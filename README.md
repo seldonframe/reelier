@@ -5,18 +5,130 @@ calls, compile it to a `SKILL.md` — a recipe with a test — and replay it
 deterministically with zero LLM calls, escalating to an LLM only when the
 world has changed underneath it.
 
-## Status: v0 spike
+## Status: v0 spike + recorder
 
-This is the v0 spike. It builds **only** the file formats and the Level-0
-deterministic runner, against a real example skill. There is:
+The Level-0 deterministic runner and file formats are the spike. On top of
+that there's now a **recorder**: a lossless MCP proxy that captures a live
+agent session as a trace, and MCP replay support in the runner. There is
+still:
 
-- **No recorder** (nothing captures a live agent trace yet — skills are
-  hand-written for now)
-- **No compiler** (no automatic trace → SKILL.md step)
+- **No compiler** (no automatic trace → SKILL.md step — traces are
+  hand-compiled into skills for now; use `reelier trace` to read one)
 - **No escalation ladder** (a divergence at Level 0 just stops the run and
   reports the failure — Levels 1-3 below are not implemented)
 - **No LLM calls anywhere in this codebase** — zero, by construction
-- **No MCP server** — this is a plain CLI over a plain file format
+
+## Record
+
+Point Reelier at the real MCP server(s) your agent already uses. It spawns
+them, re-exposes their tools 1:1 (pure passthrough — the live path is never
+modified), and adds three control tools your agent can call to capture a
+lossless trace of what it did.
+
+Install it in front of an existing MCP server (Claude Code example):
+
+```sh
+claude mcp add reelier -- npx reelier mcp --wrap "npx -y @your/mcp-server"
+```
+
+Wrap more than one downstream server by repeating `--wrap`. Then tell your
+agent: **"record yourself doing this."** It will:
+
+1. Call `reelier_start_recording {name}` — opens
+   `.reelier/traces/<name>-<n>.jsonl` (`n` auto-increments so an existing
+   trace is never overwritten) and returns the path.
+2. Call `reelier_note {text}` before each logical step to narrate intent
+   ("I'm about to pull this week's bookings"). No-op with a friendly message
+   if you're not currently recording.
+3. Work normally — every wrapped tool call and its result is appended to the
+   trace, in order, while recording is on. Calls made while *not* recording
+   pass through unlogged.
+4. Call `reelier_stop_recording {}` — returns the path and how many calls
+   were captured.
+
+Then inspect it:
+
+```sh
+reelier trace .reelier/traces/<name>-1.jsonl
+```
+
+and hand-write the corresponding `SKILL.md` from what you see (the compiler
+that automates this step doesn't exist yet). Once you have a skill, replay it
+against the same downstream(s):
+
+```sh
+reelier run skills/my-skill.skill.md --wrap "npx -y @your/mcp-server"
+```
+
+### The trace format
+
+One JSON object per line, written in order — order in the file IS the
+association between a call and its result. Every record carries a
+file-global monotonic `seq`; `call`/`result` pairs additionally share a
+call-index `i`.
+
+```jsonc
+{"t":"meta","seq":0,"name":"...","startedAt":"<ISO>","wrapped":["<downstream server names>"]}
+{"t":"note","seq":1,"ts":"<ISO>","text":"..."}
+{"t":"call","seq":2,"i":0,"ts":"<ISO>","tool":"...","args":{...}}
+{"t":"result","seq":3,"i":0,"ok":true,"ms":12,"body":{...}}
+```
+
+Control-tool calls (`reelier_start_recording`/`reelier_note`/
+`reelier_stop_recording`) are never themselves written as `call`/`result`
+entries.
+
+### Redaction (trace-write time only, never on the live path)
+
+`redact()` (`src/redact.ts`) deep-walks `args`/`body` before they're written
+to the trace:
+
+- **`REELIER_REDACT`** — comma-separated env var *names*. Any occurrence of
+  those vars' *values* (length ≥ 6) inside a string is replaced with
+  `«redacted:NAME»`.
+- **Always on, no config needed**: `sk-...`-shaped tokens and `Bearer ...`
+  headers are replaced with `«redacted»`.
+- **Always on**: a 32+-char hex string sitting in a field literally named
+  like `/token|secret|key|password|authorization/i` is replaced with
+  `«redacted»`.
+
+This is deliberately conservative — it will miss secrets that don't match
+these shapes (e.g. base64-encoded keys, secrets embedded mid-string in an
+unnamed field, non-hex tokens under 32 chars). It will not corrupt a trace
+with false-positive redactions of ordinary data, which was the higher
+priority for a first pass. Treat trace files as sensitive until you've
+verified redaction covers what you're wrapping.
+
+### Tool name identity
+
+A downstream tool is exposed under its original name. If two `--wrap`d
+downstreams both have a tool of the same name, the later one (by `--wrap`
+order, 0-indexed) is exposed as `<downstreamIndex>_<name>` and a warning is
+logged to stderr. **The exposed name is what gets recorded, and it's what
+`reelier run --wrap` looks up on replay** — both sides build the same
+collision table from the same `--wrap` order, so a name recorded by
+`reelier mcp` always resolves to the same tool on replay.
+
+### MCP result → Observation mapping (for `reelier run --wrap`)
+
+Runner steps assert against an `Observation` (`{status, headers, body}` —
+see `src/assert.ts`). MCP tool results don't have that shape natively, so
+`src/mcp-tool.ts` adapts:
+
+- `status`: `200` if the call succeeded, `500` if the MCP result set
+  `isError: true`.
+- `headers`: always `{}` — MCP has no header concept.
+- `body`: every `text`-type content block's `.text`, concatenated with
+  `"\n"`. When a tool returns a single JSON-shaped text block (the common
+  case — e.g. `{"result": 9}`), `body` *is* that JSON text, so
+  `json.<dotpath>` asserts/binds parse it directly through the existing
+  `JSON.parse(obs.body)` path. If a tool returns multiple text blocks, only
+  `body contains`/`body match` asserts are reliable; `json.*` will fail to
+  parse the concatenation — this is a documented limitation, not silently
+  papered over.
+
+Builtin `http.*` tools keep working unchanged when `--wrap` is also passed —
+the MCP-backed tools are merged alongside them.
 
 ## The five atoms
 
@@ -97,8 +209,18 @@ reelier run skills/my-skill.skill.md --var name=acme
 # Allow destructive steps to actually execute.
 reelier run skills/my-skill.skill.md --yes
 
+# Replay against one or more live MCP downstreams (repeatable --wrap).
+reelier run skills/my-skill.skill.md --wrap "npx -y @your/mcp-server"
+
 # Summarize a skill's run-record history.
 reelier bench skills/my-skill.skill.md
+
+# Start the recording proxy: re-exposes each --wrap'd downstream's tools
+# 1:1 plus 3 reelier_* control tools, on stdio.
+reelier mcp --wrap "npx -y @your/mcp-server" [--wrap "..."] [--trace-dir <dir>]
+
+# Pretty-print a trace file.
+reelier trace .reelier/traces/my-trace-1.jsonl
 ```
 
 Every run appends one JSON line to `.reelier/runs/<skill-name>.jsonl`. A step

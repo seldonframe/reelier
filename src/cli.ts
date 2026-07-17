@@ -5,19 +5,29 @@ import { readFile } from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import { createInterface } from "node:readline";
 import path from "node:path";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { parseSkill, SkillParseError } from "./skill.js";
 import { runSkill, dryRunSkill, type RunRecord } from "./runner.js";
+import { builtinTools } from "./tools.js";
+import { connectDownstream, type DownstreamConnection } from "./mcp-client.js";
+import { buildMcpTools } from "./mcp-tool.js";
+import { buildProxyServer } from "./recorder.js";
+import { parseTraceLines, formatTrace } from "./trace.js";
 
 interface ParsedArgs {
   positional: string[];
   flags: Set<string>;
   vars: Record<string, string>;
+  wraps: string[];
+  opts: Record<string, string>;
 }
 
 function parseArgv(argv: string[]): ParsedArgs {
   const positional: string[] = [];
   const flags = new Set<string>();
   const vars: Record<string, string> = {};
+  const wraps: string[] = [];
+  const opts: Record<string, string> = {};
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -28,13 +38,25 @@ function parseArgv(argv: string[]): ParsedArgs {
       }
       const eq = kv.indexOf("=");
       vars[kv.slice(0, eq)] = kv.slice(eq + 1);
+    } else if (arg === "--wrap") {
+      const val = argv[++i];
+      if (!val) {
+        throw new Error("--wrap requires a command-line string");
+      }
+      wraps.push(val);
+    } else if (arg === "--trace-dir") {
+      const val = argv[++i];
+      if (!val) {
+        throw new Error("--trace-dir requires a path");
+      }
+      opts["trace-dir"] = val;
     } else if (arg.startsWith("--")) {
       flags.add(arg.slice(2));
     } else {
       positional.push(arg);
     }
   }
-  return { positional, flags, vars };
+  return { positional, flags, vars, wraps, opts };
 }
 
 function fmtDuration(ms: number): string {
@@ -77,27 +99,43 @@ async function cmdRun(args: ParsedArgs): Promise<number> {
     return 0;
   }
 
-  const record = await runSkill(skill, {
-    vars: args.vars,
-    allowDestructive: args.flags.has("yes"),
-    onStep: (rec) => {
-      const icon = rec.outcome === "passed" || rec.outcome === "unchecked" ? "✓" : rec.outcome === "skipped" ? "○" : "✗";
-      const tag = rec.outcome === "unchecked" ? " (unchecked: no assertions)" : "";
-      console.log(`${icon} Step ${rec.n} — ${rec.title} [${rec.outcome}${tag}] ${fmtDuration(rec.ms)}`);
-      for (const f of rec.failures) {
-        console.log(`    - ${f}`);
-      }
-    },
-  });
+  const downstreams: DownstreamConnection[] = [];
+  try {
+    for (const spec of args.wraps) {
+      downstreams.push(await connectDownstream(spec));
+    }
 
-  console.log("");
-  console.log(
-    `${record.passed ? "PASSED" : "FAILED"}: ${record.totals.passed}/${record.totals.steps} steps ok, ${
-      record.totals.failed
-    } failed, ${fmtDuration(record.totals.ms)} total`
-  );
+    const tools = downstreams.length > 0 ? { ...builtinTools, ...buildMcpTools(downstreams) } : undefined;
 
-  return record.passed ? 0 : 1;
+    const record = await runSkill(skill, {
+      vars: args.vars,
+      allowDestructive: args.flags.has("yes"),
+      tools,
+      onStep: (rec) => {
+        const icon =
+          rec.outcome === "passed" || rec.outcome === "unchecked" ? "✓" : rec.outcome === "skipped" ? "○" : "✗";
+        const tag = rec.outcome === "unchecked" ? " (unchecked: no assertions)" : "";
+        console.log(`${icon} Step ${rec.n} — ${rec.title} [${rec.outcome}${tag}] ${fmtDuration(rec.ms)}`);
+        for (const f of rec.failures) {
+          console.log(`    - ${f}`);
+        }
+      },
+    });
+
+    console.log("");
+    console.log(
+      `${record.passed ? "PASSED" : "FAILED"}: ${record.totals.passed}/${record.totals.steps} steps ok, ${
+        record.totals.failed
+      } failed, ${fmtDuration(record.totals.ms)} total`
+    );
+
+    return record.passed ? 0 : 1;
+  } catch (err) {
+    console.error(`Failed to connect --wrap downstream: ${(err as Error).message}`);
+    return 1;
+  } finally {
+    await Promise.all(downstreams.map((d) => d.close().catch(() => {})));
+  }
 }
 
 async function readRunRecords(filePath: string): Promise<RunRecord[]> {
@@ -185,6 +223,76 @@ async function cmdBench(args: ParsedArgs): Promise<number> {
   return 0;
 }
 
+async function cmdMcp(args: ParsedArgs): Promise<number> {
+  if (args.wraps.length === 0) {
+    console.error('Usage: reelier mcp --wrap "<command line>" [--wrap "<another>"] [--trace-dir <dir>]');
+    return 1;
+  }
+  const traceDir = args.opts["trace-dir"] ?? path.join(process.cwd(), ".reelier", "traces");
+
+  const downstreams: DownstreamConnection[] = [];
+  try {
+    for (const spec of args.wraps) {
+      downstreams.push(await connectDownstream(spec));
+    }
+  } catch (err) {
+    console.error(`Failed to connect --wrap downstream: ${(err as Error).message}`);
+    await Promise.all(downstreams.map((d) => d.close().catch(() => {})));
+    return 1;
+  }
+
+  const server = buildProxyServer(downstreams, { traceDir });
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+
+  let shuttingDown = false;
+  const shutdown = async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    await server.close().catch(() => {});
+    await Promise.all(downstreams.map((d) => d.close().catch(() => {})));
+  };
+
+  await new Promise<void>((resolve) => {
+    process.stdin.on("close", resolve);
+    process.stdin.on("end", resolve);
+    process.on("SIGINT", () => resolve());
+    process.on("SIGTERM", () => resolve());
+  });
+  await shutdown();
+
+  return 0;
+}
+
+async function cmdTrace(args: ParsedArgs): Promise<number> {
+  const tracePath = args.positional[0];
+  if (!tracePath) {
+    console.error("Usage: reelier trace <trace.jsonl>");
+    return 1;
+  }
+
+  let source: string;
+  try {
+    source = await readFile(tracePath, "utf8");
+  } catch (err) {
+    console.error(`Could not read trace file ${tracePath}: ${(err as Error).message}`);
+    return 1;
+  }
+
+  let records;
+  try {
+    records = parseTraceLines(source);
+  } catch (err) {
+    console.error(`Malformed trace file ${tracePath}: ${(err as Error).message}`);
+    return 1;
+  }
+
+  for (const line of formatTrace(records)) {
+    console.log(line);
+  }
+  return 0;
+}
+
 async function main(): Promise<number> {
   const [, , cmd, ...rest] = process.argv;
   const args = parseArgv(rest);
@@ -194,8 +302,12 @@ async function main(): Promise<number> {
       return cmdRun(args);
     case "bench":
       return cmdBench(args);
+    case "mcp":
+      return cmdMcp(args);
+    case "trace":
+      return cmdTrace(args);
     default:
-      console.error("Usage: reelier <run|bench> <skill.md> [options]");
+      console.error("Usage: reelier <run|bench|mcp|trace> [options]");
       return 1;
   }
 }
