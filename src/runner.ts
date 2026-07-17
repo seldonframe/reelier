@@ -1,23 +1,43 @@
 // The runner loop: for each step, fill {{var}} holes from bindings, execute
 // the tool, evaluate assertions, extract binds, continue. Any assertion
-// failure or missing bind is a divergence — v0 just records the failure and
-// stops (the escalation ladder comes later). Linear only.
+// failure or missing bind is a divergence.
+//
+// At --max-level 0 (the default) a divergence just stops the run — the LLM
+// is never constructed or called, full stop; BYOK spend is opt-in.
+//
+// At --max-level >= 1, a divergence first tries Level 1: re-evaluate the
+// SAME already-captured observation with an LLM-patched assert/bind set —
+// zero side effects by construction, since nothing is re-executed. If that
+// doesn't hold and --max-level >= 2, and the step's effect isn't
+// destructive, Level 2 asks the LLM to propose patched args and re-executes
+// the step exactly once against the fresh result. A destructive step never
+// auto-re-runs at L2 — that's Level 3, a human fixing the skill by hand.
+//
+// A successful heal (L1 or L2) is written back to the skill file
+// immediately (src/writeback.ts) — the whole point of the ladder is that
+// the same drift never has to escalate twice.
 
 import { mkdir, appendFile } from "node:fs/promises";
 import path from "node:path";
 import type { Skill, Step } from "./skill.js";
 import { evalAssert, evalBind, type Observation } from "./assert.js";
 import { builtinTools, type Tool, type ToolContext } from "./tools.js";
+import type { LlmClient } from "./llm.js";
+import { resolveL1, resolveL2 } from "./escalate.js";
+import { applyWritebackSafely } from "./writeback.js";
 
 export type StepOutcome = "passed" | "failed" | "unchecked" | "skipped";
 
 export interface StepRecord {
   n: number;
   title: string;
-  level: 0;
+  /** 0 = ran deterministically (or wasn't attempted); 1/2 = healed at that escalation level. */
+  level: 0 | 1 | 2;
   outcome: StepOutcome;
   ms: number;
   failures: string[];
+  /** LLM token usage summed across every escalation attempt on this step (incl. failed ones) — 0 attempts means this is absent, not zero. */
+  llm?: { inputTokens: number; outputTokens: number };
 }
 
 export interface RunRecord {
@@ -31,6 +51,9 @@ export interface RunRecord {
     passed: number;
     failed: number;
     ms: number;
+    /** 0 for a pure-L0 run (no escalation ever attempted). */
+    llmInputTokens: number;
+    llmOutputTokens: number;
   };
 }
 
@@ -43,6 +66,14 @@ export interface RunOptions {
   /** When true, do not execute anything or write a run record — just report filled actions. */
   dryRun?: boolean;
   onStep?: (record: StepRecord, filledAction: { tool: string; args: unknown }) => void;
+  /** 0 (default) = pure deterministic replay, LLM never constructed or called. 1 = L1 only. 2 = L1 then L2. */
+  maxLevel?: 0 | 1 | 2;
+  /** Required (and only ever touched) when maxLevel >= 1. Constructing this is the caller's job — the runner never builds one itself. */
+  llm?: LlmClient;
+  llmModel?: string;
+  llmL2Model?: string;
+  /** Path to the skill's source file, required for write-back on a successful heal. Without it, a heal still passes this run but a stderr warning is printed (nothing to persist to). */
+  skillPath?: string;
 }
 
 export interface DryRunStep {
@@ -100,7 +131,7 @@ async function executeStep(
   bindings: Record<string, unknown>,
   tools: Record<string, Tool>,
   ctx: ToolContext
-): Promise<{ outcome: StepOutcome; ms: number; failures: string[] }> {
+): Promise<{ outcome: StepOutcome; ms: number; failures: string[]; observation?: Observation }> {
   const started = Date.now();
   const failures: string[] = [];
 
@@ -167,13 +198,180 @@ async function executeStep(
 
   const ms = Date.now() - started;
   if (failures.length > 0) {
-    return { outcome: "failed", ms, failures };
+    return { outcome: "failed", ms, failures, observation: obs };
   }
   if (step.asserts.length === 0) {
     // Honest-success rule: zero assertions never counts as "passed".
-    return { outcome: "unchecked", ms, failures };
+    return { outcome: "unchecked", ms, failures, observation: obs };
   }
-  return { outcome: "passed", ms, failures };
+  return { outcome: "passed", ms, failures, observation: obs };
+}
+
+/** Re-evaluate a patched assert/bind set against a fixed observation. Never re-executes anything. */
+function reEvaluatePatch(
+  asserts: string[],
+  binds: string[],
+  obs: Observation
+): { ok: boolean; failures: string[]; bindings: Record<string, unknown> } {
+  const failures: string[] = [];
+  const newBindings: Record<string, unknown> = {};
+  for (const a of asserts) {
+    try {
+      const result = evalAssert(a, obs);
+      if (!result.ok) failures.push(result.message);
+    } catch (err) {
+      failures.push(`patched assert error on '${a}': ${(err as Error).message}`);
+    }
+  }
+  for (const b of binds) {
+    try {
+      const result = evalBind(b, obs);
+      if (!result.ok) failures.push(result.message);
+      else newBindings[result.name] = result.value;
+    } catch (err) {
+      failures.push(`patched bind error on '${b}': ${(err as Error).message}`);
+    }
+  }
+  return { ok: failures.length === 0, failures, bindings: newBindings };
+}
+
+function addUsage(
+  a: { inputTokens: number; outputTokens: number } | undefined,
+  b: { inputTokens: number; outputTokens: number }
+): { inputTokens: number; outputTokens: number } {
+  return { inputTokens: (a?.inputTokens ?? 0) + b.inputTokens, outputTokens: (a?.outputTokens ?? 0) + b.outputTokens };
+}
+
+function level3Message(step: Step): string {
+  return (
+    `Step ${step.n} (${step.title}) diverged and its effect is 'destructive' — Level 2 auto-repair never ` +
+    `re-runs a destructive step (that would be an unreviewed side-effecting re-execution). Fix the skill by ` +
+    `hand (edit its action/asserts/binds), or handle this as a Level 3 manual recovery.`
+  );
+}
+
+/**
+ * Attempt to heal a diverged step via the escalation ladder. Returns the
+ * (possibly updated) outcome/failures/level/llm-usage, and mutates
+ * `bindings` in place on a successful heal (matching the deterministic
+ * path's behavior). Writes back a successful heal to `skill`/`skillPath`.
+ */
+async function attemptEscalation(
+  skill: Skill,
+  step: Step,
+  observation: Observation,
+  initialFailures: string[],
+  bindings: Record<string, unknown>,
+  tools: Record<string, Tool>,
+  toolCtx: ToolContext,
+  options: RunOptions
+): Promise<{ outcome: StepOutcome; level: 0 | 1 | 2; failures: string[]; llm?: { inputTokens: number; outputTokens: number } }> {
+  const maxLevel = options.maxLevel ?? 0;
+  if (maxLevel < 1 || !options.llm) {
+    return { outcome: "failed", level: 0, failures: initialFailures };
+  }
+
+  let failures = initialFailures;
+  let usage: { inputTokens: number; outputTokens: number } | undefined;
+
+  const l1 = await resolveL1({
+    step,
+    observation,
+    failures,
+    llm: options.llm,
+    model: options.llmModel ?? "claude-haiku-4-5-20251001",
+  });
+  usage = addUsage(usage, l1.usage);
+
+  if (l1.verdict === "patch") {
+    const reEval = reEvaluatePatch(l1.asserts, l1.binds, observation);
+    if (reEval.ok) {
+      Object.assign(bindings, reEval.bindings);
+      if (options.skillPath) {
+        await applyWritebackSafely({
+          skillPath: options.skillPath,
+          skill,
+          stepN: step.n,
+          level: 1,
+          patch: { asserts: l1.asserts, binds: l1.binds },
+          reason: l1.reason,
+        });
+      } else {
+        console.error(
+          `WARNING: Level 1 heal of step ${step.n} succeeded for this run, but no skill file path was given — nothing was written back. The same drift will escalate again next run.`
+        );
+      }
+      const outcome: StepOutcome = l1.asserts.length === 0 ? "unchecked" : "passed";
+      return { outcome, level: 1, failures: [], llm: usage };
+    }
+    failures = [...failures, ...reEval.failures.map((f) => `L1 patch didn't hold: ${f}`)];
+  } else {
+    failures = [...failures, `L1: ${l1.reason}`];
+  }
+
+  if (maxLevel < 2) {
+    return { outcome: "failed", level: 0, failures, llm: usage };
+  }
+
+  if (step.effect === "destructive") {
+    failures = [...failures, level3Message(step)];
+    return { outcome: "failed", level: 0, failures, llm: usage };
+  }
+
+  const l2 = await resolveL2({
+    step,
+    skillContext: { skillName: skill.name, bindings },
+    observation,
+    failures,
+    llm: options.llm,
+    model: options.llmL2Model ?? "claude-sonnet-5",
+  });
+  usage = addUsage(usage, l2.usage);
+
+  if (l2.verdict !== "patch") {
+    failures = [...failures, `L2: ${l2.reason}`];
+    return { outcome: "failed", level: 0, failures, llm: usage };
+  }
+
+  let filledArgs: unknown;
+  try {
+    filledArgs = l2.args !== undefined ? fillTemplate(l2.args, bindings) : fillTemplate(step.actionArgs, bindings);
+  } catch (err) {
+    failures = [...failures, `L2 patched args template fill failed: ${(err as Error).message}`];
+    return { outcome: "failed", level: 0, failures, llm: usage };
+  }
+
+  let obs2: Observation;
+  try {
+    obs2 = await tools[step.actionTool].run(filledArgs, toolCtx);
+  } catch (err) {
+    failures = [...failures, `L2 re-execution failed: ${(err as Error).message}`];
+    return { outcome: "failed", level: 0, failures, llm: usage };
+  }
+
+  const reEval2 = reEvaluatePatch(l2.asserts, l2.binds, obs2);
+  if (!reEval2.ok) {
+    failures = [...failures, ...reEval2.failures.map((f) => `L2 patch didn't hold: ${f}`)];
+    return { outcome: "failed", level: 0, failures, llm: usage };
+  }
+
+  Object.assign(bindings, reEval2.bindings);
+  if (options.skillPath) {
+    await applyWritebackSafely({
+      skillPath: options.skillPath,
+      skill,
+      stepN: step.n,
+      level: 2,
+      patch: { asserts: l2.asserts, binds: l2.binds, args: l2.args },
+      reason: l2.reason,
+    });
+  } else {
+    console.error(
+      `WARNING: Level 2 heal of step ${step.n} succeeded for this run, but no skill file path was given — nothing was written back. The same drift will escalate again next run.`
+    );
+  }
+  const outcome: StepOutcome = l2.asserts.length === 0 ? "unchecked" : "passed";
+  return { outcome, level: 2, failures: [], llm: usage };
 }
 
 /** Run a skill's steps in order. Stops (marks remaining steps "skipped") on the first divergence. */
@@ -195,8 +393,32 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
       continue;
     }
 
-    const { outcome, ms, failures } = await executeStep(step, bindings, tools, toolCtx);
-    const rec: StepRecord = { n: step.n, title: step.title, level: 0, outcome, ms, failures };
+    const started = Date.now();
+    const exec = await executeStep(step, bindings, tools, toolCtx);
+    let outcome = exec.outcome;
+    let failures = exec.failures;
+    let level: 0 | 1 | 2 = 0;
+    let llmUsage: { inputTokens: number; outputTokens: number } | undefined;
+
+    if (outcome === "failed" && exec.observation) {
+      const escalated = await attemptEscalation(
+        skill,
+        step,
+        exec.observation,
+        failures,
+        bindings,
+        tools,
+        toolCtx,
+        options
+      );
+      outcome = escalated.outcome;
+      level = escalated.level;
+      failures = escalated.failures;
+      llmUsage = escalated.llm;
+    }
+
+    const ms = Date.now() - started;
+    const rec: StepRecord = { n: step.n, title: step.title, level, outcome, ms, failures, ...(llmUsage ? { llm: llmUsage } : {}) };
     stepRecords.push(rec);
     options.onStep?.(rec, { tool: step.actionTool, args: step.actionArgs });
 
@@ -209,6 +431,8 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
   const passedCount = stepRecords.filter((s) => s.outcome === "passed" || s.outcome === "unchecked").length;
   const failedCount = stepRecords.filter((s) => s.outcome === "failed").length;
   const totalMs = stepRecords.reduce((sum, s) => sum + s.ms, 0);
+  const llmInputTokens = stepRecords.reduce((sum, s) => sum + (s.llm?.inputTokens ?? 0), 0);
+  const llmOutputTokens = stepRecords.reduce((sum, s) => sum + (s.llm?.outputTokens ?? 0), 0);
 
   const record: RunRecord = {
     skill: skill.name,
@@ -216,7 +440,7 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
     finishedAt,
     passed: failedCount === 0,
     steps: stepRecords,
-    totals: { steps: stepRecords.length, passed: passedCount, failed: failedCount, ms: totalMs },
+    totals: { steps: stepRecords.length, passed: passedCount, failed: failedCount, ms: totalMs, llmInputTokens, llmOutputTokens },
   };
 
   if (!options.dryRun) {

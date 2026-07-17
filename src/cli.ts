@@ -14,6 +14,7 @@ import { buildMcpTools } from "./mcp-tool.js";
 import { buildProxyServer } from "./recorder.js";
 import { parseTraceLines, formatTrace } from "./trace.js";
 import { compile, renderSkillMd } from "./compile.js";
+import { createLlmClient, resolveLlmConfig } from "./llm.js";
 
 interface ParsedArgs {
   positional: string[];
@@ -57,6 +58,18 @@ function parseArgv(argv: string[]): ParsedArgs {
         throw new Error("-o requires an output path");
       }
       opts.o = val;
+    } else if (
+      arg === "--max-level" ||
+      arg === "--llm-base-url" ||
+      arg === "--llm-api-key" ||
+      arg === "--llm-model" ||
+      arg === "--llm-l2-model"
+    ) {
+      const val = argv[++i];
+      if (!val) {
+        throw new Error(`${arg} requires a value`);
+      }
+      opts[arg.slice(2)] = val;
     } else if (arg.startsWith("--")) {
       flags.add(arg.slice(2));
     } else {
@@ -70,10 +83,29 @@ function fmtDuration(ms: number): string {
   return `${ms}ms`;
 }
 
+function parseMaxLevel(raw: string | undefined): 0 | 1 | 2 {
+  if (raw === undefined) return 0;
+  if (raw === "0") return 0;
+  if (raw === "1") return 1;
+  if (raw === "2") return 2;
+  throw new Error(`--max-level must be 0, 1, or 2, got: ${JSON.stringify(raw)}`);
+}
+
 async function cmdRun(args: ParsedArgs): Promise<number> {
   const skillPath = args.positional[0];
   if (!skillPath) {
-    console.error("Usage: reelier run <skill.md> [--dry-run] [--yes] [--var name=value ...]");
+    console.error(
+      "Usage: reelier run <skill.md> [--dry-run] [--yes] [--var name=value ...] [--max-level 0|1|2] " +
+        "[--llm-base-url ...] [--llm-api-key ...] [--llm-model ...] [--llm-l2-model ...]"
+    );
+    return 1;
+  }
+
+  let maxLevel: 0 | 1 | 2;
+  try {
+    maxLevel = parseMaxLevel(args.opts["max-level"]);
+  } catch (err) {
+    console.error((err as Error).message);
     return 1;
   }
 
@@ -114,15 +146,33 @@ async function cmdRun(args: ParsedArgs): Promise<number> {
 
     const tools = downstreams.length > 0 ? { ...builtinTools, ...buildMcpTools(downstreams) } : undefined;
 
+    // Rule: at --max-level 0 (default) the LLM is never constructed or
+    // called. Only build it when escalation was actually requested.
+    const llmConfig =
+      maxLevel >= 1
+        ? resolveLlmConfig({
+            baseUrl: args.opts["llm-base-url"],
+            apiKey: args.opts["llm-api-key"],
+            model: args.opts["llm-model"],
+            l2Model: args.opts["llm-l2-model"],
+          })
+        : undefined;
+
     const record = await runSkill(skill, {
       vars: args.vars,
       allowDestructive: args.flags.has("yes"),
       tools,
+      maxLevel,
+      llm: llmConfig ? createLlmClient(llmConfig) : undefined,
+      llmModel: llmConfig?.model,
+      llmL2Model: llmConfig?.l2Model,
+      skillPath,
       onStep: (rec) => {
         const icon =
           rec.outcome === "passed" || rec.outcome === "unchecked" ? "✓" : rec.outcome === "skipped" ? "○" : "✗";
         const tag = rec.outcome === "unchecked" ? " (unchecked: no assertions)" : "";
-        console.log(`${icon} Step ${rec.n} — ${rec.title} [${rec.outcome}${tag}] ${fmtDuration(rec.ms)}`);
+        const levelTag = rec.level > 0 ? ` [healed L${rec.level}]` : "";
+        console.log(`${icon} Step ${rec.n} — ${rec.title} [${rec.outcome}${tag}]${levelTag} ${fmtDuration(rec.ms)}`);
         for (const f of rec.failures) {
           console.log(`    - ${f}`);
         }
@@ -135,6 +185,9 @@ async function cmdRun(args: ParsedArgs): Promise<number> {
         record.totals.failed
       } failed, ${fmtDuration(record.totals.ms)} total`
     );
+    if (record.totals.llmInputTokens > 0 || record.totals.llmOutputTokens > 0) {
+      console.log(`LLM tokens: ${record.totals.llmInputTokens} in / ${record.totals.llmOutputTokens} out`);
+    }
 
     return record.passed ? 0 : 1;
   } catch (err) {
@@ -203,8 +256,16 @@ async function cmdBench(args: ParsedArgs): Promise<number> {
   const passRate = ((passCount / records.length) * 100).toFixed(1);
 
   const failureCounts = new Map<string, number>();
+  const levelCounts = { 0: 0, 1: 0, 2: 0 };
+  let llmInputTokens = 0;
+  let llmOutputTokens = 0;
   for (const r of records) {
+    // Defensive against run records written before the escalation ladder
+    // existed (no `level`/`llm` fields, no `totals.llmInputTokens`).
+    llmInputTokens += r.totals.llmInputTokens ?? 0;
+    llmOutputTokens += r.totals.llmOutputTokens ?? 0;
     for (const s of r.steps) {
+      levelCounts[s.level ?? 0]++;
       if (s.outcome === "failed") {
         const key = `Step ${s.n} — ${s.title}`;
         failureCounts.set(key, (failureCounts.get(key) ?? 0) + 1);
@@ -217,7 +278,8 @@ async function cmdBench(args: ParsedArgs): Promise<number> {
   console.log(`  pass rate:   ${passRate}% (${passCount}/${records.length})`);
   console.log(`  first run:   ${fmtDuration(first.totals.ms)} (${first.startedAt})`);
   console.log(`  latest run:  ${fmtDuration(latest.totals.ms)} (${latest.startedAt})`);
-  console.log(`  LLM calls:   0 (Level 0)`);
+  console.log(`  step levels: L0=${levelCounts[0]} L1=${levelCounts[1]} L2=${levelCounts[2]} (across all runs)`);
+  console.log(`  LLM tokens:  ${llmInputTokens} in / ${llmOutputTokens} out (no cost math — tokens only)`);
   if (failureCounts.size > 0) {
     console.log(`  per-step failure counts:`);
     for (const [step, count] of failureCounts) {

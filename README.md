@@ -5,17 +5,21 @@ calls, compile it to a `SKILL.md` — a recipe with a test — and replay it
 deterministically with zero LLM calls, escalating to an LLM only when the
 world has changed underneath it.
 
-## Status: v0 spike + recorder + compiler
+## Status: v0 spike + recorder + compiler + escalation ladder (L1/L2)
 
 The Level-0 deterministic runner and file formats are the spike. On top of
 that there's a **recorder** (a lossless MCP proxy that captures a live agent
-session as a trace) and a **compiler** (`reelier compile`, turning a trace
-into a runner-ready `SKILL.md` deterministically — see "Compile" below).
-There is still:
+session as a trace), a **compiler** (`reelier compile`, turning a trace into
+a runner-ready `SKILL.md` deterministically — see "Compile" below), and an
+**escalation ladder** (`--max-level 1|2`, see "Escalation ladder" below) —
+the first LLM code in this repo, strictly opt-in. There is still:
 
-- **No escalation ladder** (a divergence at Level 0 just stops the run and
-  reports the failure — Levels 1-3 below are not implemented)
-- **No LLM calls anywhere in this codebase** — zero, by construction
+- **No Level 3** — full agentic recovery when the recorded trace no longer
+  applies at all is not implemented; a diverged destructive step, or an L2
+  failure, just stops the run with a message telling you to fix the skill by
+  hand.
+- **Zero LLM calls at the default `--max-level 0`** — by construction, not
+  by convention (see below).
 
 ## Record
 
@@ -275,7 +279,15 @@ reelier run skills/my-skill.skill.md --yes
 # Replay against one or more live MCP downstreams (repeatable --wrap).
 reelier run skills/my-skill.skill.md --wrap "npx -y @your/mcp-server"
 
-# Summarize a skill's run-record history.
+# Opt into the escalation ladder on divergence (default --max-level 0 —
+# see "Escalation ladder" below). BYOK flags only matter when a step
+# actually diverges; they're never touched at --max-level 0.
+reelier run skills/my-skill.skill.md --max-level 1 \
+  [--llm-base-url https://api.anthropic.com] [--llm-api-key sk-...] \
+  [--llm-model claude-haiku-4-5-20251001] [--llm-l2-model claude-sonnet-5]
+
+# Summarize a skill's run-record history (now includes per-level step
+# counts and total LLM tokens across all runs).
 reelier bench skills/my-skill.skill.md
 
 # Start the recording proxy: re-exposes each --wrap'd downstream's tools
@@ -295,21 +307,121 @@ with zero assertions is recorded as `"unchecked"`, never `"passed"` — an
 honest-success rule: Reelier will not report a step as having verified
 anything it didn't actually check.
 
-## Roadmap: the escalation ladder
+## Escalation ladder
 
-- **L0 (this spike)** — deterministic replay, zero LLM calls, fails closed on
-  divergence.
-- **L1** — on divergence, an LLM proposes a patched step (e.g. an updated
-  selector or sentinel), a human or policy approves it, the skill is
-  re-compiled.
-- **L2** — an LLM handles the diverged step live (one-off), the run
-  continues, and the outcome is logged as a candidate patch.
-- **L3** — full agentic recovery when the recorded trace no longer applies
-  at all, with the successful recovery folded back into the skill.
+When a step diverges (an assertion fails, a bind can't find its path), Level
+0 just stops — that's still the default and it's the only thing that runs
+unless you opt in. `--max-level 1|2` lets an LLM attempt a heal before the
+run gives up. The whole ladder is built around one idea: **a heal that isn't
+written back to the skill file is worthless**, because the same drift would
+just escalate again on the very next run. So every successful heal is
+persisted immediately (see "Write-back" below) — the anti-RPA-rot property:
+once healed, a skill needs the LLM again only if the world drifts *again*.
 
-No benchmark numbers or cost-savings claims are made here — this spike is
-too small to earn them. Receipts come later, once there's something to
-measure against.
+### The four levels
+
+- **L0 (default, always on)** — deterministic replay, zero LLM calls, fails
+  closed on divergence. This is the only level that ever runs unless you
+  pass `--max-level`.
+- **L1** — re-evaluates the step's **already-captured observation** with an
+  LLM-patched `assert`/`bind` set. Nothing is re-executed — L1 is zero side
+  effects by construction, because it never calls a tool again, only
+  re-reads the same result with fresh eyes (e.g. a JSON field moved from
+  `json.id` to `json.data.id`). L1 may patch asserts and binds **only** —
+  never `args`.
+- **L2** — tried only if L1 didn't hold and `--max-level 2`. The LLM may
+  propose patched `args` in addition to asserts/binds, and the harness
+  re-executes the step **exactly once** against the new args — but **only**
+  when the step's effect is `read` or `idempotent-write`. A diverged
+  **destructive** step is never handed to L2 at all: it fails immediately
+  with a message telling you to fix the skill by hand. That refusal *is*
+  Level 3 in this version — full agentic recovery for a destructive
+  divergence isn't implemented.
+- **L3 (not implemented)** — full agentic recovery when the recorded trace
+  no longer applies at all. Today that's a human editing the skill.
+
+### Safety rules
+
+- **L0 is the default and the LLM is never constructed or called at
+  `--max-level 0`** — not "configured to no-op", actually never touched.
+  BYOK spend is opt-in, full stop.
+- **L1 never re-executes.** It only re-reads the observation the step's tool
+  call already produced. There is no way for an L1 heal to cause a second
+  side effect.
+- **L2 never re-runs a destructive step.** The harness checks `step.effect`
+  itself before ever asking the LLM for an L2 patch — an LLM proposing "just
+  re-run the delete" is structurally impossible to reach for a destructive
+  step in this version.
+- **The LLM only ever emits a narrow JSON patch; the harness applies it.**
+  Every patched `assert`/`bind` line is validated against the exact same
+  grammar the skill parser uses (`src/assert.ts`) before it's allowed near
+  a real observation or the skill file — an unparseable line is downgraded
+  to a real failure, never silently dropped or half-applied. The model never
+  writes the skill file directly.
+- **Write-back is mandatory on a successful heal, not best-effort.** See
+  below.
+
+### BYOK config — "almost any LLM"
+
+Resolved as flags > env vars > defaults:
+
+| | Flag | Env var | Default |
+| --- | --- | --- | --- |
+| Base URL | `--llm-base-url` | `REELIER_LLM_BASE_URL` | `https://api.anthropic.com` |
+| API key | `--llm-api-key` | `REELIER_LLM_API_KEY` (falls back to `ANTHROPIC_API_KEY` only when the base URL is `api.anthropic.com`) | *(none — required only when a step actually escalates)* |
+| L1 model | `--llm-model` | `REELIER_LLM_MODEL` | `claude-haiku-4-5-20251001` |
+| L2 model | `--llm-l2-model` | `REELIER_LLM_L2_MODEL` | `claude-sonnet-5` |
+
+Two wire adapters, chosen by the base URL's host: the native **Anthropic
+Messages API** for `api.anthropic.com`, and **OpenAI-compatible
+chat-completions** for every other host — which is the "almost any LLM"
+story: point `--llm-base-url` at OpenRouter, a local Ollama, Gemini's
+OpenAI-compat endpoint, Groq, vLLM, or anything else that speaks the
+chat-completions shape, and it works unchanged. The API key is only
+required — and only checked — the first time a step actually escalates; a
+`--max-level 1` run whose skill never diverges never needs a key.
+
+**Observations are sent to your configured LLM during escalation.** The
+prompt includes the step's text, the failure messages, and a bounded
+summary of the tool's response (status, body truncated to ~2000 chars, a
+truncated sample of `json.<path>` leaves) — never the full unredacted body,
+but still real data from your workflow. This is BYOK: it goes to whichever
+endpoint you've pointed `--llm-base-url` at, and nowhere else.
+
+### Token accounting — honest, no cost math
+
+Every escalation attempt's `usage` (input/output tokens) is summed into that
+step's run record, **even when the escalation fails** — a step that tried L1
+and L2 and still diverged still spent real tokens, and the run record says
+so. `reelier bench` prints total LLM tokens across a skill's run history
+plus a per-level step count (`L0=x L1=y L2=z`). No dollar figures are
+fabricated anywhere — token counts only; pricing varies by provider and
+model, and this codebase doesn't guess at it.
+
+### Write-back and the changelog convention
+
+A successful heal (L1 or L2) is applied to the **in-memory skill** and
+immediately serialized back to the `.skill.md` file
+(`src/writeback.ts`) — the patched `assert`/`bind` lines (and, for an L2
+heal, the patched `args`), plus one new line under a `## Changelog` section
+(created if the skill doesn't have one yet):
+
+```
+- 2026-07-17 — L1 heal, step 1 (create a note): upstream API update wrapped create_note's fields under a 'note' object (v1 -> v2)
+```
+
+`serializeSkill` (also `src/writeback.ts`) is the faithful inverse of
+`parseSkill`: non-step content (the title, the `Inputs:` line, `## Open
+questions`, `## Changelog`, any hand-written prose) is preserved verbatim
+from the parse, and step blocks are re-rendered canonically — stable under
+repeated serialize→parse→serialize even where it isn't byte-identical to
+hand-formatted input.
+
+A write-back **failure** (disk full, permission denied) is never allowed to
+crash the run — the heal already worked *for this run*; only persistence
+failed, and that prints a loud stderr warning instead of throwing, because
+silently losing a heal means the same drift escalates again next time,
+defeating the entire point of the ladder.
 
 ## Licensing
 

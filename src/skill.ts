@@ -21,6 +21,18 @@ export interface Skill {
   name: string;
   description: string;
   steps: Step[];
+  /**
+   * Raw body text preceding the first step header (title, "Inputs:" line,
+   * "## Steps" heading, any prose/comments), preserved verbatim so
+   * serializeSkill (src/writeback.ts) can round-trip a skill without
+   * inventing or dropping human-authored content.
+   */
+  preamble: string;
+  /**
+   * Raw body text following the last step's field block (e.g. "## Open
+   * questions", "## Changelog"), preserved verbatim for the same reason.
+   */
+  trailing: string;
 }
 
 export class SkillParseError extends Error {
@@ -147,13 +159,17 @@ export function parseSkill(source: string): Skill {
 
   const allBreaks = [...headerIdxs, ...sectionIdxs].sort((a, b) => a - b);
 
+  const preamble = bodyLines.slice(0, headerIdxs[0]).join("\n");
+
   const steps: Step[] = [];
   let expectedN = 1;
+  let lastEndIdx = bodyLines.length;
 
   for (let h = 0; h < headerIdxs.length; h++) {
     const startIdx = headerIdxs[h];
     const nextBreak = allBreaks.find((idx) => idx > startIdx);
     const endIdx = nextBreak !== undefined ? nextBreak : bodyLines.length;
+    lastEndIdx = endIdx;
     const headerLine = bodyLines[startIdx].trim();
     const fileLine = bodyStartLine + startIdx;
 
@@ -259,5 +275,7 @@ export function parseSkill(source: string): Skill {
     });
   }
 
-  return { name, description, steps };
+  const trailing = bodyLines.slice(lastEndIdx).join("\n");
+
+  return { name, description, steps, preamble, trailing };
 }
