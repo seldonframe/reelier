@@ -86,6 +86,8 @@ function parseFrontmatter(frontmatter: string): { name: string; description: str
 }
 
 const STEP_HEADER_RE = /^###\s+Step\s+(\d+)\s*[—-]\s*(.+)$/;
+/** A level-2 heading (e.g. "## Open questions", "## Changelog") — not a step header. Marks the end of the preceding step's field block. */
+const SECTION_HEADER_RE = /^##(?!#)\s+/;
 
 /** Parse the `action` line: `<tool> <json-args>`. */
 function parseAction(rest: string, ctx: { step: number; line: number }): { tool: string; args: unknown } {
@@ -123,11 +125,19 @@ export function parseSkill(source: string): Skill {
 
   const bodyLines = body.split(/\r\n|\n/);
 
-  // Find step header line indices (0-indexed within bodyLines).
+  // Find step header line indices (0-indexed within bodyLines), and section
+  // (non-step, level-2 "## ...") header indices — the latter close out a
+  // step's field block early so trailing "## Open questions" / "## Changelog"
+  // sections are never swallowed into the last step (and their prose/bullet
+  // lines are simply ignored, never mistaken for step fields).
   const headerIdxs: number[] = [];
+  const sectionIdxs: number[] = [];
   for (let i = 0; i < bodyLines.length; i++) {
-    if (STEP_HEADER_RE.test(bodyLines[i].trim())) {
+    const trimmed = bodyLines[i].trim();
+    if (STEP_HEADER_RE.test(trimmed)) {
       headerIdxs.push(i);
+    } else if (SECTION_HEADER_RE.test(trimmed)) {
+      sectionIdxs.push(i);
     }
   }
 
@@ -135,12 +145,15 @@ export function parseSkill(source: string): Skill {
     throw new SkillParseError("No '### Step N — Title' headers found in skill body");
   }
 
+  const allBreaks = [...headerIdxs, ...sectionIdxs].sort((a, b) => a - b);
+
   const steps: Step[] = [];
   let expectedN = 1;
 
   for (let h = 0; h < headerIdxs.length; h++) {
     const startIdx = headerIdxs[h];
-    const endIdx = h + 1 < headerIdxs.length ? headerIdxs[h + 1] : bodyLines.length;
+    const nextBreak = allBreaks.find((idx) => idx > startIdx);
+    const endIdx = nextBreak !== undefined ? nextBreak : bodyLines.length;
     const headerLine = bodyLines[startIdx].trim();
     const fileLine = bodyStartLine + startIdx;
 

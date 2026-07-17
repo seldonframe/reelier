@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Hand-rolled argv parsing (no commander). Two subcommands: run, bench.
 
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile, access } from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import { createInterface } from "node:readline";
 import path from "node:path";
@@ -13,6 +13,7 @@ import { connectDownstream, type DownstreamConnection } from "./mcp-client.js";
 import { buildMcpTools } from "./mcp-tool.js";
 import { buildProxyServer } from "./recorder.js";
 import { parseTraceLines, formatTrace } from "./trace.js";
+import { compile, renderSkillMd } from "./compile.js";
 
 interface ParsedArgs {
   positional: string[];
@@ -50,6 +51,12 @@ function parseArgv(argv: string[]): ParsedArgs {
         throw new Error("--trace-dir requires a path");
       }
       opts["trace-dir"] = val;
+    } else if (arg === "-o") {
+      const val = argv[++i];
+      if (!val) {
+        throw new Error("-o requires an output path");
+      }
+      opts.o = val;
     } else if (arg.startsWith("--")) {
       flags.add(arg.slice(2));
     } else {
@@ -293,6 +300,80 @@ async function cmdTrace(args: ParsedArgs): Promise<number> {
   return 0;
 }
 
+async function fileExists(p: string): Promise<boolean> {
+  try {
+    await access(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function cmdCompile(args: ParsedArgs): Promise<number> {
+  const tracePath = args.positional[0];
+  if (!tracePath) {
+    console.error("Usage: reelier compile <trace.jsonl> [-o <out.skill.md>] [--force]");
+    return 1;
+  }
+
+  let source: string;
+  try {
+    source = await readFile(tracePath, "utf8");
+  } catch (err) {
+    console.error(`Could not read trace file ${tracePath}: ${(err as Error).message}`);
+    return 1;
+  }
+
+  let records;
+  try {
+    records = parseTraceLines(source);
+  } catch (err) {
+    console.error(`Malformed trace file ${tracePath}: ${(err as Error).message}`);
+    return 1;
+  }
+
+  const result = compile(records);
+  const traceFileName = path.basename(tracePath);
+  const rendered = renderSkillMd(result, traceFileName);
+
+  // Sanity check: the compiler must always produce a skill its own parser accepts.
+  try {
+    parseSkill(rendered);
+  } catch (err) {
+    console.error(`Internal error: compiled skill failed to round-trip through the skill parser: ${(err as Error).message}`);
+    return 1;
+  }
+
+  const outPath = args.opts.o ?? path.join(process.cwd(), `${result.name}.skill.md`);
+
+  if (!args.flags.has("force") && (await fileExists(outPath))) {
+    console.error(`Refusing to overwrite existing file ${outPath} — pass --force to overwrite.`);
+    return 1;
+  }
+
+  await writeFile(outPath, rendered, "utf8");
+
+  console.log(`Wrote ${outPath}`);
+  console.log(`  steps:   ${result.stats.steps}`);
+  console.log(`  asserts: ${result.stats.asserts}`);
+  console.log(`  binds:   ${result.stats.binds}`);
+  console.log(
+    `  effects: read=${result.stats.effects.read} idempotent-write=${result.stats.effects["idempotent-write"]} destructive=${result.stats.effects.destructive}`
+  );
+  console.log("");
+  if (result.openQuestions.length === 0) {
+    console.log("Open questions: (none)");
+  } else {
+    console.log(`Open questions (${result.openQuestions.length}):`);
+    for (const oq of result.openQuestions) {
+      const where = oq.stepN !== undefined ? `Step ${oq.stepN}` : "(trailing note)";
+      console.log(`  - ${where}: ${oq.text}`);
+    }
+  }
+
+  return 0;
+}
+
 async function main(): Promise<number> {
   const [, , cmd, ...rest] = process.argv;
   const args = parseArgv(rest);
@@ -306,8 +387,10 @@ async function main(): Promise<number> {
       return cmdMcp(args);
     case "trace":
       return cmdTrace(args);
+    case "compile":
+      return cmdCompile(args);
     default:
-      console.error("Usage: reelier <run|bench|mcp|trace> [options]");
+      console.error("Usage: reelier <run|bench|mcp|trace|compile> [options]");
       return 1;
   }
 }

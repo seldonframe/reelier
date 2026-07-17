@@ -168,6 +168,35 @@ description: y
   assert.throws(() => parseSkill(bad), /Unrecognized step field/);
 });
 
+test("tolerates trailing '## Open questions' and '## Changelog' sections after the steps", () => {
+  const source = `---
+name: example-skill
+description: An example skill for tests
+---
+
+## Steps
+
+### Step 1 — First step
+- intent: Do the first thing
+- action: http.get {"url": "https://example.com"}
+- assert: status == 200
+- effect: read
+
+## Open questions
+
+- Step 1: this is not a step field, just prose.
+- (trailing note): another bullet that must not be parsed as a step field.
+
+## Changelog
+
+- 2026-07-17 — compiled from trace.jsonl (1 calls, 1 steps)
+`;
+  const skill = parseSkill(source);
+  assert.equal(skill.steps.length, 1);
+  assert.equal(skill.steps[0].asserts.length, 1);
+  assert.deepEqual(skill.steps[0].asserts, ["status == 200"]);
+});
+
 test("error message names the step and line for a malformed step", () => {
   const bad = `---
 name: x

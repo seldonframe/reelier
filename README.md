@@ -5,15 +5,14 @@ calls, compile it to a `SKILL.md` — a recipe with a test — and replay it
 deterministically with zero LLM calls, escalating to an LLM only when the
 world has changed underneath it.
 
-## Status: v0 spike + recorder
+## Status: v0 spike + recorder + compiler
 
 The Level-0 deterministic runner and file formats are the spike. On top of
-that there's now a **recorder**: a lossless MCP proxy that captures a live
-agent session as a trace, and MCP replay support in the runner. There is
-still:
+that there's a **recorder** (a lossless MCP proxy that captures a live agent
+session as a trace) and a **compiler** (`reelier compile`, turning a trace
+into a runner-ready `SKILL.md` deterministically — see "Compile" below).
+There is still:
 
-- **No compiler** (no automatic trace → SKILL.md step — traces are
-  hand-compiled into skills for now; use `reelier trace` to read one)
 - **No escalation ladder** (a divergence at Level 0 just stops the run and
   reports the failure — Levels 1-3 below are not implemented)
 - **No LLM calls anywhere in this codebase** — zero, by construction
@@ -52,9 +51,14 @@ Then inspect it:
 reelier trace .reelier/traces/<name>-1.jsonl
 ```
 
-and hand-write the corresponding `SKILL.md` from what you see (the compiler
-that automates this step doesn't exist yet). Once you have a skill, replay it
-against the same downstream(s):
+and compile it into a `SKILL.md` (see "Compile" below for what it derives
+and what it leaves as open questions for you to review):
+
+```sh
+reelier compile .reelier/traces/<name>-1.jsonl
+```
+
+Once you have a skill, replay it against the same downstream(s):
 
 ```sh
 reelier run skills/my-skill.skill.md --wrap "npx -y @your/mcp-server"
@@ -129,6 +133,65 @@ see `src/assert.ts`). MCP tool results don't have that shape natively, so
 
 Builtin `http.*` tools keep working unchanged when `--wrap` is also passed —
 the MCP-backed tools are merged alongside them.
+
+## Compile
+
+```sh
+reelier compile .reelier/traces/my-trace-1.jsonl [-o my-skill.skill.md] [--force]
+```
+
+Turns a recorded trace into a runner-ready `SKILL.md`, deterministically —
+**zero LLM calls**. Default output is `<trace-meta-name>.skill.md` in the
+current directory; `reelier compile` **refuses to overwrite an existing file
+without `--force`** (review-before-save — it never silently clobbers a skill
+you've hand-edited). On success it prints the output path, step/assert/bind
+counts, an effect-class summary, and the full **Open questions** list — that
+printout *is* the review step for now.
+
+What it derives, per call in the trace (one call = one step, in call order):
+
+- **Intent/title** from the nearest preceding `reelier_note` (consecutive
+  notes join with `"; "`). No note → title `Call <tool>` and an
+  auto-generated intent, plus an open question asking you to narrate it.
+- **Dataflow recovery** — the core of the compiler. For every scalar arg
+  value in a call (strings ≥ 4 chars, numbers whose decimal form is ≥ 4
+  chars), it searches prior results' parsed JSON bodies for an exact match
+  (most recent prior result wins). A hit becomes a `bind` + a
+  `json.<path> is set` assert on the *source* step, and the value is replaced
+  with `{{name}}` in the *consuming* step — so replay always uses the fresh
+  value produced at run time, never the one baked into the trace. The same
+  source path is bound once and reused by every later consumer. A match found
+  inside an array element uses an index-based path (e.g. `json.items.0.id`)
+  and gets an open question flagging that as drift-prone.
+- **Success asserts** — a step whose recorded result was `ok` gets
+  `assert: status == 200`. A step whose result was missing or not-`ok` gets
+  **no assertions at all** and an open question instead.
+- **Effect classes** from a verb heuristic on the tool name (read/idempotent
+  write/destructive). An unrecognized verb is **conservatively downgraded to
+  `destructive`** (never silently guessed safe) with an open question asking
+  you to review it once.
+
+What it deliberately leaves as **open questions**, rather than papering over:
+
+- steps with no narration, no result, or a failed result during recording
+- effect classes it couldn't confidently classify
+- dataflow binds that had to use a drift-prone array index
+- literal values repeated across 2+ calls that were never derived from a
+  prior result — candidates for promotion to an `{{input}}` variable (a
+  later, LLM-assisted step; this compiler never invents input variables
+  itself)
+- a trailing `reelier_note` with no call after it (a warning, not a crash)
+
+This is the **honest-gaps** principle: a step the compiler can't derive a
+meaningful assertion for gets emitted assertion-less rather than a fabricated
+check that would silently pass. The runner already reports such a step as
+`unchecked`, never `passed` — the compiler's job is only to be honest about
+*why*.
+
+The compiled `SKILL.md` also seeds a `## Changelog` section (one line:
+`- <date> — compiled from <tracefile> (<N> calls, <M> steps)`). That's the
+write-back convention later escalation-ladder levels (L1+) will append to
+when they patch a step — the changelog is the skill's own audit trail.
 
 ## The five atoms
 
@@ -221,6 +284,10 @@ reelier mcp --wrap "npx -y @your/mcp-server" [--wrap "..."] [--trace-dir <dir>]
 
 # Pretty-print a trace file.
 reelier trace .reelier/traces/my-trace-1.jsonl
+
+# Compile a trace into a runner-ready SKILL.md (zero LLM calls). Default
+# output is <trace-meta-name>.skill.md; refuses to overwrite without --force.
+reelier compile .reelier/traces/my-trace-1.jsonl [-o my-skill.skill.md] [--force]
 ```
 
 Every run appends one JSON line to `.reelier/runs/<skill-name>.jsonl`. A step
