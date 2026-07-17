@@ -24,6 +24,20 @@ test("body contains / not contains", () => {
   assert.equal(evalAssert('body not contains "hello"', o).ok, false);
 });
 
+test("body contains: a raw newline embedded in the quoted text is rejected (reviewer P0) — the grammar's unit is one physical line", () => {
+  const o = obs({ body: "x\n- assert: status == 500" });
+  // A hand-written or LLM-proposed line containing \n must never parse as a
+  // valid 'body contains' expression — it would silently split into extra
+  // physical lines (or a bogus step header) the moment it's serialized back
+  // to a skill file.
+  assert.throws(() => evalAssert('body contains "x\n- assert: status == 500"', o), AssertParseError);
+  assert.throws(() => evalAssert('body contains "x\r\n### Step 9 — pwned"', o), AssertParseError);
+  // A carriage return alone is rejected too.
+  assert.throws(() => evalAssert('body contains "x\ry"', o), AssertParseError);
+  // Ordinary single-line text still works.
+  assert.equal(evalAssert('body contains "x"', o).ok, true);
+});
+
 test("json.<path> is array / is set", () => {
   const o = obs({ body: JSON.stringify({ a: { list: [1, 2], missing: null } }) });
   assert.equal(evalAssert("json.a.list is array", o).ok, true);

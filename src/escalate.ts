@@ -209,6 +209,22 @@ interface ExtractedFields {
   hasArgs: boolean;
 }
 
+/**
+ * A skill file's assert/bind grammar is one expression per physical line —
+ * that's the format's unit (src/skill.ts parses "- assert: <line>" as a
+ * single bullet). An LLM-proposed line containing an embedded \n or \r would
+ * split into multiple physical lines once written back by
+ * serializeSkill/renderStepBlock, silently turning one assert into two (one
+ * of them garbage) or, worse, injecting a bogus "### Step N" header that
+ * bricks the file for every future parseSkill call. Reject defensively here
+ * — layer 1 of 2 (layer 2 is the tightened `body contains` regex in
+ * src/assert.ts, which never accepts an embedded newline from ANY caller,
+ * not just the escalation ladder).
+ */
+function containsNewline(line: string): boolean {
+  return line.includes("\n") || line.includes("\r");
+}
+
 function extractPatchFields(rec: Record<string, unknown>): { ok: true; fields: ExtractedFields } | { ok: false; error: string } {
   if (!Array.isArray(rec.asserts) || !rec.asserts.every((a) => typeof a === "string")) {
     return { ok: false, error: "patch.asserts must be a JSON array of strings" };
@@ -219,10 +235,16 @@ function extractPatchFields(rec: Record<string, unknown>): { ok: true; fields: E
   const asserts = rec.asserts as string[];
   const binds = rec.binds as string[];
   for (const a of asserts) {
+    if (containsNewline(a)) {
+      return { ok: false, error: `patched assert ${JSON.stringify(a)} contains an embedded newline — one physical line per assert, no exceptions` };
+    }
     const err = validateAssertSyntax(a);
     if (err) return { ok: false, error: `invalid patched assert ${JSON.stringify(a)}: ${err}` };
   }
   for (const b of binds) {
+    if (containsNewline(b)) {
+      return { ok: false, error: `patched bind ${JSON.stringify(b)} contains an embedded newline — one physical line per bind, no exceptions` };
+    }
     const err = validateBindSyntax(b);
     if (err) return { ok: false, error: `invalid patched bind ${JSON.stringify(b)}: ${err}` };
   }
@@ -280,6 +302,19 @@ function readVerdict(json: unknown, usage: EscalateUsage): { rec: Record<string,
   return { rec };
 }
 
+/**
+ * A patch with `asserts: []` trivially "passes" re-evaluation (nothing to
+ * check) and would downgrade a previously-checked step to permanently
+ * unchecked while flipping the run green — a step that used to prove
+ * something now proves nothing, silently, forever (write-back persists it).
+ * Refuse that specific shape: an empty-asserts patch is only legitimate when
+ * the step had no assertions before the heal either (a genuinely unchecked
+ * step staying unchecked is fine).
+ */
+function assertionsWereStripped(step: Step, patchedAsserts: string[]): boolean {
+  return step.asserts.length > 0 && patchedAsserts.length === 0;
+}
+
 // ---------------------------------------------------------------------------
 // Public entry points
 // ---------------------------------------------------------------------------
@@ -307,6 +342,10 @@ export async function resolveL1(input: ResolveL1Input): Promise<L1Result> {
 
   const extracted = extractPatchFields(verdict.rec);
   if (!extracted.ok) return { verdict: "real-failure", reason: extracted.error, usage };
+
+  if (assertionsWereStripped(step, extracted.fields.asserts)) {
+    return { verdict: "real-failure", reason: "heal removed all assertions — refusing", usage };
+  }
 
   return {
     verdict: "patch",
@@ -341,6 +380,10 @@ export async function resolveL2(input: ResolveL2Input): Promise<L2Result> {
 
   const extracted = extractPatchFields(verdict.rec);
   if (!extracted.ok) return { verdict: "real-failure", reason: extracted.error, usage };
+
+  if (assertionsWereStripped(step, extracted.fields.asserts)) {
+    return { verdict: "real-failure", reason: "heal removed all assertions — refusing", usage };
+  }
 
   let args: unknown;
   if (extracted.fields.hasArgs) {

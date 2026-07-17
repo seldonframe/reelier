@@ -65,7 +65,16 @@ export function evalAssert(line: string, obs: Observation): AssertResult {
   }
 
   // body contains "<text>" / body not contains "<text>"
-  m = line.match(/^body\s+(not\s+contains|contains)\s+"([\s\S]*)"$/);
+  // The quoted text may never contain a raw newline: an assert/bind is the
+  // skill file's line-based grammar's unit (one physical line per
+  // "- assert: ..." bullet — see src/skill.ts), so an embedded \n or \r here
+  // would silently split into extra bogus lines (or worse, a bogus
+  // "### Step N" header) the moment it's written back by
+  // serializeSkill/renderStepBlock. Reject at the parser itself so this is
+  // true for every caller, not just LLM-proposed patches (src/escalate.ts
+  // additionally rejects newline-bearing lines before they ever reach here —
+  // this is defense in depth, not the only guard).
+  m = line.match(/^body\s+(not\s+contains|contains)\s+"([^\r\n]*)"$/);
   if (m) {
     const [, kind, text] = m;
     const has = obs.body.includes(text);

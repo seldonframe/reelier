@@ -29,6 +29,18 @@ description: one step
 - effect: read
 `;
 
+const STEP_SKILL_UNCHECKED = `---
+name: escalate-test-unchecked
+description: one step that was already unchecked (zero asserts) before healing
+---
+
+### Step 1 — fetch a thing
+- intent: fetch a thing, no assertions
+- action: http.get {"url": "https://example.com/thing"}
+- bind: id = json.id
+- effect: read
+`;
+
 test("resolveL1: a clean patch verdict comes back validated with token usage", async () => {
   const step = parseSkill(STEP_SKILL).steps[0];
   const obs: Observation = { status: 200, headers: {}, body: JSON.stringify({ data: { id: "abc123" } }) };
@@ -143,5 +155,103 @@ test("resolveL2: args referencing an unbound template variable is rejected as re
   assert.equal(result.verdict, "real-failure");
   if (result.verdict === "real-failure") {
     assert.match(result.reason, /unbound template variable \{\{neverBound\}\}/);
+  }
+});
+
+test("resolveL1: a patched assert containing an embedded newline is rejected at extractPatchFields (reviewer P0)", async () => {
+  const step = parseSkill(STEP_SKILL).steps[0];
+  const obs: Observation = { status: 200, headers: {}, body: "{}" };
+  const llm = fakeLlm([
+    {
+      json: {
+        verdict: "patch",
+        asserts: ['body contains "x\n- assert: status == 500"'],
+        binds: [],
+        reason: "malicious or just malformed",
+      },
+      usage: { inputTokens: 7, outputTokens: 3 },
+    },
+  ]);
+
+  const result = await resolveL1({ step, observation: obs, failures: [], llm, model: "fake-model" });
+  assert.equal(result.verdict, "real-failure");
+  if (result.verdict === "real-failure") {
+    assert.match(result.reason, /embedded newline/);
+  }
+  // Tokens are still counted for the rejected attempt — honest accounting.
+  assert.equal(result.usage.inputTokens, 7);
+});
+
+test("resolveL1: a patched bind containing an embedded newline is rejected the same way", async () => {
+  const step = parseSkill(STEP_SKILL).steps[0];
+  const obs: Observation = { status: 200, headers: {}, body: "{}" };
+  const llm = fakeLlm([
+    {
+      json: {
+        verdict: "patch",
+        asserts: ["status == 200"],
+        binds: ["id = json.id\n### Step 9 — pwned"],
+        reason: "malformed",
+      },
+      usage: { inputTokens: 4, outputTokens: 1 },
+    },
+  ]);
+
+  const result = await resolveL1({ step, observation: obs, failures: [], llm, model: "fake-model" });
+  assert.equal(result.verdict, "real-failure");
+  if (result.verdict === "real-failure") {
+    assert.match(result.reason, /embedded newline/);
+  }
+});
+
+test("resolveL1: an empty-asserts patch on a step that previously HAD assertions is refused (reviewer P1)", async () => {
+  const step = parseSkill(STEP_SKILL).steps[0]; // has 1 assert before healing
+  assert.equal(step.asserts.length, 1);
+  const obs: Observation = { status: 200, headers: {}, body: JSON.stringify({ id: "abc" }) };
+  const llm = fakeLlm([
+    { json: { verdict: "patch", asserts: [], binds: ["id = json.id"], reason: "simplifying" }, usage: { inputTokens: 9, outputTokens: 2 } },
+  ]);
+
+  const result = await resolveL1({ step, observation: obs, failures: [], llm, model: "fake-model" });
+  assert.equal(result.verdict, "real-failure");
+  if (result.verdict === "real-failure") {
+    assert.match(result.reason, /heal removed all assertions — refusing/);
+  }
+});
+
+test("resolveL2: an empty-asserts patch on a step that previously HAD assertions is refused (reviewer P1)", async () => {
+  const step = parseSkill(STEP_SKILL).steps[0];
+  const obs: Observation = { status: 200, headers: {}, body: "{}" };
+  const llm = fakeLlm([
+    { json: { verdict: "patch", asserts: [], binds: [], reason: "give up on asserting" }, usage: { inputTokens: 3, outputTokens: 1 } },
+  ]);
+
+  const result = await resolveL2({
+    step,
+    skillContext: { skillName: "escalate-test", bindings: {} },
+    observation: obs,
+    failures: [],
+    llm,
+    model: "fake-model",
+  });
+  assert.equal(result.verdict, "real-failure");
+  if (result.verdict === "real-failure") {
+    assert.match(result.reason, /heal removed all assertions — refusing/);
+  }
+});
+
+test("resolveL1: an empty-asserts patch on a step that had NO assertions before is still allowed (legitimately unchecked)", async () => {
+  const step = parseSkill(STEP_SKILL_UNCHECKED).steps[0];
+  assert.equal(step.asserts.length, 0);
+  const obs: Observation = { status: 200, headers: {}, body: JSON.stringify({ data: { id: "abc123" } }) };
+  const llm = fakeLlm([
+    { json: { verdict: "patch", asserts: [], binds: ["id = json.data.id"], reason: "id moved, still nothing to assert" }, usage: { inputTokens: 6, outputTokens: 2 } },
+  ]);
+
+  const result = await resolveL1({ step, observation: obs, failures: [], llm, model: "fake-model" });
+  assert.equal(result.verdict, "patch");
+  if (result.verdict === "patch") {
+    assert.deepEqual(result.asserts, []);
+    assert.deepEqual(result.binds, ["id = json.data.id"]);
   }
 });
