@@ -2,12 +2,11 @@
 // Hand-rolled argv parsing (no commander). Two subcommands: run, bench.
 
 import { readFile, writeFile, access } from "node:fs/promises";
-import { createReadStream } from "node:fs";
-import { createInterface } from "node:readline";
 import path from "node:path";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { parseSkill, SkillParseError } from "./skill.js";
-import { runSkill, dryRunSkill, type RunRecord } from "./runner.js";
+import { runSkill, dryRunSkill, readRunRecords, type RunRecord } from "./runner.js";
+import { pushSkill, type PushRecordResult } from "./push.js";
 import { builtinTools } from "./tools.js";
 import { connectDownstream, type DownstreamConnection } from "./mcp-client.js";
 import { buildMcpTools } from "./mcp-tool.js";
@@ -198,18 +197,6 @@ async function cmdRun(args: ParsedArgs): Promise<number> {
   } finally {
     await Promise.all(downstreams.map((d) => d.close().catch(() => {})));
   }
-}
-
-async function readRunRecords(filePath: string): Promise<RunRecord[]> {
-  const records: RunRecord[] = [];
-  const stream = createReadStream(filePath, { encoding: "utf8" });
-  const rl = createInterface({ input: stream, crlfDelay: Infinity });
-  for await (const line of rl) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    records.push(JSON.parse(trimmed) as RunRecord);
-  }
-  return records;
 }
 
 export interface BenchSummary {
@@ -530,6 +517,90 @@ async function cmdCompile(args: ParsedArgs): Promise<number> {
   return 0;
 }
 
+function fmtFieldErrors(fieldErrors: unknown): string {
+  if (fieldErrors === undefined) return "(no field errors returned)";
+  try {
+    return JSON.stringify(fieldErrors);
+  } catch {
+    return String(fieldErrors);
+  }
+}
+
+async function cmdPush(args: ParsedArgs): Promise<number> {
+  const skillPath = args.positional[0];
+  if (!skillPath) {
+    console.error("Usage: reelier push <skill.md> [--all] [--dry-run] [--with-skill]");
+    return 1;
+  }
+
+  const dryRun = args.flags.has("dry-run");
+  const all = args.flags.has("all");
+  const withSkill = args.flags.has("with-skill");
+
+  let result;
+  try {
+    result = await pushSkill(skillPath, {
+      all,
+      dryRun,
+      withSkill,
+      onRecordResult: (r: PushRecordResult) => {
+        if (dryRun) {
+          console.log(`  [${r.index}] would push`);
+          return;
+        }
+        switch (r.outcome) {
+          case "pushed":
+            console.log(`  [${r.index}] pushed${r.id ? ` id=${r.id}` : ""}`);
+            break;
+          case "rejected":
+            console.log(`  [${r.index}] rejected: ${fmtFieldErrors(r.fieldErrors)}`);
+            break;
+          case "auth-failed":
+            console.log(`  [${r.index}] auth failed: ${r.message}`);
+            break;
+          case "too-large":
+            console.log(`  [${r.index}] rejected (413): ${r.message}`);
+            break;
+          case "error":
+            console.log(`  [${r.index}] error: ${r.message}`);
+            break;
+        }
+      },
+    });
+  } catch (err) {
+    // Deliberately just the error's message — resolvePushConfig() never puts
+    // the key value into its message, and neither does anything else here.
+    console.error((err as Error).message);
+    return 1;
+  }
+
+  if (result.dryRun) {
+    console.log("");
+    console.log(
+      `Dry run: would push ${result.candidateCount} new record(s) for skill '${result.skillName}' ` +
+        `(cursor ${result.cursorBefore} -> ${result.cursorBefore + result.candidateCount}).`
+    );
+    console.log("Dry run: no network calls made, no state written.");
+    return 0;
+  }
+
+  console.log("");
+  if (result.skillUploaded) {
+    console.log(`Skill '${result.skillName}' uploaded.`);
+  } else {
+    console.log(`Skill '${result.skillName}' upload skipped (already uploaded — pass --with-skill to force).`);
+  }
+  console.log(
+    `Pushed ${result.pushedCount}/${result.candidateCount} new record(s) for '${result.skillName}'. ` +
+      `Cursor: ${result.cursorBefore} -> ${result.cursorAfter}.`
+  );
+  if (result.aborted) {
+    console.log("Stopped early after a non-'pushed' outcome — cursor left at the last successful push.");
+    return 1;
+  }
+  return 0;
+}
+
 async function main(): Promise<number> {
   const [, , cmd, ...rest] = process.argv;
   const args = parseArgv(rest);
@@ -545,8 +616,10 @@ async function main(): Promise<number> {
       return cmdTrace(args);
     case "compile":
       return cmdCompile(args);
+    case "push":
+      return cmdPush(args);
     default:
-      console.error("Usage: reelier <run|bench|mcp|trace|compile> [options]");
+      console.error("Usage: reelier <run|bench|mcp|trace|compile|push> [options]");
       return 1;
   }
 }

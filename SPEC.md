@@ -4,7 +4,7 @@ This document specifies Reelier's on-disk and on-wire formats precisely
 enough that a third party can emit and consume them without reading
 Reelier's source. It is derived directly from the parser/runner
 implementation (`src/*.ts`) and the test suite (`test/*.ts`) as of package
-version **0.3.0**. Where the README and the code disagree, **the code wins**
+version **0.4.0**. Where the README and the code disagree, **the code wins**
 and the disagreement is noted inline.
 
 Key words MUST / MUST NOT / SHOULD / SHOULD NOT / MAY are used as in
@@ -38,6 +38,10 @@ RFC 2119.
   of which version produced it, MUST resolve `{{today}}`/`{{today±Nd}}` as
   computed vars rather than a bindings lookup — this is `fillTemplate`-time
   behavior, not something recorded in the skill file itself.
+- **A new CLI surface bumps the minor version too.** 0.4.0 adds `reelier
+  push` (§8) and its own local state file (`.reelier/push-state.json`) —
+  additive, no existing format changed, hence a minor bump rather than
+  major.
 - **Structures are explicitly open or closed:**
   - **Trace records** (`TraceRecord`, §2) are a **closed, discriminated
     union** over `t`. A parser MUST reject a line whose `t` is not one of
@@ -927,6 +931,78 @@ cross-checked against line-by-line:
 | Escalation ladder (L1/L2, grammar validation, destructive gating, write-back) | `test/runner-escalate.test.ts`, `test/escalate.test.ts` |
 | Run-record legacy-derivation (`reelier bench`) | `test/bench-cli.test.ts` |
 | Redaction patterns | `test/redact.test.ts` |
+| Cloud sync (`reelier push`): cursor math, `--all`, mid-batch failure, auth abort, skill-upload-on-first-push, `--dry-run` | `test/push.test.ts` |
+
+---
+
+## 8. Cloud sync API (`reelier push`) — consumer-side contract
+
+Source of truth: `src/push.ts` (`pushSkill`, `resolvePushConfig`), `test/push.test.ts`.
+
+**This section specifies only what `reelier push` relies on as an HTTP
+client.** The cloud server's own behavior — how it stores runs, what it
+does with a skill upload, its auth model beyond "accepts or rejects this
+bearer token" — is that product's own spec, not this one. What follows is
+normative for the CLI side only: what it sends, what response shapes it
+must be able to interpret, and what it does with each one.
+
+### 8.1 Config resolution
+
+`resolvePushConfig()` reads exactly two required env vars, no flags, no
+defaults:
+
+| Env var | Meaning |
+| --- | --- |
+| `REELIER_CLOUD_URL` | Base URL of the Reelier Cloud instance (no trailing slash required — the client strips one if present). |
+| `REELIER_CLOUD_KEY` | Bearer API key. |
+
+Either missing is rejected before any network call, naming only the
+missing var name(s) — the key's *value* MUST NOT appear in any error
+message, log line, or stdout the CLI produces. `reelier push` is fully
+inert (zero network calls, zero state mutation) until both are set.
+
+### 8.2 Endpoints the client calls
+
+| Endpoint | When | Request | Success | Client-recognized errors |
+| --- | --- | --- | --- | --- |
+| `POST {base}/api/v1/skills` | Once per skill: the first time that skill name is ever pushed from this working directory, or every time when `--with-skill` is passed. | `Authorization: Bearer <key>`; JSON body `{name, skillMd}` — `skillMd` is the raw skill file's full source text. | Any `2xx` status. | `401` aborts the whole push (no run records are attempted); any other non-2xx also aborts, with the response body's first 500 chars surfaced in the error. |
+| `POST {base}/api/v1/runs` | Once per new run record being pushed. | `Authorization: Bearer <key>`; JSON body `{skillName, record}` — `record` is one `RunRecord` (§4) exactly as it appears in the `.jsonl` file, unmodified. | `202` with JSON body `{id: string}`. `id` is optional to the client — a `202` with an unparseable or `id`-less body still counts as a successful push. | `400` with JSON body `{fieldErrors: ...}` — reported as a rejection, batch stops. `401` — reported as an auth failure, batch stops. `413` — reported as "too large", batch stops. Any other non-`202` status — reported as a generic error, batch stops. A `fetch` rejection (network error, DNS failure, timeout) is caught and reported the same way: batch stops. |
+
+Neither endpoint's request ever includes anything beyond what's listed
+above — no telemetry, no extra headers, no implicit retry.
+
+### 8.3 Cursor semantics (client-side state, not part of the wire contract)
+
+`reelier push` maintains `.reelier/push-state.json` —
+`{[skillName]: {pushed: number, skillUploaded: boolean}}` — purely as
+local bookkeeping; the cloud API has no concept of a cursor and is never
+asked "what have you already seen." On each push:
+
+1. `cursorBefore` = `state[skillName].pushed` (or `0` if never pushed, or
+   always `0` when `--all` is passed — `--all` **only** affects which
+   records are reconsidered this run; it does not, by itself, force a
+   skill re-upload).
+2. Candidates = every record in the skill's `.jsonl` file at index
+   `>= cursorBefore`, in file order.
+3. Records are pushed **strictly in order**. The first record whose
+   outcome is anything other than `"pushed"` stops the batch — no record
+   after it is attempted, regardless of whether a later record might have
+   succeeded.
+4. `cursorAfter` = `cursorBefore + <count of consecutive "pushed" outcomes
+   from the start of this batch>`. This is written back to
+   `push-state.json` unconditionally (even on a partial/aborted batch) so
+   the next `reelier push` resumes exactly where this one stopped.
+5. `--dry-run` short-circuits before step 3 entirely — no config is even
+   resolved, no network call is made, `push-state.json` is never read for
+   a write and never written.
+
+Because `--all` resets `cursorBefore` to `0` for *this run's* candidate
+selection but the resulting `cursorAfter` is still written back
+unconditionally, running `--all` and then hitting a failure partway
+through can leave `cursorAfter` **lower** than it was before the `--all`
+run — this is expected, not a bug: `--all` means "reconsider everything,"
+and a partial `--all` batch honestly reports only what actually got
+pushed *this run*.
 
 ---
 

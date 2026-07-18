@@ -336,6 +336,11 @@ reelier trace .reelier/traces/my-trace-1.jsonl
 # Compile a trace into a runner-ready SKILL.md (zero LLM calls). Default
 # output is <trace-meta-name>.skill.md; refuses to overwrite without --force.
 reelier compile .reelier/traces/my-trace-1.jsonl [-o my-skill.skill.md] [--force]
+
+# Sync new run records (and, on first push, the skill file) to a Reelier
+# Cloud instance — see "Push" below. Fully opt-in: does nothing unless both
+# REELIER_CLOUD_URL and REELIER_CLOUD_KEY are set.
+reelier push skills/my-skill.skill.md [--all] [--dry-run] [--with-skill]
 ```
 
 Every run appends one JSON line to `.reelier/runs/<skill-name>.jsonl`. A step
@@ -523,6 +528,81 @@ always cleaned up, success or failure. This guarantees safety for a single
 writer; it is not inter-process locking — two reelier processes racing a
 write-back against the same skill file is out of scope here and deferred to
 cloud execution.
+
+## Push
+
+`reelier push <skill.md>` syncs a skill's local run records — and, on the
+first push, the skill file itself — to a hosted Reelier Cloud instance, so
+your receipts (pass rates, escalation history, LLM token spend) accrue in
+one place instead of living only in `.reelier/runs/*.jsonl` on your
+machine. **Fully opt-in and fully inert without config**: nothing is ever
+pushed, no network call is ever made, unless both env vars below are set.
+
+```sh
+reelier push skills/my-skill.skill.md
+```
+
+### Config — two required env vars
+
+| Env var | Meaning |
+| --- | --- |
+| `REELIER_CLOUD_URL` | Base URL of your Reelier Cloud instance. |
+| `REELIER_CLOUD_KEY` | Your API key. |
+
+Either missing gives a clear, actionable error naming the missing var —
+**the key's value is never printed, logged, or included in any error
+message.**
+
+### What gets uploaded, and when
+
+- **The skill file** (`skillMd`, the raw `.skill.md` source) uploads
+  automatically the **first** time that skill is pushed from this working
+  directory. Subsequent pushes skip it — pass `--with-skill` to force a
+  re-upload (e.g. after hand-editing the skill).
+- **Run records** — every line of `.reelier/runs/<skill-name>.jsonl` that
+  hasn't been pushed successfully yet, in order, one `POST` per record.
+
+### Cursor semantics
+
+A cursor file, `.reelier/push-state.json`
+(`{[skillName]: {pushed: N, skillUploaded: bool}}`), tracks how many
+records (from the start of the run-record file) have already been pushed
+successfully for each skill. A plain `reelier push` only sends records
+*after* that cursor — running it repeatedly is cheap and never re-sends
+what already made it to the cloud.
+
+- **`--all`** ignores/resets the cursor for this run and reconsiders every
+  record in the file from the start.
+- **The cursor only ever advances past records that were actually pushed
+  successfully, in strict order.** The moment a record is rejected, hits
+  an auth failure, or errors, the batch stops — no later record in the
+  file is attempted, even if it might have succeeded on its own. The next
+  `reelier push` resumes exactly where this one stopped.
+- **`--dry-run`** prints what *would* push (record count, cursor range)
+  and touches nothing — no network call, no state file read for writing,
+  no state file write.
+
+### Per-record output
+
+Each record's outcome prints as it happens — pushed (with the cloud's
+returned id when available), rejected (with the field errors the cloud
+returned), an auth failure, a 413 (payload too large), or a generic error
+— followed by a one-line summary (skill-upload status, `N/M pushed`, and
+the cursor's before/after position). The process exits non-zero if the
+batch stopped early on anything other than every candidate record
+succeeding.
+
+### Privacy note
+
+Run records can contain **observed values** from your actual tool calls —
+status codes, response bodies (or samples of them), bind values extracted
+from real observations. Pushing a run record uploads that data to whatever
+`REELIER_CLOUD_URL` points at. This is why push is opt-in and explicit
+(never triggered by `reelier run`, never on by default): review what a
+skill's run records actually contain — the same review that applies to
+trace files (see "Redaction" above) applies here, since redaction happens
+at *trace*-write time, not at push time. Treat a run-record file as
+potentially sensitive before pushing it anywhere.
 
 ## Licensing
 

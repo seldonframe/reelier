@@ -18,6 +18,8 @@
 // the same drift never has to escalate twice.
 
 import { mkdir, appendFile } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { createInterface } from "node:readline";
 import path from "node:path";
 import type { Skill, Step } from "./skill.js";
 import { evalAssert, evalBind, type Observation } from "./assert.js";
@@ -207,6 +209,24 @@ export function dryRunSkill(skill: Skill, vars: Record<string, string> = {}, now
 
 function runRecordPath(cwd: string, skillName: string): string {
   return path.join(cwd, ".reelier", "runs", `${skillName}.jsonl`);
+}
+
+/**
+ * Read a skill's `.reelier/runs/<name>.jsonl` run-record file, one
+ * `RunRecord` per non-blank line, in file order. Shared by `reelier bench`
+ * and `reelier push` (src/cli.ts, src/push.ts) so both read the exact same
+ * way — a promoted-out duplicate would risk drifting silently.
+ */
+export async function readRunRecords(filePath: string): Promise<RunRecord[]> {
+  const records: RunRecord[] = [];
+  const stream = createReadStream(filePath, { encoding: "utf8" });
+  const rl = createInterface({ input: stream, crlfDelay: Infinity });
+  for await (const line of rl) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    records.push(JSON.parse(trimmed) as RunRecord);
+  }
+  return records;
 }
 
 async function executeStep(
