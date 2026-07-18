@@ -5,6 +5,10 @@ calls, compile it to a `SKILL.md` — a recipe with a test — and replay it
 deterministically with zero LLM calls, escalating to an LLM only when the
 world has changed underneath it.
 
+The formats are specified in [SPEC.md](./SPEC.md) — a normative,
+RFC-style reference (trace/SKILL.md/run-record/proxy/runner) for anyone
+emitting or consuming these formats without reading this package's source.
+
 ## Status: v0 spike + recorder + compiler + escalation ladder (L1/L2)
 
 The Level-0 deterministic runner and file formats are the spike. On top of

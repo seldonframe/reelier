@@ -1,0 +1,832 @@
+# Reelier Format Specification
+
+This document specifies Reelier's on-disk and on-wire formats precisely
+enough that a third party can emit and consume them without reading
+Reelier's source. It is derived directly from the parser/runner
+implementation (`src/*.ts`) and the test suite (`test/*.ts`) as of package
+version **0.2.0**. Where the README and the code disagree, **the code wins**
+and the disagreement is noted inline.
+
+Key words MUST / MUST NOT / SHOULD / SHOULD NOT / MAY are used as in
+RFC 2119.
+
+## 0. Versioning & compatibility policy
+
+- The **npm package's semver governs format changes**. This is the only
+  version anything here carries — none of the four formats below (trace,
+  SKILL.md, run-record, MCP proxy contract) has its own independent version
+  field.
+- **Record-shape changes bump the package's minor version.** Precedent: the
+  0.2.0 release added `StepRecord.escalationAttempted` and split
+  `RunRecord.totals` into honest `passed`/`unchecked`/`skipped`/`failed`
+  counts, both additive/corrective changes, without a major bump. The
+  concrete rule this establishes, and that this spec makes normative: **a
+  consumer reading a run-record MUST derive any total or rollup value from
+  the per-step `steps[].outcome` array when the newer total fields
+  (`totals.unchecked`, `totals.skipped`) are absent**, rather than trusting
+  an older `totals.passed`, which conflated `"passed"` and `"unchecked"`
+  before 0.2.0 (see §4.3). This is exactly what `reelier bench`
+  (`src/cli.ts`) does, and it is how a mixed history of pre- and post-0.2.0
+  run records stays readable without migration.
+- **Structures are explicitly open or closed:**
+  - **Trace records** (`TraceRecord`, §2) are a **closed, discriminated
+    union** over `t`. A parser MUST reject a line whose `t` is not one of
+    `meta` / `note` / `call` / `result`. Within a known record type, a
+    parser SHOULD tolerate additional, unrecognized fields (forward
+    compatibility for additive record fields in a future minor) but MUST
+    treat every field documented in §2 as required and typed as specified.
+  - **SKILL.md step fields** are a **closed** set of five bullet keys
+    (`intent`/`action`/`assert`/`bind`/`effect`, §3.2). `parseSkill` rejects
+    any other `- <key>: ...` bullet inside a step block outright (an
+    "Unrecognized step field" `SkillParseError` — `src/skill.ts:205-216`);
+    this is intentionally closed, not open-for-extension, because the field
+    set is small enough that a typo should be caught, not silently ignored.
+  - **Non-step sections** of a SKILL.md file (preamble, `## Open
+    questions`, `## Changelog`, any other `##` section) are **open,
+    free-form prose** — a parser MUST preserve them verbatim (byte content,
+    not necessarily byte-identical formatting) and MUST NOT reject a file
+    for containing an unrecognized section.
+  - **`RunRecord`/`StepRecord`** (§4) are open for **additive** fields
+    (e.g. `escalationAttempted` was added in 0.2.0 without breaking older
+    readers) but a parser MUST reject a record missing any field this spec
+    marks required for its declared version.
+- **Malformed input MUST be rejected loudly.** Every parser in this
+  codebase (`parseSkill`, `evalAssert`, `evalBind`) throws a typed error
+  (`SkillParseError`, `AssertParseError`, `BindParseError`) naming what and,
+  where applicable, which step/line, rather than silently skipping or
+  coercing bad input. A conformant third-party implementation MUST do the
+  same — never silently drop a step, a call/result record, or an assert/bind
+  line that fails to parse.
+
+---
+
+## 1. The five atoms
+
+Every SKILL.md step is composed of exactly five kinds of information (not
+all five are separate fields — `action` bundles a tool name and its args):
+
+| Atom | Carries |
+| --- | --- |
+| intent | Natural-language sentence: what the step is for |
+| action | A tool name + a JSON args template (`{{var}}` holes allowed) |
+| assert | Zero or more predicates over the observation the tool returned |
+| bind | Zero or more extractions from the observation, feeding later steps |
+| effect | Exactly one of `read` \| `idempotent-write` \| `destructive` |
+
+---
+
+## 2. Trace format (JSONL)
+
+Source of truth: `src/recorder.ts` (`TraceRecord` union, `Recorder` class),
+`src/trace.ts` (reader), `test/recorder.test.ts`, `test/proxy-e2e.test.ts`.
+
+A trace is a UTF-8 text file, one JSON object per physical line (`.jsonl`),
+written by `reelier mcp`'s recording proxy to
+`.reelier/traces/<name>-<n>.jsonl` (`<n>` auto-increments so an existing
+trace file is never overwritten — `Recorder.nextTracePath`,
+`src/recorder.ts:62-78`). A reader (`parseTraceLines`, `src/trace.ts:11-19`)
+MUST split on `\r\n` or `\n`, skip blank/whitespace-only lines, and
+`JSON.parse` every remaining line as one record.
+
+### 2.1 Ordering rules (normative)
+
+- Every record carries a file-scoped, **monotonic** integer `seq`, assigned
+  by a single incrementing counter (`Recorder.nextSeq`, starting at 0 for
+  the trace's one `meta` record) — never reused, never skipped, across every
+  record type together (not per-type).
+- **Order in the file IS the association.** There is no other index or
+  foreign key structure; a record's position (and its `seq`) relative to
+  its neighbors is the only way to reconstruct "what happened around this
+  call." Writes are serialized through a promise chain
+  (`Recorder.writeQueue`) specifically so concurrent tool calls can never
+  interleave out of `seq` order.
+- The **`meta` record MUST be first** (`seq: 0`). `Recorder.start` writes it
+  immediately upon `reelier_start_recording` and nothing else is written
+  before it.
+- `call` and `result` records additionally share a **call-index `i`**,
+  independent of `seq`, monotonic from 0, incremented once per call
+  (`Recorder.callIndex`). **A `call` record's `i` is emitted before the
+  matching `result` record's `i`** — the pairing rule a compiler or replay
+  reader MUST use: the result at call-index `i` observationally continues
+  the call at the same `i`, regardless of what other `note`/`call`/`result`
+  records fall between them (only possible today when multiple tool calls
+  are in flight concurrently, since each `call`→`result` normally happens
+  back-to-back per `CallToolRequestSchema` handler invocation —
+  `src/recorder.ts:184-234`).
+- `note` records carry no `i` — a note is trace-global narration, not
+  attached to a call index. The compiler associates the immediately
+  preceding run of `note`s with the next `call` (see §6 below and
+  `src/compile.ts:193-201`).
+
+### 2.2 Record types
+
+```ts
+type TraceRecord =
+  | { t: "meta";   seq: number; name: string; startedAt: string; wrapped: string[] }
+  | { t: "note";   seq: number; ts: string; text: string }
+  | { t: "call";   seq: number; i: number; ts: string; tool: string; args: unknown }
+  | { t: "result"; seq: number; i: number; ok: boolean; ms: number; body: unknown };
+```
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `t` | `"meta" \| "note" \| "call" \| "result"` | Discriminator. Closed set — see §0. |
+| `seq` | integer ≥ 0 | File-scoped monotonic sequence number (§2.1). |
+| `name` (meta) | string | The trace's own name, as given to `reelier_start_recording`. |
+| `startedAt` (meta) | ISO-8601 string | Recording start time (`new Date().toISOString()`). |
+| `wrapped` (meta) | string[] | Downstream server names wrapped for this recording, in `--wrap` order. |
+| `ts` (note/call) | ISO-8601 string | Timestamp the record was written. |
+| `text` (note) | string | Free-text narration passed to `reelier_note`. |
+| `i` (call/result) | integer ≥ 0 | Call index; shared between a `call` and its `result` (§2.1). |
+| `tool` (call) | string | The **exposed** tool name (post collision-prefixing — §5.3), never the raw downstream name. |
+| `args` (call) | JSON value | The tool call's arguments, **after redaction** (§2.3). |
+| `ok` (result) | boolean | `true` unless the downstream call raised, or its MCP result set `isError: true`. |
+| `ms` (result) | integer ≥ 0 | Wall-clock duration of the call, in milliseconds. |
+| `body` (result) | JSON value | The full MCP `CallToolResult`-shaped return value (`{content: [...], isError?}`), **after redaction** — not just the tool's payload. |
+
+**Control-tool calls are never traced.** `reelier_start_recording`,
+`reelier_note`, and `reelier_stop_recording` themselves never produce
+`call`/`result` records — only tools proxied from a `--wrap`'d downstream
+do (`src/recorder.ts:184-234`).
+
+### 2.3 Redaction (writer-side SHOULD)
+
+Applied only at trace-write time, on both `args` and `body` — **never** on
+the live passthrough result actually returned to the calling agent
+(`src/redact.ts:1-8`; `src/recorder.ts:230-233` calls `recordResult` with
+the already-dispatched `result`, unaffected by what `redact()` later
+strips for storage). A trace writer SHOULD redact, at minimum, the
+patterns Reelier's own `redact()` implements:
+
+1. Any configured named-secret value: for each name in a comma-separated
+   `REELIER_REDACT` env var, every occurrence of that env var's *value*
+   (only if ≥ 6 chars) inside a string is replaced with
+   `«redacted:<NAME>»`.
+2. **Always, unconditionally**: `sk-`-prefixed tokens matching
+   `/sk-[A-Za-z0-9_-]{10,}/g`, and `Bearer <token>` headers matching
+   `/Bearer\s+[A-Za-z0-9._~+/=-]{8,}/g`, both replaced with `«redacted»`.
+3. **Always, unconditionally**: a 32+-char hex string (`/^[A-Fa-f0-9]{32,}$/`)
+   sitting in a JSON key whose name matches
+   `/token|secret|key|password|authorization/i` is replaced with
+   `«redacted»`.
+
+This is a conservative, known-incomplete pattern set (documented as such
+in `src/redact.ts:1-8` and the README's "Redaction" section) — it will
+miss base64-encoded keys, secrets embedded mid-string in an unnamed field,
+and non-hex tokens under 32 chars. A conformant writer MAY implement a
+stricter or different redaction policy, but MUST NOT claim conformance
+with *this* reference pattern set unless it implements all three rules
+above. A trace file MUST be treated as potentially sensitive regardless of
+which redaction policy produced it.
+
+### 2.4 Size-limit conventions: two profiles
+
+Reelier's own proxy (`src/recorder.ts`) is, as of 0.2.0, **uncapped**:
+there is no body-length truncation and no per-trace record-count limit
+anywhere in `Recorder.write`/`recordCall`/`recordResult`. A trace grows for
+as long as recording stays on; this is the format's *default* profile —
+call it the **proxy profile**.
+
+A consuming system MAY impose its own storage-driven caps without
+violating this spec, since §0 declares trace records open for additive
+fields and this section does not mandate a maximum size. One such
+consumer, SeldonFrame's Reelier-format replay recorder
+(`packages/crm/src/lib/deployments/replay/trace-format.ts`, which
+implements this exact `TraceRecord` shape independently rather than
+depending on this package), defines a second profile:
+
+- **`TRACE_BODY_MAX_CHARS = 20_000`** — a `result.body` whose serialized
+  JSON exceeds 20,000 chars is stored as `{__truncated: true, preview:
+  <first 20k chars>, originalLength: <n>}` instead of the raw value
+  (`capTraceBody`), so a compiler reading it later can tell truncation
+  happened rather than silently seeing a partial JSON value.
+- **`TRACE_MAX_RECORDS = 200`** — once a trace hits 200 records, further
+  records are silently dropped by that consumer's recorder (documented as
+  the consumer's own responsibility, not enforced by the shaping functions
+  in `trace-format.ts` themselves).
+
+Call this the **SF profile**. It is a *storage-layer* convention on top of
+the same wire format, not a different format — every record it writes is a
+valid record under §2.2. A parser conformant with this spec MUST accept
+both profiles: it MUST NOT assume a `result.body` is untruncated, and MUST
+NOT assume a trace has fewer than 200 records. A `body` object of the
+literal shape `{__truncated: true, preview: string, originalLength:
+number}` is not currently a reserved/typed construct in the *proxy*
+profile — a reader MAY special-case it, but MUST first fall back to
+treating it as an ordinary JSON value if it doesn't recognize the marker,
+since the proxy profile never produces it.
+
+### 2.5 Example
+
+```jsonc
+{"t":"meta","seq":0,"name":"weekly-bookings","startedAt":"2026-07-18T14:02:00.000Z","wrapped":["caldiy"]}
+{"t":"note","seq":1,"ts":"2026-07-18T14:02:01.100Z","text":"I'm about to pull this week's bookings"}
+{"t":"call","seq":2,"i":0,"ts":"2026-07-18T14:02:01.200Z","tool":"list_bookings","args":{"from":"2026-07-14"}}
+{"t":"result","seq":3,"i":0,"ok":true,"ms":142,"body":{"content":[{"type":"text","text":"{\"bookings\":[...]}"}]}}
+```
+
+---
+
+## 3. SKILL.md format
+
+Source of truth: `src/skill.ts` (`parseSkill`), `src/writeback.ts`
+(`serializeSkill`, the faithful inverse), `test/skill.test.ts`.
+
+### 3.1 Frontmatter (required)
+
+A SKILL.md file MUST begin with a `---`-fenced frontmatter block
+(`splitFrontmatter`, `src/skill.ts:58-76`):
+
+- Line 1 MUST be exactly `---` (after trimming). Its absence is rejected:
+  `"SKILL.md must start with a '---' frontmatter fence"`.
+- The fence MUST be closed by another line that is exactly `---`; an
+  unclosed fence is rejected: `"Frontmatter fence '---' was never closed"`.
+- Between the fences, each non-blank line MUST match `key: value` (flat,
+  no nesting, no YAML types beyond strings —
+  `/^([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*(.*)$/`); any other shape is rejected
+  as `"Malformed frontmatter line: ..."`.
+- Exactly two keys are **required**: `name` and `description`. Missing
+  either is rejected (`"Frontmatter is missing required field 'name'"` /
+  `'description'`). Extra keys are parsed but silently unused by
+  `parseSkill`'s return type — the parser does not reject unrecognized
+  frontmatter keys (an open field set, unlike step bullets — see §0).
+
+### 3.2 Body: preamble, `## Steps`, step blocks, trailing sections
+
+After the frontmatter, the body is split on **step headers** matching
+`/^###\s+Step\s+(\d+)\s*[—-]\s*(.+)$/` (`STEP_HEADER_RE`) — i.e. exactly
+`### Step <N> — <Title>` or `### Step <N> - <Title>` (em dash or hyphen,
+either works). Everything before the first step header is the **preamble**
+(title, `Inputs:` line, the `## Steps` heading itself, any prose) and is
+preserved **verbatim** — `parseSkill` does not parse or validate it in any
+way.
+
+Step headers MUST be numbered **sequentially from 1**, in file order. A
+gap or out-of-order number is rejected: `"Expected step <expectedN> but
+found step <n> — steps must be numbered sequentially from 1"`. At least one
+step header MUST be present, or the whole file is rejected: `"No '###
+Step N — Title' headers found in skill body"`.
+
+A step's field block runs from its header to the **next** step header or
+the next level-2 (`##`, not `###`) section heading (`SECTION_HEADER_RE =
+/^##(?!#)\s+/`), whichever comes first — a `## Open questions` or `##
+Changelog` heading closes out the preceding step's block early, so
+trailing sections are never swallowed into the last step.
+
+Within a step's block, every non-blank line is either:
+
+- a **bullet** matching `/^-\s*(intent|action|assert|bind|effect)\s*:\s*(.*)$/`, or
+- an **ignored prose line** (any non-blank line not starting with `-`), or
+- **rejected** if it starts with `-` but the key isn't one of the five
+  above: `"Unrecognized step field, expected one of
+  intent/action/assert/bind/effect: ..."`.
+
+This makes the **five bullet keys a closed set** (§0) but tolerates
+free-form prose commentary inside a step block, as long as it doesn't
+start with a hyphen.
+
+**Field requiredness and cardinality** (exactly as enforced by `parseSkill`,
+`src/skill.ts:218-263`):
+
+| Field | Required? | Cardinality | Duplicate → |
+| --- | --- | --- | --- |
+| `intent` | **Yes** — `"Step is missing required 'intent' field"` | exactly 1 | `"Duplicate 'intent' field in step"` |
+| `action` | **Yes** — `"Step is missing required 'action' field"` | exactly 1 | `"Duplicate 'action' field in step"` |
+| `assert` | No | 0 or more | (repeatable — each bullet appends) |
+| `bind` | No | 0 or more | (repeatable — each bullet appends) |
+| `effect` | **Yes** — `"Step is missing required 'effect' field"` | exactly 1 | `"Duplicate 'effect' field in step"` |
+
+`assert` and `bind` are the only repeatable fields; every `- assert: ...`
+or `- bind: ...` bullet in the block is collected in file order.
+
+After the last step's field block, everything remaining in the body is the
+**trailing** section (`## Open questions`, `## Changelog`, anything else)
+and, like the preamble, is preserved **verbatim** by the parser and by
+`serializeSkill`'s round-trip.
+
+### 3.3 The `action` line grammar
+
+`- action: <tool> <json-args>` (`parseAction`, `src/skill.ts:105-128`):
+
+- Split on the **first space** in the rest of the line. Everything before
+  it is the tool name; everything after is parsed as JSON.
+- No space at all → rejected: `"Malformed action line, expected '<tool>
+  <json-args>', got: ..."`.
+- Empty tool name (e.g. a line starting with a space) → rejected: `"Action
+  line is missing a tool name"`.
+- The remainder MUST be valid JSON (any JSON value — object, array,
+  string, etc., though every example in this codebase uses an object) →
+  invalid JSON is rejected: `"Action args are not valid JSON: <parse
+  error>"`.
+- String leaves inside the parsed JSON MAY contain `{{var}}` template
+  holes (see §6.1 for exact substitution semantics: any string value, at
+  any nesting depth inside an object or array, is a legal template hole
+  site — object *keys* and non-string scalars are not, since `fillTemplate`
+  only descends into string values, array elements, and object values).
+
+### 3.4 Assert mini-language (exact grammar)
+
+Source of truth: `evalAssert`, `src/assert.ts:55-150`; every form is tried
+in the order listed and the **first regex match wins** — an unrecognized
+line (matching none) throws `AssertParseError`:
+`"Unrecognized assert expression: ..."`.
+
+| Form | Regex (informative) | Semantics |
+| --- | --- | --- |
+| `status == <int>` | `^status\s*(==\|!=)\s*(\d+)$` | `obs.status === expected` |
+| `status != <int>` | (same) | `obs.status !== expected` |
+| `body contains "<text>"` | `^body\s+(not\s+contains\|contains)\s+"([^\r\n]*)"$` | `obs.body.includes(text)` |
+| `body not contains "<text>"` | (same) | `!obs.body.includes(text)` |
+| `json.<dotpath> is array` | `^json\.([a-zA-Z0-9_.]+)\s+is\s+(array\|set)$` | `Array.isArray(resolve(dotpath))` |
+| `json.<dotpath> is set` | (same) | `resolve(dotpath) !== undefined && !== null` |
+| `json.<dotpath> length > <int>` | `^json\.([a-zA-Z0-9_.]+)\s+length\s*(>\|<)\s*(\d+)$` | `.length` of an array or string at the path, compared |
+| `json.<dotpath> length < <int>` | (same) | (same, `<`) |
+| `json.<dotpath> == <json-scalar>` | `^json\.([a-zA-Z0-9_.]+)\s*(==\|!=\|>\|<)\s*(.+)$` | strict `===`/`!==` against `JSON.parse(rawScalar)` |
+| `json.<dotpath> != <json-scalar>` | (same) | strict `!==` |
+| `json.<dotpath> > <json-scalar>` | (same) | numeric `>` — only true if both sides are `typeof === "number"` |
+| `json.<dotpath> < <json-scalar>` | (same) | numeric `<` (same numeric-type guard) |
+
+`<dotpath>` is `a.b.c` or `a.0.b`-style (numeric segments index arrays),
+matched by `[a-zA-Z0-9_.]+` and resolved by `resolveDotPath`
+(`src/assert.ts:39-48`): walks the parsed JSON body one segment at a time,
+returning `undefined` the moment it hits `null`/`undefined`/a non-object.
+Every `json.*` form requires the observation's `body` to be valid JSON —
+if `JSON.parse(obs.body)` throws, the assert itself throws
+`AssertParseError` (`"Assertion needs JSON body but body is not valid
+JSON: ..."`), which the runner treats as a step failure, not a parse-time
+rejection of the skill file.
+
+**Single-physical-line constraint (normative, security-relevant).** A
+`body contains "<text>"` assert's quoted text MUST NOT contain a raw
+`\n` or `\r` — the regex is anchored with `[^\r\n]*`, not `.*`. This is
+deliberate defense-in-depth against a newline-injection class of bug: an
+assert/bind line is the SKILL.md grammar's atomic unit (one physical line
+per `- assert:`/`- bind:` bullet, §3.2), and `serializeSkill`/
+`renderStepBlock` write each assert/bind back as one literal line. An
+embedded newline in an assert's text — most realistically arriving via an
+LLM-proposed escalation patch (§7) — would silently split into two bogus
+physical lines on write-back, or worse, accidentally produce a line that
+parses as a spurious `### Step N` header and bricks the file for every
+future `parseSkill` call. `src/escalate.ts`'s patch validator
+(`containsNewline`, `src/escalate.ts:224-226`) additionally rejects any
+LLM-proposed assert/bind line containing `\n`/`\r` **before** it reaches
+this regex at all — two independent layers guarding the same invariant,
+not just one.
+
+### 3.5 Bind mini-language (exact grammar)
+
+Source of truth: `evalBind`, `src/assert.ts:161-194`. Unrecognized input
+throws `BindParseError`: `"Unrecognized bind expression: ..."`.
+
+| Form | Regex (informative) | Semantics |
+| --- | --- | --- |
+| `<name> = json.<dotpath>` | `^([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*json\.([a-zA-Z0-9_.]+)$` | Binds `name` to `resolveDotPath(json, dotpath)`. `undefined` → `{ok: false}` (a divergence: `"bind <name> = json.<dotpath> failed: path not found"`), never a thrown parse error. |
+| `<name> = body match /<regex>/` | `^([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*body\s+match\s+\/(.*)\/$` | Compiles `<regex>` (via `new RegExp`; an invalid pattern throws `BindParseError`: `"Invalid regex in bind: ..."`), matches against `obs.body`, binds `name` to **capture group 1**. No match, or a match with no group-1, → `{ok: false}`: `"bind <name> = body match /<pattern>/ failed: no capture-group match"`. |
+
+`<name>` MUST be a valid identifier (`[a-zA-Z_][a-zA-Z0-9_]*`). A `json.*`
+bind requires a valid-JSON body identically to the assert form above.
+
+### 3.6 The `effect` enum (exact, closed)
+
+`effect` MUST be exactly one of the three literals below (`EFFECTS`,
+`src/skill.ts:51`); anything else is rejected at parse time: `"Invalid
+effect <value> — must be one of read, idempotent-write, destructive"`.
+
+| Value | Meaning | Destructive-gating contract |
+| --- | --- | --- |
+| `read` | No side effects. | Always executed. |
+| `idempotent-write` | A write safe to repeat (create-if-absent, upsert, etc.). | Always executed. |
+| `destructive` | Non-idempotent or irreversible (delete, charge, send, etc.). | Refused unless the run was invoked with `--yes`/`allowDestructive: true` — the runner prints the filled action instead of calling the tool (`executeStep`, `src/runner.ts:166-179`). **Never** re-executed by the escalation ladder's Level 2 (§7.3) regardless of `--yes` — that check is independent of `allowDestructive` and happens before L2 is even invoked (`level3Message`, `src/runner.ts:267-273`; `attemptEscalation`, `src/runner.ts:348-351`). |
+
+### 3.7 Non-Steps sections and the Changelog write-back convention
+
+- **Preamble and trailing content are preserved verbatim** (§3.2) —
+  `serializeSkill` is the faithful inverse of `parseSkill`: it re-emits the
+  parsed `preamble` and `trailing` strings byte-for-byte, and only
+  re-renders step blocks canonically (via `renderStepBlock`,
+  `src/writeback.ts:13-23`). Round-tripping `parse → serialize → parse` is
+  therefore idempotent from the second pass onward, though not necessarily
+  byte-identical to *hand-formatted* input on the first pass (e.g.
+  `JSON.stringify` spacing on the action line may differ from what a human
+  originally typed).
+- A `## Open questions` section is conventional (produced by `reelier
+  compile`, §6) but not required or specially parsed — it is ordinary
+  trailing content as far as `parseSkill` is concerned.
+- A `## Changelog` section is where **write-back** (§7.5) appends one line
+  per successful heal:
+  `- <ISO-date> — L<level> heal, step <n> (<title>): <one-sentence reason,
+  flattened to one line and truncated at 300 chars>`. If the section
+  doesn't exist yet, `appendChangelogLine` (`src/writeback.ts:66-94`)
+  creates it at the end of `trailing`; if it exists, the new line is
+  inserted directly after the last existing bullet (skipping back over
+  trailing blank lines) and before the next `##` section or EOF. This
+  convention is enforced by the write-back code path, not by `parseSkill` —
+  a `## Changelog` section with non-heal-shaped bullets is legal and
+  untouched.
+
+### 3.8 Example
+
+```markdown
+---
+name: sf-post-deploy-smoke
+description: Post-deploy smoke sweep of seldonframe.com core routes
+---
+
+# SF post-deploy smoke sweep
+
+Inputs: (none for this skill)
+
+## Steps
+
+### Step 1 — Homepage is up and branded
+- intent: Confirm the marketing homepage serves and carries the brand sentinel
+- action: http.get {"url": "https://www.seldonframe.com/"}
+- assert: status == 200
+- assert: body contains "SeldonFrame"
+- effect: read
+
+## Open questions
+
+- (none)
+
+## Changelog
+
+- 2026-07-17 — compiled from smoke-1.jsonl (1 calls, 1 steps)
+```
+
+---
+
+## 4. Run-record format (0.2.0)
+
+Source of truth: `src/runner.ts` (`RunRecord`, `StepRecord`, `runSkill`),
+`test/runner.test.ts`, `test/runner-escalate.test.ts`, `test/bench-cli.test.ts`.
+
+Every `reelier run` invocation (unless `--dry-run`) appends exactly one
+JSON line to `.reelier/runs/<skill-name>.jsonl`.
+
+### 4.1 `StepRecord`
+
+```ts
+interface StepRecord {
+  n: number;
+  title: string;
+  level: 0 | 1 | 2;
+  outcome: "passed" | "failed" | "unchecked" | "skipped";
+  ms: number;
+  failures: string[];
+  llm?: { inputTokens: number; outputTokens: number };
+  escalationAttempted?: 0 | 1 | 2;
+}
+```
+
+| Field | Semantics |
+| --- | --- |
+| `n`, `title` | Copied from the step. |
+| `outcome` | `"passed"` — ran, had ≥1 assertion, all held. `"unchecked"` — ran, had zero assertions (honest-success rule, §4.3). `"failed"` — an assertion or bind failed, a tool errored, a template var was unbound, or an unknown tool/destructive-without-`--yes` refusal occurred, **and** it did not heal via escalation. `"skipped"` — an earlier step diverged and the run stopped before this step was attempted. |
+| `level` | `0` = ran deterministically **or** never healed (including "escalation was attempted but didn't hold" — see the distinction below). `1`/`2` = **healed** at that escalation level. |
+| `failures` | Human-readable failure messages accumulated for this step; empty iff `outcome` is `"passed"`/`"unchecked"`. On a healed step, `failures` is reset to `[]`. |
+| `llm` | Present **iff** escalation ran for this step at all (any level, success or failure) — summed input/output tokens across every attempt on this step. Absent, not `{inputTokens:0,...}`, when escalation never ran. |
+| `escalationAttempted` | The **highest level TRIED**, present iff L1 was invoked at all. **Distinct from `level`**: a step can have `escalationAttempted: 2` and `level: 0` simultaneously — it burned L1 and L2 tokens and still never healed. `level` only ever reflects the level that *healed* it. |
+
+### 4.2 `RunRecord`
+
+```ts
+interface RunRecord {
+  skill: string;
+  startedAt: string;
+  finishedAt: string;
+  passed: boolean;
+  steps: StepRecord[];
+  totals: {
+    steps: number;
+    passed: number;
+    unchecked: number;
+    skipped: number;
+    failed: number;
+    ms: number;
+    llmInputTokens: number;
+    llmOutputTokens: number;
+  };
+}
+```
+
+`passed` is `true` iff zero steps have `outcome === "failed"` — an
+`"unchecked"` step does **not** make the run fail, but it also does not
+count toward `totals.passed`.
+
+### 4.3 Totals honesty rule (normative)
+
+`totals.passed` MUST count **only** steps whose `outcome` is exactly
+`"passed"` — it MUST NOT include `"unchecked"` steps. This is the 0.2.0
+"totals honesty" fix: before it, `totals.passed` silently rolled up
+`"passed" OR "unchecked"` together, which meant a step with zero
+assertions (proving nothing) could inflate an apparent pass count. Stated
+as a consumer-facing rule: **a consumer MUST NOT present an `"unchecked"`
+step, or a `totals.unchecked` count, as evidence of a passing check** —
+`"unchecked"` means "ran without incident," not "verified." This mirrors
+`executeStep`'s own honest-success rule at evaluation time (`src/runner.ts:225-229`):
+a step with `step.asserts.length === 0` is `"unchecked"`, never `"passed"`,
+even if its tool call succeeded outright.
+
+### 4.4 Legacy-derivation rule (normative)
+
+Run records written **before** 0.2.0 have no `totals.unchecked`, no
+`totals.skipped`, and their `totals.passed` used the old (dishonest)
+passed-OR-unchecked rollup — but every record's **per-step** `outcome`
+values were always correct, regardless of package version. Therefore:
+
+> A consumer reading a run-record file MUST check for the presence of
+> `totals.unchecked` (or, equivalently, `totals.skipped`). If **absent**,
+> the consumer MUST derive `passed`/`unchecked`/`skipped`/`failed` counts
+> by filtering `steps[].outcome` directly, and MUST NOT trust that
+> record's own `totals.passed` field. If **present**, the record is 0.2.0+
+> shaped and its `totals` fields may be trusted as-is.
+
+This is exactly the fallback `reelier bench` (`src/cli.ts`) implements, and
+it is what makes a mixed pre-/post-0.2.0 run-record history safely
+readable without a migration step — old records never need to be rewritten.
+
+### 4.5 Example
+
+```jsonc
+{
+  "skill": "my-skill",
+  "startedAt": "2026-07-18T14:00:00.000Z",
+  "finishedAt": "2026-07-18T14:00:01.230Z",
+  "passed": true,
+  "steps": [
+    { "n": 1, "title": "List bookings", "level": 0, "outcome": "passed",
+      "ms": 123, "failures": [] }
+  ],
+  "totals": {
+    "steps": 1, "passed": 1, "unchecked": 0, "skipped": 0, "failed": 0,
+    "ms": 123, "llmInputTokens": 0, "llmOutputTokens": 0
+  }
+}
+```
+
+---
+
+## 5. MCP proxy contract
+
+Source of truth: `src/recorder.ts` (`buildProxyServer`), `src/mcp-client.ts`
+(`buildToolRoutes`), `test/proxy-e2e.test.ts`, `test/recorder.test.ts`.
+
+`reelier mcp --wrap "<downstream command>" [--wrap "..."] [--trace-dir
+<dir>]` starts an MCP server on stdio that re-exposes every `--wrap`'d
+downstream server's tools, plus three control tools.
+
+### 5.1 The three control tools
+
+| Tool | Input schema | Behavior |
+| --- | --- | --- |
+| `reelier_start_recording` | `{ name: string }` (required) | Begins a new trace at `.reelier/traces/<name>-<n>.jsonl`. If already recording, returns (not throws — an MCP tool-result with plain text, not `isError`) a message naming the currently-recording trace and instructing the caller to stop it first — recordings never nest or silently overwrite. |
+| `reelier_note` | `{ text: string }` (required) | Appends a `note` record if currently recording; a friendly no-op message (not an error) if not recording. |
+| `reelier_stop_recording` | `{}` | Ends the current recording, flushes pending writes, returns the trace path and total call count. A friendly no-op message if not currently recording. |
+
+All three tools validate their required string argument and return
+`{...textResult(...), isError: true}` if it's missing or not a string —
+this is the one case where a control tool sets `isError`.
+
+### 5.2 Passthrough guarantees (normative)
+
+- **1:1 exposure**: every downstream tool is exposed under its own name
+  (subject to collision-prefixing, §5.3), with its original `description`
+  and `inputSchema` copied through unmodified (`ListToolsRequestSchema`
+  handler, `src/recorder.ts:158-182`).
+- **The live path is never redacted or modified.** `redact()` is applied
+  only to the copy written into the trace record (`recordCall`/
+  `recordResult`, `src/recorder.ts:108-117`); the `result` object returned
+  to the calling agent from `CallToolRequestSchema` is the **exact** object
+  `route.downstream.call(...)` produced (or an error-shaped stand-in on a
+  thrown exception), never passed through `redact()` at all
+  (`src/recorder.ts:184-234`). A conformant proxy implementation MUST
+  preserve this separation — redaction is a trace-write-time concern only,
+  and MUST NOT alter what the calling agent actually receives.
+- **Calls made while not recording pass through unlogged** — `isRecording`
+  gates whether `recordCall`/`recordResult` are invoked at all
+  (`src/recorder.ts:218-219, 230-231`); the downstream call itself always
+  happens regardless of recording state.
+- Timing (`ms`) is measured around the downstream `.call(...)` only, not
+  including proxy-side bookkeeping.
+
+### 5.3 Collision-prefixing rule
+
+`buildToolRoutes` (`src/mcp-client.ts:150-165`) is the **single source of
+truth for name resolution**, shared identically by the recording proxy
+(exposure) and the runner's `--wrap` mode (replay lookup — §6 below), so a
+name recorded by `reelier mcp` always resolves to the same tool on replay.
+Downstreams are processed in `--wrap` order (0-indexed):
+
+- A tool's name is exposed as-is **unless** a tool of the same name was
+  already registered by an earlier downstream.
+- On collision, the **later** downstream's tool is exposed as
+  `<downstreamIndex>_<name>` (0-based index into the `--wrap` list, not
+  the earlier downstream's index), and a warning is logged to stderr:
+  `[reelier] tool name collision: '<name>' from downstream <idx>
+  (<downstream.name>) exposed as '<prefixed>'`.
+- The **first** downstream to register a given name always keeps the
+  unprefixed name — only later collisions get prefixed.
+
+---
+
+## 6. Runner semantics (normative summary)
+
+Source of truth: `src/runner.ts` (`runSkill`, `executeStep`,
+`attemptEscalation`), `src/compile.ts` (dataflow recovery),
+`test/runner.test.ts`, `test/runner-escalate.test.ts`, `test/compile.test.ts`.
+
+### 6.1 The L0 loop
+
+For each step, in file order, unless an earlier step has already diverged
+(in which case this step is recorded `"skipped"` and nothing is executed):
+
+1. **Fill** `{{var}}` template holes in `step.actionArgs` against the
+   accumulated `bindings` map (`fillTemplate`, `src/runner.ts:101-122`) —
+   recursively over string leaves of arrays/objects. A `{{name}}` whose
+   `name` is not yet in `bindings` throws `"Unbound template variable
+   {{name}}"` — this is itself a divergence (see below), not a parse-time
+   error.
+2. If `step.effect === "destructive"` and `allowDestructive` is false, the
+   step is refused (`"failed"`) without calling the tool at all — the
+   filled action is reported in the failure message so the operator can
+   see exactly what would have run.
+3. Otherwise, **execute**: look up `step.actionTool` in the tool registry
+   (unknown tool → `"failed"`), call `tool.run(filledArgs, ctx)` to
+   produce an `Observation` (any thrown error → `"failed"`).
+4. **Evaluate every `assert` line** against the observation (`evalAssert`)
+   and **every `bind` line** (`evalBind`), collecting binds into a
+   step-local map. Any assert failure or bind failure appends to
+   `failures` but does not stop evaluating the rest of the step's asserts/
+   binds (all are evaluated, not short-circuited).
+5. Outcome: `"failed"` if `failures.length > 0`; else `"unchecked"` if
+   `step.asserts.length === 0`; else `"passed"`.
+6. **Only on `"passed"`/`"unchecked"`** are this step's locally-collected
+   binds merged into the shared `bindings` map used by later steps
+   (`Object.assign(bindings, exec.binds)`, `src/runner.ts:439-442`) — never
+   on `"failed"`, even if some binds evaluated successfully before a later
+   assert or bind failed in the same step. This prevents a step that fails
+   partway through from polluting shared state with values from a run that
+   never actually held.
+
+### 6.2 Divergence (definition)
+
+A step **diverges** iff its `"failed"` outcome arises from any of:
+
+- an `assert` line evaluating false,
+- a `bind` line failing to extract (path not found / regex didn't match),
+- an unresolved `{{var}}` template hole,
+- a tool execution error, an unknown tool name, or a destructive-refusal.
+
+Divergence is what triggers escalation (§6.3) when `--max-level ≥ 1`; at
+`--max-level 0` (the default) divergence simply ends the run — every
+remaining step is recorded `"skipped"`, and no LLM client is ever
+constructed or called (`runSkill`, `src/runner.ts:412-478`; the `LlmClient`
+type is only ever touched inside `attemptEscalation`, which itself early-
+returns before touching `options.llm` when `maxLevel < 1`).
+
+### 6.3 The escalation ladder
+
+Only reachable when a step's outcome is `"failed"` **and** its `observation`
+was captured (i.e. the tool actually ran — a destructive-refusal or an
+unbound-template failure has no observation and cannot escalate).
+
+- **L0** (always on) — no escalation; described above.
+- **L1** — `resolveL1` (`src/escalate.ts:331-357`) sends the step text, the
+  failure messages, and a bounded summary of the **already-captured**
+  observation (status, body truncated to ~2000 chars, up to 40 sampled
+  `json.<path>` leaves) to the LLM, asking it to propose a patched
+  `assert`/`bind` set for *that same* observation. **L1 never re-executes
+  anything** — it is zero-side-effect by construction, because the
+  observation is fixed input, never refetched. The patch is validated
+  against the exact assert/bind grammar (§3.4/§3.5) via
+  `validateAssertSyntax`/`validateBindSyntax` before being trusted, and is
+  rejected (falls through to a `"failed"` outcome, or to L2 if
+  `--max-level 2`) if: the JSON response isn't a well-formed patch object,
+  any proposed line fails grammar validation, any line contains an
+  embedded newline (§3.4), or the patch would strip **all** assertions
+  from a step that previously had at least one (`assertionsWereStripped`,
+  `src/escalate.ts:314-316` — refusing to let a heal silently downgrade a
+  previously-checked step to permanently `"unchecked"`). A holding L1
+  patch is re-evaluated (`reEvaluatePatch`) against the fixed observation
+  one more time before being accepted, merges its binds into `bindings`,
+  and is **written back immediately** (§6.4).
+- **L2** — tried only if L1 didn't hold and `--max-level 2`, **and** the
+  step's `effect` is `read` or `idempotent-write` — a `destructive` step is
+  refused before L2 is even invoked (`level3Message`), with a message
+  pointing at manual (Level 3) recovery. `resolveL2`
+  (`src/escalate.ts:369-409`) may additionally propose patched `args` (only
+  referencing `{{name}}`s already present in `bindings` —
+  `findUnboundTemplateVar` rejects anything else) for **exactly one**
+  re-execution of the step's tool call. The harness fills the patched args,
+  calls the tool once against the fresh result, re-evaluates the patched
+  asserts/binds against that **new** observation, and accepts only if that
+  holds. Same grammar/newline/empty-assertions validation as L1 applies.
+  On success, binds merge into `bindings` and the heal is written back.
+- **L3** (not implemented) — a diverged destructive step, or a failed L2,
+  simply stops the run with a message directing a human to edit the skill
+  by hand.
+
+**maxLevel gating**: `options.maxLevel` (`0 | 1 | 2`, default `0`) is the
+sole gate on how far escalation is allowed to climb; `options.llm` (an
+injected `LlmClient`) is required for any escalation to happen at all —
+absent, escalation is skipped entirely regardless of `maxLevel`.
+
+**`allowDestructive` (`--yes`) and escalation are independent controls.**
+`allowDestructive` only gates whether a `destructive` step's **L0**
+execution is attempted in the first place (§6.1 step 2). Whether that
+step, once diverged, is eligible for L2 re-execution is gated separately
+by `step.effect !== "destructive"` — passing `--yes` does not make a
+destructive step eligible for L2; a destructive step is categorically
+excluded from L2 regardless of `--yes`.
+
+**`dryRun`** (`options.dryRun`/`--dry-run`): `dryRunSkill` produces the
+filled `{tool, args}` for every step with zero execution and zero
+side effects — it is a separate, simpler code path from `runSkill`, not a
+flag threaded through the runner loop; no run record is written.
+
+### 6.4 Write-back (mandatory on heal)
+
+A successful heal at L1 or L2 is applied to the **in-memory** `Skill`
+object (`step.asserts`, `step.binds`, and — L2 only, when `args` was
+proposed — `step.actionArgs`), a changelog line is appended to `trailing`
+(§3.7), the whole skill is re-serialized via `serializeSkill`, and written
+to `skillPath` — **synchronously, before the run record is written**
+(`applyWritebackSafely`, `src/writeback.ts:158-168`, called from
+`attemptEscalation`, `src/runner.ts:322-330, 393-401`). This is mandatory,
+not best-effort: the entire point of the escalation ladder is that the
+same drift never has to escalate twice. A filesystem failure during
+write-back (disk full, permission denied) is caught and logged loudly to
+stderr but MUST NOT crash the run — the heal already succeeded *for this
+run*; only persistence failed. If `skillPath` was never provided to
+`runSkill` (e.g. a caller running an in-memory skill), no write-back is
+attempted at all and a stderr warning explains that the heal will not
+persist.
+
+---
+
+## 7. Conformance
+
+A third-party implementation reading or writing these formats should
+verify against the following reference tests, which this specification was
+cross-checked against line-by-line:
+
+| Format area | Reference test file(s) |
+| --- | --- |
+| Assert grammar (all forms) | `test/assert.test.ts` |
+| Bind grammar (all forms) | `test/assert.test.ts` |
+| SKILL.md frontmatter/step parsing, field requiredness | `test/skill.test.ts` |
+| Serialize/round-trip, changelog write-back | `test/writeback.test.ts` |
+| Trace record shape, ordering, control tools | `test/recorder.test.ts`, `test/proxy-e2e.test.ts` |
+| MCP result → Observation mapping | `test/mcp-tool.test.ts` |
+| Compiler (dataflow recovery, effect classification, open questions) | `test/compile.test.ts`, `test/compile-cli.test.ts` |
+| Runner L0 loop, honest outcomes, totals | `test/runner.test.ts` |
+| Escalation ladder (L1/L2, grammar validation, destructive gating, write-back) | `test/runner-escalate.test.ts`, `test/escalate.test.ts` |
+| Run-record legacy-derivation (`reelier bench`) | `test/bench-cli.test.ts` |
+| Redaction patterns | `test/redact.test.ts` |
+
+---
+
+## Deviations noted
+
+This section is for the orchestrator, not part of the normative spec. No
+code was changed while writing this document; these are places where
+current behavior surprised the reading, or where the spec had to describe
+an asymmetry rather than a clean rule:
+
+1. **`RunRecord`/`StepRecord` have no version field of their own** — the
+   only version signal a consumer can use is the *presence or absence* of
+   `totals.unchecked`/`totals.skipped` (§4.4). This works today but is
+   fragile: a future run-record change that isn't "add a totals field"
+   won't have an equally clean detection heuristic. Worth a real
+   `formatVersion` field before the next breaking-shaped change.
+2. **Trace records also have no version field.** The SF profile
+   (`packages/crm/.../trace-format.ts`) independently re-implements the
+   exact same `TraceRecord` union rather than importing this package —
+   the two are currently kept in sync by hand/convention, not by any
+   shared type or schema. A drift between the two (e.g. this package
+   adding a new `t` variant) would not be caught by either side's test
+   suite.
+3. **`json.<dotpath> > / <` silently evaluates false, not an error, when
+   either side isn't a number** (`src/assert.ts:134-139`) — e.g.
+   `json.count > "abc"` doesn't throw, it just reports the assert as
+   failed with a possibly-confusing message. This is documented here as
+   the actual behavior (§3.4) but a stricter implementation might prefer
+   to reject a non-numeric comparison at patch-validation time (it
+   currently only does so at the L1/L2 *empty-assertions* check, not a
+   type check).
+4. **The MCP proxy's tool list handler copies `route.tool.inputSchema` with
+   an unchecked cast** (`inputSchema: route.tool.inputSchema as {type:
+   "object"; ...}`, `src/recorder.ts:163`) — if a downstream ever
+   advertised a non-object-typed schema, this would misrepresent it to the
+   proxy's own caller without validation. Not exercised by any test found.
+5. **`reelier_start_recording`/`reelier_note`/`reelier_stop_recording`
+   "already recording" / "not recording" responses are plain-text tool
+   results, not `isError: true`** — an automated caller parsing tool
+   results by `isError` alone (rather than by response text) would treat
+   a "you can't do that right now" response as a success. This is
+   documented as the actual behavior (§5.1) but reads as an easy trap for
+   a naive MCP client.
+
+No fix is proposed or applied for any of the above — flagging only, per
+the task brief.
