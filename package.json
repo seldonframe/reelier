@@ -1,18 +1,59 @@
 {
-  "name": "reelier",
-  "version": "0.0.1",
-  "description": "Record an agent workflow once, replay it deterministically.",
+  "name": "@seldonframe/reelier",
+  "version": "0.1.0",
+  "description": "Your agent's muscle memory — record a workflow once, replay it deterministically, escalate to an LLM only on divergence.",
   "license": "AGPL-3.0-only",
   "type": "module",
   "bin": {
     "reelier": "dist/cli.js"
   },
+  "main": "dist/runner.js",
+  "exports": {
+    ".": "./dist/runner.js",
+    "./skill": "./dist/skill.js",
+    "./compile": "./dist/compile.js",
+    "./escalate": "./dist/escalate.js",
+    "./llm": "./dist/llm.js",
+    "./writeback": "./dist/writeback.js",
+    "./trace": "./dist/trace.js",
+    "./mcp-client": "./dist/mcp-client.js",
+    "./mcp-tool": "./dist/mcp-tool.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/seldonframe/reelier.git"
+  },
+  "homepage": "https://github.com/seldonframe/reelier#readme",
+  "bugs": {
+    "url": "https://github.com/seldonframe/reelier/issues"
+  },
+  "keywords": [
+    "mcp",
+    "agent",
+    "skills",
+    "skill.md",
+    "record-replay",
+    "deterministic",
+    "workflow",
+    "automation",
+    "claude",
+    "llm"
+  ],
   "engines": {
     "node": ">=20"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "tsc -p tsconfig.test.json && node --test dist-test/test/*.test.js"
+    "test": "tsc -p tsconfig.test.json && node --test dist-test/test/*.test.js",
+    "prepublishOnly": "npm run build && npm test"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "devDependencies": {
     "@types/node": "^20.14.9",
