@@ -790,35 +790,52 @@ async function cmdInit(args: ParsedArgs): Promise<number> {
             .trim()
             .toLowerCase();
           if (writeChoice === "y" || writeChoice === "yes") {
-            const plan = await planMcpConfigWrite(detection.projectConfigPath, wrapCommand);
-            if (!plan.result.added) {
-              console.log(
-                `  A "reelier" server is already configured in ${detection.projectConfigPath} — left untouched.`
-              );
-            } else {
-              console.log("  Resulting .mcp.json:");
-              console.log(
-                plan.after
-                  .split("\n")
-                  .map((l) => `    ${l}`)
-                  .join("\n")
-              );
-              const confirm = (await rl.question("  Write this? [y/N] ")).trim().toLowerCase();
-              if (confirm === "y" || confirm === "yes") {
-                await applyMcpConfigWrite(detection.projectConfigPath, plan.result.config);
+            // A malformed existing .mcp.json (or any other read/write
+            // failure here) must never abort the whole init — the file is
+            // already left untouched by construction (planMcpConfigWrite
+            // only reads+parses; applyMcpConfigWrite is never reached until
+            // an explicit confirm below), so the honest recovery is to say
+            // so and fall through to the zero-setup demo path rather than
+            // crash with a raw SyntaxError.
+            try {
+              const plan = await planMcpConfigWrite(detection.projectConfigPath, wrapCommand);
+              if (!plan.result.added) {
                 console.log(
-                  `  Wrote ${detection.projectConfigPath} (preserved ${plan.result.preservedServerNames.length} existing server(s)).`
+                  `  A "reelier" server is already configured in ${detection.projectConfigPath} — left untouched.`
                 );
               } else {
-                console.log("  Skipped — nothing written.");
+                console.log("  Resulting .mcp.json:");
+                console.log(
+                  plan.after
+                    .split("\n")
+                    .map((l) => `    ${l}`)
+                    .join("\n")
+                );
+                const confirm = (await rl.question("  Write this? [y/N] ")).trim().toLowerCase();
+                if (confirm === "y" || confirm === "yes") {
+                  await applyMcpConfigWrite(detection.projectConfigPath, plan.result.config);
+                  console.log(
+                    `  Wrote ${detection.projectConfigPath} (preserved ${plan.result.preservedServerNames.length} existing server(s)).`
+                  );
+                } else {
+                  console.log("  Skipped — nothing written.");
+                }
               }
+            } catch (err) {
+              console.log(
+                `  Your existing ${detection.projectConfigPath} isn't valid JSON — leaving it untouched; ` +
+                  `continuing with the demo path. (${(err as Error).message})`
+              );
+              wrapCommand = undefined;
             }
           }
 
-          console.log("");
-          console.log("  Restart your agent so it picks up the new MCP server, then tell it:");
-          console.log('    "record yourself doing <the task you want to teach me>"');
-          await rl.question("\n  Press Enter once you've finished recording and stopped the recording... ");
+          if (wrapCommand) {
+            console.log("");
+            console.log("  Restart your agent so it picks up the new MCP server, then tell it:");
+            console.log('    "record yourself doing <the task you want to teach me>"');
+            await rl.question("\n  Press Enter once you've finished recording and stopped the recording... ");
+          }
         }
       }
     } finally {

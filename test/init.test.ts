@@ -170,6 +170,33 @@ test("planMcpConfigWrite + applyMcpConfigWrite: merges and atomically writes, pr
   });
 });
 
+test("planMcpConfigWrite: a malformed existing .mcp.json refuses (throws) rather than silently overwriting — file is left byte-identical", async () => {
+  await withTmpDir(async (dir) => {
+    const configPath = path.join(dir, ".mcp.json");
+    const malformed = "{ this is not valid json,,, ";
+    await writeFile(configPath, malformed, "utf8");
+
+    await assert.rejects(() => planMcpConfigWrite(configPath, "npx -y @your/mcp-server"));
+
+    const after = await readFile(configPath, "utf8");
+    assert.equal(after, malformed, "malformed .mcp.json must be left byte-identical, never overwritten");
+  });
+});
+
+test("mergeReelierServer: an unknown top-level key (e.g. '$schema') survives the merge untouched", () => {
+  const existing = parseMcpConfig(
+    JSON.stringify({
+      $schema: "https://example.com/mcp-config.schema.json",
+      mcpServers: { existing: { command: "npx", args: ["-y", "@existing/server"] } },
+    })
+  );
+  const result = mergeReelierServer(existing, buildReelierServerEntry("npx -y @your/mcp-server"));
+  assert.equal(result.added, true);
+  assert.equal(result.config.$schema, "https://example.com/mcp-config.schema.json");
+  assert.ok(result.config.mcpServers?.reelier);
+  assert.ok(result.config.mcpServers?.existing);
+});
+
 test("planMcpConfigWrite: starting from no file at all still produces a valid plan", async () => {
   await withTmpDir(async (dir) => {
     const configPath = path.join(dir, ".mcp.json");

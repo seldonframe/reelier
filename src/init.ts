@@ -374,8 +374,8 @@ export function formatReceipt(record: RunRecord, demoBenchmark?: DemoBenchmarkCo
     const yourTokens = llmTokensZero ? "0" : String(record.totals.llmInputTokens + record.totals.llmOutputTokens);
     lines.push("");
     lines.push(
-      `  An agent doing this re-reasons every run (~${(demoBenchmark.agentAvgMs / 1000).toFixed(1)}s, ${agentTokensLabel} tokens ` +
-        `on our benchmark); your replay: ${record.totals.ms}ms, ${yourTokens} tokens.`
+      `  An agent doing a comparable task re-reasons every run (~${(demoBenchmark.agentAvgMs / 1000).toFixed(1)}s, ${agentTokensLabel} ` +
+        `tokens on our benchmark); your replay: ${record.totals.ms}ms, ${yourTokens} tokens.`
     );
   }
 
