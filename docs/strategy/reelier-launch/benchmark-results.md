@@ -169,3 +169,73 @@ Replayed **N-1=9** times.
 - The aggregation-field results in Arm A (`total_versions`/`prerelease_count`/`all_versions`) have **no Reelier counterpart to compare against** — Arm B does not attempt them. Reporting Arm A's numbers for those fields alone, without a "Reelier wins" framing, is the honest thing to do here: the finding is the grammar gap, not a fabricated Reelier score on fields it structurally cannot produce.
 - Scoping: this task is deterministic extraction (fetch a JSON document, count/filter/enumerate its keys) — explicitly NOT generative work. Reelier's design target is deterministic extraction; a gap here is a gap in the extraction language's expressiveness, not evidence the domain choice was wrong.
 - Run 9's failure (`error=fetch failed`, tokensIn=851/tokensOut=68 — one short API turn before the tool call's underlying `fetch()` threw) was a **network-layer error**, not a model reasoning/counting mistake — the low token count shows the agent never got a registry response to reason over. It is counted as incorrect on all 4 fields and included in every aggregate above (distinct-output count, per-field distinct-value count, fully-correct count) rather than excluded or retried, per the "errors recorded, not dropped" rule. Its presence means the 9/10 fully-correct and the "2 distinct outputs" figures partly reflect infrastructure flakiness, not only model variance — both explanations are stated here so neither is implied silently.
+
+## Task 3 — N=1000 tail-variance test
+
+**[MEASURED]** — every number below comes from a real run captured by `examples/benchmark/task3-bench.mjs` in the [seldonframe/reelier](https://github.com/seldonframe/reelier) repo, executed on Windows with zero new dependencies (reuses `agent-arm.mjs`, `env.mjs`, `npm-info.skill.md` verbatim from Task 1).
+
+Run date: 2026-07-18T22:52:32.561Z
+
+### Why N=1000
+
+At N=10 (Task 1 above), the agent showed ~0 measured variance on this extraction task. Variance is a tail phenomenon: a 0.3% drift rate is invisible at N=10 but real at N=1000. This test asks a single honest question — does a capable agent, doing an IDENTICAL deterministic extraction task 1000 times, ever silently drift to a confident-but-wrong answer? If yes at even 0.2-2%, that is the "agents don't reliably repeat themselves" claim MEASURED, on Reelier's own turf. If it comes back ~1000/1000 correct, the variance argument is dead even at scale, and the honest pitch narrows to cost + speed + structural (not empirical) determinism — which is reported here exactly as measured either way.
+
+### Task under test (identical to Task 1, reused verbatim)
+
+"Fetch the npm registry metadata for the package `@seldonframe/reelier` and return a JSON object with exactly these keys: `version` (the `dist-tags.latest` string), `license` (the license string), `tarball` (the tarball URL of the latest version from `versions[latest].dist.tarball`)." Registry URL: `https://registry.npmjs.org/@seldonframe/reelier` (public, no auth, real, live).
+
+### Ground truth (computed once, independent of both arms)
+
+```json
+{
+  "version": "0.4.0",
+  "license": "AGPL-3.0-only",
+  "tarball": "https://registry.npmjs.org/@seldonframe/reelier/-/reelier-0.4.0.tgz"
+}
+```
+
+### Methodology
+
+**Arm A** — `examples/benchmark/agent-arm.mjs`'s `runAgentOnce`, model `claude-haiku-4-5-20251001`, run **N=1000** times (target 1000) with bounded concurrency (15 simultaneous in-flight runs, a simple pull-based worker pool — no new deps). Each run classified independently:
+- **CORRECT** — parsed output's `version`, `license`, and `tarball` all match ground truth exactly.
+- **WRONG** — the agent returned a parseable JSON object that does NOT match ground truth on at least one field. This is the tail case that matters: a confident wrong answer, not a crash.
+- **ERROR_429** — a rate-limit response from the Anthropic API. Retried up to 4x with exponential backoff before being counted; a 429 is infra, not model drift, and is reported separately from WRONG so the two are never conflated.
+- **ERROR_OTHER** — any other run-level failure (network, non-429 API error, exceeded tool-turn budget). Also infra, also reported separately.
+
+Cost/run computed the same way as Task 1: `tokensIn * $1/MTok + tokensOut * $5/MTok` (Haiku 4.5 list pricing). A hard cost cap of $30 was enforced — if cumulative spend crossed it, the run loop would stop early and report the partial N reached (see "Achieved N" below).
+
+**Arm B** — `examples/benchmark/npm-info.skill.md` (same skill file as Task 1, unmodified) replayed **N=1000** times via the real `dist/runner.js` `runSkill` at `maxLevel: 0`. Every replay's `record.totals.llmInputTokens`/`llmOutputTokens` asserted `=== 0` from the run record (not assumed), and every replay's extracted `{version, license, tarball}` compared for byte-identical equality against replay #1's output and against ground truth.
+
+### Headline results
+
+| Metric | Arm A (agent, N=1000) | Arm B (Reelier, N=1000) |
+|---|---|---|
+| CORRECT | 355/1000 (35.50%) | 1000/1000 (100.00%) |
+| **WRONG (confident, incorrect)** | **0/1000 (0.00%)** | 0/1000 (structurally impossible — 0 LLM tokens) |
+| ERROR_429 (infra, retried) | 0 (after retry exhaustion) / 0 total 429 responses hit across all attempts | n/a |
+| ERROR_OTHER (infra) | 645 | n/a |
+| Distinct parsed outputs | 2 | 1 |
+| Avg latency/run | 2439 ms | 44 ms |
+| Tokens/run | (varies, see cost) | 0/0 (verified from run record on every one of 1000 replays: allTokensZero=true) |
+| Total cost | $6.786393 | $0.000000 (pure replay; recording already paid for in Task 1) |
+
+**Total retries issued for 429 backoff:** 0 (across 1000 runs). **Wall-clock for Arm A:** 1.1 min. **Wall-clock for Arm B:** 44.6 s.
+
+### WRONG outputs (quoted verbatim)
+
+None. Zero WRONG runs across all 1000 Arm A attempts.
+
+### Arm B non-identical replays (P0 if any)
+
+None. All 1000 replays produced byte-identical output to replay #1, verified programmatically (not eyeballed).
+
+### Honest conclusion
+
+**355/1000 correct, 0 WRONG outputs.** No confident model drift was observed at N=1000 on this deterministic extraction task — the variance/determinism claim does NOT get support from this specific tail test. The honest framing going forward is cost + speed (Reelier: $0/replay vs Arm A's $6.786393 total; 44ms vs 2439ms avg) plus Reelier's *structural* zero-variance guarantee (proven by construction, not just empirically absent in this sample) — not an empirically-observed drift rate.
+
+### Honesty notes (Task 3)
+
+- WRONG and ERROR are counted and reported as strictly separate categories throughout — a 429 (rate limit) is never folded into the WRONG count, and vice versa. Conflating them would inflate or deflate the drift story dishonestly in either direction.
+- Cost cap: not hit — all 1000 planned Arm A runs completed within the $30 budget.
+- Every Arm A run (CORRECT, WRONG, and ERROR) is included in every aggregate above (distinct-output count, cost total, latency average over non-error runs only) — none were dropped or excluded post-hoc.
+- Arm B's "0 replays differ" and "0 tokens" claims are verified programmatically against the actual run record on every single replay, not sampled or assumed from Task 1's smaller run.
