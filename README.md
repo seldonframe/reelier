@@ -1,9 +1,69 @@
 # Reelier
 
-Your agent's muscle memory. Record an agent workflow once as a trace of tool
-calls, compile it to a `SKILL.md` — a recipe with a test — and replay it
-deterministically with zero LLM calls, escalating to an LLM only when the
-world has changed underneath it.
+Your agent's muscle memory — record a workflow once, replay it
+deterministically forever, receipt attached.
+
+[![npm version](https://img.shields.io/npm/v/@seldonframe/reelier.svg)](https://www.npmjs.com/package/@seldonframe/reelier)
+[![CI](https://github.com/seldonframe/reelier/actions/workflows/ci.yml/badge.svg)](https://github.com/seldonframe/reelier/actions/workflows/ci.yml)
+[![license](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](./LICENSE)
+[![tests](https://img.shields.io/badge/tests-177%20passing-brightgreen.svg)](./test)
+
+Record an agent workflow once as a trace of tool calls, compile it to a
+`SKILL.md` — a recipe with a test — and replay it deterministically with
+zero LLM calls, escalating to an LLM only when the world has changed
+underneath it.
+
+```sh
+npm i -g @seldonframe/reelier && reelier init
+```
+
+60 seconds to your first receipt.
+
+### What that looks like
+
+`reelier init` records a real workflow, compiles it, replays it, and closes
+with a receipt — the actual shape (see `src/init.ts`'s `formatReceipt`):
+
+```
+$ reelier init --yes
+
+  1. Fetch @seldonframe/reelier's versioned npm registry metadata
+  2. Fetch the package homepage, using the URL bound from the registry response
+Compiled skills/reelier-init-demo-1.skill.md — 2 steps, 2 asserts, 1 bind
+
+Open questions:
+  - ...(the compiler's honest gaps, printed verbatim — never papered over)
+
+Your receipt:
+  skill:        reelier-init-demo-1
+  steps:        2 total, 2 passed, 0 unchecked, 0 failed
+  replay time:  44ms [measured]
+  LLM tokens:   0 [measured]
+
+  An agent doing a comparable task re-reasons every run (~2.8s, ~18k
+  tokens on our benchmark); your replay: 44ms, 0 tokens.
+
+Next steps:
+  reelier run skills/reelier-init-demo-1.skill.md      # replay again
+  reelier push skills/reelier-init-demo-1.skill.md     # sync receipts (opt-in)
+```
+
+### The measured proof
+
+From a real, live head-to-head benchmark (agent vs. Reelier, same task,
+same data) — see [`examples/benchmark`](./examples/benchmark) and
+[`docs/strategy/reelier-launch/benchmark-results.md`](./docs/strategy/reelier-launch/benchmark-results.md)
+for the full raw tables and methodology:
+
+- **1,000/1,000 replays byte-identical** (N=1000 tail-variance test)
+- **0 tokens per replay** (verified from the run record, not assumed)
+- **~50x cheaper** ($0.000000/replay vs. $0.019068/run averaged over the agent arm)
+- **~59x faster** (44ms vs. 2,842ms average latency)
+
+### AGPL FAQ
+
+AGPL-3.0: the engine can never be taken closed. Your skills, traces, and run
+records are YOUR data — the license never touches them.
 
 The formats are specified in [SPEC.md](./SPEC.md) — a normative,
 RFC-style reference (trace/SKILL.md/run-record/proxy/runner) for anyone

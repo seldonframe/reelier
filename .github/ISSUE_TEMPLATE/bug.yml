@@ -1,0 +1,38 @@
+name: Bug report
+description: Something in Reelier doesn't behave the way the docs/SPEC say it should.
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you expect (per README/SPEC.md), and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal repro
+      description: The exact commands you ran, and a minimal trace/skill/config if relevant. Redact any secrets.
+      render: sh
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Reelier version
+      description: Output of `reelier --version` or the version in package.json
+    validations:
+      required: true
+  - type: input
+    id: node-version
+    attributes:
+      label: Node version
+      description: Output of `node --version`
+    validations:
+      required: true
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Logs, run-record JSON, whatever else is relevant.

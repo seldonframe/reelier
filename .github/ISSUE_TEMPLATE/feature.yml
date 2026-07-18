@@ -1,0 +1,23 @@
+name: Feature request
+description: Propose a new capability, grammar extension, or CLI flag.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What can't you do today
+      description: What workflow or task hits a wall with the current trace/SKILL.md/runner design?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed shape
+      description: How would this fit the five-atom model (intent/action/assert/bind/effect) and the thin-harness constitution? Concrete syntax welcome (e.g. a new assert/bind form).
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Anything you tried working around with the current grammar/CLI, and why it wasn't enough.
