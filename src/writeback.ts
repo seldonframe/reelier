@@ -6,8 +6,68 @@
 // *persistence* failed, and that gets a loud stderr warning instead of a
 // thrown error).
 
-import { writeFile } from "node:fs/promises";
+import { writeFile, rename, unlink } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
 import type { Skill, Step } from "./skill.js";
+
+// ---------------------------------------------------------------------------
+// Atomic write-back: write-temp-then-rename so a torn/partial skill file is
+// unrepresentable. Full inter-process locking (concurrent writers racing on
+// the same skill file from two processes) is explicitly deferred to cloud
+// execution — this only guarantees a single writer never leaves the file
+// half-written if it crashes or the process is killed mid-write.
+// ---------------------------------------------------------------------------
+
+/** The subset of node:fs/promises this needs — injectable so tests can force the EEXIST/EPERM fallback branch without touching the real filesystem module. */
+export interface AtomicWriteFsOps {
+  writeFile: typeof writeFile;
+  rename: typeof rename;
+  unlink: typeof unlink;
+}
+
+const defaultAtomicWriteFsOps: AtomicWriteFsOps = { writeFile, rename, unlink };
+
+/**
+ * Write `content` to `filePath` via write-temp-then-rename: content is
+ * written in full to a temp file in the same directory (`<filePath>.tmp-
+ * <random>`), then renamed over the target. A reader can therefore only ever
+ * see the old complete file or the new complete file, never a partial write.
+ *
+ * `fs.rename` renaming over an existing file already works on POSIX and on
+ * modern Node/Windows (libuv's uv_fs_rename uses MoveFileExW with
+ * MOVEFILE_REPLACE_EXISTING) — but as a defensive fallback for the case
+ * where the target is locked or an older platform rejects the direct
+ * rename, an EEXIST/EPERM from the first rename attempt is handled by
+ * unlinking the target and retrying the rename once.
+ *
+ * The temp file is always cleaned up (success or failure) via `finally` —
+ * it must never be left behind.
+ */
+export async function writeFileAtomic(
+  filePath: string,
+  content: string,
+  fsOps: AtomicWriteFsOps = defaultAtomicWriteFsOps
+): Promise<void> {
+  const tempPath = `${filePath}.tmp-${randomBytes(6).toString("hex")}`;
+  try {
+    await fsOps.writeFile(tempPath, content, "utf8");
+    try {
+      await fsOps.rename(tempPath, filePath);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === "EEXIST" || code === "EPERM") {
+        await fsOps.unlink(filePath).catch(() => {});
+        await fsOps.rename(tempPath, filePath);
+      } else {
+        throw err;
+      }
+    }
+  } finally {
+    // No-op (ENOENT) on the success path, where the temp file no longer
+    // exists under its own name because it was just renamed onto filePath.
+    await fsOps.unlink(tempPath).catch(() => {});
+  }
+}
 
 /** Render a single step back into its "### Step N — Title" block form. Exported for reuse when building escalation prompts (src/escalate.ts) so the LLM sees the exact step-block text a human would edit. */
 export function renderStepBlock(step: Step): string[] {
@@ -146,7 +206,7 @@ export async function applyWriteback(opts: WritebackOptions): Promise<void> {
   opts.skill.trailing = appendChangelogLine(opts.skill.trailing, changelogLine);
 
   const rendered = serializeSkill(opts.skill);
-  await writeFile(opts.skillPath, rendered, "utf8");
+  await writeFileAtomic(opts.skillPath, rendered);
 }
 
 /**

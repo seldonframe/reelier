@@ -189,6 +189,14 @@ What it deliberately leaves as **open questions**, rather than papering over:
   later, LLM-assisted step; this compiler never invents input variables
   itself)
 - a trailing `reelier_note` with no call after it (a warning, not a crash)
+- **(0.3.0+) date literals** — any arg string shaped like an ISO date
+  (`YYYY-MM-DD`, optionally with a time suffix) gets an open question
+  proposing the equivalent computed var, with the actual offset worked out
+  from the trace's own recording date: `"2026-07-11"` recorded on
+  `2026-07-18` becomes a suggestion to replace it with `{{today-7d}}` *if*
+  that's what it means — the compiler never substitutes it for you, since
+  only you know whether a recorded date was meant to be relative to run
+  time or is genuinely fixed. See "Computed date template vars" below.
 
 This is the **honest-gaps** principle: a step the compiler can't derive a
 meaningful assertion for gets emitted assertion-less rather than a fabricated
@@ -255,6 +263,30 @@ the exact step and line** — Reelier never silently skips a broken step.
 - `<name> = json.<dotpath>`
 - `<name> = body match /<regex>/` (first capture group; no match is a
   divergence)
+
+`today` and `today±Nd` (e.g. `today-7d`) are **reserved** — see below — and
+can't be used as a bind name; `parseSkill` rejects it immediately with a
+clear error rather than letting it silently shadow the computed var.
+
+### Computed date template vars (0.3.0+)
+
+Alongside ordinary `{{name}}` holes filled from `bind`s/`vars`, three forms
+are resolved deterministically at fill time instead, never looked up in a
+skill's own bindings:
+
+- `{{today}}` — today's date, `YYYY-MM-DD`, UTC.
+- `{{today-Nd}}` — the date `N` days before today (`N` an integer, `1-365`).
+- `{{today+Nd}}` — the date `N` days after today.
+
+```
+- action: list_bookings {"from": "{{today-7d}}", "to": "{{today}}"}
+```
+
+That's it — no times, no other formats, no locales; a heavier need is a
+future, separately-versioned form, not a silent extension of this one. A
+run resolves all of these against a single clock snapshot taken once at the
+start of the run, so a long-running run never straddles a UTC midnight
+boundary and sees a different `{{today}}` partway through.
 
 ### Builtin tools (v0)
 
@@ -480,6 +512,17 @@ crash the run — the heal already worked *for this run*; only persistence
 failed, and that prints a loud stderr warning instead of throwing, because
 silently losing a heal means the same drift escalates again next time,
 defeating the entire point of the ladder.
+
+**(0.3.0+) Atomic write-back.** The file is never edited in place. It's
+written in full to a temp file next to it (`<skill>.skill.md.tmp-<random>`)
+and then renamed over the target, so a crash or kill mid-write leaves the
+old, complete file behind — a torn/partial skill file is unrepresentable.
+On a target that can't be renamed over directly (`EEXIST`/`EPERM`), the
+fallback unlinks the target and retries the rename once. The temp file is
+always cleaned up, success or failure. This guarantees safety for a single
+writer; it is not inter-process locking — two reelier processes racing a
+write-back against the same skill file is out of scope here and deferred to
+cloud execution.
 
 ## Licensing
 

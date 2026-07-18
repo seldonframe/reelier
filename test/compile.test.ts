@@ -267,6 +267,131 @@ test("promote-to-input: a literal repeated across steps that never appears in a 
 });
 
 // ---------------------------------------------------------------------------
+// Date-literal detection — flag (never auto-substitute) ISO-date-shaped arg
+// literals with a concrete {{today±Nd}} suggestion computed from the
+// trace's own meta.startedAt.
+// ---------------------------------------------------------------------------
+
+function metaAt(startedAt: string, name = "demo"): TraceRecord {
+  return { t: "meta", seq: 0, name, startedAt, wrapped: ["demo-downstream"] };
+}
+
+test("date-literal: a date before the recording date suggests {{today-Nd}} with the correct offset", () => {
+  const records: TraceRecord[] = [
+    metaAt("2026-07-18T14:00:00.000Z"),
+    call(1, 0, "list_bookings", { from: "2026-07-11" }),
+    result(2, 0, true, mcpJsonResult({ bookings: [] })),
+  ];
+  const compiled = compile(records);
+  assert.deepEqual(compiled.steps[0].args, { from: "2026-07-11" }); // never auto-substituted
+  const oq = compiled.openQuestions.find((o) => o.stepN === 1);
+  assert.ok(oq, "expected an open question on step 1");
+  assert.match(oq!.text, /literal date "2026-07-11"/);
+  assert.match(oq!.text, /7 days before run time/);
+  assert.match(oq!.text, /\{\{today-7d\}\}/);
+  assert.match(oq!.text, /recording date 2026-07-18/);
+});
+
+test("date-literal: a date after the recording date suggests {{today+Nd}}", () => {
+  const records: TraceRecord[] = [
+    metaAt("2026-07-18T14:00:00.000Z"),
+    call(1, 0, "create_appointment", { date: "2026-07-28" }),
+    result(2, 0, true, mcpJsonResult({ ok: true })),
+  ];
+  const compiled = compile(records);
+  const oq = compiled.openQuestions.find((o) => o.stepN === 1);
+  assert.ok(oq);
+  assert.match(oq!.text, /10 days after run time/);
+  assert.match(oq!.text, /\{\{today\+10d\}\}/);
+});
+
+test("date-literal: a date equal to the recording date suggests {{today}}", () => {
+  const records: TraceRecord[] = [
+    metaAt("2026-07-18T14:00:00.000Z"),
+    call(1, 0, "create_appointment", { date: "2026-07-18" }),
+    result(2, 0, true, mcpJsonResult({ ok: true })),
+  ];
+  const compiled = compile(records);
+  const oq = compiled.openQuestions.find((o) => o.stepN === 1);
+  assert.ok(oq);
+  assert.match(oq!.text, /\{\{today\}\}/);
+});
+
+test("date-literal: a date more than 365 days away gets an explanatory open question, no {{today±Nd}} suggestion", () => {
+  const records: TraceRecord[] = [
+    metaAt("2026-07-18T14:00:00.000Z"),
+    call(1, 0, "create_appointment", { date: "2020-01-01" }),
+    result(2, 0, true, mcpJsonResult({ ok: true })),
+  ];
+  const compiled = compile(records);
+  const oq = compiled.openQuestions.find((o) => o.stepN === 1);
+  assert.ok(oq);
+  assert.match(oq!.text, /more than 365 days/);
+  // No concrete computed-var suggestion (only the generic "no {{today±Nd}} form applies" wording).
+  assert.doesNotMatch(oq!.text, /\{\{today\}\}/);
+  assert.doesNotMatch(oq!.text, /\{\{today[+-]\d/);
+});
+
+test("date-literal: detects a literal nested inside an object/array arg", () => {
+  const records: TraceRecord[] = [
+    metaAt("2026-07-18T14:00:00.000Z"),
+    call(1, 0, "bulk_update", { filters: { range: { from: "2026-07-11", to: "2026-07-15" } }, ids: ["a", "2026-07-16"] }),
+    result(2, 0, true, mcpJsonResult({ ok: true })),
+  ];
+  const compiled = compile(records);
+  const texts = compiled.openQuestions.filter((o) => o.stepN === 1).map((o) => o.text);
+  assert.ok(texts.some((t) => /"2026-07-11"/.test(t)));
+  assert.ok(texts.some((t) => /"2026-07-15"/.test(t)));
+  assert.ok(texts.some((t) => /"2026-07-16"/.test(t)));
+});
+
+test("date-literal: no false positive on a version string like '1.2.3'", () => {
+  const records: TraceRecord[] = [
+    metaAt("2026-07-18T14:00:00.000Z"),
+    note(1, "install the package"),
+    call(2, 0, "get_package_version", { version: "1.2.3" }), // known "get" verb + narrated, so the only open question that could appear is a date-literal one
+    result(3, 0, true, mcpJsonResult({ ok: true })),
+  ];
+  const compiled = compile(records);
+  assert.equal(compiled.openQuestions.filter((o) => o.stepN === 1).length, 0);
+});
+
+test("date-literal: no false positive on ids/tokens containing digits (not dash-shaped like a date)", () => {
+  const records: TraceRecord[] = [
+    metaAt("2026-07-18T14:00:00.000Z"),
+    note(1, "look up the order"),
+    call(2, 0, "get_order", { orderId: "order_20260711123045", uuid: "12345678-1234-1234-1234-123456789012" }),
+    result(3, 0, true, mcpJsonResult({ ok: true })),
+  ];
+  const compiled = compile(records);
+  assert.equal(compiled.openQuestions.filter((o) => o.stepN === 1).length, 0);
+});
+
+test("date-literal: a value already dataflow-recovered into {{var}} is never also flagged as a date literal", () => {
+  const records: TraceRecord[] = [
+    metaAt("2026-07-18T14:00:00.000Z"),
+    call(1, 0, "create_booking", { date: "2026-07-11" }),
+    result(2, 0, true, mcpJsonResult({ id: "b1", date: "2026-07-11" })),
+    call(3, 1, "get_booking", { date: "2026-07-11" }), // matches prior result -> becomes {{date}}, not a literal anymore
+    result(4, 1, true, mcpJsonResult({ found: true })),
+  ];
+  const compiled = compile(records);
+  assert.deepEqual(compiled.steps[1].args, { date: "{{date}}" });
+  // Step 1 still gets flagged (its own value was never a dataflow target), step 2 must not be (its literal was substituted away).
+  assert.ok(compiled.openQuestions.some((o) => o.stepN === 1 && /literal date/.test(o.text)));
+  assert.ok(!compiled.openQuestions.some((o) => o.stepN === 2 && /literal date/.test(o.text)));
+});
+
+test("date-literal: no crash / no detection when the trace has no meta startedAt captured (defensive)", () => {
+  const records: TraceRecord[] = [
+    call(1, 0, "get_thing", { date: "2026-07-11" }),
+    result(2, 0, true, mcpJsonResult({ ok: true })),
+  ];
+  const compiled = compile(records);
+  assert.equal(compiled.openQuestions.filter((o) => /literal date/.test(o.text)).length, 0);
+});
+
+// ---------------------------------------------------------------------------
 // Round-trip through the skill parser
 // ---------------------------------------------------------------------------
 

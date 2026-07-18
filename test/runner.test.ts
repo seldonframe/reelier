@@ -24,6 +24,64 @@ test("fillTemplate throws on an unbound variable", () => {
   assert.throws(() => fillTemplate({ url: "{{missing}}" }, {}), /Unbound template variable/);
 });
 
+// ---------------------------------------------------------------------------
+// Computed date template vars: {{today}}, {{today-Nd}}, {{today+Nd}}.
+// A fixed `now` is injected in every case below so these tests are never
+// wall-clock-flaky.
+// ---------------------------------------------------------------------------
+
+const FIXED_NOW = Date.UTC(2026, 6, 18, 12, 0, 0); // 2026-07-18T12:00:00.000Z
+
+test("fillTemplate resolves {{today}} to the current UTC date (YYYY-MM-DD) from the injected clock", () => {
+  const filled = fillTemplate({ date: "{{today}}" }, {}, FIXED_NOW);
+  assert.deepEqual(filled, { date: "2026-07-18" });
+});
+
+test("fillTemplate resolves {{today-Nd}} to N days before the injected clock", () => {
+  const filled = fillTemplate({ date: "{{today-7d}}" }, {}, FIXED_NOW);
+  assert.deepEqual(filled, { date: "2026-07-11" });
+});
+
+test("fillTemplate resolves {{today+Nd}} to N days after the injected clock", () => {
+  const filled = fillTemplate({ date: "{{today+10d}}" }, {}, FIXED_NOW);
+  assert.deepEqual(filled, { date: "2026-07-28" });
+});
+
+test("fillTemplate computed dates cross month/year boundaries correctly", () => {
+  const filled = fillTemplate({ date: "{{today-30d}}" }, {}, FIXED_NOW);
+  assert.deepEqual(filled, { date: "2026-06-18" });
+
+  const newYear = Date.UTC(2026, 0, 3, 0, 0, 0); // 2026-01-03
+  const filled2 = fillTemplate({ date: "{{today-10d}}" }, {}, newYear);
+  assert.deepEqual(filled2, { date: "2025-12-24" });
+});
+
+test("fillTemplate rejects {{today-0d}} (offset must be >= 1 — use {{today}} for zero)", () => {
+  assert.throws(() => fillTemplate({ date: "{{today-0d}}" }, {}, FIXED_NOW), /offset of 0 days/);
+});
+
+test("fillTemplate rejects {{today-366d}} (offset too large) with a clear error, not a silent pass", () => {
+  assert.throws(() => fillTemplate({ date: "{{today-366d}}" }, {}, FIXED_NOW), /offset of 366 days/);
+});
+
+test("fillTemplate rejects {{today+400d}} the same way", () => {
+  assert.throws(() => fillTemplate({ date: "{{today+400d}}" }, {}, FIXED_NOW), /offset of 400 days/);
+});
+
+test("fillTemplate computed vars work alongside ordinary bindings in the same template", () => {
+  const filled = fillTemplate(
+    { url: "https://example.com/{{slug}}?since={{today-3d}}" },
+    { slug: "acme" },
+    FIXED_NOW
+  );
+  assert.deepEqual(filled, { url: "https://example.com/acme?since=2026-07-15" });
+});
+
+test("fillTemplate without an explicit `now` still resolves {{today}} (defaults to the real clock)", () => {
+  const filled = fillTemplate({ date: "{{today}}" }, {}) as { date: string };
+  assert.match(filled.date, /^\d{4}-\d{2}-\d{2}$/);
+});
+
 function mockTool(observations: Observation[]): Tool {
   let i = 0;
   return {

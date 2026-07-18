@@ -110,6 +110,89 @@ function isArrayIndexedPath(dotpath: string): boolean {
   return dotpath.split(".").some((seg) => /^\d+$/.test(seg));
 }
 
+// ---------------------------------------------------------------------------
+// Date-literal detection — flag (never auto-substitute) arg string literals
+// shaped like an ISO date, and suggest the equivalent {{today±Nd}} computed
+// var (runner.ts) with the concrete offset computed from the trace's own
+// recording date (meta.startedAt). Substitution is left to a human: whether
+// a recorded "2026-07-11" means "11 days before whenever this replays" or a
+// genuinely fixed date is intent the trace alone can't settle.
+// ---------------------------------------------------------------------------
+
+interface IsoCalendarDate {
+  y: number;
+  m: number;
+  d: number;
+}
+
+// Matches YYYY-MM-DD optionally followed by a time suffix (T...). Deliberately
+// anchored start-to-end so it never partially matches inside a longer token
+// (a version string like "1.2.3" has no dashes at all; a UUID's first
+// hyphen-delimited group is 8 hex digits, not exactly 4 decimal digits, so
+// it never reaches the month/day groups below).
+const ISO_DATE_LITERAL_RE = /^(\d{4})-(\d{2})-(\d{2})(T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?)?$/;
+
+/** Parse a string as an ISO date literal, validating month/day are in range (rejects e.g. "2026-13-40"). */
+function parseIsoDateLiteral(value: string): IsoCalendarDate | undefined {
+  const m = value.match(ISO_DATE_LITERAL_RE);
+  if (!m) return undefined;
+  const month = Number(m[2]);
+  const day = Number(m[3]);
+  if (month < 1 || month > 12 || day < 1 || day > 31) return undefined;
+  return { y: Number(m[1]), m: month, d: day };
+}
+
+/** Whole-day difference `b - a`, both interpreted as UTC calendar dates. */
+function daysBetweenUtc(a: IsoCalendarDate, b: IsoCalendarDate): number {
+  const aMs = Date.UTC(a.y, a.m - 1, a.d);
+  const bMs = Date.UTC(b.y, b.m - 1, b.d);
+  return Math.round((bMs - aMs) / (24 * 60 * 60 * 1000));
+}
+
+/** Recursively collect every string leaf in a JSON-like structure (unlike collectArgCandidates, no length floor — a bare date is only 10 chars). */
+function collectStringLeaves(value: unknown, prefix: string, out: Leaf[]): void {
+  if (typeof value === "string") {
+    if (prefix !== "") out.push({ path: prefix, value });
+    return;
+  }
+  if (value === null || typeof value !== "object") return;
+  if (Array.isArray(value)) {
+    value.forEach((v, i) => collectStringLeaves(v, prefix ? `${prefix}.${i}` : `${i}`, out));
+    return;
+  }
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    collectStringLeaves(v, prefix ? `${prefix}.${k}` : k, out);
+  }
+}
+
+/** Build the open-question text for one detected date literal. `diffDays` = literal's date minus the recording date. */
+function dateLiteralOpenQuestion(dateStr: string, diffDays: number, recordingDateStr: string): string {
+  if (diffDays === 0) {
+    return (
+      `literal date "${dateStr}" — if this means 'today at run time', replace with {{today}} ` +
+      `(it resolved to today on the recording date ${recordingDateStr}); if it is a fixed date, keep it.`
+    );
+  }
+  if (diffDays < 0 && -diffDays <= 365) {
+    const n = -diffDays;
+    return (
+      `literal date "${dateStr}" — if this means '${n} days before run time', replace with {{today-${n}d}} ` +
+      `(it resolved to that offset on the recording date ${recordingDateStr}); if it is a fixed date, keep it.`
+    );
+  }
+  if (diffDays > 0 && diffDays <= 365) {
+    return (
+      `literal date "${dateStr}" — if this means '${diffDays} days after run time', replace with {{today+${diffDays}d}} ` +
+      `(it resolved to that offset on the recording date ${recordingDateStr}); if it is a fixed date, keep it.`
+    );
+  }
+  return (
+    `literal date "${dateStr}" is more than 365 days from the recording date ${recordingDateStr} — ` +
+    `no {{today±Nd}} computed form applies (max offset is 365 days); if it's meant to be relative to run ` +
+    `time you'll need to handle it by hand, otherwise it's likely a genuinely fixed date.`
+  );
+}
+
 function sanitizeIdentifier(raw: string): string {
   let out = raw.replace(/[^a-zA-Z0-9_]/g, "_");
   if (!/^[a-zA-Z_]/.test(out)) out = `v_${out}`;
@@ -179,6 +262,7 @@ interface RawResult {
 /** Compile a parsed trace into a CompileResult. `name` is the trace's own meta name (falls back to "compiled"). */
 export function compile(records: TraceRecord[]): CompileResult {
   let name = "compiled";
+  let metaStartedAt: string | undefined;
   const calls: RawCall[] = [];
   const resultsByIndex = new Map<number, RawResult>();
 
@@ -189,6 +273,7 @@ export function compile(records: TraceRecord[]): CompileResult {
     switch (rec.t) {
       case "meta":
         name = rec.name;
+        metaStartedAt = rec.startedAt;
         break;
       case "note":
         pendingNotes.push(rec.text);
@@ -312,6 +397,28 @@ export function compile(records: TraceRecord[]): CompileResult {
     }
 
     filledArgsByCall.set(call.i, args);
+  }
+
+  // -- Date-literal detection ------------------------------------------------
+  // Scans the FINAL filled args (post dataflow-recovery), so a literal date
+  // that was actually recovered as a bind reference above is already
+  // {{varname}} by this point and never double-flagged here.
+
+  const recordingDate = metaStartedAt ? parseIsoDateLiteral(metaStartedAt.slice(0, 10)) : undefined;
+  if (recordingDate) {
+    const recordingDateStr = metaStartedAt!.slice(0, 10);
+    for (const call of calls) {
+      const stepN = call.i + 1;
+      const finalArgs = filledArgsByCall.get(call.i);
+      const leaves: Leaf[] = [];
+      collectStringLeaves(finalArgs, "", leaves);
+      for (const leaf of leaves) {
+        const literal = parseIsoDateLiteral(leaf.value as string);
+        if (!literal) continue;
+        const diffDays = daysBetweenUtc(recordingDate, literal);
+        addOpenQuestion(stepN, dateLiteralOpenQuestion(leaf.value as string, diffDays, recordingDateStr));
+      }
+    }
   }
 
   // -- Promote-to-input suggestions (rule 6) ---------------------------------

@@ -54,6 +54,35 @@ function isEffect(value: string): value is Effect {
   return (EFFECTS as readonly string[]).includes(value);
 }
 
+/**
+ * `today`, `today-Nd`, `today+Nd` are reserved for the runner's computed
+ * date template vars (src/runner.ts) — resolved at fill time, never looked
+ * up in a skill's own bindings. A skill that tries to `bind` one of these
+ * names would silently shadow the computed value in a way that's confusing
+ * to debug, so it's rejected loudly at parse time instead.
+ */
+function isReservedBindName(name: string): boolean {
+  return name === "today" || /^today[+-]\d+d$/.test(name);
+}
+
+/**
+ * Extract the would-be name from a (not-yet-validated) bind expression by
+ * splitting on the first '='. This is deliberately looser than the real
+ * bind-name identifier grammar (`evalBind` in src/assert.ts, which requires
+ * `[a-zA-Z_][a-zA-Z0-9_]*`) — the reserved-name guard needs to catch
+ * `today-7d = ...` too, even though that particular string would ALSO fail
+ * `evalBind`'s own grammar check later as an ordinary bind name (it contains
+ * a `-`, not a valid identifier character). Catching it here gives an
+ * earlier, clearer "this name is reserved" error instead of the more
+ * confusing generic "Unrecognized bind expression" it would otherwise hit
+ * at run time.
+ */
+function extractBindNameForReservedCheck(bindText: string): string | undefined {
+  const eqIdx = bindText.indexOf("=");
+  if (eqIdx === -1) return undefined;
+  return bindText.slice(0, eqIdx).trim();
+}
+
 /** Split a raw SKILL.md file into frontmatter + body, erroring on either being absent/malformed. */
 function splitFrontmatter(source: string): { frontmatter: string; body: string; bodyStartLine: number } {
   const lines = source.split(/\r\n|\n/);
@@ -234,9 +263,18 @@ export function parseSkill(source: string): Skill {
         case "assert":
           asserts.push(rest.trim());
           break;
-        case "bind":
-          binds.push(rest.trim());
+        case "bind": {
+          const bindText = rest.trim();
+          const candidateName = extractBindNameForReservedCheck(bindText);
+          if (candidateName !== undefined && isReservedBindName(candidateName)) {
+            throw new SkillParseError(
+              `Bind name '${candidateName}' is reserved for the computed date template vars ({{today}}, {{today-Nd}}, {{today+Nd}}) and cannot be used as a bind name`,
+              { step: n, line: curLine }
+            );
+          }
+          binds.push(bindText);
           break;
+        }
         case "effect":
           if (effect !== undefined) {
             throw new SkillParseError("Duplicate 'effect' field in step", { step: n, line: curLine });

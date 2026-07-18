@@ -221,3 +221,52 @@ description: y
     assert.match(err.message, /line \d+/);
   }
 });
+
+// ---------------------------------------------------------------------------
+// Reserved bind names: {{today}}/{{today±Nd}} are computed date template
+// vars (src/runner.ts) — a skill must not shadow them via `bind`.
+// ---------------------------------------------------------------------------
+
+function skillWithBind(bindLine: string): string {
+  return `---
+name: reserved-name-test
+description: exercises the reserved-bind-name guard
+---
+
+### Step 1 — get something
+- intent: fetch something
+- action: http.get {"url": "https://example.com"}
+- assert: status == 200
+- bind: ${bindLine}
+- effect: read
+`;
+}
+
+test("rejects a bind named 'today' as reserved for the computed date var", () => {
+  assert.throws(
+    () => parseSkill(skillWithBind("today = json.date")),
+    (err: unknown) => err instanceof SkillParseError && /reserved/.test(err.message) && /today/.test(err.message)
+  );
+});
+
+test("rejects a bind named 'today-7d' as reserved (matches the {{today-Nd}} form)", () => {
+  assert.throws(
+    () => parseSkill(skillWithBind("today-7d = json.date")),
+    (err: unknown) => err instanceof SkillParseError && /reserved/.test(err.message)
+  );
+});
+
+test("rejects a bind named 'today+30d' as reserved (matches the {{today+Nd}} form)", () => {
+  assert.throws(
+    () => parseSkill(skillWithBind("today+30d = json.date")),
+    (err: unknown) => err instanceof SkillParseError && /reserved/.test(err.message)
+  );
+});
+
+test("allows a bind named 'todayish' or 'yesterday' — not an exact reserved-name match", () => {
+  const skill = parseSkill(skillWithBind("todayish = json.date"));
+  assert.deepEqual(skill.steps[0].binds, ["todayish = json.date"]);
+
+  const skill2 = parseSkill(skillWithBind("yesterday = json.date"));
+  assert.deepEqual(skill2.steps[0].binds, ["yesterday = json.date"]);
+});

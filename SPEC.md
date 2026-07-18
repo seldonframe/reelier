@@ -4,7 +4,7 @@ This document specifies Reelier's on-disk and on-wire formats precisely
 enough that a third party can emit and consume them without reading
 Reelier's source. It is derived directly from the parser/runner
 implementation (`src/*.ts`) and the test suite (`test/*.ts`) as of package
-version **0.2.0**. Where the README and the code disagree, **the code wins**
+version **0.3.0**. Where the README and the code disagree, **the code wins**
 and the disagreement is noted inline.
 
 Key words MUST / MUST NOT / SHOULD / SHOULD NOT / MAY are used as in
@@ -28,6 +28,16 @@ RFC 2119.
   before 0.2.0 (see §4.3). This is exactly what `reelier bench`
   (`src/cli.ts`) does, and it is how a mixed history of pre- and post-0.2.0
   run records stays readable without migration.
+- **New template-fill forms bump the package's minor version too.** 0.3.0
+  adds the computed date vars `{{today}}` / `{{today-Nd}}` / `{{today+Nd}}`
+  (§6.1a) to `fillTemplate` — a `{{name}}` hole that previously always meant
+  "look `name` up in `bindings`" now has three reserved forms that resolve
+  differently instead. This can't silently break a 0.2.x skill (those exact
+  strings were never legal `bind` names to begin with — see §3.5's
+  identifier grammar), but a 0.3.0+ consumer reading ANY skill, regardless
+  of which version produced it, MUST resolve `{{today}}`/`{{today±Nd}}` as
+  computed vars rather than a bindings lookup — this is `fillTemplate`-time
+  behavior, not something recorded in the skill file itself.
 - **Structures are explicitly open or closed:**
   - **Trace records** (`TraceRecord`, §2) are a **closed, discriminated
     union** over `t`. A parser MUST reject a line whose `t` is not one of
@@ -386,6 +396,21 @@ throws `BindParseError`: `"Unrecognized bind expression: ..."`.
 `<name>` MUST be a valid identifier (`[a-zA-Z_][a-zA-Z0-9_]*`). A `json.*`
 bind requires a valid-JSON body identically to the assert form above.
 
+**Reserved names (0.3.0+, normative).** `today` and any name matching
+`today[+-]<digits>d` (e.g. `today-7d`, `today+30d`) are reserved for the
+runner's computed date template vars (§6.1a) and MUST NOT be used as a bind
+`<name>`. `parseSkill` enforces this at **parse time**, not at `evalBind`
+time — a `- bind: today = json.date` (or `today-7d = ...`, even though that
+particular string isn't a valid bind identifier to begin with) is rejected
+immediately with `SkillParseError`: `"Bind name '<name>' is reserved for the
+computed date template vars ({{today}}, {{today-Nd}}, {{today+Nd}}) and
+cannot be used as a bind name"` (`src/skill.ts`). This is deliberately
+stricter/earlier than waiting for the name to reach `evalBind`'s identifier
+grammar, so a skill author gets one clear error naming the actual conflict
+rather than a generic "unrecognized bind expression" — or worse, a bind
+that silently shadows the reserved computed var only when its right-hand
+side happens to also be a valid `json.<dotpath>`/`body match` form.
+
 ### 3.6 The `effect` enum (exact, closed)
 
 `effect` MUST be exactly one of the three literals below (`EFFECTS`,
@@ -669,13 +694,61 @@ For each step, in file order, unless an earlier step has already diverged
    partway through from polluting shared state with values from a run that
    never actually held.
 
+### 6.1a Computed date template vars (0.3.0+)
+
+Source of truth: `fillTemplate`, `src/runner.ts` (the `resolveComputedDateVar`
+helper and the regex it's threaded through). Step 1 of the L0 loop (§6.1)
+fills `{{var}}` holes; exactly two computed forms are resolved
+**deterministically from a clock, never from `bindings`**, before an
+ordinary bindings lookup is even attempted:
+
+| Form | Resolves to |
+| --- | --- |
+| `{{today}}` | The current UTC calendar date, `YYYY-MM-DD`. |
+| `{{today-Nd}}` | The UTC calendar date `N` days before `{{today}}`. |
+| `{{today+Nd}}` | The UTC calendar date `N` days after `{{today}}`. |
+
+`N` MUST be an integer in `1..365` (inclusive on both ends — use `{{today}}`
+itself for `N = 0`). A `{{today±Nd}}` hole whose `N` is out of that range is
+a divergence: `fillTemplate` throws `"Computed date var {{today±Nd}} has an
+offset of <N> days — only 1-365 is supported"`, exactly like an unresolved
+`{{var}}` (§6.2 lists this as one of the divergence triggers). No other
+computed form exists — no times, no formats, no locales; a future need for
+those is a new, separately-versioned form, not a silent extension of this
+one.
+
+**These are reserved names, not an escape hatch inside `bindings`.** A
+skill's own `bind`s can never produce a variable named `today` or
+`today±Nd` — `parseSkill` rejects that at parse time (§3.5). This makes
+`{{today}}`/`{{today±Nd}}` resolution unconditional: `fillTemplate` never
+needs to disambiguate "is this the computed var or a user bind that happens
+to share its name," because that collision is structurally prevented one
+layer up.
+
+**Determinism and the clock (normative).** `{{today}}`/`{{today±Nd}}`
+introduce a **deliberate, by-design** run-time-dependent value — the whole
+point is that the same skill resolves a different date on a different day.
+This is the one place reelier intentionally departs from pure deterministic
+replay. To keep it from being *needlessly* nondeterministic (e.g. a run
+straddling a UTC midnight boundary resolving `{{today}}` differently for
+step 3 than for step 1), `fillTemplate` takes an optional `now` parameter
+(epoch ms, default `Date.now()`), and `runSkill` computes exactly **one**
+`now` snapshot per run and threads it through every `fillTemplate` call made
+during that run (`executeStep`, the destructive-refusal preview, and the L2
+patched-args fill in `attemptEscalation` all share it) — so a run's computed
+dates are internally consistent even if the run takes several seconds.
+`dryRunSkill` takes the same optional `now` for the same reason. This clock
+parameter is an internal injection seam for reproducible tests, not a
+documented CLI flag — the CLI itself always defaults to the real clock.
+
 ### 6.2 Divergence (definition)
 
 A step **diverges** iff its `"failed"` outcome arises from any of:
 
 - an `assert` line evaluating false,
 - a `bind` line failing to extract (path not found / regex didn't match),
-- an unresolved `{{var}}` template hole,
+- an unresolved `{{var}}` template hole, or a `{{today±Nd}}` computed date
+  var whose offset is out of the supported 1-365 range (§6.1a),
 - a tool execution error, an unknown tool name, or a destructive-refusal.
 
 Divergence is what triggers escalation (§6.3) when `--max-level ≥ 1`; at
@@ -763,6 +836,72 @@ run*; only persistence failed. If `skillPath` was never provided to
 attempted at all and a stderr warning explains that the heal will not
 persist.
 
+**Write-safety: atomic write-back (0.3.0+, normative).** `applyWriteback`
+MUST NOT write `skillPath` in place. It writes the fully-serialized skill to
+a temp file in the same directory (`<skillPath>.tmp-<random suffix>`), then
+renames the temp file over `skillPath` (`writeFileAtomic`,
+`src/writeback.ts`). A reader can therefore only ever observe the file
+**before** the heal (the complete old content) or **after** it (the
+complete new content) — a torn/partial skill file from a mid-write crash or
+kill is unrepresentable. If the direct rename throws `EEXIST` or `EPERM`
+(observed on some Windows configurations when the target is open elsewhere,
+though `fs.rename`'s `MoveFileExW`-with-`MOVEFILE_REPLACE_EXISTING`
+semantics on modern Node already handle the common rename-over-existing-file
+case directly), the fallback is: unlink the target, then retry the rename
+exactly once. That retry's own failure propagates as a normal thrown error
+(caught by `applyWritebackSafely`'s stderr-warning wrapper, same as any
+other write-back failure, per the paragraph above) — it is not looped
+further. The temp file is unconditionally cleaned up in a `finally` block on
+every path (success, first-rename failure recovered by the fallback, or a
+permanent failure) — it MUST NOT be left behind under any outcome. **Full
+inter-process locking — two separate reelier processes racing a write-back
+against the same skill file — is explicitly out of scope for this atomicity
+guarantee and is deferred to cloud execution** (a future single-writer
+arbitration layer), where concurrent runs against the same skill are
+actually possible; a local CLI invocation of `reelier run` is not expected
+to race itself.
+
+### 6.5 Compiler: date-literal detection (0.3.0+)
+
+Source of truth: `compile`, `src/compile.ts` (the date-literal detection
+pass, run after dataflow recovery, before the promote-to-input pass),
+`test/compile.test.ts`.
+
+`reelier compile` never guesses whether a recorded literal date was meant to
+be relative to run time or a genuinely fixed date — that's intent the trace
+alone can't settle, and getting it wrong silently would be worse than not
+compiling a computed var at all. Instead, for every call's **final** filled
+args (i.e. after dataflow recovery has already turned any dataflow-matched
+literal into a `{{var}}` — a value recovered from a prior step's result is
+never also flagged as a date literal here), every string leaf shaped like an
+ISO date (`YYYY-MM-DD`, optionally with a `T...` time suffix; month/day
+range-validated, so `2026-13-40` doesn't false-positive-match, and neither
+does a version string like `"1.2.3"` — no dashes at all — or a UUID's first
+hyphen-delimited group — 8 hex digits, not exactly 4 decimal digits) gets an
+**open question**, never an automatic substitution:
+
+- If the literal's calendar date equals the trace's own recording date
+  (`meta.startedAt`, truncated to `YYYY-MM-DD`, UTC): suggests `{{today}}`.
+- If the literal is `N` days before the recording date, `1 <= N <= 365`:
+  suggests `{{today-Nd}}`, with `N` computed exactly from the two dates
+  (`Date.UTC` day-difference, not an approximation).
+- If the literal is `N` days after the recording date, `1 <= N <= 365`:
+  suggests `{{today+Nd}}`.
+- If the literal is more than 365 days from the recording date in either
+  direction: no computed form applies (the runner's own 1-365 range limit,
+  §6.1a) — the open question says so explicitly rather than suggesting a
+  form that would immediately fail at replay time.
+
+Each open question names the step, quotes the literal exactly as recorded,
+states the offset in plain language ("N days before/after run time"), gives
+the concrete suggested substitution, and names the recording date the
+offset was computed against — so a human reviewing the compiled skill can
+decide in one read whether to accept the computed form or keep the literal
+as a genuinely fixed date. If the trace has no `meta` record (or the
+`meta.startedAt` doesn't itself parse as a date, which should never happen
+for anything `Recorder.start` produced), date-literal detection is skipped
+entirely rather than guessing — a defensive fallback, not a normal path.
+
 ---
 
 ## 7. Conformance
@@ -776,11 +915,15 @@ cross-checked against line-by-line:
 | Assert grammar (all forms) | `test/assert.test.ts` |
 | Bind grammar (all forms) | `test/assert.test.ts` |
 | SKILL.md frontmatter/step parsing, field requiredness | `test/skill.test.ts` |
+| Reserved bind names (`today`/`today±Nd`) | `test/skill.test.ts` |
 | Serialize/round-trip, changelog write-back | `test/writeback.test.ts` |
+| Atomic write-back (temp-then-rename, EEXIST/EPERM fallback, cleanup) | `test/writeback.test.ts` |
 | Trace record shape, ordering, control tools | `test/recorder.test.ts`, `test/proxy-e2e.test.ts` |
 | MCP result → Observation mapping | `test/mcp-tool.test.ts` |
 | Compiler (dataflow recovery, effect classification, open questions) | `test/compile.test.ts`, `test/compile-cli.test.ts` |
+| Compiler date-literal detection | `test/compile.test.ts` |
 | Runner L0 loop, honest outcomes, totals | `test/runner.test.ts` |
+| Computed date template vars (`{{today}}`, `{{today±Nd}}`) | `test/runner.test.ts` |
 | Escalation ladder (L1/L2, grammar validation, destructive gating, write-back) | `test/runner-escalate.test.ts`, `test/escalate.test.ts` |
 | Run-record legacy-derivation (`reelier bench`) | `test/bench-cli.test.ts` |
 | Redaction patterns | `test/redact.test.ts` |

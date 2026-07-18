@@ -97,10 +97,65 @@ export interface DryRunStep {
   effect: string;
 }
 
-/** Recursively fill {{var}} placeholders inside string values of a JSON-like structure. */
-export function fillTemplate(value: unknown, bindings: Record<string, unknown>): unknown {
+// ---------------------------------------------------------------------------
+// Computed date template vars — {{today}}, {{today-Nd}}, {{today+Nd}}.
+// Deterministic, resolved at fill time against a single `now` snapshot (see
+// fillTemplate's `now` param). Reserved names — see parseSkill's guard in
+// src/skill.ts, which rejects a bind named `today`/`today±Nd` at parse time
+// so a skill can never accidentally shadow these.
+// ---------------------------------------------------------------------------
+
+const COMPUTED_DATE_OFFSET_RE = /^today([+-])(\d+)d$/;
+
+/** UTC calendar date (YYYY-MM-DD) for a given epoch-ms instant. */
+function isoDateUtc(ms: number): string {
+  return new Date(ms).toISOString().slice(0, 10);
+}
+
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+/**
+ * Resolve `name` as a computed date var against `now` (epoch ms).
+ * Returns undefined if `name` isn't a computed-date form at all (so the
+ * caller falls back to an ordinary bindings lookup). Throws if it IS a
+ * `today±Nd` form but N is out of the supported 1-365 range — this is a
+ * divergence, not a silent pass-through.
+ */
+function resolveComputedDateVar(name: string, now: number): string | undefined {
+  if (name === "today") {
+    return isoDateUtc(now);
+  }
+  const m = name.match(COMPUTED_DATE_OFFSET_RE);
+  if (!m) return undefined;
+  const sign = m[1] === "+" ? 1 : -1;
+  const n = parseInt(m[2], 10);
+  if (n < 1 || n > 365) {
+    throw new Error(
+      `Computed date var {{${name}}} has an offset of ${n} days — only 1-365 is supported`
+    );
+  }
+  return isoDateUtc(now + sign * n * MS_PER_DAY);
+}
+
+/**
+ * Recursively fill {{var}} placeholders inside string values of a JSON-like
+ * structure. `{{today}}` / `{{today-Nd}}` / `{{today+Nd}}` (N = 1-365) are
+ * computed deterministically from `now` (default `Date.now()`) rather than
+ * looked up in `bindings` — see the module comment above. This is the one
+ * place reelier deliberately introduces a run-time-dependent value; callers
+ * that need reproducible fills across an entire run (dryRunSkill, runSkill)
+ * pass a single `now` snapshot through every fillTemplate call so a run
+ * never straddles a UTC midnight boundary mid-execution.
+ */
+export function fillTemplate(
+  value: unknown,
+  bindings: Record<string, unknown>,
+  now: number = Date.now()
+): unknown {
   if (typeof value === "string") {
-    return value.replace(/\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}/g, (whole, name: string) => {
+    return value.replace(/\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*|today[+-]\d+d)\s*\}\}/g, (whole, name: string) => {
+      const computed = resolveComputedDateVar(name, now);
+      if (computed !== undefined) return computed;
       if (!(name in bindings)) {
         throw new Error(`Unbound template variable {{${name}}}`);
       }
@@ -109,12 +164,12 @@ export function fillTemplate(value: unknown, bindings: Record<string, unknown>):
     });
   }
   if (Array.isArray(value)) {
-    return value.map((v) => fillTemplate(v, bindings));
+    return value.map((v) => fillTemplate(v, bindings, now));
   }
   if (value !== null && typeof value === "object") {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      out[k] = fillTemplate(v, bindings);
+      out[k] = fillTemplate(v, bindings, now);
     }
     return out;
   }
@@ -122,12 +177,12 @@ export function fillTemplate(value: unknown, bindings: Record<string, unknown>):
 }
 
 /** Produce the filled action for every step without executing anything. */
-export function dryRunSkill(skill: Skill, vars: Record<string, string> = {}): DryRunStep[] {
+export function dryRunSkill(skill: Skill, vars: Record<string, string> = {}, now: number = Date.now()): DryRunStep[] {
   const bindings: Record<string, unknown> = { ...vars };
   return skill.steps.map((step) => {
     let args: unknown;
     try {
-      args = fillTemplate(step.actionArgs, bindings);
+      args = fillTemplate(step.actionArgs, bindings, now);
     } catch (err) {
       args = `<error: ${(err as Error).message}>`;
     }
@@ -143,7 +198,8 @@ async function executeStep(
   step: Step,
   bindings: Record<string, unknown>,
   tools: Record<string, Tool>,
-  ctx: ToolContext
+  ctx: ToolContext,
+  now: number
 ): Promise<{ outcome: StepOutcome; ms: number; failures: string[]; observation?: Observation; binds: Record<string, unknown> }> {
   const started = Date.now();
   const failures: string[] = [];
@@ -166,7 +222,7 @@ async function executeStep(
   if (step.effect === "destructive" && !ctx.allowDestructive) {
     let filledArgs: unknown;
     try {
-      filledArgs = fillTemplate(step.actionArgs, bindings);
+      filledArgs = fillTemplate(step.actionArgs, bindings, now);
     } catch (err) {
       filledArgs = `<error: ${(err as Error).message}>`;
     }
@@ -180,7 +236,7 @@ async function executeStep(
 
   let filledArgs: unknown;
   try {
-    filledArgs = fillTemplate(step.actionArgs, bindings);
+    filledArgs = fillTemplate(step.actionArgs, bindings, now);
   } catch (err) {
     failures.push(`Template fill failed: ${(err as Error).message}`);
     return { outcome: "failed", ms: Date.now() - started, failures, binds: localBinds };
@@ -286,7 +342,8 @@ async function attemptEscalation(
   bindings: Record<string, unknown>,
   tools: Record<string, Tool>,
   toolCtx: ToolContext,
-  options: RunOptions
+  options: RunOptions,
+  now: number
 ): Promise<{
   outcome: StepOutcome;
   level: 0 | 1 | 2;
@@ -369,7 +426,7 @@ async function attemptEscalation(
 
   let filledArgs: unknown;
   try {
-    filledArgs = l2.args !== undefined ? fillTemplate(l2.args, bindings) : fillTemplate(step.actionArgs, bindings);
+    filledArgs = l2.args !== undefined ? fillTemplate(l2.args, bindings, now) : fillTemplate(step.actionArgs, bindings, now);
   } catch (err) {
     failures = [...failures, `L2 patched args template fill failed: ${(err as Error).message}`];
     return { outcome: "failed", level: 0, failures, llm: usage, escalationAttempted };
@@ -414,6 +471,10 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
   const tools = options.tools ?? builtinTools;
   const toolCtx: ToolContext = { allowDestructive: options.allowDestructive ?? false };
   const bindings: Record<string, unknown> = { ...(options.vars ?? {}) };
+  // A single snapshot for the whole run — every fillTemplate call inside this
+  // run shares it, so {{today}}/{{today±Nd}} can never resolve to a
+  // different calendar day mid-run (e.g. across a UTC midnight boundary).
+  const now = Date.now();
 
   const startedAt = new Date().toISOString();
   const stepRecords: StepRecord[] = [];
@@ -428,7 +489,7 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
     }
 
     const started = Date.now();
-    const exec = await executeStep(step, bindings, tools, toolCtx);
+    const exec = await executeStep(step, bindings, tools, toolCtx, now);
     let outcome = exec.outcome;
     let failures = exec.failures;
     let level: 0 | 1 | 2 = 0;
@@ -449,7 +510,8 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
         bindings,
         tools,
         toolCtx,
-        options
+        options,
+        now
       );
       outcome = escalated.outcome;
       level = escalated.level;
