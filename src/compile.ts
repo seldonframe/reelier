@@ -120,18 +120,38 @@ function sanitizeIdentifier(raw: string): string {
 // Effect classification
 // ---------------------------------------------------------------------------
 
-const READ_VERB_RE = /^(get|list|read|search|fetch|query|describe|find|check|status)/;
-const DESTRUCTIVE_VERB_RE = /(delete|remove|cancel|refund|pay|send|publish|post|charge|drop|destroy)/;
-const IDEMPOTENT_VERB_RE = /(create|update|set|upsert|put|write|save|add)/;
+const READ_VERBS = new Set([
+  "get", "list", "read", "search", "fetch", "query", "describe", "find", "check", "status", "show", "view", "lookup",
+]);
+const DESTRUCTIVE_VERBS = new Set([
+  "delete", "remove", "cancel", "refund", "pay", "send", "publish", "post", "charge", "drop", "destroy", "purge", "wipe", "forward", "reply",
+]);
+const IDEMPOTENT_VERBS = new Set([
+  "create", "update", "set", "upsert", "put", "write", "save", "add", "modify", "move", "insert", "label",
+]);
 
+/** Strip MCP-server namespace prefixes (double-underscore groups, e.g.
+ *  `composio__`) so `composio__GMAIL_FETCH_EMAILS` classifies like
+ *  `GMAIL_FETCH_EMAILS`. Dot namespaces keep their last segment as before. */
+function normalizeToolName(tool: string): string {
+  const lastSegment = tool.split(".").pop() ?? tool;
+  return lastSegment.replace(/^(?:[A-Za-z0-9-]+__)+/, "");
+}
+
+/**
+ * Token-based classification with destructive-wins precedence: ANY destructive
+ * verb anywhere in the name forces `destructive` (so `search_and_purge` can
+ * never classify read — position in the name carries no authority), then any
+ * write verb, then read. No verb recognized → destructive + review flag.
+ */
 function classifyEffect(tool: string): { effect: Effect; unknown: boolean } {
   if (tool === "http.get") return { effect: "read", unknown: false };
   if (tool === "http.post") return { effect: "idempotent-write", unknown: false };
 
-  const lastSegment = tool.split(".").pop() ?? tool;
-  if (READ_VERB_RE.test(lastSegment)) return { effect: "read", unknown: false };
-  if (DESTRUCTIVE_VERB_RE.test(lastSegment)) return { effect: "destructive", unknown: false };
-  if (IDEMPOTENT_VERB_RE.test(lastSegment)) return { effect: "idempotent-write", unknown: false };
+  const tokens = normalizeToolName(tool).toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  if (tokens.some((t) => DESTRUCTIVE_VERBS.has(t))) return { effect: "destructive", unknown: false };
+  if (tokens.some((t) => IDEMPOTENT_VERBS.has(t))) return { effect: "idempotent-write", unknown: false };
+  if (tokens.some((t) => READ_VERBS.has(t))) return { effect: "read", unknown: false };
   return { effect: "destructive", unknown: true };
 }
 

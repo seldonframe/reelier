@@ -190,6 +190,19 @@ test("effects: verb heuristic matrix", () => {
     ["http.get", "read"],
     ["http.post", "idempotent-write"],
     ["archive_note", "destructive"], // unknown verb
+    // MCP-server namespace prefixes are stripped before classification
+    ["composio__GMAIL_FETCH_EMAILS", "read"],
+    ["composio__GMAIL_LIST_LABELS", "read"],
+    ["composio__GMAIL_SEND_EMAIL", "destructive"],
+    ["composio__GMAIL_ADD_LABEL_TO_EMAIL", "idempotent-write"],
+    ["composio__GMAIL_MODIFY_THREAD_LABELS", "idempotent-write"],
+    ["a__b__double_prefixed_fetch", "read"],
+    // destructive verbs win regardless of position — never read by prefix
+    ["search_and_purge", "destructive"],
+    ["get_and_delete_note", "destructive"],
+    ["fetch_then_send_report", "destructive"],
+    // write beats read when both present
+    ["get_or_create_note", "idempotent-write"],
   ];
 
   for (const [tool, expected] of cases) {
