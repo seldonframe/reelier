@@ -1,3 +1,5 @@
+<img src="https://www.reelier.com/avatar.svg" width="48" alt="Reelier" />
+
 # Reelier
 
 Your agent's muscle memory — record a workflow once, replay it
