@@ -286,8 +286,8 @@ reelier run skills/my-skill.skill.md --max-level 1 \
   [--llm-base-url https://api.anthropic.com] [--llm-api-key sk-...] \
   [--llm-model claude-haiku-4-5-20251001] [--llm-l2-model claude-sonnet-5]
 
-# Summarize a skill's run-record history (now includes per-level step
-# counts and total LLM tokens across all runs).
+# Summarize a skill's run-record history (per-level step counts,
+# escalation attempts vs heals, and total LLM tokens across all runs).
 reelier bench skills/my-skill.skill.md
 
 # Start the recording proxy: re-exposes each --wrap'd downstream's tools
@@ -306,6 +306,56 @@ Every run appends one JSON line to `.reelier/runs/<skill-name>.jsonl`. A step
 with zero assertions is recorded as `"unchecked"`, never `"passed"` — an
 honest-success rule: Reelier will not report a step as having verified
 anything it didn't actually check.
+
+### Run-record shape (0.2.0+)
+
+```jsonc
+{
+  "skill": "my-skill",
+  "startedAt": "...", "finishedAt": "...",
+  // The boolean summary: true iff zero steps failed. Unchanged semantics —
+  // an unchecked step still counts as "not failed".
+  "passed": true,
+  "steps": [
+    {
+      "n": 1, "title": "...",
+      // 0 = ran deterministically or never healed; 1/2 = HEALED at that level.
+      "level": 0,
+      "outcome": "passed", // "passed" | "unchecked" | "failed" | "skipped"
+      "ms": 123,
+      "failures": [],
+      "llm": { "inputTokens": 0, "outputTokens": 0 }, // absent if escalation never ran for this step
+      // Highest escalation level TRIED for this step, present whenever
+      // escalation ran at all (success OR failure) — absent if it never
+      // ran. Distinct from `level`: a step can have escalationAttempted: 2
+      // and level: 0 (it burned L1+L2 tokens and still never healed).
+      "escalationAttempted": 1
+    }
+  ],
+  "totals": {
+    "steps": 1,
+    // "passed" counts ONLY steps whose outcome is exactly "passed" — never
+    // "unchecked". This is the totals-honesty fix (0.2.0): before it,
+    // totals.passed silently counted "passed" OR "unchecked" together.
+    "passed": 1,
+    "unchecked": 0,
+    "skipped": 0,
+    "failed": 0,
+    "ms": 123,
+    "llmInputTokens": 0,
+    "llmOutputTokens": 0
+  }
+}
+```
+
+**Records written before 0.2.0** have no `totals.unchecked`, no
+`totals.skipped`, and their `totals.passed` used the old (dishonest)
+"passed OR unchecked" rollup — but their per-step `outcome` values were
+always recorded correctly. `reelier bench` reads a mixed history gracefully:
+for any record lacking `totals.unchecked`, it derives the honest
+passed/unchecked/skipped/failed split from that record's own `steps[].outcome`
+instead of trusting the legacy `totals` rollup. Old records stay fully
+readable; nothing needs to be migrated or re-run.
 
 ## Escalation ladder
 
@@ -393,10 +443,14 @@ endpoint you've pointed `--llm-base-url` at, and nowhere else.
 Every escalation attempt's `usage` (input/output tokens) is summed into that
 step's run record, **even when the escalation fails** — a step that tried L1
 and L2 and still diverged still spent real tokens, and the run record says
-so. `reelier bench` prints total LLM tokens across a skill's run history
-plus a per-level step count (`L0=x L1=y L2=z`). No dollar figures are
-fabricated anywhere — token counts only; pricing varies by provider and
-model, and this codebase doesn't guess at it.
+so (`escalationAttempted` records the highest level tried regardless of
+outcome). `reelier bench` prints total LLM tokens across a skill's run
+history, a per-level step count (`L0=x L1=y L2=z`, the level that HEALED
+each step), and a separate escalation line — attempts vs. heals per level —
+so a step that burned L1 tokens and still failed is visible, not silently
+absorbed into the "L0" bucket. No dollar figures are fabricated anywhere —
+token counts only; pricing varies by provider and model, and this codebase
+doesn't guess at it.
 
 ### Write-back and the changelog convention
 

@@ -180,8 +180,10 @@ async function cmdRun(args: ParsedArgs): Promise<number> {
     });
 
     console.log("");
+    const okCount = record.totals.passed + record.totals.unchecked;
+    const uncheckedTag = record.totals.unchecked > 0 ? ` (${record.totals.unchecked} unchecked)` : "";
     console.log(
-      `${record.passed ? "PASSED" : "FAILED"}: ${record.totals.passed}/${record.totals.steps} steps ok, ${
+      `${record.passed ? "PASSED" : "FAILED"}: ${okCount}/${record.totals.steps} steps ok${uncheckedTag}, ${
         record.totals.failed
       } failed, ${fmtDuration(record.totals.ms)} total`
     );
@@ -208,6 +210,108 @@ async function readRunRecords(filePath: string): Promise<RunRecord[]> {
     records.push(JSON.parse(trimmed) as RunRecord);
   }
   return records;
+}
+
+export interface BenchSummary {
+  runs: number;
+  passCount: number;
+  passRate: string;
+  firstMs: number;
+  firstStartedAt: string;
+  latestMs: number;
+  latestStartedAt: string;
+  totals: { passed: number; unchecked: number; skipped: number; failed: number };
+  levelCounts: { 0: number; 1: number; 2: number };
+  escalation: { l1Attempted: number; l1Healed: number; l2Attempted: number; l2Healed: number };
+  llmInputTokens: number;
+  llmOutputTokens: number;
+  failureCounts: Map<string, number>;
+}
+
+/**
+ * Per-record totals, honest across a mixed history: a record written before
+ * 0.2.0 has no `totals.unchecked`/`totals.skipped` field (and its old
+ * `totals.passed` counted "passed" OR "unchecked" together) — for those,
+ * derive the split from the per-step outcomes instead, which were always
+ * recorded correctly even when the rollup that summed them wasn't.
+ */
+function deriveRecordTotals(r: RunRecord): { passed: number; unchecked: number; skipped: number; failed: number } {
+  if (r.totals.unchecked !== undefined) {
+    return {
+      passed: r.totals.passed,
+      unchecked: r.totals.unchecked,
+      skipped: r.totals.skipped ?? 0,
+      failed: r.totals.failed,
+    };
+  }
+  let passed = 0;
+  let unchecked = 0;
+  let skipped = 0;
+  let failed = 0;
+  for (const s of r.steps) {
+    if (s.outcome === "passed") passed++;
+    else if (s.outcome === "unchecked") unchecked++;
+    else if (s.outcome === "skipped") skipped++;
+    else if (s.outcome === "failed") failed++;
+  }
+  return { passed, unchecked, skipped, failed };
+}
+
+export function computeBenchSummary(records: RunRecord[]): BenchSummary {
+  const first = records[0];
+  const latest = records[records.length - 1];
+  const passCount = records.filter((r) => r.passed).length;
+  const passRate = ((passCount / records.length) * 100).toFixed(1);
+
+  const failureCounts = new Map<string, number>();
+  const levelCounts = { 0: 0, 1: 0, 2: 0 };
+  const escalation = { l1Attempted: 0, l1Healed: 0, l2Attempted: 0, l2Healed: 0 };
+  const totals = { passed: 0, unchecked: 0, skipped: 0, failed: 0 };
+  let llmInputTokens = 0;
+  let llmOutputTokens = 0;
+
+  for (const r of records) {
+    llmInputTokens += r.totals.llmInputTokens ?? 0;
+    llmOutputTokens += r.totals.llmOutputTokens ?? 0;
+
+    const t = deriveRecordTotals(r);
+    totals.passed += t.passed;
+    totals.unchecked += t.unchecked;
+    totals.skipped += t.skipped;
+    totals.failed += t.failed;
+
+    for (const s of r.steps) {
+      // Defensive against run records written before the escalation ladder
+      // existed at all (no `level` field).
+      levelCounts[s.level ?? 0]++;
+      if (s.escalationAttempted !== undefined) {
+        escalation.l1Attempted++;
+        if (s.escalationAttempted === 2) escalation.l2Attempted++;
+      }
+      if (s.level === 1) escalation.l1Healed++;
+      if (s.level === 2) escalation.l2Healed++;
+      if (s.outcome === "failed") {
+        const key = `Step ${s.n} — ${s.title}`;
+        failureCounts.set(key, (failureCounts.get(key) ?? 0) + 1);
+      }
+    }
+  }
+
+  return {
+    runs: records.length,
+    passCount,
+    passRate,
+    firstMs: first.totals.ms,
+    firstStartedAt: first.startedAt,
+    latestMs: latest.totals.ms,
+    latestStartedAt: latest.startedAt,
+    totals,
+    levelCounts,
+    escalation,
+    llmInputTokens,
+    llmOutputTokens,
+    failureCounts,
+  };
 }
 
 async function cmdBench(args: ParsedArgs): Promise<number> {
@@ -250,39 +354,29 @@ async function cmdBench(args: ParsedArgs): Promise<number> {
     return 1;
   }
 
-  const first = records[0];
-  const latest = records[records.length - 1];
-  const passCount = records.filter((r) => r.passed).length;
-  const passRate = ((passCount / records.length) * 100).toFixed(1);
-
-  const failureCounts = new Map<string, number>();
-  const levelCounts = { 0: 0, 1: 0, 2: 0 };
-  let llmInputTokens = 0;
-  let llmOutputTokens = 0;
-  for (const r of records) {
-    // Defensive against run records written before the escalation ladder
-    // existed (no `level`/`llm` fields, no `totals.llmInputTokens`).
-    llmInputTokens += r.totals.llmInputTokens ?? 0;
-    llmOutputTokens += r.totals.llmOutputTokens ?? 0;
-    for (const s of r.steps) {
-      levelCounts[s.level ?? 0]++;
-      if (s.outcome === "failed") {
-        const key = `Step ${s.n} — ${s.title}`;
-        failureCounts.set(key, (failureCounts.get(key) ?? 0) + 1);
-      }
-    }
-  }
+  const summary = computeBenchSummary(records);
 
   console.log(`Bench: ${skill.name}`);
-  console.log(`  runs:        ${records.length}`);
-  console.log(`  pass rate:   ${passRate}% (${passCount}/${records.length})`);
-  console.log(`  first run:   ${fmtDuration(first.totals.ms)} (${first.startedAt})`);
-  console.log(`  latest run:  ${fmtDuration(latest.totals.ms)} (${latest.startedAt})`);
-  console.log(`  step levels: L0=${levelCounts[0]} L1=${levelCounts[1]} L2=${levelCounts[2]} (across all runs)`);
-  console.log(`  LLM tokens:  ${llmInputTokens} in / ${llmOutputTokens} out (no cost math — tokens only)`);
-  if (failureCounts.size > 0) {
+  console.log(`  runs:        ${summary.runs}`);
+  console.log(`  pass rate:   ${summary.passRate}% (${summary.passCount}/${summary.runs})`);
+  console.log(`  first run:   ${fmtDuration(summary.firstMs)} (${summary.firstStartedAt})`);
+  console.log(`  latest run:  ${fmtDuration(summary.latestMs)} (${summary.latestStartedAt})`);
+  // Honesty rule: "passed" here is ONLY steps that actually verified an
+  // assertion — never lump unchecked in with it (that's the whole point of
+  // the totals-honesty fix; see runner.ts StepOutcome/RunRecord.totals).
+  console.log(
+    `  steps:       passed=${summary.totals.passed} unchecked=${summary.totals.unchecked} skipped=${summary.totals.skipped} failed=${summary.totals.failed} (across all runs)`
+  );
+  console.log(
+    `  step levels: L0=${summary.levelCounts[0]} L1=${summary.levelCounts[1]} L2=${summary.levelCounts[2]} (across all runs)`
+  );
+  console.log(
+    `  escalation:  L1 attempted=${summary.escalation.l1Attempted} healed=${summary.escalation.l1Healed}  L2 attempted=${summary.escalation.l2Attempted} healed=${summary.escalation.l2Healed} (a step that burned tokens and still failed shows here)`
+  );
+  console.log(`  LLM tokens:  ${summary.llmInputTokens} in / ${summary.llmOutputTokens} out (no cost math — tokens only)`);
+  if (summary.failureCounts.size > 0) {
     console.log(`  per-step failure counts:`);
-    for (const [step, count] of failureCounts) {
+    for (const [step, count] of summary.failureCounts) {
       console.log(`    ${step}: ${count}`);
     }
   } else {

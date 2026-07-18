@@ -67,6 +67,11 @@ test("runner: divergence on step 1 marks step 2 as skipped and exits failed", as
     assert.equal(record.steps[0].outcome, "failed");
     assert.equal(record.steps[1].outcome, "skipped");
 
+    assert.equal(record.totals.passed, 0);
+    assert.equal(record.totals.unchecked, 0);
+    assert.equal(record.totals.skipped, 1);
+    assert.equal(record.totals.failed, 1);
+
     const raw = await readFile(path.join(dir, ".reelier", "runs", "test-two-steps.jsonl"), "utf8");
     const lines = raw.trim().split("\n");
     assert.equal(lines.length, 1);
@@ -94,6 +99,10 @@ test("runner: successful run binds step 1's value into step 2's template", async
     };
     const record = await runSkill(skill, { cwd: dir, tools: { "mock.tool": tool } });
     assert.equal(record.passed, true);
+    assert.equal(record.totals.passed, 2);
+    assert.equal(record.totals.unchecked, 0);
+    assert.equal(record.totals.skipped, 0);
+    assert.equal(record.totals.failed, 0);
     assert.deepEqual(seenUrls, ["https://example.com/1", "https://example.com/2/tok-9"]);
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -121,9 +130,12 @@ test("runner: a step with zero assertions is 'unchecked', never 'passed' (honest
     });
     assert.equal(record.steps[0].outcome, "unchecked");
     assert.notEqual(record.steps[0].outcome, "passed");
-    // unchecked still counts toward "passed" totals (it didn't fail), but is
-    // never reported as a verified assertion.
+    // record.passed (the boolean) is still true — zero failed steps — but
+    // totals.passed is honest: an unchecked step is never counted as
+    // "passed", it gets its own totals.unchecked bucket instead.
     assert.equal(record.passed, true);
+    assert.equal(record.totals.passed, 0);
+    assert.equal(record.totals.unchecked, 1);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

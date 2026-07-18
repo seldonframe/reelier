@@ -69,6 +69,7 @@ test("maxLevel 0 (default): divergence fails and the LLM is never invoked", asyn
     assert.equal(record.steps[0].level, 0);
     assert.equal(calls.length, 0, "LLM must never be called at maxLevel 0");
     assert.equal(record.totals.llmInputTokens, 0);
+    assert.equal(record.steps[0].escalationAttempted, undefined, "escalation never ran, so the field is absent");
   });
 });
 
@@ -109,6 +110,11 @@ test("L1 heals a moved json path: step passes at level 1, write-back applied and
     assert.equal(record.steps[0].outcome, "passed");
     assert.equal(record.steps[0].level, 1);
     assert.equal(record.steps[0].llm?.inputTokens, 120);
+    assert.equal(record.steps[0].escalationAttempted, 1);
+    assert.equal(record.totals.passed, 2);
+    assert.equal(record.totals.unchecked, 0);
+    assert.equal(record.totals.skipped, 0);
+    assert.equal(record.totals.failed, 0);
     assert.equal(calls.length, 1);
     // Step 2's template got the healed bind value, proving bindings were updated in-place.
     assert.deepEqual(seenUrls, ["https://example.com/thing", "https://example.com/use/abc123"]);
@@ -151,6 +157,9 @@ test("L1 invalid patch (unparseable assert line) is treated as a real failure, n
     assert.match(record.steps[0].failures.join("\n"), /invalid patched assert/);
     // Tokens from the (failed) escalation attempt are still accounted for — honest accounting.
     assert.equal(record.steps[0].llm?.inputTokens, 5);
+    assert.equal(record.steps[0].escalationAttempted, 1, "L1 was tried and rejected — still an attempt");
+    assert.equal(record.totals.failed, 1);
+    assert.equal(record.totals.skipped, 1, "step 2 never runs after step 1 diverges");
 
     const written = await readFile(skillPath, "utf8");
     assert.equal(written, SKILL_MOVED_ID, "no write-back on a rejected patch");
@@ -180,6 +189,7 @@ test("L1 real-failure verdict: step fails, no write-back, tokens still counted",
     assert.match(record.steps[0].failures.join("\n"), /the upstream API is genuinely broken/);
     assert.equal(record.totals.llmInputTokens, 40);
     assert.equal(record.totals.llmOutputTokens, 12);
+    assert.equal(record.steps[0].escalationAttempted, 1);
 
     const written = await readFile(skillPath, "utf8");
     assert.equal(written, SKILL_MOVED_ID, "no write-back when the LLM says real-failure");
@@ -239,6 +249,9 @@ test("L2 patches args on a read step: re-executed against the fake tool, passes 
     assert.equal(calledCount, 2, "original call + exactly one L2 re-execution");
     assert.equal(calls.length, 2, "L1 attempt + L2 attempt");
     assert.equal(record.steps[0].llm?.inputTokens, 210);
+    assert.equal(record.steps[0].escalationAttempted, 2, "L1 was tried first, then L2 — highest tried is 2");
+    assert.equal(record.totals.passed, 1);
+    assert.equal(record.totals.unchecked, 0);
 
     const written = await readFile(skillPath, "utf8");
     assert.match(written, /"url":"https:\/\/example\.com\/v2\/thing"/);
@@ -291,8 +304,93 @@ test("L2 on a destructive step: never re-executed, fails with the Level 3 messag
     assert.equal(calledCount, 1, "the destructive tool call ran exactly once (the original attempt) — never re-run");
     assert.equal(calls.length, 1, "only L1 was consulted — L2 is never asked about a destructive step");
     assert.match(record.steps[0].failures.join("\n"), /Level 2 auto-repair never re-runs a destructive step/);
+    assert.equal(record.steps[0].escalationAttempted, 1, "L1 was tried; L2 was never reached for a destructive step");
 
     const written = await readFile(skillPath, "utf8");
     assert.equal(written, SKILL_DESTRUCTIVE, "no write-back — nothing was healed");
+  });
+});
+
+const SKILL_STALE_BIND = `---
+name: heal-stale-bind
+description: step 1 extracts two binds but fails its assert; L1 heal drops one bind
+---
+
+### Step 1 — get a and b
+- intent: fetch a and b
+- action: mock.tool {"url": "https://example.com/thing"}
+- assert: json.flag == true
+- bind: a = json.a
+- bind: b = json.b
+- effect: read
+
+### Step 2 — use b
+- intent: use b from step 1
+- action: mock.tool {"url": "https://example.com/use/{{b}}"}
+- assert: status == 200
+- effect: read
+`;
+
+test("stale-bind regression: a bind dropped by an L1 heal must never leak into later steps' bindings", async () => {
+  await withTempDir(async (dir) => {
+    const skillPath = path.join(dir, "heal-stale-bind.skill.md");
+    await writeFile(skillPath, SKILL_STALE_BIND, "utf8");
+    const skill = parseSkill(SKILL_STALE_BIND);
+
+    // Step 1's tool call returns a=aval, b=bval, flag=false. The step's
+    // recorded assert (`json.flag == true`) fails, but BOTH binds evaluate
+    // successfully against the observation before that failure is known —
+    // this is exactly the shape that used to leak `b` into shared bindings
+    // even though the step never actually passed.
+    const { llm, calls } = spyLlm([
+      {
+        json: {
+          verdict: "patch",
+          // The heal decides `flag` just needed a corrected comparison, and
+          // that `b` is no longer a meaningful bind for this step (e.g. the
+          // upstream API dropped that field) — only `a` survives the patch.
+          asserts: ["json.flag == false"],
+          binds: ["a = json.a"],
+          reason: "flag comparison was inverted; b field no longer present upstream",
+        },
+        usage: { inputTokens: 50, outputTokens: 10 },
+      },
+    ]);
+
+    const seenUrls: string[] = [];
+    const tool: Tool = {
+      effect: "read",
+      async run(args): Promise<Observation> {
+        seenUrls.push((args as { url: string }).url);
+        if (seenUrls.length === 1) {
+          return { status: 200, headers: {}, body: JSON.stringify({ a: "aval", b: "bval", flag: false }) };
+        }
+        return { status: 200, headers: {}, body: "{}" };
+      },
+    };
+
+    const record = await runSkill(skill, {
+      cwd: dir,
+      tools: { "mock.tool": tool },
+      maxLevel: 1,
+      llm,
+      skillPath,
+    });
+
+    assert.equal(calls.length, 1);
+    assert.equal(record.steps[0].outcome, "passed", "L1 heal made step 1 hold");
+    assert.equal(record.steps[0].level, 1);
+
+    // Step 2 references {{b}}, which was never in the healed bind set — it
+    // must be unbound, proving the stale "bval" extracted during step 1's
+    // failed first attempt never leaked into shared bindings.
+    assert.equal(record.passed, false);
+    assert.equal(record.steps[1].outcome, "failed");
+    assert.match(record.steps[1].failures.join("\n"), /Unbound template variable \{\{b\}\}/);
+    assert.equal(
+      seenUrls.length,
+      1,
+      "step 2's tool call never ran at all — fillTemplate threw before the tool was invoked"
+    );
   });
 });

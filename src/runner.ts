@@ -38,6 +38,14 @@ export interface StepRecord {
   failures: string[];
   /** LLM token usage summed across every escalation attempt on this step (incl. failed ones) — 0 attempts means this is absent, not zero. */
   llm?: { inputTokens: number; outputTokens: number };
+  /**
+   * Highest escalation ladder level TRIED for this step — present whenever
+   * escalation ran at all (success or failure), absent when it never ran
+   * (either the step didn't diverge, or maxLevel was 0). Distinct from
+   * `level`, which records only the level that HEALED it (0 if it never
+   * healed, even after an escalation attempt).
+   */
+  escalationAttempted?: 0 | 1 | 2;
 }
 
 export interface RunRecord {
@@ -48,7 +56,12 @@ export interface RunRecord {
   steps: StepRecord[];
   totals: {
     steps: number;
+    /** Steps whose outcome is exactly "passed" — never includes "unchecked". */
     passed: number;
+    /** Steps that ran with zero assertions (honest-success rule: never counted as "passed"). */
+    unchecked: number;
+    /** Steps skipped because an earlier step diverged and didn't heal. */
+    skipped: number;
     failed: number;
     ms: number;
     /** 0 for a pure-L0 run (no escalation ever attempted). */
@@ -131,14 +144,23 @@ async function executeStep(
   bindings: Record<string, unknown>,
   tools: Record<string, Tool>,
   ctx: ToolContext
-): Promise<{ outcome: StepOutcome; ms: number; failures: string[]; observation?: Observation }> {
+): Promise<{ outcome: StepOutcome; ms: number; failures: string[]; observation?: Observation; binds: Record<string, unknown> }> {
   const started = Date.now();
   const failures: string[] = [];
+  // Binds are collected into a step-local map and only merged into the
+  // shared `bindings` map by the caller when this step's outcome ends up
+  // "passed"/"unchecked" (deterministic success) — never on "failed", even
+  // though some binds may have evaluated successfully before an assert (or
+  // a later bind) failed. Otherwise a step that fails on an assert AFTER
+  // extracting binds would pollute shared state with values from a run that
+  // never actually held, and a later heal that patches to a *smaller* bind
+  // set would leave the dropped bind's stale value lingering for later steps.
+  const localBinds: Record<string, unknown> = {};
 
   const tool = tools[step.actionTool];
   if (!tool) {
     failures.push(`Unknown tool '${step.actionTool}'`);
-    return { outcome: "failed", ms: Date.now() - started, failures };
+    return { outcome: "failed", ms: Date.now() - started, failures, binds: localBinds };
   }
 
   if (step.effect === "destructive" && !ctx.allowDestructive) {
@@ -153,7 +175,7 @@ async function executeStep(
         filledArgs
       )}`
     );
-    return { outcome: "failed", ms: Date.now() - started, failures };
+    return { outcome: "failed", ms: Date.now() - started, failures, binds: localBinds };
   }
 
   let filledArgs: unknown;
@@ -161,7 +183,7 @@ async function executeStep(
     filledArgs = fillTemplate(step.actionArgs, bindings);
   } catch (err) {
     failures.push(`Template fill failed: ${(err as Error).message}`);
-    return { outcome: "failed", ms: Date.now() - started, failures };
+    return { outcome: "failed", ms: Date.now() - started, failures, binds: localBinds };
   }
 
   let obs: Observation;
@@ -169,7 +191,7 @@ async function executeStep(
     obs = await tool.run(filledArgs, ctx);
   } catch (err) {
     failures.push(`Tool execution failed: ${(err as Error).message}`);
-    return { outcome: "failed", ms: Date.now() - started, failures };
+    return { outcome: "failed", ms: Date.now() - started, failures, binds: localBinds };
   }
 
   for (const assertLine of step.asserts) {
@@ -189,7 +211,7 @@ async function executeStep(
       if (!result.ok) {
         failures.push(result.message);
       } else {
-        bindings[result.name] = result.value;
+        localBinds[result.name] = result.value;
       }
     } catch (err) {
       failures.push(`Bind error on '${bindLine}': ${(err as Error).message}`);
@@ -198,13 +220,13 @@ async function executeStep(
 
   const ms = Date.now() - started;
   if (failures.length > 0) {
-    return { outcome: "failed", ms, failures, observation: obs };
+    return { outcome: "failed", ms, failures, observation: obs, binds: localBinds };
   }
   if (step.asserts.length === 0) {
     // Honest-success rule: zero assertions never counts as "passed".
-    return { outcome: "unchecked", ms, failures, observation: obs };
+    return { outcome: "unchecked", ms, failures, observation: obs, binds: localBinds };
   }
-  return { outcome: "passed", ms, failures, observation: obs };
+  return { outcome: "passed", ms, failures, observation: obs, binds: localBinds };
 }
 
 /** Re-evaluate a patched assert/bind set against a fixed observation. Never re-executes anything. */
@@ -265,7 +287,14 @@ async function attemptEscalation(
   tools: Record<string, Tool>,
   toolCtx: ToolContext,
   options: RunOptions
-): Promise<{ outcome: StepOutcome; level: 0 | 1 | 2; failures: string[]; llm?: { inputTokens: number; outputTokens: number } }> {
+): Promise<{
+  outcome: StepOutcome;
+  level: 0 | 1 | 2;
+  failures: string[];
+  llm?: { inputTokens: number; outputTokens: number };
+  /** Highest level TRIED, present iff escalation was actually attempted (i.e. L1 was invoked). */
+  escalationAttempted?: 1 | 2;
+}> {
   const maxLevel = options.maxLevel ?? 0;
   if (maxLevel < 1 || !options.llm) {
     return { outcome: "failed", level: 0, failures: initialFailures };
@@ -273,6 +302,9 @@ async function attemptEscalation(
 
   let failures = initialFailures;
   let usage: { inputTokens: number; outputTokens: number } | undefined;
+  // L1 is always the first (and, at minimum, only) level tried once we get
+  // this far — set it now so every return path below reports at least 1.
+  let escalationAttempted: 1 | 2 = 1;
 
   const l1 = await resolveL1({
     step,
@@ -302,7 +334,7 @@ async function attemptEscalation(
         );
       }
       const outcome: StepOutcome = l1.asserts.length === 0 ? "unchecked" : "passed";
-      return { outcome, level: 1, failures: [], llm: usage };
+      return { outcome, level: 1, failures: [], llm: usage, escalationAttempted };
     }
     failures = [...failures, ...reEval.failures.map((f) => `L1 patch didn't hold: ${f}`)];
   } else {
@@ -310,13 +342,15 @@ async function attemptEscalation(
   }
 
   if (maxLevel < 2) {
-    return { outcome: "failed", level: 0, failures, llm: usage };
+    return { outcome: "failed", level: 0, failures, llm: usage, escalationAttempted };
   }
 
   if (step.effect === "destructive") {
     failures = [...failures, level3Message(step)];
-    return { outcome: "failed", level: 0, failures, llm: usage };
+    return { outcome: "failed", level: 0, failures, llm: usage, escalationAttempted };
   }
+
+  escalationAttempted = 2;
 
   const l2 = await resolveL2({
     step,
@@ -330,7 +364,7 @@ async function attemptEscalation(
 
   if (l2.verdict !== "patch") {
     failures = [...failures, `L2: ${l2.reason}`];
-    return { outcome: "failed", level: 0, failures, llm: usage };
+    return { outcome: "failed", level: 0, failures, llm: usage, escalationAttempted };
   }
 
   let filledArgs: unknown;
@@ -338,7 +372,7 @@ async function attemptEscalation(
     filledArgs = l2.args !== undefined ? fillTemplate(l2.args, bindings) : fillTemplate(step.actionArgs, bindings);
   } catch (err) {
     failures = [...failures, `L2 patched args template fill failed: ${(err as Error).message}`];
-    return { outcome: "failed", level: 0, failures, llm: usage };
+    return { outcome: "failed", level: 0, failures, llm: usage, escalationAttempted };
   }
 
   let obs2: Observation;
@@ -346,13 +380,13 @@ async function attemptEscalation(
     obs2 = await tools[step.actionTool].run(filledArgs, toolCtx);
   } catch (err) {
     failures = [...failures, `L2 re-execution failed: ${(err as Error).message}`];
-    return { outcome: "failed", level: 0, failures, llm: usage };
+    return { outcome: "failed", level: 0, failures, llm: usage, escalationAttempted };
   }
 
   const reEval2 = reEvaluatePatch(l2.asserts, l2.binds, obs2);
   if (!reEval2.ok) {
     failures = [...failures, ...reEval2.failures.map((f) => `L2 patch didn't hold: ${f}`)];
-    return { outcome: "failed", level: 0, failures, llm: usage };
+    return { outcome: "failed", level: 0, failures, llm: usage, escalationAttempted };
   }
 
   Object.assign(bindings, reEval2.bindings);
@@ -371,7 +405,7 @@ async function attemptEscalation(
     );
   }
   const outcome: StepOutcome = l2.asserts.length === 0 ? "unchecked" : "passed";
-  return { outcome, level: 2, failures: [], llm: usage };
+  return { outcome, level: 2, failures: [], llm: usage, escalationAttempted };
 }
 
 /** Run a skill's steps in order. Stops (marks remaining steps "skipped") on the first divergence. */
@@ -399,8 +433,14 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
     let failures = exec.failures;
     let level: 0 | 1 | 2 = 0;
     let llmUsage: { inputTokens: number; outputTokens: number } | undefined;
+    let escalationAttempted: 0 | 1 | 2 | undefined;
 
-    if (outcome === "failed" && exec.observation) {
+    if (outcome === "passed" || outcome === "unchecked") {
+      // Deterministic success: merge this step's binds into shared state.
+      // Never done for a "failed" outcome — see executeStep's comment on
+      // why binds are collected step-local until the outcome is known.
+      Object.assign(bindings, exec.binds);
+    } else if (outcome === "failed" && exec.observation) {
       const escalated = await attemptEscalation(
         skill,
         step,
@@ -415,10 +455,20 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
       level = escalated.level;
       failures = escalated.failures;
       llmUsage = escalated.llm;
+      escalationAttempted = escalated.escalationAttempted;
     }
 
     const ms = Date.now() - started;
-    const rec: StepRecord = { n: step.n, title: step.title, level, outcome, ms, failures, ...(llmUsage ? { llm: llmUsage } : {}) };
+    const rec: StepRecord = {
+      n: step.n,
+      title: step.title,
+      level,
+      outcome,
+      ms,
+      failures,
+      ...(llmUsage ? { llm: llmUsage } : {}),
+      ...(escalationAttempted !== undefined ? { escalationAttempted } : {}),
+    };
     stepRecords.push(rec);
     options.onStep?.(rec, { tool: step.actionTool, args: step.actionArgs });
 
@@ -428,7 +478,9 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
   }
 
   const finishedAt = new Date().toISOString();
-  const passedCount = stepRecords.filter((s) => s.outcome === "passed" || s.outcome === "unchecked").length;
+  const passedCount = stepRecords.filter((s) => s.outcome === "passed").length;
+  const uncheckedCount = stepRecords.filter((s) => s.outcome === "unchecked").length;
+  const skippedCount = stepRecords.filter((s) => s.outcome === "skipped").length;
   const failedCount = stepRecords.filter((s) => s.outcome === "failed").length;
   const totalMs = stepRecords.reduce((sum, s) => sum + s.ms, 0);
   const llmInputTokens = stepRecords.reduce((sum, s) => sum + (s.llm?.inputTokens ?? 0), 0);
@@ -440,7 +492,16 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
     finishedAt,
     passed: failedCount === 0,
     steps: stepRecords,
-    totals: { steps: stepRecords.length, passed: passedCount, failed: failedCount, ms: totalMs, llmInputTokens, llmOutputTokens },
+    totals: {
+      steps: stepRecords.length,
+      passed: passedCount,
+      unchecked: uncheckedCount,
+      skipped: skippedCount,
+      failed: failedCount,
+      ms: totalMs,
+      llmInputTokens,
+      llmOutputTokens,
+    },
   };
 
   if (!options.dryRun) {
