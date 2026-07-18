@@ -203,6 +203,15 @@ test("effects: verb heuristic matrix", () => {
     ["fetch_then_send_report", "destructive"],
     // write beats read when both present
     ["get_or_create_note", "idempotent-write"],
+    // reviewer P1 regressions: execution/mutation verbs must win over read tokens
+    ["execute_query", "destructive"],
+    ["run_query", "destructive"],
+    ["check_and_transfer", "destructive"],
+    ["view_and_approve", "destructive"],
+    ["get_and_revoke", "destructive"],
+    ["list_and_terminate", "destructive"],
+    ["move_to_trash", "destructive"],
+    ["find_and_merge", "destructive"],
   ];
 
   for (const [tool, expected] of cases) {

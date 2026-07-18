@@ -125,6 +125,11 @@ const READ_VERBS = new Set([
 ]);
 const DESTRUCTIVE_VERBS = new Set([
   "delete", "remove", "cancel", "refund", "pay", "send", "publish", "post", "charge", "drop", "destroy", "purge", "wipe", "forward", "reply",
+  // execution/mutation verbs whose effects are unknowable from the name — a
+  // missing entry here silently flips destructive-wins OFF for that verb, so
+  // this set errs broad (reviewer P1: execute_query classified read without it)
+  "execute", "run", "transfer", "approve", "revoke", "terminate", "kill", "grant", "deploy", "merge", "submit",
+  "trash", "expire", "disable", "deactivate", "suspend", "reset", "overwrite", "replace", "truncate",
 ]);
 const IDEMPOTENT_VERBS = new Set([
   "create", "update", "set", "upsert", "put", "write", "save", "add", "modify", "move", "insert", "label",
