@@ -228,6 +228,13 @@ test("effects: an unrecognized verb is downgraded to destructive with an open qu
   assert.ok(compiled.openQuestions.some((oq) => oq.stepN === 1 && /verb unrecognized/.test(oq.text)));
 });
 
+test("effects: a new verb from the shipped data table is classified without an open question", () => {
+  const records: TraceRecord[] = [meta(), call(1, 0, "inspect_schema", {}), result(2, 0, true, mcpJsonResult({ ok: true }))];
+  const compiled = compile(records);
+  assert.equal(compiled.steps[0].effect, "read");
+  assert.ok(!compiled.openQuestions.some((oq) => oq.stepN === 1 && /verb unrecognized/.test(oq.text)));
+});
+
 // ---------------------------------------------------------------------------
 // Honest gaps
 // ---------------------------------------------------------------------------

@@ -45,6 +45,9 @@ more skills recorded against them. Concretely, that means:
 - **Behavior changes need tests.** A new assert/bind form, a new CLI flag, a
   new compiler heuristic — each needs a test that would fail without the
   change.
+- **Effect-verb additions belong in `src/effect-verbs.ts`.** Add the token to
+  the conservative effect class and include a compiler test showing a
+  representative tool name classifies as expected without an open question.
 - **Format changes need `SPEC.md` updated in the same PR.** `SPEC.md` is the
   normative reference for the trace / `SKILL.md` / run-record / proxy /
   runner formats; it can't drift from what the code actually does.
