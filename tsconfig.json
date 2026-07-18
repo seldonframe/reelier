@@ -1,4 +1,4 @@
-{
+﻿{
   "compilerOptions": {
     "target": "ES2022",
     "module": "NodeNext",
@@ -7,7 +7,7 @@
     "outDir": "dist",
     "rootDir": "src",
     "strict": true,
-    "declaration": false,
+    "declaration": true,
     "sourceMap": false,
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
