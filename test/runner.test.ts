@@ -251,3 +251,19 @@ test("runner: executes a destructive step when allowDestructive is true", async 
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("date vars: malformed offset forms throw loudly instead of shipping inert literals", () => {
+  for (const bad of ["{{today+3}}", "{{today-d}}", "{{today+3x}}", "{{today-}}"]) {
+    assert.throws(
+      () => fillTemplate({ q: `since ${bad}` }, {}, Date.UTC(2026, 6, 18)),
+      /Malformed computed date var/,
+      `${bad} should throw`
+    );
+  }
+  // valid forms and today-prefixed ordinary binds still work
+  assert.deepEqual(
+    fillTemplate({ q: "{{today-7d}}" }, {}, Date.UTC(2026, 6, 18)),
+    { q: "2026-07-11" }
+  );
+  assert.deepEqual(fillTemplate({ q: "{{todays_date}}" }, { todays_date: "x" }, Date.UTC(2026, 6, 18)), { q: "x" });
+});

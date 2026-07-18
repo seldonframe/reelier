@@ -153,6 +153,21 @@ export function fillTemplate(
   now: number = Date.now()
 ): unknown {
   if (typeof value === "string") {
+    // Malformed date-offset forms ({{today+3}}, {{today-d}}, {{today+3x}})
+    // would otherwise fail the main pattern below and ship downstream as
+    // inert literal text — the exact typo class the date vars invite. Reject
+    // them loudly as a divergence instead (reviewer P2-1, 0.3.0).
+    const malformed = value.match(/\{\{\s*(today[+-][^}\s]*)\s*\}\}/g);
+    if (malformed) {
+      for (const m of malformed) {
+        const body = m.replace(/^\{\{\s*|\s*\}\}$/g, "");
+        if (!COMPUTED_DATE_OFFSET_RE.test(body)) {
+          throw new Error(
+            `Malformed computed date var {{${body}}} — supported forms are {{today}}, {{today-Nd}}, {{today+Nd}} (N = 1-365)`
+          );
+        }
+      }
+    }
     return value.replace(/\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*|today[+-]\d+d)\s*\}\}/g, (whole, name: string) => {
       const computed = resolveComputedDateVar(name, now);
       if (computed !== undefined) return computed;
