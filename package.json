@@ -1,6 +1,6 @@
 {
   "name": "@seldonframe/reelier",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Your agent's muscle memory — record a workflow once, replay it deterministically, escalate to an LLM only on divergence.",
   "license": "AGPL-3.0-only",
   "type": "module",
