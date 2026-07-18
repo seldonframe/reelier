@@ -3,6 +3,8 @@
 
 import { readFile, writeFile, access } from "node:fs/promises";
 import path from "node:path";
+import os from "node:os";
+import { createInterface } from "node:readline/promises";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { parseSkill, SkillParseError } from "./skill.js";
 import { runSkill, dryRunSkill, readRunRecords, type RunRecord } from "./runner.js";
@@ -10,10 +12,23 @@ import { pushSkill, type PushRecordResult } from "./push.js";
 import { builtinTools } from "./tools.js";
 import { connectDownstream, type DownstreamConnection } from "./mcp-client.js";
 import { buildMcpTools } from "./mcp-tool.js";
-import { buildProxyServer } from "./recorder.js";
+import { buildProxyServer, Recorder } from "./recorder.js";
 import { parseTraceLines, formatTrace } from "./trace.js";
 import { compile, renderSkillMd } from "./compile.js";
 import { createLlmClient, resolveLlmConfig } from "./llm.js";
+import {
+  detectAgentConfig,
+  reelierProxyCommandLine,
+  planMcpConfigWrite,
+  applyMcpConfigWrite,
+  findNewestTraceFile,
+  runDemoRecording,
+  compileDemoTrace,
+  formatReceipt,
+  formatNextSteps,
+  LAUNCH_BENCHMARK_COMPARISON,
+  type DemoBenchmarkComparison,
+} from "./init.js";
 
 interface ParsedArgs {
   positional: string[];
@@ -604,6 +619,219 @@ async function cmdPush(args: ParsedArgs): Promise<number> {
   return 0;
 }
 
+/**
+ * Compile a trace, print the "these are the gaps I won't guess about" open
+ * questions block, replay it once at Level 0 (zero LLM calls, optionally
+ * against real `--wrap`'d downstream(s) for the recorded-session path), and
+ * print the closing receipt. Shared by both `init` paths (demo and real
+ * MCP recording) so the compile/replay/receipt steps behave identically
+ * regardless of how the trace was produced.
+ */
+async function compileReplayAndReceipt(
+  tracePath: string,
+  cwd: string,
+  demoBenchmark: DemoBenchmarkComparison | undefined,
+  wraps: string[]
+): Promise<number> {
+  console.log("");
+  console.log("Compiling live (zero LLM calls)...");
+  const source = await readFile(tracePath, "utf8");
+  const records = parseTraceLines(source);
+  const skillPath = path.join(cwd, "reelier-init-demo.skill.md");
+
+  let compiled;
+  try {
+    compiled = await compileDemoTrace(records, path.basename(tracePath), skillPath);
+  } catch (err) {
+    console.error(`Compile failed: ${(err as Error).message}`);
+    return 1;
+  }
+  console.log(`  Wrote ${compiled.skillPath}`);
+  console.log(
+    `  steps: ${compiled.result.stats.steps}  asserts: ${compiled.result.stats.asserts}  binds: ${compiled.result.stats.binds}`
+  );
+  console.log("");
+  if (compiled.result.openQuestions.length === 0) {
+    console.log("Open questions: (none) — these are the gaps I won't guess about");
+  } else {
+    console.log(`Open questions (${compiled.result.openQuestions.length}) — these are the gaps I won't guess about:`);
+    for (const oq of compiled.result.openQuestions) {
+      const where = oq.stepN !== undefined ? `Step ${oq.stepN}` : "(trailing note)";
+      console.log(`  - ${where}: ${oq.text}`);
+    }
+  }
+
+  console.log("");
+  console.log("Replaying once (Level 0 — the LLM is never constructed or called)...");
+
+  const downstreams: DownstreamConnection[] = [];
+  try {
+    for (const spec of wraps) {
+      downstreams.push(await connectDownstream(spec));
+    }
+    const tools = downstreams.length > 0 ? { ...builtinTools, ...buildMcpTools(downstreams) } : undefined;
+
+    const skill = parseSkill(compiled.source);
+    const record = await runSkill(skill, {
+      cwd,
+      tools,
+      maxLevel: 0,
+      skillPath: compiled.skillPath,
+      onStep: (rec) => {
+        const icon = rec.outcome === "passed" || rec.outcome === "unchecked" ? "✓" : rec.outcome === "skipped" ? "○" : "✗";
+        console.log(`  ${icon} Step ${rec.n} — ${rec.title} [${rec.outcome}] ${rec.ms}ms`);
+      },
+    });
+
+    // Level 0 must never touch the LLM — assert that rather than assuming
+    // it before the receipt claims "0 tokens" (never claim a step succeeded
+    // that didn't).
+    if (record.totals.llmInputTokens !== 0 || record.totals.llmOutputTokens !== 0) {
+      console.error(
+        `WARNING: Level 0 replay reported nonzero LLM token usage (${record.totals.llmInputTokens} in / ` +
+          `${record.totals.llmOutputTokens} out) — that should be structurally impossible. Reporting the real ` +
+          `numbers below rather than a "0 tokens" claim that wouldn't be true.`
+      );
+    }
+
+    for (const line of formatReceipt(record, demoBenchmark)) console.log(line);
+    for (const line of formatNextSteps(compiled.skillPath)) console.log(line);
+
+    if (!record.passed) {
+      console.error("\nReplay did not pass — see the failures above. That's still your real result, not hidden.");
+      return 1;
+    }
+    return 0;
+  } catch (err) {
+    console.error(`Replay failed: ${(err as Error).message}`);
+    return 1;
+  } finally {
+    await Promise.all(downstreams.map((d) => d.close().catch(() => {})));
+  }
+}
+
+async function runDemoPath(cwd: string): Promise<number> {
+  console.log("");
+  console.log("Recording the zero-setup demo — 2 real HTTP requests, nothing fabricated:");
+  console.log("  1. GET @seldonframe/reelier's versioned npm registry metadata");
+  console.log("  2. GET the package homepage, using the URL bound from step 1's response");
+  console.log("");
+
+  const traceDir = path.join(cwd, ".reelier", "traces");
+  const recorder = new Recorder(traceDir);
+  const recording = await runDemoRecording(recorder, { allowDestructive: false });
+  if (!recording.ok) {
+    console.error(`Recording failed: ${recording.message}`);
+    return 1;
+  }
+  console.log(`  Recorded ${recording.tracePath}`);
+
+  return compileReplayAndReceipt(recording.tracePath, cwd, LAUNCH_BENCHMARK_COMPARISON, []);
+}
+
+async function runRealPath(wrapCommand: string, cwd: string): Promise<number> {
+  const traceDir = path.join(cwd, ".reelier", "traces");
+  const tracePath = await findNewestTraceFile(traceDir);
+  if (!tracePath) {
+    console.error(
+      `No trace found under ${traceDir} — recording may not have happened, or reelier_stop_recording was never ` +
+        `called. Nothing to compile; re-run 'reelier init' once you've recorded a session.`
+    );
+    return 1;
+  }
+  console.log(`  Found trace ${tracePath}`);
+  return compileReplayAndReceipt(tracePath, cwd, undefined, [wrapCommand]);
+}
+
+async function cmdInit(args: ParsedArgs): Promise<number> {
+  const yes = args.flags.has("yes");
+  const cwd = process.cwd();
+  const homedir = os.homedir();
+
+  console.log("Reelier init — record once, replay forever. Let's get your first receipt in under 60 seconds.");
+  console.log("");
+
+  const detection = await detectAgentConfig(cwd, homedir);
+  console.log("Step 1 — agent config");
+  console.log(
+    `  project MCP config (${detection.projectConfigPath}): ${detection.projectConfigExists ? "found" : "not found"}`
+  );
+  console.log(
+    `  user Claude config (${detection.userConfigPath}): ${detection.userConfigExists ? "found" : "not found"}`
+  );
+  console.log("");
+  console.log("  To record a real agent session later, front an existing MCP server with reelier:");
+  console.log(`    ${reelierProxyCommandLine("<your-mcp-server-command>")}`);
+  console.log(
+    "  Recording needs at least one --wrap'd downstream server — since we don't know yours yet, the default"
+  );
+  console.log("  below is the zero-setup demo path instead.");
+
+  let wrapCommand: string | undefined;
+
+  if (!yes) {
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    try {
+      const choice = (
+        await rl.question("\nRecord a REAL session against your own MCP server instead of the demo? [y/N] ")
+      )
+        .trim()
+        .toLowerCase();
+
+      if (choice === "y" || choice === "yes") {
+        const raw = (
+          await rl.question("Paste the command line for your downstream MCP server (e.g. npx -y @your/mcp-server): ")
+        ).trim();
+
+        if (raw) {
+          wrapCommand = raw;
+
+          const writeChoice = (await rl.question(`Write/merge this into ${detection.projectConfigPath}? [y/N] `))
+            .trim()
+            .toLowerCase();
+          if (writeChoice === "y" || writeChoice === "yes") {
+            const plan = await planMcpConfigWrite(detection.projectConfigPath, wrapCommand);
+            if (!plan.result.added) {
+              console.log(
+                `  A "reelier" server is already configured in ${detection.projectConfigPath} — left untouched.`
+              );
+            } else {
+              console.log("  Resulting .mcp.json:");
+              console.log(
+                plan.after
+                  .split("\n")
+                  .map((l) => `    ${l}`)
+                  .join("\n")
+              );
+              const confirm = (await rl.question("  Write this? [y/N] ")).trim().toLowerCase();
+              if (confirm === "y" || confirm === "yes") {
+                await applyMcpConfigWrite(detection.projectConfigPath, plan.result.config);
+                console.log(
+                  `  Wrote ${detection.projectConfigPath} (preserved ${plan.result.preservedServerNames.length} existing server(s)).`
+                );
+              } else {
+                console.log("  Skipped — nothing written.");
+              }
+            }
+          }
+
+          console.log("");
+          console.log("  Restart your agent so it picks up the new MCP server, then tell it:");
+          console.log('    "record yourself doing <the task you want to teach me>"');
+          await rl.question("\n  Press Enter once you've finished recording and stopped the recording... ");
+        }
+      }
+    } finally {
+      rl.close();
+    }
+  }
+
+  if (wrapCommand) {
+    return runRealPath(wrapCommand, cwd);
+  }
+  return runDemoPath(cwd);
+}
+
 async function main(): Promise<number> {
   const [, , cmd, ...rest] = process.argv;
   const args = parseArgv(rest);
@@ -621,8 +849,10 @@ async function main(): Promise<number> {
       return cmdCompile(args);
     case "push":
       return cmdPush(args);
+    case "init":
+      return cmdInit(args);
     default:
-      console.error("Usage: reelier <run|bench|mcp|trace|compile|push> [options]");
+      console.error("Usage: reelier <run|bench|mcp|trace|compile|push|init> [options]");
       return 1;
   }
 }

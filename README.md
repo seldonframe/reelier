@@ -9,14 +9,16 @@ The formats are specified in [SPEC.md](./SPEC.md) — a normative,
 RFC-style reference (trace/SKILL.md/run-record/proxy/runner) for anyone
 emitting or consuming these formats without reading this package's source.
 
-## Status: v0 spike + recorder + compiler + escalation ladder (L1/L2)
+## Status: v0 spike + recorder + compiler + escalation ladder (L1/L2) + init
 
 The Level-0 deterministic runner and file formats are the spike. On top of
 that there's a **recorder** (a lossless MCP proxy that captures a live agent
 session as a trace), a **compiler** (`reelier compile`, turning a trace into
-a runner-ready `SKILL.md` deterministically — see "Compile" below), and an
+a runner-ready `SKILL.md` deterministically — see "Compile" below), an
 **escalation ladder** (`--max-level 1|2`, see "Escalation ladder" below) —
-the first LLM code in this repo, strictly opt-in. There is still:
+the first LLM code in this repo, strictly opt-in — and `reelier init`, a
+guided record → compile → replay → receipt loop for the first 60 seconds
+(see "Quickstart" below). There is still:
 
 - **No Level 3** — full agentic recovery when the recorded trace no longer
   applies at all is not implemented; a diverged destructive step, or an L2
@@ -24,6 +26,31 @@ the first LLM code in this repo, strictly opt-in. There is still:
   hand.
 - **Zero LLM calls at the default `--max-level 0`** — by construction, not
   by convention (see below).
+
+## Quickstart
+
+```sh
+npm i -g @seldonframe/reelier && reelier init
+```
+
+`reelier init` is the guided first run: it detects whether you have a
+Claude Code project MCP config (`.mcp.json`) or user config (`~/.claude.json`)
+and prints the exact entry to add for recording against your own MCP
+server(s) — but since recording needs at least one `--wrap`'d downstream
+server and it doesn't know yours yet, the default path is a **zero-setup
+demo**: it performs 2 real HTTP requests (fetches this package's own npm
+registry metadata, then its homepage — chaining a value bound from the first
+response into the second, live, no fabrication), compiles the resulting
+trace into a runner-ready `SKILL.md` live, prints the compiler's **Open
+questions** verbatim ("these are the gaps I won't guess about" — the honesty
+moment doubles as onboarding), replays it once at Level 0 (zero LLM calls),
+and closes with a receipt: the replay's *measured* time and token count
+(asserted `0`, never assumed), plus — for the demo path — a comparison
+against what an agent doing the same task costs on our own launch benchmark
+(see `docs/strategy/reelier-launch/benchmark-results.md`). Pass `--yes` to
+skip every prompt and run the demo path non-interactively (no config is ever
+written under `--yes`) — useful in CI or to see the whole loop once before
+deciding whether to wire it into your own agent.
 
 ## Record
 
@@ -300,6 +327,10 @@ Reelier prints the filled action instead of executing it.
 ## CLI usage
 
 ```sh
+# The guided 60-second first run: detect config -> record (demo or real) ->
+# compile -> replay -> receipt. See "Quickstart" above.
+reelier init [--yes]
+
 # Print every step's filled action without executing anything.
 reelier run skills/my-skill.skill.md --dry-run
 
