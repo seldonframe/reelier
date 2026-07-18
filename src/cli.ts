@@ -553,16 +553,18 @@ async function cmdPush(args: ParsedArgs): Promise<number> {
             console.log(`  [${r.index}] pushed${r.id ? ` id=${r.id}` : ""}`);
             break;
           case "rejected":
-            console.log(`  [${r.index}] rejected: ${fmtFieldErrors(r.fieldErrors)}`);
+            console.log(
+              `  [${r.index}] rejected (permanent — cursor advances past it): ${fmtFieldErrors(r.fieldErrors)}`
+            );
             break;
           case "auth-failed":
-            console.log(`  [${r.index}] auth failed: ${r.message}`);
+            console.log(`  [${r.index}] auth failed (batch stops here): ${r.message}`);
             break;
           case "too-large":
-            console.log(`  [${r.index}] rejected (413): ${r.message}`);
+            console.log(`  [${r.index}] rejected 413 (permanent — cursor advances past it): ${r.message}`);
             break;
           case "error":
-            console.log(`  [${r.index}] error: ${r.message}`);
+            console.log(`  [${r.index}] error (batch stops here): ${r.message}`);
             break;
         }
       },
@@ -590,12 +592,13 @@ async function cmdPush(args: ParsedArgs): Promise<number> {
   } else {
     console.log(`Skill '${result.skillName}' upload skipped (already uploaded — pass --with-skill to force).`);
   }
+  const rejectedNote = result.rejectedCount > 0 ? `, ${result.rejectedCount} permanently rejected` : "";
   console.log(
-    `Pushed ${result.pushedCount}/${result.candidateCount} new record(s) for '${result.skillName}'. ` +
+    `Pushed ${result.pushedCount}/${result.candidateCount} new record(s)${rejectedNote} for '${result.skillName}'. ` +
       `Cursor: ${result.cursorBefore} -> ${result.cursorAfter}.`
   );
   if (result.aborted) {
-    console.log("Stopped early after a non-'pushed' outcome — cursor left at the last successful push.");
+    console.log("Stopped early on a transient failure (auth or network/error) — cursor left at the last consumed record.");
     return 1;
   }
   return 0;

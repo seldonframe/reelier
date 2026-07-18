@@ -817,10 +817,23 @@ by `step.effect !== "destructive"` — passing `--yes` does not make a
 destructive step eligible for L2; a destructive step is categorically
 excluded from L2 regardless of `--yes`.
 
-**`dryRun`** (`options.dryRun`/`--dry-run`): `dryRunSkill` produces the
-filled `{tool, args}` for every step with zero execution and zero
-side effects — it is a separate, simpler code path from `runSkill`, not a
-flag threaded through the runner loop; no run record is written.
+**`dryRun` — two distinct things share this name; do not conflate them
+(normative):**
+
+- **`dryRunSkill(skill, vars, now)`** — the function the CLI's `--dry-run`
+  flag actually calls. A separate, simpler code path from `runSkill`
+  entirely: it fills `{tool, args}` for every step and returns that, with
+  **zero execution and zero side effects** — no tool is ever called, no
+  run record is written, nothing is appended anywhere.
+- **`runSkill(skill, { dryRun: true, ... })`** — a different thing that
+  happens to share the option name `dryRun`. Every step's tool call still
+  **executes for real** (a destructive step still executes if
+  `allowDestructive` is set, exactly as it would with `dryRun` unset) —
+  `options.dryRun` here gates **only** the final `appendFile` that writes
+  the run record to `.reelier/runs/<skill>.jsonl`. This is a narrower,
+  programmatic knob for a caller that wants a real run's real side effects
+  without that run counting toward `reelier bench` history — it is not
+  wired to any CLI flag today.
 
 ### 6.4 Write-back (mandatory on heal)
 
@@ -966,7 +979,7 @@ inert (zero network calls, zero state mutation) until both are set.
 | Endpoint | When | Request | Success | Client-recognized errors |
 | --- | --- | --- | --- | --- |
 | `POST {base}/api/v1/skills` | Once per skill: the first time that skill name is ever pushed from this working directory, or every time when `--with-skill` is passed. | `Authorization: Bearer <key>`; JSON body `{name, skillMd}` — `skillMd` is the raw skill file's full source text. | Any `2xx` status. | `401` aborts the whole push (no run records are attempted); any other non-2xx also aborts, with the response body's first 500 chars surfaced in the error. |
-| `POST {base}/api/v1/runs` | Once per new run record being pushed. | `Authorization: Bearer <key>`; JSON body `{skillName, record}` — `record` is one `RunRecord` (§4) exactly as it appears in the `.jsonl` file, unmodified. | `202` with JSON body `{id: string}`. `id` is optional to the client — a `202` with an unparseable or `id`-less body still counts as a successful push. | `400` with JSON body `{fieldErrors: ...}` — reported as a rejection, batch stops. `401` — reported as an auth failure, batch stops. `413` — reported as "too large", batch stops. Any other non-`202` status — reported as a generic error, batch stops. A `fetch` rejection (network error, DNS failure, timeout) is caught and reported the same way: batch stops. |
+| `POST {base}/api/v1/runs` | Once per new run record being pushed. | `Authorization: Bearer <key>`; JSON body `{skillName, record}` — `record` is one `RunRecord` (§4) exactly as it appears in the `.jsonl` file, unmodified. | `202` with JSON body `{id: string}`. `id` is optional to the client — a `202` with an unparseable or `id`-less body still counts as a successful push. | `400` with JSON body `{fieldErrors: ...}` and `413` — **permanent** rejections, batch continues (§8.3a). `401` and a `fetch` rejection (network error, DNS failure, timeout) — **transient**, batch stops (§8.3a). Any other non-`202` status is treated as a transient error and stops the batch too. |
 
 Neither endpoint's request ever includes anything beyond what's listed
 above — no telemetry, no extra headers, no implicit retry.
@@ -974,9 +987,10 @@ above — no telemetry, no extra headers, no implicit retry.
 ### 8.3 Cursor semantics (client-side state, not part of the wire contract)
 
 `reelier push` maintains `.reelier/push-state.json` —
-`{[skillName]: {pushed: number, skillUploaded: boolean}}` — purely as
-local bookkeeping; the cloud API has no concept of a cursor and is never
-asked "what have you already seen." On each push:
+`{[skillName]: {pushed: number, skillUploaded: boolean, rejected?:
+{index, reason, at}[]}}` — purely as local bookkeeping; the cloud API has
+no concept of a cursor and is never asked "what have you already seen."
+On each push:
 
 1. `cursorBefore` = `state[skillName].pushed` (or `0` if never pushed, or
    always `0` when `--all` is passed — `--all` **only** affects which
@@ -984,13 +998,16 @@ asked "what have you already seen." On each push:
    skill re-upload).
 2. Candidates = every record in the skill's `.jsonl` file at index
    `>= cursorBefore`, in file order.
-3. Records are pushed **strictly in order**. The first record whose
-   outcome is anything other than `"pushed"` stops the batch — no record
-   after it is attempted, regardless of whether a later record might have
-   succeeded.
-4. `cursorAfter` = `cursorBefore + <count of consecutive "pushed" outcomes
-   from the start of this batch>`. This is written back to
-   `push-state.json` unconditionally (even on a partial/aborted batch) so
+3. Records are pushed **strictly in order**. Each record's outcome is
+   classified as either **consumed** (the cursor advances past it — a
+   `"pushed"` success or a permanent `400`/`413` rejection, §8.3a) or
+   **blocking** (the cursor stops here — a transient `401`/error, §8.3a).
+   The first **blocking** outcome stops the batch outright; no record
+   after it is attempted.
+4. `cursorAfter` = `cursorBefore + <count of consecutive CONSUMED
+   outcomes from the start of this batch>` — this counts both pushed
+   successes and permanent rejections, per §8.3a. This is written back to
+   `push-state.json` unconditionally (even on a partial/stopped batch) so
    the next `reelier push` resumes exactly where this one stopped.
 5. `--dry-run` short-circuits before step 3 entirely — no config is even
    resolved, no network call is made, `push-state.json` is never read for
@@ -998,11 +1015,84 @@ asked "what have you already seen." On each push:
 
 Because `--all` resets `cursorBefore` to `0` for *this run's* candidate
 selection but the resulting `cursorAfter` is still written back
-unconditionally, running `--all` and then hitting a failure partway
-through can leave `cursorAfter` **lower** than it was before the `--all`
-run — this is expected, not a bug: `--all` means "reconsider everything,"
-and a partial `--all` batch honestly reports only what actually got
-pushed *this run*.
+unconditionally, running `--all` and then hitting a **blocking** failure
+partway through can leave `cursorAfter` **lower** than it was before the
+`--all` run — this is expected, not a bug: `--all` means "reconsider
+everything," and a partial `--all` batch honestly reports only what
+actually got consumed *this run*.
+
+### 8.3a Rejection policy: permanent vs. transient (normative)
+
+A record push's outcome falls into exactly one of two categories, and the
+category — not just the HTTP status — determines whether the cursor
+advances:
+
+- **Permanent (`400`, `413`)** — the cloud examined this exact record and
+  gave a verdict that will not change on retry: a `400` means the record's
+  shape was rejected (`fieldErrors` names why); a `413` means it will
+  never fit under the size limit as-is. Retrying the identical bytes
+  forever would wedge every later record in the file behind this one
+  permanently — so instead: a warning is printed to stderr naming the
+  record's index and the reason, an entry `{index, reason, at}` is
+  appended to that skill's `rejected` array in `push-state.json` (an
+  unbounded, never-pruned audit log — `reason` is the stringified
+  `fieldErrors` for a 400, or the size-limit message for a 413; `at` is
+  the ISO timestamp the rejection was recorded), the cursor **advances
+  past** the record as if it had been consumed, and the batch
+  **continues** to the next record.
+- **Transient (`401`, any other non-`202`/`400`/`413` status, or a
+  `fetch` rejection)** — nothing about the record itself was judged; the
+  key might be fixable, the network might recover, the server might be
+  restarted. These **stop the batch immediately** and the cursor does
+  **not** advance past the failing record, so the very next `reelier
+  push` retries it.
+
+**`--all` re-reports, it does not deduplicate.** Passing `--all` resets
+the cursor to `0`, so a record that was previously permanently rejected
+is included in the candidate set again. If the cloud rejects it again,
+**another** entry is appended to `rejected` (not merged with the earlier
+one) — the array is a timestamped history, not a per-index map, precisely
+so a record's rejection history across multiple `--all` attempts is
+visible rather than silently overwritten. This does not wedge: a
+record's *own* repeated rejection never blocks records after it, on this
+run or any run, because §8.3a always advances the cursor past a permanent
+rejection.
+
+### 8.4 State file resilience
+
+`push-state.json` is written via `writeFileAtomic` (`src/writeback.ts`,
+§6.4's atomic write-back) — the same write-temp-then-rename primitive used
+for skill-file write-back, for the same reason: a reader (including the
+next `reelier push`) can only ever observe the complete old file or the
+complete new file, never a torn write from a crash or kill mid-write.
+
+Reading is equally defensive: if `push-state.json` exists but fails to
+parse as JSON (`readPushState`, `src/push.ts`), that is treated as
+**corruption, not a fatal error** — a loud warning is printed, the corrupt
+file is renamed aside to `push-state.json.corrupt-<epoch-ms>`
+(best-effort; a rename failure is swallowed and the corrupt content is
+simply overwritten by the next successful write instead), and a fresh,
+empty state is used for this run. A torn or corrupted cursor file MUST
+NOT permanently wedge pushing — the worst case is re-pushing records the
+cloud has already seen (a `--all`-shaped outcome), which is always
+recoverable, versus a state file that can never be read again, which
+would not be.
+
+### 8.5 Future: idempotent ingestion (not implemented)
+
+At-least-once delivery is possible today: if a push is interrupted after
+the cloud accepts a record (`202`) but before the CLI durably writes the
+advanced cursor (a crash or kill between the HTTP response and
+`writePushState`'s rename), the next `reelier push` has no way to know
+that record already landed and will resend it. The client currently has
+no mechanism to signal "this exact record, deduplicate if you've already
+ingested it" — a future revision of this contract MAY have `POST
+{base}/api/v1/runs` include a stable content hash of `{skillName,
+record}` (e.g. as an `Idempotency-Key` header or a body field) so a cloud
+implementation that chooses to dedupe on it can. This requires
+corresponding server-side support that does not exist yet and is **not
+implemented in this client as of 0.4.0** — noted here as a known gap for
+a future minor version, not a guarantee this version makes.
 
 ---
 

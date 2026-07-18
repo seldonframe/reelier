@@ -565,32 +565,58 @@ message.**
 ### Cursor semantics
 
 A cursor file, `.reelier/push-state.json`
-(`{[skillName]: {pushed: N, skillUploaded: bool}}`), tracks how many
-records (from the start of the run-record file) have already been pushed
-successfully for each skill. A plain `reelier push` only sends records
-*after* that cursor — running it repeatedly is cheap and never re-sends
-what already made it to the cloud.
+(`{[skillName]: {pushed: N, skillUploaded: bool, rejected: [...]}}`),
+tracks how many records (from the start of the run-record file) the
+cursor has advanced past for each skill. A plain `reelier push` only
+sends records *after* that cursor — running it repeatedly is cheap and
+never re-sends what already made it to the cloud.
 
 - **`--all`** ignores/resets the cursor for this run and reconsiders every
   record in the file from the start.
-- **The cursor only ever advances past records that were actually pushed
-  successfully, in strict order.** The moment a record is rejected, hits
-  an auth failure, or errors, the batch stops — no later record in the
-  file is attempted, even if it might have succeeded on its own. The next
-  `reelier push` resumes exactly where this one stopped.
 - **`--dry-run`** prints what *would* push (record count, cursor range)
   and touches nothing — no network call, no state file read for writing,
   no state file write.
 
+**Two different outcomes advance the cursor differently — this is the
+important part:**
+
+- A **`400` or `413`** response is treated as the cloud's **permanent**
+  verdict on that exact record (it will never fit, or it's malformed).
+  These print a loud warning, get logged to a `rejected: [{index, reason,
+  at}, ...]` audit array in `push-state.json` for that skill (never
+  pruned automatically), and — critically — **the cursor advances past
+  them and the batch keeps going.** One bad record from months ago never
+  blocks everything pushed since.
+- A **`401` (auth failure) or a network/other error** is treated as
+  **transient** — the key or the network might work on the next attempt.
+  These **stop the batch immediately** and the cursor is left at the last
+  consumed record, so the very next `reelier push` retries from exactly
+  there.
+- **`--all` re-reports rather than deduplicating**: a previously-rejected
+  record included again via `--all` that gets rejected again adds
+  *another* entry to `rejected` rather than replacing the old one — it's
+  a timestamped history, not overwritten state, and it never wedges: a
+  record's own rejection, however many times it recurs, never blocks the
+  records after it.
+
+If `push-state.json` itself is ever corrupt (unparseable JSON — e.g. from
+an interrupted write on an older version, or manual tampering), `reelier
+push` doesn't hard-fail: it warns loudly, renames the corrupt file aside
+to `push-state.json.corrupt-<timestamp>`, and starts fresh (worst case:
+some records get re-pushed, which `--all`-shaped behavior always
+recovers from cleanly). Writes to `push-state.json` are atomic
+(write-temp-then-rename, the same primitive skill write-back uses).
+
 ### Per-record output
 
 Each record's outcome prints as it happens — pushed (with the cloud's
-returned id when available), rejected (with the field errors the cloud
-returned), an auth failure, a 413 (payload too large), or a generic error
-— followed by a one-line summary (skill-upload status, `N/M pushed`, and
-the cursor's before/after position). The process exits non-zero if the
-batch stopped early on anything other than every candidate record
-succeeding.
+returned id when available), permanently rejected (with the field errors
+the cloud returned, or the 413 message — cursor still advances), an auth
+failure, or a generic error (both of the latter two stop the batch) —
+followed by a one-line summary (skill-upload status, pushed/rejected
+counts, and the cursor's before/after position). The process exits
+non-zero only when the batch **stopped early** on a transient outcome —
+not merely because some records were permanently rejected.
 
 ### Privacy note
 

@@ -24,6 +24,11 @@ import path from "node:path";
 import type { Skill, Step } from "./skill.js";
 import { evalAssert, evalBind, type Observation } from "./assert.js";
 import { builtinTools, type Tool, type ToolContext } from "./tools.js";
+// Re-exported from the "." package entry too (in addition to "./tools")
+// purely for caller convenience — a consumer already importing RunOptions/
+// runSkill from here shouldn't need a second import just for the builtin
+// tool registry.
+export { builtinTools };
 import type { LlmClient } from "./llm.js";
 import { resolveL1, resolveL2 } from "./escalate.js";
 import { applyWritebackSafely } from "./writeback.js";
@@ -78,7 +83,15 @@ export interface RunOptions {
   tools?: Record<string, Tool>;
   /** Directory under which .reelier/runs/<skill>.jsonl is written. Defaults to cwd. */
   cwd?: string;
-  /** When true, do not execute anything or write a run record — just report filled actions. */
+  /**
+   * When true, `runSkill` still executes every step's tool call normally
+   * (including a destructive step, subject to the usual `allowDestructive`
+   * gate) — this only skips the final append to
+   * `.reelier/runs/<skill>.jsonl`. It is NOT "no execution, no side
+   * effects" — for that, use `dryRunSkill` instead, a separate function
+   * that never calls a tool at all. (The CLI's `--dry-run` flag uses
+   * `dryRunSkill`, not this option — see SPEC.md §6.1's "dryRun" note.)
+   */
   dryRun?: boolean;
   onStep?: (record: StepRecord, filledAction: { tool: string; args: unknown }) => void;
   /** 0 (default) = pure deterministic replay, LLM never constructed or called. 1 = L1 only. 2 = L1 then L2. */

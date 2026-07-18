@@ -13,11 +13,21 @@
 //   POST {base}/api/v1/skills Authorization: Bearer <key>
 //     body {name, skillMd}     -> 2xx
 //   Errors: 400 {fieldErrors}, 401 (bad/missing key), 413 (payload too large)
+//
+// Rejection policy (400/413 vs 401/network — SPEC.md §8.3a): a 400/413 is a
+// PERMANENT verdict on that exact record — the cloud looked at it and said
+// no, and retrying the identical bytes will get the identical no. Retrying
+// forever would wedge every later record behind it, so these WARN loudly,
+// record an audit entry, advance the cursor past the record, and continue
+// the batch. A 401 or a network error is TRANSIENT/retryable (bad key this
+// second, cloud unreachable this second) — those still stop the batch with
+// the cursor left at the last success, exactly as before.
 
-import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { readFile, mkdir, rename } from "node:fs/promises";
 import path from "node:path";
 import { parseSkill } from "./skill.js";
 import { readRunRecords, type RunRecord } from "./runner.js";
+import { writeFileAtomic } from "./writeback.js";
 
 export interface PushConfig {
   baseUrl: string;
@@ -47,11 +57,22 @@ export function resolvePushConfig(env: NodeJS.ProcessEnv = process.env): PushCon
 // Cursor state: .reelier/push-state.json, {[skillName]: {pushed, skillUploaded}}
 // ---------------------------------------------------------------------------
 
+export interface RejectedEntry {
+  /** Absolute index of the record within the skill's run-record file (0-based). */
+  index: number;
+  /** Human-readable reason — the fieldErrors payload (400) or the size-limit message (413). */
+  reason: string;
+  /** ISO timestamp of when this rejection was recorded. */
+  at: string;
+}
+
 export interface PushStateEntry {
-  /** Count of records from the start of the run-record file already pushed successfully. */
+  /** Count of records from the start of the run-record file the cursor has advanced past — pushed OR permanently rejected (§8.3a). */
   pushed: number;
   /** Whether the skill file itself has ever been uploaded (first-push-only, unless --with-skill). */
   skillUploaded: boolean;
+  /** Cumulative audit log of every 400/413 rejection ever recorded for this skill, oldest first. Never pruned automatically. */
+  rejected?: RejectedEntry[];
 }
 
 export type PushState = Record<string, PushStateEntry>;
@@ -60,20 +81,51 @@ function pushStatePath(cwd: string): string {
   return path.join(cwd, ".reelier", "push-state.json");
 }
 
+/**
+ * Read `.reelier/push-state.json`. A missing file is a fresh, empty state
+ * (no warning — this is the normal first-run case). A file that exists but
+ * fails to parse as JSON is treated as CORRUPT, not fatal: it's renamed
+ * aside to `push-state.json.corrupt-<epoch-ms>` (best-effort — a rename
+ * failure is swallowed, the corrupt content is simply left in place under
+ * its original name and overwritten on the next successful write), a loud
+ * warning is printed, and a fresh empty state is returned. A torn/corrupt
+ * cursor file must never permanently wedge pushing.
+ */
 export async function readPushState(cwd: string): Promise<PushState> {
+  const filePath = pushStatePath(cwd);
+  let raw: string;
   try {
-    const raw = await readFile(pushStatePath(cwd), "utf8");
-    return JSON.parse(raw) as PushState;
+    raw = await readFile(filePath, "utf8");
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return {};
     throw err;
+  }
+  try {
+    return JSON.parse(raw) as PushState;
+  } catch (err) {
+    const corruptPath = `${filePath}.corrupt-${Date.now()}`;
+    console.error(
+      `WARNING: ${filePath} is corrupt and could not be parsed as JSON (${
+        (err as Error).message
+      }) — starting from a fresh push state (renaming the corrupt file to ${corruptPath}). Any cursor ` +
+        `positions previously recorded here are lost; if you're unsure what's already been pushed, ` +
+        `re-run with --all.`
+    );
+    try {
+      await rename(filePath, corruptPath);
+    } catch {
+      // Best effort — even if we can't move it aside, we still proceed with
+      // a fresh in-memory state rather than throwing. The next successful
+      // writePushState overwrites the corrupt content at the original path.
+    }
+    return {};
   }
 }
 
 async function writePushState(cwd: string, state: PushState): Promise<void> {
   const filePath = pushStatePath(cwd);
   await mkdir(path.dirname(filePath), { recursive: true });
-  await writeFile(filePath, JSON.stringify(state, null, 2) + "\n", "utf8");
+  await writeFileAtomic(filePath, JSON.stringify(state, null, 2) + "\n");
 }
 
 function runRecordPath(cwd: string, skillName: string): string {
@@ -105,8 +157,10 @@ export interface PushResult {
   candidateCount: number;
   results: PushRecordResult[];
   pushedCount: number;
+  /** Count of records permanently rejected (400/413) THIS run — cursor still advances past these. */
+  rejectedCount: number;
   cursorAfter: number;
-  /** True iff the batch stopped early (rejection, auth failure, or any other non-success). */
+  /** True iff the batch stopped early on a TRANSIENT outcome (auth failure or a network/other error) — never true for a permanent rejection, since those advance the cursor and continue. */
   aborted: boolean;
   dryRun: boolean;
 }
@@ -120,6 +174,15 @@ export interface PushOptions {
   /** Upload the skill file even if it was already uploaded before. */
   withSkill?: boolean;
   onRecordResult?: (result: PushRecordResult) => void;
+}
+
+function formatFieldErrors(fieldErrors: unknown): string {
+  if (fieldErrors === undefined) return "(no field errors returned)";
+  try {
+    return JSON.stringify(fieldErrors);
+  } catch {
+    return String(fieldErrors);
+  }
 }
 
 async function uploadSkill(config: PushConfig, skillName: string, skillMd: string): Promise<void> {
@@ -190,11 +253,16 @@ async function pushOneRecord(
 
 /**
  * Push new run records (and, on first push, the skill file) for one skill
- * to a Reelier Cloud instance. Cursor advances only past records pushed
- * successfully in strict order — the first non-"pushed" outcome stops the
- * batch, leaving the cursor at the last success (never skips ahead over a
- * failure). `--dry-run` (options.dryRun) touches no state and makes no
- * network calls at all.
+ * to a Reelier Cloud instance, strictly in order. Two different outcomes
+ * mean two different things (§8.3a in SPEC.md):
+ *  - A 400/413 is a PERMANENT rejection of that exact record — logged as a
+ *    loud warning + an audit entry in push-state.json's "rejected" list,
+ *    the cursor advances past it, and the batch continues.
+ *  - A 401 or a network/other error is TRANSIENT — the batch stops
+ *    immediately and the cursor is left at the last successfully-pushed
+ *    (or permanently-rejected) record, so the next push retries from there.
+ * `--dry-run` (options.dryRun) touches no state and makes no network calls
+ * at all.
  */
 export async function pushSkill(skillPath: string, options: PushOptions = {}): Promise<PushResult> {
   const cwd = options.cwd ?? process.cwd();
@@ -233,6 +301,7 @@ export async function pushSkill(skillPath: string, options: PushOptions = {}): P
       candidateCount: candidates.length,
       results,
       pushedCount: 0,
+      rejectedCount: 0,
       cursorAfter: cursorBefore,
       aborted: false,
       dryRun: true,
@@ -248,27 +317,51 @@ export async function pushSkill(skillPath: string, options: PushOptions = {}): P
   }
 
   const results: PushRecordResult[] = [];
+  const newlyRejected: RejectedEntry[] = [];
   let pushedCount = 0;
+  let consumedCount = 0; // pushed + permanently-rejected — what the cursor advances past
   let aborted = false;
 
   for (let i = 0; i < candidates.length; i++) {
     const result = await pushOneRecord(config, skill.name, candidates[i], cursorBefore + i);
     results.push(result);
     options.onRecordResult?.(result);
+
     if (result.outcome === "pushed") {
       pushedCount++;
-    } else {
-      aborted = true;
-      break;
+      consumedCount++;
+      continue;
     }
+
+    if (result.outcome === "rejected" || result.outcome === "too-large") {
+      // Permanent verdict from the cloud on this exact record — warn loudly,
+      // record it for audit, advance the cursor past it, and keep going.
+      // Never wedge the whole skill's history behind one bad record.
+      const reason =
+        result.outcome === "rejected" ? formatFieldErrors(result.fieldErrors) : (result.message ?? "413");
+      console.error(
+        `WARNING: record ${result.index} of skill '${skill.name}' was permanently rejected by the cloud ` +
+          `(${result.outcome === "rejected" ? "400" : "413"}): ${reason} — cursor advanced past it; see ` +
+          `.reelier/push-state.json's "rejected" list for this skill.`
+      );
+      newlyRejected.push({ index: result.index, reason, at: new Date().toISOString() });
+      consumedCount++;
+      continue;
+    }
+
+    // "auth-failed" or "error" — transient/retryable. Stop here; the cursor
+    // does NOT advance past this record, so the next push retries it.
+    aborted = true;
+    break;
   }
 
-  const cursorAfter = cursorBefore + pushedCount;
+  const cursorAfter = cursorBefore + consumedCount;
   const newState: PushState = {
     ...state,
     [skill.name]: {
       pushed: cursorAfter,
       skillUploaded: skillUploaded || existing?.skillUploaded || false,
+      rejected: [...(existing?.rejected ?? []), ...newlyRejected],
     },
   };
   await writePushState(cwd, newState);
@@ -281,6 +374,7 @@ export async function pushSkill(skillPath: string, options: PushOptions = {}): P
     candidateCount: candidates.length,
     results,
     pushedCount,
+    rejectedCount: newlyRejected.length,
     cursorAfter,
     aborted,
     dryRun: false,

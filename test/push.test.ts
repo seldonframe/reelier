@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile, mkdir, rm, readFile } from "node:fs/promises";
+import { mkdtemp, writeFile, mkdir, rm, readFile, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pushSkill, readPushState } from "../src/push.js";
@@ -94,6 +94,21 @@ async function withFetch<T>(fn: typeof fetch, run: () => Promise<T>): Promise<T>
   }
 }
 
+/** Capture console.error output for the duration of `run` (used to assert push's loud rejection/corruption warnings without leaving them un-asserted or polluting an otherwise-quiet suite). */
+async function withCapturedConsoleError<T>(run: () => Promise<T>): Promise<{ result: T; lines: string[] }> {
+  const original = console.error;
+  const lines: string[] = [];
+  console.error = ((...args: unknown[]) => {
+    lines.push(args.map((a) => String(a)).join(" "));
+  }) as typeof console.error;
+  try {
+    const result = await run();
+    return { result, lines };
+  } finally {
+    console.error = original;
+  }
+}
+
 // ---------------------------------------------------------------------------
 
 test("push: missing env vars throws an actionable error before any fetch call, never printing the key", async () => {
@@ -135,6 +150,7 @@ test("push: new-records-only cursor math — first push sends all + uploads skil
       const result1 = await withFetch(first.fn, () => pushSkill(skillPath, { cwd: dir }));
       assert.equal(result1.skillUploaded, true);
       assert.equal(result1.pushedCount, 3);
+      assert.equal(result1.rejectedCount, 0);
       assert.equal(result1.cursorBefore, 0);
       assert.equal(result1.cursorAfter, 3);
       assert.equal(result1.aborted, false);
@@ -143,7 +159,7 @@ test("push: new-records-only cursor math — first push sends all + uploads skil
       assert.match(first.calls[1].url, /\/api\/v1\/runs$/);
 
       const state = await readPushState(dir);
-      assert.deepEqual(state["push-fixture"], { pushed: 3, skillUploaded: true });
+      assert.deepEqual(state["push-fixture"], { pushed: 3, skillUploaded: true, rejected: [] });
 
       // Second push: no new records, skill already uploaded -> zero fetch calls.
       const second = fakeFetch([]);
@@ -177,7 +193,7 @@ test("push: --all ignores/resets the cursor and reconsiders every record", async
   });
 });
 
-test("push: mid-batch failure (400 rejection) stops the batch and leaves the cursor at the last success", async () => {
+test("push: a 400 rejection WARNs, records an audit entry, advances the cursor past it, and the batch continues (P1 fix — no wedge)", async () => {
   await withTempDir(async (dir) => {
     const skillPath = await setupFixture(dir, 4);
     await withEnv({ REELIER_CLOUD_URL: "https://cloud.example", REELIER_CLOUD_KEY: "test-key" }, async () => {
@@ -186,34 +202,80 @@ test("push: mid-batch failure (400 rejection) stops the batch and leaves the cur
         { status: 202, body: { id: "r0" } },
         { status: 202, body: { id: "r1" } },
         { status: 400, body: { fieldErrors: { "record.steps": ["required"] } } },
-        // record index 3 must NEVER be attempted — no 5th response provided;
-        // fakeFetch throws if it is.
+        { status: 202, body: { id: "r3" } }, // record after the rejection MUST still be attempted
       ]);
-      const result = await withFetch(first.fn, () => pushSkill(skillPath, { cwd: dir }));
-      assert.equal(result.pushedCount, 2);
+      const { result, lines } = await withCapturedConsoleError(() => withFetch(first.fn, () => pushSkill(skillPath, { cwd: dir })));
+
+      assert.equal(result.pushedCount, 3);
+      assert.equal(result.rejectedCount, 1);
       assert.equal(result.cursorBefore, 0);
-      assert.equal(result.cursorAfter, 2);
-      assert.equal(result.aborted, true);
-      assert.equal(result.results.length, 3); // r0 pushed, r1 pushed, r2 rejected — r3 never attempted
+      assert.equal(result.cursorAfter, 4); // consumed all 4: 3 pushed + 1 permanently rejected
+      assert.equal(result.aborted, false); // a permanent rejection is never an "aborted" batch
+      assert.equal(result.results.length, 4); // every candidate was attempted, including after the rejection
       assert.equal(result.results[2].outcome, "rejected");
       assert.deepEqual(result.results[2].fieldErrors, { "record.steps": ["required"] });
-      assert.equal(first.calls.length, 4);
+      assert.equal(result.results[3].outcome, "pushed");
+      assert.equal(first.calls.length, 5);
+
+      // Loud warning, and it names the record without ever leaking the key.
+      assert.ok(lines.some((l) => l.includes("WARNING") && l.includes("permanently rejected") && l.includes("2")));
+      assert.ok(!lines.some((l) => l.includes("test-key")));
 
       const state = await readPushState(dir);
-      assert.equal(state["push-fixture"].pushed, 2);
+      assert.equal(state["push-fixture"].pushed, 4);
+      assert.equal(state["push-fixture"].rejected?.length, 1);
+      assert.equal(state["push-fixture"].rejected?.[0].index, 2);
+      assert.match(state["push-fixture"].rejected?.[0].reason ?? "", /record\.steps/);
+      assert.ok(state["push-fixture"].rejected?.[0].at);
 
-      // Resuming (no --all) picks up exactly at the cursor and can complete.
-      const resume = fakeFetch([{ status: 202, body: { id: "r2" } }, { status: 202, body: { id: "r3" } }]);
-      const result2 = await withFetch(resume.fn, () => pushSkill(skillPath, { cwd: dir }));
-      assert.equal(result2.cursorBefore, 2);
-      assert.equal(result2.pushedCount, 2);
-      assert.equal(result2.cursorAfter, 4);
-      assert.equal(result2.skillUploaded, false); // already uploaded on the first attempt
+      // Nothing left to push on the next run — the cursor moved past everything.
+      const second = fakeFetch([]);
+      const result2 = await withFetch(second.fn, () => pushSkill(skillPath, { cwd: dir }));
+      assert.equal(result2.candidateCount, 0);
+      assert.equal(second.calls.length, 0);
     });
   });
 });
 
-test("push: a 401 on a record aborts the batch immediately", async () => {
+test("push: --all re-reports a previously-rejected record (new audit entry) without wedging records after it", async () => {
+  await withTempDir(async (dir) => {
+    const skillPath = await setupFixture(dir, 2);
+    await withEnv({ REELIER_CLOUD_URL: "https://cloud.example", REELIER_CLOUD_KEY: "test-key" }, async () => {
+      const first = fakeFetch([
+        { status: 200 }, // skill upload
+        { status: 400, body: { fieldErrors: { "record.steps": ["required"] } } }, // record 0 rejected
+        { status: 202, body: { id: "r1" } }, // record 1 pushed — never blocked by record 0's rejection
+      ]);
+      const result1 = await withFetch(first.fn, () => pushSkill(skillPath, { cwd: dir }));
+      assert.equal(result1.rejectedCount, 1);
+      assert.equal(result1.pushedCount, 1);
+      assert.equal(result1.cursorAfter, 2);
+
+      let state = await readPushState(dir);
+      assert.equal(state["push-fixture"].rejected?.length, 1);
+
+      // --all resets the cursor: record 0 is reconsidered and rejected again.
+      const all = fakeFetch([
+        { status: 400, body: { fieldErrors: { "record.steps": ["required"] } } }, // record 0 rejected AGAIN
+        { status: 202, body: { id: "r1-again" } }, // record 1 still pushes fine
+      ]);
+      const result2 = await withFetch(all.fn, () => pushSkill(skillPath, { cwd: dir, all: true }));
+      assert.equal(result2.cursorBefore, 0);
+      assert.equal(result2.candidateCount, 2);
+      assert.equal(result2.rejectedCount, 1);
+      assert.equal(result2.pushedCount, 1);
+      assert.equal(result2.cursorAfter, 2);
+      assert.equal(result2.aborted, false);
+
+      state = await readPushState(dir);
+      // Two separate audit entries for record index 0 — a history, never merged/deduped.
+      const rejectedForIndex0 = (state["push-fixture"].rejected ?? []).filter((r) => r.index === 0);
+      assert.equal(rejectedForIndex0.length, 2);
+    });
+  });
+});
+
+test("push: a 401 on a record is TRANSIENT — it stops the batch immediately and does not advance the cursor past it", async () => {
   await withTempDir(async (dir) => {
     const skillPath = await setupFixture(dir, 3);
     await withEnv({ REELIER_CLOUD_URL: "https://cloud.example", REELIER_CLOUD_KEY: "bad-key" }, async () => {
@@ -225,6 +287,7 @@ test("push: a 401 on a record aborts the batch immediately", async () => {
       ]);
       const result = await withFetch(first.fn, () => pushSkill(skillPath, { cwd: dir }));
       assert.equal(result.pushedCount, 1);
+      assert.equal(result.rejectedCount, 0);
       assert.equal(result.cursorAfter, 1);
       assert.equal(result.aborted, true);
       assert.equal(result.results.length, 2);
@@ -278,5 +341,52 @@ test("push: missing run-record file gives a clear actionable error", async () =>
     await withEnv({ REELIER_CLOUD_URL: "https://cloud.example", REELIER_CLOUD_KEY: "test-key" }, async () => {
       await assert.rejects(pushSkill(skillPath, { cwd: dir }), /No run records found/);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P2: writeFileAtomic + corrupt-state resilience.
+// ---------------------------------------------------------------------------
+
+test("push: push-state.json is written atomically — no stray .tmp- file left behind", async () => {
+  await withTempDir(async (dir) => {
+    const skillPath = await setupFixture(dir, 1);
+    await withEnv({ REELIER_CLOUD_URL: "https://cloud.example", REELIER_CLOUD_KEY: "test-key" }, async () => {
+      const fetchSeq = fakeFetch([{ status: 200 }, { status: 202, body: { id: "r0" } }]);
+      await withFetch(fetchSeq.fn, () => pushSkill(skillPath, { cwd: dir }));
+    });
+    const entries = await readdir(path.join(dir, ".reelier"));
+    assert.ok(entries.includes("push-state.json"));
+    assert.ok(!entries.some((f) => f.includes(".tmp-")));
+  });
+});
+
+test("push: a JSON-corrupted push-state.json WARNs, is renamed aside, and pushing proceeds from a fresh state instead of throwing", async () => {
+  await withTempDir(async (dir) => {
+    const skillPath = await setupFixture(dir, 1);
+    const stateDir = path.join(dir, ".reelier");
+    await mkdir(stateDir, { recursive: true });
+    const statePath = path.join(stateDir, "push-state.json");
+    await writeFile(statePath, "{ this is not valid json", "utf8");
+
+    const { result: freshState, lines } = await withCapturedConsoleError(() => readPushState(dir));
+    assert.deepEqual(freshState, {});
+    assert.ok(lines.some((l) => l.includes("WARNING") && l.includes("corrupt")));
+
+    // The full push must still succeed from a clean slate rather than throwing.
+    await withEnv({ REELIER_CLOUD_URL: "https://cloud.example", REELIER_CLOUD_KEY: "test-key" }, async () => {
+      const fetchSeq = fakeFetch([{ status: 200 }, { status: 202, body: { id: "r0" } }]);
+      const result = await withFetch(fetchSeq.fn, () => pushSkill(skillPath, { cwd: dir }));
+      assert.equal(result.pushedCount, 1);
+      assert.equal(result.cursorAfter, 1);
+    });
+
+    // The corrupt file was moved aside (not silently overwritten in a way
+    // that loses the evidence), and a fresh, valid state file now exists.
+    const entries = await readdir(stateDir);
+    assert.ok(entries.some((f) => f.startsWith("push-state.json.corrupt-")));
+    assert.ok(entries.includes("push-state.json"));
+    const freshRaw = await readFile(statePath, "utf8");
+    assert.doesNotThrow(() => JSON.parse(freshRaw));
   });
 });
