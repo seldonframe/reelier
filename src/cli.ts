@@ -32,7 +32,7 @@ import {
 import { compileSessionTranscript, type SessionSkip } from "./session.js";
 import { scanTranscripts, type ScannedSession } from "./scan.js";
 import { planInstall, applyInstall, findLatestBackup, restoreFromBackup } from "./wrap.js";
-import { buildToolServer } from "./serve.js";
+import { buildToolServer, runDiffTool } from "./serve.js";
 
 interface ParsedArgs {
   positional: string[];
@@ -471,6 +471,38 @@ async function cmdServe(): Promise<number> {
   await shutdown();
 
   return 0;
+}
+
+async function cmdDiff(args: ParsedArgs): Promise<number> {
+  const skill = args.positional[0];
+  if (!skill) {
+    console.error(
+      "Usage: reelier diff <skill-name> [--cwd <dir>]\n" +
+        "  Compares the last two runs in .reelier/runs/<skill>.jsonl and reports SAME or DRIFTED.\n" +
+        "  Exit code is 0 when it ran the same, 1 on drift — so it gates a scheduled replay."
+    );
+    return 1;
+  }
+
+  const result = await runDiffTool({ skill, cwd: args.opts.cwd });
+  if (!result.ok) {
+    console.error(result.reason);
+    return 1;
+  }
+
+  const d = result.diff;
+  if (d.verdict === "skill-mismatch") {
+    console.error(d.summary);
+    return 1;
+  }
+
+  for (const s of d.steps) {
+    const mark = s.kind === "same" ? "  =" : s.kind === "healed-differently" ? "  ~" : "  ✗";
+    console.log(`${mark} ${s.note}`);
+  }
+  console.log("");
+  console.log(d.verdict === "same" ? `✓ ${d.summary}` : `⚠ ${d.summary}`);
+  return d.verdict === "same" ? 0 : 1;
 }
 
 async function cmdTrace(args: ParsedArgs): Promise<number> {
@@ -1233,6 +1265,8 @@ async function main(): Promise<number> {
       return cmdCompile(args);
     case "push":
       return cmdPush(args);
+    case "diff":
+      return cmdDiff(args);
     case "init":
       return cmdInit(args);
     case "from-session":
@@ -1245,9 +1279,10 @@ async function main(): Promise<number> {
       return cmdUninstall(args);
     default:
       console.error(
-        "Usage: reelier <run|bench|mcp|serve|trace|compile|push|init|from-session|scan|install|uninstall> [options]\n" +
+        "Usage: reelier <run|bench|mcp|serve|trace|compile|push|diff|init|from-session|scan|install|uninstall> [options]\n" +
           "  mcp   — RECORDER: fronts your own --wrap'd MCP server(s) to capture their calls into a trace.\n" +
-          "  serve — TOOL-SERVER: exposes Reelier's own commands (scan/from-session/replay/push) as MCP tools."
+          "  serve — TOOL-SERVER: exposes Reelier's own commands (scan/from-session/replay/push/diff) as MCP tools.\n" +
+          "  diff  — compare the last two runs of a skill; exit 1 on drift (gate a scheduled replay)."
       );
       return 1;
   }

@@ -40,7 +40,8 @@ import { scanTranscripts, type ScannedSession } from "./scan.js";
 import { compileSessionTranscript, type SessionSkip } from "./session.js";
 import type { OpenQuestion } from "./compile.js";
 import { parseSkill } from "./skill.js";
-import { runSkill, builtinTools, type RunRecord } from "./runner.js";
+import { runSkill, builtinTools, readRunRecords, type RunRecord } from "./runner.js";
+import { diffRunRecords, type RunDiff } from "./diff.js";
 import { connectDownstream, type DownstreamConnection } from "./mcp-client.js";
 import { buildMcpTools } from "./mcp-tool.js";
 import { pushSkill, type PushResult } from "./push.js";
@@ -294,6 +295,63 @@ const pushToolInputSchema = {
 };
 
 // ---------------------------------------------------------------------------
+// reelier_diff
+// ---------------------------------------------------------------------------
+
+export interface DiffToolInput {
+  /** Skill name (the .reelier/runs/<skill>.jsonl stem) whose runs to compare. */
+  skill: string;
+  cwd?: string;
+  /** 0-based index of the baseline run (default: second-to-last). */
+  baselineIndex?: number;
+  /** 0-based index of the candidate run (default: last). */
+  candidateIndex?: number;
+}
+
+export type DiffToolResult = { ok: true; diff: RunDiff } | { ok: false; reason: string };
+
+/**
+ * Compare two runs of the same skill and report SAME vs DRIFTED. Defaults to
+ * the last two runs in .reelier/runs/<skill>.jsonl. Honest when fewer than two
+ * runs exist (never fabricates a "same" out of a single run).
+ */
+export async function runDiffTool(input: DiffToolInput): Promise<DiffToolResult> {
+  const cwd = input.cwd ?? process.cwd();
+  const file = path.join(cwd, ".reelier", "runs", `${input.skill}.jsonl`);
+  let records: RunRecord[] = [];
+  try {
+    records = await readRunRecords(file);
+  } catch {
+    records = [];
+  }
+  if (records.length < 2) {
+    return {
+      ok: false,
+      reason: `Need at least 2 runs of "${input.skill}" to diff — found ${records.length} at ${file}. Replay it again (reelier_replay / reelier run), then diff.`,
+    };
+  }
+  const candIdx = input.candidateIndex ?? records.length - 1;
+  const baseIdx = input.baselineIndex ?? records.length - 2;
+  const baseline = records[baseIdx];
+  const candidate = records[candIdx];
+  if (!baseline || !candidate) {
+    return { ok: false, reason: `Index out of range: have ${records.length} runs (valid 0..${records.length - 1}).` };
+  }
+  return { ok: true, diff: diffRunRecords(baseline, candidate) };
+}
+
+const diffToolInputSchema = {
+  type: "object" as const,
+  properties: {
+    skill: { type: "string", description: "Skill name (the .reelier/runs/<skill>.jsonl stem) whose runs to compare." },
+    cwd: { type: "string", description: "Working directory where .reelier/ lives (default: process cwd)." },
+    baselineIndex: { type: "number", description: "0-based index of the baseline run (default: second-to-last)." },
+    candidateIndex: { type: "number", description: "0-based index of the candidate run (default: the last run)." },
+  },
+  required: ["skill"],
+};
+
+// ---------------------------------------------------------------------------
 // MCP server wiring
 // ---------------------------------------------------------------------------
 
@@ -317,6 +375,12 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
   reelier_push:
     "Push a skill's local run records (and, on first push, the skill file) to Reelier Cloud. Requires " +
     "REELIER_CLOUD_URL/REELIER_CLOUD_KEY in env — reports skipped-no-key honestly when they're absent.",
+  reelier_diff:
+    "Compare two runs of the same skill and report whether it ran the SAME or DRIFTED — the drift-detector for a " +
+    "recorded 'baseline' you replay on a schedule. Reads .reelier/runs/<skill>.jsonl (defaults to the last two runs). " +
+    "A single receipt proves one run; this proves it kept running the same. Reports per step: outcome changes and " +
+    "added/removed steps (hard drift), plus steps that now heal at a different escalation level (soft drift). Honest " +
+    "when there aren't two runs yet.",
 };
 
 function textResult(data: unknown): { content: Array<{ type: "text"; text: string }> } {
@@ -346,6 +410,7 @@ export function buildToolServer(): Server {
       },
       { name: "reelier_replay", description: TOOL_DESCRIPTIONS.reelier_replay, inputSchema: replayToolInputSchema },
       { name: "reelier_push", description: TOOL_DESCRIPTIONS.reelier_push, inputSchema: pushToolInputSchema },
+      { name: "reelier_diff", description: TOOL_DESCRIPTIONS.reelier_diff, inputSchema: diffToolInputSchema },
     ],
   }));
 
@@ -372,6 +437,11 @@ export function buildToolServer(): Server {
             return errorResult(new Error("reelier_push requires a string 'skillPath' argument."));
           }
           return textResult(await runPushTool(args as unknown as PushToolInput));
+        case "reelier_diff":
+          if (typeof args.skill !== "string" || !args.skill) {
+            return errorResult(new Error("reelier_diff requires a string 'skill' argument."));
+          }
+          return textResult(await runDiffTool(args as unknown as DiffToolInput));
         default:
           return errorResult(new Error(`Unknown tool: ${name}`));
       }

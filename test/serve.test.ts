@@ -11,6 +11,7 @@ import {
   runFromSessionTool,
   runReplayTool,
   runPushTool,
+  runDiffTool,
 } from "../src/serve.js";
 
 async function withTmpDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
@@ -318,7 +319,13 @@ test("buildToolServer: lists reelier_scan/from_session/replay/push with input sc
 
     const listed = await client.listTools();
     const names = listed.tools.map((t) => t.name).sort();
-    assert.deepEqual(names, ["reelier_from_session", "reelier_push", "reelier_replay", "reelier_scan"]);
+    assert.deepEqual(names, [
+      "reelier_diff",
+      "reelier_from_session",
+      "reelier_push",
+      "reelier_replay",
+      "reelier_scan",
+    ]);
     for (const t of listed.tools) {
       assert.equal(t.inputSchema.type, "object");
     }
@@ -345,5 +352,48 @@ test("buildToolServer: lists reelier_scan/from_session/replay/push with input sc
 
     await client.close();
     await server.close();
+  });
+});
+
+test("runDiffTool: honest when <2 runs exist; detects real drift when they do", async () => {
+  await withTmpDir(async (dir) => {
+    const runsDir = path.join(dir, ".reelier", "runs");
+    await mkdir(runsDir, { recursive: true });
+    const file = path.join(runsDir, "weekly.jsonl");
+
+    const rec = (outcome: "passed" | "failed") =>
+      JSON.stringify({
+        skill: "weekly",
+        startedAt: "2026-07-19T00:00:00.000Z",
+        finishedAt: "2026-07-19T00:00:01.000Z",
+        passed: outcome === "passed",
+        steps: [{ n: 1, title: "step 1", level: 0, outcome, ms: 1, failures: [] }],
+        totals: {
+          steps: 1,
+          passed: outcome === "passed" ? 1 : 0,
+          unchecked: 0,
+          skipped: 0,
+          failed: outcome === "failed" ? 1 : 0,
+          ms: 1,
+          llmInputTokens: 0,
+          llmOutputTokens: 0,
+        },
+      });
+
+    // 0 runs → honest error, never a fabricated "same".
+    assert.equal((await runDiffTool({ skill: "weekly", cwd: dir })).ok, false);
+
+    // 1 run → still honest error (can't compare a run to nothing).
+    await writeFile(file, rec("passed") + "\n");
+    assert.equal((await runDiffTool({ skill: "weekly", cwd: dir })).ok, false);
+
+    // 2 runs where the outcome changed → drifted.
+    await writeFile(file, rec("passed") + "\n" + rec("failed") + "\n");
+    const two = await runDiffTool({ skill: "weekly", cwd: dir });
+    assert.equal(two.ok, true);
+    if (two.ok) {
+      assert.equal(two.diff.verdict, "drifted");
+      assert.equal(two.diff.hardDrift[0].kind, "outcome-changed");
+    }
   });
 });
