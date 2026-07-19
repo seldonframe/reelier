@@ -1,0 +1,58 @@
+# Template — copy this file into your own repo's .github/workflows/ and
+# rename it (drop the .example — GitHub only runs files ending in .yml/.yaml
+# that DON'T have a .example segment, so this one is inert as shipped).
+#
+# What this does: replays a Reelier skill on a daily schedule (plus a manual
+# "Run workflow" button) and posts the receipt — steps, pass/fail per step,
+# duration, LLM token spend (0 at the default --max-level 0) — as this run's
+# job summary. A green check here on a public repo IS the distribution: it's
+# a live, dated proof that a deterministic replay of real tool calls still
+# passes, visible to anyone who looks at the repo's Actions tab or badge.
+#
+# Swap `skill:` for your own .skill.md. The two bundled in this repo
+# (examples/loops/posthog-weekly-pull.skill.md, which needs a live PostHog
+# key and is a good "loop" example; examples/benchmark/npm-info.skill.md,
+# which needs nothing and always works) are shown as alternatives below.
+
+name: Reelier replay
+
+on:
+  schedule:
+    # Daily at 08:00 UTC. Cron is UTC always — see
+    # https://docs.github.com/actions/using-workflows/events-that-trigger-workflows#schedule
+    - cron: "0 8 * * *"
+  workflow_dispatch: {} # adds a manual "Run workflow" button in the Actions tab
+  # Uncomment to also replay on every PR that touches the skill file:
+  # pull_request:
+  #   paths:
+  #     - "examples/benchmark/npm-info.skill.md"
+
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Replay skill
+        uses: seldonframe/reelier@v1
+        with:
+          skill: examples/benchmark/npm-info.skill.md
+          # skill: examples/loops/posthog-weekly-pull.skill.md  # alternative: needs POSTHOG_* vars below
+
+          max-level: "0" # 0 tokens — pure deterministic replay. Raise to 1 or
+          # 2 only if you also configure LLM credentials (see README.md
+          # "Works with any model") — this action does not set those for you.
+
+          # Optional: forward skill inputs as --var name=value (one per line).
+          # vars: |
+          #   projectId=497925
+
+          # Optional: push the receipt to Reelier Cloud after a passing run.
+          # Omit both lines entirely for a local-only replay (still posts the
+          # job summary — nothing about the check depends on Cloud).
+          cloud-key: ${{ secrets.REELIER_CLOUD_KEY }}
+          # cloud-url: https://www.reelier.com  # default; override for a self-hosted instance
+
+      # Nothing else needed — the action itself sets the job's pass/fail
+      # from the replay's own exit code, so a red check here means the
+      # replay genuinely failed, not that this workflow forgot to check.

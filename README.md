@@ -748,6 +748,76 @@ trace files (see "Redaction" above) applies here, since redaction happens
 at *trace*-write time, not at push time. Treat a run-record file as
 potentially sensitive before pushing it anywhere.
 
+## Run it in CI
+
+A GitHub Action (`action.yml` at the repo root) wraps `reelier run` (and,
+optionally, `reelier push`) as a composite step, so any repo — yours or
+anyone forking a skill you published — can replay a skill on a schedule or
+a PR and get the receipt as a real GitHub check, not just a local log. This
+is the same "honest-success" contract as everywhere else in Reelier: the
+job's pass/fail comes straight from the replay's own exit code (§4.2's
+`RunRecord.passed`), and the job summary is built by reading the actual
+`.reelier/runs/<skill-name>.jsonl` record that run produced — never a
+guess, never a rollup that hides an `unchecked` step as a pass (§4.3).
+
+```yaml
+- uses: seldonframe/reelier@v1
+  with:
+    skill: examples/benchmark/npm-info.skill.md
+    max-level: "0" # default — 0 tokens, pure deterministic replay
+    cloud-key: ${{ secrets.REELIER_CLOUD_KEY }} # optional — omit for local-only
+```
+
+Copy `.github/workflows/reelier-replay.example.yml` into your own
+`.github/workflows/` (drop the `.example`) for a ready-to-edit daily
+schedule + manual-dispatch workflow.
+
+### Inputs
+
+| Input | Required | Default | Meaning |
+| --- | --- | --- | --- |
+| `skill` | yes | — | Path to the `.skill.md` to replay. One path per action call — for multiple skills, add one step (or matrix entry) per skill. |
+| `max-level` | no | `"0"` | Forwarded to `reelier run --max-level`. `0` never calls an LLM. `1`/`2` allow self-healing escalation and need LLM credentials in the job's environment (see "Works with any model" above) — the action does not supply those for you. |
+| `cloud-url` | no | `https://www.reelier.com` | Base URL for `reelier push`. Only used when `cloud-key` is set. |
+| `cloud-key` | no | — | Reelier Cloud API key. When set **and** the replay passed, `reelier push <skill>` runs after the replay so the receipt lands in your hosted ledger. Unset (or a failed replay) means no push and no network call — pass this as `${{ secrets.<NAME> }}`, never inline. |
+| `vars` | no | — | Newline-separated `name=value` pairs, forwarded as `--var name=value` for each line. |
+
+### What the job summary contains
+
+Written by `.github/scripts/gha-summary.mjs` from inside `action.yml`,
+straight to `$GITHUB_STEP_SUMMARY`:
+
+- The skill name and overall `passed`/`failed` verdict, exactly as recorded.
+- A totals table: steps / passed / unchecked / skipped / failed / duration,
+  copied from `RunRecord.totals` — with a note that `unchecked` (ran, zero
+  assertions) is never presented as a pass, matching the CLI's own rule.
+- LLM token totals, but only when escalation actually ran (`> 0` tokens) —
+  never a fabricated `0` line implying escalation was considered and skipped.
+- A collapsible per-step table (outcome, healed level, duration).
+- Whether the receipt was pushed to Reelier Cloud, skipped (no `cloud-key`),
+  or not attempted because the replay itself failed.
+- If the run never got far enough to write a run record at all (a bad
+  skill path, a parse error), the summary says exactly that — no invented
+  numbers — and points at the raw CLI log above it.
+
+### The proof-surface idea
+
+A scheduled replay that keeps passing, visible as a green check (or a
+status badge you add yourself, pointing at the workflow) on a public repo,
+is a dated, falsifiable claim: "this deterministic tool-call sequence still
+works, as of this morning, with zero LLM involved." That's the pitch this
+action exists to make visible in the one place developers already look —
+their own repo's checks — rather than only in a local `.reelier/runs/`
+file no one outside the author ever sees.
+
+**Note:** this action's CLI invocation and the `.jsonl` parsing it depends
+on were verified locally (`reelier run examples/benchmark/npm-info.skill.md`
+against the built CLI, plus a standalone run of `gha-summary.mjs` against
+the resulting run record) and the YAML was schema-checked, but the
+composite action itself has not yet been exercised by a real GitHub Actions
+runner — that verification is pending the first live workflow run after
+this is merged and tagged.
+
 ## Licensing
 
 The AGPL-3.0 license in this repository covers the **Reelier harness only**
