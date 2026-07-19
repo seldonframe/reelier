@@ -14,7 +14,7 @@
 // skill when nothing replayable was found.
 
 import type { TraceRecord } from "./recorder.js";
-import { compile, renderSkillMd, type CompileResult } from "./compile.js";
+import { compile, renderSkillMd, classifyEffect, type CompileResult } from "./compile.js";
 import { parseSkill } from "./skill.js";
 
 // ---------------------------------------------------------------------------
@@ -204,11 +204,23 @@ export interface SessionSkip {
   reason: string;
 }
 
+/** Per-replayable-call effect classification of a session's trace (see compile.ts's classifyEffect — reused, not re-derived). Unknown-verb calls are counted under `destructive` (the classifier's safe default), never optimistically read. */
+export interface SessionEffectBreakdown {
+  read: number;
+  "idempotent-write": number;
+  destructive: number;
+}
+
+function emptyEffectBreakdown(): SessionEffectBreakdown {
+  return { read: 0, "idempotent-write": 0, destructive: 0 };
+}
+
 export interface SessionTraceBuild {
   records: TraceRecord[];
   replayableCount: number;
   skipped: SessionSkip[];
   servers: string[];
+  effects: SessionEffectBreakdown;
 }
 
 /** Reshape a transcript's `tool_result.content` into the McpCallResult shape compile.ts expects in a "result" record's body (mcp-tool.ts's mcpResultToObservation reads `.content` items of `type: "text"`). */
@@ -237,6 +249,7 @@ export function buildTraceFromSession(parsed: ParsedSessionTranscript, name: str
   const skipped: SessionSkip[] = [];
   const servers = new Set<string>();
   const bodyRecords: TraceRecord[] = [];
+  const effects = emptyEffectBreakdown();
   let seq = 1;
   let i = 0;
 
@@ -254,6 +267,8 @@ export function buildTraceFromSession(parsed: ParsedSessionTranscript, name: str
       });
       continue;
     }
+
+    effects[classifyEffect(cls.traceTool).effect]++;
 
     if (cls.server) {
       servers.add(cls.server);
@@ -278,7 +293,7 @@ export function buildTraceFromSession(parsed: ParsedSessionTranscript, name: str
   }
 
   const metaRecord: TraceRecord = { t: "meta", seq: 0, name, startedAt: new Date().toISOString(), wrapped: [...servers] };
-  return { records: [metaRecord, ...bodyRecords], replayableCount: i, skipped, servers: [...servers] };
+  return { records: [metaRecord, ...bodyRecords], replayableCount: i, skipped, servers: [...servers], effects };
 }
 
 // ---------------------------------------------------------------------------
@@ -354,6 +369,10 @@ export interface SessionSummary {
   skippedCount: number;
   servers: string[];
   malformedLines: number;
+  /** Effect breakdown of the REPLAYABLE calls only (classifyEffect, reused from compile.ts) — replayability tells you Reelier CAN re-issue a call, this tells you whether doing so is safe to repeat. */
+  effects: SessionEffectBreakdown;
+  /** true iff replayableCount > 0 and every replayable call classified as `read` — the ideal replay target. False (not "unknown") whenever there are zero replayable calls, since there's nothing to call read-only. */
+  readOnly: boolean;
 }
 
 export function summarizeSession(source: string, path: string): SessionSummary {
@@ -366,5 +385,7 @@ export function summarizeSession(source: string, path: string): SessionSummary {
     skippedCount: built.skipped.length,
     servers: built.servers,
     malformedLines: parsed.malformedLines,
+    effects: built.effects,
+    readOnly: built.replayableCount > 0 && built.effects["idempotent-write"] === 0 && built.effects.destructive === 0,
   };
 }

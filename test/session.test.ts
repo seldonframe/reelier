@@ -228,3 +228,52 @@ test("summarizeSession: a transcript with no replayable calls reports replayable
   const summary = summarizeSession(source, "/fake/path2.jsonl");
   assert.equal(summary.replayableCount, 0);
 });
+
+// ---------------------------------------------------------------------------
+// Effect breakdown (replay-worthiness, not just replay mechanics) —
+// summarizeSession/buildTraceFromSession reuse compile.ts's classifyEffect on
+// the replayable subset. mixedTranscript()'s two replayable calls are
+// create_widget (idempotent-write) and get_widget (read).
+// ---------------------------------------------------------------------------
+
+test("buildTraceFromSession: effect breakdown of a mixed read/write transcript is not read-only", () => {
+  const built = buildTraceFromSession(parseSessionTranscript(mixedTranscript()), "mixed-demo");
+  assert.deepEqual(built.effects, { read: 1, "idempotent-write": 1, destructive: 0 });
+});
+
+test("summarizeSession: reports the read-only vs side-effectful split and readOnly=false when any write call is present", () => {
+  const summary = summarizeSession(mixedTranscript(), "/fake/mixed.jsonl");
+  assert.deepEqual(summary.effects, { read: 1, "idempotent-write": 1, destructive: 0 });
+  assert.equal(summary.readOnly, false);
+});
+
+test("summarizeSession: an all-read-verb session (get_/list_ only) is readOnly=true", () => {
+  const source = [
+    assistantLine([{ id: "t1", name: "mcp__widgets__get_widget", input: { id: "w1" } }]),
+    userResultLine([{ tool_use_id: "t1", content: JSON.stringify({ id: "w1" }) }]),
+    assistantLine([{ id: "t2", name: "mcp__widgets__list_widgets", input: {} }]),
+    userResultLine([{ tool_use_id: "t2", content: JSON.stringify({ items: [] }) }]),
+  ].join("\n");
+  const summary = summarizeSession(source, "/fake/readonly.jsonl");
+  assert.deepEqual(summary.effects, { read: 2, "idempotent-write": 0, destructive: 0 });
+  assert.equal(summary.readOnly, true);
+});
+
+test("summarizeSession: a session with zero replayable calls is readOnly=false (nothing to call read-only), not fabricated true", () => {
+  const source = [assistantLine([{ id: "t1", name: "Bash", input: { command: "ls" } }]), userResultLine([{ tool_use_id: "t1", content: "x" }])].join(
+    "\n"
+  );
+  const summary = summarizeSession(source, "/fake/none.jsonl");
+  assert.equal(summary.readOnly, false);
+  assert.deepEqual(summary.effects, { read: 0, "idempotent-write": 0, destructive: 0 });
+});
+
+test("summarizeSession: an unrecognized verb stays classified destructive (safe default), never optimistically read-only", () => {
+  const source = [
+    assistantLine([{ id: "t1", name: "mcp__widgets__frobnicate", input: {} }]),
+    userResultLine([{ tool_use_id: "t1", content: JSON.stringify({ ok: true }) }]),
+  ].join("\n");
+  const summary = summarizeSession(source, "/fake/unknown-verb.jsonl");
+  assert.deepEqual(summary.effects, { read: 0, "idempotent-write": 0, destructive: 1 });
+  assert.equal(summary.readOnly, false);
+});

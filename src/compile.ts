@@ -232,7 +232,7 @@ function normalizeToolName(tool: string): string {
  * never classify read — position in the name carries no authority), then any
  * write verb, then read. No verb recognized → destructive + review flag.
  */
-function classifyEffect(tool: string): { effect: Effect; unknown: boolean } {
+export function classifyEffect(tool: string): { effect: Effect; unknown: boolean } {
   if (tool === "http.get") return { effect: "read", unknown: false };
   if (tool === "http.post") return { effect: "idempotent-write", unknown: false };
 

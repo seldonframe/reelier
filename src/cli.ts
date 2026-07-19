@@ -14,7 +14,7 @@ import { connectDownstream, type DownstreamConnection } from "./mcp-client.js";
 import { buildMcpTools } from "./mcp-tool.js";
 import { buildProxyServer, Recorder } from "./recorder.js";
 import { parseTraceLines, formatTrace } from "./trace.js";
-import { compile, renderSkillMd } from "./compile.js";
+import { compile, renderSkillMd, type CompileResult } from "./compile.js";
 import { createLlmClient, resolveLlmConfig } from "./llm.js";
 import {
   detectAgentConfig,
@@ -576,6 +576,28 @@ async function cmdCompile(args: ParsedArgs): Promise<number> {
   return 0;
 }
 
+/**
+ * Honest replay-worthiness warning for `from-session` output. The "replayable"
+ * filter (session.ts) only proves Reelier CAN re-issue these MCP calls — it
+ * says nothing about whether you SHOULD. A compiled skill full of create_/
+ * update_/delete_ steps re-executes those side effects on every replay.
+ * Reuses the compiler's own per-step effect classification (compile.ts's
+ * classifyEffect, already run inside compile()) rather than re-deriving it —
+ * this never blocks compilation, it just tells the truth about what got written.
+ */
+function printReplayWorthiness(result: CompileResult): void {
+  const sideEffectful = result.steps.filter((s) => s.effect !== "read");
+  if (sideEffectful.length === 0) {
+    console.log(`✓ all ${result.steps.length} steps are read-only — safe to replay repeatedly`);
+    return;
+  }
+  console.log(
+    `⚠ ${sideEffectful.length} of ${result.steps.length} steps are side-effectful (create/update/delete/write) — ` +
+      "replaying re-executes those side effects. Reelier replays best on read-only / data-pull workflows."
+  );
+  console.log(`  ${sideEffectful.map((s) => s.tool).join(", ")}`);
+}
+
 function printSkipped(skipped: SessionSkip[]): void {
   if (skipped.length === 0) return;
   const byReason = new Map<string, string[]>();
@@ -641,6 +663,8 @@ async function cmdFromSession(args: ParsedArgs): Promise<number> {
     console.log(`  MCP servers used: ${result.servers.join(", ")}`);
   }
   console.log("");
+  printReplayWorthiness(result.compileResult);
+  console.log("");
   if (result.compileResult.openQuestions.length === 0) {
     console.log("Open questions: (none)");
   } else {
@@ -654,13 +678,25 @@ async function cmdFromSession(args: ParsedArgs): Promise<number> {
   return 0;
 }
 
+/** "X replayable (Y read-only · Z side-effectful)" — the side-effectful count folds idempotent-write + destructive together (both re-execute a write on replay; the picker doesn't need the finer split compile.ts's stats.effects carries). */
+function fmtEffectSplit(s: ScannedSession): string {
+  const sideEffectful = s.effects["idempotent-write"] + s.effects.destructive;
+  return `${s.replayableCount} replayable (${s.effects.read} read-only · ${sideEffectful} side-effectful)`;
+}
+
 function fmtSessionLine(index: number, s: ScannedSession): string {
   const when = new Date(s.mtimeMs).toISOString().slice(0, 16).replace("T", " ");
   if (s.replayableCount > 0) {
     const servers = s.servers.length > 0 ? ` — ${s.servers.join(", ")}` : "";
-    return `  [${index}] ${s.project} · ${when} · ${s.replayableCount} replayable call(s)${servers}`;
+    const warn = s.readOnly ? "" : " ⚠ side-effectful";
+    return `  [${index}] ${s.project} · ${when} · ${fmtEffectSplit(s)}${warn}${servers}`;
   }
   return `  (skipped) ${s.project} · ${when} · no replayable tool calls found`;
+}
+
+/** Sort read-only-heavy sessions first (the ideal replay targets), side-effect-heavy ones lower — stable within each group, so recency (scanTranscripts' own sort) still breaks ties. */
+function rankByReplayWorthiness(sessions: ScannedSession[]): ScannedSession[] {
+  return [...sessions].sort((a, b) => Number(b.readOnly) - Number(a.readOnly));
 }
 
 async function cmdScan(args: ParsedArgs): Promise<number> {
@@ -670,12 +706,13 @@ async function cmdScan(args: ParsedArgs): Promise<number> {
   console.log(`Scanning ${rootDir} for agent session transcripts...`);
   const sessions = await scanTranscripts(rootDir);
 
-  const replayable = sessions.filter((s) => s.replayableCount > 0);
+  const replayable = rankByReplayWorthiness(sessions.filter((s) => s.replayableCount > 0));
   const skipped = sessions.filter((s) => s.replayableCount === 0);
+  const readOnlyCount = replayable.filter((s) => s.readOnly).length;
 
   console.log("");
   console.log(
-    `Found ${sessions.length} session(s) in your agent history · ${replayable.length} contain replayable workflows.`
+    `Found ${sessions.length} session(s) · ${replayable.length} with replayable workflows · ${readOnlyCount} are read-only (ideal to replay).`
   );
   console.log("");
 
