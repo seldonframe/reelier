@@ -2,17 +2,18 @@
 
 # Reelier
 
-Your agent's muscle memory — record a workflow once, replay it
-deterministically, receipt attached.
+**Agents make claims. Reelier writes receipts.** Record what your agent does
+once, replay it deterministically, and get a receipt every run — the exact
+steps it ran, each one asserted, byte-identical, 0 tokens.
 
 [![npm version](https://img.shields.io/npm/v/@seldonframe/reelier.svg)](https://www.npmjs.com/package/@seldonframe/reelier)
 [![CI](https://github.com/seldonframe/reelier/actions/workflows/ci.yml/badge.svg)](https://github.com/seldonframe/reelier/actions/workflows/ci.yml)
 [![license](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](./LICENSE)
 [![tests](https://img.shields.io/badge/tests-177%20passing-brightgreen.svg)](./test)
 
-Reelier records what your AI agent does once, then replays it
-deterministically — 0 tokens, milliseconds, a receipt every run. For
-developers whose agents do the same work over and over.
+A receipt is the record of what your agent actually did — every step asserted,
+byte-identical on replay, 0 tokens. For developers whose agents do the same
+work over and over.
 
 https://www.reelier.com/reelier-explainer.mp4
 

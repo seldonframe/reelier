@@ -22,7 +22,7 @@ Shorter variant if the target list enforces a strict line-length cap:
 ## awesome-ai-agents / awesome-llm-apps (generic "agent tooling" lists)
 
 ```
-- **[Reelier](https://github.com/seldonframe/reelier)** — Your agent's muscle memory: record a tool-call trace once, compile it into a `SKILL.md`, replay it deterministically forever at 0 tokens, and only fall back to an LLM (BYOK, any provider) when the recorded workflow no longer matches reality. Ships with `reelier init` — a 60-second guided first run.
+- **[Reelier](https://github.com/seldonframe/reelier)** — Agents make claims, Reelier writes receipts: record a tool-call trace once, compile it into a `SKILL.md`, replay it deterministically forever at 0 tokens, and only fall back to an LLM (BYOK, any provider) when the recorded workflow no longer matches reality. Ships with `reelier init` — a 60-second guided first run.
 ```
 
 ## awesome-selfhosted (if/when the "SaaS-eligible" or "cloud-optional" bucket applies)
@@ -40,7 +40,7 @@ given list's self-hosted criteria. Flagging this here rather than guessing.
 
 **Name:** Reelier
 
-**Tagline (≤60 chars):** Your agent's muscle memory — record once, replay free
+**Tagline (≤60 chars):** Agents make claims. Reelier writes receipts.
 
 **Short description (≤200 chars):**
 Record an AI agent's MCP tool-call workflow once, compile it into a

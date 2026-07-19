@@ -1,7 +1,7 @@
 {
   "name": "@seldonframe/reelier",
   "version": "0.7.0",
-  "description": "Your agent's muscle memory - record a workflow once, replay it deterministically, escalate to an LLM only on divergence.",
+  "description": "Agents make claims, Reelier writes receipts - record an agent workflow once, replay it deterministically at 0 tokens, and get an asserted receipt on every run.",
   "license": "AGPL-3.0-only",
   "type": "module",
   "bin": {
