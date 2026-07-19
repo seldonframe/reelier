@@ -132,8 +132,9 @@ runs:
       shell: bash
       env:
         RUN_EXIT_CODE: ${{ steps.run-skill.outputs.exit-code }}
+        SKILL: ${{ inputs.skill }}
       run: |
         if [ "$RUN_EXIT_CODE" != "0" ]; then
-          echo "Reelier replay of '${{ inputs.skill }}' failed (exit $RUN_EXIT_CODE) — see the job summary and log above." >&2
+          echo "Reelier replay of '$SKILL' failed (exit $RUN_EXIT_CODE) — see the job summary and log above." >&2
           exit "$RUN_EXIT_CODE"
         fi
