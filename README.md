@@ -3,28 +3,26 @@
 # Reelier
 
 Your agent's muscle memory — record a workflow once, replay it
-deterministically forever, receipt attached.
+deterministically, receipt attached.
 
 [![npm version](https://img.shields.io/npm/v/@seldonframe/reelier.svg)](https://www.npmjs.com/package/@seldonframe/reelier)
 [![CI](https://github.com/seldonframe/reelier/actions/workflows/ci.yml/badge.svg)](https://github.com/seldonframe/reelier/actions/workflows/ci.yml)
 [![license](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](./LICENSE)
 [![tests](https://img.shields.io/badge/tests-177%20passing-brightgreen.svg)](./test)
 
-Record an agent workflow once as a trace of tool calls, compile it to a
-`SKILL.md` — a recipe with a test — and replay it deterministically with
-zero LLM calls, escalating to an LLM only when the world has changed
-underneath it.
+Reelier records what your AI agent does once, then replays it
+deterministically — 0 tokens, milliseconds, a receipt every run. For
+developers whose agents do the same work over and over.
+
+## Install + first receipt
 
 ```sh
 npm i -g @seldonframe/reelier && reelier init
 ```
 
-60 seconds to your first receipt.
-
-### What that looks like
-
-`reelier init` records a real workflow, compiles it, replays it, and closes
-with a receipt — the actual shape (see `src/init.ts`'s `formatReceipt`):
+First receipt in 60 seconds. `reelier init` records a real workflow, compiles
+it, replays it, and closes with a receipt — the actual shape (see
+`src/init.ts`'s `formatReceipt`):
 
 ```
 $ reelier init --yes
@@ -50,26 +48,55 @@ Next steps:
   reelier push skills/reelier-init-demo-1.skill.md     # sync receipts (opt-in)
 ```
 
-### The measured proof
+`reelier init` also detects a Claude Code project MCP config (`.mcp.json`)
+or user config (`~/.claude.json`) and prints the entry to add for recording
+against your own MCP server(s). Without one, it runs the zero-setup demo
+above. Pass `--yes` to skip every prompt and run non-interactively (no
+config is ever written under `--yes`) — useful in CI.
+
+## The measured proof
 
 From a real, live head-to-head benchmark (agent vs. Reelier, same task,
 same data) — see [`examples/benchmark`](./examples/benchmark) and
 [`docs/strategy/reelier-launch/benchmark-results.md`](./docs/strategy/reelier-launch/benchmark-results.md)
-for the full raw tables and methodology:
+for the full raw tables, methodology, and how to reproduce it yourself:
 
 - **1,000/1,000 replays byte-identical** (N=1000 tail-variance test)
 - **0 tokens per replay** (verified from the run record, not assumed)
 - **~50x cheaper** ($0.000000/replay vs. $0.019068/run averaged over the agent arm)
-- **~59x faster** (44ms vs. 2,842ms average latency)
+- **~59x faster** (48ms vs. 2,842ms average latency)
+- a real drift **self-healed for ~$0.001**, once, then free every replay after
 
-### AGPL FAQ
+## How it works
 
-AGPL-3.0: the engine can never be taken closed. Your skills, traces, and run
-records are YOUR data — the license never touches them.
+1. **Record** — `reelier mcp --wrap "<your mcp server>"` sits in front of
+   your agent's real MCP tools and captures a lossless trace of what it
+   actually did.
+2. **Compile** — `reelier compile trace.jsonl` turns that trace into a
+   `SKILL.md` deterministically, zero LLM calls — a recipe with an
+   assertion on every step, and the compiler's honest gaps printed as **Open
+   questions** rather than guessed at.
+3. **Replay** — `reelier run skill.md` runs it again at Level 0: no LLM,
+   milliseconds, byte-identical.
+4. **Self-heal** — when the world drifts underneath a skill
+   (`--max-level 1|2`), an LLM patches the one broken step once and writes
+   its own changelog entry, so the fix never has to happen twice.
 
-The formats are specified in [SPEC.md](./SPEC.md) — a normative,
-RFC-style reference (trace/SKILL.md/run-record/proxy/runner) for anyone
-emitting or consuming these formats without reading this package's source.
+## Why it's not brittle RPA
+
+- Replays **tool calls**, not pixels — nothing to break on a UI redesign.
+- Every step carries its own assertion — a broken step fails loudly, never
+  silently passes.
+- AGPL-3.0, BYOK, local-first: the engine can never be taken closed, and
+  your skills, traces, and run records are **your data**.
+- Independently corroborated — [arXiv 2605.14237](https://arxiv.org/abs/2605.14237)
+  found 93.3–99.98% token reduction for the same record-and-replay pattern.
+
+The formats are specified in [SPEC.md](./SPEC.md) — a normative, RFC-style
+reference (trace/SKILL.md/run-record/proxy/runner) for anyone emitting or
+consuming these formats without reading this package's source.
+
+---
 
 ## Status: v0 spike + recorder + compiler + escalation ladder (L1/L2) + init
 
@@ -78,9 +105,8 @@ that there's a **recorder** (a lossless MCP proxy that captures a live agent
 session as a trace), a **compiler** (`reelier compile`, turning a trace into
 a runner-ready `SKILL.md` deterministically — see "Compile" below), an
 **escalation ladder** (`--max-level 1|2`, see "Escalation ladder" below) —
-the first LLM code in this repo, strictly opt-in — and `reelier init`, a
-guided record → compile → replay → receipt loop for the first 60 seconds
-(see "Quickstart" below). There is still:
+the first LLM code in this repo, strictly opt-in — and `reelier init`, the
+guided record → compile → replay → receipt loop above. There is still:
 
 - **No Level 3** — full agentic recovery when the recorded trace no longer
   applies at all is not implemented; a diverged destructive step, or an L2
@@ -88,31 +114,6 @@ guided record → compile → replay → receipt loop for the first 60 seconds
   hand.
 - **Zero LLM calls at the default `--max-level 0`** — by construction, not
   by convention (see below).
-
-## Quickstart
-
-```sh
-npm i -g @seldonframe/reelier && reelier init
-```
-
-`reelier init` is the guided first run: it detects whether you have a
-Claude Code project MCP config (`.mcp.json`) or user config (`~/.claude.json`)
-and prints the exact entry to add for recording against your own MCP
-server(s) — but since recording needs at least one `--wrap`'d downstream
-server and it doesn't know yours yet, the default path is a **zero-setup
-demo**: it performs 2 real HTTP requests (fetches this package's own npm
-registry metadata, then its homepage — chaining a value bound from the first
-response into the second, live, no fabrication), compiles the resulting
-trace into a runner-ready `SKILL.md` live, prints the compiler's **Open
-questions** verbatim ("these are the gaps I won't guess about" — the honesty
-moment doubles as onboarding), replays it once at Level 0 (zero LLM calls),
-and closes with a receipt: the replay's *measured* time and token count
-(asserted `0`, never assumed), plus — for the demo path — a comparison
-against what an agent doing the same task costs on our own launch benchmark
-(see `docs/strategy/reelier-launch/benchmark-results.md`). Pass `--yes` to
-skip every prompt and run the demo path non-interactively (no config is ever
-written under `--yes`) — useful in CI or to see the whole loop once before
-deciding whether to wire it into your own agent.
 
 ## Record
 
@@ -390,7 +391,7 @@ Reelier prints the filled action instead of executing it.
 
 ```sh
 # The guided 60-second first run: detect config -> record (demo or real) ->
-# compile -> replay -> receipt. See "Quickstart" above.
+# compile -> replay -> receipt. See "Install + first receipt" above.
 reelier init [--yes]
 
 # Print every step's filled action without executing anything.
