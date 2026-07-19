@@ -1,0 +1,139 @@
+name: "Reelier replay"
+description: >-
+  Replay a Reelier skill (deterministic, zero-token at L0) in CI on a
+  schedule or PR, and post the run record as a job-summary receipt. A
+  green replay check on a public repo is the proof surface — see the
+  "Run it in CI" section of README.md.
+author: "SeldonFrame"
+branding:
+  icon: "check-circle"
+  color: "green"
+
+inputs:
+  skill:
+    description: >-
+      Path (relative to the checked-out repo) to the .skill.md file to
+      replay. A single path only — for multiple skills, call this action
+      once per skill (see README.md "Run it in CI" for the matrix pattern).
+    required: true
+  max-level:
+    description: >-
+      Escalation ceiling passed to `reelier run --max-level`. "0" (the
+      default) never calls an LLM — pure deterministic replay, 0 tokens.
+      "1" or "2" allow self-healing escalation and require LLM credentials
+      to be present in the environment (see README.md "Works with any
+      model").
+    required: false
+    default: "0"
+  cloud-url:
+    description: >-
+      Base URL of the Reelier Cloud instance to push the receipt to.
+      Only used when `cloud-key` is also set.
+    required: false
+    default: "https://www.reelier.com"
+  cloud-key:
+    description: >-
+      Reelier Cloud API key. When set, `reelier push` runs after a
+      successful replay so the receipt accrues in your hosted ledger.
+      When unset, the replay is local-only — the job summary is still
+      written, nothing is pushed anywhere. Pass this as a GitHub secret,
+      never inline.
+    required: false
+    default: ""
+  vars:
+    description: >-
+      Newline-separated `name=value` pairs, forwarded to `reelier run` as
+      `--var name=value` for each line. Optional — most skills declare
+      their own inputs and need none.
+    required: false
+    default: ""
+
+outputs:
+  passed:
+    description: "\"true\" or \"false\" — the run record's own `passed` field."
+    value: ${{ steps.run-skill.outputs.passed }}
+  run-record-path:
+    description: "Path to the .reelier/runs/<skill-name>.jsonl file written by this run, if any."
+    value: ${{ steps.write-summary.outputs.record-path }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Set up Node
+      uses: actions/setup-node@v4
+      with:
+        node-version: 20
+
+    - name: Install @seldonframe/reelier
+      shell: bash
+      run: npm install -g @seldonframe/reelier@^0.5
+
+    - name: Run skill (reelier run)
+      id: run-skill
+      shell: bash
+      env:
+        SKILL: ${{ inputs.skill }}
+        MAX_LEVEL: ${{ inputs.max-level }}
+        VARS: ${{ inputs.vars }}
+      run: |
+        set +e
+        VAR_ARGS=()
+        if [ -n "$VARS" ]; then
+          while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            VAR_ARGS+=(--var "$line")
+          done <<< "$VARS"
+        fi
+
+        echo "::group::reelier run $SKILL --max-level $MAX_LEVEL"
+        reelier run "$SKILL" --max-level "$MAX_LEVEL" "${VAR_ARGS[@]}"
+        RUN_EXIT_CODE=$?
+        echo "::endgroup::"
+
+        echo "exit-code=$RUN_EXIT_CODE" >> "$GITHUB_OUTPUT"
+        if [ "$RUN_EXIT_CODE" -eq 0 ]; then
+          echo "passed=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "passed=false" >> "$GITHUB_OUTPUT"
+        fi
+        exit 0
+
+    - name: Push receipt to Reelier Cloud
+      id: push-cloud
+      if: ${{ inputs.cloud-key != '' && steps.run-skill.outputs.passed == 'true' }}
+      shell: bash
+      env:
+        SKILL: ${{ inputs.skill }}
+        REELIER_CLOUD_URL: ${{ inputs.cloud-url }}
+        REELIER_CLOUD_KEY: ${{ inputs.cloud-key }}
+      run: |
+        set +e
+        echo "::group::reelier push $SKILL"
+        reelier push "$SKILL"
+        PUSH_EXIT_CODE=$?
+        echo "::endgroup::"
+        if [ "$PUSH_EXIT_CODE" -eq 0 ]; then
+          echo "status=pushed" >> "$GITHUB_OUTPUT"
+        else
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+        fi
+        exit 0
+
+    - name: Write job summary
+      id: write-summary
+      shell: bash
+      env:
+        SKILL_PATH: ${{ inputs.skill }}
+        RUN_EXIT_CODE: ${{ steps.run-skill.outputs.exit-code }}
+        CLOUD_PUSH_STATUS: ${{ inputs.cloud-key == '' && 'skipped' || steps.run-skill.outputs.passed != 'true' && 'not-attempted' || steps.push-cloud.outputs.status }}
+      run: node "${{ github.action_path }}/.github/scripts/gha-summary.mjs"
+
+    - name: Fail the check if the replay failed
+      shell: bash
+      env:
+        RUN_EXIT_CODE: ${{ steps.run-skill.outputs.exit-code }}
+      run: |
+        if [ "$RUN_EXIT_CODE" != "0" ]; then
+          echo "Reelier replay of '${{ inputs.skill }}' failed (exit $RUN_EXIT_CODE) — see the job summary and log above." >&2
+          exit "$RUN_EXIT_CODE"
+        fi
