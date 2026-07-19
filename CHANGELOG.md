@@ -2,6 +2,33 @@
 
 All notable changes to `@seldonframe/reelier`. Dates are release dates.
 
+## 0.7.0 — Use Reelier inside your coding agent
+
+`reelier serve` starts an MCP tool-server that exposes Reelier's own commands
+as tools any MCP-capable agent (Claude Code, Cursor, Windsurf, Codex) can call
+mid-session — so the agent itself can turn a repeatable workflow into a
+replayable skill, or replay one instead of redoing it.
+
+### Added
+- **`reelier serve`** — an MCP server exposing four tools: `reelier_scan`,
+  `reelier_from_session`, `reelier_replay` (**Level-0 only** — a tool-server
+  call can never trigger LLM/BYOK spend), and `reelier_push` (explicit
+  `ok`/`skipped-no-key`/`failed` outcomes, never a silent success). It is the
+  deliberate opposite of `reelier mcp` (the recorder that fronts *other* MCP
+  servers); the distinction is documented in both commands' `--help` and
+  SPEC.md §10.
+- **`integrations/`** — a distributable Claude Code skill that teaches the
+  agent *when* to reach for Reelier (freeze deterministic tool-call workflows;
+  replay existing skills instead of redoing them; never promise to replay a
+  coding/editing session), plus thinner Cursor (`.mdc`) and Windsurf rules
+  variants and per-agent install steps.
+
+### The honesty rule still holds
+Only deterministic tool-call workflows are replayable. A `reelier_scan` /
+`reelier_from_session` over a session with nothing replayable returns an honest
+empty/skip result — never a fabricated skill — and `reelier_replay` returns the
+actual run record, pass or fail.
+
 ## 0.6.0 — Record from your agent's history
 
 The recording already happened. Your agent (Claude Code, and any tool that
