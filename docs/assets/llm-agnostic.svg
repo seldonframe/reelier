@@ -74,42 +74,46 @@
 
   <!-- openai-compatible branch -->
   <path d="M700,448 L740,448" stroke="#3291ff" stroke-width="1.5" fill="none"/>
-  <line x1="740" y1="235" x2="740" y2="545" stroke="#3291ff" stroke-width="1.5"/>
-  <text x="748" y="425" font-size="10.5" fill="#6b6b6f" font-family="'Geist Mono', ui-monospace, Consolas, monospace">OpenAI-compatible</text>
-  <text x="748" y="439" font-size="10.5" fill="#6b6b6f" font-family="'Geist Mono', ui-monospace, Consolas, monospace">chat-completions</text>
-  <line x1="740" y1="235" x2="780" y2="235" stroke="#3291ff" stroke-width="1.5" marker-end="url(#arrowAccent)"/>
-  <line x1="740" y1="297" x2="780" y2="297" stroke="#3291ff" stroke-width="1.5" marker-end="url(#arrowAccent)"/>
-  <line x1="740" y1="359" x2="780" y2="359" stroke="#3291ff" stroke-width="1.5" marker-end="url(#arrowAccent)"/>
-  <line x1="740" y1="421" x2="780" y2="421" stroke="#3291ff" stroke-width="1.5" marker-end="url(#arrowAccent)"/>
-  <line x1="740" y1="483" x2="780" y2="483" stroke="#3291ff" stroke-width="1.5" marker-end="url(#arrowAccent)"/>
-  <line x1="740" y1="545" x2="780" y2="545" stroke="#3291ff" stroke-width="1.5" marker-end="url(#arrowAccent)"/>
+  <line x1="740" y1="229" x2="740" y2="571" stroke="#3291ff" stroke-width="1.5"/>
+  <text x="748" y="404" font-size="10.5" fill="#6b6b6f" font-family="'Geist Mono', ui-monospace, Consolas, monospace">OpenAI-compatible</text>
+  <text x="748" y="418" font-size="10.5" fill="#6b6b6f" font-family="'Geist Mono', ui-monospace, Consolas, monospace">chat-completions</text>
+  <line x1="740" y1="229" x2="780" y2="229" stroke="#3291ff" stroke-width="1.5" marker-end="url(#arrowAccent)"/>
+  <line x1="740" y1="286" x2="780" y2="286" stroke="#3291ff" stroke-width="1.5" marker-end="url(#arrowAccent)"/>
+  <line x1="740" y1="343" x2="780" y2="343" stroke="#3291ff" stroke-width="1.5" marker-end="url(#arrowAccent)"/>
+  <line x1="740" y1="400" x2="780" y2="400" stroke="#3291ff" stroke-width="1.5" marker-end="url(#arrowAccent)"/>
+  <line x1="740" y1="457" x2="780" y2="457" stroke="#3291ff" stroke-width="1.5" marker-end="url(#arrowAccent)"/>
+  <line x1="740" y1="514" x2="780" y2="514" stroke="#3291ff" stroke-width="1.5" marker-end="url(#arrowAccent)"/>
+  <line x1="740" y1="571" x2="780" y2="571" stroke="#3291ff" stroke-width="1.5" marker-end="url(#arrowAccent)"/>
 
   <!-- ================= RIGHT: providers ================= -->
   <text x="950" y="128" font-size="11.5" letter-spacing="0.03em" fill="#6b6b6f" text-anchor="middle" font-family="'Geist Mono', ui-monospace, Consolas, monospace">PROVIDERS (BYOK — point the base URL anywhere)</text>
 
   <g font-family="'Geist Mono', ui-monospace, Consolas, monospace" font-size="14" fill="#ededed">
-    <rect x="780" y="150" width="340" height="46" rx="8" fill="#0c0c0e" stroke="#232326"/>
-    <text x="804" y="178">Anthropic</text>
-    <rect x="1024" y="164" width="76" height="19" rx="4" fill="rgba(50,145,255,.10)" stroke="#3291ff" stroke-opacity="0.4"/>
-    <text x="1062" y="177" font-size="10" fill="#3291ff" text-anchor="middle">native</text>
+    <rect x="780" y="150" width="340" height="44" rx="8" fill="#0c0c0e" stroke="#232326"/>
+    <text x="804" y="177">Anthropic</text>
+    <rect x="1024" y="162" width="76" height="19" rx="4" fill="rgba(50,145,255,.10)" stroke="#3291ff" stroke-opacity="0.4"/>
+    <text x="1062" y="175" font-size="10" fill="#3291ff" text-anchor="middle">native</text>
 
-    <rect x="780" y="212" width="340" height="46" rx="8" fill="#0c0c0e" stroke="#232326"/>
-    <text x="804" y="240">OpenRouter</text>
+    <rect x="780" y="207" width="340" height="44" rx="8" fill="#0c0c0e" stroke="#232326"/>
+    <text x="804" y="234">OpenRouter</text>
 
-    <rect x="780" y="274" width="340" height="46" rx="8" fill="#0c0c0e" stroke="#232326"/>
-    <text x="804" y="302">Ollama (local)</text>
+    <rect x="780" y="264" width="340" height="44" rx="8" fill="#0c0c0e" stroke="#232326"/>
+    <text x="804" y="291">Ollama (local)</text>
 
-    <rect x="780" y="336" width="340" height="46" rx="8" fill="#0c0c0e" stroke="#232326"/>
-    <text x="804" y="364" font-size="13">Gemini (OpenAI-compat endpoint)</text>
+    <rect x="780" y="321" width="340" height="44" rx="8" fill="#0c0c0e" stroke="#232326"/>
+    <text x="804" y="348" font-size="13">Gemini (OpenAI-compat endpoint)</text>
 
-    <rect x="780" y="398" width="340" height="46" rx="8" fill="#0c0c0e" stroke="#232326"/>
-    <text x="804" y="426">Groq</text>
+    <rect x="780" y="378" width="340" height="44" rx="8" fill="#0c0c0e" stroke="#232326"/>
+    <text x="804" y="405">Groq</text>
 
-    <rect x="780" y="460" width="340" height="46" rx="8" fill="#0c0c0e" stroke="#232326"/>
-    <text x="804" y="488">vLLM (self-hosted)</text>
+    <rect x="780" y="435" width="340" height="44" rx="8" fill="#0c0c0e" stroke="#232326"/>
+    <text x="804" y="462" font-size="13">Kimi / Moonshot (OpenAI-compat endpoint)</text>
 
-    <rect x="780" y="522" width="340" height="46" rx="8" fill="#0c0c0e" stroke="#232326"/>
-    <text x="804" y="550">LM Studio (local)</text>
+    <rect x="780" y="492" width="340" height="44" rx="8" fill="#0c0c0e" stroke="#232326"/>
+    <text x="804" y="519">vLLM (self-hosted)</text>
+
+    <rect x="780" y="549" width="340" height="44" rx="8" fill="#0c0c0e" stroke="#232326"/>
+    <text x="804" y="576">LM Studio (local)</text>
   </g>
 
   <!-- ================= Footer caption ================= -->

@@ -93,8 +93,8 @@ not convention. Escalation is opt-in and speaks through one narrow BYOK call
 surface (`--llm-base-url` / `REELIER_LLM_BASE_URL` + `--llm-model`): a native
 Anthropic Messages API adapter for `api.anthropic.com`, and an
 OpenAI-compatible chat-completions adapter for everything else — OpenRouter,
-Ollama, Gemini's OpenAI-compat endpoint, Groq, vLLM, LM Studio, or any other
-host that speaks the same wire format. Better models don't obsolete Reelier —
+Ollama, Gemini's OpenAI-compat endpoint, Groq, vLLM, LM Studio, Kimi (Moonshot),
+or any other host that speaks the same wire format. Better models don't obsolete Reelier —
 point `--llm-base-url` at a stronger one and every skill's *next* self-heal
 gets smarter for free, without recompiling anything by hand.
 
@@ -577,8 +577,9 @@ Two wire adapters, chosen by the base URL's host: the native **Anthropic
 Messages API** for `api.anthropic.com`, and **OpenAI-compatible
 chat-completions** for every other host — which is the "almost any LLM"
 story: point `--llm-base-url` at OpenRouter, a local Ollama, Gemini's
-OpenAI-compat endpoint, Groq, vLLM, or anything else that speaks the
-chat-completions shape, and it works unchanged. The API key is only
+OpenAI-compat endpoint, Groq, vLLM, Kimi (Moonshot's `api.moonshot.ai/v1`),
+or anything else that speaks the chat-completions shape, and it works
+unchanged. The API key is only
 required — and only checked — the first time a step actually escalates; a
 `--max-level 1` run whose skill never diverges never needs a key.
 
