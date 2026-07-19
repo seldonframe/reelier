@@ -18,14 +18,16 @@
     "./trace": "./dist/trace.js",
     "./mcp-client": "./dist/mcp-client.js",
     "./mcp-tool": "./dist/mcp-tool.js",
-    "./tools": "./dist/tools.js"
+    "./tools": "./dist/tools.js",
+    "./serve": "./dist/serve.js"
   },
   "files": [
     "dist",
     "SPEC.md",
     "README.md",
     "LICENSE",
-    "CHANGELOG.md"
+    "CHANGELOG.md",
+    "integrations"
   ],
   "repository": {
     "type": "git",

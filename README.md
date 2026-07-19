@@ -855,6 +855,61 @@ trace files (see "Redaction" above) applies here, since redaction happens
 at *trace*-write time, not at push time. Treat a run-record file as
 potentially sensitive before pushing it anywhere.
 
+## Use Reelier inside your coding agent
+
+Everything above assumes you're typing `reelier ...` at a terminal. `reelier
+serve` instead exposes Reelier's own commands **as MCP tools**, so a
+running coding agent — Claude Code, Cursor, Windsurf, Codex, anything that
+speaks MCP — can call Reelier mid-session without shelling out:
+
+```sh
+reelier serve
+```
+
+**This is a different role from `reelier mcp`.** `reelier mcp --wrap
+"<server>"` is the *recorder*: it fronts *your own* MCP server(s) so their
+calls get captured into a trace. `reelier serve` takes no `--wrap` at all —
+it fronts *Reelier itself*, exposing four tools:
+
+| Tool | Wraps | What it does |
+| --- | --- | --- |
+| `reelier_scan` | `scan.ts` | Discover replayable workflows in an agent's session history (default `~/.claude/projects`). |
+| `reelier_from_session` | `session.ts` | Compile a `SKILL.md` from a session transcript. |
+| `reelier_replay` | `runner.ts` | Run a skill file at Level 0 (zero LLM calls) and return the real run record. |
+| `reelier_push` | `push.ts` | Push a skill's run records (and, on first push, the skill) to Reelier Cloud. |
+
+Same honesty rules as the CLI throughout: a scan/compile over a session
+with nothing replayable returns an explicit empty/skip result, never a
+fabricated skill; a replay returns whatever the runner actually measured;
+a push missing `REELIER_CLOUD_URL`/`REELIER_CLOUD_KEY` reports
+`skipped-no-key`, not a silent success.
+
+### Wiring it up
+
+Add to your agent's MCP config (e.g. `.mcp.json` for Claude Code):
+
+```json
+{
+  "mcpServers": {
+    "reelier": {
+      "command": "npx",
+      "args": ["-y", "@seldonframe/reelier", "serve"]
+    }
+  }
+}
+```
+
+### Teaching the agent *when* to reach for it
+
+Having the tools available doesn't mean an agent knows when to use them.
+`integrations/claude-code/reelier/` ships a `SKILL.md` you drop into
+`~/.claude/skills/` (or your project's `.claude/skills/`) that teaches the
+reflex: after finishing a repeatable, tool-call-driven task, offer to
+freeze it into a replayable skill; before redoing deterministic work,
+check whether a skill already covers it. `integrations/cursor/` and
+`integrations/windsurf/` have thinner rules-file variants of the same
+guidance. See `integrations/README.md` for install steps per agent.
+
 ## Run it in CI
 
 A GitHub Action (`action.yml` at the repo root) wraps `reelier run` (and,

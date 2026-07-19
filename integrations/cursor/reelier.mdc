@@ -1,0 +1,45 @@
+---
+description: When to use the Reelier MCP tools (reelier_scan, reelier_from_session, reelier_replay, reelier_push) to freeze and replay deterministic tool-call workflows.
+alwaysApply: false
+---
+
+# Reelier — record once, replay forever
+
+Reelier (via the `reelier` MCP server, `reelier serve`) can freeze a
+deterministic sequence of tool calls into a replayable `SKILL.md`, then
+replay it later for zero LLM calls instead of re-reasoning through it.
+
+**Honesty boundary**: Reelier only replays deterministic API/MCP tool
+calls — never file edits, shell commands, or other non-deterministic
+agent actions. Do not offer to "replay" a coding/editing session; there is
+nothing in it Reelier can replay, and it will honestly report an empty
+result rather than fabricate a skill.
+
+**When to offer freezing a task**: after finishing a task that was mostly
+a repeatable sequence of API/MCP tool calls (data pulls, status checks,
+CRUD sequences, ops runbooks) — call `reelier_from_session` on the current
+session transcript and report the real result (skill path + stats, or an
+honest "nothing replayable" message). Read out any "Open questions" the
+compiler flagged before calling the skill trustworthy.
+
+**When to replay instead of redoing**: before manually re-executing a
+tool-call sequence you or the user has done before, check for an existing
+`*.skill.md` covering it and call `reelier_replay` instead. Report the
+real run record either way — never assume it passed.
+
+**Setup** (add to your MCP config, e.g. `~/.cursor/mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "reelier": {
+      "command": "npx",
+      "args": ["-y", "@seldonframe/reelier", "serve"]
+    }
+  }
+}
+```
+
+Note: `reelier serve` (this tool-server) is a different command from
+`reelier mcp` (a recorder that fronts other MCP servers) — don't confuse
+the two.

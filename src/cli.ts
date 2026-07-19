@@ -32,6 +32,7 @@ import {
 import { compileSessionTranscript, type SessionSkip } from "./session.js";
 import { scanTranscripts, type ScannedSession } from "./scan.js";
 import { planInstall, applyInstall, findLatestBackup, restoreFromBackup } from "./wrap.js";
+import { buildToolServer } from "./serve.js";
 
 interface ParsedArgs {
   positional: string[];
@@ -398,7 +399,11 @@ async function cmdBench(args: ParsedArgs): Promise<number> {
 
 async function cmdMcp(args: ParsedArgs): Promise<number> {
   if (args.wraps.length === 0) {
-    console.error('Usage: reelier mcp --wrap "<command line>" [--wrap "<another>"] [--trace-dir <dir>]');
+    console.error(
+      'Usage: reelier mcp --wrap "<command line>" [--wrap "<another>"] [--trace-dir <dir>]\n' +
+        "  (this is the RECORDER — it fronts your OWN MCP server(s) so their calls can be captured into a " +
+        "trace. To expose Reelier's own commands as tools instead, use 'reelier serve'.)"
+    );
     return 1;
   }
   const traceDir = args.opts["trace-dir"] ?? path.join(process.cwd(), ".reelier", "traces");
@@ -424,6 +429,37 @@ async function cmdMcp(args: ParsedArgs): Promise<number> {
     shuttingDown = true;
     await server.close().catch(() => {});
     await Promise.all(downstreams.map((d) => d.close().catch(() => {})));
+  };
+
+  await new Promise<void>((resolve) => {
+    process.stdin.on("close", resolve);
+    process.stdin.on("end", resolve);
+    process.on("SIGINT", () => resolve());
+    process.on("SIGTERM", () => resolve());
+  });
+  await shutdown();
+
+  return 0;
+}
+
+/**
+ * `reelier serve` — the AGENT-NATIVE tool-server. Exposes Reelier's OWN
+ * commands (scan, from-session, replay, push) as MCP tools an agent can
+ * call mid-session. This is the OPPOSITE of `reelier mcp`: that command is
+ * the recorder — it fronts *other* MCP servers (via --wrap) to capture
+ * their calls. `reelier serve` takes no --wrap; it's Reelier fronting
+ * itself. See src/serve.ts for the tool list + schemas.
+ */
+async function cmdServe(): Promise<number> {
+  const server = buildToolServer();
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+
+  let shuttingDown = false;
+  const shutdown = async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    await server.close().catch(() => {});
   };
 
   await new Promise<void>((resolve) => {
@@ -1152,6 +1188,8 @@ async function main(): Promise<number> {
       return cmdBench(args);
     case "mcp":
       return cmdMcp(args);
+    case "serve":
+      return cmdServe();
     case "trace":
       return cmdTrace(args);
     case "compile":
@@ -1170,7 +1208,9 @@ async function main(): Promise<number> {
       return cmdUninstall(args);
     default:
       console.error(
-        "Usage: reelier <run|bench|mcp|trace|compile|push|init|from-session|scan|install|uninstall> [options]"
+        "Usage: reelier <run|bench|mcp|serve|trace|compile|push|init|from-session|scan|install|uninstall> [options]\n" +
+          "  mcp   — RECORDER: fronts your own --wrap'd MCP server(s) to capture their calls into a trace.\n" +
+          "  serve — TOOL-SERVER: exposes Reelier's own commands (scan/from-session/replay/push) as MCP tools."
       );
       return 1;
   }

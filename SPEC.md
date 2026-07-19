@@ -1195,6 +1195,72 @@ sort chronologically) and leaves the backup file in place afterward. If no
 backup exists, `uninstall` exits non-zero with the config path it checked,
 never guessing at what to restore.
 
+## 10. Agent-native tool-server (`reelier serve`)
+
+Source of truth: `src/serve.ts` (`buildToolServer` and the four
+`run*Tool` functions), `test/serve.test.ts`.
+
+`reelier serve` starts an MCP server on stdio that exposes Reelier's OWN
+commands as callable tools — the **opposite** role from `reelier mcp`
+(§5): that command fronts *other* MCP servers to record their calls;
+`reelier serve` fronts *Reelier itself*, takes no `--wrap`, and never
+starts or manages a recording. Each tool is a thin wrapper over an
+existing module — no engine logic is duplicated.
+
+### 10.1 Tool list
+
+| Tool | Required input | Wraps | Output |
+| --- | --- | --- | --- |
+| `reelier_scan` | (none) | `scan.ts`'s `scanTranscripts` | `{ rootDir, totalSessions, replayableSessions, sessions: ScannedSession[] }` |
+| `reelier_from_session` | `transcriptPath: string` | `session.ts`'s `compileSessionTranscript` | `{ ok: true, skillPath, steps, asserts, binds, servers, replayableCount, skipped, openQuestions }` on success, or `{ ok: false, reason, skipped }` when nothing in the transcript was replayable |
+| `reelier_replay` | `skillPath: string` | `runner.ts`'s `runSkill` | The real `RunRecord` (§4.2), unmodified |
+| `reelier_push` | `skillPath: string` | `push.ts`'s `pushSkill` | `{ outcome: "ok", result: PushResult }` \| `{ outcome: "skipped-no-key", message }` \| `{ outcome: "failed", message }` |
+
+Optional inputs mirror the equivalent CLI flags 1:1: `reelier_scan.dir`
+(`--dir`), `reelier_from_session.{name,out,force}` (`--name`/`--out`/
+`--force`), `reelier_replay.{vars,wrap,allowDestructive,cwd}`
+(`--var`/`--wrap`/`--yes`/implicit cwd), `reelier_push.{all,dryRun,
+withSkill,cwd}` (`--all`/`--dry-run`/`--with-skill`/implicit cwd).
+
+### 10.2 Normative behavior
+
+- **`reelier_replay` always runs at Level 0** (`maxLevel: 0` is hardcoded
+  in `runReplayTool`, never accepted as caller input) — the LLM is never
+  constructed or called from this surface, regardless of what a
+  malicious or careless caller might attempt to pass. A tool-server call
+  is inert without a human explicitly choosing to escalate from the CLI.
+- **Honesty is structural, not a formatting convention.** `reelier_scan`
+  and `reelier_from_session` return the exact same `ok`/`skipped`/
+  `reason` shapes as their CLI counterparts (§9.1, §9.2) — a session or
+  transcript with zero deterministically-replayable tool calls is
+  reported as such, never upgraded into a fabricated skill or a
+  nonexistent replayable count.
+- **`reelier_from_session` refuses to silently overwrite** an existing
+  file at the resolved output path unless `force: true` is passed —
+  matching the CLI's `--force` gate exactly (same `fileExists` check).
+- **`reelier_push`'s three-way outcome is normative**: a thrown error
+  whose message names `REELIER_CLOUD_URL`/`REELIER_CLOUD_KEY` (i.e.
+  `resolvePushConfig`'s own error, §8.1) is classified `skipped-no-key`;
+  any other thrown error (missing run records, read failure) is
+  classified `failed` with the real error message; neither case is ever
+  reported as `outcome: "ok"`.
+- **Every tool call either returns `textResult(<JSON-serialized result>)`
+  or an explicit MCP error** (`{ content: [...], isError: true }`) — a
+  missing required argument, an unknown tool name, or a thrown exception
+  from the wrapped module all produce `isError: true` with a human-
+  readable message in `content[0].text`; none of these are ever
+  represented as a silent/empty success.
+
+### 10.3 Distinguishing `mcp` from `serve` at the CLI
+
+`reelier mcp` invoked with no `--wrap` prints a usage error that
+explicitly names `reelier serve` as the command to reach for instead when
+the goal is exposing Reelier's own commands rather than recording a
+downstream server. The top-level unknown-command usage text
+(`reelier <run|bench|mcp|serve|...>`) likewise spells out the `mcp` vs.
+`serve` role split inline, so a mistyped or unfamiliar invocation is
+redirected rather than left to guess from a bare "unknown command" error.
+
 ## Deviations noted
 
 This section is for the orchestrator, not part of the normative spec. No
