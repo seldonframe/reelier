@@ -226,7 +226,7 @@ const replayToolInputSchema = {
   type: "object" as const,
   properties: {
     skillPath: { type: "string", description: "Path to a .skill.md file to run." },
-    vars: { type: "object", description: "Template variable bindings ({{name}} -> value)." },
+    vars: { type: "object", description: "Template variable bindings ({{name}} -> value) — e.g. a computed date window so a relative-date skill replays against the current period, not a frozen one." },
     wrap: {
       type: "array",
       items: { type: "string" },
@@ -303,11 +303,17 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
     "sessions contain a deterministically-replayable tool-call sequence (MCP/HTTP calls only — native file/shell " +
     "actions are reported as skipped, never fabricated into a fake result).",
   reelier_from_session:
-    "Compile a SKILL.md from a session transcript. Returns the written skill's path, stats, and open questions — " +
-    "or, honestly, that nothing in the transcript was replayable.",
+    "Compile a SKILL.md from a session transcript — the right move when the work already happened by hand (you " +
+    "can't record it retroactively). Get the transcriptPath from reelier_scan first; it lists each session's path. " +
+    "Returns the written skill's path, stats, and open questions — or, honestly, that nothing in the transcript was " +
+    "replayable. If the workflow depended on a relative time window (\"this week\"), watch the open questions: bind " +
+    "that window to a date variable (see reelier_replay's vars) so a later replay pulls the CURRENT window, not a " +
+    "frozen one.",
   reelier_replay:
     "Run a skill file at Level 0 (deterministic replay, zero LLM calls) and return the real run record: per-step " +
-    "outcomes, timing, and totals. Never fabricates a pass.",
+    "outcomes, timing, and totals. Never fabricates a pass. Level 0 reproduces the recorded TOOL CALLS only — it does " +
+    "not re-run any LLM reasoning or prose-formatting step, so a 'summarize'/'write-up' part of the original workflow " +
+    "is not reproduced here. Pass vars to fill {{templated}} inputs (e.g. a computed date window).",
   reelier_push:
     "Push a skill's local run records (and, on first push, the skill file) to Reelier Cloud. Requires " +
     "REELIER_CLOUD_URL/REELIER_CLOUD_KEY in env — reports skipped-no-key honestly when they're absent.",

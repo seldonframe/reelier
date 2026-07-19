@@ -131,9 +131,12 @@ export class Recorder {
 
 const CONTROL_TOOL_DESCRIPTIONS: Record<string, string> = {
   reelier_start_recording:
-    "Begin recording this session's tool calls as a Reelier trace. Call reelier_note before each " +
-    "logical step to narrate intent, then call the tools you'd normally call — they pass through " +
-    "unchanged and are logged. Call reelier_stop_recording when done.",
+    "Begin recording the tool calls you're ABOUT to make as a Reelier trace — it captures only calls made " +
+    "after this, so you cannot record work retroactively. If the workflow already happened earlier this " +
+    "session, do NOT re-do it just to record it — compile it straight from history instead " +
+    "(reelier_from_session, or the `reelier serve` scan→from_session path). Otherwise: call reelier_note " +
+    "before each logical step to narrate intent, then call the tools you'd normally call — they pass " +
+    "through unchanged and are logged. Call reelier_stop_recording when done.",
   reelier_note:
     "Narrate what you're about to do, in one sentence (e.g. \"I'm about to pull this week's " +
     "bookings\"). No-op if not currently recording.",
