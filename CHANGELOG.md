@@ -2,6 +2,28 @@
 
 All notable changes to `@seldonframe/reelier`. Dates are release dates.
 
+## 0.7.1 — Replay-worthiness, not just replay-mechanics
+
+`scan` and `from-session` now tell you which discovered workflows are actually
+worth replaying — not just which ones Reelier *can* re-issue.
+
+### Added
+- **`reelier scan`** shows each session's effect split — `X replayable
+  (Y read-only · Z side-effectful)` — ranks read-only sessions (the ideal
+  replay targets) first, tags side-effect-heavy ones `⚠ side-effectful`, and
+  headlines how many are read-only. (On a real 2,307-session history: 556
+  replayable, but only **5** read-only.)
+- **`reelier from-session`** warns after compiling when a skill contains
+  side-effectful steps (`create/update/delete/write`) — replaying re-executes
+  those side effects — or confirms `✓ all N steps are read-only — safe to
+  replay repeatedly`. It never blocks the compile; it just tells the truth.
+
+### Why
+"Replayable" proves Reelier *can* re-issue a call, not that you *should*
+replay it — a `create_scheduled_task` call is replayable-shaped but would
+re-create the task every run. This reuses the same effect classifier that
+already keeps destructive steps off the escalation ladder.
+
 ## 0.7.0 — Use Reelier inside your coding agent
 
 `reelier serve` starts an MCP tool-server that exposes Reelier's own commands
