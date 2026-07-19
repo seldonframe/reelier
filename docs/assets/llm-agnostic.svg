@@ -1,0 +1,127 @@
+<svg width="1200" height="700" viewBox="0 0 1200 700" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Reelier's escalation ladder: Level 0 replays deterministically with zero LLM calls; only Level 1 and Level 2 escalation call an LLM, through one narrow BYOK call surface that fans out to any OpenAI-compatible provider plus a native Anthropic adapter.">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#6b6b6f"/>
+    </marker>
+    <marker id="arrowAccent" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#3291ff"/>
+    </marker>
+  </defs>
+
+  <rect width="1200" height="700" fill="#0a0a0a"/>
+  <line x1="0" y1="95" x2="1200" y2="95" stroke="#1a1a1c" stroke-width="1"/>
+  <line x1="0" y1="620" x2="1200" y2="620" stroke="#1a1a1c" stroke-width="1"/>
+
+  <!-- Header -->
+  <text x="600" y="38" font-size="13" letter-spacing="0.05em" fill="#6b6b6f" text-anchor="middle" font-family="'Geist Mono', ui-monospace, Consolas, monospace">ARCHITECTURE</text>
+  <text x="600" y="72" font-size="28" font-weight="600" letter-spacing="-0.02em" fill="#ededed" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif">Any model. Your key. Swappable per call.</text>
+
+  <!-- ================= LEFT: Reelier escalation ladder ================= -->
+  <rect x="40" y="110" width="380" height="500" rx="10" fill="#0c0c0e" stroke="#232326"/>
+
+  <g transform="translate(320 118) scale(0.34)" stroke="#ededed" stroke-width="8" stroke-linejoin="round" stroke-linecap="round" fill="none">
+    <path d="M30 22 L78 50 L30 78 Z"/>
+    <line x1="18" y1="38" x2="18" y2="62"/>
+  </g>
+  <text x="64" y="146" font-size="15" font-weight="600" letter-spacing="0.05em" fill="#ededed" font-family="'Geist Mono', ui-monospace, Consolas, monospace">REELIER</text>
+  <text x="64" y="170" font-size="12" fill="#6b6b6f" font-family="'Geist Mono', ui-monospace, Consolas, monospace">ESCALATION LADDER — divergence-only</text>
+
+  <!-- L0 -->
+  <rect x="64" y="195" width="332" height="125" rx="8" fill="rgba(62,207,142,.09)" stroke="#3ecf8e" stroke-opacity="0.35"/>
+  <rect x="300" y="206" width="90" height="22" rx="4" fill="rgba(62,207,142,.09)" stroke="#3ecf8e" stroke-opacity="0.35"/>
+  <text x="345" y="221" font-size="10.5" font-weight="600" fill="#3ecf8e" text-anchor="middle" font-family="'Geist Mono', ui-monospace, Consolas, monospace">[MEASURED]</text>
+  <text x="88" y="238" font-size="24" font-weight="700" fill="#3ecf8e" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif">L0</text>
+  <text x="88" y="262" font-size="15" font-weight="600" fill="#ededed" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif">deterministic replay</text>
+  <text x="88" y="285" font-size="11.5" fill="#a1a1a6" font-family="'Geist Mono', ui-monospace, Consolas, monospace">0 LLM calls &#183; 0 tokens &#183; always on</text>
+  <text x="88" y="305" font-size="11" fill="#6b6b6f" font-family="'Geist Mono', ui-monospace, Consolas, monospace">fails closed on divergence — never guesses</text>
+
+  <!-- arrow L0 -> L1 -->
+  <line x1="229" y1="320" x2="229" y2="350" stroke="#6b6b6f" stroke-width="1.5" stroke-dasharray="4 4" marker-end="url(#arrow)"/>
+  <text x="246" y="339" font-size="10.5" fill="#6b6b6f" font-family="'Geist Mono', ui-monospace, Consolas, monospace">on divergence only</text>
+
+  <!-- L1 -->
+  <rect x="64" y="350" width="332" height="90" rx="8" fill="#0c0c0e" stroke="#232326"/>
+  <text x="88" y="378" font-size="14" font-weight="600" fill="#ededed" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif">L1 — re-read same observation</text>
+  <text x="88" y="399" font-size="11" fill="#a1a1a6" font-family="'Geist Mono', ui-monospace, Consolas, monospace">patches assert/bind only, no re-execution</text>
+  <text x="88" y="421" font-size="11.5" font-weight="600" fill="#3291ff" font-family="'Geist Mono', ui-monospace, Consolas, monospace">&#8594; LLM call (BYOK)</text>
+
+  <!-- arrow L1 -> L2 -->
+  <line x1="229" y1="440" x2="229" y2="470" stroke="#6b6b6f" stroke-width="1.5" stroke-dasharray="4 4" marker-end="url(#arrow)"/>
+  <text x="246" y="459" font-size="10.5" fill="#6b6b6f" font-family="'Geist Mono', ui-monospace, Consolas, monospace">if L1 can't heal it</text>
+
+  <!-- L2 -->
+  <rect x="64" y="470" width="332" height="90" rx="8" fill="#0c0c0e" stroke="#232326"/>
+  <text x="88" y="498" font-size="14" font-weight="600" fill="#ededed" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif">L2 — propose new args</text>
+  <text x="88" y="519" font-size="11" fill="#a1a1a6" font-family="'Geist Mono', ui-monospace, Consolas, monospace">read / idempotent-write only — one re-exec</text>
+  <text x="88" y="541" font-size="11.5" font-weight="600" fill="#3291ff" font-family="'Geist Mono', ui-monospace, Consolas, monospace">&#8594; LLM call (BYOK)</text>
+
+  <text x="64" y="590" font-size="11" fill="#6b6b6f" font-family="'Geist Mono', ui-monospace, Consolas, monospace">destructive steps never escalate — no Level 3</text>
+
+  <!-- ================= MIDDLE: BYOK call surface ================= -->
+  <path d="M396,395 C430,395 430,390 470,388" stroke="#3291ff" stroke-width="1.5" fill="none" marker-end="url(#arrowAccent)"/>
+  <path d="M396,515 C430,515 430,448 470,448" stroke="#3291ff" stroke-width="1.5" fill="none" marker-end="url(#arrowAccent)"/>
+
+  <rect x="470" y="360" width="230" height="110" rx="10" fill="rgba(0,112,243,.08)" stroke="#0070f3"/>
+  <text x="585" y="391" font-size="12" font-weight="600" letter-spacing="0.05em" fill="#3291ff" text-anchor="middle" font-family="'Geist Mono', ui-monospace, Consolas, monospace">BYOK CALL SURFACE</text>
+  <text x="585" y="415" font-size="12" fill="#ededed" text-anchor="middle" font-family="'Geist Mono', ui-monospace, Consolas, monospace">REELIER_LLM_BASE_URL + model</text>
+  <text x="585" y="435" font-size="11" fill="#a1a1a6" text-anchor="middle" font-family="'Geist Mono', ui-monospace, Consolas, monospace">flags &gt; env vars &gt; defaults</text>
+  <text x="585" y="492" font-size="13" fill="#ededed" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif">any model, your key — swappable per call</text>
+
+  <!-- native branch -->
+  <path d="M700,388 L780,173" stroke="#3291ff" stroke-width="1.5" fill="none" marker-end="url(#arrowAccent)"/>
+  <text x="705" y="272" font-size="10.5" fill="#6b6b6f" font-family="'Geist Mono', ui-monospace, Consolas, monospace">Anthropic Messages API</text>
+  <text x="705" y="286" font-size="10.5" fill="#6b6b6f" font-family="'Geist Mono', ui-monospace, Consolas, monospace">(native adapter)</text>
+
+  <!-- openai-compatible branch -->
+  <path d="M700,448 L740,448" stroke="#3291ff" stroke-width="1.5" fill="none"/>
+  <line x1="740" y1="235" x2="740" y2="545" stroke="#3291ff" stroke-width="1.5"/>
+  <text x="748" y="425" font-size="10.5" fill="#6b6b6f" font-family="'Geist Mono', ui-monospace, Consolas, monospace">OpenAI-compatible</text>
+  <text x="748" y="439" font-size="10.5" fill="#6b6b6f" font-family="'Geist Mono', ui-monospace, Consolas, monospace">chat-completions</text>
+  <line x1="740" y1="235" x2="780" y2="235" stroke="#3291ff" stroke-width="1.5" marker-end="url(#arrowAccent)"/>
+  <line x1="740" y1="297" x2="780" y2="297" stroke="#3291ff" stroke-width="1.5" marker-end="url(#arrowAccent)"/>
+  <line x1="740" y1="359" x2="780" y2="359" stroke="#3291ff" stroke-width="1.5" marker-end="url(#arrowAccent)"/>
+  <line x1="740" y1="421" x2="780" y2="421" stroke="#3291ff" stroke-width="1.5" marker-end="url(#arrowAccent)"/>
+  <line x1="740" y1="483" x2="780" y2="483" stroke="#3291ff" stroke-width="1.5" marker-end="url(#arrowAccent)"/>
+  <line x1="740" y1="545" x2="780" y2="545" stroke="#3291ff" stroke-width="1.5" marker-end="url(#arrowAccent)"/>
+
+  <!-- ================= RIGHT: providers ================= -->
+  <text x="950" y="128" font-size="11.5" letter-spacing="0.03em" fill="#6b6b6f" text-anchor="middle" font-family="'Geist Mono', ui-monospace, Consolas, monospace">PROVIDERS (BYOK — point the base URL anywhere)</text>
+
+  <g font-family="'Geist Mono', ui-monospace, Consolas, monospace" font-size="14" fill="#ededed">
+    <rect x="780" y="150" width="340" height="46" rx="8" fill="#0c0c0e" stroke="#232326"/>
+    <text x="804" y="178">Anthropic</text>
+    <rect x="1024" y="164" width="76" height="19" rx="4" fill="rgba(50,145,255,.10)" stroke="#3291ff" stroke-opacity="0.4"/>
+    <text x="1062" y="177" font-size="10" fill="#3291ff" text-anchor="middle">native</text>
+
+    <rect x="780" y="212" width="340" height="46" rx="8" fill="#0c0c0e" stroke="#232326"/>
+    <text x="804" y="240">OpenRouter</text>
+
+    <rect x="780" y="274" width="340" height="46" rx="8" fill="#0c0c0e" stroke="#232326"/>
+    <text x="804" y="302">Ollama (local)</text>
+
+    <rect x="780" y="336" width="340" height="46" rx="8" fill="#0c0c0e" stroke="#232326"/>
+    <text x="804" y="364" font-size="13">Gemini (OpenAI-compat endpoint)</text>
+
+    <rect x="780" y="398" width="340" height="46" rx="8" fill="#0c0c0e" stroke="#232326"/>
+    <text x="804" y="426">Groq</text>
+
+    <rect x="780" y="460" width="340" height="46" rx="8" fill="#0c0c0e" stroke="#232326"/>
+    <text x="804" y="488">vLLM (self-hosted)</text>
+
+    <rect x="780" y="522" width="340" height="46" rx="8" fill="#0c0c0e" stroke="#232326"/>
+    <text x="804" y="550">LM Studio (local)</text>
+  </g>
+
+  <!-- ================= Footer caption ================= -->
+  <text x="600" y="652" font-size="15" font-weight="600" fill="#ededed" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif">Level-0 replay calls no model at all — 0 tokens, measured.</text>
+  <text x="600" y="678" font-size="12.5" fill="#a1a1a6" text-anchor="middle" font-family="'Geist Mono', ui-monospace, Consolas, monospace">Only escalation touches an LLM — and it's yours, any provider, swappable per call.</text>
+
+  <!-- brand corner -->
+  <g transform="translate(40 636)">
+    <g stroke="#a1a1a6" stroke-width="6" stroke-linejoin="round" stroke-linecap="round" fill="none">
+      <path d="M4 1 L20 10 L4 19 Z"/>
+      <line x1="0" y1="5" x2="0" y2="16"/>
+    </g>
+    <text x="32" y="15" font-size="13" fill="#a1a1a6" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif">reelier.com</text>
+  </g>
+</svg>

@@ -14,6 +14,8 @@ Reelier records what your AI agent does once, then replays it
 deterministically — 0 tokens, milliseconds, a receipt every run. For
 developers whose agents do the same work over and over.
 
+https://www.reelier.com/reelier-explainer.mp4
+
 ## Install + first receipt
 
 ```sh
@@ -81,6 +83,20 @@ for the full raw tables, methodology, and how to reproduce it yourself:
 4. **Self-heal** — when the world drifts underneath a skill
    (`--max-level 1|2`), an LLM patches the one broken step once and writes
    its own changelog entry, so the fix never has to happen twice.
+
+## Works with any model (BYOK)
+
+![LLM-agnostic](docs/assets/llm-agnostic.svg)
+
+Level-0 replay (the default) never calls a model — 0 tokens, by construction,
+not convention. Escalation is opt-in and speaks through one narrow BYOK call
+surface (`--llm-base-url` / `REELIER_LLM_BASE_URL` + `--llm-model`): a native
+Anthropic Messages API adapter for `api.anthropic.com`, and an
+OpenAI-compatible chat-completions adapter for everything else — OpenRouter,
+Ollama, Gemini's OpenAI-compat endpoint, Groq, vLLM, LM Studio, or any other
+host that speaks the same wire format. Better models don't obsolete Reelier —
+point `--llm-base-url` at a stronger one and every skill's *next* self-heal
+gets smarter for free, without recompiling anything by hand.
 
 ## Why it's not brittle RPA
 
