@@ -1096,6 +1096,105 @@ a future minor version, not a guarantee this version makes.
 
 ---
 
+## 9. Session-derived skills (`reelier from-session` / `reelier scan`) and MCP install wrapping (`reelier install`)
+
+Three commands (0.6.0+) close the gap between "an agent session already
+happened" and "a replayable skill exists" without requiring the recorder
+proxy (§5) to have been in the loop at all.
+
+### 9.1 `reelier from-session <transcript.jsonl>` — compile a skill from an agent's own session log
+
+Claude Code (and compatible agents) write session transcripts as JSONL —
+one JSON object per line, mixing several line `type`s. Only two are
+relevant here:
+
+- An **assistant** message line: `{"type":"assistant","message":{"content":[...]}}`,
+  where `content` may include `{"type":"tool_use","id","name","input"}` blocks.
+- A **user** message line: `{"type":"user","message":{"content":[...]}}`,
+  where `content` may include `{"type":"tool_result","tool_use_id","content","is_error"?}`
+  blocks. `tool_result.content` is either a bare string or an array of
+  `{"type":"text","text"}` blocks (both shapes occur in real transcripts —
+  confirmed by reading actual `~/.claude/projects/*/*.jsonl` files, not
+  assumed). `is_error` (snake_case, distinct from the MCP wire format's
+  `isError`) marks a failed call.
+
+Every other line `type` (`queue-operation`, `attachment`, summaries, ...)
+carries no `message.content` array and is ignored.
+
+**The honesty rule (normative, non-negotiable):** a tool_use is
+*replayable* if and only if:
+
+- its `name` is exactly `http.get` or `http.post` (Reelier's own
+  builtins), or
+- its `name` matches `mcp__<server>__<tool>` (split on the literal
+  substring `__`; the recorded trace's `tool` field is the bare `<tool>`
+  segment — server prefix stripped — so it matches the name
+  `buildMcpTools()` (`src/mcp-tool.ts`) exposes a `--wrap`'d downstream
+  tool under, keeping the compiled skill actually replayable).
+
+Every other tool name (`Bash`, `Read`, `Edit`, `Write`, `Grep`, `Glob`,
+`Task`, `WebFetch`, `ToolSearch`, ... — any Claude Code native tool) is
+classified **not replayable** by default-deny, never by an exhaustive
+blacklist. A replayable call whose matching `tool_result` never appears in
+the transcript (recording cut off mid-call) is also skipped, not guessed
+at.
+
+The replayable subset is converted 1:1 into the existing trace format
+(§2) — one `call`/`result` record pair per replayable tool_use/tool_result
+pair, in transcript order — and handed to the unmodified compiler
+(`compile()`, §"3. SKILL.md format"). No second skill format, no
+LLM call.
+
+If zero tool_use calls in the transcript are replayable, `from-session`
+does **not** emit a skill (empty or otherwise) — it exits non-zero with:
+`"no deterministically-replayable tool calls found in this session —
+Reelier replays API/MCP tool workflows, not file edits or shell
+commands."` The full skip list (tool name + reason, deduplicated and
+counted) is always printed, success or failure.
+
+### 9.2 `reelier scan [--dir <dir>] [--yes] [--out-dir <dir>]`
+
+Recursively finds every `*.jsonl` under `--dir` (default
+`~/.claude/projects`), summarizes each with the same classification as
+§9.1 (so `scan`'s "replayable" verdict for a session can never disagree
+with what `from-session` would do to that same file), and prints:
+
+```
+Found N session(s) in your agent history · M contain replayable workflows.
+```
+
+followed by one line per replayable session (project, timestamp, replayable
+call count, MCP servers touched) and a count of sessions skipped outright
+(zero replayable calls — never offered as a selectable option, since there
+is nothing honest to compile). Interactively prompts for a comma-separated
+selection (or `all`); `--yes` selects every replayable session
+non-interactively. Selected sessions are compiled via §9.1's exact logic
+and written to `--out-dir` (default `.reelier/skills-from-scan/`).
+
+### 9.3 `reelier install [--agent claude] [--dry-run]` / `reelier uninstall`
+
+Extends `reelier init`'s existing config detection (`detectAgentConfig`,
+§"Step 1" internals) into a one-command wrap: for the first of the
+project `.mcp.json` / user `~/.claude.json` that exists, every configured
+server of the plain `{command, args?}` (local stdio) shape is rewritten
+in place to `{command: "npx", args: ["-y", "@seldonframe/reelier", "mcp",
+"--wrap", "<original command line, rejoined>"]}` — i.e. fronted by the
+same `reelier mcp --wrap` proxy §5 already documents, under the *same*
+server name key. Remote/url-based server entries (no `command` field) are
+left untouched and reported as skipped, never mis-wrapped.
+
+Idempotent: an entry already shaped like a reelier wrap (`command ===
+"npx"` and `args` includes `@seldonframe/reelier`, `mcp`, and `--wrap`) is
+detected and left alone — running `install` twice never double-wraps, and
+the second run does not write a redundant backup.
+
+Before any write, the original config file content is copied byte-for-byte
+to `<configPath>.backup-<ISO-timestamp-with-dashes>`; `reelier uninstall`
+restores the lexically-latest such backup (ISO timestamps in the suffix
+sort chronologically) and leaves the backup file in place afterward. If no
+backup exists, `uninstall` exits non-zero with the config path it checked,
+never guessing at what to restore.
+
 ## Deviations noted
 
 This section is for the orchestrator, not part of the normative spec. No

@@ -128,8 +128,11 @@ that there's a **recorder** (a lossless MCP proxy that captures a live agent
 session as a trace), a **compiler** (`reelier compile`, turning a trace into
 a runner-ready `SKILL.md` deterministically — see "Compile" below), an
 **escalation ladder** (`--max-level 1|2`, see "Escalation ladder" below) —
-the first LLM code in this repo, strictly opt-in — and `reelier init`, the
-guided record → compile → replay → receipt loop above. There is still:
+the first LLM code in this repo, strictly opt-in — `reelier init`, the
+guided record → compile → replay → receipt loop above, and
+`reelier from-session` / `reelier scan` / `reelier install` (see "Record
+from your agent's history" below) — compiling skills straight out of an
+agent's own session history, no recorder proxy required first. There is still:
 
 - **No Level 3** — full agentic recovery when the recorded trace no longer
   applies at all is not implemented; a diverged destructive step, or an L2
@@ -183,6 +186,92 @@ Once you have a skill, replay it against the same downstream(s):
 
 ```sh
 reelier run skills/my-skill.skill.md --wrap "npx -y @your/mcp-server"
+```
+
+## Record from your agent's history
+
+You don't have to set anything up before recording — if you use Claude
+Code (or a compatible agent that writes standard Anthropic-format session
+transcripts), the recording already happened. Every session is a JSONL
+file at `~/.claude/projects/<project>/<uuid>.jsonl`. Compile one directly:
+
+```sh
+reelier from-session ~/.claude/projects/my-app/2f8e....jsonl
+```
+
+This is the honest version of "turn what I just did into a skill": it
+walks the transcript, pairs each tool call with its result, and keeps
+**only** the calls Reelier can actually replay deterministically — its
+own builtins (`http.get`/`http.post`) and MCP server tool calls
+(`mcp__<server>__<tool>`). Everything else your agent did in that session
+— `Bash`, `Read`, `Edit`, `Write`, `Grep`, `Task`, `WebFetch`, ... — gets
+reported as skipped, with why, never silently dropped and never faked
+into a step. If a session has no replayable calls at all, `from-session`
+says so plainly and writes nothing:
+
+```
+no deterministically-replayable tool calls found in this session — Reelier
+replays API/MCP tool workflows, not file edits or shell commands.
+```
+
+The replayable calls run through the exact same compiler as `reelier
+compile` (see "Compile" below) — same dataflow-recovered binds, same
+honest "Open questions" list.
+
+To find which of your past sessions are even worth compiling:
+
+```sh
+reelier scan
+```
+
+walks `~/.claude/projects` (or `--dir <path>`), summarizes every
+transcript it finds, and asks which ones to turn into skills:
+
+```
+Found 1364 session(s) in your agent history · 150 contain replayable workflows.
+
+Which should Reelier turn into a skill you can replay forever?
+
+  [1] my-app · 2026-07-19 12:50 · 88 replayable call(s) — posthog, neon, seldonframe
+  [2] my-app · 2026-07-17 21:58 · 51 replayable call(s) — claude-in-chrome
+  ...
+
+Select sessions to compile (comma-separated numbers, "all", or Enter for none):
+```
+
+Pass `--yes` to compile every session with at least one replayable call,
+non-interactively — sessions with zero replayable calls are never offered
+as an option. Compiled skills land in `.reelier/skills-from-scan/` by
+default (`--out-dir` to change it).
+
+### Making future recording one phrase
+
+`reelier init` already tells you the exact command to front an existing
+MCP server with the recorder proxy. `reelier install` does it for you:
+
+```sh
+reelier install          # wraps every local MCP server in .mcp.json (or ~/.claude.json)
+reelier install --dry-run  # show the exact rewrite without writing anything
+```
+
+It backs up your current config first (`.mcp.json.backup-<timestamp>`),
+then rewrites each configured local server in place to be fronted by
+`reelier mcp --wrap "<its original command>"` — same server name, so
+nothing else that references it breaks. Running it again is a no-op
+(already-wrapped servers are detected and left alone); remote/URL-based
+servers are skipped, never mis-wrapped. Restart your agent, then just work
+normally — no new setup step before recording:
+
+```
+Restart your agent, then work normally. When you want to save a workflow,
+tell your agent: "record this" ... do the work ... "done"
+Then compile it: reelier from-session <the .jsonl transcript your agent just wrote>
+```
+
+To revert:
+
+```sh
+reelier uninstall   # restores the config from install's backup
 ```
 
 ### The trace format
@@ -458,6 +547,24 @@ reelier compile .reelier/traces/my-trace-1.jsonl [-o my-skill.skill.md] [--force
 # Cloud instance — see "Push" below. Fully opt-in: does nothing unless both
 # REELIER_CLOUD_URL and REELIER_CLOUD_KEY are set.
 reelier push skills/my-skill.skill.md [--all] [--dry-run] [--with-skill]
+
+# Compile a skill straight from an agent session transcript your agent
+# already wrote — see "Record from your agent's history" above. Only the
+# deterministically-replayable calls (builtins + mcp__server__tool) become
+# steps; everything else is reported skipped, never fabricated.
+reelier from-session ~/.claude/projects/my-app/<uuid>.jsonl [--out my-skill.skill.md] [--name my-skill] [--force]
+
+# Discover every replayable workflow across your agent's session history and
+# pick which to compile.
+reelier scan [--dir ~/.claude/projects] [--yes] [--out-dir .reelier/skills-from-scan]
+
+# Front every configured local MCP server with the reelier recorder proxy,
+# in place, so recording is one phrase away next time — see "Making future
+# recording one phrase" above.
+reelier install [--agent claude] [--dry-run]
+
+# Restore the config reelier install backed up.
+reelier uninstall [--agent claude]
 ```
 
 Every run appends one JSON line to `.reelier/runs/<skill-name>.jsonl`. A step

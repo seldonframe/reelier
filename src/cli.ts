@@ -29,6 +29,9 @@ import {
   LAUNCH_BENCHMARK_COMPARISON,
   type DemoBenchmarkComparison,
 } from "./init.js";
+import { compileSessionTranscript, type SessionSkip } from "./session.js";
+import { scanTranscripts, type ScannedSession } from "./scan.js";
+import { planInstall, applyInstall, findLatestBackup, restoreFromBackup } from "./wrap.js";
 
 interface ParsedArgs {
   positional: string[];
@@ -77,7 +80,12 @@ function parseArgv(argv: string[]): ParsedArgs {
       arg === "--llm-base-url" ||
       arg === "--llm-api-key" ||
       arg === "--llm-model" ||
-      arg === "--llm-l2-model"
+      arg === "--llm-l2-model" ||
+      arg === "--out" ||
+      arg === "--name" ||
+      arg === "--dir" ||
+      arg === "--out-dir" ||
+      arg === "--agent"
     ) {
       const val = argv[++i];
       if (!val) {
@@ -532,6 +540,290 @@ async function cmdCompile(args: ParsedArgs): Promise<number> {
   return 0;
 }
 
+function printSkipped(skipped: SessionSkip[]): void {
+  if (skipped.length === 0) return;
+  const byReason = new Map<string, string[]>();
+  for (const s of skipped) {
+    const list = byReason.get(s.reason) ?? [];
+    list.push(s.name);
+    byReason.set(s.reason, list);
+  }
+  console.log(`Skipped ${skipped.length} non-replayable/unresolved tool call(s):`);
+  for (const [reason, names] of byReason) {
+    const counts = new Map<string, number>();
+    for (const n of names) counts.set(n, (counts.get(n) ?? 0) + 1);
+    const nameList = [...counts.entries()].map(([n, c]) => (c > 1 ? `${n} x${c}` : n)).join(", ");
+    console.log(`  - ${nameList}`);
+    console.log(`    ${reason}`);
+  }
+}
+
+async function cmdFromSession(args: ParsedArgs): Promise<number> {
+  const transcriptPath = args.positional[0];
+  if (!transcriptPath) {
+    console.error("Usage: reelier from-session <transcript.jsonl> [--out <skill.md>] [--name <name>] [--force]");
+    return 1;
+  }
+
+  let source: string;
+  try {
+    source = await readFile(transcriptPath, "utf8");
+  } catch (err) {
+    console.error(`Could not read transcript file ${transcriptPath}: ${(err as Error).message}`);
+    return 1;
+  }
+
+  const traceFileName = path.basename(transcriptPath);
+  const name = args.opts.name ?? traceFileName.replace(/\.jsonl$/i, "");
+
+  const result = compileSessionTranscript(source, { name, traceFileName });
+
+  console.log(`Scanned ${traceFileName}: ${result.ok ? result.replayableCount : 0} replayable call(s) found.`);
+  console.log("");
+  printSkipped(result.skipped);
+
+  if (!result.ok) {
+    console.log("");
+    console.log(result.reason);
+    return 1;
+  }
+
+  const outPath = args.opts.out ?? path.join(process.cwd(), `${result.compileResult.name}.skill.md`);
+  if (!args.flags.has("force") && (await fileExists(outPath))) {
+    console.error(`\nRefusing to overwrite existing file ${outPath} — pass --force to overwrite.`);
+    return 1;
+  }
+
+  await writeFile(outPath, result.skillSource, "utf8");
+
+  console.log("");
+  console.log(`Wrote ${outPath}`);
+  console.log(`  steps:   ${result.compileResult.stats.steps}`);
+  console.log(`  asserts: ${result.compileResult.stats.asserts}`);
+  console.log(`  binds:   ${result.compileResult.stats.binds}`);
+  if (result.servers.length > 0) {
+    console.log(`  MCP servers used: ${result.servers.join(", ")}`);
+  }
+  console.log("");
+  if (result.compileResult.openQuestions.length === 0) {
+    console.log("Open questions: (none)");
+  } else {
+    console.log(`Open questions (${result.compileResult.openQuestions.length}):`);
+    for (const oq of result.compileResult.openQuestions) {
+      const where = oq.stepN !== undefined ? `Step ${oq.stepN}` : "(trailing note)";
+      console.log(`  - ${where}: ${oq.text}`);
+    }
+  }
+
+  return 0;
+}
+
+function fmtSessionLine(index: number, s: ScannedSession): string {
+  const when = new Date(s.mtimeMs).toISOString().slice(0, 16).replace("T", " ");
+  if (s.replayableCount > 0) {
+    const servers = s.servers.length > 0 ? ` — ${s.servers.join(", ")}` : "";
+    return `  [${index}] ${s.project} · ${when} · ${s.replayableCount} replayable call(s)${servers}`;
+  }
+  return `  (skipped) ${s.project} · ${when} · no replayable tool calls found`;
+}
+
+async function cmdScan(args: ParsedArgs): Promise<number> {
+  const rootDir = args.opts.dir ?? path.join(os.homedir(), ".claude", "projects");
+  const yes = args.flags.has("yes");
+
+  console.log(`Scanning ${rootDir} for agent session transcripts...`);
+  const sessions = await scanTranscripts(rootDir);
+
+  const replayable = sessions.filter((s) => s.replayableCount > 0);
+  const skipped = sessions.filter((s) => s.replayableCount === 0);
+
+  console.log("");
+  console.log(
+    `Found ${sessions.length} session(s) in your agent history · ${replayable.length} contain replayable workflows.`
+  );
+  console.log("");
+
+  if (replayable.length === 0) {
+    console.log("None of the scanned sessions contain a deterministically-replayable tool-call sequence (Reelier");
+    console.log("replays API/MCP tool workflows, not file edits or shell commands) — nothing to compile.");
+    if (skipped.length > 0) {
+      console.log("");
+      console.log(`Skipped (no replayable calls): ${skipped.length} session(s).`);
+    }
+    return 0;
+  }
+
+  console.log("Which should Reelier turn into a skill you can replay forever?");
+  console.log("");
+  for (let i = 0; i < replayable.length; i++) {
+    console.log(fmtSessionLine(i + 1, replayable[i]));
+  }
+  if (skipped.length > 0) {
+    console.log("");
+    console.log(`(${skipped.length} other session(s) skipped — no replayable tool calls found, not offered as options.)`);
+  }
+
+  let selected: ScannedSession[];
+  if (yes) {
+    selected = replayable;
+    console.log("");
+    console.log(`--yes: compiling all ${selected.length} session(s) with replayable calls.`);
+  } else {
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    let answer: string;
+    try {
+      answer = (
+        await rl.question(`\nSelect sessions to compile (comma-separated numbers, "all", or Enter for none): `)
+      ).trim();
+    } finally {
+      rl.close();
+    }
+    if (answer === "" ) {
+      console.log("No sessions selected — nothing compiled.");
+      return 0;
+    }
+    if (answer.toLowerCase() === "all") {
+      selected = replayable;
+    } else {
+      const indices = answer
+        .split(",")
+        .map((s) => parseInt(s.trim(), 10))
+        .filter((n) => Number.isInteger(n) && n >= 1 && n <= replayable.length);
+      selected = indices.map((n) => replayable[n - 1]);
+      if (selected.length === 0) {
+        console.log("No valid selection — nothing compiled.");
+        return 0;
+      }
+    }
+  }
+
+  const outDir = args.opts["out-dir"] ?? path.join(process.cwd(), ".reelier", "skills-from-scan");
+  const { mkdir } = await import("node:fs/promises");
+  await mkdir(outDir, { recursive: true });
+
+  console.log("");
+  let compiledCount = 0;
+  for (const session of selected) {
+    let source: string;
+    try {
+      source = await readFile(session.path, "utf8");
+    } catch (err) {
+      console.log(`  ${session.path}: could not re-read (${(err as Error).message}) — skipped.`);
+      continue;
+    }
+    const traceFileName = path.basename(session.path);
+    const name = `${session.project}-${traceFileName.replace(/\.jsonl$/i, "")}`;
+    const result = compileSessionTranscript(source, { name, traceFileName });
+    if (!result.ok) {
+      // Shouldn't happen (scan already filtered to replayableCount > 0), but never fabricate a skill if it does.
+      console.log(`  ${session.path}: ${result.reason}`);
+      continue;
+    }
+    const outPath = path.join(outDir, `${name}.skill.md`);
+    await writeFile(outPath, result.skillSource, "utf8");
+    console.log(
+      `  Wrote ${outPath} (${result.compileResult.stats.steps} steps, ${result.compileResult.stats.asserts} asserts, ${result.skipped.length} calls skipped)`
+    );
+    compiledCount++;
+  }
+
+  console.log("");
+  console.log(`Compiled ${compiledCount}/${selected.length} selected session(s) into ${outDir}.`);
+  return 0;
+}
+
+async function cmdInstall(args: ParsedArgs): Promise<number> {
+  const agent = args.opts.agent ?? "auto";
+  if (agent !== "auto" && agent !== "claude") {
+    console.error(`Unsupported --agent '${agent}' — only 'claude' (or 'auto', which currently resolves to claude) is supported.`);
+    return 1;
+  }
+
+  const cwd = process.cwd();
+  const homedir = os.homedir();
+  const detection = await detectAgentConfig(cwd, homedir);
+  const configPath = detection.projectConfigExists
+    ? detection.projectConfigPath
+    : detection.userConfigExists
+      ? detection.userConfigPath
+      : undefined;
+
+  if (!configPath) {
+    console.error(
+      `No MCP config found — checked ${detection.projectConfigPath} and ${detection.userConfigPath}. Configure ` +
+        `at least one MCP server first (or run 'reelier init'), then re-run 'reelier install'.`
+    );
+    return 1;
+  }
+
+  console.log(`reelier install — wrapping the MCP servers in ${configPath} so recording is one phrase away.`);
+  console.log("");
+
+  const plan = await planInstall(configPath);
+  for (const e of plan.entries) {
+    if (e.action === "wrap") console.log(`  ${e.name}: will wrap`);
+    else if (e.action === "already-wrapped") console.log(`  ${e.name}: already wrapped — left alone`);
+    else console.log(`  ${e.name}: skipped — ${e.reason}`);
+  }
+
+  if (!plan.changed) {
+    console.log("");
+    console.log("Nothing to do — every configured server is already wrapped or can't be wrapped.");
+    return 0;
+  }
+
+  if (args.flags.has("dry-run")) {
+    console.log("");
+    console.log("Dry run — resulting config would be:");
+    console.log(
+      plan.after
+        .split("\n")
+        .map((l) => `  ${l}`)
+        .join("\n")
+    );
+    console.log("\nNothing written (--dry-run).");
+    return 0;
+  }
+
+  const result = await applyInstall(plan);
+  console.log("");
+  console.log(`Wrapped ${result.wrappedCount} server(s) in ${configPath}.`);
+  if (result.backupPath) console.log(`Original config backed up to ${result.backupPath}.`);
+  console.log("");
+  console.log("Restart your agent, then work normally. When you want to save a workflow, tell your agent:");
+  console.log('  "record this" ... do the work ... "done"');
+  console.log("Then compile it: reelier from-session <the .jsonl transcript your agent just wrote>");
+  console.log("");
+  console.log("To revert: reelier uninstall");
+  return 0;
+}
+
+async function cmdUninstall(args: ParsedArgs): Promise<number> {
+  const agent = args.opts.agent ?? "auto";
+  if (agent !== "auto" && agent !== "claude") {
+    console.error(`Unsupported --agent '${agent}' — only 'claude' (or 'auto', which currently resolves to claude) is supported.`);
+    return 1;
+  }
+
+  const cwd = process.cwd();
+  const homedir = os.homedir();
+  const detection = await detectAgentConfig(cwd, homedir);
+  const configPath = detection.projectConfigExists ? detection.projectConfigPath : detection.userConfigPath;
+
+  const backup = await findLatestBackup(configPath);
+  if (!backup) {
+    console.error(
+      `No reelier install backup found for ${configPath}. If you have a backup file from elsewhere, restore it ` +
+        `manually by copying its contents back over ${configPath}.`
+    );
+    return 1;
+  }
+
+  await restoreFromBackup(configPath, backup);
+  console.log(`Restored ${configPath} from ${backup}.`);
+  return 0;
+}
+
 function fmtFieldErrors(fieldErrors: unknown): string {
   if (fieldErrors === undefined) return "(no field errors returned)";
   try {
@@ -868,8 +1160,18 @@ async function main(): Promise<number> {
       return cmdPush(args);
     case "init":
       return cmdInit(args);
+    case "from-session":
+      return cmdFromSession(args);
+    case "scan":
+      return cmdScan(args);
+    case "install":
+      return cmdInstall(args);
+    case "uninstall":
+      return cmdUninstall(args);
     default:
-      console.error("Usage: reelier <run|bench|mcp|trace|compile|push|init> [options]");
+      console.error(
+        "Usage: reelier <run|bench|mcp|trace|compile|push|init|from-session|scan|install|uninstall> [options]"
+      );
       return 1;
   }
 }
