@@ -69,6 +69,13 @@ for the full raw tables, methodology, and how to reproduce it yourself:
 - **~59x faster** (48ms vs. 2,842ms average latency)
 - a real drift **self-healed for ~$0.001**, once, then free every replay after
 
+> **Latency varies by network.** Level-0 replay re-executes the skill's tool
+> calls (e.g. the HTTP request), so absolute wall-clock time depends on your
+> connection — these figures are from our benchmark environment; on a slower
+> link a replay may take 150–500ms. What does **not** vary: **0 LLM tokens**,
+> the same steps every run, and the receipt — those are guaranteed by
+> construction. The agent arm's latency is reasoning-bound, not network-bound.
+
 ## How it works
 
 1. **Record** — `reelier mcp --wrap "<your mcp server>"` sits in front of
