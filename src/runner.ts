@@ -35,6 +35,13 @@ import { applyWritebackSafely } from "./writeback.js";
 
 export type StepOutcome = "passed" | "failed" | "unchecked" | "skipped";
 
+export interface StepWhy {
+  /** Why this step diverged — the load-bearing failure, verbatim from the real assertion/tool result. Present on a failed step. Never fabricated. */
+  trigger?: string;
+  /** What an escalation changed to heal this step — from the real L1/L2 patch reason. Present on a healed step. */
+  change?: string;
+}
+
 export interface StepRecord {
   n: number;
   title: string;
@@ -53,6 +60,8 @@ export interface StepRecord {
    * healed, even after an escalation attempt).
    */
   escalationAttempted?: 0 | 1 | 2;
+  /** Present only when this step drifted (trigger) or healed (change); absent for an unchanged step. Never fabricated — see docs/specs/receipt-why.md. */
+  why?: StepWhy;
 }
 
 export interface RunRecord {
@@ -399,6 +408,8 @@ async function attemptEscalation(
   llm?: { inputTokens: number; outputTokens: number };
   /** Highest level TRIED, present iff escalation was actually attempted (i.e. L1 was invoked). */
   escalationAttempted?: 1 | 2;
+  /** What the heal changed, from the real patch reason — present only on a successful heal. */
+  why?: StepWhy;
 }> {
   const maxLevel = options.maxLevel ?? 0;
   if (maxLevel < 1 || !options.llm) {
@@ -439,7 +450,7 @@ async function attemptEscalation(
         );
       }
       const outcome: StepOutcome = l1.asserts.length === 0 ? "unchecked" : "passed";
-      return { outcome, level: 1, failures: [], llm: usage, escalationAttempted };
+      return { outcome, level: 1, failures: [], llm: usage, escalationAttempted, why: { change: `L1: ${l1.reason}` } };
     }
     failures = [...failures, ...reEval.failures.map((f) => `L1 patch didn't hold: ${f}`)];
   } else {
@@ -510,7 +521,7 @@ async function attemptEscalation(
     );
   }
   const outcome: StepOutcome = l2.asserts.length === 0 ? "unchecked" : "passed";
-  return { outcome, level: 2, failures: [], llm: usage, escalationAttempted };
+  return { outcome, level: 2, failures: [], llm: usage, escalationAttempted, why: { change: `L2: ${l2.reason}` } };
 }
 
 /** Run a skill's steps in order. Stops (marks remaining steps "skipped") on the first divergence. */
@@ -543,6 +554,9 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
     let level: 0 | 1 | 2 = 0;
     let llmUsage: { inputTokens: number; outputTokens: number } | undefined;
     let escalationAttempted: 0 | 1 | 2 | undefined;
+    let why: StepWhy | undefined;
+    // The load-bearing divergence, captured BEFORE escalation appends L1/L2 noise.
+    const initialTrigger = exec.outcome === "failed" ? exec.failures[0] : undefined;
 
     if (outcome === "passed" || outcome === "unchecked") {
       // Deterministic success: merge this step's binds into shared state.
@@ -566,7 +580,12 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
       failures = escalated.failures;
       llmUsage = escalated.llm;
       escalationAttempted = escalated.escalationAttempted;
+      if (outcome === "failed") why = { trigger: initialTrigger ?? failures[0] };
+      else if (escalated.why) why = escalated.why;
     }
+    // A step that failed without an observation (tool threw) skips escalation —
+    // still record why it diverged.
+    if (outcome === "failed" && !why) why = { trigger: initialTrigger ?? failures[0] };
 
     const ms = Date.now() - started;
     const rec: StepRecord = {
@@ -578,6 +597,7 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
       failures,
       ...(llmUsage ? { llm: llmUsage } : {}),
       ...(escalationAttempted !== undefined ? { escalationAttempted } : {}),
+      ...(why ? { why } : {}),
     };
     stepRecords.push(rec);
     options.onStep?.(rec, { tool: step.actionTool, args: step.actionArgs });

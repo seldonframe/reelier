@@ -357,30 +357,34 @@ const diffToolInputSchema = {
 
 const TOOL_DESCRIPTIONS: Record<string, string> = {
   reelier_scan:
-    "Discover replayable workflows in an agent's session history (defaults to ~/.claude/projects). Returns which " +
-    "sessions contain a deterministically-replayable tool-call sequence (MCP/HTTP calls only — native file/shell " +
-    "actions are reported as skipped, never fabricated into a fake result).",
+    "Discover replayable workflows in an agent's session history (defaults to ~/.claude/projects). Returns each " +
+    "session's transcript path — feed one to reelier_from_session. Only MCP/HTTP tool-call sequences are replayable; " +
+    "native file/shell actions are reported as skipped, never fabricated into a fake result. USE WHEN: deciding which " +
+    "past work is worth compiling into a replayable skill.",
   reelier_from_session:
-    "Compile a SKILL.md from a session transcript — the right move when the work already happened by hand (you " +
-    "can't record it retroactively). Get the transcriptPath from reelier_scan first; it lists each session's path. " +
-    "Returns the written skill's path, stats, and open questions — or, honestly, that nothing in the transcript was " +
-    "replayable. If the workflow depended on a relative time window (\"this week\"), watch the open questions: bind " +
-    "that window to a date variable (see reelier_replay's vars) so a later replay pulls the CURRENT window, not a " +
-    "frozen one.",
+    "Compile a SKILL.md from a session transcript. USE WHEN: the work ALREADY happened (this session or by hand) — " +
+    "recording can't be retroactive. NOT for work that hasn't happened yet (record that live via the reelier mcp " +
+    "proxy). Get the transcriptPath from reelier_scan first. Returns the written skill's path, stats, and open " +
+    "questions — or, honestly, that nothing in the transcript was replayable. If the workflow used a relative time " +
+    "window (\"this week\"), bind it to a date variable (e.g. {{today-7d}}) so later replays pull the CURRENT window, " +
+    "not a frozen one — the openQuestions output flags this.",
   reelier_replay:
     "Run a skill file at Level 0 (deterministic replay, zero LLM calls) and return the real run record: per-step " +
-    "outcomes, timing, and totals. Never fabricates a pass. Level 0 reproduces the recorded TOOL CALLS only — it does " +
-    "not re-run any LLM reasoning or prose-formatting step, so a 'summarize'/'write-up' part of the original workflow " +
-    "is not reproduced here. Pass vars to fill {{templated}} inputs (e.g. a computed date window).",
+    "outcomes, timing, totals, and — when a step drifted — why (the failing assertion). Never fabricates a pass. " +
+    "Reproduces the recorded TOOL CALLS (MCP/HTTP) only — no LLM reasoning or prose step re-runs. It does NOT " +
+    "schedule itself: pair with cron/CI for recurring runs. Pass vars to fill {{templated}} inputs (e.g. a computed " +
+    "date window) so a replay pulls current data.",
   reelier_push:
-    "Push a skill's local run records (and, on first push, the skill file) to Reelier Cloud. Requires " +
-    "REELIER_CLOUD_URL/REELIER_CLOUD_KEY in env — reports skipped-no-key honestly when they're absent.",
+    "Push a skill's local run records (and, on first push, the skill file) to Reelier Cloud, where each receipt gets " +
+    "a shareable permalink + verified-replay badge. Requires REELIER_CLOUD_URL/REELIER_CLOUD_KEY in env — reports " +
+    "skipped-no-key honestly when they're absent. USE WHEN: a run's receipt should be durable or shareable.",
   reelier_diff:
-    "Compare two runs of the same skill and report whether it ran the SAME or DRIFTED — the drift-detector for a " +
-    "recorded 'baseline' you replay on a schedule. Reads .reelier/runs/<skill>.jsonl (defaults to the last two runs). " +
-    "A single receipt proves one run; this proves it kept running the same. Reports per step: outcome changes and " +
-    "added/removed steps (hard drift), plus steps that now heal at a different escalation level (soft drift). Honest " +
-    "when there aren't two runs yet.",
+    "Compare two runs of the same skill and report SAME or DRIFTED — the drift-detector for a recorded baseline " +
+    "replayed on a schedule. Compares per-step outcomes, structure, and heal-level from .reelier/runs/<skill>.jsonl " +
+    "(defaults to the last two runs); data values that legitimately change run-to-run are NOT drift. Drifted steps " +
+    "carry why (the failing assertion). To check a MODEL upgrade: re-record the workflow with the new model, then " +
+    "diff against your frozen baseline — replaying a pinned skill can't reveal model changes (replay never calls a " +
+    "model). Honest when there aren't two runs yet.",
 };
 
 function textResult(data: unknown): { content: Array<{ type: "text"; text: string }> } {

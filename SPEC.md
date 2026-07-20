@@ -505,6 +505,7 @@ interface StepRecord {
   failures: string[];
   llm?: { inputTokens: number; outputTokens: number };
   escalationAttempted?: 0 | 1 | 2;
+  why?: { trigger?: string; change?: string };
 }
 ```
 
@@ -516,6 +517,7 @@ interface StepRecord {
 | `failures` | Human-readable failure messages accumulated for this step; empty iff `outcome` is `"passed"`/`"unchecked"`. On a healed step, `failures` is reset to `[]`. |
 | `llm` | Present **iff** escalation ran for this step at all (any level, success or failure) — summed input/output tokens across every attempt on this step. Absent, not `{inputTokens:0,...}`, when escalation never ran. |
 | `escalationAttempted` | The **highest level TRIED**, present iff L1 was invoked at all. **Distinct from `level`**: a step can have `escalationAttempted: 2` and `level: 0` simultaneously — it burned L1 and L2 tokens and still never healed. `level` only ever reflects the level that *healed* it. |
+| `why` (0.8.0+) | Present **only** when this step's behavior changed: `trigger` = the load-bearing divergence (the first failure, verbatim from the real assertion/tool result) on a `"failed"` step; `change` = what the successful L1/L2 patch changed (`"L1: <reason>"` / `"L2: <reason>"`, the escalation's own reason) on a healed step. Absent on an unchanged step. **Never fabricated** — a producer MUST populate it only from observed engine data, never from generated narrative. |
 
 ### 4.2 `RunRecord`
 

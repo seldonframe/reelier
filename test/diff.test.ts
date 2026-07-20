@@ -55,6 +55,16 @@ test("a step outcome changing passed→failed → DRIFTED (hard)", () => {
   assert.match(d.summary, /DRIFTED/);
 });
 
+test("a drifted step surfaces its why.trigger in the diff note", () => {
+  const base = run("weekly-pull", [step(1, "passed")]);
+  const cand = run("weekly-pull", [
+    { ...step(1, "failed"), why: { trigger: "assert status == 200 failed: got 401" } },
+  ]);
+  const d = diffRunRecords(base, cand);
+  assert.equal(d.verdict, "drifted");
+  assert.match(d.hardDrift[0].note, /got 401/);
+});
+
 test("a removed step → DRIFTED (hard)", () => {
   const base = run("weekly-pull", [step(1, "passed"), step(2, "passed")]);
   const cand = run("weekly-pull", [step(1, "passed")]);

@@ -84,9 +84,12 @@ machine-readable, per-run twin.
 - **`reelier diff`** (`src/diff.ts`): thread `why.trigger` into `StepDiff.note`
   for `outcome-changed` steps, so a DRIFTED verdict reads *"step 3 DRIFTED:
   assert status==200 failed (observed 401)"* instead of just *"passed → failed"*.
-- **Receipt permalink twins** (reelier-cloud `/r/[token]/json` + `/md`): include
-  `why` per step; the HTML receipt shows *"healed: <change>"* / *"drifted:
-  <trigger>"*.
+- **Receipt permalink twins** (reelier-cloud `/r/[token]/json` + `/md`):
+  **EXCLUDED** (amended 2026-07-19): `why.trigger` carries failure text, which
+  the public permalink deliberately never exposes (`share.ts`'s display-safe
+  restriction: no failures text, no tool args). `why` stays in the pushed
+  `record` jsonb for the owner (dashboard/authenticated surfaces may show it);
+  the public twins keep the existing restricted shape.
 - **`SPEC.md` §4**: add the optional `why` object to the run-record schema.
 
 ## 6. Honesty guards (non-negotiable)

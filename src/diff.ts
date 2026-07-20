@@ -90,7 +90,8 @@ export function diffRunRecords(baseline: RunRecord, candidate: RunRecord): RunDi
     const base = side(bs!);
     const cand = side(cs!);
     if (bs!.outcome !== cs!.outcome) {
-      return { n, title: cs!.title, kind: "outcome-changed", baseline: base, candidate: cand, note: `Step ${n} "${cs!.title}": ${bs!.outcome} → ${cs!.outcome}.` };
+      const trigger = cs!.why?.trigger ? ` — ${cs!.why.trigger}` : "";
+      return { n, title: cs!.title, kind: "outcome-changed", baseline: base, candidate: cand, note: `Step ${n} "${cs!.title}": ${bs!.outcome} → ${cs!.outcome}${trigger}.` };
     }
     if (bs!.level !== cs!.level) {
       return { n, title: cs!.title, kind: "healed-differently", baseline: base, candidate: cand, note: `Step ${n} "${cs!.title}": still ${cs!.outcome}, but healed at L${cs!.level} (baseline was L${bs!.level}).` };

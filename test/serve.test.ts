@@ -225,6 +225,11 @@ description: exercises a real failure
     assert.equal(record.passed, false);
     assert.equal(record.steps[0].outcome, "failed");
     assert.ok(record.steps[0].failures.length > 0);
+    // The "why" (docs/specs/receipt-why.md): a drifted step carries its real
+    // trigger — the load-bearing failure — captured at Level 0 with 0 tokens,
+    // never fabricated.
+    assert.equal(record.steps[0].why?.trigger, record.steps[0].failures[0]);
+    assert.equal(record.totals.llmInputTokens, 0);
   });
 });
 
