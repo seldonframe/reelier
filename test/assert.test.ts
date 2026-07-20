@@ -102,3 +102,42 @@ test("bind: no regex match is a divergence, not a throw", () => {
 test("unrecognized bind expression throws BindParseError", () => {
   assert.throws(() => evalBind("not a bind", obs()), BindParseError);
 });
+
+test("json value comparison: >= and <= (value assertions, not just shape)", () => {
+  const o = obs({ body: JSON.stringify({ count: 5 }) });
+  assert.equal(evalAssert("json.count >= 5", o).ok, true);
+  assert.equal(evalAssert("json.count >= 6", o).ok, false);
+  assert.equal(evalAssert("json.count <= 5", o).ok, true);
+  assert.equal(evalAssert("json.count <= 4", o).ok, false);
+  // a bare > / < still works (regression)
+  assert.equal(evalAssert("json.count > 4", o).ok, true);
+  assert.equal(evalAssert("json.count > 5", o).ok, false);
+  // non-numbers never satisfy an ordered comparison
+  assert.equal(evalAssert("json.count >= 5", obs({ body: JSON.stringify({ count: "5" }) })).ok, false);
+});
+
+test("json type assertions: is number / string / boolean / null", () => {
+  const o = obs({ body: JSON.stringify({ n: 3, s: "x", b: true, z: null }) });
+  assert.equal(evalAssert("json.n is number", o).ok, true);
+  assert.equal(evalAssert("json.s is number", o).ok, false);
+  assert.equal(evalAssert("json.s is string", o).ok, true);
+  assert.equal(evalAssert("json.b is boolean", o).ok, true);
+  assert.equal(evalAssert("json.z is null", o).ok, true);
+  assert.equal(evalAssert("json.n is null", o).ok, false);
+});
+
+test("json value pattern: matches /regex/", () => {
+  const o = obs({ body: JSON.stringify({ id: "usr_ABC123", email: "a@b.com" }) });
+  assert.equal(evalAssert("json.id matches /^usr_[A-Z0-9]+$/", o).ok, true);
+  assert.equal(evalAssert("json.id matches /^acct_/", o).ok, false);
+  assert.equal(evalAssert("json.email matches /@/", o).ok, true);
+  // a non-string value can't match
+  assert.equal(evalAssert("json.email matches /@/", obs({ body: JSON.stringify({ email: 5 }) })).ok, false);
+});
+
+test("length >= / <= on arrays and strings", () => {
+  const o = obs({ body: JSON.stringify({ items: [1, 2, 3] }) });
+  assert.equal(evalAssert("json.items length >= 3", o).ok, true);
+  assert.equal(evalAssert("json.items length >= 4", o).ok, false);
+  assert.equal(evalAssert("json.items length <= 3", o).ok, true);
+});

@@ -85,18 +85,45 @@ export function evalAssert(line: string, obs: Observation): AssertResult {
     };
   }
 
-  // json.<dotpath> is array / is set
-  m = line.match(/^json\.([a-zA-Z0-9_.]+)\s+is\s+(array|set)$/);
+  // json.<dotpath> is array / set / number / string / boolean / null
+  m = line.match(/^json\.([a-zA-Z0-9_.]+)\s+is\s+(array|set|number|string|boolean|null)$/);
   if (m) {
     const [, dotpath, kind] = m;
     const json = getJsonBody(obs);
     const val = resolveDotPath(json, dotpath);
-    const ok = kind === "array" ? Array.isArray(val) : val !== undefined && val !== null;
+    const ok =
+      kind === "array"
+        ? Array.isArray(val)
+        : kind === "set"
+          ? val !== undefined && val !== null
+          : kind === "number"
+            ? typeof val === "number"
+            : kind === "string"
+              ? typeof val === "string"
+              : kind === "boolean"
+                ? typeof val === "boolean"
+                : /* null */ val === null;
     return { ok, message: ok ? "" : `json.${dotpath} is ${kind} failed: got ${JSON.stringify(val)}` };
   }
 
-  // json.<dotpath> length > <int>
-  m = line.match(/^json\.([a-zA-Z0-9_.]+)\s+length\s*(>|<)\s*(\d+)$/);
+  // json.<dotpath> matches /<regex>/ — assert a string value matches a pattern.
+  m = line.match(/^json\.([a-zA-Z0-9_.]+)\s+matches\s+\/(.*)\/$/);
+  if (m) {
+    const [, dotpath, pattern] = m;
+    const json = getJsonBody(obs);
+    const val = resolveDotPath(json, dotpath);
+    let re: RegExp;
+    try {
+      re = new RegExp(pattern);
+    } catch (err) {
+      throw new AssertParseError(`Invalid regex in assert: ${(err as Error).message}`);
+    }
+    const ok = typeof val === "string" && re.test(val);
+    return { ok, message: ok ? "" : `json.${dotpath} matches /${pattern}/ failed: got ${JSON.stringify(val)}` };
+  }
+
+  // json.<dotpath> length >= / <= / > / < <int>
+  m = line.match(/^json\.([a-zA-Z0-9_.]+)\s+length\s*(>=|<=|>|<)\s*(\d+)$/);
   if (m) {
     const [, dotpath, op, numText] = m;
     const expected = parseInt(numText, 10);
@@ -104,15 +131,18 @@ export function evalAssert(line: string, obs: Observation): AssertResult {
     const val = resolveDotPath(json, dotpath);
     let len: number | undefined;
     if (Array.isArray(val) || typeof val === "string") len = val.length;
-    const ok = len !== undefined && (op === ">" ? len > expected : len < expected);
+    let ok = false;
+    if (len !== undefined) {
+      ok = op === ">" ? len > expected : op === "<" ? len < expected : op === ">=" ? len >= expected : len <= expected;
+    }
     return {
       ok,
       message: ok ? "" : `json.${dotpath} length ${op} ${expected} failed: got ${JSON.stringify(val)}`,
     };
   }
 
-  // json.<dotpath> == <json-scalar> / != / > / <
-  m = line.match(/^json\.([a-zA-Z0-9_.]+)\s*(==|!=|>|<)\s*(.+)$/);
+  // json.<dotpath> == <json-scalar> / != / >= / <= / > / <
+  m = line.match(/^json\.([a-zA-Z0-9_.]+)\s*(==|!=|>=|<=|>|<)\s*(.+)$/);
   if (m) {
     const [, dotpath, op, rawScalar] = m;
     const json = getJsonBody(obs);
@@ -136,6 +166,12 @@ export function evalAssert(line: string, obs: Observation): AssertResult {
         break;
       case "<":
         ok = typeof val === "number" && typeof expected === "number" && val < expected;
+        break;
+      case ">=":
+        ok = typeof val === "number" && typeof expected === "number" && val >= expected;
+        break;
+      case "<=":
+        ok = typeof val === "number" && typeof expected === "number" && val <= expected;
         break;
       default:
         ok = false;

@@ -194,6 +194,38 @@ function dateLiteralOpenQuestion(dateStr: string, diffDays: number, recordingDat
   );
 }
 
+// Id / timestamp literals — same "flag, never auto-substitute" discipline as
+// ISO dates: a UUID or a Unix-epoch-shaped number in a recorded arg is often a
+// per-run identity (session/job/user id) or a "now" that gets frozen on replay.
+const UUID_LITERAL_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** A digit-only string in a plausible Unix-epoch range: seconds (~2001–2038) or milliseconds. */
+function unixTimestampKind(s: string): "seconds" | "milliseconds" | undefined {
+  if (!/^\d+$/.test(s)) return undefined;
+  const n = Number(s);
+  if (s.length === 10 && n >= 1_000_000_000 && n <= 2_147_483_647) return "seconds";
+  if (s.length === 13 && n >= 1_000_000_000_000 && n <= 2_147_483_647_000) return "milliseconds";
+  return undefined;
+}
+
+/** Open-question text for an id/timestamp-shaped literal, or undefined if it's neither. */
+function idOrTimestampOpenQuestion(value: string): string | undefined {
+  if (UUID_LITERAL_RE.test(value)) {
+    return (
+      `literal id "${value}" looks like a UUID — if it identifies a record that changes each run ` +
+      `(a session, job, or user id), make it a {{variable}} passed at run time; if it's a stable constant, keep it.`
+    );
+  }
+  const ts = unixTimestampKind(value);
+  if (ts) {
+    return (
+      `literal "${value}" looks like a Unix timestamp (${ts}) — if it means 'now' or a run-relative time it will ` +
+      `be frozen on replay; make it a {{variable}} (or a computed date) if it should move, else keep it.`
+    );
+  }
+  return undefined;
+}
+
 function sanitizeIdentifier(raw: string): string {
   let out = raw.replace(/[^a-zA-Z0-9_]/g, "_");
   if (!/^[a-zA-Z_]/.test(out)) out = `v_${out}`;
@@ -408,6 +440,19 @@ export function compile(records: TraceRecord[]): CompileResult {
         const diffDays = daysBetweenUtc(recordingDate, literal);
         addOpenQuestion(stepN, dateLiteralOpenQuestion(leaf.value as string, diffDays, recordingDateStr));
       }
+    }
+  }
+
+  // Id / timestamp literals — flagged regardless of the recording date (a UUID
+  // needs no date context), same flag-never-substitute discipline as dates.
+  for (const call of calls) {
+    const stepN = call.i + 1;
+    const finalArgs = filledArgsByCall.get(call.i);
+    const leaves: Leaf[] = [];
+    collectStringLeaves(finalArgs, "", leaves);
+    for (const leaf of leaves) {
+      const q = idOrTimestampOpenQuestion(leaf.value as string);
+      if (q) addOpenQuestion(stepN, q);
     }
   }
 

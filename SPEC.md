@@ -351,14 +351,15 @@ line (matching none) throws `AssertParseError`:
 | `status != <int>` | (same) | `obs.status !== expected` |
 | `body contains "<text>"` | `^body\s+(not\s+contains\|contains)\s+"([^\r\n]*)"$` | `obs.body.includes(text)` |
 | `body not contains "<text>"` | (same) | `!obs.body.includes(text)` |
-| `json.<dotpath> is array` | `^json\.([a-zA-Z0-9_.]+)\s+is\s+(array\|set)$` | `Array.isArray(resolve(dotpath))` |
+| `json.<dotpath> is array` | `^json\.([a-zA-Z0-9_.]+)\s+is\s+(array\|set\|number\|string\|boolean\|null)$` | `Array.isArray(resolve(dotpath))` |
 | `json.<dotpath> is set` | (same) | `resolve(dotpath) !== undefined && !== null` |
-| `json.<dotpath> length > <int>` | `^json\.([a-zA-Z0-9_.]+)\s+length\s*(>\|<)\s*(\d+)$` | `.length` of an array or string at the path, compared |
-| `json.<dotpath> length < <int>` | (same) | (same, `<`) |
-| `json.<dotpath> == <json-scalar>` | `^json\.([a-zA-Z0-9_.]+)\s*(==\|!=\|>\|<)\s*(.+)$` | strict `===`/`!==` against `JSON.parse(rawScalar)` |
+| `json.<dotpath> is number\|string\|boolean\|null` (0.11.0+) | (same) | `typeof`/`=== null` **type** assertion on the resolved value |
+| `json.<dotpath> matches /<regex>/` (0.11.0+) | `^json\.([a-zA-Z0-9_.]+)\s+matches\s+\/(.*)\/$` | resolved value is a `string` and `new RegExp(pattern).test(value)` — a **value pattern** check |
+| `json.<dotpath> length > <int>` | `^json\.([a-zA-Z0-9_.]+)\s+length\s*(>=\|<=\|>\|<)\s*(\d+)$` | `.length` of an array or string at the path, compared (`>=`/`<=` added 0.11.0) |
+| `json.<dotpath> length < <int>` | (same) | (same, `<`/`>=`/`<=`) |
+| `json.<dotpath> == <json-scalar>` | `^json\.([a-zA-Z0-9_.]+)\s*(==\|!=\|>=\|<=\|>\|<)\s*(.+)$` | strict `===`/`!==` against `JSON.parse(rawScalar)` |
 | `json.<dotpath> != <json-scalar>` | (same) | strict `!==` |
-| `json.<dotpath> > <json-scalar>` | (same) | numeric `>` — only true if both sides are `typeof === "number"` |
-| `json.<dotpath> < <json-scalar>` | (same) | numeric `<` (same numeric-type guard) |
+| `json.<dotpath> >\|<\|>=\|<= <json-scalar>` | (same) | numeric comparison — only true if both sides are `typeof === "number"` (`>=`/`<=` added 0.11.0) |
 
 `<dotpath>` is `a.b.c` or `a.0.b`-style (numeric segments index arrays),
 matched by `[a-zA-Z0-9_.]+` and resolved by `resolveDotPath`

@@ -363,7 +363,7 @@ test("date-literal: no false positive on a version string like '1.2.3'", () => {
   assert.equal(compiled.openQuestions.filter((o) => o.stepN === 1).length, 0);
 });
 
-test("date-literal: no false positive on ids/tokens containing digits (not dash-shaped like a date)", () => {
+test("param-lint: no DATE false positive on ids/tokens; a bare UUID gets the id-lint, a prefixed id does not", () => {
   const records: TraceRecord[] = [
     metaAt("2026-07-18T14:00:00.000Z"),
     note(1, "look up the order"),
@@ -371,7 +371,25 @@ test("date-literal: no false positive on ids/tokens containing digits (not dash-
     result(3, 0, true, mcpJsonResult({ ok: true })),
   ];
   const compiled = compile(records);
-  assert.equal(compiled.openQuestions.filter((o) => o.stepN === 1).length, 0);
+  const step1 = compiled.openQuestions.filter((o) => o.stepN === 1);
+  // No DATE false positive on either literal (neither is YYYY-MM-DD shaped).
+  assert.equal(step1.filter((o) => /literal date/.test(o.text)).length, 0);
+  // A prefixed id is NOT flagged (not a bare UUID / timestamp).
+  assert.equal(step1.filter((o) => o.text.includes("order_20260711123045")).length, 0);
+  // A bare UUID IS flagged by the new id-lint (advisory — "if it changes per run…").
+  assert.equal(step1.filter((o) => o.text.includes("looks like a UUID")).length, 1);
+});
+
+test("param-lint: a standalone Unix-timestamp literal is flagged (advisory)", () => {
+  const records: TraceRecord[] = [
+    metaAt("2026-07-18T14:00:00.000Z"),
+    note(1, "fetch events since a time"),
+    call(2, 0, "get_events", { since: "1720000000" }),
+    result(3, 0, true, mcpJsonResult({ ok: true })),
+  ];
+  const compiled = compile(records);
+  const step1 = compiled.openQuestions.filter((o) => o.stepN === 1);
+  assert.equal(step1.filter((o) => o.text.includes("Unix timestamp")).length, 1);
 });
 
 test("date-literal: a value already dataflow-recovered into {{var}} is never also flagged as a date literal", () => {
