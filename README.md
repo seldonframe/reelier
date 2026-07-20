@@ -45,6 +45,19 @@ Your receipt:
   our benchmark). Your replay: 44ms, 0 tokens.
 ```
 
+### Or run it with Docker — no Node install
+
+```sh
+docker run --rm ghcr.io/seldonframe/reelier --help
+
+# Replay a skill from the current directory:
+docker run --rm -v "$PWD:/work" -w /work ghcr.io/seldonframe/reelier run my.skill.md
+
+# Record from your agent history (mount it read-only):
+docker run --rm -v "$HOME/.claude:/root/.claude:ro" -v "$PWD:/work" -w /work \
+  ghcr.io/seldonframe/reelier scan
+```
+
 ## Why
 
 - **Your agent relearns the job every run — then quietly drifts.** Every run re-derives the workflow, and every small "rational" fix compounds — what long-run operators call *scar tissue*. A compiled skill never relearns and can't drift.

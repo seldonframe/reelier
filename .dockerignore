@@ -1,0 +1,12 @@
+node_modules
+dist
+dist-test
+.git
+.github
+docs
+examples
+test
+skills
+*.log
+*.tgz
+.reelier
