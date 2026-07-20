@@ -8,6 +8,8 @@
 
 Record the run that worked, replay it deterministically — **0 tokens, byte-identical, a receipt on every step** — and `reelier diff` catches the day it drifts.
 
+**Think of it as CI + snapshot tests for your agent's tool-call workflows.**
+
 [![npm version](https://img.shields.io/npm/v/reelier.svg?color=blue)](https://www.npmjs.com/package/reelier)
 [![CI](https://github.com/seldonframe/reelier/actions/workflows/ci.yml/badge.svg)](https://github.com/seldonframe/reelier/actions/workflows/ci.yml)
 [![tests](https://img.shields.io/badge/tests-233%20passing-brightgreen.svg)](./test)
