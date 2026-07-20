@@ -1,6 +1,6 @@
 # Spec: Receipt "why" — capturing the trigger + decision behind every change
 
-Status: PROPOSED (2026-07-19). Owner: engine (`@seldonframe/reelier`).
+Status: PROPOSED (2026-07-19). Owner: engine (`reelier`).
 
 ## 1. Motivation (from the market, verbatim)
 

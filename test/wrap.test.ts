@@ -68,7 +68,7 @@ test("planInstall: wraps a plain local server, leaves an already-wrapped one alo
     assert.equal(afterConfig.mcpServers.seldonframe.command, "npx");
     assert.deepEqual(afterConfig.mcpServers.seldonframe.args, [
       "-y",
-      "@seldonframe/reelier",
+      "reelier",
       "mcp",
       "--wrap",
       "npx -y @seldonframe/mcp@latest",
@@ -92,7 +92,7 @@ test("applyInstall: writes a timestamped backup with the ORIGINAL content, then 
     assert.equal(backupContent, originalContent);
 
     const rewritten = JSON.parse(await readFile(configPath, "utf8"));
-    assert.deepEqual(rewritten.mcpServers.widgets.args, ["-y", "@seldonframe/reelier", "mcp", "--wrap", "npx -y @widgets/mcp"]);
+    assert.deepEqual(rewritten.mcpServers.widgets.args, ["-y", "reelier", "mcp", "--wrap", "npx -y @widgets/mcp"]);
 
     assert.equal(result.wrappedCount, 1);
   });

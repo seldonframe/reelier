@@ -44,14 +44,14 @@ export interface WrappableEntry {
   [key: string]: unknown;
 }
 
-/** An entry already fronted by reelier (npx @seldonframe/reelier mcp --wrap ...) — left untouched, never double-wrapped. */
+/** An entry already fronted by reelier (npx reelier mcp --wrap ...) — left untouched, never double-wrapped. Detects both the current `reelier` package name and the legacy `@seldonframe/reelier`, so a re-install never double-wraps a server that was wrapped before the rename. */
 export function isWrappedEntry(entry: unknown): boolean {
   if (!isRecord(entry)) return false;
   const args = entry.args;
   return (
     entry.command === "npx" &&
     Array.isArray(args) &&
-    args.includes("@seldonframe/reelier") &&
+    (args.includes("reelier") || args.includes("@seldonframe/reelier")) &&
     args.includes("mcp") &&
     args.includes("--wrap")
   );

@@ -28,7 +28,7 @@ tool-call sequence, check for an existing `*.skill.md` and call
   "mcpServers": {
     "reelier": {
       "command": "npx",
-      "args": ["-y", "@seldonframe/reelier", "serve"]
+      "args": ["-y", "reelier", "serve"]
     }
   }
 }

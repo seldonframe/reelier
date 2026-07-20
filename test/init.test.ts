@@ -78,7 +78,7 @@ test("agentConfigPaths is pure and matches detectAgentConfig's paths", () => {
 
 test("reelierProxyCommandLine prints the exact npx invocation", () => {
   const line = reelierProxyCommandLine("npx -y @your/mcp-server");
-  assert.equal(line, 'npx -y @seldonframe/reelier mcp --wrap "npx -y @your/mcp-server"');
+  assert.equal(line, 'npx -y reelier mcp --wrap "npx -y @your/mcp-server"');
 });
 
 // ---------------------------------------------------------------------------
@@ -91,7 +91,7 @@ test("mergeReelierServer: adds reelier to an empty config", () => {
   assert.deepEqual(result.preservedServerNames, []);
   assert.deepEqual(result.config.mcpServers?.reelier, {
     command: "npx",
-    args: ["-y", "@seldonframe/reelier", "mcp", "--wrap", "npx -y @your/mcp-server"],
+    args: ["-y", "reelier", "mcp", "--wrap", "npx -y @your/mcp-server"],
   });
 });
 
@@ -157,7 +157,7 @@ test("planMcpConfigWrite + applyMcpConfigWrite: merges and atomically writes, pr
     assert.ok(written.mcpServers.reelier);
     assert.deepEqual(written.mcpServers.reelier.args, [
       "-y",
-      "@seldonframe/reelier",
+      "reelier",
       "mcp",
       "--wrap",
       "npx -y @your/mcp-server",
@@ -263,7 +263,7 @@ function fakeRegistryTool(): Tool {
           status: 200,
           headers: {},
           body: JSON.stringify({
-            name: "@seldonframe/reelier",
+            name: "reelier",
             version: "0.5.0",
             license: "AGPL-3.0-only",
             repository: { type: "git", url: "git+https://example.com/reelier.git" },
@@ -343,7 +343,7 @@ test("runDemoRecording: dataflow binds to the top-level field even when a FULL p
             status: 200,
             headers: {},
             body: JSON.stringify({
-              _id: "@seldonframe/reelier",
+              _id: "reelier",
               versions: {
                 "0.1.0": { homepage: "https://example.com/reelier-homepage" },
               },
@@ -361,8 +361,8 @@ test("runDemoRecording: dataflow binds to the top-level field even when a FULL p
     // compiler's real behavior on that input shape.
     await recorder.start("regression-demo", ["builtin:http.get"]);
     recorder.note("fetch full packument");
-    const i1 = recorder.recordCall("http.get", { url: "https://registry.npmjs.org/@seldonframe/reelier" });
-    const obs1 = await fullPackumentTool.run({ url: "https://registry.npmjs.org/@seldonframe/reelier" }, {
+    const i1 = recorder.recordCall("http.get", { url: "https://registry.npmjs.org/reelier" });
+    const obs1 = await fullPackumentTool.run({ url: "https://registry.npmjs.org/reelier" }, {
       allowDestructive: false,
     });
     recorder.recordResult(i1, true, 1, { content: [{ type: "text", text: obs1.body }], isError: false });
@@ -392,7 +392,7 @@ test("runDemoRecording: an honest failure when the registry response has no usab
     const tool: Tool = {
       effect: "read",
       async run() {
-        return { status: 200, headers: {}, body: JSON.stringify({ name: "@seldonframe/reelier" }) };
+        return { status: 200, headers: {}, body: JSON.stringify({ name: "reelier" }) };
       },
     };
     const result = await runDemoRecording(recorder, { allowDestructive: false }, tool);

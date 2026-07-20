@@ -4,7 +4,7 @@ description: >-
   schedule or PR, and post the run record as a job-summary receipt. A
   green replay check on a public repo is the proof surface — see the
   "Run it in CI" section of README.md.
-author: "SeldonFrame"
+author: "Reelier"
 branding:
   icon: "check-circle"
   color: "green"
@@ -27,14 +27,14 @@ inputs:
     default: "0"
   cloud-url:
     description: >-
-      Base URL of the Reelier Cloud instance to push the receipt to.
+      Base URL of the receipt-ledger endpoint to push the receipt to.
       Only used when `cloud-key` is also set.
     required: false
     default: "https://www.reelier.com"
   cloud-key:
     description: >-
-      Reelier Cloud API key. When set, `reelier push` runs after a
-      successful replay so the receipt accrues in your hosted ledger.
+      Receipt-ledger API key. When set, `reelier push` runs after a
+      successful replay so the receipt accrues in your ledger.
       When unset, the replay is local-only — the job summary is still
       written, nothing is pushed anywhere. Pass this as a GitHub secret,
       never inline.
@@ -64,9 +64,9 @@ runs:
       with:
         node-version: 20
 
-    - name: Install @seldonframe/reelier
+    - name: Install reelier
       shell: bash
-      run: npm install -g @seldonframe/reelier@^0.5
+      run: npm install -g reelier@^0.12
 
     - name: Run skill (reelier run)
       id: run-skill
@@ -98,7 +98,7 @@ runs:
         fi
         exit 0
 
-    - name: Push receipt to Reelier Cloud
+    - name: Push receipt to the ledger
       id: push-cloud
       if: ${{ inputs.cloud-key != '' && steps.run-skill.outputs.passed == 'true' }}
       shell: bash

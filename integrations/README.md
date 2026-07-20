@@ -20,7 +20,7 @@ confuse the two when wiring things up.
      "mcpServers": {
        "reelier": {
          "command": "npx",
-         "args": ["-y", "@seldonframe/reelier", "serve"]
+         "args": ["-y", "reelier", "serve"]
        }
      }
    }
@@ -55,7 +55,7 @@ confuse the two when wiring things up.
 
 Any agent that can connect to a local MCP server over stdio can use
 `reelier serve` the same way — point its MCP config at
-`npx -y @seldonframe/reelier serve`. There's no Codex-specific rules file
+`npx -y reelier serve`. There's no Codex-specific rules file
 here yet; the Cursor/Windsurf variants above are close enough to adapt by
 hand, or use `claude-code/reelier/SKILL.md` as the fullest reference for
 the "when" guidance.
@@ -69,7 +69,7 @@ Once connected, the agent can call:
 | `reelier_scan` | "What in my session history could I turn into a replayable skill?" |
 | `reelier_from_session` | "Freeze this session's tool calls into a SKILL.md." |
 | `reelier_replay` | "Run this skill and tell me if it still passes." |
-| `reelier_push` | "Sync this skill's run records to Reelier Cloud." |
+| `reelier_push` | "Sync this skill's run records to your receipt ledger." |
 
 See the main `README.md`'s "Use Reelier inside your coding agent" section
 and `SPEC.md` §10 for the full tool contract (input schemas, honesty

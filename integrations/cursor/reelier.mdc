@@ -34,7 +34,7 @@ real run record either way — never assume it passed.
   "mcpServers": {
     "reelier": {
       "command": "npx",
-      "args": ["-y", "@seldonframe/reelier", "serve"]
+      "args": ["-y", "reelier", "serve"]
     }
   }
 }

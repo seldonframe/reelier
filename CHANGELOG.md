@@ -1,6 +1,20 @@
 # Changelog
 
-All notable changes to `@seldonframe/reelier`. Dates are release dates.
+All notable changes to `reelier`. Dates are release dates.
+
+## 0.12.0 — Cleaner install: the package is now `reelier`
+
+### Changed
+- **The npm package is now `reelier`** (was `@seldonframe/reelier`) — install with
+  `npm i -g reelier`. The `reelier` command, the skill / trace / receipt formats,
+  and every flag are unchanged; only the install name is shorter. The old scoped
+  package is deprecated with a pointer to the new name.
+- Standalone-OSS polish: removed hosted-product marketing from the README, CLI,
+  and integrations so the repo reads as a self-contained tool. `reelier push` and
+  the receipt ledger remain available as an opt-in.
+
+### Added
+- `reelier --version` / `-v` prints the version; `reelier --help` / `-h` prints usage.
 
 ## 0.7.1 — Replay-worthiness, not just replay-mechanics
 

@@ -70,13 +70,13 @@ export interface McpServerEntry {
   args: string[];
 }
 
-/** The exact command line reelier prints to front an existing MCP server: `npx -y @seldonframe/reelier mcp --wrap "<wrapCommand>"`. */
+/** The exact command line reelier prints to front an existing MCP server: `npx -y reelier mcp --wrap "<wrapCommand>"`. */
 export function reelierProxyCommandLine(wrapCommand: string): string {
-  return `npx -y @seldonframe/reelier mcp --wrap ${JSON.stringify(wrapCommand)}`;
+  return `npx -y reelier mcp --wrap ${JSON.stringify(wrapCommand)}`;
 }
 
 export function buildReelierServerEntry(wrapCommand: string): McpServerEntry {
-  return { command: "npx", args: ["-y", "@seldonframe/reelier", "mcp", "--wrap", wrapCommand] };
+  return { command: "npx", args: ["-y", "reelier", "mcp", "--wrap", wrapCommand] };
 }
 
 // ---------------------------------------------------------------------------
@@ -240,8 +240,8 @@ export async function runDemoRecording(
     return { ok: false, message: started.message };
   }
 
-  recorder.note("Fetch @seldonframe/reelier's versioned npm registry metadata");
-  const versionedUrl = "https://registry.npmjs.org/@seldonframe/reelier/latest";
+  recorder.note("Fetch reelier's own versioned npm registry metadata");
+  const versionedUrl = "https://registry.npmjs.org/reelier/latest";
   const i1 = recorder.recordCall("http.get", { url: versionedUrl });
   const t1 = Date.now();
   let obs1;
@@ -387,7 +387,7 @@ export function formatNextSteps(skillPath: string): string[] {
     "",
     "Next steps:",
     `  reelier run ${skillPath}      # replay again`,
-    `  reelier push ${skillPath}     # sync receipts to Reelier Cloud (opt-in — see SPEC.md "Push")`,
+    `  reelier push ${skillPath}     # sync receipts to your ledger (opt-in — see SPEC.md "Push")`,
     "  SPEC.md has the full trace / SKILL.md / run-record formats.",
   ];
 }

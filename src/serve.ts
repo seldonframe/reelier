@@ -263,7 +263,7 @@ export type PushToolResult =
 
 /**
  * Push run records (and, on first push, the skill file) for a skill to
- * Reelier Cloud. Reads REELIER_CLOUD_URL/REELIER_CLOUD_KEY from env, exactly
+ * your receipt ledger. Reads REELIER_CLOUD_URL/REELIER_CLOUD_KEY from env, exactly
  * like `reelier push`. Missing config is reported as `skipped-no-key`, not
  * silently treated as a no-op success; any other failure (read error, no run
  * records) is reported as `failed` with the real error message.
@@ -380,7 +380,7 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
     "date window) so a replay pulls current data. READ-ONLY by default: 'idempotent-write' steps are held back " +
     "(reported as a refused/failed step) unless you pass allowWrites — so replaying never re-fires a write.",
   reelier_push:
-    "Push a skill's local run records (and, on first push, the skill file) to Reelier Cloud, where each receipt gets " +
+    "Push a skill's local run records (and, on first push, the skill file) to your receipt ledger, where each receipt gets " +
     "a shareable permalink + verified-replay badge. Requires REELIER_CLOUD_URL/REELIER_CLOUD_KEY in env — reports " +
     "skipped-no-key honestly when they're absent. USE WHEN: a run's receipt should be durable or shareable.",
   reelier_diff:

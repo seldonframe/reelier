@@ -1135,7 +1135,7 @@ async function compileReplayAndReceipt(
 async function runDemoPath(cwd: string): Promise<number> {
   console.log("");
   console.log("Recording the zero-setup demo — 2 real HTTP requests, nothing fabricated:");
-  console.log("  1. GET @seldonframe/reelier's versioned npm registry metadata");
+  console.log("  1. GET reelier's versioned npm registry metadata");
   console.log("  2. GET the package homepage, using the URL bound from step 1's response");
   console.log("");
 
@@ -1331,8 +1331,29 @@ async function cmdInit(args: ParsedArgs): Promise<number> {
   return runDemoPath(cwd);
 }
 
+const USAGE =
+  "Usage: reelier <run|bench|mcp|serve|trace|compile|push|diff|init|from-session|scan|install|uninstall> [options]\n" +
+  "  mcp   — RECORDER: fronts your own --wrap'd MCP server(s) to capture their calls into a trace.\n" +
+  "  serve — TOOL-SERVER: exposes Reelier's own commands (scan/from-session/replay/push/diff) as MCP tools.\n" +
+  "  diff  — compare the last two runs of a skill; exit 1 on drift (gate a scheduled replay).";
+
 async function main(): Promise<number> {
   const [, , cmd, ...rest] = process.argv;
+
+  if (cmd === "--version" || cmd === "-v") {
+    try {
+      const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+      console.log(pkg.version);
+    } catch {
+      console.log("unknown");
+    }
+    return 0;
+  }
+  if (cmd === "--help" || cmd === "-h") {
+    console.log(USAGE);
+    return 0;
+  }
+
   const args = parseArgv(rest);
 
   switch (cmd) {
@@ -1363,12 +1384,7 @@ async function main(): Promise<number> {
     case "uninstall":
       return cmdUninstall(args);
     default:
-      console.error(
-        "Usage: reelier <run|bench|mcp|serve|trace|compile|push|diff|init|from-session|scan|install|uninstall> [options]\n" +
-          "  mcp   — RECORDER: fronts your own --wrap'd MCP server(s) to capture their calls into a trace.\n" +
-          "  serve — TOOL-SERVER: exposes Reelier's own commands (scan/from-session/replay/push/diff) as MCP tools.\n" +
-          "  diff  — compare the last two runs of a skill; exit 1 on drift (gate a scheduled replay)."
-      );
+      console.error(USAGE);
       return 1;
   }
 }

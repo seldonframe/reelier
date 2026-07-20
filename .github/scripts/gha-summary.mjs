@@ -131,13 +131,13 @@ async function main() {
 
   lines.push("");
   if (cloudPushStatus === "pushed") {
-    lines.push("**Reelier Cloud:** receipt pushed.");
+    lines.push("**Ledger:** receipt pushed.");
   } else if (cloudPushStatus === "failed") {
-    lines.push("**Reelier Cloud:** push attempted but failed — see the raw CLI log above.");
+    lines.push("**Ledger:** push attempted but failed — see the raw CLI log above.");
   } else if (cloudPushStatus === "skipped") {
-    lines.push("_Reelier Cloud: not pushed (no `cloud-key` input set)._");
+    lines.push("_Ledger: not pushed (no `cloud-key` input set)._");
   } else if (cloudPushStatus === "not-attempted") {
-    lines.push("_Reelier Cloud: push skipped — the replay failed, so nothing was pushed._");
+    lines.push("_Ledger: push skipped — the replay failed, so nothing was pushed._");
   }
 
   await appendFile(summaryPath, lines.join("\n") + "\n");

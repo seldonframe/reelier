@@ -14,7 +14,7 @@ not a replay.
 
 Inputs (pass at run time; nothing sensitive is stored in this file):
 - `{{posthog_key}}` — a PostHog **personal API key** (Bearer). BYOK: it's
-  sent directly to PostHog, never to Reelier Cloud.
+  sent directly to PostHog, never to the ledger.
 - `{{project_id}}` — your PostHog project id (e.g. `497925`).
 
 The 7-day window uses Reelier's built-in computed date vars, so the same

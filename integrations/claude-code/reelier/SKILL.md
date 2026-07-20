@@ -96,7 +96,7 @@ the equivalent file for Cursor/Windsurf — see `integrations/README.md`):
   "mcpServers": {
     "reelier": {
       "command": "npx",
-      "args": ["-y", "@seldonframe/reelier", "serve"]
+      "args": ["-y", "reelier", "serve"]
     }
   }
 }

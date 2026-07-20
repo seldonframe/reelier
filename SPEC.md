@@ -204,9 +204,8 @@ call it the **proxy profile**.
 A consuming system MAY impose its own storage-driven caps without
 violating this spec, since §0 declares trace records open for additive
 fields and this section does not mandate a maximum size. One such
-consumer, SeldonFrame's Reelier-format replay recorder
-(`packages/crm/src/lib/deployments/replay/trace-format.ts`, which
-implements this exact `TraceRecord` shape independently rather than
+consumer, an independent Reelier-format replay recorder that
+implements this exact `TraceRecord` shape rather than
 depending on this package), defines a second profile:
 
 - **`TRACE_BODY_MAX_CHARS = 20_000`** — a `result.body` whose serialized
@@ -969,7 +968,7 @@ defaults:
 
 | Env var | Meaning |
 | --- | --- |
-| `REELIER_CLOUD_URL` | Base URL of the Reelier Cloud instance (no trailing slash required — the client strips one if present). |
+| `REELIER_CLOUD_URL` | Base URL of the receipt-ledger endpoint (no trailing slash required — the client strips one if present). |
 | `REELIER_CLOUD_KEY` | Bearer API key. |
 
 Either missing is rejected before any network call, naming only the
@@ -1180,14 +1179,14 @@ Extends `reelier init`'s existing config detection (`detectAgentConfig`,
 §"Step 1" internals) into a one-command wrap: for the first of the
 project `.mcp.json` / user `~/.claude.json` that exists, every configured
 server of the plain `{command, args?}` (local stdio) shape is rewritten
-in place to `{command: "npx", args: ["-y", "@seldonframe/reelier", "mcp",
+in place to `{command: "npx", args: ["-y", "reelier", "mcp",
 "--wrap", "<original command line, rejoined>"]}` — i.e. fronted by the
 same `reelier mcp --wrap` proxy §5 already documents, under the *same*
 server name key. Remote/url-based server entries (no `command` field) are
 left untouched and reported as skipped, never mis-wrapped.
 
 Idempotent: an entry already shaped like a reelier wrap (`command ===
-"npx"` and `args` includes `@seldonframe/reelier`, `mcp`, and `--wrap`) is
+"npx"` and `args` includes `reelier` (or the legacy `@seldonframe/reelier`), `mcp`, and `--wrap`) is
 detected and left alone — running `install` twice never double-wraps, and
 the second run does not write a redundant backup.
 

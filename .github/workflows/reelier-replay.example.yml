@@ -47,7 +47,7 @@ jobs:
           # vars: |
           #   projectId=497925
 
-          # Optional: push the receipt to Reelier Cloud after a passing run.
+          # Optional: push the receipt to the ledger after a passing run.
           # Omit both lines entirely for a local-only replay (still posts the
           # job summary — nothing about the check depends on Cloud).
           cloud-key: ${{ secrets.REELIER_CLOUD_KEY }}

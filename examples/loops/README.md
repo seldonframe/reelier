@@ -14,12 +14,12 @@ to a model. This folder shows that split on real workflows.
 ## 1. See it work in 60 seconds (no data key needed)
 
 This uses the already-green `npm-info` skill and pushes the receipt to **your**
-Reelier Cloud ledger, so you watch a run appear in your dashboard.
+receipt ledger, so you watch a run appear in your dashboard.
 
 ```bash
-npm i -g @seldonframe/reelier
+npm i -g reelier
 
-# Put YOUR Reelier Cloud key somewhere it can be read (get it from
+# Put YOUR ledger key somewhere it can be read (get it from
 # https://www.reelier.com/dashboard — "Regenerate key" shows it once):
 export REELIER_CLOUD_URL=https://www.reelier.com
 export REELIER_CLOUD_KEY=sfr_...          # your regenerated key
@@ -29,7 +29,7 @@ reelier run examples/benchmark/npm-info.skill.md
 #   ✓ Step 1 ... [passed]  ~0.5s
 #   PASSED: 1/1 steps ok, 0 failed
 
-# Push the receipt to your cloud ledger, then open the dashboard:
+# Push the receipt to your ledger, then open the dashboard:
 reelier push
 ```
 
@@ -38,12 +38,12 @@ That's the whole loop: replay → receipt → ledger, on your key.
 
 ---
 
-## 2. A real SF loop: the weekly PostHog pull (the "gather" half of seo-geo-loop)
+## 2. A real loop: the weekly PostHog pull (the "gather" half of a metrics loop)
 
 [`posthog-weekly-pull.skill.md`](./posthog-weekly-pull.skill.md) pulls the
 last-7-days event + pageview counts from PostHog. It's **BYOK** — your PostHog
 personal API key is passed at run time with `--var` and goes directly to
-PostHog, never to Reelier Cloud, and is never written to the skill file.
+PostHog, never to the ledger, and is never written to the skill file.
 
 ```bash
 # BYOK: a PostHog *personal* API key (Bearer) + your project id.
@@ -62,8 +62,8 @@ week without editing anything. The assertions check **shape, not value**
 (`200` + a `results` array), because the count changes weekly but the pull
 never should.
 
-To run it every Monday untouched, that's exactly what Reelier Cloud's
-scheduled replay is for (Level-0, builtin-only, behind the SSRF guard) — same
+To run it every Monday untouched, that's exactly what a scheduled replay
+is for (Level-0, builtin-only, behind the SSRF guard) — same
 skill, no laptop required.
 
 ---

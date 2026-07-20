@@ -8,13 +8,13 @@
 
 Record the run that worked, replay it deterministically — **0 tokens, byte-identical, a receipt on every step** — and `reelier diff` catches the day it drifts.
 
-[![npm version](https://img.shields.io/npm/v/@seldonframe/reelier.svg?color=blue)](https://www.npmjs.com/package/@seldonframe/reelier)
+[![npm version](https://img.shields.io/npm/v/reelier.svg?color=blue)](https://www.npmjs.com/package/reelier)
 [![CI](https://github.com/seldonframe/reelier/actions/workflows/ci.yml/badge.svg)](https://github.com/seldonframe/reelier/actions/workflows/ci.yml)
 [![tests](https://img.shields.io/badge/tests-233%20passing-brightgreen.svg)](./test)
 [![license](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](./LICENSE)
 [![stars](https://img.shields.io/github/stars/seldonframe/reelier?style=social)](https://github.com/seldonframe/reelier)
 
-**[Website](https://www.reelier.com)** · **[Dashboard](https://www.reelier.com/dashboard)** · **[Docs](https://www.reelier.com/docs)** · **[SPEC.md](./SPEC.md)**
+**[Website](https://www.reelier.com)** · **[Docs](https://www.reelier.com/docs)** · **[SPEC.md](./SPEC.md)**
 
 <img src="https://raw.githubusercontent.com/seldonframe/reelier/main/docs/assets/reelier-demo.gif" width="760" alt="Reelier: record a run that worked, replay it deterministically at 0 tokens, diff for drift, a receipt on every step" />
 
@@ -29,7 +29,7 @@ Your agent re-derives the same workflow every run — burning tokens and quietly
 ## Install → your first receipt in 60 seconds
 
 ```sh
-npm i -g @seldonframe/reelier && reelier init
+npm i -g reelier && reelier init
 ```
 
 `reelier init` **scans the work you've already done first** — across Claude Code, Codex, Windsurf, and OpenClaw — and offers to turn a real past session into a replayable skill. No such history? It runs a zero-setup demo and closes with a real receipt:
@@ -59,14 +59,14 @@ Your receipt:
 reelier init                        # 60s: record → compile → replay → your receipt
 reelier run  <name>.skill.md        # replay deterministically — 0 tokens (read-only by default)
 reelier diff <name>                 # SAME or DRIFTED, per step — exit 1 on drift
-reelier push <name>.skill.md        # sync receipts to your cloud ledger
+reelier push <name>.skill.md        # sync receipts to your ledger (opt-in)
 ```
 
 1. **Record** — three ways: `reelier mcp --wrap "<your mcp server>"` (a lossless proxy in front of your agent's tools), straight from an existing session (`reelier scan` / `reelier from-session`), or the guided `reelier init`.
 2. **Compile** — `reelier compile` turns a trace into a `SKILL.md` deterministically (0 LLM calls) — a recipe with an **assertion on every step**, and the compiler's honest gaps printed as **Open questions** (including literal dates, UUIDs, and timestamps it flags as "should this be a variable?") rather than guessed at.
 3. **Replay** — `reelier run` runs it at Level 0: no LLM, milliseconds, byte-identical. **Read-only by default** — a write step (`idempotent-write`) never re-fires unless you pass `--allow-writes`.
 4. **Diff** — `reelier diff` compares two runs of a skill and reports **SAME or DRIFTED per step**, with the failing assertion as the *why*. Exit code 1 on drift, so it gates a scheduled replay.
-5. **Receipt** — every run is a receipt (per-step outcomes, timing, 0 tokens). `reelier push` syncs them to [Reelier Cloud](https://www.reelier.com/dashboard) as a shareable permalink + an embeddable **verified-replay badge**.
+5. **Receipt** — every run is a receipt (per-step outcomes, timing, 0 tokens). `reelier push` optionally syncs them to a receipt ledger for a shareable permalink + an embeddable **verified-replay badge**.
 
 ## Assert the value, not just the shape
 
@@ -86,7 +86,7 @@ A skill's assertions are what make a replay *proof*. The grammar checks status, 
 `reelier serve` exposes Reelier's own commands as MCP tools, so Claude Code / Cursor / Windsurf / Codex can call it mid-session:
 
 ```json
-{ "mcpServers": { "reelier": { "command": "npx", "args": ["-y", "@seldonframe/reelier", "serve"] } } }
+{ "mcpServers": { "reelier": { "command": "npx", "args": ["-y", "reelier", "serve"] } } }
 ```
 
 The agent gets `reelier_scan`, `reelier_from_session`, `reelier_replay`, `reelier_diff`, and `reelier_push` — with descriptions that tell it exactly *when to use* each (and when not to). It records a deterministic task once, then replays instead of re-reasoning.
@@ -111,10 +111,6 @@ Level-0 replay (the default) never calls a model — 0 tokens, by construction. 
 
 The engine can never be taken closed. Your skills, traces, and run records are **your data** — leaving is copying a folder. The formats are specified in [SPEC.md](./SPEC.md), a normative RFC-style reference so anyone can emit or consume them without reading the source.
 
-## Reelier Cloud (optional)
-
-Local Reelier is complete and free forever. [Reelier Cloud](https://www.reelier.com/dashboard) adds a hosted receipt ledger, public receipt permalinks + verified-replay badges, and scheduled replays — sign in with GitHub, free tier, your data exports anytime.
-
 ## Contributing
 
 Issues and PRs welcome — see [SPEC.md](./SPEC.md) for the formats (the spec wins over the code; fix the code, not the spec). `npm test` runs the full suite; `npm run build && npx tsc --noEmit` before a PR.
@@ -135,7 +131,5 @@ npm install && npm test
 <div align="center">
 
 **If Reelier saved you a re-run, [star it](https://github.com/seldonframe/reelier) ⭐ — it's how other builders find it.**
-
-Built by the [SeldonFrame](https://www.reelier.com) team.
 
 </div>
