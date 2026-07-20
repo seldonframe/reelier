@@ -1148,6 +1148,67 @@ async function cmdInit(args: ParsedArgs): Promise<number> {
   console.log("Reelier init — record once, replay forever. Let's get your first receipt in under 60 seconds.");
   console.log("");
 
+  // Step 0 — meet the user where they are: before recording anything NEW,
+  // look at the agent work they've ALREADY done and offer to compile a
+  // replayable skill straight from history. Read-only sessions only (safe
+  // to replay); any scan failure degrades honestly to the normal init flow —
+  // never a crash, never a fabricated candidate.
+  try {
+    const scanRoot = path.join(homedir, ".claude", "projects");
+    const sessions = await scanTranscripts(scanRoot);
+    const candidates = rankByReplayWorthiness(
+      sessions.filter((s) => s.replayableCount > 0 && s.readOnly)
+    ).slice(0, 3);
+
+    if (candidates.length > 0) {
+      console.log("Step 0 — you already have replayable work");
+      console.log(
+        `  Scanned ${scanRoot}: ${candidates.length} read-only session(s) Reelier can replay as-is:`
+      );
+      for (let i = 0; i < candidates.length; i++) {
+        console.log(fmtSessionLine(i + 1, candidates[i]));
+      }
+
+      if (yes) {
+        console.log("  (--yes: skipping the offer — compile any of these later with `reelier scan`.)");
+      } else {
+        const rl0 = createInterface({ input: process.stdin, output: process.stdout });
+        let pick: string;
+        try {
+          pick = (
+            await rl0.question("\n  Compile one into a skill now? (number, or Enter to skip): ")
+          ).trim();
+        } finally {
+          rl0.close();
+        }
+        const n = parseInt(pick, 10);
+        if (Number.isInteger(n) && n >= 1 && n <= candidates.length) {
+          const session = candidates[n - 1];
+          const source = await readFile(session.path, "utf8");
+          const traceFileName = path.basename(session.path);
+          const name = `${session.project}-${traceFileName.replace(/\.jsonl$/i, "")}`;
+          const result = compileSessionTranscript(source, { name, traceFileName });
+          if (result.ok) {
+            const outPath = path.join(cwd, `${result.compileResult.name}.skill.md`);
+            await writeFile(outPath, result.skillSource, "utf8");
+            console.log(
+              `  Wrote ${outPath} (${result.compileResult.stats.steps} steps, ${result.compileResult.stats.asserts} asserts).`
+            );
+            console.log("  Replay it (MCP-tool steps need their server wrapped):");
+            console.log(`    reelier run ${outPath}`);
+          } else {
+            // Shouldn't happen (scan pre-filtered), but never fabricate.
+            console.log(`  ${session.path}: ${result.reason}`);
+          }
+        }
+      }
+      console.log("");
+    }
+  } catch {
+    // Scan is a best-effort bonus — a missing/unreadable ~/.claude/projects
+    // must never block first-run init.
+  }
+
   const detection = await detectAgentConfig(cwd, homedir);
   console.log("Step 1 — agent config");
   console.log(
