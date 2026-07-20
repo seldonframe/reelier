@@ -233,6 +233,40 @@ description: exercises a real failure
   });
 });
 
+test("runReplayTool: read-only by default — a write step is refused unless allowWrites", async () => {
+  await withTmpDir(async (dir) => {
+    const skillPath = path.join(dir, "writer.skill.md");
+    await writeFile(
+      skillPath,
+      `---
+name: writer
+description: has a write step
+---
+
+### Step 1 — create a thing
+- intent: create
+- action: http.post {"url": "https://api.example.com/things", "body": {"x": 1}}
+- effect: idempotent-write
+`,
+      "utf8"
+    );
+
+    // Default replay is read-only: the write is refused BEFORE any fetch — no
+    // network call, honest failed step explaining how to opt in.
+    const readonly = await runReplayTool({ skillPath, cwd: dir });
+    assert.equal(readonly.passed, false);
+    assert.equal(readonly.steps[0].outcome, "failed");
+    assert.match(readonly.steps[0].failures[0], /read-only|allow-writes/i);
+
+    // Opt in → the step actually executes (unchecked: it ran, no assertion).
+    const written = await withFetch(fakeOkFetch(), () =>
+      runReplayTool({ skillPath, cwd: dir, allowWrites: true })
+    );
+    assert.equal(written.steps[0].outcome, "unchecked");
+    assert.ok(!/read-only/i.test(written.steps[0].failures[0] ?? ""));
+  });
+});
+
 // ---------------------------------------------------------------------------
 // reelier_push
 // ---------------------------------------------------------------------------

@@ -190,6 +190,8 @@ export interface ReplayToolInput {
   /** Downstream MCP server command line(s) to connect for MCP-tool steps (same shape as the CLI's --wrap). */
   wrap?: string[];
   allowDestructive?: boolean;
+  /** Permit `idempotent-write` steps to execute. Default false — replay is read-only. */
+  allowWrites?: boolean;
   cwd?: string;
 }
 
@@ -213,6 +215,7 @@ export async function runReplayTool(input: ReplayToolInput): Promise<RunRecord> 
     return await runSkill(skill, {
       vars: input.vars,
       allowDestructive: input.allowDestructive ?? false,
+      allowWrites: input.allowWrites ?? false,
       tools,
       maxLevel: 0,
       cwd: input.cwd,
@@ -234,6 +237,7 @@ const replayToolInputSchema = {
       description: "Downstream MCP server command line(s) to connect for MCP-tool steps (same shape as the CLI's --wrap).",
     },
     allowDestructive: { type: "boolean", description: "Allow steps whose effect is 'destructive' to run." },
+    allowWrites: { type: "boolean", description: "Allow 'idempotent-write' steps to execute. Default false — replay is READ-ONLY, so re-running never re-fires writes." },
     cwd: { type: "string", description: "Working directory the run record is written under (default: process cwd)." },
   },
   required: ["skillPath"],
@@ -373,7 +377,8 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
     "outcomes, timing, totals, and — when a step drifted — why (the failing assertion). Never fabricates a pass. " +
     "Reproduces the recorded TOOL CALLS (MCP/HTTP) only — no LLM reasoning or prose step re-runs. It does NOT " +
     "schedule itself: pair with cron/CI for recurring runs. Pass vars to fill {{templated}} inputs (e.g. a computed " +
-    "date window) so a replay pulls current data.",
+    "date window) so a replay pulls current data. READ-ONLY by default: 'idempotent-write' steps are held back " +
+    "(reported as a refused/failed step) unless you pass allowWrites — so replaying never re-fires a write.",
   reelier_push:
     "Push a skill's local run records (and, on first push, the skill file) to Reelier Cloud, where each receipt gets " +
     "a shareable permalink + verified-replay badge. Requires REELIER_CLOUD_URL/REELIER_CLOUD_KEY in env — reports " +

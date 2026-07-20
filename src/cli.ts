@@ -118,7 +118,7 @@ async function cmdRun(args: ParsedArgs): Promise<number> {
   const skillPath = args.positional[0];
   if (!skillPath) {
     console.error(
-      "Usage: reelier run <skill.md> [--dry-run] [--yes] [--var name=value ...] [--max-level 0|1|2] " +
+      "Usage: reelier run <skill.md> [--dry-run] [--allow-writes] [--yes] [--var name=value ...] [--max-level 0|1|2] " +
         "[--llm-base-url ...] [--llm-api-key ...] [--llm-model ...] [--llm-l2-model ...]"
     );
     return 1;
@@ -184,6 +184,7 @@ async function cmdRun(args: ParsedArgs): Promise<number> {
     const record = await runSkill(skill, {
       vars: args.vars,
       allowDestructive: args.flags.has("yes"),
+      allowWrites: args.flags.has("allow-writes") || args.flags.has("yes"),
       tools,
       maxLevel,
       llm: llmConfig ? createLlmClient(llmConfig) : undefined,

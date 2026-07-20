@@ -424,7 +424,7 @@ effect <value> — must be one of read, idempotent-write, destructive"`.
 | Value | Meaning | Destructive-gating contract |
 | --- | --- | --- |
 | `read` | No side effects. | Always executed. |
-| `idempotent-write` | A write safe to repeat (create-if-absent, upsert, etc.). | Always executed. |
+| `idempotent-write` | A write safe to repeat (create-if-absent, upsert, etc.). | **Read-only by default (0.10.0+):** refused unless the run was invoked with `--allow-writes` (or `--yes`, which implies it) — so replaying a skill never silently re-fires its writes. The runner records an honest failed step (`"Refusing to execute a write step … replay is read-only by default"`) instead of calling the tool. Gated on the **effective** effect (`step.effect ?? tool.effect`), so a POST-that-reads marked `effect: read` is never held back. |
 | `destructive` | Non-idempotent or irreversible (delete, charge, send, etc.). | Refused unless the run was invoked with `--yes`/`allowDestructive: true` — the runner prints the filled action instead of calling the tool (`executeStep`, `src/runner.ts:166-179`). **Never** re-executed by the escalation ladder's Level 2 (§7.3) regardless of `--yes` — that check is independent of `allowDestructive` and happens before L2 is even invoked (`level3Message`, `src/runner.ts:267-273`; `attemptEscalation`, `src/runner.ts:348-351`). |
 
 ### 3.7 Non-Steps sections and the Changelog write-back convention

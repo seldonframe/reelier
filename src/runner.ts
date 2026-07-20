@@ -89,6 +89,8 @@ export interface RunRecord {
 export interface RunOptions {
   vars?: Record<string, string>;
   allowDestructive?: boolean;
+  /** Permit `idempotent-write` steps to execute. Default false — replay is read-only. `allowDestructive` implies this. */
+  allowWrites?: boolean;
   tools?: Record<string, Tool>;
   /** Directory under which .reelier/runs/<skill>.jsonl is written. Defaults to cwd. */
   cwd?: string;
@@ -287,6 +289,25 @@ async function executeStep(
       `Refusing to execute destructive step without --yes. Filled action: ${step.actionTool} ${JSON.stringify(
         filledArgs
       )}`
+    );
+    return { outcome: "failed", ms: Date.now() - started, failures, binds: localBinds };
+  }
+
+  // Read-only by default: a write step never re-fires on replay unless the
+  // caller opts in. `read` steps (incl. POST-that-reads marked `effect: read`)
+  // are never gated; this only holds back `idempotent-write`. Falls back to the
+  // tool's intrinsic effect when the step didn't override one.
+  const effectiveEffect = step.effect ?? tool.effect;
+  if (effectiveEffect === "idempotent-write" && !ctx.allowWrites) {
+    let filledArgs: unknown;
+    try {
+      filledArgs = fillTemplate(step.actionArgs, bindings, now);
+    } catch (err) {
+      filledArgs = `<error: ${(err as Error).message}>`;
+    }
+    failures.push(
+      `Refusing to execute a write step (effect: idempotent-write) — replay is read-only by default. ` +
+        `Pass --allow-writes to execute it. Filled action: ${step.actionTool} ${JSON.stringify(filledArgs)}`
     );
     return { outcome: "failed", ms: Date.now() - started, failures, binds: localBinds };
   }
@@ -528,7 +549,11 @@ async function attemptEscalation(
 export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<RunRecord> {
   const cwd = options.cwd ?? process.cwd();
   const tools = options.tools ?? builtinTools;
-  const toolCtx: ToolContext = { allowDestructive: options.allowDestructive ?? false };
+  const toolCtx: ToolContext = {
+    allowDestructive: options.allowDestructive ?? false,
+    // Allowing destructive implies allowing writes (destructive ⊃ write).
+    allowWrites: (options.allowWrites ?? false) || (options.allowDestructive ?? false),
+  };
   const bindings: Record<string, unknown> = { ...(options.vars ?? {}) };
   // A single snapshot for the whole run — every fillTemplate call inside this
   // run shares it, so {{today}}/{{today±Nd}} can never resolve to a

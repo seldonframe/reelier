@@ -7,6 +7,13 @@ import type { Effect } from "./skill.js";
 export interface ToolContext {
   /** Whether --yes was passed on the CLI (permits destructive effects to run). */
   allowDestructive: boolean;
+  /**
+   * Whether `idempotent-write` steps may execute. Optional; absent/false means
+   * replay is READ-ONLY, so re-running a skill never re-fires its writes.
+   * `reelier run --allow-writes` (and `--yes`, which implies it) opts in.
+   * `read` steps are never gated.
+   */
+  allowWrites?: boolean;
 }
 
 export interface Tool {
