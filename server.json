@@ -3,7 +3,7 @@
   "name": "io.github.seldonframe/reelier",
   "title": "Reelier",
   "description": "Record an agent's tool-call workflow once and replay it deterministically at 0 tokens with a receipt on every step; reelier diff catches drift. Snapshot tests and CI for agent workflows.",
-  "version": "0.12.0",
+  "version": "0.12.1",
   "websiteUrl": "https://www.reelier.com",
   "repository": {
     "url": "https://github.com/seldonframe/reelier",
@@ -14,7 +14,7 @@
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "reelier",
-      "version": "0.12.0",
+      "version": "0.12.1",
       "runtimeHint": "npx",
       "transport": {
         "type": "stdio"

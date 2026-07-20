@@ -2,6 +2,12 @@
 
 All notable changes to `reelier`. Dates are release dates.
 
+## 0.12.1 — MCP registry metadata
+
+### Added
+- `mcpName` in package.json + a `server.json` manifest, so Reelier can be listed in the official
+  MCP registry as `io.github.seldonframe/reelier`.
+
 ## 0.12.0 — Cleaner install: the package is now `reelier`
 
 ### Changed
