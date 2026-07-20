@@ -1,0 +1,61 @@
+<svg viewBox="0 0 920 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="How Reelier works: record your agent's tool calls into a trace, compile to a SKILL.md with no LLM, replay at 0 tokens, and diff to catch drift.">
+  <style>
+    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+    .t{fill:#e6edf3}.d{fill:#7d8894}.g{fill:#3fb950}
+  </style>
+  <rect x="6" y="6" width="908" height="288" rx="14" fill="#0d1117" stroke="#232a33" stroke-width="1.5"/>
+  <text x="30" y="42" class="mono t" font-size="17" font-weight="600">How Reelier works</text>
+  <text x="30" y="63" class="mono d" font-size="12.5">record once &#183; replay forever at $0 &#183; a receipt on every step</text>
+
+  <!-- connector + flowing data packet -->
+  <line x1="46" y1="168" x2="874" y2="168" stroke="#232a33" stroke-width="2"/>
+  <circle r="6" cy="168" fill="#3fb950">
+    <animate attributeName="cx" values="120;800" keyTimes="0;1" dur="5s" repeatCount="indefinite"/>
+    <animate attributeName="opacity" values="0;1;1;1;0" keyTimes="0;0.05;0.5;0.95;1" dur="5s" repeatCount="indefinite"/>
+  </circle>
+
+  <!-- CARD 1 Record -->
+  <g class="mono">
+    <rect x="30" y="98" width="176" height="140" rx="12" fill="#11161d" stroke="#232a33" stroke-width="1.5"/>
+    <circle cx="56" cy="128" r="13" fill="#16351f"><animate attributeName="fill" values="#16351f;#16351f;#3fb950;#16351f;#16351f" keyTimes="0;0.06;0.10;0.17;1" dur="5s" repeatCount="indefinite"/></circle>
+    <text x="56" y="133" text-anchor="middle" class="g" font-size="14" font-weight="700">1</text>
+    <text x="78" y="133" class="t" font-size="15" font-weight="600">Record</text>
+    <text x="20" y="170" class="d" font-size="12.5"><tspan x="20">your agent's tool calls,</tspan><tspan x="20" dy="17">captured as a trace</tspan></text>
+    <text x="20" y="222" class="g" font-size="12">&#8594; trace.jsonl</text>
+  </g>
+
+  <!-- CARD 2 Compile -->
+  <g class="mono">
+    <rect x="248" y="98" width="176" height="140" rx="12" fill="#11161d" stroke="#232a33" stroke-width="1.5"/>
+    <circle cx="274" cy="128" r="13" fill="#16351f"><animate attributeName="fill" values="#16351f;#16351f;#3fb950;#16351f;#16351f" keyTimes="0;0.32;0.36;0.43;1" dur="5s" repeatCount="indefinite"/></circle>
+    <text x="274" y="133" text-anchor="middle" class="g" font-size="14" font-weight="700">2</text>
+    <text x="296" y="133" class="t" font-size="15" font-weight="600">Compile</text>
+    <text x="238" y="170" class="d" font-size="12.5"><tspan x="238">trace &#8594; a readable</tspan><tspan x="238" dy="17">SKILL.md, 0 LLM calls</tspan></text>
+    <text x="238" y="222" class="g" font-size="12">&#8594; name.skill.md</text>
+  </g>
+
+  <!-- CARD 3 Replay -->
+  <g class="mono">
+    <rect x="466" y="98" width="176" height="140" rx="12" fill="#11161d" stroke="#232a33" stroke-width="1.5"/>
+    <circle cx="492" cy="128" r="13" fill="#16351f"><animate attributeName="fill" values="#16351f;#16351f;#3fb950;#16351f;#16351f" keyTimes="0;0.57;0.61;0.68;1" dur="5s" repeatCount="indefinite"/></circle>
+    <text x="492" y="133" text-anchor="middle" class="g" font-size="14" font-weight="700">3</text>
+    <text x="514" y="133" class="t" font-size="15" font-weight="600">Replay</text>
+    <text x="456" y="170" class="d" font-size="12.5"><tspan x="456">no model call at all:</tspan><tspan x="456" dy="17">0 tokens, byte-identical</tspan></text>
+    <text x="456" y="222" class="g" font-size="12">&#10003; receipt</text>
+  </g>
+
+  <!-- CARD 4 Diff -->
+  <g class="mono">
+    <rect x="684" y="98" width="176" height="140" rx="12" fill="#11161d" stroke="#232a33" stroke-width="1.5"/>
+    <circle cx="710" cy="128" r="13" fill="#16351f"><animate attributeName="fill" values="#16351f;#16351f;#3fb950;#16351f;#16351f" keyTimes="0;0.82;0.86;0.93;1" dur="5s" repeatCount="indefinite"/></circle>
+    <text x="710" y="133" text-anchor="middle" class="g" font-size="14" font-weight="700">4</text>
+    <text x="732" y="133" class="t" font-size="15" font-weight="600">Diff</text>
+    <text x="674" y="170" class="d" font-size="12.5"><tspan x="674">SAME or DRIFTED,</tspan><tspan x="674" dy="17">exit 1 the day it breaks</tspan></text>
+    <text x="674" y="222" class="g" font-size="12">&#8594; gates CI</text>
+  </g>
+
+  <!-- chevrons between cards -->
+  <text x="222" y="173" class="mono d" font-size="16">&#8250;</text>
+  <text x="440" y="173" class="mono d" font-size="16">&#8250;</text>
+  <text x="658" y="173" class="mono d" font-size="16">&#8250;</text>
+</svg>

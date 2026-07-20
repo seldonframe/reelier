@@ -1,0 +1,47 @@
+<svg viewBox="0 0 720 360" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Cost of running the same agent workflow ten times: the agent re-derives it every run and the cost climbs; Reelier records it once and replays it for zero dollars, so its line stays flat.">
+  <style>
+    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+    .t{fill:#e6edf3}.d{fill:#7d8894}.g{fill:#3fb950}.a{fill:#f0a03c}
+  </style>
+  <rect x="6" y="6" width="708" height="348" rx="14" fill="#0d1117" stroke="#232a33" stroke-width="1.5"/>
+  <text x="28" y="40" class="mono t" font-size="17" font-weight="600">The same workflow, 10 times</text>
+  <text x="28" y="61" class="mono d" font-size="12.5">re-derived every run, or recorded once and replayed for $0</text>
+
+  <!-- legend -->
+  <rect x="470" y="30" width="12" height="12" rx="2" fill="#f0a03c"/>
+  <text x="488" y="40" class="mono d" font-size="12">agent re-runs</text>
+  <rect x="586" y="30" width="12" height="12" rx="2" fill="#3fb950"/>
+  <text x="604" y="40" class="mono d" font-size="12">reelier</text>
+
+  <!-- axes -->
+  <line x1="70" y1="95" x2="70" y2="300" stroke="#232a33" stroke-width="1.5"/>
+  <line x1="70" y1="300" x2="662" y2="300" stroke="#232a33" stroke-width="1.5"/>
+  <text x="60" y="103" text-anchor="end" class="mono d" font-size="11">$0.19</text>
+  <text x="60" y="298" text-anchor="end" class="mono d" font-size="11">$0</text>
+  <text x="366" y="326" text-anchor="middle" class="mono d" font-size="11.5">runs of the same workflow  &#183;  1 &#8594; 10</text>
+
+  <!-- agent line: climbs (draws in) -->
+  <path d="M70 292 L650 110" fill="none" stroke="#f0a03c" stroke-width="3" stroke-linecap="round"
+        stroke-dasharray="620" stroke-dashoffset="0">
+    <animate attributeName="stroke-dashoffset" values="620;0;0;620" keyTimes="0;0.5;0.9;1" dur="6s" repeatCount="indefinite"/>
+  </path>
+  <!-- reelier line: flat near zero (draws in) -->
+  <path d="M70 292 L650 289" fill="none" stroke="#3fb950" stroke-width="3" stroke-linecap="round"
+        stroke-dasharray="582" stroke-dashoffset="0">
+    <animate attributeName="stroke-dashoffset" values="582;0;0;582" keyTimes="0;0.5;0.9;1" dur="6s" repeatCount="indefinite"/>
+  </path>
+
+  <!-- endpoint markers + labels (visible by default; pulse with the draw) -->
+  <g opacity="1"><animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;0.5;0.6;0.9;1" dur="6s" repeatCount="indefinite"/>
+    <circle cx="650" cy="110" r="4.5" fill="#f0a03c"/>
+    <text x="640" y="103" text-anchor="end" class="mono a" font-size="13" font-weight="600">$0.19 and climbing</text>
+    <text x="640" y="120" text-anchor="end" class="mono d" font-size="11">~18k tokens, ~2.8s, every run</text>
+    <circle cx="650" cy="289" r="4.5" fill="#3fb950"/>
+    <text x="640" y="283" text-anchor="end" class="mono g" font-size="13" font-weight="600">$0.00</text>
+  </g>
+
+  <!-- callout -->
+  <rect x="70" y="112" width="196" height="46" rx="9" fill="#11161d" stroke="#232a33" stroke-width="1.2"/>
+  <text x="82" y="132" class="mono g" font-size="14" font-weight="700">~50x cheaper &#183; ~59x faster</text>
+  <text x="82" y="149" class="mono d" font-size="11">measured &#183; 1,000/1,000 byte-identical</text>
+</svg>
