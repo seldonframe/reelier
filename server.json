@@ -1,8 +1,8 @@
 {
-  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-07-09/server.schema.json",
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.seldonframe/reelier",
   "title": "Reelier",
-  "description": "Record an agent's tool-call workflow once and replay it deterministically at 0 tokens with a receipt on every step; reelier diff catches drift. Snapshot tests and CI for agent workflows.",
+  "description": "Snapshot tests and CI for agent workflows: record a run, replay it at 0 tokens, diff for drift.",
   "version": "0.12.1",
   "websiteUrl": "https://www.reelier.com",
   "repository": {
@@ -12,7 +12,6 @@
   "packages": [
     {
       "registryType": "npm",
-      "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "reelier",
       "version": "0.12.1",
       "runtimeHint": "npx",
