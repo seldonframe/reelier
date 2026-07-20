@@ -16,7 +16,9 @@ Record the run that worked, replay it deterministically — **0 tokens, byte-ide
 
 **[Website](https://www.reelier.com)** · **[Dashboard](https://www.reelier.com/dashboard)** · **[Docs](https://www.reelier.com/docs)** · **[SPEC.md](./SPEC.md)**
 
-https://www.reelier.com/reelier-explainer.mp4
+<img src="https://raw.githubusercontent.com/seldonframe/reelier/main/docs/assets/reelier-demo.gif" width="760" alt="Reelier: record a run that worked, replay it deterministically at 0 tokens, diff for drift, a receipt on every step" />
+
+<sub><a href="https://www.reelier.com/reelier-explainer.mp4">▶ watch with sound (22s)</a></sub>
 
 </div>
 
