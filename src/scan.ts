@@ -8,6 +8,7 @@
 
 import { readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
+import os from "node:os";
 import { summarizeSession, type SessionSummary } from "./session.js";
 
 /** Real transcripts live two levels down: `<dir>/<project-slug>/<uuid>.jsonl`. Scanned defensively (a couple of extra levels) in case an agent ever nests further, capped so a symlink loop or huge unrelated tree can't hang the scan. */
@@ -43,6 +44,34 @@ export interface ScannedSession extends SessionSummary {
   /** Directory name the transcript lives in — the project slug Claude Code derives from the cwd it was recorded in. */
   project: string;
   mtimeMs: number;
+  /** Which agent/IDE this transcript came from (see AGENT_SOURCES). */
+  sourceId: string;
+  sourceLabel: string;
+}
+
+/**
+ * A known place an agent/IDE writes tool-call session transcripts, relative to
+ * the home dir. Each existing dir is scanned; formats other than Claude Code's
+ * JSONL currently parse to 0 replayable (session.ts skips lines it doesn't
+ * recognize) — honest degradation, never a crash or a fabricated result. A new
+ * IDE is a one-line entry here PLUS, if its transcript schema differs, a parser
+ * branch in session.ts. Deliberately NOT listed: IDEs whose history is a SQLite
+ * DB (Cursor) or a rules/config dir (`.cursor/rules`, `.windsurfrules`) rather
+ * than a replayable tool-call transcript.
+ */
+export interface AgentSource {
+  id: string;
+  label: string;
+  dir: string;
+}
+
+export function agentSources(homedir: string = os.homedir()): AgentSource[] {
+  return [
+    { id: "claude-code", label: "Claude Code", dir: path.join(homedir, ".claude", "projects") },
+    { id: "codex", label: "Codex CLI", dir: path.join(homedir, ".codex", "sessions") },
+    { id: "windsurf", label: "Windsurf", dir: path.join(homedir, ".codeium", "windsurf") },
+    { id: "openclaw", label: "OpenClaw", dir: path.join(homedir, ".openclaw") },
+  ];
 }
 
 /**
@@ -51,7 +80,10 @@ export interface ScannedSession extends SessionSummary {
  * (session.ts's own parser already tolerates malformed lines within a file;
  * this only guards the outer read failing entirely, e.g. permissions).
  */
-export async function scanTranscripts(rootDir: string): Promise<ScannedSession[]> {
+export async function scanTranscripts(
+  rootDir: string,
+  src: { id: string; label: string } = { id: "custom", label: "directory" }
+): Promise<ScannedSession[]> {
   const files = await findTranscriptFiles(rootDir);
   const results: ScannedSession[] = [];
 
@@ -65,9 +97,31 @@ export async function scanTranscripts(rootDir: string): Promise<ScannedSession[]
       continue;
     }
     const summary = summarizeSession(source, file);
-    results.push({ ...summary, project: path.basename(path.dirname(file)), mtimeMs });
+    results.push({
+      ...summary,
+      project: path.basename(path.dirname(file)),
+      mtimeMs,
+      sourceId: src.id,
+      sourceLabel: src.label,
+    });
   }
 
   results.sort((a, b) => b.mtimeMs - a.mtimeMs);
   return results;
+}
+
+/**
+ * Scan EVERY known agent/IDE transcript source (AGENT_SOURCES) under `homedir`,
+ * tagging each session with where it came from. Missing sources are skipped
+ * silently; an unrecognized-format source contributes 0 replayable sessions
+ * rather than erroring. Returns the merged, recency-sorted list.
+ */
+export async function scanAgentSessions(homedir: string = os.homedir()): Promise<ScannedSession[]> {
+  const all: ScannedSession[] = [];
+  for (const src of agentSources(homedir)) {
+    const found = await scanTranscripts(src.dir, { id: src.id, label: src.label });
+    all.push(...found);
+  }
+  all.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  return all;
 }

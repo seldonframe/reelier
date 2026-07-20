@@ -30,7 +30,7 @@ import {
   type DemoBenchmarkComparison,
 } from "./init.js";
 import { compileSessionTranscript, type SessionSkip } from "./session.js";
-import { scanTranscripts, type ScannedSession } from "./scan.js";
+import { scanTranscripts, scanAgentSessions, agentSources, type ScannedSession } from "./scan.js";
 import { planInstall, applyInstall, findLatestBackup, restoreFromBackup } from "./wrap.js";
 import { buildToolServer, runDiffTool } from "./serve.js";
 
@@ -718,12 +718,13 @@ function fmtEffectSplit(s: ScannedSession): string {
 
 function fmtSessionLine(index: number, s: ScannedSession): string {
   const when = new Date(s.mtimeMs).toISOString().slice(0, 16).replace("T", " ");
+  const from = s.sourceId && s.sourceId !== "custom" ? `${s.sourceLabel} · ` : "";
   if (s.replayableCount > 0) {
     const servers = s.servers.length > 0 ? ` — ${s.servers.join(", ")}` : "";
     const warn = s.readOnly ? "" : " ⚠ side-effectful";
-    return `  [${index}] ${s.project} · ${when} · ${fmtEffectSplit(s)}${warn}${servers}`;
+    return `  [${index}] ${from}${s.project} · ${when} · ${fmtEffectSplit(s)}${warn}${servers}`;
   }
-  return `  (skipped) ${s.project} · ${when} · no replayable tool calls found`;
+  return `  (skipped) ${from}${s.project} · ${when} · no replayable tool calls found`;
 }
 
 /** Sort read-only-heavy sessions first (the ideal replay targets), side-effect-heavy ones lower — stable within each group, so recency (scanTranscripts' own sort) still breaks ties. */
@@ -732,11 +733,18 @@ function rankByReplayWorthiness(sessions: ScannedSession[]): ScannedSession[] {
 }
 
 async function cmdScan(args: ParsedArgs): Promise<number> {
-  const rootDir = args.opts.dir ?? path.join(os.homedir(), ".claude", "projects");
+  const explicitDir = args.opts.dir;
   const yes = args.flags.has("yes");
 
-  console.log(`Scanning ${rootDir} for agent session transcripts...`);
-  const sessions = await scanTranscripts(rootDir);
+  let sessions: ScannedSession[];
+  if (explicitDir) {
+    console.log(`Scanning ${explicitDir} for agent session transcripts...`);
+    sessions = await scanTranscripts(explicitDir);
+  } else {
+    console.log("Scanning every known agent/IDE for session transcripts:");
+    for (const s of agentSources()) console.log(`  · ${s.label} — ${s.dir}`);
+    sessions = await scanAgentSessions();
+  }
 
   const replayable = rankByReplayWorthiness(sessions.filter((s) => s.replayableCount > 0));
   const skipped = sessions.filter((s) => s.replayableCount === 0);
@@ -746,6 +754,22 @@ async function cmdScan(args: ParsedArgs): Promise<number> {
   console.log(
     `Found ${sessions.length} session(s) · ${replayable.length} with replayable workflows · ${readOnlyCount} are read-only (ideal to replay).`
   );
+  if (!explicitDir) {
+    // Per-source breakdown — which IDEs had (parseable) transcripts vs. which
+    // contributed nothing (missing dir, or a format we don't parse yet).
+    const bySource = new Map<string, { total: number; replayable: number }>();
+    for (const s of sessions) {
+      const e = bySource.get(s.sourceLabel) ?? { total: 0, replayable: 0 };
+      e.total++;
+      if (s.replayableCount > 0) e.replayable++;
+      bySource.set(s.sourceLabel, e);
+    }
+    const parts = agentSources().map((src) => {
+      const e = bySource.get(src.label);
+      return e ? `${src.label}: ${e.replayable}/${e.total} replayable` : `${src.label}: none found`;
+    });
+    console.log(`  by source — ${parts.join(" · ")}`);
+  }
   console.log("");
 
   if (replayable.length === 0) {
@@ -1154,8 +1178,7 @@ async function cmdInit(args: ParsedArgs): Promise<number> {
   // to replay); any scan failure degrades honestly to the normal init flow —
   // never a crash, never a fabricated candidate.
   try {
-    const scanRoot = path.join(homedir, ".claude", "projects");
-    const sessions = await scanTranscripts(scanRoot);
+    const sessions = await scanAgentSessions(homedir);
     const candidates = rankByReplayWorthiness(
       sessions.filter((s) => s.replayableCount > 0 && s.readOnly)
     ).slice(0, 3);
@@ -1163,7 +1186,7 @@ async function cmdInit(args: ParsedArgs): Promise<number> {
     if (candidates.length > 0) {
       console.log("Step 0 — you already have replayable work");
       console.log(
-        `  Scanned ${scanRoot}: ${candidates.length} read-only session(s) Reelier can replay as-is:`
+        `  Scanned your agent history (${agentSources().map((s) => s.label).join(", ")}): ${candidates.length} read-only session(s) Reelier can replay as-is:`
       );
       for (let i = 0; i < candidates.length; i++) {
         console.log(fmtSessionLine(i + 1, candidates[i]));

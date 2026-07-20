@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { findTranscriptFiles, scanTranscripts } from "../src/scan.js";
+import { findTranscriptFiles, scanTranscripts, scanAgentSessions, agentSources } from "../src/scan.js";
 
 async function withTmpDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
   const dir = await mkdtemp(path.join(tmpdir(), "reelier-scan-"));
@@ -21,6 +21,30 @@ function assistantLine(id: string, name: string, input: unknown): string {
 function userResultLine(toolUseId: string, content: unknown): string {
   return JSON.stringify({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: toolUseId, content }] } });
 }
+
+test("scanAgentSessions: scans every known source, tags each session, and skips missing dirs gracefully", async () => {
+  await withTmpDir(async (home) => {
+    // A Claude Code transcript with one replayable http tool call.
+    const projDir = path.join(home, ".claude", "projects", "my-proj");
+    await mkdir(projDir, { recursive: true });
+    const replayable =
+      assistantLine("t1", "mcp__x__q", { url: "https://e.com" }) +
+      "\n" +
+      userResultLine("t1", "ok") +
+      "\n";
+    await writeFile(path.join(projDir, "s.jsonl"), replayable, "utf8");
+    // .codex/.codeium/.openclaw do NOT exist under this temp home.
+
+    const sessions = await scanAgentSessions(home);
+    // Missing sources contribute nothing and never throw.
+    assert.equal(sessions.length, 1);
+    assert.equal(sessions[0].sourceId, "claude-code");
+    assert.equal(sessions[0].sourceLabel, "Claude Code");
+    // Registry lists more than one source (extensible), all homedir-relative.
+    const ids = agentSources(home).map((s) => s.id);
+    assert.ok(ids.includes("claude-code") && ids.length >= 2);
+  });
+});
 
 test("findTranscriptFiles: finds *.jsonl nested two levels down (project/uuid.jsonl), ignores other files", async () => {
   await withTmpDir(async (dir) => {
