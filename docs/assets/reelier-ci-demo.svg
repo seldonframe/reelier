@@ -1,0 +1,44 @@
+<svg viewBox="0 0 760 452" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Reelier: record an agent run, replay it at 0 tokens, diff catches drift and fails CI.">
+  <style>
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .prompt { fill: #6b7684; }
+    .txt { fill: #e6edf3; }
+    .dim { fill: #7d8894; }
+    .amber { fill: #f0a03c; }
+    .green { fill: #3fb950; }
+    .red { fill: #f85149; }
+  </style>
+
+  <!-- window -->
+  <rect x="6" y="6" width="748" height="440" rx="12" fill="#0d1117" stroke="#232a33" stroke-width="1.5"/>
+  <!-- title bar -->
+  <circle cx="30" cy="30" r="6" fill="#ff5f56"/>
+  <circle cx="50" cy="30" r="6" fill="#ffbd2e"/>
+  <circle cx="70" cy="30" r="6" fill="#27c93f"/>
+  <text x="380" y="35" text-anchor="middle" font-size="13" class="mono dim">reelier — CI for agent workflows</text>
+  <line x1="6" y1="52" x2="754" y2="52" stroke="#232a33" stroke-width="1"/>
+
+  <!-- sweeping highlight (animates on the site; harmless static bar if stripped) -->
+  <rect x="14" y="70" width="732" height="70" rx="8" fill="#1b2430" opacity="0.0">
+    <animate attributeName="y" dur="6s" repeatCount="indefinite" keyTimes="0;0.28;0.33;0.61;0.66;0.94;1" values="70;70;172;172;274;274;70"/>
+    <animate attributeName="opacity" dur="6s" repeatCount="indefinite" keyTimes="0;0.03;0.30;0.33;0.63;0.66;0.96;1" values="0;0.55;0.55;0.55;0.55;0.55;0.55;0"/>
+  </rect>
+
+  <!-- Beat 1: the agent re-derives + re-bills every run -->
+  <text x="26" y="98" font-size="15" class="mono prompt">$ <tspan class="txt">agent run extract-and-post</tspan></text>
+  <text x="26" y="124" font-size="14.5" class="mono amber">done. 2.8s . 18,400 tokens . $0.019  <tspan class="dim">(every single run)</tspan></text>
+
+  <!-- Beat 2: replay the run that worked, deterministically -->
+  <text x="26" y="200" font-size="15" class="mono prompt">$ <tspan class="txt">reelier run extract-and-post.skill.md</tspan></text>
+  <text x="26" y="226" font-size="14.5" class="mono green">3/3 passed. 44ms . 0 tokens . $0.00</text>
+  <text x="26" y="248" font-size="13.5" class="mono dim">receipt: byte-identical, an assertion on every step</text>
+
+  <!-- Beat 3: diff catches drift and fails the build -->
+  <text x="26" y="302" font-size="15" class="mono prompt">$ <tspan class="txt">reelier diff extract-and-post</tspan></text>
+  <text x="26" y="328" font-size="14.5" class="mono red">DRIFTED. step 3 . status 200 -&gt; 401 . exit 1</text>
+  <text x="26" y="350" font-size="13.5" class="mono dim">caught in CI, before production<tspan class="txt" dx="6">▋</tspan></text>
+
+  <!-- caption -->
+  <line x1="6" y1="392" x2="754" y2="392" stroke="#232a33" stroke-width="1"/>
+  <text x="380" y="422" text-anchor="middle" font-size="14" class="mono dim">record.  replay at $0.  diff catches drift.</text>
+</svg>
