@@ -118,6 +118,14 @@ A skill's assertions are what make a replay *proof*. The grammar checks status, 
 
 The agent gets `reelier_scan`, `reelier_from_session`, `reelier_replay`, `reelier_diff`, and `reelier_push` — with descriptions that tell it exactly *when to use* each (and when not to). It records a deterministic task once, then replays instead of re-reasoning.
 
+## Tools
+
+- **reelier_scan** — scan agent session history (Claude Code, Codex, Windsurf, OpenClaw) for replayable tool-call workflows
+- **reelier_from_session** — compile a recorded session into a replayable SKILL.md with an assertion on every step
+- **reelier_replay** — replay a skill deterministically at 0 LLM tokens (read-only by default; writes gated behind `--allow-writes`)
+- **reelier_diff** — compare two runs: SAME or DRIFTED per step, with the failing assertion as the why; exit 1 on drift
+- **reelier_push** — sync a run receipt to the [ledger](https://www.reelier.com/replays) for a shareable permalink (opt-in)
+
 ## The measured proof
 
 From a real, live head-to-head benchmark (agent vs. Reelier, same task, same data) — full tables + methodology in [`examples/benchmark`](./examples/benchmark):

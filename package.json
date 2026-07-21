@@ -48,7 +48,13 @@
     "workflow",
     "automation",
     "claude",
-    "llm"
+    "llm",
+    "mcp-server",
+    "testing",
+    "snapshot-testing",
+    "ci",
+    "replay",
+    "ai-agents"
   ],
   "engines": {
     "node": ">=20"
