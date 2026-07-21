@@ -22,8 +22,14 @@
     "entry_point": "index.js",
     "mcp_config": {
       "command": "npx",
-      "args": ["-y", "reelier@0.13.0", "serve"]
+      "args": ["-y", "reelier@0.13.0", "serve"],
+      "env": {}
     }
+  },
+  "user_config": {},
+  "compatibility": {
+    "platforms": ["darwin", "win32", "linux"],
+    "runtimes": { "node": ">=18.0.0" }
   },
   "tools": [
     { "name": "reelier_scan", "description": "Scan agent session history for replayable tool-call workflows" },
