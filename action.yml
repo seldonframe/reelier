@@ -1,9 +1,7 @@
 name: "Reelier replay"
 description: >-
-  Replay a Reelier skill (deterministic, zero-token at L0) in CI on a
-  schedule or PR, and post the run record as a job-summary receipt. A
-  green replay check on a public repo is the proof surface — see the
-  "Run it in CI" section of README.md.
+  Replay a Reelier skill in CI — deterministic, 0 LLM tokens, exit 1 on
+  drift — and post the run receipt as a job summary.
 author: "Reelier"
 branding:
   icon: "check-circle"
