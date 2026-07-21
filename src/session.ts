@@ -221,6 +221,10 @@ export interface SessionTraceBuild {
   skipped: SessionSkip[];
   servers: string[];
   effects: SessionEffectBreakdown;
+  /** Replayable calls whose classification fell through to unknown→destructive (no verb recognized) — a subset of `effects.destructive`. */
+  unknownCount: number;
+  /** Unique tool names behind `unknownCount`, for the scan KPI's "top blockers" line. */
+  unknownTools: string[];
 }
 
 /** Reshape a transcript's `tool_result.content` into the McpCallResult shape compile.ts expects in a "result" record's body (mcp-tool.ts's mcpResultToObservation reads `.content` items of `type: "text"`). */
@@ -250,6 +254,8 @@ export function buildTraceFromSession(parsed: ParsedSessionTranscript, name: str
   const servers = new Set<string>();
   const bodyRecords: TraceRecord[] = [];
   const effects = emptyEffectBreakdown();
+  const unknownTools = new Set<string>();
+  let unknownCount = 0;
   let seq = 1;
   let i = 0;
 
@@ -268,7 +274,12 @@ export function buildTraceFromSession(parsed: ParsedSessionTranscript, name: str
       continue;
     }
 
-    effects[classifyEffect(cls.traceTool).effect]++;
+    const classified = classifyEffect(cls.traceTool);
+    effects[classified.effect]++;
+    if (classified.unknown) {
+      unknownCount++;
+      unknownTools.add(cls.traceTool);
+    }
 
     if (cls.server) {
       servers.add(cls.server);
@@ -293,7 +304,15 @@ export function buildTraceFromSession(parsed: ParsedSessionTranscript, name: str
   }
 
   const metaRecord: TraceRecord = { t: "meta", seq: 0, name, startedAt: new Date().toISOString(), wrapped: [...servers] };
-  return { records: [metaRecord, ...bodyRecords], replayableCount: i, skipped, servers: [...servers], effects };
+  return {
+    records: [metaRecord, ...bodyRecords],
+    replayableCount: i,
+    skipped,
+    servers: [...servers],
+    effects,
+    unknownCount,
+    unknownTools: [...unknownTools],
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -373,6 +392,10 @@ export interface SessionSummary {
   effects: SessionEffectBreakdown;
   /** true iff replayableCount > 0 and every replayable call classified as `read` — the ideal replay target. False (not "unknown") whenever there are zero replayable calls, since there's nothing to call read-only. */
   readOnly: boolean;
+  /** Replayable calls that classified unknown→destructive (subset of `effects.destructive`) — the self-improvement signal behind scan's "blocked ONLY by unknown-verb tools" line. */
+  unknownCount: number;
+  /** Unique tool names behind `unknownCount`. */
+  unknownTools: string[];
 }
 
 export function summarizeSession(source: string, path: string): SessionSummary {
@@ -387,5 +410,7 @@ export function summarizeSession(source: string, path: string): SessionSummary {
     malformedLines: parsed.malformedLines,
     effects: built.effects,
     readOnly: built.replayableCount > 0 && built.effects["idempotent-write"] === 0 && built.effects.destructive === 0,
+    unknownCount: built.unknownCount,
+    unknownTools: built.unknownTools,
   };
 }

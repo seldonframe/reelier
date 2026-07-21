@@ -20,6 +20,7 @@ function buildFakeDownstream(): Server {
         name: "echo",
         description: "Echoes back the given text.",
         inputSchema: { type: "object" as const, properties: { text: { type: "string" } }, required: ["text"] },
+        annotations: { readOnlyHint: true },
       },
       {
         name: "fail_tool",
@@ -133,6 +134,9 @@ test("proxy E2E: list tools, record a session, and verify exact trace + verbatim
     if (records[0].t === "meta") {
       assert.equal(records[0].name, "demo");
       assert.deepEqual(records[0].wrapped, ["fake-downstream"]);
+      // Annotation hints from the downstream's tools/list are captured into
+      // meta — only for tools that declared any (fail_tool declared none).
+      assert.deepEqual(records[0].toolAnnotations, { echo: { readOnlyHint: true } });
     }
 
     assert.equal(records[1].t, "note");

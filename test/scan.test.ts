@@ -3,7 +3,15 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { findTranscriptFiles, scanTranscripts, scanAgentSessions, agentSources } from "../src/scan.js";
+import {
+  findTranscriptFiles,
+  scanTranscripts,
+  scanAgentSessions,
+  agentSources,
+  replayableRateStats,
+  formatReplayableRate,
+  type ReplayableRateInput,
+} from "../src/scan.js";
 
 async function withTmpDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
   const dir = await mkdtemp(path.join(tmpdir(), "reelier-scan-"));
@@ -91,4 +99,110 @@ test("scanTranscripts: summarizes replayable vs skipped across multiple sessions
     assert.equal(none?.skippedCount, 1);
     assert.equal(replayable?.project, "my-project");
   });
+});
+
+// ---------------------------------------------------------------------------
+// The self-measuring KPI: replayableRateStats + formatReplayableRate.
+// ---------------------------------------------------------------------------
+
+/** Minimal ReplayableRateInput factory. */
+function rateInput(overrides: Partial<ReplayableRateInput>): ReplayableRateInput {
+  return {
+    replayableCount: 0,
+    readOnly: false,
+    effects: { read: 0, "idempotent-write": 0, destructive: 0 },
+    unknownCount: 0,
+    unknownTools: [],
+    ...overrides,
+  };
+}
+
+test("replayableRateStats: read-only rate over replayable sessions only, with blocked-only-by-unknown counted and blockers ranked", () => {
+  const sessions: ReplayableRateInput[] = [
+    // Fully read-only (the numerator).
+    rateInput({ replayableCount: 2, readOnly: true, effects: { read: 2, "idempotent-write": 0, destructive: 0 } }),
+    // Blocked ONLY by unknown-verb tools: every non-read call is an unknown fallthrough.
+    rateInput({
+      replayableCount: 3,
+      effects: { read: 1, "idempotent-write": 0, destructive: 2 },
+      unknownCount: 2,
+      unknownTools: ["frobnicate", "quuxify"],
+    }),
+    // Also blocked only by unknown — shares one blocker, so frobnicate ranks first.
+    rateInput({
+      replayableCount: 1,
+      effects: { read: 0, "idempotent-write": 0, destructive: 1 },
+      unknownCount: 1,
+      unknownTools: ["frobnicate"],
+    }),
+    // Blocked by a KNOWN write (idempotent-write present) — NOT blocked-only-by-unknown.
+    rateInput({ replayableCount: 2, effects: { read: 1, "idempotent-write": 1, destructive: 0 } }),
+    // Blocked by a KNOWN destructive verb (unknownCount 0) — NOT blocked-only-by-unknown.
+    rateInput({ replayableCount: 2, effects: { read: 1, "idempotent-write": 0, destructive: 1 } }),
+    // Mixed known destructive + unknown — a verb addition alone can't convert it, so NOT counted.
+    rateInput({
+      replayableCount: 2,
+      effects: { read: 0, "idempotent-write": 0, destructive: 2 },
+      unknownCount: 1,
+      unknownTools: ["frobnicate"],
+    }),
+    // Zero replayable calls — excluded from the denominator entirely.
+    rateInput({ replayableCount: 0 }),
+  ];
+
+  const stats = replayableRateStats(sessions);
+  assert.equal(stats.replayableSessions, 6);
+  assert.equal(stats.readOnlySessions, 1);
+  assert.equal(stats.readOnlyPct, 16.7);
+  assert.equal(stats.blockedOnlyByUnknown, 2);
+  assert.deepEqual(stats.topBlockers, [
+    { tool: "frobnicate", sessions: 2 },
+    { tool: "quuxify", sessions: 1 },
+  ]);
+});
+
+test("replayableRateStats: zero replayable sessions is an honest 0/0 at 0% — never NaN, never fabricated", () => {
+  const stats = replayableRateStats([rateInput({ replayableCount: 0 })]);
+  assert.equal(stats.replayableSessions, 0);
+  assert.equal(stats.readOnlySessions, 0);
+  assert.equal(stats.readOnlyPct, 0);
+  assert.equal(stats.blockedOnlyByUnknown, 0);
+  assert.deepEqual(stats.topBlockers, []);
+});
+
+test("formatReplayableRate: prints the rate line plus the top-blockers self-improvement line (capped at topN)", () => {
+  const stats = replayableRateStats([
+    rateInput({ replayableCount: 1, readOnly: true, effects: { read: 1, "idempotent-write": 0, destructive: 0 } }),
+    rateInput({
+      replayableCount: 1,
+      effects: { read: 0, "idempotent-write": 0, destructive: 1 },
+      unknownCount: 1,
+      unknownTools: ["frobnicate"],
+    }),
+  ]);
+  const lines = formatReplayableRate(stats);
+  assert.equal(lines[0], "Replayable rate: 1/2 sessions fully read-only (50%).");
+  assert.match(lines[1], /1 session\(s\) blocked ONLY by unknown-verb tools \(top blockers: frobnicate ×1\)/);
+
+  const capped = formatReplayableRate(
+    replayableRateStats([
+      rateInput({
+        replayableCount: 1,
+        effects: { read: 0, "idempotent-write": 0, destructive: 3 },
+        unknownCount: 3,
+        unknownTools: ["a_tool", "b_tool", "c_tool"],
+      }),
+    ]),
+    2
+  );
+  assert.match(capped[1], /top blockers: a_tool ×1, b_tool ×1\)/);
+  assert.ok(!capped[1].includes("c_tool"));
+});
+
+test("formatReplayableRate: says so plainly when nothing is blocked by unknown verbs", () => {
+  const lines = formatReplayableRate(
+    replayableRateStats([rateInput({ replayableCount: 1, readOnly: true, effects: { read: 1, "idempotent-write": 0, destructive: 0 } })])
+  );
+  assert.equal(lines[0], "Replayable rate: 1/1 sessions fully read-only (100%).");
+  assert.match(lines[1], /0 sessions blocked only by unknown-verb tools/);
 });

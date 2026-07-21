@@ -277,3 +277,23 @@ test("summarizeSession: an unrecognized verb stays classified destructive (safe 
   assert.deepEqual(summary.effects, { read: 0, "idempotent-write": 0, destructive: 1 });
   assert.equal(summary.readOnly, false);
 });
+
+test("summarizeSession: unknown-verb calls are counted and named (the scan KPI's blocker signal)", () => {
+  const source = [
+    assistantLine([{ id: "t1", name: "mcp__widgets__frobnicate", input: {} }]),
+    userResultLine([{ tool_use_id: "t1", content: JSON.stringify({ ok: true }) }]),
+    assistantLine([{ id: "t2", name: "mcp__widgets__frobnicate", input: {} }]),
+    userResultLine([{ tool_use_id: "t2", content: JSON.stringify({ ok: true }) }]),
+    assistantLine([{ id: "t3", name: "mcp__widgets__get_widget", input: { id: "w1" } }]),
+    userResultLine([{ tool_use_id: "t3", content: JSON.stringify({ id: "w1" }) }]),
+  ].join("\n");
+  const summary = summarizeSession(source, "/fake/unknown-count.jsonl");
+  assert.equal(summary.unknownCount, 2);
+  assert.deepEqual(summary.unknownTools, ["frobnicate"]); // unique names, not one per call
+});
+
+test("summarizeSession: a KNOWN destructive verb is not counted as unknown — the blocker signal never conflates the two", () => {
+  const summary = summarizeSession(mixedTranscript(), "/fake/known-only.jsonl");
+  assert.equal(summary.unknownCount, 0);
+  assert.deepEqual(summary.unknownTools, []);
+});

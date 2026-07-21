@@ -7,6 +7,7 @@ import type { Observation } from "./assert.js";
 import type { Effect } from "./skill.js";
 import type { Tool, ToolContext } from "./tools.js";
 import { buildToolRoutes, type DownstreamConnection, type DownstreamTool, type McpCallResult } from "./mcp-client.js";
+import { classifyEffect } from "./effect-verbs.js";
 
 /**
  * MCP result -> Observation mapping:
@@ -35,19 +36,16 @@ export function mcpResultToObservation(result: McpCallResult): Observation {
 }
 
 /**
- * Best-effort effect classification from MCP tool annotations (readOnlyHint /
- * idempotentHint / destructiveHint). Defaults to "destructive" when a tool
- * declares none — the conservative default. Note: as of this writing the
- * runner only consults `step.effect` (required on every step in a skill
- * file), not `Tool.effect`, so this mainly documents intent for future use.
+ * Effect classification for a downstream tool: the ONE shared trust ladder
+ * (effect-verbs.ts's classifyEffect — destructiveHint, then the verb lists
+ * which no annotation may downgrade, then readOnlyHint/idempotentHint
+ * refining unrecognized verbs, then destructive-by-default). Note: as of
+ * this writing the runner only consults `step.effect` (required on every
+ * step in a skill file), not `Tool.effect`, so this mainly documents intent
+ * for future use.
  */
 export function effectFromAnnotations(tool: DownstreamTool): Effect {
-  const a = tool.annotations;
-  if (!a) return "destructive";
-  if (a.readOnlyHint) return "read";
-  if (a.idempotentHint) return "idempotent-write";
-  if (a.destructiveHint) return "destructive";
-  return "destructive";
+  return classifyEffect(tool.name, tool.annotations).effect;
 }
 
 function mcpTool(downstream: DownstreamConnection, realName: string, effect: Effect): Tool {

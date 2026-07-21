@@ -125,3 +125,82 @@ export async function scanAgentSessions(homedir: string = os.homedir()): Promise
   all.sort((a, b) => b.mtimeMs - a.mtimeMs);
   return all;
 }
+
+// ---------------------------------------------------------------------------
+// The self-measuring KPI: how many replayable sessions are fully read-only
+// (the ideal replay targets), and how many miss that bar ONLY because of
+// unknown-verb tools — i.e. exactly the sessions a verb-list addition in
+// effect-verbs.ts would convert. The top-blockers list is the self-improvement
+// loop: it names the tools to consider classifying next.
+// ---------------------------------------------------------------------------
+
+/** The per-session fields the KPI consumes (a subset of SessionSummary). */
+export type ReplayableRateInput = Pick<SessionSummary, "replayableCount" | "readOnly" | "effects" | "unknownCount" | "unknownTools">;
+
+export interface ReplayableRateStats {
+  /** Sessions with at least one replayable call — the KPI's denominator. */
+  replayableSessions: number;
+  /** Of those, fully read-only sessions — the KPI's numerator. */
+  readOnlySessions: number;
+  /** readOnlySessions / replayableSessions as a percentage (one decimal); 0 when there are no replayable sessions. */
+  readOnlyPct: number;
+  /** Replayable sessions that are NOT read-only solely because every non-read call was an unknown→destructive fallthrough (no known write/destructive verb involved). */
+  blockedOnlyByUnknown: number;
+  /** Unknown-classified tool names ranked by how many blocked-only sessions they appear in (desc, ties alphabetical). */
+  topBlockers: Array<{ tool: string; sessions: number }>;
+}
+
+/** True iff this session would be fully read-only were its unknown-verb tools classified `read` — every non-read call is an unknown fallthrough, no KNOWN write/destructive verb anywhere. */
+function isBlockedOnlyByUnknown(s: ReplayableRateInput): boolean {
+  return (
+    s.replayableCount > 0 &&
+    !s.readOnly &&
+    s.effects["idempotent-write"] === 0 &&
+    s.effects.destructive > 0 &&
+    s.effects.destructive === s.unknownCount
+  );
+}
+
+export function replayableRateStats(sessions: ReplayableRateInput[]): ReplayableRateStats {
+  const replayable = sessions.filter((s) => s.replayableCount > 0);
+  const readOnly = replayable.filter((s) => s.readOnly);
+  const blocked = replayable.filter(isBlockedOnlyByUnknown);
+
+  const counts = new Map<string, number>();
+  for (const s of blocked) {
+    for (const tool of new Set(s.unknownTools)) {
+      counts.set(tool, (counts.get(tool) ?? 0) + 1);
+    }
+  }
+  const topBlockers = [...counts.entries()]
+    .map(([tool, sessions]) => ({ tool, sessions }))
+    .sort((a, b) => b.sessions - a.sessions || a.tool.localeCompare(b.tool));
+
+  return {
+    replayableSessions: replayable.length,
+    readOnlySessions: readOnly.length,
+    readOnlyPct: replayable.length === 0 ? 0 : Math.round((readOnly.length / replayable.length) * 1000) / 10,
+    blockedOnlyByUnknown: blocked.length,
+    topBlockers,
+  };
+}
+
+/** Render the KPI stat block as printable lines (`reelier scan` output). */
+export function formatReplayableRate(stats: ReplayableRateStats, topN = 5): string[] {
+  const lines = [
+    `Replayable rate: ${stats.readOnlySessions}/${stats.replayableSessions} sessions fully read-only (${stats.readOnlyPct}%).`,
+  ];
+  if (stats.blockedOnlyByUnknown > 0) {
+    const top = stats.topBlockers
+      .slice(0, topN)
+      .map((b) => `${b.tool} ×${b.sessions}`)
+      .join(", ");
+    lines.push(
+      `${stats.blockedOnlyByUnknown} session(s) blocked ONLY by unknown-verb tools (top blockers: ${top}) — ` +
+        `these are the verbs to consider classifying next (effect-verbs.ts).`
+    );
+  } else {
+    lines.push(`0 sessions blocked only by unknown-verb tools.`);
+  }
+  return lines;
+}

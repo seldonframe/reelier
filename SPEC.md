@@ -136,7 +136,8 @@ MUST split on `\r\n` or `\n`, skip blank/whitespace-only lines, and
 
 ```ts
 type TraceRecord =
-  | { t: "meta";   seq: number; name: string; startedAt: string; wrapped: string[] }
+  | { t: "meta";   seq: number; name: string; startedAt: string; wrapped: string[];
+      toolAnnotations?: Record<string, { readOnlyHint?: boolean; destructiveHint?: boolean; idempotentHint?: boolean }> }
   | { t: "note";   seq: number; ts: string; text: string }
   | { t: "call";   seq: number; i: number; ts: string; tool: string; args: unknown }
   | { t: "result"; seq: number; i: number; ok: boolean; ms: number; body: unknown };
@@ -149,6 +150,7 @@ type TraceRecord =
 | `name` (meta) | string | The trace's own name, as given to `reelier_start_recording`. |
 | `startedAt` (meta) | ISO-8601 string | Recording start time (`new Date().toISOString()`). |
 | `wrapped` (meta) | string[] | Downstream server names wrapped for this recording, in `--wrap` order. |
+| `toolAnnotations` (meta, optional, 0.13.0+) | `Record<string, {readOnlyHint?, destructiveHint?, idempotentHint?}>` | MCP `tools/list` annotation hints per **exposed** tool name (post collision-prefixing, matching `call.tool`), captured once at recording start (`collectToolAnnotations`, `src/recorder.ts`). A writer MUST include only hints the downstream actually declared (never fabricated defaults) and SHOULD omit the field entirely when no wrapped tool declares any of the three — so annotation-free traces are byte-identical to pre-0.13.0 ones. Additive per §0's forward-compatibility rule; a pre-0.13.0 reader tolerates and ignores it. Consumers treat these as **hints, not security**: the compiler's effect classifier (`classifyEffect`, `src/effect-verbs.ts`) applies a strict trust ladder — `destructiveHint: true` always wins; **no annotation ever downgrades a verb-list match** (not the destructive tier, and not an idempotent-write verb either — `create_note` + `readOnlyHint: true` stays `idempotent-write`); a hint may only tighten a read verb-match (`idempotentHint`) or refine a tool whose verbs the lists don't recognize — and replay write-gating (§3.6) still applies to everything classified `idempotent-write` or worse. |
 | `ts` (note/call) | ISO-8601 string | Timestamp the record was written. |
 | `text` (note) | string | Free-text narration passed to `reelier_note`. |
 | `i` (call/result) | integer ≥ 0 | Call index; shared between a `call` and its `result` (§2.1). |
@@ -894,10 +896,15 @@ args (i.e. after dataflow recovery has already turned any dataflow-matched
 literal into a `{{var}}` — a value recovered from a prior step's result is
 never also flagged as a date literal here), every string leaf shaped like an
 ISO date (`YYYY-MM-DD`, optionally with a `T...` time suffix; month/day
-range-validated, so `2026-13-40` doesn't false-positive-match, and neither
-does a version string like `"1.2.3"` — no dashes at all — or a UUID's first
-hyphen-delimited group — 8 hex digits, not exactly 4 decimal digits) gets an
-**open question**, never an automatic substitution:
+range-validated AND round-trip-validated against `Date.UTC` — so
+`2026-13-40` doesn't match as a date, and neither does a roll-over date like
+`2026-02-30` or a non-leap `2026-02-29`, whose `Date.UTC` form would
+silently shift into the next month and make any computed offset fabricated
+math; date-SHAPED-but-impossible literals get their own honest "not a real
+calendar date" open question instead of offset math. A version string like
+`"1.2.3"` — no dashes at all — or a UUID's first hyphen-delimited group — 8
+hex digits, not exactly 4 decimal digits — never matches the shape at all)
+gets an **open question**, never an automatic substitution:
 
 - If the literal's calendar date equals the trace's own recording date
   (`meta.startedAt`, truncated to `YYYY-MM-DD`, UTC): suggests `{{today}}`.
@@ -912,14 +919,32 @@ hyphen-delimited group — 8 hex digits, not exactly 4 decimal digits) gets an
   form that would immediately fail at replay time.
 
 Each open question names the step, quotes the literal exactly as recorded,
-states the offset in plain language ("N days before/after run time"), gives
-the concrete suggested substitution, and names the recording date the
-offset was computed against — so a human reviewing the compiled skill can
-decide in one read whether to accept the computed form or keep the literal
-as a genuinely fixed date. If the trace has no `meta` record (or the
-`meta.startedAt` doesn't itself parse as a date, which should never happen
-for anything `Recorder.start` produced), date-literal detection is skipped
-entirely rather than guessing — a defensive fallback, not a normal path.
+states the offset in plain language ("N days before/after run time", with
+singular "1 day"), gives the concrete suggested substitution, and names the
+recording date the offset was computed against — so a human reviewing the
+compiled skill can decide in one read whether to accept the computed form or
+keep the literal as a genuinely fixed date. Two datetime-specific
+refinements (0.13.0+): a literal carrying a `T...` time suffix gets a
+substitution that keeps the suffix verbatim (`"{{today-7d}}T09:30:00Z"` —
+the runner's `{{today±Nd}}` resolves to a bare date, so replacing the whole
+string would silently drop the time), and a literal whose explicit non-UTC
+offset places it on a **different UTC calendar day** than the date as
+written (e.g. `2026-07-11T23:30:00-05:00` is `2026-07-12` in UTC) gets an
+explicit which-day note, since `{{today±Nd}}` resolves as a UTC date. The
+offset math itself always uses the date as written. If the trace has no
+`meta` record (or the `meta.startedAt` doesn't itself parse as a date, which
+should never happen for anything `Recorder.start` produced), date-literal
+detection is skipped entirely rather than guessing — a defensive fallback,
+not a normal path.
+
+**Lint consolidation (0.13.0+).** The date / UUID / Unix-timestamp lints all
+key their occurrences by literal value: when the SAME literal appears in 3+
+distinct steps, the compiler emits ONE consolidated open question on the
+literal's first step, listing every step it appears in ("appears in steps 2,
+4, 7 — one variable?"), instead of per-step duplicates. Below that threshold
+(1-2 steps) the per-step flags are kept unchanged. The lint text depends
+only on the literal value and the recording date, so consolidation never
+drops information — every occurrence would have said the same thing.
 
 ---
 
@@ -1165,8 +1190,25 @@ with what `from-session` would do to that same file), and prints:
 Found N session(s) in your agent history · M contain replayable workflows.
 ```
 
-followed by one line per replayable session (project, timestamp, replayable
-call count, MCP servers touched) and a count of sessions skipped outright
+plus (0.13.0+) a self-measuring stat block (`replayableRateStats` /
+`formatReplayableRate`, `src/scan.ts`):
+
+```
+Replayable rate: X/Y sessions fully read-only (Z%).
+N session(s) blocked ONLY by unknown-verb tools (top blockers: tool1 ×a, tool2 ×b, ...)
+```
+
+where Y = sessions with ≥1 replayable call, X = those whose every replayable
+call classified `read`, and the second line counts sessions that miss
+read-only **solely** because every non-read call was an unknown-verb
+fallthrough (unknown → destructive, `classifyEffect`) — i.e. exactly the
+sessions a verb-list addition in `src/effect-verbs.ts` would convert; the
+named blockers are the self-improvement loop's queue. The same stats object
+is returned as `replayableRate` by the `reelier_scan` MCP tool.
+
+The listing that follows shows one line per replayable session (project,
+timestamp, replayable call count, MCP servers touched) and a count of
+sessions skipped outright
 (zero replayable calls — never offered as a selectable option, since there
 is nothing honest to compile). Interactively prompts for a comma-separated
 selection (or `all`); `--yes` selects every replayable session
@@ -1195,7 +1237,22 @@ to `<configPath>.backup-<ISO-timestamp-with-dashes>`; `reelier uninstall`
 restores the lexically-latest such backup (ISO timestamps in the suffix
 sort chronologically) and leaves the backup file in place afterward. If no
 backup exists, `uninstall` exits non-zero with the config path it checked,
-never guessing at what to restore.
+never guessing at what to restore. The backup is load-bearing, not
+best-effort: if the backup file itself cannot be written, `applyInstall`
+aborts with an explicit error and the config is left byte-identical — an
+existing config is never rewritten without its backup on disk first.
+
+`reelier init` closes with the same install as an offer (`planWrapOffer`,
+`src/wrap.ts`): after the receipt, it re-detects the configs, plans the
+identical wrap, and — on an interactive TTY without `--yes` — asks an
+explicit y/N (default no; the config is never modified without an explicit
+yes). Non-TTY or `--yes` prints the exact `reelier install` one-liner
+instead of prompting. A successful install (either entry point) prints the
+`reelier uninstall` revert path immediately, so the exit is always visible.
+The offer's pitch — wrap-captured traces are lossless and include tool
+annotations, while scan-from-history is a reconstruction — is kept true by
+§2.2/§5: the recording proxy captures `tools/list` annotation hints into
+the trace `meta` record.
 
 ## 10. Agent-native tool-server (`reelier serve`)
 

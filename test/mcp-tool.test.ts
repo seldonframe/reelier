@@ -63,6 +63,32 @@ description: uses a registered MCP tool, then binds and uses its result
 - effect: read
 `;
 
+test("runner-MCP adapter: Tool.effect follows the shared trust ladder — a readOnlyHint never downgrades any verb-match", () => {
+  const downstream: DownstreamConnection = {
+    name: "fake-mixed-server",
+    tools: [
+      // Unknown verb + readOnlyHint -> the hint classifies it read.
+      { name: "frobnicate", inputSchema: {}, annotations: { readOnlyHint: true } },
+      // Destructive verb + readOnlyHint -> the verb wins, always.
+      { name: "delete_thing", inputSchema: {}, annotations: { readOnlyHint: true } },
+      // Idempotent-write verb + readOnlyHint -> the verb wins here too; the
+      // hint can't exempt a recognized write from --allow-writes.
+      { name: "create_thing", inputSchema: {}, annotations: { readOnlyHint: true } },
+      // No annotations, unknown verb -> destructive by default.
+      { name: "quuxify", inputSchema: {} },
+    ],
+    async call() {
+      throw new Error("not called in this test");
+    },
+    async close() {},
+  };
+  const tools = buildMcpTools([downstream]);
+  assert.equal(tools.frobnicate.effect, "read");
+  assert.equal(tools.delete_thing.effect, "destructive");
+  assert.equal(tools.create_thing.effect, "idempotent-write");
+  assert.equal(tools.quuxify.effect, "destructive");
+});
+
 test("runner-MCP adapter: a registered MCP tool runs a 2-step skill, json path + bind flow between steps", async () => {
   const downstream = fakeAddDownstream();
   const tools = { ...builtinTools, ...buildMcpTools([downstream]) };

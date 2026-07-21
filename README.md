@@ -84,6 +84,17 @@ reelier push <name>.skill.md        # sync receipts to your ledger (opt-in)
 4. **Diff** — `reelier diff` compares two runs of a skill and reports **SAME or DRIFTED per step**, with the failing assertion as the *why*. Exit code 1 on drift, so it gates a scheduled replay.
 5. **Receipt** — every run is a receipt (per-step outcomes, timing, 0 tokens). `reelier push` optionally syncs them to a receipt ledger for a shareable permalink + an embeddable **verified-replay badge**.
 
+### Convert an Agent Skill
+
+Turn an instruction skill + one recorded run into a deterministic replay — your skill, minus the model:
+
+```sh
+reelier mcp --wrap "<your mcp server>"                 # record: agent runs the skill's task once
+reelier compile trace.jsonl --from-skill ./my-skill/SKILL.md
+# → my-skill.skill.md — name + description carried from your SKILL.md,
+#   steps ONLY from the recorded run (never generated from instruction text)
+```
+
 ## Assert the value, not just the shape
 
 A skill's assertions are what make a replay *proof*. The grammar checks status, structure, **and value**:
