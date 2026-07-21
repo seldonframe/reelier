@@ -11,9 +11,24 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { buildToolRoutes, type DownstreamConnection, type McpCallResult, type ToolRoute } from "./mcp-client.js";
 import { redact } from "./redact.js";
+import type { ToolEffectAnnotations } from "./effect-verbs.js";
 
 export type TraceRecord =
-  | { t: "meta"; seq: number; name: string; startedAt: string; wrapped: string[] }
+  | {
+      t: "meta";
+      seq: number;
+      name: string;
+      startedAt: string;
+      wrapped: string[];
+      /**
+       * MCP tools/list annotation hints (readOnlyHint / destructiveHint /
+       * idempotentHint) per EXPOSED tool name, captured at recording start.
+       * Additive/optional: omitted entirely when no wrapped tool declares any
+       * of the three hints, so annotation-free traces are byte-identical to
+       * pre-0.13 ones. Hints, not security — see classifyEffect's trust ladder.
+       */
+      toolAnnotations?: Record<string, ToolEffectAnnotations>;
+    }
   | { t: "note"; seq: number; ts: string; text: string }
   | { t: "call"; seq: number; i: number; ts: string; tool: string; args: unknown }
   | { t: "result"; seq: number; i: number; ok: boolean; ms: number; body: unknown };
@@ -77,7 +92,11 @@ export class Recorder {
     return path.join(this.traceDir, `${name}-${maxN + 1}.jsonl`);
   }
 
-  async start(name: string, wrapped: string[]): Promise<{ ok: true; path: string } | { ok: false; message: string }> {
+  async start(
+    name: string,
+    wrapped: string[],
+    toolAnnotations?: Record<string, ToolEffectAnnotations>
+  ): Promise<{ ok: true; path: string } | { ok: false; message: string }> {
     if (this.recording) {
       return {
         ok: false,
@@ -91,7 +110,16 @@ export class Recorder {
     this.callIndex = 0;
     this.callCount = 0;
     this.recording = true;
-    this.write({ t: "meta", seq: this.nextSeq(), name, startedAt: new Date().toISOString(), wrapped });
+    this.write({
+      t: "meta",
+      seq: this.nextSeq(),
+      name,
+      startedAt: new Date().toISOString(),
+      wrapped,
+      // Omit the key entirely when nothing is annotated — annotation-free
+      // traces stay byte-identical to older ones.
+      ...(toolAnnotations && Object.keys(toolAnnotations).length > 0 ? { toolAnnotations } : {}),
+    });
     await this.flush();
     return { ok: true, path: filePath };
   }
@@ -148,6 +176,27 @@ export interface ProxyServerOptions {
 }
 
 /**
+ * Capture each routed tool's effect-relevant annotation hints from its
+ * downstream tools/list entry, keyed by EXPOSED name (post collision-prefixing
+ * — the same name `call` records carry, so the compiler's lookup matches).
+ * Only the three hints classifyEffect consults are kept, and only when the
+ * downstream actually declared at least one — never fabricated defaults.
+ */
+export function collectToolAnnotations(routes: Map<string, ToolRoute>): Record<string, ToolEffectAnnotations> {
+  const out: Record<string, ToolEffectAnnotations> = {};
+  for (const route of routes.values()) {
+    const a = route.tool.annotations;
+    if (!a) continue;
+    const hints: ToolEffectAnnotations = {};
+    if (typeof a.readOnlyHint === "boolean") hints.readOnlyHint = a.readOnlyHint;
+    if (typeof a.destructiveHint === "boolean") hints.destructiveHint = a.destructiveHint;
+    if (typeof a.idempotentHint === "boolean") hints.idempotentHint = a.idempotentHint;
+    if (Object.keys(hints).length > 0) out[route.exposedName] = hints;
+  }
+  return out;
+}
+
+/**
  * Build (but do not connect) the proxy MCP server for a set of already-
  * connected downstreams. Pure/testable — connecting a transport is the
  * caller's job (stdio for the real CLI, InMemory for tests).
@@ -155,6 +204,7 @@ export interface ProxyServerOptions {
 export function buildProxyServer(downstreams: DownstreamConnection[], options: ProxyServerOptions): Server {
   const routes = buildToolRoutes(downstreams);
   const recorder = new Recorder(options.traceDir);
+  const toolAnnotations = collectToolAnnotations(routes);
 
   const server = new Server({ name: "reelier-proxy", version: "0.0.1" }, { capabilities: { tools: {} } });
 
@@ -193,7 +243,7 @@ export function buildProxyServer(downstreams: DownstreamConnection[], options: P
         return { ...textResult("reelier_start_recording requires a string 'name' argument."), isError: true };
       }
       const wrapped = downstreams.map((d) => d.name);
-      const result = await recorder.start(traceName, wrapped);
+      const result = await recorder.start(traceName, wrapped, toolAnnotations);
       return result.ok ? textResult(`Recording started: ${result.path}`) : textResult(result.message);
     }
 

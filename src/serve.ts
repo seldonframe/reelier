@@ -36,7 +36,7 @@ import os from "node:os";
 import path from "node:path";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { scanTranscripts, type ScannedSession } from "./scan.js";
+import { scanTranscripts, replayableRateStats, type ScannedSession, type ReplayableRateStats } from "./scan.js";
 import { compileSessionTranscript, type SessionSkip } from "./session.js";
 import type { OpenQuestion } from "./compile.js";
 import { parseSkill } from "./skill.js";
@@ -68,6 +68,8 @@ export interface ScanToolResult {
   rootDir: string;
   totalSessions: number;
   replayableSessions: number;
+  /** The self-measuring KPI: read-only rate + sessions blocked ONLY by unknown-verb tools (with the blockers named). */
+  replayableRate: ReplayableRateStats;
   sessions: ScannedSession[];
 }
 
@@ -84,6 +86,7 @@ export async function runScanTool(input: ScanToolInput): Promise<ScanToolResult>
     rootDir,
     totalSessions: sessions.length,
     replayableSessions: sessions.filter((s) => s.replayableCount > 0).length,
+    replayableRate: replayableRateStats(sessions),
     sessions,
   };
 }

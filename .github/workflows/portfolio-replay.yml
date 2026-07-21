@@ -1,0 +1,96 @@
+# Public replay portfolio — the standing proof loop.
+#
+# Replays the five read-only skills in examples/portfolio/ every 6 hours
+# (plus a manual "Run workflow" button). Each run prints every skill's
+# receipt — per-step assertion results and the PASSED/FAILED summary —
+# straight into the job log, and the job goes red iff any replay genuinely
+# failed. Level-0 replay only: zero LLM tokens, $0.00, no secrets required.
+#
+# The REELIER_API_KEY secret is OPTIONAL. Without it, nothing is pushed
+# anywhere and this Action is still the public audit log — the dated green
+# check history on the Actions tab IS the standing proof ("N replays,
+# N passing, $0.00"). With it, each skill's receipt is additionally pushed
+# to the receipt ledger (`reelier push`) so the same proof accrues on
+# reelier.com. See examples/portfolio/README.md for the honesty rule.
+
+name: Portfolio replay
+
+on:
+  schedule:
+    # Every 6 hours. Cron is always UTC; the :17 offset avoids the
+    # top-of-hour scheduled-job stampede on shared runners.
+    - cron: "17 */6 * * *"
+  workflow_dispatch: {} # manual "Run workflow" button in the Actions tab
+
+permissions:
+  contents: read
+
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install reelier (published CLI)
+        run: npm i -g reelier
+
+      # Replays ALL five skills even if an early one fails, so every
+      # receipt lands in the log; the verdict is delivered by the final
+      # step, not by an early exit that would hide the remaining receipts.
+      - name: Replay the portfolio (receipts in this log)
+        id: replay
+        run: |
+          set +e
+          failed=""
+          for skill in examples/portfolio/*.skill.md; do
+            echo "::group::reelier run $skill"
+            reelier run "$skill"
+            code=$?
+            echo "::endgroup::"
+            if [ "$code" -ne 0 ]; then
+              echo "REPLAY FAILED: $skill (exit $code)"
+              failed="$failed $skill"
+            fi
+          done
+          echo "failed=${failed# }" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      # Optional and honest: pushes the receipts of failed replays too —
+      # a red receipt is still a real receipt. Skipped (with a log line,
+      # never a silent pass) when the secret isn't configured.
+      - name: Push receipts to the ledger (only if REELIER_API_KEY is set)
+        env:
+          REELIER_CLOUD_URL: https://www.reelier.com
+          REELIER_CLOUD_KEY: ${{ secrets.REELIER_API_KEY }}
+        run: |
+          if [ -z "$REELIER_CLOUD_KEY" ]; then
+            echo "REELIER_API_KEY not set — skipping push. The job log above is still the public audit log."
+            exit 0
+          fi
+          set +e
+          push_failed=0
+          for skill in examples/portfolio/*.skill.md; do
+            echo "::group::reelier push $skill"
+            reelier push "$skill"
+            code=$?
+            echo "::endgroup::"
+            if [ "$code" -ne 0 ]; then
+              echo "PUSH FAILED: $skill (exit $code)"
+              push_failed=1
+            fi
+          done
+          exit "$push_failed"
+
+      - name: Fail the job if any replay failed
+        env:
+          FAILED: ${{ steps.replay.outputs.failed }}
+        run: |
+          if [ -n "$FAILED" ]; then
+            echo "Portfolio replay failed for:$(printf ' %s' $FAILED) — see the receipts in the log above." >&2
+            exit 1
+          fi
+          echo "All portfolio replays passed."

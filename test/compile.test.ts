@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { compile, renderSkillMd } from "../src/compile.js";
+import { compile, renderSkillMd, classifyEffect } from "../src/compile.js";
 import { parseSkill } from "../src/skill.js";
 import type { TraceRecord } from "../src/recorder.js";
 
@@ -125,6 +125,58 @@ test("dataflow: a value sitting inside an array element uses an index-based path
   );
 });
 
+test("dataflow: an array-element bind asks whether the position is stable and suggests a field match from the element's own scalar fields", () => {
+  const records: TraceRecord[] = [
+    meta(),
+    call(1, 0, "list_notes", {}),
+    result(
+      2,
+      0,
+      true,
+      mcpJsonResult({
+        items: [
+          { id: "note_a001", name: "alpha", meta: { nested: true } },
+          { id: "note_b002", name: "beta", meta: { nested: true } },
+          { id: "note_c003", name: "gamma", meta: { nested: true } },
+        ],
+      })
+    ),
+    call(3, 1, "get_note", { id: "note_c003" }),
+    result(4, 1, true, mcpJsonResult({ found: true })),
+  ];
+
+  const compiled = compile(records);
+  assert.deepEqual(compiled.steps[0].binds, ["id = json.items.2.id"]);
+  assert.deepEqual(compiled.steps[1].args, { id: "{{id}}" });
+  const oq = compiled.openQuestions.find((o) => o.stepN === 1 && /index-based path/.test(o.text));
+  assert.ok(oq, "expected an index-based-path open question on step 1");
+  // The question names the concrete index, asks the stability question, and
+  // suggests selecting by a field match using the element's own SCALAR fields
+  // (identifying names like id/name first; the non-scalar `meta` never suggested).
+  assert.match(oq!.text, /element \[2\] positionally stable/);
+  assert.match(oq!.text, /field match/);
+  assert.match(oq!.text, /id\/name/);
+  assert.doesNotMatch(oq!.text, /meta/);
+});
+
+test("dataflow: a bind into an array of scalars asks the stability question without a field-match suggestion", () => {
+  const records: TraceRecord[] = [
+    meta(),
+    call(1, 0, "list_tags", {}),
+    result(2, 0, true, mcpJsonResult({ tags: ["tag-alpha", "tag-beta", "tag-gamma"] })),
+    call(3, 1, "get_tag", { tag: "tag-beta" }),
+    result(4, 1, true, mcpJsonResult({ found: true })),
+  ];
+
+  const compiled = compile(records);
+  assert.deepEqual(compiled.steps[0].binds, ["tags_1 = json.tags.1"]);
+  const oq = compiled.openQuestions.find((o) => o.stepN === 1 && /index-based path/.test(o.text));
+  assert.ok(oq, "expected an index-based-path open question on step 1");
+  assert.match(oq!.text, /element \[1\] positionally stable/);
+  assert.match(oq!.text, /matching its value/); // scalar element: no fields to match on
+  assert.doesNotMatch(oq!.text, /field match/);
+});
+
 // ---------------------------------------------------------------------------
 // Notes
 // ---------------------------------------------------------------------------
@@ -212,6 +264,30 @@ test("effects: verb heuristic matrix", () => {
     ["list_and_terminate", "destructive"],
     ["move_to_trash", "destructive"],
     ["find_and_merge", "destructive"],
+    // 2026-07 empirical-audit verbs (see effect-verbs.ts)
+    ["take_screenshot", "read"],
+    ["preview_logs", "read"],
+    ["tail_logs", "read"],
+    ["count_rows", "read"],
+    ["stat_file", "read"],
+    ["ping_server", "read"],
+    ["retrieve_document", "read"],
+    ["mark_chapter", "idempotent-write"],
+    ["upload_screenshot", "idempotent-write"], // upload (write) beats screenshot (read)
+    ["sync_contacts", "idempotent-write"],
+    ["patch_record", "idempotent-write"],
+    ["spawn_task", "destructive"],
+    ["exec_command", "destructive"],
+    ["browser_evaluate", "destructive"],
+    ["preview_start", "destructive"], // start (destructive) beats preview (read)
+    ["clear_logs", "destructive"], // clear (destructive) beats logs (read)
+    ["push_context", "destructive"],
+    ["rotate_secret", "destructive"],
+    ["finalize_workspace", "destructive"],
+    // deliberately-left-out verbs stay unknown -> destructive (write sense exists)
+    ["resolve_incident", "destructive"],
+    ["watch_repo", "destructive"],
+    ["take_snapshot", "destructive"],
   ];
 
   for (const [tool, expected] of cases) {
@@ -219,6 +295,138 @@ test("effects: verb heuristic matrix", () => {
     const compiled = compile(records);
     assert.equal(compiled.steps[0].effect, expected, `${tool} -> expected ${expected}`);
   }
+});
+
+// ---------------------------------------------------------------------------
+// Annotation trust ladder (classifyEffect): destructiveHint > destructive
+// verb match > idempotent-write verb match > read verb match (idempotentHint
+// may tighten it) > readOnlyHint/idempotentHint refining unrecognized verbs
+// > unknown->destructive. A hint can only tighten, never downgrade a
+// verb-list match.
+// ---------------------------------------------------------------------------
+
+test("trust ladder: destructiveHint:true always classifies destructive — over read verbs and over readOnlyHint", () => {
+  assert.deepEqual(classifyEffect("get_note", { destructiveHint: true }), { effect: "destructive", unknown: false });
+  assert.deepEqual(classifyEffect("frobnicate", { destructiveHint: true, readOnlyHint: true }), {
+    effect: "destructive",
+    unknown: false,
+  });
+});
+
+test("trust ladder: an annotation NEVER downgrades a destructive verb-match", () => {
+  // The invariant: a server's own readOnly/idempotent hints carry no authority
+  // over a destructive verb anywhere in the tool name.
+  assert.deepEqual(classifyEffect("delete_note", { readOnlyHint: true }), { effect: "destructive", unknown: false });
+  assert.deepEqual(classifyEffect("send_email", { idempotentHint: true }), { effect: "destructive", unknown: false });
+  assert.deepEqual(classifyEffect("search_and_purge", { readOnlyHint: true, idempotentHint: true }), {
+    effect: "destructive",
+    unknown: false,
+  });
+});
+
+test("trust ladder: readOnlyHint:true classifies an unknown-verb tool read (and clears the review flag)", () => {
+  assert.deepEqual(classifyEffect("frobnicate", { readOnlyHint: true }), { effect: "read", unknown: false });
+});
+
+test("trust ladder: idempotentHint:true classifies an unknown-verb tool idempotent-write", () => {
+  assert.deepEqual(classifyEffect("frobnicate", { idempotentHint: true }), { effect: "idempotent-write", unknown: false });
+});
+
+test("trust ladder: readOnlyHint outranks idempotentHint on an unknown-verb tool", () => {
+  assert.deepEqual(classifyEffect("frobnicate", { readOnlyHint: true, idempotentHint: true }), {
+    effect: "read",
+    unknown: false,
+  });
+});
+
+test("trust ladder: a readOnlyHint NEVER downgrades an idempotent-write verb-match", () => {
+  // The write gate would never fire on a `read` step, so one sloppy boolean in
+  // a server's tools/list must not exempt a verb-recognized write from
+  // --allow-writes.
+  assert.deepEqual(classifyEffect("create_note", { readOnlyHint: true }), {
+    effect: "idempotent-write",
+    unknown: false,
+  });
+  assert.deepEqual(classifyEffect("upload_file", { readOnlyHint: true, idempotentHint: true }), {
+    effect: "idempotent-write",
+    unknown: false,
+  });
+});
+
+test("trust ladder: idempotentHint tightens a read verb-match to idempotent-write; readOnlyHint just agrees", () => {
+  assert.deepEqual(classifyEffect("fetch_data", { idempotentHint: true }), {
+    effect: "idempotent-write",
+    unknown: false,
+  });
+  assert.deepEqual(classifyEffect("get_note", { readOnlyHint: true, idempotentHint: true }), {
+    effect: "read",
+    unknown: false,
+  });
+});
+
+test("trust ladder: hints set to false carry no authority — verb lists and the unknown default still apply", () => {
+  assert.deepEqual(classifyEffect("get_note", { readOnlyHint: false }), { effect: "read", unknown: false });
+  assert.deepEqual(classifyEffect("frobnicate", { readOnlyHint: false, destructiveHint: false }), {
+    effect: "destructive",
+    unknown: true,
+  });
+});
+
+test("trust ladder: no annotations at all — unchanged unknown->destructive + review flag", () => {
+  assert.deepEqual(classifyEffect("frobnicate"), { effect: "destructive", unknown: true });
+});
+
+test("compile: meta.toolAnnotations feed the classifier — readOnlyHint converts an unknown-verb step to read, without an open question", () => {
+  const records: TraceRecord[] = [
+    {
+      t: "meta",
+      seq: 0,
+      name: "annotated",
+      startedAt: "2026-01-01T00:00:00.000Z",
+      wrapped: ["demo-downstream"],
+      toolAnnotations: { frobnicate: { readOnlyHint: true } },
+    },
+    call(1, 0, "frobnicate", {}),
+    result(2, 0, true, mcpJsonResult({ ok: true })),
+  ];
+  const compiled = compile(records);
+  assert.equal(compiled.steps[0].effect, "read");
+  assert.ok(!compiled.openQuestions.some((oq) => /verb unrecognized/.test(oq.text)));
+});
+
+test("compile: meta.toolAnnotations can never downgrade a destructive verb-match", () => {
+  const records: TraceRecord[] = [
+    {
+      t: "meta",
+      seq: 0,
+      name: "annotated",
+      startedAt: "2026-01-01T00:00:00.000Z",
+      wrapped: ["demo-downstream"],
+      toolAnnotations: { delete_note: { readOnlyHint: true } },
+    },
+    call(1, 0, "delete_note", { id: "n1" }),
+    result(2, 0, true, mcpJsonResult({ ok: true })),
+  ];
+  const compiled = compile(records);
+  assert.equal(compiled.steps[0].effect, "destructive");
+});
+
+test("compile: meta.toolAnnotations can never downgrade an idempotent-write verb-match to read", () => {
+  const records: TraceRecord[] = [
+    {
+      t: "meta",
+      seq: 0,
+      name: "annotated",
+      startedAt: "2026-01-01T00:00:00.000Z",
+      wrapped: ["demo-downstream"],
+      toolAnnotations: { create_note: { readOnlyHint: true } },
+    },
+    call(1, 0, "create_note", { text: "hi" }),
+    result(2, 0, true, mcpJsonResult({ ok: true })),
+  ];
+  const compiled = compile(records);
+  // Stays gated behind --allow-writes at replay; a wrong hint can't exempt it.
+  assert.equal(compiled.steps[0].effect, "idempotent-write");
 });
 
 test("effects: an unrecognized verb is downgraded to destructive with an open question", () => {
@@ -417,6 +625,171 @@ test("date-literal: no crash / no detection when the trace has no meta startedAt
 });
 
 // ---------------------------------------------------------------------------
+// Date-heuristic hardening — end-of-month, leap days, impossible dates,
+// the 365-day boundary, and datetime literals (Z / offset / date-only).
+// ---------------------------------------------------------------------------
+
+test("date-literal: end-of-month boundary — the day after Jan 31 is exactly {{today+1d}} (singular 'day')", () => {
+  const records: TraceRecord[] = [
+    metaAt("2026-01-31T12:00:00.000Z"),
+    call(1, 0, "create_appointment", { date: "2026-02-01" }),
+    result(2, 0, true, mcpJsonResult({ ok: true })),
+  ];
+  const compiled = compile(records);
+  const oq = compiled.openQuestions.find((o) => o.stepN === 1 && /literal date/.test(o.text));
+  assert.ok(oq);
+  assert.match(oq!.text, /1 day after run time/);
+  assert.match(oq!.text, /\{\{today\+1d\}\}/);
+});
+
+test("date-literal: a real leap day gets correct offset math", () => {
+  const records: TraceRecord[] = [
+    metaAt("2028-02-28T09:00:00.000Z"), // 2028 is a leap year
+    call(1, 0, "create_appointment", { date: "2028-02-29" }),
+    result(2, 0, true, mcpJsonResult({ ok: true })),
+  ];
+  const compiled = compile(records);
+  const oq = compiled.openQuestions.find((o) => o.stepN === 1 && /literal date/.test(o.text));
+  assert.ok(oq);
+  assert.match(oq!.text, /1 day after run time/);
+  assert.match(oq!.text, /\{\{today\+1d\}\}/);
+});
+
+test("date-literal: impossible calendar dates are flagged as such, never given fabricated roll-over offset math", () => {
+  // Date.UTC would silently roll "2026-02-30" to March 2 and a non-leap
+  // "2026-02-29" to March 1 — an offset computed from those would be a lie.
+  const records: TraceRecord[] = [
+    metaAt("2026-07-18T14:00:00.000Z"),
+    note(1, "impossible dates"),
+    call(2, 0, "get_report", { a: "2026-02-30", b: "2026-02-29", c: "2026-13-40" }),
+    result(3, 0, true, mcpJsonResult({ ok: true })),
+  ];
+  const compiled = compile(records);
+  const step1 = compiled.openQuestions.filter((o) => o.stepN === 1);
+  for (const v of ["2026-02-30", "2026-02-29", "2026-13-40"]) {
+    const qs = step1.filter((o) => o.text.includes(`"${v}"`));
+    assert.equal(qs.length, 1, `expected exactly one flag for ${v}`);
+    assert.match(qs[0].text, /not a real calendar date/);
+    assert.doesNotMatch(qs[0].text, /\{\{today/);
+  }
+});
+
+test("date-literal: 365-day boundary — exactly 365 days away still gets a concrete suggestion; 366 does not", () => {
+  const records: TraceRecord[] = [
+    metaAt("2026-07-18T14:00:00.000Z"),
+    call(1, 0, "create_appointment", { at: "2027-07-18" }), // +365
+    result(2, 0, true, mcpJsonResult({ ok: true })),
+    call(3, 1, "create_appointment", { at: "2027-07-19" }), // +366
+    result(4, 1, true, mcpJsonResult({ ok: true })),
+  ];
+  const compiled = compile(records);
+  const q365 = compiled.openQuestions.find((o) => o.stepN === 1 && /literal date/.test(o.text));
+  assert.ok(q365);
+  assert.match(q365!.text, /365 days after run time/);
+  assert.match(q365!.text, /\{\{today\+365d\}\}/);
+  const q366 = compiled.openQuestions.find((o) => o.stepN === 2 && /literal date/.test(o.text));
+  assert.ok(q366);
+  assert.match(q366!.text, /more than 365 days/);
+  assert.doesNotMatch(q366!.text, /\{\{today[+-]\d/);
+});
+
+test("date-literal: a datetime literal's suggestion keeps the recorded time suffix verbatim ({{today±Nd}} is date-only)", () => {
+  const records: TraceRecord[] = [
+    metaAt("2026-07-18T14:00:00.000Z"),
+    call(1, 0, "list_events", { since: "2026-07-11T09:30:00Z" }),
+    result(2, 0, true, mcpJsonResult({ ok: true })),
+  ];
+  const compiled = compile(records);
+  const oq = compiled.openQuestions.find((o) => o.stepN === 1 && /literal date/.test(o.text));
+  assert.ok(oq);
+  assert.match(oq!.text, /replace the date part with \{\{today-7d\}\}/);
+  assert.match(oq!.text, /"\{\{today-7d\}\}T09:30:00Z"/); // concrete, runnable substitution
+  // Z means the written date IS the UTC date — no ambiguity note.
+  assert.doesNotMatch(oq!.text, /different UTC calendar day/);
+});
+
+test("date-literal: a non-UTC offset that crosses UTC midnight gets an explicit which-day note", () => {
+  // 2026-07-11T23:30-05:00 == 2026-07-12T04:30Z — the written calendar day
+  // and the UTC day {{today±Nd}} resolves to are different days.
+  const records: TraceRecord[] = [
+    metaAt("2026-07-18T14:00:00.000Z"),
+    call(1, 0, "list_events", { since: "2026-07-11T23:30:00-05:00" }),
+    result(2, 0, true, mcpJsonResult({ ok: true })),
+  ];
+  const compiled = compile(records);
+  const oq = compiled.openQuestions.find((o) => o.stepN === 1 && /literal date/.test(o.text));
+  assert.ok(oq);
+  assert.match(oq!.text, /different UTC calendar day \(2026-07-12\)/);
+  // The offset math itself still uses the date as written (flag-only honesty).
+  assert.match(oq!.text, /\{\{today-7d\}\}/);
+});
+
+test("date-literal: a non-UTC offset that stays on the same calendar day gets no which-day note", () => {
+  const records: TraceRecord[] = [
+    metaAt("2026-07-18T14:00:00.000Z"),
+    call(1, 0, "list_events", { since: "2026-07-11T09:30:00+02:00" }),
+    result(2, 0, true, mcpJsonResult({ ok: true })),
+  ];
+  const compiled = compile(records);
+  const oq = compiled.openQuestions.find((o) => o.stepN === 1 && /literal date/.test(o.text));
+  assert.ok(oq);
+  assert.doesNotMatch(oq!.text, /different UTC calendar day/);
+});
+
+// ---------------------------------------------------------------------------
+// Lint consolidation — the same literal in 3+ steps flags ONCE with the step
+// list instead of producing per-step duplicates.
+// ---------------------------------------------------------------------------
+
+test("consolidation: the same date literal across 3 steps produces exactly ONE open question listing every step", () => {
+  const records: TraceRecord[] = [
+    metaAt("2026-07-18T14:00:00.000Z"),
+    call(1, 0, "list_bookings", { from: "2026-07-11" }),
+    result(2, 0, true, mcpJsonResult({ bookings: [] })),
+    call(3, 1, "list_invoices", { from: "2026-07-11" }),
+    result(4, 1, true, mcpJsonResult({ invoices: [] })),
+    call(5, 2, "list_payments", { from: "2026-07-11" }),
+    result(6, 2, true, mcpJsonResult({ payments: [] })),
+  ];
+  const compiled = compile(records);
+  const dateQs = compiled.openQuestions.filter((o) => /literal date "2026-07-11"/.test(o.text));
+  assert.equal(dateQs.length, 1, "expected one consolidated flag, not per-step duplicates");
+  assert.equal(dateQs[0].stepN, 1);
+  assert.match(dateQs[0].text, /appears in steps 1, 2, 3 — one variable\?/);
+  // The offset suggestion itself survives consolidation.
+  assert.match(dateQs[0].text, /\{\{today-7d\}\}/);
+});
+
+test("consolidation: the same UUID across 3 steps produces exactly ONE flag; 2 steps stays per-step", () => {
+  const uuid = "12345678-1234-1234-1234-123456789012";
+  const threeSteps: TraceRecord[] = [
+    metaAt("2026-07-18T14:00:00.000Z"),
+    call(1, 0, "get_order", { id: uuid }),
+    result(2, 0, true, mcpJsonResult({ found: false })),
+    call(3, 1, "get_refund", { id: uuid }),
+    result(4, 1, true, mcpJsonResult({ found: false })),
+    call(5, 2, "get_shipment", { id: uuid }),
+    result(6, 2, true, mcpJsonResult({ found: false })),
+  ];
+  const compiledThree = compile(threeSteps);
+  const uuidQsThree = compiledThree.openQuestions.filter((o) => o.text.includes("looks like a UUID"));
+  assert.equal(uuidQsThree.length, 1);
+  assert.match(uuidQsThree[0].text, /appears in steps 1, 2, 3 — one variable\?/);
+
+  const twoSteps: TraceRecord[] = [
+    metaAt("2026-07-18T14:00:00.000Z"),
+    call(1, 0, "get_order", { id: uuid }),
+    result(2, 0, true, mcpJsonResult({ found: false })),
+    call(3, 1, "get_refund", { id: uuid }),
+    result(4, 1, true, mcpJsonResult({ found: false })),
+  ];
+  const compiledTwo = compile(twoSteps);
+  const uuidQsTwo = compiledTwo.openQuestions.filter((o) => o.text.includes("looks like a UUID"));
+  assert.equal(uuidQsTwo.length, 2, "below the 3-step threshold the per-step flags are kept");
+  assert.ok(uuidQsTwo.every((o) => !/appears in steps/.test(o.text)));
+});
+
+// ---------------------------------------------------------------------------
 // Round-trip through the skill parser
 // ---------------------------------------------------------------------------
 
@@ -437,6 +810,29 @@ test("round-trip: compiled output (including Open questions + Changelog) parses 
   assert.equal(parsed.steps.length, 2);
   assert.equal(parsed.steps[1].actionTool, "get_note");
   assert.deepEqual(parsed.steps[1].actionArgs, { id: "{{id}}" });
+});
+
+test("round-trip: --from-skill provenance rendering (carried description + provenance lines) parses cleanly", () => {
+  const records: TraceRecord[] = [
+    meta("trace-meta-name"),
+    note(1, "add two numbers"),
+    call(2, 0, "add", { a: 1, b: 2 }),
+    result(3, 0, true, mcpJsonResult({ result: 3 })),
+  ];
+  const compiled = compile(records);
+  const rendered = renderSkillMd({ ...compiled, name: "carried-name" }, "t.jsonl", {
+    sourceFileName: "SKILL.md",
+    description: "Carried description.",
+  });
+
+  const parsed = parseSkill(rendered);
+  assert.equal(parsed.name, "carried-name");
+  assert.equal(parsed.description, "Carried description.");
+  assert.match(parsed.preamble, /Compiled from SKILL\.md \+ t\.jsonl — every step below comes from that recorded trace; none were generated from the instruction text\./);
+  assert.match(parsed.trailing, /compiled from SKILL\.md \+ t\.jsonl \(1 calls, 1 steps\)/);
+  // Steps are untouched by provenance: still exactly the trace's calls.
+  assert.equal(parsed.steps.length, 1);
+  assert.equal(parsed.steps[0].actionTool, "add");
 });
 
 test("round-trip: an empty open-questions skill still renders and parses (no questions section body issue)", () => {

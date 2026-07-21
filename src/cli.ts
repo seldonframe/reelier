@@ -14,7 +14,8 @@ import { connectDownstream, type DownstreamConnection } from "./mcp-client.js";
 import { buildMcpTools } from "./mcp-tool.js";
 import { buildProxyServer, Recorder } from "./recorder.js";
 import { parseTraceLines, formatTrace } from "./trace.js";
-import { compile, renderSkillMd, type CompileResult } from "./compile.js";
+import { compile, renderSkillMd, type CompileResult, type FromSkillProvenance } from "./compile.js";
+import { parseInstructionSkillFrontmatter } from "./from-skill.js";
 import { createLlmClient, resolveLlmConfig } from "./llm.js";
 import {
   detectAgentConfig,
@@ -30,8 +31,8 @@ import {
   type DemoBenchmarkComparison,
 } from "./init.js";
 import { compileSessionTranscript, type SessionSkip } from "./session.js";
-import { scanTranscripts, scanAgentSessions, agentSources, type ScannedSession } from "./scan.js";
-import { planInstall, applyInstall, findLatestBackup, restoreFromBackup } from "./wrap.js";
+import { scanTranscripts, scanAgentSessions, agentSources, replayableRateStats, formatReplayableRate, type ScannedSession } from "./scan.js";
+import { planInstall, applyInstall, findLatestBackup, restoreFromBackup, planWrapOffer, type InstallResult } from "./wrap.js";
 import { buildToolServer, runDiffTool } from "./serve.js";
 
 interface ParsedArgs {
@@ -86,7 +87,8 @@ function parseArgv(argv: string[]): ParsedArgs {
       arg === "--name" ||
       arg === "--dir" ||
       arg === "--out-dir" ||
-      arg === "--agent"
+      arg === "--agent" ||
+      arg === "--from-skill"
     ) {
       const val = argv[++i];
       if (!val) {
@@ -544,10 +546,30 @@ async function fileExists(p: string): Promise<boolean> {
   }
 }
 
+/**
+ * `--from-skill` never generates steps — that would be guessing, and a wrong
+ * guess replayed deterministically is a lie with a receipt. So when there is
+ * no recorded trace to compile from, the only honest answer is "record one",
+ * with the exact commands to do it.
+ */
+const FROM_SKILL_NO_TRACE_HELP = [
+  "--from-skill needs a recorded run to compile from — Reelier never generates steps from instruction text.",
+  "Record one first:",
+  '  1. Put the recorder in front of your agent\'s tools:  reelier mcp --wrap "<your mcp server command>"',
+  "  2. Have the agent run the skill's task once — every tool call lands in a trace (.jsonl).",
+  "  3. Compile it:  reelier compile <trace.jsonl> --from-skill <SKILL.md>",
+  "Or start from a session you already recorded: `reelier scan` lists replayable ones.",
+];
+
 async function cmdCompile(args: ParsedArgs): Promise<number> {
+  const fromSkillPath = args.opts["from-skill"];
   const tracePath = args.positional[0];
   if (!tracePath) {
-    console.error("Usage: reelier compile <trace.jsonl> [-o <out.skill.md>] [--force]");
+    if (fromSkillPath) {
+      for (const line of FROM_SKILL_NO_TRACE_HELP) console.error(line);
+      return 1;
+    }
+    console.error("Usage: reelier compile <trace.jsonl> [-o <out.skill.md>] [--force] [--from-skill <SKILL.md>]");
     return 1;
   }
 
@@ -556,6 +578,9 @@ async function cmdCompile(args: ParsedArgs): Promise<number> {
     source = await readFile(tracePath, "utf8");
   } catch (err) {
     console.error(`Could not read trace file ${tracePath}: ${(err as Error).message}`);
+    if (fromSkillPath) {
+      for (const line of FROM_SKILL_NO_TRACE_HELP) console.error(line);
+    }
     return 1;
   }
 
@@ -567,9 +592,56 @@ async function cmdCompile(args: ParsedArgs): Promise<number> {
     return 1;
   }
 
-  const result = compile(records);
+  let result = compile(records);
   const traceFileName = path.basename(tracePath);
-  const rendered = renderSkillMd(result, traceFileName);
+
+  let fromSkill: FromSkillProvenance | undefined;
+  if (fromSkillPath) {
+    let skillSource: string;
+    try {
+      skillSource = await readFile(fromSkillPath, "utf8");
+    } catch (err) {
+      console.error(`Could not read --from-skill file ${fromSkillPath}: ${(err as Error).message}`);
+      return 1;
+    }
+    let fm;
+    try {
+      fm = parseInstructionSkillFrontmatter(skillSource);
+    } catch (err) {
+      console.error(`--from-skill ${fromSkillPath}: ${(err as Error).message}`);
+      return 1;
+    }
+    if (args.opts.o && path.resolve(args.opts.o) === path.resolve(fromSkillPath)) {
+      console.error(`Refusing to write the compiled skill over its own source ${fromSkillPath} — pass a different -o.`);
+      return 1;
+    }
+    let name = fm.name;
+    if (!args.opts.o) {
+      // Default output is `<name>.skill.md` in cwd. Never overwrite an
+      // existing file via the carried name — suffix the name instead
+      // (-2, -3, ...), so the source instruction skill and any earlier
+      // compile stay byte-identical.
+      let candidate = name;
+      let suffix = 2;
+      while (await fileExists(path.join(process.cwd(), `${candidate}.skill.md`))) {
+        if (suffix > 99) {
+          console.error(
+            `Could not find a free name for ${name}.skill.md after 99 suffix attempts — pass -o <out.skill.md> explicitly.`
+          );
+          return 1;
+        }
+        candidate = `${name}-${suffix++}`;
+      }
+      if (candidate !== name) {
+        console.log(`Name '${name}' collides with existing ${name}.skill.md — compiled skill is named '${candidate}'.`);
+      }
+      name = candidate;
+    }
+    result = { ...result, name };
+    fromSkill = { sourceFileName: path.basename(fromSkillPath), description: fm.description };
+  }
+
+  const rendered = renderSkillMd(result, traceFileName, fromSkill);
 
   // Sanity check: the compiler must always produce a skill its own parser accepts.
   try {
@@ -589,6 +661,11 @@ async function cmdCompile(args: ParsedArgs): Promise<number> {
   await writeFile(outPath, rendered, "utf8");
 
   console.log(`Wrote ${outPath}`);
+  if (fromSkill) {
+    console.log(
+      `  compiled from ${fromSkill.sourceFileName} + ${traceFileName} (name + description carried; steps from the trace only)`
+    );
+  }
   console.log(`  steps:   ${result.stats.steps}`);
   console.log(`  asserts: ${result.stats.asserts}`);
   console.log(`  binds:   ${result.stats.binds}`);
@@ -771,6 +848,11 @@ async function cmdScan(args: ParsedArgs): Promise<number> {
     });
     console.log(`  by source — ${parts.join(" · ")}`);
   }
+  // The self-measuring KPI: read-only rate + which unknown-verb tools are the
+  // only thing standing between a session and fully-read-only replay.
+  for (const line of formatReplayableRate(replayableRateStats(sessions))) {
+    console.log(`  ${line}`);
+  }
   console.log("");
 
   if (replayable.length === 0) {
@@ -915,7 +997,14 @@ async function cmdInstall(args: ParsedArgs): Promise<number> {
     return 0;
   }
 
-  const result = await applyInstall(plan);
+  let result: InstallResult;
+  try {
+    result = await applyInstall(plan);
+  } catch (err) {
+    // The backup-or-abort guard (applyInstall) fires here: nothing was written.
+    console.error((err as Error).message);
+    return 1;
+  }
   console.log("");
   console.log(`Wrapped ${result.wrappedCount} server(s) in ${configPath}.`);
   if (result.backupPath) console.log(`Original config backed up to ${result.backupPath}.`);
@@ -1165,6 +1254,53 @@ async function runRealPath(wrapCommand: string, cwd: string): Promise<number> {
   return compileReplayAndReceipt(tracePath, cwd, undefined, [wrapCommand]);
 }
 
+/**
+ * Init's closing offer — wrap install as the recommended next step (lossless
+ * capture by default). Re-detects the configs (init itself may have just
+ * written .mcp.json). Interactive (real TTY, no --yes): y/N prompt, default
+ * N — the config is never modified without an explicit yes. Non-interactive:
+ * the exact `reelier install` one-liner is printed instead of a prompt. Every
+ * write goes through applyInstall's backup-or-abort guard, and the
+ * `reelier uninstall` exit is printed right after a successful install.
+ */
+async function offerWrapInstall(cwd: string, homedir: string, interactive: boolean): Promise<number> {
+  const detection = await detectAgentConfig(cwd, homedir);
+  const offer = await planWrapOffer(detection, interactive);
+  for (const line of offer.lines) console.log(line);
+  if (offer.mode !== "prompt" || !offer.plan) return 0;
+
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  let choice: string;
+  try {
+    choice = (await rl.question("  Wrap them now? [y/N] ")).trim().toLowerCase();
+  } finally {
+    rl.close();
+  }
+  if (choice !== "y" && choice !== "yes") {
+    console.log("  Skipped — turn it on anytime: reelier install");
+    return 0;
+  }
+
+  for (const e of offer.plan.entries) {
+    if (e.action === "wrap") console.log(`  ${e.name}: will wrap`);
+    else if (e.action === "already-wrapped") console.log(`  ${e.name}: already wrapped — left alone`);
+    else console.log(`  ${e.name}: skipped — ${e.reason}`);
+  }
+
+  let result: InstallResult;
+  try {
+    result = await applyInstall(offer.plan);
+  } catch (err) {
+    // applyInstall's backup-or-abort guard: nothing was written.
+    console.error(`  Install aborted: ${(err as Error).message}`);
+    return 1;
+  }
+  console.log(`  Wrapped ${result.wrappedCount} server(s) in ${offer.configPath}.`);
+  if (result.backupPath) console.log(`  Original config backed up to ${result.backupPath}.`);
+  console.log("  Restart your agent to pick up the wrapped servers. To revert: reelier uninstall");
+  return 0;
+}
+
 async function cmdInit(args: ParsedArgs): Promise<number> {
   const yes = args.flags.has("yes");
   const cwd = process.cwd();
@@ -1325,10 +1461,13 @@ async function cmdInit(args: ParsedArgs): Promise<number> {
     }
   }
 
-  if (wrapCommand) {
-    return runRealPath(wrapCommand, cwd);
-  }
-  return runDemoPath(cwd);
+  const initCode = wrapCommand ? await runRealPath(wrapCommand, cwd) : await runDemoPath(cwd);
+
+  // Closing offer — make lossless capture the default happy path. Runs even
+  // when the demo/replay above failed (the offer is independent of it), but
+  // an init failure keeps its exit code either way.
+  const offerCode = await offerWrapInstall(cwd, homedir, !yes && process.stdin.isTTY === true);
+  return initCode !== 0 ? initCode : offerCode;
 }
 
 const USAGE =

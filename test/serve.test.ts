@@ -116,6 +116,10 @@ test("runScanTool: reports replayable vs skipped sessions correctly", async () =
     const replayable = result.sessions.find((s) => s.path.endsWith("session-replayable.jsonl"));
     assert.equal(replayable?.replayableCount, 1);
     assert.deepEqual(replayable?.servers, ["widgets"]);
+    // The self-measuring KPI rides along for agent consumers too.
+    assert.equal(result.replayableRate.replayableSessions, 1);
+    assert.equal(result.replayableRate.readOnlySessions, 1);
+    assert.equal(result.replayableRate.blockedOnlyByUnknown, 0);
   });
 });
 

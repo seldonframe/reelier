@@ -1,0 +1,29 @@
+# Publishes server.json to the Official MCP Registry (registry.modelcontextprotocol.io)
+# Auth: GitHub OIDC — no secrets needed for the io.github.seldonframe/* namespace.
+# Downstream: GitHub MCP Registry -> VS Code @mcp gallery; PulseMCP ingests daily; Smithery/Glama mirror.
+name: Publish to MCP Registry
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install mcp-publisher
+        run: |
+          curl -fsSL "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m).tar.gz" | tar xz mcp-publisher
+
+      - name: Login (GitHub OIDC)
+        run: ./mcp-publisher login github-oidc
+
+      - name: Publish server.json
+        run: ./mcp-publisher publish

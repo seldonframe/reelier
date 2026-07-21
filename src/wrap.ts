@@ -11,7 +11,14 @@ import { readFile, writeFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { splitCommandLine } from "./mcp-client.js";
 import { writeFileAtomic } from "./writeback.js";
-import { fileExists, parseMcpConfig, formatMcpConfigJson, buildReelierServerEntry, type McpConfigJson } from "./init.js";
+import {
+  fileExists,
+  parseMcpConfig,
+  formatMcpConfigJson,
+  buildReelierServerEntry,
+  type McpConfigJson,
+  type AgentConfigDetection,
+} from "./init.js";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -133,6 +140,9 @@ export async function planInstall(configPath: string): Promise<InstallPlan> {
 
 // ---------------------------------------------------------------------------
 // Apply — back up first (original content, byte-for-byte), then atomic write.
+// The backup is load-bearing, not best-effort: if it cannot be written, the
+// install ABORTS with an explicit error and the config is left byte-identical
+// — an existing config is never rewritten without its backup on disk first.
 // ---------------------------------------------------------------------------
 
 export interface InstallResult {
@@ -143,13 +153,21 @@ export interface InstallResult {
   skippedCount: number;
 }
 
-export async function applyInstall(plan: InstallPlan): Promise<InstallResult> {
+/** `now` is injectable only so tests can pin the timestamped backup path; production callers omit it. */
+export async function applyInstall(plan: InstallPlan, now: Date = new Date()): Promise<InstallResult> {
   let backupPath: string | undefined;
   if (plan.changed) {
     if (plan.configExisted) {
-      const ts = new Date().toISOString().replace(/[:.]/g, "-");
+      const ts = now.toISOString().replace(/[:.]/g, "-");
       backupPath = `${plan.configPath}.backup-${ts}`;
-      await writeFile(backupPath, plan.before, "utf8");
+      try {
+        await writeFile(backupPath, plan.before, "utf8");
+      } catch (err) {
+        throw new Error(
+          `Backup failed (${backupPath}): ${(err as Error).message}. Install aborted — ${plan.configPath} was ` +
+            `NOT modified; a config is never rewritten without its backup on disk first.`
+        );
+      }
     }
     await writeFileAtomic(plan.configPath, plan.after);
   }
@@ -187,4 +205,94 @@ export async function findLatestBackup(configPath: string): Promise<string | und
 export async function restoreFromBackup(configPath: string, backupPath: string): Promise<void> {
   const content = await readFile(backupPath, "utf8");
   await writeFileAtomic(configPath, content);
+}
+
+// ---------------------------------------------------------------------------
+// Init's closing offer — wrap onboarding as the recommended next step.
+// Pure planning + line formatting only: this function never writes anything.
+// cli.ts owns the y/N readline, and only an explicit yes there reaches
+// applyInstall (which itself backs up before any write, or aborts).
+// ---------------------------------------------------------------------------
+
+/**
+ * The one-line pitch init prints. Kept true by the proxy itself:
+ * buildProxyServer captures each wrapped tool's tools/list annotation hints
+ * into the trace meta (recorder.ts's collectToolAnnotations), so
+ * wrap-captured traces really do include annotations — which scan's
+ * transcript reconstruction never has.
+ */
+export const WRAP_PITCH =
+  "Wrap captures lossless traces (tool annotations included) — scan-from-history is a reconstruction; wrap is the recording.";
+
+export type WrapOfferMode = "prompt" | "print-command" | "none";
+
+export interface WrapOffer {
+  mode: WrapOfferMode;
+  configPath?: string;
+  plan?: InstallPlan;
+  /** Exactly what init prints for this offer, in order — empty when there is nothing to say. */
+  lines: string[];
+}
+
+/**
+ * Plan the end-of-init wrap offer against the detected agent configs (same
+ * project-then-user precedence as `reelier install`). `interactive` = a real
+ * TTY without `--yes`: mode "prompt" means cli.ts asks y/N (default N — the
+ * config is never modified without an explicit yes); otherwise mode
+ * "print-command" prints the exact `reelier install` one-liner instead of
+ * prompting. No config, nothing wrappable, or an unreadable config yields
+ * "none" — the offer is a bonus, never a gate, but it also never skips
+ * silently: an unreadable config gets an honest line saying so.
+ */
+export async function planWrapOffer(detection: AgentConfigDetection, interactive: boolean): Promise<WrapOffer> {
+  const configPath = detection.projectConfigExists
+    ? detection.projectConfigPath
+    : detection.userConfigExists
+      ? detection.userConfigPath
+      : undefined;
+  if (!configPath) return { mode: "none", lines: [] };
+
+  let plan: InstallPlan;
+  try {
+    plan = await planInstall(configPath);
+  } catch (err) {
+    return {
+      mode: "none",
+      configPath,
+      lines: [
+        "",
+        `(Skipping the wrap offer — ${configPath} could not be read as an MCP config: ${(err as Error).message})`,
+      ],
+    };
+  }
+
+  const wrapCount = plan.entries.filter((e) => e.action === "wrap").length;
+  const alreadyWrappedCount = plan.entries.filter((e) => e.action === "already-wrapped").length;
+
+  if (!plan.changed) {
+    if (alreadyWrappedCount > 0) {
+      return {
+        mode: "none",
+        configPath,
+        plan,
+        lines: [
+          "",
+          `Lossless capture is already on — ${alreadyWrappedCount} wrapped server(s) in ${configPath}. Revert anytime: reelier uninstall`,
+        ],
+      };
+    }
+    return { mode: "none", configPath, plan, lines: [] };
+  }
+
+  const lines = [
+    "",
+    "Recommended next step — turn on lossless capture:",
+    `  ${WRAP_PITCH}`,
+    `  ${configPath}: ${wrapCount} server(s) reelier can wrap. Your config is backed up first; revert anytime with 'reelier uninstall'.`,
+  ];
+  if (!interactive) {
+    lines.push("  Turn it on: reelier install");
+    return { mode: "print-command", configPath, plan, lines };
+  }
+  return { mode: "prompt", configPath, plan, lines };
 }

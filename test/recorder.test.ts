@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { Recorder, type TraceRecord } from "../src/recorder.js";
+import { Recorder, collectToolAnnotations, type TraceRecord } from "../src/recorder.js";
+import { buildToolRoutes, type DownstreamConnection } from "../src/mcp-client.js";
 
 async function readTrace(filePath: string): Promise<TraceRecord[]> {
   const raw = await readFile(filePath, "utf8");
@@ -48,6 +49,61 @@ test("recorder: meta is always the first record, seq is monotonic, note ordering
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("recorder: meta carries toolAnnotations when provided, and omits the key entirely when absent/empty", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "reelier-recorder-"));
+  try {
+    const withAnnotations = new Recorder(dir);
+    const s1 = await withAnnotations.start("annotated", ["fake"], { list_widgets: { readOnlyHint: true } });
+    assert.equal(s1.ok, true);
+    if (!s1.ok) return;
+    await withAnnotations.stop();
+    const t1 = await readTrace(s1.path);
+    assert.equal(t1[0].t, "meta");
+    if (t1[0].t === "meta") {
+      assert.deepEqual(t1[0].toolAnnotations, { list_widgets: { readOnlyHint: true } });
+    }
+
+    // No annotations (and an empty map) -> the key is absent from the JSON
+    // line, so annotation-free traces stay byte-identical to older ones.
+    const without = new Recorder(dir);
+    const s2 = await without.start("plain", ["fake"], {});
+    assert.equal(s2.ok, true);
+    if (!s2.ok) return;
+    await without.stop();
+    const raw = await readFile(s2.path, "utf8");
+    assert.ok(!raw.includes("toolAnnotations"));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+function fakeConnection(name: string, tools: DownstreamConnection["tools"]): DownstreamConnection {
+  return {
+    name,
+    tools,
+    async call() {
+      throw new Error("not called in this test");
+    },
+    async close() {},
+  };
+}
+
+test("collectToolAnnotations: keeps only declared hints, keyed by EXPOSED (collision-prefixed) name, skipping annotation-less tools", () => {
+  const a = fakeConnection("server-a", [
+    { name: "list_widgets", inputSchema: {}, annotations: { readOnlyHint: true } },
+    { name: "plain_tool", inputSchema: {} }, // no annotations -> not captured
+  ]);
+  const b = fakeConnection("server-b", [
+    // Collides with server-a's list_widgets -> exposed as 1_list_widgets.
+    { name: "list_widgets", inputSchema: {}, annotations: { destructiveHint: true, idempotentHint: false } },
+  ]);
+  const routes = buildToolRoutes([a, b]);
+  assert.deepEqual(collectToolAnnotations(routes), {
+    list_widgets: { readOnlyHint: true },
+    "1_list_widgets": { destructiveHint: true, idempotentHint: false },
+  });
 });
 
 test("recorder: note is a friendly no-op (not written) when not recording", async () => {

@@ -2,6 +2,66 @@
 
 All notable changes to `reelier`. Dates are release dates.
 
+## 0.13.0 — Annotation trust ladder + the self-measuring scan
+
+### Added
+- **MCP annotation consumption.** The recording proxy captures each wrapped
+  tool's `tools/list` annotation hints (`readOnlyHint` / `destructiveHint` /
+  `idempotentHint`) into the trace `meta` record (`toolAnnotations`, keyed by
+  exposed tool name; omitted when nothing is annotated — see SPEC §2.2).
+  `classifyEffect` consumes them via a strict trust ladder:
+  `destructiveHint` always wins → destructive verb match → idempotent-write
+  verb match → read verb match (`idempotentHint` may tighten it) →
+  `readOnlyHint`/`idempotentHint` refine unrecognized verbs → unknown stays
+  destructive + flagged. An annotation NEVER downgrades a verb-list match — a
+  server's `readOnlyHint: true` on `create_note` cannot exempt it from
+  `--allow-writes`. Hints, not security: replay write-gating
+  (`--allow-writes`) still applies to everything `idempotent-write` or worse.
+  The runner's MCP tool adapter now shares this exact classifier, so the
+  compiler and the adapter can never disagree.
+- **Wrap onboarding in `reelier init`.** Init now closes by offering
+  `reelier install` as the recommended next step: "Wrap captures lossless
+  traces (tool annotations included) — scan-from-history is a
+  reconstruction; wrap is the recording." Interactive TTY: an explicit y/N
+  (default N — the config is never modified without an explicit yes);
+  non-TTY (or `--yes`): the exact `reelier install` one-liner is printed
+  instead of a prompt.
+- **Backup-or-abort guard.** `reelier install` (and init's inline offer)
+  now refuses to rewrite a config when the pre-write backup itself cannot
+  be written — the install aborts with an honest error and the config is
+  left byte-identical.
+- **Self-measuring scan KPI.** `reelier scan` (and the `reelier_scan` MCP
+  tool, as `replayableRate`) now reports
+  `Replayable rate: X/Y sessions fully read-only (Z%)` plus
+  `N session(s) blocked ONLY by unknown-verb tools (top blockers: ...)` —
+  the blocker list names exactly which verbs to consider classifying next.
+- **Empirical verb audit** (run against a real 2,334-session history):
+  read gains `count retrieve tail preview ping health browse glob grep stat
+  stats head exists info summarize screenshot logs`; idempotent-write gains
+  `mark upload embed patch append sync`; destructive gains `spawn exec eval
+  evaluate start stop clear push rotate finalize`. Deliberately left out
+  (write sense exists): `resolve`, `watch`, `snapshot`, `meta`, `context`,
+  `navigate`. On that history the audit collapsed "blocked only by
+  unknown-verb tools" from 494 sessions to 6 — 488 of them contained real
+  writes now classified confidently instead of flagged as unknown.
+- **Compiler variable-extraction polish** (flag-only throughout — no new
+  auto-substitution; exact-match dataflow binds are unchanged):
+  - An array-element bind (`json.items.2.id`) now asks the concrete
+    stability question — "is element [2] positionally stable across runs,
+    or should this select it by a field match (e.g. the element whose
+    id/name matches)?" — with the candidate fields read from the recorded
+    element's own scalar keys (identifying names like `id`/`name` first).
+  - Date-heuristic hardening: impossible calendar dates (`2026-02-30`, a
+    non-leap `2026-02-29`) are flagged "not a real calendar date" instead of
+    receiving offset math fabricated from the `Date.UTC` roll-over; a
+    datetime literal's suggestion keeps its time suffix verbatim
+    (`"{{today-7d}}T09:30:00Z"` — `{{today±Nd}}` resolves date-only); a
+    non-UTC offset that lands on a different UTC calendar day gets an
+    explicit which-day note; "1 day" is singular.
+  - The same date/UUID/timestamp literal appearing in 3+ steps now flags
+    ONCE with the full step list ("appears in steps 2, 4, 7 — one
+    variable?") instead of per-step duplicates (SPEC §6.5).
+
 ## 0.12.1 — MCP registry metadata
 
 ### Added

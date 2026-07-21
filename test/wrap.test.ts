@@ -11,7 +11,10 @@ import {
   joinCommandLine,
   findLatestBackup,
   restoreFromBackup,
+  planWrapOffer,
+  WRAP_PITCH,
 } from "../src/wrap.js";
+import { detectAgentConfig } from "../src/init.js";
 
 async function withTmpDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
   const dir = await mkdtemp(path.join(tmpdir(), "reelier-wrap-"));
@@ -167,5 +170,107 @@ test("applyInstall never writes a backup when the config never existed (nothing 
     assert.equal(result.backupPath, undefined);
     const entries = await readdir(dir).catch(() => []);
     assert.equal(entries.length, 0, "no file should have been created for an empty, unchanged plan");
+  });
+});
+
+test("applyInstall: when the backup write fails, the install ABORTS with an honest error and the config is byte-identical", async () => {
+  await withTmpDir(async (dir) => {
+    const configPath = path.join(dir, ".mcp.json");
+    const original = JSON.stringify({ mcpServers: { widgets: { command: "npx", args: ["-y", "@widgets/mcp"] } } });
+    await writeFile(configPath, original, "utf8");
+    const plan = await planInstall(configPath);
+    assert.equal(plan.changed, true);
+
+    // Occupy the exact backup path with a DIRECTORY so the backup writeFile
+    // must fail (the injectable `now` pins the timestamped path).
+    const now = new Date("2026-07-21T00:00:00.000Z");
+    const ts = now.toISOString().replace(/[:.]/g, "-");
+    await mkdir(`${configPath}.backup-${ts}`, { recursive: true });
+
+    await assert.rejects(() => applyInstall(plan, now), /Backup failed[\s\S]*NOT modified/);
+    assert.equal(await readFile(configPath, "utf8"), original, "config must never be rewritten without its backup on disk");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// planWrapOffer — init's closing wrap-onboarding offer
+// ---------------------------------------------------------------------------
+
+async function fixtureDetection(dir: string, opts: { projectConfig?: string; userConfig?: string }) {
+  const cwd = path.join(dir, "cwd");
+  const home = path.join(dir, "home");
+  await mkdir(cwd, { recursive: true });
+  await mkdir(home, { recursive: true });
+  if (opts.projectConfig !== undefined) await writeFile(path.join(cwd, ".mcp.json"), opts.projectConfig, "utf8");
+  if (opts.userConfig !== undefined) await writeFile(path.join(home, ".claude.json"), opts.userConfig, "utf8");
+  return { cwd, home, detection: await detectAgentConfig(cwd, home) };
+}
+
+const oneWrappableServer = JSON.stringify({ mcpServers: { widgets: { command: "npx", args: ["-y", "@widgets/mcp"] } } });
+
+test("planWrapOffer: interactive TTY -> mode 'prompt' with the pitch, and planning alone never writes anything", async () => {
+  await withTmpDir(async (dir) => {
+    const { cwd, detection } = await fixtureDetection(dir, { projectConfig: oneWrappableServer });
+    const configPath = path.join(cwd, ".mcp.json");
+
+    const offer = await planWrapOffer(detection, true);
+    assert.equal(offer.mode, "prompt");
+    assert.equal(offer.configPath, configPath);
+    assert.ok(offer.plan?.changed);
+    assert.ok(offer.lines.some((l) => l.includes(WRAP_PITCH)), "the pitch line must be printed verbatim");
+    assert.ok(
+      !offer.lines.some((l) => l.includes("Turn it on: reelier install")),
+      "prompt mode asks y/N — it never prints the non-TTY one-liner fallback"
+    );
+
+    // Never modify configs without an explicit yes: planning must not write.
+    assert.equal(await readFile(configPath, "utf8"), oneWrappableServer);
+    assert.deepEqual(await readdir(cwd), [".mcp.json"], "no backup or rewrite before an explicit yes");
+  });
+});
+
+test("planWrapOffer: non-interactive -> mode 'print-command' with the exact one-liner instead of a prompt (user-config fallback)", async () => {
+  await withTmpDir(async (dir) => {
+    const { home, detection } = await fixtureDetection(dir, { userConfig: oneWrappableServer });
+
+    const offer = await planWrapOffer(detection, false);
+    assert.equal(offer.mode, "print-command");
+    assert.equal(offer.configPath, path.join(home, ".claude.json"), "no project config -> falls back to the user config, same as `reelier install`");
+    assert.ok(offer.lines.some((l) => l.trim() === "Turn it on: reelier install"));
+    assert.ok(offer.lines.some((l) => l.includes(WRAP_PITCH)));
+  });
+});
+
+test("planWrapOffer: no config anywhere -> mode 'none' with nothing to print (the offer is a bonus, never a gate)", async () => {
+  await withTmpDir(async (dir) => {
+    const { detection } = await fixtureDetection(dir, {});
+    const offer = await planWrapOffer(detection, true);
+    assert.equal(offer.mode, "none");
+    assert.deepEqual(offer.lines, []);
+  });
+});
+
+test("planWrapOffer: everything already wrapped -> mode 'none' with an honest already-on note including the uninstall exit", async () => {
+  await withTmpDir(async (dir) => {
+    const alreadyWrapped = JSON.stringify({
+      mcpServers: { widgets: { command: "npx", args: ["-y", "reelier", "mcp", "--wrap", "npx -y @widgets/mcp"] } },
+    });
+    const { detection } = await fixtureDetection(dir, { projectConfig: alreadyWrapped });
+    const offer = await planWrapOffer(detection, true);
+    assert.equal(offer.mode, "none");
+    const text = offer.lines.join("\n");
+    assert.match(text, /already on/);
+    assert.match(text, /reelier uninstall/);
+  });
+});
+
+test("planWrapOffer: a malformed config never crashes init's closing step — honest skip note, file untouched", async () => {
+  await withTmpDir(async (dir) => {
+    const malformed = "{ not json,,,";
+    const { cwd, detection } = await fixtureDetection(dir, { projectConfig: malformed });
+    const offer = await planWrapOffer(detection, true);
+    assert.equal(offer.mode, "none");
+    assert.match(offer.lines.join("\n"), /could not be read/);
+    assert.equal(await readFile(path.join(cwd, ".mcp.json"), "utf8"), malformed);
   });
 });
