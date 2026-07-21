@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "reelier": {
+      "command": "npx",
+      "args": ["-y", "reelier", "serve"]
+    }
+  }
+}
