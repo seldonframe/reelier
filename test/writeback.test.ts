@@ -175,6 +175,54 @@ description: a skill already healed once
   }
 });
 
+test("applyWriteback on a compiled (renderSkillMd) skill keeps the provenance footer as the file's last line, with the heal bullet appended to the changelog above it", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "reelier-writeback-"));
+  try {
+    const records: TraceRecord[] = [
+      meta("footer-heal-skill"),
+      note(1, "get a note"),
+      call(2, 0, "get_note", { id: "note_1" }),
+      result(3, 0, true, mcpJsonResult({ id: "note_1", text: "hi" })),
+    ];
+    const compiled = compile(records);
+    const source = renderSkillMd(compiled, "footer-heal.jsonl");
+
+    // Sanity: renderSkillMd really does put the footer after the Changelog,
+    // as the file's true last content line — this is the shape the bug
+    // report described.
+    const preLines = source.split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
+    assert.match(preLines[preLines.length - 1], /^_Recorded with \[Reelier\]/);
+
+    const skillPath = path.join(dir, "footer-heal.skill.md");
+    await fsWriteFile(skillPath, source, "utf8");
+
+    const skill = parseSkill(source);
+    await applyWriteback({
+      skillPath,
+      skill,
+      stepN: 1,
+      level: 1,
+      patch: { asserts: ["status == 200"], binds: ["id = json.id"] },
+      reason: "id was flat, not nested",
+    });
+
+    const written = await readFile(skillPath, "utf8");
+    const nonBlankLines = written.split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
+
+    // The footer is still the file's true last non-blank line...
+    assert.match(nonBlankLines[nonBlankLines.length - 1], /^_Recorded with \[Reelier\]/);
+    // ...and the heal bullet landed ABOVE it, inside the changelog list.
+    const footerIdx = written.indexOf("_Recorded with [Reelier]");
+    const healIdx = written.indexOf("L1 heal, step 1");
+    assert.ok(healIdx > 0 && healIdx < footerIdx, "heal bullet must appear before the footer");
+
+    const reparsed = parseSkill(written);
+    assert.deepEqual(reparsed.steps[0].binds, ["id = json.id"]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Atomic write-back: write-temp-then-rename, so a torn/partial skill file is
 // unrepresentable, with a Windows-shaped EEXIST/EPERM fallback.

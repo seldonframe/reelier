@@ -663,6 +663,15 @@ export function compile(records: TraceRecord[]): CompileResult {
 // Rendering
 // ---------------------------------------------------------------------------
 
+/**
+ * Matches the leading `_Recorded with [Reelier](...` provenance footer line
+ * renderSkillMd appends as the file's final line. Exported so writeback.ts's
+ * appendChangelogLine can recognize and skip back over it — a heal bullet
+ * must land at the end of the changelog list, not after the footer (which
+ * must stay the file's true last line).
+ */
+export const RECORDED_WITH_FOOTER_RE = /^_Recorded with \[Reelier\]\(/;
+
 function isoDate(): string {
   return new Date().toISOString().slice(0, 10);
 }

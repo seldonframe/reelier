@@ -9,6 +9,7 @@
 import { writeFile, rename, unlink } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import type { Skill, Step } from "./skill.js";
+import { RECORDED_WITH_FOOTER_RE } from "./compile.js";
 
 // ---------------------------------------------------------------------------
 // Atomic write-back: write-temp-then-rename so a torn/partial skill file is
@@ -142,9 +143,16 @@ function appendChangelogLine(trailing: string, line: string): string {
     }
   }
   // Insert right before the next section heading (or EOF), skipping back
-  // over any trailing blank lines so the new line lands directly after the
-  // last existing changelog bullet.
-  while (insertAt > headingIdx + 1 && trailingLines[insertAt - 1].trim() === "") {
+  // over any trailing blank lines AND a trailing renderSkillMd provenance
+  // footer line (there's no "## " section heading between the changelog and
+  // that footer, so without this the footer would sit ABOVE the loop's
+  // insertAt and every heal bullet would land after it — the footer must
+  // stay the file's true last line, and new bullets belong at the end of
+  // the changelog list, above it).
+  while (
+    insertAt > headingIdx + 1 &&
+    (trailingLines[insertAt - 1].trim() === "" || RECORDED_WITH_FOOTER_RE.test(trailingLines[insertAt - 1].trim()))
+  ) {
     insertAt--;
   }
   const out = trailingLines.slice(0, insertAt);
