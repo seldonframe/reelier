@@ -25,7 +25,7 @@
 
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { normalizeToolName } from "./effect-verbs.js";
+import { stripMcpNamespacePrefix } from "./effect-verbs.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -350,7 +350,13 @@ function describeDenyRule(rule: DenyRule): string {
 }
 
 export function evaluatePolicy(policy: Policy, toolName: string, args: unknown, ctx: PolicyEvalContext): PolicyVerdict {
-  const normalizedTool = normalizeToolName(toolName).toLowerCase();
+  // Reuse the effect-ladder's collision-prefix stripping (composio__-style
+  // namespacing) so a deny/dry_run glob matches regardless of which
+  // downstream exposed the tool — but NOT the effect classifier's
+  // dot-segment truncation, which would mangle a literal dotted tool name
+  // like "gmail.send_email" into just "send_email" and make the spec's own
+  // policy.yml example ("tool: gmail.send_email") unmatchable.
+  const normalizedTool = stripMcpNamespacePrefix(toolName).toLowerCase();
   let hosts: Set<string> | undefined;
 
   for (const rule of policy.deny) {

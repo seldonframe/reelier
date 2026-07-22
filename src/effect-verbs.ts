@@ -147,15 +147,24 @@ export interface ToolEffectAnnotations {
 }
 
 /** Strip MCP-server namespace prefixes (double-underscore groups, e.g.
+ *  `composio__gmail_send_email` -> `gmail_send_email`). Exported
+ *  separately from `normalizeToolName` below so a caller that wants ONLY
+ *  the collision-prefix stripped — not the dot-segment truncation, which
+ *  would mangle a literal dotted tool name like `gmail.send_email` into
+ *  just `send_email` — can reuse this half in isolation. policy.ts's glob
+ *  matching is exactly that caller: a deny rule like `tool: "gmail.send_email"`
+ *  must still match a `composio__gmail.send_email`-prefixed exposure, but
+ *  must NOT have its own dot collapsed away. */
+export function stripMcpNamespacePrefix(tool: string): string {
+  return tool.replace(/^(?:[A-Za-z0-9-]+__)+/, "");
+}
+
+/** Strip MCP-server namespace prefixes (double-underscore groups, e.g.
  *  `composio__`) so `composio__GMAIL_FETCH_EMAILS` classifies like
- *  `GMAIL_FETCH_EMAILS`. Dot namespaces keep their last segment as before.
- *  Exported so policy.ts's glob matching normalizes tool names the SAME
- *  way the effect classifier does (spec: "glob semantics reuse the
- *  existing effect-ladder tool-name normalization") — one definition of
- *  "what a tool is really called", never two that can drift apart. */
+ *  `GMAIL_FETCH_EMAILS`. Dot namespaces keep their last segment as before. */
 export function normalizeToolName(tool: string): string {
   const lastSegment = tool.split(".").pop() ?? tool;
-  return lastSegment.replace(/^(?:[A-Za-z0-9-]+__)+/, "");
+  return stripMcpNamespacePrefix(lastSegment);
 }
 
 /**
