@@ -1760,7 +1760,7 @@ const USAGE =
   "          reelier get --mine <name> fetches YOUR OWN private skill (authenticated) instead.\n" +
   "  diff  — compare the last two runs of a skill; exit 1 on drift (gate a scheduled replay).\n" +
   "  from-session — compile a transcript from Claude Code, Codex CLI, or OpenClaw into a skill.\n" +
-  "          Format is sniffed from content; override with --agent <claude-code|codex|openclaw>.\n" +
+  "          Format is sniffed from content; override with --agent <claude-code|codex|openclaw|cursor|windsurf>.\n" +
   "          --agent cursor / --agent windsurf report why those aren't supported yet instead of guessing.\n" +
   "  scan  — discover session transcripts from every known agent (also reports Cursor/Windsurf DB findings).";
 
