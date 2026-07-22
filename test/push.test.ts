@@ -629,7 +629,9 @@ test("push: a record that already carries skillContentSha256 is forwarded unchan
 
       const runCall = fetchSeq.calls[1];
       const sentBody = JSON.parse(runCall.init.body as string);
-      assert.equal(sentBody.record.skillContentSha256, "a".repeat(64));
+      // Load-bearing: the cloud ingest reads skillContentSha256 at the TOP LEVEL
+      // of the body (sibling of `record`), not from inside `record`.
+      assert.equal(sentBody.skillContentSha256, "a".repeat(64));
     });
   });
 });
@@ -644,7 +646,7 @@ test("push: a record with NO skillContentSha256 gets the push-time fallback hash
       const runCall = fetchSeq.calls[1];
       const sentBody = JSON.parse(runCall.init.body as string);
       const expectedSha = createHash("sha256").update(SKILL_SOURCE, "utf8").digest("hex");
-      assert.equal(sentBody.record.skillContentSha256, expectedSha);
+      assert.equal(sentBody.skillContentSha256, expectedSha);
 
       // The fallback is push-time-only — it must never be written back into
       // the local .jsonl run-record file itself.

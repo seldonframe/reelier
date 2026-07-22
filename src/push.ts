@@ -338,7 +338,15 @@ async function pushOneRecord(
         "content-type": "application/json",
         authorization: `Bearer ${config.apiKey}`,
       },
-      body: JSON.stringify({ skillName, record, ...(share ? { share: true } : {}) }),
+      // `skillContentSha256` rides at the TOP LEVEL of the POST body (sibling of
+      // `record`), matching the cloud ingest contract (route.ts reads it there,
+      // not from inside `record`). Hoisted from the stamped record.
+      body: JSON.stringify({
+        skillName,
+        record,
+        ...(record.skillContentSha256 ? { skillContentSha256: record.skillContentSha256 } : {}),
+        ...(share ? { share: true } : {}),
+      }),
     });
   } catch (err) {
     return { index, outcome: "error", message: `Network error: ${(err as Error).message}` };
