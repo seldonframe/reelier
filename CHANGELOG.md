@@ -2,6 +2,30 @@
 
 All notable changes to `reelier`. Dates are release dates.
 
+## 0.14.0 — Receipts you can hand to someone
+
+### Added
+- **`reelier push --share`.** Pushing with `--share` mints a public receipt
+  permalink (same mint path as the dashboard's Share button) and prints it
+  plus the copy-paste badge markdown
+  (`[![reelier](<badge>)](<receipt>)`). Without `--share`, push stays
+  private and prints the dashboard ledger URL with a one-line tip — no
+  receipt is ever made public implicitly. If share is requested but the
+  cloud returns no link (older cloud, mint failure), the CLI says so
+  explicitly instead of staying silent.
+- **SKILL.md provenance.** Compiled skills now carry
+  `recorded_with: reelier v<version>` in frontmatter and a single footer
+  line linking back to reelier.com with the replay one-liner, so a skill
+  file found in the wild explains how to run it. Heal write-backs insert
+  changelog bullets above the footer — it stays the file's last line.
+
+### Fixed
+- **Entrypoint guard resolves symlinks.** `cli.ts` now compares
+  `import.meta.url` against `pathToFileURL(realpathSync(argv[1]))`, so
+  invocation through npm's `.bin` symlinks (`npx reelier`, global
+  installs) runs `main()` correctly. Guarded by a junction/symlink
+  regression test.
+
 ## 0.13.0 — Annotation trust ladder + the self-measuring scan
 
 ### Added
