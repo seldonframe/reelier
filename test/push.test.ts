@@ -655,3 +655,122 @@ test("push: a record with NO skillContentSha256 gets the push-time fallback hash
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// costUsd / priceTableDate (the $ meter's push-time addition, flight-recorder-v1 §2)
+// ---------------------------------------------------------------------------
+
+test("push: a zero-token record carries costUsd:0 + priceTableDate computed from the bundled table", async () => {
+  await withTempDir(async (dir) => {
+    const skillPath = await setupFixture(dir, 1); // makeRecord() has zero llm tokens
+    await withEnv(
+      { REELIER_CLOUD_URL: "https://cloud.example", REELIER_CLOUD_KEY: "test-key", HOME: dir, USERPROFILE: dir },
+      async () => {
+        const fetchSeq = fakeFetch([{ status: 200 }, { status: 202, body: { id: "r0" } }]);
+        await withFetch(fetchSeq.fn, () => pushSkill(skillPath, { cwd: dir }));
+
+        const sentBody = JSON.parse(fetchSeq.calls[1].init.body as string);
+        assert.equal(sentBody.costUsd, 0);
+        assert.match(sentBody.priceTableDate, /^\d{4}-\d{2}-\d{2}$/);
+      }
+    );
+  });
+});
+
+test("push: a record whose step carries a priced model computes the correct costUsd", async () => {
+  await withTempDir(async (dir) => {
+    const skillPath = path.join(dir, "push-fixture.skill.md");
+    await writeFile(skillPath, SKILL_SOURCE, "utf8");
+    const runsDir = path.join(dir, ".reelier", "runs");
+    await mkdir(runsDir, { recursive: true });
+    const record: RunRecord = {
+      ...makeRecord(0),
+      steps: [
+        {
+          n: 1,
+          title: "one",
+          level: 1,
+          outcome: "passed",
+          ms: 5,
+          failures: [],
+          llm: { inputTokens: 1_000_000, outputTokens: 0, model: "claude-haiku-4-5" },
+        },
+      ],
+      totals: { steps: 1, passed: 1, unchecked: 0, skipped: 0, failed: 0, ms: 5, llmInputTokens: 1_000_000, llmOutputTokens: 0 },
+    };
+    await writeFile(path.join(runsDir, "push-fixture.jsonl"), JSON.stringify(record) + "\n", "utf8");
+
+    await withEnv(
+      { REELIER_CLOUD_URL: "https://cloud.example", REELIER_CLOUD_KEY: "test-key", HOME: dir, USERPROFILE: dir },
+      async () => {
+        const fetchSeq = fakeFetch([{ status: 200 }, { status: 202, body: { id: "r0" } }]);
+        await withFetch(fetchSeq.fn, () => pushSkill(skillPath, { cwd: dir }));
+
+        const sentBody = JSON.parse(fetchSeq.calls[1].init.body as string);
+        // haiku-4-5 bundled: $1/Mtok in -> 1M tokens = $1 exactly.
+        assert.equal(sentBody.costUsd, 1);
+      }
+    );
+  });
+});
+
+test("push: an unpriceable (unknown-model) record omits costUsd and priceTableDate entirely — never a guessed number on the wire", async () => {
+  await withTempDir(async (dir) => {
+    const skillPath = path.join(dir, "push-fixture.skill.md");
+    await writeFile(skillPath, SKILL_SOURCE, "utf8");
+    const runsDir = path.join(dir, ".reelier", "runs");
+    await mkdir(runsDir, { recursive: true });
+    const record: RunRecord = {
+      ...makeRecord(0),
+      steps: [
+        {
+          n: 1,
+          title: "one",
+          level: 1,
+          outcome: "passed",
+          ms: 5,
+          failures: [],
+          llm: { inputTokens: 1000, outputTokens: 1000, model: "totally-unknown-model" },
+        },
+      ],
+      totals: { steps: 1, passed: 1, unchecked: 0, skipped: 0, failed: 0, ms: 5, llmInputTokens: 1000, llmOutputTokens: 1000 },
+    };
+    await writeFile(path.join(runsDir, "push-fixture.jsonl"), JSON.stringify(record) + "\n", "utf8");
+
+    await withEnv(
+      { REELIER_CLOUD_URL: "https://cloud.example", REELIER_CLOUD_KEY: "test-key", HOME: dir, USERPROFILE: dir },
+      async () => {
+        const fetchSeq = fakeFetch([{ status: 200 }, { status: 202, body: { id: "r0" } }]);
+        await withFetch(fetchSeq.fn, () => pushSkill(skillPath, { cwd: dir }));
+
+        const sentBody = JSON.parse(fetchSeq.calls[1].init.body as string);
+        assert.equal("costUsd" in sentBody, false);
+        assert.equal("priceTableDate" in sentBody, false);
+      }
+    );
+  });
+});
+
+test("push: a corrupt ~/.reelier/prices.yml WARNs but never breaks the push — costUsd is just omitted", async () => {
+  await withTempDir(async (dir) => {
+    const skillPath = await setupFixture(dir, 1);
+    await mkdir(path.join(dir, ".reelier"), { recursive: true });
+    await writeFile(path.join(dir, ".reelier", "prices.yml"), "not: [valid, at, all\n  ::broken\n", "utf8");
+
+    await withEnv(
+      { REELIER_CLOUD_URL: "https://cloud.example", REELIER_CLOUD_KEY: "test-key", HOME: dir, USERPROFILE: dir },
+      async () => {
+        const fetchSeq = fakeFetch([{ status: 200 }, { status: 202, body: { id: "r0" } }]);
+        const { result, lines } = await withCapturedConsoleError(() =>
+          withFetch(fetchSeq.fn, () => pushSkill(skillPath, { cwd: dir }))
+        );
+
+        assert.equal(result.pushedCount, 1); // the push itself still succeeds
+        assert.ok(lines.some((l) => l.includes("could not load the $ meter's price table")));
+
+        const sentBody = JSON.parse(fetchSeq.calls[1].init.body as string);
+        assert.equal("costUsd" in sentBody, false);
+      }
+    );
+  });
+});

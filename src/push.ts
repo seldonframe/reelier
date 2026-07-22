@@ -29,6 +29,7 @@ import path from "node:path";
 import { parseSkill } from "./skill.js";
 import { readRunRecords, type RunRecord } from "./runner.js";
 import { writeFileAtomic } from "./writeback.js";
+import { costRun, loadPriceTable, type PriceTable } from "./cost.js";
 
 export interface PushConfig {
   baseUrl: string;
@@ -323,13 +324,31 @@ async function uploadSkill(
   };
 }
 
+/**
+ * Compute the optional `costUsd`/`priceTableDate` pair a pushed record
+ * carries (flight-recorder-v1 spec §2) — top-level-safe additions a
+ * pre-existing cloud simply ignores. Present ONLY when every step's tokens
+ * (including zero, the common deterministic-replay case) priced cleanly
+ * against `priceTable`; a record with ANY unpriceable-model tokens omits
+ * both fields rather than send a partial/wrong number — never guess a
+ * price on the wire either.
+ */
+function computePushCost(record: RunRecord, priceTable: PriceTable | undefined): { costUsd: number; priceTableDate: string } | undefined {
+  if (!priceTable) return undefined;
+  const cost = costRun(record, priceTable);
+  if (cost.unpriceableModels.length > 0) return undefined;
+  return { costUsd: cost.pricedUsd, priceTableDate: priceTable.bundledRetrievedAt };
+}
+
 async function pushOneRecord(
   config: PushConfig,
   skillName: string,
   record: RunRecord,
   index: number,
-  share?: boolean
+  share?: boolean,
+  priceTable?: PriceTable
 ): Promise<PushRecordResult> {
+  const cost = computePushCost(record, priceTable);
   let res: Response;
   try {
     res = await fetch(`${config.baseUrl.replace(/\/$/, "")}/api/v1/runs`, {
@@ -338,14 +357,20 @@ async function pushOneRecord(
         "content-type": "application/json",
         authorization: `Bearer ${config.apiKey}`,
       },
-      // `skillContentSha256` rides at the TOP LEVEL of the POST body (sibling of
-      // `record`), matching the cloud ingest contract (route.ts reads it there,
-      // not from inside `record`). Hoisted from the stamped record.
+      // `skillContentSha256` (and, now, `costUsd`/`priceTableDate`) ride at
+      // the TOP LEVEL of the POST body (sibling of `record`), matching the
+      // cloud ingest contract (route.ts reads them there, not from inside
+      // `record`). An older cloud that doesn't know these fields yet simply
+      // ignores them — same optional-field discipline as skillContentSha256.
+      // NOTE for the cloud side (follow-up, not this change): displaying
+      // costUsd/priceTableDate on the receipt page is a separate piece of
+      // work this push-time addition does not include.
       body: JSON.stringify({
         skillName,
         record,
         ...(record.skillContentSha256 ? { skillContentSha256: record.skillContentSha256 } : {}),
         ...(share ? { share: true } : {}),
+        ...(cost ? { costUsd: cost.costUsd, priceTableDate: cost.priceTableDate } : {}),
       }),
     });
   } catch (err) {
@@ -444,6 +469,21 @@ export async function pushSkill(skillPath: string, options: PushOptions = {}): P
 
   const config = resolvePushConfig();
 
+  // Best-effort: a missing price file is normal (bundled-only), but a
+  // PRESENT-and-corrupt ~/.reelier/prices.yml must never break a push (the
+  // recorder's prime directive — pushing is plumbing, cost is a bonus on
+  // top of it). Warn loudly and push without costUsd/priceTableDate rather
+  // than aborting the whole batch over an unrelated malformed file.
+  let priceTable: PriceTable | undefined;
+  try {
+    priceTable = await loadPriceTable();
+  } catch (err) {
+    console.error(
+      `WARNING: could not load the $ meter's price table (${(err as Error).message}) — pushing without ` +
+        `costUsd/priceTableDate this run. Fix or remove the offending ~/.reelier/prices.yml to restore it.`
+    );
+  }
+
   let skillUploaded = false;
   let publicSubmission: PublicSubmissionResult | undefined;
   if (needsSkillUpload) {
@@ -472,7 +512,7 @@ export async function pushSkill(skillPath: string, options: PushOptions = {}): P
     const record = candidates[i].skillContentSha256
       ? candidates[i]
       : { ...candidates[i], skillContentSha256: pushTimeFallbackSha256 };
-    const result = await pushOneRecord(config, skill.name, record, cursorBefore + i, options.share);
+    const result = await pushOneRecord(config, skill.name, record, cursorBefore + i, options.share, priceTable);
     results.push(result);
     options.onRecordResult?.(result);
 
