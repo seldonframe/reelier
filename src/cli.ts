@@ -3,6 +3,7 @@
 
 import { readFile, writeFile, access } from "node:fs/promises";
 import { realpathSync } from "node:fs";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import os from "node:os";
 import { pathToFileURL } from "node:url";
@@ -200,6 +201,9 @@ async function cmdRun(args: ParsedArgs): Promise<number> {
       llmModel: llmConfig?.model,
       llmL2Model: llmConfig?.l2Model,
       skillPath,
+      // The exact bytes just read off disk to parse `skill` for this run —
+      // stamped verbatim onto the RunRecord (see RunRecord.skillContentSha256).
+      skillContentSha256: createHash("sha256").update(source, "utf8").digest("hex"),
       onStep: (rec) => {
         const icon =
           rec.outcome === "passed" || rec.outcome === "unchecked" ? "✓" : rec.outcome === "skipped" ? "○" : "✗";
@@ -1062,7 +1066,7 @@ function fmtFieldErrors(fieldErrors: unknown): string {
 export async function cmdPush(args: ParsedArgs): Promise<number> {
   const skillPath = args.positional[0];
   if (!skillPath) {
-    console.error("Usage: reelier push <skill.md> [--all] [--dry-run] [--with-skill] [--share]");
+    console.error("Usage: reelier push <skill.md> [--all] [--dry-run] [--with-skill] [--share] [--public]");
     return 1;
   }
 
@@ -1070,6 +1074,7 @@ export async function cmdPush(args: ParsedArgs): Promise<number> {
   const all = args.flags.has("all");
   const withSkill = args.flags.has("with-skill");
   const share = args.flags.has("share");
+  const isPublic = args.flags.has("public");
 
   // Tracks whether the cloud actually honored --share on at least one
   // pushed record this run — a mint failure or an older cloud that doesn't
@@ -1084,6 +1089,7 @@ export async function cmdPush(args: ParsedArgs): Promise<number> {
       dryRun,
       withSkill,
       share,
+      public: isPublic,
       onRecordResult: (r: PushRecordResult) => {
         if (dryRun) {
           console.log(`  [${r.index}] would push`);
@@ -1139,6 +1145,26 @@ export async function cmdPush(args: ParsedArgs): Promise<number> {
     console.log(`Skill '${result.skillName}' uploaded.`);
   } else {
     console.log(`Skill '${result.skillName}' upload skipped (already uploaded — pass --with-skill to force).`);
+  }
+  // `--public` (skill-registry-v0 spec §2): report exactly what the cloud
+  // decided — never claim "listed" or a same-day promise the cloud didn't
+  // actually return.
+  if (isPublic) {
+    if (result.publicSubmission) {
+      const ps = result.publicSubmission;
+      if (ps.noop) {
+        console.log(`Already listed (unchanged): ${ps.pageUrl}`);
+      } else if (ps.status === "listed") {
+        console.log(`Listed: ${ps.pageUrl}`);
+        console.log(`  get: ${ps.getCommand}`);
+      } else {
+        console.log(`Pending review (usually within 2 business days): ${ps.pageUrl}`);
+      }
+    } else if (result.skillUploaded) {
+      // The upload succeeded but the cloud didn't return registry details —
+      // an older cloud that doesn't understand `public: true` yet.
+      console.log("--public was requested, but the cloud returned no registry listing details (older cloud?).");
+    }
   }
   const rejectedNote = result.rejectedCount > 0 ? `, ${result.rejectedCount} permanently rejected` : "";
   console.log(
@@ -1302,6 +1328,7 @@ async function compileReplayAndReceipt(
       tools,
       maxLevel: 0,
       skillPath: compiled.skillPath,
+      skillContentSha256: createHash("sha256").update(compiled.source, "utf8").digest("hex"),
       onStep: (rec) => {
         const icon = rec.outcome === "passed" || rec.outcome === "unchecked" ? "✓" : rec.outcome === "skipped" ? "○" : "✗";
         console.log(`  ${icon} Step ${rec.n} — ${rec.title} [${rec.outcome}] ${rec.ms}ms`);
