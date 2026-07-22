@@ -835,6 +835,33 @@ test("round-trip: --from-skill provenance rendering (carried description + prove
   assert.equal(parsed.steps[0].actionTool, "add");
 });
 
+test("renderSkillMd: emits recorded_with frontmatter + a single Reelier provenance footer line", () => {
+  const records: TraceRecord[] = [
+    meta("provenance-skill"),
+    note(1, "add two numbers"),
+    call(2, 0, "add", { a: 1, b: 2 }),
+    result(3, 0, true, mcpJsonResult({ result: 3 })),
+  ];
+  const compiled = compile(records);
+  const rendered = renderSkillMd(compiled, "provenance.jsonl");
+
+  assert.match(rendered, /^recorded_with: reelier v\S+$/m);
+
+  const footerLines = rendered
+    .split("\n")
+    .filter((line) => line.includes("Recorded with") && line.includes("reelier.com"));
+  assert.equal(footerLines.length, 1, "exactly one provenance footer line");
+  assert.match(
+    footerLines[0],
+    /^_Recorded with \[Reelier\]\(https:\/\/reelier\.com\/\?utm_source=skill-md\) — replay: `npx -y reelier run provenance-skill\.skill\.md`_$/
+  );
+
+  // Still parses cleanly — the new frontmatter key and trailing footer line
+  // don't break the SKILL.md grammar.
+  const parsed = parseSkill(rendered);
+  assert.equal(parsed.name, "provenance-skill");
+});
+
 test("round-trip: an empty open-questions skill still renders and parses (no questions section body issue)", () => {
   const records: TraceRecord[] = [
     meta("clean-skill"),

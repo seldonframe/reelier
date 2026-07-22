@@ -1006,10 +1006,12 @@ inert (zero network calls, zero state mutation) until both are set.
 | Endpoint | When | Request | Success | Client-recognized errors |
 | --- | --- | --- | --- | --- |
 | `POST {base}/api/v1/skills` | Once per skill: the first time that skill name is ever pushed from this working directory, or every time when `--with-skill` is passed. | `Authorization: Bearer <key>`; JSON body `{name, skillMd}` — `skillMd` is the raw skill file's full source text. | Any `2xx` status. | `401` aborts the whole push (no run records are attempted); any other non-2xx also aborts, with the response body's first 500 chars surfaced in the error. |
-| `POST {base}/api/v1/runs` | Once per new run record being pushed. | `Authorization: Bearer <key>`; JSON body `{skillName, record}` — `record` is one `RunRecord` (§4) exactly as it appears in the `.jsonl` file, unmodified. | `202` with JSON body `{id: string}`. `id` is optional to the client — a `202` with an unparseable or `id`-less body still counts as a successful push. | `400` with JSON body `{fieldErrors: ...}` and `413` — **permanent** rejections, batch continues (§8.3a). `401` and a `fetch` rejection (network error, DNS failure, timeout) — **transient**, batch stops (§8.3a). Any other non-`202` status is treated as a transient error and stops the batch too. |
+| `POST {base}/api/v1/runs` | Once per new run record being pushed. | `Authorization: Bearer <key>`; JSON body `{skillName, record}` — `record` is one `RunRecord` (§4) exactly as it appears in the `.jsonl` file, unmodified. When `reelier push --share` is used, the body also carries `share: true`. | `202` with JSON body `{id: string}`. `id` is optional to the client — a `202` with an unparseable or `id`-less body still counts as a successful push. With `share: true`, a successful response additionally carries `shareUrl` and `badgeUrl` (absolute URLs to the newly-minted-or-reused public receipt and its badge SVG) — both are optional to the client the same way `id` is. | `400` with JSON body `{fieldErrors: ...}` and `413` — **permanent** rejections, batch continues (§8.3a). `401` and a `fetch` rejection (network error, DNS failure, timeout) — **transient**, batch stops (§8.3a). Any other non-`202` status is treated as a transient error and stops the batch too. |
 
 Neither endpoint's request ever includes anything beyond what's listed
-above — no telemetry, no extra headers, no implicit retry.
+above (plus the opt-in `share` field on `/api/v1/runs`) — no telemetry, no
+extra headers, no implicit retry. `share` defaults to unset/false: a push
+is never made public unless the caller explicitly passes `--share`.
 
 ### 8.3 Cursor semantics (client-side state, not part of the wire contract)
 

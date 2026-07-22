@@ -1055,13 +1055,14 @@ function fmtFieldErrors(fieldErrors: unknown): string {
 async function cmdPush(args: ParsedArgs): Promise<number> {
   const skillPath = args.positional[0];
   if (!skillPath) {
-    console.error("Usage: reelier push <skill.md> [--all] [--dry-run] [--with-skill]");
+    console.error("Usage: reelier push <skill.md> [--all] [--dry-run] [--with-skill] [--share]");
     return 1;
   }
 
   const dryRun = args.flags.has("dry-run");
   const all = args.flags.has("all");
   const withSkill = args.flags.has("with-skill");
+  const share = args.flags.has("share");
 
   let result;
   try {
@@ -1069,6 +1070,7 @@ async function cmdPush(args: ParsedArgs): Promise<number> {
       all,
       dryRun,
       withSkill,
+      share,
       onRecordResult: (r: PushRecordResult) => {
         if (dryRun) {
           console.log(`  [${r.index}] would push`);
@@ -1077,6 +1079,10 @@ async function cmdPush(args: ParsedArgs): Promise<number> {
         switch (r.outcome) {
           case "pushed":
             console.log(`  [${r.index}] pushed${r.id ? ` id=${r.id}` : ""}`);
+            if (r.shareUrl && r.badgeUrl) {
+              console.log(`    Receipt: ${r.shareUrl}`);
+              console.log(`    [![reelier](${r.badgeUrl})](${r.shareUrl})`);
+            }
             break;
           case "rejected":
             console.log(
@@ -1123,6 +1129,16 @@ async function cmdPush(args: ParsedArgs): Promise<number> {
     `Pushed ${result.pushedCount}/${result.candidateCount} new record(s)${rejectedNote} for '${result.skillName}'. ` +
       `Cursor: ${result.cursorBefore} -> ${result.cursorAfter}.`
   );
+  // Privacy first: a push never creates a public receipt unless --share was
+  // passed (see PushOptions.share in push.ts). Point at the authenticated
+  // dashboard instead, plus a one-line nudge toward the public option.
+  if (!share && result.pushedCount > 0) {
+    const cloudUrl = (process.env.REELIER_CLOUD_URL ?? "").replace(/\/+$/, "");
+    if (cloudUrl) {
+      console.log(`Dashboard: ${cloudUrl}/dashboard/runs`);
+    }
+    console.log("  tip: add --share for a public receipt link");
+  }
   if (result.aborted) {
     console.log("Stopped early on a transient failure (auth or network/error) — cursor left at the last consumed record.");
     return 1;

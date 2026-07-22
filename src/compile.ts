@@ -6,11 +6,29 @@
 // whether to overwrite), conservative effect classes (an unrecognized verb
 // defaults to `destructive` so a human reviews once).
 
+import { readFileSync } from "node:fs";
 import type { TraceRecord } from "./recorder.js";
 import type { Effect } from "./skill.js";
 import { mcpResultToObservation } from "./mcp-tool.js";
 import type { McpCallResult } from "./mcp-client.js";
 import { classifyEffect, type ToolEffectAnnotations } from "./effect-verbs.js";
+
+/**
+ * The installed reelier version, for the SKILL.md provenance frontmatter
+ * (`recorded_with:`). Read once, synchronously (renderSkillMd itself is
+ * sync and is called from several non-async call sites — see init.ts,
+ * session.ts, cli.ts), the same file cli.ts's `--version` reads
+ * (`../package.json` relative to src/), just via readFileSync instead of
+ * the async readFile it uses.
+ */
+function readReelierVersion(): string {
+  try {
+    const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+    return typeof pkg.version === "string" ? pkg.version : "unknown";
+  } catch {
+    return "unknown";
+  }
+}
 
 export interface OpenQuestion {
   /** The step this open question is attached to, or undefined for a trace-global note (e.g. a trailing unclaimed note). */
@@ -675,6 +693,7 @@ export function renderSkillMd(result: CompileResult, traceFileName: string, from
       ? `description: ${fromSkill.description}`
       : `description: Compiled from ${traceFileName} (${result.steps.length} calls) on ${date}`
   );
+  lines.push(`recorded_with: reelier v${readReelierVersion()}`);
   lines.push("---");
   lines.push("");
   lines.push(`# ${result.name}`);
@@ -715,6 +734,11 @@ export function renderSkillMd(result: CompileResult, traceFileName: string, from
   lines.push("## Changelog");
   lines.push("");
   lines.push(`- ${date} — compiled from ${provenance} (${result.steps.length} calls, ${result.steps.length} steps)`);
+  lines.push("");
+
+  lines.push(
+    `_Recorded with [Reelier](https://reelier.com/?utm_source=skill-md) — replay: \`npx -y reelier run ${result.name}.skill.md\`_`
+  );
   lines.push("");
 
   return lines.join("\n");
