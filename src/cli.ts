@@ -12,7 +12,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { parseSkill, SkillParseError } from "./skill.js";
 import { runSkill, dryRunSkill, readRunRecords, type RunRecord } from "./runner.js";
 import { pushSkill, PublicSubmissionError, type PushRecordResult } from "./push.js";
-import { getSkill, type GetOutcome } from "./get.js";
+import { getSkill, getMineSkill, type GetOutcome, type GetMineOutcome } from "./get.js";
 import { builtinTools } from "./tools.js";
 import { connectDownstream, type DownstreamConnection } from "./mcp-client.js";
 import { buildMcpTools } from "./mcp-tool.js";
@@ -1230,11 +1230,76 @@ function printTrustBlock(outcome: Extract<GetOutcome, { kind: "written" }>): voi
   }
 }
 
+/**
+ * Trust-block variant for `reelier get --mine` (see cmdGetMine below):
+ * private skills carry no registry grade, so there's no READ-ONLY/WRITES
+ * badge — just the locally-parsed per-step effects/endpoints, the content
+ * hash, an explicit "not a public listing" provenance line, and the next
+ * command. Never executes anything.
+ */
+function printPrivateTrustBlock(outcome: Extract<GetMineOutcome, { kind: "written" }>): void {
+  const { result, steps, endpoints } = outcome;
+  if (steps.length > 0) {
+    console.log("Per-step effects:");
+    for (const s of steps) {
+      console.log(`  Step ${s.n} — ${s.title} [${s.effect}]`);
+    }
+  }
+  console.log(`Endpoints: ${endpoints.length > 0 ? endpoints.join(", ") : "(none)"}`);
+  console.log(`Content hash: sha256:${result.contentSha256}`);
+  console.log("source: your private cloud copy (not a public listing)");
+  console.log("");
+  console.log(`Next: reelier run ${outcome.path}`);
+}
+
+async function cmdGetMine(name: string, args: ParsedArgs): Promise<number> {
+  let outcome: GetMineOutcome;
+  try {
+    outcome = await getMineSkill(name, { dir: args.opts.dir, force: args.flags.has("force") });
+  } catch (err) {
+    console.error((err as Error).message);
+    return 1;
+  }
+
+  switch (outcome.kind) {
+    case "error":
+      console.error(outcome.message);
+      return 1;
+    case "tamper":
+      console.error(
+        `Integrity check FAILED — the fetched content's sha256 does not match the server-declared contentSha256. ` +
+          `Expected ${outcome.expectedSha}, got ${outcome.actualSha}. Nothing was written.`
+      );
+      return 1;
+    case "hash-mismatch":
+      console.error(
+        `${outcome.path} already exists with different content (local sha256 ${outcome.existingSha}, incoming ` +
+          `${outcome.incomingSha}). Run 'reelier diff' to compare, or pass --force to overwrite.`
+      );
+      return 1;
+    case "up-to-date":
+      console.log(`${outcome.path} is already up to date (skill '${outcome.skillName}').`);
+      return 0;
+    case "written":
+      console.log(`Wrote ${outcome.path}.`);
+      console.log("");
+      printPrivateTrustBlock(outcome);
+      return 0;
+  }
+}
+
 export async function cmdGet(args: ParsedArgs): Promise<number> {
   const ref = args.positional[0];
   if (!ref) {
-    console.error("Usage: reelier get <owner>/<skill>[@<N> | @sha256:<hex>] [--dir <dir>] [--force]");
+    console.error(
+      "Usage: reelier get <owner>/<skill>[@<N> | @sha256:<hex>] [--dir <dir>] [--force]\n" +
+        "       reelier get --mine <name> [--dir <dir>] [--force]"
+    );
     return 1;
+  }
+
+  if (args.flags.has("mine")) {
+    return cmdGetMine(ref, args);
   }
 
   let outcome: GetOutcome;
@@ -1622,6 +1687,7 @@ const USAGE =
   "  mcp   — RECORDER: fronts your own --wrap'd MCP server(s) to capture their calls into a trace.\n" +
   "  serve — TOOL-SERVER: exposes Reelier's own commands (scan/from-session/replay/push/diff) as MCP tools.\n" +
   "  get   — fetch a public registry skill to ./skills/<skill>.skill.md; never executes it.\n" +
+  "          reelier get --mine <name> fetches YOUR OWN private skill (authenticated) instead.\n" +
   "  diff  — compare the last two runs of a skill; exit 1 on drift (gate a scheduled replay).";
 
 async function main(): Promise<number> {
