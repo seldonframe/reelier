@@ -386,19 +386,21 @@ async function fetchPrivateSkill(config: PushConfig, name: string): Promise<Priv
  * effects + endpoints locally via the same parse used for the public trust
  * block"). Walks every step's actionArgs recursively for absolute http(s)
  * URLs and reduces each to its origin — matching the public registry's
- * "domain the skill will hit" semantics, not full paths. A string that looks
- * like a URL but still contains an unresolved `{{var}}` in the host fails
- * `new URL()` and is skipped rather than guessed at.
+ * "domain the skill will hit" semantics, not full paths. A string still
+ * containing an unresolved `{{var}}` template is skipped outright before
+ * parsing — `new URL()` does NOT reject templated hosts (it would happily
+ * yield an origin like `https://{{host}}`), so the guard must come first.
  */
 function extractLocalEndpoints(skill: Skill): string[] {
   const found = new Set<string>();
   const walk = (value: unknown): void => {
     if (typeof value === "string") {
+      if (value.includes("{{")) return; // unresolved template — skip, don't guess
       if (/^https?:\/\//i.test(value)) {
         try {
           found.add(new URL(value).origin);
         } catch {
-          // Unresolved template var or otherwise malformed — skip, don't guess.
+          // Malformed URL — skip, don't guess.
         }
       }
       return;
@@ -432,10 +434,10 @@ export type GetMineOutcome =
 export async function getMineSkill(name: string, options: GetOptions = {}): Promise<GetMineOutcome> {
   const cwd = options.cwd ?? process.cwd();
 
-  if (name.includes("/")) {
+  if (name.includes("/") || name.includes("\\") || name.includes("..")) {
     return {
       kind: "error",
-      message: `--mine takes a bare skill name with no owner prefix, got: ${JSON.stringify(
+      message: `--mine takes a bare skill name with no owner prefix or path separators, got: ${JSON.stringify(
         name
       )}. Drop the '<owner>/' part — private fetches are already scoped to your own tenant.`,
     };

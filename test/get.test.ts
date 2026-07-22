@@ -396,15 +396,17 @@ function mineBody(overrides: Partial<Record<string, unknown>> = {}) {
   };
 }
 
-test("getMineSkill: rejects a name containing '/' without ever calling fetch", async () => {
+test("getMineSkill: rejects a name with a path separator or traversal without ever calling fetch", async () => {
   await withTempDir(async (dir) => {
     await withEnv({ REELIER_CLOUD_URL: "https://cloud.example", REELIER_CLOUD_KEY: "test-key" }, async () => {
-      const { fn, calls } = fakeFetch([]);
-      const outcome = await withFetch(fn, () => getMineSkill("acme/my-private-fixture", { cwd: dir }));
-      assert.equal(outcome.kind, "error");
-      if (outcome.kind !== "error") return;
-      assert.match(outcome.message, /--mine takes a bare skill name/);
-      assert.equal(calls.length, 0);
+      for (const bad of ["acme/my-private-fixture", "acme\\my-skill", "../escape", "a..b"]) {
+        const { fn, calls } = fakeFetch([]);
+        const outcome = await withFetch(fn, () => getMineSkill(bad, { cwd: dir }));
+        assert.equal(outcome.kind, "error", `expected error for ${JSON.stringify(bad)}`);
+        if (outcome.kind !== "error") continue;
+        assert.match(outcome.message, /--mine takes a bare skill name/);
+        assert.equal(calls.length, 0, `no fetch for ${JSON.stringify(bad)}`);
+      }
     });
   });
 });
