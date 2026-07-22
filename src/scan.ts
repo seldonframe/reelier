@@ -9,7 +9,14 @@
 import { readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { summarizeSession, type SessionSummary } from "./session.js";
+import { summarizeSession, type SessionSummary, type SessionFormatId } from "./session.js";
+
+export {
+  stubAgentSources,
+  probeStubSource,
+  type StubAgentSource,
+  type StubAgentId,
+} from "./session-formats.js";
 
 /** Real transcripts live two levels down: `<dir>/<project-slug>/<uuid>.jsonl`. Scanned defensively (a couple of extra levels) in case an agent ever nests further, capped so a symlink loop or huge unrelated tree can't hang the scan. */
 const MAX_DEPTH = 4;
@@ -51,26 +58,31 @@ export interface ScannedSession extends SessionSummary {
 
 /**
  * A known place an agent/IDE writes tool-call session transcripts, relative to
- * the home dir. Each existing dir is scanned; formats other than Claude Code's
- * JSONL currently parse to 0 replayable (session.ts skips lines it doesn't
- * recognize) — honest degradation, never a crash or a fabricated result. A new
- * IDE is a one-line entry here PLUS, if its transcript schema differs, a parser
- * branch in session.ts. Deliberately NOT listed: IDEs whose history is a SQLite
- * DB (Cursor) or a rules/config dir (`.cursor/rules`, `.windsurfrules`) rather
- * than a replayable tool-call transcript.
+ * the home dir. Each dir is scanned and, when `format` is set, parsed with
+ * that format's dedicated adapter (session-formats.ts) instead of
+ * auto-detecting per file — the location alone already tells us the format.
+ * Claude Code has no `format` set: its own parser (session.ts) is the
+ * fallback `summarizeSession` already uses when detection finds nothing else,
+ * so leaving it unset preserves the exact prior behavior. Deliberately NOT
+ * listed here: Cursor and Windsurf, whose history is a SQLite `state.vscdb`
+ * rather than a replayable JSONL tool-call transcript — see
+ * `stubAgentSources` in session-formats.ts for how those are (honestly)
+ * reported instead.
  */
 export interface AgentSource {
   id: string;
   label: string;
   dir: string;
+  format?: SessionFormatId;
 }
 
 export function agentSources(homedir: string = os.homedir()): AgentSource[] {
   return [
     { id: "claude-code", label: "Claude Code", dir: path.join(homedir, ".claude", "projects") },
-    { id: "codex", label: "Codex CLI", dir: path.join(homedir, ".codex", "sessions") },
-    { id: "windsurf", label: "Windsurf", dir: path.join(homedir, ".codeium", "windsurf") },
-    { id: "openclaw", label: "OpenClaw", dir: path.join(homedir, ".openclaw") },
+    // ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl — codex-rs/rollout/src/lib.rs (SESSIONS_SUBDIR) + list.rs (rollout_date_parts).
+    { id: "codex", label: "Codex CLI", dir: path.join(homedir, ".codex", "sessions"), format: "codex" },
+    // ~/.openclaw/agents/<agentId>/sessions/<sessionId>.jsonl — openclaw/openclaw src/config/paths.ts + src/config/sessions/paths.ts.
+    { id: "openclaw", label: "OpenClaw", dir: path.join(homedir, ".openclaw", "agents"), format: "openclaw" },
   ];
 }
 
@@ -82,7 +94,7 @@ export function agentSources(homedir: string = os.homedir()): AgentSource[] {
  */
 export async function scanTranscripts(
   rootDir: string,
-  src: { id: string; label: string } = { id: "custom", label: "directory" }
+  src: { id: string; label: string; format?: SessionFormatId } = { id: "custom", label: "directory" }
 ): Promise<ScannedSession[]> {
   const files = await findTranscriptFiles(rootDir);
   const results: ScannedSession[] = [];
@@ -96,7 +108,7 @@ export async function scanTranscripts(
     } catch {
       continue;
     }
-    const summary = summarizeSession(source, file);
+    const summary = summarizeSession(source, file, src.format);
     results.push({
       ...summary,
       project: path.basename(path.dirname(file)),
@@ -119,7 +131,7 @@ export async function scanTranscripts(
 export async function scanAgentSessions(homedir: string = os.homedir()): Promise<ScannedSession[]> {
   const all: ScannedSession[] = [];
   for (const src of agentSources(homedir)) {
-    const found = await scanTranscripts(src.dir, { id: src.id, label: src.label });
+    const found = await scanTranscripts(src.dir, { id: src.id, label: src.label, format: src.format });
     all.push(...found);
   }
   all.sort((a, b) => b.mtimeMs - a.mtimeMs);

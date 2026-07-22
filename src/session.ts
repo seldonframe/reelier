@@ -16,6 +16,15 @@
 import type { TraceRecord } from "./recorder.js";
 import { compile, renderSkillMd, classifyEffect, type CompileResult } from "./compile.js";
 import { parseSkill } from "./skill.js";
+import {
+  detectSessionFormat,
+  parseCodexTranscript,
+  parseOpenClawTranscript,
+  type SessionFormatId,
+} from "./session-formats.js";
+
+export type { SessionFormatId } from "./session-formats.js";
+export { detectSessionFormat, SESSION_FORMAT_LABELS } from "./session-formats.js";
 
 // ---------------------------------------------------------------------------
 // Parsing — tolerant of the real file format. Verified against actual
@@ -90,6 +99,21 @@ function asToolResultBlock(block: unknown): RawToolResultBlock | undefined {
   if (!isRecord(block) || block.type !== "tool_result") return undefined;
   if (typeof block.tool_use_id !== "string") return undefined;
   return { type: "tool_result", tool_use_id: block.tool_use_id, content: block.content, is_error: block.is_error === true };
+}
+
+/**
+ * Parse a transcript with a specific known format, or auto-detect it from
+ * content (session-formats.ts's detectSessionFormat) and fall back to the
+ * Claude Code parser when nothing else matches — this is the SAME fallback
+ * every from-session call has always had (an unrecognized/malformed
+ * transcript parses to 0 replayable calls rather than erroring), now just
+ * explicit about which parser ran.
+ */
+export function parseSessionTranscriptForFormat(source: string, format?: SessionFormatId): ParsedSessionTranscript {
+  const resolved = format ?? detectSessionFormat(source) ?? "claude-code";
+  if (resolved === "codex") return parseCodexTranscript(source);
+  if (resolved === "openclaw") return parseOpenClawTranscript(source);
+  return parseSessionTranscript(source);
 }
 
 /** Parse a session transcript's raw JSONL text into ordered tool_use/tool_result pairs. Never throws on a malformed line — counts and skips it instead. */
@@ -328,6 +352,8 @@ export interface FromSessionOptions {
   name: string;
   /** Basename of the transcript file, embedded in the skill's description line. */
   traceFileName: string;
+  /** Force a specific source format instead of auto-detecting from content (the CLI's `--agent` override). */
+  format?: SessionFormatId;
 }
 
 export interface FromSessionSuccess {
@@ -346,7 +372,7 @@ export interface FromSessionNothingReplayable {
 }
 
 export function compileSessionTranscript(source: string, opts: FromSessionOptions): FromSessionSuccess | FromSessionNothingReplayable {
-  const parsed = parseSessionTranscript(source);
+  const parsed = parseSessionTranscriptForFormat(source, opts.format);
   const built = buildTraceFromSession(parsed, opts.name);
 
   if (built.replayableCount === 0) {
@@ -398,8 +424,8 @@ export interface SessionSummary {
   unknownTools: string[];
 }
 
-export function summarizeSession(source: string, path: string): SessionSummary {
-  const parsed = parseSessionTranscript(source);
+export function summarizeSession(source: string, path: string, format?: SessionFormatId): SessionSummary {
+  const parsed = parseSessionTranscriptForFormat(source, format);
   const built = buildTraceFromSession(parsed, "scan-summary");
   return {
     path,

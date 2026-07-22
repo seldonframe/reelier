@@ -34,8 +34,18 @@ import {
   LAUNCH_BENCHMARK_COMPARISON,
   type DemoBenchmarkComparison,
 } from "./init.js";
-import { compileSessionTranscript, type SessionSkip } from "./session.js";
-import { scanTranscripts, scanAgentSessions, agentSources, replayableRateStats, formatReplayableRate, type ScannedSession } from "./scan.js";
+import { compileSessionTranscript, detectSessionFormat, SESSION_FORMAT_LABELS, type SessionSkip, type SessionFormatId } from "./session.js";
+import {
+  scanTranscripts,
+  scanAgentSessions,
+  agentSources,
+  replayableRateStats,
+  formatReplayableRate,
+  stubAgentSources,
+  probeStubSource,
+  type ScannedSession,
+  type StubAgentId,
+} from "./scan.js";
 import { planInstall, applyInstall, findLatestBackup, restoreFromBackup, planWrapOffer, type InstallResult } from "./wrap.js";
 import { buildToolServer, runDiffTool } from "./serve.js";
 
@@ -737,11 +747,56 @@ function printSkipped(skipped: SessionSkip[]): void {
   }
 }
 
+const AGENT_OVERRIDE_ALIASES: Record<string, SessionFormatId> = {
+  "claude-code": "claude-code",
+  claude: "claude-code",
+  codex: "codex",
+  openclaw: "openclaw",
+};
+
+const STUB_AGENT_IDS = new Set<string>(["cursor", "windsurf"]);
+
+/** Honest stub message for a SQLite-backed format we deliberately don't parse (see session-formats.ts's stubAgentSources doc comment for the evidence). Never fabricates a parse — reports what's on disk instead. */
+async function printStubFindings(agentId: StubAgentId): Promise<void> {
+  const src = stubAgentSources().find((s) => s.id === agentId);
+  if (!src) return;
+  const probe = await probeStubSource(src);
+  console.log(`${src.label}: format not yet supported.`);
+  console.log(`  ${src.findings}`);
+  if (probe.found > 0) {
+    console.log(`  Found ${probe.found} state.vscdb file(s) on this machine, e.g. ${probe.paths[0]}`);
+  } else {
+    console.log(`  No state.vscdb found under ${src.globalStorageDir} or ${src.workspaceStorageDir}.`);
+  }
+}
+
 async function cmdFromSession(args: ParsedArgs): Promise<number> {
   const transcriptPath = args.positional[0];
-  if (!transcriptPath) {
-    console.error("Usage: reelier from-session <transcript.jsonl> [--out <skill.md>] [--name <name>] [--force]");
+  const agentOverride = args.opts.agent?.toLowerCase();
+
+  if (agentOverride && STUB_AGENT_IDS.has(agentOverride)) {
+    await printStubFindings(agentOverride as StubAgentId);
     return 1;
+  }
+  if (transcriptPath && /\.vscdb$/i.test(transcriptPath)) {
+    // A Cursor/Windsurf SQLite file handed to us directly — same honest stub, no --agent needed to detect it.
+    const guess: StubAgentId = /windsurf/i.test(transcriptPath) ? "windsurf" : "cursor";
+    await printStubFindings(guess);
+    return 1;
+  }
+
+  if (!transcriptPath) {
+    console.error("Usage: reelier from-session <transcript.jsonl> [--out <skill.md>] [--name <name>] [--agent <claude-code|codex|openclaw|cursor|windsurf>] [--force]");
+    return 1;
+  }
+
+  let format: SessionFormatId | undefined;
+  if (agentOverride) {
+    format = AGENT_OVERRIDE_ALIASES[agentOverride];
+    if (!format) {
+      console.error(`Unknown --agent '${args.opts.agent}'. Known: claude-code, codex, openclaw, cursor, windsurf.`);
+      return 1;
+    }
   }
 
   let source: string;
@@ -754,8 +809,10 @@ async function cmdFromSession(args: ParsedArgs): Promise<number> {
 
   const traceFileName = path.basename(transcriptPath);
   const name = args.opts.name ?? traceFileName.replace(/\.jsonl$/i, "");
+  const detected = format ?? detectSessionFormat(source);
+  console.log(`Format: ${detected ? SESSION_FORMAT_LABELS[detected] : "unrecognized (falling back to Claude Code parsing)"}`);
 
-  const result = compileSessionTranscript(source, { name, traceFileName });
+  const result = compileSessionTranscript(source, { name, traceFileName, format });
 
   console.log(`Scanned ${traceFileName}: ${result.ok ? result.replayableCount : 0} replayable call(s) found.`);
   console.log("");
@@ -833,6 +890,19 @@ async function cmdScan(args: ParsedArgs): Promise<number> {
     console.log("Scanning every known agent/IDE for session transcripts:");
     for (const s of agentSources()) console.log(`  · ${s.label} — ${s.dir}`);
     sessions = await scanAgentSessions();
+  }
+
+  if (!explicitDir) {
+    // Cursor/Windsurf are SQLite-backed (state.vscdb) — never scanned into ScannedSession
+    // (no parser exists, see session-formats.ts), but still probed and reported honestly.
+    for (const src of stubAgentSources()) {
+      const probe = await probeStubSource(src);
+      console.log(
+        probe.found > 0
+          ? `  · ${src.label} — ${probe.found} state.vscdb file(s) found, format not yet supported (${src.findings})`
+          : `  · ${src.label} — none found`
+      );
+    }
   }
 
   const replayable = rankByReplayWorthiness(sessions.filter((s) => s.replayableCount > 0));
