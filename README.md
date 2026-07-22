@@ -95,6 +95,27 @@ reelier compile trace.jsonl --from-skill ./my-skill/SKILL.md
 #   steps ONLY from the recorded run (never generated from instruction text)
 ```
 
+### Import sessions from any agent
+
+You already have replayable workflows sitting in your agent's own session logs. `reelier scan` finds them; `reelier from-session` turns one into a skill. Format is sniffed from the file's content — no flag needed for the supported agents:
+
+```sh
+reelier scan                                          # discovers sessions from every known agent under your home dir
+reelier from-session ~/.claude/projects/*/*.jsonl      # Claude Code
+reelier from-session ~/.codex/sessions/**/rollout-*.jsonl   # Codex CLI
+reelier from-session ~/.openclaw/agents/*/sessions/*.jsonl  # OpenClaw
+```
+
+| Agent | Session location | Status |
+| --- | --- | --- |
+| Claude Code | `~/.claude/projects/<project>/<uuid>.jsonl` | supported |
+| Codex CLI | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` | supported |
+| OpenClaw | `~/.openclaw/agents/<agentId>/sessions/<sessionId>.jsonl` | supported |
+| Cursor | `.../User/globalStorage/state.vscdb` (SQLite, undocumented) | detected, not yet parseable |
+| Windsurf | `.../User/globalStorage/state.vscdb` (SQLite, undocumented) | detected, not yet parseable |
+
+Only replayable calls (Reelier's own builtins, or `mcp__<server>__<tool>` calls) ever compile into a skill — native file/shell/search actions are reported as skipped, never fabricated into a step. Pass `--agent <claude-code|codex|openclaw>` to force a format instead of auto-detecting; `reelier scan` / `reelier from-session --agent cursor` (or `--agent windsurf`) report what's on disk honestly rather than guessing at an undocumented binary format.
+
 ## Assert the value, not just the shape
 
 A skill's assertions are what make a replay *proof*. The grammar checks status, structure, **and value**:

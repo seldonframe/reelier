@@ -1,0 +1,7 @@
+{"timestamp":"2026-01-01T00:00:00.000Z","type":"session_meta","payload":{"id":"9b1b7f9e-58a1-4a2e-9f0a-000000000001","timestamp":"2026-01-01T00:00:00.000Z","cwd":"/home/user/project","originator":"codex_cli_rs","cli_version":"0.1.0"}}
+{"timestamp":"2026-01-01T00:00:01.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"check the weather forecast for the deploy window"}]}}
+{"timestamp":"2026-01-01T00:00:02.000Z","type":"response_item","payload":{"type":"function_call","id":null,"name":"shell","arguments":"{\"command\":[\"ls\",\"-la\"]}","call_id":"call_shell_1"}}
+{"timestamp":"2026-01-01T00:00:02.500Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call_shell_1","output":"total 0\ndrwxr-xr-x  2 user user 4096 Jan  1 00:00 .\n"}}
+{"timestamp":"2026-01-01T00:00:03.000Z","type":"response_item","payload":{"type":"function_call","id":null,"name":"mcp__weather__get_forecast","arguments":"{\"city\":\"San Francisco\"}","call_id":"call_weather_1"}}
+{"timestamp":"2026-01-01T00:00:03.500Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call_weather_1","output":"{\"forecast\":\"sunny\",\"highF\":68}"}}
+{"timestamp":"2026-01-01T00:00:04.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Deploy window looks clear — sunny, 68F."}]}}
