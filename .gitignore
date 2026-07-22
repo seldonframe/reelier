@@ -5,3 +5,4 @@ dist-test/
 
 *.mcpb
 .screenshots-tmp/
+.house-tenant-key.local
