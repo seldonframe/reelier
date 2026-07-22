@@ -2,6 +2,7 @@
 // Hand-rolled argv parsing (no commander). Two subcommands: run, bench.
 
 import { readFile, writeFile, access } from "node:fs/promises";
+import { realpathSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { pathToFileURL } from "node:url";
@@ -1568,12 +1569,33 @@ async function main(): Promise<number> {
 }
 
 // Only run main() when this file is the process entry point (`node
-// dist/cli.js ...`, or the npx-installed `reelier` bin) — NOT when it's
-// merely imported as a module (e.g. test/push-cli.test.ts imports cmdPush
-// directly to exercise its console output). Without this guard, importing
-// cli.js for its exports would also execute the full CLI against the
-// importer's own argv, printing USAGE and setting a stray exitCode.
-const isMainModule = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
+// dist/cli.js ...`, the npx-installed `reelier` bin, an npm global bin
+// symlink, or a node_modules/.bin shim) — NOT when it's merely imported as
+// a module (e.g. test/push-cli.test.ts imports cmdPush directly to
+// exercise its console output). Without this guard, importing cli.js for
+// its exports would also execute the full CLI against the importer's own
+// argv, printing USAGE and setting a stray exitCode.
+//
+// Node resolves import.meta.url to the REAL (symlink-followed) path of the
+// running module, but leaves process.argv[1] as the symlink path the
+// process was invoked through — so on Unix, comparing the two raw would
+// always mismatch for every symlinked invocation (npm global bin, `npx
+// reelier`, local node_modules/.bin), the CLI's primary distribution path.
+// realpathSync(argv[1]) resolves argv[1] the same way import.meta.url
+// already is before comparing. Wrapped in try/catch and falls back to the
+// unresolved comparison — argv[1] might not exist in exotic embedding
+// scenarios, and this must never throw at import time.
+function resolveIsMainModule(): boolean {
+  const argv1 = process.argv[1];
+  if (argv1 === undefined) return false;
+  try {
+    return import.meta.url === pathToFileURL(realpathSync(argv1)).href;
+  } catch {
+    return import.meta.url === pathToFileURL(argv1).href;
+  }
+}
+
+const isMainModule = resolveIsMainModule();
 
 if (isMainModule) {
   main()
