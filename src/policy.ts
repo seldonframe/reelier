@@ -159,6 +159,13 @@ export function parseYamlSubset(source: string): Record<string, unknown> {
     if (!m) {
       throw new Error(`line ${lineNo + 1}: malformed continuation line: ${JSON.stringify(withComment)}`);
     }
+    // Reject a repeated key within the SAME rule map rather than silently
+    // letting the later occurrence win — a duplicate `tool:`/`unless:` in
+    // one rule is almost always a typo'd third key, and last-wins would
+    // hide whichever one the author actually meant.
+    if (Object.prototype.hasOwnProperty.call(currentItem, m[1])) {
+      throw new Error(`line ${lineNo + 1}: duplicate key "${m[1]}" within the same rule (list item)`);
+    }
     currentItem[m[1]] = unquote(m[2]);
   }
 
@@ -305,6 +312,32 @@ export function matchGlob(glob: string, value: string): boolean {
   return globToRegExp(glob).test(value);
 }
 
+/**
+ * Endpoint-rule glob matching: a leading `*.` is given host-or-subdomain
+ * semantics rather than plain glob semantics — `"*.stripe.com"` matches
+ * BOTH the apex `stripe.com` and any subdomain (`api.stripe.com`,
+ * `checkout.stripe.com`). Plain `matchGlob`'s literal `*` would treat
+ * `"*.stripe.com"` as "one or more characters, then .stripe.com", so the
+ * apex itself (with no leading segment to fill the `*`) never matches —
+ * a false negative on the single most common way someone writes this
+ * rule. This asymmetry is deliberately ONE-directional: it only ever
+ * matches MORE hosts than plain-glob semantics would, never fewer, so
+ * widening it can't create a false sense of a call being blocked when it
+ * wasn't. Any other endpoint glob shape (no leading `*.`, or `*` used
+ * elsewhere) falls back to plain glob matching, unchanged. Tool-name
+ * globs are NEVER routed through this function — only `endpoint:` rules.
+ */
+export function matchEndpointGlob(glob: string, host: string): boolean {
+  const g = glob.toLowerCase();
+  const h = host.toLowerCase();
+  const apexMatch = /^\*\.([^*]+)$/.exec(g);
+  if (apexMatch) {
+    const apex = apexMatch[1];
+    return h === apex || h.endsWith(`.${apex}`);
+  }
+  return matchGlob(glob, host);
+}
+
 // ---------------------------------------------------------------------------
 // Endpoint extraction — deep-walk call args collecting every string value
 // that parses as an absolute URL, so a deny rule can target a destination
@@ -365,7 +398,7 @@ export function evaluatePolicy(policy: Policy, toolName: string, args: unknown, 
     if (!matched && rule.endpoint) {
       hosts ??= extractEndpointHosts(args);
       for (const host of hosts) {
-        if (matchGlob(rule.endpoint, host)) {
+        if (matchEndpointGlob(rule.endpoint, host)) {
           matched = true;
           break;
         }
@@ -436,6 +469,21 @@ export async function loadPolicyForWrap(cwd: string, homedir: string): Promise<P
 }
 
 // ---------------------------------------------------------------------------
+// Endpoint-rule honesty note — printed by BOTH `reelier policy check` and
+// the wrap-start banner whenever a loaded policy has any `endpoint` rules,
+// so the URL-only limitation (see docs/specs/flight-recorder-v1.md §1) is
+// never a silent gap between what the file promises and what the code does.
+// ---------------------------------------------------------------------------
+
+export const ENDPOINT_RULE_NOTE =
+  "note: endpoint rules match literal URLs in tool arguments only — structured tools without URLs in " +
+  "args are not covered; use tool rules for those.";
+
+export function hasEndpointRules(policy: Policy): boolean {
+  return policy.deny.some((r) => r.endpoint !== undefined);
+}
+
+// ---------------------------------------------------------------------------
 // Human-facing summary — the 1-2 line banner `reelier mcp` prints on start.
 // ---------------------------------------------------------------------------
 
@@ -451,7 +499,53 @@ export function summarizePolicyForWrapStart(result: PolicyLoadResult): string[] 
   }
   const denyCount = result.policy.deny.length;
   const dryRunCount = result.policy.dryRun.length;
-  return [
-    `[reelier] policy: ${denyCount} deny rule(s), ${dryRunCount} dry-run rule(s) loaded from ${result.sourcePath}`,
-  ];
+  const lines = [`[reelier] policy: ${denyCount} deny rule(s), ${dryRunCount} dry-run rule(s) loaded from ${result.sourcePath}`];
+  if (hasEndpointRules(result.policy)) {
+    lines.push(`[reelier] policy: ${ENDPOINT_RULE_NOTE}`);
+  }
+  return lines;
+}
+
+// ---------------------------------------------------------------------------
+// N1 — unmatched-tool-rule detection. At wrap start, a deny/dry_run TOOL
+// rule that matches NONE of the currently-wrapped tools is almost always a
+// typo or a missed collision-rename prefix (mcp-client.ts's buildToolRoutes
+// renames a colliding tool to `<downstreamIndex>_<name>`) — today that
+// silently no-ops. Surfacing it costs nothing (it's read-only, computed
+// once at wrap start) and the reviewer rated it the highest-value hardening
+// item, so it always runs — never opt-in.
+// ---------------------------------------------------------------------------
+
+export interface UnmatchedToolRule {
+  kind: "deny" | "dry_run";
+  glob: string;
+}
+
+/** `availableToolNames` = the exposed (post collision-rename) tool names the proxy is actually routing — the SAME normalization used at match time (stripMcpNamespacePrefix, lowercased) is applied here so this never over-reports a rule as unmatched just because of namespacing. */
+export function findUnmatchedToolRules(policy: Policy, availableToolNames: string[]): UnmatchedToolRule[] {
+  const normalizedAvailable = availableToolNames.map((t) => stripMcpNamespacePrefix(t).toLowerCase());
+  const unmatched: UnmatchedToolRule[] = [];
+  for (const rule of policy.deny) {
+    if (rule.tool && !normalizedAvailable.some((t) => matchGlob(rule.tool!, t))) {
+      unmatched.push({ kind: "deny", glob: rule.tool });
+    }
+  }
+  for (const rule of policy.dryRun) {
+    if (rule.tool && !normalizedAvailable.some((t) => matchGlob(rule.tool!, t))) {
+      unmatched.push({ kind: "dry_run", glob: rule.tool });
+    }
+  }
+  return unmatched;
+}
+
+/** Formats the wrap-start warning line(s) for `findUnmatchedToolRules`' output — empty array when nothing is unmatched (no warning printed). Names up to 5 available tools so the human can spot a typo/missing-prefix at a glance without dumping the whole tool list. */
+export function formatUnmatchedToolRuleWarnings(unmatched: UnmatchedToolRule[], availableToolNames: string[]): string[] {
+  if (unmatched.length === 0) return [];
+  const sample = availableToolNames.slice(0, 5);
+  const available =
+    sample.length > 0 ? `available: ${sample.join(", ")}${availableToolNames.length > 5 ? ", ..." : ""}` : "no tools wrapped";
+  return unmatched.map(
+    (u) =>
+      `[reelier] policy: WARNING — ${u.kind} rule tool:"${u.glob}" matches none of the currently-wrapped tools (${available}) — check for a typo or a missing namespace/collision prefix.`
+  );
 }

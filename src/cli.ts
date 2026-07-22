@@ -38,7 +38,7 @@ import { compileSessionTranscript, type SessionSkip } from "./session.js";
 import { scanTranscripts, scanAgentSessions, agentSources, replayableRateStats, formatReplayableRate, type ScannedSession } from "./scan.js";
 import { planInstall, applyInstall, findLatestBackup, restoreFromBackup, planWrapOffer, type InstallResult } from "./wrap.js";
 import { buildToolServer, runDiffTool } from "./serve.js";
-import { loadPolicyForWrap, summarizePolicyForWrapStart, parsePolicyStrict } from "./policy.js";
+import { loadPolicyForWrap, summarizePolicyForWrapStart, parsePolicyStrict, hasEndpointRules, ENDPOINT_RULE_NOTE } from "./policy.js";
 
 // Exported (alongside cmdPush below) so test/push-cli.test.ts can drive
 // cmdPush's console output directly with a fake ParsedArgs + monkeypatched
@@ -511,6 +511,9 @@ async function cmdPolicyCheck(args: ParsedArgs): Promise<number> {
 
   const policy = validation.policy!;
   console.log(`${targetPath}: OK — ${policy.deny.length} deny rule(s), ${policy.dryRun.length} dry-run rule(s)`);
+  if (hasEndpointRules(policy)) {
+    console.log(ENDPOINT_RULE_NOTE);
+  }
   return 0;
 }
 

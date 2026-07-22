@@ -37,6 +37,25 @@ test("reelier policy check: a valid policy.yml prints OK + rule counts, exit 0",
     const result = await runCli(["policy", "check"], cwd);
     assert.equal(result.code, 0);
     assert.match(result.stdout, /OK — 2 deny rule\(s\), 1 dry-run rule\(s\)/);
+    // B1: the file has an endpoint rule -> the URL-only honesty note is printed.
+    assert.match(
+      result.stdout,
+      /note: endpoint rules match literal URLs in tool arguments only — structured tools without URLs in args are not covered; use tool rules for those\./
+    );
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("reelier policy check: no endpoint rules -> no B1 note printed", async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "reelier-policy-cli-"));
+  try {
+    await mkdir(path.join(cwd, ".reelier"), { recursive: true });
+    await writeFile(path.join(cwd, ".reelier", "policy.yml"), 'version: 1\ndeny:\n  - tool: "*.delete_*"\n', "utf8");
+
+    const result = await runCli(["policy", "check"], cwd);
+    assert.equal(result.code, 0);
+    assert.doesNotMatch(result.stdout, /endpoint rules match literal URLs/);
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }

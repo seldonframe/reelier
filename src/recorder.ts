@@ -12,7 +12,13 @@ import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprot
 import { buildToolRoutes, type DownstreamConnection, type McpCallResult, type ToolRoute } from "./mcp-client.js";
 import { redact } from "./redact.js";
 import type { ToolEffectAnnotations } from "./effect-verbs.js";
-import { emptyPolicy, evaluatePolicy, type Policy } from "./policy.js";
+import {
+  emptyPolicy,
+  evaluatePolicy,
+  findUnmatchedToolRules,
+  formatUnmatchedToolRuleWarnings,
+  type Policy,
+} from "./policy.js";
 
 export type TraceRecord =
   | {
@@ -247,6 +253,16 @@ export function buildProxyServer(downstreams: DownstreamConnection[], options: P
   const toolAnnotations = collectToolAnnotations(routes);
   const policy = options.policy ?? emptyPolicy();
   const policyCtx = { allowWrites: options.allowWrites ?? false };
+
+  // N1 hardening: a deny/dry_run TOOL rule matching none of the tools this
+  // wrap session actually exposes is almost always a typo or a missed
+  // collision-rename prefix — warn once, at wrap start, naming the rule and
+  // a sample of what IS available. Read-only and cheap (computed once from
+  // already-built routes), so it always runs.
+  const availableToolNames = [...routes.keys()];
+  for (const line of formatUnmatchedToolRuleWarnings(findUnmatchedToolRules(policy, availableToolNames), availableToolNames)) {
+    console.error(line);
+  }
 
   const server = new Server({ name: "reelier-proxy", version: "0.0.1" }, { capabilities: { tools: {} } });
 

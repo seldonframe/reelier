@@ -8,6 +8,7 @@ import {
   parsePolicyStrict,
   validatePolicyObject,
   matchGlob,
+  matchEndpointGlob,
   globToRegExp,
   extractEndpointHosts,
   evaluatePolicy,
@@ -15,6 +16,10 @@ import {
   loadPolicyForWrap,
   summarizePolicyForWrapStart,
   policyPaths,
+  hasEndpointRules,
+  ENDPOINT_RULE_NOTE,
+  findUnmatchedToolRules,
+  formatUnmatchedToolRuleWarnings,
   type Policy,
 } from "../src/policy.js";
 
@@ -126,14 +131,49 @@ test("matchGlob: * wildcard, case-insensitive, anchored full match", () => {
   assert.equal(matchGlob("crm.*", "CRM.CREATE_CONTACT"), true); // case-insensitive
   assert.equal(matchGlob("gmail.send_email", "gmail.send_email"), true);
   assert.equal(matchGlob("gmail.send_email", "gmail.send_emails"), false);
+  // Plain glob semantics (used for TOOL rules, unchanged by the endpoint
+  // apex-or-subdomain fix below): "*." requires a literal leading segment
+  // before the dot, so the bare apex "stripe.com" does NOT match — this is
+  // intentional here; endpoint RULES get their own matcher (matchEndpointGlob)
+  // specifically because this behavior is wrong for destinations.
   assert.equal(matchGlob("*.stripe.com", "api.stripe.com"), true);
-  assert.equal(matchGlob("*.stripe.com", "stripe.com"), false); // "*." requires at least a leading segment + dot... actually check literal
+  assert.equal(matchGlob("*.stripe.com", "stripe.com"), false);
 });
 
 test("globToRegExp: only * is special; other regex metacharacters are escaped literally", () => {
   const re = globToRegExp("a.b+c");
   assert.equal(re.test("a.b+c"), true);
   assert.equal(re.test("aXb+c"), false); // "." escaped -> literal dot, not "any char"
+});
+
+// ---------------------------------------------------------------------------
+// Endpoint-rule glob matching (B2): "*.host.tld" is apex-or-subdomain, NOT
+// plain glob semantics — deliberately more protective than matchGlob, never
+// less (see policy.ts's matchEndpointGlob doc comment).
+// ---------------------------------------------------------------------------
+
+test("matchEndpointGlob: *.host.tld matches the apex itself", () => {
+  assert.equal(matchEndpointGlob("*.stripe.com", "stripe.com"), true);
+});
+
+test("matchEndpointGlob: *.host.tld matches a subdomain", () => {
+  assert.equal(matchEndpointGlob("*.stripe.com", "api.stripe.com"), true);
+  assert.equal(matchEndpointGlob("*.stripe.com", "checkout.stripe.com"), true);
+});
+
+test("matchEndpointGlob: *.host.tld does not match an unrelated host or a look-alike suffix", () => {
+  assert.equal(matchEndpointGlob("*.stripe.com", "example.com"), false);
+  assert.equal(matchEndpointGlob("*.stripe.com", "notstripe.com"), false); // must be apex or a DOT-separated subdomain, not just a suffix
+  assert.equal(matchEndpointGlob("*.stripe.com", "stripe.com.evil.com"), false);
+});
+
+test("matchEndpointGlob: case-insensitive", () => {
+  assert.equal(matchEndpointGlob("*.STRIPE.com", "Stripe.COM"), true);
+});
+
+test("matchEndpointGlob: a glob without a leading '*.' falls back to plain glob semantics", () => {
+  assert.equal(matchEndpointGlob("api.stripe.com", "api.stripe.com"), true);
+  assert.equal(matchEndpointGlob("*stripe*", "checkout.stripe.com"), true);
 });
 
 // ---------------------------------------------------------------------------
@@ -163,10 +203,23 @@ test("evaluatePolicy: tool-glob deny rule blocks a matching call", () => {
   assert.equal(verdict.verdict, "deny");
 });
 
-test("evaluatePolicy: endpoint-glob deny rule blocks a call whose args carry a matching URL", () => {
+test("evaluatePolicy: endpoint-glob deny rule blocks a call whose args carry a matching URL (subdomain)", () => {
   const policy: Policy = { version: 1, deny: [{ endpoint: "*.stripe.com" }], dryRun: [] };
   const verdict = evaluatePolicy(policy, "http.post", { url: "https://api.stripe.com/v1/charges" }, ctxNoEscape);
   assert.equal(verdict.verdict, "deny");
+});
+
+test("evaluatePolicy: endpoint-glob deny rule ALSO blocks the apex host (B2 — *.host.tld is apex-or-subdomain for endpoint rules)", () => {
+  const policy: Policy = { version: 1, deny: [{ endpoint: "*.stripe.com" }], dryRun: [] };
+  const verdict = evaluatePolicy(policy, "http.post", { url: "https://stripe.com/v1/charges" }, ctxNoEscape);
+  assert.equal(verdict.verdict, "deny");
+});
+
+test("evaluatePolicy: endpoint rules never see a structured call with no URL in its args — this is the documented B1 limit, not a bug", () => {
+  const policy: Policy = { version: 1, deny: [{ endpoint: "*.stripe.com" }], dryRun: [] };
+  // A Composio-style structured Stripe call: no URL string anywhere in args.
+  const verdict = evaluatePolicy(policy, "STRIPE_CREATE_CHARGE", { amount: 500, currency: "usd", customer: "cus_123" }, ctxNoEscape);
+  assert.equal(verdict.verdict, "allow"); // NOT covered — must be denied by `tool` instead
 });
 
 test("evaluatePolicy: endpoint-glob deny rule does not block an unrelated destination", () => {
@@ -315,4 +368,100 @@ test("summarizePolicyForWrapStart: 1-2 lines, WARN + gap language on failure, pl
   assert.ok(failed.length >= 1 && failed.length <= 2);
   assert.match(failed.join(" "), /WARNING/);
   assert.match(failed.join(" "), /disabled/i);
+});
+
+test("summarizePolicyForWrapStart: appends the endpoint-rule honesty note (B1) when the policy has any endpoint rules", () => {
+  const withEndpoint = summarizePolicyForWrapStart({
+    ok: true,
+    policy: { version: 1, deny: [{ endpoint: "*.stripe.com" }], dryRun: [] },
+    sourcePath: "/x/.reelier/policy.yml",
+  });
+  assert.equal(withEndpoint.length, 2);
+  assert.equal(withEndpoint[1], `[reelier] policy: ${ENDPOINT_RULE_NOTE}`);
+
+  const withoutEndpoint = summarizePolicyForWrapStart({
+    ok: true,
+    policy: { version: 1, deny: [{ tool: "*.delete_*" }], dryRun: [] },
+    sourcePath: "/x/.reelier/policy.yml",
+  });
+  assert.equal(withoutEndpoint.length, 1);
+});
+
+test("hasEndpointRules: true iff at least one deny rule sets endpoint", () => {
+  assert.equal(hasEndpointRules({ version: 1, deny: [{ endpoint: "*.stripe.com" }], dryRun: [] }), true);
+  assert.equal(hasEndpointRules({ version: 1, deny: [{ tool: "*.delete_*" }], dryRun: [] }), false);
+  assert.equal(hasEndpointRules(emptyPolicy()), false);
+});
+
+// ---------------------------------------------------------------------------
+// N1 — unmatched-tool-rule detection: a deny/dry_run TOOL rule that matches
+// none of the currently-wrapped tools warns at wrap start (typo / missed
+// collision-rename prefix), a matching rule stays silent.
+// ---------------------------------------------------------------------------
+
+test("findUnmatchedToolRules: a rule matching nothing is reported", () => {
+  const policy: Policy = { version: 1, deny: [{ tool: "*.frobnicate_*" }], dryRun: [] };
+  const unmatched = findUnmatchedToolRules(policy, ["gmail.delete_message", "crm.create_contact"]);
+  assert.deepEqual(unmatched, [{ kind: "deny", glob: "*.frobnicate_*" }]);
+});
+
+test("findUnmatchedToolRules: a rule matching at least one available tool is NOT reported", () => {
+  const policy: Policy = { version: 1, deny: [{ tool: "*.delete_*" }], dryRun: [{ tool: "crm.*" }] };
+  const unmatched = findUnmatchedToolRules(policy, ["gmail.delete_message", "crm.create_contact"]);
+  assert.deepEqual(unmatched, []);
+});
+
+test("findUnmatchedToolRules: an endpoint-only rule is never flagged as unmatched (it has no tool glob to match)", () => {
+  const policy: Policy = { version: 1, deny: [{ endpoint: "*.stripe.com" }], dryRun: [] };
+  const unmatched = findUnmatchedToolRules(policy, ["gmail.delete_message"]);
+  assert.deepEqual(unmatched, []);
+});
+
+test("findUnmatchedToolRules: matching is namespace-prefix aware, same as evaluatePolicy", () => {
+  const policy: Policy = { version: 1, deny: [{ tool: "gmail.send_email" }], dryRun: [] };
+  const unmatched = findUnmatchedToolRules(policy, ["composio__gmail.send_email"]);
+  assert.deepEqual(unmatched, []); // matches once the collision/namespace prefix is stripped
+});
+
+test("formatUnmatchedToolRuleWarnings: empty input -> no warning lines printed", () => {
+  assert.deepEqual(formatUnmatchedToolRuleWarnings([], ["a", "b"]), []);
+});
+
+test("formatUnmatchedToolRuleWarnings: names the rule and up to 5 available tools", () => {
+  const lines = formatUnmatchedToolRuleWarnings(
+    [{ kind: "deny", glob: "*.frobnicate_*" }],
+    ["a", "b", "c", "d", "e", "f", "g"]
+  );
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /WARNING/);
+  assert.match(lines[0], /deny rule tool:"\*\.frobnicate_\*"/);
+  assert.match(lines[0], /matches none of the currently-wrapped tools/);
+  assert.match(lines[0], /available: a, b, c, d, e, \.\.\./); // capped at 5, "..." signals more exist
+});
+
+test("formatUnmatchedToolRuleWarnings: reports 'no tools wrapped' when there's nothing to sample", () => {
+  const lines = formatUnmatchedToolRuleWarnings([{ kind: "dry_run", glob: "crm.*" }], []);
+  assert.match(lines[0], /no tools wrapped/);
+});
+
+// ---------------------------------------------------------------------------
+// N3 — duplicate keys within a single rule map are rejected, not last-wins.
+// ---------------------------------------------------------------------------
+
+test("parseYamlSubset: throws on a duplicate key within one list item (first key + continuation line)", () => {
+  const source = 'deny:\n  - tool: "a.*"\n    tool: "b.*"\n';
+  assert.throws(() => parseYamlSubset(source), /duplicate key "tool"/);
+});
+
+test("parseYamlSubset: no false positive across DIFFERENT list items — only within-item duplicates are rejected", () => {
+  const source = 'deny:\n  - tool: "a.*"\n  - tool: "b.*"\n';
+  const parsed = parseYamlSubset(source);
+  assert.deepEqual(parsed.deny, [{ tool: "a.*" }, { tool: "b.*" }]);
+});
+
+test("parsePolicyStrict: surfaces the duplicate-key parse error as a validation error, exit-1-worthy for policy check", () => {
+  const source = 'version: 1\ndeny:\n  - tool: "a.*"\n    tool: "b.*"\n';
+  const result = parsePolicyStrict(source);
+  assert.equal(result.policy, undefined);
+  assert.match(result.errors.join(";"), /duplicate key "tool"/);
 });

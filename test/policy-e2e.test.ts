@@ -249,3 +249,53 @@ test("policy e2e: malformed policy at wrap runtime degrades to pass-through + a 
     await rm(traceDir, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// N1 e2e: buildProxyServer itself prints the unmatched-tool-rule warning at
+// wrap start (not just the pure findUnmatchedToolRules helper) — captured
+// via console.error, same pattern test/push.test.ts uses.
+// ---------------------------------------------------------------------------
+
+async function withCapturedConsoleError<T>(run: () => Promise<T>): Promise<{ result: T; lines: string[] }> {
+  const original = console.error;
+  const lines: string[] = [];
+  console.error = ((...args: unknown[]) => {
+    lines.push(args.map((a) => String(a)).join(" "));
+  }) as typeof console.error;
+  try {
+    const result = await run();
+    return { result, lines };
+  } finally {
+    console.error = original;
+  }
+}
+
+test("policy e2e (N1): a deny rule matching none of the wrapped tools warns at wrap start, naming the rule and available tools", async () => {
+  const traceDir = await mkdtemp(path.join(tmpdir(), "reelier-policy-e2e-"));
+  try {
+    const { lines } = await withCapturedConsoleError(async () => {
+      const { close } = await wireProxy({ policy: { version: 1, deny: [{ tool: "*.frobnicate_*" }], dryRun: [] } }, traceDir);
+      await close();
+    });
+    const warning = lines.find((l) => l.includes("WARNING") && l.includes("*.frobnicate_*"));
+    assert.ok(warning, `expected an unmatched-rule warning, got: ${JSON.stringify(lines)}`);
+    assert.match(warning!, /deny rule tool:"\*\.frobnicate_\*"/);
+    assert.match(warning!, /matches none of the currently-wrapped tools/);
+    assert.match(warning!, /gmail\.delete_message/); // one of the fixture's real tool names, in the sample
+  } finally {
+    await rm(traceDir, { recursive: true, force: true });
+  }
+});
+
+test("policy e2e (N1): a deny rule that DOES match a wrapped tool prints no unmatched-rule warning", async () => {
+  const traceDir = await mkdtemp(path.join(tmpdir(), "reelier-policy-e2e-"));
+  try {
+    const { lines } = await withCapturedConsoleError(async () => {
+      const { close } = await wireProxy({ policy: { version: 1, deny: [{ tool: "*.delete_*" }], dryRun: [] } }, traceDir);
+      await close();
+    });
+    assert.ok(!lines.some((l) => l.includes("WARNING")), `expected no warning, got: ${JSON.stringify(lines)}`);
+  } finally {
+    await rm(traceDir, { recursive: true, force: true });
+  }
+});
