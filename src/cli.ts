@@ -58,6 +58,7 @@ import {
   type SinceFilter,
 } from "./cost.js";
 import { BUNDLED_PRICES_RETRIEVED_AT } from "./prices.js";
+import { loadPolicyForWrap, summarizePolicyForWrapStart, parsePolicyStrict, hasEndpointRules, ENDPOINT_RULE_NOTE } from "./policy.js";
 
 // Exported (alongside cmdPush below) so test/push-cli.test.ts can drive
 // cmdPush's console output directly with a fake ParsedArgs + monkeypatched
@@ -627,7 +628,21 @@ async function cmdMcp(args: ParsedArgs): Promise<number> {
     return 1;
   }
 
-  const server = buildProxyServer(downstreams, { traceDir });
+  // The seatbelt (flight-recorder-v1 spec §1) — loaded once at wrap start.
+  // A malformed policy.yml degrades to deny-nothing (never bricks the
+  // agent); the WARN is printed exactly once here, not per call.
+  const allowWrites = args.flags.has("allow-writes");
+  const policyResult = await loadPolicyForWrap(process.cwd(), os.homedir());
+  for (const line of summarizePolicyForWrapStart(policyResult)) {
+    console.error(line);
+  }
+
+  const server = buildProxyServer(downstreams, {
+    traceDir,
+    policy: policyResult.policy,
+    policyGap: policyResult.ok ? undefined : policyResult.error,
+    allowWrites,
+  });
   const transport = new StdioServerTransport();
   await server.connect(transport);
 
@@ -648,6 +663,61 @@ async function cmdMcp(args: ParsedArgs): Promise<number> {
   await shutdown();
 
   return 0;
+}
+
+/**
+ * `reelier policy check [path]` — lint a policy.yml WITHOUT the wrap-time
+ * fail-safe: every error is reported (unknown keys, bad globs, empty
+ * rules, unknown `unless` flags), and a bad file exits 1. This is where
+ * strictness lives (per the Prime Directive's split: wrap runtime fails
+ * open, `policy check` is deliberately picky). Defaults to the project
+ * path; falls back to the global path if the project file doesn't exist;
+ * an explicit path argument overrides both.
+ */
+async function cmdPolicyCheck(args: ParsedArgs): Promise<number> {
+  const explicit = args.positional[1];
+  let targetPath: string;
+  if (explicit) {
+    targetPath = explicit;
+  } else {
+    const projectPath = path.join(process.cwd(), ".reelier", "policy.yml");
+    if (await fileExists(projectPath)) {
+      targetPath = projectPath;
+    } else {
+      targetPath = path.join(os.homedir(), ".reelier", "policy.yml");
+    }
+  }
+
+  let source: string;
+  try {
+    source = await readFile(targetPath, "utf8");
+  } catch (err) {
+    console.error(`No policy file at ${targetPath} (${(err as Error).message})`);
+    return 1;
+  }
+
+  const validation = parsePolicyStrict(source);
+  if (validation.errors.length > 0) {
+    console.error(`${targetPath}: ${validation.errors.length} error(s):`);
+    for (const e of validation.errors) console.error(`  - ${e}`);
+    return 1;
+  }
+
+  const policy = validation.policy!;
+  console.log(`${targetPath}: OK — ${policy.deny.length} deny rule(s), ${policy.dryRun.length} dry-run rule(s)`);
+  if (hasEndpointRules(policy)) {
+    console.log(ENDPOINT_RULE_NOTE);
+  }
+  return 0;
+}
+
+async function cmdPolicy(args: ParsedArgs): Promise<number> {
+  const sub = args.positional[0];
+  if (sub === "check") {
+    return cmdPolicyCheck(args);
+  }
+  console.error('Usage: reelier policy check [path]  (defaults to .reelier/policy.yml, falling back to ~/.reelier/policy.yml)');
+  return 1;
 }
 
 /**
@@ -1937,14 +2007,17 @@ async function cmdInit(args: ParsedArgs): Promise<number> {
 }
 
 const USAGE =
-  "Usage: reelier <run|bench|cost|prices|mcp|serve|trace|compile|push|get|diff|init|from-session|scan|install|uninstall> [options]\n" +
+  "Usage: reelier <run|bench|cost|prices|mcp|serve|trace|compile|push|get|diff|policy|init|from-session|scan|install|uninstall> [options]\n" +
   "  mcp    — RECORDER: fronts your own --wrap'd MCP server(s) to capture their calls into a trace.\n" +
+  "           Enforces .reelier/policy.yml (or ~/.reelier/policy.yml) — deny/dry-run rules; pass --allow-writes\n" +
+  "           to satisfy a rule's 'unless: \"--allow-writes\"' escape.\n" +
   "  serve  — TOOL-SERVER: exposes Reelier's own commands (scan/from-session/replay/push/diff) as MCP tools.\n" +
   "  get    — fetch a public registry skill to ./skills/<skill>.skill.md; never executes it.\n" +
   "           reelier get --mine <name> fetches YOUR OWN private skill (authenticated) instead.\n" +
   "  diff   — compare the last two runs of a skill; exit 1 on drift (gate a scheduled replay).\n" +
   "  cost   — reelier cost [skill] [--since 7d|30d|all]: $ per run from recorded LLM tokens + ~/.reelier/prices.yml.\n" +
   "  prices — reelier prices lists the active merged price table; 'reelier prices update' prints the bundled table's freshness.\n" +
+  "  policy check [path] — lint a policy.yml (unknown keys, bad globs, empty rules); exit 1 on any error.\n" +
   "  from-session — compile a transcript from Claude Code, Codex CLI, or OpenClaw into a skill.\n" +
   "           Format is sniffed from content; override with --agent <claude-code|codex|openclaw|cursor|windsurf>.\n" +
   "           --agent cursor / --agent windsurf report why those aren't supported yet instead of guessing.\n" +
@@ -1992,6 +2065,8 @@ async function main(): Promise<number> {
       return cmdGet(args);
     case "diff":
       return cmdDiff(args);
+    case "policy":
+      return cmdPolicy(args);
     case "init":
       return cmdInit(args);
     case "from-session":

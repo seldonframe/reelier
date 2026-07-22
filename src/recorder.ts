@@ -12,6 +12,13 @@ import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprot
 import { buildToolRoutes, type DownstreamConnection, type McpCallResult, type ToolRoute } from "./mcp-client.js";
 import { redact } from "./redact.js";
 import type { ToolEffectAnnotations } from "./effect-verbs.js";
+import {
+  emptyPolicy,
+  evaluatePolicy,
+  findUnmatchedToolRules,
+  formatUnmatchedToolRuleWarnings,
+  type Policy,
+} from "./policy.js";
 
 export type TraceRecord =
   | {
@@ -28,10 +35,31 @@ export type TraceRecord =
        * pre-0.13 ones. Hints, not security — see classifyEffect's trust ladder.
        */
       toolAnnotations?: Record<string, ToolEffectAnnotations>;
+      /**
+       * Set only when the active policy.yml failed to parse at wrap start —
+       * the Prime Directive's "a missing record must be visible, never
+       * silent" gap marker. Enforcement degrades to deny-nothing while this
+       * is set; absent entirely on every trace recorded under a valid (or
+       * absent) policy, so pre-policy traces stay byte-identical.
+       */
+      policyGap?: string;
     }
   | { t: "note"; seq: number; ts: string; text: string }
   | { t: "call"; seq: number; i: number; ts: string; tool: string; args: unknown }
-  | { t: "result"; seq: number; i: number; ok: boolean; ms: number; body: unknown };
+  | {
+      t: "result";
+      seq: number;
+      i: number;
+      ok: boolean;
+      ms: number;
+      body: unknown;
+      /** Set (true) only when this call was blocked by policy — never present on an allowed call. */
+      denied?: boolean;
+      /** Set (true) only when this call was intercepted by a dry_run rule — never present on a real call. Never let a dry-run step read as a real one (never-lies). */
+      dryRun?: boolean;
+      /** Human-readable rule description, present alongside denied/dryRun. */
+      rule?: string;
+    };
 
 function textResult(text: string): McpCallResult {
   return { content: [{ type: "text", text }] };
@@ -95,7 +123,8 @@ export class Recorder {
   async start(
     name: string,
     wrapped: string[],
-    toolAnnotations?: Record<string, ToolEffectAnnotations>
+    toolAnnotations?: Record<string, ToolEffectAnnotations>,
+    policyGap?: string
   ): Promise<{ ok: true; path: string } | { ok: false; message: string }> {
     if (this.recording) {
       return {
@@ -119,6 +148,7 @@ export class Recorder {
       // Omit the key entirely when nothing is annotated — annotation-free
       // traces stay byte-identical to older ones.
       ...(toolAnnotations && Object.keys(toolAnnotations).length > 0 ? { toolAnnotations } : {}),
+      ...(policyGap ? { policyGap } : {}),
     });
     await this.flush();
     return { ok: true, path: filePath };
@@ -142,6 +172,16 @@ export class Recorder {
 
   recordResult(i: number, ok: boolean, ms: number, body: unknown): void {
     this.write({ t: "result", seq: this.nextSeq(), i, ok, ms, body: redact(body) });
+  }
+
+  /** Record a call the policy DENIED — never dispatched downstream. `body` is the structured error handed back to the agent. */
+  recordDenied(i: number, ms: number, body: unknown, rule: string): void {
+    this.write({ t: "result", seq: this.nextSeq(), i, ok: false, ms, body: redact(body), denied: true, rule });
+  }
+
+  /** Record a call a dry_run rule intercepted — never dispatched downstream. `body` is the synthetic success handed back to the agent. */
+  recordDryRun(i: number, ms: number, body: unknown, rule: string): void {
+    this.write({ t: "result", seq: this.nextSeq(), i, ok: true, ms, body: redact(body), dryRun: true, rule });
   }
 
   async stop(): Promise<{ ok: true; path: string; callCount: number } | { ok: false; message: string }> {
@@ -173,6 +213,12 @@ const CONTROL_TOOL_DESCRIPTIONS: Record<string, string> = {
 
 export interface ProxyServerOptions {
   traceDir: string;
+  /** The seatbelt (spec §1). Omitted/undefined behaves exactly like the empty policy — everything allowed, no enforcement overhead beyond the (cheap) empty-array checks. */
+  policy?: Policy;
+  /** Set when the policy file that produced `policy` failed to parse — carried into the trace meta record as a gap marker. Only meaningful when `policy` is passed. */
+  policyGap?: string;
+  /** Whether this wrap process was started with --allow-writes — the one `unless` escape flag deny rules can reference. */
+  allowWrites?: boolean;
 }
 
 /**
@@ -205,6 +251,18 @@ export function buildProxyServer(downstreams: DownstreamConnection[], options: P
   const routes = buildToolRoutes(downstreams);
   const recorder = new Recorder(options.traceDir);
   const toolAnnotations = collectToolAnnotations(routes);
+  const policy = options.policy ?? emptyPolicy();
+  const policyCtx = { allowWrites: options.allowWrites ?? false };
+
+  // N1 hardening: a deny/dry_run TOOL rule matching none of the tools this
+  // wrap session actually exposes is almost always a typo or a missed
+  // collision-rename prefix — warn once, at wrap start, naming the rule and
+  // a sample of what IS available. Read-only and cheap (computed once from
+  // already-built routes), so it always runs.
+  const availableToolNames = [...routes.keys()];
+  for (const line of formatUnmatchedToolRuleWarnings(findUnmatchedToolRules(policy, availableToolNames), availableToolNames)) {
+    console.error(line);
+  }
 
   const server = new Server({ name: "reelier-proxy", version: "0.0.1" }, { capabilities: { tools: {} } });
 
@@ -243,7 +301,7 @@ export function buildProxyServer(downstreams: DownstreamConnection[], options: P
         return { ...textResult("reelier_start_recording requires a string 'name' argument."), isError: true };
       }
       const wrapped = downstreams.map((d) => d.name);
-      const result = await recorder.start(traceName, wrapped, toolAnnotations);
+      const result = await recorder.start(traceName, wrapped, toolAnnotations, options.policyGap);
       return result.ok ? textResult(`Recording started: ${result.path}`) : textResult(result.message);
     }
 
@@ -269,8 +327,33 @@ export function buildProxyServer(downstreams: DownstreamConnection[], options: P
     }
 
     const isRecording = recorder.isRecording;
-    const callIndex = isRecording ? recorder.recordCall(name, args) : -1;
     const started = Date.now();
+
+    // Policy enforcement — the chokepoint. Evaluated BEFORE the call is
+    // dispatched downstream so a deny/dry_run rule never lets the real
+    // effect happen. Precedence (spec §1): deny > dry_run > allow.
+    const verdict = evaluatePolicy(policy, name, args, policyCtx);
+
+    if (verdict.verdict === "deny") {
+      const message = `blocked by reelier policy: ${verdict.description}`;
+      const body = { ...textResult(message), isError: true };
+      if (isRecording) {
+        const callIndex = recorder.recordCall(name, args);
+        recorder.recordDenied(callIndex, Date.now() - started, body, verdict.description);
+      }
+      return body;
+    }
+
+    if (verdict.verdict === "dry_run") {
+      const body = textResult(`[DRY-RUN] ${name} — matched policy rule ${verdict.description}; no call was forwarded downstream.`);
+      if (isRecording) {
+        const callIndex = recorder.recordCall(name, args);
+        recorder.recordDryRun(callIndex, Date.now() - started, body, verdict.description);
+      }
+      return body;
+    }
+
+    const callIndex = isRecording ? recorder.recordCall(name, args) : -1;
     let result: McpCallResult;
     let ok = true;
     try {

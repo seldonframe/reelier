@@ -18,7 +18,9 @@ _Drafted 2026-07-23. The recorder-native feature set that turns `reelier install
     - tool: "*.delete_*"            # glob on tool name
     - tool: "gmail.send_email"
       unless: "--allow-writes"      # deny unless the existing gate flag is passed
-    - endpoint: "*.stripe.com"      # deny by destination, not just tool name
+    - endpoint: "*.stripe.com"      # deny by destination host — matches the URL's host ONLY
+                                    # ("*.host.tld" = apex-or-subdomain: matches stripe.com
+                                    # AND api.stripe.com); see the endpoint-rule limit below
   dry_run:
     - tool: "crm.*"                 # intercept: log the call + args, return a synthetic
                                     # success marked DRY-RUN, never forward
@@ -26,9 +28,17 @@ _Drafted 2026-07-23. The recorder-native feature set that turns `reelier install
 - `reelier install` prints the active policy on wrap start; `reelier policy check` lints it.
 - A denied call returns a structured tool error to the agent ("blocked by reelier policy: <rule>") — the agent can adapt; the human sees it in the trace flagged DENIED.
 - Dry-run responses are marked in the trace and in receipts (`dryRun: true` per step) — **a receipt containing dry-run steps says so on its face.** Never let a dry-run receipt read as a real one (never-lies).
+- **Endpoint rules match literal URLs found in tool-call arguments only.** Tools that reach a service through structured parameters (no URL string anywhere in args — e.g. a Composio-style `STRIPE_CREATE_CHARGE` call, or a Gmail send with recipient/subject/body fields) are **not covered** by an `endpoint` rule, because there is no URL to extract a host from. Deny those by `tool` name instead. `reelier policy check` and the wrap-start banner both print a one-line reminder whenever a policy file has any `endpoint` rules, so this is never a silent gap. (Deliberately not "fixed" by heuristically guessing a host from a tool name or provider field — a false-positive block would violate the Prime Directive; claim-narrowing, not cleverness, is the correct fix here.)
 
-**Design decisions:** policy lives in a file (versionable, reviewable in PRs) not in flags; deny beats dry-run beats allow; glob semantics = the existing effect-ladder tool-name normalization; no remote/cloud policy in v1 (non-goal — keeps trust story local-first).
-**Verify:** unit matrix (deny/dry-run/pass per rule type); e2e — wrapped MCP fixture where a denied call is blocked, trace shows DENIED, agent receives the structured error, exit path clean; a dry-run receipt renders with the DRY-RUN banner.
+**Design decisions:** policy lives in a file (versionable, reviewable in PRs) not in flags; deny beats dry-run beats allow; glob semantics = the existing effect-ladder tool-name normalization (specifically its collision-prefix-stripping half, so a rule matches regardless of MCP namespace prefixing — see policy.ts); endpoint-rule globs get apex-or-subdomain semantics (`*.host.tld` matches both `host.tld` and any subdomain) since that reading is strictly more protective, never a false negative traded for a false comfort; no remote/cloud policy in v1 (non-goal — keeps trust story local-first).
+
+**Known limits (read before trusting a policy.yml):**
+- **Endpoint rules are URL-string-only** — see the bullet above. There is no plan to add host-guessing heuristics; a tool with no URL in its args needs a `tool` rule.
+- **Fail-open is whole-file, not per-rule.** A single strict-validation error anywhere in policy.yml (a typo, a bad key) disables the ENTIRE file's enforcement for that wrap session — not just the broken rule — because a partially-trusted policy is worse than a visibly-disabled one. `reelier policy check` catches this before you wrap; the wrap-start WARNING + trace `policyGap` marker catch it if you didn't.
+- **Collision-renamed tools need their own rules.** When two wrapped downstreams expose the same tool name, the proxy renames the second one to `<downstreamIndex>_<name>` (mcp-client.ts's `buildToolRoutes`) — a `tool` glob must account for that renamed form, or it silently won't match the renamed tool. The wrap-start warning (below) catches a rule that ends up matching nothing.
+- **A tool/dry_run rule matching zero currently-wrapped tools now warns at wrap start** (naming the rule and up to 5 available tool names) — this catches both the collision-rename case above and ordinary typos.
+
+**Verify:** unit matrix (deny/dry-run/pass per rule type, endpoint apex/subdomain matching, unmatched-rule detection); e2e — wrapped MCP fixture where a denied call is blocked, trace shows DENIED, agent receives the structured error, exit path clean; a dry-run receipt renders with the DRY-RUN banner.
 
 ## 2. The $ meter (accounting)
 
