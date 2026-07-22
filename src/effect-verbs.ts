@@ -148,8 +148,12 @@ export interface ToolEffectAnnotations {
 
 /** Strip MCP-server namespace prefixes (double-underscore groups, e.g.
  *  `composio__`) so `composio__GMAIL_FETCH_EMAILS` classifies like
- *  `GMAIL_FETCH_EMAILS`. Dot namespaces keep their last segment as before. */
-function normalizeToolName(tool: string): string {
+ *  `GMAIL_FETCH_EMAILS`. Dot namespaces keep their last segment as before.
+ *  Exported so policy.ts's glob matching normalizes tool names the SAME
+ *  way the effect classifier does (spec: "glob semantics reuse the
+ *  existing effect-ladder tool-name normalization") — one definition of
+ *  "what a tool is really called", never two that can drift apart. */
+export function normalizeToolName(tool: string): string {
   const lastSegment = tool.split(".").pop() ?? tool;
   return lastSegment.replace(/^(?:[A-Za-z0-9-]+__)+/, "");
 }

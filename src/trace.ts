@@ -25,6 +25,9 @@ export function formatTrace(records: TraceRecord[]): string[] {
     switch (rec.t) {
       case "meta":
         lines.push(`[meta] ${rec.name} started ${rec.startedAt} — wrapping: ${rec.wrapped.join(", ") || "(none)"}`);
+        if (rec.policyGap) {
+          lines.push(`[meta] GAP: policy enforcement disabled this run — ${rec.policyGap}`);
+        }
         break;
       case "note":
         lines.push(`[note] ${rec.ts} — ${rec.text}`);
@@ -32,9 +35,12 @@ export function formatTrace(records: TraceRecord[]): string[] {
       case "call":
         lines.push(`[call #${rec.i}] ${rec.ts} — ${rec.tool} ${summarize(rec.args)}`);
         break;
-      case "result":
-        lines.push(`[result #${rec.i}] ${rec.ok ? "ok" : "ERROR"} (${rec.ms}ms) ${summarize(rec.body)}`);
+      case "result": {
+        const tag = rec.denied ? "DENIED" : rec.dryRun ? "DRY-RUN" : rec.ok ? "ok" : "ERROR";
+        const rule = rec.denied || rec.dryRun ? ` [policy: ${rec.rule}]` : "";
+        lines.push(`[result #${rec.i}] ${tag} (${rec.ms}ms)${rule} ${summarize(rec.body)}`);
         break;
+      }
       default: {
         const _exhaustive: never = rec;
         lines.push(`[unknown] ${JSON.stringify(_exhaustive)}`);
