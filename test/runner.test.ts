@@ -199,6 +199,40 @@ test("runner: a step with zero assertions is 'unchecked', never 'passed' (honest
   }
 });
 
+test("runner: stamps options.skillContentSha256 verbatim onto the RunRecord when provided", async () => {
+  const skill = parseSkill(SKILL_TWO_STEPS);
+  const dir = await mkdtemp(path.join(tmpdir(), "reelier-test-"));
+  try {
+    const record = await runSkill(skill, {
+      cwd: dir,
+      tools: { "mock.tool": mockTool([{ status: 200, headers: {}, body: JSON.stringify({ token: "t" }) }]) },
+      skillContentSha256: "a".repeat(64),
+    });
+    assert.equal(record.skillContentSha256, "a".repeat(64));
+
+    const raw = await readFile(path.join(dir, ".reelier", "runs", "test-two-steps.jsonl"), "utf8");
+    const written = JSON.parse(raw.trim().split("\n")[0]);
+    assert.equal(written.skillContentSha256, "a".repeat(64));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("runner: skillContentSha256 is absent (not fabricated) when the caller doesn't pass it", async () => {
+  const skill = parseSkill(SKILL_TWO_STEPS);
+  const dir = await mkdtemp(path.join(tmpdir(), "reelier-test-"));
+  try {
+    const record = await runSkill(skill, {
+      cwd: dir,
+      tools: { "mock.tool": mockTool([{ status: 200, headers: {}, body: JSON.stringify({ token: "t" }) }]) },
+    });
+    assert.equal(record.skillContentSha256, undefined);
+    assert.ok(!("skillContentSha256" in record));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 const SKILL_DESTRUCTIVE = `---
 name: test-destructive
 description: a destructive step

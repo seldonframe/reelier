@@ -339,6 +339,22 @@ test("getSkill: WRITES-grade fixture reports effectGrade 'writes' and per-step e
   });
 });
 
+test("getSkill: 404 -> 'error' outcome naming the missing owner/skill, no write", async () => {
+  await withTempDir(async (dir) => {
+    await withEnv({ REELIER_CLOUD_URL: "https://cloud.example" }, async () => {
+      const { fn } = fakeFetch([{ status: 404 }]);
+      const outcome = await withFetch(fn, () => getSkill("acme/nonexistent-skill", { cwd: dir }));
+
+      assert.equal(outcome.kind, "error");
+      if (outcome.kind !== "error") return;
+      assert.match(outcome.message, /No registry listing found for 'acme\/nonexistent-skill'/);
+
+      const skillsDir = path.join(dir, "skills");
+      await assert.rejects(() => readFile(path.join(skillsDir, "nonexistent-skill.skill.md"), "utf8"));
+    });
+  });
+});
+
 test("getSkill: missing REELIER_CLOUD_URL -> error outcome, no network call", async () => {
   await withTempDir(async (dir) => {
     await withEnv({ REELIER_CLOUD_URL: undefined }, async () => {

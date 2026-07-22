@@ -2,8 +2,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, writeFile, mkdir, rm, readFile, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { createHash } from "node:crypto";
 import path from "node:path";
-import { pushSkill, readPushState } from "../src/push.js";
+import { pushSkill, readPushState, PublicSubmissionError } from "../src/push.js";
 import type { RunRecord } from "../src/runner.js";
 
 const SKILL_SOURCE = `---
@@ -429,6 +430,226 @@ test("push: without --share, the request body omits 'share' entirely and the res
       const runCall = fetchSeq.calls[1];
       const sentBody = JSON.parse(runCall.init.body as string);
       assert.equal("share" in sentBody, false);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// --public (skill-registry-v0 spec §2)
+// ---------------------------------------------------------------------------
+
+test("push: --public sends public:true and reports a 'listed' submission", async () => {
+  await withTempDir(async (dir) => {
+    const skillPath = await setupFixture(dir, 1);
+    await withEnv({ REELIER_CLOUD_URL: "https://cloud.example", REELIER_CLOUD_KEY: "test-key" }, async () => {
+      const fetchSeq = fakeFetch([
+        {
+          status: 200,
+          body: {
+            status: "listed",
+            pageUrl: "https://cloud.example/skills/acme/push-fixture",
+            getCommand: "npx -y reelier@latest get acme/push-fixture",
+            version: 1,
+            noop: false,
+          },
+        },
+        { status: 202, body: { id: "r0" } },
+      ]);
+      const result = await withFetch(fetchSeq.fn, () => pushSkill(skillPath, { cwd: dir, public: true }));
+
+      assert.equal(result.skillUploaded, true);
+      assert.deepEqual(result.publicSubmission, {
+        status: "listed",
+        pageUrl: "https://cloud.example/skills/acme/push-fixture",
+        getCommand: "npx -y reelier@latest get acme/push-fixture",
+        version: 1,
+        noop: false,
+      });
+
+      const uploadCall = fetchSeq.calls[0];
+      const sentBody = JSON.parse(uploadCall.init.body as string);
+      assert.equal(sentBody.public, true);
+    });
+  });
+});
+
+test("push: --public reports a 'pending' submission for a write-grade skill", async () => {
+  await withTempDir(async (dir) => {
+    const skillPath = await setupFixture(dir, 1);
+    await withEnv({ REELIER_CLOUD_URL: "https://cloud.example", REELIER_CLOUD_KEY: "test-key" }, async () => {
+      const fetchSeq = fakeFetch([
+        {
+          status: 200,
+          body: { status: "pending", pageUrl: "https://cloud.example/skills/acme/push-fixture", noop: false },
+        },
+        { status: 202, body: { id: "r0" } },
+      ]);
+      const result = await withFetch(fetchSeq.fn, () => pushSkill(skillPath, { cwd: dir, public: true }));
+
+      assert.equal(result.publicSubmission?.status, "pending");
+      assert.equal(result.publicSubmission?.pageUrl, "https://cloud.example/skills/acme/push-fixture");
+      // getCommand wasn't returned — must not be fabricated.
+      assert.equal(result.publicSubmission?.getCommand, "");
+    });
+  });
+});
+
+test("push: --public reports noop:true when the cloud says the bytes are unchanged", async () => {
+  await withTempDir(async (dir) => {
+    const skillPath = await setupFixture(dir, 1);
+    await withEnv({ REELIER_CLOUD_URL: "https://cloud.example", REELIER_CLOUD_KEY: "test-key" }, async () => {
+      const fetchSeq = fakeFetch([
+        {
+          status: 200,
+          body: { status: "listed", pageUrl: "https://cloud.example/skills/acme/push-fixture", noop: true },
+        },
+        { status: 202, body: { id: "r0" } },
+      ]);
+      const result = await withFetch(fetchSeq.fn, () => pushSkill(skillPath, { cwd: dir, public: true }));
+      assert.equal(result.publicSubmission?.noop, true);
+    });
+  });
+});
+
+test("push: --public forces a re-upload even when the skill was already privately uploaded", async () => {
+  await withTempDir(async (dir) => {
+    const skillPath = await setupFixture(dir, 1);
+    await withEnv({ REELIER_CLOUD_URL: "https://cloud.example", REELIER_CLOUD_KEY: "test-key" }, async () => {
+      const first = fakeFetch([{ status: 200 }, { status: 202, body: { id: "r0" } }]);
+      await withFetch(first.fn, () => pushSkill(skillPath, { cwd: dir }));
+
+      // Nothing new to push, and the skill is already marked uploaded — but
+      // --public must still hit /api/v1/skills to submit for listing.
+      const second = fakeFetch([
+        { status: 200, body: { status: "listed", pageUrl: "https://cloud.example/skills/acme/push-fixture", noop: false } },
+      ]);
+      const result = await withFetch(second.fn, () => pushSkill(skillPath, { cwd: dir, public: true }));
+      assert.equal(result.skillUploaded, true);
+      assert.equal(second.calls.length, 1);
+      assert.match(second.calls[0].url, /\/api\/v1\/skills$/);
+      assert.equal(result.publicSubmission?.status, "listed");
+    });
+  });
+});
+
+test("push: --public against a cloud that 200s with no registry body -> upload succeeds, publicSubmission is undefined (never fabricated)", async () => {
+  await withTempDir(async (dir) => {
+    const skillPath = await setupFixture(dir, 1);
+    await withEnv({ REELIER_CLOUD_URL: "https://cloud.example", REELIER_CLOUD_KEY: "test-key" }, async () => {
+      const fetchSeq = fakeFetch([{ status: 200 }, { status: 202, body: { id: "r0" } }]);
+      const result = await withFetch(fetchSeq.fn, () => pushSkill(skillPath, { cwd: dir, public: true }));
+      assert.equal(result.skillUploaded, true);
+      assert.equal(result.publicSubmission, undefined);
+    });
+  });
+});
+
+test("push: --public with a 400 (missing license) throws PublicSubmissionError with the field errors verbatim", async () => {
+  await withTempDir(async (dir) => {
+    const skillPath = await setupFixture(dir, 1);
+    await withEnv({ REELIER_CLOUD_URL: "https://cloud.example", REELIER_CLOUD_KEY: "test-key" }, async () => {
+      const fetchSeq = fakeFetch([
+        { status: 400, body: { fieldErrors: { license: ["required for --public"] } } },
+      ]);
+      await assert.rejects(
+        withFetch(fetchSeq.fn, () => pushSkill(skillPath, { cwd: dir, public: true })),
+        (err: unknown) => {
+          assert.ok(err instanceof PublicSubmissionError);
+          assert.match((err as Error).message, /license/);
+          return true;
+        }
+      );
+    });
+  });
+});
+
+test("push: --public with a 403 (unlinked tenant) throws PublicSubmissionError carrying linkUrl", async () => {
+  await withTempDir(async (dir) => {
+    const skillPath = await setupFixture(dir, 1);
+    await withEnv({ REELIER_CLOUD_URL: "https://cloud.example", REELIER_CLOUD_KEY: "test-key" }, async () => {
+      const fetchSeq = fakeFetch([
+        {
+          status: 403,
+          body: {
+            error: "Link your GitHub account before publishing to the registry.",
+            linkUrl: "https://cloud.example/dashboard/link-github",
+          },
+        },
+      ]);
+      await assert.rejects(
+        withFetch(fetchSeq.fn, () => pushSkill(skillPath, { cwd: dir, public: true })),
+        (err: unknown) => {
+          assert.ok(err instanceof PublicSubmissionError);
+          assert.match((err as Error).message, /Link your GitHub account/);
+          assert.equal((err as PublicSubmissionError).linkUrl, "https://cloud.example/dashboard/link-github");
+          return true;
+        }
+      );
+    });
+  });
+});
+
+test("push: --public composes with --share (both flags honored on the same push)", async () => {
+  await withTempDir(async (dir) => {
+    const skillPath = await setupFixture(dir, 1);
+    await withEnv({ REELIER_CLOUD_URL: "https://cloud.example", REELIER_CLOUD_KEY: "test-key" }, async () => {
+      const fetchSeq = fakeFetch([
+        { status: 200, body: { status: "listed", pageUrl: "https://cloud.example/skills/acme/push-fixture", noop: false } },
+        { status: 202, body: { id: "r0", shareUrl: "https://cloud.example/r/tok_1" } },
+      ]);
+      const result = await withFetch(fetchSeq.fn, () => pushSkill(skillPath, { cwd: dir, public: true, share: true }));
+
+      assert.equal(result.publicSubmission?.status, "listed");
+      assert.equal(result.results[0].shareUrl, "https://cloud.example/r/tok_1");
+
+      const uploadBody = JSON.parse(fetchSeq.calls[0].init.body as string);
+      assert.equal(uploadBody.public, true);
+      const runBody = JSON.parse(fetchSeq.calls[1].init.body as string);
+      assert.equal(runBody.share, true);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// skillContentSha256 stamping (run-time field + push-time fallback)
+// ---------------------------------------------------------------------------
+
+test("push: a record that already carries skillContentSha256 is forwarded unchanged (run-time stamp wins)", async () => {
+  await withTempDir(async (dir) => {
+    const skillPath = path.join(dir, "push-fixture.skill.md");
+    await writeFile(skillPath, SKILL_SOURCE, "utf8");
+    const runsDir = path.join(dir, ".reelier", "runs");
+    await mkdir(runsDir, { recursive: true });
+    const record = { ...makeRecord(0), skillContentSha256: "a".repeat(64) };
+    await writeFile(path.join(runsDir, "push-fixture.jsonl"), JSON.stringify(record) + "\n", "utf8");
+
+    await withEnv({ REELIER_CLOUD_URL: "https://cloud.example", REELIER_CLOUD_KEY: "test-key" }, async () => {
+      const fetchSeq = fakeFetch([{ status: 200 }, { status: 202, body: { id: "r0" } }]);
+      await withFetch(fetchSeq.fn, () => pushSkill(skillPath, { cwd: dir }));
+
+      const runCall = fetchSeq.calls[1];
+      const sentBody = JSON.parse(runCall.init.body as string);
+      assert.equal(sentBody.record.skillContentSha256, "a".repeat(64));
+    });
+  });
+});
+
+test("push: a record with NO skillContentSha256 gets the push-time fallback hash of the current skill file bytes", async () => {
+  await withTempDir(async (dir) => {
+    const skillPath = await setupFixture(dir, 1); // makeRecord() never sets skillContentSha256
+    await withEnv({ REELIER_CLOUD_URL: "https://cloud.example", REELIER_CLOUD_KEY: "test-key" }, async () => {
+      const fetchSeq = fakeFetch([{ status: 200 }, { status: 202, body: { id: "r0" } }]);
+      await withFetch(fetchSeq.fn, () => pushSkill(skillPath, { cwd: dir }));
+
+      const runCall = fetchSeq.calls[1];
+      const sentBody = JSON.parse(runCall.init.body as string);
+      const expectedSha = createHash("sha256").update(SKILL_SOURCE, "utf8").digest("hex");
+      assert.equal(sentBody.record.skillContentSha256, expectedSha);
+
+      // The fallback is push-time-only — it must never be written back into
+      // the local .jsonl run-record file itself.
+      const raw = await readFile(path.join(dir, ".reelier", "runs", "push-fixture.jsonl"), "utf8");
+      assert.equal(JSON.parse(raw.trim()).skillContentSha256, undefined);
     });
   });
 });

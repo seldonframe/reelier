@@ -11,7 +11,7 @@ import { createInterface } from "node:readline/promises";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { parseSkill, SkillParseError } from "./skill.js";
 import { runSkill, dryRunSkill, readRunRecords, type RunRecord } from "./runner.js";
-import { pushSkill, type PushRecordResult } from "./push.js";
+import { pushSkill, PublicSubmissionError, type PushRecordResult } from "./push.js";
 import { getSkill, type GetOutcome } from "./get.js";
 import { builtinTools } from "./tools.js";
 import { connectDownstream, type DownstreamConnection } from "./mcp-client.js";
@@ -1127,6 +1127,12 @@ export async function cmdPush(args: ParsedArgs): Promise<number> {
     // Deliberately just the error's message — resolvePushConfig() never puts
     // the key value into its message, and neither does anything else here.
     console.error((err as Error).message);
+    // A --public 403 (unlinked tenant / reserved namespace) carries a
+    // linkUrl the plain message doesn't include — print it too so the CLI
+    // surfaces "the server's message + linkUrl when present" verbatim.
+    if (err instanceof PublicSubmissionError && err.linkUrl) {
+      console.error(err.linkUrl);
+    }
     return 1;
   }
 

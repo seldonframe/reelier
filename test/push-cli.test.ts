@@ -191,3 +191,149 @@ test("cmdPush without --share: prints the Dashboard/tip fallback, never a Receip
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// --public (skill-registry-v0 spec §2)
+// ---------------------------------------------------------------------------
+
+test("cmdPush --public: status 'listed' prints 'Listed: <pageUrl>' then '  get: <getCommand>'", async () => {
+  await withTempDir(async (dir) => {
+    const skillPath = await setupFixture(dir);
+    await withEnv({ REELIER_CLOUD_URL: "https://cloud.example", REELIER_CLOUD_KEY: "test-key" }, async () => {
+      const fn = fakeFetch([
+        {
+          status: 200,
+          body: {
+            status: "listed",
+            pageUrl: "https://cloud.example/skills/acme/push-cli-fixture",
+            getCommand: "npx -y reelier@latest get acme/push-cli-fixture",
+            noop: false,
+          },
+        },
+        { status: 202, body: { id: "run_0" } },
+      ]);
+      const { result: exitCode, lines } = await withCapturedLogs(() =>
+        withCwd(dir, () => withFetch(fn, () => cmdPush(makeArgs(skillPath, ["public"]))))
+      );
+
+      assert.equal(exitCode, 0);
+      assert.ok(lines.some((l) => l === "Listed: https://cloud.example/skills/acme/push-cli-fixture"));
+      assert.ok(lines.some((l) => l === "  get: npx -y reelier@latest get acme/push-cli-fixture"));
+    });
+  });
+});
+
+test("cmdPush --public: status 'pending' prints the exact 2-business-day copy, never a same-day promise", async () => {
+  await withTempDir(async (dir) => {
+    const skillPath = await setupFixture(dir);
+    await withEnv({ REELIER_CLOUD_URL: "https://cloud.example", REELIER_CLOUD_KEY: "test-key" }, async () => {
+      const fn = fakeFetch([
+        {
+          status: 200,
+          body: { status: "pending", pageUrl: "https://cloud.example/skills/acme/push-cli-fixture", noop: false },
+        },
+        { status: 202, body: { id: "run_0" } },
+      ]);
+      const { result: exitCode, lines } = await withCapturedLogs(() =>
+        withCwd(dir, () => withFetch(fn, () => cmdPush(makeArgs(skillPath, ["public"]))))
+      );
+
+      assert.equal(exitCode, 0);
+      assert.ok(
+        lines.some(
+          (l) =>
+            l ===
+            "Pending review (usually within 2 business days): https://cloud.example/skills/acme/push-cli-fixture"
+        )
+      );
+      assert.ok(!lines.some((l) => l.toLowerCase().includes("same day") || l.toLowerCase().includes("same-day")));
+    });
+  });
+});
+
+test("cmdPush --public: noop true prints 'Already listed (unchanged): <pageUrl>'", async () => {
+  await withTempDir(async (dir) => {
+    const skillPath = await setupFixture(dir);
+    await withEnv({ REELIER_CLOUD_URL: "https://cloud.example", REELIER_CLOUD_KEY: "test-key" }, async () => {
+      const fn = fakeFetch([
+        {
+          status: 200,
+          body: { status: "listed", pageUrl: "https://cloud.example/skills/acme/push-cli-fixture", noop: true },
+        },
+        { status: 202, body: { id: "run_0" } },
+      ]);
+      const { result: exitCode, lines } = await withCapturedLogs(() =>
+        withCwd(dir, () => withFetch(fn, () => cmdPush(makeArgs(skillPath, ["public"]))))
+      );
+
+      assert.equal(exitCode, 0);
+      assert.ok(lines.some((l) => l === "Already listed (unchanged): https://cloud.example/skills/acme/push-cli-fixture"));
+      assert.ok(!lines.some((l) => l.startsWith("Listed:")));
+    });
+  });
+});
+
+test("cmdPush --public: missing license -> the cloud's 400 message is surfaced verbatim and the command exits non-zero", async () => {
+  await withTempDir(async (dir) => {
+    const skillPath = await setupFixture(dir);
+    await withEnv({ REELIER_CLOUD_URL: "https://cloud.example", REELIER_CLOUD_KEY: "test-key" }, async () => {
+      const fn = fakeFetch([
+        { status: 400, body: { fieldErrors: { license: ["required for --public"] } } },
+      ]);
+      const { result: exitCode, lines } = await withCapturedLogs(() =>
+        withCwd(dir, () => withFetch(fn, () => cmdPush(makeArgs(skillPath, ["public"]))))
+      );
+
+      assert.equal(exitCode, 1);
+      assert.ok(lines.some((l) => l.includes("license")));
+      // Never claim a listing happened when the upload was rejected.
+      assert.ok(!lines.some((l) => l.startsWith("Listed:") || l.startsWith("Pending review")));
+    });
+  });
+});
+
+test("cmdPush --public: 403 (reserved namespace / unlinked tenant) surfaces the server's message + linkUrl and exits non-zero", async () => {
+  await withTempDir(async (dir) => {
+    const skillPath = await setupFixture(dir);
+    await withEnv({ REELIER_CLOUD_URL: "https://cloud.example", REELIER_CLOUD_KEY: "test-key" }, async () => {
+      const fn = fakeFetch([
+        {
+          status: 403,
+          body: {
+            error: "Link your GitHub account before publishing to the registry.",
+            linkUrl: "https://cloud.example/dashboard/link-github",
+          },
+        },
+      ]);
+      const { result: exitCode, lines } = await withCapturedLogs(() =>
+        withCwd(dir, () => withFetch(fn, () => cmdPush(makeArgs(skillPath, ["public"]))))
+      );
+
+      assert.equal(exitCode, 1);
+      assert.ok(lines.some((l) => l.includes("Link your GitHub account")));
+      assert.ok(lines.some((l) => l.includes("https://cloud.example/dashboard/link-github")));
+    });
+  });
+});
+
+test("cmdPush --public --share: both a registry line and a Receipt line print", async () => {
+  await withTempDir(async (dir) => {
+    const skillPath = await setupFixture(dir);
+    await withEnv({ REELIER_CLOUD_URL: "https://cloud.example", REELIER_CLOUD_KEY: "test-key" }, async () => {
+      const fn = fakeFetch([
+        {
+          status: 200,
+          body: { status: "listed", pageUrl: "https://cloud.example/skills/acme/push-cli-fixture", noop: false },
+        },
+        { status: 202, body: { id: "run_0", shareUrl: "https://cloud.example/r/tok_1" } },
+      ]);
+      const { result: exitCode, lines } = await withCapturedLogs(() =>
+        withCwd(dir, () => withFetch(fn, () => cmdPush(makeArgs(skillPath, ["public", "share"]))))
+      );
+
+      assert.equal(exitCode, 0);
+      assert.ok(lines.some((l) => l === "Listed: https://cloud.example/skills/acme/push-cli-fixture"));
+      assert.ok(lines.some((l) => l === "    Receipt: https://cloud.example/r/tok_1"));
+    });
+  });
+});
