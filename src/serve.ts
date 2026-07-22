@@ -32,6 +32,7 @@
 // error into a success.
 
 import { readFile, writeFile, access } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -223,6 +224,7 @@ export async function runReplayTool(input: ReplayToolInput): Promise<RunRecord> 
       maxLevel: 0,
       cwd: input.cwd,
       skillPath: input.skillPath,
+      skillContentSha256: createHash("sha256").update(source, "utf8").digest("hex"),
     });
   } finally {
     await Promise.all(downstreams.map((d) => d.close().catch(() => {})));

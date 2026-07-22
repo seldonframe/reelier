@@ -69,6 +69,16 @@ export interface RunRecord {
   startedAt: string;
   finishedAt: string;
   passed: boolean;
+  /**
+   * sha256 (64 lowercase hex chars) of the exact skill-file bytes that
+   * produced this run — stamped at RUN time by the caller (cmdRun/
+   * compileReplayAndReceipt/runReplayTool all already hold the source they
+   * just read to parse the skill), the most truthful moment to capture it.
+   * Optional: absent when the caller didn't pass `skillContentSha256` (e.g.
+   * a caller with no file on disk to hash). See push.ts's pushSkill for the
+   * push-time fallback used on older records that predate this field.
+   */
+  skillContentSha256?: string;
   steps: StepRecord[];
   totals: {
     steps: number;
@@ -113,6 +123,8 @@ export interface RunOptions {
   llmL2Model?: string;
   /** Path to the skill's source file, required for write-back on a successful heal. Without it, a heal still passes this run but a stderr warning is printed (nothing to persist to). */
   skillPath?: string;
+  /** sha256 of the skill-file bytes the caller read to produce `skill` — stamped verbatim onto the resulting RunRecord. See RunRecord.skillContentSha256. */
+  skillContentSha256?: string;
 }
 
 export interface DryRunStep {
@@ -646,6 +658,7 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
     startedAt,
     finishedAt,
     passed: failedCount === 0,
+    ...(options.skillContentSha256 ? { skillContentSha256: options.skillContentSha256 } : {}),
     steps: stepRecords,
     totals: {
       steps: stepRecords.length,

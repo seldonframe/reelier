@@ -24,6 +24,7 @@
 // the cursor left at the last success, exactly as before.
 
 import { readFile, mkdir, rename } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { parseSkill } from "./skill.js";
 import { readRunRecords, type RunRecord } from "./runner.js";
@@ -155,6 +156,8 @@ export interface PushResult {
   skillName: string;
   /** True iff the skill file was actually uploaded this run (dry-run reports what WOULD happen and this stays false). */
   skillUploaded: boolean;
+  /** Set iff `--public` was passed AND the skill was (re-)uploaded this run AND the cloud returned registry-submission details. Absent on a plain push, on dry-run, or against an older cloud that doesn't understand `public: true` yet. */
+  publicSubmission?: PublicSubmissionResult;
   totalRecords: number;
   cursorBefore: number;
   /** Records at/after cursorBefore that this run considered pushing. */
@@ -184,7 +187,37 @@ export interface PushOptions {
    * sets this.
    */
   share?: boolean;
+  /**
+   * Submit the skill to the public registry (skill-registry-v0 spec §2):
+   * adds `public: true` to the skills upload POST body. Composes with
+   * `--share` — both flags can be set on the same push. Because submission
+   * is itself an upload (the cloud needs the latest bytes to grade/list),
+   * `--public` forces the skill-upload leg to run even if it was already
+   * uploaded before (equivalent to implying `withSkill` for this push only).
+   */
+  public?: boolean;
   onRecordResult?: (result: PushRecordResult) => void;
+}
+
+/** Result of a `--public` submission — parsed from the skills-upload response body when `public: true` was sent and the cloud understood it. */
+export interface PublicSubmissionResult {
+  status: "listed" | "pending";
+  pageUrl: string;
+  /** The `reelier get ...` copy-paste command for this listing. Empty string if the cloud omitted it. */
+  getCommand: string;
+  version?: number;
+  /** True when the submitted bytes are identical to the currently-listed version — nothing changed. */
+  noop: boolean;
+}
+
+/** Thrown when the cloud's skills-upload response signals a registry-submission-specific failure (missing license, unlinked namespace, reserved name) — carries the server's own message verbatim, and `linkUrl` when the cloud provided one (e.g. the tenant->GitHub linking page for a 403). */
+export class PublicSubmissionError extends Error {
+  linkUrl?: string;
+  constructor(message: string, linkUrl?: string) {
+    super(message);
+    this.name = "PublicSubmissionError";
+    this.linkUrl = linkUrl;
+  }
 }
 
 function formatFieldErrors(fieldErrors: unknown): string {
@@ -196,21 +229,98 @@ function formatFieldErrors(fieldErrors: unknown): string {
   }
 }
 
-async function uploadSkill(config: PushConfig, skillName: string, skillMd: string): Promise<void> {
+/**
+ * Upload the skill file. When `makePublic` is true, adds `public: true` to
+ * the POST body (skill-registry-v0 spec §2) — the cloud enters the skill
+ * into the moderation/listing pipeline and, on success, responds with
+ * `{pageUrl, getCommand, status, version, noop}` in addition to the plain
+ * upload's usual 2xx. Returns that parsed submission on a public upload,
+ * `undefined` on a plain (non-public) upload.
+ *
+ * Two failure modes are registry-submission-specific and get their own
+ * handling so the CLI can surface the cloud's own words verbatim rather than
+ * a generic "upload failed" (spec §2 / task brief):
+ *  - 400: a triage/validation rejection (most commonly: missing `license:`
+ *    frontmatter). Surfaces the field errors exactly as the cloud sent them.
+ *  - 403: a linking/namespace rejection (unlinked tenant->GitHub, or a
+ *    reserved owner slug). Surfaces the cloud's message plus `linkUrl` when
+ *    present so the CLI can print the exact URL to fix it at.
+ * Both throw `PublicSubmissionError` — never silently swallowed.
+ */
+async function uploadSkill(
+  config: PushConfig,
+  skillName: string,
+  skillMd: string,
+  makePublic?: boolean
+): Promise<PublicSubmissionResult | undefined> {
   const res = await fetch(`${config.baseUrl.replace(/\/$/, "")}/api/v1/skills`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
       authorization: `Bearer ${config.apiKey}`,
     },
-    body: JSON.stringify({ name: skillName, skillMd }),
+    body: JSON.stringify({ name: skillName, skillMd, ...(makePublic ? { public: true } : {}) }),
   });
   if (res.status === 401) {
     throw new Error("Skill upload failed: HTTP 401 — the configured REELIER_CLOUD_KEY was rejected.");
   }
-  if (res.ok) return;
-  const bodyText = await res.text().catch(() => "");
-  throw new Error(`Skill upload failed: HTTP ${res.status}: ${bodyText.slice(0, 500)}`);
+  if (res.status === 400) {
+    const bodyText = await res.text().catch(() => "");
+    let message = `Skill upload rejected (400)${bodyText ? `: ${bodyText.slice(0, 500)}` : ""}`;
+    try {
+      const parsed = JSON.parse(bodyText);
+      if (parsed && parsed.fieldErrors !== undefined) {
+        message = `Skill upload rejected: ${formatFieldErrors(parsed.fieldErrors)}`;
+      } else if (parsed && typeof parsed.error === "string") {
+        message = `Skill upload rejected: ${parsed.error}`;
+      }
+    } catch {
+      // Non-JSON body — fall back to the raw text already captured above.
+    }
+    throw new PublicSubmissionError(message);
+  }
+  if (res.status === 403) {
+    const bodyText = await res.text().catch(() => "");
+    let message = `Skill upload forbidden (403)${bodyText ? `: ${bodyText.slice(0, 500)}` : ""}`;
+    let linkUrl: string | undefined;
+    try {
+      const parsed = JSON.parse(bodyText);
+      if (parsed && typeof parsed.error === "string") message = parsed.error;
+      if (parsed && typeof parsed.linkUrl === "string") linkUrl = parsed.linkUrl;
+    } catch {
+      // Non-JSON body — fall back to the raw text already captured above.
+    }
+    throw new PublicSubmissionError(message, linkUrl);
+  }
+  if (!res.ok) {
+    const bodyText = await res.text().catch(() => "");
+    throw new Error(`Skill upload failed: HTTP ${res.status}: ${bodyText.slice(0, 500)}`);
+  }
+  if (!makePublic) return undefined;
+
+  let body: Partial<PublicSubmissionResult> = {};
+  try {
+    body = JSON.parse(await res.text());
+  } catch {
+    // The upload itself succeeded (2xx) — a malformed/absent submission body
+    // just means we can't report listing details, not that the push failed.
+  }
+  if (
+    (body.status !== "listed" && body.status !== "pending") ||
+    typeof body.pageUrl !== "string"
+  ) {
+    // Older cloud that accepted `public: true` but doesn't understand the
+    // registry pipeline yet — the upload succeeded, there's just nothing to
+    // report. Never fabricate a pageUrl/status that wasn't actually returned.
+    return undefined;
+  }
+  return {
+    status: body.status,
+    pageUrl: body.pageUrl,
+    getCommand: typeof body.getCommand === "string" ? body.getCommand : "",
+    version: typeof body.version === "number" ? body.version : undefined,
+    noop: body.noop === true,
+  };
 }
 
 async function pushOneRecord(
@@ -297,7 +407,11 @@ export async function pushSkill(skillPath: string, options: PushOptions = {}): P
   const existing = state[skill.name];
   const cursorBefore = options.all ? 0 : existing?.pushed ?? 0;
   const candidates = allRecords.slice(cursorBefore);
-  const needsSkillUpload = options.withSkill || !existing?.skillUploaded;
+  // `--public` always re-runs the upload leg, even if the skill was already
+  // uploaded privately before: submitting to the registry needs the current
+  // bytes graded/listed, and a resubmission of unchanged bytes is itself a
+  // meaningful (no-op) outcome the cloud reports back.
+  const needsSkillUpload = options.withSkill || options.public || !existing?.skillUploaded;
 
   if (options.dryRun) {
     const results: PushRecordResult[] = candidates.map((_, i) => ({
@@ -323,8 +437,9 @@ export async function pushSkill(skillPath: string, options: PushOptions = {}): P
   const config = resolvePushConfig();
 
   let skillUploaded = false;
+  let publicSubmission: PublicSubmissionResult | undefined;
   if (needsSkillUpload) {
-    await uploadSkill(config, skill.name, source);
+    publicSubmission = await uploadSkill(config, skill.name, source, options.public);
     skillUploaded = true;
   }
 
@@ -334,8 +449,22 @@ export async function pushSkill(skillPath: string, options: PushOptions = {}): P
   let consumedCount = 0; // pushed + permanently-rejected — what the cursor advances past
   let aborted = false;
 
+  // Push-time fallback hash: records written by a `reelier run` that predates
+  // `RunRecord.skillContentSha256` (or by any future caller with no file
+  // access of its own) arrive here with the field absent. Rather than push
+  // them with no hash at all, stamp the CURRENT skill file's bytes at the
+  // moment of push — better than nothing, but note the staleness caveat: if
+  // the file was edited between when the run actually happened and this
+  // push, this hash reflects the edited bytes, not the ones that produced
+  // the run. Run-time stamping (see cli.ts/serve.ts) is always preferred and
+  // takes priority whenever a record already carries its own hash.
+  const pushTimeFallbackSha256 = createHash("sha256").update(source, "utf8").digest("hex");
+
   for (let i = 0; i < candidates.length; i++) {
-    const result = await pushOneRecord(config, skill.name, candidates[i], cursorBefore + i, options.share);
+    const record = candidates[i].skillContentSha256
+      ? candidates[i]
+      : { ...candidates[i], skillContentSha256: pushTimeFallbackSha256 };
+    const result = await pushOneRecord(config, skill.name, record, cursorBefore + i, options.share);
     results.push(result);
     options.onRecordResult?.(result);
 
@@ -381,6 +510,7 @@ export async function pushSkill(skillPath: string, options: PushOptions = {}): P
   return {
     skillName: skill.name,
     skillUploaded,
+    publicSubmission,
     totalRecords: allRecords.length,
     cursorBefore,
     candidateCount: candidates.length,

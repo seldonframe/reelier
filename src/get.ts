@@ -29,8 +29,9 @@
 import { readFile, mkdir } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import path from "node:path";
-import { parseSkill } from "./skill.js";
+import { parseSkill, type Skill } from "./skill.js";
 import { writeFileAtomic } from "./writeback.js";
+import { resolvePushConfig, type PushConfig } from "./push.js";
 
 export interface GetConfig {
   baseUrl: string;
@@ -295,4 +296,209 @@ export async function getSkill(ref: string, options: GetOptions = {}): Promise<G
   }
 
   return { kind: "written", path: outPath, skillName: parsedRef.skill, result: data, steps };
+}
+
+// ---------------------------------------------------------------------------
+// `reelier get --mine <name>` — authenticated fetch of the TENANT'S OWN
+// private skill ("push here, fetch anywhere"). Distinct code path from the
+// public registry fetch above: private skills carry no registry grade
+// (never listed, never triaged), so the trust block is built from a local
+// parse of the returned bytes rather than server-declared effectGrade/
+// license/endpoints. `--mine` never touches the public /api/v1/registry/
+// route and the public route never touches /api/v1/skills/<name> — the two
+// stay fully separate surfaces sharing only the write/collision plumbing.
+//
+// Cloud API contract (locked, cloud-side implementation in parallel):
+//   GET {base}/api/v1/skills/<name>   Authorization: Bearer <key>
+//     -> 200 {name, skillMd, contentSha256, updatedAt}
+//     -> 404 (no private skill by that name for this tenant)
+//     -> 401 (bad/missing key)
+//   <name> is URL-encoded into the path. No @N/@sha256 pins — private
+//   skills aren't versioned the way registry listings are; this always
+//   fetches the tenant's current bytes.
+// ---------------------------------------------------------------------------
+
+export interface PrivateFetchResult {
+  name: string;
+  skillMd: string;
+  contentSha256: string;
+  updatedAt: string;
+}
+
+type PrivateFetchOutcome =
+  | { ok: true; data: PrivateFetchResult }
+  | { ok: false; status: number; reason: string };
+
+async function fetchPrivateSkill(config: PushConfig, name: string): Promise<PrivateFetchOutcome> {
+  const base = config.baseUrl.replace(/\/$/, "");
+  const url = `${base}/api/v1/skills/${encodeURIComponent(name)}`;
+
+  let res: Response;
+  try {
+    res = await fetch(url, { headers: { authorization: `Bearer ${config.apiKey}` } });
+  } catch (err) {
+    return { ok: false, status: 0, reason: `Network error: ${(err as Error).message}` };
+  }
+
+  if (res.status === 401) {
+    return { ok: false, status: 401, reason: "HTTP 401 — the configured REELIER_CLOUD_KEY was rejected." };
+  }
+  if (res.status === 404) {
+    return { ok: false, status: 404, reason: `No private skill named '${name}' in your cloud.` };
+  }
+  if (!res.ok) {
+    const bodyText = await res.text().catch(() => "");
+    return { ok: false, status: res.status, reason: `HTTP ${res.status}: ${bodyText.slice(0, 500)}` };
+  }
+
+  let body: Partial<PrivateFetchResult>;
+  try {
+    body = JSON.parse(await res.text());
+  } catch (err) {
+    return {
+      ok: false,
+      status: res.status,
+      reason: `Malformed JSON response from the cloud: ${(err as Error).message}`,
+    };
+  }
+  if (
+    typeof body.name !== "string" ||
+    typeof body.skillMd !== "string" ||
+    typeof body.contentSha256 !== "string" ||
+    typeof body.updatedAt !== "string"
+  ) {
+    return {
+      ok: false,
+      status: res.status,
+      reason: "Cloud response is missing required fields (name/skillMd/contentSha256/updatedAt).",
+    };
+  }
+
+  return {
+    ok: true,
+    data: { name: body.name, skillMd: body.skillMd, contentSha256: body.contentSha256, updatedAt: body.updatedAt },
+  };
+}
+
+/**
+ * Best-effort local endpoint extraction for the private trust block, which
+ * has no server-computed `endpoints` field to print (spec: "compute per-step
+ * effects + endpoints locally via the same parse used for the public trust
+ * block"). Walks every step's actionArgs recursively for absolute http(s)
+ * URLs and reduces each to its origin — matching the public registry's
+ * "domain the skill will hit" semantics, not full paths. A string still
+ * containing an unresolved `{{var}}` template is skipped outright before
+ * parsing — `new URL()` does NOT reject templated hosts (it would happily
+ * yield an origin like `https://{{host}}`), so the guard must come first.
+ */
+function extractLocalEndpoints(skill: Skill): string[] {
+  const found = new Set<string>();
+  const walk = (value: unknown): void => {
+    if (typeof value === "string") {
+      if (value.includes("{{")) return; // unresolved template — skip, don't guess
+      if (/^https?:\/\//i.test(value)) {
+        try {
+          found.add(new URL(value).origin);
+        } catch {
+          // Malformed URL — skip, don't guess.
+        }
+      }
+      return;
+    }
+    if (Array.isArray(value)) {
+      for (const v of value) walk(v);
+      return;
+    }
+    if (value !== null && typeof value === "object") {
+      for (const v of Object.values(value)) walk(v);
+    }
+  };
+  for (const step of skill.steps) walk(step.actionArgs);
+  return Array.from(found).sort();
+}
+
+export type GetMineOutcome =
+  | { kind: "written"; path: string; skillName: string; result: PrivateFetchResult; steps: GetStepEffect[]; endpoints: string[] }
+  | { kind: "up-to-date"; path: string; skillName: string }
+  | { kind: "hash-mismatch"; path: string; existingSha: string; incomingSha: string }
+  | { kind: "tamper"; expectedSha: string; actualSha: string }
+  | { kind: "error"; message: string };
+
+/**
+ * `reelier get --mine <name>` — fetch the tenant's OWN private skill
+ * (authenticated) and land it at `<dir>/<name>.skill.md`, same landing path
+ * and collision semantics as the public `getSkill` above. `name` must be a
+ * bare skill name (no `owner/` prefix — that's the public-registry shape).
+ * Never executes anything.
+ */
+export async function getMineSkill(name: string, options: GetOptions = {}): Promise<GetMineOutcome> {
+  const cwd = options.cwd ?? process.cwd();
+
+  if (name.includes("/") || name.includes("\\") || name.includes("..")) {
+    return {
+      kind: "error",
+      message: `--mine takes a bare skill name with no owner prefix or path separators, got: ${JSON.stringify(
+        name
+      )}. Drop the '<owner>/' part — private fetches are already scoped to your own tenant.`,
+    };
+  }
+
+  let config: PushConfig;
+  try {
+    config = resolvePushConfig();
+  } catch (err) {
+    return { kind: "error", message: (err as Error).message };
+  }
+
+  const fetchResult = await fetchPrivateSkill(config, name);
+  if (!fetchResult.ok) {
+    return { kind: "error", message: fetchResult.reason };
+  }
+  const data = fetchResult.data;
+
+  // Integrity before anything touches disk, exactly like the public path.
+  const actualSha = createHash("sha256").update(data.skillMd, "utf8").digest("hex");
+  if (actualSha !== data.contentSha256) {
+    return { kind: "tamper", expectedSha: data.contentSha256, actualSha };
+  }
+
+  const dir = options.dir !== undefined ? path.resolve(cwd, options.dir) : path.join(cwd, "skills");
+  const outPath = path.join(dir, `${name}.skill.md`);
+
+  let existing: string | undefined;
+  try {
+    existing = await readFile(outPath, "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      return { kind: "error", message: `Could not read existing ${outPath}: ${(err as Error).message}` };
+    }
+  }
+
+  if (existing !== undefined) {
+    const existingSha = createHash("sha256").update(existing, "utf8").digest("hex");
+    if (existingSha === actualSha) {
+      return { kind: "up-to-date", path: outPath, skillName: name };
+    }
+    if (!options.force) {
+      return { kind: "hash-mismatch", path: outPath, existingSha, incomingSha: actualSha };
+    }
+    // --force + a real hash mismatch: fall through and overwrite below.
+  }
+
+  await mkdir(dir, { recursive: true });
+  await writeFileAtomic(outPath, data.skillMd);
+
+  let steps: GetStepEffect[] = [];
+  let endpoints: string[] = [];
+  try {
+    const parsed = parseSkill(data.skillMd);
+    steps = parsed.steps.map((s) => ({ n: s.n, title: s.title, effect: s.effect }));
+    endpoints = extractLocalEndpoints(parsed);
+  } catch {
+    // Best-effort only — never blocks the write (already integrity-verified)
+    // or crashes the command. The trust block just prints without per-step
+    // detail if the local parse somehow fails.
+  }
+
+  return { kind: "written", path: outPath, skillName: name, result: data, steps, endpoints };
 }

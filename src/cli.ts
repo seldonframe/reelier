@@ -3,6 +3,7 @@
 
 import { readFile, writeFile, access } from "node:fs/promises";
 import { realpathSync } from "node:fs";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import os from "node:os";
 import { pathToFileURL } from "node:url";
@@ -10,8 +11,8 @@ import { createInterface } from "node:readline/promises";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { parseSkill, SkillParseError } from "./skill.js";
 import { runSkill, dryRunSkill, readRunRecords, type RunRecord } from "./runner.js";
-import { pushSkill, type PushRecordResult } from "./push.js";
-import { getSkill, type GetOutcome } from "./get.js";
+import { pushSkill, PublicSubmissionError, type PushRecordResult } from "./push.js";
+import { getSkill, getMineSkill, type GetOutcome, type GetMineOutcome } from "./get.js";
 import { builtinTools } from "./tools.js";
 import { connectDownstream, type DownstreamConnection } from "./mcp-client.js";
 import { buildMcpTools } from "./mcp-tool.js";
@@ -200,6 +201,9 @@ async function cmdRun(args: ParsedArgs): Promise<number> {
       llmModel: llmConfig?.model,
       llmL2Model: llmConfig?.l2Model,
       skillPath,
+      // The exact bytes just read off disk to parse `skill` for this run —
+      // stamped verbatim onto the RunRecord (see RunRecord.skillContentSha256).
+      skillContentSha256: createHash("sha256").update(source, "utf8").digest("hex"),
       onStep: (rec) => {
         const icon =
           rec.outcome === "passed" || rec.outcome === "unchecked" ? "✓" : rec.outcome === "skipped" ? "○" : "✗";
@@ -1062,7 +1066,7 @@ function fmtFieldErrors(fieldErrors: unknown): string {
 export async function cmdPush(args: ParsedArgs): Promise<number> {
   const skillPath = args.positional[0];
   if (!skillPath) {
-    console.error("Usage: reelier push <skill.md> [--all] [--dry-run] [--with-skill] [--share]");
+    console.error("Usage: reelier push <skill.md> [--all] [--dry-run] [--with-skill] [--share] [--public]");
     return 1;
   }
 
@@ -1070,6 +1074,7 @@ export async function cmdPush(args: ParsedArgs): Promise<number> {
   const all = args.flags.has("all");
   const withSkill = args.flags.has("with-skill");
   const share = args.flags.has("share");
+  const isPublic = args.flags.has("public");
 
   // Tracks whether the cloud actually honored --share on at least one
   // pushed record this run — a mint failure or an older cloud that doesn't
@@ -1084,6 +1089,7 @@ export async function cmdPush(args: ParsedArgs): Promise<number> {
       dryRun,
       withSkill,
       share,
+      public: isPublic,
       onRecordResult: (r: PushRecordResult) => {
         if (dryRun) {
           console.log(`  [${r.index}] would push`);
@@ -1121,6 +1127,12 @@ export async function cmdPush(args: ParsedArgs): Promise<number> {
     // Deliberately just the error's message — resolvePushConfig() never puts
     // the key value into its message, and neither does anything else here.
     console.error((err as Error).message);
+    // A --public 403 (unlinked tenant / reserved namespace) carries a
+    // linkUrl the plain message doesn't include — print it too so the CLI
+    // surfaces "the server's message + linkUrl when present" verbatim.
+    if (err instanceof PublicSubmissionError && err.linkUrl) {
+      console.error(err.linkUrl);
+    }
     return 1;
   }
 
@@ -1139,6 +1151,26 @@ export async function cmdPush(args: ParsedArgs): Promise<number> {
     console.log(`Skill '${result.skillName}' uploaded.`);
   } else {
     console.log(`Skill '${result.skillName}' upload skipped (already uploaded — pass --with-skill to force).`);
+  }
+  // `--public` (skill-registry-v0 spec §2): report exactly what the cloud
+  // decided — never claim "listed" or a same-day promise the cloud didn't
+  // actually return.
+  if (isPublic) {
+    if (result.publicSubmission) {
+      const ps = result.publicSubmission;
+      if (ps.noop) {
+        console.log(`Already listed (unchanged): ${ps.pageUrl}`);
+      } else if (ps.status === "listed") {
+        console.log(`Listed: ${ps.pageUrl}`);
+        console.log(`  get: ${ps.getCommand}`);
+      } else {
+        console.log(`Pending review (usually within 2 business days): ${ps.pageUrl}`);
+      }
+    } else if (result.skillUploaded) {
+      // The upload succeeded but the cloud didn't return registry details —
+      // an older cloud that doesn't understand `public: true` yet.
+      console.log("--public was requested, but the cloud returned no registry listing details (older cloud?).");
+    }
   }
   const rejectedNote = result.rejectedCount > 0 ? `, ${result.rejectedCount} permanently rejected` : "";
   console.log(
@@ -1198,11 +1230,76 @@ function printTrustBlock(outcome: Extract<GetOutcome, { kind: "written" }>): voi
   }
 }
 
+/**
+ * Trust-block variant for `reelier get --mine` (see cmdGetMine below):
+ * private skills carry no registry grade, so there's no READ-ONLY/WRITES
+ * badge — just the locally-parsed per-step effects/endpoints, the content
+ * hash, an explicit "not a public listing" provenance line, and the next
+ * command. Never executes anything.
+ */
+function printPrivateTrustBlock(outcome: Extract<GetMineOutcome, { kind: "written" }>): void {
+  const { result, steps, endpoints } = outcome;
+  if (steps.length > 0) {
+    console.log("Per-step effects:");
+    for (const s of steps) {
+      console.log(`  Step ${s.n} — ${s.title} [${s.effect}]`);
+    }
+  }
+  console.log(`Endpoints: ${endpoints.length > 0 ? endpoints.join(", ") : "(none)"}`);
+  console.log(`Content hash: sha256:${result.contentSha256}`);
+  console.log("source: your private cloud copy (not a public listing)");
+  console.log("");
+  console.log(`Next: reelier run ${outcome.path}`);
+}
+
+async function cmdGetMine(name: string, args: ParsedArgs): Promise<number> {
+  let outcome: GetMineOutcome;
+  try {
+    outcome = await getMineSkill(name, { dir: args.opts.dir, force: args.flags.has("force") });
+  } catch (err) {
+    console.error((err as Error).message);
+    return 1;
+  }
+
+  switch (outcome.kind) {
+    case "error":
+      console.error(outcome.message);
+      return 1;
+    case "tamper":
+      console.error(
+        `Integrity check FAILED — the fetched content's sha256 does not match the server-declared contentSha256. ` +
+          `Expected ${outcome.expectedSha}, got ${outcome.actualSha}. Nothing was written.`
+      );
+      return 1;
+    case "hash-mismatch":
+      console.error(
+        `${outcome.path} already exists with different content (local sha256 ${outcome.existingSha}, incoming ` +
+          `${outcome.incomingSha}). Run 'reelier diff' to compare, or pass --force to overwrite.`
+      );
+      return 1;
+    case "up-to-date":
+      console.log(`${outcome.path} is already up to date (skill '${outcome.skillName}').`);
+      return 0;
+    case "written":
+      console.log(`Wrote ${outcome.path}.`);
+      console.log("");
+      printPrivateTrustBlock(outcome);
+      return 0;
+  }
+}
+
 export async function cmdGet(args: ParsedArgs): Promise<number> {
   const ref = args.positional[0];
   if (!ref) {
-    console.error("Usage: reelier get <owner>/<skill>[@<N> | @sha256:<hex>] [--dir <dir>] [--force]");
+    console.error(
+      "Usage: reelier get <owner>/<skill>[@<N> | @sha256:<hex>] [--dir <dir>] [--force]\n" +
+        "       reelier get --mine <name> [--dir <dir>] [--force]"
+    );
     return 1;
+  }
+
+  if (args.flags.has("mine")) {
+    return cmdGetMine(ref, args);
   }
 
   let outcome: GetOutcome;
@@ -1302,6 +1399,7 @@ async function compileReplayAndReceipt(
       tools,
       maxLevel: 0,
       skillPath: compiled.skillPath,
+      skillContentSha256: createHash("sha256").update(compiled.source, "utf8").digest("hex"),
       onStep: (rec) => {
         const icon = rec.outcome === "passed" || rec.outcome === "unchecked" ? "✓" : rec.outcome === "skipped" ? "○" : "✗";
         console.log(`  ${icon} Step ${rec.n} — ${rec.title} [${rec.outcome}] ${rec.ms}ms`);
@@ -1589,6 +1687,7 @@ const USAGE =
   "  mcp   — RECORDER: fronts your own --wrap'd MCP server(s) to capture their calls into a trace.\n" +
   "  serve — TOOL-SERVER: exposes Reelier's own commands (scan/from-session/replay/push/diff) as MCP tools.\n" +
   "  get   — fetch a public registry skill to ./skills/<skill>.skill.md; never executes it.\n" +
+  "          reelier get --mine <name> fetches YOUR OWN private skill (authenticated) instead.\n" +
   "  diff  — compare the last two runs of a skill; exit 1 on drift (gate a scheduled replay).";
 
 async function main(): Promise<number> {

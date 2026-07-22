@@ -4,7 +4,7 @@ import { mkdtemp, rm, readFile, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import { getSkill, parseSkillRef } from "../src/get.js";
+import { getSkill, parseSkillRef, getMineSkill } from "../src/get.js";
 
 const SKILL_MD = `---
 name: fetched-fixture
@@ -44,11 +44,13 @@ async function withTempDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
 
 type FakeResponseSpec = { status: number; body?: unknown } | { networkError: string };
 
-function fakeFetch(responses: FakeResponseSpec[]): { fn: typeof fetch; calls: string[] } {
+function fakeFetch(responses: FakeResponseSpec[]): { fn: typeof fetch; calls: string[]; inits: (RequestInit | undefined)[] } {
   const calls: string[] = [];
+  const inits: (RequestInit | undefined)[] = [];
   let i = 0;
-  const fn = (async (url: string) => {
+  const fn = (async (url: string, init?: RequestInit) => {
     calls.push(url);
+    inits.push(init);
     const spec = responses[i++];
     if (!spec) throw new Error(`fetch called more times than expected (call #${calls.length})`);
     if ("networkError" in spec) throw new Error(spec.networkError);
@@ -58,7 +60,7 @@ function fakeFetch(responses: FakeResponseSpec[]): { fn: typeof fetch; calls: st
       text: async () => JSON.stringify(spec.body ?? {}),
     } as unknown as Response;
   }) as typeof fetch;
-  return { fn, calls };
+  return { fn, calls, inits };
 }
 
 async function withEnv<T>(vars: Record<string, string | undefined>, fn: () => Promise<T>): Promise<T> {
@@ -339,6 +341,22 @@ test("getSkill: WRITES-grade fixture reports effectGrade 'writes' and per-step e
   });
 });
 
+test("getSkill: 404 -> 'error' outcome naming the missing owner/skill, no write", async () => {
+  await withTempDir(async (dir) => {
+    await withEnv({ REELIER_CLOUD_URL: "https://cloud.example" }, async () => {
+      const { fn } = fakeFetch([{ status: 404 }]);
+      const outcome = await withFetch(fn, () => getSkill("acme/nonexistent-skill", { cwd: dir }));
+
+      assert.equal(outcome.kind, "error");
+      if (outcome.kind !== "error") return;
+      assert.match(outcome.message, /No registry listing found for 'acme\/nonexistent-skill'/);
+
+      const skillsDir = path.join(dir, "skills");
+      await assert.rejects(() => readFile(path.join(skillsDir, "nonexistent-skill.skill.md"), "utf8"));
+    });
+  });
+});
+
 test("getSkill: missing REELIER_CLOUD_URL -> error outcome, no network call", async () => {
   await withTempDir(async (dir) => {
     await withEnv({ REELIER_CLOUD_URL: undefined }, async () => {
@@ -346,6 +364,174 @@ test("getSkill: missing REELIER_CLOUD_URL -> error outcome, no network call", as
       assert.equal(outcome.kind, "error");
       if (outcome.kind !== "error") return;
       assert.match(outcome.message, /REELIER_CLOUD_URL/);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getMineSkill — `reelier get --mine <name>` (authenticated, own private
+// skill; no owner segment, no registry grade)
+// ---------------------------------------------------------------------------
+
+const MINE_SKILL_MD = `---
+name: my-private-fixture
+description: a private skill fetched via --mine
+---
+
+### Step 1 — check status
+- intent: check the status endpoint
+- action: http.get {"url": "https://internal.example.com/status"}
+- assert: status == 200
+- effect: read
+`;
+const MINE_SHA = createHash("sha256").update(MINE_SKILL_MD, "utf8").digest("hex");
+
+function mineBody(overrides: Partial<Record<string, unknown>> = {}) {
+  return {
+    name: "my-private-fixture",
+    skillMd: MINE_SKILL_MD,
+    contentSha256: MINE_SHA,
+    updatedAt: "2026-07-22T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+test("getMineSkill: rejects a name with a path separator or traversal without ever calling fetch", async () => {
+  await withTempDir(async (dir) => {
+    await withEnv({ REELIER_CLOUD_URL: "https://cloud.example", REELIER_CLOUD_KEY: "test-key" }, async () => {
+      for (const bad of ["acme/my-private-fixture", "acme\\my-skill", "../escape", "a..b"]) {
+        const { fn, calls } = fakeFetch([]);
+        const outcome = await withFetch(fn, () => getMineSkill(bad, { cwd: dir }));
+        assert.equal(outcome.kind, "error", `expected error for ${JSON.stringify(bad)}`);
+        if (outcome.kind !== "error") continue;
+        assert.match(outcome.message, /--mine takes a bare skill name/);
+        assert.equal(calls.length, 0, `no fetch for ${JSON.stringify(bad)}`);
+      }
+    });
+  });
+});
+
+test("getMineSkill: fresh fetch hits GET /api/v1/skills/<name> with a Bearer header and writes the file", async () => {
+  await withTempDir(async (dir) => {
+    await withEnv({ REELIER_CLOUD_URL: "https://cloud.example", REELIER_CLOUD_KEY: "test-key" }, async () => {
+      const { fn, calls, inits } = fakeFetch([{ status: 200, body: mineBody() }]);
+      const outcome = await withFetch(fn, () => getMineSkill("my-private-fixture", { cwd: dir }));
+
+      assert.equal(outcome.kind, "written");
+      if (outcome.kind !== "written") return;
+      assert.equal(outcome.path, path.join(dir, "skills", "my-private-fixture.skill.md"));
+      assert.equal(outcome.result.contentSha256, MINE_SHA);
+      assert.equal(outcome.steps.length, 1);
+      assert.equal(outcome.steps[0].effect, "read");
+      assert.deepEqual(outcome.endpoints, ["https://internal.example.com"]);
+
+      const written = await readFile(outcome.path, "utf8");
+      assert.equal(written, MINE_SKILL_MD);
+
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0], "https://cloud.example/api/v1/skills/my-private-fixture");
+      const headers = inits[0]?.headers as Record<string, string>;
+      assert.equal(headers.authorization, "Bearer test-key");
+    });
+  });
+});
+
+test("getMineSkill: 404 -> 'error' outcome naming the private skill, no write", async () => {
+  await withTempDir(async (dir) => {
+    await withEnv({ REELIER_CLOUD_URL: "https://cloud.example", REELIER_CLOUD_KEY: "test-key" }, async () => {
+      const { fn } = fakeFetch([{ status: 404 }]);
+      const outcome = await withFetch(fn, () => getMineSkill("nonexistent", { cwd: dir }));
+      assert.equal(outcome.kind, "error");
+      if (outcome.kind !== "error") return;
+      assert.match(outcome.message, /No private skill named 'nonexistent' in your cloud/);
+      await assert.rejects(() => readFile(path.join(dir, "skills", "nonexistent.skill.md"), "utf8"));
+    });
+  });
+});
+
+test("getMineSkill: 401 -> 'error' outcome naming the key rejection", async () => {
+  await withTempDir(async (dir) => {
+    await withEnv({ REELIER_CLOUD_URL: "https://cloud.example", REELIER_CLOUD_KEY: "bad-key" }, async () => {
+      const { fn } = fakeFetch([{ status: 401 }]);
+      const outcome = await withFetch(fn, () => getMineSkill("my-private-fixture", { cwd: dir }));
+      assert.equal(outcome.kind, "error");
+      if (outcome.kind !== "error") return;
+      assert.match(outcome.message, /401/);
+      assert.match(outcome.message, /REELIER_CLOUD_KEY/);
+    });
+  });
+});
+
+test("getMineSkill: tamper — body's actual sha256 doesn't match its own declared contentSha256 -> nothing written", async () => {
+  await withTempDir(async (dir) => {
+    await withEnv({ REELIER_CLOUD_URL: "https://cloud.example", REELIER_CLOUD_KEY: "test-key" }, async () => {
+      const { fn } = fakeFetch([{ status: 200, body: mineBody({ contentSha256: "0".repeat(64) }) }]);
+      const outcome = await withFetch(fn, () => getMineSkill("my-private-fixture", { cwd: dir }));
+      assert.equal(outcome.kind, "tamper");
+      if (outcome.kind !== "tamper") return;
+      assert.equal(outcome.expectedSha, "0".repeat(64));
+      assert.equal(outcome.actualSha, MINE_SHA);
+      await assert.rejects(() => readFile(path.join(dir, "skills", "my-private-fixture.skill.md"), "utf8"));
+    });
+  });
+});
+
+test("getMineSkill: same-hash collision -> 'up-to-date', no write", async () => {
+  await withTempDir(async (dir) => {
+    const skillsDir = path.join(dir, "skills");
+    await mkdir(skillsDir, { recursive: true });
+    const outPath = path.join(skillsDir, "my-private-fixture.skill.md");
+    await writeFile(outPath, MINE_SKILL_MD, "utf8");
+
+    await withEnv({ REELIER_CLOUD_URL: "https://cloud.example", REELIER_CLOUD_KEY: "test-key" }, async () => {
+      const { fn } = fakeFetch([{ status: 200, body: mineBody() }]);
+      const outcome = await withFetch(fn, () => getMineSkill("my-private-fixture", { cwd: dir }));
+      assert.equal(outcome.kind, "up-to-date");
+      if (outcome.kind !== "up-to-date") return;
+      assert.equal(outcome.path, outPath);
+      const after = await readFile(outPath, "utf8");
+      assert.equal(after, MINE_SKILL_MD);
+    });
+  });
+});
+
+test("getMineSkill: different-hash collision -> hard error, no write, --force overwrites", async () => {
+  await withTempDir(async (dir) => {
+    const skillsDir = path.join(dir, "skills");
+    await mkdir(skillsDir, { recursive: true });
+    const outPath = path.join(skillsDir, "my-private-fixture.skill.md");
+    const staleContent = "---\nname: my-private-fixture\ndescription: stale\n---\n\n### Step 1 — x\n- intent: x\n- action: http.get {}\n- effect: read\n";
+    await writeFile(outPath, staleContent, "utf8");
+
+    await withEnv({ REELIER_CLOUD_URL: "https://cloud.example", REELIER_CLOUD_KEY: "test-key" }, async () => {
+      const { fn } = fakeFetch([{ status: 200, body: mineBody() }]);
+      const outcome = await withFetch(fn, () => getMineSkill("my-private-fixture", { cwd: dir }));
+      assert.equal(outcome.kind, "hash-mismatch");
+      const after = await readFile(outPath, "utf8");
+      assert.equal(after, staleContent);
+    });
+
+    await withEnv({ REELIER_CLOUD_URL: "https://cloud.example", REELIER_CLOUD_KEY: "test-key" }, async () => {
+      const { fn } = fakeFetch([{ status: 200, body: mineBody() }]);
+      const outcome = await withFetch(fn, () => getMineSkill("my-private-fixture", { cwd: dir, force: true }));
+      assert.equal(outcome.kind, "written");
+      const after = await readFile(outPath, "utf8");
+      assert.equal(after, MINE_SKILL_MD);
+    });
+  });
+});
+
+test("getMineSkill: missing REELIER_CLOUD_URL/KEY -> error outcome, no network call (same helpful message push prints)", async () => {
+  await withTempDir(async (dir) => {
+    await withEnv({ REELIER_CLOUD_URL: undefined, REELIER_CLOUD_KEY: undefined }, async () => {
+      const { fn, calls } = fakeFetch([]);
+      const outcome = await withFetch(fn, () => getMineSkill("my-private-fixture", { cwd: dir }));
+      assert.equal(outcome.kind, "error");
+      if (outcome.kind !== "error") return;
+      assert.match(outcome.message, /REELIER_CLOUD_URL/);
+      assert.match(outcome.message, /REELIER_CLOUD_KEY/);
+      assert.match(outcome.message, /'reelier push'/); // literally push's own message, per the task brief
+      assert.equal(calls.length, 0);
     });
   });
 });
