@@ -2,6 +2,27 @@
 
 All notable changes to `reelier`. Dates are release dates.
 
+## 0.16.0 — Publish in one flag, fetch your own
+
+### Added
+- **`reelier push <skill> --public`.** Publish a skill to the reelier.com
+  registry in one command — triage grades it and either lists it instantly
+  (read-only) or queues it for review. Prints `Listed: <url>` /
+  `Pending review (usually within 2 business days): <url>` / the honest
+  fallback if the cloud can't mint a link. Missing `license:` surfaces the
+  server error and exits non-zero.
+- **`reelier get --mine <name>`.** Fetch your OWN private skill from the
+  cloud — "push here, fetch anywhere you're logged in," zero public
+  exposure. Sha-verified before write, same collision semantics as public
+  `get`; the trust block marks it as your private copy. Never executes.
+- **Run receipts now carry `skillContentSha256`** (the sha256 of the exact
+  skill bytes that produced the run), so a shared receipt can be tied to a
+  registry listing by content — the basis for the registry's cross-tenant
+  "someone else ran this" signal. Optional; older clouds ignore it.
+
+### Fixed
+- `get <missing>` (and every `get` error path) now exits non-zero for CI.
+
 ## 0.15.0 — Get skills from the registry
 
 ### Added
