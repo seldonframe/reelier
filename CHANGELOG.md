@@ -2,6 +2,28 @@
 
 All notable changes to `reelier`. Dates are release dates.
 
+## 0.18.0 — The flight recorder
+
+### Added
+- **Policy seatbelt.** `.reelier/policy.yml` (or `~/.reelier/policy.yml`)
+  deny-lists and dry-runs tool calls at the wrap chokepoint — enforced in
+  the recorder, not the prompt, so the agent can't be talked out of it.
+  Denied calls return a structured policy error; dry-runs return synthetic
+  success marked DRY-RUN and never forward. `reelier policy check` lints
+  the file. Endpoint rules match literal URLs in tool args (apex-or-
+  subdomain semantics); rules that match no wrapped tool warn at start.
+  Fail-open with a visible gap marker — a policy problem never bricks
+  your agent, and never hides.
+- **The $ meter.** `reelier cost [skill] [--since 7d|30d|all]` prices your
+  recorded runs from actual token counts — bundled table verified against
+  provider pricing pages (2026-07-22), overridable via
+  `~/.reelier/prices.yml`. Unknown model → honest "n/a", never a guess.
+  Receipts gain optional `costUsd` + `priceTableDate`.
+- **Import sessions from any agent.** `from-session`/`scan` now parse
+  Codex CLI and OpenClaw session logs (formats verified against upstream
+  sources), alongside Claude Code. Cursor/Windsurf are detected and
+  reported honestly (undocumented SQLite — no guessed parser).
+
 ## 0.17.0 — MIT
 
 ### Changed
