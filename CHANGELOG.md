@@ -2,6 +2,14 @@
 
 All notable changes to `reelier`. Dates are release dates.
 
+## 0.17.0 — MIT
+
+### Changed
+- **License: AGPL-3.0 → MIT**, from this version forward. Use Reelier
+  anywhere, embed it in anything — no copyleft obligations, no legal
+  review needed. Versions ≤0.16.0 remain AGPL-3.0 as released. The moat
+  was never the code; it's the receipts.
+
 ## 0.16.0 — Publish in one flag, fetch your own
 
 ### Added

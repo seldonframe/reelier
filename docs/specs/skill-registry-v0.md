@@ -38,7 +38,7 @@ reelier get <owner>/<skill>[@<N> | @sha256:<hex>]     # default: latest listed v
 - **Dashboard:** a "Submit to registry" toggle on `/dashboard/skills/[name]` — same pipeline, second door for already-uploaded skills.
 - **Namespace = GitHub login**, via the existing GitHub OAuth. **Explicit tenant→GitHub linking step:** an API-key tenant and an OAuth identity are not automatically the same thing (the known fixlyai-vs-seed mismatch proves it) — until the tenant is linked, `--public` errors with the exact dashboard URL to complete the link. Reserved names (`reelier`, `admin`, route words) blocklisted; `reelier` is the house owner.
 - **Versioning:** server-assigned integers, auto-bumped on any content-hash change. Listings are **immutable per content hash**: republishing identical bytes is a no-op; changed bytes mint version N+1 and **re-enter moderation** (a v1 read-only skill must not silently become a v2 write skill — grade recomputed and re-gated per hash). Old listed versions stay fetchable by `@N`/`@sha256:`.
-- **License:** frontmatter grows one field, `license:` (SPDX id), **required for `--public`**. The CLI prompts with a default of `MIT`; absent license = 400 at submit, never a guessed default. AGPL applies to the CLI, not user skills.
+- **License:** frontmatter grows one field, `license:` (SPDX id), **required for `--public`**. The CLI prompts with a default of `MIT`; absent license = 400 at submit, never a guessed default. (The CLI itself is MIT as of 0.17.0; skill licenses are the publisher's own choice.)
 
 ## 3. Public pages
 

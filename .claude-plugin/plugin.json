@@ -9,7 +9,7 @@
   },
   "homepage": "https://www.reelier.com",
   "repository": "https://github.com/seldonframe/reelier",
-  "license": "AGPL-3.0-only",
+  "license": "MIT",
   "keywords": [
     "mcp",
     "replay",

@@ -58,4 +58,4 @@ env vars (Reelier needs no API key) and only `reelier`/`npx` as binaries.
 Publishing to ClawHub releases the published bundle under **MIT-0**
 (ClawHub does not honor per-skill license overrides). That covers only the
 `clawhub/reelier/SKILL.md` documentation bundle — the Reelier source code
-in this repository remains AGPL-3.0.
+in this repository is MIT-licensed.

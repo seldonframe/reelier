@@ -13,7 +13,7 @@ Record the run that worked, replay it deterministically — **0 tokens, byte-ide
 [![npm version](https://img.shields.io/npm/v/reelier.svg?color=blue)](https://www.npmjs.com/package/reelier)
 [![CI](https://github.com/seldonframe/reelier/actions/workflows/ci.yml/badge.svg)](https://github.com/seldonframe/reelier/actions/workflows/ci.yml)
 [![tests](https://img.shields.io/badge/tests-233%20passing-brightgreen.svg)](./test)
-[![license](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](./LICENSE)
+[![license](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 [![Discord](https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white)](https://discord.gg/nSp5sd4v)
 [![stars](https://img.shields.io/github/stars/seldonframe/reelier?style=social)](https://github.com/seldonframe/reelier)
 
@@ -142,9 +142,9 @@ From a real, live head-to-head benchmark (agent vs. Reelier, same task, same dat
 
 Level-0 replay (the default) never calls a model — 0 tokens, by construction. Escalation (`--max-level 1|2`) is opt-in and speaks through one narrow BYOK surface (`--llm-base-url` + `--llm-model`): a native Anthropic Messages adapter, and an OpenAI-compatible adapter for everything else (OpenRouter, Ollama, Gemini's OpenAI endpoint, Groq, vLLM, LM Studio, Kimi, …). Point it at a stronger model and every skill's *next* self-heal gets smarter for free.
 
-## Own it — AGPL, BYOK, local-first
+## Own it — MIT, BYOK, local-first
 
-The engine can never be taken closed. Your skills, traces, and run records are **your data** — leaving is copying a folder. The formats are specified in [SPEC.md](./SPEC.md), a normative RFC-style reference so anyone can emit or consume them without reading the source.
+Use it anywhere, embed it in anything — no copyleft strings, no legal review needed. Your skills, traces, and run records are **your data** — leaving is copying a folder. The formats are specified in [SPEC.md](./SPEC.md), a normative RFC-style reference so anyone can emit or consume them without reading the source.
 
 ## Contributing
 
@@ -161,7 +161,7 @@ npm install && npm test
 
 ## License
 
-[AGPL-3.0](./LICENSE) — free to fork, audit, and self-host forever.
+[MIT](./LICENSE) — free to fork, embed, audit, and self-host forever. (Versions ≤0.16.0 were released under AGPL-3.0 and remain so.)
 
 <div align="center">
 

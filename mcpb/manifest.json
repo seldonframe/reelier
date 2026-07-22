@@ -4,7 +4,7 @@
   "display_name": "Reelier",
   "version": "0.13.0",
   "description": "Record an agent's tool-call workflow once, replay it deterministically at 0 tokens, and diff runs to catch drift — CI + snapshot tests for MCP tool-call workflows.",
-  "long_description": "Reelier records an agent's tool-call session (MCP-native), compiles it into a SKILL.md with an assertion on every step, replays it at Level 0 (no LLM, milliseconds, byte-identical, read-only by default), and diffs runs to report SAME or DRIFTED per step with exit 1 on drift. Every run writes a receipt. AGPL-3.0, local-first, BYOK.",
+  "long_description": "Reelier records an agent's tool-call session (MCP-native), compiles it into a SKILL.md with an assertion on every step, replays it at Level 0 (no LLM, milliseconds, byte-identical, read-only by default), and diffs runs to report SAME or DRIFTED per step with exit 1 on drift. Every run writes a receipt. MIT, local-first, BYOK.",
   "author": {
     "name": "Maxime Houle",
     "url": "https://www.reelier.com"
@@ -15,7 +15,7 @@
     "type": "git",
     "url": "https://github.com/seldonframe/reelier"
   },
-  "license": "AGPL-3.0",
+  "license": "MIT",
   "keywords": ["testing", "ci", "replay", "deterministic", "agents", "snapshot-tests", "mcp"],
   "server": {
     "type": "node",
