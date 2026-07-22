@@ -2,6 +2,20 @@
 
 All notable changes to `reelier`. Dates are release dates.
 
+## 0.15.0 — Get skills from the registry
+
+### Added
+- **`reelier get <owner>/<skill>`.** Fetch a published skill from the
+  reelier.com registry — latest listed version by default, or pin with
+  `@<N>` / `@sha256:<hex>`. The CLI verifies the content hash against
+  the registry's `contentSha256` before writing anything; a mismatch
+  writes nothing and errors loudly. Lands at `./skills/<skill>.skill.md`
+  (`--dir` overrides); identical content is a no-op, different content
+  is a hard error unless `--force`. After writing it prints the trust
+  block — effect grade, per-step effects, endpoints, license, content
+  hash — and the next command. WRITES-graded skills print the
+  replay-re-executes warning. `get` never executes anything.
+
 ## 0.14.0 — Receipts you can hand to someone
 
 ### Added
