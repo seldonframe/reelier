@@ -11,6 +11,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { parseSkill, SkillParseError } from "./skill.js";
 import { runSkill, dryRunSkill, readRunRecords, type RunRecord } from "./runner.js";
 import { pushSkill, type PushRecordResult } from "./push.js";
+import { getSkill, type GetOutcome } from "./get.js";
 import { builtinTools } from "./tools.js";
 import { connectDownstream, type DownstreamConnection } from "./mcp-client.js";
 import { buildMcpTools } from "./mcp-tool.js";
@@ -1171,6 +1172,79 @@ export async function cmdPush(args: ParsedArgs): Promise<number> {
 }
 
 /**
+ * `reelier get <owner>/<skill>[@<N> | @sha256:<hex>]` — CONSUME half of the
+ * public skill registry (see src/get.ts's header for the fetch API contract
+ * and the @N/@sha256 request-shape decision). Never executes the skill;
+ * only fetches, verifies, and writes one file.
+ */
+function printTrustBlock(outcome: Extract<GetOutcome, { kind: "written" }>): void {
+  const { result, steps } = outcome;
+  const gradeLabel = result.effectGrade === "read_only" ? "READ-ONLY" : "WRITES";
+  console.log(`Effect grade: ${gradeLabel}`);
+  if (steps.length > 0) {
+    console.log("Per-step effects:");
+    for (const s of steps) {
+      console.log(`  Step ${s.n} — ${s.title} [${s.effect}]`);
+    }
+  }
+  console.log(`Endpoints: ${result.endpoints.length > 0 ? result.endpoints.join(", ") : "(none)"}`);
+  console.log(`License: ${result.license}`);
+  console.log(`Content hash: sha256:${result.contentSha256}`);
+  console.log("");
+  console.log(`Next: reelier run ${outcome.path}`);
+  if (result.effectGrade === "writes") {
+    console.log("");
+    console.log("Replay re-executes. This skill performs writes; `reelier run` will require --allow-writes.");
+  }
+}
+
+export async function cmdGet(args: ParsedArgs): Promise<number> {
+  const ref = args.positional[0];
+  if (!ref) {
+    console.error("Usage: reelier get <owner>/<skill>[@<N> | @sha256:<hex>] [--dir <dir>] [--force]");
+    return 1;
+  }
+
+  let outcome: GetOutcome;
+  try {
+    outcome = await getSkill(ref, { dir: args.opts.dir, force: args.flags.has("force") });
+  } catch (err) {
+    console.error((err as Error).message);
+    return 1;
+  }
+
+  switch (outcome.kind) {
+    case "error":
+      console.error(outcome.message);
+      return 1;
+    case "removed":
+      console.error(`This skill has been removed from the registry: ${outcome.reason}`);
+      return 1;
+    case "tamper":
+      console.error(
+        `Integrity check FAILED — the fetched content's sha256 does not match the ${
+          outcome.source === "pin" ? "requested @sha256: pin" : "server-declared contentSha256"
+        }. Expected ${outcome.expectedSha}, got ${outcome.actualSha}. Nothing was written.`
+      );
+      return 1;
+    case "hash-mismatch":
+      console.error(
+        `${outcome.path} already exists with different content (local sha256 ${outcome.existingSha}, incoming ` +
+          `${outcome.incomingSha}). Run 'reelier diff' to compare, or pass --force to overwrite.`
+      );
+      return 1;
+    case "up-to-date":
+      console.log(`${outcome.path} is already up to date (skill '${outcome.skillName}' v${outcome.version}).`);
+      return 0;
+    case "written":
+      console.log(`Wrote ${outcome.path} (v${outcome.result.version}).`);
+      console.log("");
+      printTrustBlock(outcome);
+      return 0;
+  }
+}
+
+/**
  * Compile a trace, print the "these are the gaps I won't guess about" open
  * questions block, replay it once at Level 0 (zero LLM calls, optionally
  * against real `--wrap`'d downstream(s) for the recorded-session path), and
@@ -1511,9 +1585,10 @@ async function cmdInit(args: ParsedArgs): Promise<number> {
 }
 
 const USAGE =
-  "Usage: reelier <run|bench|mcp|serve|trace|compile|push|diff|init|from-session|scan|install|uninstall> [options]\n" +
+  "Usage: reelier <run|bench|mcp|serve|trace|compile|push|get|diff|init|from-session|scan|install|uninstall> [options]\n" +
   "  mcp   — RECORDER: fronts your own --wrap'd MCP server(s) to capture their calls into a trace.\n" +
   "  serve — TOOL-SERVER: exposes Reelier's own commands (scan/from-session/replay/push/diff) as MCP tools.\n" +
+  "  get   — fetch a public registry skill to ./skills/<skill>.skill.md; never executes it.\n" +
   "  diff  — compare the last two runs of a skill; exit 1 on drift (gate a scheduled replay).";
 
 async function main(): Promise<number> {
@@ -1550,6 +1625,8 @@ async function main(): Promise<number> {
       return cmdCompile(args);
     case "push":
       return cmdPush(args);
+    case "get":
+      return cmdGet(args);
     case "diff":
       return cmdDiff(args);
     case "init":
