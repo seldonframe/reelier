@@ -505,7 +505,7 @@ interface StepRecord {
   outcome: "passed" | "failed" | "unchecked" | "skipped";
   ms: number;
   failures: string[];
-  llm?: { inputTokens: number; outputTokens: number };
+  llm?: { inputTokens: number; outputTokens: number; model?: string };
   escalationAttempted?: 0 | 1 | 2;
   why?: { trigger?: string; change?: string };
 }
@@ -517,7 +517,7 @@ interface StepRecord {
 | `outcome` | `"passed"` — ran, had ≥1 assertion, all held. `"unchecked"` — ran, had zero assertions (honest-success rule, §4.3). `"failed"` — an assertion or bind failed, a tool errored, a template var was unbound, or an unknown tool/destructive-without-`--yes` refusal occurred, **and** it did not heal via escalation. `"skipped"` — an earlier step diverged and the run stopped before this step was attempted. |
 | `level` | `0` = ran deterministically **or** never healed (including "escalation was attempted but didn't hold" — see the distinction below). `1`/`2` = **healed** at that escalation level. |
 | `failures` | Human-readable failure messages accumulated for this step; empty iff `outcome` is `"passed"`/`"unchecked"`. On a healed step, `failures` is reset to `[]`. |
-| `llm` | Present **iff** escalation ran for this step at all (any level, success or failure) — summed input/output tokens across every attempt on this step. Absent, not `{inputTokens:0,...}`, when escalation never ran. |
+| `llm` | Present **iff** escalation ran for this step at all (any level, success or failure) — summed input/output tokens across every attempt on this step. Absent, not `{inputTokens:0,...}`, when escalation never ran. `llm.model` (0.17.0+, the $ meter — flight-recorder-v1 §2) is the model of the **highest escalation level actually invoked** on this step (L2's model if L2 ran, else L1's) — a step that tried L1 then L2 with two different models has its summed tokens priced entirely at the L2 rate by `reelier cost`. Absent when the caller never passed `--llm-model`/`--llm-l2-model` and the runner's own default also went unresolved (never happens in practice — the runner always has a default), or on any pre-0.17.0 record. |
 | `escalationAttempted` | The **highest level TRIED**, present iff L1 was invoked at all. **Distinct from `level`**: a step can have `escalationAttempted: 2` and `level: 0` simultaneously — it burned L1 and L2 tokens and still never healed. `level` only ever reflects the level that *healed* it. |
 | `why` (0.8.0+) | Present **only** when this step's behavior changed: `trigger` = the load-bearing divergence (the first failure, verbatim from the real assertion/tool result) on a `"failed"` step; `change` = what the successful L1/L2 patch changed (`"L1: <reason>"` / `"L2: <reason>"`, the escalation's own reason) on a healed step. Absent on an unchanged step. **Never fabricated** — a producer MUST populate it only from observed engine data, never from generated narrative. |
 
@@ -1013,6 +1013,19 @@ above (plus the opt-in `share` field on `/api/v1/runs`) — no telemetry, no
 extra headers, no implicit retry. `share` defaults to unset/false: a push
 is never made public unless the caller explicitly passes `--share`.
 
+`/api/v1/runs`'s body also carries `skillContentSha256` (sha256 of the
+skill-file bytes that produced the run) whenever the record has one or a
+push-time fallback hash is computed, and — as of 0.17.0, the $ meter
+(flight-recorder-v1 §2) — optional top-level `costUsd` (number) and
+`priceTableDate` (the bundled price table's retrieval date, `YYYY-MM-DD`)
+computed from the record's own LLM tokens against the active price table
+(`src/cost.ts`). Both are present together or absent together: absent
+whenever any step's tokens can't be priced (no price entry for its
+recorded model) — the client never sends a partial or guessed dollar
+figure. An older cloud that doesn't recognize these fields ignores them;
+this is a client-side-only addition (displaying them on a receipt page is
+a separate, not-yet-built, piece of cloud-side work).
+
 ### 8.3 Cursor semantics (client-side state, not part of the wire contract)
 
 `reelier push` maintains `.reelier/push-state.json` —
@@ -1321,6 +1334,81 @@ downstream server. The top-level unknown-command usage text
 (`reelier <run|bench|mcp|serve|...>`) likewise spells out the `mcp` vs.
 `serve` role split inline, so a mistyped or unfamiliar invocation is
 redirected rather than left to guess from a bare "unknown command" error.
+
+## 11. The $ meter (`reelier cost` / `reelier prices`) — 0.17.0
+
+Source of truth: `src/prices.ts` (bundled table), `src/cost.ts` (cost math,
+`~/.reelier/prices.yml` parsing, `--since` filtering), `test/cost.test.ts`,
+`test/cost-cli.test.ts`. See flight-recorder-v1 spec §2 for the feature
+brief this implements.
+
+### 11.1 Price table resolution (normative)
+
+Prices are **never auto-fetched** — a wrong silent price is treated as a
+lie, the same standard as any other honesty rule in this spec. The active
+price table is the bundled default table (`src/prices.ts`, pinned to a
+retrieval date against each provider's official pricing docs) merged with
+an optional `~/.reelier/prices.yml` override, model-id keyed, user entries
+winning per-model over the bundled default. A missing override file is
+the normal case (bundled-only, no warning). A present-but-malformed
+override file throws rather than silently falling back to bundled-only —
+the user clearly meant to change something and a swallowed parse error
+would leave them thinking their override took effect when it didn't.
+
+`~/.reelier/prices.yml` shape (the only shape the hand-rolled parser
+accepts — no new YAML dependency, matching this repo's zero-new-deps
+convention):
+
+```yaml
+version: 1
+models:
+  <model-id>:
+    inputPerMtok: <number>
+    outputPerMtok: <number>
+```
+
+### 11.2 Cost math (normative)
+
+A step's cost is computed only from its own `llm.inputTokens` /
+`llm.outputTokens` / `llm.model` (§4.1). A step with zero tokens costs
+exactly `$0` and carries no unpriced-model verdict. A step with tokens but
+**no price entry for its recorded model** (or no model recorded at all)
+is `unknown model` — its tokens are never guessed at any price, including
+$0 or an average of known models. A run's total cost is the sum of every
+priceable step; if any step in the run is unpriceable, the run's total is
+explicitly a **partial** total (the CLI and the push-time `costUsd` field,
+§8.2, both refuse to present a partial total as if it were complete —
+`reelier cost` labels it `n/a (unknown model: <id>)` and flags the
+aggregate total as PARTIAL; `reelier push` omits `costUsd`/`priceTableDate`
+entirely for that record).
+
+A run whose steps carry zero LLM tokens across the board — the common
+case, since deterministic replay (`--max-level 0`, the default) never
+constructs an LLM at all — is `isZeroTokenReplay`. `reelier cost` reports
+how many of the listed runs are exactly this case as its honest "replay
+would have cost $0.00" line: computed only from each record's own
+zero-token steps, never a marketing estimate.
+
+### 11.3 `reelier cost [skill] [--since 7d|30d|all]`
+
+With `skill` given, reads only `.reelier/runs/<skill>.jsonl`. Without it,
+enumerates every `.jsonl` file under `.reelier/runs/` and reports across
+all of them. `--since` filters runs by `startedAt`; omitted defaults to
+`all`. Output is one row per run (started time, skill, step count, input/
+output tokens, the model(s) used — `mixed` when a run's steps used more
+than one distinct model, `-` when none), a totals row, the PARTIAL note
+when applicable, the zero-token-replay line, and the active price table's
+provenance (bundled retrieval date, plus the override path when loaded).
+
+### 11.4 `reelier prices` / `reelier prices update`
+
+`reelier prices` lists the currently active merged table (§11.1),
+model-sorted, each row tagged `bundled` or `override` by source.
+`reelier prices update` is deliberately **not** an auto-fetch (spec
+non-goal) — it only prints the bundled table's retrieval date and the
+override file's expected shape; refreshing the bundled table itself is a
+manual code change (edit `src/prices.ts`, re-verify each source URL,
+bump the retrieval date).
 
 ## Deviations noted
 
