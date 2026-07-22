@@ -145,6 +145,10 @@ export interface PushRecordResult {
   id?: string;
   fieldErrors?: unknown;
   message?: string;
+  /** Only set when the push was made with `--share` and the cloud minted/reused a public receipt token. */
+  shareUrl?: string;
+  /** Only set alongside shareUrl — the badge SVG URL for the same token. */
+  badgeUrl?: string;
 }
 
 export interface PushResult {
@@ -173,6 +177,13 @@ export interface PushOptions {
   dryRun?: boolean;
   /** Upload the skill file even if it was already uploaded before. */
   withSkill?: boolean;
+  /**
+   * Opt each pushed record into a PUBLIC receipt (mint-or-reuse a share
+   * token cloud-side). Privacy first: omitted/false means every push stays
+   * private by default — see cli.ts's `--share` flag, the only place that
+   * sets this.
+   */
+  share?: boolean;
   onRecordResult?: (result: PushRecordResult) => void;
 }
 
@@ -206,7 +217,8 @@ async function pushOneRecord(
   config: PushConfig,
   skillName: string,
   record: RunRecord,
-  index: number
+  index: number,
+  share?: boolean
 ): Promise<PushRecordResult> {
   let res: Response;
   try {
@@ -216,21 +228,21 @@ async function pushOneRecord(
         "content-type": "application/json",
         authorization: `Bearer ${config.apiKey}`,
       },
-      body: JSON.stringify({ skillName, record }),
+      body: JSON.stringify({ skillName, record, ...(share ? { share: true } : {}) }),
     });
   } catch (err) {
     return { index, outcome: "error", message: `Network error: ${(err as Error).message}` };
   }
 
   if (res.status === 202) {
-    let body: { id?: string } = {};
+    let body: { id?: string; shareUrl?: string; badgeUrl?: string } = {};
     try {
       body = JSON.parse(await res.text());
     } catch {
       // A 202 with an unparseable body is still a successful push as far as
       // the ledger is concerned — the id just won't be reported.
     }
-    return { index, outcome: "pushed", id: body.id };
+    return { index, outcome: "pushed", id: body.id, shareUrl: body.shareUrl, badgeUrl: body.badgeUrl };
   }
   if (res.status === 401) {
     return { index, outcome: "auth-failed", message: "the configured REELIER_CLOUD_KEY was rejected" };
@@ -323,7 +335,7 @@ export async function pushSkill(skillPath: string, options: PushOptions = {}): P
   let aborted = false;
 
   for (let i = 0; i < candidates.length; i++) {
-    const result = await pushOneRecord(config, skill.name, candidates[i], cursorBefore + i);
+    const result = await pushOneRecord(config, skill.name, candidates[i], cursorBefore + i, options.share);
     results.push(result);
     options.onRecordResult?.(result);
 

@@ -390,3 +390,45 @@ test("push: a JSON-corrupted push-state.json WARNs, is renamed aside, and pushin
     assert.doesNotThrow(() => JSON.parse(freshRaw));
   });
 });
+
+test("push: --share sends share:true and surfaces shareUrl/badgeUrl from the response", async () => {
+  await withTempDir(async (dir) => {
+    const skillPath = await setupFixture(dir, 1);
+    await withEnv({ REELIER_CLOUD_URL: "https://cloud.example", REELIER_CLOUD_KEY: "test-key" }, async () => {
+      const fetchSeq = fakeFetch([
+        { status: 200 }, // skill upload
+        {
+          status: 202,
+          body: { id: "run_0", shareUrl: "https://cloud.example/r/tok_abc", badgeUrl: "https://cloud.example/badge/tok_abc" },
+        },
+      ]);
+      const result = await withFetch(fetchSeq.fn, () => pushSkill(skillPath, { cwd: dir, share: true }));
+
+      assert.equal(result.pushedCount, 1);
+      assert.equal(result.results[0].shareUrl, "https://cloud.example/r/tok_abc");
+      assert.equal(result.results[0].badgeUrl, "https://cloud.example/badge/tok_abc");
+
+      // The run POST body carried share:true.
+      const runCall = fetchSeq.calls[1];
+      const sentBody = JSON.parse(runCall.init.body as string);
+      assert.equal(sentBody.share, true);
+    });
+  });
+});
+
+test("push: without --share, the request body omits 'share' entirely and the result carries no shareUrl/badgeUrl", async () => {
+  await withTempDir(async (dir) => {
+    const skillPath = await setupFixture(dir, 1);
+    await withEnv({ REELIER_CLOUD_URL: "https://cloud.example", REELIER_CLOUD_KEY: "test-key" }, async () => {
+      const fetchSeq = fakeFetch([{ status: 200 }, { status: 202, body: { id: "run_0" } }]);
+      const result = await withFetch(fetchSeq.fn, () => pushSkill(skillPath, { cwd: dir }));
+
+      assert.equal(result.results[0].shareUrl, undefined);
+      assert.equal(result.results[0].badgeUrl, undefined);
+
+      const runCall = fetchSeq.calls[1];
+      const sentBody = JSON.parse(runCall.init.body as string);
+      assert.equal("share" in sentBody, false);
+    });
+  });
+});

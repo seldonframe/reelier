@@ -2,8 +2,10 @@
 // Hand-rolled argv parsing (no commander). Two subcommands: run, bench.
 
 import { readFile, writeFile, access } from "node:fs/promises";
+import { realpathSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { pathToFileURL } from "node:url";
 import { createInterface } from "node:readline/promises";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { parseSkill, SkillParseError } from "./skill.js";
@@ -35,7 +37,11 @@ import { scanTranscripts, scanAgentSessions, agentSources, replayableRateStats, 
 import { planInstall, applyInstall, findLatestBackup, restoreFromBackup, planWrapOffer, type InstallResult } from "./wrap.js";
 import { buildToolServer, runDiffTool } from "./serve.js";
 
-interface ParsedArgs {
+// Exported (alongside cmdPush below) so test/push-cli.test.ts can drive
+// cmdPush's console output directly with a fake ParsedArgs + monkeypatched
+// fetch, instead of spawning a real subprocess against a real HTTP server —
+// same reasoning as computeBenchSummary's export just below.
+export interface ParsedArgs {
   positional: string[];
   flags: Set<string>;
   vars: Record<string, string>;
@@ -1052,16 +1058,23 @@ function fmtFieldErrors(fieldErrors: unknown): string {
   }
 }
 
-async function cmdPush(args: ParsedArgs): Promise<number> {
+export async function cmdPush(args: ParsedArgs): Promise<number> {
   const skillPath = args.positional[0];
   if (!skillPath) {
-    console.error("Usage: reelier push <skill.md> [--all] [--dry-run] [--with-skill]");
+    console.error("Usage: reelier push <skill.md> [--all] [--dry-run] [--with-skill] [--share]");
     return 1;
   }
 
   const dryRun = args.flags.has("dry-run");
   const all = args.flags.has("all");
   const withSkill = args.flags.has("with-skill");
+  const share = args.flags.has("share");
+
+  // Tracks whether the cloud actually honored --share on at least one
+  // pushed record this run — a mint failure or an older cloud that doesn't
+  // understand `share` yet still returns a plain 202 with no shareUrl, and
+  // that must never be a silent no-op (see the `share` block below).
+  let sawShareUrl = false;
 
   let result;
   try {
@@ -1069,6 +1082,7 @@ async function cmdPush(args: ParsedArgs): Promise<number> {
       all,
       dryRun,
       withSkill,
+      share,
       onRecordResult: (r: PushRecordResult) => {
         if (dryRun) {
           console.log(`  [${r.index}] would push`);
@@ -1077,6 +1091,13 @@ async function cmdPush(args: ParsedArgs): Promise<number> {
         switch (r.outcome) {
           case "pushed":
             console.log(`  [${r.index}] pushed${r.id ? ` id=${r.id}` : ""}`);
+            if (r.shareUrl) {
+              sawShareUrl = true;
+              console.log(`    Receipt: ${r.shareUrl}`);
+              if (r.badgeUrl) {
+                console.log(`    [![reelier](${r.badgeUrl})](${r.shareUrl})`);
+              }
+            }
             break;
           case "rejected":
             console.log(
@@ -1123,6 +1144,25 @@ async function cmdPush(args: ParsedArgs): Promise<number> {
     `Pushed ${result.pushedCount}/${result.candidateCount} new record(s)${rejectedNote} for '${result.skillName}'. ` +
       `Cursor: ${result.cursorBefore} -> ${result.cursorAfter}.`
   );
+  // Privacy first: a push never creates a public receipt unless --share was
+  // passed (see PushOptions.share in push.ts). When --share wasn't passed,
+  // point at the authenticated dashboard instead, plus a one-line nudge.
+  // When --share WAS passed but nothing came back with a shareUrl (older
+  // cloud that doesn't understand `share` yet, or a mint failure the cloud
+  // swallowed), say so explicitly rather than exiting 0 with no URL at all
+  // — then fall back to the same dashboard/tip lines.
+  if (result.pushedCount > 0) {
+    if (share && !sawShareUrl) {
+      console.log("share requested, but the cloud returned no receipt link (older cloud or share failure)");
+    }
+    if (!share || !sawShareUrl) {
+      const cloudUrl = (process.env.REELIER_CLOUD_URL ?? "").replace(/\/+$/, "");
+      if (cloudUrl) {
+        console.log(`Dashboard: ${cloudUrl}/dashboard/runs`);
+      }
+      console.log("  tip: add --share for a public receipt link");
+    }
+  }
   if (result.aborted) {
     console.log("Stopped early on a transient failure (auth or network/error) — cursor left at the last consumed record.");
     return 1;
@@ -1528,14 +1568,45 @@ async function main(): Promise<number> {
   }
 }
 
-main()
-  .then((code) => {
-    // Set exitCode rather than force-calling process.exit(): fetch's
-    // underlying async handles need a turn of the event loop to close
-    // cleanly (a forced exit() here can race that teardown on Windows).
-    process.exitCode = code;
-  })
-  .catch((err) => {
-    console.error(err instanceof Error ? err.stack ?? err.message : String(err));
-    process.exitCode = 1;
-  });
+// Only run main() when this file is the process entry point (`node
+// dist/cli.js ...`, the npx-installed `reelier` bin, an npm global bin
+// symlink, or a node_modules/.bin shim) — NOT when it's merely imported as
+// a module (e.g. test/push-cli.test.ts imports cmdPush directly to
+// exercise its console output). Without this guard, importing cli.js for
+// its exports would also execute the full CLI against the importer's own
+// argv, printing USAGE and setting a stray exitCode.
+//
+// Node resolves import.meta.url to the REAL (symlink-followed) path of the
+// running module, but leaves process.argv[1] as the symlink path the
+// process was invoked through — so on Unix, comparing the two raw would
+// always mismatch for every symlinked invocation (npm global bin, `npx
+// reelier`, local node_modules/.bin), the CLI's primary distribution path.
+// realpathSync(argv[1]) resolves argv[1] the same way import.meta.url
+// already is before comparing. Wrapped in try/catch and falls back to the
+// unresolved comparison — argv[1] might not exist in exotic embedding
+// scenarios, and this must never throw at import time.
+function resolveIsMainModule(): boolean {
+  const argv1 = process.argv[1];
+  if (argv1 === undefined) return false;
+  try {
+    return import.meta.url === pathToFileURL(realpathSync(argv1)).href;
+  } catch {
+    return import.meta.url === pathToFileURL(argv1).href;
+  }
+}
+
+const isMainModule = resolveIsMainModule();
+
+if (isMainModule) {
+  main()
+    .then((code) => {
+      // Set exitCode rather than force-calling process.exit(): fetch's
+      // underlying async handles need a turn of the event loop to close
+      // cleanly (a forced exit() here can race that teardown on Windows).
+      process.exitCode = code;
+    })
+    .catch((err) => {
+      console.error(err instanceof Error ? err.stack ?? err.message : String(err));
+      process.exitCode = 1;
+    });
+}
