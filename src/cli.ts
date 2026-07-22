@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Hand-rolled argv parsing (no commander). Two subcommands: run, bench.
 
-import { readFile, writeFile, access } from "node:fs/promises";
+import { readFile, writeFile, access, readdir } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
@@ -48,6 +48,16 @@ import {
 } from "./scan.js";
 import { planInstall, applyInstall, findLatestBackup, restoreFromBackup, planWrapOffer, type InstallResult } from "./wrap.js";
 import { buildToolServer, runDiffTool } from "./serve.js";
+import {
+  costRun,
+  loadPriceTable,
+  formatUsd,
+  parseSinceFlag,
+  withinSince,
+  defaultPricesFilePath,
+  type SinceFilter,
+} from "./cost.js";
+import { BUNDLED_PRICES_RETRIEVED_AT } from "./prices.js";
 
 // Exported (alongside cmdPush below) so test/push-cli.test.ts can drive
 // cmdPush's console output directly with a fake ParsedArgs + monkeypatched
@@ -106,7 +116,8 @@ function parseArgv(argv: string[]): ParsedArgs {
       arg === "--dir" ||
       arg === "--out-dir" ||
       arg === "--agent" ||
-      arg === "--from-skill"
+      arg === "--from-skill" ||
+      arg === "--since"
     ) {
       const val = argv[++i];
       if (!val) {
@@ -418,6 +429,179 @@ async function cmdBench(args: ParsedArgs): Promise<number> {
     console.log(`  per-step failure counts: none`);
   }
 
+  return 0;
+}
+
+/** Skill names (run-record file stems) present under `.reelier/runs/` — used by `reelier cost` when no skill is named on the command line. Absent/empty directory is not an error (just no runs yet). */
+async function listRunFileSkillNames(cwd: string): Promise<string[]> {
+  const dir = path.join(cwd, ".reelier", "runs");
+  let entries: string[];
+  try {
+    entries = await readdir(dir);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw err;
+  }
+  return entries.filter((f) => f.endsWith(".jsonl")).map((f) => f.slice(0, -".jsonl".length));
+}
+
+async function cmdCost(args: ParsedArgs): Promise<number> {
+  const cwd = process.cwd();
+  const skillArg = args.positional[0];
+
+  let since: SinceFilter;
+  try {
+    since = parseSinceFlag(args.opts.since);
+  } catch (err) {
+    console.error((err as Error).message);
+    return 1;
+  }
+
+  const skillNames = skillArg ? [skillArg] : await listRunFileSkillNames(cwd);
+  if (skillNames.length === 0) {
+    console.error(
+      skillArg
+        ? `No run records found for skill '${skillArg}' at ${path.join(cwd, ".reelier", "runs", `${skillArg}.jsonl`)}`
+        : `No run records found under ${path.join(cwd, ".reelier", "runs")} — run 'reelier run <skill.md>' at least once first.`
+    );
+    return 1;
+  }
+
+  let table;
+  try {
+    table = await loadPriceTable();
+  } catch (err) {
+    console.error(`Could not load price table: ${(err as Error).message}`);
+    return 1;
+  }
+
+  const rows: { skill: string; cost: ReturnType<typeof costRun> }[] = [];
+  for (const name of skillNames) {
+    const filePath = path.join(cwd, ".reelier", "runs", `${name}.jsonl`);
+    let records: RunRecord[];
+    try {
+      records = await readRunRecords(filePath);
+    } catch (err) {
+      if (skillArg) {
+        console.error(`No run records found at ${filePath}: ${(err as Error).message}`);
+        return 1;
+      }
+      continue; // listRunFileSkillNames already found the file; a race/removal here just skips it
+    }
+    for (const record of records) {
+      if (!withinSince(record.startedAt, since)) continue;
+      rows.push({ skill: name, cost: costRun(record, table) });
+    }
+  }
+
+  if (rows.length === 0) {
+    console.log(`No runs found${since !== "all" ? ` in the last ${since}` : ""}.`);
+    return 0;
+  }
+
+  console.log(`Cost: ${skillArg ?? "(all skills)"}${since !== "all" ? ` — last ${since}` : ""}`);
+  console.log(
+    `  ${"STARTED".padEnd(24)} ${"SKILL".padEnd(20)} ${"STEPS".padStart(5)} ${"TOK IN".padStart(9)} ${"TOK OUT".padStart(9)} ${"MODEL".padEnd(24)} ${"COST".padStart(12)}`
+  );
+
+  let totalSteps = 0;
+  let totalIn = 0;
+  let totalOut = 0;
+  let totalUsd = 0;
+  let zeroTokenCount = 0;
+  const unpriceableModels = new Set<string>();
+
+  for (const { skill, cost } of rows) {
+    const modelsUsed = [...new Set(cost.steps.map((s) => s.model).filter((m): m is string => Boolean(m)))];
+    const modelLabel = modelsUsed.length === 0 ? "-" : modelsUsed.length === 1 ? modelsUsed[0] : "mixed";
+    const costLabel =
+      cost.unpriceableModels.length > 0
+        ? `n/a (unknown model: ${cost.unpriceableModels.join(", ")})`
+        : formatUsd(cost.pricedUsd);
+    console.log(
+      `  ${cost.startedAt.padEnd(24)} ${skill.padEnd(20)} ${String(cost.totalSteps).padStart(5)} ${String(
+        cost.totalInputTokens
+      ).padStart(9)} ${String(cost.totalOutputTokens).padStart(9)} ${modelLabel.padEnd(24)} ${costLabel.padStart(12)}`
+    );
+    totalSteps += cost.totalSteps;
+    totalIn += cost.totalInputTokens;
+    totalOut += cost.totalOutputTokens;
+    totalUsd += cost.pricedUsd;
+    if (cost.isZeroTokenReplay) zeroTokenCount++;
+    for (const m of cost.unpriceableModels) unpriceableModels.add(m);
+  }
+
+  console.log(
+    `  ${"TOTAL".padEnd(24)} ${"".padEnd(20)} ${String(totalSteps).padStart(5)} ${String(totalIn).padStart(
+      9
+    )} ${String(totalOut).padStart(9)} ${"".padEnd(24)} ${formatUsd(totalUsd).padStart(12)}`
+  );
+  if (unpriceableModels.size > 0) {
+    console.log(
+      `  (total is PARTIAL — excludes tokens from unpriced model(s): ${[...unpriceableModels].join(
+        ", "
+      )}; add them to ${defaultPricesFilePath()} to include)`
+    );
+  }
+  // The honest marketing sentence: only ever printed against runs whose OWN
+  // record shows zero LLM tokens (a true deterministic replay) — never a
+  // guess about what a run "would have" cost by any other measure.
+  console.log(`  ${zeroTokenCount} of ${rows.length} run(s) replayed at $0.00 — pure deterministic replay, no LLM tokens.`);
+  console.log(
+    `  price table: bundled ${table.bundledRetrievedAt}${
+      table.userFileLoaded ? ` + overrides from ${table.userFilePath}` : ""
+    }`
+  );
+
+  return 0;
+}
+
+async function cmdPrices(args: ParsedArgs): Promise<number> {
+  const sub = args.positional[0];
+
+  if (sub === "update") {
+    // v1 is explicitly non-auto-fetching (SPEC.md non-goal) — a wrong
+    // silent price is a lie. This just surfaces freshness + the override
+    // path; refreshing the bundled table itself is a manual code change.
+    console.log(`Bundled price table: retrieved ${BUNDLED_PRICES_RETRIEVED_AT}`);
+    console.log(
+      `reelier never auto-fetches prices — 'prices update' only reports the bundled table's freshness above.`
+    );
+    console.log(`To use different rates, create/edit ${defaultPricesFilePath()}:`);
+    console.log(`  version: 1`);
+    console.log(`  models:`);
+    console.log(`    <model-id>:`);
+    console.log(`      inputPerMtok: <number>`);
+    console.log(`      outputPerMtok: <number>`);
+    console.log(`Run 'reelier prices' (no subcommand) to see the current merged table.`);
+    return 0;
+  }
+
+  let table;
+  try {
+    table = await loadPriceTable();
+  } catch (err) {
+    console.error(`Could not load price table: ${(err as Error).message}`);
+    return 1;
+  }
+
+  console.log(`Prices — bundled table retrieved ${table.bundledRetrievedAt}`);
+  console.log(
+    table.userFileLoaded
+      ? `  overrides loaded from ${table.userFilePath} (${table.overriddenModels.length} model(s))`
+      : `  no override file at ${table.userFilePath} — bundled table only`
+  );
+  console.log("");
+  console.log(`  ${"MODEL".padEnd(28)} ${"IN $/Mtok".padStart(10)} ${"OUT $/Mtok".padStart(11)}  SOURCE`);
+  for (const id of Object.keys(table.models).sort()) {
+    const entry = table.models[id];
+    const source = table.overriddenModels.includes(id) ? "override" : "bundled";
+    console.log(
+      `  ${id.padEnd(28)} ${String(entry.inputPerMtok).padStart(10)} ${String(entry.outputPerMtok).padStart(
+        11
+      )}  ${source}`
+    );
+  }
   return 0;
 }
 
@@ -1753,16 +1937,18 @@ async function cmdInit(args: ParsedArgs): Promise<number> {
 }
 
 const USAGE =
-  "Usage: reelier <run|bench|mcp|serve|trace|compile|push|get|diff|init|from-session|scan|install|uninstall> [options]\n" +
-  "  mcp   — RECORDER: fronts your own --wrap'd MCP server(s) to capture their calls into a trace.\n" +
-  "  serve — TOOL-SERVER: exposes Reelier's own commands (scan/from-session/replay/push/diff) as MCP tools.\n" +
-  "  get   — fetch a public registry skill to ./skills/<skill>.skill.md; never executes it.\n" +
-  "          reelier get --mine <name> fetches YOUR OWN private skill (authenticated) instead.\n" +
-  "  diff  — compare the last two runs of a skill; exit 1 on drift (gate a scheduled replay).\n" +
+  "Usage: reelier <run|bench|cost|prices|mcp|serve|trace|compile|push|get|diff|init|from-session|scan|install|uninstall> [options]\n" +
+  "  mcp    — RECORDER: fronts your own --wrap'd MCP server(s) to capture their calls into a trace.\n" +
+  "  serve  — TOOL-SERVER: exposes Reelier's own commands (scan/from-session/replay/push/diff) as MCP tools.\n" +
+  "  get    — fetch a public registry skill to ./skills/<skill>.skill.md; never executes it.\n" +
+  "           reelier get --mine <name> fetches YOUR OWN private skill (authenticated) instead.\n" +
+  "  diff   — compare the last two runs of a skill; exit 1 on drift (gate a scheduled replay).\n" +
+  "  cost   — reelier cost [skill] [--since 7d|30d|all]: $ per run from recorded LLM tokens + ~/.reelier/prices.yml.\n" +
+  "  prices — reelier prices lists the active merged price table; 'reelier prices update' prints the bundled table's freshness.\n" +
   "  from-session — compile a transcript from Claude Code, Codex CLI, or OpenClaw into a skill.\n" +
-  "          Format is sniffed from content; override with --agent <claude-code|codex|openclaw|cursor|windsurf>.\n" +
-  "          --agent cursor / --agent windsurf report why those aren't supported yet instead of guessing.\n" +
-  "  scan  — discover session transcripts from every known agent (also reports Cursor/Windsurf DB findings).";
+  "           Format is sniffed from content; override with --agent <claude-code|codex|openclaw|cursor|windsurf>.\n" +
+  "           --agent cursor / --agent windsurf report why those aren't supported yet instead of guessing.\n" +
+  "  scan   — discover session transcripts from every known agent (also reports Cursor/Windsurf DB findings).";
 
 async function main(): Promise<number> {
   const [, , cmd, ...rest] = process.argv;
@@ -1788,6 +1974,10 @@ async function main(): Promise<number> {
       return cmdRun(args);
     case "bench":
       return cmdBench(args);
+    case "cost":
+      return cmdCost(args);
+    case "prices":
+      return cmdPrices(args);
     case "mcp":
       return cmdMcp(args);
     case "serve":

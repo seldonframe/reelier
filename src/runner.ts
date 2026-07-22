@@ -50,8 +50,18 @@ export interface StepRecord {
   outcome: StepOutcome;
   ms: number;
   failures: string[];
-  /** LLM token usage summed across every escalation attempt on this step (incl. failed ones) — 0 attempts means this is absent, not zero. */
-  llm?: { inputTokens: number; outputTokens: number };
+  /**
+   * LLM token usage summed across every escalation attempt on this step
+   * (incl. failed ones) — 0 attempts means this is absent, not zero.
+   * `model` (added for the $ meter, src/cost.ts) is the model of the
+   * HIGHEST escalation level actually invoked on this step (L2's model if
+   * L2 ran, else L1's) — a known simplification: if a step tried L1 then
+   * L2 with two different models, the summed tokens above are priced
+   * entirely at the L2 rate by the cost meter. Rare in practice (most
+   * steps resolve at whichever level they first reach) and never silently
+   * wrong — just less precise than per-attempt model tracking would be.
+   */
+  llm?: { inputTokens: number; outputTokens: number; model?: string };
   /**
    * Highest escalation ladder level TRIED for this step — present whenever
    * escalation ran at all (success or failure), absent when it never ran
@@ -438,7 +448,7 @@ async function attemptEscalation(
   outcome: StepOutcome;
   level: 0 | 1 | 2;
   failures: string[];
-  llm?: { inputTokens: number; outputTokens: number };
+  llm?: { inputTokens: number; outputTokens: number; model?: string };
   /** Highest level TRIED, present iff escalation was actually attempted (i.e. L1 was invoked). */
   escalationAttempted?: 1 | 2;
   /** What the heal changed, from the real patch reason — present only on a successful heal. */
@@ -450,19 +460,23 @@ async function attemptEscalation(
   }
 
   let failures = initialFailures;
-  let usage: { inputTokens: number; outputTokens: number } | undefined;
+  let usage: { inputTokens: number; outputTokens: number; model?: string } | undefined;
   // L1 is always the first (and, at minimum, only) level tried once we get
   // this far — set it now so every return path below reports at least 1.
   let escalationAttempted: 1 | 2 = 1;
 
+  const l1Model = options.llmModel ?? "claude-haiku-4-5-20251001";
   const l1 = await resolveL1({
     step,
     observation,
     failures,
     llm: options.llm,
-    model: options.llmModel ?? "claude-haiku-4-5-20251001",
+    model: l1Model,
   });
-  usage = addUsage(usage, l1.usage);
+  // `model` is stamped onto the running usage total after every stage so it
+  // always reflects the HIGHEST level actually invoked (see StepRecord.llm's
+  // doc comment) — L2's model overwrites L1's below if L2 runs.
+  usage = { ...addUsage(usage, l1.usage), model: l1Model };
 
   if (l1.verdict === "patch") {
     const reEval = reEvaluatePatch(l1.asserts, l1.binds, observation);
@@ -501,15 +515,16 @@ async function attemptEscalation(
 
   escalationAttempted = 2;
 
+  const l2Model = options.llmL2Model ?? "claude-sonnet-5";
   const l2 = await resolveL2({
     step,
     skillContext: { skillName: skill.name, bindings },
     observation,
     failures,
     llm: options.llm,
-    model: options.llmL2Model ?? "claude-sonnet-5",
+    model: l2Model,
   });
-  usage = addUsage(usage, l2.usage);
+  usage = { ...addUsage(usage, l2.usage), model: l2Model };
 
   if (l2.verdict !== "patch") {
     failures = [...failures, `L2: ${l2.reason}`];
@@ -589,7 +604,7 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
     let outcome = exec.outcome;
     let failures = exec.failures;
     let level: 0 | 1 | 2 = 0;
-    let llmUsage: { inputTokens: number; outputTokens: number } | undefined;
+    let llmUsage: { inputTokens: number; outputTokens: number; model?: string } | undefined;
     let escalationAttempted: 0 | 1 | 2 | undefined;
     let why: StepWhy | undefined;
     // The load-bearing divergence, captured BEFORE escalation appends L1/L2 noise.
