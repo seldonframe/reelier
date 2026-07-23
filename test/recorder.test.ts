@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { Recorder, collectToolAnnotations, type TraceRecord } from "../src/recorder.js";
+import { Recorder, collectToolAnnotations, collectToolManifest, type TraceRecord } from "../src/recorder.js";
 import { buildToolRoutes, type DownstreamConnection } from "../src/mcp-client.js";
 
 async function readTrace(filePath: string): Promise<TraceRecord[]> {
@@ -104,6 +104,90 @@ test("collectToolAnnotations: keeps only declared hints, keyed by EXPOSED (colli
     list_widgets: { readOnlyHint: true },
     "1_list_widgets": { destructiveHint: true, idempotentHint: false },
   });
+});
+
+test("collectToolManifest: builds a digest per exposed tool, keyed by EXPOSED (collision-prefixed) name, and is stable across calls", () => {
+  const a = fakeConnection("server-a", [
+    { name: "create_contact", inputSchema: { type: "object", properties: { email: { type: "string" } } } },
+  ]);
+  const routes = buildToolRoutes([a]);
+
+  const first = collectToolManifest(routes);
+  const second = collectToolManifest(routes);
+
+  assert.equal(first.manifest.length, 1);
+  assert.equal(first.manifest[0].name, "create_contact");
+  assert.equal(first.manifest[0].server, "server-a");
+  assert.match(first.manifest[0].digest, /^sha256:[0-9a-f]{64}$/);
+  assert.deepEqual(first.manifest, second.manifest);
+  assert.deepEqual(first.gap, []);
+});
+
+test("collectToolManifest: fail-open — a tool whose schema cannot be digested is skipped into gap, never throws", () => {
+  const circular: Record<string, unknown> = {};
+  circular.self = circular;
+  const a = fakeConnection("server-a", [
+    { name: "create_contact", inputSchema: { type: "object" } },
+    { name: "exotic_tool", inputSchema: circular },
+  ]);
+  const routes = buildToolRoutes([a]);
+
+  const { manifest, gap } = collectToolManifest(routes);
+  assert.equal(manifest.length, 1);
+  assert.equal(manifest[0].name, "create_contact");
+  assert.deepEqual(gap, ["exotic_tool"]);
+});
+
+test("recorder: meta carries toolManifest when provided, and omits the key entirely when absent/empty", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "reelier-recorder-"));
+  try {
+    const withManifest = new Recorder(dir);
+    const s1 = await withManifest.start(
+      "manifested",
+      ["fake"],
+      undefined,
+      undefined,
+      [{ name: "create_contact", server: "fake", digest: "sha256:" + "0".repeat(64) }]
+    );
+    assert.equal(s1.ok, true);
+    if (!s1.ok) return;
+    await withManifest.stop();
+    const t1 = await readTrace(s1.path);
+    assert.equal(t1[0].t, "meta");
+    if (t1[0].t === "meta") {
+      assert.deepEqual(t1[0].toolManifest, [
+        { name: "create_contact", server: "fake", digest: "sha256:" + "0".repeat(64) },
+      ]);
+    }
+
+    const without = new Recorder(dir);
+    const s2 = await without.start("plain", ["fake"], undefined, undefined, []);
+    assert.equal(s2.ok, true);
+    if (!s2.ok) return;
+    await without.stop();
+    const raw = await readFile(s2.path, "utf8");
+    assert.ok(!raw.includes("toolManifest"));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("recorder: meta carries manifestGap when a tool's schema could not be digested (fail-open, never throws)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "reelier-recorder-"));
+  try {
+    const recorder = new Recorder(dir);
+    const s1 = await recorder.start("gapped", ["fake"], undefined, undefined, [], ["exotic_tool"]);
+    assert.equal(s1.ok, true);
+    if (!s1.ok) return;
+    await recorder.stop();
+    const t1 = await readTrace(s1.path);
+    assert.equal(t1[0].t, "meta");
+    if (t1[0].t === "meta") {
+      assert.deepEqual(t1[0].manifestGap, ["exotic_tool"]);
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("recorder: note is a friendly no-op (not written) when not recording", async () => {

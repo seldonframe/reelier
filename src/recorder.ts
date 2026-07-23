@@ -12,6 +12,8 @@ import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprot
 import { buildToolRoutes, type DownstreamConnection, type McpCallResult, type ToolRoute } from "./mcp-client.js";
 import { redact } from "./redact.js";
 import type { ToolEffectAnnotations } from "./effect-verbs.js";
+import { digestSha256 } from "./canonical-json.js";
+import type { ManifestTool } from "./skill.js";
 import {
   emptyPolicy,
   evaluatePolicy,
@@ -43,6 +45,21 @@ export type TraceRecord =
        * absent) policy, so pre-policy traces stay byte-identical.
        */
       policyGap?: string;
+      /**
+       * Per-EXPOSED-tool schema digests, captured at wrap time — the source
+       * material for Skill.manifest (docs/specs/flight-recorder-v2.md §1).
+       * Omitted entirely when empty so manifest-free traces stay
+       * byte-identical to pre-v2 ones.
+       */
+      toolManifest?: ManifestTool[];
+      /**
+       * Fail-open gap marker (Prime Directive): exposed tool names whose
+       * inputSchema could not be digested (e.g. a circular/exotic schema
+       * value). Capture must never throw out of the proxy path — a tool
+       * that can't be digested is simply omitted from toolManifest and
+       * named here instead.
+       */
+      manifestGap?: string[];
     }
   | { t: "note"; seq: number; ts: string; text: string }
   | { t: "call"; seq: number; i: number; ts: string; tool: string; args: unknown }
@@ -124,7 +141,9 @@ export class Recorder {
     name: string,
     wrapped: string[],
     toolAnnotations?: Record<string, ToolEffectAnnotations>,
-    policyGap?: string
+    policyGap?: string,
+    toolManifest?: ManifestTool[],
+    manifestGap?: string[]
   ): Promise<{ ok: true; path: string } | { ok: false; message: string }> {
     if (this.recording) {
       return {
@@ -149,6 +168,8 @@ export class Recorder {
       // traces stay byte-identical to older ones.
       ...(toolAnnotations && Object.keys(toolAnnotations).length > 0 ? { toolAnnotations } : {}),
       ...(policyGap ? { policyGap } : {}),
+      ...(toolManifest && toolManifest.length > 0 ? { toolManifest } : {}),
+      ...(manifestGap && manifestGap.length > 0 ? { manifestGap } : {}),
     });
     await this.flush();
     return { ok: true, path: filePath };
@@ -243,6 +264,30 @@ export function collectToolAnnotations(routes: Map<string, ToolRoute>): Record<s
 }
 
 /**
+ * Capture a per-tool schema digest at wrap time, keyed by EXPOSED name (same
+ * key space as collectToolAnnotations and as replay's tool lookup) — the
+ * source material for Skill.manifest (docs/specs/flight-recorder-v2.md §1).
+ *
+ * Fail-open (Prime Directive): if a tool's inputSchema cannot be digested
+ * (e.g. it contains a circular reference), that tool is OMITTED from the
+ * manifest and its exposed name is appended to `gap` instead — capture must
+ * never throw out of the proxy path.
+ */
+export function collectToolManifest(routes: Map<string, ToolRoute>): { manifest: ManifestTool[]; gap: string[] } {
+  const manifest: ManifestTool[] = [];
+  const gap: string[] = [];
+  for (const route of routes.values()) {
+    try {
+      const digest = digestSha256(route.tool.inputSchema);
+      manifest.push({ name: route.exposedName, server: route.downstream.name, digest });
+    } catch {
+      gap.push(route.exposedName);
+    }
+  }
+  return { manifest, gap };
+}
+
+/**
  * Build (but do not connect) the proxy MCP server for a set of already-
  * connected downstreams. Pure/testable — connecting a transport is the
  * caller's job (stdio for the real CLI, InMemory for tests).
@@ -251,6 +296,7 @@ export function buildProxyServer(downstreams: DownstreamConnection[], options: P
   const routes = buildToolRoutes(downstreams);
   const recorder = new Recorder(options.traceDir);
   const toolAnnotations = collectToolAnnotations(routes);
+  const { manifest: toolManifest, gap: manifestGap } = collectToolManifest(routes);
   const policy = options.policy ?? emptyPolicy();
   const policyCtx = { allowWrites: options.allowWrites ?? false };
 
@@ -301,7 +347,7 @@ export function buildProxyServer(downstreams: DownstreamConnection[], options: P
         return { ...textResult("reelier_start_recording requires a string 'name' argument."), isError: true };
       }
       const wrapped = downstreams.map((d) => d.name);
-      const result = await recorder.start(traceName, wrapped, toolAnnotations, options.policyGap);
+      const result = await recorder.start(traceName, wrapped, toolAnnotations, options.policyGap, toolManifest, manifestGap);
       return result.ok ? textResult(`Recording started: ${result.path}`) : textResult(result.message);
     }
 
