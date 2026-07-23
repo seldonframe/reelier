@@ -113,6 +113,40 @@ Only replayable calls — builtins or `mcp__<server>__<tool>` — compile into a
 - **reelier_diff** — SAME or DRIFTED per step; exit 1 on drift
 - **reelier_push** — sync a receipt to the [ledger](https://www.reelier.com/replays) (opt-in)
 
+## Login: `reelier login` / `logout` / `whoami`
+
+`reelier push`/`get`/`verify`/`serve` default `REELIER_CLOUD_URL` to
+`https://www.reelier.com` — no config needed. Credentials resolve in this
+order: `REELIER_CLOUD_KEY` env var, then the key stored in the local config
+file. Env vars remain the CI/self-hosting path; `login` is the interactive
+one.
+
+```sh
+reelier login    # connect this machine to Reelier Cloud
+reelier whoami    # print who the stored key resolves to
+reelier logout    # clear the locally stored key
+```
+
+**Device flow.** `reelier login` starts an OAuth-Device-Flow-shaped handshake
+against Reelier Cloud: the CLI requests a device code, prints a short user
+code (`XXXX-XXXX`) plus an `https://www.reelier.com/activate` link, and
+best-effort opens that link in your default browser (falling back to just
+printing it if the browser can't be launched). You approve the code on
+reelier.com — that's where GitHub OAuth happens; the CLI itself never talks
+to GitHub, it only polls Reelier Cloud. Once approved, the cloud mints an API
+key: the CLI never sees the user's GitHub credentials, and the minted key is
+shown to no one and stored **hashed** server-side. Device codes expire after
+15 minutes; an expired or denied code makes `login` exit non-zero with the
+reason. `reelier logout` only clears the local credential — it does not
+revoke the key server-side; revoke a leaked key from the dashboard's
+Settings.
+
+**Config file.** The key (and, if you ever pointed at a non-default cloud, the
+URL) are stored at `~/.reelier/config.json`, written with `chmod 0o600`
+best-effort (a no-op on platforms without POSIX permissions, e.g. Windows) —
+this restricts read access to the current OS user, but the file is **plain
+JSON on disk, not encrypted**. Treat it like any other local credential file.
+
 ## BYOK
 
 Level-0 never calls a model — 0 tokens, by construction. Escalation (`--max-level 1|2`) is opt-in via one BYOK surface: native Anthropic, or OpenAI-compatible for the rest (OpenRouter, Ollama, Gemini, Groq, vLLM, LM Studio, Kimi, …).

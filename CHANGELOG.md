@@ -2,6 +2,28 @@
 
 All notable changes to `reelier`. Dates are release dates.
 
+## 0.23.0 — Self-serve login: `reelier login`, zero-config cloud URL
+
+Breaking behavior: **none — additive.**
+
+### Added
+- **`reelier login` / `logout` / `whoami`.** `login` starts an
+  OAuth-Device-Flow-shaped handshake against Reelier Cloud: prints a
+  `XXXX-XXXX` user code and an `https://www.reelier.com/activate` link,
+  best-effort opens it in your browser, and polls until you approve it
+  there (that's where GitHub OAuth happens — the CLI itself never talks to
+  GitHub). The resulting key is written to `~/.reelier/config.json`
+  (`chmod 0o600` best-effort) and never printed. `logout` clears the local
+  key only — server-side revocation stays in the dashboard's Settings.
+  `whoami` prints `<githubLogin ?? name> (<baseUrl>)`, or exits 1 with the
+  reason when not logged in or the key was revoked.
+- **`REELIER_CLOUD_URL` now defaults to `https://www.reelier.com`.**
+  `push`/`get`/`verify`/`serve` no longer require the env var to reach the
+  cloud. Credential precedence: `REELIER_CLOUD_KEY` env var, then the key
+  in the config file written by `reelier login`. Env vars remain the
+  CI/self-hosting path. `push` without any key now says "Not logged in.
+  Run 'reelier login' ..." instead of a bare missing-env-var error.
+
 ## 0.22.0 — PR receipts render on pull_request CI
 
 Breaking behavior: **none — one new optional push field.**

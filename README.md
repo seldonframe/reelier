@@ -66,7 +66,8 @@ reelier ci                          # write a workflow: drift-CI + PR receipts, 
 2. **Compile.** `reelier compile` turns a trace into a `SKILL.md` — 0 LLM calls, an assertion per step, honest gaps printed as **Open questions**.
 3. **Replay.** `reelier run` replays it at Level 0 — no LLM, byte-identical, read-only by default (writes need `--allow-writes`).
 4. **Diff.** `reelier diff` reports SAME or DRIFTED per step, with the failing assertion as the *why* — exit 1 on drift.
-5. **Push.** Every run is a receipt; `reelier push` optionally syncs it to a ledger for a permalink and an embeddable verified-replay badge.
+5. **Log in.** `reelier login` connects this machine to Reelier Cloud with a device code in your browser — or set `REELIER_CLOUD_URL`/`REELIER_CLOUD_KEY` for CI and self-hosting.
+6. **Push.** Every run is a receipt; `reelier push` optionally syncs it to a ledger for a permalink and an embeddable verified-replay badge.
 
 Already have an Agent Skill? Convert it — your skill, minus the model:
 
