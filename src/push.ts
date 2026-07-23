@@ -33,6 +33,7 @@ import { writeFileAtomic } from "./writeback.js";
 import { costRun, loadPriceTable, type PriceTable } from "./cost.js";
 import { digestSha256 } from "./canonical-json.js";
 import { loadSigningKey, signRecordDigest, signingKeyDir, type LoadedSigningKey } from "./signing.js";
+import { requestTimestamp, DEFAULT_TSA_URL, type RequestedTimestamp } from "./tsa.js";
 
 export interface PushConfig {
   baseUrl: string;
@@ -270,6 +271,14 @@ export interface PushOptions {
    * uploaded before (equivalent to implying `withSkill` for this push only).
    */
   public?: boolean;
+  /**
+   * Request an RFC-3161 trusted timestamp (trust-ladder spec §2) for each
+   * pushed record, over its own canonical digest. Opt-in at first ship
+   * (spec's explicit "opt-in, default-on one minor version later" plan).
+   * Fail-open per record: a TSA failure never blocks that record's push,
+   * it just omits `timestamp` for it — see src/tsa.ts's requestTimestamp.
+   */
+  timestamp?: boolean;
   onRecordResult?: (result: PushRecordResult) => void;
 }
 
@@ -432,6 +441,27 @@ function computeSignature(
   return { alg: "ed25519", keyId: signingKey.keyId, sig: signRecordDigest(signingKey.privateKey, digest) };
 }
 
+/**
+ * Resolve the TSA URL once per batch (env override wins, same "never
+ * silently switch" discipline as the bundled price table): `REELIER_TSA_URL`
+ * if set, else the bundled `DEFAULT_TSA_URL`. Only consulted when
+ * `--timestamp` was actually passed — no TSA is ever contacted otherwise.
+ */
+function resolveTsaUrl(env: NodeJS.ProcessEnv = process.env): string {
+  return env.REELIER_TSA_URL || DEFAULT_TSA_URL;
+}
+
+/** Request a timestamp for THIS record's own digest (each record has a different digest, unlike the batch-level signing key/CI attestation) — `undefined` on any failure (requestTimestamp already fail-opens with its own stderr line). */
+async function computeTimestamp(
+  record: RunRecord,
+  tsaUrl: string | undefined
+): Promise<RequestedTimestamp | undefined> {
+  if (!tsaUrl) return undefined;
+  const digestHex = digestSha256(record).replace(/^sha256:/, "");
+  const result = await requestTimestamp(tsaUrl, digestHex);
+  return result ?? undefined;
+}
+
 async function pushOneRecord(
   config: PushConfig,
   skillName: string,
@@ -440,10 +470,12 @@ async function pushOneRecord(
   share?: boolean,
   priceTable?: PriceTable,
   signingKey?: LoadedSigningKey,
-  ciAttestation?: CiAttestation
+  ciAttestation?: CiAttestation,
+  tsaUrl?: string
 ): Promise<PushRecordResult> {
   const cost = computePushCost(record, priceTable);
   const signature = computeSignature(record, signingKey);
+  const timestamp = await computeTimestamp(record, tsaUrl);
   let res: Response;
   try {
     res = await fetch(`${config.baseUrl.replace(/\/$/, "")}/api/v1/runs`, {
@@ -472,6 +504,7 @@ async function pushOneRecord(
         ...(cost ? { costUsd: cost.costUsd, priceTableDate: cost.priceTableDate } : {}),
         ...(signature ? { signature } : {}),
         ...(ciAttestation ? { ciAttestation } : {}),
+        ...(timestamp ? { timestamp } : {}),
       }),
     });
   } catch (err) {
@@ -605,6 +638,10 @@ export async function pushSkill(skillPath: string, options: PushOptions = {}): P
   // Detected once per batch, before the skill upload leg — fail-open and
   // silent-on-absence, exactly like the signing key just below.
   const ciAttestation = (await detectCiOidc()) ?? undefined;
+  // Resolved once per batch (the URL, not a network call — the actual TSA
+  // request happens per-record below, since each record has its own
+  // digest). Only resolved at all when --timestamp was passed.
+  const tsaUrl = options.timestamp ? resolveTsaUrl() : undefined;
 
   let skillUploaded = false;
   let publicSubmission: PublicSubmissionResult | undefined;
@@ -647,7 +684,8 @@ export async function pushSkill(skillPath: string, options: PushOptions = {}): P
       options.share,
       priceTable,
       signingKey,
-      ciAttestation
+      ciAttestation,
+      tsaUrl
     );
     results.push(result);
     options.onRecordResult?.(result);

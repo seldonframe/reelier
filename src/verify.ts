@@ -21,6 +21,7 @@ import path from "node:path";
 import { verifyRecordSignature } from "./signing.js";
 import { digestSha256 } from "./canonical-json.js";
 import { resolveGetConfig } from "./get.js";
+import { imprintMatches } from "./tsa.js";
 import type { RunRecord } from "./runner.js";
 
 export interface VerifyPayload {
@@ -175,24 +176,41 @@ export function evaluateUnalteredSincePushClaim(payload: VerifyPayload, publicPe
 }
 
 /**
- * The timestamp claim. Slice B (src/tsa.ts) has not shipped yet — this
- * renders presence/absence honestly without performing (or claiming to
- * perform) imprint-match or RFC-3161 chain verification, which are that
- * slice's job. Never fails the exit code (nothing here asserts a checked
- * fact yet).
+ * The timestamp claim (trust-ladder spec §2's "verification honesty (v1
+ * scope)"). This checks the ONE thing the CLI can cheaply verify offline —
+ * that the TSA token's messageImprint actually matches this record's own
+ * digest (`imprintMatches`'s documented OID+OCTET-STRING shortcut; see
+ * src/tsa.ts) — and prints the standard `openssl ts -verify` command for
+ * the OTHER half (full RFC-3161 certificate-chain verification), which
+ * this CLI does not attempt. A genuine imprint MISMATCH is a real, checked
+ * failure (the token doesn't attest to THIS record) and fails the exit
+ * code, same as a bad signature. A MATCHING imprint stays graded
+ * "unchecked" rather than "verified" — it proves the digest was submitted
+ * to the named TSA, not that the TSA (or its certificate chain) is
+ * trustworthy, so it never overclaims past what was actually checked.
  */
 export function evaluateTimestampClaim(payload: VerifyPayload): ClaimLine {
   if (!payload.timestamp) {
     return { claim: "timestamped", status: "absent", line: "timestamped: — none" };
   }
+  const digestHex = digestSha256(payload.record).replace(/^sha256:/, "");
+  const opensslHint = `openssl ts -verify -in <token file, base64-decoded> -digest ${digestHex}`;
+  if (!imprintMatches(payload.timestamp.token, digestHex)) {
+    return {
+      claim: "timestamped",
+      status: "failed",
+      line:
+        `timestamped: ✗ IMPRINT MISMATCH (tsa ${payload.timestamp.tsa}) — the token's message imprint does not ` +
+        `match this record's digest; the record may have changed after it was timestamped, or this token belongs ` +
+        `to a different record.`,
+    };
+  }
   return {
     claim: "timestamped",
     status: "unchecked",
     line:
-      `timestamped: — present (tsa ${payload.timestamp.tsa}); this CLI version does not yet verify RFC-3161 tokens ` +
-      `(trust-ladder Slice B) — verify manually: openssl ts -verify -in <token file, base64-decoded> -digest ${digestSha256(
-        payload.record
-      )}`,
+      `timestamped: imprint ✓ (tsa ${payload.timestamp.tsa}) — proves this digest was submitted to the named TSA; ` +
+      `full certificate-chain verification is not performed by this CLI — verify manually: ${opensslHint}`,
   };
 }
 

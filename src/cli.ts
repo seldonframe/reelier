@@ -1699,7 +1699,7 @@ function fmtFieldErrors(fieldErrors: unknown): string {
 export async function cmdPush(args: ParsedArgs): Promise<number> {
   const skillPath = args.positional[0];
   if (!skillPath) {
-    console.error("Usage: reelier push <skill.md> [--all] [--dry-run] [--with-skill] [--share] [--public]");
+    console.error("Usage: reelier push <skill.md> [--all] [--dry-run] [--with-skill] [--share] [--public] [--timestamp]");
     return 1;
   }
 
@@ -1708,6 +1708,7 @@ export async function cmdPush(args: ParsedArgs): Promise<number> {
   const withSkill = args.flags.has("with-skill");
   const share = args.flags.has("share");
   const isPublic = args.flags.has("public");
+  const timestamp = args.flags.has("timestamp");
 
   // Tracks whether the cloud actually honored --share on at least one
   // pushed record this run — a mint failure or an older cloud that doesn't
@@ -1723,6 +1724,7 @@ export async function cmdPush(args: ParsedArgs): Promise<number> {
       withSkill,
       share,
       public: isPublic,
+      timestamp,
       onRecordResult: (r: PushRecordResult) => {
         if (dryRun) {
           console.log(`  [${r.index}] would push`);

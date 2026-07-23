@@ -15,7 +15,14 @@ import {
 } from "../src/verify.js";
 import { generateSigningKeypair, loadSigningKey, signRecordDigest } from "../src/signing.js";
 import { digestSha256 } from "../src/canonical-json.js";
+import { buildTimeStampReq } from "../src/tsa.js";
 import type { RunRecord } from "../src/runner.js";
+
+/** A fake TSA response embedding a genuine MessageImprint for `digestHex` — same "wrap the real request DER" technique as test/tsa.test.ts's fixture. */
+function fakeTsaTokenB64For(digestHex: string): string {
+  const der = buildTimeStampReq(digestHex);
+  return Buffer.concat([Buffer.from([0xde, 0xad]), der, Buffer.from([0xbe, 0xef])]).toString("base64");
+}
 
 function makeRecord(n: number): RunRecord {
   return {
@@ -130,13 +137,35 @@ test("evaluateTimestampClaim: absent -> '— none', never fabricated", () => {
   assert.match(result.line, /none/);
 });
 
-test("evaluateTimestampClaim: present -> reports it honestly as not-yet-verified by this CLI (Slice B), never claims a check it didn't do", () => {
+test("evaluateTimestampClaim: matching imprint -> 'unchecked' (imprint proven, chain trust not — never overclaims 'verified')", () => {
+  const record = makeRecord(0);
+  const digestHex = digestSha256(record).replace(/^sha256:/, "");
+  const result = evaluateTimestampClaim({
+    record,
+    timestamp: { tsa: "https://tsa.example", token: fakeTsaTokenB64For(digestHex) },
+  });
+  assert.equal(result.status, "unchecked");
+  assert.match(result.line, /imprint ✓/);
+  assert.match(result.line, /openssl ts -verify/);
+});
+
+test("evaluateTimestampClaim: mismatched imprint (token belongs to a different digest) -> failed, loud", () => {
+  const record = makeRecord(0);
+  const wrongDigestHex = "0".repeat(64);
+  const result = evaluateTimestampClaim({
+    record,
+    timestamp: { tsa: "https://tsa.example", token: fakeTsaTokenB64For(wrongDigestHex) },
+  });
+  assert.equal(result.status, "failed");
+  assert.match(result.line, /IMPRINT MISMATCH/);
+});
+
+test("evaluateTimestampClaim: garbage token (no SHA-256 OID found at all) -> failed, never throws", () => {
   const result = evaluateTimestampClaim({
     record: makeRecord(0),
     timestamp: { tsa: "https://tsa.example", token: "deadbeef" },
   });
-  assert.equal(result.status, "unchecked");
-  assert.match(result.line, /openssl ts -verify/);
+  assert.equal(result.status, "failed");
 });
 
 test("evaluateVerifyClaims: exit code 0 when nothing PRESENT failed (unsigned + no timestamp)", () => {
