@@ -34,6 +34,7 @@ import { costRun, loadPriceTable, type PriceTable } from "./cost.js";
 import { digestSha256 } from "./canonical-json.js";
 import { loadSigningKey, signRecordDigest, signingKeyDir, type LoadedSigningKey } from "./signing.js";
 import { requestTimestamp, DEFAULT_TSA_URL, type RequestedTimestamp } from "./tsa.js";
+import { DEFAULT_CLOUD_URL, readCliConfig, type CliConfig } from "./cloud-config.js";
 
 export interface PushConfig {
   baseUrl: string;
@@ -141,22 +142,24 @@ export async function detectPrHeadSha(
 }
 
 /**
- * Resolve cloud sync config from env. Never logs or embeds the key
- * anywhere in a thrown message — only names the missing var(s).
+ * Resolve cloud sync config. `baseUrl` always resolves — env.REELIER_CLOUD_URL,
+ * then the config file's `cloudUrl`, then the bundled `DEFAULT_CLOUD_URL` — so
+ * a fresh install with zero configuration still points at the real Reelier
+ * Cloud. `apiKey` is the one thing that gates whether pushing is "on": env
+ * REELIER_CLOUD_KEY, then the config file's `apiKey` (written by `reelier
+ * login`), and if neither is present this throws — pushing stays strictly
+ * opt-in. Never logs or embeds the key anywhere in a thrown message.
  */
-export function resolvePushConfig(env: NodeJS.ProcessEnv = process.env): PushConfig {
-  const baseUrl = env.REELIER_CLOUD_URL;
-  const apiKey = env.REELIER_CLOUD_KEY;
-  const missing: string[] = [];
-  if (!baseUrl) missing.push("REELIER_CLOUD_URL");
-  if (!apiKey) missing.push("REELIER_CLOUD_KEY");
-  if (missing.length > 0) {
+export function resolvePushConfig(env: NodeJS.ProcessEnv = process.env, fileConfig: CliConfig = {}): PushConfig {
+  const baseUrl = env.REELIER_CLOUD_URL || fileConfig.cloudUrl || DEFAULT_CLOUD_URL;
+  const apiKey = env.REELIER_CLOUD_KEY || fileConfig.apiKey;
+  if (!apiKey) {
     throw new Error(
-      `'reelier push' requires ${missing.join(" and ")} to be set — point REELIER_CLOUD_URL at your Reelier ` +
-        `Cloud instance and REELIER_CLOUD_KEY at your API key. Pushing is opt-in; nothing is synced without both.`
+      "Not logged in. Run 'reelier login' to connect this machine to Reelier Cloud (or set REELIER_CLOUD_KEY). " +
+        "Pushing is opt-in; nothing is synced without a key."
     );
   }
-  return { baseUrl: baseUrl!, apiKey: apiKey! };
+  return { baseUrl, apiKey };
 }
 
 // ---------------------------------------------------------------------------
@@ -675,7 +678,11 @@ export async function pushSkill(skillPath: string, options: PushOptions = {}): P
     };
   }
 
-  const config = resolvePushConfig();
+  // Callers load the config file first (Task 8) — env still wins over it,
+  // and it's what lets a machine that ran `reelier login` push with zero
+  // env vars set at all.
+  const fileConfig = await readCliConfig();
+  const config = resolvePushConfig(process.env, fileConfig);
 
   // Best-effort: a missing price file is normal (bundled-only), but a
   // PRESENT-and-corrupt ~/.reelier/prices.yml must never break a push (the

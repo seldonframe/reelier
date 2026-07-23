@@ -268,8 +268,11 @@ export type PushToolResult =
 
 /**
  * Push run records (and, on first push, the skill file) for a skill to
- * your receipt ledger. Reads REELIER_CLOUD_URL/REELIER_CLOUD_KEY from env, exactly
- * like `reelier push`. Missing config is reported as `skipped-no-key`, not
+ * your receipt ledger, exactly like `reelier push`. The cloud URL always
+ * resolves (env REELIER_CLOUD_URL, then the config file, then the bundled
+ * default) — whether push is "on" at all is gated on an apiKey being present
+ * (env REELIER_CLOUD_KEY, or the config file written by `reelier login`),
+ * NEVER on the URL. Missing apiKey is reported as `skipped-no-key`, not
  * silently treated as a no-op success; any other failure (read error, no run
  * records) is reported as `failed` with the real error message.
  */
@@ -284,7 +287,7 @@ export async function runPushTool(input: PushToolInput): Promise<PushToolResult>
     return { outcome: "ok", result };
   } catch (err) {
     const message = (err as Error).message;
-    if (message.includes("REELIER_CLOUD_URL") || message.includes("REELIER_CLOUD_KEY")) {
+    if (message.includes("Not logged in") || message.includes("REELIER_CLOUD_KEY")) {
       return { outcome: "skipped-no-key", message };
     }
     return { outcome: "failed", message };
@@ -386,8 +389,9 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
     "(reported as a refused/failed step) unless you pass allowWrites — so replaying never re-fires a write.",
   reelier_push:
     "Push a skill's local run records (and, on first push, the skill file) to your receipt ledger, where each receipt gets " +
-    "a shareable permalink + verified-replay badge. Requires REELIER_CLOUD_URL/REELIER_CLOUD_KEY in env — reports " +
-    "skipped-no-key honestly when they're absent. USE WHEN: a run's receipt should be durable or shareable.",
+    "a shareable permalink + verified-replay badge. Requires an apiKey — from `reelier login` (or REELIER_CLOUD_KEY in " +
+    "env) — reports skipped-no-key honestly when absent; the cloud URL always resolves on its own. USE WHEN: a run's " +
+    "receipt should be durable or shareable.",
   reelier_diff:
     "Compare two runs of the same skill and report SAME or DRIFTED — the drift-detector for a recorded baseline " +
     "replayed on a schedule. Compares per-step outcomes, structure, and heal-level from .reelier/runs/<skill>.jsonl " +

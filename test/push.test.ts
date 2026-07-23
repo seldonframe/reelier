@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { pushSkill, readPushState, PublicSubmissionError } from "../src/push.js";
+import { DEFAULT_CLOUD_URL, writeCliConfig } from "../src/cloud-config.js";
 import type { RunRecord } from "../src/runner.js";
 
 const SKILL_SOURCE = `---
@@ -112,28 +113,78 @@ async function withCapturedConsoleError<T>(run: () => Promise<T>): Promise<{ res
 
 // ---------------------------------------------------------------------------
 
-test("push: missing env vars throws an actionable error before any fetch call, never printing the key", async () => {
+test("push: no env and no config file -> the 'Not logged in' message, before any fetch call, never printing the key", async () => {
   await withTempDir(async (dir) => {
     const skillPath = await setupFixture(dir, 1);
     const { fn, calls } = fakeFetch([]);
-    await withEnv({ REELIER_CLOUD_URL: undefined, REELIER_CLOUD_KEY: undefined }, async () => {
-      await withFetch(fn, async () => {
-        await assert.rejects(
-          pushSkill(skillPath, { cwd: dir }),
-          /REELIER_CLOUD_URL.*REELIER_CLOUD_KEY|REELIER_CLOUD_KEY.*REELIER_CLOUD_URL/
-        );
-        assert.equal(calls.length, 0);
-      });
-    });
+    // HOME/USERPROFILE pinned to the isolated tmp dir (no ~/.reelier/config.json
+    // written there) so this test never depends on the real machine's login state.
+    await withEnv(
+      { REELIER_CLOUD_URL: undefined, REELIER_CLOUD_KEY: undefined, HOME: dir, USERPROFILE: dir },
+      async () => {
+        await withFetch(fn, async () => {
+          await assert.rejects(
+            pushSkill(skillPath, { cwd: dir }),
+            /Not logged in\. Run 'reelier login' to connect this machine to Reelier Cloud \(or set REELIER_CLOUD_KEY\)\. Pushing is opt-in; nothing is synced without a key\./
+          );
+          assert.equal(calls.length, 0);
+        });
+      }
+    );
   });
 });
 
-test("push: missing only the key still names it, and never leaks it when it IS set", async () => {
+test("push: REELIER_CLOUD_URL set but no key anywhere still throws 'Not logged in', and never leaks a key that IS set on other runs", async () => {
   await withTempDir(async (dir) => {
     const skillPath = await setupFixture(dir, 1);
-    await withEnv({ REELIER_CLOUD_URL: "https://cloud.example", REELIER_CLOUD_KEY: undefined }, async () => {
-      await assert.rejects(pushSkill(skillPath, { cwd: dir }), /REELIER_CLOUD_KEY/);
-    });
+    await withEnv(
+      { REELIER_CLOUD_URL: "https://cloud.example", REELIER_CLOUD_KEY: undefined, HOME: dir, USERPROFILE: dir },
+      async () => {
+        await assert.rejects(pushSkill(skillPath, { cwd: dir }), /Not logged in.*REELIER_CLOUD_KEY/s);
+      }
+    );
+  });
+});
+
+test("push: apiKey from the config file + no REELIER_CLOUD_URL anywhere -> resolves DEFAULT_CLOUD_URL and pushes", async () => {
+  await withTempDir(async (dir) => {
+    const skillPath = await setupFixture(dir, 1);
+    await writeCliConfig({ apiKey: "file-key" }, dir); // `dir` doubles as HOME below
+    await withEnv(
+      { REELIER_CLOUD_URL: undefined, REELIER_CLOUD_KEY: undefined, HOME: dir, USERPROFILE: dir },
+      async () => {
+        const fetchSeq = fakeFetch([{ status: 200 }, { status: 202, body: { id: "r0" } }]);
+        const result = await withFetch(fetchSeq.fn, () => pushSkill(skillPath, { cwd: dir }));
+
+        assert.equal(result.pushedCount, 1);
+        assert.equal(fetchSeq.calls.length, 2);
+        for (const call of fetchSeq.calls) {
+          assert.ok(call.url.startsWith(DEFAULT_CLOUD_URL), `expected ${call.url} to start with ${DEFAULT_CLOUD_URL}`);
+        }
+        const headers = fetchSeq.calls[1].init.headers as Record<string, string>;
+        assert.equal(headers.authorization, "Bearer file-key");
+      }
+    );
+  });
+});
+
+test("push: env REELIER_CLOUD_URL/REELIER_CLOUD_KEY override a conflicting config file", async () => {
+  await withTempDir(async (dir) => {
+    const skillPath = await setupFixture(dir, 1);
+    await writeCliConfig({ apiKey: "file-key", cloudUrl: "https://file.example" }, dir);
+    await withEnv(
+      { REELIER_CLOUD_URL: "https://env.example", REELIER_CLOUD_KEY: "env-key", HOME: dir, USERPROFILE: dir },
+      async () => {
+        const fetchSeq = fakeFetch([{ status: 200 }, { status: 202, body: { id: "r0" } }]);
+        await withFetch(fetchSeq.fn, () => pushSkill(skillPath, { cwd: dir }));
+
+        for (const call of fetchSeq.calls) {
+          assert.ok(call.url.startsWith("https://env.example"));
+        }
+        const headers = fetchSeq.calls[1].init.headers as Record<string, string>;
+        assert.equal(headers.authorization, "Bearer env-key");
+      }
+    );
   });
 });
 

@@ -13,6 +13,7 @@ import { parseSkill, SkillParseError, type Step } from "./skill.js";
 import { runSkill, dryRunSkill, readRunRecords, type RunRecord } from "./runner.js";
 import { pushSkill, PublicSubmissionError, type PushRecordResult } from "./push.js";
 import { getSkill, getMineSkill, type GetOutcome, type GetMineOutcome } from "./get.js";
+import { DEFAULT_CLOUD_URL, readCliConfig } from "./cloud-config.js";
 import { builtinTools } from "./tools.js";
 import { connectDownstream, type DownstreamConnection } from "./mcp-client.js";
 import { buildMcpTools } from "./mcp-tool.js";
@@ -1868,10 +1869,11 @@ export async function cmdPush(args: ParsedArgs): Promise<number> {
       console.log("share requested, but the cloud returned no receipt link (older cloud or share failure)");
     }
     if (!share || !sawShareUrl) {
-      const cloudUrl = (process.env.REELIER_CLOUD_URL ?? "").replace(/\/+$/, "");
-      if (cloudUrl) {
-        console.log(`Dashboard: ${cloudUrl}/dashboard/runs`);
-      }
+      // The URL always resolves now (env -> config file -> DEFAULT_CLOUD_URL)
+      // — same chain resolvePushConfig used to actually push this run.
+      const fileConfig = await readCliConfig();
+      const cloudUrl = (process.env.REELIER_CLOUD_URL || fileConfig.cloudUrl || DEFAULT_CLOUD_URL).replace(/\/+$/, "");
+      console.log(`Dashboard: ${cloudUrl}/dashboard/runs`);
       console.log("  tip: add --share for a public receipt link");
     }
   }

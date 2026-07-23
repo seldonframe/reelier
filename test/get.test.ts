@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { getSkill, parseSkillRef, getMineSkill } from "../src/get.js";
+import { DEFAULT_CLOUD_URL, writeCliConfig } from "../src/cloud-config.js";
 
 const SKILL_MD = `---
 name: fetched-fixture
@@ -357,13 +358,38 @@ test("getSkill: 404 -> 'error' outcome naming the missing owner/skill, no write"
   });
 });
 
-test("getSkill: missing REELIER_CLOUD_URL -> error outcome, no network call", async () => {
+test("getSkill: no REELIER_CLOUD_URL and no config file -> resolves DEFAULT_CLOUD_URL (get is anonymous, never throws)", async () => {
   await withTempDir(async (dir) => {
-    await withEnv({ REELIER_CLOUD_URL: undefined }, async () => {
-      const outcome = await getSkill("acme/fetched-fixture", { cwd: dir });
-      assert.equal(outcome.kind, "error");
-      if (outcome.kind !== "error") return;
-      assert.match(outcome.message, /REELIER_CLOUD_URL/);
+    // HOME/USERPROFILE pinned to the isolated tmp dir (no config.json there)
+    // so this never depends on the real machine's login state.
+    await withEnv({ REELIER_CLOUD_URL: undefined, HOME: dir, USERPROFILE: dir }, async () => {
+      const { fn, calls } = fakeFetch([{ status: 200, body: readOnlyBody() }]);
+      const outcome = await withFetch(fn, () => getSkill("acme/fetched-fixture", { cwd: dir }));
+      assert.equal(outcome.kind, "written");
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0], `${DEFAULT_CLOUD_URL}/api/v1/registry/acme/fetched-fixture`);
+    });
+  });
+});
+
+test("getSkill: cloudUrl from the config file is used when REELIER_CLOUD_URL is unset", async () => {
+  await withTempDir(async (dir) => {
+    await writeCliConfig({ cloudUrl: "https://file.example" }, dir);
+    await withEnv({ REELIER_CLOUD_URL: undefined, HOME: dir, USERPROFILE: dir }, async () => {
+      const { fn, calls } = fakeFetch([{ status: 200, body: readOnlyBody() }]);
+      await withFetch(fn, () => getSkill("acme/fetched-fixture", { cwd: dir }));
+      assert.equal(calls[0], "https://file.example/api/v1/registry/acme/fetched-fixture");
+    });
+  });
+});
+
+test("getSkill: REELIER_CLOUD_URL overrides a conflicting config-file cloudUrl", async () => {
+  await withTempDir(async (dir) => {
+    await writeCliConfig({ cloudUrl: "https://file.example" }, dir);
+    await withEnv({ REELIER_CLOUD_URL: "https://env.example", HOME: dir, USERPROFILE: dir }, async () => {
+      const { fn, calls } = fakeFetch([{ status: 200, body: readOnlyBody() }]);
+      await withFetch(fn, () => getSkill("acme/fetched-fixture", { cwd: dir }));
+      assert.equal(calls[0], "https://env.example/api/v1/registry/acme/fetched-fixture");
     });
   });
 });
@@ -521,17 +547,38 @@ test("getMineSkill: different-hash collision -> hard error, no write, --force ov
   });
 });
 
-test("getMineSkill: missing REELIER_CLOUD_URL/KEY -> error outcome, no network call (same helpful message push prints)", async () => {
+test("getMineSkill: no key anywhere -> 'Not logged in' error outcome, no network call (same message push throws)", async () => {
   await withTempDir(async (dir) => {
-    await withEnv({ REELIER_CLOUD_URL: undefined, REELIER_CLOUD_KEY: undefined }, async () => {
-      const { fn, calls } = fakeFetch([]);
-      const outcome = await withFetch(fn, () => getMineSkill("my-private-fixture", { cwd: dir }));
-      assert.equal(outcome.kind, "error");
-      if (outcome.kind !== "error") return;
-      assert.match(outcome.message, /REELIER_CLOUD_URL/);
-      assert.match(outcome.message, /REELIER_CLOUD_KEY/);
-      assert.match(outcome.message, /'reelier push'/); // literally push's own message, per the task brief
-      assert.equal(calls.length, 0);
-    });
+    // HOME/USERPROFILE pinned to the isolated tmp dir so this never depends
+    // on the real machine's login state.
+    await withEnv(
+      { REELIER_CLOUD_URL: undefined, REELIER_CLOUD_KEY: undefined, HOME: dir, USERPROFILE: dir },
+      async () => {
+        const { fn, calls } = fakeFetch([]);
+        const outcome = await withFetch(fn, () => getMineSkill("my-private-fixture", { cwd: dir }));
+        assert.equal(outcome.kind, "error");
+        if (outcome.kind !== "error") return;
+        assert.match(outcome.message, /Not logged in\. Run 'reelier login'/);
+        assert.match(outcome.message, /REELIER_CLOUD_KEY/);
+        assert.equal(calls.length, 0);
+      }
+    );
+  });
+});
+
+test("getMineSkill: apiKey from the config file + no REELIER_CLOUD_URL anywhere -> resolves DEFAULT_CLOUD_URL", async () => {
+  await withTempDir(async (dir) => {
+    await writeCliConfig({ apiKey: "file-key" }, dir);
+    await withEnv(
+      { REELIER_CLOUD_URL: undefined, REELIER_CLOUD_KEY: undefined, HOME: dir, USERPROFILE: dir },
+      async () => {
+        const { fn, calls, inits } = fakeFetch([{ status: 200, body: mineBody() }]);
+        const outcome = await withFetch(fn, () => getMineSkill("my-private-fixture", { cwd: dir }));
+        assert.equal(outcome.kind, "written");
+        assert.equal(calls[0], `${DEFAULT_CLOUD_URL}/api/v1/skills/my-private-fixture`);
+        const headers = inits[0]?.headers as Record<string, string>;
+        assert.equal(headers.authorization, "Bearer file-key");
+      }
+    );
   });
 });
