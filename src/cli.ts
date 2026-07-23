@@ -19,7 +19,7 @@ import { buildMcpTools } from "./mcp-tool.js";
 import { buildProxyServer, Recorder } from "./recorder.js";
 import { parseTraceLines, formatTrace } from "./trace.js";
 import { compile, renderSkillMd, type CompileResult, type FromSkillProvenance } from "./compile.js";
-import { buildManifestForSkill } from "./manifest.js";
+import { buildManifestForSkill, preflightManifest } from "./manifest.js";
 import { serializeSkill, writeFileAtomic } from "./writeback.js";
 import { parseInstructionSkillFrontmatter } from "./from-skill.js";
 import { createLlmClient, resolveLlmConfig } from "./llm.js";
@@ -148,12 +148,21 @@ function parseMaxLevel(raw: string | undefined): 0 | 1 | 2 {
   throw new Error(`--max-level must be 0, 1, or 2, got: ${JSON.stringify(raw)}`);
 }
 
-async function cmdRun(args: ParsedArgs): Promise<number> {
+/**
+ * `connect` is injectable (defaults to the real `connectDownstream`, which
+ * spawns a subprocess) so tests can drive the manifest preflight against an
+ * in-process fake DownstreamConnection instead — same reasoning as
+ * cmdManifest's and cmdPush's overrides.
+ */
+export async function cmdRun(
+  args: ParsedArgs,
+  connect: (spec: string) => Promise<DownstreamConnection> = connectDownstream
+): Promise<number> {
   const skillPath = args.positional[0];
   if (!skillPath) {
     console.error(
-      "Usage: reelier run <skill.md> [--dry-run] [--allow-writes] [--yes] [--var name=value ...] [--max-level 0|1|2] " +
-        "[--llm-base-url ...] [--llm-api-key ...] [--llm-model ...] [--llm-l2-model ...]"
+      "Usage: reelier run <skill.md> [--dry-run] [--allow-writes] [--yes] [--ignore-manifest] [--var name=value ...] " +
+        "[--max-level 0|1|2] [--llm-base-url ...] [--llm-api-key ...] [--llm-model ...] [--llm-l2-model ...]"
     );
     return 1;
   }
@@ -198,7 +207,41 @@ async function cmdRun(args: ParsedArgs): Promise<number> {
   const downstreams: DownstreamConnection[] = [];
   try {
     for (const spec of args.wraps) {
-      downstreams.push(await connectDownstream(spec));
+      downstreams.push(await connect(spec));
+    }
+
+    // Fail-closed manifest preflight (docs/specs/flight-recorder-v2.md §1):
+    // prove the tools this skill was recorded/stamped against are still the
+    // tools present — schema-identical — BEFORE step 1 executes. A skill
+    // with no manifest is unaffected (additive; every pre-v2 skill stays
+    // valid) beyond a one-line advisory note.
+    const ignoreManifest = args.flags.has("ignore-manifest");
+    let manifestIgnored = false;
+    if (skill.manifest) {
+      if (ignoreManifest) {
+        console.error("WARNING: --ignore-manifest — replaying despite unverified tool schemas");
+        manifestIgnored = true;
+      } else if (args.wraps.length === 0) {
+        console.error("manifest present but no --wrap given — cannot verify tools against live servers");
+        return 1;
+      } else {
+        const { ok, drifts } = preflightManifest(skill.manifest, downstreams);
+        if (!ok) {
+          console.error("MANIFEST DRIFT — refusing to replay (fail closed):");
+          for (const d of drifts) {
+            const liveTag = d.live !== undefined ? ` live ${d.live}` : "";
+            console.error(`  ✗ ${d.name} — recorded ${d.recorded}${liveTag} (${d.note})`);
+          }
+          console.error(
+            `If the change is intentional: reelier manifest ${skillPath} --wrap …  |  break-glass: --ignore-manifest`
+          );
+          return 1;
+        }
+      }
+    } else {
+      console.error(
+        `note: ${skillPath} has no manifest — replay cannot detect tool-schema drift. Stamp one: reelier manifest ${skillPath} --wrap …`
+      );
     }
 
     const tools = downstreams.length > 0 ? { ...builtinTools, ...buildMcpTools(downstreams) } : undefined;
@@ -228,6 +271,7 @@ async function cmdRun(args: ParsedArgs): Promise<number> {
       // The exact bytes just read off disk to parse `skill` for this run —
       // stamped verbatim onto the RunRecord (see RunRecord.skillContentSha256).
       skillContentSha256: createHash("sha256").update(source, "utf8").digest("hex"),
+      manifestIgnored,
       onStep: (rec) => {
         const icon =
           rec.outcome === "passed" || rec.outcome === "unchecked" ? "✓" : rec.outcome === "skipped" ? "○" : "✗";

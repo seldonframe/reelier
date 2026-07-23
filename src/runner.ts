@@ -89,6 +89,14 @@ export interface RunRecord {
    * push-time fallback used on older records that predate this field.
    */
   skillContentSha256?: string;
+  /**
+   * Set (true) only when this run's manifest preflight was explicitly
+   * bypassed via `--ignore-manifest` (docs/specs/flight-recorder-v2.md §1) —
+   * the break-glass path. Absent on every run that had no manifest to check,
+   * or whose manifest preflight ran normally, so pre-v2 records (and normal
+   * v2 ones) stay byte-identical.
+   */
+  manifestIgnored?: true;
   steps: StepRecord[];
   totals: {
     steps: number;
@@ -135,6 +143,8 @@ export interface RunOptions {
   skillPath?: string;
   /** sha256 of the skill-file bytes the caller read to produce `skill` — stamped verbatim onto the resulting RunRecord. See RunRecord.skillContentSha256. */
   skillContentSha256?: string;
+  /** Threaded verbatim onto RunRecord.manifestIgnored — set by the caller (cmdRun) when `--ignore-manifest` bypassed the manifest preflight. The runner itself never evaluates a manifest; this is purely a receipt annotation. */
+  manifestIgnored?: boolean;
 }
 
 export interface DryRunStep {
@@ -674,6 +684,7 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
     finishedAt,
     passed: failedCount === 0,
     ...(options.skillContentSha256 ? { skillContentSha256: options.skillContentSha256 } : {}),
+    ...(options.manifestIgnored ? { manifestIgnored: true } : {}),
     steps: stepRecords,
     totals: {
       steps: stepRecords.length,
