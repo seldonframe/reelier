@@ -39,6 +39,76 @@ export interface PushConfig {
   apiKey: string;
 }
 
+// ---------------------------------------------------------------------------
+// CI attestation (trust-ladder spec §5) — GitHub Actions' own OIDC identity
+// endpoint. Zero-config in Actions: when ACTIONS_ID_TOKEN_REQUEST_URL/TOKEN
+// are present (the runner exposes these only when the workflow granted
+// `permissions: id-token: write`), request a short-lived JWT scoped to
+// audience "reelier.com" and attach it to the push payload. Absent env ->
+// null, NOTHING said — a laptop push is never shamed for lacking this.
+// ANY failure (network, non-2xx, malformed body) -> null + exactly one
+// stderr line; this must never block or delay a push (same fail-open
+// contract as B1's TSA request).
+// ---------------------------------------------------------------------------
+
+export interface CiAttestation {
+  provider: "github-actions";
+  token: string;
+}
+
+/** The exact audience every CI-attestation JWT this CLI requests is scoped to — the cloud's ingest verification checks this same literal (trust-ladder spec §5). */
+export const CI_ATTESTATION_AUDIENCE = "reelier.com";
+
+/**
+ * Detect and fetch a GitHub Actions OIDC token, if the runner's identity
+ * endpoint is available in the current environment. `fetchImpl` is
+ * injectable purely for tests (mirrors every other network call in this
+ * file) — production always uses the global `fetch`.
+ */
+export async function detectCiOidc(
+  env: NodeJS.ProcessEnv = process.env,
+  fetchImpl: typeof fetch = fetch
+): Promise<CiAttestation | null> {
+  const url = env.ACTIONS_ID_TOKEN_REQUEST_URL;
+  const requestToken = env.ACTIONS_ID_TOKEN_REQUEST_TOKEN;
+  if (!url || !requestToken) return null;
+
+  let res: Response;
+  try {
+    res = await fetchImpl(`${url}&audience=${CI_ATTESTATION_AUDIENCE}`, {
+      headers: { authorization: `Bearer ${requestToken}` },
+    });
+  } catch (err) {
+    console.error(
+      `WARNING: GitHub Actions OIDC token request failed (${(err as Error).message}) — pushing without ciAttestation.`
+    );
+    return null;
+  }
+  if (!res.ok) {
+    console.error(
+      `WARNING: GitHub Actions OIDC token request returned HTTP ${res.status} — pushing without ciAttestation.`
+    );
+    return null;
+  }
+
+  let body: { value?: unknown };
+  try {
+    body = JSON.parse(await res.text());
+  } catch (err) {
+    console.error(
+      `WARNING: GitHub Actions OIDC token response was not valid JSON (${(err as Error).message}) — pushing without ciAttestation.`
+    );
+    return null;
+  }
+  if (typeof body.value !== "string" || body.value.length === 0) {
+    console.error(
+      "WARNING: GitHub Actions OIDC token response had no usable 'value' field — pushing without ciAttestation."
+    );
+    return null;
+  }
+  return { provider: "github-actions", token: body.value };
+}
+
 /**
  * Resolve cloud sync config from env. Never logs or embeds the key
  * anywhere in a thrown message — only names the missing var(s).
@@ -369,7 +439,8 @@ async function pushOneRecord(
   index: number,
   share?: boolean,
   priceTable?: PriceTable,
-  signingKey?: LoadedSigningKey
+  signingKey?: LoadedSigningKey,
+  ciAttestation?: CiAttestation
 ): Promise<PushRecordResult> {
   const cost = computePushCost(record, priceTable);
   const signature = computeSignature(record, signingKey);
@@ -382,13 +453,14 @@ async function pushOneRecord(
         authorization: `Bearer ${config.apiKey}`,
       },
       // `skillContentSha256` (and, now, `costUsd`/`priceTableDate`/
-      // `signature`) ride at the TOP LEVEL of the POST body (sibling of
-      // `record`), matching the cloud ingest contract (route.ts reads them
-      // there, not from inside `record`). An older cloud that doesn't know
-      // these fields yet simply ignores them — same optional-field
-      // discipline as skillContentSha256. No signing key configured ->
-      // `signature` is omitted entirely, zero output, no shaming of an
-      // unsigned push (trust-ladder spec §1's never-lies rule).
+      // `signature`/`ciAttestation`) ride at the TOP LEVEL of the POST body
+      // (sibling of `record`), matching the cloud ingest contract (route.ts
+      // reads them there, not from inside `record`). An older cloud that
+      // doesn't know these fields yet simply ignores them — same
+      // optional-field discipline as skillContentSha256. No signing key
+      // configured -> `signature` omitted; not running in GitHub Actions (or
+      // no id-token permission) -> `ciAttestation` omitted. Neither omission
+      // is ever shamed (trust-ladder spec's never-lies rule).
       // NOTE for the cloud side (follow-up, not this change): displaying
       // costUsd/priceTableDate on the receipt page is a separate piece of
       // work this push-time addition does not include.
@@ -399,6 +471,7 @@ async function pushOneRecord(
         ...(share ? { share: true } : {}),
         ...(cost ? { costUsd: cost.costUsd, priceTableDate: cost.priceTableDate } : {}),
         ...(signature ? { signature } : {}),
+        ...(ciAttestation ? { ciAttestation } : {}),
       }),
     });
   } catch (err) {
@@ -529,6 +602,10 @@ export async function pushSkill(skillPath: string, options: PushOptions = {}): P
     );
   }
 
+  // Detected once per batch, before the skill upload leg — fail-open and
+  // silent-on-absence, exactly like the signing key just below.
+  const ciAttestation = (await detectCiOidc()) ?? undefined;
+
   let skillUploaded = false;
   let publicSubmission: PublicSubmissionResult | undefined;
   if (needsSkillUpload) {
@@ -562,7 +639,16 @@ export async function pushSkill(skillPath: string, options: PushOptions = {}): P
     const record = candidates[i].skillContentSha256
       ? candidates[i]
       : { ...candidates[i], skillContentSha256: pushTimeFallbackSha256 };
-    const result = await pushOneRecord(config, skill.name, record, cursorBefore + i, options.share, priceTable, signingKey);
+    const result = await pushOneRecord(
+      config,
+      skill.name,
+      record,
+      cursorBefore + i,
+      options.share,
+      priceTable,
+      signingKey,
+      ciAttestation
+    );
     results.push(result);
     options.onRecordResult?.(result);
 
