@@ -1,6 +1,8 @@
 # Trust Ladder v1 — Spec
 
-_Drafted 2026-07-22. The rungs that move a receipt from "trust me" to "check my references": signing (flight-recorder v1 §6, made real), trusted timestamps, provider request-ids, and cross-tenant corroboration with **reputation-only** standing (decided 2026-07-22 — economic stake/slashing is an explicit non-goal). Ships as 0.20.0 (OSS) + a reelier-cloud wave; implementation starts after flight-recorder v2 (0.19.0) merges, and builds on its primitives (`canonicalJson`/`digestSha256`, the manifest, the write receipt block)._
+_Drafted 2026-07-22; CI attestation added same day (Max: build the full pragmatic bundle — CI-attested runs + provider request-ids + TSA + signed-by-verified-org). The rungs that move a receipt from "trust me" to "check my references": signing (flight-recorder v1 §6, made real), trusted timestamps, provider request-ids, CI environment attestation, and cross-tenant corroboration with **reputation-only** standing (decided 2026-07-22 — economic stake/slashing is an explicit non-goal). Ships as 0.20.0 (OSS) + a reelier-cloud wave; implementation starts after flight-recorder v2 (0.19.0) merges, and builds on its primitives (`canonicalJson`/`digestSha256`, the manifest, the write receipt block)._
+
+_The bundle's combined claim, stated honestly: faking a fully-lit receipt requires compromising GitHub's OIDC, the provider's own logs, or a domain-verified identity's standing — parties the operator does not control. That is fabrication-**resistance** (a cost, raised), never fabrication-**proof** (a boolean, unclaimable)._
 
 **The governing principle — a ladder of graded claims, never a blanket ✓:** a receipt asserts several *independent* claims, each provable to a different grade. The receipt page renders them as separate rows (green/amber/grey), each stating exactly what it proves and how to raise it. A single "verified ✓" would be a lie by compression; the ladder is the product.
 
@@ -69,6 +71,21 @@ _Drafted 2026-07-22. The rungs that move a receipt from "trust me" to "check my 
 **Known limits:** sybil tenants can manufacture "distinct" corroboration — mitigations are the verified-org badge weighting and distinct-tenant definitions (same billing identity = one tenant); state the limit on the methodology page rather than hiding it.
 
 **Verify:** fingerprint-match fixtures across seeded tenants; distinct-tenant counting under same-org duplicates; domain-verification flow e2e; flagged-org rendering.
+
+## 5. CI attestation — GitHub OIDC environment provenance (the operator-independent witness)
+
+**Job:** make a CI receipt structurally stronger than a laptop receipt: GitHub itself asserts *which repo, which sha, which workflow, which run* produced the push — an anchor the operator cannot mint.
+
+**Mechanics:**
+- **CLI (zero-config in Actions):** when `ACTIONS_ID_TOKEN_REQUEST_URL`/`ACTIONS_ID_TOKEN_REQUEST_TOKEN` are present (the runner's OIDC endpoint), `reelier push` requests an OIDC JWT with `audience=reelier.com` and attaches it to the payload: `ciAttestation: { provider: "github-actions", token: <jwt> }`. Absent env → field omitted, nothing said (a laptop push is not shamed). The workflow needs `permissions: id-token: write` — the reelier GitHub Action (tag `v1`) adds it to its documented snippet.
+- **Cloud (verification at ingest):** verify the JWT against GitHub's published JWKS (issuer `https://token.actions.githubusercontent.com`, audience must be `reelier.com`, standard exp/iat) — plain OIDC verification, no Sigstore infrastructure. On pass, store the claims that matter and render: *"CI-attested: `owner/repo@<sha>` · workflow `<name>` · run `<id>` — asserted by GitHub Actions ✓"*. On fail, store nothing and mark the rung grey with "attestation present but did not verify" (never render unverified claims).
+- The token itself is verified-then-discarded; only the extracted claims persist (the JWT is short-lived anyway — minutes — which is exactly why verification happens at ingest, not later).
+
+**Design decisions:** this is deliberately **not** Sigstore keyless signing — no Fulcio certs, no public Rekor log, so none of the documented cons (public-log privacy leak, log-dependent verification forever, standing infra). The trade, stated on the page: a third party re-verifying later is trusting reelier.com's ingest-time verification record, not re-deriving it from a public log. That is the honest v1 trade; Sigstore proper remains the later rung if receipts-on-PRs demand third-party re-derivability. GitHub Actions only in v1 (GitLab/Buildkite OIDC are the same shape, added on demand).
+
+**Known limits:** attests the *environment*, not the truth — a compromised repo/workflow mints valid attestations for whatever it runs; combine with §1 (who) + §3 (what it touched) for the full picture. Claims schema is GitHub's; if GitHub changes claim semantics, verification policy needs a version bump (pin the checked claims explicitly).
+
+**Verify:** JWKS-verification unit tests with fixture JWTs (valid / wrong audience / expired / wrong issuer / tampered); e2e — a real Actions run on the reelier repo pushes a receipt and the page renders the attested row; laptop push renders grey rung with no nagging; **cross-seam integration test mandatory** (CLI env-detect → push payload → cloud verify → page).
 
 ## The receipt page — the ladder rendered (cloud)
 
