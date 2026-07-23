@@ -12,7 +12,7 @@ Record the run that worked, replay it deterministically — **0 tokens, byte-ide
 
 [![npm version](https://img.shields.io/npm/v/reelier.svg?color=blue)](https://www.npmjs.com/package/reelier)
 [![CI](https://github.com/seldonframe/reelier/actions/workflows/ci.yml/badge.svg)](https://github.com/seldonframe/reelier/actions/workflows/ci.yml)
-[![tests](https://img.shields.io/badge/tests-233%20passing-brightgreen.svg)](./test)
+[![tests](https://img.shields.io/badge/tests-641%20passing-brightgreen.svg)](./test)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 [![Discord](https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white)](https://discord.gg/nSp5sd4v)
 [![stars](https://img.shields.io/github/stars/seldonframe/reelier?style=social)](https://github.com/seldonframe/reelier)
@@ -122,11 +122,17 @@ Only replayable calls (Reelier's own builtins, or `mcp__<server>__<tool>` calls)
 
 One recorded skill gives you three different questions to ask of it, not one:
 
-- **Determinism** — `reelier run <skill.md>` replays against the assertions you recorded. Same steps, same asserts, 0 tokens. Answers: *does this still do what it did?*
-- **Recovery** — `reelier run <skill.md> --fail N[=status]` injects a synthetic failure at step `N` (default status `500`; override with `--fail N=429`, repeatable) instead of dispatching that step's real tool call, then runs the SAME escalation ladder a real failure would hit. Nothing outside the network actually happens — a mocked step never calls its tool, so you can recovery-test a write step with no `--allow-writes` and no side effect. Answers: *if this broke, would the skill notice and heal?* (A mock run is a local test only — `reelier push` refuses to publish one; see below.)
-- **Drift** — `reelier run <skill.md> --wrap "<your mcp server>"` replays against your *live*, read-only dependencies instead of the recorded trace. Paired with `reelier manifest` (below), this is how you catch a tool's schema moving out from under you before a real replay does.
+| Test | Command | Answers |
+| --- | --- | --- |
+| **Determinism** | `reelier run <skill.md>` replays against the assertions you recorded. Same steps, same asserts, 0 tokens. | *Does this still do what it did?* |
+| **Recovery** | `reelier run <skill.md> --fail N[=status]` injects a synthetic failure at step `N` (default status `500`; override with `--fail N=429`, repeatable) instead of dispatching that step's real tool call, then runs the SAME escalation ladder a real failure would hit. | *If this broke, would the skill notice and heal?* |
+| **Drift** | `reelier run <skill.md> --wrap "<your mcp server>"` replays against your *live*, read-only dependencies instead of the recorded trace. Paired with `reelier manifest` (below), this is how you catch a tool's schema moving out from under you before a real replay does. | *Has the world moved out from under this skill?* |
+
+Nothing outside the network actually happens during a recovery test — a mocked step never calls its tool, so you can recovery-test a write step with no `--allow-writes` and no side effect. A mock run is a local test only — `reelier push` refuses to publish one.
 
 *Taxonomy due to Mads Hansen's review of the launch post.*
+
+Normative spec: [docs/specs/flight-recorder-v2.md](./docs/specs/flight-recorder-v2.md)
 
 ### Tool-schema drift: `reelier manifest`
 
@@ -189,8 +195,14 @@ A receipt asserts several *independent* things about a run, each provable to a d
 | --- | --- | --- | --- |
 | **Unaltered since push** | `reelier init --signing` once, then every `reelier push` signs automatically | Produced by the holder of this Ed25519 key and **tamper-evident** since it was pushed | The run wasn't fabricated before it was ever recorded |
 | **Timestamped** | `reelier push <skill.md> --timestamp` | An RFC-3161 timestamp authority attests the record's digest existed by time T | The record's contents, or that it wasn't backdated before *this* timestamp request |
+| **Produced by** | Register your public key at reelier.com (verified-org badge via DNS domain verification) | The receipt names the identity holding the signing key | Identity is not intent — it says who pushed, not that the run was honest |
+| **Tools verified** | `reelier manifest <skill.md> --wrap "…"` once; every replay preflights it | The tools replayed against carry byte-identical input schemas to the tools recorded | That tool *behavior* is unchanged — the digest covers the schema contract, not the implementation behind it |
+| **Writes approved** | `reelier approve <skill.md>` | Every executed write matched a human-approved hash of its exact tool + argument template | That values bound into the template at run time were the intended ones — approval binds the operation shape |
 | **Cross-checkable refs** | Automatic — any step whose call returns a provider request-id (`request-id`, `stripe-request-id`, `cf-ray`, …, or an MCP body's `request_id`/`requestId`/`x_request_id`) carries it | An auditor can cross-check the claim against the provider's own logs | Reelier does not verify these upstream itself — that's the auditor's job |
 | **CI-attested** | Automatic in GitHub Actions (needs `permissions: id-token: write`) | Which repo, sha, and workflow run produced the push — an anchor the operator can't mint themselves | The workflow's own logic wasn't compromised — attests the *environment*, not the truth of what it ran |
+| **Corroborated** | Accrues automatically on reelier.com as distinct tenants push receipts for byte-identical skill content | Independent tenants produced matching receipts — matching accrues only across distinct tenants | That tenants are truly independent people — same billing identity counts once, but sybil accounts are named as the known limit |
+
+Normative spec: [docs/specs/trust-ladder-v1.md](./docs/specs/trust-ladder-v1.md)
 
 `reelier verify <permalink|file> [--key <pub.pem>]` recomputes each claim offline and prints every row — never a bare OK:
 
@@ -201,6 +213,14 @@ reelier verify https://reelier.com/r/<token> --key mykey.pub.pem
 ```
 
 Absent claims are rendered honestly, never shamed: an unsigned push says `— unsigned`, not "unverified" or "insecure" — sign your pushes with `reelier init --signing` whenever you want that row lit. Exit code is 0 unless a claim that's actually **present** fails verification (a bad signature, a mismatched timestamp imprint); an absent or unchecked claim never fails the exit code.
+
+## What it means for you
+
+- **Solo dev / OSS maintainer** — your replay is a real regression test again: drift can't pass silently, and you can test recovery on purpose.
+- **Team shipping agent changes** — "the migration ran clean" becomes a checkable artifact on the PR, not a claim — CI-attested receipts are structurally harder to fake than a laptop's.
+- **Agency running agents for clients** — proof-of-delivery: "the agent booked these 40 jobs" as signed, timestamped evidence a client can verify themselves.
+- **Marketplace buyer or seller** — corroborated receipts are reviews that can't be astroturfed: they accrue only across distinct tenants running byte-identical skill content.
+- **Audit-facing ops** — a signed, timestamped, CI-attested trail of every write, with an idempotency key and the resource it touched.
 
 ## The measured proof
 
