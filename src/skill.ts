@@ -13,6 +13,14 @@ export interface Step {
   asserts: string[];
   binds: string[];
   effect: Effect;
+  /**
+   * Hash-bound write approval (docs/specs/flight-recorder-v2.md §2), stamped
+   * by `reelier approve` (src/cli.ts). Absent = legacy/unapproved step — the
+   * runner falls back to the `--allow-writes`/`--yes` flags for it. Present
+   * = the runner recomputes `computeApprovalHash` (src/approval.ts) and
+   * refuses to execute (no flag override) if it doesn't match verbatim.
+   */
+  approve?: string;
   /** 1-indexed line in the source file where this step's header starts. */
   line: number;
 }
@@ -294,6 +302,7 @@ export function parseSkill(source: string): Skill {
     const asserts: string[] = [];
     const binds: string[] = [];
     let effect: Effect | undefined;
+    let approve: string | undefined;
 
     for (let i = startIdx + 1; i < endIdx; i++) {
       const raw = bodyLines[i];
@@ -301,13 +310,13 @@ export function parseSkill(source: string): Skill {
       if (line === "") continue;
       const curLine = bodyStartLine + i;
 
-      const bulletMatch = line.match(/^-\s*(intent|action|assert|bind|effect)\s*:\s*(.*)$/);
+      const bulletMatch = line.match(/^-\s*(intent|action|assert|bind|effect|approve)\s*:\s*(.*)$/);
       if (!bulletMatch) {
         // Ignore non-bullet prose lines within a step block (e.g. blank/comment text),
         // but reject anything that looks like an attempted bullet with a typo'd key.
         if (line.startsWith("-")) {
           throw new SkillParseError(
-            `Unrecognized step field, expected one of intent/action/assert/bind/effect: ${JSON.stringify(line)}`,
+            `Unrecognized step field, expected one of intent/action/assert/bind/effect/approve: ${JSON.stringify(line)}`,
             { step: n, line: curLine }
           );
         }
@@ -357,6 +366,21 @@ export function parseSkill(source: string): Skill {
           }
           effect = rest.trim() as Effect;
           break;
+        case "approve":
+          if (approve !== undefined) {
+            throw new SkillParseError("Duplicate 'approve' field in step", { step: n, line: curLine });
+          }
+          {
+            const value = rest.trim();
+            if (!DIGEST_RE.test(value)) {
+              throw new SkillParseError(
+                `Invalid 'approve' value ${JSON.stringify(value)} — expected sha256:<64 hex>`,
+                { step: n, line: curLine }
+              );
+            }
+            approve = value;
+          }
+          break;
       }
     }
 
@@ -379,6 +403,7 @@ export function parseSkill(source: string): Skill {
       asserts,
       binds,
       effect,
+      ...(approve !== undefined ? { approve } : {}),
       line: fileLine,
     });
   }

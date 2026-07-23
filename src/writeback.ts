@@ -80,6 +80,7 @@ export function renderStepBlock(step: Step): string[] {
   for (const a of step.asserts) lines.push(`- assert: ${a}`);
   for (const b of step.binds) lines.push(`- bind: ${b}`);
   lines.push(`- effect: ${step.effect}`);
+  if (step.approve !== undefined) lines.push(`- approve: ${step.approve}`);
   lines.push("");
   return lines;
 }
@@ -126,7 +127,8 @@ const SECTION_HEADING_RE = /^##(?!#)\s+/;
  * (appended after the existing bullets, before the next section or EOF), or
  * create the section (appended to the end of `trailing`) if absent.
  */
-function appendChangelogLine(trailing: string, line: string): string {
+/** Exported so callers outside the escalation write-back path (e.g. `reelier approve`, src/cli.ts) can append a changelog bullet using the exact same insertion rule. */
+export function appendChangelogLine(trailing: string, line: string): string {
   const trailingLines = trailing.length > 0 ? trailing.split(/\r\n|\n/) : [];
   const headingIdx = trailingLines.findIndex((l) => CHANGELOG_HEADING_RE.test(l.trim()));
 
