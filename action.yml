@@ -1,8 +1,7 @@
 name: "Reelier replay"
 description: >-
-  Snapshot tests for AI agents: replay recorded MCP tool-call workflows
-  deterministically — 0 LLM tokens, exit 1 on drift, and a receipt
-  comment on every pull request.
+  Snapshot tests for AI agents — deterministic replay of MCP tool-call
+  workflows. 0 LLM tokens, exit 1 on drift, PR receipts.
 author: "Reelier"
 branding:
   icon: "check-circle"
