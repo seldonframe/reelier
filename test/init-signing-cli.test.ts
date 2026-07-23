@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { cmdInit, type ParsedArgs } from "../src/cli.js";
@@ -88,6 +88,32 @@ test("reelier init --signing: idempotent — a second run prints the existing ke
 
       const secondKeyMatch = joined.match(/Signing key already exists: ([0-9a-f]{16})/);
       assert.equal(secondKeyMatch![1], firstKeyId);
+    });
+  });
+});
+
+test("reelier init --signing: a malformed existing key file is named in a warning, then a fresh key is generated (never silently orphaned)", async () => {
+  await withTempDir(async (home) => {
+    await withEnv({ HOME: home, USERPROFILE: home }, async () => {
+      const signingDir = path.join(home, ".reelier", "signing");
+      await mkdir(signingDir, { recursive: true });
+      const brokenFileName = "abcdef0123456789.pem";
+      await writeFile(path.join(signingDir, brokenFileName), "not a real PEM", "utf8");
+
+      const { result: code, lines } = await withCapturedLogs(() => cmdInit(argsWithSigning()));
+      assert.equal(code, 0);
+      const joined = lines.join("\n");
+
+      // loadSigningKey's own WARNING (src/signing.ts) names the orphaned
+      // file by path — cmdInitSigning doesn't suppress or duplicate it, it
+      // just proceeds to generate a fresh key on top of it.
+      assert.match(joined, /WARNING/);
+      assert.match(joined, new RegExp(brokenFileName.replace(".", "\\.")));
+      assert.match(joined, /Generated signing key: [0-9a-f]{16}/);
+
+      const loaded = await loadSigningKey(signingDir);
+      assert.ok(loaded);
+      assert.notEqual(loaded!.keyId, "abcdef0123456789");
     });
   });
 });
