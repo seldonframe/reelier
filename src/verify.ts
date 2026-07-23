@@ -28,6 +28,16 @@ export interface VerifyPayload {
   record: RunRecord;
   signature?: { alg: string; keyId: string; sig: string };
   timestamp?: { tsa: string; token: string };
+  /**
+   * The tenant's registered public key, additively returned by
+   * `/r/<token>/json` when the receipt is signed (cloud Slice C's key
+   * registry). Only consulted by `evaluateUnalteredSincePushClaim` when
+   * the caller did NOT pass `--key` — an explicit `--key` always wins, so
+   * a permalink is never trusted blindly by default; this just spares a
+   * caller who has no independent copy of the key from an "unchecked"
+   * line when the cloud already knows which key signed it.
+   */
+  signingKey?: { keyId: string; publicKeyPem: string; verified?: boolean; revoked?: boolean };
 }
 
 export function isHttpUrl(input: string): boolean {
@@ -146,6 +156,20 @@ export interface ClaimLine {
  * this key and has not been altered since push". Verifies against
  * `digestSha256(payload.record)` recomputed HERE, over whatever record was
  * actually fetched/read — never trusts a client-declared digest.
+ *
+ * Key resolution order (B5 — spec §1's "given via --key <pem> or fetched
+ * from the tenant's published key page"):
+ *  1. An explicit `--key <pub.pem>` (the `publicPem` argument) ALWAYS wins
+ *     — a permalink is never trusted blindly by default just because it
+ *     came bundled with its own claimed key.
+ *  2. Otherwise, `payload.signingKey` (additively returned by
+ *     `/r/<token>/json` when the receipt is signed) is used IF its keyId
+ *     matches the signature's own keyId — verified against that PEM, with
+ *     an honest attribution caveat on the same line (the key came from
+ *     reelier.com, not from something the caller independently holds).
+ *     A keyId MISMATCH between the signature and the payload's signingKey
+ *     is a real problem worth failing loudly, naming both ids.
+ *  3. Neither present -> today's "unchecked" line, unchanged.
  */
 export function evaluateUnalteredSincePushClaim(payload: VerifyPayload, publicPem?: string): ClaimLine {
   const sig = payload.signature;
@@ -156,17 +180,53 @@ export function evaluateUnalteredSincePushClaim(payload: VerifyPayload, publicPe
       line: "unaltered-since-push: — unsigned (sign your pushes: reelier init --signing)",
     };
   }
-  if (!publicPem) {
-    return {
-      claim: "unaltered-since-push",
-      status: "unchecked",
-      line: `unaltered-since-push: — signed by key ${sig.keyId}, but no public key was given to check it against (pass --key <pub.pem>)`,
-    };
+
+  if (publicPem) {
+    return verifySignatureAgainstKey(payload.record, sig, publicPem, "");
   }
-  const digest = digestSha256(payload.record);
+
+  const signingKey = payload.signingKey;
+  if (signingKey) {
+    if (signingKey.keyId !== sig.keyId) {
+      return {
+        claim: "unaltered-since-push",
+        status: "failed",
+        line:
+          `unaltered-since-push: ✗ KEY MISMATCH (signature claims key ${sig.keyId}, but reelier.com's published ` +
+          `signing key for this receipt is ${signingKey.keyId} — these must match; the payload may be tampered ` +
+          `with, or reelier.com is showing the wrong key)`,
+      };
+    }
+    return verifySignatureAgainstKey(
+      payload.record,
+      sig,
+      signingKey.publicKeyPem,
+      " — key supplied by reelier.com; for independent verification pass --key"
+    );
+  }
+
+  return {
+    claim: "unaltered-since-push",
+    status: "unchecked",
+    line: `unaltered-since-push: — signed by key ${sig.keyId}, but no public key was given to check it against (pass --key <pub.pem>)`,
+  };
+}
+
+/** Shared verify-and-render step for both the --key and signingKey-attribution paths — `attributionSuffix` is appended inside the parens on a successful verify only (a failure names the key plainly, no attribution noise). */
+function verifySignatureAgainstKey(
+  record: RunRecord,
+  sig: NonNullable<VerifyPayload["signature"]>,
+  publicPem: string,
+  attributionSuffix: string
+): ClaimLine {
+  const digest = digestSha256(record);
   const verified = verifyRecordSignature(publicPem, digest, sig.sig);
   if (verified) {
-    return { claim: "unaltered-since-push", status: "verified", line: `unaltered-since-push: ✓ (key ${sig.keyId})` };
+    return {
+      claim: "unaltered-since-push",
+      status: "verified",
+      line: `unaltered-since-push: ✓ (key ${sig.keyId}${attributionSuffix})`,
+    };
   }
   return {
     claim: "unaltered-since-push",

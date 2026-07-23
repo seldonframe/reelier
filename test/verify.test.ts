@@ -131,6 +131,83 @@ test("evaluateUnalteredSincePushClaim: wrong public key -> failed, not verified"
   });
 });
 
+// ---------------------------------------------------------------------------
+// B5 — cloud-supplied signingKey attribution (only consulted when --key was
+// NOT given; --key always wins when present).
+// ---------------------------------------------------------------------------
+
+test("evaluateUnalteredSincePushClaim: no --key, but payload carries a matching signingKey -> verifies against it, with the attribution caveat", async () => {
+  await withTempDir(async (dir) => {
+    const generated = await generateSigningKeypair(dir);
+    const loaded = await loadSigningKey(dir);
+    const record = makeRecord(0);
+    const sig = signRecordDigest(loaded!.privateKey, digestSha256(record));
+    const payload: VerifyPayload = {
+      record,
+      signature: { alg: "ed25519", keyId: generated.keyId, sig },
+      signingKey: { keyId: generated.keyId, publicKeyPem: generated.publicPem },
+    };
+    const result = evaluateUnalteredSincePushClaim(payload);
+    assert.equal(result.status, "verified");
+    assert.match(result.line, /✓/);
+    assert.match(result.line, new RegExp(generated.keyId));
+    assert.match(result.line, /supplied by reelier\.com/);
+    assert.match(result.line, /--key/);
+  });
+});
+
+test("evaluateUnalteredSincePushClaim: no --key, signingKey.keyId does NOT match the signature's keyId -> failed, naming both ids", async () => {
+  await withTempDir(async (dirA) => {
+    await withTempDir(async (dirB) => {
+      const keyA = await generateSigningKeypair(dirA);
+      const loadedA = await loadSigningKey(dirA);
+      const keyB = await generateSigningKeypair(dirB);
+      const record = makeRecord(0);
+      const sig = signRecordDigest(loadedA!.privateKey, digestSha256(record));
+      const payload: VerifyPayload = {
+        record,
+        signature: { alg: "ed25519", keyId: keyA.keyId, sig },
+        signingKey: { keyId: keyB.keyId, publicKeyPem: keyB.publicPem },
+      };
+      const result = evaluateUnalteredSincePushClaim(payload);
+      assert.equal(result.status, "failed");
+      assert.match(result.line, new RegExp(keyA.keyId));
+      assert.match(result.line, new RegExp(keyB.keyId));
+    });
+  });
+});
+
+test("evaluateUnalteredSincePushClaim: no --key, no signingKey in payload -> today's unchecked line, unchanged", async () => {
+  const result = evaluateUnalteredSincePushClaim({
+    record: makeRecord(0),
+    signature: { alg: "ed25519", keyId: "deadbeefdeadbeef", sig: "irrelevant" },
+  });
+  assert.equal(result.status, "unchecked");
+  assert.match(result.line, /no public key was given/);
+});
+
+test("evaluateUnalteredSincePushClaim: --key given ALWAYS wins over a signingKey in the payload, even a mismatched one", async () => {
+  await withTempDir(async (dirCorrect) => {
+    await withTempDir(async (dirWrongCloudKey) => {
+      const correctKey = await generateSigningKeypair(dirCorrect);
+      const loadedCorrect = await loadSigningKey(dirCorrect);
+      const wrongCloudKey = await generateSigningKeypair(dirWrongCloudKey);
+      const record = makeRecord(0);
+      const sig = signRecordDigest(loadedCorrect!.privateKey, digestSha256(record));
+      const payload: VerifyPayload = {
+        record,
+        signature: { alg: "ed25519", keyId: correctKey.keyId, sig },
+        // A payload whose signingKey is unrelated to the actual signature —
+        // must never influence the result when --key is explicitly given.
+        signingKey: { keyId: wrongCloudKey.keyId, publicKeyPem: wrongCloudKey.publicPem },
+      };
+      const result = evaluateUnalteredSincePushClaim(payload, correctKey.publicPem);
+      assert.equal(result.status, "verified");
+      assert.doesNotMatch(result.line, /reelier\.com/);
+    });
+  });
+});
+
 test("evaluateTimestampClaim: absent -> '— none', never fabricated", () => {
   const result = evaluateTimestampClaim({ record: makeRecord(0) });
   assert.equal(result.status, "absent");
