@@ -2545,9 +2545,15 @@ export async function cmdWhoami(fetchImpl: typeof fetch = fetch): Promise<number
     return 1;
   }
 
-  const res = await fetchImpl(`${baseUrl}/api/v1/me`, {
-    headers: { authorization: `Bearer ${apiKey}` },
-  });
+  let res;
+  try {
+    res = await fetchImpl(`${baseUrl}/api/v1/me`, {
+      headers: { authorization: `Bearer ${apiKey}` },
+    });
+  } catch (err) {
+    console.error(`Failed to look up identity: ${(err as Error).message}`);
+    return 1;
+  }
   if (res.status === 401) {
     console.error("API key is invalid or revoked. Run 'reelier login' again.");
     return 1;
@@ -2556,7 +2562,13 @@ export async function cmdWhoami(fetchImpl: typeof fetch = fetch): Promise<number
     console.error(`Failed to look up identity (HTTP ${res.status}).`);
     return 1;
   }
-  const { tenant } = (await res.json()) as { tenant: { name: string; githubLogin: string | null } };
+  let tenant: { name: string; githubLogin: string | null };
+  try {
+    ({ tenant } = (await res.json()) as { tenant: { name: string; githubLogin: string | null } });
+  } catch (err) {
+    console.error(`Failed to look up identity: ${(err as Error).message}`);
+    return 1;
+  }
   console.log(`${tenant.githubLogin ?? tenant.name} (${baseUrl})`);
   return 0;
 }

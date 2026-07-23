@@ -123,6 +123,21 @@ test("cmdWhoami: 200 with no githubLogin -> falls back to tenant name", async ()
   });
 });
 
+test("cmdWhoami: fetchImpl throws (network error) -> exit 1, clean message, no stack trace", async () => {
+  await withHome(async (home) => {
+    await writeCliConfig({ apiKey: "sk-good-key" }, home);
+    await withEnv({ REELIER_CLOUD_KEY: undefined, REELIER_CLOUD_URL: undefined }, async () => {
+      const fn = (async () => {
+        throw new Error("getaddrinfo ENOTFOUND www.reelier.com");
+      }) as typeof fetch;
+      const { result, lines } = await withCapturedLogs(() => cmdWhoami(fn));
+      assert.equal(result, 1);
+      assert.ok(lines.includes("Failed to look up identity: getaddrinfo ENOTFOUND www.reelier.com"));
+      assert.ok(!lines.some((l) => l.includes("at ")), "no stack trace in captured output");
+    });
+  });
+});
+
 // --- cmdLogin ------------------------------------------------------------
 
 test("cmdLogin happy path: the raw API key string never appears in captured output; the user code does", async () => {

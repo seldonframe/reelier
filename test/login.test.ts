@@ -111,6 +111,47 @@ test("pollForToken: access_denied throws the exact denial message", async () => 
   );
 });
 
+test("pollForToken: unrecognized 400 body throws the generic 'Login failed (HTTP…)' branch", async () => {
+  const { fn } = fakeFetch([{ status: 400, body: { error: "some_unknown_error" } }]);
+  const { fn: sleepFn } = recordingSleep();
+  await assert.rejects(
+    () => pollForToken("https://www.reelier.com", "dc-1", { fetchImpl: fn, sleepImpl: sleepFn }),
+    /Login failed \(HTTP 400\)/
+  );
+});
+
+test("pollForToken: maxWaitMs exceeded while still pending throws the expired message", async () => {
+  const { fn } = fakeFetch([
+    { status: 400, body: { error: "authorization_pending" } },
+    { status: 400, body: { error: "authorization_pending" } },
+    { status: 400, body: { error: "authorization_pending" } },
+  ]);
+  // Each sleepImpl call advances a fake clock past the tiny maxWaitMs so the
+  // deadline check trips on the next loop iteration without real waiting.
+  let now = 0;
+  const sleeps: number[] = [];
+  const sleepFn = async (ms: number) => {
+    sleeps.push(ms);
+    now += ms;
+  };
+  const realNow = Date.now;
+  Date.now = () => now;
+  try {
+    await assert.rejects(
+      () =>
+        pollForToken("https://www.reelier.com", "dc-1", {
+          intervalSeconds: 5,
+          maxWaitMs: 1,
+          fetchImpl: fn,
+          sleepImpl: sleepFn,
+        }),
+      /Login expired — run 'reelier login' again\./
+    );
+  } finally {
+    Date.now = realNow;
+  }
+});
+
 test("openBrowser: win32 spawns cmd /c start \"\" <url>, detached + unref", async () => {
   const calls: { cmd: string; args: string[]; opts: unknown }[] = [];
   const fakeChild = { unref: () => {}, on: () => {} };
