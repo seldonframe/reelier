@@ -2,6 +2,62 @@
 
 All notable changes to `reelier`. Dates are release dates.
 
+## 0.20.0 — Trust ladder: signing, timestamps, request-id refs, CI attestation
+
+Breaking behavior: **none — every field below is an optional sibling of the
+existing push payload.** An older cloud (or a caller that never opts in)
+sees no difference at all; nothing here is on by default except refs
+(automatic, allowlist-only, omitted when nothing was captured).
+
+A receipt asserts several *independent* claims, each provable to a
+different grade — this release adds the OSS-side rungs. See README's
+"Trust ladder" section for the full table and `docs/specs/trust-ladder-v1.md`
+for the normative spec (spec wins over the code on any conflict).
+
+### Added
+- **`reelier init --signing`.** Generates (or, on a re-run, prints — never
+  regenerates) a local Ed25519 keypair at `~/.reelier/signing/` via
+  `node:crypto` (zero new deps). `keyId` = first 16 hex chars of
+  sha256(public key DER).
+- **`reelier push` signs.** When a signing key exists, every pushed record
+  carries `signature: {alg:"ed25519", keyId, sig}` — computed over
+  `digestSha256(record)` for the EXACT bytes serialized into the payload
+  (after any push-time stamping), never an earlier shape of the record. No
+  key configured → the field is simply omitted; an unsigned push is never
+  shamed.
+- **`reelier push <skill.md> --timestamp`.** Requests an RFC-3161 trusted
+  timestamp (default TSA: freetsa.org, override via `REELIER_TSA_URL`) over
+  each record's own digest and attaches `timestamp: {tsa, token}`.
+  Fail-open: any TSA failure (network, non-2xx, malformed response) never
+  blocks the push — the record just ships without a timestamp, one stderr
+  line explaining why.
+- **Request-id refs.** `http.get`/`http.post` capture an allowlist of
+  provider request-id response headers (`request-id`, `x-request-id`,
+  `x-amzn-requestid`, `x-amz-request-id`, `x-goog-request-id`,
+  `stripe-request-id`, `cf-ray`); MCP-wrapped tools capture an exact-match
+  allowlist of top-level JSON body keys (`request_id`, `requestId`,
+  `x_request_id`) from a single-JSON-body result. Threaded onto
+  `StepRecord.refs` for ANY executed step (not just writes) — omitted when
+  nothing on the allowlist was found. Passes through the existing
+  redaction rules like everything else that ends up in a receipt.
+- **CI attestation (GitHub Actions).** When a workflow grants
+  `permissions: id-token: write`, `reelier push` automatically requests a
+  GitHub OIDC token (audience `reelier.com`) and attaches
+  `ciAttestation: {provider:"github-actions", token}`. Absent the
+  permission (or outside Actions entirely) → omitted, nothing said — a
+  laptop push is never treated as lesser.
+- **`reelier verify <permalink|file> [--key <pub.pem>]`.** Recomputes the
+  record's digest and prints per-claim lines — never a bare OK:
+  `unaltered-since-push` (verified / **✗ SIGNATURE INVALID** / unsigned /
+  signed-but-no-key-given) and `timestamped` (imprint ✓ / **✗ IMPRINT
+  MISMATCH** / none). Exit code is 0 unless a claim that's actually
+  *present* failed verification — an absent or unchecked claim never
+  fails the exit code.
+- The bundled GitHub Action's documented workflow snippet
+  (`.github/workflows/reelier-replay.example.yml`) now shows
+  `permissions: id-token: write` on the job, with a comment explaining
+  what it buys.
+
 ## 0.19.0 — Flight recorder v2: manifest, approval, mocked failures
 
 Breaking behavior: **none — every addition below is additive.** Every

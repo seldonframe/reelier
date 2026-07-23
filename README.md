@@ -181,6 +181,27 @@ The agent gets `reelier_scan`, `reelier_from_session`, `reelier_replay`, `reelie
 - **reelier_diff** — compare two runs: SAME or DRIFTED per step, with the failing assertion as the why; exit 1 on drift
 - **reelier_push** — sync a run receipt to the [ledger](https://www.reelier.com/replays) for a shareable permalink (opt-in)
 
+## Trust ladder — a ladder of graded claims, never a blanket ✓
+
+A receipt asserts several *independent* things about a run, each provable to a different grade. Reelier renders them as separate rows — never one "verified ✓" that would be a lie by compression. **What no rung claims:** none of this proves a run wasn't *fabricated before it was recorded* — signing proves unaltered-since-push by a known key-holder, timestamps prove existed-by-T, request-id refs make claims externally falsifiable. "Fabrication-proof" isn't in the vocabulary here.
+
+| Claim | How you get it | What it proves | What it does *not* prove |
+| --- | --- | --- | --- |
+| **Unaltered since push** | `reelier init --signing` once, then every `reelier push` signs automatically | Produced by the holder of this Ed25519 key and **tamper-evident** since it was pushed | The run wasn't fabricated before it was ever recorded |
+| **Timestamped** | `reelier push <skill.md> --timestamp` | An RFC-3161 timestamp authority attests the record's digest existed by time T | The record's contents, or that it wasn't backdated before *this* timestamp request |
+| **Cross-checkable refs** | Automatic — any step whose call returns a provider request-id (`request-id`, `stripe-request-id`, `cf-ray`, …, or an MCP body's `request_id`/`requestId`/`x_request_id`) carries it | An auditor can cross-check the claim against the provider's own logs | Reelier does not verify these upstream itself — that's the auditor's job |
+| **CI-attested** | Automatic in GitHub Actions (needs `permissions: id-token: write`) | Which repo, sha, and workflow run produced the push — an anchor the operator can't mint themselves | The workflow's own logic wasn't compromised — attests the *environment*, not the truth of what it ran |
+
+`reelier verify <permalink|file> [--key <pub.pem>]` recomputes each claim offline and prints every row — never a bare OK:
+
+```sh
+reelier verify https://reelier.com/r/<token> --key mykey.pub.pem
+# unaltered-since-push: ✓ (key a1b2c3d4e5f6a7b8)
+# timestamped: imprint ✓ (tsa https://freetsa.org/tsr) — full chain verification: openssl ts -verify ...
+```
+
+Absent claims are rendered honestly, never shamed: an unsigned push says `— unsigned`, not "unverified" or "insecure" — sign your pushes with `reelier init --signing` whenever you want that row lit. Exit code is 0 unless a claim that's actually **present** fails verification (a bad signature, a mismatched timestamp imprint); an absent or unchecked claim never fails the exit code.
+
 ## The measured proof
 
 From a real, live head-to-head benchmark (agent vs. Reelier, same task, same data) — full tables + methodology in [`examples/benchmark`](./examples/benchmark):

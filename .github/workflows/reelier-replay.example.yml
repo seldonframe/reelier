@@ -30,6 +30,16 @@ on:
 jobs:
   replay:
     runs-on: ubuntu-latest
+    permissions:
+      # id-token: write is what lets `reelier push` request GitHub's own
+      # OIDC token and attach it as a CI attestation (trust-ladder spec §5)
+      # — the receipt then carries "CI-attested: owner/repo@<sha> · workflow
+      # <name> · run <id>", an anchor the workflow author can't mint
+      # themselves. Omit this permission (or drop it to `read`) and pushes
+      # from this job simply carry no ciAttestation — never a failure,
+      # never required for the replay itself to pass or fail.
+      id-token: write
+      contents: read # actions/checkout@v4's own minimum requirement
     steps:
       - uses: actions/checkout@v4
 
