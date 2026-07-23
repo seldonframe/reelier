@@ -2,6 +2,52 @@
 
 All notable changes to `reelier`. Dates are release dates.
 
+## 0.19.0 — Flight recorder v2: manifest, approval, mocked failures
+
+Breaking behavior: **none — every addition below is additive.** Every
+pre-0.19.0 skill and run record parses and behaves exactly as before. The
+one new fail-closed check (approval-mismatch refusal) applies **only** to a
+write/destructive step that already carries an `approve:` field — a step
+without one keeps today's exact `--allow-writes`/`--yes` behavior.
+
+### Added
+- **`reelier manifest <skill.md> --wrap "..."`.** Stamps a per-tool schema
+  digest (sha256 over the tool's `inputSchema`) onto the skill, for every
+  tool its steps actually use. `reelier run --wrap ...` preflights the
+  stamped manifest against the live servers BEFORE step 1 executes and fails
+  closed — `MANIFEST DRIFT — refusing to replay` — on any missing tool or
+  schema mismatch. `--ignore-manifest` is the explicit break-glass override
+  (stamped as `manifestIgnored: true` on the run record — never silent). A
+  skill with no manifest gets an advisory note only; nothing is required.
+- **`reelier approve <skill.md> [--all]`.** Hash-binds approval to one
+  write/destructive step's exact tool + argument template (`{{placeholders}}`
+  intact) — the FINAL boundary a write crosses before it executes on replay.
+  An approved step whose tool/args still match executes with no flags at
+  all; if they've drifted since approval, replay fails closed —
+  `Approval mismatch` — and **no flag overrides that refusal**
+  (`--allow-writes`/`--yes` do not apply once a step carries `approve:`).
+- **Write receipts.** Every step whose tool call actually dispatched a
+  write-effect (`idempotent-write`/`destructive`) now carries a `write`
+  block: `idempotencyKey` (tool + filled args + server), `approved` (via
+  hash vs. via the legacy flags), a best-effort `resource` (`id`/`version`
+  extracted from a JSON response body, honestly omitted otherwise), and
+  `duplicateOf` when an earlier step in the same run wrote the identical
+  key. `reelier run` prints one summary deprecation note when any write
+  executed via the legacy flags rather than a per-step approval.
+- **`reelier run <skill.md> --fail N[=status]`.** Injects a synthetic failed
+  Observation at step `N` (default status `500`, override with `--fail
+  N=429`, repeatable) instead of dispatching that step's real tool call —
+  the mocked failure flows into the same assert/bind evaluation and, on
+  divergence, the same real escalation ladder a genuine failure would hit.
+  A mocked step never consults the write/approval gates (there's no side
+  effect to guard) and never gets a `write` receipt. Prints a `MOCK RUN —
+  injected failures at step(s): ...` banner and a per-step `⚡ INJECTED
+  failure` line.
+- **`reelier push` refuses mock runs.** A run record carrying any injected
+  failures (`RunRecord.mockFailures`) is a local recovery test, never a real
+  receipt — pushing the whole batch is refused with a structured error
+  naming the step(s), before any fetch call. No `--force`/`--all` override.
+
 ## 0.18.0 — The flight recorder
 
 ### Added

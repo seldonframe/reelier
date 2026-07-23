@@ -265,6 +265,16 @@ A SKILL.md file MUST begin with a `---`-fenced frontmatter block
   `'description'`). Extra keys are parsed but silently unused by
   `parseSkill`'s return type — the parser does not reject unrecognized
   frontmatter keys (an open field set, unlike step bullets — see §0).
+- A third, optional key, `manifest` (flight-recorder-v2, 0.19.0+), carries a
+  one-line canonical-JSON `SkillManifest`: `{"v":1,"tools":[{"name":
+  "<exposed-tool-name>","server":"<downstream-name>","digest":"sha256:<64
+  hex>"}]}` — a schema digest per tool the skill's steps actually use,
+  written by `reelier manifest <skill.md> --wrap ...` (§below). Present iff
+  the skill has been stamped; absent for every pre-0.19.0 skill and for any
+  skill never stamped. Malformed shape (wrong `v`, non-array `tools`, a
+  tool missing `name`/`digest`, a `digest` not matching `sha256:[0-9a-f]
+  {64}`) is rejected loudly (`SkillParseError`) rather than silently
+  dropped.
 
 ### 3.2 Body: preamble, `## Steps`, step blocks, trailing sections
 
@@ -290,13 +300,13 @@ trailing sections are never swallowed into the last step.
 
 Within a step's block, every non-blank line is either:
 
-- a **bullet** matching `/^-\s*(intent|action|assert|bind|effect)\s*:\s*(.*)$/`, or
+- a **bullet** matching `/^-\s*(intent|action|assert|bind|effect|approve)\s*:\s*(.*)$/`, or
 - an **ignored prose line** (any non-blank line not starting with `-`), or
-- **rejected** if it starts with `-` but the key isn't one of the five
+- **rejected** if it starts with `-` but the key isn't one of the six
   above: `"Unrecognized step field, expected one of
-  intent/action/assert/bind/effect: ..."`.
+  intent/action/assert/bind/effect/approve: ..."`.
 
-This makes the **five bullet keys a closed set** (§0) but tolerates
+This makes the **six bullet keys a closed set** (§0) but tolerates
 free-form prose commentary inside a step block, as long as it doesn't
 start with a hyphen.
 
@@ -310,9 +320,15 @@ start with a hyphen.
 | `assert` | No | 0 or more | (repeatable — each bullet appends) |
 | `bind` | No | 0 or more | (repeatable — each bullet appends) |
 | `effect` | **Yes** — `"Step is missing required 'effect' field"` | exactly 1 | `"Duplicate 'effect' field in step"` |
+| `approve` | No (flight-recorder-v2, 0.19.0+) | 0 or 1 | `"Duplicate 'approve' field in step"` |
 
 `assert` and `bind` are the only repeatable fields; every `- assert: ...`
 or `- bind: ...` bullet in the block is collected in file order.
+
+`approve: sha256:<64 hex>` (§6.1a) hash-binds a write/destructive step's
+tool + argument template — a value not matching `sha256:[0-9a-f]{64}`
+exactly is rejected at parse time, not silently accepted. Written by
+`reelier approve <skill.md> [--all]`, never by hand.
 
 After the last step's field block, everything remaining in the body is the
 **trailing** section (`## Open questions`, `## Changelog`, anything else)
@@ -429,6 +445,12 @@ effect <value> — must be one of read, idempotent-write, destructive"`.
 | `idempotent-write` | A write safe to repeat (create-if-absent, upsert, etc.). | **Read-only by default (0.10.0+):** refused unless the run was invoked with `--allow-writes` (or `--yes`, which implies it) — so replaying a skill never silently re-fires its writes. The runner records an honest failed step (`"Refusing to execute a write step … replay is read-only by default"`) instead of calling the tool. Gated on the **effective** effect (`step.effect ?? tool.effect`), so a POST-that-reads marked `effect: read` is never held back. |
 | `destructive` | Non-idempotent or irreversible (delete, charge, send, etc.). | Refused unless the run was invoked with `--yes`/`allowDestructive: true` — the runner prints the filled action instead of calling the tool (`executeStep`, `src/runner.ts:166-179`). **Never** re-executed by the escalation ladder's Level 2 (§7.3) regardless of `--yes` — that check is independent of `allowDestructive` and happens before L2 is even invoked (`level3Message`, `src/runner.ts:267-273`; `attemptEscalation`, `src/runner.ts:348-351`). |
 
+The gating contract above is the **legacy** path — still exactly what
+happens for any write/destructive step with no `approve:` field. A step
+that carries `approve:` is gated differently (§6.1b, flight-recorder-v2,
+0.19.0+): the hash-bound approval is the FINAL word, and no flag
+(`--allow-writes`, `--yes`) overrides a mismatch.
+
 ### 3.7 Non-Steps sections and the Changelog write-back convention
 
 - **Preamble and trailing content are preserved verbatim** (§3.2) —
@@ -508,6 +530,13 @@ interface StepRecord {
   llm?: { inputTokens: number; outputTokens: number; model?: string };
   escalationAttempted?: 0 | 1 | 2;
   why?: { trigger?: string; change?: string };
+  write?: {
+    idempotencyKey: string;
+    approved: boolean;
+    resource?: { id?: string; version?: string };
+    duplicateOf?: number;
+  };
+  mocked?: true;
 }
 ```
 
@@ -520,6 +549,8 @@ interface StepRecord {
 | `llm` | Present **iff** escalation ran for this step at all (any level, success or failure) — summed input/output tokens across every attempt on this step. Absent, not `{inputTokens:0,...}`, when escalation never ran. `llm.model` (0.17.0+, the $ meter — flight-recorder-v1 §2) is the model of the **highest escalation level actually invoked** on this step (L2's model if L2 ran, else L1's) — a step that tried L1 then L2 with two different models has its summed tokens priced entirely at the L2 rate by `reelier cost`. Absent when the caller never passed `--llm-model`/`--llm-l2-model` and the runner's own default also went unresolved (never happens in practice — the runner always has a default), or on any pre-0.17.0 record. |
 | `escalationAttempted` | The **highest level TRIED**, present iff L1 was invoked at all. **Distinct from `level`**: a step can have `escalationAttempted: 2` and `level: 0` simultaneously — it burned L1 and L2 tokens and still never healed. `level` only ever reflects the level that *healed* it. |
 | `why` (0.8.0+) | Present **only** when this step's behavior changed: `trigger` = the load-bearing divergence (the first failure, verbatim from the real assertion/tool result) on a `"failed"` step; `change` = what the successful L1/L2 patch changed (`"L1: <reason>"` / `"L2: <reason>"`, the escalation's own reason) on a healed step. Absent on an unchanged step. **Never fabricated** — a producer MUST populate it only from observed engine data, never from generated narrative. |
+| `write` (0.19.0+, §6.1c) | Present **iff** this step's tool call actually dispatched a write-effect (`idempotent-write`/`destructive`) call — never for a refused, skipped, or mocked step. `approved` is `true` iff dispatched via a matching `Step.approve` hash, `false` via the legacy `--allow-writes`/`--yes` flags. `resource` is a best-effort, honestly-labeled extraction from the response body; absent, never fabricated, when nothing was found. `duplicateOf` is the step number of an earlier step in the SAME run that wrote the identical `idempotencyKey`. |
+| `mocked` (0.19.0+, §6.1d) | `true` iff this step's observation was a synthetic injected failure (`--fail N[=status]`) rather than a real tool dispatch. Absent for every real step. |
 
 ### 4.2 `RunRecord`
 
@@ -529,6 +560,9 @@ interface RunRecord {
   startedAt: string;
   finishedAt: string;
   passed: boolean;
+  skillContentSha256?: string;
+  manifestIgnored?: true;
+  mockFailures?: number[];
   steps: StepRecord[];
   totals: {
     steps: number;
@@ -546,6 +580,15 @@ interface RunRecord {
 `passed` is `true` iff zero steps have `outcome === "failed"` — an
 `"unchecked"` step does **not** make the run fail, but it also does not
 count toward `totals.passed`.
+
+`manifestIgnored` (0.19.0+, §6.1b) is `true` iff this run's manifest
+preflight was explicitly bypassed via `--ignore-manifest` — absent on every
+run that had no manifest to check, or whose preflight ran normally.
+
+`mockFailures` (0.19.0+, §6.1d) is the sorted list of step numbers that had
+an injected failure (`--fail N[=status]`) this run — present only when
+non-empty. A record carrying this field is a local recovery test, never a
+real receipt: `reelier push` (§8) refuses to push it, unconditionally.
 
 ### 4.3 Totals honesty rule (normative)
 
@@ -748,6 +791,99 @@ dates are internally consistent even if the run takes several seconds.
 `dryRunSkill` takes the same optional `now` for the same reason. This clock
 parameter is an internal injection seam for reproducible tests, not a
 documented CLI flag — the CLI itself always defaults to the real clock.
+
+### 6.1b Manifest preflight (`reelier manifest`, flight-recorder-v2, 0.19.0+)
+
+Source of truth: `src/manifest.ts` (`buildManifestForSkill`,
+`preflightManifest`), `src/cli.ts` (`cmdManifest`, `cmdRun`),
+`test/manifest.test.ts`, `test/manifest-cli.test.ts`.
+
+- `reelier manifest <skill.md> --wrap "<command>"` connects the given
+  downstream(s), resolves tool routes the same way replay does
+  (`buildToolRoutes`, §5.3), and stamps `skill.manifest` (§3.1) with one
+  entry per tool the skill's steps actually use — `digest = sha256(canonical
+  JSON of the tool's inputSchema)`. Printed per-tool as `unchanged` /
+  `updated` / `added` / `removed` against whatever manifest was already
+  stamped. No `--wrap` given is a usage error, exit 1.
+- `reelier run <skill.md> --wrap ...` runs the preflight **before step 1
+  executes** whenever `skill.manifest` is present: `ok` → proceed silently;
+  any missing tool or schema mismatch → `MANIFEST DRIFT — refusing to
+  replay (fail closed)` printed per drifted tool, exit 1, and the fake/real
+  downstream's `call` is never invoked. A manifest present with no `--wrap`
+  at all is also a hard refusal (nothing to preflight against). A skill
+  with no manifest gets an advisory note only and runs normally — every
+  pre-0.19.0 skill is unaffected.
+- `--ignore-manifest` is the explicit break-glass override: skips the
+  preflight, prints a `WARNING: --ignore-manifest` line, and stamps
+  `RunRecord.manifestIgnored: true` (§4.2) — never a silent bypass.
+
+### 6.1c Per-step write approval (`reelier approve`, flight-recorder-v2, 0.19.0+)
+
+Source of truth: `src/approval.ts` (`computeApprovalHash`,
+`computeIdempotencyKey`), `src/runner.ts` (`executeStep`'s write-gate
+block), `src/cli.ts` (`cmdApprove`), `test/approval.test.ts`,
+`test/runner.test.ts`.
+
+For a write/destructive step (§3.6) whose `effect` is the **effective**
+effect (`step.effect ?? tool.effect`):
+
+- **No `approve:` field** — unchanged legacy behavior (§3.6's table):
+  gated on `--allow-writes`/`--yes`.
+- **`approve:` present** — this is the FINAL boundary, and it replaces the
+  legacy flags entirely for this step:
+  - `step.approve === computeApprovalHash(step)` (a hash over the step's
+    tool name + argument *template*, `{{placeholders}}` intact — never the
+    filled args, and never including the server, so `reelier approve` can
+    run fully offline) → the step executes with **no flag needed at all**,
+    even a `destructive` one.
+  - Any mismatch (the step's tool or args changed since it was approved) →
+    `"failed"` with `"Approval mismatch on write step … Re-review and
+    re-approve: reelier approve <skill.md>"` — **no flag overrides this**,
+    including `--allow-writes` and `--yes` together. The tool is never
+    called.
+- `reelier approve <skill.md> [--all]` walks every write/destructive step,
+  shows its current state (`unapproved` / `approved (current)` / `approved
+  (STALE — args changed)`), and on confirmation (or unconditionally under
+  `--all`) stamps `step.approve = computeApprovalHash(step)`, serializes,
+  and appends one `## Changelog` line (§3.7).
+
+**Write receipts.** Whenever a write/destructive step's tool call actually
+dispatches (approved-hash path or legacy-flag path alike), `StepRecord`
+(§4.1) gains a `write` block: `idempotencyKey` (`computeIdempotencyKey(tool,
+tool.server ?? null, filledArgs)` — the tool + the FILLED args + the
+downstream server, never enforced against external state), `approved`
+(`true` iff executed via a matching approval hash, `false` via the legacy
+flags), an optional best-effort `resource` (`id`/`version`, extracted from
+a JSON response body's `id`/`_id` and `version`/`etag`/`revision`/`sha`
+fields when present — honestly omitted, never guessed, otherwise), and an
+optional `duplicateOf` (the step number of an earlier step in the SAME run
+that wrote the identical `idempotencyKey` — recorded, not failed). A step
+that never dispatched (refused, skipped, or mocked — §6.1d) never gets a
+`write` block.
+
+### 6.1d Mocked-failure replay (`--fail N[=status]`, flight-recorder-v2, 0.19.0+)
+
+Source of truth: `src/runner.ts` (`executeStep`'s mock branch, immediately
+after the unknown-tool check and before the write-gate block), `src/cli.ts`
+(`cmdRun`'s `--fail` parsing), `test/runner.test.ts`.
+
+`reelier run <skill.md> --fail N[=status]` (repeatable; `N` alone defaults
+to injected status `500`) replaces step `N`'s real tool dispatch with a
+synthetic `Observation {status, headers: {}, body: "reelier: injected
+failure (--fail N)"}` — the step's `{{var}}` template is still filled first
+(a template error is a real divergence and surfaces normally), but no tool
+call happens: the write/approval gate (§6.1c) is never consulted, so a
+write step can be recovery-tested with no `--allow-writes` and no
+`approve:`. The synthetic observation flows into the same assert/bind
+evaluation (§6.1) and, on divergence, the SAME escalation ladder (§6.3) a
+real failure would hit — a mocked step CAN heal at L1/L2 exactly like a
+real one, and L2's re-execution (if reached) calls the real tool. A mocked
+step's `StepRecord` (§4.1) carries `mocked: true` and never a `write`
+block, even if L2 healed it with a genuine write. `RunRecord.mockFailures`
+(§4.2) is the sorted list of step numbers that had an injection this run,
+present only when non-empty. `reelier push` (§8) refuses to push any record
+carrying `mockFailures` — a mock run is a local recovery test, never a real
+receipt, and there is no override.
 
 ### 6.2 Divergence (definition)
 
@@ -1000,6 +1136,20 @@ Either missing is rejected before any network call, naming only the
 missing var name(s) — the key's *value* MUST NOT appear in any error
 message, log line, or stdout the CLI produces. `reelier push` is fully
 inert (zero network calls, zero state mutation) until both are set.
+
+### 8.1a Mock-run refusal (flight-recorder-v2, 0.19.0+, normative)
+
+Before any fetch call (including the skill upload leg), `pushSkill` MUST
+inspect every candidate record in the batch (`allRecords.slice(cursorBefore)`,
+§8.3) for `RunRecord.mockFailures` (§4.2). If ANY candidate carries a
+non-empty `mockFailures`, the whole push is refused with a structured
+error naming the affected step number(s), and **zero** network calls are
+made — not even for records earlier in the batch that carry no
+`mockFailures` of their own. There is no `--force` or `--all` override:
+mock runs (`--fail N`, §6.1d) are local recovery tests, and a mocked
+receipt MUST never be published beside real ones. A batch containing only
+records with no `mockFailures` field pushes exactly as before this
+version.
 
 ### 8.2 Endpoints the client calls
 

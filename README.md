@@ -116,6 +116,38 @@ reelier from-session ~/.openclaw/agents/*/sessions/*.jsonl  # OpenClaw
 
 Only replayable calls (Reelier's own builtins, or `mcp__<server>__<tool>` calls) ever compile into a skill — native file/shell/search actions are reported as skipped, never fabricated into a step. Pass `--agent <claude-code|codex|openclaw>` to force a format instead of auto-detecting; `reelier scan` / `reelier from-session --agent cursor` (or `--agent windsurf`) report what's on disk honestly rather than guessing at an undocumented binary format.
 
+## Three tests, one skill
+
+One recorded skill gives you three different questions to ask of it, not one:
+
+- **Determinism** — `reelier run <skill.md>` replays against the assertions you recorded. Same steps, same asserts, 0 tokens. Answers: *does this still do what it did?*
+- **Recovery** — `reelier run <skill.md> --fail N[=status]` injects a synthetic failure at step `N` (default status `500`; override with `--fail N=429`, repeatable) instead of dispatching that step's real tool call, then runs the SAME escalation ladder a real failure would hit. Nothing outside the network actually happens — a mocked step never calls its tool, so you can recovery-test a write step with no `--allow-writes` and no side effect. Answers: *if this broke, would the skill notice and heal?* (A mock run is a local test only — `reelier push` refuses to publish one; see below.)
+- **Drift** — `reelier run <skill.md> --wrap "<your mcp server>"` replays against your *live*, read-only dependencies instead of the recorded trace. Paired with `reelier manifest` (below), this is how you catch a tool's schema moving out from under you before a real replay does.
+
+*Taxonomy due to Mads Hansen's review of the launch post.*
+
+### Tool-schema drift: `reelier manifest`
+
+A skill's steps call specific tools with specific argument shapes. If a wrapped MCP server's tool schema changes since you recorded against it, replay should refuse loudly, not silently fill the wrong args. `reelier manifest` stamps a schema digest for every tool the skill's steps actually use:
+
+```sh
+reelier manifest <skill.md> --wrap "<your mcp server>"   # stamp/refresh the manifest from live servers
+reelier run <skill.md> --wrap "<your mcp server>"         # preflight checks the manifest BEFORE step 1 runs
+```
+
+If a stamped tool's schema has drifted (or the tool is gone), `reelier run` fails closed — `MANIFEST DRIFT — refusing to replay` — before anything executes. `--ignore-manifest` is the explicit break-glass override for when you know the drift is fine; it's still recorded on the run (`manifestIgnored: true`), so it's never a silent bypass. A skill with no manifest at all just gets an advisory note — every pre-manifest skill keeps working unmodified.
+
+### Per-step write approval: `reelier approve`
+
+`--allow-writes`/`--yes` are blanket flags — they say "this run may write," not "this exact write is reviewed." `reelier approve` hash-binds approval to one specific step's tool + argument template:
+
+```sh
+reelier approve <skill.md>          # walk each write/destructive step, y/N to approve
+reelier approve <skill.md> --all    # approve every write step non-interactively
+```
+
+An approved step whose tool/args still match its stamped hash executes with **no flags at all**. If the step's tool or args have changed since approval, replay fails closed — `Approval mismatch` — and no flag overrides it; you re-review and re-approve. A write step with no `approve:` field keeps today's exact `--allow-writes`/`--yes` behavior, unchanged.
+
 ## Assert the value, not just the shape
 
 A skill's assertions are what make a replay *proof*. The grammar checks status, structure, **and value**:
