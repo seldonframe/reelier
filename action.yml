@@ -1,7 +1,8 @@
 name: "Reelier replay"
 description: >-
-  Replay a Reelier skill in CI — deterministic, 0 LLM tokens, exit 1 on
-  drift — and post the run receipt as a job summary.
+  Snapshot tests for AI agents: replay recorded MCP tool-call workflows
+  deterministically — 0 LLM tokens, exit 1 on drift, and a receipt
+  comment on every pull request.
 author: "Reelier"
 branding:
   icon: "check-circle"
