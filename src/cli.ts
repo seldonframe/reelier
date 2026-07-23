@@ -15,6 +15,7 @@ import { pushSkill, PublicSubmissionError, type PushRecordResult } from "./push.
 import { getSkill, getMineSkill, type GetOutcome, type GetMineOutcome } from "./get.js";
 import { DEFAULT_CLOUD_URL, readCliConfig, writeCliConfig, clearCliCredentials } from "./cloud-config.js";
 import { startLogin, pollForToken, openBrowser } from "./login.js";
+import type { spawn } from "node:child_process";
 import { builtinTools } from "./tools.js";
 import { connectDownstream, type DownstreamConnection } from "./mcp-client.js";
 import { buildMcpTools } from "./mcp-tool.js";
@@ -2466,12 +2467,21 @@ async function resolveBaseUrl(): Promise<string> {
  * a browser, then poll until the user approves (or Ctrl-C cancels). Writes
  * the resulting key to ~/.reelier/config.json. Never prints the key itself —
  * only the resolved identity ("Logged in as ...").
+ *
+ * `fetchImpl`/`sleepImpl`/`spawnImpl` are injection seams for tests (house
+ * default-parameter pattern, as in push.ts) — they pass straight through to
+ * login.ts's own `startLogin`/`pollForToken`/`openBrowser` opts rather than
+ * duplicating any polling/spawn logic here.
  */
-async function cmdLogin(): Promise<number> {
+export async function cmdLogin(
+  fetchImpl: typeof fetch = fetch,
+  sleepImpl?: (ms: number) => Promise<void>,
+  spawnImpl?: typeof spawn
+): Promise<number> {
   const baseUrl = await resolveBaseUrl();
   let start;
   try {
-    start = await startLogin(baseUrl);
+    start = await startLogin(baseUrl, fetchImpl);
   } catch (err) {
     console.error(`Failed to start login: ${(err as Error).message}`);
     return 1;
@@ -2482,13 +2492,15 @@ async function cmdLogin(): Promise<number> {
   console.log(start.verificationUriComplete);
   console.log("\nWaiting for approval (Ctrl-C to cancel)...");
 
-  openBrowser(start.verificationUriComplete);
+  openBrowser(start.verificationUriComplete, undefined, spawnImpl);
 
   let apiKey: string;
   let tenant: { name: string; githubLogin: string | null };
   try {
     ({ apiKey, tenant } = await pollForToken(baseUrl, start.deviceCode, {
       intervalSeconds: start.interval,
+      fetchImpl,
+      sleepImpl,
     }));
   } catch (err) {
     console.error((err as Error).message);
@@ -2511,7 +2523,7 @@ async function cmdLogin(): Promise<number> {
  * server-side; that happens from the dashboard (Settings), which is worth
  * saying out loud since a lingering key would otherwise silently work again.
  */
-async function cmdLogout(): Promise<number> {
+export async function cmdLogout(): Promise<number> {
   await clearCliCredentials();
   console.log("Logged out.");
   console.log("Note: this only clears the key on this machine — revoke it from the dashboard (Settings) if it may have leaked.");
@@ -2521,8 +2533,10 @@ async function cmdLogout(): Promise<number> {
 /**
  * `reelier whoami` — GET /api/v1/me with the stored key, prints the resolved
  * identity or a precise reason it couldn't (no key at all vs. a rejected key).
+ * `fetchImpl` is an injection seam for tests (house default-parameter
+ * pattern, as in push.ts).
  */
-async function cmdWhoami(): Promise<number> {
+export async function cmdWhoami(fetchImpl: typeof fetch = fetch): Promise<number> {
   const baseUrl = await resolveBaseUrl();
   const fileConfig = await readCliConfig();
   const apiKey = process.env.REELIER_CLOUD_KEY || fileConfig.apiKey;
@@ -2531,7 +2545,7 @@ async function cmdWhoami(): Promise<number> {
     return 1;
   }
 
-  const res = await fetch(`${baseUrl}/api/v1/me`, {
+  const res = await fetchImpl(`${baseUrl}/api/v1/me`, {
     headers: { authorization: `Bearer ${apiKey}` },
   });
   if (res.status === 401) {
