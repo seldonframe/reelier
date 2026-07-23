@@ -2,6 +2,29 @@
 
 All notable changes to `reelier`. Dates are release dates.
 
+## 0.21.0 — reelier ci: drift-CI + PR receipts in one command
+
+Breaking behavior: **none — additive.**
+
+### Added
+- **`reelier ci [--force] [--path <dir>]`.** Discovers the repo's
+  `*.skill.md` files (depth ≤ 3, node_modules/.git excluded) and writes
+  `.github/workflows/reelier-replay.yml`: replay on every PR + a daily
+  schedule, manifest preflight failing closed on drift, and
+  `permissions` preconfigured (`pull-requests: write` for the receipt
+  comment, `id-token: write` for CI attestation). Refuses to overwrite
+  an existing workflow without `--force`; zero skills found → an
+  honestly-marked placeholder plus a pointer at `reelier init`, never an
+  invented path.
+- **Sticky PR receipt comment (GitHub Action, ships via the `v1` tag).**
+  On `pull_request` events with `pull-requests: write`, the action
+  upserts one sticky comment carrying each skill's receipt — pass/fail,
+  steps, duration, tokens, and the receipt permalink when pushed. A
+  failed replay still comments (a red receipt is a real receipt);
+  comment failures warn and never fail the job. Deliberately inactive on
+  `pull_request_target` — replaying PR-controlled skill files in a
+  secrets-bearing context is the classic fork-PR attack shape.
+
 ## 0.20.0 — Trust ladder: signing, timestamps, request-id refs, CI attestation
 
 Breaking behavior: **none — every field below is an optional sibling of the
