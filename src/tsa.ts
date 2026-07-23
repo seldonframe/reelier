@@ -169,17 +169,36 @@ export async function requestTimestamp(
  *
  * HONEST SHORTCUT, documented here rather than papered over: this does NOT
  * parse the full CMS/TSTInfo structure. It searches the raw response bytes
- * for the SHA-256 AlgorithmIdentifier DER (`SHA256_OID_DER`, optionally
- * followed by NULL parameters) and reads the OCTET STRING immediately
- * after it as the imprint hash. In a genuine RFC-3161 response, the TSTInfo
- * (which carries the ONE messageImprint that matters) is encoded as the
- * CMS SignedData's `eContent`, which precedes the `certificates`/
- * `signerInfos` fields in DER byte order — so in every real TSA response,
- * the FIRST match of this OID is the messageImprint's own hash algorithm,
- * not some unrelated SHA-256 AlgorithmIdentifier elsewhere in the
- * structure (e.g. inside a certificate). This proves the response's
- * claimed imprint matches the digest we asked to be timestamped — nothing
- * about the TSA's certificate chain, signature, or trust. Full chain
+ * for EVERY occurrence of the SHA-256 AlgorithmIdentifier DER
+ * (`SHA256_OID_DER`, optionally followed by NULL parameters) and, for each
+ * one, checks whether the very next TLV is an OCTET STRING of exactly 32
+ * bytes equal to `digestHex`.
+ *
+ * Scanning ALL occurrences (not just the first) matters: a genuine CMS
+ * `SignedData` carries its own top-level `digestAlgorithms` SET (itself a
+ * sha256 `AlgorithmIdentifier`) BEFORE the `eContent`-embedded `TSTInfo`
+ * that holds the actual `messageImprint` — `digestAlgorithms` has NO octet
+ * string attached to it at all (it's followed by `eContentType`/other CMS
+ * fields), so anchoring on the FIRST occurrence, as an earlier version of
+ * this function did, finds `digestAlgorithms` on every genuine token and
+ * reports a false mismatch on a perfectly honest, unaltered timestamp — the
+ * worst possible direction for a never-lies invariant (a real tamper
+ * accusation on a receipt that was never tampered with). The claim HOLDS
+ * (returns `true`) the moment ANY occurrence is immediately followed by a
+ * matching 32-byte OCTET STRING; it only reports a mismatch when NO
+ * occurrence anywhere in the token matches.
+ *
+ * Accepted residual, stated honestly rather than hidden: scanning every
+ * occurrence means a maliciously crafted (non-CMS, hand-built) blob could
+ * satisfy this check by embedding the target digest's AlgorithmIdentifier
+ * anywhere at all, unrelated to any real TSTInfo. This is bounded by the
+ * claim's own grade — a match here is graded `"unchecked"` at the call site
+ * (`verify.ts`'s `evaluateTimestampClaim`), never `"verified"`; it proves
+ * the digest appears correctly-shaped somewhere in what the TSA returned,
+ * nothing about the TSA's certificate chain, signature, or trust. Only the
+ * MISMATCH (✗) direction is a hard, load-bearing claim, and scanning every
+ * occurrence can only ever turn a false ✗ into a (still honestly-graded)
+ * pass — it cannot manufacture a false ✗ the other way. Full chain
  * verification is `openssl ts -verify` (printed alongside this at the
  * CLI's `verify` command), not reimplemented here.
  */
@@ -195,16 +214,27 @@ export function imprintMatches(tokenB64: string, digestHex: string): boolean {
   }
   if (token.length === 0) return false;
 
-  const oidIndex = token.indexOf(SHA256_OID_DER);
-  if (oidIndex === -1) return false;
+  let searchFrom = 0;
+  for (;;) {
+    const oidIndex = token.indexOf(SHA256_OID_DER, searchFrom);
+    if (oidIndex === -1) return false; // no (more) occurrences — none matched.
 
-  let cursor = oidIndex + SHA256_OID_DER.length;
-  if (token[cursor] === DER_TAG_NULL && token[cursor + 1] === 0x00) cursor += 2;
+    let cursor = oidIndex + SHA256_OID_DER.length;
+    if (token[cursor] === DER_TAG_NULL && token[cursor + 1] === 0x00) cursor += 2;
 
-  if (token[cursor] !== DER_TAG_OCTET_STRING) return false;
-  const len = token[cursor + 1];
-  if (len !== 32) return false; // a SHA-256 imprint is always exactly 32 bytes
-  if (cursor + 2 + 32 > token.length) return false;
-  const imprint = token.subarray(cursor + 2, cursor + 2 + 32);
-  return imprint.equals(expected);
+    if (
+      token[cursor] === DER_TAG_OCTET_STRING &&
+      token[cursor + 1] === 32 &&
+      cursor + 2 + 32 <= token.length &&
+      token.subarray(cursor + 2, cursor + 2 + 32).equals(expected)
+    ) {
+      return true;
+    }
+
+    // This occurrence wasn't it (e.g. digestAlgorithms, or a signerInfo's
+    // own digestAlgorithm, or an unrelated AlgorithmIdentifier) — keep
+    // scanning forward from just past where this OID started, so an
+    // overlapping/adjacent occurrence is never skipped.
+    searchFrom = oidIndex + 1;
+  }
 }

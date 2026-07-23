@@ -1,6 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
 import { buildTimeStampReq, requestTimestamp, imprintMatches, DEFAULT_TSA_URL } from "../src/tsa.js";
+
+// Fixtures live at test/fixtures/ (repo-relative — NOT copied by tsc, so
+// resolved from the compiled test file's real source path, same pattern as
+// test/session-formats.test.ts's FIXTURES_DIR).
+const FIXTURES_DIR = fileURLToPath(new URL("../../test/fixtures", import.meta.url));
 
 // B1 — RFC-3161 timestamps (trust-ladder spec §2).
 
@@ -107,6 +115,56 @@ test("imprintMatches: malformed digestHex argument -> false, never throws", () =
 });
 
 // ---------------------------------------------------------------------------
+// Realistic CMS layout (review finding #1/#2): a genuine RFC-3161
+// TimeStampResp is a CMS SignedData whose `digestAlgorithms` SET (itself a
+// sha256 AlgorithmIdentifier, with NO 32-byte OCTET STRING right after it —
+// it's followed by the eContentType/other CMS fields) appears BEFORE the
+// eContent-embedded TSTInfo's own messageImprint (which DOES have the real
+// 32-byte digest right after its AlgorithmIdentifier). The naive
+// first-match-only search picks the WRONG occurrence and must fail here on
+// the buggy implementation — this fixture is what the earlier
+// `fakeTsaResponseWithImprint` blind spot didn't cover (no digestAlgorithms
+// ever preceded its bare MessageImprint).
+// ---------------------------------------------------------------------------
+
+const SHA256_ALGID_DER = Buffer.concat([
+  Buffer.from([0x30, 0x0d]), // SEQUENCE, len 13 (AlgorithmIdentifier)
+  Buffer.from([0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01]), // OID id-sha256
+  Buffer.from([0x05, 0x00]), // NULL params
+]);
+
+/**
+ * A CMS-shaped fixture: `digestAlgorithms` (a SET OF AlgorithmIdentifier,
+ * sha256, NOT followed by the imprint octets — followed by unrelated junk
+ * standing in for eContentType/eContent's own tag) precedes the REAL
+ * messageImprint (AlgorithmIdentifier + OCTET STRING(32) = the actual
+ * digest), which in turn is followed by more junk standing in for
+ * certificates/signerInfos. Mirrors a genuine RFC-3161 TimeStampResp's DER
+ * byte order closely enough to catch the first-match-only bug.
+ */
+function buildRealisticCmsFixture(digestHex: string): Buffer {
+  const digestAlgorithms = Buffer.concat([Buffer.from([0x31, SHA256_ALGID_DER.length]), SHA256_ALGID_DER]);
+  // Stands in for eContentType (an OID) immediately following digestAlgorithms
+  // in a real SignedData — deliberately NOT an OCTET STRING(32), so the
+  // first-match-only bug's cursor check fails right here.
+  const eContentTypeStandIn = Buffer.from([0x06, 0x03, 0x2a, 0x86, 0x48]);
+  const realImprint = Buffer.concat([SHA256_ALGID_DER, Buffer.from([0x04, 0x20]), Buffer.from(digestHex, "hex")]);
+  const signerInfosStandIn = Buffer.from([0x31, 0x03, 0x01, 0x02, 0x03]); // stands in for signerInfos SET
+  return Buffer.concat([digestAlgorithms, eContentTypeStandIn, realImprint, signerInfosStandIn]);
+}
+
+test("imprintMatches: REALISTIC CMS layout — digestAlgorithms precedes the real messageImprint — still matches (review finding #1)", () => {
+  const token = buildRealisticCmsFixture(HELLO_SHA256_HEX);
+  assert.equal(imprintMatches(token.toString("base64"), HELLO_SHA256_HEX), true);
+});
+
+test("imprintMatches: REALISTIC CMS layout with a genuinely wrong digest -> false", () => {
+  const token = buildRealisticCmsFixture(HELLO_SHA256_HEX);
+  const wrongDigest = "0".repeat(64);
+  assert.equal(imprintMatches(token.toString("base64"), wrongDigest), false);
+});
+
+// ---------------------------------------------------------------------------
 // requestTimestamp — fail-open matrix.
 // ---------------------------------------------------------------------------
 
@@ -189,4 +247,25 @@ test("requestTimestamp: a malformed digest never reaches the network — null + 
   assert.equal(result, null);
   assert.equal(fetchCalled, false);
   assert.equal(lines.length, 1);
+});
+
+// ---------------------------------------------------------------------------
+// Real freetsa.org token — a permanent regression fixture (review finding
+// #2). test/fixtures/freetsa-token.b64 is a REAL RFC-3161 TimeStampResp
+// captured live from https://freetsa.org/tsr by a one-off script (NOT this
+// test suite, NOT CI — see test/fixtures/freetsa-token.meta.json for the
+// exact digest input, fetch date, and provenance). This test makes ZERO
+// network calls; it only reads the checked-in bytes. Its purpose: prove
+// imprintMatches's scan-all fix (review finding #1) actually holds against
+// a genuine TSA response, not just hand-built fixtures that might
+// (however carefully) still miss some real-world CMS quirk.
+// ---------------------------------------------------------------------------
+
+test("imprintMatches: a REAL freetsa.org token (checked-in fixture) matches its real digest and rejects a wrong one", async () => {
+  const tokenB64 = (await readFile(path.join(FIXTURES_DIR, "freetsa-token.b64"), "utf8")).trim();
+  const meta = JSON.parse(await readFile(path.join(FIXTURES_DIR, "freetsa-token.meta.json"), "utf8")) as {
+    digestHex: string;
+  };
+  assert.equal(imprintMatches(tokenB64, meta.digestHex), true);
+  assert.equal(imprintMatches(tokenB64, "0".repeat(64)), false);
 });

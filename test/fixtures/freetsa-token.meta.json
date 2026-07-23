@@ -1,0 +1,9 @@
+{
+  "_comment": "Provenance for freetsa-token.b64 — a REAL RFC-3161 TimeStampResp captured live from freetsa.org for a permanent regression fixture (trust-ladder Slice B review finding #2). Fetched by a one-off script, NOT part of the test suite or CI — zero network calls happen when the tests that use this fixture run. Re-fetch only if freetsa.org's response shape ever changes in a way that breaks the fixture (unlikely) or freetsa.org disappears (fetch against a different public TSA and update this file).",
+  "tsa": "https://freetsa.org/tsr",
+  "fetchedAt": "2026-07-23T00:00:00Z",
+  "digestInput": "reelier trust-ladder freetsa.org live fixture 2026-07-23",
+  "digestHex": "08ef9a0289f792c74429581b2be6788ef3a958ae1bd8c9f01485a54801a63c45",
+  "digestAlgorithm": "sha256",
+  "note": "digestHex = sha256(digestInput) — the exact 64-char hex digest that was timestamped. test/tsa.test.ts asserts imprintMatches(token, digestHex) === true and imprintMatches(token, <any other digest>) === false against this real token."
+}

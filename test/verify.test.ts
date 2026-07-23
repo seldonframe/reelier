@@ -15,13 +15,30 @@ import {
 } from "../src/verify.js";
 import { generateSigningKeypair, loadSigningKey, signRecordDigest } from "../src/signing.js";
 import { digestSha256 } from "../src/canonical-json.js";
-import { buildTimeStampReq } from "../src/tsa.js";
 import type { RunRecord } from "../src/runner.js";
 
-/** A fake TSA response embedding a genuine MessageImprint for `digestHex` — same "wrap the real request DER" technique as test/tsa.test.ts's fixture. */
+// Review finding #1/#2: a genuine RFC-3161 TimeStampResp is a CMS
+// SignedData whose top-level `digestAlgorithms` SET (itself a sha256
+// AlgorithmIdentifier, with NO octet string right after it) precedes the
+// eContent-embedded TSTInfo's own messageImprint (which DOES have the real
+// 32-byte digest right after ITS AlgorithmIdentifier). A fixture that only
+// ever wraps a bare MessageImprint (no preceding digestAlgorithms) can't
+// catch a first-match-only bug — this fixture mirrors the real byte order
+// closely enough to (same construction as test/tsa.test.ts's
+// buildRealisticCmsFixture).
+const SHA256_ALGID_DER = Buffer.concat([
+  Buffer.from([0x30, 0x0d]),
+  Buffer.from([0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01]),
+  Buffer.from([0x05, 0x00]),
+]);
+
+/** A CMS-shaped fake TSA response: digestAlgorithms (no imprint attached) BEFORE the real messageImprint for `digestHex`, BEFORE trailing junk standing in for signerInfos. */
 function fakeTsaTokenB64For(digestHex: string): string {
-  const der = buildTimeStampReq(digestHex);
-  return Buffer.concat([Buffer.from([0xde, 0xad]), der, Buffer.from([0xbe, 0xef])]).toString("base64");
+  const digestAlgorithms = Buffer.concat([Buffer.from([0x31, SHA256_ALGID_DER.length]), SHA256_ALGID_DER]);
+  const eContentTypeStandIn = Buffer.from([0x06, 0x03, 0x2a, 0x86, 0x48]);
+  const realImprint = Buffer.concat([SHA256_ALGID_DER, Buffer.from([0x04, 0x20]), Buffer.from(digestHex, "hex")]);
+  const signerInfosStandIn = Buffer.from([0x31, 0x03, 0x01, 0x02, 0x03]);
+  return Buffer.concat([digestAlgorithms, eContentTypeStandIn, realImprint, signerInfosStandIn]).toString("base64");
 }
 
 function makeRecord(n: number): RunRecord {
