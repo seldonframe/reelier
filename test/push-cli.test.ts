@@ -337,3 +337,34 @@ test("cmdPush --public --share: both a registry line and a Receipt line print", 
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Task 11: cmdPush surfaces the mock-run refusal exactly like any other
+// pushSkill error — exit 1, message printed, no fetch call.
+// ---------------------------------------------------------------------------
+
+test("cmdPush: refuses a mock run — exit 1, message printed, no fetch call", async () => {
+  await withTempDir(async (dir) => {
+    const skillPath = path.join(dir, "push-cli-fixture.skill.md");
+    await writeFile(skillPath, SKILL_SOURCE, "utf8");
+    const runsDir = path.join(dir, ".reelier", "runs");
+    await mkdir(runsDir, { recursive: true });
+    const mockRecord = { ...makeRecord(0), mockFailures: [1] };
+    await writeFile(path.join(runsDir, "push-cli-fixture.jsonl"), JSON.stringify(mockRecord) + "\n", "utf8");
+
+    await withEnv({ REELIER_CLOUD_URL: "https://cloud.example", REELIER_CLOUD_KEY: "test-key" }, async () => {
+      let fetchCalled = false;
+      const fn = (async () => {
+        fetchCalled = true;
+        throw new Error("fetch must never be called");
+      }) as typeof fetch;
+      const { result: exitCode, lines } = await withCapturedLogs(() =>
+        withCwd(dir, () => withFetch(fn, () => cmdPush(makeArgs(skillPath, []))))
+      );
+
+      assert.equal(exitCode, 1);
+      assert.ok(lines.some((l) => /refusing to push a mock run \(injected failures at step\(s\): 1\)/.test(l)));
+      assert.equal(fetchCalled, false);
+    });
+  });
+});

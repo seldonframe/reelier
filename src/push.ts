@@ -440,6 +440,23 @@ export async function pushSkill(skillPath: string, options: PushOptions = {}): P
   const existing = state[skill.name];
   const cursorBefore = options.all ? 0 : existing?.pushed ?? 0;
   const candidates = allRecords.slice(cursorBefore);
+
+  // Mock runs (`--fail N`, docs/specs/flight-recorder-v2.md §3) are local
+  // recovery tests, never real receipts: a mocked record must never sit
+  // beside real ones in the cloud ledger. Refuse the WHOLE batch up front —
+  // before the skill upload or a single fetch call — if ANY candidate
+  // carries mockFailures. No --force/--all override: there is no legitimate
+  // reason to publish a mocked receipt.
+  const mockedStepNumbers = Array.from(
+    new Set(candidates.flatMap((r) => r.mockFailures ?? []))
+  ).sort((a, b) => a - b);
+  if (mockedStepNumbers.length > 0) {
+    throw new Error(
+      `refusing to push a mock run (injected failures at step(s): ${mockedStepNumbers.join(", ")}) — mock runs are ` +
+        `local recovery tests; a mocked receipt must never sit beside real ones. Re-run without --fail to produce a ` +
+        `pushable receipt.`
+    );
+  }
   // `--public` always re-runs the upload leg, even if the skill was already
   // uploaded privately before: submitting to the registry needs the current
   // bytes graded/listed, and a resubmission of unchanged bytes is itself a

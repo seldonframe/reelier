@@ -346,6 +346,87 @@ test("push: missing run-record file gives a clear actionable error", async () =>
 });
 
 // ---------------------------------------------------------------------------
+// Task 11: `reelier push` refuses mock runs (docs/specs/flight-recorder-v2.md
+// §3) — a mocked receipt (RunRecord.mockFailures set) must never sit beside
+// real ones. No --force override; fetch must never fire.
+// ---------------------------------------------------------------------------
+
+test("push: refuses to push a record carrying mockFailures — structured error naming the step(s), fetch never called", async () => {
+  await withTempDir(async (dir) => {
+    const skillPath = path.join(dir, "push-fixture.skill.md");
+    await writeFile(skillPath, SKILL_SOURCE, "utf8");
+    const runsDir = path.join(dir, ".reelier", "runs");
+    await mkdir(runsDir, { recursive: true });
+    const mockRecord = { ...makeRecord(0), mockFailures: [3] };
+    await writeFile(path.join(runsDir, "push-fixture.jsonl"), JSON.stringify(mockRecord) + "\n", "utf8");
+
+    const { fn, calls } = fakeFetch([]);
+    await withEnv({ REELIER_CLOUD_URL: "https://cloud.example", REELIER_CLOUD_KEY: "test-key" }, async () => {
+      await withFetch(fn, async () => {
+        await assert.rejects(
+          pushSkill(skillPath, { cwd: dir }),
+          /refusing to push a mock run \(injected failures at step\(s\): 3\)/
+        );
+        assert.equal(calls.length, 0, "fetch must never fire for a mock run");
+      });
+    });
+  });
+});
+
+test("push: refuses even when the offending record is NOT the first candidate in the batch", async () => {
+  await withTempDir(async (dir) => {
+    const skillPath = path.join(dir, "push-fixture.skill.md");
+    await writeFile(skillPath, SKILL_SOURCE, "utf8");
+    const runsDir = path.join(dir, ".reelier", "runs");
+    await mkdir(runsDir, { recursive: true });
+    const lines = [JSON.stringify(makeRecord(0)), JSON.stringify({ ...makeRecord(1), mockFailures: [2, 5] })].join("\n") + "\n";
+    await writeFile(path.join(runsDir, "push-fixture.jsonl"), lines, "utf8");
+
+    const { fn, calls } = fakeFetch([]);
+    await withEnv({ REELIER_CLOUD_URL: "https://cloud.example", REELIER_CLOUD_KEY: "test-key" }, async () => {
+      await withFetch(fn, async () => {
+        await assert.rejects(
+          pushSkill(skillPath, { cwd: dir }),
+          /refusing to push a mock run \(injected failures at step\(s\): 2, 5\)/
+        );
+        assert.equal(calls.length, 0, "fetch must never fire for the whole batch, including the earlier real record");
+      });
+    });
+  });
+});
+
+test("push: --all does NOT override the mock-run refusal (no --force escape hatch)", async () => {
+  await withTempDir(async (dir) => {
+    const skillPath = path.join(dir, "push-fixture.skill.md");
+    await writeFile(skillPath, SKILL_SOURCE, "utf8");
+    const runsDir = path.join(dir, ".reelier", "runs");
+    await mkdir(runsDir, { recursive: true });
+    const mockRecord = { ...makeRecord(0), mockFailures: [1] };
+    await writeFile(path.join(runsDir, "push-fixture.jsonl"), JSON.stringify(mockRecord) + "\n", "utf8");
+
+    const { fn, calls } = fakeFetch([]);
+    await withEnv({ REELIER_CLOUD_URL: "https://cloud.example", REELIER_CLOUD_KEY: "test-key" }, async () => {
+      await withFetch(fn, async () => {
+        await assert.rejects(pushSkill(skillPath, { cwd: dir, all: true }), /refusing to push a mock run/);
+        assert.equal(calls.length, 0);
+      });
+    });
+  });
+});
+
+test("push: a record without mockFailures pushes exactly as before (regression)", async () => {
+  await withTempDir(async (dir) => {
+    const skillPath = await setupFixture(dir, 1);
+    await withEnv({ REELIER_CLOUD_URL: "https://cloud.example", REELIER_CLOUD_KEY: "test-key" }, async () => {
+      const { fn } = fakeFetch([{ status: 200 }, { status: 202, body: { id: "r0" } }]);
+      const result = await withFetch(fn, () => pushSkill(skillPath, { cwd: dir }));
+      assert.equal(result.pushedCount, 1);
+      assert.equal(result.aborted, false);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // P2: writeFileAtomic + corrupt-state resilience.
 // ---------------------------------------------------------------------------
 
