@@ -474,8 +474,33 @@ async function pushOneRecord(
   tsaUrl?: string
 ): Promise<PushRecordResult> {
   const cost = computePushCost(record, priceTable);
-  const signature = computeSignature(record, signingKey);
-  const timestamp = await computeTimestamp(record, tsaUrl);
+
+  // Defense-in-depth (review finding #3): computeTimestamp is already
+  // internally fail-open (requestTimestamp never throws), but
+  // computeSignature calls into node:crypto's sign() against an
+  // already-validated key — a throw here should be unreachable in
+  // practice, but "should be unreachable" is exactly the class of
+  // assumption a per-record try/catch costs nothing to make actually true.
+  // Either failure degrades this ONE record to unsigned/untimestamped; it
+  // must never fail the whole push.
+  let signature: { alg: "ed25519"; keyId: string; sig: string } | undefined;
+  try {
+    signature = computeSignature(record, signingKey);
+  } catch (err) {
+    console.error(`WARNING: could not sign record ${index} (${(err as Error).message}) — pushing it unsigned.`);
+    signature = undefined;
+  }
+
+  let timestamp: RequestedTimestamp | undefined;
+  try {
+    timestamp = await computeTimestamp(record, tsaUrl);
+  } catch (err) {
+    console.error(
+      `WARNING: could not request a timestamp for record ${index} (${(err as Error).message}) — pushing it without one.`
+    );
+    timestamp = undefined;
+  }
+
   let res: Response;
   try {
     res = await fetch(`${config.baseUrl.replace(/\/$/, "")}/api/v1/runs`, {

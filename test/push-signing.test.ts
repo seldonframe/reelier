@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, writeFile, mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { generateKeyPairSync } from "node:crypto";
 import path from "node:path";
 import { pushSkill } from "../src/push.js";
 import { generateSigningKeypair, verifyRecordSignature } from "../src/signing.js";
@@ -101,6 +102,20 @@ async function withFetch<T>(fn: typeof fetch, run: () => Promise<T>): Promise<T>
   }
 }
 
+async function withCapturedStderr<T>(run: () => Promise<T>): Promise<{ result: T; lines: string[] }> {
+  const original = console.error;
+  const lines: string[] = [];
+  console.error = ((...args: unknown[]) => {
+    lines.push(args.map(String).join(" "));
+  }) as typeof console.error;
+  try {
+    const result = await run();
+    return { result, lines };
+  } finally {
+    console.error = original;
+  }
+}
+
 test("push attaches signature=undefined (field omitted) when no signing key exists", async () => {
   await withTempDir(async (dir) => {
     const skillPath = await setupFixture(dir, 1);
@@ -178,6 +193,53 @@ test("push tamper: a single-byte change to the pushed record no longer verifies 
       const tampered = { ...body.record, passed: !body.record.passed };
       const tamperedDigest = digestSha256(tampered);
       assert.equal(verifyRecordSignature(generated.publicPem, tamperedDigest, body.signature.sig), false);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Review finding #3 (hardening): a signing throw must degrade this ONE
+// record to unsigned, never fail the whole push. `loadSigningKey` already
+// validates a key PARSES at load time (createPrivateKey succeeds for any
+// key type, including one that doesn't support signing at all) but does
+// NOT check it's actually Ed25519 — node:crypto's one-shot `sign(null,
+// ...)` throws ("operation not supported for this keytype") when given a
+// key type like x25519 (a valid, parseable Diffie-Hellman key with no
+// signing support), which is exactly the "should be unreachable in
+// practice" throw path the per-record try/catch in pushOneRecord now
+// guards.
+// ---------------------------------------------------------------------------
+
+test("push: a signing key that THROWS when used (e.g. wrong key type slipped past load-time validation) degrades to an unsigned push, not a failed one — exactly one stderr warning", async () => {
+  await withTempDir(async (home) => {
+    await withTempDir(async (dir) => {
+      const signingDir = path.join(home, ".reelier", "signing");
+      await mkdir(signingDir, { recursive: true });
+      // x25519 parses fine at load time (createPrivateKey doesn't check
+      // whether a key supports signing), but signRecordDigest's one-shot
+      // sign() throws when handed one — the exact "unreachable in
+      // practice, guarded anyway" scenario review finding #3 asks for.
+      const { privateKey } = generateKeyPairSync("x25519");
+      const pem = privateKey.export({ type: "pkcs8", format: "pem" }) as string;
+      await writeFile(path.join(signingDir, "deadbeefcafefeed.pem"), pem, "utf8");
+
+      const skillPath = await setupFixture(dir, 1);
+      const { fn, calls } = fakeFetch([{ status: 200, body: {} }, { status: 202, body: { id: "r1" } }]);
+
+      const { result, lines } = await withCapturedStderr(() =>
+        withEnv(
+          { REELIER_CLOUD_URL: "https://cloud.example", REELIER_CLOUD_KEY: "test-key", HOME: home, USERPROFILE: home },
+          () => withFetch(fn, () => pushSkill(skillPath, { cwd: dir }))
+        )
+      );
+
+      assert.equal(result.pushedCount, 1, "the push itself must still succeed");
+      const runsCall = calls.find((c) => c.url.endsWith("/api/v1/runs"));
+      const body = JSON.parse(runsCall!.init.body as string);
+      assert.equal(body.signature, undefined, "the record ships unsigned, never a crash");
+
+      const warnLines = lines.filter((l) => l.includes("WARNING") && l.includes("sign record"));
+      assert.equal(warnLines.length, 1, `expected exactly one signing warning, got: ${JSON.stringify(lines)}`);
     });
   });
 });
