@@ -7,7 +7,8 @@ import { fillTemplate, runSkill } from "../src/runner.js";
 import type { Tool } from "../src/tools.js";
 import type { Observation } from "../src/assert.js";
 import { parseSkill } from "../src/skill.js";
-import { computeApprovalHash } from "../src/approval.js";
+import { computeApprovalHash, computeIdempotencyKey } from "../src/approval.js";
+import type { LlmClient, LlmCallInput, LlmCallResult } from "../src/llm.js";
 
 test("fillTemplate replaces {{var}} holes in string values, recursively", () => {
   const filled = fillTemplate(
@@ -430,6 +431,211 @@ test("approval gate: no approve field on a destructive step keeps today's EXACT 
     assert.equal(calls(), 0);
     assert.equal(record.passed, false);
     assert.match(record.steps[0].failures[0], /Refusing to execute destructive step without --yes\./);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Task 8: the write receipt — StepRecord.write (idempotency key, approved,
+// resource, duplicateOf). Spec: flight-recorder-v2.md §2.
+// ---------------------------------------------------------------------------
+
+function spyLlm(responses: LlmCallResult[]): { llm: LlmClient; calls: LlmCallInput[] } {
+  const calls: LlmCallInput[] = [];
+  let i = 0;
+  const llm: LlmClient = {
+    async completeJson(input) {
+      calls.push(input);
+      const r = responses[Math.min(i, responses.length - 1)];
+      i++;
+      return r;
+    },
+  };
+  return { llm, calls };
+}
+
+test("write receipt: an executed write step gets a stable idempotencyKey matching computeIdempotencyKey", async () => {
+  const skill = parseSkill(skillWithApprove("idempotent-write", WRITE_APPROVE_HASH));
+  const dir = await mkdtemp(path.join(tmpdir(), "reelier-test-"));
+  try {
+    const record = await runSkill(skill, {
+      cwd: dir,
+      tools: { "mock.tool": { effect: "read", async run() { return { status: 200, headers: {}, body: "" }; } } },
+    });
+    const expected = computeIdempotencyKey("mock.tool", null, WRITE_ACTION_ARGS);
+    assert.equal(record.steps[0].write?.idempotencyKey, expected);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("write receipt: approved is true when executed via the approve hash, false when via the legacy flag", async () => {
+  const dirA = await mkdtemp(path.join(tmpdir(), "reelier-test-"));
+  const dirB = await mkdtemp(path.join(tmpdir(), "reelier-test-"));
+  try {
+    const approvedSkill = parseSkill(skillWithApprove("idempotent-write", WRITE_APPROVE_HASH));
+    const recA = await runSkill(approvedSkill, {
+      cwd: dirA,
+      tools: { "mock.tool": { effect: "read", async run() { return { status: 200, headers: {}, body: "" }; } } },
+    });
+    assert.equal(recA.steps[0].write?.approved, true);
+
+    const legacySkill = parseSkill(skillWithApprove("idempotent-write"));
+    const recB = await runSkill(legacySkill, {
+      cwd: dirB,
+      tools: { "mock.tool": { effect: "read", async run() { return { status: 200, headers: {}, body: "" }; } } },
+      allowWrites: true,
+    });
+    assert.equal(recB.steps[0].write?.approved, false);
+  } finally {
+    await rm(dirA, { recursive: true, force: true });
+    await rm(dirB, { recursive: true, force: true });
+  }
+});
+
+test("write receipt: resource is extracted from a JSON body's id/version-ish fields", async () => {
+  const skill = parseSkill(skillWithApprove("idempotent-write", WRITE_APPROVE_HASH));
+  const dir = await mkdtemp(path.join(tmpdir(), "reelier-test-"));
+  try {
+    const record = await runSkill(skill, {
+      cwd: dir,
+      tools: {
+        "mock.tool": {
+          effect: "read",
+          async run() {
+            return { status: 200, headers: {}, body: JSON.stringify({ id: "c_123", etag: 7 }) };
+          },
+        },
+      },
+    });
+    assert.deepEqual(record.steps[0].write?.resource, { id: "c_123", version: "7" });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("write receipt: resource is omitted (not fabricated) when the body isn't JSON or has neither field", async () => {
+  const dirA = await mkdtemp(path.join(tmpdir(), "reelier-test-"));
+  const dirB = await mkdtemp(path.join(tmpdir(), "reelier-test-"));
+  try {
+    const skillA = parseSkill(skillWithApprove("idempotent-write", WRITE_APPROVE_HASH));
+    const recA = await runSkill(skillA, {
+      cwd: dirA,
+      tools: { "mock.tool": { effect: "read", async run() { return { status: 200, headers: {}, body: "not json at all" }; } } },
+    });
+    assert.equal(recA.steps[0].write?.resource, undefined);
+    assert.ok(!("resource" in (recA.steps[0].write ?? {})));
+
+    const skillB = parseSkill(skillWithApprove("idempotent-write", WRITE_APPROVE_HASH));
+    const recB = await runSkill(skillB, {
+      cwd: dirB,
+      tools: { "mock.tool": { effect: "read", async run() { return { status: 200, headers: {}, body: JSON.stringify({ ok: true }) }; } } },
+    });
+    assert.equal(recB.steps[0].write?.resource, undefined);
+  } finally {
+    await rm(dirA, { recursive: true, force: true });
+    await rm(dirB, { recursive: true, force: true });
+  }
+});
+
+const SKILL_DUPLICATE_WRITES = `---
+name: test-duplicate-writes
+description: two steps that dispatch the identical write twice in one run
+---
+
+### Step 1 — write it
+- intent: write it
+- action: mock.tool {"url": "https://example.com/write"}
+- assert: status == 200
+- effect: idempotent-write
+
+### Step 2 — write the same thing again
+- intent: write it again (e.g. a retried skill)
+- action: mock.tool {"url": "https://example.com/write"}
+- assert: status == 200
+- effect: idempotent-write
+`;
+
+test("write receipt: a second step with the identical idempotency key is flagged duplicateOf the first, not failed", async () => {
+  const skill = parseSkill(SKILL_DUPLICATE_WRITES);
+  const dir = await mkdtemp(path.join(tmpdir(), "reelier-test-"));
+  try {
+    const record = await runSkill(skill, {
+      cwd: dir,
+      tools: { "mock.tool": { effect: "read", async run() { return { status: 200, headers: {}, body: "" }; } } },
+      allowWrites: true,
+    });
+    assert.equal(record.passed, true);
+    assert.equal(record.steps[0].write?.duplicateOf, undefined);
+    assert.equal(record.steps[1].write?.duplicateOf, 1);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+const SKILL_WRITE_HEAL_L2 = `---
+name: heal-write-with-l2
+description: a write step whose endpoint moved, healed at L2
+---
+
+### Step 1 — create a contact
+- intent: create a contact
+- action: mock.tool {"url": "https://example.com/v1/contacts"}
+- assert: status == 200
+- effect: idempotent-write
+`;
+
+test("write receipt: an L2-healed write step carries a fresh write block (from the re-executed call)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "reelier-test-"));
+  const skillPath = path.join(dir, "heal-write-with-l2.skill.md");
+  try {
+    const { writeFile } = await import("node:fs/promises");
+    await writeFile(skillPath, SKILL_WRITE_HEAL_L2, "utf8");
+    const skill = parseSkill(SKILL_WRITE_HEAL_L2);
+
+    const { llm } = spyLlm([
+      { json: { verdict: "real-failure", reason: "L1 has nothing to patch, the endpoint itself moved" }, usage: { inputTokens: 10, outputTokens: 5 } },
+      {
+        json: {
+          verdict: "patch",
+          asserts: ["status == 200"],
+          binds: [],
+          args: { url: "https://example.com/v2/contacts" },
+          reason: "endpoint moved from v1 to v2",
+        },
+        usage: { inputTokens: 200, outputTokens: 50 },
+      },
+    ]);
+
+    const tool: Tool = {
+      effect: "idempotent-write",
+      async run(args): Promise<Observation> {
+        const url = (args as { url: string }).url;
+        if (url === "https://example.com/v2/contacts") {
+          return { status: 200, headers: {}, body: JSON.stringify({ id: "c_9" }) };
+        }
+        return { status: 404, headers: {}, body: "not found" };
+      },
+    };
+
+    const record = await runSkill(skill, {
+      cwd: dir,
+      tools: { "mock.tool": tool },
+      maxLevel: 2,
+      allowWrites: true,
+      llm,
+      skillPath,
+    });
+
+    assert.equal(record.passed, true);
+    assert.equal(record.steps[0].level, 2);
+    assert.equal(record.steps[0].write?.approved, false);
+    assert.deepEqual(record.steps[0].write?.resource, { id: "c_9" });
+    assert.equal(
+      record.steps[0].write?.idempotencyKey,
+      computeIdempotencyKey("mock.tool", null, { url: "https://example.com/v2/contacts" })
+    );
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

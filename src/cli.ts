@@ -281,6 +281,9 @@ export async function cmdRun(
         for (const f of rec.failures) {
           console.log(`    - ${f}`);
         }
+        if (rec.write?.duplicateOf !== undefined) {
+          console.log(`    ! duplicate write (same idempotency key as step ${rec.write.duplicateOf})`);
+        }
       },
     });
 
@@ -294,6 +297,14 @@ export async function cmdRun(
     );
     if (record.totals.llmInputTokens > 0 || record.totals.llmOutputTokens > 0) {
       console.log(`LLM tokens: ${record.totals.llmInputTokens} in / ${record.totals.llmOutputTokens} out`);
+    }
+    // Deprecation nudge (docs/specs/flight-recorder-v2.md §2): any write that
+    // executed via the legacy --allow-writes/--yes flags rather than a
+    // matching per-step approval gets one summary note, not one per step.
+    if (record.steps.some((s) => s.write?.approved === false)) {
+      console.log(
+        "note: write steps executed via --allow-writes/--yes without per-step approval — approve them: reelier approve <skill.md>"
+      );
     }
 
     return record.passed ? 0 : 1;

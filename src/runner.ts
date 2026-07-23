@@ -32,7 +32,7 @@ export { builtinTools };
 import type { LlmClient } from "./llm.js";
 import { resolveL1, resolveL2 } from "./escalate.js";
 import { applyWritebackSafely } from "./writeback.js";
-import { computeApprovalHash } from "./approval.js";
+import { computeApprovalHash, computeIdempotencyKey } from "./approval.js";
 
 export type StepOutcome = "passed" | "failed" | "unchecked" | "skipped";
 
@@ -41,6 +41,22 @@ export interface StepWhy {
   trigger?: string;
   /** What an escalation changed to heal this step — from the real L1/L2 patch reason. Present on a healed step. */
   change?: string;
+}
+
+/**
+ * The write receipt: present iff a write-effect (idempotent-write/destructive)
+ * step actually dispatched its tool call — never for a refused/mocked step.
+ * Spec: docs/specs/flight-recorder-v2.md §2.
+ */
+export interface StepWrite {
+  /** computeIdempotencyKey(tool, tool.server ?? null, filledArgs) — per-run identity of this exact write. */
+  idempotencyKey: string;
+  /** true = executed via a matching Step.approve hash; false = executed via the legacy --allow-writes/--yes flags. */
+  approved: boolean;
+  /** Best-effort, honestly-labeled extraction from the tool's JSON response body — absent when nothing was found. */
+  resource?: { id?: string; version?: string };
+  /** Set when an earlier step in THIS run wrote with the identical idempotencyKey — the step number of that earlier step. */
+  duplicateOf?: number;
 }
 
 export interface StepRecord {
@@ -73,6 +89,8 @@ export interface StepRecord {
   escalationAttempted?: 0 | 1 | 2;
   /** Present only when this step drifted (trigger) or healed (change); absent for an unchanged step. Never fabricated — see docs/specs/receipt-why.md. */
   why?: StepWhy;
+  /** Present iff this step's tool actually dispatched a write-effect call — see StepWrite. */
+  write?: StepWrite;
 }
 
 export interface RunRecord {
@@ -286,13 +304,59 @@ export async function readRunRecords(filePath: string): Promise<RunRecord[]> {
   return records;
 }
 
+/**
+ * Best-effort, honestly-labeled resource extraction from a write tool's
+ * response body (docs/specs/flight-recorder-v2.md §2): `id` from
+ * `body.id ?? body._id`, `version` from `body.version ?? body.etag ??
+ * body.revision ?? body.sha` — each stringified only when the raw value is a
+ * string or number (never guessed at from anything else). Returns undefined
+ * (never `{}`) when the body isn't JSON, isn't an object, or has neither
+ * field — a step never gets a fabricated resource.
+ */
+function extractResource(obs: Observation): { id?: string; version?: string } | undefined {
+  let body: unknown;
+  try {
+    body = JSON.parse(obs.body);
+  } catch {
+    return undefined;
+  }
+  if (body === null || typeof body !== "object" || Array.isArray(body)) return undefined;
+  const rec = body as Record<string, unknown>;
+  const idRaw = rec.id ?? rec._id;
+  const versionRaw = rec.version ?? rec.etag ?? rec.revision ?? rec.sha;
+  const id = typeof idRaw === "string" || typeof idRaw === "number" ? String(idRaw) : undefined;
+  const version = typeof versionRaw === "string" || typeof versionRaw === "number" ? String(versionRaw) : undefined;
+  if (id === undefined && version === undefined) return undefined;
+  return { ...(id !== undefined ? { id } : {}), ...(version !== undefined ? { version } : {}) };
+}
+
+/** Build the write receipt for a write-effect step whose tool call just dispatched. See StepWrite. */
+function buildStepWrite(
+  toolName: string,
+  tool: Tool,
+  filledArgs: unknown,
+  obs: Observation,
+  approved: boolean
+): StepWrite {
+  const idempotencyKey = computeIdempotencyKey(toolName, tool.server ?? null, filledArgs);
+  const resource = extractResource(obs);
+  return { idempotencyKey, approved, ...(resource ? { resource } : {}) };
+}
+
 async function executeStep(
   step: Step,
   bindings: Record<string, unknown>,
   tools: Record<string, Tool>,
   ctx: ToolContext,
   now: number
-): Promise<{ outcome: StepOutcome; ms: number; failures: string[]; observation?: Observation; binds: Record<string, unknown> }> {
+): Promise<{
+  outcome: StepOutcome;
+  ms: number;
+  failures: string[];
+  observation?: Observation;
+  binds: Record<string, unknown>;
+  write?: StepWrite;
+}> {
   const started = Date.now();
   const failures: string[] = [];
   // Binds are collected into a step-local map and only merged into the
@@ -379,6 +443,11 @@ async function executeStep(
     return { outcome: "failed", ms: Date.now() - started, failures, binds: localBinds };
   }
 
+  // The write receipt reflects that the tool call actually dispatched — it's
+  // stamped here, BEFORE assert evaluation, because the side effect already
+  // happened regardless of whether the step's assertions later hold.
+  const write = isWrite ? buildStepWrite(step.actionTool, tool, filledArgs, obs, step.approve !== undefined) : undefined;
+
   for (const assertLine of step.asserts) {
     try {
       const result = evalAssert(assertLine, obs);
@@ -405,13 +474,13 @@ async function executeStep(
 
   const ms = Date.now() - started;
   if (failures.length > 0) {
-    return { outcome: "failed", ms, failures, observation: obs, binds: localBinds };
+    return { outcome: "failed", ms, failures, observation: obs, binds: localBinds, write };
   }
   if (step.asserts.length === 0) {
     // Honest-success rule: zero assertions never counts as "passed".
-    return { outcome: "unchecked", ms, failures, observation: obs, binds: localBinds };
+    return { outcome: "unchecked", ms, failures, observation: obs, binds: localBinds, write };
   }
-  return { outcome: "passed", ms, failures, observation: obs, binds: localBinds };
+  return { outcome: "passed", ms, failures, observation: obs, binds: localBinds, write };
 }
 
 /** Re-evaluate a patched assert/bind set against a fixed observation. Never re-executes anything. */
@@ -482,6 +551,8 @@ async function attemptEscalation(
   escalationAttempted?: 1 | 2;
   /** What the heal changed, from the real patch reason — present only on a successful heal. */
   why?: StepWhy;
+  /** Fresh write receipt from the L2 re-execution's real tool call — absent when only L1 ran (L1 never re-executes). */
+  write?: StepWrite;
 }> {
   const maxLevel = options.maxLevel ?? 0;
   if (maxLevel < 1 || !options.llm) {
@@ -568,18 +639,29 @@ async function attemptEscalation(
     return { outcome: "failed", level: 0, failures, llm: usage, escalationAttempted };
   }
 
+  const l2Tool = tools[step.actionTool];
   let obs2: Observation;
   try {
-    obs2 = await tools[step.actionTool].run(filledArgs, toolCtx);
+    obs2 = await l2Tool.run(filledArgs, toolCtx);
   } catch (err) {
     failures = [...failures, `L2 re-execution failed: ${(err as Error).message}`];
     return { outcome: "failed", level: 0, failures, llm: usage, escalationAttempted };
   }
 
+  // The re-execution's write receipt reflects the FRESH tool call (not the
+  // original, now-stale one) — L2's whole point is that a new call just
+  // happened. Only relevant for a write-effect step; destructive never
+  // reaches L2 (checked above), so this is idempotent-write or read.
+  const l2EffectiveEffect = step.effect ?? l2Tool.effect;
+  const l2Write =
+    l2EffectiveEffect === "idempotent-write"
+      ? buildStepWrite(step.actionTool, l2Tool, filledArgs, obs2, step.approve !== undefined)
+      : undefined;
+
   const reEval2 = reEvaluatePatch(l2.asserts, l2.binds, obs2);
   if (!reEval2.ok) {
     failures = [...failures, ...reEval2.failures.map((f) => `L2 patch didn't hold: ${f}`)];
-    return { outcome: "failed", level: 0, failures, llm: usage, escalationAttempted };
+    return { outcome: "failed", level: 0, failures, llm: usage, escalationAttempted, write: l2Write };
   }
 
   Object.assign(bindings, reEval2.bindings);
@@ -598,7 +680,7 @@ async function attemptEscalation(
     );
   }
   const outcome: StepOutcome = l2.asserts.length === 0 ? "unchecked" : "passed";
-  return { outcome, level: 2, failures: [], llm: usage, escalationAttempted, why: { change: `L2: ${l2.reason}` } };
+  return { outcome, level: 2, failures: [], llm: usage, escalationAttempted, why: { change: `L2: ${l2.reason}` }, write: l2Write };
 }
 
 /** Run a skill's steps in order. Stops (marks remaining steps "skipped") on the first divergence. */
@@ -619,6 +701,10 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
   const startedAt = new Date().toISOString();
   const stepRecords: StepRecord[] = [];
   let diverged = false;
+  // Tracks the FIRST step number to write with a given idempotency key in
+  // THIS run — a later step with the identical key is recorded (never
+  // failed) as a duplicate of that first one.
+  const writeKeySeen = new Map<string, number>();
 
   for (const step of skill.steps) {
     if (diverged) {
@@ -636,6 +722,7 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
     let llmUsage: { inputTokens: number; outputTokens: number; model?: string } | undefined;
     let escalationAttempted: 0 | 1 | 2 | undefined;
     let why: StepWhy | undefined;
+    let write = exec.write;
     // The load-bearing divergence, captured BEFORE escalation appends L1/L2 noise.
     const initialTrigger = exec.outcome === "failed" ? exec.failures[0] : undefined;
 
@@ -663,10 +750,24 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
       escalationAttempted = escalated.escalationAttempted;
       if (outcome === "failed") why = { trigger: initialTrigger ?? failures[0] };
       else if (escalated.why) why = escalated.why;
+      // L2's re-execution produces a FRESH write (a new tool call actually
+      // happened) — it supersedes step 1's original, now-stale attempt. L1
+      // never re-executes, so it never returns a `write` and the original
+      // (exec.write) stands.
+      if (escalated.write) write = escalated.write;
     }
     // A step that failed without an observation (tool threw) skips escalation —
     // still record why it diverged.
     if (outcome === "failed" && !why) why = { trigger: initialTrigger ?? failures[0] };
+
+    if (write) {
+      const firstSeenAt = writeKeySeen.get(write.idempotencyKey);
+      if (firstSeenAt !== undefined) {
+        write = { ...write, duplicateOf: firstSeenAt };
+      } else {
+        writeKeySeen.set(write.idempotencyKey, step.n);
+      }
+    }
 
     const ms = Date.now() - started;
     const rec: StepRecord = {
@@ -679,6 +780,7 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
       ...(llmUsage ? { llm: llmUsage } : {}),
       ...(escalationAttempted !== undefined ? { escalationAttempted } : {}),
       ...(why ? { why } : {}),
+      ...(write ? { write } : {}),
     };
     stepRecords.push(rec);
     options.onStep?.(rec, { tool: step.actionTool, args: step.actionArgs });
