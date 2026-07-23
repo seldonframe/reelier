@@ -643,6 +643,256 @@ test("write receipt: an L2-healed write step carries a fresh write block (from t
 });
 
 // ---------------------------------------------------------------------------
+// Adversarial-review fix wave (fr2-slice2-review.md, findings #1/#2/#3/#4):
+// L2 re-execution must re-check approval before dispatching a write whose
+// args the LLM patched away from the approved template. Spec §2: "patched
+// args that leave the approved template → the write is NOT re-executed at
+// L2." Only a matching template (or an unapproved legacy step) may execute.
+// ---------------------------------------------------------------------------
+
+const L2_APPROVE_ARGS = { url: "https://example.com/contacts" };
+const L2_APPROVE_HASH = computeApprovalHash({ actionTool: "mock.tool", actionArgs: L2_APPROVE_ARGS });
+
+function skillApprovedWriteForL2(): string {
+  return `---
+name: approved-write-l2
+description: an approved write step that diverges then reaches L2
+---
+
+### Step 1 — create a contact
+- intent: create a contact
+- action: mock.tool ${JSON.stringify(L2_APPROVE_ARGS)}
+- assert: json.flag == true
+- effect: idempotent-write
+- approve: ${L2_APPROVE_HASH}
+`;
+}
+
+test("L2 approval gate: an approved step whose L2 patch changes ARGS is refused — tool never re-dispatched, no lying write", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "reelier-test-"));
+  const skillPath = path.join(dir, "approved-write-l2.skill.md");
+  try {
+    const { writeFile } = await import("node:fs/promises");
+    await writeFile(skillPath, skillApprovedWriteForL2(), "utf8");
+    const skill = parseSkill(skillApprovedWriteForL2());
+
+    const { llm } = spyLlm([
+      { json: { verdict: "real-failure", reason: "L1 has nothing to patch" }, usage: { inputTokens: 10, outputTokens: 5 } },
+      {
+        json: {
+          verdict: "patch",
+          asserts: ["json.flag == true"],
+          binds: [],
+          args: { url: "https://example.com/contacts-v2" }, // DIFFERENT from the approved template
+          reason: "endpoint moved",
+        },
+        usage: { inputTokens: 50, outputTokens: 20 },
+      },
+    ]);
+
+    let calls = 0;
+    const tool: Tool = {
+      effect: "idempotent-write",
+      async run(): Promise<Observation> {
+        calls++;
+        return { status: 200, headers: {}, body: JSON.stringify({ flag: false }) };
+      },
+    };
+
+    const record = await runSkill(skill, { cwd: dir, tools: { "mock.tool": tool }, maxLevel: 2, llm, skillPath });
+
+    assert.equal(calls, 1, "only the main-path dispatch happened — L2 must never re-execute on an approval mismatch");
+    assert.equal(record.passed, false);
+    assert.equal(record.steps[0].level, 0);
+    assert.match(record.steps[0].failures.join("\n"), /Approval mismatch on L2-patched write step/);
+    assert.match(record.steps[0].failures.join("\n"), /was NOT re-executed/);
+    // The write block, if present, is the TRUE main-path receipt (real dispatch,
+    // real approval match against the ORIGINAL template) — never a fabricated
+    // L2 one, and never lying about approval.
+    assert.equal(record.steps[0].write?.approved, true);
+    assert.equal(
+      record.steps[0].write?.idempotencyKey,
+      computeIdempotencyKey("mock.tool", null, L2_APPROVE_ARGS)
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("L2 approval gate: an approved step whose L2 patch touches only asserts/binds (args unchanged) executes normally, write.approved stays true", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "reelier-test-"));
+  const skillPath = path.join(dir, "approved-write-l2.skill.md");
+  try {
+    const { writeFile } = await import("node:fs/promises");
+    await writeFile(skillPath, skillApprovedWriteForL2(), "utf8");
+    const skill = parseSkill(skillApprovedWriteForL2());
+
+    const { llm } = spyLlm([
+      { json: { verdict: "real-failure", reason: "L1 has nothing to patch" }, usage: { inputTokens: 10, outputTokens: 5 } },
+      {
+        json: {
+          verdict: "patch",
+          asserts: ["json.flag == false"],
+          binds: [],
+          // No `args` field at all — the LLM only patched asserts, so the
+          // candidate template is the step's OWN unchanged template, which
+          // trivially still matches the approval.
+          reason: "flag semantics were inverted",
+        },
+        usage: { inputTokens: 30, outputTokens: 10 },
+      },
+    ]);
+
+    let calls = 0;
+    const tool: Tool = {
+      effect: "idempotent-write",
+      async run(): Promise<Observation> {
+        calls++;
+        return { status: 200, headers: {}, body: JSON.stringify({ flag: false, id: "c_1" }) };
+      },
+    };
+
+    const record = await runSkill(skill, { cwd: dir, tools: { "mock.tool": tool }, maxLevel: 2, llm, skillPath });
+
+    assert.equal(calls, 2, "main-path dispatch + exactly one L2 re-execution");
+    assert.equal(record.passed, true);
+    assert.equal(record.steps[0].level, 2);
+    assert.equal(record.steps[0].write?.approved, true);
+    assert.deepEqual(record.steps[0].write?.resource, { id: "c_1" });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("L2 approval gate: an UNAPPROVED step (legacy --allow-writes) still re-executes at L2 with patched args, unchanged", async () => {
+  const skillPath0 = path.join(await mkdtemp(path.join(tmpdir(), "reelier-test-")), "unused");
+  const dir = path.dirname(skillPath0);
+  const skillPath = path.join(dir, "heal-write-with-l2-legacy.skill.md");
+  try {
+    const { writeFile } = await import("node:fs/promises");
+    const source = `---
+name: heal-write-with-l2-legacy
+description: an unapproved write step healed at L2 (legacy flag path)
+---
+
+### Step 1 — create a contact
+- intent: create a contact
+- action: mock.tool {"url": "https://example.com/v1/contacts"}
+- assert: status == 200
+- effect: idempotent-write
+`;
+    await writeFile(skillPath, source, "utf8");
+    const skill = parseSkill(source);
+
+    const { llm } = spyLlm([
+      { json: { verdict: "real-failure", reason: "L1 has nothing to patch, the endpoint itself moved" }, usage: { inputTokens: 10, outputTokens: 5 } },
+      {
+        json: {
+          verdict: "patch",
+          asserts: ["status == 200"],
+          binds: [],
+          args: { url: "https://example.com/v2/contacts" },
+          reason: "endpoint moved from v1 to v2",
+        },
+        usage: { inputTokens: 200, outputTokens: 50 },
+      },
+    ]);
+
+    let calls = 0;
+    const tool: Tool = {
+      effect: "idempotent-write",
+      async run(args): Promise<Observation> {
+        calls++;
+        const url = (args as { url: string }).url;
+        if (url === "https://example.com/v2/contacts") {
+          return { status: 200, headers: {}, body: "{}" };
+        }
+        return { status: 404, headers: {}, body: "not found" };
+      },
+    };
+
+    const record = await runSkill(skill, {
+      cwd: dir,
+      tools: { "mock.tool": tool },
+      maxLevel: 2,
+      allowWrites: true,
+      llm,
+      skillPath,
+    });
+
+    assert.equal(calls, 2, "no approve field -> no approval check at L2, legacy flag path executes as before");
+    assert.equal(record.passed, true);
+    assert.equal(record.steps[0].level, 2);
+    assert.equal(record.steps[0].write?.approved, false);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("write receipt: an intra-step double write (main dispatch + L2 re-dispatch with the SAME idempotency key) is flagged duplicateOf, not silently discarded", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "reelier-test-"));
+  const skillPath = path.join(dir, "double-write.skill.md");
+  try {
+    const { writeFile } = await import("node:fs/promises");
+    const source = `---
+name: double-write
+description: main-path write + an L2 re-execution against the SAME args
+---
+
+### Step 1 — write it
+- intent: write it
+- action: mock.tool {"url": "https://example.com/write"}
+- assert: json.flag == true
+- effect: idempotent-write
+`;
+    await writeFile(skillPath, source, "utf8");
+    const skill = parseSkill(source);
+
+    const { llm } = spyLlm([
+      { json: { verdict: "real-failure", reason: "L1 has nothing to patch" }, usage: { inputTokens: 10, outputTokens: 5 } },
+      {
+        json: {
+          verdict: "patch",
+          asserts: ["json.flag == false"],
+          binds: [],
+          // Same args template (no `args` field) — the re-dispatch hits the
+          // exact same URL, so its idempotency key matches the main-path
+          // attempt's exactly.
+          reason: "flag semantics were inverted",
+        },
+        usage: { inputTokens: 30, outputTokens: 10 },
+      },
+    ]);
+
+    const tool: Tool = {
+      effect: "idempotent-write",
+      async run(): Promise<Observation> {
+        return { status: 200, headers: {}, body: JSON.stringify({ flag: false }) };
+      },
+    };
+
+    const record = await runSkill(skill, {
+      cwd: dir,
+      tools: { "mock.tool": tool },
+      maxLevel: 2,
+      allowWrites: true,
+      llm,
+      skillPath,
+    });
+
+    assert.equal(record.passed, true);
+    assert.equal(record.steps[0].level, 2);
+    // The main-path write registered this step's own idempotency key BEFORE
+    // escalation ran; the L2 re-dispatch's identical key is honestly flagged
+    // as a duplicate of that earlier (same-step) attempt, rather than
+    // silently discarding the fact that TWO real writes happened.
+    assert.equal(record.steps[0].write?.duplicateOf, 1);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Task 10: --fail N[=status] mocked-failure replay through the real
 // escalation ladder. Spec: flight-recorder-v2.md §3.
 // ---------------------------------------------------------------------------

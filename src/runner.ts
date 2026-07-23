@@ -594,6 +594,24 @@ function level3Message(step: Step): string {
 }
 
 /**
+ * L2 approval mismatch: the LLM's proposed args template leaves the
+ * template a human approved (`step.approve`). Mirrors level3Message's
+ * shape — spec §2: "patched args that leave the approved template → the
+ * write is NOT re-executed at L2." The main-path gate (executeStep) already
+ * proved `step.approve` matched the ORIGINAL template before this step ever
+ * reached L2 (attemptEscalation only runs when the main path produced an
+ * observation), so this only fires when L2's proposed args differ from what
+ * was approved.
+ */
+function l2ApprovalMismatchMessage(step: Step): string {
+  return (
+    `Approval mismatch on L2-patched write step ${step.n} (${step.title}) — the LLM's proposed args leave the ` +
+    `template a human approved. Level 2 auto-repair never re-executes a write whose args weren't approved. ` +
+    `Re-review and re-approve: reelier approve <skill.md>. (The write was NOT re-executed.)`
+  );
+}
+
+/**
  * Attempt to heal a diverged step via the escalation ladder. Returns the
  * (possibly updated) outcome/failures/level/llm-usage, and mutates
  * `bindings` in place on a successful heal (matching the deterministic
@@ -707,6 +725,26 @@ async function attemptEscalation(
   }
 
   const l2Tool = tools[step.actionTool];
+  // Only relevant for a write-effect step; destructive never reaches L2
+  // (checked above), so this is idempotent-write or read.
+  const l2EffectiveEffect = step.effect ?? l2Tool.effect;
+  const l2IsWrite = l2EffectiveEffect === "idempotent-write";
+
+  if (l2IsWrite && step.approve !== undefined) {
+    // Approval binds {tool, args: TEMPLATE} (src/approval.ts) — recompute it
+    // over the L2 CANDIDATE template (l2.args if the LLM proposed new args,
+    // else the step's own unchanged template) and require it to still match
+    // what a human approved. This is the FINAL boundary extending to L2: no
+    // flag overrides it, and a mismatch means the write is NEVER dispatched.
+    const l2ArgsTemplate = l2.args !== undefined ? l2.args : step.actionArgs;
+    const l2ExpectedHash = computeApprovalHash({ actionTool: step.actionTool, actionArgs: l2ArgsTemplate });
+    if (l2ExpectedHash !== step.approve) {
+      failures = [...failures, l2ApprovalMismatchMessage(step)];
+      return { outcome: "failed", level: 0, failures, llm: usage, escalationAttempted };
+    }
+    // Hash matches: the human's approval still covers whatever L2 is about to run.
+  }
+
   let obs2: Observation;
   try {
     obs2 = await l2Tool.run(filledArgs, toolCtx);
@@ -717,13 +755,10 @@ async function attemptEscalation(
 
   // The re-execution's write receipt reflects the FRESH tool call (not the
   // original, now-stale one) — L2's whole point is that a new call just
-  // happened. Only relevant for a write-effect step; destructive never
-  // reaches L2 (checked above), so this is idempotent-write or read.
-  const l2EffectiveEffect = step.effect ?? l2Tool.effect;
-  const l2Write =
-    l2EffectiveEffect === "idempotent-write"
-      ? buildStepWrite(step.actionTool, l2Tool, filledArgs, obs2, step.approve !== undefined)
-      : undefined;
+  // happened. `approved` is truthful here: if step.approve was defined, the
+  // gate above already proved it matched THIS exact candidate template
+  // before dispatch — a mismatch never reaches this line.
+  const l2Write = l2IsWrite ? buildStepWrite(step.actionTool, l2Tool, filledArgs, obs2, step.approve !== undefined) : undefined;
 
   const reEval2 = reEvaluatePatch(l2.asserts, l2.binds, obs2);
   if (!reEval2.ok) {
@@ -791,6 +826,21 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
     let escalationAttempted: 0 | 1 | 2 | undefined;
     let why: StepWhy | undefined;
     let write = exec.write;
+    // Register/dedupe the MAIN-PATH write's key immediately — BEFORE any
+    // escalation runs. This matters when L2 later re-dispatches the same
+    // step: without registering here first, a step that wrote twice (main
+    // dispatch, then an L2 re-dispatch with the identical args) would have
+    // its main-path write silently discarded (superseded by the fresh L2
+    // one below) and the fact that TWO real writes happened in this run
+    // would escape duplicate detection entirely (fr2-slice2-review.md #4).
+    if (write) {
+      const firstSeenAt = writeKeySeen.get(write.idempotencyKey);
+      if (firstSeenAt !== undefined) {
+        write = { ...write, duplicateOf: firstSeenAt };
+      } else {
+        writeKeySeen.set(write.idempotencyKey, step.n);
+      }
+    }
     // The load-bearing divergence, captured BEFORE escalation appends L1/L2 noise.
     const initialTrigger = exec.outcome === "failed" ? exec.failures[0] : undefined;
 
@@ -819,10 +869,18 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
       if (outcome === "failed") why = { trigger: initialTrigger ?? failures[0] };
       else if (escalated.why) why = escalated.why;
       // L2's re-execution produces a FRESH write (a new tool call actually
-      // happened) — it supersedes step 1's original, now-stale attempt. L1
-      // never re-executes, so it never returns a `write` and the original
-      // (exec.write) stands.
-      if (escalated.write) write = escalated.write;
+      // happened) — it supersedes step 1's original, now-stale attempt for
+      // THIS record. The main-path key was already registered above, so an
+      // L2 re-dispatch with the IDENTICAL key (args unchanged) is honestly
+      // flagged as a duplicate of that earlier attempt — even when "earlier"
+      // means this very step, which really did write twice.
+      if (escalated.write && !exec.mocked) {
+        const firstSeenAt = writeKeySeen.get(escalated.write.idempotencyKey);
+        write = firstSeenAt !== undefined ? { ...escalated.write, duplicateOf: firstSeenAt } : escalated.write;
+        if (firstSeenAt === undefined) writeKeySeen.set(escalated.write.idempotencyKey, step.n);
+      } else if (escalated.write) {
+        write = escalated.write;
+      }
     }
     // A step that failed without an observation (tool threw) skips escalation —
     // still record why it diverged.
@@ -830,17 +888,9 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
 
     // A mocked step (`--fail N`) never dispatched a real tool call, even if
     // its own escalation subsequently healed via a REAL L2 re-execution —
-    // never receipt a write on a step whose original attempt was synthetic.
+    // never receipt a write on a step whose original attempt was synthetic
+    // (and never let its key pollute the dup map above, either).
     if (exec.mocked) write = undefined;
-
-    if (write) {
-      const firstSeenAt = writeKeySeen.get(write.idempotencyKey);
-      if (firstSeenAt !== undefined) {
-        write = { ...write, duplicateOf: firstSeenAt };
-      } else {
-        writeKeySeen.set(write.idempotencyKey, step.n);
-      }
-    }
 
     const ms = Date.now() - started;
     const rec: StepRecord = {
