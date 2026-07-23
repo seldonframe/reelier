@@ -25,3 +25,16 @@ Every new third-party/throw path returns null + exactly one stderr line and neve
 
 ## Counts
 npm test: 633 pass / 0 fail / 0 skipped (tsc + node --test, ~3.2s). Matches claimed 633.
+
+---
+
+# Re-verification (commits c7c3b0e, ea09921) — APPROVED
+
+Tests: `npm test` = **637 pass / 0 fail / 0 skipped** (matches claimed 637). A node test-runner IPC flake ("Unable to deserialize cloned data") prints for manifest-cli.test.js *after* the aggregate summary; it does not register as a failure (known standalone flake).
+
+1. **Scan-all fix (src/tsa.ts:205-240) — CORRECT.** Probe with a realistic CMS layout (digestAlgorithms sha256 AlgId before the real messageImprint) now returns true; old first-anchor returned false. ✗ direction sound: wrong digest → no occurrence's OCTET STRING(32) matches → indexOf exhausts → false (confirmed on both fixtures and the real token). Residual (crafted non-CMS blob embedding the digest) stated honestly in the doc comment; positive still graded `"unchecked"` at verify.ts (never `"verified"`).
+2. **Real-token fixture — genuine, but does NOT exercise the scan (non-blocking honesty nit).** test/fixtures/freetsa-token.b64 is a real freetsa RFC-3161 TimeStampResp (valid DER, signedData + id-ct-TSTInfo OIDs present; digestHex == sha256(digestInput) verified). Provenance meta complete. HOWEVER: freetsa signs its SignedData with **SHA-512** (digestAlgorithms OID ends `02 03`), so the token contains exactly ONE sha256 OID — the imprint itself. The OLD first-anchor code ALSO passes this token, so the real-token test would NOT fail on a first-anchor regression — contrary to the commit/test-comment claim that it "proves the scan-all fix holds against a genuine TSA response." The genuine regression guard is the hand-built `buildRealisticCmsFixture` test (test/tsa.test.ts) — verified to fail first-anchor and pass scan-all. The real-token test still earns its keep (works-on-real-data + wrong-digest→false) and is not a can't-fail test; the claim is just overstated. Note also this explains the original finding's blast radius: the default freetsa path wouldn't have hit the bug (SHA-512 signature), but any SHA-256-signing TSA would — the fix is correct and necessary regardless.
+3. **Doc comment CMS byte-order (src/tsa.ts:177-189) — correct now** (digestAlgorithms precedes eContent/TSTInfo, no octet string attached).
+4. **ea09921 fail-open wrap (src/push.ts:476-503) — CORRECT.** computeSignature + computeTimestamp each in their own try/catch; a throw degrades that ONE record to unsigned/untimestamped with one stderr line, push still succeeds. Test uses a real x25519 key that genuinely throws on sign() (not a mock); asserts pushedCount===1, body.signature undefined, exactly one warning.
+
+Verdict: **APPROVED.**

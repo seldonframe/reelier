@@ -680,6 +680,21 @@ export async function pushSkill(skillPath: string, options: PushOptions = {}): P
   // key degrades this push to unsigned rather than aborting it.
   const signingKey = (await loadSigningKey(signingKeyDir(os.homedir()))) ?? undefined;
 
+  // Cross-seam privacy consent (trust-ladder cloud adjudication): the cloud
+  // only serves the FULL signed record on `/r/<token>/json` for SIGNED
+  // receipts — `reelier verify` needs the raw bytes to recompute the
+  // digest. That means `--share` on a SIGNED push publishes more than an
+  // unsigned share does, and consent must be visible at the moment it
+  // happens, not buried in docs. Exactly one line per push invocation
+  // (never per record) — only when BOTH a key is loaded AND this push is
+  // shared; silent otherwise (unsigned pushes, or signed-but-unshared
+  // pushes, are unaffected and print nothing new).
+  if (signingKey && options.share) {
+    console.error(
+      "note: sharing a signed receipt publishes its full signed record at the receipt URL (that's what makes it independently verifiable)"
+    );
+  }
+
   const results: PushRecordResult[] = [];
   const newlyRejected: RejectedEntry[] = [];
   let pushedCount = 0;

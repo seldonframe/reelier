@@ -190,3 +190,39 @@ Same two-group approach (the `manifest-cli.test.js` Windows IPC flake remains co
 - The reviewer's probe methodology (build a realistic CMS layout, watch it fail, then fix) is exactly what TDD requires and is exactly what was followed here — no shortcuts.
 - Nothing in this fix round touched `src/verify.ts`'s logic itself (it already correctly delegated to `imprintMatches`); fixing `tsa.ts` alone was sufficient, confirmed by the existing `evaluateTimestampClaim` tests passing unchanged against the strengthened fixture.
 - No spec/plan docs were modified.
+
+---
+
+# Last OSS task — sharing-a-signed-receipt consent note (cross-seam privacy adjudication)
+
+Same branch/worktree. Landed after `.superpowers/sdd/trust-sliceB-review.md`'s re-verification pass was appended (externally, marked **APPROVED** on commits `c7c3b0e`/`ea09921`, with one non-blocking honesty nit: `test/fixtures/freetsa-token.b64`'s real token signs with SHA-512, so it contains only ONE sha256 OID — the imprint itself — and would NOT have failed on the old first-anchor code; the genuine regression guard is `test/tsa.test.ts`'s hand-built `buildRealisticCmsFixture`, which does fail-then-pass correctly. No action was requested on that nit in this dispatch, so it was left as-is — flagging here for visibility only).
+
+## Task
+
+Cloud only serves the full signed record on `/r/<token>/json` for SIGNED receipts (verify needs the bytes) — so `--share` on a SIGNED push publishes more than an unsigned share does. Consent must be visible at creation time: print exactly one stderr line, once per push invocation (never per record), when BOTH a signing key is loaded AND the push is shared.
+
+## Status: DONE
+
+`src/push.ts`'s `pushSkill` — right after `signingKey` is resolved once per batch (before the per-record loop) — now checks `if (signingKey && options.share)` and prints exactly:
+
+```
+note: sharing a signed receipt publishes its full signed record at the receipt URL (that's what makes it independently verifiable)
+```
+
+Placed at the batch level (not inside `pushOneRecord`), so a push with N candidate records still prints the line exactly once, never N times.
+
+TDD per the dispatch: wrote `test/push-share-consent.test.ts` covering all four combinations (signed+shared → exactly one line, even with 2 records in the batch; signed+unshared / unsigned+shared / unsigned+unshared → zero lines each). Sanity-verified TDD-style by temporarily short-circuiting the new guard (`if (false && signingKey && options.share)`), confirming the "signed+shared" test fails exactly as expected (`0 !== 1`), then restoring the real guard and confirming green.
+
+## Commit
+
+- feat(trust-ladder): sharing-a-signed-receipt consent note (cross-seam privacy) — this same commit includes this report update.
+
+## Final suite counts
+
+- All files except `manifest-cli.test.js`: **632 pass / 0 fail**
+- `manifest-cli.test.js` standalone: **9/9 pass**
+- **Total: 641 pass / 0 fail** (baseline 637 + 4 new: `test/push-share-consent.test.ts`'s four combination tests).
+
+`npx tsc -p tsconfig.test.json`: clean, no errors.
+
+No spec/plan docs were modified.
