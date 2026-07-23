@@ -1,0 +1,45 @@
+# PR receipt demo — pull_request trigger (proves the 0.22.0 head-sha path).
+#
+# On a pull_request event GITHUB_SHA is the synthetic MERGE commit, so the
+# attested ci_sha is no PR's head. reelier >=0.22.0 additionally sends the
+# real PR head sha (ciHeadSha, read from the event payload), and the App
+# matches the PR on that — which is what this run exercises end to end.
+# Same-repo branch PRs get secrets + id-token; fork PRs would not (and would
+# render a check-run only). Runs only on pull_request, so it never collides
+# with the push-triggered pr-receipt-demo.yml.
+name: PR receipt (pull_request) demo
+
+on:
+  pull_request: {}
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install reelier
+        run: npm i -g reelier
+      - name: Replay one skill and push an attested receipt (sends ciHeadSha)
+        env:
+          REELIER_CLOUD_URL: https://www.reelier.com
+          REELIER_CLOUD_KEY: ${{ secrets.REELIER_API_KEY }}
+          REELIER_SIGNING_KEY: ${{ secrets.REELIER_SIGNING_KEY }}
+        run: |
+          reelier run examples/portfolio/registry-latest.skill.md
+          if [ -n "$REELIER_SIGNING_KEY" ]; then
+            mkdir -p ~/.reelier/signing
+            printf '%s\n' "$REELIER_SIGNING_KEY" > ~/.reelier/signing/9158fc9cd0fb4e9b.pem
+          fi
+          if [ -n "$REELIER_CLOUD_KEY" ]; then
+            reelier push examples/portfolio/registry-latest.skill.md --timestamp --share
+          else
+            echo "REELIER_API_KEY not set — cannot push an attested receipt."
+            exit 1
+          fi
