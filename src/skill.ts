@@ -17,10 +17,29 @@ export interface Step {
   line: number;
 }
 
+/** One tool this skill's steps depend on, as recorded/stamped from a live downstream's advertised schema. */
+export interface ManifestTool {
+  name: string;
+  server?: string;
+  digest: string;
+}
+
+/**
+ * Environment binding: proves at replay time that the tools a skill was
+ * recorded/stamped against are still the tools present (schema-identical)
+ * before step 1 runs. Spec: docs/specs/flight-recorder-v2.md §1.
+ */
+export interface SkillManifest {
+  v: 1;
+  tools: ManifestTool[];
+}
+
 export interface Skill {
   name: string;
   description: string;
   steps: Step[];
+  /** Optional tool-schema manifest (docs/specs/flight-recorder-v2.md §1) — absent for skills predating this feature or never stamped. */
+  manifest?: SkillManifest;
   /**
    * Raw body text preceding the first step header (title, "Inputs:" line,
    * "## Steps" heading, any prose/comments), preserved verbatim so
@@ -104,8 +123,49 @@ function splitFrontmatter(source: string): { frontmatter: string; body: string; 
   return { frontmatter, body, bodyStartLine: endIdx + 2 };
 }
 
-/** Minimal frontmatter parser: flat `key: value` pairs only (name, description). */
-function parseFrontmatter(frontmatter: string): { name: string; description: string } {
+const DIGEST_RE = /^sha256:[0-9a-f]{64}$/;
+
+/**
+ * Validate the shape of a parsed `manifest:` frontmatter value. Thrown
+ * errors are loud and specific (no Optimistic Path — a malformed manifest
+ * must never silently degrade to "no manifest").
+ */
+function validateManifestShape(value: unknown): SkillManifest {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new SkillParseError("Malformed 'manifest' frontmatter (expected an object)");
+  }
+  const obj = value as Record<string, unknown>;
+  if (obj.v !== 1) {
+    throw new SkillParseError(`Malformed 'manifest' frontmatter: expected "v": 1, got ${JSON.stringify(obj.v)}`);
+  }
+  if (!Array.isArray(obj.tools)) {
+    throw new SkillParseError("Malformed 'manifest' frontmatter: 'tools' must be an array");
+  }
+  const tools: ManifestTool[] = obj.tools.map((t, i) => {
+    if (t === null || typeof t !== "object" || Array.isArray(t)) {
+      throw new SkillParseError(`Malformed 'manifest' frontmatter: tools[${i}] must be an object`);
+    }
+    const tool = t as Record<string, unknown>;
+    if (typeof tool.name !== "string" || tool.name === "") {
+      throw new SkillParseError(`Malformed 'manifest' frontmatter: tools[${i}] is missing a string 'name'`);
+    }
+    if (typeof tool.digest !== "string" || !DIGEST_RE.test(tool.digest)) {
+      throw new SkillParseError(
+        `Malformed 'manifest' frontmatter: tools[${i}] ('${tool.name}') has an invalid 'digest' (expected sha256:<64 hex>)`
+      );
+    }
+    if (tool.server !== undefined && typeof tool.server !== "string") {
+      throw new SkillParseError(`Malformed 'manifest' frontmatter: tools[${i}] ('${tool.name}') has a non-string 'server'`);
+    }
+    const out: ManifestTool = { name: tool.name, digest: tool.digest };
+    if (typeof tool.server === "string") out.server = tool.server;
+    return out;
+  });
+  return { v: 1, tools };
+}
+
+/** Minimal frontmatter parser: flat `key: value` pairs (name, description, optional manifest). */
+function parseFrontmatter(frontmatter: string): { name: string; description: string; manifest?: SkillManifest } {
   const fields: Record<string, string> = {};
   const fmLines = frontmatter.split(/\r\n|\n/);
   for (const raw of fmLines) {
@@ -123,7 +183,17 @@ function parseFrontmatter(frontmatter: string): { name: string; description: str
   if (!fields.description) {
     throw new SkillParseError("Frontmatter is missing required field 'description'");
   }
-  return { name: fields.name, description: fields.description };
+  let manifest: SkillManifest | undefined;
+  if (fields.manifest !== undefined) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(fields.manifest);
+    } catch (err) {
+      throw new SkillParseError(`Malformed manifest frontmatter (not valid JSON): ${(err as Error).message}`);
+    }
+    manifest = validateManifestShape(parsed);
+  }
+  return { name: fields.name, description: fields.description, manifest };
 }
 
 const STEP_HEADER_RE = /^###\s+Step\s+(\d+)\s*[—-]\s*(.+)$/;
@@ -162,7 +232,7 @@ function parseAction(rest: string, ctx: { step: number; line: number }): { tool:
  */
 export function parseSkill(source: string): Skill {
   const { frontmatter, body, bodyStartLine } = splitFrontmatter(source);
-  const { name, description } = parseFrontmatter(frontmatter);
+  const { name, description, manifest } = parseFrontmatter(frontmatter);
 
   const bodyLines = body.split(/\r\n|\n/);
 
@@ -315,5 +385,7 @@ export function parseSkill(source: string): Skill {
 
   const trailing = bodyLines.slice(lastEndIdx).join("\n");
 
-  return { name, description, steps, preamble, trailing };
+  return manifest !== undefined
+    ? { name, description, steps, manifest, preamble, trailing }
+    : { name, description, steps, preamble, trailing };
 }

@@ -10,6 +10,7 @@ import { writeFile, rename, unlink } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import type { Skill, Step } from "./skill.js";
 import { RECORDED_WITH_FOOTER_RE } from "./compile.js";
+import { canonicalJson } from "./canonical-json.js";
 
 // ---------------------------------------------------------------------------
 // Atomic write-back: write-temp-then-rename so a torn/partial skill file is
@@ -97,6 +98,7 @@ export function serializeSkill(skill: Skill): string {
   lines.push("---");
   lines.push(`name: ${skill.name}`);
   lines.push(`description: ${skill.description}`);
+  if (skill.manifest) lines.push(`manifest: ${canonicalJson(skill.manifest)}`);
   lines.push("---");
 
   if (skill.preamble.length > 0) {
