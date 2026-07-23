@@ -9,7 +9,7 @@ import os from "node:os";
 import { pathToFileURL } from "node:url";
 import { createInterface } from "node:readline/promises";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { parseSkill, SkillParseError } from "./skill.js";
+import { parseSkill, SkillParseError, type Step } from "./skill.js";
 import { runSkill, dryRunSkill, readRunRecords, type RunRecord } from "./runner.js";
 import { pushSkill, PublicSubmissionError, type PushRecordResult } from "./push.js";
 import { getSkill, getMineSkill, type GetOutcome, type GetMineOutcome } from "./get.js";
@@ -20,7 +20,9 @@ import { buildProxyServer, Recorder } from "./recorder.js";
 import { parseTraceLines, formatTrace } from "./trace.js";
 import { compile, renderSkillMd, type CompileResult, type FromSkillProvenance } from "./compile.js";
 import { buildManifestForSkill, preflightManifest } from "./manifest.js";
-import { serializeSkill, writeFileAtomic } from "./writeback.js";
+import { serializeSkill, writeFileAtomic, appendChangelogLine } from "./writeback.js";
+import { computeApprovalHash } from "./approval.js";
+import { canonicalJson } from "./canonical-json.js";
 import { parseInstructionSkillFrontmatter } from "./from-skill.js";
 import { createLlmClient, resolveLlmConfig } from "./llm.js";
 import {
@@ -1099,6 +1101,97 @@ export async function cmdManifest(
   }
 }
 
+/** A step whose effect requires the approval/legacy-flag gate at replay (src/runner.ts's executeStep). */
+function isWriteEffectStep(step: Step): boolean {
+  return step.effect === "idempotent-write" || step.effect === "destructive";
+}
+
+/**
+ * `reelier approve <skill.md> [--all]` — hash-bind approval onto each
+ * write/destructive step (docs/specs/flight-recorder-v2.md §2): the final
+ * boundary a write crosses at replay, replacing the blanket
+ * `--allow-writes`/`--yes` flags. Runs entirely offline (approval binds only
+ * tool + args template — see src/approval.ts's doc comment on why `server`
+ * is deliberately excluded).
+ */
+export async function cmdApprove(args: ParsedArgs): Promise<number> {
+  const skillPath = args.positional[0];
+  if (!skillPath) {
+    console.error("Usage: reelier approve <skill.md> [--all]");
+    return 1;
+  }
+
+  let source: string;
+  try {
+    source = await readFile(skillPath, "utf8");
+  } catch (err) {
+    console.error(`Could not read skill file ${skillPath}: ${(err as Error).message}`);
+    return 1;
+  }
+
+  let skill;
+  try {
+    skill = parseSkill(source);
+  } catch (err) {
+    if (err instanceof SkillParseError) {
+      console.error(`Malformed skill in ${skillPath}: ${err.message}`);
+      return 1;
+    }
+    throw err;
+  }
+
+  const writeSteps = skill.steps.filter(isWriteEffectStep);
+  if (writeSteps.length === 0) {
+    console.log("no write steps to approve");
+    return 0;
+  }
+
+  const all = args.flags.has("all");
+  const rl = all ? undefined : createInterface({ input: process.stdin, output: process.stdout });
+
+  let approvedCount = 0;
+  let skippedCount = 0;
+  try {
+    for (const step of writeSteps) {
+      const expected = computeApprovalHash(step);
+      const state =
+        step.approve === undefined ? "unapproved" : step.approve === expected ? "approved (current)" : "approved (STALE — args changed)";
+
+      console.log(`Step ${step.n} — ${step.title}`);
+      console.log(`  ${step.actionTool} ${canonicalJson(step.actionArgs)}`);
+      console.log(`  effect: ${step.effect}`);
+      console.log(`  ${state}`);
+
+      let yes: boolean;
+      if (all) {
+        yes = true;
+      } else {
+        const answer = (await rl!.question("  Approve this step? (y/N) ")).trim().toLowerCase();
+        yes = answer === "y" || answer === "yes";
+      }
+
+      if (yes) {
+        step.approve = expected;
+        approvedCount++;
+      } else {
+        skippedCount++;
+      }
+    }
+  } finally {
+    rl?.close();
+  }
+
+  if (approvedCount > 0) {
+    const changelogLine = `- approved ${approvedCount} write step(s) (reelier approve)`;
+    skill.trailing = appendChangelogLine(skill.trailing, changelogLine);
+    const rendered = serializeSkill(skill);
+    await writeFileAtomic(skillPath, rendered);
+  }
+
+  console.log(`approved ${approvedCount}, skipped ${skippedCount}`);
+  return 0;
+}
+
 /**
  * Honest replay-worthiness warning for `from-session` output. The "replayable"
  * filter (session.ts) only proves Reelier CAN re-issue these MCP calls — it
@@ -2145,8 +2238,9 @@ async function cmdInit(args: ParsedArgs): Promise<number> {
 }
 
 const USAGE =
-  "Usage: reelier <run|bench|cost|prices|mcp|serve|trace|compile|manifest|push|get|diff|policy|init|from-session|scan|install|uninstall> [options]\n" +
+  "Usage: reelier <run|bench|cost|prices|mcp|serve|trace|compile|manifest|approve|push|get|diff|policy|init|from-session|scan|install|uninstall> [options]\n" +
   "  manifest — reelier manifest <skill.md> --wrap \"<command>\": stamp/refresh the skill's tool-schema manifest from live servers.\n" +
+  "  approve — reelier approve <skill.md> [--all]: hash-bind approval onto each write/destructive step (the final replay boundary).\n" +
   "  mcp    — RECORDER: fronts your own --wrap'd MCP server(s) to capture their calls into a trace.\n" +
   "           Enforces .reelier/policy.yml (or ~/.reelier/policy.yml) — deny/dry-run rules; pass --allow-writes\n" +
   "           to satisfy a rule's 'unless: \"--allow-writes\"' escape.\n" +
@@ -2200,6 +2294,8 @@ async function main(): Promise<number> {
       return cmdCompile(args);
     case "manifest":
       return cmdManifest(args);
+    case "approve":
+      return cmdApprove(args);
     case "push":
       return cmdPush(args);
     case "get":
