@@ -159,6 +159,42 @@ test("cmdApprove --all: reports 'approved (STALE — args changed)' and re-stamp
   });
 });
 
+// ---------------------------------------------------------------------------
+// Adversarial-review fix wave (fr2-slice2-review.md, finding #5): re-running
+// `approve --all` on an already-current skill must be a no-op — print
+// "unchanged", never re-stamp, never append another changelog line, never
+// rewrite the file (mirrors `reelier manifest`'s "unchanged" behavior).
+// ---------------------------------------------------------------------------
+
+test("cmdApprove --all: re-running on an already-current skill is idempotent — prints 'unchanged', file bytes stay identical, no new changelog line", async () => {
+  await withTempDir(async (dir) => {
+    const skillPath = path.join(dir, "s.skill.md");
+    await writeFile(skillPath, SKILL_TWO_WRITES, "utf8");
+
+    const first = await cmdApprove(fakeArgs([skillPath], ["all"]));
+    assert.equal(first, 0);
+    const afterFirst = await readFile(skillPath, "utf8");
+
+    const { result: code, logs } = await captureConsole(() => cmdApprove(fakeArgs([skillPath], ["all"])));
+    assert.equal(code, 0);
+    assert.ok(logs.some((l) => /unchanged/.test(l)), "second run should report 'unchanged' for every step");
+    assert.ok(!logs.some((l) => /approved 2,/.test(l)), "must not re-count already-current steps as newly approved");
+
+    const afterSecond = await readFile(skillPath, "utf8");
+    assert.equal(afterSecond, afterFirst, "file bytes must be byte-identical — no re-stamp, no new changelog line");
+    assert.equal(
+      (afterSecond.match(/## Changelog/g) ?? []).length,
+      1,
+      "only one Changelog section, no duplicate/second changelog entry appended"
+    );
+    assert.equal(
+      (afterSecond.match(/approved \d+ write step\(s\) \(reelier approve\)/g) ?? []).length,
+      1,
+      "exactly one 'approved N write step(s)' changelog line — the second run appends nothing"
+    );
+  });
+});
+
 test("cmdApprove: reports a missing skill file with a clear error, exit 1", async () => {
   await withTempDir(async (dir) => {
     const skillPath = path.join(dir, "does-not-exist.skill.md");

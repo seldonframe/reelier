@@ -1153,7 +1153,18 @@ export async function cmdManifest(
   }
 }
 
-/** A step whose effect requires the approval/legacy-flag gate at replay (src/runner.ts's executeStep). */
+/**
+ * A step whose effect requires the approval/legacy-flag gate at replay
+ * (src/runner.ts's executeStep). Classifies on `step.effect` alone — the
+ * runtime gate falls back to `tool.effect` when a step omits `effect`
+ * (`step.effect ?? tool.effect`), but `parseSkill` currently REQUIRES an
+ * explicit `effect:` on every step (src/skill.ts), so that fallback is
+ * unreachable here. If `effect:` is ever made optional, this function would
+ * need the same `?? tool.effect` fallback (a live DownstreamConnection/Tool
+ * registry, not available offline) or it would silently skip approving a
+ * tool-effect write (fr2-slice2-review.md #6, documented-only — no behavior
+ * change).
+ */
 function isWriteEffectStep(step: Step): boolean {
   return step.effect === "idempotent-write" || step.effect === "destructive";
 }
@@ -1203,16 +1214,28 @@ export async function cmdApprove(args: ParsedArgs): Promise<number> {
 
   let approvedCount = 0;
   let skippedCount = 0;
+  let unchangedCount = 0;
   try {
     for (const step of writeSteps) {
       const expected = computeApprovalHash(step);
-      const state =
-        step.approve === undefined ? "unapproved" : step.approve === expected ? "approved (current)" : "approved (STALE — args changed)";
+      const isCurrent = step.approve !== undefined && step.approve === expected;
+      const state = step.approve === undefined ? "unapproved" : isCurrent ? "approved (current)" : "approved (STALE — args changed)";
 
       console.log(`Step ${step.n} — ${step.title}`);
       console.log(`  ${step.actionTool} ${canonicalJson(step.actionArgs)}`);
       console.log(`  effect: ${step.effect}`);
       console.log(`  ${state}`);
+
+      // Idempotent — mirrors `reelier manifest`'s "unchanged" behavior
+      // (fr2-slice2-review.md #5): an already-current step is a true no-op.
+      // Never prompted, never re-stamped (the hash wouldn't change anyway),
+      // never counted toward approvedCount — so a second `approve --all` on
+      // an untouched skill writes nothing back at all.
+      if (isCurrent) {
+        console.log("  unchanged");
+        unchangedCount++;
+        continue;
+      }
 
       let yes: boolean;
       if (all) {
@@ -1240,7 +1263,7 @@ export async function cmdApprove(args: ParsedArgs): Promise<number> {
     await writeFileAtomic(skillPath, rendered);
   }
 
-  console.log(`approved ${approvedCount}, skipped ${skippedCount}`);
+  console.log(`approved ${approvedCount}, skipped ${skippedCount}, unchanged ${unchangedCount}`);
   return 0;
 }
 
