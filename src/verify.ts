@@ -21,6 +21,7 @@ import path from "node:path";
 import { verifyRecordSignature } from "./signing.js";
 import { digestSha256 } from "./canonical-json.js";
 import { resolveGetConfig } from "./get.js";
+import { readCliConfig, type CliConfig } from "./cloud-config.js";
 import { imprintMatches } from "./tsa.js";
 import type { RunRecord } from "./runner.js";
 
@@ -97,15 +98,19 @@ export interface ResolveVerifyPayloadOptions {
   cwd?: string;
   fetchImpl?: typeof fetch;
   env?: NodeJS.ProcessEnv;
+  /** Injectable for tests — defaults to `readCliConfig()` (the real `~/.reelier/config.json`). */
+  fileConfig?: CliConfig;
 }
 
 /**
  * Resolve `target` — a full http(s) permalink, a bare registry token, or a
  * local file path — to its `VerifyPayload`. Order: absolute URL -> fetch
  * directly; otherwise try it as a local file relative to `cwd`; only if
- * that file doesn't exist is it treated as a bare token against
- * `REELIER_CLOUD_URL` (mirrors `reelier get`'s anonymous-fetch config, via
- * `resolveGetConfig`).
+ * that file doesn't exist is it treated as a bare token, resolved against
+ * `REELIER_CLOUD_URL` -> the config file's `cloudUrl` -> `DEFAULT_CLOUD_URL`
+ * (mirrors `reelier get`'s anonymous-fetch config resolution exactly, via
+ * `resolveGetConfig` — a self-hoster who logged in with a custom cloudUrl
+ * gets the same URL from `verify` as from `get`).
  */
 export async function resolveVerifyPayload(
   target: string,
@@ -130,15 +135,8 @@ export async function resolveVerifyPayload(
     // Not a readable local file — fall through to the bare-token path.
   }
 
-  let baseUrl: string;
-  try {
-    baseUrl = resolveGetConfig(options.env).baseUrl;
-  } catch (err) {
-    return {
-      ok: false,
-      message: `${(err as Error).message} (no local file found at ${resolvedPath} either — pass a full permalink URL, a bare registry token, or an existing file path)`,
-    };
-  }
+  const fileConfig = options.fileConfig ?? (await readCliConfig());
+  const baseUrl = resolveGetConfig(options.env, fileConfig).baseUrl;
   const url = `${baseUrl.replace(/\/$/, "")}/r/${encodeURIComponent(target)}/json`;
   return fetchVerifyPayloadFromUrl(url, fetchImpl);
 }
