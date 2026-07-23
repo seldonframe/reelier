@@ -25,11 +25,14 @@
 
 import { readFile, mkdir, rename } from "node:fs/promises";
 import { createHash } from "node:crypto";
+import os from "node:os";
 import path from "node:path";
 import { parseSkill } from "./skill.js";
 import { readRunRecords, type RunRecord } from "./runner.js";
 import { writeFileAtomic } from "./writeback.js";
 import { costRun, loadPriceTable, type PriceTable } from "./cost.js";
+import { digestSha256 } from "./canonical-json.js";
+import { loadSigningKey, signRecordDigest, signingKeyDir, type LoadedSigningKey } from "./signing.js";
 
 export interface PushConfig {
   baseUrl: string;
@@ -340,15 +343,36 @@ function computePushCost(record: RunRecord, priceTable: PriceTable | undefined):
   return { costUsd: cost.pricedUsd, priceTableDate: priceTable.bundledRetrievedAt };
 }
 
+/**
+ * The optional `signature` sibling field (trust-ladder wire contract):
+ * `sig = base64(ed25519-sign(digestSha256(record)))`. Computed over the
+ * EXACT `record` object this function is about to serialize into the POST
+ * body — i.e. AFTER any push-time stamping (the skillContentSha256
+ * fallback in pushSkill below) and after whatever redaction already
+ * happened at record time (src/redact.ts, applied long before this record
+ * ever reached disk) — never the pre-stamp/pre-redaction shape. "Sign what
+ * ships, not what ran" (trust-ladder plan task A3).
+ */
+function computeSignature(
+  record: RunRecord,
+  signingKey: LoadedSigningKey | undefined
+): { alg: "ed25519"; keyId: string; sig: string } | undefined {
+  if (!signingKey) return undefined;
+  const digest = digestSha256(record);
+  return { alg: "ed25519", keyId: signingKey.keyId, sig: signRecordDigest(signingKey.privateKey, digest) };
+}
+
 async function pushOneRecord(
   config: PushConfig,
   skillName: string,
   record: RunRecord,
   index: number,
   share?: boolean,
-  priceTable?: PriceTable
+  priceTable?: PriceTable,
+  signingKey?: LoadedSigningKey
 ): Promise<PushRecordResult> {
   const cost = computePushCost(record, priceTable);
+  const signature = computeSignature(record, signingKey);
   let res: Response;
   try {
     res = await fetch(`${config.baseUrl.replace(/\/$/, "")}/api/v1/runs`, {
@@ -357,11 +381,14 @@ async function pushOneRecord(
         "content-type": "application/json",
         authorization: `Bearer ${config.apiKey}`,
       },
-      // `skillContentSha256` (and, now, `costUsd`/`priceTableDate`) ride at
-      // the TOP LEVEL of the POST body (sibling of `record`), matching the
-      // cloud ingest contract (route.ts reads them there, not from inside
-      // `record`). An older cloud that doesn't know these fields yet simply
-      // ignores them — same optional-field discipline as skillContentSha256.
+      // `skillContentSha256` (and, now, `costUsd`/`priceTableDate`/
+      // `signature`) ride at the TOP LEVEL of the POST body (sibling of
+      // `record`), matching the cloud ingest contract (route.ts reads them
+      // there, not from inside `record`). An older cloud that doesn't know
+      // these fields yet simply ignores them — same optional-field
+      // discipline as skillContentSha256. No signing key configured ->
+      // `signature` is omitted entirely, zero output, no shaming of an
+      // unsigned push (trust-ladder spec §1's never-lies rule).
       // NOTE for the cloud side (follow-up, not this change): displaying
       // costUsd/priceTableDate on the receipt page is a separate piece of
       // work this push-time addition does not include.
@@ -371,6 +398,7 @@ async function pushOneRecord(
         ...(record.skillContentSha256 ? { skillContentSha256: record.skillContentSha256 } : {}),
         ...(share ? { share: true } : {}),
         ...(cost ? { costUsd: cost.costUsd, priceTableDate: cost.priceTableDate } : {}),
+        ...(signature ? { signature } : {}),
       }),
     });
   } catch (err) {
@@ -508,6 +536,11 @@ export async function pushSkill(skillPath: string, options: PushOptions = {}): P
     skillUploaded = true;
   }
 
+  // Loaded once per batch, not once per record — loadSigningKey never
+  // throws (malformed key -> warns to stderr + null), so a broken signing
+  // key degrades this push to unsigned rather than aborting it.
+  const signingKey = (await loadSigningKey(signingKeyDir(os.homedir()))) ?? undefined;
+
   const results: PushRecordResult[] = [];
   const newlyRejected: RejectedEntry[] = [];
   let pushedCount = 0;
@@ -529,7 +562,7 @@ export async function pushSkill(skillPath: string, options: PushOptions = {}): P
     const record = candidates[i].skillContentSha256
       ? candidates[i]
       : { ...candidates[i], skillContentSha256: pushTimeFallbackSha256 };
-    const result = await pushOneRecord(config, skill.name, record, cursorBefore + i, options.share, priceTable);
+    const result = await pushOneRecord(config, skill.name, record, cursorBefore + i, options.share, priceTable, signingKey);
     results.push(result);
     options.onRecordResult?.(result);
 
