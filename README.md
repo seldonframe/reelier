@@ -59,6 +59,7 @@ reelier init                        # 60s: record → compile → replay → you
 reelier run  <name>.skill.md        # replay deterministically — 0 tokens (read-only by default)
 reelier diff <name>                 # SAME or DRIFTED, per step — exit 1 on drift
 reelier push <name>.skill.md        # sync receipts to your ledger (opt-in)
+reelier ci                          # write a workflow: drift-CI + PR receipts, one command
 ```
 
 1. **Record.** `reelier mcp --wrap "<mcp server>"` proxies your tools live, or pull a session via `reelier scan`/`from-session`, or run the guided `reelier init`.

@@ -31,6 +31,18 @@ Absent claims render honestly, never shamed — `— unsigned`, not "insecure." 
 
 Normative spec: [specs/flight-recorder-v2.md](./specs/flight-recorder-v2.md)
 
+## CI: replay on every PR
+
+`reelier ci [--force] [--path <dir>]` discovers every `*.skill.md` in the repo (depth-capped, `node_modules`/`.git` excluded) and writes `.github/workflows/reelier-replay.yml` — one command instead of hand-copying [`reelier-replay.example.yml`](../.github/workflows/reelier-replay.example.yml). `--path` overrides the discovery root only; the workflow file itself always lands under the current directory's `.github/workflows/`. Refuses to overwrite an existing file without `--force`. Zero skills found still writes the workflow, with a clearly-marked placeholder path and a `reelier init` nudge — never a silently-invented real-looking path.
+
+The generated workflow:
+
+- Triggers on `pull_request`, a daily `schedule`, and manual `workflow_dispatch`.
+- Runs one matrix job per discovered skill, so one skill's replay failing never hides another's receipt.
+- Replays fail-closed (the drift/manifest preflight in `reelier run`, see above) and gates the check on the replay's own exit code — a red check here is a genuine failure, never a workflow bug.
+- Posts a sticky PR receipt comment (one comment per PR, upserted every run) via the action's `pr-comment` input — one section per skill, so a matrix of skills reads as one comment, not N. Needs `permissions: pull-requests: write` (the generated workflow sets it); without it, the action logs a skip line and the replay's pass/fail is unaffected.
+- Carries a commented-out `cloud-key` push block pointing at a `REELIER_API_KEY` secret — uncomment it to also sync receipts to your ledger; also needs `permissions: id-token: write` for the push's CI attestation (the generated workflow sets this too).
+
 ## Guardrails: manifest and approve
 
 `reelier manifest` stamps a schema digest per tool a skill uses; drift or a missing tool fails closed — `MANIFEST DRIFT — refusing to replay`. `--ignore-manifest` is the break-glass override, recorded (`manifestIgnored: true`), never silent. A skill with no manifest gets an advisory note.

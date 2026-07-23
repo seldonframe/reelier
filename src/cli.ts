@@ -65,6 +65,7 @@ import { BUNDLED_PRICES_RETRIEVED_AT } from "./prices.js";
 import { loadPolicyForWrap, summarizePolicyForWrapStart, parsePolicyStrict, hasEndpointRules, ENDPOINT_RULE_NOTE } from "./policy.js";
 import { generateSigningKeypair, loadSigningKey, signRecordDigest, verifyRecordSignature, signingKeyDir } from "./signing.js";
 import { resolveVerifyPayload, evaluateVerifyClaims } from "./verify.js";
+import { writeCiWorkflow, PLACEHOLDER_SKILL_PATH } from "./ci-scaffold.js";
 
 // Exported (alongside cmdPush below) so test/push-cli.test.ts can drive
 // cmdPush's console output directly with a fake ParsedArgs + monkeypatched
@@ -134,7 +135,8 @@ function parseArgv(argv: string[]): ParsedArgs {
       arg === "--agent" ||
       arg === "--from-skill" ||
       arg === "--since" ||
-      arg === "--key"
+      arg === "--key" ||
+      arg === "--path"
     ) {
       const val = argv[++i];
       if (!val) {
@@ -861,6 +863,48 @@ async function cmdServe(): Promise<number> {
     process.on("SIGTERM", () => resolve());
   });
   await shutdown();
+
+  return 0;
+}
+
+/**
+ * `reelier ci [--force] [--path <dir>]` — writes
+ * `.github/workflows/reelier-replay.yml` so a repo gets drift-CI (replay
+ * every discovered skill on every PR + a daily schedule) and the sticky PR
+ * receipt comment in one command. `--path` overrides the skill-discovery
+ * root only — the workflow file itself always lands under the CURRENT
+ * working directory's `.github/workflows/`, matching every other
+ * repo-relative write this CLI does (compile, manifest, approve).
+ */
+async function cmdCi(args: ParsedArgs): Promise<number> {
+  const cwd = process.cwd();
+  const scanRoot = args.opts.path ? path.resolve(cwd, args.opts.path) : cwd;
+  const force = args.flags.has("force");
+
+  const result = await writeCiWorkflow(cwd, scanRoot, force);
+
+  if (result.refused) {
+    console.error(
+      `${result.path} already exists — refusing to overwrite it without --force. ` +
+        `Pass --force to regenerate it (this replaces the whole file, including any manual edits).`
+    );
+    return 1;
+  }
+
+  console.log(`Wrote ${result.path}`);
+  if (result.skillPaths.length === 0) {
+    console.log(`  no *.skill.md files found under ${scanRoot} — wrote a placeholder skill path (${PLACEHOLDER_SKILL_PATH}).`);
+    console.log("  Record a skill first: reelier init  (or reelier mcp --wrap \"<your mcp server>\" + reelier compile)");
+    console.log(`  then edit the workflow's matrix to point at it, and re-run 'reelier ci --force' to pick up more later.`);
+  } else {
+    console.log(`  discovered ${result.skillPaths.length} skill(s):`);
+    for (const s of result.skillPaths) console.log(`    - ${s}`);
+  }
+  console.log("");
+  console.log("Next steps:");
+  console.log(`  1. Commit ${path.relative(cwd, result.path)}`);
+  console.log("  2. (Optional) Add a REELIER_API_KEY secret in this repo's Settings > Secrets to push receipts to your ledger.");
+  console.log("  3. Open a PR — it will get a Reelier receipt comment automatically.");
 
   return 0;
 }
@@ -2408,7 +2452,8 @@ export async function cmdInit(args: ParsedArgs): Promise<number> {
 }
 
 const USAGE =
-  "Usage: reelier <run|bench|cost|prices|mcp|serve|trace|compile|manifest|approve|push|get|verify|diff|policy|init|from-session|scan|install|uninstall> [options]\n" +
+  "Usage: reelier <run|bench|cost|prices|mcp|serve|trace|compile|manifest|approve|push|get|verify|diff|ci|policy|init|from-session|scan|install|uninstall> [options]\n" +
+  "  ci     — reelier ci [--force] [--path <dir>]: writes .github/workflows/reelier-replay.yml — drift-CI + PR receipts in one command.\n" +
   "  manifest — reelier manifest <skill.md> --wrap \"<command>\": stamp/refresh the skill's tool-schema manifest from live servers.\n" +
   "  approve — reelier approve <skill.md> [--all]: hash-bind approval onto each write/destructive step (the final replay boundary).\n" +
   "  mcp    — RECORDER: fronts your own --wrap'd MCP server(s) to capture their calls into a trace.\n" +
@@ -2476,6 +2521,8 @@ async function main(): Promise<number> {
       return cmdVerify(args);
     case "diff":
       return cmdDiff(args);
+    case "ci":
+      return cmdCi(args);
     case "policy":
       return cmdPolicy(args);
     case "init":
