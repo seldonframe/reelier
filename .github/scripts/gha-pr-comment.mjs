@@ -178,12 +178,24 @@ async function main() {
     return;
   }
   const skillName = extractSkillName(source) ?? path.basename(skillPath).replace(/\.skill\.md$/, "");
+  // The raw name (PR-controlled content) plays three roles with different
+  // safety needs: the run-record FILENAME must use it verbatim; the heading
+  // gets it with HTML-comment-capable characters stripped; the section
+  // MARKER must be slug-safe or the upsert regex can't round-trip it (a
+  // space or ">" in a marker breaks re-matching → duplicate sections
+  // appended forever) — and a crafted name could otherwise forge marker
+  // boundaries.
+  const displayName = skillName.replace(/[<>]/g, "");
+  const skillSlug = skillName.replace(/[^A-Za-z0-9._-]/g, "-");
 
   const record = await readLastRecord(path.join(process.cwd(), ".reelier", "runs", `${skillName}.jsonl`));
-  const section = renderSkillSection(skillName, record, { maxLevel, runExitCode, cloudKeySet, receiptUrl });
+  const section = renderSkillSection(displayName, record, { maxLevel, runExitCode, cloudKeySet, receiptUrl });
 
   let listRes;
   try {
+    // Known limit: first page only. On a PR with >100 comments where the
+    // sticky one has scrolled past page 1, a duplicate gets posted — an
+    // accepted edge; pagination is not worth the extra calls per run.
     listRes = await githubRequest(apiUrl, token, "GET", `/repos/${repo}/issues/${prNumber}/comments?per_page=100`);
   } catch (err) {
     warn(`listing PR comments failed (${err.message})`);
@@ -211,8 +223,8 @@ async function main() {
   const existing = Array.isArray(comments) ? comments.find((c) => typeof c.body === "string" && c.body.includes(STICKY_MARKER)) : undefined;
 
   const { blocks, order } = existing ? parseSkillBlocks(existing.body) : { blocks: new Map(), order: [] };
-  if (!blocks.has(skillName)) order.push(skillName);
-  blocks.set(skillName, section);
+  if (!blocks.has(skillSlug)) order.push(skillSlug);
+  blocks.set(skillSlug, section);
   const newBody = renderComment(blocks, order);
 
   let writeRes;

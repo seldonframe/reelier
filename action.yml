@@ -48,10 +48,13 @@ inputs:
   pr-comment:
     description: >-
       Upsert one sticky PR comment carrying this run's receipt. Applies
-      only when the triggering event is `pull_request`/`pull_request_target`
-      AND the job has `permissions: pull-requests: write` — otherwise this
-      is skipped with a log line, never a failure. "true" (the default) or
-      "false".
+      only when the triggering event is `pull_request` AND the job has
+      `permissions: pull-requests: write` — otherwise this is skipped with
+      a log line, never a failure. Deliberately NOT active on
+      `pull_request_target`: replaying PR-controlled skill files in a
+      context that carries secrets and a write token is the classic
+      fork-PR attack shape, and this action refuses to encourage it.
+      "true" (the default) or "false".
     required: false
     default: "true"
 
@@ -63,7 +66,10 @@ outputs:
     description: "Path to the .reelier/runs/<skill-name>.jsonl file written by this run, if any."
     value: ${{ steps.write-summary.outputs.record-path }}
   receipt-url:
-    description: "Public receipt URL printed by `reelier push --share`, if this run pushed one."
+    description: >-
+      Reserved: the public receipt URL when the push step prints one. The
+      action's push does not currently pass `--share`, so this is empty
+      today — populated once a share input exists.
     value: ${{ steps.push-cloud.outputs.receipt-url }}
 
 runs:
@@ -164,7 +170,7 @@ runs:
           echo "pr-comment input is false — skipping PR comment."
           exit 0
         fi
-        if [ "$EVENT_NAME" != "pull_request" ] && [ "$EVENT_NAME" != "pull_request_target" ]; then
+        if [ "$EVENT_NAME" != "pull_request" ]; then
           echo "not a PR event ($EVENT_NAME) — skipping PR comment."
           exit 0
         fi
