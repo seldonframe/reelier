@@ -63,6 +63,7 @@ import {
 } from "./cost.js";
 import { BUNDLED_PRICES_RETRIEVED_AT } from "./prices.js";
 import { loadPolicyForWrap, summarizePolicyForWrapStart, parsePolicyStrict, hasEndpointRules, ENDPOINT_RULE_NOTE } from "./policy.js";
+import { generateSigningKeypair, loadSigningKey, signRecordDigest, verifyRecordSignature, signingKeyDir } from "./signing.js";
 
 // Exported (alongside cmdPush below) so test/push-cli.test.ts can drive
 // cmdPush's console output directly with a fake ParsedArgs + monkeypatched
@@ -2143,10 +2144,56 @@ async function offerWrapInstall(cwd: string, homedir: string, interactive: boole
   return 0;
 }
 
-async function cmdInit(args: ParsedArgs): Promise<number> {
+/**
+ * `reelier init --signing` — generate (or, if one already exists, report)
+ * the local Ed25519 signing key at `~/.reelier/signing/`. A distinct,
+ * short-circuiting path off `cmdInit`: it does none of the record/replay
+ * demo flow, so it's fast, non-interactive, and safe to run repeatedly.
+ * Idempotent by design (mirrors `reelier approve`'s unchanged-semantics,
+ * trust-ladder plan task A2) — an existing key is printed, never
+ * regenerated; there is no legitimate reason for a bare `--signing` re-run
+ * to silently mint a second key a user didn't ask to rotate.
+ */
+async function cmdInitSigning(homedir: string): Promise<number> {
+  const dir = signingKeyDir(homedir);
+
+  const existing = await loadSigningKey(dir);
+  if (existing) {
+    let publicPem: string;
+    try {
+      publicPem = await readFile(path.join(dir, `${existing.keyId}.pub.pem`), "utf8");
+    } catch (err) {
+      console.error(
+        `Signing key already exists: ${existing.keyId}, but its public key file could not be read (${
+          (err as Error).message
+        }). The private key is intact; re-derive/re-export the public half or generate a new key.`
+      );
+      return 1;
+    }
+    console.log(`Signing key already exists: ${existing.keyId}`);
+    console.log(publicPem.trim());
+    console.log("Register it: https://reelier.com/settings/keys");
+    return 0;
+  }
+
+  const generated = await generateSigningKeypair(dir);
+  console.log(`Generated signing key: ${generated.keyId}`);
+  console.log(`Private key: ${generated.privatePath} (keep this secret — never commit it, never upload it)`);
+  console.log(generated.publicPem.trim());
+  console.log("Register it: https://reelier.com/settings/keys");
+  return 0;
+}
+
+// Exported so test/init-signing-cli.test.ts can drive the `--signing` path
+// directly (same reasoning as cmdPush's export note above).
+export async function cmdInit(args: ParsedArgs): Promise<number> {
   const yes = args.flags.has("yes");
   const cwd = process.cwd();
   const homedir = os.homedir();
+
+  if (args.flags.has("signing")) {
+    return cmdInitSigning(homedir);
+  }
 
   console.log("Reelier init — record once, replay forever. Let's get your first receipt in under 60 seconds.");
   console.log("");
@@ -2322,6 +2369,8 @@ const USAGE =
   "  serve  — TOOL-SERVER: exposes Reelier's own commands (scan/from-session/replay/push/diff) as MCP tools.\n" +
   "  get    — fetch a public registry skill to ./skills/<skill>.skill.md; never executes it.\n" +
   "           reelier get --mine <name> fetches YOUR OWN private skill (authenticated) instead.\n" +
+  "  init --signing — generate (or print the existing) Ed25519 signing key at ~/.reelier/signing/; idempotent.\n" +
+  "  verify <permalink|file> [--key <pub.pem>] — recompute the record digest and check signature/timestamp claims.\n" +
   "  diff   — compare the last two runs of a skill; exit 1 on drift (gate a scheduled replay).\n" +
   "  cost   — reelier cost [skill] [--since 7d|30d|all]: $ per run from recorded LLM tokens + ~/.reelier/prices.yml.\n" +
   "  prices — reelier prices lists the active merged price table; 'reelier prices update' prints the bundled table's freshness.\n" +
