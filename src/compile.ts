@@ -8,10 +8,11 @@
 
 import { readFileSync } from "node:fs";
 import type { TraceRecord } from "./recorder.js";
-import type { Effect } from "./skill.js";
+import type { Effect, SkillManifest } from "./skill.js";
 import { mcpResultToObservation } from "./mcp-tool.js";
 import type { McpCallResult } from "./mcp-client.js";
 import { classifyEffect, type ToolEffectAnnotations } from "./effect-verbs.js";
+import { canonicalJson } from "./canonical-json.js";
 
 /**
  * The installed reelier version, for the SKILL.md provenance frontmatter
@@ -58,6 +59,14 @@ export interface CompileResult {
     binds: number;
     effects: Record<Effect, number>;
   };
+  /**
+   * Tool-schema manifest (docs/specs/flight-recorder-v2.md §1), threaded
+   * from the trace's meta.toolManifest and filtered to tools this trace's
+   * OWN steps use — drift in a tool the skill never calls must never fail a
+   * replay. Undefined when the trace carried no toolManifest (e.g. a
+   * from-session transcript with no live schema capture, or a pre-v2 trace).
+   */
+  manifest?: SkillManifest;
 }
 
 // ---------------------------------------------------------------------------
@@ -384,6 +393,7 @@ export function compile(records: TraceRecord[]): CompileResult {
   let name = "compiled";
   let metaStartedAt: string | undefined;
   let metaToolAnnotations: Record<string, ToolEffectAnnotations> | undefined;
+  let metaToolManifest: SkillManifest["tools"] | undefined;
   const calls: RawCall[] = [];
   const resultsByIndex = new Map<number, RawResult>();
 
@@ -396,6 +406,7 @@ export function compile(records: TraceRecord[]): CompileResult {
         name = rec.name;
         metaStartedAt = rec.startedAt;
         metaToolAnnotations = rec.toolAnnotations;
+        metaToolManifest = rec.toolManifest;
         break;
       case "note":
         pendingNotes.push(rec.text);
@@ -651,11 +662,18 @@ export function compile(records: TraceRecord[]): CompileResult {
     ...[...stepOpenQuestions.values()].flat(),
   ].sort((a, b) => (a.stepN ?? Infinity) - (b.stepN ?? Infinity));
 
+  // Only tools THIS trace's own steps use — drift in a tool the skill never
+  // calls must never fail a replay (docs/specs/flight-recorder-v2.md §1).
+  const usedToolNames = new Set(steps.map((s) => s.tool));
+  const filteredManifestTools = (metaToolManifest ?? []).filter((t) => usedToolNames.has(t.name));
+  const manifest: SkillManifest | undefined = filteredManifestTools.length > 0 ? { v: 1, tools: filteredManifestTools } : undefined;
+
   return {
     name,
     steps,
     openQuestions,
     stats: { steps: steps.length, asserts: assertCount, binds: bindCount, effects: effectCounts },
+    ...(manifest ? { manifest } : {}),
   };
 }
 
@@ -702,6 +720,7 @@ export function renderSkillMd(result: CompileResult, traceFileName: string, from
       ? `description: ${fromSkill.description}`
       : `description: Compiled from ${traceFileName} (${result.steps.length} calls) on ${date}`
   );
+  if (result.manifest) lines.push(`manifest: ${canonicalJson(result.manifest)}`);
   lines.push(`recorded_with: reelier v${readReelierVersion()}`);
   lines.push("---");
   lines.push("");

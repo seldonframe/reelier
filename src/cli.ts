@@ -19,6 +19,8 @@ import { buildMcpTools } from "./mcp-tool.js";
 import { buildProxyServer, Recorder } from "./recorder.js";
 import { parseTraceLines, formatTrace } from "./trace.js";
 import { compile, renderSkillMd, type CompileResult, type FromSkillProvenance } from "./compile.js";
+import { buildManifestForSkill } from "./manifest.js";
+import { serializeSkill, writeFileAtomic } from "./writeback.js";
 import { parseInstructionSkillFrontmatter } from "./from-skill.js";
 import { createLlmClient, resolveLlmConfig } from "./llm.js";
 import {
@@ -959,6 +961,87 @@ async function cmdCompile(args: ParsedArgs): Promise<number> {
   }
 
   return 0;
+}
+
+/**
+ * `reelier manifest <skill.md> --wrap "…"` — stamp/refresh a skill's tool
+ * manifest from LIVE downstreams (docs/specs/flight-recorder-v2.md §1).
+ * Covers hand-authored skills (no trace to inherit a manifest from) and the
+ * legitimate-upgrade path after an intentional tool change.
+ *
+ * `connect` is injectable (defaults to the real `connectDownstream`, which
+ * spawns a subprocess) so tests can drive this against an in-process fake
+ * DownstreamConnection instead — same reasoning as cmdPush's fetch override.
+ */
+export async function cmdManifest(
+  args: ParsedArgs,
+  connect: (spec: string) => Promise<DownstreamConnection> = connectDownstream
+): Promise<number> {
+  const skillPath = args.positional[0];
+  if (!skillPath) {
+    console.error("Usage: reelier manifest <skill.md> --wrap \"<command>\" [--wrap ...]");
+    return 1;
+  }
+  if (args.wraps.length === 0) {
+    console.error("reelier manifest needs --wrap to reach live servers");
+    return 1;
+  }
+
+  let source: string;
+  try {
+    source = await readFile(skillPath, "utf8");
+  } catch (err) {
+    console.error(`Could not read skill file ${skillPath}: ${(err as Error).message}`);
+    return 1;
+  }
+
+  let skill;
+  try {
+    skill = parseSkill(source);
+  } catch (err) {
+    if (err instanceof SkillParseError) {
+      console.error(`Malformed skill in ${skillPath}: ${err.message}`);
+      return 1;
+    }
+    throw err;
+  }
+
+  const downstreams: DownstreamConnection[] = [];
+  try {
+    for (const spec of args.wraps) {
+      downstreams.push(await connect(spec));
+    }
+
+    const oldByName = new Map((skill.manifest?.tools ?? []).map((t) => [t.name, t.digest]));
+    const newManifest = buildManifestForSkill(skill, downstreams);
+    const newByName = new Map(newManifest.tools.map((t) => [t.name, t.digest]));
+
+    const allNames = [...new Set([...oldByName.keys(), ...newByName.keys()])].sort();
+    for (const name of allNames) {
+      const oldDigest = oldByName.get(name);
+      const newDigest = newByName.get(name);
+      if (oldDigest === undefined && newDigest !== undefined) {
+        console.log(`  added     ${name} ${newDigest}`);
+      } else if (oldDigest !== undefined && newDigest === undefined) {
+        console.log(`  removed   ${name} ${oldDigest}`);
+      } else if (oldDigest === newDigest) {
+        console.log(`  unchanged ${name} ${newDigest}`);
+      } else {
+        console.log(`  updated   ${name} ${oldDigest} -> ${newDigest}`);
+      }
+    }
+
+    skill.manifest = newManifest;
+    const rendered = serializeSkill(skill);
+    await writeFileAtomic(skillPath, rendered);
+    console.log(`Wrote manifest to ${skillPath} (${newManifest.tools.length} tool(s))`);
+    return 0;
+  } catch (err) {
+    console.error(`Failed to connect --wrap downstream: ${(err as Error).message}`);
+    return 1;
+  } finally {
+    await Promise.all(downstreams.map((d) => d.close().catch(() => {})));
+  }
 }
 
 /**
@@ -2007,7 +2090,8 @@ async function cmdInit(args: ParsedArgs): Promise<number> {
 }
 
 const USAGE =
-  "Usage: reelier <run|bench|cost|prices|mcp|serve|trace|compile|push|get|diff|policy|init|from-session|scan|install|uninstall> [options]\n" +
+  "Usage: reelier <run|bench|cost|prices|mcp|serve|trace|compile|manifest|push|get|diff|policy|init|from-session|scan|install|uninstall> [options]\n" +
+  "  manifest — reelier manifest <skill.md> --wrap \"<command>\": stamp/refresh the skill's tool-schema manifest from live servers.\n" +
   "  mcp    — RECORDER: fronts your own --wrap'd MCP server(s) to capture their calls into a trace.\n" +
   "           Enforces .reelier/policy.yml (or ~/.reelier/policy.yml) — deny/dry-run rules; pass --allow-writes\n" +
   "           to satisfy a rule's 'unless: \"--allow-writes\"' escape.\n" +
@@ -2059,6 +2143,8 @@ async function main(): Promise<number> {
       return cmdTrace(args);
     case "compile":
       return cmdCompile(args);
+    case "manifest":
+      return cmdManifest(args);
     case "push":
       return cmdPush(args);
     case "get":

@@ -429,6 +429,68 @@ test("compile: meta.toolAnnotations can never downgrade an idempotent-write verb
   assert.equal(compiled.steps[0].effect, "idempotent-write");
 });
 
+// ---------------------------------------------------------------------------
+// Manifest threading (docs/specs/flight-recorder-v2.md §1) — compile() reads
+// meta.toolManifest and CompileResult carries only the tools this trace's
+// OWN steps use; renderSkillMd emits it as a `manifest:` frontmatter line.
+// ---------------------------------------------------------------------------
+
+test("compile: threads meta.toolManifest into CompileResult.manifest, filtered to tools the steps actually use", () => {
+  const records: TraceRecord[] = [
+    {
+      t: "meta",
+      seq: 0,
+      name: "manifested",
+      startedAt: "2026-01-01T00:00:00.000Z",
+      wrapped: ["demo-downstream"],
+      toolManifest: [
+        { name: "create_note", server: "demo-downstream", digest: "sha256:" + "1".repeat(64) },
+        { name: "unused_tool", server: "demo-downstream", digest: "sha256:" + "2".repeat(64) },
+      ],
+    },
+    call(1, 0, "create_note", { text: "hi" }),
+    result(2, 0, true, mcpJsonResult({ ok: true })),
+  ];
+  const compiled = compile(records);
+  assert.deepEqual(compiled.manifest, {
+    v: 1,
+    tools: [{ name: "create_note", server: "demo-downstream", digest: "sha256:" + "1".repeat(64) }],
+  });
+});
+
+test("compile: no meta.toolManifest -> CompileResult.manifest is undefined (no manifest fabricated)", () => {
+  const records: TraceRecord[] = [meta(), call(1, 0, "create_note", { text: "hi" }), result(2, 0, true, mcpJsonResult({ ok: true }))];
+  const compiled = compile(records);
+  assert.equal(compiled.manifest, undefined);
+});
+
+test("renderSkillMd: emits a manifest: frontmatter line when CompileResult.manifest is present, round-trips through parseSkill", () => {
+  const records: TraceRecord[] = [
+    {
+      t: "meta",
+      seq: 0,
+      name: "manifested",
+      startedAt: "2026-01-01T00:00:00.000Z",
+      wrapped: ["demo-downstream"],
+      toolManifest: [{ name: "create_note", server: "demo-downstream", digest: "sha256:" + "1".repeat(64) }],
+    },
+    call(1, 0, "create_note", { text: "hi" }),
+    result(2, 0, true, mcpJsonResult({ ok: true })),
+  ];
+  const compiled = compile(records);
+  const rendered = renderSkillMd(compiled, "trace.jsonl");
+  assert.match(rendered, /^manifest: /m);
+  const reparsed = parseSkill(rendered);
+  assert.deepEqual(reparsed.manifest, compiled.manifest);
+});
+
+test("renderSkillMd: no manifest -> no manifest: line (byte-identical to pre-manifest skills)", () => {
+  const records: TraceRecord[] = [meta(), call(1, 0, "create_note", { text: "hi" }), result(2, 0, true, mcpJsonResult({ ok: true }))];
+  const compiled = compile(records);
+  const rendered = renderSkillMd(compiled, "trace.jsonl");
+  assert.doesNotMatch(rendered, /manifest:/);
+});
+
 test("effects: an unrecognized verb is downgraded to destructive with an open question", () => {
   const records: TraceRecord[] = [meta(), call(1, 0, "archive_note", {}), result(2, 0, true, mcpJsonResult({ ok: true }))];
   const compiled = compile(records);
