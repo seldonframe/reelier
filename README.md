@@ -50,7 +50,7 @@ npm i -g reelier && reelier init
 docker run --rm ghcr.io/seldonframe/reelier --help
 ```
 
-`reelier init` scans work you've already done (Claude Code, Codex, Windsurf, OpenClaw) into a real skill, or falls back to a zero-setup demo with a real receipt in under 60 seconds.
+`reelier init` scans work you've already done (Claude Code, Codex, OpenClaw) into a real skill, or falls back to a zero-setup demo with a real receipt in under 60 seconds.
 
 ## How to use it
 
