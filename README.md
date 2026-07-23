@@ -23,6 +23,8 @@ Record the run that worked, replay it deterministically — **0 tokens, byte-ide
 
 <sub><a href="https://www.reelier.com/reelier-explainer.mp4">▶ watch with sound (22s)</a></sub>
 
+<a href="https://glama.ai/mcp/servers/seldonframe/reelier"><img width="380" height="200" src="https://glama.ai/mcp/servers/seldonframe/reelier/badge" alt="Reelier MCP server on Glama" /></a>
+
 </div>
 
 ---
