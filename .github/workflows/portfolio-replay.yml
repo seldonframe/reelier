@@ -24,6 +24,10 @@ on:
 
 permissions:
   contents: read
+  # Lets `reelier push` request a GitHub OIDC token so pushed receipts carry
+  # a CI attestation (repo + sha + workflow run, asserted by GitHub itself).
+  # Absent this permission the push still works — the rung just stays grey.
+  id-token: write
 
 jobs:
   replay:
@@ -66,16 +70,26 @@ jobs:
         env:
           REELIER_CLOUD_URL: https://www.reelier.com
           REELIER_CLOUD_KEY: ${{ secrets.REELIER_API_KEY }}
+          REELIER_SIGNING_KEY: ${{ secrets.REELIER_SIGNING_KEY }}
         run: |
           if [ -z "$REELIER_CLOUD_KEY" ]; then
             echo "REELIER_API_KEY not set — skipping push. The job log above is still the public audit log."
             exit 0
           fi
+          # Optional CI signing key (keyId 9158fc9cd0fb4e9b, registered to the
+          # Reelier house tenant). When present, every push below is signed —
+          # combined with id-token above, receipts light unaltered-since-push,
+          # timestamped, produced-by AND CI-attested in one run.
+          if [ -n "$REELIER_SIGNING_KEY" ]; then
+            mkdir -p ~/.reelier/signing
+            printf '%s\n' "$REELIER_SIGNING_KEY" > ~/.reelier/signing/9158fc9cd0fb4e9b.pem
+            echo "Signing key installed (keyId 9158fc9cd0fb4e9b) — pushes will be signed."
+          fi
           set +e
           push_failed=0
           for skill in examples/portfolio/*.skill.md; do
-            echo "::group::reelier push $skill"
-            reelier push "$skill"
+            echo "::group::reelier push $skill --timestamp --share"
+            reelier push "$skill" --timestamp --share
             code=$?
             echo "::endgroup::"
             if [ "$code" -ne 0 ]; then
