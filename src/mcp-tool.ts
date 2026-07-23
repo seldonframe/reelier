@@ -3,11 +3,48 @@
 // names a tool that only exists behind an MCP server. Builtin http.* tools
 // keep working unchanged (they're just merged in alongside these).
 
-import type { Observation } from "./assert.js";
+import type { Observation, ObservationRef } from "./assert.js";
 import type { Effect } from "./skill.js";
 import type { Tool, ToolContext } from "./tools.js";
 import { buildToolRoutes, type DownstreamConnection, type DownstreamTool, type McpCallResult } from "./mcp-client.js";
 import { classifyEffect } from "./effect-verbs.js";
+import { redact } from "./redact.js";
+
+// Request-id-shaped body keys (trust-ladder spec §3, MCP half): EXACT match
+// only — no fuzzy/substring matching. A server field named
+// `requestIdentifier` must NOT match; guessing at near-miss keys is worse
+// than reporting nothing (spec's explicit rule).
+const BODY_REQUEST_ID_KEYS = ["request_id", "requestId", "x_request_id"] as const;
+
+/**
+ * Capture request-id-shaped fields from a tool result's body — ONLY the
+ * single-JSON-body case (exactly one text content item that parses as a
+ * JSON object): "the proxy sees tool results, not HTTP transport" (spec
+ * §3), so multi-block bodies and non-JSON bodies yield nothing rather than
+ * a guess. Values pass through `redact()` — same redaction-wins rule as the
+ * header half in tools.ts.
+ */
+function extractBodyRefs(result: McpCallResult): ObservationRef[] | undefined {
+  if (result.content.length !== 1) return undefined;
+  const item = result.content[0];
+  if (item.type !== "text" || typeof item.text !== "string") return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(item.text);
+  } catch {
+    return undefined;
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+  const body = parsed as Record<string, unknown>;
+  const refs: ObservationRef[] = [];
+  for (const key of BODY_REQUEST_ID_KEYS) {
+    const value = body[key];
+    if (typeof value === "string" && value.length > 0) {
+      refs.push({ source: "body", key, value: redact(value) as string });
+    }
+  }
+  return refs.length > 0 ? refs : undefined;
+}
 
 /**
  * MCP result -> Observation mapping:
@@ -28,10 +65,12 @@ export function mcpResultToObservation(result: McpCallResult): Observation {
       texts.push(item.text);
     }
   }
+  const refs = extractBodyRefs(result);
   return {
     status: result.isError ? 500 : 200,
     headers: {},
     body: texts.join("\n"),
+    ...(refs ? { refs } : {}),
   };
 }
 

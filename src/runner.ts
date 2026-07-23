@@ -22,7 +22,7 @@ import { createReadStream } from "node:fs";
 import { createInterface } from "node:readline";
 import path from "node:path";
 import type { Skill, Step } from "./skill.js";
-import { evalAssert, evalBind, type Observation } from "./assert.js";
+import { evalAssert, evalBind, type Observation, type ObservationRef } from "./assert.js";
 import { builtinTools, type Tool, type ToolContext } from "./tools.js";
 // Re-exported from the "." package entry too (in addition to "./tools")
 // purely for caller convenience — a consumer already importing RunOptions/
@@ -91,6 +91,15 @@ export interface StepRecord {
   why?: StepWhy;
   /** Present iff this step's tool actually dispatched a write-effect call — see StepWrite. */
   write?: StepWrite;
+  /**
+   * Provider-issued request-id refs captured from this step's Observation
+   * (trust-ladder spec §3) — extends the write receipt's honesty discipline
+   * to EVERY executed step, not just writes: a read step's response can
+   * carry a cross-checkable reference too. Omitted when the tool call
+   * captured none (allowlist-only; never fabricated). Absent for a mocked
+   * step (`--fail N`) — no real dispatch happened, nothing to capture.
+   */
+  refs?: ObservationRef[];
   /**
    * Set (true) iff this step's observation was a synthetic injected failure
    * (`--fail N[=status]`, docs/specs/flight-recorder-v2.md §3) rather than a
@@ -638,6 +647,8 @@ async function attemptEscalation(
   why?: StepWhy;
   /** Fresh write receipt from the L2 re-execution's real tool call — absent when only L1 ran (L1 never re-executes). */
   write?: StepWrite;
+  /** Fresh refs from the L2 re-execution's real tool call — same "absent when only L1 ran" rule as `write`. */
+  refs?: ObservationRef[];
 }> {
   const maxLevel = options.maxLevel ?? 0;
   if (maxLevel < 1 || !options.llm) {
@@ -763,7 +774,7 @@ async function attemptEscalation(
   const reEval2 = reEvaluatePatch(l2.asserts, l2.binds, obs2);
   if (!reEval2.ok) {
     failures = [...failures, ...reEval2.failures.map((f) => `L2 patch didn't hold: ${f}`)];
-    return { outcome: "failed", level: 0, failures, llm: usage, escalationAttempted, write: l2Write };
+    return { outcome: "failed", level: 0, failures, llm: usage, escalationAttempted, write: l2Write, refs: obs2.refs };
   }
 
   Object.assign(bindings, reEval2.bindings);
@@ -782,7 +793,16 @@ async function attemptEscalation(
     );
   }
   const outcome: StepOutcome = l2.asserts.length === 0 ? "unchecked" : "passed";
-  return { outcome, level: 2, failures: [], llm: usage, escalationAttempted, why: { change: `L2: ${l2.reason}` }, write: l2Write };
+  return {
+    outcome,
+    level: 2,
+    failures: [],
+    llm: usage,
+    escalationAttempted,
+    why: { change: `L2: ${l2.reason}` },
+    write: l2Write,
+    refs: obs2.refs,
+  };
 }
 
 /** Run a skill's steps in order. Stops (marks remaining steps "skipped") on the first divergence. */
@@ -826,6 +846,12 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
     let escalationAttempted: 0 | 1 | 2 | undefined;
     let why: StepWhy | undefined;
     let write = exec.write;
+    // Extends the write receipt's discipline to EVERY executed step (spec
+    // §3) — a read step's Observation can carry cross-checkable refs too.
+    // `exec.observation` is set on every REAL (or mocked-synthetic) dispatch
+    // path; a refused-write step never reaches a dispatch, so this is
+    // naturally undefined there, exactly like `write`.
+    let refs = exec.observation?.refs;
     // Register/dedupe the MAIN-PATH write's key immediately — BEFORE any
     // escalation runs. This matters when L2 later re-dispatches the same
     // step: without registering here first, a step that wrote twice (main
@@ -881,6 +907,11 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
       } else if (escalated.write) {
         write = escalated.write;
       }
+      // Same "fresh L2 dispatch supersedes the stale main-path attempt"
+      // reasoning as `write` above — L2 actually re-called the tool, so its
+      // refs (if any) are what THIS record should reflect. `escalated.refs`
+      // is only set when a real L2 dispatch happened (see attemptEscalation).
+      if (escalated.refs !== undefined) refs = escalated.refs;
     }
     // A step that failed without an observation (tool threw) skips escalation —
     // still record why it diverged.
@@ -888,9 +919,12 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
 
     // A mocked step (`--fail N`) never dispatched a real tool call, even if
     // its own escalation subsequently healed via a REAL L2 re-execution —
-    // never receipt a write on a step whose original attempt was synthetic
-    // (and never let its key pollute the dup map above, either).
-    if (exec.mocked) write = undefined;
+    // never receipt a write (or refs) on a step whose original attempt was
+    // synthetic (and never let its key pollute the dup map above, either).
+    if (exec.mocked) {
+      write = undefined;
+      refs = undefined;
+    }
 
     const ms = Date.now() - started;
     const rec: StepRecord = {
@@ -904,6 +938,7 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
       ...(escalationAttempted !== undefined ? { escalationAttempted } : {}),
       ...(why ? { why } : {}),
       ...(write ? { write } : {}),
+      ...(refs && refs.length > 0 ? { refs } : {}),
       ...(exec.mocked ? { mocked: true as const } : {}),
     };
     stepRecords.push(rec);

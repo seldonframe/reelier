@@ -1,8 +1,9 @@
 // Builtin tool registry. A plain map so MCP-backed tools can be registered
 // alongside these later without changing the runner.
 
-import type { Observation } from "./assert.js";
+import type { Observation, ObservationRef } from "./assert.js";
 import type { Effect } from "./skill.js";
+import { redact } from "./redact.js";
 
 export interface ToolContext {
   /** Whether --yes was passed on the CLI (permits destructive effects to run). */
@@ -60,6 +61,38 @@ function headersToRecord(headers: Headers): Record<string, string> {
   return out;
 }
 
+// Provider-issued request-id headers (trust-ladder spec §3) — an ALLOWLIST,
+// never a heuristic scrape. The Fetch API's Headers object always exposes
+// keys lowercased regardless of how the server sent them, so headersToRecord
+// above already yields lowercase keys matching this list exactly.
+const REQUEST_ID_HEADER_ALLOWLIST = [
+  "request-id",
+  "x-request-id",
+  "x-amzn-requestid",
+  "x-amz-request-id",
+  "x-goog-request-id",
+  "stripe-request-id",
+  "cf-ray",
+] as const;
+
+/**
+ * Capture allowlisted response headers into `Observation.refs` — omitted
+ * entirely (never an empty array) when none were present. Values pass
+ * through `redact()` like everything else that ends up in a receipt
+ * (trust-ladder spec §3's "redaction wins" rule): a request-id happening to
+ * equal a masked secret renders as redacted, not leaked.
+ */
+function extractHeaderRefs(headers: Record<string, string>): ObservationRef[] | undefined {
+  const refs: ObservationRef[] = [];
+  for (const key of REQUEST_ID_HEADER_ALLOWLIST) {
+    const value = headers[key];
+    if (typeof value === "string" && value.length > 0) {
+      refs.push({ source: "header", key, value: redact(value) as string });
+    }
+  }
+  return refs.length > 0 ? refs : undefined;
+}
+
 export const builtinTools: Record<string, Tool> = {
   "http.get": {
     effect: "read",
@@ -67,7 +100,9 @@ export const builtinTools: Record<string, Tool> = {
       const url = requireString(args, "url");
       const res = await fetchWithTimeout(url, { method: "GET" });
       const body = await res.text();
-      return { status: res.status, headers: headersToRecord(res.headers), body };
+      const headers = headersToRecord(res.headers);
+      const refs = extractHeaderRefs(headers);
+      return { status: res.status, headers, body, ...(refs ? { refs } : {}) };
     },
   },
   "http.post": {
@@ -86,7 +121,9 @@ export const builtinTools: Record<string, Tool> = {
         body: body === undefined ? undefined : typeof body === "string" ? body : JSON.stringify(body),
       });
       const text = await res.text();
-      return { status: res.status, headers: headersToRecord(res.headers), body: text };
+      const responseHeaders = headersToRecord(res.headers);
+      const refs = extractHeaderRefs(responseHeaders);
+      return { status: res.status, headers: responseHeaders, body: text, ...(refs ? { refs } : {}) };
     },
   },
 };

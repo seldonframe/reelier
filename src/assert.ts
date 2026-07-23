@@ -1,10 +1,26 @@
 // Assert and bind mini-languages. Deliberately tiny: parse with a handful of
 // regexes, and error loudly on anything that doesn't match (no silent no-op).
 
+export interface ObservationRef {
+  source: "header" | "body";
+  key: string;
+  value: string;
+}
+
 export interface Observation {
   status: number;
   headers: Record<string, string>;
   body: string;
+  /**
+   * Provider-issued identifiers cross-checkable against the provider's own
+   * logs (trust-ladder spec §3) — captured from an ALLOWLIST only (never
+   * guessed/scraped), omitted entirely when none were found. Populated by
+   * the tool that produced this Observation (src/tools.ts's http.* from
+   * response headers; src/mcp-tool.ts from a single-JSON-body's top-level
+   * fields) and threaded onto `StepRecord.refs` for ANY executed step,
+   * including reads — not just writes.
+   */
+  refs?: ObservationRef[];
 }
 
 export class AssertParseError extends Error {
