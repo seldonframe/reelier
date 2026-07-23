@@ -65,13 +65,11 @@ docker run --rm -v "$HOME/.claude:/root/.claude:ro" -v "$PWD:/work" -w /work \
 
 ## Why
 
-- **Your agent relearns the job every run — then quietly drifts.** Every run re-derives the workflow, and every small "rational" fix compounds — what long-run operators call *scar tissue*. A compiled skill never relearns and can't drift.
+- **Your agent relearns the job every run — then quietly drifts.** Every run re-derives the workflow, and every small "rational" fix compounds. A compiled skill never relearns and can't drift.
 - **The real problem is the bill.** *"How much did that cost?"* is the first reply every long agent run gets. Reelier replays for **0 tokens**, with a receipt.
-- **It's not brittle RPA.** Replays *tool calls* (typed JSON in/out), not pixels — and every step carries its own assertion, so a broken step **fails loudly, never silently passes**.
-- **Upgraded the model?** A replay is pinned — re-record on the new model and `reelier diff` against your frozen baseline: **SAME or DRIFTED, per step**, before it reaches production.
-- **"Anything deterministic should just be code."** Agreed — your agent already wrote it. Reelier captures its real, working run into a tested file. Determinism without the hand-coding.
+- **It's not brittle RPA.** Replays *tool calls* (typed JSON in/out), not pixels — every step carries its own assertion, so a broken step **fails loudly, never silently passes**.
 
-## How it works — record → compile → replay → diff → receipt
+## The five steps
 
 ```sh
 reelier init                        # 60s: record → compile → replay → your receipt
@@ -80,15 +78,13 @@ reelier diff <name>                 # SAME or DRIFTED, per step — exit 1 on dr
 reelier push <name>.skill.md        # sync receipts to your ledger (opt-in)
 ```
 
-1. **Record** — three ways: `reelier mcp --wrap "<your mcp server>"` (a lossless proxy in front of your agent's tools), straight from an existing session (`reelier scan` / `reelier from-session`), or the guided `reelier init`.
-2. **Compile** — `reelier compile` turns a trace into a `SKILL.md` deterministically (0 LLM calls) — a recipe with an **assertion on every step**, and the compiler's honest gaps printed as **Open questions** (including literal dates, UUIDs, and timestamps it flags as "should this be a variable?") rather than guessed at.
-3. **Replay** — `reelier run` runs it at Level 0: no LLM, milliseconds, byte-identical. **Read-only by default** — a write step (`idempotent-write`) never re-fires unless you pass `--allow-writes`.
-4. **Diff** — `reelier diff` compares two runs of a skill and reports **SAME or DRIFTED per step**, with the failing assertion as the *why*. Exit code 1 on drift, so it gates a scheduled replay.
-5. **Receipt** — every run is a receipt (per-step outcomes, timing, 0 tokens). `reelier push` optionally syncs them to a receipt ledger for a shareable permalink + an embeddable **verified-replay badge**.
+1. **Record.** Three ways in: `reelier mcp --wrap "<your mcp server>"` (a lossless proxy in front of your agent's tools), straight from an existing session (`reelier scan` / `reelier from-session`, see below), or the guided `reelier init`.
+2. **Compile.** `reelier compile` turns a trace into a `SKILL.md` deterministically (0 LLM calls) — an assertion on every step, and honest gaps printed as **Open questions** (literal dates, UUIDs, timestamps flagged "should this be a variable?") rather than guessed at.
+3. **Replay.** `reelier run` runs it at Level 0: no LLM, milliseconds, byte-identical. **Read-only by default** — a write step (`idempotent-write`) never re-fires unless you pass `--allow-writes`.
+4. **Diff.** `reelier diff` compares two runs and reports **SAME or DRIFTED per step**, with the failing assertion as the *why*. Exit code 1 on drift, so it gates a scheduled replay. Upgraded the model? Re-record against it and diff against your frozen baseline before it reaches production.
+5. **Push → receipt.** Every run is a receipt (per-step outcomes, timing, 0 tokens). `reelier push` optionally syncs it to a ledger for a shareable permalink + an embeddable **verified-replay badge**.
 
-### Convert an Agent Skill
-
-Turn an instruction skill + one recorded run into a deterministic replay — your skill, minus the model:
+**Already have an Agent Skill?** Convert it — your skill, minus the model:
 
 ```sh
 reelier mcp --wrap "<your mcp server>"                 # record: agent runs the skill's task once
@@ -99,7 +95,7 @@ reelier compile trace.jsonl --from-skill ./my-skill/SKILL.md
 
 ### Import sessions from any agent
 
-You already have replayable workflows sitting in your agent's own session logs. `reelier scan` finds them; `reelier from-session` turns one into a skill. Format is sniffed from the file's content — no flag needed for the supported agents:
+`reelier scan` finds replayable workflows already sitting in your agent's session logs; `reelier from-session` turns one into a skill. Format is sniffed from content — no flag needed for supported agents:
 
 ```sh
 reelier scan                                          # discovers sessions from every known agent under your home dir
@@ -116,7 +112,7 @@ reelier from-session ~/.openclaw/agents/*/sessions/*.jsonl  # OpenClaw
 | Cursor | `.../User/globalStorage/state.vscdb` (SQLite, undocumented) | detected, not yet parseable |
 | Windsurf | `.../User/globalStorage/state.vscdb` (SQLite, undocumented) | detected, not yet parseable |
 
-Only replayable calls (Reelier's own builtins, or `mcp__<server>__<tool>` calls) ever compile into a skill — native file/shell/search actions are reported as skipped, never fabricated into a step. Pass `--agent <claude-code|codex|openclaw>` to force a format instead of auto-detecting; `reelier scan` / `reelier from-session --agent cursor` (or `--agent windsurf`) report what's on disk honestly rather than guessing at an undocumented binary format.
+Only replayable calls (Reelier's own builtins, or `mcp__<server>__<tool>` calls) ever compile into a skill — native file/shell/search actions are reported as skipped, never fabricated into a step. Pass `--agent <claude-code|codex|openclaw>` to force a format; `--agent cursor`/`--agent windsurf` report what's on disk honestly rather than guessing at an undocumented binary format.
 
 ## Three tests, one skill
 
@@ -126,7 +122,7 @@ One recorded skill gives you three different questions to ask of it, not one:
 | --- | --- | --- |
 | **Determinism** | `reelier run <skill.md>` replays against the assertions you recorded. Same steps, same asserts, 0 tokens. | *Does this still do what it did?* |
 | **Recovery** | `reelier run <skill.md> --fail N[=status]` injects a synthetic failure at step `N` (default status `500`; override with `--fail N=429`, repeatable) instead of dispatching that step's real tool call, then runs the SAME escalation ladder a real failure would hit. | *If this broke, would the skill notice and heal?* |
-| **Drift** | `reelier run <skill.md> --wrap "<your mcp server>"` replays against your *live*, read-only dependencies instead of the recorded trace. Paired with `reelier manifest` (below), this is how you catch a tool's schema moving out from under you before a real replay does. | *Has the world moved out from under this skill?* |
+| **Drift** | `reelier run <skill.md> --wrap "<your mcp server>"` replays against your *live*, read-only dependencies instead of the recorded trace. Paired with `reelier manifest` (below), this catches a tool's schema moving out from under you before a real replay does. | *Has the world moved out from under this skill?* |
 
 Nothing outside the network actually happens during a recovery test — a mocked step never calls its tool, so you can recovery-test a write step with no `--allow-writes` and no side effect. A mock run is a local test only — `reelier push` refuses to publish one.
 
@@ -136,29 +132,25 @@ Normative spec: [docs/specs/flight-recorder-v2.md](./docs/specs/flight-recorder-
 
 ### Tool-schema drift: `reelier manifest`
 
-A skill's steps call specific tools with specific argument shapes. If a wrapped MCP server's tool schema changes since you recorded against it, replay should refuse loudly, not silently fill the wrong args. `reelier manifest` stamps a schema digest for every tool the skill's steps actually use:
+`reelier manifest` stamps a schema digest for every tool a skill's steps actually use, so replay refuses loudly instead of silently filling the wrong args once a wrapped server's tool schema changes: a drifted or missing tool fails closed — `MANIFEST DRIFT — refusing to replay` — before anything executes. `--ignore-manifest` is the explicit break-glass override, still recorded on the run (`manifestIgnored: true`), never a silent bypass; a skill with no manifest at all just gets an advisory note and keeps working unmodified.
 
 ```sh
 reelier manifest <skill.md> --wrap "<your mcp server>"   # stamp/refresh the manifest from live servers
 reelier run <skill.md> --wrap "<your mcp server>"         # preflight checks the manifest BEFORE step 1 runs
 ```
 
-If a stamped tool's schema has drifted (or the tool is gone), `reelier run` fails closed — `MANIFEST DRIFT — refusing to replay` — before anything executes. `--ignore-manifest` is the explicit break-glass override for when you know the drift is fine; it's still recorded on the run (`manifestIgnored: true`), so it's never a silent bypass. A skill with no manifest at all just gets an advisory note — every pre-manifest skill keeps working unmodified.
-
 ### Per-step write approval: `reelier approve`
 
-`--allow-writes`/`--yes` are blanket flags — they say "this run may write," not "this exact write is reviewed." `reelier approve` hash-binds approval to one specific step's tool + argument template:
+`--allow-writes`/`--yes` are blanket flags — "this run may write," not "this exact write is reviewed." `reelier approve` hash-binds approval to one step's tool + argument template: a match executes with **no flags at all**; a changed tool or args fails closed — `Approval mismatch` — and no flag overrides it. A step with no `approve:` field keeps today's `--allow-writes`/`--yes` behavior, unchanged.
 
 ```sh
 reelier approve <skill.md>          # walk each write/destructive step, y/N to approve
 reelier approve <skill.md> --all    # approve every write step non-interactively
 ```
 
-An approved step whose tool/args still match its stamped hash executes with **no flags at all**. If the step's tool or args have changed since approval, replay fails closed — `Approval mismatch` — and no flag overrides it; you re-review and re-approve. A write step with no `approve:` field keeps today's exact `--allow-writes`/`--yes` behavior, unchanged.
-
 ## Assert the value, not just the shape
 
-A skill's assertions are what make a replay *proof*. The grammar checks status, structure, **and value**:
+A skill's assertions are what make a replay *proof* — the grammar checks status, structure, **and value**:
 
 ```md
 - assert: status == 200
@@ -177,11 +169,7 @@ A skill's assertions are what make a replay *proof*. The grammar checks status, 
 { "mcpServers": { "reelier": { "command": "npx", "args": ["-y", "reelier", "serve"] } } }
 ```
 
-The agent gets `reelier_scan`, `reelier_from_session`, `reelier_replay`, `reelier_diff`, and `reelier_push` — with descriptions that tell it exactly *when to use* each (and when not to). It records a deterministic task once, then replays instead of re-reasoning.
-
-## Tools
-
-- **reelier_scan** — scan agent session history (Claude Code, Codex, Windsurf, OpenClaw) for replayable tool-call workflows
+- **reelier_scan** — scan agent session history for replayable tool-call workflows
 - **reelier_from_session** — compile a recorded session into a replayable SKILL.md with an assertion on every step
 - **reelier_replay** — replay a skill deterministically at 0 LLM tokens (read-only by default; writes gated behind `--allow-writes`)
 - **reelier_diff** — compare two runs: SAME or DRIFTED per step, with the failing assertion as the why; exit 1 on drift
@@ -189,7 +177,7 @@ The agent gets `reelier_scan`, `reelier_from_session`, `reelier_replay`, `reelie
 
 ## Trust ladder — a ladder of graded claims, never a blanket ✓
 
-A receipt asserts several *independent* things about a run, each provable to a different grade. Reelier renders them as separate rows — never one "verified ✓" that would be a lie by compression. **What no rung claims:** none of this proves a run wasn't *fabricated before it was recorded* — signing proves unaltered-since-push by a known key-holder, timestamps prove existed-by-T, request-id refs make claims externally falsifiable. "Fabrication-proof" isn't in the vocabulary here.
+A receipt asserts several *independent* things about a run, each provable to a different grade — never one "verified ✓" that would be a lie by compression. **What no rung claims:** none of this proves a run wasn't *fabricated before it was recorded* — signing proves unaltered-since-push by a known key-holder, timestamps prove existed-by-T, request-id refs make claims externally falsifiable.
 
 | Claim | How you get it | What it proves | What it does *not* prove |
 | --- | --- | --- | --- |
@@ -212,7 +200,7 @@ reelier verify https://reelier.com/r/<token> --key mykey.pub.pem
 # timestamped: imprint ✓ (tsa https://freetsa.org/tsr) — full chain verification: openssl ts -verify ...
 ```
 
-Absent claims are rendered honestly, never shamed: an unsigned push says `— unsigned`, not "unverified" or "insecure" — sign your pushes with `reelier init --signing` whenever you want that row lit. Exit code is 0 unless a claim that's actually **present** fails verification (a bad signature, a mismatched timestamp imprint); an absent or unchecked claim never fails the exit code.
+Absent claims are rendered honestly, never shamed: an unsigned push says `— unsigned`, not "unverified" or "insecure." Exit code is 0 unless a claim that's actually **present** fails verification (a bad signature, a mismatched timestamp imprint); an absent or unchecked claim never fails the exit code.
 
 ## What it means for you
 
@@ -236,15 +224,15 @@ From a real, live head-to-head benchmark (agent vs. Reelier, same task, same dat
 
 ## Works with any model (BYOK)
 
-Level-0 replay (the default) never calls a model — 0 tokens, by construction. Escalation (`--max-level 1|2`) is opt-in and speaks through one narrow BYOK surface (`--llm-base-url` + `--llm-model`): a native Anthropic Messages adapter, and an OpenAI-compatible adapter for everything else (OpenRouter, Ollama, Gemini's OpenAI endpoint, Groq, vLLM, LM Studio, Kimi, …). Point it at a stronger model and every skill's *next* self-heal gets smarter for free.
+Level-0 replay (the default) never calls a model — 0 tokens, by construction. Escalation (`--max-level 1|2`) is opt-in through one narrow BYOK surface (`--llm-base-url` + `--llm-model`): a native Anthropic Messages adapter, and an OpenAI-compatible adapter for everything else (OpenRouter, Ollama, Gemini's OpenAI endpoint, Groq, vLLM, LM Studio, Kimi, …).
 
 ## Own it — MIT, BYOK, local-first
 
-Use it anywhere, embed it in anything — no copyleft strings, no legal review needed. Your skills, traces, and run records are **your data** — leaving is copying a folder. The formats are specified in [SPEC.md](./SPEC.md), a normative RFC-style reference so anyone can emit or consume them without reading the source.
+Use it anywhere, embed it in anything — no copyleft strings, no legal review needed. Your skills, traces, and run records are **your data** — leaving is copying a folder. Formats are specified in [SPEC.md](./SPEC.md), a normative RFC-style reference so anyone can emit or consume them without reading the source. [MIT](./LICENSE), free to fork, embed, audit, and self-host forever. (Versions ≤0.16.0 were released under AGPL-3.0 and remain so.)
 
 ## Contributing
 
-Issues and PRs welcome — see [SPEC.md](./SPEC.md) for the formats (the spec wins over the code; fix the code, not the spec). `npm test` runs the full suite; `npm run build && npx tsc --noEmit` before a PR.
+Issues and PRs welcome — [SPEC.md](./SPEC.md) is the source of truth for formats (fix the code, not the spec).
 
 ```sh
 git clone https://github.com/seldonframe/reelier && cd reelier
@@ -254,10 +242,6 @@ npm install && npm test
 ## Star history
 
 [![Star History Chart](https://api.star-history.com/svg?repos=seldonframe/reelier&type=Date)](https://star-history.com/#seldonframe/reelier&Date)
-
-## License
-
-[MIT](./LICENSE) — free to fork, embed, audit, and self-host forever. (Versions ≤0.16.0 were released under AGPL-3.0 and remain so.)
 
 <div align="center">
 
