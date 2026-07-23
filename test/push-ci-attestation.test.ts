@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, writeFile, mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { detectCiOidc, pushSkill } from "../src/push.js";
+import { detectCiOidc, detectPrHeadSha, pushSkill } from "../src/push.js";
 import type { RunRecord } from "../src/runner.js";
 
 // B3 — CI attestation (trust-ladder spec §5). GitHub Actions' own OIDC
@@ -42,6 +42,60 @@ async function withCapturedStderr<T>(run: () => Promise<T>): Promise<{ result: T
     console.error = original;
   }
 }
+
+// detectPrHeadSha — the operator-asserted PR head sha for pull_request runs.
+const A_SHA = "abc1230000000000000000000000000000000000";
+
+test("detectPrHeadSha: pull_request event -> reads .pull_request.head.sha from the event payload", async () => {
+  const readImpl = async (p: string) => {
+    assert.equal(p, "/tmp/event.json");
+    return JSON.stringify({ pull_request: { head: { sha: A_SHA } } });
+  };
+  const sha = await detectPrHeadSha(
+    { GITHUB_EVENT_NAME: "pull_request", GITHUB_EVENT_PATH: "/tmp/event.json" } as NodeJS.ProcessEnv,
+    readImpl,
+  );
+  assert.equal(sha, A_SHA);
+});
+
+test("detectPrHeadSha: pull_request_target is also honored", async () => {
+  const sha = await detectPrHeadSha(
+    { GITHUB_EVENT_NAME: "pull_request_target", GITHUB_EVENT_PATH: "/x" } as NodeJS.ProcessEnv,
+    async () => JSON.stringify({ pull_request: { head: { sha: A_SHA } } }),
+  );
+  assert.equal(sha, A_SHA);
+});
+
+test("detectPrHeadSha: a non-pull_request event -> null (push receipts already carry the head as ciSha)", async () => {
+  const sha = await detectPrHeadSha(
+    { GITHUB_EVENT_NAME: "push", GITHUB_EVENT_PATH: "/x" } as NodeJS.ProcessEnv,
+    async () => {
+      throw new Error("must not read the event file for a push");
+    },
+  );
+  assert.equal(sha, null);
+});
+
+test("detectPrHeadSha: absent event path, unreadable file, bad JSON, or non-40-hex sha -> null (fail-open)", async () => {
+  assert.equal(await detectPrHeadSha({ GITHUB_EVENT_NAME: "pull_request" } as NodeJS.ProcessEnv, async () => "{}"), null);
+  assert.equal(
+    await detectPrHeadSha({ GITHUB_EVENT_NAME: "pull_request", GITHUB_EVENT_PATH: "/x" } as NodeJS.ProcessEnv, async () => {
+      throw new Error("ENOENT");
+    }),
+    null,
+  );
+  assert.equal(
+    await detectPrHeadSha({ GITHUB_EVENT_NAME: "pull_request", GITHUB_EVENT_PATH: "/x" } as NodeJS.ProcessEnv, async () => "not json"),
+    null,
+  );
+  assert.equal(
+    await detectPrHeadSha(
+      { GITHUB_EVENT_NAME: "pull_request", GITHUB_EVENT_PATH: "/x" } as NodeJS.ProcessEnv,
+      async () => JSON.stringify({ pull_request: { head: { sha: "SHORT" } } }),
+    ),
+    null,
+  );
+});
 
 test("detectCiOidc: absent env -> null, no stderr output (never shames a laptop push)", async () => {
   const { fn } = fakeFetch({});

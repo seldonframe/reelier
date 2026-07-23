@@ -2,6 +2,22 @@
 
 All notable changes to `reelier`. Dates are release dates.
 
+## 0.22.0 — PR receipts render on pull_request CI
+
+Breaking behavior: **none — one new optional push field.**
+
+### Added
+- **`ciHeadSha` on push.** On a `pull_request`/`pull_request_target`
+  Actions run, `reelier push` reads the real PR head sha from the event
+  payload and sends it alongside the CI attestation. Without it, the
+  reelier.com GitHub App couldn't find the PR to comment on — a
+  pull_request run's attested sha is the synthetic *merge* commit, which
+  no PR has as its head, so a receipt got a check-run but no comment. The
+  head sha is operator-asserted (it isn't in the OIDC token), and the
+  cloud only ever honors it against an actually-open PR's head in the
+  attested repo. Absent for push/laptop runs — nothing said, nothing
+  changes.
+
 ## 0.21.0 — reelier ci: drift-CI + PR receipts in one command
 
 Breaking behavior: **none — additive.**

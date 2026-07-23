@@ -111,6 +111,36 @@ export async function detectCiOidc(
 }
 
 /**
+ * The PR head sha, for pull_request-triggered Actions runs only. On a
+ * pull_request event GITHUB_SHA (and the OIDC token's `sha` claim) is the
+ * synthetic MERGE commit — no PR's head — so the cloud's GitHub App can't
+ * locate the PR to render a receipt comment from it. We read the real head
+ * sha from the event payload and send it as an operator-asserted
+ * `ciHeadSha` (NEVER attested — the cloud only honors it when it matches an
+ * actually-open PR's head in the attested repo). Any other event, or any
+ * read/parse failure -> null, nothing said (same fail-open, never-shamed
+ * contract as detectCiOidc). `readFileImpl` is injectable for tests.
+ */
+export async function detectPrHeadSha(
+  env: NodeJS.ProcessEnv = process.env,
+  readFileImpl: (p: string) => Promise<string> = (p) => readFile(p, "utf8")
+): Promise<string | null> {
+  const eventName = env.GITHUB_EVENT_NAME;
+  if (eventName !== "pull_request" && eventName !== "pull_request_target") return null;
+  const eventPath = env.GITHUB_EVENT_PATH;
+  if (!eventPath) return null;
+  try {
+    const parsed = JSON.parse(await readFileImpl(eventPath)) as {
+      pull_request?: { head?: { sha?: unknown } };
+    };
+    const sha = parsed.pull_request?.head?.sha;
+    return typeof sha === "string" && /^[0-9a-f]{40}$/.test(sha) ? sha : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Resolve cloud sync config from env. Never logs or embeds the key
  * anywhere in a thrown message — only names the missing var(s).
  */
@@ -471,7 +501,8 @@ async function pushOneRecord(
   priceTable?: PriceTable,
   signingKey?: LoadedSigningKey,
   ciAttestation?: CiAttestation,
-  tsaUrl?: string
+  tsaUrl?: string,
+  ciHeadSha?: string
 ): Promise<PushRecordResult> {
   const cost = computePushCost(record, priceTable);
 
@@ -529,6 +560,7 @@ async function pushOneRecord(
         ...(cost ? { costUsd: cost.costUsd, priceTableDate: cost.priceTableDate } : {}),
         ...(signature ? { signature } : {}),
         ...(ciAttestation ? { ciAttestation } : {}),
+        ...(ciHeadSha ? { ciHeadSha } : {}),
         ...(timestamp ? { timestamp } : {}),
       }),
     });
@@ -663,6 +695,10 @@ export async function pushSkill(skillPath: string, options: PushOptions = {}): P
   // Detected once per batch, before the skill upload leg — fail-open and
   // silent-on-absence, exactly like the signing key just below.
   const ciAttestation = (await detectCiOidc()) ?? undefined;
+  // The PR head sha for pull_request-triggered runs — lets the cloud's App
+  // find the PR to comment on (the attested ciSha is a merge commit there).
+  // Absent for push/laptop runs; operator-asserted, never attested.
+  const ciHeadSha = (await detectPrHeadSha()) ?? undefined;
   // Resolved once per batch (the URL, not a network call — the actual TSA
   // request happens per-record below, since each record has its own
   // digest). Only resolved at all when --timestamp was passed.
@@ -725,7 +761,8 @@ export async function pushSkill(skillPath: string, options: PushOptions = {}): P
       priceTable,
       signingKey,
       ciAttestation,
-      tsaUrl
+      tsaUrl,
+      ciHeadSha
     );
     results.push(result);
     options.onRecordResult?.(result);
