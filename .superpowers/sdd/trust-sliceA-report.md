@@ -157,3 +157,36 @@ Final combined run (excluding the known-flaky file, run separately):
 ```
 
 `npx tsc -p tsconfig.test.json` — no output, exit 0 (clean compile), confirmed after every commit in this slice.
+
+---
+
+# Slice B review fixes — report
+
+Coordinator's Slice B review verdict: **FIX REQUIRED**. Full findings: `C:\Users\maxim\CascadeProjects\reelier-trust\.superpowers\sdd\trust-sliceB-review.md`. Same branch/worktree.
+
+## Per-finding status
+
+1. **BLOCKING — `src/tsa.ts` `imprintMatches` false-mismatches genuine tokens**: FIXED. `imprintMatches` anchored on the FIRST sha256-OID occurrence in the token, but a genuine RFC-3161 `TimeStampResp` (a CMS `SignedData`) carries its own top-level `digestAlgorithms` SET — itself a sha256 `AlgorithmIdentifier`, with NO octet string attached — BEFORE the `eContent`-embedded `TSTInfo`'s own `messageImprint` (which DOES have the real 32-byte digest right after its `AlgorithmIdentifier`). The first-match-only search found `digestAlgorithms` on every genuine token, never reached the real imprint, and reported a false tamper accusation (`✗ IMPRINT MISMATCH`, exit 1) on an honestly-timestamped receipt — the worst possible never-lies violation, on the feature's own happy path. Fixed by scanning ALL sha256-OID occurrences: the claim holds (`true`) the moment ANY occurrence is immediately followed by a matching 32-byte OCTET STRING; it only returns `false` when NO occurrence anywhere in the token matches. The doc comment (previously wrong — it reasoned about certificates/signerInfos coming AFTER `eContent` but never mentioned `digestAlgorithms` coming BEFORE it) is rewritten to state the real CMS byte order and the accepted residual honestly: a crafted non-CMS blob could satisfy scan-all by embedding the digest anywhere, but this is bounded because a match is graded `"unchecked"` (never `"verified"`) at the call site (`verify.ts`) — only the mismatch (✗) direction is a hard, load-bearing claim, and scan-all can only ever turn a false ✗ into an honestly-graded pass, never manufacture a false ✗ the other way.
+2. **BLOCKING (test gap) — naive fixtures validated the shortcut against its own assumption**: FIXED, TDD as instructed. Added `buildRealisticCmsFixture`/analogous helper to both `test/tsa.test.ts` and `test/verify.test.ts` (a `digestAlgorithms` SET with no attached octet string, followed by junk standing in for `eContentType`, followed by the REAL `AlgorithmIdentifier`+`OCTET STRING(32)`+digest, followed by junk standing in for `signerInfos`) — confirmed it fails on the pre-fix code (`AssertionError: false !== true`), then confirmed green after the fix. Also fetched ONE real token live from `https://freetsa.org/tsr` via a throwaway script (`node fetch-freetsa-token.mjs`, run once in the scratchpad directory, NOT part of the test suite or CI — zero network calls happen when `npm test` runs) and checked it in as `test/fixtures/freetsa-token.b64` (raw base64, 4632 response bytes) + `test/fixtures/freetsa-token.meta.json` (provenance: TSA URL, fetch date 2026-07-23, exact digest input string, and the resulting 64-hex digest). New test asserts `imprintMatches(realToken, thatDigest) === true` and `=== false` for a wrong digest — both pass against the real, live-captured token. This is a genuine end-to-end confirmation that the fix holds against an actual TSA response, not just hand-reasoned-about fixtures.
+3. **OPTIONAL hardening — per-record try/catch around sign/timestamp**: DONE. `computeSignature`/`computeTimestamp` now run inside `pushOneRecord`'s own try/catch (previously unguarded, though `computeTimestamp` was already internally fail-open via `requestTimestamp`). A throw degrades that ONE record to unsigned/untimestamped with exactly one stderr warning line, never fails the push. Test constructs a REAL x25519 key (parses fine via `createPrivateKey` — the same validation `loadSigningKey` already does at load time — but `sign(null, ...)` genuinely throws `"operation not supported for this keytype"` for a Diffie-Hellman key) to exercise the actual throw path rather than mocking it. (Initial attempt used an RSA key, discovered experimentally that Node's `crypto.sign(null, ...)` does NOT throw for RSA or EC keys — it silently picks a default digest algorithm — so switched to x25519, confirmed to genuinely throw.)
+
+## Commit SHAs (all on `feat/trust-ladder`, in order)
+
+- `c7c3b0e` — fix: B1 review — imprintMatches false-mismatches genuine tokens (findings #1 + #2)
+- `ea09921` — fix: review finding #3 — per-record try/catch around sign/timestamp
+
+## Final suite counts
+
+Same two-group approach (the `manifest-cli.test.js` Windows IPC flake remains confirmed pre-existing/unrelated — 9/9 every time run standalone):
+
+- All files except `manifest-cli.test.js`: **628 pass / 0 fail**
+- `manifest-cli.test.js` standalone: **9/9 pass**
+- **Total: 637 pass / 0 fail** (review-fix baseline 633 + 4 new: +2 `tsa.test.ts` realistic-CMS-layout tests, +1 `tsa.test.ts` real-freetsa-token test, +1 `push-signing.test.ts` x25519-throw hardening test; `test/verify.test.ts`'s fixture was strengthened in place — no test count change there).
+
+`npx tsc -p tsconfig.test.json`: clean, no errors, at both commits.
+
+## Notes
+
+- The reviewer's probe methodology (build a realistic CMS layout, watch it fail, then fix) is exactly what TDD requires and is exactly what was followed here — no shortcuts.
+- Nothing in this fix round touched `src/verify.ts`'s logic itself (it already correctly delegated to `imprintMatches`); fixing `tsa.ts` alone was sufficient, confirmed by the existing `evaluateTimestampClaim` tests passing unchanged against the strengthened fixture.
+- No spec/plan docs were modified.
