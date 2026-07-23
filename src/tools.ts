@@ -19,6 +19,13 @@ export interface ToolContext {
 export interface Tool {
   /** Intrinsic effect class of this tool, used when a step doesn't override it. */
   effect: Effect;
+  /**
+   * The downstream MCP server that advertises this tool (DownstreamConnection.name,
+   * src/mcp-tool.ts's mcpTool), used to compute the write receipt's idempotency
+   * key (src/approval.ts's computeIdempotencyKey). Absent for builtin http.*
+   * tools, which have no server concept.
+   */
+  server?: string;
   run(args: unknown, ctx: ToolContext): Promise<Observation>;
 }
 

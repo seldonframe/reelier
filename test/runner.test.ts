@@ -7,6 +7,7 @@ import { fillTemplate, runSkill } from "../src/runner.js";
 import type { Tool } from "../src/tools.js";
 import type { Observation } from "../src/assert.js";
 import { parseSkill } from "../src/skill.js";
+import { computeApprovalHash } from "../src/approval.js";
 
 test("fillTemplate replaces {{var}} holes in string values, recursively", () => {
   const filled = fillTemplate(
@@ -281,6 +282,154 @@ test("runner: executes a destructive step when allowDestructive is true", async 
     const record = await runSkill(skill, { cwd: dir, tools: { "mock.tool": tool }, allowDestructive: true });
     assert.equal(called, true);
     assert.equal(record.passed, true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Task 7: the approval gate replaces the blanket --allow-writes/--yes flags
+// as the FINAL boundary on a write step. Spec: flight-recorder-v2.md §2.
+// ---------------------------------------------------------------------------
+
+const WRITE_ACTION_ARGS = { url: "https://example.com/write" };
+const DESTRUCTIVE_ACTION_ARGS = { url: "https://example.com/delete" };
+
+const WRITE_APPROVE_HASH = computeApprovalHash({ actionTool: "mock.tool", actionArgs: WRITE_ACTION_ARGS });
+const DESTRUCTIVE_APPROVE_HASH = computeApprovalHash({ actionTool: "mock.tool", actionArgs: DESTRUCTIVE_ACTION_ARGS });
+const WRONG_HASH = `sha256:${"0".repeat(64)}`;
+
+function skillWithApprove(effect: "idempotent-write" | "destructive", approveLine?: string): string {
+  const args = effect === "destructive" ? DESTRUCTIVE_ACTION_ARGS : WRITE_ACTION_ARGS;
+  return `---
+name: test-approval-gate
+description: exercises the approval gate
+---
+
+### Step 1 — write it
+- intent: perform the write
+- action: mock.tool ${JSON.stringify(args)}
+- assert: status == 200
+- effect: ${effect}
+${approveLine !== undefined ? `- approve: ${approveLine}\n` : ""}`;
+}
+
+function callCountingTool(status = 200): { tool: Tool; calls: () => number } {
+  let calls = 0;
+  const tool: Tool = {
+    effect: "read",
+    async run() {
+      calls++;
+      return { status, headers: {}, body: "" };
+    },
+  };
+  return { tool, calls: () => calls };
+}
+
+test("approval gate: approved+match executes a WRITE step with NO flags at all", async () => {
+  const skill = parseSkill(skillWithApprove("idempotent-write", WRITE_APPROVE_HASH));
+  const dir = await mkdtemp(path.join(tmpdir(), "reelier-test-"));
+  const { tool, calls } = callCountingTool();
+  try {
+    const record = await runSkill(skill, { cwd: dir, tools: { "mock.tool": tool } }); // no allowWrites/allowDestructive
+    assert.equal(calls(), 1);
+    assert.equal(record.passed, true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("approval gate: approved+match executes a DESTRUCTIVE step with NO flags at all", async () => {
+  const skill = parseSkill(skillWithApprove("destructive", DESTRUCTIVE_APPROVE_HASH));
+  const dir = await mkdtemp(path.join(tmpdir(), "reelier-test-"));
+  const { tool, calls } = callCountingTool();
+  try {
+    const record = await runSkill(skill, { cwd: dir, tools: { "mock.tool": tool } });
+    assert.equal(calls(), 1);
+    assert.equal(record.passed, true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("approval gate: approved+MISMATCH fails closed on a write step even WITH --allow-writes AND --yes", async () => {
+  const skill = parseSkill(skillWithApprove("idempotent-write", WRONG_HASH));
+  const dir = await mkdtemp(path.join(tmpdir(), "reelier-test-"));
+  const { tool, calls } = callCountingTool();
+  try {
+    const record = await runSkill(skill, {
+      cwd: dir,
+      tools: { "mock.tool": tool },
+      allowWrites: true,
+      allowDestructive: true,
+    });
+    assert.equal(calls(), 0, "the fake tool must NEVER be called on an approval mismatch");
+    assert.equal(record.passed, false);
+    assert.match(record.steps[0].failures[0], /Approval mismatch/);
+    assert.match(record.steps[0].failures[0], /reelier approve/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("approval gate: approved+MISMATCH fails closed on a destructive step even WITH --allow-writes AND --yes", async () => {
+  const skill = parseSkill(skillWithApprove("destructive", WRONG_HASH));
+  const dir = await mkdtemp(path.join(tmpdir(), "reelier-test-"));
+  const { tool, calls } = callCountingTool();
+  try {
+    const record = await runSkill(skill, {
+      cwd: dir,
+      tools: { "mock.tool": tool },
+      allowWrites: true,
+      allowDestructive: true,
+    });
+    assert.equal(calls(), 0, "the fake tool must NEVER be called on an approval mismatch");
+    assert.equal(record.passed, false);
+    assert.match(record.steps[0].failures[0], /Approval mismatch/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("approval gate: no approve field on a write step keeps today's EXACT refusal message, no flags", async () => {
+  const skill = parseSkill(skillWithApprove("idempotent-write"));
+  const dir = await mkdtemp(path.join(tmpdir(), "reelier-test-"));
+  const { tool, calls } = callCountingTool();
+  try {
+    const record = await runSkill(skill, { cwd: dir, tools: { "mock.tool": tool } });
+    assert.equal(calls(), 0);
+    assert.equal(record.passed, false);
+    assert.match(
+      record.steps[0].failures[0],
+      /Refusing to execute a write step \(effect: idempotent-write\) — replay is read-only by default\. Pass --allow-writes to execute it\./
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("approval gate: no approve field on a write step executes normally with --allow-writes (legacy path unchanged)", async () => {
+  const skill = parseSkill(skillWithApprove("idempotent-write"));
+  const dir = await mkdtemp(path.join(tmpdir(), "reelier-test-"));
+  const { tool, calls } = callCountingTool();
+  try {
+    const record = await runSkill(skill, { cwd: dir, tools: { "mock.tool": tool }, allowWrites: true });
+    assert.equal(calls(), 1);
+    assert.equal(record.passed, true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("approval gate: no approve field on a destructive step keeps today's EXACT refusal message", async () => {
+  const skill = parseSkill(skillWithApprove("destructive"));
+  const dir = await mkdtemp(path.join(tmpdir(), "reelier-test-"));
+  const { tool, calls } = callCountingTool();
+  try {
+    const record = await runSkill(skill, { cwd: dir, tools: { "mock.tool": tool } });
+    assert.equal(calls(), 0);
+    assert.equal(record.passed, false);
+    assert.match(record.steps[0].failures[0], /Refusing to execute destructive step without --yes\./);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

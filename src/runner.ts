@@ -32,6 +32,7 @@ export { builtinTools };
 import type { LlmClient } from "./llm.js";
 import { resolveL1, resolveL2 } from "./escalate.js";
 import { applyWritebackSafely } from "./writeback.js";
+import { computeApprovalHash } from "./approval.js";
 
 export type StepOutcome = "passed" | "failed" | "unchecked" | "skipped";
 
@@ -310,38 +311,56 @@ async function executeStep(
     return { outcome: "failed", ms: Date.now() - started, failures, binds: localBinds };
   }
 
-  if (step.effect === "destructive" && !ctx.allowDestructive) {
-    let filledArgs: unknown;
-    try {
-      filledArgs = fillTemplate(step.actionArgs, bindings, now);
-    } catch (err) {
-      filledArgs = `<error: ${(err as Error).message}>`;
-    }
-    failures.push(
-      `Refusing to execute destructive step without --yes. Filled action: ${step.actionTool} ${JSON.stringify(
-        filledArgs
-      )}`
-    );
-    return { outcome: "failed", ms: Date.now() - started, failures, binds: localBinds };
-  }
-
   // Read-only by default: a write step never re-fires on replay unless the
   // caller opts in. `read` steps (incl. POST-that-reads marked `effect: read`)
-  // are never gated; this only holds back `idempotent-write`. Falls back to the
-  // tool's intrinsic effect when the step didn't override one.
+  // are never gated; this only holds back `idempotent-write`/`destructive`.
+  // Falls back to the tool's intrinsic effect when the step didn't override one.
   const effectiveEffect = step.effect ?? tool.effect;
-  if (effectiveEffect === "idempotent-write" && !ctx.allowWrites) {
-    let filledArgs: unknown;
-    try {
-      filledArgs = fillTemplate(step.actionArgs, bindings, now);
-    } catch (err) {
-      filledArgs = `<error: ${(err as Error).message}>`;
+  const isWrite = effectiveEffect === "idempotent-write" || effectiveEffect === "destructive";
+
+  if (isWrite) {
+    if (step.approve !== undefined) {
+      // Hash-bound approval (docs/specs/flight-recorder-v2.md §2) is the
+      // FINAL boundary on a write step: a human stamped this hash (`reelier
+      // approve`) against the step's exact tool+args template. If it still
+      // matches, this executes with NO flag needed at all. If it doesn't —
+      // the step drifted since it was approved — this fails closed and NO
+      // flag (--allow-writes, --yes) can override that refusal.
+      const expected = computeApprovalHash(step);
+      if (step.approve !== expected) {
+        failures.push(
+          `Approval mismatch on write step — the step's tool/args changed since it was approved. ` +
+            `Re-review and re-approve: reelier approve <skill.md>. (--allow-writes/--yes do NOT override an approval mismatch.)`
+        );
+        return { outcome: "failed", ms: Date.now() - started, failures, binds: localBinds };
+      }
+      // Hash matches: the human approved exactly this operation — execute, no flag needed.
+    } else if (effectiveEffect === "destructive" && !ctx.allowDestructive) {
+      let filledArgs: unknown;
+      try {
+        filledArgs = fillTemplate(step.actionArgs, bindings, now);
+      } catch (err) {
+        filledArgs = `<error: ${(err as Error).message}>`;
+      }
+      failures.push(
+        `Refusing to execute destructive step without --yes. Filled action: ${step.actionTool} ${JSON.stringify(
+          filledArgs
+        )}`
+      );
+      return { outcome: "failed", ms: Date.now() - started, failures, binds: localBinds };
+    } else if (effectiveEffect === "idempotent-write" && !ctx.allowWrites) {
+      let filledArgs: unknown;
+      try {
+        filledArgs = fillTemplate(step.actionArgs, bindings, now);
+      } catch (err) {
+        filledArgs = `<error: ${(err as Error).message}>`;
+      }
+      failures.push(
+        `Refusing to execute a write step (effect: idempotent-write) — replay is read-only by default. ` +
+          `Pass --allow-writes to execute it. Filled action: ${step.actionTool} ${JSON.stringify(filledArgs)}`
+      );
+      return { outcome: "failed", ms: Date.now() - started, failures, binds: localBinds };
     }
-    failures.push(
-      `Refusing to execute a write step (effect: idempotent-write) — replay is read-only by default. ` +
-        `Pass --allow-writes to execute it. Filled action: ${step.actionTool} ${JSON.stringify(filledArgs)}`
-    );
-    return { outcome: "failed", ms: Date.now() - started, failures, binds: localBinds };
   }
 
   let filledArgs: unknown;

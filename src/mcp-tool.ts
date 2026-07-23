@@ -51,6 +51,7 @@ export function effectFromAnnotations(tool: DownstreamTool): Effect {
 function mcpTool(downstream: DownstreamConnection, realName: string, effect: Effect): Tool {
   return {
     effect,
+    server: downstream.name,
     async run(args: unknown, _ctx: ToolContext): Promise<Observation> {
       const result = await downstream.call(realName, args);
       return mcpResultToObservation(result);
