@@ -36,7 +36,7 @@ _Drafted 2026-07-22. Three features, all from one dev.to comment (Mads Hansen, o
 **Job:** `--allow-writes` is a blanket yes to *every* write in the skill — too broad to be the final safety boundary. Replace it: each write step carries a human approval bound to the hash of the exact operation, replay refuses anything that drifted from what was approved, and the receipt records what the write actually produced.
 
 **Two hashes, deliberately distinct (state this in the docs, plainly):**
-- **Approval hash** — `sha256(canonical JSON {tool, server, argsTemplate})` where `argsTemplate` is the step's args with `{{placeholders}}` **intact**. Binding to filled args would brick every skill that binds a value from a prior step; template-binding means a human approves the *operation shape* — and for fully-static steps the template IS the exact args.
+- **Approval hash** — `sha256(canonical JSON {tool, argsTemplate})` where `argsTemplate` is the step's args with `{{placeholders}}` **intact**. Binding to filled args would brick every skill that binds a value from a prior step; template-binding means a human approves the *operation shape* — and for fully-static steps the template IS the exact args. Server identity is deliberately NOT in this hash: `reelier approve` runs offline (no `--wrap`), and environment binding is the **manifest's** job — the preflight fails closed on server/schema drift before approval is ever evaluated. Two controls, one job each.
 - **Run idempotency key** — `sha256(canonical JSON {tool, server, filledArgs})` computed at execution time, recorded in the receipt. This is the per-run "exact normalized arguments + target environment" identity.
 
 **Mechanics:**
@@ -47,7 +47,7 @@ _Drafted 2026-07-22. Three features, all from one dev.to comment (Mads Hansen, o
   - no `approve:` → legacy behavior (`--allow-writes` / `--allow-destructive` required) + a deprecation warning pointing at `reelier approve`.
   - L2 escalation with patched args (escalate.ts:40–44) re-hashes: patched args that leave the approved template → the write is NOT re-executed at L2 (existing destructive-at-L2 guard, runner.ts:511–513, extends to approval mismatch).
 - **Receipt:** `StepRecord` gains optional `write: { idempotencyKey, approved: boolean, resource?: { id?, version? } }`. `resource` extracted from the response body by an honest heuristic — top-level `id`/`_id`/`version`/`etag`/`revision`/`sha` in JSON bodies — omitted when absent, never guessed. The L2 re-execution path (runner.ts:544–548) stamps the same field (today it evaluates and discards — a healed write leaving no record of what it produced is exactly the gap this closes). Duplicate idempotency key within one run → loud warning + both recorded, not a hard fail (rare-legitimate double-writes exist).
-- **policy.yml stays the floor:** deny > dry_run > approval. An approved step that a policy denies is still denied.
+- **policy.yml stays the floor at the recorder chokepoint:** deny > dry_run > approval when recording through the wrap. Replay-side policy evaluation does not exist today and v2 does not add it (see Non-goals) — the replay-side controls are the manifest preflight + approval gate.
 
 **Design decisions:** approval lives per-step in SKILL.md (hash-bound, PR-reviewable, headless-CI-safe), not in policy.yml allow-rules (not bound to args — coarser than the ask) and not interactive-at-replay (breaks the CI wedge). Idempotency keys are recorded, not enforced against external state — Reelier has no cross-run ledger in v2 and MCP tools accept no idempotency header; claiming dedup we can't enforce would be a lie. The key makes duplicates *detectable* in receipts; enforcement is v3+ if ever.
 
@@ -70,7 +70,7 @@ _Drafted 2026-07-22. Three features, all from one dev.to comment (Mads Hansen, o
 
 ## Non-goals (v2)
 
-Semantic schema diffing · cross-run idempotency enforcement / external-state ledger · policy.yml allow-rules · interactive approval at replay · timeout/malformed-body injection · any change to record-time fail-open behavior · signing (still v1 §6, still gating the banned words).
+Semantic schema diffing · cross-run idempotency enforcement / external-state ledger · policy.yml allow-rules · replay-side policy.yml evaluation · interactive approval at replay · timeout/malformed-body injection · any change to record-time fail-open behavior · signing (still v1 §6, still gating the banned words).
 
 ## Order + effort
 
