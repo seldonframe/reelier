@@ -1,0 +1,49 @@
+# PR receipt demo — proves the Reelier receipts GitHub App renders a sticky
+# comment on a real pull request.
+#
+# Triggers on push to demo/** branches (NOT pull_request): on a push event
+# GITHUB_SHA is the branch's head commit, which is the sha the App matches an
+# open PR against. A pull_request event runs against a synthetic MERGE commit
+# that is no PR's head, so it would never match — hence push here.
+#
+# The workflow only pushes an attested receipt; the App (installed on this
+# org) does the commenting via its own installation token, so this job needs
+# no pull-requests permission.
+name: PR receipt demo
+
+on:
+  push:
+    branches: ["demo/**"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install reelier
+        run: npm i -g reelier
+      - name: Replay one skill and push an attested receipt
+        env:
+          REELIER_CLOUD_URL: https://www.reelier.com
+          REELIER_CLOUD_KEY: ${{ secrets.REELIER_API_KEY }}
+          REELIER_SIGNING_KEY: ${{ secrets.REELIER_SIGNING_KEY }}
+        run: |
+          reelier run examples/portfolio/registry-latest.skill.md
+          if [ -n "$REELIER_SIGNING_KEY" ]; then
+            mkdir -p ~/.reelier/signing
+            printf '%s\n' "$REELIER_SIGNING_KEY" > ~/.reelier/signing/9158fc9cd0fb4e9b.pem
+          fi
+          if [ -n "$REELIER_CLOUD_KEY" ]; then
+            reelier push examples/portfolio/registry-latest.skill.md --timestamp --share
+          else
+            echo "REELIER_API_KEY not set — cannot push an attested receipt."
+            exit 1
+          fi
