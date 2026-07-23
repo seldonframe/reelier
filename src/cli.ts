@@ -13,7 +13,8 @@ import { parseSkill, SkillParseError, type Step } from "./skill.js";
 import { runSkill, dryRunSkill, readRunRecords, type RunRecord } from "./runner.js";
 import { pushSkill, PublicSubmissionError, type PushRecordResult } from "./push.js";
 import { getSkill, getMineSkill, type GetOutcome, type GetMineOutcome } from "./get.js";
-import { DEFAULT_CLOUD_URL, readCliConfig } from "./cloud-config.js";
+import { DEFAULT_CLOUD_URL, readCliConfig, writeCliConfig, clearCliCredentials } from "./cloud-config.js";
+import { startLogin, pollForToken, openBrowser } from "./login.js";
 import { builtinTools } from "./tools.js";
 import { connectDownstream, type DownstreamConnection } from "./mcp-client.js";
 import { buildMcpTools } from "./mcp-tool.js";
@@ -2453,8 +2454,104 @@ export async function cmdInit(args: ParsedArgs): Promise<number> {
   return initCode !== 0 ? initCode : offerCode;
 }
 
+/** env -> config file -> DEFAULT_CLOUD_URL — same chain resolvePushConfig uses to resolve a base URL. */
+async function resolveBaseUrl(): Promise<string> {
+  const fileConfig = await readCliConfig();
+  return (process.env.REELIER_CLOUD_URL || fileConfig.cloudUrl || DEFAULT_CLOUD_URL).replace(/\/+$/, "");
+}
+
+/**
+ * `reelier login` — OAuth-Device-Flow-shaped handshake against Reelier
+ * Cloud: start the device code, print it + the confirm URL, best-effort open
+ * a browser, then poll until the user approves (or Ctrl-C cancels). Writes
+ * the resulting key to ~/.reelier/config.json. Never prints the key itself —
+ * only the resolved identity ("Logged in as ...").
+ */
+async function cmdLogin(): Promise<number> {
+  const baseUrl = await resolveBaseUrl();
+  let start;
+  try {
+    start = await startLogin(baseUrl);
+  } catch (err) {
+    console.error(`Failed to start login: ${(err as Error).message}`);
+    return 1;
+  }
+
+  console.log("Confirm this code in your browser:\n");
+  console.log(`    ${start.userCode}\n`);
+  console.log(start.verificationUriComplete);
+  console.log("\nWaiting for approval (Ctrl-C to cancel)...");
+
+  openBrowser(start.verificationUriComplete);
+
+  let apiKey: string;
+  let tenant: { name: string; githubLogin: string | null };
+  try {
+    ({ apiKey, tenant } = await pollForToken(baseUrl, start.deviceCode, {
+      intervalSeconds: start.interval,
+    }));
+  } catch (err) {
+    console.error((err as Error).message);
+    return 1;
+  }
+
+  await writeCliConfig({
+    cloudUrl: baseUrl === DEFAULT_CLOUD_URL ? undefined : baseUrl,
+    apiKey,
+    tenantName: tenant.name,
+    githubLogin: tenant.githubLogin ?? undefined,
+  });
+
+  console.log(`Logged in as ${tenant.githubLogin ?? tenant.name}. 'reelier push <skill>' now syncs receipts.`);
+  return 0;
+}
+
+/**
+ * `reelier logout` — clears the locally stored key. Does NOT revoke the key
+ * server-side; that happens from the dashboard (Settings), which is worth
+ * saying out loud since a lingering key would otherwise silently work again.
+ */
+async function cmdLogout(): Promise<number> {
+  await clearCliCredentials();
+  console.log("Logged out.");
+  console.log("Note: this only clears the key on this machine — revoke it from the dashboard (Settings) if it may have leaked.");
+  return 0;
+}
+
+/**
+ * `reelier whoami` — GET /api/v1/me with the stored key, prints the resolved
+ * identity or a precise reason it couldn't (no key at all vs. a rejected key).
+ */
+async function cmdWhoami(): Promise<number> {
+  const baseUrl = await resolveBaseUrl();
+  const fileConfig = await readCliConfig();
+  const apiKey = process.env.REELIER_CLOUD_KEY || fileConfig.apiKey;
+  if (!apiKey) {
+    console.error("Not logged in. Run 'reelier login'.");
+    return 1;
+  }
+
+  const res = await fetch(`${baseUrl}/api/v1/me`, {
+    headers: { authorization: `Bearer ${apiKey}` },
+  });
+  if (res.status === 401) {
+    console.error("API key is invalid or revoked. Run 'reelier login' again.");
+    return 1;
+  }
+  if (!res.ok) {
+    console.error(`Failed to look up identity (HTTP ${res.status}).`);
+    return 1;
+  }
+  const { tenant } = (await res.json()) as { tenant: { name: string; githubLogin: string | null } };
+  console.log(`${tenant.githubLogin ?? tenant.name} (${baseUrl})`);
+  return 0;
+}
+
 const USAGE =
-  "Usage: reelier <run|bench|cost|prices|mcp|serve|trace|compile|manifest|approve|push|get|verify|diff|ci|policy|init|from-session|scan|install|uninstall> [options]\n" +
+  "Usage: reelier <run|bench|cost|prices|mcp|serve|trace|compile|manifest|approve|push|get|verify|diff|ci|policy|init|from-session|scan|install|uninstall|login|logout|whoami> [options]\n" +
+  "  login  — reelier login: connect this machine to Reelier Cloud via a device-code browser handshake; writes ~/.reelier/config.json.\n" +
+  "  logout — reelier logout: clears the locally stored key (revoke it from the dashboard's Settings, not locally).\n" +
+  "  whoami — reelier whoami: print the identity the stored key resolves to, or that you're not logged in.\n" +
   "  ci     — reelier ci [--force] [--path <dir>]: writes .github/workflows/reelier-replay.yml — drift-CI + PR receipts in one command.\n" +
   "  manifest — reelier manifest <skill.md> --wrap \"<command>\": stamp/refresh the skill's tool-schema manifest from live servers.\n" +
   "  approve — reelier approve <skill.md> [--all]: hash-bind approval onto each write/destructive step (the final replay boundary).\n" +
@@ -2537,6 +2634,12 @@ async function main(): Promise<number> {
       return cmdInstall(args);
     case "uninstall":
       return cmdUninstall(args);
+    case "login":
+      return cmdLogin();
+    case "logout":
+      return cmdLogout();
+    case "whoami":
+      return cmdWhoami();
     default:
       console.error(USAGE);
       return 1;
