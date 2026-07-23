@@ -22,10 +22,14 @@ on:
     # https://docs.github.com/actions/using-workflows/events-that-trigger-workflows#schedule
     - cron: "0 8 * * *"
   workflow_dispatch: {} # adds a manual "Run workflow" button in the Actions tab
-  # Uncomment to also replay on every PR that touches the skill file:
-  # pull_request:
-  #   paths:
-  #     - "examples/benchmark/npm-info.skill.md"
+  # Replays on every PR too — with `pull-requests: write` below, the action
+  # also upserts ONE sticky PR comment carrying the receipt (steps passed,
+  # duration, tokens, and a receipt link when pushed) so reviewers see it
+  # without opening the Actions tab. Remove this trigger (or set the
+  # action's `pr-comment: "false"`) to keep this workflow schedule-only.
+  pull_request:
+    paths:
+      - "examples/benchmark/npm-info.skill.md"
 
 jobs:
   replay:
@@ -40,6 +44,11 @@ jobs:
       # never required for the replay itself to pass or fail.
       id-token: write
       contents: read # actions/checkout@v4's own minimum requirement
+      # Lets the action upsert its sticky PR receipt comment on `pull_request`
+      # events. Omit this (or drop it to `read`) and the action just logs
+      # "no pull-requests: write permission" and skips the comment — the
+      # replay itself still passes/fails exactly the same either way.
+      pull-requests: write
     steps:
       - uses: actions/checkout@v4
 

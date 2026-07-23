@@ -45,6 +45,15 @@ inputs:
       their own inputs and need none.
     required: false
     default: ""
+  pr-comment:
+    description: >-
+      Upsert one sticky PR comment carrying this run's receipt. Applies
+      only when the triggering event is `pull_request`/`pull_request_target`
+      AND the job has `permissions: pull-requests: write` — otherwise this
+      is skipped with a log line, never a failure. "true" (the default) or
+      "false".
+    required: false
+    default: "true"
 
 outputs:
   passed:
@@ -53,6 +62,9 @@ outputs:
   run-record-path:
     description: "Path to the .reelier/runs/<skill-name>.jsonl file written by this run, if any."
     value: ${{ steps.write-summary.outputs.record-path }}
+  receipt-url:
+    description: "Public receipt URL printed by `reelier push --share`, if this run pushed one."
+    value: ${{ steps.push-cloud.outputs.receipt-url }}
 
 runs:
   using: "composite"
@@ -107,14 +119,20 @@ runs:
       run: |
         set +e
         echo "::group::reelier push $SKILL"
-        reelier push "$SKILL"
+        PUSH_OUTPUT=$(reelier push "$SKILL" 2>&1)
         PUSH_EXIT_CODE=$?
+        printf '%s\n' "$PUSH_OUTPUT"
         echo "::endgroup::"
         if [ "$PUSH_EXIT_CODE" -eq 0 ]; then
           echo "status=pushed" >> "$GITHUB_OUTPUT"
         else
           echo "status=failed" >> "$GITHUB_OUTPUT"
         fi
+        # Only set when this push also carried `--share` (not passed by this
+        # action today) and the cloud actually minted a public receipt token
+        # — absent otherwise, never fabricated.
+        RECEIPT_URL=$(printf '%s\n' "$PUSH_OUTPUT" | grep -oE 'Receipt: https://\S+' | head -1 | sed 's/^Receipt: //')
+        echo "receipt-url=$RECEIPT_URL" >> "$GITHUB_OUTPUT"
         exit 0
 
     - name: Write job summary
@@ -125,6 +143,36 @@ runs:
         RUN_EXIT_CODE: ${{ steps.run-skill.outputs.exit-code }}
         CLOUD_PUSH_STATUS: ${{ inputs.cloud-key == '' && 'skipped' || steps.run-skill.outputs.passed != 'true' && 'not-attempted' || steps.push-cloud.outputs.status }}
       run: node "${{ github.action_path }}/.github/scripts/gha-summary.mjs"
+
+    - name: Post PR receipt comment
+      id: pr-comment
+      if: always()
+      shell: bash
+      env:
+        PR_COMMENT: ${{ inputs.pr-comment }}
+        EVENT_NAME: ${{ github.event_name }}
+        GITHUB_TOKEN: ${{ github.token }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        SKILL_PATH: ${{ inputs.skill }}
+        MAX_LEVEL: ${{ inputs.max-level }}
+        RUN_EXIT_CODE: ${{ steps.run-skill.outputs.exit-code }}
+        CLOUD_KEY_SET: ${{ inputs.cloud-key != '' && 'true' || 'false' }}
+        RECEIPT_URL: ${{ steps.push-cloud.outputs.receipt-url }}
+      run: |
+        set +e
+        if [ "$PR_COMMENT" != "true" ]; then
+          echo "pr-comment input is false — skipping PR comment."
+          exit 0
+        fi
+        if [ "$EVENT_NAME" != "pull_request" ] && [ "$EVENT_NAME" != "pull_request_target" ]; then
+          echo "not a PR event ($EVENT_NAME) — skipping PR comment."
+          exit 0
+        fi
+        # This never fails the job: any failure inside the script prints one
+        # WARNING line and the script itself exits 0 — see
+        # .github/scripts/gha-pr-comment.mjs's own doc comment.
+        node "${{ github.action_path }}/.github/scripts/gha-pr-comment.mjs"
+        exit 0
 
     - name: Fail the check if the replay failed
       shell: bash
