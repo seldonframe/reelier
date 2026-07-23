@@ -255,10 +255,13 @@ test("requestTimestamp: a malformed digest never reaches the network — null + 
 // captured live from https://freetsa.org/tsr by a one-off script (NOT this
 // test suite, NOT CI — see test/fixtures/freetsa-token.meta.json for the
 // exact digest input, fetch date, and provenance). This test makes ZERO
-// network calls; it only reads the checked-in bytes. Its purpose: prove
-// imprintMatches's scan-all fix (review finding #1) actually holds against
-// a genuine TSA response, not just hand-built fixtures that might
-// (however carefully) still miss some real-world CMS quirk.
+// network calls; it only reads the checked-in bytes. Honest scope (re-review
+// finding): freetsa signs its SignedData with SHA-512, so this token carries
+// exactly ONE sha256 OID — the imprint itself — which means it canNOT catch
+// a regression to first-OID anchoring; the hand-built realistic-CMS fixture
+// above is the guard for that specific bug (review finding #1). What this
+// test DOES prove: imprintMatches parses a genuine TSA response's real-world
+// DER, and the ✗ direction rejects a wrong digest on real bytes.
 // ---------------------------------------------------------------------------
 
 test("imprintMatches: a REAL freetsa.org token (checked-in fixture) matches its real digest and rejects a wrong one", async () => {
