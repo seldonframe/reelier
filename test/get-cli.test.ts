@@ -115,7 +115,7 @@ async function withCapturedLogs<T>(run: () => Promise<T>): Promise<{ result: T; 
 }
 
 function makeArgs(ref: string, flags: string[] = [], opts: Record<string, string> = {}): ParsedArgs {
-  return { positional: [ref], flags: new Set(flags), vars: {}, wraps: [], opts };
+  return { positional: [ref], flags: new Set(flags), vars: {}, wraps: [], opts, fails: [] };
 }
 
 test("cmdGet: READ-ONLY fixture prints the full trust block, no writes warning", async () => {
@@ -191,7 +191,7 @@ test("cmdGet: WRITES fixture prints the amber warning + replay-re-executes line"
 });
 
 test("cmdGet: missing ref prints usage and exits 1", async () => {
-  const argsNoPositional: ParsedArgs = { positional: [], flags: new Set(), vars: {}, wraps: [], opts: {} };
+  const argsNoPositional: ParsedArgs = { positional: [], flags: new Set(), vars: {}, wraps: [], opts: {}, fails: [] };
   const { result: exitCode, lines } = await withCapturedLogs(() => cmdGet(argsNoPositional));
   assert.equal(exitCode, 1);
   assert.ok(lines.some((l) => l.startsWith("Usage: reelier get ")));

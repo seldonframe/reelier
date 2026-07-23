@@ -24,7 +24,7 @@ description: a skill used to exercise cmdManifest
 `;
 
 function fakeArgs(positional: string[], wraps: string[] = []): ParsedArgs {
-  return { positional, flags: new Set(), vars: {}, wraps, opts: {} };
+  return { positional, flags: new Set(), vars: {}, wraps, opts: {}, fails: [] };
 }
 
 function fakeConnection(name: string, tools: DownstreamConnection["tools"]): DownstreamConnection {
@@ -153,7 +153,7 @@ manifest: {"tools":[{"digest":"${digest}","name":"get_status","server":"fake"}],
 }
 
 function runArgs(positional: string[], wraps: string[] = [], flags: string[] = []): ParsedArgs {
-  return { positional, flags: new Set(flags), vars: {}, wraps, opts: {} };
+  return { positional, flags: new Set(flags), vars: {}, wraps, opts: {}, fails: [] };
 }
 
 async function captureConsoleError<T>(fn: () => Promise<T>): Promise<{ result: T; logs: string[] }> {

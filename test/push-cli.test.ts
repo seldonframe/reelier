@@ -122,7 +122,7 @@ async function withCapturedLogs<T>(run: () => Promise<T>): Promise<{ result: T; 
 }
 
 function makeArgs(skillPath: string, flags: string[]): ParsedArgs {
-  return { positional: [skillPath], flags: new Set(flags), vars: {}, wraps: [], opts: {} };
+  return { positional: [skillPath], flags: new Set(flags), vars: {}, wraps: [], opts: {}, fails: [] };
 }
 
 test("cmdPush --share: the cloud returns a shareUrl -> 'Receipt:' + badge markdown print, no fallback notice", async () => {

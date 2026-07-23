@@ -74,6 +74,8 @@ export interface ParsedArgs {
   vars: Record<string, string>;
   wraps: string[];
   opts: Record<string, string>;
+  /** Raw `--fail N` / `--fail N=status` values, in the order given — repeatable, mirrors `wraps`. Parsed/validated by cmdRun (see parseMockFailures). */
+  fails: string[];
 }
 
 function parseArgv(argv: string[]): ParsedArgs {
@@ -82,6 +84,7 @@ function parseArgv(argv: string[]): ParsedArgs {
   const vars: Record<string, string> = {};
   const wraps: string[] = [];
   const opts: Record<string, string> = {};
+  const fails: string[] = [];
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -98,6 +101,12 @@ function parseArgv(argv: string[]): ParsedArgs {
         throw new Error("--wrap requires a command-line string");
       }
       wraps.push(val);
+    } else if (arg === "--fail") {
+      const val = argv[++i];
+      if (!val) {
+        throw new Error("--fail requires a value (N or N=status), e.g. --fail 3 or --fail 3=429");
+      }
+      fails.push(val);
     } else if (arg === "--trace-dir") {
       const val = argv[++i];
       if (!val) {
@@ -135,7 +144,27 @@ function parseArgv(argv: string[]): ParsedArgs {
       positional.push(arg);
     }
   }
-  return { positional, flags, vars, wraps, opts };
+  return { positional, flags, vars, wraps, opts, fails };
+}
+
+/**
+ * Parse `--fail` values (`N` or `N=status`) into a step-number -> injected-
+ * HTTP-status map. `N` alone defaults to status 500. Throws a plain `Error`
+ * (caught by cmdRun as a usage error, exit 1) on anything that doesn't match
+ * — never silently ignored.
+ */
+function parseMockFailures(raw: string[]): Record<number, number> {
+  const result: Record<number, number> = {};
+  for (const spec of raw) {
+    const m = spec.match(/^(\d+)(?:=(\d+))?$/);
+    if (!m) {
+      throw new Error(`--fail requires N or N=status (e.g. --fail 3 or --fail 3=429), got: ${JSON.stringify(spec)}`);
+    }
+    const n = parseInt(m[1], 10);
+    const status = m[2] !== undefined ? parseInt(m[2], 10) : 500;
+    result[n] = status;
+  }
+  return result;
 }
 
 function fmtDuration(ms: number): string {
@@ -164,7 +193,8 @@ export async function cmdRun(
   if (!skillPath) {
     console.error(
       "Usage: reelier run <skill.md> [--dry-run] [--allow-writes] [--yes] [--ignore-manifest] [--var name=value ...] " +
-        "[--max-level 0|1|2] [--llm-base-url ...] [--llm-api-key ...] [--llm-model ...] [--llm-l2-model ...]"
+        "[--max-level 0|1|2] [--llm-base-url ...] [--llm-api-key ...] [--llm-model ...] [--llm-l2-model ...] " +
+        "[--fail N[=status] ...]"
     );
     return 1;
   }
@@ -172,6 +202,17 @@ export async function cmdRun(
   let maxLevel: 0 | 1 | 2;
   try {
     maxLevel = parseMaxLevel(args.opts["max-level"]);
+  } catch (err) {
+    console.error((err as Error).message);
+    return 1;
+  }
+
+  // `--fail N[=status]` (docs/specs/flight-recorder-v2.md §3): validated up
+  // front, before even reading the skill file — a malformed --fail is a
+  // usage error, not something that should depend on the skill existing.
+  let mockFailures: Record<number, number>;
+  try {
+    mockFailures = parseMockFailures(args.fails);
   } catch (err) {
     console.error((err as Error).message);
     return 1;
@@ -248,6 +289,13 @@ export async function cmdRun(
 
     const tools = downstreams.length > 0 ? { ...builtinTools, ...buildMcpTools(downstreams) } : undefined;
 
+    if (args.fails.length > 0) {
+      const stepNums = Object.keys(mockFailures)
+        .map(Number)
+        .sort((a, b) => a - b);
+      console.log(`MOCK RUN — injected failures at step(s): ${stepNums.join(", ")}`);
+    }
+
     // Rule: at --max-level 0 (default) the LLM is never constructed or
     // called. Only build it when escalation was actually requested.
     const llmConfig =
@@ -274,12 +322,16 @@ export async function cmdRun(
       // stamped verbatim onto the RunRecord (see RunRecord.skillContentSha256).
       skillContentSha256: createHash("sha256").update(source, "utf8").digest("hex"),
       manifestIgnored,
+      ...(args.fails.length > 0 ? { mockFailures } : {}),
       onStep: (rec) => {
         const icon =
           rec.outcome === "passed" || rec.outcome === "unchecked" ? "✓" : rec.outcome === "skipped" ? "○" : "✗";
         const tag = rec.outcome === "unchecked" ? " (unchecked: no assertions)" : "";
         const levelTag = rec.level > 0 ? ` [healed L${rec.level}]` : "";
         console.log(`${icon} Step ${rec.n} — ${rec.title} [${rec.outcome}${tag}]${levelTag} ${fmtDuration(rec.ms)}`);
+        if (rec.mocked) {
+          console.log(`    ⚡ INJECTED failure (--fail ${rec.n})`);
+        }
         for (const f of rec.failures) {
           console.log(`    - ${f}`);
         }

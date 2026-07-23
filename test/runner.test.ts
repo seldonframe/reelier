@@ -9,6 +9,7 @@ import type { Observation } from "../src/assert.js";
 import { parseSkill } from "../src/skill.js";
 import { computeApprovalHash, computeIdempotencyKey } from "../src/approval.js";
 import type { LlmClient, LlmCallInput, LlmCallResult } from "../src/llm.js";
+import { cmdRun, type ParsedArgs } from "../src/cli.js";
 
 test("fillTemplate replaces {{var}} holes in string values, recursively", () => {
   const filled = fillTemplate(
@@ -636,6 +637,307 @@ test("write receipt: an L2-healed write step carries a fresh write block (from t
       record.steps[0].write?.idempotencyKey,
       computeIdempotencyKey("mock.tool", null, { url: "https://example.com/v2/contacts" })
     );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Task 10: --fail N[=status] mocked-failure replay through the real
+// escalation ladder. Spec: flight-recorder-v2.md §3.
+// ---------------------------------------------------------------------------
+
+const SKILL_MOCK_SINGLE = `---
+name: test-mock-single
+description: one read step, mockable
+---
+
+### Step 1 — get a thing
+- intent: fetch a thing
+- action: mock.tool {"url": "https://example.com/thing"}
+- assert: status == 200
+- effect: read
+`;
+
+test("mock failure: a mocked step never dispatches the real tool", async () => {
+  const skill = parseSkill(SKILL_MOCK_SINGLE);
+  const dir = await mkdtemp(path.join(tmpdir(), "reelier-test-"));
+  let called = false;
+  try {
+    const tool: Tool = {
+      effect: "read",
+      async run() {
+        called = true;
+        return { status: 200, headers: {}, body: "" };
+      },
+    };
+    const record = await runSkill(skill, {
+      cwd: dir,
+      tools: { "mock.tool": tool },
+      mockFailures: { 1: 500 },
+    });
+    assert.equal(called, false, "the real tool must never be called for a mocked step");
+    assert.equal(record.passed, false);
+    assert.equal(record.steps[0].mocked, true);
+    assert.match(record.steps[0].failures[0], /status/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("mock failure: defaults to injected status 500 when no override given", async () => {
+  const skill = parseSkill(SKILL_MOCK_SINGLE);
+  const dir = await mkdtemp(path.join(tmpdir(), "reelier-test-"));
+  try {
+    const record = await runSkill(skill, {
+      cwd: dir,
+      tools: { "mock.tool": mockTool([{ status: 200, headers: {}, body: "" }]) },
+      mockFailures: { 1: 500 },
+    });
+    assert.equal(record.steps[0].outcome, "failed");
+    assert.equal(record.steps[0].mocked, true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("mock failure: an explicit override status is honored (e.g. 429)", async () => {
+  const skill = parseSkill(`---
+name: test-mock-status
+description: asserts a specific injected status
+---
+
+### Step 1 — get a thing
+- intent: fetch a thing
+- action: mock.tool {"url": "https://example.com/thing"}
+- assert: status == 429
+- effect: read
+`);
+  const dir = await mkdtemp(path.join(tmpdir(), "reelier-test-"));
+  try {
+    const record = await runSkill(skill, {
+      cwd: dir,
+      tools: { "mock.tool": mockTool([{ status: 200, headers: {}, body: "" }]) },
+      mockFailures: { 1: 429 },
+    });
+    // The synthetic observation's status is 429, matching the assert -> passes.
+    assert.equal(record.steps[0].outcome, "passed");
+    assert.equal(record.steps[0].mocked, true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("mock failure: an unmocked step in the same run is completely unaffected", async () => {
+  const skill = parseSkill(SKILL_TWO_STEPS);
+  const dir = await mkdtemp(path.join(tmpdir(), "reelier-test-"));
+  try {
+    const record = await runSkill(skill, {
+      cwd: dir,
+      tools: {
+        "mock.tool": {
+          effect: "read",
+          async run() {
+            return { status: 200, headers: {}, body: JSON.stringify({ token: "tok-9" }) };
+          },
+        },
+      },
+      mockFailures: { 1: 500 },
+    });
+    assert.equal(record.steps[0].mocked, true);
+    assert.equal(record.steps[0].outcome, "failed");
+    assert.equal(record.steps[1].outcome, "skipped");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("mock failure: RunRecord.mockFailures carries the sorted step numbers; absent when none injected", async () => {
+  const skill = parseSkill(SKILL_MOCK_SINGLE);
+  const dir = await mkdtemp(path.join(tmpdir(), "reelier-test-"));
+  try {
+    const record = await runSkill(skill, {
+      cwd: dir,
+      tools: { "mock.tool": mockTool([{ status: 200, headers: {}, body: "" }]) },
+      mockFailures: { 1: 500 },
+    });
+    assert.deepEqual(record.mockFailures, [1]);
+
+    const dir2 = await mkdtemp(path.join(tmpdir(), "reelier-test-"));
+    try {
+      const record2 = await runSkill(skill, {
+        cwd: dir2,
+        tools: { "mock.tool": mockTool([{ status: 200, headers: {}, body: "" }]) },
+      });
+      assert.equal(record2.mockFailures, undefined);
+      assert.ok(!("mockFailures" in record2));
+    } finally {
+      await rm(dir2, { recursive: true, force: true });
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("mock failure: a mocked write step never gets a write receipt (no dispatch happened)", async () => {
+  const skill = parseSkill(skillWithApprove("idempotent-write", WRITE_APPROVE_HASH));
+  const dir = await mkdtemp(path.join(tmpdir(), "reelier-test-"));
+  let called = false;
+  try {
+    const record = await runSkill(skill, {
+      cwd: dir,
+      tools: {
+        "mock.tool": {
+          effect: "read",
+          async run() {
+            called = true;
+            return { status: 200, headers: {}, body: "" };
+          },
+        },
+      },
+      mockFailures: { 1: 500 },
+    });
+    assert.equal(called, false);
+    assert.equal(record.steps[0].write, undefined);
+    assert.equal(record.steps[0].mocked, true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("mock failure: a mocked write step's real gates (approval/allow-writes) are never consulted — no flags needed to recovery-test it", async () => {
+  // No `approve:` and no allowWrites — under real execution this step would
+  // refuse outright. Under --fail it still runs (mocked), proving the gate
+  // is bypassed entirely for a mocked dispatch.
+  const skill = parseSkill(skillWithApprove("idempotent-write"));
+  const dir = await mkdtemp(path.join(tmpdir(), "reelier-test-"));
+  try {
+    const record = await runSkill(skill, {
+      cwd: dir,
+      tools: { "mock.tool": { effect: "read", async run() { return { status: 200, headers: {}, body: "" }; } } },
+      mockFailures: { 1: 500 },
+    });
+    assert.equal(record.steps[0].mocked, true);
+    assert.equal(record.steps[0].outcome, "failed");
+    // The failure must be the injected-observation assert failure, NOT the
+    // "Refusing to execute a write step" gate message.
+    assert.doesNotMatch(record.steps[0].failures[0], /Refusing to execute/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("mock failure: a mocked failure flows into the REAL escalation ladder and can be healed at L1", async () => {
+  const skill = parseSkill(SKILL_MOCK_SINGLE);
+  const dir = await mkdtemp(path.join(tmpdir(), "reelier-test-"));
+  try {
+    const { llm } = spyLlm([
+      {
+        json: { verdict: "patch", asserts: ["status == 500"], binds: [], reason: "injected failure is expected here" },
+        usage: { inputTokens: 10, outputTokens: 5 },
+      },
+    ]);
+    const record = await runSkill(skill, {
+      cwd: dir,
+      tools: { "mock.tool": mockTool([{ status: 200, headers: {}, body: "" }]) },
+      mockFailures: { 1: 500 },
+      maxLevel: 1,
+      llm,
+    });
+    assert.equal(record.passed, true);
+    assert.equal(record.steps[0].level, 1);
+    assert.equal(record.steps[0].mocked, true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Task 10 (CLI): cmdRun's --fail N[=status] flag parsing/validation, plus
+// its "MOCK RUN" banner and per-step "INJECTED" onStep line.
+// ---------------------------------------------------------------------------
+
+function fakeArgs(positional: string[], fails: string[] = []): ParsedArgs {
+  return { positional, flags: new Set(), vars: {}, wraps: [], opts: {}, fails };
+}
+
+async function withCapturedConsole<T>(fn: () => Promise<T>): Promise<{ result: T; logs: string[]; errs: string[] }> {
+  const logs: string[] = [];
+  const errs: string[] = [];
+  const origLog = console.log;
+  const origError = console.error;
+  console.log = (msg: string) => logs.push(msg);
+  console.error = (msg: string) => errs.push(msg);
+  try {
+    const result = await fn();
+    return { result, logs, errs };
+  } finally {
+    console.log = origLog;
+    console.error = origError;
+  }
+}
+
+test("cmdRun: --fail with a non-numeric step is rejected with a usage error, exit 1 (no file needed)", async () => {
+  const { result, errs } = await withCapturedConsole(() => cmdRun(fakeArgs(["/nonexistent/does-not-matter.skill.md"], ["x"])));
+  assert.equal(result, 1);
+  assert.ok(errs.some((l) => /--fail/.test(l)));
+});
+
+test("cmdRun: --fail 3=oops (non-numeric status) is rejected with a usage error, exit 1", async () => {
+  const { result, errs } = await withCapturedConsole(() => cmdRun(fakeArgs(["/nonexistent/does-not-matter.skill.md"], ["3=oops"])));
+  assert.equal(result, 1);
+  assert.ok(errs.some((l) => /--fail/.test(l)));
+});
+
+const SKILL_MOCK_HTTP = `---
+name: test-mock-http-get
+description: single read step against the builtin http.get tool
+---
+
+### Step 1 — get a thing
+- intent: fetch a thing
+- action: http.get {"url": "https://example.invalid/thing"}
+- assert: status == 200
+- effect: read
+`;
+
+test("cmdRun: --fail 1 prints the MOCK RUN banner and an INJECTED line, and never dispatches the real tool", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "reelier-test-"));
+  const skillPath = path.join(dir, "s.skill.md");
+  try {
+    const { writeFile } = await import("node:fs/promises");
+    await writeFile(skillPath, SKILL_MOCK_HTTP, "utf8");
+    const { result, logs } = await withCapturedConsole(() => cmdRun(fakeArgs([skillPath], ["1"])));
+    assert.equal(result, 1); // default injected status 500 fails the `status == 200` assert
+    assert.ok(logs.some((l) => /MOCK RUN — injected failures at step\(s\): 1/.test(l)));
+    assert.ok(logs.some((l) => /⚡ INJECTED failure \(--fail 1\)/.test(l)));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("cmdRun: --fail 1=429 honors the explicit override status", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "reelier-test-"));
+  const skillPath = path.join(dir, "s.skill.md");
+  try {
+    const { writeFile } = await import("node:fs/promises");
+    await writeFile(
+      skillPath,
+      `---
+name: test-mock-http-status
+description: single read step asserting a specific injected status
+---
+
+### Step 1 — get a thing
+- intent: fetch a thing
+- action: http.get {"url": "https://example.invalid/thing"}
+- assert: status == 429
+- effect: read
+`,
+      "utf8"
+    );
+    const { result } = await withCapturedConsole(() => cmdRun(fakeArgs([skillPath], ["1=429"])));
+    assert.equal(result, 0);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

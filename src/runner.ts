@@ -91,6 +91,13 @@ export interface StepRecord {
   why?: StepWhy;
   /** Present iff this step's tool actually dispatched a write-effect call — see StepWrite. */
   write?: StepWrite;
+  /**
+   * Set (true) iff this step's observation was a synthetic injected failure
+   * (`--fail N[=status]`, docs/specs/flight-recorder-v2.md §3) rather than a
+   * real tool dispatch. A mocked step never gets a `write` block — no tool
+   * call happened, so there's nothing to receipt.
+   */
+  mocked?: true;
 }
 
 export interface RunRecord {
@@ -116,6 +123,14 @@ export interface RunRecord {
    * v2 ones) stay byte-identical.
    */
   manifestIgnored?: true;
+  /**
+   * Sorted step numbers that had an injected failure this run (`--fail
+   * N[=status]`, docs/specs/flight-recorder-v2.md §3) — present only when
+   * `RunOptions.mockFailures` was non-empty. A mock run is a local recovery
+   * test, never a real receipt: `reelier push` refuses to push a record that
+   * carries this field (src/push.ts).
+   */
+  mockFailures?: number[];
   steps: StepRecord[];
   totals: {
     steps: number;
@@ -164,6 +179,14 @@ export interface RunOptions {
   skillContentSha256?: string;
   /** Threaded verbatim onto RunRecord.manifestIgnored — set by the caller (cmdRun) when `--ignore-manifest` bypassed the manifest preflight. The runner itself never evaluates a manifest; this is purely a receipt annotation. */
   manifestIgnored?: boolean;
+  /**
+   * `--fail N[=status]` (docs/specs/flight-recorder-v2.md §3): step number ->
+   * HTTP status to inject as a synthetic Observation instead of dispatching
+   * that step's real tool call. The synthetic failure flows into the SAME
+   * assert/bind evaluation and, on divergence, the SAME escalation ladder a
+   * real failure would hit. Absent/empty = no injection, today's behavior.
+   */
+  mockFailures?: Record<number, number>;
 }
 
 export interface DryRunStep {
@@ -343,12 +366,45 @@ function buildStepWrite(
   return { idempotencyKey, approved, ...(resource ? { resource } : {}) };
 }
 
+/** Evaluate a step's asserts/binds against `obs`, in place, into `failures`/`localBinds` (shared by the real-dispatch and mocked-dispatch paths in executeStep). */
+function evaluateAssertsAndBinds(
+  step: Step,
+  obs: Observation,
+  failures: string[],
+  localBinds: Record<string, unknown>
+): void {
+  for (const assertLine of step.asserts) {
+    try {
+      const result = evalAssert(assertLine, obs);
+      if (!result.ok) {
+        failures.push(result.message);
+      }
+    } catch (err) {
+      failures.push(`Assert error on '${assertLine}': ${(err as Error).message}`);
+    }
+  }
+
+  for (const bindLine of step.binds) {
+    try {
+      const result = evalBind(bindLine, obs);
+      if (!result.ok) {
+        failures.push(result.message);
+      } else {
+        localBinds[result.name] = result.value;
+      }
+    } catch (err) {
+      failures.push(`Bind error on '${bindLine}': ${(err as Error).message}`);
+    }
+  }
+}
+
 async function executeStep(
   step: Step,
   bindings: Record<string, unknown>,
   tools: Record<string, Tool>,
   ctx: ToolContext,
-  now: number
+  now: number,
+  mockStatus?: number
 ): Promise<{
   outcome: StepOutcome;
   ms: number;
@@ -356,6 +412,7 @@ async function executeStep(
   observation?: Observation;
   binds: Record<string, unknown>;
   write?: StepWrite;
+  mocked?: true;
 }> {
   const started = Date.now();
   const failures: string[] = [];
@@ -373,6 +430,38 @@ async function executeStep(
   if (!tool) {
     failures.push(`Unknown tool '${step.actionTool}'`);
     return { outcome: "failed", ms: Date.now() - started, failures, binds: localBinds };
+  }
+
+  if (mockStatus !== undefined) {
+    // Mocked-failure replay (`--fail N[=status]`, docs/specs/flight-recorder-v2.md
+    // §3): a mocked step dispatches NOTHING — no tool call happens, so the
+    // approval/write gates below are never reached (there's no side effect
+    // to guard; you can recovery-test a write skill without --allow-writes).
+    // The template is still filled — a template error is a real divergence
+    // and must surface normally — then a synthetic Observation flows into
+    // the SAME assert/bind evaluation and, on failure, the SAME escalation
+    // ladder a real failure would hit.
+    try {
+      fillTemplate(step.actionArgs, bindings, now);
+    } catch (err) {
+      failures.push(`Template fill failed: ${(err as Error).message}`);
+      return { outcome: "failed", ms: Date.now() - started, failures, binds: localBinds };
+    }
+    const obs: Observation = {
+      status: mockStatus,
+      headers: {},
+      body: `reelier: injected failure (--fail ${step.n})`,
+    };
+    evaluateAssertsAndBinds(step, obs, failures, localBinds);
+
+    const ms = Date.now() - started;
+    if (failures.length > 0) {
+      return { outcome: "failed", ms, failures, observation: obs, binds: localBinds, mocked: true };
+    }
+    if (step.asserts.length === 0) {
+      return { outcome: "unchecked", ms, failures, observation: obs, binds: localBinds, mocked: true };
+    }
+    return { outcome: "passed", ms, failures, observation: obs, binds: localBinds, mocked: true };
   }
 
   // Read-only by default: a write step never re-fires on replay unless the
@@ -448,29 +537,7 @@ async function executeStep(
   // happened regardless of whether the step's assertions later hold.
   const write = isWrite ? buildStepWrite(step.actionTool, tool, filledArgs, obs, step.approve !== undefined) : undefined;
 
-  for (const assertLine of step.asserts) {
-    try {
-      const result = evalAssert(assertLine, obs);
-      if (!result.ok) {
-        failures.push(result.message);
-      }
-    } catch (err) {
-      failures.push(`Assert error on '${assertLine}': ${(err as Error).message}`);
-    }
-  }
-
-  for (const bindLine of step.binds) {
-    try {
-      const result = evalBind(bindLine, obs);
-      if (!result.ok) {
-        failures.push(result.message);
-      } else {
-        localBinds[result.name] = result.value;
-      }
-    } catch (err) {
-      failures.push(`Bind error on '${bindLine}': ${(err as Error).message}`);
-    }
-  }
+  evaluateAssertsAndBinds(step, obs, failures, localBinds);
 
   const ms = Date.now() - started;
   if (failures.length > 0) {
@@ -715,7 +782,8 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
     }
 
     const started = Date.now();
-    const exec = await executeStep(step, bindings, tools, toolCtx, now);
+    const mockStatus = options.mockFailures?.[step.n];
+    const exec = await executeStep(step, bindings, tools, toolCtx, now, mockStatus);
     let outcome = exec.outcome;
     let failures = exec.failures;
     let level: 0 | 1 | 2 = 0;
@@ -760,6 +828,11 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
     // still record why it diverged.
     if (outcome === "failed" && !why) why = { trigger: initialTrigger ?? failures[0] };
 
+    // A mocked step (`--fail N`) never dispatched a real tool call, even if
+    // its own escalation subsequently healed via a REAL L2 re-execution —
+    // never receipt a write on a step whose original attempt was synthetic.
+    if (exec.mocked) write = undefined;
+
     if (write) {
       const firstSeenAt = writeKeySeen.get(write.idempotencyKey);
       if (firstSeenAt !== undefined) {
@@ -781,6 +854,7 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
       ...(escalationAttempted !== undefined ? { escalationAttempted } : {}),
       ...(why ? { why } : {}),
       ...(write ? { write } : {}),
+      ...(exec.mocked ? { mocked: true as const } : {}),
     };
     stepRecords.push(rec);
     options.onStep?.(rec, { tool: step.actionTool, args: step.actionArgs });
@@ -798,6 +872,9 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
   const totalMs = stepRecords.reduce((sum, s) => sum + s.ms, 0);
   const llmInputTokens = stepRecords.reduce((sum, s) => sum + (s.llm?.inputTokens ?? 0), 0);
   const llmOutputTokens = stepRecords.reduce((sum, s) => sum + (s.llm?.outputTokens ?? 0), 0);
+  const mockFailureSteps = Object.keys(options.mockFailures ?? {})
+    .map(Number)
+    .sort((a, b) => a - b);
 
   const record: RunRecord = {
     skill: skill.name,
@@ -806,6 +883,7 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
     passed: failedCount === 0,
     ...(options.skillContentSha256 ? { skillContentSha256: options.skillContentSha256 } : {}),
     ...(options.manifestIgnored ? { manifestIgnored: true } : {}),
+    ...(mockFailureSteps.length > 0 ? { mockFailures: mockFailureSteps } : {}),
     steps: stepRecords,
     totals: {
       steps: stepRecords.length,

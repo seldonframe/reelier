@@ -55,7 +55,7 @@ description: a skill with a write and a destructive step
 `;
 
 function fakeArgs(positional: string[], flags: string[] = []): ParsedArgs {
-  return { positional, flags: new Set(flags), vars: {}, wraps: [], opts: {} };
+  return { positional, flags: new Set(flags), vars: {}, wraps: [], opts: {}, fails: [] };
 }
 
 async function withTempDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
@@ -113,7 +113,7 @@ test("cmdApprove --all: an approved skill then satisfies the runner's approval g
     await cmdApprove(fakeArgs([skillPath], ["all"]));
 
     let called = false;
-    const runArgs: ParsedArgs = { positional: [skillPath], flags: new Set(), vars: {}, wraps: [], opts: {} };
+    const runArgs: ParsedArgs = { positional: [skillPath], flags: new Set(), vars: {}, wraps: [], opts: {}, fails: [] };
     const origLog = console.log;
     const origErr = console.error;
     console.log = () => {};
