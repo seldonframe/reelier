@@ -64,6 +64,7 @@ import {
 import { BUNDLED_PRICES_RETRIEVED_AT } from "./prices.js";
 import { loadPolicyForWrap, summarizePolicyForWrapStart, parsePolicyStrict, hasEndpointRules, ENDPOINT_RULE_NOTE } from "./policy.js";
 import { generateSigningKeypair, loadSigningKey, signRecordDigest, verifyRecordSignature, signingKeyDir } from "./signing.js";
+import { resolveVerifyPayload, evaluateVerifyClaims } from "./verify.js";
 
 // Exported (alongside cmdPush below) so test/push-cli.test.ts can drive
 // cmdPush's console output directly with a fake ParsedArgs + monkeypatched
@@ -132,7 +133,8 @@ function parseArgv(argv: string[]): ParsedArgs {
       arg === "--out-dir" ||
       arg === "--agent" ||
       arg === "--from-skill" ||
-      arg === "--since"
+      arg === "--since" ||
+      arg === "--key"
     ) {
       const val = argv[++i];
       if (!val) {
@@ -1973,6 +1975,50 @@ export async function cmdGet(args: ParsedArgs): Promise<number> {
 }
 
 /**
+ * `reelier verify <permalink|file> [--key <pub.pem>]` — trust-ladder plan
+ * task A4. Fetches/reads the receipt, recomputes the digest, and prints
+ * every claim as its own line — never a bare OK (spec §1's governing rule:
+ * a ladder of graded claims, never a blanket checkmark). Exits 1 only when
+ * a claim that IS present actually FAILED verification; absent or
+ * unchecked claims (unsigned, or signed with no --key given to check
+ * against) never fail the exit code.
+ */
+export async function cmdVerify(args: ParsedArgs): Promise<number> {
+  const target = args.positional[0];
+  if (!target) {
+    console.error("Usage: reelier verify <permalink|file> [--key <pub.pem>]");
+    return 1;
+  }
+
+  let publicPem: string | undefined;
+  if (args.opts.key) {
+    try {
+      publicPem = await readFile(args.opts.key, "utf8");
+    } catch (err) {
+      console.error(`Could not read --key ${args.opts.key}: ${(err as Error).message}`);
+      return 1;
+    }
+  }
+
+  const outcome = await resolveVerifyPayload(target, { cwd: process.cwd() });
+  if (!outcome.ok) {
+    console.error(outcome.message);
+    return 1;
+  }
+
+  const result = evaluateVerifyClaims(outcome.payload, publicPem);
+  console.log(`Verifying ${target}:`);
+  for (const claim of result.claims) console.log(`  ${claim.line}`);
+  console.log("");
+  console.log(
+    result.exitCode === 0
+      ? "No present claim failed verification. (Absent/unchecked rows above are honest gaps, not passes — see docs/specs/trust-ladder-v1.md §1 for what each raises.)"
+      : "At least one present claim FAILED verification — see the ✗ line above."
+  );
+  return result.exitCode;
+}
+
+/**
  * Compile a trace, print the "these are the gaps I won't guess about" open
  * questions block, replay it once at Level 0 (zero LLM calls, optionally
  * against real `--wrap`'d downstream(s) for the recorded-session path), and
@@ -2360,7 +2406,7 @@ export async function cmdInit(args: ParsedArgs): Promise<number> {
 }
 
 const USAGE =
-  "Usage: reelier <run|bench|cost|prices|mcp|serve|trace|compile|manifest|approve|push|get|diff|policy|init|from-session|scan|install|uninstall> [options]\n" +
+  "Usage: reelier <run|bench|cost|prices|mcp|serve|trace|compile|manifest|approve|push|get|verify|diff|policy|init|from-session|scan|install|uninstall> [options]\n" +
   "  manifest — reelier manifest <skill.md> --wrap \"<command>\": stamp/refresh the skill's tool-schema manifest from live servers.\n" +
   "  approve — reelier approve <skill.md> [--all]: hash-bind approval onto each write/destructive step (the final replay boundary).\n" +
   "  mcp    — RECORDER: fronts your own --wrap'd MCP server(s) to capture their calls into a trace.\n" +
@@ -2424,6 +2470,8 @@ async function main(): Promise<number> {
       return cmdPush(args);
     case "get":
       return cmdGet(args);
+    case "verify":
+      return cmdVerify(args);
     case "diff":
       return cmdDiff(args);
     case "policy":

@@ -1,0 +1,209 @@
+// `reelier verify <permalink|file> [--key <pub.pem>]` — trust-ladder spec
+// §1's offline verification half. Fetches a receipt's JSON (a full
+// permalink URL, a bare registry token resolved against REELIER_CLOUD_URL —
+// reusing get.ts's `resolveGetConfig`, an anonymous read exactly like
+// `reelier get` — or a local file), recomputes the canonical digest, and
+// evaluates each claim independently. Never a bare OK: a receipt with no
+// signature renders as honestly unsigned (never shamed — never-lies rule);
+// a receipt whose signature FAILS to verify against the digest recomputed
+// here is the one thing that fails the command's exit code. A signature
+// present but nothing given to check it against ("no key provided") is
+// neither pass nor fail — it's unchecked, and says so.
+//
+// Timestamp verification (imprint-match, full RFC-3161 chain) is
+// trust-ladder Slice B's job (src/tsa.ts) — not built yet. This module
+// renders the timestamp row honestly (absent, or present-but-not-yet-
+// verified-by-this-CLI-version) rather than fabricating a check it can't
+// perform.
+
+import { readFile, access } from "node:fs/promises";
+import path from "node:path";
+import { verifyRecordSignature } from "./signing.js";
+import { digestSha256 } from "./canonical-json.js";
+import { resolveGetConfig } from "./get.js";
+import type { RunRecord } from "./runner.js";
+
+export interface VerifyPayload {
+  record: RunRecord;
+  signature?: { alg: string; keyId: string; sig: string };
+  timestamp?: { tsa: string; token: string };
+}
+
+export function isHttpUrl(input: string): boolean {
+  return /^https?:\/\//i.test(input);
+}
+
+/** `https://host/r/<token>[/]` -> `https://host/r/<token>/json`. Already-`/json` URLs pass through unchanged. */
+export function permalinkJsonUrl(permalink: string): string {
+  const trimmed = permalink.replace(/\/+$/, "");
+  return trimmed.endsWith("/json") ? trimmed : `${trimmed}/json`;
+}
+
+function isVerifyPayloadShape(value: unknown): value is VerifyPayload {
+  return typeof value === "object" && value !== null && "record" in (value as Record<string, unknown>);
+}
+
+/**
+ * Parse fetched/read JSON text into a `VerifyPayload`. Accepts either the
+ * full `{record, signature?, timestamp?}` envelope (what `/r/<token>/json`
+ * returns) or a bare `RunRecord` (e.g. a raw local run-record JSON file with
+ * no trust siblings) — the latter is wrapped as `{record: parsed}` with
+ * nothing fabricated; it simply has no signature/timestamp to evaluate.
+ */
+export function parseVerifyPayload(raw: string): VerifyPayload {
+  const parsed: unknown = JSON.parse(raw);
+  if (isVerifyPayloadShape(parsed)) return parsed;
+  return { record: parsed as RunRecord };
+}
+
+export type FetchVerifyOutcome = { ok: true; payload: VerifyPayload } | { ok: false; message: string };
+
+async function fetchVerifyPayloadFromUrl(url: string, fetchImpl: typeof fetch): Promise<FetchVerifyOutcome> {
+  let res: Response;
+  try {
+    res = await fetchImpl(url);
+  } catch (err) {
+    return { ok: false, message: `Network error: ${(err as Error).message}` };
+  }
+  if (!res.ok) {
+    const bodyText = await res.text().catch(() => "");
+    return { ok: false, message: `HTTP ${res.status}: ${bodyText.slice(0, 500)}` };
+  }
+  let raw: string;
+  try {
+    raw = await res.text();
+  } catch (err) {
+    return { ok: false, message: `Could not read response body: ${(err as Error).message}` };
+  }
+  try {
+    return { ok: true, payload: parseVerifyPayload(raw) };
+  } catch (err) {
+    return { ok: false, message: `Malformed JSON response: ${(err as Error).message}` };
+  }
+}
+
+export interface ResolveVerifyPayloadOptions {
+  cwd?: string;
+  fetchImpl?: typeof fetch;
+  env?: NodeJS.ProcessEnv;
+}
+
+/**
+ * Resolve `target` — a full http(s) permalink, a bare registry token, or a
+ * local file path — to its `VerifyPayload`. Order: absolute URL -> fetch
+ * directly; otherwise try it as a local file relative to `cwd`; only if
+ * that file doesn't exist is it treated as a bare token against
+ * `REELIER_CLOUD_URL` (mirrors `reelier get`'s anonymous-fetch config, via
+ * `resolveGetConfig`).
+ */
+export async function resolveVerifyPayload(
+  target: string,
+  options: ResolveVerifyPayloadOptions = {}
+): Promise<FetchVerifyOutcome> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+
+  if (isHttpUrl(target)) {
+    return fetchVerifyPayloadFromUrl(permalinkJsonUrl(target), fetchImpl);
+  }
+
+  const cwd = options.cwd ?? process.cwd();
+  const resolvedPath = path.resolve(cwd, target);
+  try {
+    await access(resolvedPath);
+    const raw = await readFile(resolvedPath, "utf8");
+    return { ok: true, payload: parseVerifyPayload(raw) };
+  } catch (err) {
+    if (err instanceof SyntaxError) {
+      return { ok: false, message: `${resolvedPath} is not valid JSON: ${err.message}` };
+    }
+    // Not a readable local file — fall through to the bare-token path.
+  }
+
+  let baseUrl: string;
+  try {
+    baseUrl = resolveGetConfig(options.env).baseUrl;
+  } catch (err) {
+    return {
+      ok: false,
+      message: `${(err as Error).message} (no local file found at ${resolvedPath} either — pass a full permalink URL, a bare registry token, or an existing file path)`,
+    };
+  }
+  const url = `${baseUrl.replace(/\/$/, "")}/r/${encodeURIComponent(target)}/json`;
+  return fetchVerifyPayloadFromUrl(url, fetchImpl);
+}
+
+export type ClaimStatus = "verified" | "failed" | "unchecked" | "absent";
+
+export interface ClaimLine {
+  claim: "unaltered-since-push" | "timestamped";
+  status: ClaimStatus;
+  line: string;
+}
+
+/**
+ * The signature claim — spec §1's exact framing: "produced by the holder of
+ * this key and has not been altered since push". Verifies against
+ * `digestSha256(payload.record)` recomputed HERE, over whatever record was
+ * actually fetched/read — never trusts a client-declared digest.
+ */
+export function evaluateUnalteredSincePushClaim(payload: VerifyPayload, publicPem?: string): ClaimLine {
+  const sig = payload.signature;
+  if (!sig) {
+    return {
+      claim: "unaltered-since-push",
+      status: "absent",
+      line: "unaltered-since-push: — unsigned (sign your pushes: reelier init --signing)",
+    };
+  }
+  if (!publicPem) {
+    return {
+      claim: "unaltered-since-push",
+      status: "unchecked",
+      line: `unaltered-since-push: — signed by key ${sig.keyId}, but no public key was given to check it against (pass --key <pub.pem>)`,
+    };
+  }
+  const digest = digestSha256(payload.record);
+  const verified = verifyRecordSignature(publicPem, digest, sig.sig);
+  if (verified) {
+    return { claim: "unaltered-since-push", status: "verified", line: `unaltered-since-push: ✓ (key ${sig.keyId})` };
+  }
+  return {
+    claim: "unaltered-since-push",
+    status: "failed",
+    line: `unaltered-since-push: ✗ SIGNATURE INVALID (key ${sig.keyId} does not verify against this record's digest — either the record changed after signing, or this isn't the right public key)`,
+  };
+}
+
+/**
+ * The timestamp claim. Slice B (src/tsa.ts) has not shipped yet — this
+ * renders presence/absence honestly without performing (or claiming to
+ * perform) imprint-match or RFC-3161 chain verification, which are that
+ * slice's job. Never fails the exit code (nothing here asserts a checked
+ * fact yet).
+ */
+export function evaluateTimestampClaim(payload: VerifyPayload): ClaimLine {
+  if (!payload.timestamp) {
+    return { claim: "timestamped", status: "absent", line: "timestamped: — none" };
+  }
+  return {
+    claim: "timestamped",
+    status: "unchecked",
+    line:
+      `timestamped: — present (tsa ${payload.timestamp.tsa}); this CLI version does not yet verify RFC-3161 tokens ` +
+      `(trust-ladder Slice B) — verify manually: openssl ts -verify -in <token file, base64-decoded> -digest ${digestSha256(
+        payload.record
+      )}`,
+  };
+}
+
+export interface VerifyResult {
+  claims: ClaimLine[];
+  /** 0 unless a PRESENT claim FAILED verification — absent/unchecked claims never fail the exit code (never-lies rule). */
+  exitCode: 0 | 1;
+}
+
+export function evaluateVerifyClaims(payload: VerifyPayload, publicPem?: string): VerifyResult {
+  const claims = [evaluateUnalteredSincePushClaim(payload, publicPem), evaluateTimestampClaim(payload)];
+  const exitCode = claims.some((c) => c.status === "failed") ? 1 : 0;
+  return { claims, exitCode };
+}
