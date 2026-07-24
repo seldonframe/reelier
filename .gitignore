@@ -5,6 +5,7 @@ coverage/
 .reelier/
 .stryker-tmp/
 reports/
+.superpowers-*/
 
 *.mcpb
 .screenshots-tmp/
