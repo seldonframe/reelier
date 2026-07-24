@@ -7,9 +7,13 @@ this file only covers cutting and shipping a release.
 
 1. `npm test` — green.
 2. `npm run test:coverage` — note the coverage %. Don't regress it.
-3. `npm run test:mutation` — optional; run on any trust-critical core file you
-   touched (`src/runner.ts`, `src/escalate.ts`, `src/verify.ts`, `src/signing.ts`,
-   `src/policy.ts`, `src/canonical-json.ts`, …). Investigate any survivors.
+3. `npm run test:mutation` — the full trust-critical core (10 modules). It's
+   **incremental** (`reports/stryker-incremental.json`), so the first run is slow
+   but subsequent runs only re-test mutants in code that changed — feasible as a
+   per-release gate. Investigate every survivor: it's either a real test gap to
+   close, or a provably-equivalent mutant to annotate with `// Stryker disable
+   next-line <Mutator>: <reason>` (see `src/canonical-json.ts` for the pattern).
+   Target: keep the score in the green band (≥90).
 4. Update `CHANGELOG.md` with the new version's entry.
 
 ## Cut the release

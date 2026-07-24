@@ -24,5 +24,12 @@
   "htmlReporter": {
     "fileName": "reports/mutation/index.html"
   },
-  "concurrency": 2
+  "concurrency": 2,
+  "incremental": true,
+  "incrementalFile": "reports/stryker-incremental.json",
+  "thresholds": {
+    "high": 90,
+    "low": 80,
+    "break": null
+  }
 }
