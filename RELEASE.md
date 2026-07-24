@@ -5,30 +5,34 @@ this file only covers cutting and shipping a release.
 
 ## Pre-release
 
-1. `npm run preflight` — must pass all checks. It verifies:
-   - working tree is clean
-   - you're on `main` and synced with `origin/main`
-   - the current `package.json` version is not already published on npm
-   - `npm run build` succeeds
-   - `npm test` passes AND the README tests badge matches the actual pass count
+1. `npm test` — green.
 2. `npm run test:coverage` — note the coverage %. Don't regress it.
-3. `npm run test:mutation` — optional, run on any core file you touched
-   (`src/runner.ts`, `src/writeback.ts`, `src/skill.ts`, etc.).
+3. `npm run test:mutation` — optional; run on any trust-critical core file you
+   touched (`src/runner.ts`, `src/escalate.ts`, `src/verify.ts`, `src/signing.ts`,
+   `src/policy.ts`, `src/canonical-json.ts`, …). Investigate any survivors.
+4. Update `CHANGELOG.md` with the new version's entry.
 
-Do not proceed to Publish until `npm run preflight` exits 0.
+## Cut the release
 
-## Publish
-
-1. Bump the version: `npm version patch` (or `minor`/`major` as appropriate).
-   This commits and tags.
-2. Push the commit and tag: `git push && git push --tags`.
-3. Publish from a **clean checkout at the tip of `main`** — never from a
-   feature branch or a tree with local changes:
+1. **Bump the version first:** `npm version patch` (or `minor`/`major`). This
+   commits and tags — so preflight in the next step validates the version you're
+   actually about to ship, not the previous one.
+2. **Gate:** `npm run preflight` — must exit 0 before you publish. It **hard-fails**
+   on:
+   - working tree not clean
+   - the (just-bumped) `package.json` version is already published on npm
+   - `npm run build` fails
+   - `npm test` fails, or the README tests badge ≠ the actual pass count
+   It also prints **advisory warnings** (these do NOT block) if you're not on
+   `main` or not yet synced with `origin/main` — both are expected right after a
+   local `npm version` bump, before you push.
+3. Push the commit and tag: `git push && git push --tags`.
+4. Publish from a **clean checkout at the tip of `main`** — never from a feature
+   branch or a tree with local changes:
    ```
    npm publish --otp=<code>
    ```
-4. Verify it actually landed: `npm view reelier version` must match the
-   version you just bumped to.
+5. Verify it landed: `npm view reelier version` must match the version you bumped to.
 
 ## Post-release
 
@@ -36,7 +40,5 @@ Do not proceed to Publish until `npm run preflight` exits 0.
    `@v1` tag to the new release commit. This is a **deliberate,
    public-behavior-affecting change** — don't do it reflexively for every
    release, only when the Action itself changed.
-2. Update `CHANGELOG.md` with the new version's entry.
-3. Update the README tests badge if the suite size changed (the preflight
-   check catches drift here going forward, but do it manually too if you
-   bypass preflight for any reason).
+2. The README tests badge drift is caught by preflight going forward; if you ever
+   bypass preflight, update the badge manually.
