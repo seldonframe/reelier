@@ -61,8 +61,13 @@ async function readLastRecord(jsonlPath) {
   }
 }
 
+/** Growth-loop CTA appended only when a public receipt permalink exists — omitted (never a broken link) when the run wasn't shared/pushed. */
+function renderVerifyCta(receiptUrl) {
+  return `🔍 [Verify this receipt](${receiptUrl}) · [Make your own →](https://www.reelier.com/?utm_source=pr-comment)`;
+}
+
 /** The markdown between (not including) this skill's own markers. Never fabricates a number the run record doesn't carry. */
-function renderSkillSection(name, record, { maxLevel, runExitCode, cloudKeySet, receiptUrl }) {
+export function renderSkillSection(name, record, { maxLevel, runExitCode, cloudKeySet, receiptUrl }) {
   if (!record) {
     const icon = runExitCode === "0" ? "✓" : "✗";
     return [
@@ -103,6 +108,10 @@ function renderSkillSection(name, record, { maxLevel, runExitCode, cloudKeySet, 
     lines.push("- pushed to ledger (private — no public receipt; push with `--share` for one)");
   }
 
+  // Growth-loop CTA: only when there's a real public permalink to point at —
+  // never a broken link when the run wasn't shared/pushed.
+  if (receiptUrl) lines.push(renderVerifyCta(receiptUrl));
+
   return lines.join("\n");
 }
 
@@ -119,7 +128,7 @@ function parseSkillBlocks(body) {
   return { blocks, order };
 }
 
-function renderComment(blocks, order) {
+export function renderComment(blocks, order) {
   const parts = [STICKY_MARKER, "", "## Reelier receipts", ""];
   for (const name of order) {
     parts.push(`<!-- reelier-skill:${name} -->`);
