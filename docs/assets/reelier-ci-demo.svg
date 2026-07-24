@@ -31,7 +31,7 @@
   <!-- Beat 2: replay the run that worked, deterministically -->
   <text x="26" y="200" font-size="15" class="mono prompt">$ <tspan class="txt">reelier run extract-and-post.skill.md</tspan></text>
   <text x="26" y="226" font-size="14.5" class="mono green">3/3 passed. 44ms . 0 tokens . $0.00</text>
-  <text x="26" y="248" font-size="13.5" class="mono dim">receipt: byte-identical, an assertion on every step</text>
+  <text x="26" y="248" font-size="13.5" class="mono dim">receipt: byte-identical, per-step pass/fail</text>
 
   <!-- Beat 3: diff catches drift and fails the build -->
   <text x="26" y="302" font-size="15" class="mono prompt">$ <tspan class="txt">reelier diff extract-and-post</tspan></text>

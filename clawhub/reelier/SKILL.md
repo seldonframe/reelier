@@ -20,7 +20,7 @@ metadata:
 # Reelier — stop re-paying for the same job every heartbeat
 
 Reelier compiles a run that *worked* into a `SKILL.md` file that replays
-deterministically: no LLM, 0 tokens, an assertion on every step, a receipt
+deterministically: no LLM, 0 tokens, per-step pass/fail, a receipt
 for every run. This skill teaches you **when** to reach for it inside
 OpenClaw — written against `reelier` 0.12.x.
 
@@ -88,7 +88,7 @@ Replace the re-reasoned job in the cron/heartbeat with the replay:
 npx -y reelier run <job-name>.skill.md
 ```
 
-- **0 LLM tokens, milliseconds**, and every step is asserted — a broken
+- **0 LLM tokens, milliseconds**, and every step is recorded — a broken
   step fails loudly, never silently passes.
 - **Read-only by default.** A write step (`idempotent-write`) never
   re-fires unless you explicitly pass `--allow-writes`. Do not add
