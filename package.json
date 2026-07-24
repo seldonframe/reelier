@@ -20,7 +20,9 @@
     "./mcp-client": "./dist/mcp-client.js",
     "./mcp-tool": "./dist/mcp-tool.js",
     "./tools": "./dist/tools.js",
-    "./serve": "./dist/serve.js"
+    "./serve": "./dist/serve.js",
+    "./contract/*": "./contract/*",
+    "./package.json": "./package.json"
   },
   "files": [
     "dist",
