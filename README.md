@@ -6,6 +6,8 @@
 
 ### Agents make claims. Reelier writes receipts.
 
+**Upgrade the model on Friday.**
+
 Record the run that worked, replay it deterministically — **0 tokens, byte-identical, a receipt on every step** — and `reelier diff` catches the day it drifts.
 
 **Think of it as CI + snapshot tests for your agent's tool-call workflows.**
@@ -31,7 +33,7 @@ Record the run that worked, replay it deterministically — **0 tokens, byte-ide
 
 ## Why
 
-Your agent re-derives the same workflow every run. That burns tokens, and it quietly drifts — the same prompt takes a different path six weeks later and nobody notices until a client does. Reelier compiles the run that worked into a file that replays deterministically, no model in the loop: 0 tokens, and a receipt on every step.
+AI agents are non-deterministic — the same prompt, a different result every run — and they'll claim they did the work whether they did or not. Reelier records the run that worked, replays it deterministically at $0, and writes a signed receipt that proves it. Point it at your existing CI in one workflow — it adds a verifiable receipt, it doesn't replace your stack.
 
 Measured on a real head-to-head benchmark, same task, same data ([full method](./docs/REFERENCE.md#benchmark-method)):
 
