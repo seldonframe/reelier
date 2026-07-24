@@ -2,6 +2,23 @@
 
 _2026-07-23. Every name, issue number, and stat below was verified against fetched sources (GitHub API, npm, Glama, PulseMCP) on this date. Reach surfaces are limited to what each person publicly attaches to their project. The offer everywhere: concierge setup (we PR the workflow), 2 weeks of use, one 15-min call, permission to show their green ladder; they get priority fixes + a verified-org badge._
 
+> **STATUS 2026-07-24 — all 10 below CONTACTED.** Wave 2 ([50 leads](./2026-07-23-outreach-wave-2-leads.md)) first 10 also messaged. Wave 3 is [the bump-safety sheet](./2026-07-24-bump-safety-outreach.md), which targets a different pain than either of these — see its header for why.
+>
+> Fill in as replies land; **reply rate is the only signal that tells us whether the message or the wedge is wrong.** Per the standing rule: one message, zero follow-ups.
+>
+> | # | Target | Contacted | Replied | Workflow merged | Still green wk 3 |
+> |---|--------|-----------|---------|-----------------|------------------|
+> | 1 | czlonkowski / n8n-mcp | ✅ | | | |
+> | 2 | chrisdoc / hevy-mcp | ✅ | | | |
+> | 3 | mrexodia / ida-pro-mcp | ✅ | | | |
+> | 4 | sbroenne / mcp-server-excel | ✅ | | | |
+> | 5 | mksglu / context-mode | ✅ | | | |
+> | 6 | Ably / ably-cli | ✅ | | | |
+> | 7 | CloudWalk / stratus | ✅ | | | |
+> | 8 | Redis / RediSearch | ✅ | | | |
+> | 9 | Fedimint | ✅ | | | |
+> | 10 | Mads Hansen (partner #0) | ✅ | | | |
+
 ## The first 10 (recommended batch)
 
 ### MCP server authors (drift pain, documented)
