@@ -1,0 +1,28 @@
+{
+  "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
+  "packageManager": "npm",
+  "testRunner": "command",
+  "commandRunner": {
+    "command": "npm test"
+  },
+  "checkers": ["typescript"],
+  "tsconfigFile": "tsconfig.json",
+  "mutate": [
+    "src/runner.ts",
+    "src/escalate.ts",
+    "src/verify.ts",
+    "src/signing.ts",
+    "src/approval.ts",
+    "src/manifest.ts",
+    "src/policy.ts",
+    "src/assert.ts",
+    "src/tsa.ts",
+    "src/canonical-json.ts"
+  ],
+  "tempDirName": ".stryker-tmp",
+  "reporters": ["html", "clear-text", "progress"],
+  "htmlReporter": {
+    "fileName": "reports/mutation/index.html"
+  },
+  "concurrency": 2
+}

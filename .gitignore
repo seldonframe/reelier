@@ -3,6 +3,8 @@ dist/
 dist-test/
 coverage/
 .reelier/
+.stryker-tmp/
+reports/
 
 *.mcpb
 .screenshots-tmp/

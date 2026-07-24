@@ -63,12 +63,15 @@
     "build": "tsc -p tsconfig.json",
     "test": "tsc -p tsconfig.test.json && node --test --test-concurrency=1 dist-test/test/*.test.js",
     "test:coverage": "c8 npm test",
+    "test:mutation": "stryker run",
     "prepublishOnly": "npm run build && npm test"
   },
   "publishConfig": {
     "access": "public"
   },
   "devDependencies": {
+    "@stryker-mutator/core": "^9.6.1",
+    "@stryker-mutator/typescript-checker": "^9.6.1",
     "@types/node": "^20.14.9",
     "c8": "^10.1.3",
     "typescript": "^5.5.4"
