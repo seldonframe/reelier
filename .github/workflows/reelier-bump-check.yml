@@ -34,6 +34,14 @@
 # green check here stand in for evaluating a model bump — that's a
 # different question this workflow was never asked.
 #
+# And one more, because it's the difference between real protection and a
+# false sense of it: a skill only gates as hard as its recorded assertions.
+# A skill that asserts nothing replays GREEN vacuously — it ran, but it
+# checked nothing. A green check on an assertion-free skill means "it ran,"
+# NOT "nothing drifted." Make sure the skills you point this at actually
+# assert on the tool outputs that matter (that's what `reelier compile`
+# captures) — otherwise you're protected on paper only.
+#
 # --------------------------------------------------------------------------
 # How the pass/fail check-run and PR comment happen
 # --------------------------------------------------------------------------
