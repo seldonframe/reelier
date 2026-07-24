@@ -37,11 +37,13 @@ const CONTRACT_PUBLIC_KEY_PATH = fileURLToPath(
 );
 
 // This sha MUST equal the cloud's copy (reelier-cloud
-// test/fixtures/wire-contract/payload.json). Any change to the produced
-// wire format changes this sha — regenerate BOTH repos' fixtures from the
-// same OSS commit and update the sha in BOTH tests. That lockstep is the
-// cross-repo contract.
-const LOCKED_SHA256 = "d9f11dc7b910ffaf6a2c4de3b3641f0eae44dd0695568c96d3074f66acfed7a1";
+// test/fixtures/wire-contract/payload.json). It is computed over the fixture
+// with line endings normalized to LF (\r\n -> \n), so it is identical on
+// Windows (CRLF working trees) and Linux/CI (LF) — git stores the bytes as
+// LF, which is the canonical value here. Any change to the produced wire
+// format changes this sha; regenerate BOTH repos' fixtures and update it in
+// BOTH tests. That lockstep is the cross-repo contract.
+const LOCKED_SHA256 = "07bc8adb224b19e39ae1368c0bf5651d2e51bce75671d876e97ffde3e9ff001c";
 
 // The documented contract's top-level field set (src/push.ts's POST body to
 // `/api/v1/runs`): `skillName` and `record` are always present; everything
@@ -71,8 +73,13 @@ interface ContractFixture {
 }
 
 test("sha-lock: contract/wire-contract.v1.json bytes match the locked sha (producer-drift guard)", async () => {
-  const raw = await readFile(CONTRACT_JSON_PATH);
-  const actual = createHash("sha256").update(raw).digest("hex");
+  // Normalize CRLF -> LF before hashing so the lock is platform-independent:
+  // git stores the fixture as LF, but a Windows working tree checks it out as
+  // CRLF. Line endings are not part of the wire contract (JSON.parse ignores
+  // them); a real format change alters non-EOL bytes and still trips this.
+  const raw = await readFile(CONTRACT_JSON_PATH, "utf8");
+  const normalized = raw.replace(/\r\n/g, "\n");
+  const actual = createHash("sha256").update(normalized, "utf8").digest("hex");
   assert.equal(
     actual,
     LOCKED_SHA256,
