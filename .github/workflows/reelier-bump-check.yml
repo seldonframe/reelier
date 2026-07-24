@@ -135,6 +135,22 @@ jobs:
           # Optional: push the receipt to your ledger after a passing run.
           # Omit for a local-only replay (the job summary + PR comment
           # still happen either way).
+          #
+          # WARNING if you uncomment this: this job (see the `if:` gate
+          # above) is triggered by dependabot[bot]/renovate[bot], and
+          # GitHub gives Dependabot-triggered runs secrets from the repo's
+          # separate Dependabot secrets scope (Settings → Secrets and
+          # variables → Dependabot), NOT the regular Actions secrets scope
+          # `secrets.*` normally reads from here. This is unrelated to the
+          # `permissions: pull-requests: write` block above, which IS
+          # honored for Dependabot PRs (GitHub's 2021-10-11 change) and is
+          # why the PR comment still works fine even without this secret.
+          # If `REELIER_CLOUD_KEY` only exists under Actions secrets, it
+          # resolves to an empty string here, the action's own
+          # `if: inputs.cloud-key != ''` guard is false, and the push is
+          # silently skipped — no error, nothing calling it out. Add the
+          # secret under the Dependabot scope too if you want this to push
+          # on Dependabot/Renovate-triggered runs.
           # cloud-key: ${{ secrets.REELIER_CLOUD_KEY }}
 
       # Nothing else needed. The action's own last step
