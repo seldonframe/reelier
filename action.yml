@@ -1,9 +1,5 @@
 name: "Reelier replay"
-description: >-
-  Snapshot tests for AI agents: deterministic replay of MCP tool-call
-  workflows. 0 LLM tokens, exit 1 on drift, PR receipts. Also gates
-  Dependabot/Renovate PRs — install the bumped dependency, replay your
-  recorded skills against it, and fail the check on drift.
+description: "Gate Dependabot/Renovate bumps: replay recorded agent tool-call workflows at 0 LLM tokens, fail the PR check on drift."
 author: "Reelier"
 branding:
   icon: "check-circle"
