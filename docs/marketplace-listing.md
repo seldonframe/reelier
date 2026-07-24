@@ -42,9 +42,9 @@ a model upgrade is safe. It is a bump-safety check, not a model-eval tool.
 
 ## How it works (for the listing's "How it works" panel)
 
-1. **Record once.** `reelier mcp --wrap "<your tool server>"` (or `reelier init`, or `reelier scan`/`from-session` from an existing agent transcript) captures one real run of your workflow — every tool call, every response — and `reelier compile` turns it into a `.skill.md` with an assertion per step.
+1. **Record once.** `reelier mcp --wrap "<your tool server>"` (or `reelier init`, or `reelier scan`/`from-session` from an existing agent transcript) captures one real run of your workflow — every tool call, every response — and `reelier compile` turns it into a `.skill.md` with minimal per-step assertions.
 2. **Dependabot/Renovate opens a bump PR.** Your existing test suite runs as normal; it has no visibility into tool-call behavior.
-3. **This action replays the skill live against the bumped dependency.** `reelier run <skill.md> --max-level 0` re-executes every recorded step for real — 0 LLM tokens, byte-identical intent — and checks each step's own recorded assertion against what actually came back.
+3. **This action replays the skill live against the bumped dependency.** `reelier run <skill.md> --max-level 0` re-executes every recorded step for real — 0 LLM tokens, byte-identical intent — and checks each recorded assertion against what actually came back.
 4. **Pass or fail, with receipts.** Nothing drifted → green check, sticky PR comment with the pass count. Something drifted → red check, the exact failing step and assertion in the job log, merge blocked if you've made this a required status check.
 
 ## Setup steps (for the listing's "Installation" panel)

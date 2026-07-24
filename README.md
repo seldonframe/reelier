@@ -63,7 +63,7 @@ reelier ci                          # write a workflow: drift-CI + PR receipts, 
 ```
 
 1. **Record.** `reelier mcp --wrap "<mcp server>"` proxies your tools live, or pull a session via `reelier scan`/`from-session`, or run the guided `reelier init`.
-2. **Compile.** `reelier compile` turns a trace into a `SKILL.md` — 0 LLM calls, an assertion per step, honest gaps printed as **Open questions**.
+2. **Compile.** `reelier compile` turns a trace into a `SKILL.md` — 0 LLM calls, minimal assertions, honest gaps printed as **Open questions**.
 3. **Replay.** `reelier run` replays it at Level 0 — no LLM, byte-identical, read-only by default (writes need `--allow-writes`).
 4. **Diff.** `reelier diff` reports SAME or DRIFTED per step, with the failing assertion as the *why* — exit 1 on drift.
 5. **Log in.** `reelier login` connects this machine to Reelier Cloud with a device code in your browser — or set `REELIER_CLOUD_URL`/`REELIER_CLOUD_KEY` for CI and self-hosting.

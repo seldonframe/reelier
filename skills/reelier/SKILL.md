@@ -5,8 +5,8 @@ description: Replay a recorded tool-call workflow instead of re-reasoning it. US
 
 # Reelier — replay instead of re-reasoning
 
-A `*.skill.md` file is a recorded run that worked: tool calls with an
-assertion on every step. Replaying it costs 0 LLM tokens, takes
+A `*.skill.md` file is a recorded run that worked: tool calls with a
+per-step pass/fail result. Replaying it costs 0 LLM tokens, takes
 milliseconds, and produces a receipt. Re-reasoning it burns tokens and
 quietly drifts. Prefer the replay.
 
