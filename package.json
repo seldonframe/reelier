@@ -64,6 +64,7 @@
     "test": "tsc -p tsconfig.test.json && node --test --test-concurrency=1 dist-test/test/*.test.js",
     "test:coverage": "c8 npm test",
     "test:mutation": "stryker run",
+    "preflight": "node scripts/preflight.mjs",
     "prepublishOnly": "npm run build && npm test"
   },
   "publishConfig": {
