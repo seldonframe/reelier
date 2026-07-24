@@ -2,6 +2,26 @@
 
 All notable changes to `reelier`. Dates are release dates.
 
+## 0.24.0 — Ship the wire contract + hardened verification core
+
+Breaking behavior: **none — additive.**
+
+### Added
+- **The canonical wire contract now ships in the package** at
+  `contract/wire-contract.v1.json` (+ its Ed25519 public key). It is a real
+  captured `reelier push` body — the single source of truth for the CLI↔cloud
+  push format. Downstream consumers (e.g. Reelier Cloud) can import and pin it
+  directly instead of holding a drift-prone copy.
+
+### Internal (no runtime change)
+- Verification core is now property-tested (fast-check invariants over the
+  canonical-JSON digest and Ed25519 sign/verify), adversarially tested
+  (forge-and-reject over verify/signing/timestamp/manifest), golden-file
+  pinned (record/digest/SKILL.md drift canaries), and determinism-proven
+  (hermetic N-run replay identity + a local e2e binary smoke).
+- Mutation testing (Stryker) scoped to the trust-critical modules, plus a
+  release `preflight` gate and `RELEASE.md` runbook. 730 tests.
+
 ## 0.23.0 — Self-serve login: `reelier login`, zero-config cloud URL
 
 Breaking behavior: **none — additive.**
