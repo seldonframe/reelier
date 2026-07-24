@@ -19,9 +19,9 @@ A dependency bump shouldn't silently break your agent. Reelier re-runs your reco
 
 **[Website](https://www.reelier.com)** · **[Docs](https://www.reelier.com/docs)** · **[SPEC.md](./SPEC.md)**
 
-<img src="https://raw.githubusercontent.com/seldonframe/reelier/main/docs/assets/reelier-demo.gif" width="760" alt="Reelier: record a run that worked, replay it deterministically at 0 tokens, diff for drift, a receipt on every step" />
+<img src="https://raw.githubusercontent.com/seldonframe/reelier/main/docs/assets/reelier-demo.gif" width="760" alt="Reelier: Dependabot bumps a dependency, Reelier replays your recorded agent run at 0 tokens and diffs it, catching the drift on the PR before you merge" />
 
-<sub><a href="https://www.reelier.com/reelier-explainer.mp4">▶ watch with sound (22s)</a></sub>
+<sub><a href="https://www.reelier.com/reelier-explainer.mp4">▶ watch with sound (27s)</a></sub>
 
 <a href="https://glama.ai/mcp/servers/seldonframe/reelier"><img width="380" height="200" src="https://glama.ai/mcp/servers/seldonframe/reelier/badge" alt="Reelier MCP server on Glama" /></a>
 
