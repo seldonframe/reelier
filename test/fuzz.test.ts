@@ -33,6 +33,19 @@ import { buildTimeStampReq, imprintMatches } from "../src/tsa.js";
 // this size within a couple hundred ms per property.
 const NUM_RUNS = process.env.FUZZ_RUNS ? Number(process.env.FUZZ_RUNS) : 200;
 
+// Determinism: an unseeded fast-check run picks a fresh random seed every
+// process, so the exact same fuzz test can pass on one CI run and fail on
+// the next (or pass on a PR and fail on main) — a flaky CI badge, not a real
+// signal. Pin a fixed seed globally so every `npm test` run replays the
+// IDENTICAL input sequence: a fuzz test then always passes or always fails,
+// never flakes. Set FUZZ_RANDOM (any value) to explore fresh inputs instead —
+// used by `npm run test:fuzz` for on-demand deep fuzzing, where finding NEW
+// counterexamples is the point rather than reproducibility.
+const FUZZ_SEED = 20260724;
+fc.configureGlobal(
+  process.env.FUZZ_RANDOM ? { seed: Date.now() } : { seed: FUZZ_SEED }
+);
+
 function obs(overrides: Partial<Observation> = {}): Observation {
   return { status: 200, headers: {}, body: "{}", ...overrides };
 }
