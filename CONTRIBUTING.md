@@ -14,6 +14,10 @@ Node >= 20 required (see `engines` in `package.json`). No other services or
 API keys are needed to build or run the test suite — the escalation-ladder
 tests exercise the LLM wire adapters against fakes, never a live API.
 
+Optional: run `npm run hooks:install` once to enable a local pre-push hook
+(`.githooks/pre-push`) that runs `npm test` before every `git push` and blocks
+the push on failure. It's opt-in — nothing runs until you install it.
+
 ## The design constitution (brief)
 
 Every step in a skill is five atoms — **intent, action, assert, bind,

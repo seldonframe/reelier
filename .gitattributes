@@ -11,3 +11,6 @@ contract/wire-contract.v1.public-key.pem text eol=lf
 # hold binary fixtures (e.g. a TSA token) that must not be EOL-converted.
 test/fixtures/golden/** text eol=lf
 *.skill.md text eol=lf
+
+# POSIX shell script — must stay LF (CRLF breaks the shebang on execution).
+.githooks/pre-push text eol=lf

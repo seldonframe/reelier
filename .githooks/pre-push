@@ -1,0 +1,26 @@
+#!/bin/sh
+# Opt-in pre-push hook: runs `npm test` and blocks the push on failure.
+#
+# This is NOT enabled by default. Git only looks in .git/hooks unless
+# core.hooksPath is set, so this script is inert until a contributor opts in:
+#
+#   npm run hooks:install     # sets core.hooksPath to .githooks (local repo only)
+#
+# To go back to the default (disabled) behavior:
+#
+#   git config --unset core.hooksPath
+
+echo "pre-push: running \`npm test\` before allowing the push..."
+
+npm test
+status=$?
+
+if [ "$status" -ne 0 ]; then
+  echo ""
+  echo "pre-push: \`npm test\` failed (exit $status) — push blocked." >&2
+  echo "Fix the failing tests, or skip this hook once with \`git push --no-verify\`." >&2
+  exit "$status"
+fi
+
+echo "pre-push: tests passed — proceeding with push."
+exit 0
