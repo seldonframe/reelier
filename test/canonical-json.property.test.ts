@@ -41,7 +41,9 @@ const unicodeKeyObjectArb = fc.dictionary(
     fc.constantFrom("é", "日本語", "🚀key", " space ", "")
   ).map((s) => s || "k"),
   jsonValueArb(2),
-  { minKeys: 1, maxKeys: 8 }
+  // >=2 keys so a reversed-key shuffle is always a real reorder (a 1-key
+  // object is a no-op shuffle that would pass trivially).
+  { minKeys: 2, maxKeys: 8 }
 );
 
 /**
@@ -67,10 +69,16 @@ function shuffleDeep(value: unknown): unknown {
   return value;
 }
 
-test("property: canonicalJson is deterministic for arbitrary values", () => {
+test("property: canonicalJson depends only on value — pure, no mutation, identity-independent", () => {
   fc.assert(
     fc.property(jsonValueArb(3), (x) => {
-      return canonicalJson(x) === canonicalJson(x);
+      // An independent object graph with the same value: catches any reliance
+      // on object identity/memoization. And the input must not be mutated —
+      // a serializer with side effects would corrupt the record it hashes.
+      const clone = JSON.parse(JSON.stringify(x));
+      const before = JSON.stringify(x);
+      const out = canonicalJson(x);
+      return out === canonicalJson(clone) && JSON.stringify(x) === before;
     })
   );
 });
