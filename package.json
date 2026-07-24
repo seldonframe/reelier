@@ -70,7 +70,8 @@
     "test:e2e": "node scripts/e2e-local.mjs",
     "test:mutation": "stryker run",
     "preflight": "node scripts/preflight.mjs",
-    "prepublishOnly": "npm run build && npm test"
+    "prepublishOnly": "npm run build && npm test",
+    "hooks:install": "git config core.hooksPath .githooks"
   },
   "publishConfig": {
     "access": "public"
