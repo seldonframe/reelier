@@ -1,0 +1,144 @@
+# Copy this file into your own repo's .github/workflows/ (any name works,
+# reelier-bump-check.yml is a fine default) and edit the two spots marked
+# EDIT below. It is inert as shipped in THIS repo — it targets `npm ci`
+# against reelier's own package.json, which is harmless here, but the
+# `skill:` line needs to point at YOUR recorded skill(s) to be useful.
+#
+# --------------------------------------------------------------------------
+# What problem this solves
+# --------------------------------------------------------------------------
+# Dependabot/Renovate open a PR that bumps a dependency and run your test
+# suite against it — but your test suite doesn't know what your agent
+# actually DOES at runtime: which tools it calls, with what arguments, and
+# what it expects back. A dependency bump can silently change that behavior
+# (a new SDK version renames a field, changes a default, alters an error
+# shape) without failing a single unit test. Dependabot has no way to catch
+# this — it isn't a check Dependabot runs, it's a check YOU add.
+#
+# This workflow closes that gap: it installs the bumped dependency, then
+# REPLAYS your already-recorded Reelier skill(s) live against it. Each step
+# of a skill carries its own recorded assertion (see `reelier compile`), so
+# if the bump changed what a tool call returns, the replay fails on that
+# exact step — not a generic "something broke," a specific "step 3's assert
+# on `json.status` no longer holds."
+#
+# --------------------------------------------------------------------------
+# What this does NOT test — read before you trust a green check
+# --------------------------------------------------------------------------
+# `max-level: "0"` below means the replay NEVER calls an LLM — 0 tokens,
+# every run. That's exactly right for a dependency-bump gate (you want to
+# know "did the bumped package change tool behavior," not "did the model
+# improvise something different this time") but it also means this
+# workflow proves nothing about MODEL upgrades or prompt changes. It is a
+# dependency/MCP-tool-bump check, not a model-version check. Don't let a
+# green check here stand in for evaluating a model bump — that's a
+# different question this workflow was never asked.
+#
+# And one more, because it's the difference between real protection and a
+# false sense of it: a skill only gates as hard as its recorded assertions.
+# A skill that asserts nothing replays GREEN vacuously — it ran, but it
+# checked nothing. A green check on an assertion-free skill means "it ran,"
+# NOT "nothing drifted." Make sure the skills you point this at actually
+# assert on the tool outputs that matter (that's what `reelier compile`
+# captures) — otherwise you're protected on paper only.
+#
+# --------------------------------------------------------------------------
+# How the pass/fail check-run and PR comment happen
+# --------------------------------------------------------------------------
+# The `seldonframe/reelier@v1` action below does both of these for you —
+# nothing extra to wire up:
+#   - It sets this job's exit code from the replay's own exit code, so a
+#     red check here means the replay genuinely found drift.
+#   - With `permissions: pull-requests: write` (set below), it upserts ONE
+#     sticky PR comment with a pass/fail summary per skill (steps
+#     passed/failed, duration, 0 LLM tokens). The exact assertion that
+#     failed — the actual diff of what broke — prints in THIS job's log
+#     (the "Run skill (reelier run)" step), which the PR comment links to
+#     implicitly via the check-run; it is not repeated inside the comment
+#     body itself.
+
+name: Reelier bump-safety check
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+
+jobs:
+  reelier-bump-check:
+    # Gate: only run this (comparatively expensive — it installs deps and
+    # replays live tool calls) on PRs that are actually a dependency bump.
+    # Two independent signals, either one is enough:
+    #   - the PR author is Dependabot or Renovate's bot account
+    #   - the PR carries a "dependencies" label (Dependabot applies this by
+    #     default; add it yourself for Renovate or a manual bump PR you
+    #     want the same gate applied to)
+    if: >-
+      github.actor == 'dependabot[bot]' ||
+      github.actor == 'renovate[bot]' ||
+      contains(github.event.pull_request.labels.*.name, 'dependencies')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read # actions/checkout@v4's own minimum requirement
+      # Lets the action upsert its sticky PR receipt comment. Omit this (or
+      # drop it to `read`) and the action just logs a skip line — the
+      # replay's own pass/fail is unaffected either way.
+      pull-requests: write
+    steps:
+      # `pull_request` checks out the PR's merge commit by default — the
+      # repo state with the bumped dependency already applied to the
+      # manifest/lockfile. No extra ref wrangling needed.
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # EDIT: install with whatever your repo actually uses (npm ci / yarn
+      # install --frozen-lockfile / pnpm install --frozen-lockfile). This is
+      # the step that actually pulls in the bumped version Dependabot/
+      # Renovate proposed — everything after this runs against it.
+      - name: Install the bumped dependencies
+        run: npm ci
+
+      # EDIT: point `skill:` at your own recorded .skill.md file. The one
+      # below (bundled in this repo) is a placeholder so the workflow is
+      # valid YAML out of the box — replace it, don't rely on it.
+      #
+      # For more than one skill, copy this whole step once per skill file
+      # (a build-time GitHub Actions matrix can't discover files at
+      # workflow-parse time from repo content, so — same as `reelier ci`'s
+      # generated workflow — the skill list is spelled out explicitly, not
+      # dynamically globbed). Each copy gets its own sticky-comment section
+      # automatically (keyed by skill name), so N skills read as one PR
+      # comment with N sections, not N comments.
+      - name: Replay recorded skill against the bumped dependency
+        uses: seldonframe/reelier@v1
+        with:
+          skill: examples/benchmark/npm-info.skill.md
+
+          # 0 tokens, deterministic — see "What this does NOT test" above.
+          # Don't raise this for a bump-check gate; a higher level lets the
+          # LLM self-heal around the very drift you're trying to catch.
+          max-level: "0"
+
+          # EDIT (uncomment if needed): only required when the skill's
+          # tools live behind your own MCP server / tool process rather
+          # than the built-in ones (http.get, fs, …) — i.e. when the
+          # dependency being bumped is something YOUR tool-serving code
+          # imports, and you need the replay to hit that code live to
+          # actually exercise the bump. `reelier run --wrap` launches the
+          # given command as the live tool backend for the replay; a skill
+          # with a stamped manifest (`reelier manifest`) requires this or
+          # the run refuses to replay (fail-closed drift check).
+          # wrap: node ./mcp-server.js
+
+          # Optional: push the receipt to your ledger after a passing run.
+          # Omit for a local-only replay (the job summary + PR comment
+          # still happen either way).
+          # cloud-key: ${{ secrets.REELIER_CLOUD_KEY }}
+
+      # Nothing else needed. The action's own last step
+      # ("Fail the check if the replay failed") already sets this job's
+      # exit code from the replay's exit code — a red check here IS the
+      # merge gate; GitHub branch protection just needs this job listed as
+      # a required status check.
