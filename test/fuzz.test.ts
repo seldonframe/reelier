@@ -312,16 +312,13 @@ test("fuzz: evalBind never crashes on near-miss bind-grammar recombinations", ()
 // has no built-in Symbol arbitrary, so a constant Symbol is mixed in by
 // hand) to see what happens outside that contract.
 //
-// KNOWN CRASH (see .superpowers-fuzz/fuzz-report.md): digestSha256 throws an
-// uncaught TypeError — not any documented error — for top-level `undefined`
-// / functions / symbols (canonicalJson silently returns `undefined` instead
-// of a string for those, then `crypto.createHash().update(undefined)`
-// throws) and for ANY value containing a `bigint` anywhere in its object
-// graph (`JSON.stringify` throws "Do not know how to serialize a BigInt").
-// Both thrown errors ARE proper `Error` instances with clear messages, so
-// they satisfy the narrow "Error with a message" fallback invariant below —
-// but they are still undeclared, undocumented crashes out of a function
-// whose signature promises to accept `unknown`. Flagged, not hidden.
+// This fuzzer originally caught digestSha256 throwing an OPAQUE, undeclared
+// TypeError on non-JSON input (see .superpowers-fuzz/fuzz-report.md): for
+// top-level undefined/functions/symbols canonicalJson returned `undefined`
+// and crypto.update(undefined) crashed, and any BigInt anywhere made
+// JSON.stringify throw. canonical-json.ts now REJECTS those explicitly with a
+// clear, declared `canonicalJson: ...` TypeError. The two tests below pin both
+// halves: no crash on JSON-safe input, an explicit typed rejection otherwise.
 // ---------------------------------------------------------------------------
 
 test("fuzz: canonicalJson/digestSha256 never crash with an improper (message-less) error on JSON-safe values", () => {
@@ -334,22 +331,36 @@ test("fuzz: canonicalJson/digestSha256 never crash with an improper (message-les
   );
 });
 
-test("fuzz: canonicalJson/digestSha256 stay within the 'proper Error' fallback invariant even for bigint/function/undefined/symbol-bearing values (documents the known crash above)", () => {
-  const weirdArb = fc.oneof(
-    fc.anything({ withBigInt: true, withDate: true, withMap: true, withSet: true, withObjectString: true }),
+test("fuzz: canonicalJson/digestSha256 REJECT non-JSON values (bigint anywhere, top-level undefined/function/symbol) with a clear canonical-json TypeError — never an opaque crash", () => {
+  // Every value here is outside the JSON contract and MUST be rejected
+  // explicitly. This fuzzer originally found these throwing an opaque
+  // TypeError from deep inside JSON.stringify / crypto.update; canonical-json.ts
+  // now rejects them with a declared `canonicalJson: ...` message, and this
+  // test pins that so the crash can't quietly return.
+  const nonJsonArb = fc.oneof(
     fc.bigInt(),
     fc.constant(undefined),
     fc.constant(Symbol("fuzz")),
-    fc.func(fc.integer())
+    fc.func(fc.integer()),
+    fc.dictionary(fc.string(), fc.bigInt(), { minKeys: 1 }), // bigint nested in an object
+    fc.array(fc.bigInt(), { minLength: 1 })                  // bigint nested in an array
   );
   fc.assert(
-    fc.property(weirdArb, (value) => {
-      // These inputs are KNOWN to throw a raw TypeError today (see the
-      // block comment above) — that is still a proper `Error` with a
-      // message, so the fallback invariant holds; a hang, a non-Error
-      // throw, or a message-less throw would still fail this assertion.
-      assertReturnsOrThrowsProperError(() => canonicalJson(value));
-      assertReturnsOrThrowsProperError(() => digestSha256(value));
+    fc.property(nonJsonArb, (value) => {
+      for (const fn of [() => canonicalJson(value), () => digestSha256(value)]) {
+        let threw: unknown;
+        try {
+          fn();
+        } catch (e) {
+          threw = e;
+        }
+        assert.ok(threw instanceof TypeError, "expected a TypeError rejection, got: " + String(threw));
+        assert.match(
+          (threw as Error).message,
+          /canonicalJson:/,
+          "expected the declared canonical-json rejection message, not an opaque crash"
+        );
+      }
     }),
     { numRuns: NUM_RUNS }
   );
