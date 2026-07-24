@@ -43,11 +43,19 @@ export interface AssertResult {
   message: string;
 }
 
-function getJsonBody(obs: Observation): unknown {
+/**
+ * Parse an Observation's body as JSON, throwing the CALLER's declared error
+ * type (AssertParseError for evalAssert, BindParseError for evalBind) on
+ * failure — never a fixed type regardless of caller. Passing the wrong class
+ * here previously meant evalBind's json.<dotpath> branch could throw an
+ * AssertParseError (not an instanceof BindParseError) on a non-JSON body,
+ * which is an undeclared-for-evalBind crash from the caller's perspective.
+ */
+function getJsonBody<E extends new (message: string) => Error>(obs: Observation, ErrorClass: E): unknown {
   try {
     return JSON.parse(obs.body);
   } catch {
-    throw new AssertParseError(`Assertion needs JSON body but body is not valid JSON: ${obs.body.slice(0, 200)}`);
+    throw new ErrorClass(`Assertion needs JSON body but body is not valid JSON: ${obs.body.slice(0, 200)}`);
   }
 }
 
@@ -105,7 +113,7 @@ export function evalAssert(line: string, obs: Observation): AssertResult {
   m = line.match(/^json\.([a-zA-Z0-9_.]+)\s+is\s+(array|set|number|string|boolean|null)$/);
   if (m) {
     const [, dotpath, kind] = m;
-    const json = getJsonBody(obs);
+    const json = getJsonBody(obs, AssertParseError);
     const val = resolveDotPath(json, dotpath);
     const ok =
       kind === "array"
@@ -126,7 +134,7 @@ export function evalAssert(line: string, obs: Observation): AssertResult {
   m = line.match(/^json\.([a-zA-Z0-9_.]+)\s+matches\s+\/(.*)\/$/);
   if (m) {
     const [, dotpath, pattern] = m;
-    const json = getJsonBody(obs);
+    const json = getJsonBody(obs, AssertParseError);
     const val = resolveDotPath(json, dotpath);
     let re: RegExp;
     try {
@@ -143,7 +151,7 @@ export function evalAssert(line: string, obs: Observation): AssertResult {
   if (m) {
     const [, dotpath, op, numText] = m;
     const expected = parseInt(numText, 10);
-    const json = getJsonBody(obs);
+    const json = getJsonBody(obs, AssertParseError);
     const val = resolveDotPath(json, dotpath);
     let len: number | undefined;
     if (Array.isArray(val) || typeof val === "string") len = val.length;
@@ -161,7 +169,7 @@ export function evalAssert(line: string, obs: Observation): AssertResult {
   m = line.match(/^json\.([a-zA-Z0-9_.]+)\s*(==|!=|>=|<=|>|<)\s*(.+)$/);
   if (m) {
     const [, dotpath, op, rawScalar] = m;
-    const json = getJsonBody(obs);
+    const json = getJsonBody(obs, AssertParseError);
     const val = resolveDotPath(json, dotpath);
     let expected: unknown;
     try {
@@ -217,7 +225,7 @@ export function evalBind(line: string, obs: Observation): BindResult {
   m = line.match(/^([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*json\.([a-zA-Z0-9_.]+)$/);
   if (m) {
     const [, name, dotpath] = m;
-    const json = getJsonBody(obs);
+    const json = getJsonBody(obs, BindParseError);
     const val = resolveDotPath(json, dotpath);
     if (val === undefined) {
       return { ok: false, name, message: `bind ${name} = json.${dotpath} failed: path not found` };
