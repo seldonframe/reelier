@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -121,6 +121,63 @@ test("loadSigningKey picks the newest key when multiple keys exist", async () =>
     assert.ok(loaded);
     assert.equal(loaded!.keyId, second.keyId);
     assert.notEqual(second.keyId, first.keyId);
+  });
+});
+
+test("loadSigningKey is deterministic when two keys share the exact same mtime (filename tiebreak)", async () => {
+  await withTempDir(async (dir) => {
+    const first = await generateSigningKeypair(dir);
+    const second = await generateSigningKeypair(dir);
+
+    // Force an exact tie: coarse-resolution filesystems can produce this
+    // naturally, but we pin it here so the test is deterministic rather
+    // than timing-dependent.
+    const tiedMtime = new Date();
+    await utimes(path.join(dir, `${first.keyId}.pem`), tiedMtime, tiedMtime);
+    await utimes(path.join(dir, `${second.keyId}.pem`), tiedMtime, tiedMtime);
+
+    const expectedKeyId = [first.keyId, second.keyId].sort((a, b) =>
+      `${a}.pem`.localeCompare(`${b}.pem`)
+    )[0];
+
+    // Repeated loads must all agree, regardless of readdir's (unspecified)
+    // ordering for same-mtime files — the old code's stability depended on
+    // that ordering, which is exactly the flake this guards against.
+    for (let i = 0; i < 10; i++) {
+      const loaded = await loadSigningKey(dir);
+      assert.ok(loaded);
+      assert.equal(loaded!.keyId, expectedKeyId);
+    }
+  });
+});
+
+test("loadSigningKey skips a malformed newest key and falls through to the next valid one", async () => {
+  await withTempDir(async (dir) => {
+    const valid = await generateSigningKeypair(dir);
+    // Older mtime for the valid key, newer mtime for the malformed one —
+    // the malformed key is "newest" and must not stop a valid older key
+    // from loading.
+    const older = new Date(Date.now() - 60_000);
+    await utimes(path.join(dir, `${valid.keyId}.pem`), older, older);
+
+    const malformedKeyId = "fedcba9876543210";
+    await writeFile(path.join(dir, `${malformedKeyId}.pem`), "not a real PEM", "utf8");
+    const newer = new Date();
+    await utimes(path.join(dir, `${malformedKeyId}.pem`), newer, newer);
+
+    const originalError = console.error;
+    let warned = false;
+    console.error = (() => {
+      warned = true;
+    }) as typeof console.error;
+    try {
+      const loaded = await loadSigningKey(dir);
+      assert.ok(loaded, "expected fallthrough to the valid older key, got null");
+      assert.equal(loaded!.keyId, valid.keyId);
+      assert.equal(warned, true);
+    } finally {
+      console.error = originalError;
+    }
   });
 });
 

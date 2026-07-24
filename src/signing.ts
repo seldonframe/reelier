@@ -104,27 +104,37 @@ export async function loadSigningKey(dir: string): Promise<LoadedSigningKey | nu
       return { ...c, filePath, mtimeMs: st.mtimeMs };
     })
   );
-  withStats.sort((a, b) => b.mtimeMs - a.mtimeMs);
-  const newest = withStats[0];
+  // Sort newest-first. mtimeMs alone is not a total order — on
+  // coarse-resolution filesystems two keys written close together can land
+  // on the identical millisecond, leaving the comparator's outcome for that
+  // pair dependent on `readdir`'s (unspecified) input order. Break ties by
+  // fileName so the result is deterministic regardless of directory order.
+  withStats.sort((a, b) => b.mtimeMs - a.mtimeMs || a.fileName.localeCompare(b.fileName));
 
-  let pem: string;
-  try {
-    pem = await readFile(newest.filePath, "utf8");
-  } catch (err) {
-    console.error(`WARNING: signing key ${newest.filePath} could not be read (${(err as Error).message}) — skipping.`);
-    return null;
+  // Walk newest-first and skip any candidate that fails to read or parse —
+  // a malformed newest key must not hide an otherwise-valid older one.
+  // Return null only once every candidate has been tried and failed.
+  for (const candidate of withStats) {
+    let pem: string;
+    try {
+      pem = await readFile(candidate.filePath, "utf8");
+    } catch (err) {
+      console.error(`WARNING: signing key ${candidate.filePath} could not be read (${(err as Error).message}) — skipping.`);
+      continue;
+    }
+    try {
+      const privateKey = createPrivateKey(pem);
+      return { keyId: candidate.keyId, privateKey };
+    } catch (err) {
+      console.error(
+        `WARNING: signing key ${candidate.filePath} is malformed and could not be loaded (${
+          (err as Error).message
+        }) — pushes will go out unsigned until this is fixed or a new key is generated.`
+      );
+      continue;
+    }
   }
-  try {
-    const privateKey = createPrivateKey(pem);
-    return { keyId: newest.keyId, privateKey };
-  } catch (err) {
-    console.error(
-      `WARNING: signing key ${newest.filePath} is malformed and could not be loaded (${
-        (err as Error).message
-      }) — pushes will go out unsigned until this is fixed or a new key is generated.`
-    );
-    return null;
-  }
+  return null;
 }
 
 /** Sign a canonical-JSON digest string (e.g. `digestSha256(record)`) with an Ed25519 private key. Returns base64 — the exact `signature.sig` wire value (wire contract: `sig = base64(ed25519-sign(sha256hex-digest-string))`). */
