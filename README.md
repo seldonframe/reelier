@@ -6,9 +6,7 @@
 
 ### Agents make claims. Reelier writes receipts.
 
-**Upgrade the model on Friday.**
-
-Record the run that worked, replay it deterministically — **0 tokens, byte-identical, a receipt on every step** — and `reelier diff` catches the day it drifts.
+A dependency bump shouldn't silently break your agent. Reelier re-runs your recorded workflows against the new version at zero LLM cost and diffs them — so you see exactly what changed before you merge.
 
 **Think of it as CI + snapshot tests for your agent's tool-call workflows.**
 
@@ -86,6 +84,14 @@ reelier compile trace.jsonl --from-skill ./my-skill/SKILL.md
 | **Drift** | `reelier run <skill.md> --wrap "<your mcp server>"` | *Has the world moved out from under this skill?* |
 
 *Taxonomy due to Mads Hansen's review of the launch post.* Full semantics for each test, including recovery injection and manifest guardrails: [docs/REFERENCE.md](./docs/REFERENCE.md).
+
+## Gate Dependabot / Renovate bump PRs
+
+Dependabot and Renovate open the PR and run your test suite — but neither knows what your agent actually *does* at runtime, so a dependency bump that silently changes a tool call's shape (a renamed field, a new default, a different error) sails through with green unit tests. This is the check they don't run.
+
+Copy [`.github/workflows/reelier-bump-check.yml`](.github/workflows/reelier-bump-check.yml) into your repo, point `skill:` at your own recorded `.skill.md` file(s), and it will: gate to PRs from `dependabot[bot]`/`renovate[bot]` (or a `dependencies` label), install the bumped dependency, replay your recorded skill live against it at `--max-level 0` (0 tokens), and fail the check on the exact step that drifted.
+
+This tests dependency and MCP-tool-call behavior — it does **not** test model upgrades; `--max-level 0` never calls an LLM. Full listing copy and setup: [`docs/marketplace-listing.md`](docs/marketplace-listing.md).
 
 ## Prove it
 

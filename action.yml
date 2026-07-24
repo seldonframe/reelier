@@ -1,7 +1,9 @@
 name: "Reelier replay"
 description: >-
   Snapshot tests for AI agents: deterministic replay of MCP tool-call
-  workflows. 0 LLM tokens, exit 1 on drift, PR receipts.
+  workflows. 0 LLM tokens, exit 1 on drift, PR receipts. Also gates
+  Dependabot/Renovate PRs — install the bumped dependency, replay your
+  recorded skills against it, and fail the check on drift.
 author: "Reelier"
 branding:
   icon: "check-circle"
@@ -43,6 +45,18 @@ inputs:
       Newline-separated `name=value` pairs, forwarded to `reelier run` as
       `--var name=value` for each line. Optional — most skills declare
       their own inputs and need none.
+    required: false
+    default: ""
+  wrap:
+    description: >-
+      Newline-separated command lines, forwarded to `reelier run` as
+      `--wrap "<command>"` for each line (repeatable, same as the CLI).
+      Use this to front your own MCP server / tool process so the replay
+      exercises the code that actually changed in a dependency bump —
+      e.g. `wrap: "node ./mcp-server.js"`. Required only when the skill
+      carries a manifest (`reelier manifest`) or otherwise needs live
+      tools instead of the built-in ones (http, fs). Optional — skills
+      that only use built-in tools need no wrap.
     required: false
     default: ""
   pr-comment:
@@ -91,6 +105,7 @@ runs:
         SKILL: ${{ inputs.skill }}
         MAX_LEVEL: ${{ inputs.max-level }}
         VARS: ${{ inputs.vars }}
+        WRAP: ${{ inputs.wrap }}
       run: |
         set +e
         VAR_ARGS=()
@@ -101,8 +116,16 @@ runs:
           done <<< "$VARS"
         fi
 
+        WRAP_ARGS=()
+        if [ -n "$WRAP" ]; then
+          while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            WRAP_ARGS+=(--wrap "$line")
+          done <<< "$WRAP"
+        fi
+
         echo "::group::reelier run $SKILL --max-level $MAX_LEVEL"
-        reelier run "$SKILL" --max-level "$MAX_LEVEL" "${VAR_ARGS[@]}"
+        reelier run "$SKILL" --max-level "$MAX_LEVEL" "${VAR_ARGS[@]}" "${WRAP_ARGS[@]}"
         RUN_EXIT_CODE=$?
         echo "::endgroup::"
 
