@@ -51,7 +51,11 @@ function matchGolden(name: string, actual: string): void {
     );
   }
   const expected = readFileSync(filePath, "utf8");
-  assert.equal(actual, expected, `Wire format drift detected in golden "${name}" — confirm this was intended, then UPDATE_GOLDEN=1.`);
+  // Compare EOL-normalized: git may check a committed fixture out as CRLF on a
+  // Windows working tree while renderSkillMd/canonicalJson emit LF. Line
+  // endings are not part of the wire format; a real drift changes other bytes.
+  const norm = (s: string): string => s.replace(/\r\n/g, "\n");
+  assert.equal(norm(actual), norm(expected), `Wire format drift detected in golden "${name}" — confirm this was intended, then UPDATE_GOLDEN=1.`);
 }
 
 // ---------------------------------------------------------------------------
