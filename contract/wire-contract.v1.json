@@ -1,0 +1,42 @@
+{
+  "skillName": "wire-contract-fixture",
+  "record": {
+    "skill": "wire-contract-fixture",
+    "startedAt": "2026-07-22T00:00:00.000Z",
+    "finishedAt": "2026-07-22T00:00:01.230Z",
+    "passed": true,
+    "skillContentSha256": "352ef82386a84656ea5946a4f7e62157b9a9c068106c07a12e2ad42fefd8ed83",
+    "steps": [
+      {
+        "n": 1,
+        "title": "Fetch a static fixture URL",
+        "level": 0,
+        "outcome": "passed",
+        "ms": 1230,
+        "failures": []
+      }
+    ],
+    "totals": {
+      "steps": 1,
+      "passed": 1,
+      "unchecked": 0,
+      "skipped": 0,
+      "failed": 0,
+      "ms": 1230,
+      "llmInputTokens": 0,
+      "llmOutputTokens": 0
+    }
+  },
+  "skillContentSha256": "352ef82386a84656ea5946a4f7e62157b9a9c068106c07a12e2ad42fefd8ed83",
+  "costUsd": 0,
+  "priceTableDate": "2026-07-22",
+  "signature": {
+    "alg": "ed25519",
+    "keyId": "aa22e8743d5e4c3d",
+    "sig": "HCuEu/M3J/8NrO1auNxx0+1wKTypQstbKJsngR7CEhyZzQnZQsJFS057ak4rlE/2vR7HH51eZYoYjqZcnpf1DA=="
+  },
+  "ciAttestation": {
+    "provider": "github-actions",
+    "token": "eyJhbGciOiJSUzI1NiIsImtpZCI6IndpcmUtY29udHJhY3QtZml4dHVyZS1raWQifQ.eyJyZXBvc2l0b3J5Ijoic2VsZG9uZnJhbWUvcmVlbGllciIsInNoYSI6IjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2NzgiLCJ3b3JrZmxvd19yZWYiOiJzZWxkb25mcmFtZS9yZWVsaWVyLy5naXRodWIvd29ya2Zsb3dzL2NpLnltbEByZWZzL2hlYWRzL21haW4iLCJydW5faWQiOiI5OTk4ODg3NzciLCJpYXQiOjE3ODQ3NzMyMzgsImlzcyI6Imh0dHBzOi8vdG9rZW4uYWN0aW9ucy5naXRodWJ1c2VyY29udGVudC5jb20iLCJhdWQiOiJyZWVsaWVyLmNvbSIsImV4cCI6NDk0MDUzMzIzOH0.rEZjzM9vJsObNjEaRmv_Wpmzw9Li0ubJ_uMyF9ne0fUMfPMVxNTCHt6PzZw5c9h_VMqQOYMhOhN4fPq6ifPLn_uNfdvDtrnTi2B1tk-daeRNUKubRJjizJFfw36tLpRsc2JRicJTQmGmngGIILjvUNOuKbgJjfZXXfbTX2ZarLv_ptz8Zmh3VqtXUTrp-atTDf-AJNQb25fxupLgK6I3e1sYYs-7-rHMryClynq2MbLreFtYG1fkmXr6_2Z4h0rTvP7w6xhOYGn_VEq0oN6sneeGs3XXvDqyYpuYPCa76y8Pmegk0c9EL-fFMAkGyBF6iCJWo73igWIUAlwpPbkHJQ"
+  }
+}

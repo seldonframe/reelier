@@ -28,7 +28,8 @@
     "README.md",
     "LICENSE",
     "CHANGELOG.md",
-    "integrations"
+    "integrations",
+    "contract"
   ],
   "repository": {
     "type": "git",
