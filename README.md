@@ -29,6 +29,22 @@ A dependency bump shouldn't silently break your agent. Reelier re-runs your reco
 
 ---
 
+## Receipts on your agent PRs — install and done
+
+Agent-authored PRs (Dependabot, Claude, Codex, Cursor, …) get a receipt comment in seconds: author, files changed, declared scope vs. what actually changed, sensitive paths flagged. No workflow file, no CLI, no config.
+
+**[→ Install the Reelier receipts GitHub App](https://github.com/apps/reelier-receipts)** — free on public repos, forever.
+
+> **Reelier receipt — agent PR**
+> Author: `dependabot[bot]` · Files changed: 2 (+119 −41)
+> Declared scope: none (add `.reelier/scope.yml` to enable unexpected-write detection)
+> Sensitive paths touched: ⚠ 1 — `package-lock.json`
+> Proves scope and change, not correctness
+
+<sub>A real receipt from Reelier's own repos — [see one live](https://github.com/seldonframe/reelier/pull/27). Declare scope per agent in `.reelier/scope.yml` (or a <code>reelier-scope</code> block in the PR body) and the receipt reports unexpected writes. The receipt proves scope and change, never correctness or safety.</sub>
+
+---
+
 ## Why
 
 AI agents are non-deterministic — the same prompt, a different result every run — and they'll claim they did the work whether they did or not. Reelier records the run that worked, replays it deterministically at $0, and writes a signed receipt that proves it. Point it at your existing CI in one workflow — it adds a verifiable receipt, it doesn't replace your stack.
