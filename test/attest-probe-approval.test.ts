@@ -85,3 +85,30 @@ test("F2: flag-path degrade keeps the response-derived reason when nothing is de
   assert.match(a.reason!, /probe-requires-approval/);
   assert.equal(w.probeCalls(), 0);
 });
+
+// Fix-wave F4: a write dispatch that THROWS after a successful pre-probe must
+// not discard the captured pre evidence — the call went out (the side effect
+// may have landed server-side) even though no observation came back.
+test("F4: throwing write tool => failed step still carries a pre-only attest with reason dispatch-failed", async () => {
+  const w = world();
+  w.tools["fake.update"] = { effect: "idempotent-write", run: async () => { throw new Error("ETIMEDOUT"); } };
+  const rec = await runSkill(parseSkill(withApprove(SKILL)), { tools: w.tools, dryRun: true });
+  assert.equal(rec.steps[0].outcome, "failed");
+  assert.match(rec.steps[0].failures.join("\n"), /Tool execution failed: ETIMEDOUT/);
+  assert.equal(w.probeCalls(), 1, "only the pre-probe fired — no post-probe after a throw");
+  const a = rec.steps[0].attest!;
+  assert.equal(a.method, "declared-probe");
+  assert.equal(a.confidence, "partial");
+  assert.ok(a.pre, "the captured pre evidence must be preserved");
+  assert.equal(a.post, undefined);
+  assert.equal(a.reason, "dispatch-failed");
+});
+
+test("F4: throwing write tool with a FAILED pre-probe records no attest (nothing was captured)", async () => {
+  const w = world();
+  w.tools["fake.read"] = { effect: "read", run: async () => { throw new Error("probe down"); } };
+  w.tools["fake.update"] = { effect: "idempotent-write", run: async () => { throw new Error("ETIMEDOUT"); } };
+  const rec = await runSkill(parseSkill(withApprove(SKILL)), { tools: w.tools, dryRun: true });
+  assert.equal(rec.steps[0].outcome, "failed");
+  assert.equal(rec.steps[0].attest, undefined);
+});

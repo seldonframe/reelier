@@ -702,7 +702,23 @@ async function executeStep(
     obs = await tool.run(filledArgs, ctx);
   } catch (err) {
     failures.push(`Tool execution failed: ${(err as Error).message}`);
-    return { outcome: "failed", ms: Date.now() - started, failures, binds: localBinds };
+    // A throw AFTER dispatch is not "never dispatched" — the write-effect
+    // call went out and its side effect may have landed server-side (e.g. a
+    // response timeout after the server applied the write). If the pre-probe
+    // already captured evidence, preserve it (final-review minor F4): a
+    // one-sided attest, confidence "partial", reason "dispatch-failed" —
+    // never silently drop the only state evidence for the incident.
+    let throwAttest: StepAttest | undefined;
+    if (isWrite && step.attest && probeApproved && preProbe !== undefined && preProbe.ok && Object.keys(preProbe.projected).length > 0) {
+      throwAttest = {
+        method: "declared-probe",
+        selector: `${step.attest.tool} ${canonicalJson(step.attest.args)}`,
+        pre: { hash: saltedProjectionHash(preProbe.projected, attestSalt), at: preAt! },
+        confidence: "partial",
+        reason: "dispatch-failed",
+      };
+    }
+    return { outcome: "failed", ms: Date.now() - started, failures, binds: localBinds, ...(throwAttest !== undefined ? { attest: throwAttest } : {}) };
   }
 
   // The write receipt reflects that the tool call actually dispatched — it's
