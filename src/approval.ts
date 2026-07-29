@@ -7,7 +7,17 @@
 // that refusal.
 
 import { digestSha256 } from "./canonical-json.js";
-import type { Step } from "./skill.js";
+import type { Step, StepAttestDecl } from "./skill.js";
+
+/**
+ * The exact inputs the approval hash binds. `attest` is REQUIRED (though its
+ * value may be `undefined`): `Step.attest` is optional, so a `Pick` would let
+ * a call site build a fresh object literal that silently omits the key and
+ * compute the legacy attest-less hash for a step that IS attested — exactly
+ * the bug behind the L2 gate regression (final-review S1/S4). With the key
+ * required, omission is a compile error at every call site.
+ */
+export type ApprovalHashInput = Pick<Step, "actionTool" | "actionArgs"> & { attest: StepAttestDecl | undefined };
 
 /**
  * Approval binds the OPERATION SHAPE: tool + args template ({{placeholders}}
@@ -23,7 +33,7 @@ import type { Step } from "./skill.js";
  * the hash input stays byte-identical to before this field existed, so
  * every already-approved skill remains approved.
  */
-export function computeApprovalHash(step: Pick<Step, "actionTool" | "actionArgs" | "attest">): string {
+export function computeApprovalHash(step: ApprovalHashInput): string {
   if (step.attest === undefined) {
     return digestSha256({ args: step.actionArgs, tool: step.actionTool });
   }

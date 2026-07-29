@@ -1267,7 +1267,7 @@ export async function cmdApprove(args: ParsedArgs): Promise<number> {
   let unchangedCount = 0;
   try {
     for (const step of writeSteps) {
-      const expected = computeApprovalHash(step);
+      const expected = computeApprovalHash({ actionTool: step.actionTool, actionArgs: step.actionArgs, attest: step.attest });
       const isCurrent = step.approve !== undefined && step.approve === expected;
       const state = step.approve === undefined ? "unapproved" : isCurrent ? "approved (current)" : "approved (STALE — args changed)";
 

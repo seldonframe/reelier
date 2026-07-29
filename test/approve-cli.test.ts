@@ -99,8 +99,8 @@ test("cmdApprove --all: stamps a valid approve: hash for every write step, atomi
 
     const written = await readFile(skillPath, "utf8");
     const skill = parseSkill(written);
-    assert.equal(skill.steps[0].approve, computeApprovalHash(skill.steps[0]));
-    assert.equal(skill.steps[1].approve, computeApprovalHash(skill.steps[1]));
+    assert.equal(skill.steps[0].approve, computeApprovalHash({ ...skill.steps[0], attest: skill.steps[0].attest }));
+    assert.equal(skill.steps[1].approve, computeApprovalHash({ ...skill.steps[1], attest: skill.steps[1].attest }));
     assert.match(written, /## Changelog/);
     assert.match(written, /approved 2 write step\(s\) \(reelier approve\)/);
   });
@@ -155,7 +155,7 @@ test("cmdApprove --all: reports 'approved (STALE — args changed)' and re-stamp
 
     const written = await readFile(skillPath, "utf8");
     const skill = parseSkill(written);
-    assert.equal(skill.steps[0].approve, computeApprovalHash(skill.steps[0]));
+    assert.equal(skill.steps[0].approve, computeApprovalHash({ ...skill.steps[0], attest: skill.steps[0].attest }));
   });
 });
 

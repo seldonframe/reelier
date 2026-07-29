@@ -406,7 +406,7 @@ description: one pre-approved write step with no attest
 - effect: destructive
 `;
     const parsed = parseSkill(withoutHash);
-    const currentHash = computeApprovalHash(parsed.steps[0]);
+    const currentHash = computeApprovalHash({ ...parsed.steps[0], attest: parsed.steps[0].attest });
     const skillSource = `---
 name: attest-advisory-current
 description: one pre-approved write step with no attest
