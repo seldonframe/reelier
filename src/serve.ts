@@ -43,6 +43,7 @@ import type { OpenQuestion } from "./compile.js";
 import { parseSkill } from "./skill.js";
 import { runSkill, builtinTools, readRunRecords, type RunRecord } from "./runner.js";
 import { diffRunRecords, type RunDiff } from "./diff.js";
+import { preflightManifest } from "./manifest.js";
 import { connectDownstream, type DownstreamConnection } from "./mcp-client.js";
 import { buildMcpTools } from "./mcp-tool.js";
 import { pushSkill, type PushResult } from "./push.js";
@@ -197,6 +198,8 @@ export interface ReplayToolInput {
   /** Permit `idempotent-write` steps to execute. Default false — replay is read-only. */
   allowWrites?: boolean;
   cwd?: string;
+  /** Break-glass: replay despite an unverifiable/drifted manifest (mirrors the CLI's --ignore-manifest; the run record carries manifestIgnored: true). */
+  ignoreManifest?: boolean;
 }
 
 /**
@@ -204,6 +207,10 @@ export interface ReplayToolInput {
  * constructed or called from this surface) and return the real run record.
  * Never fabricates a passed/failed verdict: whatever runSkill actually
  * measured is what's returned, unmodified.
+ *
+ * Mirrors cmdRun's fail-closed manifest preflight (cli.ts:261-293) exactly:
+ * a manifest-carrying skill gets its tool schemas verified against live
+ * downstreams BEFORE any step executes, unless ignoreManifest breaks glass.
  */
 export async function runReplayTool(input: ReplayToolInput): Promise<RunRecord> {
   const source = await readFile(input.skillPath, "utf8");
@@ -214,6 +221,26 @@ export async function runReplayTool(input: ReplayToolInput): Promise<RunRecord> 
     for (const spec of input.wrap ?? []) {
       downstreams.push(await connectDownstream(spec));
     }
+
+    let manifestIgnored = false;
+    if (skill.manifest) {
+      if (input.ignoreManifest) {
+        manifestIgnored = true;
+      } else if (downstreams.length === 0) {
+        throw new Error(
+          "manifest present but no 'wrap' given — cannot verify tool schemas against live servers (fail closed). Pass wrap, or ignoreManifest: true to break-glass."
+        );
+      } else {
+        const { ok, drifts } = preflightManifest(skill.manifest, downstreams);
+        if (!ok) {
+          throw new Error(
+            "MANIFEST DRIFT — refusing to replay (fail closed): " +
+              drifts.map((d) => `${d.name} — recorded ${d.recorded}${d.live !== undefined ? ` live ${d.live}` : ""} (${d.note})`).join("; ")
+          );
+        }
+      }
+    }
+
     const tools = downstreams.length > 0 ? { ...builtinTools, ...buildMcpTools(downstreams) } : undefined;
 
     return await runSkill(skill, {
@@ -225,6 +252,7 @@ export async function runReplayTool(input: ReplayToolInput): Promise<RunRecord> 
       cwd: input.cwd,
       skillPath: input.skillPath,
       skillContentSha256: createHash("sha256").update(source, "utf8").digest("hex"),
+      ...(manifestIgnored ? { manifestIgnored: true } : {}),
     });
   } finally {
     await Promise.all(downstreams.map((d) => d.close().catch(() => {})));
@@ -244,6 +272,11 @@ const replayToolInputSchema = {
     allowDestructive: { type: "boolean", description: "Allow steps whose effect is 'destructive' to run." },
     allowWrites: { type: "boolean", description: "Allow 'idempotent-write' steps to execute. Default false — replay is READ-ONLY, so re-running never re-fires writes." },
     cwd: { type: "string", description: "Working directory the run record is written under (default: process cwd)." },
+    ignoreManifest: {
+      type: "boolean",
+      description:
+        "Break-glass: replay despite an unverifiable/drifted manifest (mirrors the CLI's --ignore-manifest; the run record carries manifestIgnored: true).",
+    },
   },
   required: ["skillPath"],
 };
