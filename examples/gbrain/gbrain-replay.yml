@@ -1,0 +1,99 @@
+# gbrain scheduled replay — a cron-triggered variant of the `reelier ci`
+# scaffold (see src/ci-scaffold.ts's renderCiWorkflow for the standard
+# shape this is adapted from), extended with the setup this recipe needs
+# that a plain http.*-only skill doesn't: a Bun toolchain, a gbrain
+# install, and a zero-config pglite database — because gbrain is a
+# --wrap'd MCP server, not a built-in http tool, and Reelier Cloud's
+# hosted scheduled-replay product only supports http.*-only skills (see
+# ../gbrain/README.md "Honest constraints"). This plain GitHub Actions cron
+# has no such restriction: it runs the OSS `reelier` CLI directly.
+#
+# UNTESTED ON WINDOWS, LINUX-CI-TARGETED EXAMPLE. This file has not been
+# run against a live gbrain instance on any machine (see
+# gbrain-capture-enrich.skill.md's own HONESTY NOTE and this directory's
+# README.md "What's validated here / what isn't") — treat it as a starting
+# point to adapt, not a verified-green workflow to copy blindly.
+
+name: gbrain replay
+
+on:
+  schedule:
+    # Daily at 07:23 UTC — off-peak minute, avoids the top-of-hour
+    # scheduled-job stampede (same convention `reelier ci` uses).
+    - cron: "23 7 * * *"
+  workflow_dispatch: {} # manual "Run workflow" button in the Actions tab
+
+permissions:
+  contents: write # this workflow commits synced gbrain markdown + the run receipt
+  id-token: write # lets `reelier push` attach a GitHub OIDC CI attestation (optional block below)
+
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ">=1.3.10" # gbrain's own engines.bun floor — see README.md "Prerequisites"
+
+      - name: Install gbrain
+        run: bun install -g github:garrytan/gbrain
+
+      - name: Zero-config gbrain database (no embedding keys needed)
+        run: gbrain init --pglite --no-embedding
+
+      - name: Set up Node (for the reelier CLI)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install reelier
+        # Exact-pinned, not a caret range — see action.yml's cli-version
+        # input doc comment for why a floating 0.x range is the wrong
+        # default for a determinism tool.
+        run: npm install -g "reelier@0.24.0"
+
+      - name: Replay the gbrain skill
+        id: run-skill
+        env:
+          MCP_STDIO: "1" # required — see README.md "Wrap it"
+        run: |
+          set +e
+          reelier run examples/gbrain/gbrain-capture-enrich.skill.md \
+            --wrap "gbrain serve" \
+            --max-level 0 \
+            --allow-writes
+          echo "exit-code=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Diff gate — fail on drift from the previous scheduled run
+        # `reelier diff` compares the last two runs in
+        # .reelier/runs/<skill>.jsonl and exits 1 on drift (see src/cli.ts's
+        # cmdDiff) — the first-ever run on a fresh checkout has no prior
+        # run to diff against, so this step is allowed to no-op then.
+        run: |
+          reelier diff gbrain-capture-enrich || echo "::warning::no prior run to diff against yet, or drift detected — see log above"
+
+      - name: Sync gbrain's tracked pages to disk as markdown
+        run: gbrain sync
+
+      - name: Push the receipt to your ledger (optional)
+        if: ${{ env.REELIER_CLOUD_KEY != '' }}
+        env:
+          REELIER_CLOUD_KEY: ${{ secrets.REELIER_CLOUD_KEY }}
+        run: reelier push examples/gbrain/gbrain-capture-enrich.skill.md
+
+      - name: Commit synced pages + run receipt
+        # One commit carrying both what changed in the knowledge brain
+        # (gbrain sync's markdown) and the receipt proving the replay that
+        # produced it ran cleanly (see README.md "Receipts + system of
+        # record"). Adjust the paths below to match your own gbrain sync
+        # target directory.
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .reelier/runs/gbrain-capture-enrich.jsonl
+          # git add <your gbrain sync target dir> -- adjust to your setup
+          git diff --cached --quiet || git commit -m "chore(gbrain): scheduled replay receipt + synced pages"
+          git push
