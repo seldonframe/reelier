@@ -652,6 +652,16 @@ async function executeStep(
     return { outcome: "failed", ms: Date.now() - started, failures, binds: localBinds };
   }
 
+  // A declared probe dispatches ONLY when this write executed via a matching
+  // `approve:` hash (final-review S2): the approval hash binding of `attest:`
+  // (src/approval.ts) is the sole defense against an unreviewed probe args
+  // template exfiltrating live bindings through a probe URL, and it only
+  // engages on the approve path. On the flag path (--allow-writes/--yes) the
+  // probe never fires and the attest degrades honestly (see below). A
+  // defined `step.approve` here is guaranteed to have MATCHED — a mismatch
+  // returned above before any dispatch.
+  const probeApproved = step.attest !== undefined && step.approve !== undefined;
+
   // Pre-probe (declared-probe attestation, consequence-layer §1.2): captured
   // strictly BEFORE dispatch or never. Runs only for write steps that
   // declared one — reads never probe, and a probe failure never gates the
@@ -659,7 +669,7 @@ async function executeStep(
   // actually resolves, never stamped later — that's the honesty rule.
   let preProbe: ProbeResult | undefined;
   let preAt: string | undefined;
-  if (isWrite && step.attest) {
+  if (isWrite && step.attest && probeApproved) {
     preProbe = await runProbe(step.attest, tools, bindings, ctx, now, probeTimeoutMs);
     preAt = new Date().toISOString();
   }
@@ -679,7 +689,7 @@ async function executeStep(
 
   let attest: StepAttest | undefined;
   if (isWrite) {
-    if (step.attest) {
+    if (step.attest && probeApproved) {
       const postProbe = await runProbe(step.attest, tools, bindings, ctx, now, probeTimeoutMs);
       const postAt = new Date().toISOString();
       const selector = `${step.attest.tool} ${canonicalJson(step.attest.args)}`;
@@ -712,6 +722,14 @@ async function executeStep(
       }
     } else {
       attest = buildResponseDerivedAttest(obs);
+      if (step.attest) {
+        // A probe WAS declared but this write executed via the flag path
+        // (--allow-writes/--yes), so no approval hash ever bound the probe's
+        // args template — the probe was withheld (see probeApproved above)
+        // and the attest honestly records why it degraded.
+        const reason = "probe-requires-approval";
+        attest = { ...attest, reason: attest.reason !== undefined ? `${attest.reason}; ${reason}` : reason };
+      }
     }
   }
 

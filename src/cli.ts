@@ -1277,7 +1277,8 @@ export async function cmdApprove(args: ParsedArgs): Promise<number> {
       if (step.attest === undefined) {
         console.log(
           "  note: no 'attest:' declared — state attestation for this write is response-derived (partial) at best. " +
-            'Declare a paired read for exact pre/post attestation: - attest: {"tool":"<read tool>","args":{...},"projection":["field",...]}'
+            "Exact pre/post attestation needs BOTH an attest: declaration AND this approval (the probe only runs on an approved step): " +
+            '- attest: {"tool":"<read tool>","args":{...},"projection":["field",...]}'
         );
       }
       console.log(`  ${state}`);

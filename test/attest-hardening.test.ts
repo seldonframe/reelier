@@ -269,6 +269,14 @@ description: d
 - effect: idempotent-write
 `;
 
+/** PROBE_SKILL with a CURRENT approve: hash stamped (attest bound in) — since
+ * fix-wave F2 the declared probe only dispatches on the approved path. */
+function approvedProbeSkill(): string {
+  const s = parseSkill(PROBE_SKILL).steps[0];
+  const hash = computeApprovalHash({ actionTool: s.actionTool, actionArgs: s.actionArgs, attest: s.attest });
+  return `${PROBE_SKILL}- approve: ${hash}\n`;
+}
+
 const LADDER_CASES: Array<{
   pre: ProbeState;
   post: ProbeState;
@@ -294,7 +302,7 @@ for (const c of LADDER_CASES) {
       "fake.update": { effect: "idempotent-write", run: async () => obsOf({ id: "x1" }) },
       "fake.read": tool,
     };
-    const rec = await runSkill(parseSkill(PROBE_SKILL), { tools, allowWrites: true, dryRun: true });
+    const rec = await runSkill(parseSkill(approvedProbeSkill()), { tools, allowWrites: true, dryRun: true });
     const a = rec.steps[0].attest!;
     assert.equal(a.method, "declared-probe");
     assert.equal(a.confidence, c.confidence, `expected confidence ${c.confidence}, got ${a.confidence} (reason: ${a.reason})`);
