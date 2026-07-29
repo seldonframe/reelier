@@ -1269,7 +1269,7 @@ export async function cmdApprove(args: ParsedArgs): Promise<number> {
     for (const step of writeSteps) {
       const expected = computeApprovalHash({ actionTool: step.actionTool, actionArgs: step.actionArgs, attest: step.attest });
       const isCurrent = step.approve !== undefined && step.approve === expected;
-      const state = step.approve === undefined ? "unapproved" : isCurrent ? "approved (current)" : "approved (STALE — args changed)";
+      const state = step.approve === undefined ? "unapproved" : isCurrent ? "approved (current)" : "approved (STALE — tool/args/attest changed)";
 
       console.log(`Step ${step.n} — ${step.title}`);
       console.log(`  ${step.actionTool} ${canonicalJson(step.actionArgs)}`);

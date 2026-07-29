@@ -848,14 +848,14 @@ effect (`step.effect ?? tool.effect`):
     filled args, and never including the server, so `reelier approve` can
     run fully offline) → the step executes with **no flag needed at all**,
     even a `destructive` one.
-  - Any mismatch (the step's tool or args changed since it was approved) →
+  - Any mismatch (the step's tool, args, or `attest:` declaration changed since it was approved) →
     `"failed"` with `"Approval mismatch on write step … Re-review and
     re-approve: reelier approve <skill.md>"` — **no flag overrides this**,
     including `--allow-writes` and `--yes` together. The tool is never
     called.
 - `reelier approve <skill.md> [--all]` walks every write/destructive step,
   shows its current state (`unapproved` / `approved (current)` / `approved
-  (STALE — args changed)`), and on confirmation (or unconditionally under
+  (STALE — tool/args/attest changed)`), and on confirmation (or unconditionally under
   `--all`) stamps `step.approve = computeApprovalHash(step)`, serializes,
   and appends one `## Changelog` line (§3.7).
 

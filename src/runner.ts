@@ -630,7 +630,7 @@ async function executeStep(
       const expected = computeApprovalHash({ actionTool: step.actionTool, actionArgs: step.actionArgs, attest: step.attest });
       if (step.approve !== expected) {
         failures.push(
-          `Approval mismatch on write step — the step's tool/args changed since it was approved. ` +
+          `Approval mismatch on write step — the step's tool/args/attest changed since it was approved. ` +
             `Re-review and re-approve: reelier approve <skill.md>. (--allow-writes/--yes do NOT override an approval mismatch.)`
         );
         return { outcome: "failed", ms: Date.now() - started, failures, binds: localBinds };

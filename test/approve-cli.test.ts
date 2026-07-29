@@ -135,7 +135,7 @@ test("cmdApprove --all: an approved skill then satisfies the runner's approval g
   });
 });
 
-test("cmdApprove --all: reports 'approved (STALE — args changed)' and re-stamps when args drifted since a prior approval", async () => {
+test("cmdApprove --all: reports 'approved (STALE — tool/args/attest changed)' and re-stamps when args drifted since a prior approval", async () => {
   await withTempDir(async (dir) => {
     const skillPath = path.join(dir, "s.skill.md");
     await writeFile(skillPath, SKILL_ONE_WRITE, "utf8");
