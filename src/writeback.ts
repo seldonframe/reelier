@@ -80,6 +80,9 @@ export function renderStepBlock(step: Step): string[] {
   for (const a of step.asserts) lines.push(`- assert: ${a}`);
   for (const b of step.binds) lines.push(`- bind: ${b}`);
   lines.push(`- effect: ${step.effect}`);
+  if (step.attest !== undefined) {
+    lines.push(`- attest: ${JSON.stringify({ tool: step.attest.tool, args: step.attest.args, ...(step.attest.projection ? { projection: step.attest.projection } : {}) })}`);
+  }
   if (step.approve !== undefined) lines.push(`- approve: ${step.approve}`);
   lines.push("");
   return lines;
