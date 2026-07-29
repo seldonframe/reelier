@@ -2,7 +2,8 @@ node_modules/
 dist/
 dist-test/
 coverage/
-.reelier/
+.reelier/*
+!.reelier/scope.yml
 .stryker-tmp/
 reports/
 .superpowers-*/

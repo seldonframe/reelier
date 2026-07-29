@@ -1,0 +1,21 @@
+# Per-agent declared write scope (read by the reelier-receipts App from
+# this repo's default branch). Keyed by the PR's git AUTHOR login — exact,
+# case-insensitive match, NOT a branch glob — per the cloud repo's
+# src/lib/pr-scope.ts (parseRepoScopeForAuthor). On a squash-merged
+# claude/* PR the git author is the human GitHub account driving the
+# agent ("fixlyai", confirmed via `gh api user`), not a bot login.
+#
+# Conservative and honest over permissive: only the areas our agents
+# legitimately touch shipping features, tests, docs, examples, and
+# integrations for this OSS repo — never CI workflow internals beyond the
+# .github/** surface, and never anything outside this declared list.
+fixlyai:
+  - "src/**"
+  - "test/**"
+  - "docs/**"
+  - "examples/**"
+  - "integrations/**"
+  - ".github/**"
+  - "*.md"
+  - "package.json"
+  - "package-lock.json"
