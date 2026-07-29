@@ -829,19 +829,23 @@ function level3Message(step: Step): string {
 }
 
 /**
- * L2 approval mismatch: the LLM's proposed args template leaves the
- * template a human approved (`step.approve`). Mirrors level3Message's
- * shape — spec §2: "patched args that leave the approved template → the
- * write is NOT re-executed at L2." The main-path gate (executeStep) already
- * proved `step.approve` matched the ORIGINAL template before this step ever
- * reached L2 (attemptEscalation only runs when the main path produced an
- * observation), so this only fires when L2's proposed args differ from what
- * was approved.
+ * L2 approval mismatch: the hash recomputed over the L2 candidate template
+ * (tool/args/attest) no longer matches `step.approve`. Mirrors
+ * level3Message's shape — spec §2: "patched args that leave the approved
+ * template → the write is NOT re-executed at L2." Two distinct causes land
+ * here: (1) the LLM's proposed args genuinely diverge from the approved
+ * template, or (2) the approval is simply stale — the step's `tool:`,
+ * `args:`, or `attest:` was edited by hand after `reelier approve` last ran,
+ * so even an L2 candidate identical to the step's own (edited) template no
+ * longer hashes to what was approved. Either way the write is NOT
+ * re-executed; this message doesn't try to distinguish them, it just names
+ * both possibilities and points at the fix.
  */
 function l2ApprovalMismatchMessage(step: Step): string {
   return (
-    `Approval mismatch on L2-patched write step ${step.n} (${step.title}) — the LLM's proposed args leave the ` +
-    `template a human approved. Level 2 auto-repair never re-executes a write whose args weren't approved. ` +
+    `Approval mismatch on L2-patched write step ${step.n} (${step.title}) — either the LLM's proposed args leave ` +
+    `the template a human approved, or the approval is stale because tool/args/attest was edited since it was ` +
+    `last approved. Level 2 auto-repair never re-executes a write whose approval doesn't match. ` +
     `Re-review and re-approve: reelier approve <skill.md>. (The write was NOT re-executed.)`
   );
 }
