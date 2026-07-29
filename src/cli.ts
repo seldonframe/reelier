@@ -1274,6 +1274,12 @@ export async function cmdApprove(args: ParsedArgs): Promise<number> {
       console.log(`Step ${step.n} — ${step.title}`);
       console.log(`  ${step.actionTool} ${canonicalJson(step.actionArgs)}`);
       console.log(`  effect: ${step.effect}`);
+      if (step.attest === undefined) {
+        console.log(
+          "  note: no 'attest:' declared — state attestation for this write is response-derived (partial) at best. " +
+            'Declare a paired read for exact pre/post attestation: - attest: {"tool":"<read tool>","args":{...},"projection":["field",...]}'
+        );
+      }
       console.log(`  ${state}`);
 
       // Idempotent — mirrors `reelier manifest`'s "unchanged" behavior
