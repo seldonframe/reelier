@@ -99,8 +99,8 @@ test("cmdApprove --all: stamps a valid approve: hash for every write step, atomi
 
     const written = await readFile(skillPath, "utf8");
     const skill = parseSkill(written);
-    assert.equal(skill.steps[0].approve, computeApprovalHash(skill.steps[0]));
-    assert.equal(skill.steps[1].approve, computeApprovalHash(skill.steps[1]));
+    assert.equal(skill.steps[0].approve, computeApprovalHash({ ...skill.steps[0], attest: skill.steps[0].attest }));
+    assert.equal(skill.steps[1].approve, computeApprovalHash({ ...skill.steps[1], attest: skill.steps[1].attest }));
     assert.match(written, /## Changelog/);
     assert.match(written, /approved 2 write step\(s\) \(reelier approve\)/);
   });
@@ -135,7 +135,7 @@ test("cmdApprove --all: an approved skill then satisfies the runner's approval g
   });
 });
 
-test("cmdApprove --all: reports 'approved (STALE — args changed)' and re-stamps when args drifted since a prior approval", async () => {
+test("cmdApprove --all: reports 'approved (STALE — tool/args/attest changed)' and re-stamps when args drifted since a prior approval", async () => {
   await withTempDir(async (dir) => {
     const skillPath = path.join(dir, "s.skill.md");
     await writeFile(skillPath, SKILL_ONE_WRITE, "utf8");
@@ -155,7 +155,7 @@ test("cmdApprove --all: reports 'approved (STALE — args changed)' and re-stamp
 
     const written = await readFile(skillPath, "utf8");
     const skill = parseSkill(written);
-    assert.equal(skill.steps[0].approve, computeApprovalHash(skill.steps[0]));
+    assert.equal(skill.steps[0].approve, computeApprovalHash({ ...skill.steps[0], attest: skill.steps[0].attest }));
   });
 });
 

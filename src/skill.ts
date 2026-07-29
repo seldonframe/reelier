@@ -21,8 +21,23 @@ export interface Step {
    * refuses to execute (no flag override) if it doesn't match verbatim.
    */
   approve?: string;
+  /**
+   * Declares the paired read for `declared-probe` attestation: a read-only
+   * call, run after this step's write, whose (optionally projected) result
+   * is bound into the receipt as evidence the write took effect. Covered by
+   * the approval hash (src/approval.ts) when present — see the security
+   * rationale there.
+   */
+  attest?: StepAttestDecl;
   /** 1-indexed line in the source file where this step's header starts. */
   line: number;
+}
+
+/** A step's declared paired read for `declared-probe` attestation (see `Step.attest`). */
+export interface StepAttestDecl {
+  tool: string;
+  args: unknown;
+  projection?: string[];
 }
 
 /** One tool this skill's steps depend on, as recorded/stamped from a live downstream's advertised schema. */
@@ -172,6 +187,37 @@ function validateManifestShape(value: unknown): SkillManifest {
   return { v: 1, tools };
 }
 
+/**
+ * Validate the shape of a parsed `attest:` step-field value. Thrown errors
+ * are loud and specific (no Optimistic Path — a malformed attest decl must
+ * never silently degrade to "no attest").
+ */
+function validateAttestShape(value: unknown, ctx: { step: number; line: number }): StepAttestDecl {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new SkillParseError("Malformed 'attest' value (expected a JSON object)", ctx);
+  }
+  const obj = value as Record<string, unknown>;
+  for (const key of Object.keys(obj)) {
+    if (key !== "tool" && key !== "args" && key !== "projection") {
+      throw new SkillParseError(`Unknown 'attest' key ${JSON.stringify(key)} — expected tool/args/projection`, ctx);
+    }
+  }
+  if (typeof obj.tool !== "string" || obj.tool.trim() === "") {
+    throw new SkillParseError("'attest' is missing a non-empty string 'tool'", ctx);
+  }
+  if (!("args" in obj)) {
+    throw new SkillParseError("'attest' is missing 'args'", ctx);
+  }
+  let projection: string[] | undefined;
+  if (obj.projection !== undefined) {
+    if (!Array.isArray(obj.projection) || obj.projection.length === 0 || obj.projection.some((p) => typeof p !== "string" || p.trim() === "")) {
+      throw new SkillParseError("'attest.projection' must be a non-empty array of non-empty strings", ctx);
+    }
+    projection = obj.projection as string[];
+  }
+  return { tool: obj.tool, args: obj.args, ...(projection ? { projection } : {}) };
+}
+
 /** Minimal frontmatter parser: flat `key: value` pairs (name, description, optional manifest). */
 function parseFrontmatter(frontmatter: string): { name: string; description: string; manifest?: SkillManifest } {
   const fields: Record<string, string> = {};
@@ -303,6 +349,7 @@ export function parseSkill(source: string): Skill {
     const binds: string[] = [];
     let effect: Effect | undefined;
     let approve: string | undefined;
+    let attest: StepAttestDecl | undefined;
 
     for (let i = startIdx + 1; i < endIdx; i++) {
       const raw = bodyLines[i];
@@ -310,13 +357,13 @@ export function parseSkill(source: string): Skill {
       if (line === "") continue;
       const curLine = bodyStartLine + i;
 
-      const bulletMatch = line.match(/^-\s*(intent|action|assert|bind|effect|approve)\s*:\s*(.*)$/);
+      const bulletMatch = line.match(/^-\s*(intent|action|assert|bind|effect|approve|attest)\s*:\s*(.*)$/);
       if (!bulletMatch) {
         // Ignore non-bullet prose lines within a step block (e.g. blank/comment text),
         // but reject anything that looks like an attempted bullet with a typo'd key.
         if (line.startsWith("-")) {
           throw new SkillParseError(
-            `Unrecognized step field, expected one of intent/action/assert/bind/effect/approve: ${JSON.stringify(line)}`,
+            `Unrecognized step field, expected one of intent/action/assert/bind/effect/approve/attest: ${JSON.stringify(line)}`,
             { step: n, line: curLine }
           );
         }
@@ -381,6 +428,19 @@ export function parseSkill(source: string): Skill {
             approve = value;
           }
           break;
+        case "attest": {
+          if (attest !== undefined) {
+            throw new SkillParseError("Duplicate 'attest' field in step", { step: n, line: curLine });
+          }
+          let parsedAttest: unknown;
+          try {
+            parsedAttest = JSON.parse(rest.trim());
+          } catch (err) {
+            throw new SkillParseError(`Attest value is not valid JSON: ${(err as Error).message}`, { step: n, line: curLine });
+          }
+          attest = validateAttestShape(parsedAttest, { step: n, line: curLine });
+          break;
+        }
       }
     }
 
@@ -404,6 +464,7 @@ export function parseSkill(source: string): Skill {
       binds,
       effect,
       ...(approve !== undefined ? { approve } : {}),
+      ...(attest !== undefined ? { attest } : {}),
       line: fileLine,
     });
   }

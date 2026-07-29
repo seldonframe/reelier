@@ -1267,13 +1267,20 @@ export async function cmdApprove(args: ParsedArgs): Promise<number> {
   let unchangedCount = 0;
   try {
     for (const step of writeSteps) {
-      const expected = computeApprovalHash(step);
+      const expected = computeApprovalHash({ actionTool: step.actionTool, actionArgs: step.actionArgs, attest: step.attest });
       const isCurrent = step.approve !== undefined && step.approve === expected;
-      const state = step.approve === undefined ? "unapproved" : isCurrent ? "approved (current)" : "approved (STALE — args changed)";
+      const state = step.approve === undefined ? "unapproved" : isCurrent ? "approved (current)" : "approved (STALE — tool/args/attest changed)";
 
       console.log(`Step ${step.n} — ${step.title}`);
       console.log(`  ${step.actionTool} ${canonicalJson(step.actionArgs)}`);
       console.log(`  effect: ${step.effect}`);
+      if (step.attest === undefined) {
+        console.log(
+          "  note: no 'attest:' declared — state attestation for this write is response-derived (partial) at best. " +
+            "Exact pre/post attestation needs BOTH an attest: declaration AND this approval (the probe only runs on an approved step): " +
+            '- attest: {"tool":"<read tool>","args":{...},"projection":["field",...]}'
+        );
+      }
       console.log(`  ${state}`);
 
       // Idempotent — mirrors `reelier manifest`'s "unchanged" behavior

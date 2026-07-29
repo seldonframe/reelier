@@ -18,10 +18,11 @@
 // the same drift never has to escalate twice.
 
 import { mkdir, appendFile } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { createInterface } from "node:readline";
 import path from "node:path";
-import type { Skill, Step } from "./skill.js";
+import type { Skill, Step, StepAttestDecl } from "./skill.js";
 import { evalAssert, evalBind, type Observation, type ObservationRef } from "./assert.js";
 import { builtinTools, type Tool, type ToolContext } from "./tools.js";
 // Re-exported from the "." package entry too (in addition to "./tools")
@@ -33,6 +34,7 @@ import type { LlmClient } from "./llm.js";
 import { resolveL1, resolveL2 } from "./escalate.js";
 import { applyWritebackSafely } from "./writeback.js";
 import { computeApprovalHash, computeIdempotencyKey } from "./approval.js";
+import { digestSha256 } from "./canonical-json.js";
 
 export type StepOutcome = "passed" | "failed" | "unchecked" | "skipped";
 
@@ -57,6 +59,24 @@ export interface StepWrite {
   resource?: { id?: string; version?: string };
   /** Set when an earlier step in THIS run wrote with the identical idempotencyKey — the step number of that earlier step. */
   duplicateOf?: number;
+}
+
+export interface AttestState {
+  hash: string;
+  at: string;
+}
+
+export interface StepAttest {
+  method: "response-derived" | "declared-probe";
+  /** The probe TOOL NAME only (e.g. "github.get_comment") — identifies which tool observed
+   * the state. Never the args template: a record is a publishable artifact and the record
+   * format carries no other tool args. */
+  selector?: string;
+  pre?: AttestState;
+  post?: AttestState;
+  delta?: { changed: number; fields?: string[] };
+  confidence: "exact" | "partial" | "pending" | "absent";
+  reason?: string;
 }
 
 export interface StepRecord {
@@ -91,6 +111,8 @@ export interface StepRecord {
   why?: StepWhy;
   /** Present iff this step's tool actually dispatched a write-effect call — see StepWrite. */
   write?: StepWrite;
+  /** State attestation (consequence-layer §1) — present iff a write-effect step actually dispatched. Hashes over a field projection, never raw values. absent/pending are never a pass. */
+  attest?: StepAttest;
   /**
    * Provider-issued request-id refs captured from this step's Observation
    * (trust-ladder spec §3) — extends the write receipt's honesty discipline
@@ -196,6 +218,8 @@ export interface RunOptions {
    * real failure would hit. Absent/empty = no injection, today's behavior.
    */
   mockFailures?: Record<number, number>;
+  /** Declared-probe timeout in ms (consequence-layer §1.6). Default 2000. A probe that exceeds it degrades the attestation, never the step. */
+  probeTimeoutMs?: number;
 }
 
 export interface DryRunStep {
@@ -375,6 +399,122 @@ function buildStepWrite(
   return { idempotencyKey, approved, ...(resource ? { resource } : {}) };
 }
 
+/** Default projection field allowlists for response-derived attestation — identity/version class only, never content. Exported so tests fuzz the REAL lists instead of a copy that silently decays. */
+export const ATTEST_BODY_FIELDS = ["id", "_id", "version", "etag", "revision", "sha", "updated_at", "node_id"] as const;
+export const ATTEST_HEADER_FIELDS = ["etag", "last-modified"] as const;
+
+/**
+ * Project an Observation down to the fields that identify/version its
+ * resource. With an explicit projection: those top-level body keys only.
+ * Without: the conservative default allowlists above (body + headers).
+ * Values are stringified for hashing and NEVER stored in any record.
+ */
+export function projectObservation(obs: Observation, projection?: string[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  let body: unknown;
+  try { body = JSON.parse(obs.body); } catch { body = undefined; }
+  const rec = body !== null && typeof body === "object" && !Array.isArray(body) ? (body as Record<string, unknown>) : undefined;
+  if (projection) {
+    if (rec) {
+      for (const key of projection) {
+        const v = rec[key];
+        if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") out[`body.${key}`] = String(v);
+      }
+    }
+    return out;
+  }
+  if (rec) {
+    for (const key of ATTEST_BODY_FIELDS) {
+      const v = rec[key];
+      if (typeof v === "string" || typeof v === "number") out[`body.${key}`] = String(v);
+    }
+  }
+  for (const key of ATTEST_HEADER_FIELDS) {
+    const v = obs.headers[key];
+    if (typeof v === "string" && v.length > 0) out[`header.${key}`] = v;
+  }
+  return out;
+}
+
+/**
+ * A salted commitment over a field projection (final-review S3). A bare
+ * sha256 over a low-entropy projection (a boolean, an enum, a small id) is
+ * trivially preimage-reversible from a shared/pushed record, and the changed
+ * field NAMES in `delta.fields` hand the attacker the dictionary. The salt is
+ * per-attest, held in memory only, and NEVER recorded — pre and post for the
+ * SAME attest share it, so within-record change detection (pre === post iff
+ * the projection didn't change) survives, while cross-run hash joins are
+ * deliberately sacrificed. A hash is not encryption; this makes it not
+ * brute-forceable either.
+ */
+function newAttestSalt(): string {
+  return randomBytes(16).toString("hex");
+}
+
+function saltedProjectionHash(projected: Record<string, string>, salt: string): string {
+  return digestSha256({ projection: projected, salt });
+}
+
+/** Consequence-layer §1.3 `response-derived`: state derived from the write's own response. Ceiling `partial`; `absent` + reason when nothing derivable. Never fabricated. Hash is a salted commitment (see newAttestSalt). */
+export function buildResponseDerivedAttest(obs: Observation): StepAttest {
+  const projected = projectObservation(obs);
+  if (Object.keys(projected).length === 0) {
+    return { method: "response-derived", confidence: "absent", reason: "no-derivable-state" };
+  }
+  return {
+    method: "response-derived",
+    post: { hash: saltedProjectionHash(projected, newAttestSalt()), at: new Date().toISOString() },
+    confidence: "partial",
+  };
+}
+
+const DEFAULT_PROBE_TIMEOUT_MS = 2000;
+
+type ProbeResult = { ok: true; projected: Record<string, string> } | { ok: false; reason: string };
+
+/** Run the declared paired read with a hard timeout. Failure DEGRADES (returns a reason) — it must never fail or delay-fail the step (consequence-layer §1.6). */
+async function runProbe(
+  decl: StepAttestDecl,
+  tools: Record<string, Tool>,
+  bindings: Record<string, unknown>,
+  ctx: ToolContext,
+  now: number,
+  timeoutMs: number
+): Promise<ProbeResult> {
+  const probeTool = tools[decl.tool];
+  if (!probeTool) return { ok: false, reason: `probe-tool-unknown: '${decl.tool}'` };
+  if (probeTool.effect !== "read") {
+    return { ok: false, reason: `probe-not-read: '${decl.tool}' has effect '${probeTool.effect}' — a probe must be a read` };
+  }
+  let filled: unknown;
+  try {
+    filled = fillTemplate(decl.args, bindings, now);
+  } catch (err) {
+    return { ok: false, reason: `probe-template: ${(err as Error).message}` };
+  }
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    const obs = await Promise.race([
+      probeTool.run(filled, ctx),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`probe timeout after ${timeoutMs}ms`)), timeoutMs);
+      }),
+    ]);
+    return { ok: true, projected: projectObservation(obs, decl.projection) };
+  } catch (err) {
+    return { ok: false, reason: `probe-failed: ${(err as Error).message}` };
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+/** Changed projection-field NAMES between two captures — names only, never values. */
+function computeDelta(pre: Record<string, string>, post: Record<string, string>): { changed: number; fields?: string[] } {
+  const keys = [...new Set([...Object.keys(pre), ...Object.keys(post)])].sort();
+  const fields = keys.filter((k) => pre[k] !== post[k]);
+  return fields.length > 0 ? { changed: fields.length, fields } : { changed: 0 };
+}
+
 /** Evaluate a step's asserts/binds against `obs`, in place, into `failures`/`localBinds` (shared by the real-dispatch and mocked-dispatch paths in executeStep). */
 function evaluateAssertsAndBinds(
   step: Step,
@@ -413,7 +553,8 @@ async function executeStep(
   tools: Record<string, Tool>,
   ctx: ToolContext,
   now: number,
-  mockStatus?: number
+  mockStatus?: number,
+  probeTimeoutMs: number = DEFAULT_PROBE_TIMEOUT_MS
 ): Promise<{
   outcome: StepOutcome;
   ms: number;
@@ -421,6 +562,7 @@ async function executeStep(
   observation?: Observation;
   binds: Record<string, unknown>;
   write?: StepWrite;
+  attest?: StepAttest;
   mocked?: true;
 }> {
   const started = Date.now();
@@ -488,10 +630,10 @@ async function executeStep(
       // matches, this executes with NO flag needed at all. If it doesn't —
       // the step drifted since it was approved — this fails closed and NO
       // flag (--allow-writes, --yes) can override that refusal.
-      const expected = computeApprovalHash(step);
+      const expected = computeApprovalHash({ actionTool: step.actionTool, actionArgs: step.actionArgs, attest: step.attest });
       if (step.approve !== expected) {
         failures.push(
-          `Approval mismatch on write step — the step's tool/args changed since it was approved. ` +
+          `Approval mismatch on write step — the step's tool/args/attest changed since it was approved. ` +
             `Re-review and re-approve: reelier approve <skill.md>. (--allow-writes/--yes do NOT override an approval mismatch.)`
         );
         return { outcome: "failed", ms: Date.now() - started, failures, binds: localBinds };
@@ -533,12 +675,53 @@ async function executeStep(
     return { outcome: "failed", ms: Date.now() - started, failures, binds: localBinds };
   }
 
+  // A declared probe dispatches ONLY when this write executed via a matching
+  // `approve:` hash (final-review S2): the approval hash binding of `attest:`
+  // (src/approval.ts) is the sole defense against an unreviewed probe args
+  // template exfiltrating live bindings through a probe URL, and it only
+  // engages on the approve path. On the flag path (--allow-writes/--yes) the
+  // probe never fires and the attest degrades honestly (see below). A
+  // defined `step.approve` here is guaranteed to have MATCHED — a mismatch
+  // returned above before any dispatch.
+  const probeApproved = step.attest !== undefined && step.approve !== undefined;
+
+  // Pre-probe (declared-probe attestation, consequence-layer §1.2): captured
+  // strictly BEFORE dispatch or never. Runs only for write steps that
+  // declared one — reads never probe, and a probe failure never gates the
+  // write. The `pre` timestamp is captured HERE, the instant the pre-probe
+  // actually resolves, never stamped later — that's the honesty rule.
+  let preProbe: ProbeResult | undefined;
+  let preAt: string | undefined;
+  // ONE salt for this step's whole attest — pre and post commit with the same
+  // salt so within-record equality semantics hold (see newAttestSalt).
+  const attestSalt = newAttestSalt();
+  if (isWrite && step.attest && probeApproved) {
+    preProbe = await runProbe(step.attest, tools, bindings, ctx, now, probeTimeoutMs);
+    preAt = new Date().toISOString();
+  }
+
   let obs: Observation;
   try {
     obs = await tool.run(filledArgs, ctx);
   } catch (err) {
     failures.push(`Tool execution failed: ${(err as Error).message}`);
-    return { outcome: "failed", ms: Date.now() - started, failures, binds: localBinds };
+    // A throw AFTER dispatch is not "never dispatched" — the write-effect
+    // call went out and its side effect may have landed server-side (e.g. a
+    // response timeout after the server applied the write). If the pre-probe
+    // already captured evidence, preserve it (final-review minor F4): a
+    // one-sided attest, confidence "partial", reason "dispatch-failed" —
+    // never silently drop the only state evidence for the incident.
+    let throwAttest: StepAttest | undefined;
+    if (isWrite && step.attest && probeApproved && preProbe !== undefined && preProbe.ok && Object.keys(preProbe.projected).length > 0) {
+      throwAttest = {
+        method: "declared-probe",
+        selector: step.attest.tool,
+        pre: { hash: saltedProjectionHash(preProbe.projected, attestSalt), at: preAt! },
+        confidence: "partial",
+        reason: "dispatch-failed",
+      };
+    }
+    return { outcome: "failed", ms: Date.now() - started, failures, binds: localBinds, ...(throwAttest !== undefined ? { attest: throwAttest } : {}) };
   }
 
   // The write receipt reflects that the tool call actually dispatched — it's
@@ -546,17 +729,63 @@ async function executeStep(
   // happened regardless of whether the step's assertions later hold.
   const write = isWrite ? buildStepWrite(step.actionTool, tool, filledArgs, obs, step.approve !== undefined) : undefined;
 
+  let attest: StepAttest | undefined;
+  if (isWrite) {
+    if (step.attest && probeApproved) {
+      const postProbe = await runProbe(step.attest, tools, bindings, ctx, now, probeTimeoutMs);
+      const postAt = new Date().toISOString();
+      const selector = step.attest.tool;
+      const preSide = preProbe && preProbe.ok && Object.keys(preProbe.projected).length > 0 ? preProbe.projected : undefined;
+      const postSide = postProbe.ok && Object.keys(postProbe.projected).length > 0 ? postProbe.projected : undefined;
+      const reasons = [
+        preProbe && !preProbe.ok ? `pre: ${preProbe.reason}` : preSide === undefined ? "pre: empty-projection" : undefined,
+        !postProbe.ok ? `post: ${postProbe.reason}` : postSide === undefined ? "post: empty-projection" : undefined,
+      ].filter((r): r is string => r !== undefined);
+      if (preSide && postSide) {
+        attest = {
+          method: "declared-probe",
+          selector,
+          pre: { hash: saltedProjectionHash(preSide, attestSalt), at: preAt! },
+          post: { hash: saltedProjectionHash(postSide, attestSalt), at: postAt },
+          delta: computeDelta(preSide, postSide),
+          confidence: "exact",
+        };
+      } else if (preSide || postSide) {
+        attest = {
+          method: "declared-probe",
+          selector,
+          ...(preSide !== undefined ? { pre: { hash: saltedProjectionHash(preSide, attestSalt), at: preAt! } } : {}),
+          ...(postSide !== undefined ? { post: { hash: saltedProjectionHash(postSide, attestSalt), at: postAt } } : {}),
+          confidence: "partial",
+          reason: reasons.join("; "),
+        };
+      } else {
+        attest = { method: "declared-probe", selector, confidence: "absent", reason: reasons.join("; ") };
+      }
+    } else {
+      attest = buildResponseDerivedAttest(obs);
+      if (step.attest) {
+        // A probe WAS declared but this write executed via the flag path
+        // (--allow-writes/--yes), so no approval hash ever bound the probe's
+        // args template — the probe was withheld (see probeApproved above)
+        // and the attest honestly records why it degraded.
+        const reason = "probe-requires-approval";
+        attest = { ...attest, reason: attest.reason !== undefined ? `${attest.reason}; ${reason}` : reason };
+      }
+    }
+  }
+
   evaluateAssertsAndBinds(step, obs, failures, localBinds);
 
   const ms = Date.now() - started;
   if (failures.length > 0) {
-    return { outcome: "failed", ms, failures, observation: obs, binds: localBinds, write };
+    return { outcome: "failed", ms, failures, observation: obs, binds: localBinds, write, attest };
   }
   if (step.asserts.length === 0) {
     // Honest-success rule: zero assertions never counts as "passed".
-    return { outcome: "unchecked", ms, failures, observation: obs, binds: localBinds, write };
+    return { outcome: "unchecked", ms, failures, observation: obs, binds: localBinds, write, attest };
   }
-  return { outcome: "passed", ms, failures, observation: obs, binds: localBinds, write };
+  return { outcome: "passed", ms, failures, observation: obs, binds: localBinds, write, attest };
 }
 
 /** Re-evaluate a patched assert/bind set against a fixed observation. Never re-executes anything. */
@@ -603,19 +832,23 @@ function level3Message(step: Step): string {
 }
 
 /**
- * L2 approval mismatch: the LLM's proposed args template leaves the
- * template a human approved (`step.approve`). Mirrors level3Message's
- * shape — spec §2: "patched args that leave the approved template → the
- * write is NOT re-executed at L2." The main-path gate (executeStep) already
- * proved `step.approve` matched the ORIGINAL template before this step ever
- * reached L2 (attemptEscalation only runs when the main path produced an
- * observation), so this only fires when L2's proposed args differ from what
- * was approved.
+ * L2 approval mismatch: the hash recomputed over the L2 candidate template
+ * (tool/args/attest) no longer matches `step.approve`. Mirrors
+ * level3Message's shape — spec §2: "patched args that leave the approved
+ * template → the write is NOT re-executed at L2." Two distinct causes land
+ * here: (1) the LLM's proposed args genuinely diverge from the approved
+ * template, or (2) the approval is simply stale — the step's `tool:`,
+ * `args:`, or `attest:` was edited by hand after `reelier approve` last ran,
+ * so even an L2 candidate identical to the step's own (edited) template no
+ * longer hashes to what was approved. Either way the write is NOT
+ * re-executed; this message doesn't try to distinguish them, it just names
+ * both possibilities and points at the fix.
  */
 function l2ApprovalMismatchMessage(step: Step): string {
   return (
-    `Approval mismatch on L2-patched write step ${step.n} (${step.title}) — the LLM's proposed args leave the ` +
-    `template a human approved. Level 2 auto-repair never re-executes a write whose args weren't approved. ` +
+    `Approval mismatch on L2-patched write step ${step.n} (${step.title}) — either the LLM's proposed args leave ` +
+    `the template a human approved, or the approval is stale because tool/args/attest was edited since it was ` +
+    `last approved. Level 2 auto-repair never re-executes a write whose approval doesn't match. ` +
     `Re-review and re-approve: reelier approve <skill.md>. (The write was NOT re-executed.)`
   );
 }
@@ -649,6 +882,8 @@ async function attemptEscalation(
   write?: StepWrite;
   /** Fresh refs from the L2 re-execution's real tool call — same "absent when only L1 ran" rule as `write`. */
   refs?: ObservationRef[];
+  /** Fresh attest from the L2 re-execution's real tool call — same "absent when only L1 ran" rule as `write`. */
+  attest?: StepAttest;
 }> {
   const maxLevel = options.maxLevel ?? 0;
   if (maxLevel < 1 || !options.llm) {
@@ -748,7 +983,11 @@ async function attemptEscalation(
     // what a human approved. This is the FINAL boundary extending to L2: no
     // flag overrides it, and a mismatch means the write is NEVER dispatched.
     const l2ArgsTemplate = l2.args !== undefined ? l2.args : step.actionArgs;
-    const l2ExpectedHash = computeApprovalHash({ actionTool: step.actionTool, actionArgs: l2ArgsTemplate });
+    // `attest` MUST be bound here exactly as cmdApprove stamped it — omitting
+    // it computes the legacy hash and makes an approved+attested step
+    // permanently un-healable at L2 with a fabricated mismatch reason
+    // (final-review S1/S4). ApprovalHashInput makes omission a compile error.
+    const l2ExpectedHash = computeApprovalHash({ actionTool: step.actionTool, actionArgs: l2ArgsTemplate, attest: step.attest });
     if (l2ExpectedHash !== step.approve) {
       failures = [...failures, l2ApprovalMismatchMessage(step)];
       return { outcome: "failed", level: 0, failures, llm: usage, escalationAttempted };
@@ -770,11 +1009,12 @@ async function attemptEscalation(
   // gate above already proved it matched THIS exact candidate template
   // before dispatch — a mismatch never reaches this line.
   const l2Write = l2IsWrite ? buildStepWrite(step.actionTool, l2Tool, filledArgs, obs2, step.approve !== undefined) : undefined;
+  const l2Attest = l2IsWrite ? buildResponseDerivedAttest(obs2) : undefined;
 
   const reEval2 = reEvaluatePatch(l2.asserts, l2.binds, obs2);
   if (!reEval2.ok) {
     failures = [...failures, ...reEval2.failures.map((f) => `L2 patch didn't hold: ${f}`)];
-    return { outcome: "failed", level: 0, failures, llm: usage, escalationAttempted, write: l2Write, refs: obs2.refs };
+    return { outcome: "failed", level: 0, failures, llm: usage, escalationAttempted, write: l2Write, refs: obs2.refs, attest: l2Attest };
   }
 
   Object.assign(bindings, reEval2.bindings);
@@ -802,6 +1042,7 @@ async function attemptEscalation(
     why: { change: `L2: ${l2.reason}` },
     write: l2Write,
     refs: obs2.refs,
+    attest: l2Attest,
   };
 }
 
@@ -819,6 +1060,7 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
   // run shares it, so {{today}}/{{today±Nd}} can never resolve to a
   // different calendar day mid-run (e.g. across a UTC midnight boundary).
   const now = Date.now();
+  const probeTimeoutMs = options.probeTimeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS;
 
   const startedAt = new Date().toISOString();
   const stepRecords: StepRecord[] = [];
@@ -838,7 +1080,7 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
 
     const started = Date.now();
     const mockStatus = options.mockFailures?.[step.n];
-    const exec = await executeStep(step, bindings, tools, toolCtx, now, mockStatus);
+    const exec = await executeStep(step, bindings, tools, toolCtx, now, mockStatus, probeTimeoutMs);
     let outcome = exec.outcome;
     let failures = exec.failures;
     let level: 0 | 1 | 2 = 0;
@@ -846,6 +1088,7 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
     let escalationAttempted: 0 | 1 | 2 | undefined;
     let why: StepWhy | undefined;
     let write = exec.write;
+    let attest = exec.attest;
     // Extends the write receipt's discipline to EVERY executed step (spec
     // §3) — a read step's Observation can carry cross-checkable refs too.
     // `exec.observation` is set on every REAL (or mocked-synthetic) dispatch
@@ -912,6 +1155,9 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
       // refs (if any) are what THIS record should reflect. `escalated.refs`
       // is only set when a real L2 dispatch happened (see attemptEscalation).
       if (escalated.refs !== undefined) refs = escalated.refs;
+      // Same "fresh L2 dispatch supersedes the stale main-path attempt"
+      // reasoning as `write`/`refs` above.
+      if (escalated.attest !== undefined) attest = escalated.attest;
     }
     // A step that failed without an observation (tool threw) skips escalation —
     // still record why it diverged.
@@ -924,6 +1170,7 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
     if (exec.mocked) {
       write = undefined;
       refs = undefined;
+      attest = undefined;
     }
 
     const ms = Date.now() - started;
@@ -938,6 +1185,7 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
       ...(escalationAttempted !== undefined ? { escalationAttempted } : {}),
       ...(why ? { why } : {}),
       ...(write ? { write } : {}),
+      ...(attest ? { attest } : {}),
       ...(refs && refs.length > 0 ? { refs } : {}),
       ...(exec.mocked ? { mocked: true as const } : {}),
     };

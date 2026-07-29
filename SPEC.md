@@ -536,6 +536,16 @@ interface StepRecord {
     resource?: { id?: string; version?: string };
     duplicateOf?: number;
   };
+  refs?: { source: "header" | "body"; key: string; value: string }[];
+  attest?: {
+    method: "response-derived" | "declared-probe";
+    selector?: string;
+    pre?: { hash: string; at: string };
+    post?: { hash: string; at: string };
+    delta?: { changed: number; fields?: string[] };
+    confidence: "exact" | "partial" | "pending" | "absent";
+    reason?: string;
+  };
   mocked?: true;
 }
 ```
@@ -550,6 +560,8 @@ interface StepRecord {
 | `escalationAttempted` | The **highest level TRIED**, present iff L1 was invoked at all. **Distinct from `level`**: a step can have `escalationAttempted: 2` and `level: 0` simultaneously — it burned L1 and L2 tokens and still never healed. `level` only ever reflects the level that *healed* it. |
 | `why` (0.8.0+) | Present **only** when this step's behavior changed: `trigger` = the load-bearing divergence (the first failure, verbatim from the real assertion/tool result) on a `"failed"` step; `change` = what the successful L1/L2 patch changed (`"L1: <reason>"` / `"L2: <reason>"`, the escalation's own reason) on a healed step. Absent on an unchanged step. **Never fabricated** — a producer MUST populate it only from observed engine data, never from generated narrative. |
 | `write` (0.19.0+, §6.1c) | Present **iff** this step's tool call actually dispatched a write-effect (`idempotent-write`/`destructive`) call — never for a refused, skipped, or mocked step. `approved` is `true` iff dispatched via a matching `Step.approve` hash, `false` via the legacy `--allow-writes`/`--yes` flags. `resource` is a best-effort, honestly-labeled extraction from the response body; absent, never fabricated, when nothing was found. `duplicateOf` is the step number of an earlier step in the SAME run that wrote the identical `idempotencyKey`. |
+| `refs` (0.20.0+, trust-ladder §3) | Provider-issued request-id references captured from this step's response (allowlist-only — never scraped or fabricated). Omitted when none were captured, and always absent on a mocked step. This field shipped in 0.20.0; earlier printings of this table omitted it — that was a spec/implementation gap, not a behavior change. |
+| `attest` (state-attestation P1) | Present **iff** this step's tool call actually dispatched a write-effect call — never for a refused, skipped, or mocked step (the same caveat the `write` row carries). A dispatch that **throws** after a successful approved pre-probe still carries the captured `pre` side as confidence `"partial"` with reason `"dispatch-failed"` — the call went out even though no observation came back. `response-derived`: a hash over identity/version fields of the write's own response — confidence ceiling `"partial"`. `declared-probe`: the step's declared paired read captured before dispatch (`pre`) and after the result (`post`) — both present ⇒ `"exact"`, one side ⇒ `"partial"`, none ⇒ `"absent"` with `reason`. `selector` (declared-probe only) is the probe's tool name alone (e.g. `"github.get_comment"`) — never the args template, since a record is a publishable artifact and the record format carries no other tool args. The declared probe dispatches **only** when the step executed via a matching `approve:` hash (the approval hash binds `attest:`, so a human reviewed the probe's args template); on the flag path (`--allow-writes`/`--yes`) the probe is withheld and attest degrades to `response-derived` with reason `probe-requires-approval`. `delta` lists changed projection-field **names** only. Hashes are `sha256:<hex>` **salted commitments** for change-detection: each attest mixes a per-attest random salt (held in memory only, never recorded) into the canonical-JSON field projection, with `pre`/`post` of the same attest sharing one salt — so `pre.hash === post.hash` iff the projection didn't change, while cross-run hash joins are deliberately impossible. A hash is not encryption; without the salt it cannot be brute-forced, and it is not recomputable by third parties. Raw state never appears in a record, and a probe failure degrades the attestation, never the step. `absent`/`pending` MUST NOT be rendered as a pass by any consumer. |
 | `mocked` (0.19.0+, §6.1d) | `true` iff this step's observation was a synthetic injected failure (`--fail N[=status]`) rather than a real tool dispatch. Absent for every real step. |
 
 ### 4.2 `RunRecord`
@@ -836,14 +848,14 @@ effect (`step.effect ?? tool.effect`):
     filled args, and never including the server, so `reelier approve` can
     run fully offline) → the step executes with **no flag needed at all**,
     even a `destructive` one.
-  - Any mismatch (the step's tool or args changed since it was approved) →
+  - Any mismatch (the step's tool, args, or `attest:` declaration changed since it was approved) →
     `"failed"` with `"Approval mismatch on write step … Re-review and
     re-approve: reelier approve <skill.md>"` — **no flag overrides this**,
     including `--allow-writes` and `--yes` together. The tool is never
     called.
 - `reelier approve <skill.md> [--all]` walks every write/destructive step,
   shows its current state (`unapproved` / `approved (current)` / `approved
-  (STALE — args changed)`), and on confirmation (or unconditionally under
+  (STALE — tool/args/attest changed)`), and on confirmation (or unconditionally under
   `--all`) stamps `step.approve = computeApprovalHash(step)`, serializes,
   and appends one `## Changelog` line (§3.7).
 

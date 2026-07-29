@@ -7,16 +7,41 @@
 // that refusal.
 
 import { digestSha256 } from "./canonical-json.js";
-import type { Step } from "./skill.js";
+import type { Step, StepAttestDecl } from "./skill.js";
+
+/**
+ * The exact inputs the approval hash binds. `attest` is REQUIRED (though its
+ * value may be `undefined`): `Step.attest` is optional, so a `Pick` would let
+ * a call site build a fresh object literal that silently omits the key and
+ * compute the legacy attest-less hash for a step that IS attested — exactly
+ * the bug behind the L2 gate regression (final-review S1/S4). With the key
+ * required, omission is a compile error at every call site.
+ */
+export type ApprovalHashInput = Pick<Step, "actionTool" | "actionArgs"> & { attest: StepAttestDecl | undefined };
 
 /**
  * Approval binds the OPERATION SHAPE: tool + args template ({{placeholders}}
  * intact). Environment binding is the manifest's job (preflight fails closed
  * on server/schema drift BEFORE approval is ever evaluated) — that split is
  * what lets `reelier approve` run offline. Spec: flight-recorder-v2 §2.
+ *
+ * When `attest` is present it's bound into the hash too: a probe's args
+ * template is filled with live bindings at run time, so an unreviewed edit
+ * to it could exfiltrate a bound value through a probe URL — binding it
+ * under `approve` means editing `attest:` on an approved step forces
+ * re-approval, exactly like editing `action:`. For steps WITHOUT `attest`
+ * the hash input stays byte-identical to before this field existed, so
+ * every already-approved skill remains approved.
  */
-export function computeApprovalHash(step: Pick<Step, "actionTool" | "actionArgs">): string {
-  return digestSha256({ args: step.actionArgs, tool: step.actionTool });
+export function computeApprovalHash(step: ApprovalHashInput): string {
+  if (step.attest === undefined) {
+    return digestSha256({ args: step.actionArgs, tool: step.actionTool });
+  }
+  return digestSha256({
+    args: step.actionArgs,
+    attest: { args: step.attest.args, projection: step.attest.projection ?? null, tool: step.attest.tool },
+    tool: step.actionTool,
+  });
 }
 
 /** Per-run identity of an executed write: tool + FILLED args + server. Recorded in the receipt; never enforced against external state (spec non-goal). */
