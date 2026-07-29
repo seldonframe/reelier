@@ -21,7 +21,7 @@ import { mkdir, appendFile } from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import { createInterface } from "node:readline";
 import path from "node:path";
-import type { Skill, Step } from "./skill.js";
+import type { Skill, Step, StepAttestDecl } from "./skill.js";
 import { evalAssert, evalBind, type Observation, type ObservationRef } from "./assert.js";
 import { builtinTools, type Tool, type ToolContext } from "./tools.js";
 // Re-exported from the "." package entry too (in addition to "./tools")
@@ -33,7 +33,7 @@ import type { LlmClient } from "./llm.js";
 import { resolveL1, resolveL2 } from "./escalate.js";
 import { applyWritebackSafely } from "./writeback.js";
 import { computeApprovalHash, computeIdempotencyKey } from "./approval.js";
-import { digestSha256 } from "./canonical-json.js";
+import { digestSha256, canonicalJson } from "./canonical-json.js";
 
 export type StepOutcome = "passed" | "failed" | "unchecked" | "skipped";
 
@@ -214,6 +214,8 @@ export interface RunOptions {
    * real failure would hit. Absent/empty = no injection, today's behavior.
    */
   mockFailures?: Record<number, number>;
+  /** Declared-probe timeout in ms (consequence-layer §1.6). Default 2000. A probe that exceeds it degrades the attestation, never the step. */
+  probeTimeoutMs?: number;
 }
 
 export interface DryRunStep {
@@ -443,6 +445,53 @@ export function buildResponseDerivedAttest(obs: Observation): StepAttest {
   };
 }
 
+const DEFAULT_PROBE_TIMEOUT_MS = 2000;
+
+type ProbeResult = { ok: true; projected: Record<string, string> } | { ok: false; reason: string };
+
+/** Run the declared paired read with a hard timeout. Failure DEGRADES (returns a reason) — it must never fail or delay-fail the step (consequence-layer §1.6). */
+async function runProbe(
+  decl: StepAttestDecl,
+  tools: Record<string, Tool>,
+  bindings: Record<string, unknown>,
+  ctx: ToolContext,
+  now: number,
+  timeoutMs: number
+): Promise<ProbeResult> {
+  const probeTool = tools[decl.tool];
+  if (!probeTool) return { ok: false, reason: `probe-tool-unknown: '${decl.tool}'` };
+  if (probeTool.effect !== "read") {
+    return { ok: false, reason: `probe-not-read: '${decl.tool}' has effect '${probeTool.effect}' — a probe must be a read` };
+  }
+  let filled: unknown;
+  try {
+    filled = fillTemplate(decl.args, bindings, now);
+  } catch (err) {
+    return { ok: false, reason: `probe-template: ${(err as Error).message}` };
+  }
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    const obs = await Promise.race([
+      probeTool.run(filled, ctx),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`probe timeout after ${timeoutMs}ms`)), timeoutMs);
+      }),
+    ]);
+    return { ok: true, projected: projectObservation(obs, decl.projection) };
+  } catch (err) {
+    return { ok: false, reason: `probe-failed: ${(err as Error).message}` };
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+/** Changed projection-field NAMES between two captures — names only, never values. */
+function computeDelta(pre: Record<string, string>, post: Record<string, string>): { changed: number; fields?: string[] } {
+  const keys = [...new Set([...Object.keys(pre), ...Object.keys(post)])].sort();
+  const fields = keys.filter((k) => pre[k] !== post[k]);
+  return fields.length > 0 ? { changed: fields.length, fields } : { changed: 0 };
+}
+
 /** Evaluate a step's asserts/binds against `obs`, in place, into `failures`/`localBinds` (shared by the real-dispatch and mocked-dispatch paths in executeStep). */
 function evaluateAssertsAndBinds(
   step: Step,
@@ -481,7 +530,8 @@ async function executeStep(
   tools: Record<string, Tool>,
   ctx: ToolContext,
   now: number,
-  mockStatus?: number
+  mockStatus?: number,
+  probeTimeoutMs: number = DEFAULT_PROBE_TIMEOUT_MS
 ): Promise<{
   outcome: StepOutcome;
   ms: number;
@@ -602,6 +652,18 @@ async function executeStep(
     return { outcome: "failed", ms: Date.now() - started, failures, binds: localBinds };
   }
 
+  // Pre-probe (declared-probe attestation, consequence-layer §1.2): captured
+  // strictly BEFORE dispatch or never. Runs only for write steps that
+  // declared one — reads never probe, and a probe failure never gates the
+  // write. The `pre` timestamp is captured HERE, the instant the pre-probe
+  // actually resolves, never stamped later — that's the honesty rule.
+  let preProbe: ProbeResult | undefined;
+  let preAt: string | undefined;
+  if (isWrite && step.attest) {
+    preProbe = await runProbe(step.attest, tools, bindings, ctx, now, probeTimeoutMs);
+    preAt = new Date().toISOString();
+  }
+
   let obs: Observation;
   try {
     obs = await tool.run(filledArgs, ctx);
@@ -614,7 +676,44 @@ async function executeStep(
   // stamped here, BEFORE assert evaluation, because the side effect already
   // happened regardless of whether the step's assertions later hold.
   const write = isWrite ? buildStepWrite(step.actionTool, tool, filledArgs, obs, step.approve !== undefined) : undefined;
-  const attest = isWrite ? buildResponseDerivedAttest(obs) : undefined;
+
+  let attest: StepAttest | undefined;
+  if (isWrite) {
+    if (step.attest) {
+      const postProbe = await runProbe(step.attest, tools, bindings, ctx, now, probeTimeoutMs);
+      const postAt = new Date().toISOString();
+      const selector = `${step.attest.tool} ${canonicalJson(step.attest.args)}`;
+      const preSide = preProbe && preProbe.ok && Object.keys(preProbe.projected).length > 0 ? preProbe.projected : undefined;
+      const postSide = postProbe.ok && Object.keys(postProbe.projected).length > 0 ? postProbe.projected : undefined;
+      const reasons = [
+        preProbe && !preProbe.ok ? `pre: ${preProbe.reason}` : preSide === undefined ? "pre: empty-projection" : undefined,
+        !postProbe.ok ? `post: ${postProbe.reason}` : postSide === undefined ? "post: empty-projection" : undefined,
+      ].filter((r): r is string => r !== undefined);
+      if (preSide && postSide) {
+        attest = {
+          method: "declared-probe",
+          selector,
+          pre: { hash: digestSha256(preSide), at: preAt! },
+          post: { hash: digestSha256(postSide), at: postAt },
+          delta: computeDelta(preSide, postSide),
+          confidence: "exact",
+        };
+      } else if (preSide || postSide) {
+        attest = {
+          method: "declared-probe",
+          selector,
+          ...(preSide !== undefined ? { pre: { hash: digestSha256(preSide), at: preAt! } } : {}),
+          ...(postSide !== undefined ? { post: { hash: digestSha256(postSide), at: postAt } } : {}),
+          confidence: "partial",
+          reason: reasons.join("; "),
+        };
+      } else {
+        attest = { method: "declared-probe", selector, confidence: "absent", reason: reasons.join("; ") };
+      }
+    } else {
+      attest = buildResponseDerivedAttest(obs);
+    }
+  }
 
   evaluateAssertsAndBinds(step, obs, failures, localBinds);
 
@@ -893,6 +992,7 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
   // run shares it, so {{today}}/{{today±Nd}} can never resolve to a
   // different calendar day mid-run (e.g. across a UTC midnight boundary).
   const now = Date.now();
+  const probeTimeoutMs = options.probeTimeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS;
 
   const startedAt = new Date().toISOString();
   const stepRecords: StepRecord[] = [];
@@ -912,7 +1012,7 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
 
     const started = Date.now();
     const mockStatus = options.mockFailures?.[step.n];
-    const exec = await executeStep(step, bindings, tools, toolCtx, now, mockStatus);
+    const exec = await executeStep(step, bindings, tools, toolCtx, now, mockStatus, probeTimeoutMs);
     let outcome = exec.outcome;
     let failures = exec.failures;
     let level: 0 | 1 | 2 = 0;
