@@ -13,7 +13,7 @@ import assert from "node:assert/strict";
 import fc from "fast-check";
 
 import { parseSkill, SkillParseError } from "../src/skill.js";
-import { runSkill, projectObservation, buildResponseDerivedAttest } from "../src/runner.js";
+import { runSkill, projectObservation, buildResponseDerivedAttest, ATTEST_BODY_FIELDS, ATTEST_HEADER_FIELDS } from "../src/runner.js";
 import { computeApprovalHash } from "../src/approval.js";
 import { digestSha256 } from "../src/canonical-json.js";
 import type { Tool } from "../src/tools.js";
@@ -128,7 +128,7 @@ const primitiveArb = fc.oneof(
   fc.double({ noNaN: true, noDefaultInfinity: true })
 );
 const bodyArb = fc.dictionary(
-  fc.constantFrom("id", "_id", "version", "etag", "revision", "sha", "updated_at", "node_id"),
+  fc.constantFrom(...ATTEST_BODY_FIELDS),
   primitiveArb,
   { minKeys: 1, maxKeys: 8 }
 );
@@ -154,7 +154,7 @@ test("property: hash is stable under body key order / header insertion order per
   fc.assert(
     fc.property(
       bodyArb,
-      fc.dictionary(fc.constantFrom("etag", "last-modified"), fc.string({ minLength: 1, maxLength: 10 }), { maxKeys: 2 }),
+      fc.dictionary(fc.constantFrom(...ATTEST_HEADER_FIELDS), fc.string({ minLength: 1, maxLength: 10 }), { maxKeys: 2 }),
       fc.array(fc.nat({ max: 20 }), { minLength: 0, maxLength: 10 }),
       fc.array(fc.nat({ max: 20 }), { minLength: 0, maxLength: 10 }),
       (body, headers, bodyOrderSeed, headerOrderSeed) => {
@@ -212,7 +212,7 @@ test("property: JSON.stringify(projection) never contains a projected value stri
   fc.assert(
     fc.property(
       fc.dictionary(
-        fc.constantFrom("id", "_id", "version", "etag", "revision", "sha", "updated_at", "node_id"),
+        fc.constantFrom(...ATTEST_BODY_FIELDS),
         fc.oneof(fc.string({ minLength: 4, maxLength: 40 }), fc.integer({ min: 10000, max: 999999999 })),
         { minKeys: 1, maxKeys: 8 }
       ),

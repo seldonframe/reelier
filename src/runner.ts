@@ -396,9 +396,9 @@ function buildStepWrite(
   return { idempotencyKey, approved, ...(resource ? { resource } : {}) };
 }
 
-/** Default projection field allowlists for response-derived attestation — identity/version class only, never content. */
-const ATTEST_BODY_FIELDS = ["id", "_id", "version", "etag", "revision", "sha", "updated_at", "node_id"] as const;
-const ATTEST_HEADER_FIELDS = ["etag", "last-modified"] as const;
+/** Default projection field allowlists for response-derived attestation — identity/version class only, never content. Exported so tests fuzz the REAL lists instead of a copy that silently decays. */
+export const ATTEST_BODY_FIELDS = ["id", "_id", "version", "etag", "revision", "sha", "updated_at", "node_id"] as const;
+export const ATTEST_HEADER_FIELDS = ["etag", "last-modified"] as const;
 
 /**
  * Project an Observation down to the fields that identify/version its
