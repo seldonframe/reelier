@@ -4,6 +4,8 @@ import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { runReplayTool } from "../src/serve.js";
+import type { DownstreamConnection } from "../src/mcp-client.js";
+import { digestSha256 } from "../src/canonical-json.js";
 
 async function withTmpDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
   const dir = await mkdtemp(path.join(tmpdir(), "reelier-serve-preflight-"));
@@ -73,6 +75,50 @@ test("runReplayTool: manifest present but no wrap given — fails closed with a 
   });
 });
 
+// The matching-manifest case needs a live downstream to preflight against —
+// an in-process fake injected via runReplayTool's connect override, same
+// reasoning as cmdRun's/cmdManifest's injectable connect (test/manifest-cli.test.ts).
+const TOOL_SCHEMA = { type: "object" as const };
+const TOOL_DIGEST = digestSha256(TOOL_SCHEMA);
+
+function fakeStatusConnection(): DownstreamConnection {
+  return {
+    name: "fake",
+    tools: [{ name: "get_status", inputSchema: TOOL_SCHEMA }],
+    async call() {
+      return { content: [{ type: "text", text: "{}" }] };
+    },
+    async close() {},
+  };
+}
+
+const CHECKED_MANIFEST_SKILL_SOURCE = `---
+name: serve-replay-checked-fixture
+description: a skill whose manifest matches the live fake downstream
+manifest: {"v":1,"tools":[{"name":"get_status","server":"fake","digest":"${TOOL_DIGEST}"}]}
+---
+
+### Step 1 — check status
+- intent: check status
+- action: get_status {}
+- effect: read
+`;
+
+test("runReplayTool: a passing manifest preflight stamps manifestChecked on the record (never manifestIgnored)", async () => {
+  await withTmpDir(async (dir) => {
+    const skillPath = path.join(dir, "serve-replay-checked-fixture.skill.md");
+    await writeFile(skillPath, CHECKED_MANIFEST_SKILL_SOURCE, "utf8");
+
+    const record = await runReplayTool(
+      { skillPath, cwd: dir, wrap: ["fake-wrap-spec"] },
+      async () => fakeStatusConnection()
+    );
+    assert.equal(record.passed, true);
+    assert.equal(record.manifestChecked, true);
+    assert.equal(record.manifestIgnored, undefined);
+  });
+});
+
 test("runReplayTool: ignoreManifest true is a break-glass — resolves and threads manifestIgnored onto the record", async () => {
   await withTmpDir(async (dir) => {
     const skillPath = path.join(dir, "serve-replay-manifest-fixture.skill.md");
@@ -83,6 +129,7 @@ test("runReplayTool: ignoreManifest true is a break-glass — resolves and threa
     );
     assert.equal(record.passed, true);
     assert.equal(record.manifestIgnored, true);
+    assert.equal(record.manifestChecked, undefined);
   });
 });
 
@@ -94,5 +141,6 @@ test("runReplayTool: a manifest-less skill replays exactly as before — unaffec
     const record = await withFetch(fakeOkFetch(), () => runReplayTool({ skillPath, cwd: dir }));
     assert.equal(record.passed, true);
     assert.equal(record.manifestIgnored, undefined);
+    assert.equal(record.manifestChecked, undefined);
   });
 });

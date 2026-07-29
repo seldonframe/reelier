@@ -155,6 +155,17 @@ export interface RunRecord {
    */
   manifestIgnored?: true;
   /**
+   * Set (true) only when this run had a manifest AND its preflight ran and
+   * passed — the positive "declared + verified" signal, mutually exclusive
+   * with `manifestIgnored`. Absent when the skill declared no manifest, or
+   * when the preflight was bypassed via `--ignore-manifest` — so a consumer
+   * (e.g. the cloud receipt ladder) can distinguish "declared + passed" from
+   * "never declared" without inferring from absence. A failed preflight
+   * never reaches here: the run refuses fail-closed and no record is
+   * written. Absent on every pre-existing record (additive).
+   */
+  manifestChecked?: true;
+  /**
    * Sorted step numbers that had an injected failure this run (`--fail
    * N[=status]`, docs/specs/flight-recorder-v2.md §3) — present only when
    * `RunOptions.mockFailures` was non-empty. A mock run is a local recovery
@@ -210,6 +221,8 @@ export interface RunOptions {
   skillContentSha256?: string;
   /** Threaded verbatim onto RunRecord.manifestIgnored — set by the caller (cmdRun) when `--ignore-manifest` bypassed the manifest preflight. The runner itself never evaluates a manifest; this is purely a receipt annotation. */
   manifestIgnored?: boolean;
+  /** Threaded verbatim onto RunRecord.manifestChecked — set by the caller (cmdRun/runReplayTool) when a declared manifest's preflight ran and passed. Same discipline as manifestIgnored: the runner never evaluates a manifest; this is purely a receipt annotation. */
+  manifestChecked?: boolean;
   /**
    * `--fail N[=status]` (docs/specs/flight-recorder-v2.md §3): step number ->
    * HTTP status to inject as a synthetic Observation instead of dispatching
@@ -1216,6 +1229,7 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
     passed: failedCount === 0,
     ...(options.skillContentSha256 ? { skillContentSha256: options.skillContentSha256 } : {}),
     ...(options.manifestIgnored ? { manifestIgnored: true } : {}),
+    ...(options.manifestChecked ? { manifestChecked: true } : {}),
     ...(mockFailureSteps.length > 0 ? { mockFailures: mockFailureSteps } : {}),
     steps: stepRecords,
     totals: {

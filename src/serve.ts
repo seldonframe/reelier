@@ -211,18 +211,25 @@ export interface ReplayToolInput {
  * Mirrors cmdRun's fail-closed manifest preflight (cli.ts:261-293) exactly:
  * a manifest-carrying skill gets its tool schemas verified against live
  * downstreams BEFORE any step executes, unless ignoreManifest breaks glass.
+ *
+ * `connect` is a test seam (defaults to the real connectDownstream, which
+ * spawns a subprocess) — same reasoning as cmdRun's/cmdManifest's override.
  */
-export async function runReplayTool(input: ReplayToolInput): Promise<RunRecord> {
+export async function runReplayTool(
+  input: ReplayToolInput,
+  connect: (spec: string) => Promise<DownstreamConnection> = connectDownstream
+): Promise<RunRecord> {
   const source = await readFile(input.skillPath, "utf8");
   const skill = parseSkill(source);
 
   const downstreams: DownstreamConnection[] = [];
   try {
     for (const spec of input.wrap ?? []) {
-      downstreams.push(await connectDownstream(spec));
+      downstreams.push(await connect(spec));
     }
 
     let manifestIgnored = false;
+    let manifestChecked = false;
     if (skill.manifest) {
       if (input.ignoreManifest) {
         manifestIgnored = true;
@@ -238,6 +245,9 @@ export async function runReplayTool(input: ReplayToolInput): Promise<RunRecord> 
               drifts.map((d) => `${d.name} — recorded ${d.recorded}${d.live !== undefined ? ` live ${d.live}` : ""} (${d.note})`).join("; ")
           );
         }
+        // Declared + verified — the positive counterpart to manifestIgnored
+        // (RunRecord.manifestChecked), mirroring cmdRun's stamp.
+        manifestChecked = true;
       }
     }
 
@@ -253,6 +263,7 @@ export async function runReplayTool(input: ReplayToolInput): Promise<RunRecord> 
       skillPath: input.skillPath,
       skillContentSha256: createHash("sha256").update(source, "utf8").digest("hex"),
       ...(manifestIgnored ? { manifestIgnored: true } : {}),
+      ...(manifestChecked ? { manifestChecked: true } : {}),
     });
   } finally {
     await Promise.all(downstreams.map((d) => d.close().catch(() => {})));

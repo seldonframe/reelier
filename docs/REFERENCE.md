@@ -45,7 +45,7 @@ The generated workflow:
 
 ## Guardrails: manifest and approve
 
-`reelier manifest` stamps a schema digest per tool a skill uses; drift or a missing tool fails closed — `MANIFEST DRIFT — refusing to replay`. `--ignore-manifest` is the break-glass override, recorded (`manifestIgnored: true`), never silent. A skill with no manifest gets an advisory note.
+`reelier manifest` stamps a schema digest per tool a skill uses; drift or a missing tool fails closed — `MANIFEST DRIFT — refusing to replay`. A passing preflight is stamped on the run record (`manifestChecked: true`) so a receipt can prove "declared + verified", not just infer it. `--ignore-manifest` is the break-glass override, recorded (`manifestIgnored: true`), never silent. A skill with no manifest gets an advisory note.
 
 ```sh
 reelier manifest <skill.md> --wrap "<your mcp server>"   # stamp/refresh the manifest from live servers

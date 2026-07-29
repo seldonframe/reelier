@@ -574,6 +574,7 @@ interface RunRecord {
   passed: boolean;
   skillContentSha256?: string;
   manifestIgnored?: true;
+  manifestChecked?: true;
   mockFailures?: number[];
   steps: StepRecord[];
   totals: {
@@ -596,6 +597,16 @@ count toward `totals.passed`.
 `manifestIgnored` (0.19.0+, §6.1b) is `true` iff this run's manifest
 preflight was explicitly bypassed via `--ignore-manifest` — absent on every
 run that had no manifest to check, or whose preflight ran normally.
+
+`manifestChecked` (§6.1b) is `true` iff this run's skill declared a manifest
+AND its preflight ran and passed — the positive "declared + verified" signal,
+mutually exclusive with `manifestIgnored`. Absent when the skill declared no
+manifest, and absent on the `--ignore-manifest` break-glass path — so a
+consumer (e.g. the cloud receipt ladder) can distinguish "declared + passed"
+from "never declared" without inferring from absence. A failed preflight
+never produces a record at all (the run refuses fail-closed, §6.1b), so a
+record can never carry `manifestChecked` for a preflight that did not pass.
+Absent on every record that predates the field (additive).
 
 `mockFailures` (0.19.0+, §6.1d) is the sorted list of step numbers that had
 an injected failure (`--fail N[=status]`) this run — present only when
@@ -818,13 +829,15 @@ Source of truth: `src/manifest.ts` (`buildManifestForSkill`,
   `updated` / `added` / `removed` against whatever manifest was already
   stamped. No `--wrap` given is a usage error, exit 1.
 - `reelier run <skill.md> --wrap ...` runs the preflight **before step 1
-  executes** whenever `skill.manifest` is present: `ok` → proceed silently;
-  any missing tool or schema mismatch → `MANIFEST DRIFT — refusing to
-  replay (fail closed)` printed per drifted tool, exit 1, and the fake/real
-  downstream's `call` is never invoked. A manifest present with no `--wrap`
-  at all is also a hard refusal (nothing to preflight against). A skill
-  with no manifest gets an advisory note only and runs normally — every
-  pre-0.19.0 skill is unaffected.
+  executes** whenever `skill.manifest` is present: `ok` → proceed silently
+  and stamp `RunRecord.manifestChecked: true` (§4.2) — the positive
+  "declared + verified" signal; any missing tool or schema mismatch →
+  `MANIFEST DRIFT — refusing to replay (fail closed)` printed per drifted
+  tool, exit 1, and the fake/real downstream's `call` is never invoked. A
+  manifest present with no `--wrap` at all is also a hard refusal (nothing
+  to preflight against). A skill with no manifest gets an advisory note
+  only and runs normally — every pre-0.19.0 skill is unaffected, and its
+  record carries neither `manifestChecked` nor `manifestIgnored`.
 - `--ignore-manifest` is the explicit break-glass override: skips the
   preflight, prints a `WARNING: --ignore-manifest` line, and stamps
   `RunRecord.manifestIgnored: true` (§4.2) — never a silent bypass.

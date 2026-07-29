@@ -268,6 +268,7 @@ export async function cmdRun(
     // valid) beyond a one-line advisory note.
     const ignoreManifest = args.flags.has("ignore-manifest");
     let manifestIgnored = false;
+    let manifestChecked = false;
     if (skill.manifest) {
       if (ignoreManifest) {
         console.error("WARNING: --ignore-manifest — replaying despite unverified tool schemas");
@@ -288,6 +289,10 @@ export async function cmdRun(
           );
           return 1;
         }
+        // Declared + verified — the positive counterpart to manifestIgnored,
+        // stamped on the record so a consumer can tell "preflight passed"
+        // apart from "no manifest to check" (RunRecord.manifestChecked).
+        manifestChecked = true;
       }
     } else {
       console.error(
@@ -330,6 +335,7 @@ export async function cmdRun(
       // stamped verbatim onto the RunRecord (see RunRecord.skillContentSha256).
       skillContentSha256: createHash("sha256").update(source, "utf8").digest("hex"),
       manifestIgnored,
+      manifestChecked,
       ...(args.fails.length > 0 ? { mockFailures } : {}),
       onStep: (rec) => {
         const icon =
