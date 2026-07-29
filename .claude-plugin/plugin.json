@@ -1,7 +1,7 @@
 {
   "name": "reelier",
   "displayName": "Reelier",
-  "version": "0.13.0",
+  "version": "0.24.0",
   "description": "Record an agent's tool-call workflow once, replay it deterministically at 0 tokens, and diff runs to catch drift — CI + snapshot tests for MCP tool-call workflows.",
   "author": {
     "name": "SeldonFrame",
