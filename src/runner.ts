@@ -33,6 +33,7 @@ import type { LlmClient } from "./llm.js";
 import { resolveL1, resolveL2 } from "./escalate.js";
 import { applyWritebackSafely } from "./writeback.js";
 import { computeApprovalHash, computeIdempotencyKey } from "./approval.js";
+import { digestSha256 } from "./canonical-json.js";
 
 export type StepOutcome = "passed" | "failed" | "unchecked" | "skipped";
 
@@ -57,6 +58,21 @@ export interface StepWrite {
   resource?: { id?: string; version?: string };
   /** Set when an earlier step in THIS run wrote with the identical idempotencyKey — the step number of that earlier step. */
   duplicateOf?: number;
+}
+
+export interface AttestState {
+  hash: string;
+  at: string;
+}
+
+export interface StepAttest {
+  method: "response-derived" | "declared-probe";
+  selector?: string;
+  pre?: AttestState;
+  post?: AttestState;
+  delta?: { changed: number; fields?: string[] };
+  confidence: "exact" | "partial" | "pending" | "absent";
+  reason?: string;
 }
 
 export interface StepRecord {
@@ -91,6 +107,8 @@ export interface StepRecord {
   why?: StepWhy;
   /** Present iff this step's tool actually dispatched a write-effect call — see StepWrite. */
   write?: StepWrite;
+  /** State attestation (consequence-layer §1) — present iff a write-effect step actually dispatched. Hashes over a field projection, never raw values. absent/pending are never a pass. */
+  attest?: StepAttest;
   /**
    * Provider-issued request-id refs captured from this step's Observation
    * (trust-ladder spec §3) — extends the write receipt's honesty discipline
@@ -375,6 +393,56 @@ function buildStepWrite(
   return { idempotencyKey, approved, ...(resource ? { resource } : {}) };
 }
 
+/** Default projection field allowlists for response-derived attestation — identity/version class only, never content. */
+const ATTEST_BODY_FIELDS = ["id", "_id", "version", "etag", "revision", "sha", "updated_at", "node_id"] as const;
+const ATTEST_HEADER_FIELDS = ["etag", "last-modified"] as const;
+
+/**
+ * Project an Observation down to the fields that identify/version its
+ * resource. With an explicit projection: those top-level body keys only.
+ * Without: the conservative default allowlists above (body + headers).
+ * Values are stringified for hashing and NEVER stored in any record.
+ */
+export function projectObservation(obs: Observation, projection?: string[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  let body: unknown;
+  try { body = JSON.parse(obs.body); } catch { body = undefined; }
+  const rec = body !== null && typeof body === "object" && !Array.isArray(body) ? (body as Record<string, unknown>) : undefined;
+  if (projection) {
+    if (rec) {
+      for (const key of projection) {
+        const v = rec[key];
+        if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") out[`body.${key}`] = String(v);
+      }
+    }
+    return out;
+  }
+  if (rec) {
+    for (const key of ATTEST_BODY_FIELDS) {
+      const v = rec[key];
+      if (typeof v === "string" || typeof v === "number") out[`body.${key}`] = String(v);
+    }
+  }
+  for (const key of ATTEST_HEADER_FIELDS) {
+    const v = obs.headers[key];
+    if (typeof v === "string" && v.length > 0) out[`header.${key}`] = v;
+  }
+  return out;
+}
+
+/** Consequence-layer §1.3 `response-derived`: state derived from the write's own response. Ceiling `partial`; `absent` + reason when nothing derivable. Never fabricated. */
+export function buildResponseDerivedAttest(obs: Observation): StepAttest {
+  const projected = projectObservation(obs);
+  if (Object.keys(projected).length === 0) {
+    return { method: "response-derived", confidence: "absent", reason: "no-derivable-state" };
+  }
+  return {
+    method: "response-derived",
+    post: { hash: digestSha256(projected), at: new Date().toISOString() },
+    confidence: "partial",
+  };
+}
+
 /** Evaluate a step's asserts/binds against `obs`, in place, into `failures`/`localBinds` (shared by the real-dispatch and mocked-dispatch paths in executeStep). */
 function evaluateAssertsAndBinds(
   step: Step,
@@ -421,6 +489,7 @@ async function executeStep(
   observation?: Observation;
   binds: Record<string, unknown>;
   write?: StepWrite;
+  attest?: StepAttest;
   mocked?: true;
 }> {
   const started = Date.now();
@@ -545,18 +614,19 @@ async function executeStep(
   // stamped here, BEFORE assert evaluation, because the side effect already
   // happened regardless of whether the step's assertions later hold.
   const write = isWrite ? buildStepWrite(step.actionTool, tool, filledArgs, obs, step.approve !== undefined) : undefined;
+  const attest = isWrite ? buildResponseDerivedAttest(obs) : undefined;
 
   evaluateAssertsAndBinds(step, obs, failures, localBinds);
 
   const ms = Date.now() - started;
   if (failures.length > 0) {
-    return { outcome: "failed", ms, failures, observation: obs, binds: localBinds, write };
+    return { outcome: "failed", ms, failures, observation: obs, binds: localBinds, write, attest };
   }
   if (step.asserts.length === 0) {
     // Honest-success rule: zero assertions never counts as "passed".
-    return { outcome: "unchecked", ms, failures, observation: obs, binds: localBinds, write };
+    return { outcome: "unchecked", ms, failures, observation: obs, binds: localBinds, write, attest };
   }
-  return { outcome: "passed", ms, failures, observation: obs, binds: localBinds, write };
+  return { outcome: "passed", ms, failures, observation: obs, binds: localBinds, write, attest };
 }
 
 /** Re-evaluate a patched assert/bind set against a fixed observation. Never re-executes anything. */
@@ -649,6 +719,8 @@ async function attemptEscalation(
   write?: StepWrite;
   /** Fresh refs from the L2 re-execution's real tool call — same "absent when only L1 ran" rule as `write`. */
   refs?: ObservationRef[];
+  /** Fresh attest from the L2 re-execution's real tool call — same "absent when only L1 ran" rule as `write`. */
+  attest?: StepAttest;
 }> {
   const maxLevel = options.maxLevel ?? 0;
   if (maxLevel < 1 || !options.llm) {
@@ -770,11 +842,12 @@ async function attemptEscalation(
   // gate above already proved it matched THIS exact candidate template
   // before dispatch — a mismatch never reaches this line.
   const l2Write = l2IsWrite ? buildStepWrite(step.actionTool, l2Tool, filledArgs, obs2, step.approve !== undefined) : undefined;
+  const l2Attest = l2IsWrite ? buildResponseDerivedAttest(obs2) : undefined;
 
   const reEval2 = reEvaluatePatch(l2.asserts, l2.binds, obs2);
   if (!reEval2.ok) {
     failures = [...failures, ...reEval2.failures.map((f) => `L2 patch didn't hold: ${f}`)];
-    return { outcome: "failed", level: 0, failures, llm: usage, escalationAttempted, write: l2Write, refs: obs2.refs };
+    return { outcome: "failed", level: 0, failures, llm: usage, escalationAttempted, write: l2Write, refs: obs2.refs, attest: l2Attest };
   }
 
   Object.assign(bindings, reEval2.bindings);
@@ -802,6 +875,7 @@ async function attemptEscalation(
     why: { change: `L2: ${l2.reason}` },
     write: l2Write,
     refs: obs2.refs,
+    attest: l2Attest,
   };
 }
 
@@ -846,6 +920,7 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
     let escalationAttempted: 0 | 1 | 2 | undefined;
     let why: StepWhy | undefined;
     let write = exec.write;
+    let attest = exec.attest;
     // Extends the write receipt's discipline to EVERY executed step (spec
     // §3) — a read step's Observation can carry cross-checkable refs too.
     // `exec.observation` is set on every REAL (or mocked-synthetic) dispatch
@@ -912,6 +987,9 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
       // refs (if any) are what THIS record should reflect. `escalated.refs`
       // is only set when a real L2 dispatch happened (see attemptEscalation).
       if (escalated.refs !== undefined) refs = escalated.refs;
+      // Same "fresh L2 dispatch supersedes the stale main-path attempt"
+      // reasoning as `write`/`refs` above.
+      if (escalated.attest !== undefined) attest = escalated.attest;
     }
     // A step that failed without an observation (tool threw) skips escalation —
     // still record why it diverged.
@@ -924,6 +1002,7 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
     if (exec.mocked) {
       write = undefined;
       refs = undefined;
+      attest = undefined;
     }
 
     const ms = Date.now() - started;
@@ -938,6 +1017,7 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
       ...(escalationAttempted !== undefined ? { escalationAttempted } : {}),
       ...(why ? { why } : {}),
       ...(write ? { write } : {}),
+      ...(attest ? { attest } : {}),
       ...(refs && refs.length > 0 ? { refs } : {}),
       ...(exec.mocked ? { mocked: true as const } : {}),
     };

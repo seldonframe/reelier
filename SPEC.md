@@ -536,6 +536,16 @@ interface StepRecord {
     resource?: { id?: string; version?: string };
     duplicateOf?: number;
   };
+  refs?: { source: "header" | "body"; key: string; value: string }[];
+  attest?: {
+    method: "response-derived" | "declared-probe";
+    selector?: string;
+    pre?: { hash: string; at: string };
+    post?: { hash: string; at: string };
+    delta?: { changed: number; fields?: string[] };
+    confidence: "exact" | "partial" | "pending" | "absent";
+    reason?: string;
+  };
   mocked?: true;
 }
 ```
@@ -550,6 +560,8 @@ interface StepRecord {
 | `escalationAttempted` | The **highest level TRIED**, present iff L1 was invoked at all. **Distinct from `level`**: a step can have `escalationAttempted: 2` and `level: 0` simultaneously — it burned L1 and L2 tokens and still never healed. `level` only ever reflects the level that *healed* it. |
 | `why` (0.8.0+) | Present **only** when this step's behavior changed: `trigger` = the load-bearing divergence (the first failure, verbatim from the real assertion/tool result) on a `"failed"` step; `change` = what the successful L1/L2 patch changed (`"L1: <reason>"` / `"L2: <reason>"`, the escalation's own reason) on a healed step. Absent on an unchanged step. **Never fabricated** — a producer MUST populate it only from observed engine data, never from generated narrative. |
 | `write` (0.19.0+, §6.1c) | Present **iff** this step's tool call actually dispatched a write-effect (`idempotent-write`/`destructive`) call — never for a refused, skipped, or mocked step. `approved` is `true` iff dispatched via a matching `Step.approve` hash, `false` via the legacy `--allow-writes`/`--yes` flags. `resource` is a best-effort, honestly-labeled extraction from the response body; absent, never fabricated, when nothing was found. `duplicateOf` is the step number of an earlier step in the SAME run that wrote the identical `idempotencyKey`. |
+| `refs` (0.20.0+, trust-ladder §3) | Provider-issued request-id references captured from this step's response (allowlist-only — never scraped or fabricated). Omitted when none were captured, and always absent on a mocked step. This field shipped in 0.20.0; earlier printings of this table omitted it — that was a spec/implementation gap, not a behavior change. |
+| `attest` (state-attestation P1) | Present **iff** this step's tool call actually dispatched a write-effect call. `response-derived`: a hash over identity/version fields of the write's own response — confidence ceiling `"partial"`. `declared-probe`: the step's declared paired read captured before dispatch (`pre`) and after the result (`post`) — both present ⇒ `"exact"`, one side ⇒ `"partial"`, none ⇒ `"absent"` with `reason`. `delta` lists changed projection-field **names** only. Hashes are `sha256:<hex>` over a canonical-JSON field projection — raw state never appears in a record, and a probe failure degrades the attestation, never the step. `absent`/`pending` MUST NOT be rendered as a pass by any consumer. |
 | `mocked` (0.19.0+, §6.1d) | `true` iff this step's observation was a synthetic injected failure (`--fail N[=status]`) rather than a real tool dispatch. Absent for every real step. |
 
 ### 4.2 `RunRecord`
