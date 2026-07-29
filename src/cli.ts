@@ -28,6 +28,7 @@ import { computeApprovalHash } from "./approval.js";
 import { canonicalJson } from "./canonical-json.js";
 import { parseInstructionSkillFrontmatter } from "./from-skill.js";
 import { createLlmClient, resolveLlmConfig } from "./llm.js";
+import { renderAttestLines } from "./attest-render.js";
 import {
   detectAgentConfig,
   reelierProxyCommandLine,
@@ -345,6 +346,11 @@ export async function cmdRun(
         }
         if (rec.write?.duplicateOf !== undefined) {
           console.log(`    ! duplicate write (same idempotency key as step ${rec.write.duplicateOf})`);
+        }
+        if (rec.attest) {
+          for (const line of renderAttestLines(rec.attest)) {
+            console.log(`   ${line}`);
+          }
         }
       },
     });
