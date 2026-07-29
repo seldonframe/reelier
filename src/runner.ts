@@ -34,7 +34,7 @@ import type { LlmClient } from "./llm.js";
 import { resolveL1, resolveL2 } from "./escalate.js";
 import { applyWritebackSafely } from "./writeback.js";
 import { computeApprovalHash, computeIdempotencyKey } from "./approval.js";
-import { digestSha256, canonicalJson } from "./canonical-json.js";
+import { digestSha256 } from "./canonical-json.js";
 
 export type StepOutcome = "passed" | "failed" | "unchecked" | "skipped";
 
@@ -68,6 +68,9 @@ export interface AttestState {
 
 export interface StepAttest {
   method: "response-derived" | "declared-probe";
+  /** The probe TOOL NAME only (e.g. "github.get_comment") — identifies which tool observed
+   * the state. Never the args template: a record is a publishable artifact and the record
+   * format carries no other tool args. */
   selector?: string;
   pre?: AttestState;
   post?: AttestState;
@@ -712,7 +715,7 @@ async function executeStep(
     if (isWrite && step.attest && probeApproved && preProbe !== undefined && preProbe.ok && Object.keys(preProbe.projected).length > 0) {
       throwAttest = {
         method: "declared-probe",
-        selector: `${step.attest.tool} ${canonicalJson(step.attest.args)}`,
+        selector: step.attest.tool,
         pre: { hash: saltedProjectionHash(preProbe.projected, attestSalt), at: preAt! },
         confidence: "partial",
         reason: "dispatch-failed",
@@ -731,7 +734,7 @@ async function executeStep(
     if (step.attest && probeApproved) {
       const postProbe = await runProbe(step.attest, tools, bindings, ctx, now, probeTimeoutMs);
       const postAt = new Date().toISOString();
-      const selector = `${step.attest.tool} ${canonicalJson(step.attest.args)}`;
+      const selector = step.attest.tool;
       const preSide = preProbe && preProbe.ok && Object.keys(preProbe.projected).length > 0 ? preProbe.projected : undefined;
       const postSide = postProbe.ok && Object.keys(postProbe.projected).length > 0 ? postProbe.projected : undefined;
       const reasons = [

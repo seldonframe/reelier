@@ -56,10 +56,22 @@ test("declared-probe: pre+post captured, exact confidence, honest delta", async 
   assert.ok(a.pre && a.post && a.pre.hash !== a.post.hash);
   assert.deepEqual(a.delta, { changed: 2, fields: ["body.etag", "body.value"] });
   assert.deepEqual(w.calls, ["read", "update", "read"]); // pre-probe BEFORE dispatch, post after
-  assert.equal(a.selector, `fake.read {"id":"x1"}`);
+  assert.equal(a.selector, "fake.read");
   // raw values never recorded:
   const flat = JSON.stringify(a);
   for (const raw of ["e1", "e2", "old", "new"]) assert.ok(!flat.includes(`"${raw}"`), `leaked ${raw}`);
+});
+
+test("selector records the tool name only — the args template never appears in the record", async () => {
+  const w = world({ etag: "e1", value: "old" });
+  const rec = await runSkill(parseSkill(withApprove(SKILL(ATTEST))), { tools: w.tools, allowWrites: true, dryRun: true });
+  const a = rec.steps[0].attest!;
+  assert.equal(a.selector, "fake.read");
+  const flat = JSON.stringify(rec);
+  // the probe's declared args template (e.g. {"id":"x1"}) must never leak into the record,
+  // even though it's perfectly fine to appear in the skill source itself.
+  assert.ok(!flat.includes(`{"id":"x1"}`), "args template leaked into serialized record");
+  assert.ok(!flat.includes("fake.read {"), "old selector-with-args format leaked into serialized record");
 });
 
 test("no-change write yields exact with delta.changed 0 and no fields", async () => {
