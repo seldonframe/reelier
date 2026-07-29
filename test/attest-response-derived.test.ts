@@ -18,8 +18,12 @@ test("response body with id + etag yields partial attest with a projection hash"
   assert.match(a.post!.hash, /^sha256:[0-9a-f]{64}$/);
   assert.equal(a.pre, undefined);
   assert.equal(a.delta, undefined);
-  // exact expected hash: projection is {"body.etag":"W/\"abc\"","body.id":"42"}
-  assert.equal(a.post!.hash, digestSha256({ "body.etag": 'W/"abc"', "body.id": "42" }));
+  // Fix-wave F3: the hash is a SALTED commitment, so the exact digest this
+  // test used to pin is no longer recomputable — pin instead that it is NOT
+  // the bare unsalted digest (that would be preimage-reversible for
+  // low-entropy projections). Within-attest determinism is covered by
+  // test/attest-salted-hash.test.ts.
+  assert.notEqual(a.post!.hash, digestSha256({ "body.etag": 'W/"abc"', "body.id": "42" }));
 });
 
 test("attest never contains raw response values (hash + timestamps only)", () => {
@@ -30,9 +34,14 @@ test("attest never contains raw response values (hash + timestamps only)", () =>
 });
 
 test("header etag participates in the projection when the body has nothing", () => {
+  // The body alone is not JSON (nothing derivable) — so a "partial" outcome
+  // with a post hash proves the header etag is what fed the projection.
+  // (F3: salted commitment, so the exact digest is no longer asserted.)
   const a = buildResponseDerivedAttest(obsOf("not json", { etag: '"v7"' }));
   assert.equal(a.confidence, "partial");
-  assert.equal(a.post!.hash, digestSha256({ "header.etag": '"v7"' }));
+  assert.match(a.post!.hash, /^sha256:[0-9a-f]{64}$/);
+  const withoutHeader = buildResponseDerivedAttest(obsOf("not json", {}));
+  assert.equal(withoutHeader.confidence, "absent");
 });
 
 test("array body / non-JSON body / empty object degrade to absent with reason", () => {
@@ -44,10 +53,16 @@ test("array body / non-JSON body / empty object degrade to absent with reason", 
   }
 });
 
-test("projection hash is stable under body key order", () => {
+test("projection is stable under body key order (hash equality is per-attest only since F3 salting)", () => {
+  // Two separate buildResponseDerivedAttest calls are two attests with two
+  // salts — their hashes intentionally DIFFER even for identical input. The
+  // key-order-invariance property lives at the projection layer.
+  const projA = projectObservation(obsOf({ id: 1, version: "2" }));
+  const projB = projectObservation(obsOf({ version: "2", id: 1 }));
+  assert.deepEqual(projA, projB);
   const a = buildResponseDerivedAttest(obsOf({ id: 1, version: "2" }));
   const b = buildResponseDerivedAttest(obsOf({ version: "2", id: 1 }));
-  assert.equal(a.post!.hash, b.post!.hash);
+  assert.notEqual(a.post!.hash, b.post!.hash, "separate attests must not share a recomputable hash");
 });
 
 const WRITE_SKILL = `---

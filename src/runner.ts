@@ -18,6 +18,7 @@
 // the same drift never has to escalate twice.
 
 import { mkdir, appendFile } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { createInterface } from "node:readline";
 import path from "node:path";
@@ -432,7 +433,26 @@ export function projectObservation(obs: Observation, projection?: string[]): Rec
   return out;
 }
 
-/** Consequence-layer §1.3 `response-derived`: state derived from the write's own response. Ceiling `partial`; `absent` + reason when nothing derivable. Never fabricated. */
+/**
+ * A salted commitment over a field projection (final-review S3). A bare
+ * sha256 over a low-entropy projection (a boolean, an enum, a small id) is
+ * trivially preimage-reversible from a shared/pushed record, and the changed
+ * field NAMES in `delta.fields` hand the attacker the dictionary. The salt is
+ * per-attest, held in memory only, and NEVER recorded — pre and post for the
+ * SAME attest share it, so within-record change detection (pre === post iff
+ * the projection didn't change) survives, while cross-run hash joins are
+ * deliberately sacrificed. A hash is not encryption; this makes it not
+ * brute-forceable either.
+ */
+function newAttestSalt(): string {
+  return randomBytes(16).toString("hex");
+}
+
+function saltedProjectionHash(projected: Record<string, string>, salt: string): string {
+  return digestSha256({ projection: projected, salt });
+}
+
+/** Consequence-layer §1.3 `response-derived`: state derived from the write's own response. Ceiling `partial`; `absent` + reason when nothing derivable. Never fabricated. Hash is a salted commitment (see newAttestSalt). */
 export function buildResponseDerivedAttest(obs: Observation): StepAttest {
   const projected = projectObservation(obs);
   if (Object.keys(projected).length === 0) {
@@ -440,7 +460,7 @@ export function buildResponseDerivedAttest(obs: Observation): StepAttest {
   }
   return {
     method: "response-derived",
-    post: { hash: digestSha256(projected), at: new Date().toISOString() },
+    post: { hash: saltedProjectionHash(projected, newAttestSalt()), at: new Date().toISOString() },
     confidence: "partial",
   };
 }
@@ -669,6 +689,9 @@ async function executeStep(
   // actually resolves, never stamped later — that's the honesty rule.
   let preProbe: ProbeResult | undefined;
   let preAt: string | undefined;
+  // ONE salt for this step's whole attest — pre and post commit with the same
+  // salt so within-record equality semantics hold (see newAttestSalt).
+  const attestSalt = newAttestSalt();
   if (isWrite && step.attest && probeApproved) {
     preProbe = await runProbe(step.attest, tools, bindings, ctx, now, probeTimeoutMs);
     preAt = new Date().toISOString();
@@ -703,8 +726,8 @@ async function executeStep(
         attest = {
           method: "declared-probe",
           selector,
-          pre: { hash: digestSha256(preSide), at: preAt! },
-          post: { hash: digestSha256(postSide), at: postAt },
+          pre: { hash: saltedProjectionHash(preSide, attestSalt), at: preAt! },
+          post: { hash: saltedProjectionHash(postSide, attestSalt), at: postAt },
           delta: computeDelta(preSide, postSide),
           confidence: "exact",
         };
@@ -712,8 +735,8 @@ async function executeStep(
         attest = {
           method: "declared-probe",
           selector,
-          ...(preSide !== undefined ? { pre: { hash: digestSha256(preSide), at: preAt! } } : {}),
-          ...(postSide !== undefined ? { post: { hash: digestSha256(postSide), at: postAt } } : {}),
+          ...(preSide !== undefined ? { pre: { hash: saltedProjectionHash(preSide, attestSalt), at: preAt! } } : {}),
+          ...(postSide !== undefined ? { post: { hash: saltedProjectionHash(postSide, attestSalt), at: postAt } } : {}),
           confidence: "partial",
           reason: reasons.join("; "),
         };
