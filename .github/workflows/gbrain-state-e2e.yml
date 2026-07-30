@@ -135,7 +135,8 @@ jobs:
 
       # ---- Stage 4 — the interference ------------------------------------
       - name: A second writer clobbers the slug (the fleet-mate this check exists for)
-        run: gbrain put reelier-demo-page --content "clobbered: another agent rewrote this page overnight"
+        run: |
+          gbrain put reelier-demo-page --content "clobbered: another agent rewrote this page overnight"
 
       # ---- Stage 5 — Run 2, the mismatch stamp ---------------------------
       - name: Run 2 — the stamp; the write executes, the run passes, the receipt tells the truth
