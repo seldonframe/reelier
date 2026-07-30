@@ -17,7 +17,8 @@
     "src/policy.ts",
     "src/assert.ts",
     "src/tsa.ts",
-    "src/canonical-json.ts"
+    "src/canonical-json.ts",
+    "src/expect-mac.ts"
   ],
   "tempDirName": ".stryker-tmp",
   "reporters": ["html", "clear-text", "progress"],
