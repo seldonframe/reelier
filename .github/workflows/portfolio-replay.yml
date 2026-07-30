@@ -6,7 +6,7 @@
 # straight into the job log, and the job goes red iff any replay genuinely
 # failed. Level-0 replay only: zero LLM tokens, $0.00, no secrets required.
 #
-# The REELIER_API_KEY secret is OPTIONAL. Without it, nothing is pushed
+# The REELIER_CLOUD_KEY secret is OPTIONAL. Without it, nothing is pushed
 # anywhere and this Action is still the public audit log — the dated green
 # check history on the Actions tab IS the standing proof ("N replays,
 # N passing, $0.00"). With it, each skill's receipt is additionally pushed
@@ -66,14 +66,14 @@ jobs:
       # Optional and honest: pushes the receipts of failed replays too —
       # a red receipt is still a real receipt. Skipped (with a log line,
       # never a silent pass) when the secret isn't configured.
-      - name: Push receipts to the ledger (only if REELIER_API_KEY is set)
+      - name: Push receipts to the ledger (only if REELIER_CLOUD_KEY is set)
         env:
           REELIER_CLOUD_URL: https://www.reelier.com
-          REELIER_CLOUD_KEY: ${{ secrets.REELIER_API_KEY }}
+          REELIER_CLOUD_KEY: ${{ secrets.REELIER_CLOUD_KEY }}
           REELIER_SIGNING_KEY: ${{ secrets.REELIER_SIGNING_KEY }}
         run: |
           if [ -z "$REELIER_CLOUD_KEY" ]; then
-            echo "REELIER_API_KEY not set — skipping push. The job log above is still the public audit log."
+            echo "REELIER_CLOUD_KEY not set — skipping push. The job log above is still the public audit log."
             exit 0
           fi
           # Optional CI signing key (keyId 9158fc9cd0fb4e9b, registered to the
