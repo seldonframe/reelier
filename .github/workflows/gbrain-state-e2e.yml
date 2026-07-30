@@ -166,6 +166,26 @@ jobs:
           grep -E "pre-state check: not evaluated — key-unavailable: keyId '" /tmp/run3.log
           grep -E "^PASSED:" /tmp/run3.log
 
+      # ---- Owner review + the restored punchline -------------------------
+      # extraction_review is owner-only BY DESIGN (localOnly: a remote caller
+      # who could promote would make the quarantine lane decorative) — so
+      # promotion is a host-machine CLI act, never a wrapped skill step. In
+      # CI the runner IS the host. The read-only companion skill then
+      # receipts what the promotion changed: verified stub + non-empty
+      # backlink graph — the original capture-enrich punchline, restored on
+      # the honest side of the trust boundary.
+      - name: Owner promotes the quarantined stubs (local CLI — the trust boundary is the demo)
+        run: |
+          gbrain extraction-review promote --slugs people/garry-tan,companies/reelier-inc
+
+      - name: Verify the promotion took — receipted read of the grown graph
+        env:
+          MCP_STDIO: "1"
+        run: |
+          # Read-only skill: nothing to approve, replaying re-fires nothing.
+          $REELIER run examples/gbrain/gbrain-verify-promoted.skill.md --wrap "gbrain serve" --max-level 0 | tee /tmp/verify-promoted.log
+          grep -E "^PASSED:" /tmp/verify-promoted.log
+
       # ---- Stage 6 — push all receipts; assert the /md twins (N5) --------
       - name: Push receipts + assert /md renders + verify
         if: ${{ vars.GBRAIN_E2E_PUSH == 'true' }}
@@ -198,6 +218,13 @@ jobs:
 
           curl -fsSL "$url_uneval/md" | tee /tmp/receipt-uneval.md
           grep -E "pre-state check: not evaluated — key-unavailable" /tmp/receipt-uneval.md
+
+          # The promotion companion's receipt too — its own skill, own ledger.
+          $REELIER push examples/gbrain/gbrain-verify-promoted.skill.md --share | tee /tmp/push-verify.log
+          vurl=$(grep -E "^\s*Receipt: " /tmp/push-verify.log | grep -Eo "https://[^ ]+" | tail -1)
+          test -n "$vurl"
+          curl -fsSL "$vurl/md" | tee /tmp/receipt-promoted.md
+          grep -E "PASSED" /tmp/receipt-promoted.md
 
           # The verifier recomputes offline math over the published record;
           # a non-zero exit fails this step (pipefail is on).
