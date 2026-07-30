@@ -630,7 +630,7 @@ async function executeStep(
       // matches, this executes with NO flag needed at all. If it doesn't —
       // the step drifted since it was approved — this fails closed and NO
       // flag (--allow-writes, --yes) can override that refusal.
-      const expected = computeApprovalHash({ actionTool: step.actionTool, actionArgs: step.actionArgs, attest: step.attest });
+      const expected = computeApprovalHash({ actionTool: step.actionTool, actionArgs: step.actionArgs, attest: step.attest, expect: step.expect });
       if (step.approve !== expected) {
         failures.push(
           `Approval mismatch on write step — the step's tool/args/attest changed since it was approved. ` +
@@ -987,7 +987,7 @@ async function attemptEscalation(
     // it computes the legacy hash and makes an approved+attested step
     // permanently un-healable at L2 with a fabricated mismatch reason
     // (final-review S1/S4). ApprovalHashInput makes omission a compile error.
-    const l2ExpectedHash = computeApprovalHash({ actionTool: step.actionTool, actionArgs: l2ArgsTemplate, attest: step.attest });
+    const l2ExpectedHash = computeApprovalHash({ actionTool: step.actionTool, actionArgs: l2ArgsTemplate, attest: step.attest, expect: step.expect });
     if (l2ExpectedHash !== step.approve) {
       failures = [...failures, l2ApprovalMismatchMessage(step)];
       return { outcome: "failed", level: 0, failures, llm: usage, escalationAttempted };

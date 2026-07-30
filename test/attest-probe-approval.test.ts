@@ -34,7 +34,7 @@ description: d
 /** Stamp a CURRENT approve: hash (attest bound in), exactly as cmdApprove would. */
 function withApprove(src: string): string {
   const s = parseSkill(src).steps[0];
-  const hash = computeApprovalHash({ actionTool: s.actionTool, actionArgs: s.actionArgs, attest: s.attest });
+  const hash = computeApprovalHash({ actionTool: s.actionTool, actionArgs: s.actionArgs, attest: s.attest, expect: s.expect });
   return `${src}- approve: ${hash}\n`;
 }
 

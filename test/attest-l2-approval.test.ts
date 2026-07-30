@@ -46,7 +46,7 @@ description: approved+attested write step that diverges then reaches L2
 /** Skill text with a CURRENT approve: hash stamped exactly as cmdApprove would (attest bound in). */
 function approvedSkillSource(): string {
   const s = parseSkill(BODY).steps[0];
-  const hash = computeApprovalHash({ actionTool: s.actionTool, actionArgs: s.actionArgs, attest: s.attest });
+  const hash = computeApprovalHash({ actionTool: s.actionTool, actionArgs: s.actionArgs, attest: s.attest, expect: s.expect });
   return `${BODY}- approve: ${hash}\n`;
 }
 

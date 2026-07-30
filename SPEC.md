@@ -49,10 +49,10 @@ RFC 2119.
     parser SHOULD tolerate additional, unrecognized fields (forward
     compatibility for additive record fields in a future minor) but MUST
     treat every field documented in §2 as required and typed as specified.
-  - **SKILL.md step fields** are a **closed** set of five bullet keys
-    (`intent`/`action`/`assert`/`bind`/`effect`, §3.2). `parseSkill` rejects
-    any other `- <key>: ...` bullet inside a step block outright (an
-    "Unrecognized step field" `SkillParseError` — `src/skill.ts:205-216`);
+  - **SKILL.md step fields** are a **closed** set of eight bullet keys
+    (`intent`/`action`/`assert`/`bind`/`effect`/`approve`/`attest`/`expect`,
+    §3.2). `parseSkill` rejects any other `- <key>: ...` bullet inside a
+    step block outright (an "Unrecognized step field" `SkillParseError`);
     this is intentionally closed, not open-for-extension, because the field
     set is small enough that a typo should be caught, not silently ignored.
   - **Non-step sections** of a SKILL.md file (preamble, `## Open
@@ -300,18 +300,18 @@ trailing sections are never swallowed into the last step.
 
 Within a step's block, every non-blank line is either:
 
-- a **bullet** matching `/^-\s*(intent|action|assert|bind|effect|approve)\s*:\s*(.*)$/`, or
+- a **bullet** matching `/^-\s*(intent|action|assert|bind|effect|approve|attest|expect)\s*:\s*(.*)$/`, or
 - an **ignored prose line** (any non-blank line not starting with `-`), or
-- **rejected** if it starts with `-` but the key isn't one of the six
+- **rejected** if it starts with `-` but the key isn't one of the eight
   above: `"Unrecognized step field, expected one of
-  intent/action/assert/bind/effect/approve: ..."`.
+  intent/action/assert/bind/effect/approve/attest/expect: ..."`.
 
-This makes the **six bullet keys a closed set** (§0) but tolerates
+This makes the **eight bullet keys a closed set** (§0) but tolerates
 free-form prose commentary inside a step block, as long as it doesn't
 start with a hyphen.
 
-**Field requiredness and cardinality** (exactly as enforced by `parseSkill`,
-`src/skill.ts:218-263`):
+**Field requiredness and cardinality** (exactly as enforced by
+`parseSkill`'s per-step field loop, `src/skill.ts`):
 
 | Field | Required? | Cardinality | Duplicate → |
 | --- | --- | --- | --- |
@@ -321,6 +321,8 @@ start with a hyphen.
 | `bind` | No | 0 or more | (repeatable — each bullet appends) |
 | `effect` | **Yes** — `"Step is missing required 'effect' field"` | exactly 1 | `"Duplicate 'effect' field in step"` |
 | `approve` | No (flight-recorder-v2, 0.19.0+) | 0 or 1 | `"Duplicate 'approve' field in step"` |
+| `attest` | No (state attestation, 0.22.0+) | 0 or 1 | `"Duplicate 'attest' field in step"` |
+| `expect` | No (state-conditioned approval; requires `attest` + `approve` on the step) | 0 or 1 | `"Duplicate 'expect' field in step"` |
 
 `assert` and `bind` are the only repeatable fields; every `- assert: ...`
 or `- bind: ...` bullet in the block is collected in file order.
@@ -329,6 +331,33 @@ or `- bind: ...` bullet in the block is collected in file order.
 tool + argument template — a value not matching `sha256:[0-9a-f]{64}`
 exactly is rejected at parse time, not silently accepted. Written by
 `reelier approve <skill.md> [--all]`, never by hand.
+
+`attest: {"tool":"<read tool>","args":{...},"projection":["field",...]}`
+(state attestation, 0.22.0+; record shape §4.1's `attest` block) declares
+the paired read for `declared-probe` attestation. A
+closed shape (`tool`/`args`/`projection` — an unknown key is rejected:
+`"Unknown 'attest' key ... — expected tool/args/projection"`); `tool` MUST
+be a non-empty string, `args` MUST be present, `projection` (optional)
+MUST be a non-empty array of non-empty strings. Malformed shape is
+rejected loudly, never silently degraded to "no attest".
+
+`expect: {"at":"<ISO-8601>","keyId":"<16 hex>","pre":"hmac-sha256:<64
+hex>"}` (state-conditioned approval) binds the step's approval to the
+world it was granted against: `pre` is a keyed commitment (HMAC-SHA256
+under a per-approval key held in a local keystore, NEVER in this file or
+any record) over the approve-time observation of the step's declared
+probe; `keyId` names the key; `at` is the approve-time observation
+timestamp (informational — time is never an input to the comparison).
+Machine-written by `reelier approve --probe`, never by hand. A closed
+shape: unknown keys are rejected (`"Unknown 'expect' key ... — expected
+pre/keyId/at"`), `pre` MUST match `hmac-sha256:[0-9a-f]{64}` exactly,
+`keyId` MUST match `[0-9a-f]{16}` exactly, `at` MUST be a non-empty
+ISO-8601-parseable string. `expect` without BOTH `attest:` and `approve:`
+on the same step is a parse error (`"'expect' requires both 'attest:' and
+'approve:' on the step"`) — there is no probe to compare with otherwise,
+and the only writer always writes the trio. Serialized canonically with
+alphabetical key order (`at`, `keyId`, `pre`), matching the canonical-JSON
+sort, so the file line and the approval-hash input agree byte-for-byte.
 
 After the last step's field block, everything remaining in the body is the
 **trailing** section (`## Open questions`, `## Changelog`, anything else)
@@ -846,9 +875,13 @@ effect (`step.effect ?? tool.effect`):
   - `step.approve === computeApprovalHash(step)` (a hash over the step's
     tool name + argument *template*, `{{placeholders}}` intact — never the
     filled args, and never including the server, so `reelier approve` can
-    run fully offline) → the step executes with **no flag needed at all**,
-    even a `destructive` one.
-  - Any mismatch (the step's tool, args, or `attest:` declaration changed since it was approved) →
+    run fully offline; when the step carries an `attest:` declaration
+    and/or an `expect:` binding (§3.2), those are bound into the hash too)
+    → the step executes with **no flag needed at all**, even a
+    `destructive` one.
+  - Any mismatch (the step's tool, args, `attest:` declaration, or
+    `expect:` binding changed since it was approved — deleting `expect:`
+    to quietly un-condition a step counts) →
     `"failed"` with `"Approval mismatch on write step … Re-review and
     re-approve: reelier approve <skill.md>"` — **no flag overrides this**,
     including `--allow-writes` and `--yes` together. The tool is never

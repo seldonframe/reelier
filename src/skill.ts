@@ -29,6 +29,19 @@ export interface Step {
    * rationale there.
    */
   attest?: StepAttestDecl;
+  /**
+   * State-conditioned approval binding (state-conditioned-approval P1):
+   * a keyed commitment (`pre`, HMAC-SHA256 under a per-approval key that
+   * NEVER enters this file or any record — only its `keyId` does) over the
+   * approve-time observation of the step's declared probe (`attest:`),
+   * plus the observation timestamp (`at`, informational — time is never an
+   * input to the comparison). Machine-written by `reelier approve --probe`,
+   * never by hand. Requires BOTH `attest:` and `approve:` on the same step
+   * (invariant I-12) and is itself covered by the approval hash
+   * (src/approval.ts) — hand-editing or deleting it is an approval
+   * mismatch, refused at the final boundary.
+   */
+  expect?: StepExpect;
   /** 1-indexed line in the source file where this step's header starts. */
   line: number;
 }
@@ -38,6 +51,16 @@ export interface StepAttestDecl {
   tool: string;
   args: unknown;
   projection?: string[];
+}
+
+/** A step's state-conditioned approval binding (see `Step.expect`). */
+export interface StepExpect {
+  /** Approve-time observation timestamp (ISO-8601). Informational — never an input to the comparison. */
+  at: string;
+  /** Names which local keystore key computed `pre` — 16 hex, the signing keyId length convention. */
+  keyId: string;
+  /** The keyed commitment over the approve-time projected observation: `hmac-sha256:<64 hex>`. */
+  pre: string;
 }
 
 /** One tool this skill's steps depend on, as recorded/stamped from a live downstream's advertised schema. */
@@ -218,6 +241,50 @@ function validateAttestShape(value: unknown, ctx: { step: number; line: number }
   return { tool: obj.tool, args: obj.args, ...(projection ? { projection } : {}) };
 }
 
+const EXPECT_PRE_RE = /^hmac-sha256:[0-9a-f]{64}$/;
+const EXPECT_KEY_ID_RE = /^[0-9a-f]{16}$/;
+// Shape-anchored, not just Date.parse: V8's Date.parse accepts plenty of
+// non-ISO strings ("March 5, 2026", "2026/07/30", "0", padded input), so a
+// bare parseability check would under-enforce the "ISO-8601" contract this
+// field's own error message states. Shape first, then parseability.
+const EXPECT_AT_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
+
+/**
+ * Validate the shape of a parsed `expect:` step-field value. Thrown errors
+ * are loud and specific (no Optimistic Path — a malformed expect binding
+ * must never silently degrade to "no binding"). Mirrors validateAttestShape.
+ */
+function validateExpectShape(value: unknown, ctx: { step: number; line: number }): StepExpect {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new SkillParseError("Malformed 'expect' value (expected a JSON object)", ctx);
+  }
+  const obj = value as Record<string, unknown>;
+  for (const key of Object.keys(obj)) {
+    if (key !== "at" && key !== "keyId" && key !== "pre") {
+      throw new SkillParseError(`Unknown 'expect' key ${JSON.stringify(key)} — expected pre/keyId/at`, ctx);
+    }
+  }
+  if (typeof obj.pre !== "string" || !EXPECT_PRE_RE.test(obj.pre)) {
+    throw new SkillParseError(
+      `Invalid 'expect.pre' ${JSON.stringify(obj.pre)} — expected hmac-sha256:<64 hex>`,
+      ctx
+    );
+  }
+  if (typeof obj.keyId !== "string" || !EXPECT_KEY_ID_RE.test(obj.keyId)) {
+    throw new SkillParseError(
+      `Invalid 'expect.keyId' ${JSON.stringify(obj.keyId)} — expected 16 lowercase hex chars`,
+      ctx
+    );
+  }
+  if (typeof obj.at !== "string" || !EXPECT_AT_RE.test(obj.at) || Number.isNaN(Date.parse(obj.at))) {
+    throw new SkillParseError(
+      `Invalid 'expect.at' ${JSON.stringify(obj.at)} — expected a non-empty ISO-8601 timestamp`,
+      ctx
+    );
+  }
+  return { at: obj.at, keyId: obj.keyId, pre: obj.pre };
+}
+
 /** Minimal frontmatter parser: flat `key: value` pairs (name, description, optional manifest). */
 function parseFrontmatter(frontmatter: string): { name: string; description: string; manifest?: SkillManifest } {
   const fields: Record<string, string> = {};
@@ -350,6 +417,8 @@ export function parseSkill(source: string): Skill {
     let effect: Effect | undefined;
     let approve: string | undefined;
     let attest: StepAttestDecl | undefined;
+    let expect: StepExpect | undefined;
+    let expectLine: number | undefined;
 
     for (let i = startIdx + 1; i < endIdx; i++) {
       const raw = bodyLines[i];
@@ -357,13 +426,13 @@ export function parseSkill(source: string): Skill {
       if (line === "") continue;
       const curLine = bodyStartLine + i;
 
-      const bulletMatch = line.match(/^-\s*(intent|action|assert|bind|effect|approve|attest)\s*:\s*(.*)$/);
+      const bulletMatch = line.match(/^-\s*(intent|action|assert|bind|effect|approve|attest|expect)\s*:\s*(.*)$/);
       if (!bulletMatch) {
         // Ignore non-bullet prose lines within a step block (e.g. blank/comment text),
         // but reject anything that looks like an attempted bullet with a typo'd key.
         if (line.startsWith("-")) {
           throw new SkillParseError(
-            `Unrecognized step field, expected one of intent/action/assert/bind/effect/approve/attest: ${JSON.stringify(line)}`,
+            `Unrecognized step field, expected one of intent/action/assert/bind/effect/approve/attest/expect: ${JSON.stringify(line)}`,
             { step: n, line: curLine }
           );
         }
@@ -441,6 +510,20 @@ export function parseSkill(source: string): Skill {
           attest = validateAttestShape(parsedAttest, { step: n, line: curLine });
           break;
         }
+        case "expect": {
+          if (expect !== undefined) {
+            throw new SkillParseError("Duplicate 'expect' field in step", { step: n, line: curLine });
+          }
+          let parsedExpect: unknown;
+          try {
+            parsedExpect = JSON.parse(rest.trim());
+          } catch (err) {
+            throw new SkillParseError(`Expect value is not valid JSON: ${(err as Error).message}`, { step: n, line: curLine });
+          }
+          expect = validateExpectShape(parsedExpect, { step: n, line: curLine });
+          expectLine = curLine;
+          break;
+        }
       }
     }
 
@@ -452,6 +535,17 @@ export function parseSkill(source: string): Skill {
     }
     if (!effect) {
       throw new SkillParseError("Step is missing required 'effect' field", { step: n, line: fileLine });
+    }
+    // Joint validation (state-conditioned-approval I-12): the only writer of
+    // `expect:` (`reelier approve --probe`) always writes the attest/approve/
+    // expect trio, so a lone `expect` can only be a hand edit — and there is
+    // no probe to compare with (attest) and no approval to condition (approve)
+    // without the other two. Rejected loudly, never silently ignored.
+    if (expect !== undefined && (attest === undefined || approve === undefined)) {
+      throw new SkillParseError("'expect' requires both 'attest:' and 'approve:' on the step", {
+        step: n,
+        line: expectLine ?? fileLine,
+      });
     }
 
     steps.push({
@@ -465,6 +559,7 @@ export function parseSkill(source: string): Skill {
       effect,
       ...(approve !== undefined ? { approve } : {}),
       ...(attest !== undefined ? { attest } : {}),
+      ...(expect !== undefined ? { expect } : {}),
       line: fileLine,
     });
   }

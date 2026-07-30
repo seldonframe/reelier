@@ -84,6 +84,11 @@ export function renderStepBlock(step: Step): string[] {
     lines.push(`- attest: ${JSON.stringify({ tool: step.attest.tool, args: step.attest.args, ...(step.attest.projection ? { projection: step.attest.projection } : {}) })}`);
   }
   if (step.approve !== undefined) lines.push(`- approve: ${step.approve}`);
+  if (step.expect !== undefined) {
+    // Canonical (alphabetical: at, keyId, pre) so the file line and the
+    // approval-hash input agree byte-for-byte (wave2 spec §2.1).
+    lines.push(`- expect: ${canonicalJson({ at: step.expect.at, keyId: step.expect.keyId, pre: step.expect.pre })}`);
+  }
   lines.push("");
   return lines;
 }
