@@ -851,16 +851,27 @@ documented CLI flag — the CLI itself always defaults to the real clock.
 ### 6.1b Manifest preflight (`reelier manifest`, flight-recorder-v2, 0.19.0+)
 
 Source of truth: `src/manifest.ts` (`buildManifestForSkill`,
-`preflightManifest`), `src/cli.ts` (`cmdManifest`, `cmdRun`),
-`test/manifest.test.ts`, `test/manifest-cli.test.ts`.
+`addProbeToolsToManifest`, `preflightManifest`), `src/cli.ts`
+(`cmdManifest`, `cmdRun`, `cmdApprove`), `test/manifest-build.test.ts`,
+`test/expect-manifest-probe.test.ts`.
 
 - `reelier manifest <skill.md> --wrap "<command>"` connects the given
   downstream(s), resolves tool routes the same way replay does
   (`buildToolRoutes`, §5.3), and stamps `skill.manifest` (§3.1) with one
-  entry per tool the skill's steps actually use — `digest = sha256(canonical
-  JSON of the tool's inputSchema)`. Printed per-tool as `unchanged` /
-  `updated` / `added` / `removed` against whatever manifest was already
-  stamped. No `--wrap` given is a usage error, exit 1.
+  entry per tool the skill's steps actually use — plus, for every
+  `expect:`-bearing step (state-conditioned approval), the step's declared
+  probe tool (`attest.tool`): a probe-tool schema drift on a state-bound
+  step fails the preflight closed before step 1 instead of surfacing only
+  as a per-step `unevaluated`. `reelier approve --probe` also adds any
+  missing probe-tool entries to an EXISTING manifest when it binds
+  (additive only — existing entries are never re-digested; blessing
+  unrelated drift stays `reelier manifest`'s explicit act), and prints an
+  advisory when there is no manifest to extend. A builtin `http.*` probe
+  is never in a manifest (builtins have no downstream schema) — its drift
+  remains detectable only at run time. `digest = sha256(canonical JSON of
+  the tool's inputSchema)`. Printed per-tool as `unchanged` / `updated` /
+  `added` / `removed` against whatever manifest was already stamped. No
+  `--wrap` given is a usage error, exit 1.
 - `reelier run <skill.md> --wrap ...` runs the preflight **before step 1
   executes** whenever `skill.manifest` is present: `ok` → proceed silently;
   any missing tool or schema mismatch → `MANIFEST DRIFT — refusing to

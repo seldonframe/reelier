@@ -31,7 +31,7 @@ import { buildMcpTools } from "./mcp-tool.js";
 import { buildProxyServer, Recorder } from "./recorder.js";
 import { parseTraceLines, formatTrace } from "./trace.js";
 import { compile, renderSkillMd, type CompileResult, type FromSkillProvenance } from "./compile.js";
-import { buildManifestForSkill, preflightManifest } from "./manifest.js";
+import { buildManifestForSkill, preflightManifest, addProbeToolsToManifest } from "./manifest.js";
 import { serializeSkill, writeFileAtomic, appendChangelogLine } from "./writeback.js";
 import { computeApprovalHash } from "./approval.js";
 import { canonicalJson } from "./canonical-json.js";
@@ -1739,6 +1739,25 @@ export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Prom
   }
 
   if (approvedCount > 0) {
+    // §8.6 probe coverage at bind time (S5): a freshly-bound step's probe
+    // tool joins an EXISTING manifest additively (existing entries never
+    // re-digested — blessing unrelated drift is `reelier manifest`'s
+    // explicit act, not a side effect of approve). Without a manifest or
+    // without --wrap there is nothing to stamp against — advise instead:
+    // probe-tool drift then only surfaces at run time as `unevaluated`.
+    if (probe && stateBoundCount > 0) {
+      if (skill.manifest && downstreams.length > 0) {
+        const { manifest: updated, added } = addProbeToolsToManifest(skill.manifest, skill, downstreams);
+        if (added.length > 0) {
+          skill.manifest = updated;
+          console.log(`manifest: added probe tool(s) ${added.join(", ")} — probe-tool drift now fails the preflight closed`);
+        }
+      } else {
+        console.log(
+          `note: probe-tool schema drift on state-bound steps is only detectable before step 1 via a manifest — stamp one: reelier manifest ${skillPath} --wrap …`
+        );
+      }
+    }
     const changelogLine = probe
       ? `- approved ${approvedCount} write step(s), ${stateBoundCount} state-bound (reelier approve --probe)`
       : `- approved ${approvedCount} write step(s) (reelier approve)`;
