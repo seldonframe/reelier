@@ -891,6 +891,37 @@ effect (`step.effect ?? tool.effect`):
   (STALE — tool/args/attest changed)`), and on confirmation (or unconditionally under
   `--all`) stamps `step.approve = computeApprovalHash(step)`, serializes,
   and appends one `## Changelog` line (§3.7).
+- `reelier approve <skill.md> --probe [--rebind] [--wrap "<cmd>"]...`
+  (state-conditioned approval) additionally binds each approval to the
+  world it was granted against: the step's declared `attest:` probe is run
+  live at approve time (read-effect enforced, 2000 ms timeout, literal
+  args only — any `{{placeholder}}` in probe OR action args refuses the
+  binding, as does a missing explicit `projection`), the projected
+  observation is shown to the approver before EVERY consent, fresh bind
+  and re-bind alike (values print only on a TTY and never under `--all` —
+  CI logs are retained artifacts; names otherwise), and the yes stamps
+  `approve:` and `expect:` alongside the declared `attest:` (the §3.2
+  trio). The per-approval key lands in `~/.reelier/expect-keys.json`
+  (`REELIER_EXPECT_KEYS` override) BEFORE the skill file is touched; it
+  never enters the file or any record. A step that cannot be bound is
+  never silently approved weaker: interactive mode offers the explicit
+  downgrade (`Approve WITHOUT state binding?`), `--all` skips it, counts
+  it (`skipped (probe failed): N`), and exits non-zero — a failing
+  keystore is the same class (`approve-probe-failed:
+  keystore-unavailable`). Re-running `--probe` on an unchanged bound step
+  re-verifies and reports (`unchanged (state re-verified against current
+  binding)`), writing nothing; a re-verify that CANNOT run (probe failure,
+  deleted key, empty projection) is its own loud class (`re-verify
+  unavailable: N`, exit non-zero — never folded into "unchanged"). If the
+  world moved, re-binding requires the interactive yes or the explicit
+  `--rebind` flag — under `--all` without `--rebind` the step is skipped
+  (`skipped (world moved): N`, exit non-zero). Plain `approve` on a
+  CHANGED step that carries `expect:` refuses (`state-bound step changed —
+  re-approve with --probe, or pass --drop-expect to approve without state
+  binding`); `--drop-expect` is the explicit, named downgrade that strips
+  the binding and stamps a shape-only approval — it is a plain-approve
+  flag and conflicts with `--probe` (refused up front: `--probe` (re)binds
+  state, the two flags answer opposite questions).
 
 **Write receipts.** Whenever a write/destructive step's tool call actually
 dispatches (approved-hash path or legacy-flag path alike), `StepRecord`
