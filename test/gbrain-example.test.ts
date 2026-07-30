@@ -36,8 +36,11 @@ test("examples/gbrain/gbrain-capture-enrich.skill.md parses with the real SKILL.
   assert.equal(backlinks.actionTool, "get_backlinks");
   assert.equal(backlinks.effect, "read");
   assert.ok(
-    backlinks.asserts.some((a) => a.includes("json.backlinks.length >= 1")),
-    "get_backlinks step must carry the self-verifying backlinks assert"
+    // Live-schema correction (e2e run 30534286059): get_backlinks returns a
+    // BARE Link[] array, so no dotpath can address a length on it — the
+    // self-verifying punchline is the non-empty check.
+    backlinks.asserts.some((a) => a.includes('body not contains "[]"')),
+    "get_backlinks step must carry the self-verifying non-empty assert"
   );
 
   // Neither field can be honestly produced without a live gbrain instance to
