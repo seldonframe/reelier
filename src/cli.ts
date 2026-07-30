@@ -1464,6 +1464,67 @@ function safeFieldName(name: string): string {
 }
 
 /**
+ * W3-S3 (wave3 §3, P1.5 review N11 — "free diagnosis left on the table"):
+ * when a `--probe` re-verify finds the world has moved, recompute the
+ * per-field MACs it already holds and name what actually moved. Terminal
+ * output only — no record, no receipt, no persisted claim.
+ *
+ * Two claims, deliberately distinct labels:
+ *
+ * - `fields changed since approval` — the phrase P1.5 already ships on the
+ *   runner's mismatch render (src/attest-render.ts) and W3-S1 mirrors onto
+ *   the cloud. Same label because it is the same claim, earned the same way:
+ *   per-field MAC inequality under the held key proves the committed value
+ *   differs. One claim, one label, wherever an operator meets it.
+ * - `committed fields absent at re-verify` — its own label, because it is a
+ *   DIFFERENT claim from the runner's `declared fields absent at execute`.
+ *   A1 forbids the runner from asserting approve-time presence (the opaque
+ *   whole MAC hides it). Here it is honest: `expect.fields`' key set IS the
+ *   approve-time projected-field set, disclosed in the committed skill file
+ *   by P1.5's accepted-disclosure record. Naming it "since approval" would
+ *   quietly borrow the other claim's wording for a different fact.
+ *
+ * Silent on a fieldless (pre-P1.5) binding: there is no per-field evidence,
+ * and a diagnosis nothing earned is exactly what this codebase must never
+ * print. Each line prints only when non-empty, so an all-absence divergence
+ * names no change (and vice versa) — never an empty claim.
+ *
+ * Stated limitation (wave3 registry item 8), and NOT a defect: a field that
+ * was absent at approve but is present now appears in neither line. It was
+ * never committed, so there is nothing to compare it against — and naming
+ * it "appeared since approval" would be an approve-time presence claim of
+ * exactly the kind A1 forbids.
+ */
+function reportReVerifyDiagnosis(
+  step: Step,
+  key: Uint8Array,
+  typed: Record<string, string | number | boolean>
+): void {
+  const committed = step.expect?.fields;
+  if (committed === undefined) return;
+  const changed: string[] = [];
+  const absent: string[] = [];
+  // Object.entries reads own enumerable keys only; the `typed` lookup below
+  // is an own-property read for the same reason the runner's is — a fields
+  // entry named "constructor"/"toString" would otherwise read through
+  // Object.prototype and land a fabricated name on the consent transcript.
+  for (const [name, recorded] of Object.entries(committed)) {
+    const liveValue = Object.prototype.hasOwnProperty.call(typed, name) ? typed[name] : undefined;
+    if (liveValue === undefined) {
+      absent.push(name);
+      continue;
+    }
+    if (expectFieldMac(key, step.attest!.tool, name, liveValue) !== recorded) changed.push(name);
+  }
+  if (changed.length > 0) {
+    console.log(`  fields changed since approval: ${changed.map(safeFieldName).join(", ")}`);
+  }
+  if (absent.length > 0) {
+    console.log(`  committed fields absent at re-verify: ${absent.map(safeFieldName).join(", ")}`);
+  }
+}
+
+/**
  * Injectable seams for cmdApprove — same reasoning as cmdRun's `connect`
  * override: tests drive the probe flow against in-process fakes, no
  * subprocess, no real stdin, no real home directory.
@@ -1901,6 +1962,14 @@ export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Prom
           continue;
         }
         console.log(`  approved (current) — but the world has moved since ${step.expect.at}`);
+        // W3-S3 (P1.5 review N11): the whole-projection MAC just told us THAT
+        // the world moved; the per-field commitments already in hand tell us
+        // WHICH field moved, for free — the diagnosis was being thrown away.
+        // Same key, same probe tool, same MAC function the runner uses, so
+        // the claim is exactly as earned here as it is there. Names only,
+        // never values: this prints on every path including --all, because
+        // A2's TTY gate governs projected VALUES, not field names.
+        reportReVerifyDiagnosis(step, key, typed);
         // §4.2.3 holds for a re-bind too (review finding — blocking): the
         // yes must be granted against a SHOWN observation, never blind.
         showObservation(typed, step.attest!.projection ?? []);

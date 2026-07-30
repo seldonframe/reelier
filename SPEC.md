@@ -970,7 +970,20 @@ effect (`step.effect ?? tool.effect`):
   unavailable: N`, exit non-zero — never folded into "unchanged"). If the
   world moved, re-binding requires the interactive yes or the explicit
   `--rebind` flag — under `--all` without `--rebind` the step is skipped
-  (`skipped (world moved): N`, exit non-zero). Plain `approve` on a
+  (`skipped (world moved): N`, exit non-zero). A moved binding that carries
+  per-field commitments (`expect.fields`, §3.2) also reports WHICH field
+  moved, recomputed from the same key and the same live observation:
+  `fields changed since approval: <names>` for committed fields whose value
+  differs (the same claim, and the same label, the runner's mismatch stamp
+  uses) and `committed fields absent at re-verify: <names>` for committed
+  fields the re-verify observation no longer carries — a distinct label
+  because it is a distinct claim, honest here only because `expect.fields`'
+  key set IS the disclosed approve-time field set. Names only, on every path
+  including `--all` (the TTY gate governs projected VALUES, not names); each
+  line prints only when non-empty, and a binding minted before per-field
+  commitments existed reports neither rather than fabricating a diagnosis.
+  Nothing here is recorded or pushed — it is a report to the approver.
+  Plain `approve` on a
   CHANGED step that carries `expect:` refuses (`state-bound step changed —
   re-approve with --probe, or pass --drop-expect to approve without state
   binding`); `--drop-expect` is the explicit, named downgrade that strips
