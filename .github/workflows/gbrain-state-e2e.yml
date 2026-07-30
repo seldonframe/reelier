@@ -1,0 +1,211 @@
+# State-conditioned approval dogfood e2e (wave2 §6.1.5 stages 0-6, slice S7
+# — the wave's exit bar). Runs the WHOLE loop against a live gbrain on a
+# zero-config pglite database: seed the page, prove the fixed point, hold
+# the approval ceremony (probe + bind), Run 1 (match), interfere like a
+# second fleet agent, Run 2 (the mismatch stamp — the write executes, the
+# run passes, the receipt carries the finding), prove the key-unavailable
+# path renders `unevaluated` (never a pass), and — when pushing is enabled —
+# push all three receipts and assert their /md twins render per §7.
+#
+# Uses the CLI BUILT FROM THIS CHECKOUT, never npm — the wave's S1-S4 land
+# behind one release boundary (B6), so no published reelier carries
+# `--probe` until that release is cut. This workflow is how a Windows dev
+# machine drives the loop (the spec's own instruction): trigger it from
+# the Actions tab. First runs are EXPECTED to be a discovery loop (the
+# shipped example was never live-recorded — its own HONESTY NOTE says so;
+# args/projection corrections ARE the demo material and land in the skill
+# file's changelog).
+#
+# Founder setup: none for stages 0-5 (the expect keystore is minted
+# in-job — approve and run share the runner). Stage 6 needs BOTH the
+# repo variable GBRAIN_E2E_PUSH=true AND the REELIER_CLOUD_KEY secret;
+# the step fails loudly if the variable is set without the secret.
+
+name: gbrain state e2e
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    # Weekly, off-peak minute (same convention as gbrain-replay).
+    - cron: "41 6 * * 1"
+
+permissions:
+  contents: read
+  id-token: write # optional CI attestation on `reelier push`
+
+defaults:
+  run:
+    # Explicit bash => `bash -eo pipefail` (Actions' default {0} shell has
+    # NO pipefail, which silently swallows failures left of `| tee`).
+    shell: bash
+
+jobs:
+  state-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SKILL: examples/gbrain/gbrain-capture-enrich.skill.md
+      REELIER_EXPECT_KEYS: ${{ runner.temp }}/e2e-expect-keys.json
+    steps:
+      - uses: actions/checkout@v4
+
+      # ---- Stage 0 — make the example real -------------------------------
+      - name: Set up Bun (gbrain is Bun-only)
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ">=1.3.10"
+
+      - name: Install gbrain
+        run: bun install -g github:garrytan/gbrain
+
+      - name: Zero-config gbrain database (pglite, no embedding keys)
+        run: gbrain init --pglite --no-embedding
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build reelier from THIS checkout (B6 — the wave ships behind one release)
+        run: |
+          npm ci
+          npm run build
+          echo "REELIER=node $GITHUB_WORKSPACE/dist/cli.js" >> "$GITHUB_ENV"
+
+      - name: Stamp a real manifest against live gbrain
+        env:
+          MCP_STDIO: "1" # required whenever gbrain serve is wrapped — see examples/gbrain/README.md
+        run: $REELIER manifest "$SKILL" --wrap "gbrain serve"
+
+      # ---- Seed + Stage-1 fixed-point pre-check (N5, precondition) -------
+      # The page must EXIST before the ceremony: absence-CAS is out of v1
+      # (§6.1.3) — a probe against a missing slug is an empty projection and
+      # `approve --probe` refuses to bind it. The seed run is Stage 0's
+      # record-execution analog. Then an undisturbed re-run must hold the
+      # projection fixed (§6.1.2) before any interference makes Run 2's
+      # mismatch meaningful.
+      - name: Seed run (creates the page; plain shape approval)
+        env:
+          MCP_STDIO: "1"
+        run: |
+          $REELIER approve "$SKILL" --all
+          $REELIER run "$SKILL" --wrap "gbrain serve" --max-level 0 | tee /tmp/seed.log
+          grep -E "^PASSED:" /tmp/seed.log
+
+      - name: Stage-1 fixed-point pre-check — an undisturbed re-run must not move the projection
+        env:
+          MCP_STDIO: "1"
+        run: |
+          $REELIER run "$SKILL" --wrap "gbrain serve" --max-level 0 | tee /tmp/fixed1.log
+          grep -E "^PASSED:" /tmp/fixed1.log
+          # The attest delta on step 1 must show no change on an undisturbed
+          # re-run — if gbrain's enrichment rewrites compiled_truth between
+          # identical writes, the projection is NOT a fixed point and must
+          # be re-picked (that discovery loop is part of the point, §6.1.5).
+          grep -E "state: exact — no observed change" /tmp/fixed1.log
+
+      # ---- Stage 2 — the approval ceremony -------------------------------
+      - name: Approve with state binding (probe + mint + stamp; CI = names only, never values)
+        env:
+          MCP_STDIO: "1"
+        run: |
+          $REELIER approve "$SKILL" --probe --all --wrap "gbrain serve" | tee /tmp/approve.log
+          grep -E "probing pre-state \(get_page\)… ok" /tmp/approve.log
+          grep -E "pre-state commitment: hmac-sha256:" /tmp/approve.log
+          grep -E "· state-bound 1$" /tmp/approve.log
+          # A2: names only in CI — the values footer must be absent AND the
+          # names-only line present (pin the branch, not just the negation).
+          grep -E "projected fields: body\.compiled_truth" /tmp/approve.log
+          if grep -q "values shown for review only" /tmp/approve.log; then
+            echo "::error::projected values printed under --all — A2 violation"; exit 1
+          fi
+
+      # ---- Stage 3 — Run 1, the match ------------------------------------
+      - name: Run 1 — the muted match fact (no --allow-writes; the approval carries the write)
+        env:
+          MCP_STDIO: "1"
+        run: |
+          $REELIER run "$SKILL" --wrap "gbrain serve" --max-level 0 | tee /tmp/run1.log
+          grep -E "^PASSED:" /tmp/run1.log
+          grep -E "pre-state check: match \(approved .* · observed .*\)" /tmp/run1.log
+          # The copy law, live: no endorsement words anywhere in the output.
+          if grep -Eiq "\bverified\b|no drift|\bsafe\b" /tmp/run1.log; then
+            echo "::error::forbidden phrase in run output"; exit 1
+          fi
+
+      # ---- Stage 4 — the interference ------------------------------------
+      - name: A second writer clobbers the slug (the fleet-mate this check exists for)
+        run: gbrain put reelier-demo-page --content "clobbered: another agent rewrote this page overnight"
+
+      # ---- Stage 5 — Run 2, the mismatch stamp ---------------------------
+      - name: Run 2 — the stamp; the write executes, the run passes, the receipt tells the truth
+        env:
+          MCP_STDIO: "1"
+        run: |
+          set +e
+          $REELIER run "$SKILL" --wrap "gbrain serve" --max-level 0 > /tmp/run2.log 2>&1
+          code=$?
+          set -e
+          cat /tmp/run2.log
+          grep -E "executed against state that differs from the state this approval was granted against" /tmp/run2.log
+          grep -E "pre-state commitment mismatch \(approved .* · observed .*\)" /tmp/run2.log
+          # §6.1.5 stage 5: the attest tells the same story in its own voice.
+          grep -E "state: exact — 1 field changed \(body\.compiled_truth\)" /tmp/run2.log
+          grep -E "^PASSED:.*· 1 finding$" /tmp/run2.log
+          # I-9: the stamp never flips the exit code.
+          test "$code" = "0"
+
+      # ---- Key-unavailable path (S7 accept: never a silent pass) ---------
+      - name: Deleted-keystore run — `unevaluated`, never a pass, never a block
+        env:
+          MCP_STDIO: "1"
+        run: |
+          REELIER_EXPECT_KEYS=${{ runner.temp }}/nonexistent-keystore.json \
+            $REELIER run "$SKILL" --wrap "gbrain serve" --max-level 0 | tee /tmp/run3.log
+          grep -E "pre-state check: not evaluated — key-unavailable: keyId '" /tmp/run3.log
+          grep -E "^PASSED:" /tmp/run3.log
+
+      # ---- Stage 6 — push all receipts; assert the /md twins (N5) --------
+      - name: Push receipts + assert /md renders + verify
+        if: ${{ vars.GBRAIN_E2E_PUSH == 'true' }}
+        env:
+          REELIER_CLOUD_KEY: ${{ secrets.REELIER_CLOUD_KEY }}
+        run: |
+          if [ -z "$REELIER_CLOUD_KEY" ]; then
+            echo "::error::GBRAIN_E2E_PUSH is set but the REELIER_CLOUD_KEY secret is missing"; exit 1
+          fi
+          # pushSkill sends EVERY unpushed ledger record in order (seed,
+          # fixed-point, run1, run2, run3) and --share mints a /r/ URL per
+          # record — the LAST THREE map to Run 1 (match), Run 2 (mismatch),
+          # and the key-unavailable run.
+          $REELIER push "$SKILL" --share | tee /tmp/push.log
+          # Only the "Receipt: <url>" lines — the badge markdown line embeds
+          # the same token twice and would double-count.
+          mapfile -t urls < <(grep -E "^\s*Receipt: " /tmp/push.log | grep -Eo "https://[^ ]+")
+          count=${#urls[@]}
+          test "$count" -ge 3
+          url_match="${urls[count-3]}"
+          url_mismatch="${urls[count-2]}"
+          url_uneval="${urls[count-1]}"
+
+          curl -fsSL "$url_match/md" | tee /tmp/receipt-match.md
+          grep -E "pre-state check: match \(approved" /tmp/receipt-match.md
+
+          curl -fsSL "$url_mismatch/md" | tee /tmp/receipt-mismatch.md
+          grep -E "finding: executed against state that differs" /tmp/receipt-mismatch.md
+          grep -E "PASSED" /tmp/receipt-mismatch.md
+
+          curl -fsSL "$url_uneval/md" | tee /tmp/receipt-uneval.md
+          grep -E "pre-state check: not evaluated — key-unavailable" /tmp/receipt-uneval.md
+
+          # The verifier recomputes offline math over the published record;
+          # a non-zero exit fails this step (pipefail is on).
+          $REELIER verify "$url_match"
+          $REELIER verify "$url_mismatch"
+
+      - name: Upload logs (the whole loop, for the receipt trail)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gbrain-state-e2e-logs
+          path: /tmp/*.log

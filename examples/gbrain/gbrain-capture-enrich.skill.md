@@ -53,9 +53,10 @@ content)
 
 ### Step 1 — Capture a page into gbrain
 - intent: Save a small page into gbrain by slug (upsert — same slug converges, but each run still adds a version row, see README.md "Idempotency honesty")
-- action: put_page {"slug": "reelier-demo-page", "title": "Reelier x gbrain demo page", "markdown": "# Reelier x gbrain\n\nThis page was captured by the reelier example skill examples/gbrain/gbrain-capture-enrich.skill.md. It links to [[Reelier]] and [[gbrain]] so entity extraction has something to find."}
+- action: put_page {"slug": "reelier-demo-page", "content": "# Reelier x gbrain\n\nThis page was captured by the reelier example skill examples/gbrain/gbrain-capture-enrich.skill.md. It links to [[Reelier]] and [[gbrain]] so entity extraction has something to find."}
 - assert: status == 200
 - effect: idempotent-write
+- attest: {"tool":"get_page","args":{"slug":"reelier-demo-page"},"projection":["compiled_truth"]}
 
 ### Step 2 — Extract entities from the captured page
 - intent: Trigger gbrain's regex-based entity extraction on the page just captured — no LLM, no embedding keys needed (see README.md "Zero-config, except embeddings")
@@ -83,3 +84,5 @@ content)
 ## Changelog
 
 - (none yet — this file has not been recorded, manifest-stamped, or approved on any machine; run the commands in README.md to do all three on your own)
+- 2026-07-30 — Step 1 gains an `attest:` declaration (probe `get_page`, explicit projection `[compiled_truth]` — state-conditioned approval Stage 1, wave2 §6.1.5). The projection field name is UNVERIFIED until the dogfood loop first runs live (A15); `.github/workflows/gbrain-state-e2e.yml` is the loop that verifies it — it stamps `approve:`/`expect:` at run time in CI (per-run keystore), so this checked-in file still carries neither.
+- 2026-07-30 — Step 1's `put_page` args aligned with live gbrain's op schema per the wave2 spec's Stage-0 recon (`{"slug","content"}` — the shipped `title`/`markdown` shape predated any live recording and matched no live schema). Still unverified until the e2e loop first runs green; if live gbrain disagrees, the loop fails loudly at the seed run and the correction lands here.

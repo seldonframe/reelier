@@ -689,6 +689,41 @@ description: write step without attest
   });
 });
 
+test("--probe --all on a mixed skill: approved-current unbindable steps are 'unchanged', exit 0 (S7 integration finding)", async () => {
+  await withTempDir(async (dir) => {
+    const mixed = `---
+name: probe-mixed-approved
+description: step 1 bindable, step 2 attest-less — both pre-approved
+---
+
+### Step 1 — bindable
+- intent: w1
+- action: put_page {"markdown":"# a","slug":"a","title":"A"}
+- effect: idempotent-write
+- attest: {"tool":"get_page","args":{"slug":"a"},"projection":["compiled_truth"]}
+
+### Step 2 — attest-less
+- intent: w2
+- action: put_page {"markdown":"# b","slug":"b","title":"B"}
+- effect: idempotent-write
+`;
+    const skillPath = path.join(dir, "s.skill.md");
+    await writeFile(skillPath, mixed, "utf8");
+    const { tools } = fakeTools();
+    // Pre-approve everything shape-only (the seed pattern), THEN bind.
+    await captureOutput(() => cmdApprove(fakeArgs([skillPath], ["all"]), deps(dir)));
+    const { result: code, out } = await captureOutput(() =>
+      cmdApprove(fakeArgs([skillPath], ["probe", "all"]), deps(dir, { tools }))
+    );
+    assert.equal(code, 0, "an approved-current unbindable step must not fail a scripted bind pass");
+    assert.match(out, /unchanged \(already approved; not state-bindable\)/);
+    assert.match(out, /approved 1, skipped 0, unchanged 1 · state-bound 1/);
+    const skill = parseSkill(await readFile(skillPath, "utf8"));
+    assert.ok(skill.steps[0].expect, "the bindable step bound");
+    assert.equal(skill.steps[1].expect, undefined);
+  });
+});
+
 test("--probe binds a previously approved-but-unbound step (re-stamps: the hash now covers expect)", async () => {
   await withTempDir(async (dir) => {
     const skillPath = path.join(dir, "s.skill.md");
