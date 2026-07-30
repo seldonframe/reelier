@@ -2,6 +2,59 @@
 
 All notable changes to `reelier`. Dates are release dates.
 
+## 0.25.0 — State-conditioned approval P1: approvals that expire when the world moves
+
+Breaking behavior: **none — additive.** Every already-approved skill remains
+approved (the expect-less approval-hash branches are byte-identical, pinned
+by test).
+
+### Added
+- **`reelier approve --probe` — bind a yes to the world you looked at.** The
+  step's declared probe runs at approve time, the projected state is shown
+  to the approver (values on a TTY only; names-only under `--all`/CI), and
+  the approval is stamped with a keyed commitment (`expect:`) over that
+  observation. The per-approval key lives in `~/.reelier/expect-keys.json`
+  (`REELIER_EXPECT_KEYS` to relocate; one file, one CI secret) — never in
+  the skill file or any record. Rotation is re-approval; deleting a
+  keystore entry is revocation, and a revoked binding degrades loudly,
+  never silently. Re-running `--probe` on an unchanged world re-verifies
+  and writes nothing; re-binding a moved world takes an interactive yes or
+  the explicit `--rebind`.
+- **The execute-time pre-state check (recorder mode).** Before dispatching
+  a state-bound write, the runner re-observes through the same declared
+  probe and compares commitments. Equal → a muted
+  `pre-state check: match (approved … · observed … · window N ms)` fact.
+  Unequal → the write still executes (the trust layer is never why a write
+  fails) and the receipt carries the finding:
+  `⚠ executed against state that differs from the state this approval was
+  granted against`, plus `declared fields absent at execute: <names>` when
+  applicable. Not evaluable → `pre-state check: not evaluated — <reason>`
+  (a closed reason registry: probe-timeout / probe-failed /
+  probe-tool-unknown / empty-projection / key-unavailable) — its own state,
+  never a pass, never a block. Run summaries gain `· N finding(s)`;
+  outcome, badge, and exit code never change because of a stamp.
+- **Record additions (additive; the pinned wire-contract fixture is
+  untouched):** `StepRecord.stateCheck` and `StepWrite.dispatchedAt` — every
+  checked write carries its own measured observation→dispatch window. The
+  approval hash covers `expect:`, so hand-editing or deleting a binding is
+  an approval mismatch at the existing no-flag-override boundary. Manifests
+  cover the probe tools of state-bound steps, and `approve --probe` extends
+  an existing manifest at bind time. Expect-bearing steps are
+  L2-heal-ineligible — a healed write would never be state-checked.
+- **Honesty boundaries, stated in SPEC.md:** the check is check-then-act
+  against an observation — never compare-and-swap at the resource — and
+  equality covers the declared projection only. Where a tool supports
+  `If-Match`, use it; this is the vendor-neutral fallback with a paper
+  trail.
+
+### Verified
+- Live end-to-end against a real gbrain (Bun-only MCP knowledge brain,
+  pglite) in CI before release: manifest stamp, approval ceremony, match
+  run, a second writer's interference, the mismatch finding on a PASSING
+  run (exit 0), and the deleted-keystore `unevaluated` path
+  (`.github/workflows/gbrain-state-e2e.yml`). The gbrain example skill's
+  args were corrected to the live op schema in the same discovery loop.
+
 ## 0.24.0 — Ship the wire contract + hardened verification core
 
 Breaking behavior: **none — additive.**
