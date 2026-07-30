@@ -111,6 +111,11 @@ export function renderStateCheckLines(check: StepStateCheck, dispatchedAt: strin
       "⚠ executed against state that differs from the state this approval was granted against —",
       `  pre-state commitment mismatch (approved ${check.expectedAt} · observed ${check.observedAt})`,
     ];
+    if (check.changedFields && check.changedFields.length > 0) {
+      // P1.5: an EARNED approve-time claim — per-field MAC inequality under
+      // the held key proves the committed value differs (names only).
+      lines.push(`  fields changed since approval: ${check.changedFields.join(", ")}`);
+    }
     if (check.absentFields && check.absentFields.length > 0) {
       lines.push(`  declared fields absent at execute: ${check.absentFields.join(", ")}`);
     }
