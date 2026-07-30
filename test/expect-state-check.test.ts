@@ -29,7 +29,7 @@ async function boundSkill(dir: string, boundBody: Record<string, unknown>, opts:
   const keystorePath = path.join(dir, "expect-keys.json");
   const { key, keyId } = mintExpectKey();
   await writeKeystoreEntry(keystorePath, keyId, { key: key.toString("base64"), createdAt: "2026-07-29T06:00:00.000Z" });
-  const typed = projectObservationTyped({ body: JSON.stringify(boundBody), headers: {} }, projection);
+  const typed = projectObservationTyped({ body: JSON.stringify(boundBody), headers: {} , status: 200}, projection);
   const pre = expectMac(key, "get_page", typed);
   const expect = { at: "2026-07-29T06:00:00.000Z", keyId, pre };
 

@@ -42,6 +42,7 @@ import {
   expectMac,
   expectFieldMac,
   probeArgsMac,
+  STATUS_CODE_ENTRY,
   lookupHeader,
   projectObservationTyped,
   ABSENT_FIELDS_MAX,
@@ -516,12 +517,19 @@ export function projectObservation(obs: Observation, projection?: string[]): Rec
     // last-modified — the If-Match-class fields explicit projections could
     // never reach); `body.<key>` is the explicit body form; a bare `<key>`
     // stays a top-level body key, byte-identical to the shipped selection
-    // (zero-touch for every existing skill). The `status` namespace is
-    // DEFERRED — a bare `status` entry already means the body key named
-    // "status" in shipped skills, and silently re-pointing it at the HTTP
-    // status would change what an existing approval binds (recorded in the
-    // P1.5 addendum).
+    // (zero-touch for every existing skill).
+    //
+    // W3-S5 / I-19: `status.code` — exactly that spelling — addresses the
+    // HTTP status. P1.5's deferral reason becomes permanent law rather than
+    // a postponement: a bare `status` already means the body key named
+    // "status" in shipped skills (one lives in this repo's own test tree),
+    // so it is NEVER re-pointed. A body key literally named "status.code"
+    // stays addressable as `body.status.code`.
     for (const key of projection) {
+      if (key === STATUS_CODE_ENTRY) {
+        out[key] = String(obs.status);
+        continue;
+      }
       if (key.startsWith("header.")) {
         const name = key.slice("header.".length);
         const v = lookupHeader(obs.headers, name);

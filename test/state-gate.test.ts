@@ -176,7 +176,7 @@ async function boundSkill(dir: string, observedState: Record<string, unknown>, o
   const keystorePath = path.join(dir, "keys.json");
   const { key, keyId } = mintExpectKey();
   await writeKeystoreEntry(keystorePath, keyId, { key: key.toString("base64"), createdAt: "2026-07-30T00:00:00.000Z" });
-  const typed = projectObservationTyped({ headers: {}, body: JSON.stringify(observedState) }, ["compiled_truth"]);
+  const typed = projectObservationTyped({ headers: {}, status: 200, body: JSON.stringify(observedState) }, ["compiled_truth"]);
   const pre = expectMac(key, "get_page", typed);
   const fields = Object.fromEntries(
     Object.entries(typed).map(([name, value]) => [name, expectFieldMac(key, "get_page", name, value)])
@@ -414,7 +414,7 @@ async function withStubbedFetch<T>(state: { body: () => string; posts: string[] 
 async function writeHttpBoundSkill(dir: string, keystorePath: string, observed: Record<string, unknown>): Promise<string> {
   const { key, keyId } = mintExpectKey();
   await writeKeystoreEntry(keystorePath, keyId, { key: key.toString("base64"), createdAt: "2026-07-30T00:00:00.000Z" });
-  const typed = projectObservationTyped({ headers: {}, body: JSON.stringify(observed) }, ["compiled_truth"]);
+  const typed = projectObservationTyped({ headers: {}, status: 200, body: JSON.stringify(observed) }, ["compiled_truth"]);
   const pre = expectMac(key, "http.get", typed);
   const base = `---
 name: s8-http-bound

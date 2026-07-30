@@ -219,7 +219,7 @@ test("e2e: a fieldless (0.25.0-era) binding still mismatches with NO changedFiel
     const keystorePath = path.join(dir, "keys.json");
     const { key, keyId } = mintExpectKey();
     await writeKeystoreEntry(keystorePath, keyId, { key: key.toString("base64"), createdAt: "2026-07-30T00:00:00.000Z" });
-    const typed = projectObservationTyped({ headers: {}, body: JSON.stringify({ compiled_truth: "# v1" }) }, ["compiled_truth"]);
+    const typed = projectObservationTyped({ headers: {}, status: 200, body: JSON.stringify({ compiled_truth: "# v1" }) }, ["compiled_truth"]);
     const pre = expectMac(key, "get_page", typed);
     const base = `---
 name: p15-fieldless
@@ -412,7 +412,7 @@ test("changedFields: a prototype-key fields entry (constructor) is never diagnos
     const keystorePath = path.join(dir, "keys.json");
     const { key, keyId } = mintExpectKey();
     await writeKeystoreEntry(keystorePath, keyId, { key: key.toString("base64"), createdAt: "2026-07-30T00:00:00.000Z" });
-    const typed = projectObservationTyped({ headers: {}, body: JSON.stringify({ compiled_truth: "# v1" }) }, ["compiled_truth"]);
+    const typed = projectObservationTyped({ headers: {}, status: 200, body: JSON.stringify({ compiled_truth: "# v1" }) }, ["compiled_truth"]);
     const pre = expectMac(key, "get_page", typed);
     const fields = {
       "body.compiled_truth": expectFieldMac(key, "get_page", "body.compiled_truth", "# v1"),

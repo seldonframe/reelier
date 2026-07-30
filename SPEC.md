@@ -346,9 +346,23 @@ just `approve --probe`: `header.<name>` addresses a response header
 (matched case-insensitively, exact match first — fetch lowercases header
 names but `--replay` fixtures and hand-authored registries need not),
 `body.<key>` is the explicit body form, and a bare `<key>` stays a
-top-level body key, byte-identical to the pre-P1.5 selection. A `status`
-namespace is deliberately absent: a bare `status` entry already means the
-body key named "status" in shipped skills.
+top-level body key, byte-identical to the pre-P1.5 selection. The entry
+`status.code` — exactly that spelling — addresses the response's HTTP
+status (a NUMBER in the typed twin, so `404` and `"404"` never commit
+alike), which is what makes "approve this write against a resource that
+is currently ABSENT" expressible: bind on a 404 and the check matches
+while the resource stays absent, and mismatches once it exists. A bare
+`status` remains the top-level body key named "status" **permanently** —
+it already means that in shipped skills, so re-pointing it would change
+what an existing approval binds — and a body key literally named
+"status.code" stays addressable as `body.status.code`. `status.code`
+cannot be state-bound through a wrapped MCP tool and `approve --probe`
+REFUSES to: MCP has no HTTP status, so an error result is fabricated as
+500 and flows through as a *successful* observation, meaning a binding
+stamped at 500 would match on every future error of any kind. Binding
+on it prints a conditional fixed-point note (the binding self-invalidates
+only if the approved write creates or deletes the probed resource) —
+never the version-class warning, which would claim mutation as fact.
 
 `expect: {"at":"<ISO-8601>","keyId":"<16 hex>","pre":"hmac-sha256:<64
 hex>"}` (state-conditioned approval) binds the step's approval to the

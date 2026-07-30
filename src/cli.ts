@@ -16,6 +16,7 @@ import {
   expectMac,
   expectFieldMac,
   probeArgsMac,
+  STATUS_CODE_ENTRY,
   projectObservationTyped,
   projectionMisses,
   typedKeyFor,
@@ -1927,7 +1928,18 @@ export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Prom
     const volatile = projection.filter((f) =>
       (EXPECT_VOLATILE_FIELDS as readonly string[]).includes(f.replace(/^(?:body|header)\./, ""))
     );
-    if (volatile.length > 0) {
+    // W3-S5: `status.code` gets its OWN note, and it is deliberately NOT a
+    // member of EXPECT_VOLATILE_FIELDS. That list's warning claims mutation
+    // as FACT ("mutated by every write"), which is affirmatively false for a
+    // guard probe of a resource the write never touches — the same
+    // false-consent-transcript class the P1.5 review fixed for `header.etag`.
+    // Conditional wording instead, and it REPLACES the other two branches:
+    // one note per binding, or operators learn to read none of them.
+    if (projection.includes(STATUS_CODE_ENTRY)) {
+      console.log(
+        "  note: binding on HTTP status — if the approved write creates or deletes the probed resource, this binding self-invalidates after its own first run (fixed-point rule); if the probe targets a resource the write leaves untouched, it is a fixed point"
+      );
+    } else if (volatile.length > 0) {
       console.log(
         `  warning: projection field(s) ${volatile.map(safeFieldName).join(", ")} are version-class — mutated by every write; a standing approval here self-invalidates after its own first run (fixed-point rule)`
       );
@@ -2231,6 +2243,29 @@ export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Prom
       } else if (step.attest.projection === undefined) {
         structuralReason =
           "no explicit projection declared — a state binding requires an explicit projection (the default projection is version-class, volatile by design)";
+      } else if (
+        step.attest.projection.includes(STATUS_CODE_ENTRY) &&
+        probeTools?.[step.attest.tool]?.server !== undefined
+      ) {
+        // W3-S5, and it is a REFUSAL, not a lint (A7's precedent for a
+        // binding class that misleads about what is conditioned). On MCP
+        // there is no HTTP status: mcpResultToObservation fabricates
+        // `isError ? 500 : 200`, and an isError result flows through as a
+        // SUCCESSFUL observation. A binding stamped at 500 would therefore
+        // match on every future error of any kind — which in gate mode
+        // converts exactly the classes A12 sends to grey (and the gate
+        // refuses) into a match that DISPATCHES the write. That is a
+        // fail-OPEN conversion of the one sanctioned fail-closed control,
+        // triggered by error conditions; it also neutralizes B7 (an induced
+        // isError would yield match, never unevaluated, so no alert fires).
+        //
+        // Bind-time refusal is sufficient enforcement: `attest.projection`
+        // is covered by the approval hash, so a hand-added `status.code`
+        // after approval is an approval-hash mismatch the existing gate
+        // already refuses. `status.code` stays fully live on the http
+        // builtins, which carry real statuses. The predicate is `server`,
+        // set by mcpTool for every wrapped tool and absent on http builtins.
+        structuralReason = `'status.code' cannot be state-bound through the MCP tool '${step.attest.tool}' — MCP has no HTTP status, so an isError result is fabricated as 500 and flows through as a successful observation (A12): a binding stamped at 500 would MATCH on every future error. Use a read that reifies absence into a body field, or probe over http`;
       }
 
       // A structurally-unbindable step that is ALREADY approved-current and
