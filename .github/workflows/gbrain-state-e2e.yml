@@ -45,7 +45,6 @@ jobs:
     timeout-minutes: 20
     env:
       SKILL: examples/gbrain/gbrain-capture-enrich.skill.md
-      REELIER_EXPECT_KEYS: ${{ runner.temp }}/e2e-expect-keys.json
     steps:
       - uses: actions/checkout@v4
 
@@ -71,6 +70,7 @@ jobs:
           npm ci
           npm run build
           echo "REELIER=node $GITHUB_WORKSPACE/dist/cli.js" >> "$GITHUB_ENV"
+          echo "REELIER_EXPECT_KEYS=$RUNNER_TEMP/e2e-expect-keys.json" >> "$GITHUB_ENV"
 
       - name: Stamp a real manifest against live gbrain
         env:
@@ -161,7 +161,7 @@ jobs:
         env:
           MCP_STDIO: "1"
         run: |
-          REELIER_EXPECT_KEYS=${{ runner.temp }}/nonexistent-keystore.json \
+          REELIER_EXPECT_KEYS=$RUNNER_TEMP/nonexistent-keystore.json \
             $REELIER run "$SKILL" --wrap "gbrain serve" --max-level 0 | tee /tmp/run3.log
           grep -E "pre-state check: not evaluated — key-unavailable: keyId '" /tmp/run3.log
           grep -E "^PASSED:" /tmp/run3.log
