@@ -53,7 +53,7 @@ jobs:
         # Exact-pinned, not a caret range — see action.yml's cli-version
         # input doc comment for why a floating 0.x range is the wrong
         # default for a determinism tool.
-        run: npm install -g "reelier@0.24.0"
+        run: npm install -g "reelier@0.25.0"
 
       - name: Replay the gbrain skill
         id: run-skill
