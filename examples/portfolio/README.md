@@ -64,7 +64,7 @@ the unauthenticated rate limit is hit — that failure is a real receipt too.)
 directory, so a new skill file joins the standing proof automatically. Every
 green run appends to a public, dated, third-party-hosted audit log — the
 Actions tab — so the proof accumulates on its own: **N replays, N passing,
-$0.00 in tokens.** No secret is needed for that; if a `REELIER_API_KEY`
+$0.00 in tokens.** No secret is needed for that; if a `REELIER_CLOUD_KEY`
 secret is present, each receipt is additionally pushed to the receipt ledger
 on reelier.com.
 

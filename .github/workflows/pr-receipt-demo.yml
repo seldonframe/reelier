@@ -33,7 +33,7 @@ jobs:
       - name: Replay one skill and push an attested receipt
         env:
           REELIER_CLOUD_URL: https://www.reelier.com
-          REELIER_CLOUD_KEY: ${{ secrets.REELIER_API_KEY }}
+          REELIER_CLOUD_KEY: ${{ secrets.REELIER_CLOUD_KEY }}
           REELIER_SIGNING_KEY: ${{ secrets.REELIER_SIGNING_KEY }}
         run: |
           reelier run examples/portfolio/registry-latest.skill.md
@@ -44,6 +44,6 @@ jobs:
           if [ -n "$REELIER_CLOUD_KEY" ]; then
             reelier push examples/portfolio/registry-latest.skill.md --timestamp --share
           else
-            echo "REELIER_API_KEY not set — cannot push an attested receipt."
+            echo "REELIER_CLOUD_KEY not set — cannot push an attested receipt."
             exit 1
           fi

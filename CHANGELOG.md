@@ -2,6 +2,55 @@
 
 All notable changes to `reelier`. Dates are release dates.
 
+## 0.26.0 — P1.5: name what moved, reach the headers, prune the keys
+
+Breaking behavior: **none — additive.** A fieldless binding hashes
+byte-identically to 0.25.0 (pinned), every existing projection selects
+byte-identically, and skills without `expect:` remain untouched end to end.
+
+### Added
+- **Per-field commitments (`expect.fields`) and mismatch diagnosis.**
+  `approve --probe` now also stamps one keyed commitment per projected
+  field (same per-approval key, domain-separated from the whole-projection
+  MAC). When a bound write later executes against moved state, the receipt
+  can name WHICH declared fields moved:
+  `fields changed since approval: body.compiled_truth` — names only, never
+  values, and only for fields present at both approve and execute. This is
+  an earned approve-time claim: per-field MAC inequality under the held
+  key proves the committed value differs. A 0.25.0-era fieldless binding
+  never fabricates a diagnosis. The whole-projection commitment stays the
+  only match/mismatch verdict.
+- **Projection namespaces.** `header.<name>` addresses a response header —
+  http's native `etag` / `last-modified`, the If-Match-class fields
+  explicit projections could never reach (matched case-insensitively,
+  exact match first). `body.<key>` is the explicit body form; a bare
+  `<key>` stays a top-level body key, byte-identical to the shipped
+  selection. The fixed-point lint sees through the prefixes
+  (`header.etag` is version-class). A `status` namespace is deliberately
+  deferred: a bare `status` already means a body key in shipped skills.
+- **`reelier approve --prune-keys [--all]`.** Lists keystore entries whose
+  keyId appears in no `*.md` under the current directory and removes them
+  only on explicit confirmation. Biased toward sparing on every edge:
+  standalone-only (refuses to combine with a skill path or any approve
+  flag), a reference scan at least as forgiving as the parser
+  (whitespace-tolerant, case-insensitive `.md`, symlinks followed), a
+  post-consent re-scan, and a minted-after-scan guard under the keystore
+  lock — removal is revocation, and the prompt names what the scan could
+  not see.
+- **gbrain example, part two: the owner promotion.** The quarantine story
+  now has its second half in CI — the owner promotes the quarantined
+  entity stubs (`extraction-review promote`, a local trust-boundary act),
+  and a read-only companion skill receipts the grown graph, backlinks
+  restored (`examples/gbrain/gbrain-verify-promoted.skill.md`).
+
+### Verified
+- Full state-conditioned loop green in CI against a real gbrain,
+  **including live receipt pushes**: match, mismatch (a real second
+  writer), key-unavailable `unevaluated`, owner promotion, and the
+  companion receipt — six receipts minted on live `/r/` pages, `/md`
+  render asserted and `reelier verify` re-run offline on each
+  (`.github/workflows/gbrain-state-e2e.yml`, run 30540918371).
+
 ## 0.25.0 — State-conditioned approval P1: approvals that expire when the world moves
 
 Breaking behavior: **none — additive.** Every already-approved skill remains
