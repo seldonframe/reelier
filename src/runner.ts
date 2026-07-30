@@ -22,6 +22,7 @@ import { randomBytes } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { createInterface } from "node:readline";
 import path from "node:path";
+import os from "node:os";
 import type { Skill, Step, StepAttestDecl } from "./skill.js";
 import { evalAssert, evalBind, type Observation, type ObservationRef } from "./assert.js";
 import { builtinTools, type Tool, type ToolContext } from "./tools.js";
@@ -35,6 +36,14 @@ import { resolveL1, resolveL2 } from "./escalate.js";
 import { applyWritebackSafely } from "./writeback.js";
 import { computeApprovalHash, computeIdempotencyKey } from "./approval.js";
 import { digestSha256 } from "./canonical-json.js";
+import {
+  readKeystore,
+  loadExpectKey,
+  expectMac,
+  projectObservationTyped,
+  resolveKeystorePath,
+  type ExpectKeystore,
+} from "./expect-mac.js";
 
 export type StepOutcome = "passed" | "failed" | "unchecked" | "skipped";
 
@@ -59,6 +68,42 @@ export interface StepWrite {
   resource?: { id?: string; version?: string };
   /** Set when an earlier step in THIS run wrote with the identical idempotencyKey — the step number of that earlier step. */
   duplicateOf?: number;
+  /**
+   * The instant the write dispatch was issued (state-conditioned approval
+   * §2.3, additive): with `stateCheck.observedAt`, every checked receipt
+   * carries its own measured probe→dispatch window. Present ONLY on
+   * expect-bearing steps — a skill with no `expect:` produces byte-identical
+   * records (invariant I-2).
+   */
+  dispatchedAt?: string;
+}
+
+/**
+ * The execute-time state check of a state-conditioned approval (wave2 spec
+ * §2.3, additive-optional on the wire — the pinned wire-contract fixture is
+ * untouched, I-11). Present iff the step carried `expect:` AND the runner
+ * reached the check; a step refused earlier (approval mismatch, unknown
+ * tool, write gate) carries none. Outcomes and timestamps only — NO keyed
+ * MAC values ever land in a record (I-7). Three-valued honesty is
+ * load-bearing: `unevaluated` is its own state, never a pass (never-list
+ * #1), never a recorder block (never-list #5).
+ */
+export interface StepStateCheck {
+  outcome: "match" | "mismatch" | "unevaluated";
+  /** stamped = mismatch recorded, write still dispatched (recorder mode). "refused" is reserved for gate mode (S8 — not built in P1). */
+  action: "proceeded" | "stamped" | "refused";
+  /** expect.at — when the approved observation was made. Informational: time is never an input to the comparison (I-14). */
+  expectedAt: string;
+  /** When the execute-time observation resolved; absent iff unevaluated before any observation. */
+  observedAt?: string;
+  /** Present iff outcome === "unevaluated" — a closed registry (§8.6): probe-timeout / probe-failed / probe-tool-unknown / empty-projection / key-unavailable. */
+  reason?: string;
+  /**
+   * Present only when outcome === "mismatch" and declared projection fields
+   * were absent at execute (B5/A9): names only (`delta.fields` precedent,
+   * A1 wording — never an approve-time presence claim), capped.
+   */
+  absentFields?: string[];
 }
 
 export interface AttestState {
@@ -113,6 +158,8 @@ export interface StepRecord {
   write?: StepWrite;
   /** State attestation (consequence-layer §1) — present iff a write-effect step actually dispatched. Hashes over a field projection, never raw values. absent/pending are never a pass. */
   attest?: StepAttest;
+  /** The execute-time state check (state-conditioned approval) — present iff the step carried `expect:` and the runner reached the check. See StepStateCheck. */
+  stateCheck?: StepStateCheck;
   /**
    * Provider-issued request-id refs captured from this step's Observation
    * (trust-ladder spec §3) — extends the write receipt's honesty discipline
@@ -220,6 +267,13 @@ export interface RunOptions {
   mockFailures?: Record<number, number>;
   /** Declared-probe timeout in ms (consequence-layer §1.6). Default 2000. A probe that exceeds it degrades the attestation, never the step. */
   probeTimeoutMs?: number;
+  /**
+   * Expect keystore file for state-conditioned approvals (wave2 §3.4).
+   * Default: `REELIER_EXPECT_KEYS` env var, else `~/.reelier/expect-keys.json`.
+   * Read lazily, only when a step actually carries `expect:` — the read path
+   * and expect-less skills gain zero I/O (I-2).
+   */
+  expectKeystorePath?: string;
 }
 
 export interface DryRunStep {
@@ -559,6 +613,26 @@ function evaluateAssertsAndBinds(
   }
 }
 
+/**
+ * runProbe reasons → the closed stateCheck reason registry (§8.6/N1):
+ * timeouts get their own `probe-timeout:` label; `probe-tool-unknown:` is
+ * already registry-shaped; anything else folds under `probe-failed:`.
+ * Adding a reason to the registry requires a spec amendment.
+ */
+function normalizeStateCheckReason(reason: string): string {
+  if (reason.startsWith("probe-failed: probe timeout")) {
+    return `probe-timeout: ${reason.slice("probe-failed: ".length)}`;
+  }
+  if (reason.startsWith("probe-tool-unknown:") || reason.startsWith("probe-failed:")) {
+    return reason;
+  }
+  return `probe-failed: ${reason}`;
+}
+
+/** Caps for stateCheck.absentFields (B5): the shipped cloud attest.ts limits, applied at the producer too so a record is honest before it ever ships. */
+const ABSENT_FIELDS_MAX = 32;
+const ABSENT_FIELD_NAME_MAX = 120;
+
 async function executeStep(
   step: Step,
   bindings: Record<string, unknown>,
@@ -566,7 +640,8 @@ async function executeStep(
   ctx: ToolContext,
   now: number,
   mockStatus?: number,
-  probeTimeoutMs: number = DEFAULT_PROBE_TIMEOUT_MS
+  probeTimeoutMs: number = DEFAULT_PROBE_TIMEOUT_MS,
+  expectKeys?: () => Promise<ExpectKeystore | undefined>
 ): Promise<{
   outcome: StepOutcome;
   ms: number;
@@ -575,6 +650,7 @@ async function executeStep(
   binds: Record<string, unknown>;
   write?: StepWrite;
   attest?: StepAttest;
+  stateCheck?: StepStateCheck;
   mocked?: true;
 }> {
   const started = Date.now();
@@ -633,6 +709,18 @@ async function executeStep(
   // Falls back to the tool's intrinsic effect when the step didn't override one.
   const effectiveEffect = step.effect ?? tool.effect;
   const isWrite = effectiveEffect === "idempotent-write" || effectiveEffect === "destructive";
+
+  // Belt to the parse-time rule (S4 review finding): a state-bound step whose
+  // effective effect is NOT a write would dispatch with no approval gate, no
+  // state check, and no write receipt — a stamped binding nothing checks
+  // (never-list #1). parseSkill already rejects `expect` + `effect: read`;
+  // this catches hand-crafted Skill objects handed straight to runSkill().
+  if (step.expect !== undefined && !isWrite) {
+    failures.push(
+      `Refusing to execute state-bound step with non-write effect '${effectiveEffect}' — a binding on an ungated dispatch would never be checked. (Unrepresentable via parseSkill; fix the step's effect or re-approve.)`
+    );
+    return { outcome: "failed", ms: Date.now() - started, failures, binds: localBinds };
+  }
 
   if (isWrite) {
     if (step.approve !== undefined) {
@@ -712,6 +800,77 @@ async function executeStep(
     preAt = new Date().toISOString();
   }
 
+  // The state check (state-conditioned approval §5.1 step 4): iff the step
+  // carries `expect:`, compare the pre-probe observation's keyed commitment
+  // against the approve-time one — strictly BEFORE dispatch (I-3), no clock
+  // in the predicate (I-14), no policy file read (A3: P1 is recorder-only —
+  // fail open, record honestly, never block; never-list #5). `expect`
+  // guarantees attest+approve by grammar (I-12), so preProbe ran above.
+  let stateCheck: StepStateCheck | undefined;
+  if (isWrite && step.expect !== undefined) {
+    const expectedAt = step.expect.at;
+    // §5.1 step 4's normative a→b→c order: key first (a revocation signal —
+    // key-unavailable — must never be masked by a coincident probe flake;
+    // these reason strings are a closed, stable gate-event-label registry).
+    const store = expectKeys !== undefined ? await expectKeys() : undefined;
+    const key = store !== undefined ? loadExpectKey(store, step.expect.keyId) : undefined;
+    if (key === undefined) {
+      // Deletion IS revocation and is indistinguishable from never-present
+      // (C7) — one reason string, never a fake distinction. observedAt is
+      // present iff the probe actually resolved.
+      stateCheck = {
+        outcome: "unevaluated",
+        action: "proceeded",
+        expectedAt,
+        ...(preProbe !== undefined && preProbe.ok ? { observedAt: preAt } : {}),
+        reason: `key-unavailable: keyId '${step.expect.keyId}'`,
+      };
+    } else if (preProbe === undefined || !preProbe.ok) {
+      stateCheck = {
+        outcome: "unevaluated",
+        action: "proceeded",
+        expectedAt,
+        reason: normalizeStateCheckReason(preProbe === undefined ? "probe-failed: probe never ran" : preProbe.reason),
+      };
+    } else {
+      const typed = projectObservationTyped(preProbe.obs.body, step.attest?.projection ?? []);
+      if (Object.keys(typed).length === 0) {
+        stateCheck = {
+          outcome: "unevaluated",
+          action: "proceeded",
+          expectedAt,
+          observedAt: preAt,
+          reason: "empty-projection: probe returned no declared fields",
+        };
+      } else {
+        if (expectMac(key, step.attest!.tool, typed) === step.expect.pre) {
+          stateCheck = { outcome: "match", action: "proceeded", expectedAt, observedAt: preAt };
+        } else {
+          // Real mismatch (§5.3/C5): the observable shape through the
+          // declared probe changed. absentFields names declared fields
+          // absent AT EXECUTE (A1 — never an approve-time presence claim).
+          const absent = (step.attest?.projection ?? [])
+            .map((f) => `body.${f}`)
+            .filter((k) => !(k in typed))
+            .slice(0, ABSENT_FIELDS_MAX)
+            .map((n) => n.slice(0, ABSENT_FIELD_NAME_MAX));
+          stateCheck = {
+            outcome: "mismatch",
+            action: "stamped",
+            expectedAt,
+            observedAt: preAt,
+            ...(absent.length > 0 ? { absentFields: absent } : {}),
+          };
+        }
+      }
+    }
+  }
+
+  // dispatchedAt is stamped only for checked (expect-bearing) writes — an
+  // expect-less skill's record stays byte-identical (I-2). Captured at the
+  // instant the dispatch is issued, closing the measured window (§8.2).
+  const dispatchedAt = isWrite && step.expect !== undefined ? new Date().toISOString() : undefined;
+
   let obs: Observation;
   try {
     obs = await tool.run(filledArgs, ctx);
@@ -733,13 +892,24 @@ async function executeStep(
         reason: "dispatch-failed",
       };
     }
-    return { outcome: "failed", ms: Date.now() - started, failures, binds: localBinds, ...(throwAttest !== undefined ? { attest: throwAttest } : {}) };
+    // §8.6: the state check completed BEFORE dispatch — a dispatch throw
+    // never un-computes it.
+    return {
+      outcome: "failed",
+      ms: Date.now() - started,
+      failures,
+      binds: localBinds,
+      ...(throwAttest !== undefined ? { attest: throwAttest } : {}),
+      ...(stateCheck !== undefined ? { stateCheck } : {}),
+    };
   }
 
   // The write receipt reflects that the tool call actually dispatched — it's
   // stamped here, BEFORE assert evaluation, because the side effect already
   // happened regardless of whether the step's assertions later hold.
-  const write = isWrite ? buildStepWrite(step.actionTool, tool, filledArgs, obs, step.approve !== undefined) : undefined;
+  const write = isWrite
+    ? { ...buildStepWrite(step.actionTool, tool, filledArgs, obs, step.approve !== undefined), ...(dispatchedAt !== undefined ? { dispatchedAt } : {}) }
+    : undefined;
 
   let attest: StepAttest | undefined;
   if (isWrite) {
@@ -791,13 +961,13 @@ async function executeStep(
 
   const ms = Date.now() - started;
   if (failures.length > 0) {
-    return { outcome: "failed", ms, failures, observation: obs, binds: localBinds, write, attest };
+    return { outcome: "failed", ms, failures, observation: obs, binds: localBinds, write, attest, stateCheck };
   }
   if (step.asserts.length === 0) {
     // Honest-success rule: zero assertions never counts as "passed".
-    return { outcome: "unchecked", ms, failures, observation: obs, binds: localBinds, write, attest };
+    return { outcome: "unchecked", ms, failures, observation: obs, binds: localBinds, write, attest, stateCheck };
   }
-  return { outcome: "passed", ms, failures, observation: obs, binds: localBinds, write, attest };
+  return { outcome: "passed", ms, failures, observation: obs, binds: localBinds, write, attest, stateCheck };
 }
 
 /** Re-evaluate a patched assert/bind set against a fixed observation. Never re-executes anything. */
@@ -956,6 +1126,19 @@ async function attemptEscalation(
     return { outcome: "failed", level: 0, failures, llm: usage, escalationAttempted };
   }
 
+  // B1 / I-15 (state-conditioned approval §5.1 step 0): an expect-bearing
+  // step is not L2-eligible. The escalation channel re-dispatches WITHOUT
+  // probes, so a healed write would never be state-checked — it would land
+  // byte-indistinguishable from an unbound legacy step and render as a
+  // clean pass (never-list #1). Same carve-out as destructive steps.
+  if (step.expect !== undefined) {
+    failures = [
+      ...failures,
+      `state-bound step: L2 heal ineligible — the escalation channel re-dispatches without a pre-state check, so a healed write would never be state-checked. Re-approve with 'reelier approve --probe' after fixing the drift, or heal by hand.`,
+    ];
+    return { outcome: "failed", level: 0, failures, llm: usage, escalationAttempted };
+  }
+
   escalationAttempted = 2;
 
   const l2Model = options.llmL2Model ?? "claude-sonnet-5";
@@ -1074,6 +1257,30 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
   const now = Date.now();
   const probeTimeoutMs = options.probeTimeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS;
 
+  // Expect keystore, loaded lazily and at most once — only a step that
+  // actually carries `expect:` triggers the read (I-2: the read path and
+  // expect-less skills gain zero I/O). An unreadable/malformed keystore is a
+  // loud stderr warning + every lookup degrading to key-unavailable
+  // (`unevaluated`, never a pass, never a block — the recorder must not
+  // crash the run over its own trust layer, never-list #5).
+  let expectStoreCache: ExpectKeystore | undefined;
+  let expectStoreLoaded = false;
+  const expectKeys = async (): Promise<ExpectKeystore | undefined> => {
+    if (!expectStoreLoaded) {
+      expectStoreLoaded = true;
+      const keystorePath = options.expectKeystorePath ?? resolveKeystorePath(process.env, os.homedir());
+      try {
+        expectStoreCache = await readKeystore(keystorePath);
+      } catch (err) {
+        console.error(
+          `WARNING: expect keystore unreadable (${(err as Error).message}) — state checks this run will record 'unevaluated' (key-unavailable), never a pass`
+        );
+        expectStoreCache = undefined;
+      }
+    }
+    return expectStoreCache;
+  };
+
   const startedAt = new Date().toISOString();
   const stepRecords: StepRecord[] = [];
   let diverged = false;
@@ -1092,7 +1299,7 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
 
     const started = Date.now();
     const mockStatus = options.mockFailures?.[step.n];
-    const exec = await executeStep(step, bindings, tools, toolCtx, now, mockStatus, probeTimeoutMs);
+    const exec = await executeStep(step, bindings, tools, toolCtx, now, mockStatus, probeTimeoutMs, expectKeys);
     let outcome = exec.outcome;
     let failures = exec.failures;
     let level: 0 | 1 | 2 = 0;
@@ -1198,6 +1405,10 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
       ...(why ? { why } : {}),
       ...(write ? { write } : {}),
       ...(attest ? { attest } : {}),
+      // The main-path check, never post-hoc (I-3): L2 is ineligible for
+      // expect-bearing steps (B1), so escalation can never produce a
+      // fresher stateCheck to supersede this one.
+      ...(exec.stateCheck && !exec.mocked ? { stateCheck: exec.stateCheck } : {}),
       ...(refs && refs.length > 0 ? { refs } : {}),
       ...(exec.mocked ? { mocked: true as const } : {}),
     };
