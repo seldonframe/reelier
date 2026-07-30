@@ -45,7 +45,6 @@ jobs:
     timeout-minutes: 20
     env:
       SKILL: examples/gbrain/gbrain-capture-enrich.skill.md
-      REELIER_EXPECT_KEYS: ${{ runner.temp }}/e2e-expect-keys.json
     steps:
       - uses: actions/checkout@v4
 
