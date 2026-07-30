@@ -71,28 +71,28 @@ test("a skill WITHOUT approve serializes with no approve: line at all", () => {
 // ---------------------------------------------------------------------------
 
 test("computeApprovalHash is stable across arg-key order", () => {
-  const h1 = computeApprovalHash({ actionTool: "crm.create_contact", actionArgs: { a: 1, b: 2 }, attest: undefined });
-  const h2 = computeApprovalHash({ actionTool: "crm.create_contact", actionArgs: { b: 2, a: 1 }, attest: undefined });
+  const h1 = computeApprovalHash({ actionTool: "crm.create_contact", actionArgs: { a: 1, b: 2 }, attest: undefined, expect: undefined });
+  const h2 = computeApprovalHash({ actionTool: "crm.create_contact", actionArgs: { b: 2, a: 1 }, attest: undefined, expect: undefined });
   assert.equal(h1, h2);
   assert.match(h1, /^sha256:[0-9a-f]{64}$/);
 });
 
 test("computeApprovalHash differs when the tool changes", () => {
-  const h1 = computeApprovalHash({ actionTool: "crm.create_contact", actionArgs: { a: 1 }, attest: undefined });
-  const h2 = computeApprovalHash({ actionTool: "crm.update_contact", actionArgs: { a: 1 }, attest: undefined });
+  const h1 = computeApprovalHash({ actionTool: "crm.create_contact", actionArgs: { a: 1 }, attest: undefined, expect: undefined });
+  const h2 = computeApprovalHash({ actionTool: "crm.update_contact", actionArgs: { a: 1 }, attest: undefined, expect: undefined });
   assert.notEqual(h1, h2);
 });
 
 test("computeApprovalHash differs when a placeholder is swapped into the args template", () => {
-  const h1 = computeApprovalHash({ actionTool: "crm.create_contact", actionArgs: { email: "a@example.com" }, attest: undefined });
-  const h2 = computeApprovalHash({ actionTool: "crm.create_contact", actionArgs: { email: "{{email}}" }, attest: undefined });
+  const h1 = computeApprovalHash({ actionTool: "crm.create_contact", actionArgs: { email: "a@example.com" }, attest: undefined, expect: undefined });
+  const h2 = computeApprovalHash({ actionTool: "crm.create_contact", actionArgs: { email: "{{email}}" }, attest: undefined, expect: undefined });
   assert.notEqual(h1, h2);
 });
 
 test("computeApprovalHash does NOT bind server (offline reelier approve can't know it)", () => {
   // Same tool+args, no way to pass a server into computeApprovalHash at all —
   // this test just documents/pins the 2-key shape via a stable digest.
-  const h = computeApprovalHash({ actionTool: "crm.create_contact", actionArgs: { a: 1 }, attest: undefined });
+  const h = computeApprovalHash({ actionTool: "crm.create_contact", actionArgs: { a: 1 }, attest: undefined, expect: undefined });
   assert.match(h, /^sha256:[0-9a-f]{64}$/);
 });
 

@@ -63,7 +63,7 @@ test("serializeSkill round-trips attest byte-stably", () => {
 test("approval hash unchanged for attest-less steps, changes when attest added", () => {
   const plain = parseSkill(BASE("")).steps[0];
   // lock the legacy formula so this can never silently drift:
-  assert.equal(computeApprovalHash({ ...plain, attest: plain.attest }), digestSha256({ args: plain.actionArgs, tool: plain.actionTool }));
+  assert.equal(computeApprovalHash({ ...plain, attest: plain.attest, expect: plain.expect }), digestSha256({ args: plain.actionArgs, tool: plain.actionTool }));
   const withAttest = parseSkill(BASE(DECL)).steps[0];
-  assert.notEqual(computeApprovalHash({ ...withAttest, attest: withAttest.attest }), computeApprovalHash({ ...plain, attest: plain.attest }));
+  assert.notEqual(computeApprovalHash({ ...withAttest, attest: withAttest.attest, expect: withAttest.expect }), computeApprovalHash({ ...plain, attest: plain.attest, expect: plain.expect }));
 });
