@@ -107,10 +107,16 @@ export function renderStateCheckLines(check: StepStateCheck, dispatchedAt: strin
     return [`pre-state check: match (approved ${check.expectedAt} · observed ${check.observedAt}${windowPart})`];
   }
   if (check.outcome === "mismatch") {
-    const lines = [
-      "⚠ executed against state that differs from the state this approval was granted against —",
-      `  pre-state commitment mismatch (approved ${check.expectedAt} · observed ${check.observedAt})`,
-    ];
+    // Gate mode (S8): a REFUSED mismatch must never wear the recorder's
+    // "executed against …" stamp — nothing executed. The diagnosis lines
+    // (changed/absent) are observations and render either way.
+    const lines =
+      check.action === "refused"
+        ? [`pre-state check: mismatch — write refused before dispatch (approved ${check.expectedAt} · observed ${check.observedAt})`]
+        : [
+            "⚠ executed against state that differs from the state this approval was granted against —",
+            `  pre-state commitment mismatch (approved ${check.expectedAt} · observed ${check.observedAt})`,
+          ];
     if (check.changedFields && check.changedFields.length > 0) {
       // P1.5: an EARNED approve-time claim — per-field MAC inequality under
       // the held key proves the committed value differs (names only).
@@ -124,19 +130,31 @@ export function renderStateCheckLines(check: StepStateCheck, dispatchedAt: strin
   // `reason` is always present on a runner-produced unevaluated check; the
   // fallback marks a malformed/hand-crafted record and is deliberately NOT
   // registry-shaped (the reason registry is closed — never mint a label).
-  return [`pre-state check: not evaluated — ${check.reason ?? "(no reason recorded — malformed record)"}`];
+  const uneval = `pre-state check: not evaluated — ${check.reason ?? "(no reason recorded — malformed record)"}`;
+  // Gate mode (S8): an opted-in repo refuses on unevaluated too (revocation
+  // means fail-closed) — say so, muted, without minting a new reason label.
+  return [check.action === "refused" ? `${uneval} — write refused (state gate)` : uneval];
 }
 
-/** Mismatch stamps only — match is not a finding (it's a fact) and unevaluated is not a finding (nothing was observed to differ). Feeds the run summary's `· N finding(s)`. */
+/**
+ * Mismatches only — stamped (recorder) OR refused (gate mode, S8): both
+ * observed the same fact about the world, and a refusal must never erase
+ * the evidence that produced it. Match is not a finding (it's a fact) and
+ * unevaluated is not a finding (nothing was observed to differ). Feeds the
+ * run summary's `· N finding(s)`.
+ */
 export function stateCheckFindingsCount(steps: Array<{ stateCheck?: StepStateCheck }>): number {
   return steps.filter((s) => s.stateCheck?.outcome === "mismatch").length;
 }
 
 /**
  * The run summary's finding tag (§5.4): ` · N finding(s)` when any step
- * stamped a pre-state mismatch, empty otherwise. The tag NEVER feeds the
- * exit code or PASSED/FAILED (I-9) — a finding is about the world, not the
- * run. Exported so the string format is test-pinned.
+ * stamped OR refused on a pre-state mismatch, empty otherwise. The tag
+ * itself never feeds the exit code or PASSED/FAILED (I-9) — a finding is
+ * about the world, not the run. In gate mode a refused run legitimately
+ * prints BOTH FAILED and a finding tag: the refusal (in `failures[]`)
+ * flips the outcome, the finding preserves what was observed. Exported so
+ * the string format is test-pinned.
  */
 export function findingsSummaryTag(steps: Array<{ stateCheck?: StepStateCheck }>): string {
   const findings = stateCheckFindingsCount(steps);

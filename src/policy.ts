@@ -46,9 +46,23 @@ export interface Policy {
   version: number;
   deny: DenyRule[];
   dryRun: DryRunRule[];
+  /**
+   * State gate (wave2 §5.5, S8): "refuse" opts THIS repo into fail-closed
+   * on the run path — a write step whose pre-state check lands mismatch or
+   * unevaluated is refused before dispatch by `reelier run`. An explicit
+   * per-repo opt-in, never a per-invocation flag (a flag is exactly the
+   * "talked out of it" surface the policy file exists to prevent, I-10).
+   * The WRAP runtime reads it only to name it in the banner — deny/dry_run
+   * enforcement is the wrap's job, the gate is the run path's.
+   */
+  stateGate?: "refuse";
 }
 
 export function emptyPolicy(): Policy {
+  // Deliberately gate-less: this is the wrap runtime's fail-safe for a
+  // malformed file, and a malformed file cannot opt a repo in (A3). The
+  // run path handles malformed-with-state_gate separately — by refusing
+  // the run, never by synthesizing a policy.
   return { version: 1, deny: [], dryRun: [] };
 }
 
@@ -98,7 +112,11 @@ function indentOf(line: string): number {
  * outside the supported subset — never silently drops or misreads a line.
  */
 export function parseYamlSubset(source: string): Record<string, unknown> {
-  const rawLines = source.split(/\r\n|\n/);
+  // A leading BOM is never meaningful YAML content, and rejecting the file
+  // over it fails the WRAP open (enforcement disabled) and the GATE closed
+  // (refuse-run) for a file every editor shows as correct — on the one
+  // platform whose default shell redirect writes one (review finding).
+  const rawLines = stripBom(source).split(/\r\n|\n/);
   const out: Record<string, unknown> = {};
 
   let currentListKey: string | null = null;
@@ -179,7 +197,7 @@ export function parseYamlSubset(source: string): Record<string, unknown> {
 // picture in one pass.
 // ---------------------------------------------------------------------------
 
-const KNOWN_TOP_KEYS = new Set(["version", "deny", "dry_run"]);
+const KNOWN_TOP_KEYS = new Set(["version", "deny", "dry_run", "state_gate"]);
 const KNOWN_DENY_KEYS = new Set(["tool", "endpoint", "unless"]);
 const KNOWN_DRY_RUN_KEYS = new Set(["tool"]);
 
@@ -212,6 +230,22 @@ export function validatePolicyObject(raw: Record<string, unknown>): PolicyValida
       errors.push(`"version: ${parsed}" is not supported — only version 1 exists today`);
     } else {
       version = parsed;
+    }
+  }
+
+  // S8 (§5.5): the only supported mode is "refuse" — a closed enum, so a
+  // typo'd or future value is a strict error here, which on the run path
+  // means refuse-the-run (fail closed with the key present), never a
+  // silently-off gate wearing an opt-in's clothes.
+  let stateGate: "refuse" | undefined;
+  if (raw.state_gate !== undefined) {
+    if (raw.state_gate === "refuse") {
+      stateGate = "refuse";
+    } else {
+      const shown = typeof raw.state_gate === "string" ? raw.state_gate : JSON.stringify(raw.state_gate);
+      errors.push(
+        `"state_gate: ${shown}" is not supported — the only mode is "refuse" (fail-closed on pre-state mismatch/unevaluated at run time); remove the key for recorder mode`
+      );
     }
   }
 
@@ -283,7 +317,115 @@ export function validatePolicyObject(raw: Record<string, unknown>): PolicyValida
   }
 
   if (errors.length > 0) return { errors };
-  return { errors: [], policy: { version, deny, dryRun } };
+  return { errors: [], policy: { version, deny, dryRun, ...(stateGate !== undefined ? { stateGate } : {}) } };
+}
+
+/**
+ * Does the RAW policy text contain a top-level `state_gate` key? This is
+ * the run path's strict-consequence scope (A3): only a file that textually
+ * declares the key can make the run path fail closed — a malformed file
+ * cannot opt a repo IN, so nothing without the key ever refuses a run.
+ * Comment-stripped (a commented-out line is not intent); indent-0 only (a
+ * nested occurrence is a list value, not a declaration); whitespace
+ * tolerated before the colon — the subset parser rejects such a line, but
+ * the intent is unmistakable, and the detector being MORE forgiving than
+ * the parser errs in the only safe direction here: toward refusing the
+ * run over a malformed opt-in, never toward silently ignoring one.
+ */
+export function detectStateGateKey(source: string): boolean {
+  // A leading UTF-8 BOM must never hide a declared opt-in (review finding,
+  // blocking): Windows PowerShell 5.1's `>` and Out-File write one by
+  // default, so it is the LIKELIEST authoring path on this project's own
+  // platform — and an undetected key means the gate silently fails open
+  // against text a human plainly sees. Stripped for detection only; the
+  // strict parser still rejects the BOM'd line, so a BOM'd opt-in resolves
+  // to refuse-run (fail closed, loud) rather than off.
+  for (const rawLine of stripBom(source).split(/\r\n|\n/)) {
+    if (/^state_gate\s*:/.test(stripComment(rawLine))) return true;
+  }
+  return false;
+}
+
+/** Strip a leading UTF-8 BOM (U+FEFF) — node's readFile(utf8) preserves it. */
+function stripBom(source: string): string {
+  return source.charCodeAt(0) === 0xfeff ? source.slice(1) : source;
+}
+
+/**
+ * Resolve the state gate for a `reelier run` (S8, §5.5). NEVER consulted by
+ * the wrap runtime and reads nothing when no policy file exists — the
+ * recorder path for non-opted-in repos is unchanged. First existing
+ * candidate (project, then global) decides, whole-file — the same
+ * precedence rule as loadPolicyForWrap, never a per-key merge across
+ * files. Outcomes:
+ *  - "refuse": valid opt-in — the caller threads it into the runner.
+ *  - "refuse-run": the file DECLARES state_gate but fails strict parse —
+ *    the caller must refuse the whole run before step 1 (fail closed;
+ *    silently ignoring a declared operator intent is the one direction an
+ *    opt-in gate must never fail).
+ *  - "off": no file, no key, or (with `warning` set) a malformed file
+ *    WITHOUT the key — fail open per the wrap doctrine, warned on stderr
+ *    only: the warning line IS the gap marker on this path; the run
+ *    record is never mutated for a repo that did not opt in (I-2).
+ */
+export type StateGateResolution =
+  | { mode: "off"; warning?: string }
+  | { mode: "refuse"; sourcePath: string }
+  | { mode: "refuse-run"; sourcePath: string; errors: string[] };
+
+export async function resolveStateGateForRun(cwd: string, homedir: string): Promise<StateGateResolution> {
+  const { project, global } = policyPaths(cwd, homedir);
+  for (const candidate of [project, global]) {
+    let source: string;
+    try {
+      source = await readFile(candidate, "utf8");
+    } catch (err) {
+      // ENOENT is "no file here" — try the next candidate. ANY OTHER read
+      // error means a file exists whose declared intent we cannot inspect
+      // (EACCES, EISDIR, a Windows lock): skipping it silently would drop
+      // a possible opt-in with no marker AND would let the global file
+      // decide despite an existing project file, breaking the documented
+      // first-existing-file rule. Fail loud instead — but not closed: the
+      // key may well be absent, and refusing every run over an unreadable
+      // keyless file would brick repos that never opted in (review
+      // finding). The warning IS the gap marker on this path.
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") continue;
+      return {
+        mode: "off",
+        warning:
+          `[reelier] policy: ${candidate} exists but could not be read (${(err as Error).message}) — ` +
+          `state gate OFF and this file's declared intent is UNKNOWN (if it opts in with 'state_gate: refuse', that opt-in is NOT in effect). Fix the file's readability.`,
+      };
+    }
+    if (detectStateGateKey(source)) {
+      const validation = parsePolicyStrict(source);
+      if (validation.errors.length > 0) {
+        return { mode: "refuse-run", sourcePath: candidate, errors: validation.errors };
+      }
+      if (validation.policy!.stateGate === "refuse") {
+        return { mode: "refuse", sourcePath: candidate };
+      }
+      // Unreachable today (a valid parse with the key present implies
+      // "refuse" — every other value is a strict error). Kept explicit so
+      // a future mode lands here as OFF, never as an accidental gate.
+      return { mode: "off" };
+    }
+    const validation = parsePolicyStrict(source);
+    if (validation.errors.length > 0) {
+      return {
+        mode: "off",
+        warning:
+          // "no top-level 'state_gate' key DETECTED" — never "contains
+          // no key" (review finding): the detector cannot know what the
+          // file contains, and asserting absence steers an operator whose
+          // key is masked by an encoding quirk away from the real defect.
+          `[reelier] policy: ${candidate} is malformed and no top-level 'state_gate' key was detected — state gate OFF ` +
+          `(a malformed file cannot opt a repo in; enforcement gap). Run 'reelier policy check' to see every error.`,
+      };
+    }
+    return { mode: "off" };
+  }
+  return { mode: "off" };
 }
 
 /** Parse + validate raw policy.yml text in one shot. A syntax error (bad subset) is reported as a single validation error, same bucket as a schema error — `policy check` doesn't need callers to distinguish the two. */
@@ -502,6 +644,14 @@ export function summarizePolicyForWrapStart(result: PolicyLoadResult): string[] 
   const lines = [`[reelier] policy: ${denyCount} deny rule(s), ${dryRunCount} dry-run rule(s) loaded from ${result.sourcePath}`];
   if (hasEndpointRules(result.policy)) {
     lines.push(`[reelier] policy: ${ENDPOINT_RULE_NOTE}`);
+  }
+  if (result.policy.stateGate === "refuse") {
+    // Name WHERE the gate is enforced — the wrap records and applies
+    // deny/dry_run rules; the state gate acts in 'reelier run' at dispatch
+    // time. Silence here would let an operator believe the wrap refuses.
+    lines.push(
+      `[reelier] policy: state_gate: refuse declared — enforced by 'reelier run' at dispatch time (the wrap itself never gates on pre-state).`
+    );
   }
   return lines;
 }
