@@ -1627,59 +1627,73 @@ export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Prom
       // (Re)approval path under --probe: check bindability, probe, then
       // mint + stamp — or degrade EXPLICITLY (§4.4: a silent downgrade to a
       // weaker approval than the human asked for is forbidden).
-      let notBindable: string | undefined;
       let typed: Record<string, string | number | boolean> | undefined;
       let observedAtMs = 0;
 
+      // STRUCTURAL unbindability — decidable from the file alone, before any
+      // probe dispatch. Kept strictly separate from probe-time failures: the
+      // no-op guard below may ONLY ever fire on this class (review finding —
+      // treating a probe timeout as "not state-bindable" would hand the A6
+      // evidence suppressor a clean exit code, and the printed verdict would
+      // be a lie about a perfectly bindable step).
       const attestPlaceholders = step.attest ? collectPlaceholders(step.attest.args) : [];
       const actionPlaceholders = collectPlaceholders(step.actionArgs);
+      let structuralReason: string | undefined;
       if (step.attest === undefined) {
-        notBindable = "no 'attest:' declared — a state binding needs a declared probe";
+        structuralReason = "no 'attest:' declared — a state binding needs a declared probe";
       } else if (attestPlaceholders.some(isComputedDateName)) {
-        notBindable = `attest args use computed date vars (${attestPlaceholders
+        structuralReason = `attest args use computed date vars (${attestPlaceholders
           .filter(isComputedDateName)
           .map((n) => `{{${n}}}`)
           .join(", ")}) — approve-day and execute-day fills would target different observations (not state-bindable in v1)`;
       } else if (attestPlaceholders.length > 0) {
-        notBindable = `attest args contain placeholders (${attestPlaceholders.map((n) => `{{${n}}}`).join(", ")}) — probe args must be fully literal in v1 (not state-bindable)`;
+        structuralReason = `attest args contain placeholders (${attestPlaceholders.map((n) => `{{${n}}}`).join(", ")}) — probe args must be fully literal in v1 (not state-bindable)`;
       } else if (actionPlaceholders.length > 0) {
         // A7 (write-target honesty; pick recorded in the spec: refuse): the
         // check conditions the PROBE's fixed resource — with placeholders in
         // the action args the WRITTEN resource varies per run.
-        notBindable = `action args contain placeholders (${actionPlaceholders.map((n) => `{{${n}}}`).join(", ")}) — the written resource varies per run (write-target honesty, not state-bindable in v1)`;
+        structuralReason = `action args contain placeholders (${actionPlaceholders.map((n) => `{{${n}}}`).join(", ")}) — the written resource varies per run (write-target honesty, not state-bindable in v1)`;
       } else if (step.attest.projection === undefined) {
-        notBindable =
+        structuralReason =
           "no explicit projection declared — a state binding requires an explicit projection (the default projection is version-class, volatile by design)";
-      } else {
-        process.stdout.write(`  probing pre-state (${step.attest.tool})… `);
-        const probeResult = await runProbe(step.attest, probeTools!, {}, { allowDestructive: false }, now(), DEFAULT_PROBE_TIMEOUT_MS);
+      }
+
+      // A structurally-unbindable step that is ALREADY approved-current and
+      // unbound: nothing to consent to and nothing minted weaker — a skip
+      // here would make `approve --probe --all` on any mixed skill exit
+      // non-zero forever (S7 integration finding), and an interactive yes
+      // would restamp the identical hash with a duplicate changelog line
+      // (§4.3's "safe to run repeatedly"). Probe-time failures NEVER take
+      // this path, and the A2 never-silently-weaker rule still governs
+      // unapproved unbindable steps below.
+      if (structuralReason !== undefined && isCurrent && step.expect === undefined) {
+        console.log(`  not state-bindable: ${structuralReason}`);
+        console.log("  unchanged (already approved; not state-bindable)");
+        unchangedCount++;
+        continue;
+      }
+
+      let notBindable = structuralReason;
+      if (notBindable === undefined) {
+        process.stdout.write(`  probing pre-state (${step.attest!.tool})… `);
+        const probeResult = await runProbe(step.attest!, probeTools!, {}, { allowDestructive: false }, now(), DEFAULT_PROBE_TIMEOUT_MS);
         observedAtMs = now();
         if (!probeResult.ok) {
           console.log(`failed (${probeResult.reason})`);
           notBindable = probeResult.reason;
         } else {
-          typed = projectObservationTyped(probeResult.obs.body, step.attest.projection);
+          typed = projectObservationTyped(probeResult.obs.body, step.attest!.projection ?? []);
           if (Object.keys(typed).length === 0) {
             console.log("failed (empty-projection: probe returned no declared fields)");
             notBindable = "empty-projection: probe returned no declared fields";
           } else {
             console.log("ok");
-            showObservation(typed, step.attest.projection);
+            showObservation(typed, step.attest!.projection ?? []);
           }
         }
       }
 
       if (notBindable !== undefined) {
-        // An already-approved (shape-current, unbound) step that can't be
-        // bound: nothing to consent to — a yes would restamp the identical
-        // hash and append a duplicate changelog line on every run (review
-        // finding: §4.3's "safe to run repeatedly" holds interactively too).
-        if (isCurrent && step.expect === undefined && !all) {
-          console.log(`  not state-bindable: ${notBindable}`);
-          console.log("  unchanged (already approved; not state-bindable)");
-          unchangedCount++;
-          continue;
-        }
         if (all) {
           console.log(`  skipped (probe failed): ${notBindable}`);
           skippedProbeFailed++;
