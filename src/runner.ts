@@ -41,6 +41,7 @@ import {
   loadExpectKey,
   expectMac,
   expectFieldMac,
+  probeArgsMac,
   lookupHeader,
   projectObservationTyped,
   ABSENT_FIELDS_MAX,
@@ -680,12 +681,29 @@ function normalizeStateCheckReason(reason: string): string {
   if (reason.startsWith("probe-failed: probe timeout")) {
     return `probe-timeout: ${reason.slice("probe-failed: ".length)}`;
   }
-  if (reason.startsWith("probe-tool-unknown:") || reason.startsWith("probe-failed:")) {
+  if (
+    reason.startsWith("probe-tool-unknown:") ||
+    reason.startsWith("probe-failed:") ||
+    // W3-S4: already a registry member, synthesized by the probeArgs gate
+    // above (no probe ran, so wrapping it as `probe-failed:` would claim a
+    // dispatch that never happened). Passed through verbatim.
+    reason.startsWith("probe-args-mismatch:") ||
+    reason.startsWith("key-unavailable:")
+  ) {
     return reason;
   }
   return `probe-failed: ${reason}`;
 }
 
+
+/**
+ * W3-S4 / I-18. A member of the CLOSED reason registry (wave2 N1 — these
+ * strings become gate-event labels), added by the wave-3 spec amendment
+ * that named it. Deliberately NOT "probe-target-mismatch", which wave2 §8.3
+ * pre-named it: MAC inequality proves the filled ARGS differ; whether that
+ * changes the probed TARGET is an inference the string must not claim.
+ */
+const PROBE_ARGS_MISMATCH_REASON = "probe-args-mismatch: filled probe args differ from the approved ones";
 
 async function executeStep(
   step: Step,
@@ -696,7 +714,15 @@ async function executeStep(
   mockStatus?: number,
   probeTimeoutMs: number = DEFAULT_PROBE_TIMEOUT_MS,
   expectKeys?: () => Promise<ExpectKeystore | undefined>,
-  stateGate?: "refuse"
+  stateGate?: "refuse",
+  /**
+   * The run's `--var`s ALONE — deliberately not the shared `bindings` map,
+   * which merges them with step-output `bind:` values. Probe args on a
+   * `probeArgs`-bearing step fill from this and nothing else (W3-S4): a
+   * `bind:` whose name collides with a probe-arg placeholder is precisely
+   * the exfiltration channel the commitment exists to close.
+   */
+  vars: Record<string, string> = {}
 ): Promise<{
   outcome: StepOutcome;
   ms: number;
@@ -850,9 +876,60 @@ async function executeStep(
   // ONE salt for this step's whole attest — pre and post commit with the same
   // salt so within-record equality semantics hold (see newAttestSalt).
   const attestSalt = newAttestSalt();
+
+  // ---- W3-S4 / I-18: the probeArgs gate, resolved BEFORE any dispatch ----
+  //
+  // On a binding carrying `expect.probeArgs`, fill the probe args from the
+  // run's --vars ONLY (a pure computation — no dispatch), recompute the MAC,
+  // and compare. On inequality NEITHER the pre-probe nor the post-probe is
+  // dispatched. The dispatch ban is the load-bearing half of the invariant:
+  // comparing AFTER the probe fires would reopen the exfiltration channel
+  // that forced literal-only probes in P1, and a build that exfiltrates and
+  // then honestly reports `unevaluated` satisfies a comparison-only rule
+  // while being exactly as wrong.
+  //
+  // The key is resolved here rather than in the state-check block below
+  // because the gate needs it first; the block reuses it. Without a key we
+  // cannot establish that these args are the approved ones, so we do not
+  // dispatch — and the existing `key-unavailable` reason (which the §5.1
+  // a→b→c order already puts first) is the honest label for it.
+  const expectStore = isWrite && step.expect !== undefined && expectKeys !== undefined ? await expectKeys() : undefined;
+  const expectKey =
+    isWrite && step.expect !== undefined && expectStore !== undefined ? loadExpectKey(expectStore, step.expect.keyId) : undefined;
+
+  let probeBindings: Record<string, unknown> = bindings;
+  let probeArgsBlocked: string | undefined;
+  if (isWrite && step.expect?.probeArgs !== undefined && step.attest !== undefined) {
+    // --vars only. Never the merged map: a step-output `bind:` colliding with
+    // a probe-arg placeholder name is the channel this closes.
+    probeBindings = { ...vars };
+    if (expectKey === undefined) {
+      probeArgsBlocked = `key-unavailable: keyId '${step.expect.keyId}'`;
+    } else {
+      let filledProbeArgs: unknown;
+      try {
+        filledProbeArgs = fillTemplate(step.attest.args, probeBindings, now);
+      } catch {
+        // An unfilled hole is not the approved filled shape. Same class, same
+        // label — never a distinct reason minted at the point of failure.
+        probeArgsBlocked = PROBE_ARGS_MISMATCH_REASON;
+      }
+      if (probeArgsBlocked === undefined && probeArgsMac(expectKey, step.attest.tool, filledProbeArgs) !== step.expect.probeArgs) {
+        probeArgsBlocked = PROBE_ARGS_MISMATCH_REASON;
+      }
+    }
+  }
+
   if (isWrite && step.attest && probeApproved) {
-    preProbe = await runProbe(step.attest, tools, bindings, ctx, now, probeTimeoutMs);
-    preAt = new Date().toISOString();
+    if (probeArgsBlocked !== undefined) {
+      // Synthesized, never dispatched: the state check below reads this as an
+      // ordinary probe failure and the attest degrades through the existing
+      // probe-failure path — no fabricated observation, no `observedAt`.
+      preProbe = { ok: false, reason: probeArgsBlocked };
+    } else {
+      preProbe = await runProbe(step.attest, tools, probeBindings, ctx, now, probeTimeoutMs);
+      preAt = new Date().toISOString();
+    }
   }
 
   // The state check (state-conditioned approval §5.1 step 4): iff the step
@@ -869,8 +946,9 @@ async function executeStep(
     // §5.1 step 4's normative a→b→c order: key first (a revocation signal —
     // key-unavailable — must never be masked by a coincident probe flake;
     // these reason strings are a closed, stable gate-event-label registry).
-    const store = expectKeys !== undefined ? await expectKeys() : undefined;
-    const key = store !== undefined ? loadExpectKey(store, step.expect.keyId) : undefined;
+    // Resolved above the pre-probe since W3-S4 (the probeArgs gate needs it
+    // before any dispatch); the ordering this branch encodes is unchanged.
+    const key = expectKey;
     if (key === undefined) {
       // Deletion IS revocation and is indistinguishable from never-present
       // (C7) — one reason string, never a fake distinction. observedAt is
@@ -1016,7 +1094,14 @@ async function executeStep(
   let attest: StepAttest | undefined;
   if (isWrite) {
     if (step.attest && probeApproved) {
-      const postProbe = await runProbe(step.attest, tools, bindings, ctx, now, probeTimeoutMs);
+      // W3-S4 / I-18: "neither the pre-probe nor the post-probe is
+      // dispatched". The post-probe would carry the same unapproved filled
+      // args out of the same hole, so the ban covers it identically —
+      // synthesized as a failure, never dispatched.
+      const postProbe: ProbeResult =
+        probeArgsBlocked !== undefined
+          ? { ok: false, reason: probeArgsBlocked }
+          : await runProbe(step.attest, tools, probeBindings, ctx, now, probeTimeoutMs);
       const postAt = new Date().toISOString();
       const selector = step.attest.tool;
       const preSide = preProbe && preProbe.ok && Object.keys(preProbe.projected).length > 0 ? preProbe.projected : undefined;
@@ -1401,7 +1486,21 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
 
     const started = Date.now();
     const mockStatus = options.mockFailures?.[step.n];
-    const exec = await executeStep(step, bindings, tools, toolCtx, now, mockStatus, probeTimeoutMs, expectKeys, options.stateGate);
+    const exec = await executeStep(
+      step,
+      bindings,
+      tools,
+      toolCtx,
+      now,
+      mockStatus,
+      probeTimeoutMs,
+      expectKeys,
+      options.stateGate,
+      // W3-S4: the run's --vars ALONE, kept separate from `bindings` (which
+      // accumulates step-output binds as the run proceeds) so a probeArgs-
+      // bearing step's probe args can never fill from a colliding `bind:`.
+      options.vars ?? {}
+    );
     let outcome = exec.outcome;
     let failures = exec.failures;
     let level: 0 | 1 | 2 = 0;

@@ -99,7 +99,10 @@ test("unknown expect key rejected with the spec's verbatim message shape", () =>
     // Anchored through to the where-clause (review finding): an unanchored
     // prefix match let the P1.5 "/fields" suffix land without this pin
     // noticing — the key list must end exactly at the (step …) suffix.
-    /Unknown 'expect' key "extra" — expected pre\/keyId\/at\/fields \(step /
+    // W3-S4 added `probeArgs` to the closed key set; the error string moves
+    // with it in the SAME PR — otherwise every binding this slice stamps
+    // becomes a parse error under the old message's promise.
+    /Unknown 'expect' key "extra" — expected pre\/keyId\/at\/fields\/probeArgs \(step /
   );
 });
 

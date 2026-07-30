@@ -87,7 +87,18 @@ export function renderStepBlock(step: Step): string[] {
   if (step.expect !== undefined) {
     // Canonical (alphabetical: at, fields?, keyId, pre) so the file line and
     // the approval-hash input agree byte-for-byte (wave2 spec §2.1).
-    lines.push(`- expect: ${canonicalJson({ at: step.expect.at, keyId: step.expect.keyId, pre: step.expect.pre, ...(step.expect.fields !== undefined ? { fields: step.expect.fields } : {}) })}`);
+    // canonicalJson sorts keys, so the emitted order is alphabetical — at,
+    // fields, keyId, pre, probeArgs — matching the approval-hash input's own
+    // sort so the file line and the hash input agree byte-for-byte.
+    lines.push(
+      `- expect: ${canonicalJson({
+        at: step.expect.at,
+        keyId: step.expect.keyId,
+        pre: step.expect.pre,
+        ...(step.expect.fields !== undefined ? { fields: step.expect.fields } : {}),
+        ...(step.expect.probeArgs !== undefined ? { probeArgs: step.expect.probeArgs } : {}),
+      })}`
+    );
   }
   lines.push("");
   return lines;

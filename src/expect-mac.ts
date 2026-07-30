@@ -266,6 +266,37 @@ export function expectFieldMac(key: Uint8Array, probeTool: string, fieldName: st
   return MAC_PREFIX + createHmac("sha256", Buffer.from(key)).update(input, "utf8").digest("hex");
 }
 
+/**
+ * The FILLED probe-args commitment (W3-S4; wave2 conflict C4, deferred with
+ * probe-arg parameterization and landed with it). P1 forced literal probe
+ * args because a `{{var}}` hole in a probe-args template is an exfiltration
+ * channel: whatever fills it rides out through the probe URL. The approval
+ * hash cannot close that — it covers the file's TEMPLATE text, which a
+ * run-time fill leaves untouched. This commitment can: the runner recomputes
+ * it over the args it is ABOUT to send and compares BEFORE dispatching
+ * anything (I-18 — the dispatch ban is the load-bearing half; a build that
+ * exfiltrates first and then honestly reports `unevaluated` would satisfy a
+ * comparison-only rule and still be wrong).
+ *
+ * Domain-separated from the other two MACs by canonical-JSON input SHAPE:
+ * `{args, probe, v}` here, `{probe, projection, v}` for the whole-projection
+ * commitment, `{field, probe, v, value}` per field. No constructible
+ * collision — `args` is an arbitrary JSON value and `projection` a
+ * type-tagged string map, and the key sets differ regardless.
+ *
+ * Values are canonicalized, never stringified: `{"n":1}` and `{"n":"1"}` are
+ * different args and MUST commit differently (A6's false-MATCH class applies
+ * here for the same reason it applies to projections).
+ */
+export function probeArgsMac(key: Uint8Array, probeTool: string, filledArgs: unknown): string {
+  assertUsableKey(key);
+  if (typeof probeTool !== "string" || probeTool.trim() === "") {
+    throw new Error("probeArgsMac: probe tool name must be a non-empty string");
+  }
+  const input = canonicalJson({ args: filledArgs, probe: probeTool, v: 1 });
+  return MAC_PREFIX + createHmac("sha256", Buffer.from(key)).update(input, "utf8").digest("hex");
+}
+
 // ---------------------------------------------------------------------------
 // Keystore
 // ---------------------------------------------------------------------------
