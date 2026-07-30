@@ -59,22 +59,22 @@ content)
 - attest: {"tool":"get_page","args":{"slug":"reelier-demo-page"},"projection":["compiled_truth"]}
 
 ### Step 2 — Extract entities from the captured page
-- intent: Run gbrain's regex-based entity extraction over the captured text (live schema: text + source_slug — remote MCP calls land the stubs in the quarantine lane, provenance auto-extracted)
-- action: extract_entities {"source_slug": "reelier-demo-page", "text": "This page links to [[Reelier]] and [[gbrain]] so entity extraction has something to find."}
+- intent: Run gbrain's regex-based entity extraction over text attributed to the captured page (live schema: text + source_slug — remote MCP calls land the stubs in the quarantine lane, provenance auto-extracted; the text deliberately carries a person-shaped and a company-shaped name for the extractor)
+- action: extract_entities {"source_slug": "reelier-demo-page", "text": "Garry Tan reviewed this demo for Reelier Inc. It links to [[Reelier]] and [[gbrain]] so entity extraction has something to find."}
 - assert: status == 200
 - effect: destructive
 
-### Step 3 — Confirm extraction landed
-- intent: List the quarantine lane (live schema: a global unverified-stubs list, not per-slug) — a pure read, but classified destructive by fail-closed default since gbrain declares no readOnlyHint (see the effect-classification note above)
-- action: extraction_pending {"limit": 10}
+### Step 3 — Confirm extraction landed in the quarantine lane
+- intent: List the unverified-stub lane and assert this page's extraction actually produced stubs attributed to it (rows carry extracted_from = source slug) — the run's own punchline, not an assumption. A pure read, but classified destructive by fail-closed default since gbrain declares no readOnlyHint (see the effect-classification note above)
+- action: extraction_pending {"limit": 50}
 - assert: status == 200
+- assert: body contains "reelier-demo-page"
 - effect: destructive
 
-### Step 4 — Self-verify the backlink graph grew
-- intent: Fetch the page's backlinks and assert the response is a non-empty list — the run's own punchline, not an assumption (live schema: the response is a BARE JSON array of Link rows, so no dotpath length assert can address it; non-emptiness is the honest check)
+### Step 4 — Read the page's backlink graph
+- intent: Fetch the page's backlinks (live behavior: QUARANTINED stubs do not write backlink rows — run 2 of the e2e proved the graph stays empty until stubs are promoted via extraction_review, so this read documents the graph as-is rather than asserting growth)
 - action: get_backlinks {"slug": "reelier-demo-page"}
 - assert: status == 200
-- assert: body not contains "[]"
 - effect: read
 
 ## Open questions
@@ -86,4 +86,5 @@ content)
 - (none yet — this file has not been recorded, manifest-stamped, or approved on any machine; run the commands in README.md to do all three on your own)
 - 2026-07-30 — Step 1 gains an `attest:` declaration (probe `get_page`, explicit projection `[compiled_truth]` — state-conditioned approval Stage 1, wave2 §6.1.5). The projection field name is UNVERIFIED until the dogfood loop first runs live (A15); `.github/workflows/gbrain-state-e2e.yml` is the loop that verifies it — it stamps `approve:`/`expect:` at run time in CI (per-run keystore), so this checked-in file still carries neither.
 - 2026-07-30 — Step 1's `put_page` args aligned with live gbrain's op schema per the wave2 spec's Stage-0 recon (`{"slug","content"}` — the shipped `title`/`markdown` shape predated any live recording and matched no live schema). Still unverified until the e2e loop first runs green; if live gbrain disagrees, the loop fails loudly at the seed run and the correction lands here.
+- 2026-07-30 — e2e run 2 (30534736372): steps 1–3 PASSED live (extract_entities {text, source_slug} verified). Step 4 disproved the shipped punchline: quarantined stubs write NO backlink rows (body was exactly []), so the graph-grew assert moved to step 3 (extraction_pending rows carry extracted_from = source slug) and step 4 became an as-is read of the graph. Promotion via extraction_review is the missing link — a future extension.
 - 2026-07-30 — First LIVE run of the e2e loop (Actions run 30534286059) verified step 1 against real gbrain (put_page {slug, content} passed) and corrected the rest from gbrain's actual `src/core/operations.ts`: `extract_entities` takes `{text, source_slug}` not `{slug}` (remote calls land stubs in the quarantine lane); `extraction_pending` is a global `{limit, offset}` list, not per-slug; `get_backlinks` returns a BARE array of Link rows, so step 4's `json.backlinks.length` assert could never hold — replaced with the non-empty check. This is the discovery loop the wave2 spec anticipated (A15): grammar-valid is not receipted.
