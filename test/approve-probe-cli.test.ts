@@ -450,6 +450,31 @@ test("--probe warns (warn-only) on version-class projection fields; notes ABA wh
   });
 });
 
+test("fixed-point lint sees through P1.5 namespaces: header.etag/body.etag warn, never the false ABA note", async () => {
+  // Review finding (blocking): a prefix-blind lint printed "no version-class
+  // field" — an affirmatively false consent-transcript line — for the MOST
+  // version-class projection expressible, the exact fields namespaces exist
+  // to reach (http's native etag / last-modified).
+  await withTempDir(async (dir) => {
+    const nsSkill = SKILL_BINDABLE.replace('"projection":["compiled_truth"]', '"projection":["header.etag","body.etag"]');
+    const skillPath = path.join(dir, "s.skill.md");
+    await writeFile(skillPath, nsSkill, "utf8");
+    const tools: Record<string, Tool> = {
+      get_page: {
+        effect: "read",
+        run: async () => ({ status: 200, headers: { etag: 'W/"v7"' }, body: JSON.stringify({ etag: "b7" }) }),
+      },
+      put_page: { effect: "idempotent-write", run: async () => ({ status: 200, headers: {}, body: "{}" }) },
+    };
+    const { result: code, out } = await captureOutput(() =>
+      cmdApprove(fakeArgs([skillPath], ["probe", "all"]), deps(dir, { tools }))
+    );
+    assert.equal(code, 0, "warn-only: the binding still lands");
+    assert.match(out, /warning: projection field\(s\) header\.etag, body\.etag are version-class/);
+    assert.doesNotMatch(out, /note: no version-class field in this projection/);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Without --probe: the §4.4 stale-binding refusal and --drop-expect
 // ---------------------------------------------------------------------------

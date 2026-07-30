@@ -40,6 +40,8 @@ import {
   readKeystore,
   loadExpectKey,
   expectMac,
+  expectFieldMac,
+  lookupHeader,
   projectObservationTyped,
   resolveKeystorePath,
   type ExpectKeystore,
@@ -104,6 +106,15 @@ export interface StepStateCheck {
    * A1 wording — never an approve-time presence claim), capped.
    */
   absentFields?: string[];
+  /**
+   * P1.5 (wave2 §3.5): present only when outcome === "mismatch" AND the
+   * binding carried per-field commitments — the declared fields whose
+   * recomputed field MAC differs from the approve-time one. Unlike
+   * absentFields, this IS an approve-time claim, and an earned one: under
+   * the held key, per-field MAC inequality proves the committed value
+   * differs. Names only, capped like absentFields.
+   */
+  changedFields?: string[];
 }
 
 export interface AttestState {
@@ -469,11 +480,27 @@ export function projectObservation(obs: Observation, projection?: string[]): Rec
   try { body = JSON.parse(obs.body); } catch { body = undefined; }
   const rec = body !== null && typeof body === "object" && !Array.isArray(body) ? (body as Record<string, unknown>) : undefined;
   if (projection) {
-    if (rec) {
-      for (const key of projection) {
-        const v = rec[key];
-        if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") out[`body.${key}`] = String(v);
+    // Projection namespaces (state-conditioned approval P1.5, wave2 §6.1.3):
+    // `header.<name>` addresses a response header (http's native etag /
+    // last-modified — the If-Match-class fields explicit projections could
+    // never reach); `body.<key>` is the explicit body form; a bare `<key>`
+    // stays a top-level body key, byte-identical to the shipped selection
+    // (zero-touch for every existing skill). The `status` namespace is
+    // DEFERRED — a bare `status` entry already means the body key named
+    // "status" in shipped skills, and silently re-pointing it at the HTTP
+    // status would change what an existing approval binds (recorded in the
+    // P1.5 addendum).
+    for (const key of projection) {
+      if (key.startsWith("header.")) {
+        const name = key.slice("header.".length);
+        const v = lookupHeader(obs.headers, name);
+        if (typeof v === "string" && v.length > 0) out[key] = v;
+        continue;
       }
+      if (!rec) continue;
+      const bodyKey = key.startsWith("body.") ? key.slice("body.".length) : key;
+      const v = rec[bodyKey];
+      if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") out[`body.${bodyKey}`] = String(v);
     }
     return out;
   }
@@ -833,7 +860,7 @@ async function executeStep(
         reason: normalizeStateCheckReason(preProbe === undefined ? "probe-failed: probe never ran" : preProbe.reason),
       };
     } else {
-      const typed = projectObservationTyped(preProbe.obs.body, step.attest?.projection ?? []);
+      const typed = projectObservationTyped(preProbe.obs, step.attest?.projection ?? []);
       if (Object.keys(typed).length === 0) {
         stateCheck = {
           outcome: "unevaluated",
@@ -849,17 +876,36 @@ async function executeStep(
           // Real mismatch (§5.3/C5): the observable shape through the
           // declared probe changed. absentFields names declared fields
           // absent AT EXECUTE (A1 — never an approve-time presence claim).
+          // Output-form names per the P1.5 namespaces: bare entries are
+          // body keys; header./body. prefixed entries keep their namespace.
           const absent = (step.attest?.projection ?? [])
-            .map((f) => `body.${f}`)
+            .map((f) => (f.startsWith("header.") || f.startsWith("body.") ? f : `body.${f}`))
             .filter((k) => !(k in typed))
             .slice(0, ABSENT_FIELDS_MAX)
             .map((n) => n.slice(0, ABSENT_FIELD_NAME_MAX));
+          // P1.5 diagnosis: fields present at BOTH times whose per-field
+          // MAC moved — only when the binding carried field commitments; a
+          // fieldless (0.25.0) binding never fabricates a diagnosis.
+          let changed: string[] = [];
+          if (step.expect.fields !== undefined) {
+            for (const [name, recorded] of Object.entries(step.expect.fields)) {
+              // Own-property read (review finding): `typed` is a plain object,
+              // so a fields entry named "constructor"/"toString" would read
+              // through Object.prototype and land a fabricated name in a
+              // signed record. Fourth door on the __proto__ hardening.
+              const liveValue = Object.prototype.hasOwnProperty.call(typed, name) ? typed[name] : undefined;
+              if (liveValue === undefined) continue; // absent → absentFields' job
+              if (expectFieldMac(key, step.attest!.tool, name, liveValue) !== recorded) changed.push(name);
+            }
+            changed = changed.slice(0, ABSENT_FIELDS_MAX).map((n) => n.slice(0, ABSENT_FIELD_NAME_MAX));
+          }
           stateCheck = {
             outcome: "mismatch",
             action: "stamped",
             expectedAt,
             observedAt: preAt,
             ...(absent.length > 0 ? { absentFields: absent } : {}),
+            ...(changed.length > 0 ? { changedFields: changed } : {}),
           };
         }
       }
