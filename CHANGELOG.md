@@ -2,6 +2,47 @@
 
 All notable changes to `reelier`. Dates are release dates.
 
+## 0.27.0 — The state gate: fail-closed, opt-in, per repo
+
+Breaking behavior: **none — additive, and off unless you turn it on.** A repo
+with no `state_gate` key in `.reelier/policy.yml` behaves byte-identically to
+0.26.0: the recorder stamps findings and never blocks a write.
+
+### Added
+- **`state_gate: refuse` — the one line that turns the recorder into a
+  gate.** Put it at the top level of `.reelier/policy.yml` and a write step
+  whose pre-state check lands `mismatch` (the world moved since the
+  approval) or `unevaluated` (the binding could not be checked) is
+  **refused before dispatch**: the step fails with an explicit reason, and
+  the record carries no `write` block and no `attest` — the call provably
+  never went out. The computed diagnosis survives the refusal, so the
+  receipt still names which declared fields moved.
+- **No flag overrides it.** `--allow-writes` and `--yes` are not consulted
+  on a state-gate refusal. That is the entire reason the opt-in lives in a
+  file a human commits rather than a flag an agent can pass: a control that
+  can be talked out of at invocation time is not a control.
+- **Refusing on `unevaluated` is deliberate.** After a key is deleted —
+  which is how a binding is revoked — the approval is no longer evidence,
+  and fail-closed is precisely what revocation should mean for a repo that
+  asked for it.
+- **Every run path resolves the gate**, not just `reelier run`: the
+  `reelier_replay` MCP tool honors the same policy file, so an agent
+  cannot bypass an opted-in repo's gate by choosing the other entrypoint.
+- **A malformed opt-in fails closed.** If `.reelier/policy.yml` names
+  `state_gate` but does not parse, the run is refused before step 1 with
+  the parse errors — silently ignoring a declared operator intent is the
+  one direction an opt-in gate must never fail. A malformed file that does
+  *not* name `state_gate` keeps today's behavior: warn on stderr, run
+  anyway. A malformed file can never opt a repo **in**.
+
+### Notes
+- Two controls, one job each, still: **fail open at the recorder, fail
+  closed at the gate.** Recorder mode remains the default everywhere.
+- A UTF-8 BOM (what Windows PowerShell's `>` and `Out-File` write by
+  default) never hides the opt-in, and a policy file that exists but
+  cannot be read is reported as an unknown intent rather than skipped
+  silently.
+
 ## 0.26.0 — P1.5: name what moved, reach the headers, prune the keys
 
 Breaking behavior: **none — additive.** A fieldless binding hashes
