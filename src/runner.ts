@@ -468,12 +468,24 @@ export function buildResponseDerivedAttest(obs: Observation): StepAttest {
   };
 }
 
-const DEFAULT_PROBE_TIMEOUT_MS = 2000;
+export const DEFAULT_PROBE_TIMEOUT_MS = 2000;
 
-type ProbeResult = { ok: true; projected: Record<string, string> } | { ok: false; reason: string };
+export type ProbeResult =
+  | { ok: true; obs: Observation; projected: Record<string, string> }
+  | { ok: false; reason: string };
 
-/** Run the declared paired read with a hard timeout. Failure DEGRADES (returns a reason) — it must never fail or delay-fail the step (consequence-layer §1.6). */
-async function runProbe(
+/**
+ * Run the declared paired read with a hard timeout. Failure DEGRADES
+ * (returns a reason) — it must never fail or delay-fail the step
+ * (consequence-layer §1.6). Exported for `reelier approve --probe`
+ * (state-conditioned approval §4.2): probes dispatch in exactly two
+ * contexts — at run time under a matched approval, and at approve time
+ * interactively with literal args (I-13); this is the single code path
+ * for both. The raw `obs` rides along so the state-conditioned paths can
+ * compute their TYPE-TAGGED projection (src/expect-mac.ts) from the same
+ * single observation that feeds the salted attest projection (I-4).
+ */
+export async function runProbe(
   decl: StepAttestDecl,
   tools: Record<string, Tool>,
   bindings: Record<string, unknown>,
@@ -500,7 +512,7 @@ async function runProbe(
         timer = setTimeout(() => reject(new Error(`probe timeout after ${timeoutMs}ms`)), timeoutMs);
       }),
     ]);
-    return { ok: true, projected: projectObservation(obs, decl.projection) };
+    return { ok: true, obs, projected: projectObservation(obs, decl.projection) };
   } catch (err) {
     return { ok: false, reason: `probe-failed: ${(err as Error).message}` };
   } finally {
