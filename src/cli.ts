@@ -77,7 +77,14 @@ import {
   type SinceFilter,
 } from "./cost.js";
 import { BUNDLED_PRICES_RETRIEVED_AT } from "./prices.js";
-import { loadPolicyForWrap, summarizePolicyForWrapStart, parsePolicyStrict, hasEndpointRules, ENDPOINT_RULE_NOTE } from "./policy.js";
+import {
+  loadPolicyForWrap,
+  summarizePolicyForWrapStart,
+  parsePolicyStrict,
+  hasEndpointRules,
+  ENDPOINT_RULE_NOTE,
+  resolveStateGateForRun,
+} from "./policy.js";
 import { generateSigningKeypair, loadSigningKey, signRecordDigest, verifyRecordSignature, signingKeyDir } from "./signing.js";
 import { resolveVerifyPayload, evaluateVerifyClaims } from "./verify.js";
 import { writeCiWorkflow, PLACEHOLDER_SKILL_PATH } from "./ci-scaffold.js";
@@ -235,7 +242,8 @@ function buildWrappedToolRegistry(downstreams: DownstreamConnection[]): Record<s
  */
 export async function cmdRun(
   args: ParsedArgs,
-  connect: (spec: string) => Promise<DownstreamConnection> = connectDownstream
+  connect: (spec: string) => Promise<DownstreamConnection> = connectDownstream,
+  deps: { cwd?: string; homedir?: string } = {}
 ): Promise<number> {
   const skillPath = args.positional[0];
   if (!skillPath) {
@@ -245,6 +253,27 @@ export async function cmdRun(
         "[--fail N[=status] ...]"
     );
     return 1;
+  }
+
+  // S8 (§5.5): resolve the state-gate opt-in FIRST — a malformed file that
+  // DECLARES `state_gate` refuses the run before anything else happens
+  // (silently ignoring it would fail open against a declared operator
+  // intent, the one direction an opt-in gate must never fail). Repos
+  // without the key keep today's behavior on this path — a malformed
+  // policy without it warns (the warning line is the gap marker; the run
+  // record is never mutated for a repo that did not opt in).
+  const stateGate = await resolveStateGateForRun(deps.cwd ?? process.cwd(), deps.homedir ?? os.homedir());
+  if (stateGate.mode === "refuse-run") {
+    console.error(
+      `Refusing to run: ${stateGate.sourcePath} declares 'state_gate' but is malformed (${stateGate.errors.length} error(s)): ${stateGate.errors.join("; ")}`
+    );
+    console.error(
+      "A malformed state-gate opt-in fails closed. Fix the file ('reelier policy check') or remove the state_gate key for recorder mode."
+    );
+    return 1;
+  }
+  if (stateGate.mode === "off" && stateGate.warning !== undefined) {
+    console.error(stateGate.warning);
   }
 
   let maxLevel: 0 | 1 | 2;
@@ -368,6 +397,12 @@ export async function cmdRun(
       // stamped verbatim onto the RunRecord (see RunRecord.skillContentSha256).
       skillContentSha256: createHash("sha256").update(source, "utf8").digest("hex"),
       manifestIgnored,
+      // The directory whose policy governed the gate MUST be the directory
+      // that receives the run record (review finding): otherwise a
+      // programmatic caller passing deps.cwd gates on repo A and records
+      // into repo B. Same value, by construction.
+      ...(deps.cwd !== undefined ? { cwd: deps.cwd } : {}),
+      ...(stateGate.mode === "refuse" ? { stateGate: "refuse" as const } : {}),
       ...(args.fails.length > 0 ? { mockFailures } : {}),
       onStep: (rec) => {
         const icon =
@@ -401,8 +436,12 @@ export async function cmdRun(
     const okCount = record.totals.passed + record.totals.unchecked;
     const uncheckedTag = record.totals.unchecked > 0 ? ` (${record.totals.unchecked} unchecked)` : "";
     // §5.4: the summary gains `· N finding(s)` when any step stamped a
-    // pre-state mismatch. The stamp never flips PASSED/FAILED or the exit
-    // code (I-9) — a finding is about the world, not the run.
+    // pre-state mismatch (stamped in recorder mode, or refused under the
+    // S8 state gate). The stamp never flips PASSED/FAILED or the exit code
+    // (I-9) — a finding is about the world, not the run. In gate mode the
+    // REFUSAL flips the outcome (it lands in failures[]), so a refused run
+    // prints FAILED *and* a finding tag: two honest facts, not one signal
+    // leaking into the other.
     console.log(
       `${record.passed ? "PASSED" : "FAILED"}: ${okCount}/${record.totals.steps} steps ok${uncheckedTag}, ${
         record.totals.failed
@@ -874,7 +913,8 @@ async function cmdPolicyCheck(args: ParsedArgs): Promise<number> {
   }
 
   const policy = validation.policy!;
-  console.log(`${targetPath}: OK — ${policy.deny.length} deny rule(s), ${policy.dryRun.length} dry-run rule(s)`);
+  const gateNote = policy.stateGate === "refuse" ? ", state_gate: refuse (run-path gate — fail-closed on pre-state mismatch/unevaluated)" : "";
+  console.log(`${targetPath}: OK — ${policy.deny.length} deny rule(s), ${policy.dryRun.length} dry-run rule(s)${gateNote}`);
   if (hasEndpointRules(policy)) {
     console.log(ENDPOINT_RULE_NOTE);
   }

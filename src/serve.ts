@@ -47,6 +47,7 @@ import { preflightManifest } from "./manifest.js";
 import { connectDownstream, type DownstreamConnection } from "./mcp-client.js";
 import { buildMcpTools } from "./mcp-tool.js";
 import { pushSkill, type PushResult } from "./push.js";
+import { resolveStateGateForRun } from "./policy.js";
 
 async function fileExists(p: string): Promise<boolean> {
   try {
@@ -208,13 +209,34 @@ export interface ReplayToolInput {
  * Never fabricates a passed/failed verdict: whatever runSkill actually
  * measured is what's returned, unmodified.
  *
- * Mirrors cmdRun's fail-closed manifest preflight (cli.ts:261-293) exactly:
- * a manifest-carrying skill gets its tool schemas verified against live
- * downstreams BEFORE any step executes, unless ignoreManifest breaks glass.
+ * Mirrors cmdRun's fail-closed preflights exactly — BOTH of them: the
+ * manifest check (a manifest-carrying skill gets its tool schemas verified
+ * against live downstreams before any step executes, unless ignoreManifest
+ * breaks glass) AND the state gate (wave2 §5.5, S8). The gate especially:
+ * this is the surface an AGENT drives, and the whole premise of a
+ * per-repo opt-in over a per-invocation flag is that it cannot be talked
+ * out of at invocation time (I-10). A gate honored by `reelier run` and
+ * ignored here would be a control an agent bypasses by picking the other
+ * entrypoint (review finding, blocking). Resolved from `input.cwd` — the
+ * same directory whose .reelier/runs receives the record.
  */
 export async function runReplayTool(input: ReplayToolInput): Promise<RunRecord> {
   const source = await readFile(input.skillPath, "utf8");
   const skill = parseSkill(source);
+
+  // Resolved BEFORE any downstream is wired, exactly like cmdRun: a
+  // malformed policy that DECLARES state_gate refuses the whole replay.
+  const cwd = input.cwd ?? process.cwd();
+  const stateGate = await resolveStateGateForRun(cwd, os.homedir());
+  if (stateGate.mode === "refuse-run") {
+    throw new Error(
+      `Refusing to replay: ${stateGate.sourcePath} declares 'state_gate' but is malformed ` +
+        `(${stateGate.errors.length} error(s)): ${stateGate.errors.join("; ")} — a malformed state-gate opt-in fails closed.`
+    );
+  }
+  if (stateGate.mode === "off" && stateGate.warning !== undefined) {
+    console.error(stateGate.warning);
+  }
 
   const downstreams: DownstreamConnection[] = [];
   try {
@@ -249,10 +271,11 @@ export async function runReplayTool(input: ReplayToolInput): Promise<RunRecord> 
       allowWrites: input.allowWrites ?? false,
       tools,
       maxLevel: 0,
-      cwd: input.cwd,
+      cwd,
       skillPath: input.skillPath,
       skillContentSha256: createHash("sha256").update(source, "utf8").digest("hex"),
       ...(manifestIgnored ? { manifestIgnored: true } : {}),
+      ...(stateGate.mode === "refuse" ? { stateGate: "refuse" as const } : {}),
     });
   } finally {
     await Promise.all(downstreams.map((d) => d.close().catch(() => {})));
