@@ -37,7 +37,7 @@ import { computeApprovalHash } from "./approval.js";
 import { canonicalJson } from "./canonical-json.js";
 import { parseInstructionSkillFrontmatter } from "./from-skill.js";
 import { createLlmClient, resolveLlmConfig } from "./llm.js";
-import { renderAttestLines } from "./attest-render.js";
+import { renderAttestLines, renderStateCheckLines, findingsSummaryTag } from "./attest-render.js";
 import {
   detectAgentConfig,
   reelierProxyCommandLine,
@@ -387,16 +387,24 @@ export async function cmdRun(
             console.log(`   ${line}`);
           }
         }
+        if (rec.stateCheck) {
+          for (const line of renderStateCheckLines(rec.stateCheck, rec.write?.dispatchedAt)) {
+            console.log(`   ${line}`);
+          }
+        }
       },
     });
 
     console.log("");
     const okCount = record.totals.passed + record.totals.unchecked;
     const uncheckedTag = record.totals.unchecked > 0 ? ` (${record.totals.unchecked} unchecked)` : "";
+    // §5.4: the summary gains `· N finding(s)` when any step stamped a
+    // pre-state mismatch. The stamp never flips PASSED/FAILED or the exit
+    // code (I-9) — a finding is about the world, not the run.
     console.log(
       `${record.passed ? "PASSED" : "FAILED"}: ${okCount}/${record.totals.steps} steps ok${uncheckedTag}, ${
         record.totals.failed
-      } failed, ${fmtDuration(record.totals.ms)} total`
+      } failed, ${fmtDuration(record.totals.ms)} total${findingsSummaryTag(record.steps)}`
     );
     if (record.totals.llmInputTokens > 0 || record.totals.llmOutputTokens > 0) {
       console.log(`LLM tokens: ${record.totals.llmInputTokens} in / ${record.totals.llmOutputTokens} out`);

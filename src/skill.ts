@@ -547,6 +547,18 @@ export function parseSkill(source: string): Skill {
         line: expectLine ?? fileLine,
       });
     }
+    // And never on a read step (S4 adversarial-review finding): the runner's
+    // write gates — approval hash, state check, write receipt — all key off
+    // the write effect, so `expect` on an `effect: read` step would be a
+    // stamped binding NOTHING checks, silently rendering as a clean pass
+    // (never-list #1). `approve --probe` only ever binds write steps; this
+    // shape can only be a hand edit flipping the effect after binding.
+    if (expect !== undefined && effect === "read") {
+      throw new SkillParseError(
+        "'expect' requires a write-effect step — a read step has no gated dispatch to condition (did the step's 'effect' change after it was state-bound?)",
+        { step: n, line: expectLine ?? fileLine }
+      );
+    }
 
     steps.push({
       n,

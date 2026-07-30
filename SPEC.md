@@ -355,7 +355,12 @@ pre/keyId/at"`), `pre` MUST match `hmac-sha256:[0-9a-f]{64}` exactly,
 ISO-8601-parseable string. `expect` without BOTH `attest:` and `approve:`
 on the same step is a parse error (`"'expect' requires both 'attest:' and
 'approve:' on the step"`) — there is no probe to compare with otherwise,
-and the only writer always writes the trio. Serialized canonically with
+and the only writer always writes the trio. `expect` on an `effect: read`
+step is also a parse error (`"'expect' requires a write-effect step …"`):
+every gate that checks a binding keys off the write effect, so a bound
+read step would carry a stamped condition nothing ever checks — the shape
+can only arise from a hand edit flipping the effect after binding.
+Serialized canonically with
 alphabetical key order (`at`, `keyId`, `pre`), matching the canonical-JSON
 sort, so the file line and the approval-hash input agree byte-for-byte.
 
@@ -564,6 +569,7 @@ interface StepRecord {
     approved: boolean;
     resource?: { id?: string; version?: string };
     duplicateOf?: number;
+    dispatchedAt?: string;
   };
   refs?: { source: "header" | "body"; key: string; value: string }[];
   attest?: {
@@ -574,6 +580,14 @@ interface StepRecord {
     delta?: { changed: number; fields?: string[] };
     confidence: "exact" | "partial" | "pending" | "absent";
     reason?: string;
+  };
+  stateCheck?: {
+    outcome: "match" | "mismatch" | "unevaluated";
+    action: "proceeded" | "stamped" | "refused";
+    expectedAt: string;
+    observedAt?: string;
+    reason?: string;
+    absentFields?: string[];
   };
   mocked?: true;
 }
@@ -588,9 +602,10 @@ interface StepRecord {
 | `llm` | Present **iff** escalation ran for this step at all (any level, success or failure) — summed input/output tokens across every attempt on this step. Absent, not `{inputTokens:0,...}`, when escalation never ran. `llm.model` (0.17.0+, the $ meter — flight-recorder-v1 §2) is the model of the **highest escalation level actually invoked** on this step (L2's model if L2 ran, else L1's) — a step that tried L1 then L2 with two different models has its summed tokens priced entirely at the L2 rate by `reelier cost`. Absent when the caller never passed `--llm-model`/`--llm-l2-model` and the runner's own default also went unresolved (never happens in practice — the runner always has a default), or on any pre-0.17.0 record. |
 | `escalationAttempted` | The **highest level TRIED**, present iff L1 was invoked at all. **Distinct from `level`**: a step can have `escalationAttempted: 2` and `level: 0` simultaneously — it burned L1 and L2 tokens and still never healed. `level` only ever reflects the level that *healed* it. |
 | `why` (0.8.0+) | Present **only** when this step's behavior changed: `trigger` = the load-bearing divergence (the first failure, verbatim from the real assertion/tool result) on a `"failed"` step; `change` = what the successful L1/L2 patch changed (`"L1: <reason>"` / `"L2: <reason>"`, the escalation's own reason) on a healed step. Absent on an unchanged step. **Never fabricated** — a producer MUST populate it only from observed engine data, never from generated narrative. |
-| `write` (0.19.0+, §6.1c) | Present **iff** this step's tool call actually dispatched a write-effect (`idempotent-write`/`destructive`) call — never for a refused, skipped, or mocked step. `approved` is `true` iff dispatched via a matching `Step.approve` hash, `false` via the legacy `--allow-writes`/`--yes` flags. `resource` is a best-effort, honestly-labeled extraction from the response body; absent, never fabricated, when nothing was found. `duplicateOf` is the step number of an earlier step in the SAME run that wrote the identical `idempotencyKey`. |
+| `write` (0.19.0+, §6.1c) | Present **iff** this step's tool call actually dispatched a write-effect (`idempotent-write`/`destructive`) call — never for a refused, skipped, or mocked step. `approved` is `true` iff dispatched via a matching `Step.approve` hash, `false` via the legacy `--allow-writes`/`--yes` flags. `resource` is a best-effort, honestly-labeled extraction from the response body; absent, never fabricated, when nothing was found. `duplicateOf` is the step number of an earlier step in the SAME run that wrote the identical `idempotencyKey`. `dispatchedAt` (state-conditioned approval) is the instant the dispatch was issued — present **only** on `expect:`-bearing steps (a skill with no `expect:` produces byte-identical records); with `stateCheck.observedAt` it carries the measured observation→dispatch window, which renderers omit (never clamp, never fabricate) when negative or absurd. |
 | `refs` (0.20.0+, trust-ladder §3) | Provider-issued request-id references captured from this step's response (allowlist-only — never scraped or fabricated). Omitted when none were captured, and always absent on a mocked step. This field shipped in 0.20.0; earlier printings of this table omitted it — that was a spec/implementation gap, not a behavior change. |
 | `attest` (state-attestation P1) | Present **iff** this step's tool call actually dispatched a write-effect call — never for a refused, skipped, or mocked step (the same caveat the `write` row carries). A dispatch that **throws** after a successful approved pre-probe still carries the captured `pre` side as confidence `"partial"` with reason `"dispatch-failed"` — the call went out even though no observation came back. `response-derived`: a hash over identity/version fields of the write's own response — confidence ceiling `"partial"`. `declared-probe`: the step's declared paired read captured before dispatch (`pre`) and after the result (`post`) — both present ⇒ `"exact"`, one side ⇒ `"partial"`, none ⇒ `"absent"` with `reason`. `selector` (declared-probe only) is the probe's tool name alone (e.g. `"github.get_comment"`) — never the args template, since a record is a publishable artifact and the record format carries no other tool args. The declared probe dispatches **only** when the step executed via a matching `approve:` hash (the approval hash binds `attest:`, so a human reviewed the probe's args template); on the flag path (`--allow-writes`/`--yes`) the probe is withheld and attest degrades to `response-derived` with reason `probe-requires-approval`. `delta` lists changed projection-field **names** only. Hashes are `sha256:<hex>` **salted commitments** for change-detection: each attest mixes a per-attest random salt (held in memory only, never recorded) into the canonical-JSON field projection, with `pre`/`post` of the same attest sharing one salt — so `pre.hash === post.hash` iff the projection didn't change, while cross-run hash joins are deliberately impossible. A hash is not encryption; without the salt it cannot be brute-forced, and it is not recomputable by third parties. Raw state never appears in a record, and a probe failure degrades the attestation, never the step. `absent`/`pending` MUST NOT be rendered as a pass by any consumer. |
+| `stateCheck` (state-conditioned approval) | Present **iff** the step carried `expect:` (§3.2) AND the runner reached the check (a step refused earlier — approval mismatch, unknown tool, write gate — carries none; a mocked step never does). The execute-time comparison of the step's pre-probe observation against the approve-time keyed commitment, computed strictly **before** dispatch. Outcomes: `match` (commitment equality — of the **declared projection only**, never the whole world, never a semantic-correctness or safety claim), `mismatch` (recorder mode records `action: "stamped"` and the write **still dispatches** — the stamp never flips `outcome`, `passed`, or the exit code), `unevaluated` (its own state — a consumer MUST NOT render it as a pass, and in recorder mode it never blocks). `action: "refused"` is reserved for the opt-in gate mode (not shipped in P1). `expectedAt` = `expect.at` (informational — **time is never an input to the comparison**); `observedAt` = when the execute-time observation resolved, absent iff unevaluated before any observation. `reason` (present iff `unevaluated`) is a **closed registry**: `probe-timeout: …`, `probe-failed: …`, `probe-tool-unknown: '<tool>'`, `empty-projection: probe returned no declared fields`, `key-unavailable: keyId '<id>'` — a deleted key and a never-present key are deliberately indistinguishable (deletion IS revocation). `absentFields` (only on `mismatch`) lists declared projection fields absent **at execute** — names only, capped at 32 entries / 120 chars each; it never asserts anything about approve-time presence. No keyed commitment values (and no keyId beyond a reason string) ever appear in a record. |
 | `mocked` (0.19.0+, §6.1d) | `true` iff this step's observation was a synthetic injected failure (`--fail N[=status]`) rather than a real tool dispatch. Absent for every real step. |
 
 ### 4.2 `RunRecord`

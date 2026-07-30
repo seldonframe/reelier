@@ -12,7 +12,7 @@
 // No new claims beyond what StepAttest actually recorded: this file never
 // says "verified", "safe", "drift detected", or "no drift" — see
 // docs/specs/flight-recorder-v2.md and the never-list this mirrors.
-import type { StepAttest } from "./runner.js";
+import type { StepAttest, StepStateCheck } from "./runner.js";
 
 /**
  * sha256:<64 hex> -> sha256:<first4>…<last4>. Anything that doesn't match
@@ -73,4 +73,67 @@ export function renderAttestLines(attest: StepAttest): string[] {
   const pre = preStateLine(attest);
   if (pre) lines.push(pre);
   return lines;
+}
+
+/**
+ * The probe→dispatch window in ms, or undefined when it can't be honestly
+ * rendered: either timestamp missing, negative (clock skew), or absurd
+ * (> 60 s — the window is an in-process gap between the probe resolving and
+ * the dispatch being issued; anything beyond a minute is a clock artifact,
+ * not a measurement). A14: the figure is OMITTED, never clamped, never
+ * declared with a special string, never fabricated.
+ */
+function measuredWindowMs(observedAt: string | undefined, dispatchedAt: string | undefined): number | undefined {
+  if (observedAt === undefined || dispatchedAt === undefined) return undefined;
+  const w = Date.parse(dispatchedAt) - Date.parse(observedAt);
+  if (Number.isNaN(w) || w < 0 || w > 60_000) return undefined;
+  return w;
+}
+
+/**
+ * CLI text for a step's state check (state-conditioned approval §5.4).
+ * These strings are stable API — they become gate-event labels. The copy
+ * law, test-pinned: match is a MUTED fact (no color, no symbol, never an
+ * endorsement); mismatch is the recorder stamp (loud — the string is
+ * sanctioned asymmetrically because it errs toward self-incrimination);
+ * unevaluated is its own state, never either. Forbidden on this surface:
+ * "verified", "safe", "no drift", "atomic", "guaranteed", and any
+ * state-was-X-at-dispatch claim (only observations are claimable).
+ */
+export function renderStateCheckLines(check: StepStateCheck, dispatchedAt: string | undefined): string[] {
+  if (check.outcome === "match") {
+    const w = measuredWindowMs(check.observedAt, dispatchedAt);
+    const windowPart = w !== undefined ? ` · window ${w} ms` : "";
+    return [`pre-state check: match (approved ${check.expectedAt} · observed ${check.observedAt}${windowPart})`];
+  }
+  if (check.outcome === "mismatch") {
+    const lines = [
+      "⚠ executed against state that differs from the state this approval was granted against —",
+      `  pre-state commitment mismatch (approved ${check.expectedAt} · observed ${check.observedAt})`,
+    ];
+    if (check.absentFields && check.absentFields.length > 0) {
+      lines.push(`  declared fields absent at execute: ${check.absentFields.join(", ")}`);
+    }
+    return lines;
+  }
+  // `reason` is always present on a runner-produced unevaluated check; the
+  // fallback marks a malformed/hand-crafted record and is deliberately NOT
+  // registry-shaped (the reason registry is closed — never mint a label).
+  return [`pre-state check: not evaluated — ${check.reason ?? "(no reason recorded — malformed record)"}`];
+}
+
+/** Mismatch stamps only — match is not a finding (it's a fact) and unevaluated is not a finding (nothing was observed to differ). Feeds the run summary's `· N finding(s)`. */
+export function stateCheckFindingsCount(steps: Array<{ stateCheck?: StepStateCheck }>): number {
+  return steps.filter((s) => s.stateCheck?.outcome === "mismatch").length;
+}
+
+/**
+ * The run summary's finding tag (§5.4): ` · N finding(s)` when any step
+ * stamped a pre-state mismatch, empty otherwise. The tag NEVER feeds the
+ * exit code or PASSED/FAILED (I-9) — a finding is about the world, not the
+ * run. Exported so the string format is test-pinned.
+ */
+export function findingsSummaryTag(steps: Array<{ stateCheck?: StepStateCheck }>): string {
+  const findings = stateCheckFindingsCount(steps);
+  return findings > 0 ? ` · ${findings} finding${findings === 1 ? "" : "s"}` : "";
 }
