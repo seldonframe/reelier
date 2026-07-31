@@ -116,28 +116,85 @@ export function expectMac(key: Uint8Array, probeTool: string, projected: Record<
 
 /**
  * The typed twin of `projectObservation`'s explicit-projection branch
- * (src/runner.ts): same selection semantics — declared top-level body keys,
- * scalars only, `body.` prefix, absent/non-scalar silently dropped, non-JSON
- * or non-object bodies project to {} — but values keep their JSON type so
- * the MAC input can be type-tagged (A6). The attest pipeline's own
+ * (src/runner.ts): same selection semantics — including the P1.5 projection
+ * namespaces (`header.<name>` from response headers, `body.<key>`/bare
+ * `<key>` from top-level body keys), scalars only, absent/non-scalar
+ * silently dropped, non-JSON or non-object bodies contribute no body
+ * fields — but values keep their JSON type so the MAC input can be
+ * type-tagged (A6; headers are always strings). The attest pipeline's own
  * stringifying projection is deliberately untouched (I-4: keyed and salted
- * commitments never mix; fork the encoding, not the attest path).
+ * commitments never mix; fork the encoding, not the attest path). The
+ * selection rules are pinned to projectObservation by drift tests — the
+ * fork was sanctioned for the ENCODING, never the SELECTION.
  */
-export function projectObservationTyped(body: string, projection: string[]): Record<string, string | number | boolean> {
+export function projectObservationTyped(
+  obs: { body: string; headers: Record<string, string> },
+  projection: string[]
+): Record<string, string | number | boolean> {
   const out: Record<string, string | number | boolean> = {};
   let parsed: unknown;
   try {
-    parsed = JSON.parse(body);
+    parsed = JSON.parse(obs.body);
   } catch {
-    return out;
+    parsed = undefined;
   }
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return out;
-  const rec = parsed as Record<string, unknown>;
+  const rec = parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : undefined;
   for (const key of projection) {
-    const v = rec[key];
-    if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") out[`body.${key}`] = v;
+    if (key.startsWith("header.")) {
+      const name = key.slice("header.".length);
+      const v = lookupHeader(obs.headers, name);
+      if (typeof v === "string" && v.length > 0) out[key] = v;
+      continue;
+    }
+    if (!rec) continue;
+    const bodyKey = key.startsWith("body.") ? key.slice("body.".length) : key;
+    const v = rec[bodyKey];
+    if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") out[`body.${bodyKey}`] = v;
   }
   return out;
+}
+
+/**
+ * Case-insensitive header lookup, exact match first — HTTP header names are
+ * case-insensitive and fetch lowercases them, but --replay fixtures and
+ * hand-authored tool registries pass header records through untouched, so an
+ * exact-only lookup would land `header.ETag` in absentFields forever (review
+ * finding). Shared by BOTH projection twins (projectObservationTyped here,
+ * projectObservation's explicit branch in src/runner.ts) so the selection
+ * rule cannot drift between them. Own keys only; the caller's
+ * typeof === "string" check screens anything a prototype could leak.
+ */
+export function lookupHeader(headers: Record<string, string>, name: string): string | undefined {
+  const exact = headers[name];
+  if (typeof exact === "string") return exact;
+  const lower = name.toLowerCase();
+  for (const k of Object.keys(headers)) {
+    if (k.toLowerCase() === lower) return headers[k];
+  }
+  return undefined;
+}
+
+/**
+ * Per-field commitment (P1.5, wave2 §3.5): one MAC per projected field,
+ * under the SAME per-approval key, so a mismatch can be diagnosed to the
+ * field NAMES that moved — never values. Domain-separated from the
+ * whole-projection MAC by input shape (`field`/`value` keys vs
+ * `projection`); the whole-projection MAC stays the authoritative
+ * match/mismatch verdict — field MACs only ever explain a mismatch the
+ * whole MAC already declared. The §3.5 trade is accepted knowingly: each
+ * exposed commitment is one more dictionary surface for that field under a
+ * leaked key, bounded per-approval like everything else in the scheme.
+ */
+export function expectFieldMac(key: Uint8Array, probeTool: string, fieldName: string, value: string | number | boolean): string {
+  assertUsableKey(key);
+  if (typeof probeTool !== "string" || probeTool.trim() === "") {
+    throw new Error("expectFieldMac: probe tool name must be a non-empty string");
+  }
+  if (typeof fieldName !== "string" || fieldName.trim() === "" || fieldName === "__proto__") {
+    throw new Error(`expectFieldMac: invalid field name ${JSON.stringify(fieldName)}`);
+  }
+  const input = canonicalJson({ field: fieldName, probe: probeTool, v: 1, value: tagScalar(value) });
+  return MAC_PREFIX + createHmac("sha256", Buffer.from(key)).update(input, "utf8").digest("hex");
 }
 
 // ---------------------------------------------------------------------------
@@ -269,6 +326,42 @@ export async function writeKeystoreEntry(
   entry: ExpectKeystoreEntry,
   opts: KeystoreWriteOptions = {}
 ): Promise<void> {
+  return updateKeystore(filePath, (store) => {
+    store.keys[keyId] = entry;
+  }, opts);
+}
+
+/**
+ * Remove entries by keyId — `reelier approve --prune-keys`'s write half
+ * (P1.5, wave2 §3.4's named follow-up). Same lock + temp-file + rename
+ * discipline as every keystore write; removing an absent keyId is a no-op,
+ * never an error (the prune scan and the store may race a concurrent
+ * approve). `mintedBefore` closes the other half of that race under the
+ * lock (review finding): an entry minted at or after the caller's scan
+ * began cannot have been judged orphaned by that scan, so it is spared —
+ * keys are random and unrecoverable, deletion errs toward sparing.
+ */
+export async function removeKeystoreEntries(
+  filePath: string,
+  keyIds: string[],
+  opts: KeystoreWriteOptions & { mintedBefore?: string } = {}
+): Promise<void> {
+  return updateKeystore(filePath, (store) => {
+    for (const keyId of keyIds) {
+      const entry = store.keys[keyId];
+      if (entry === undefined) continue;
+      if (opts.mintedBefore !== undefined && entry.createdAt >= opts.mintedBefore) continue;
+      delete store.keys[keyId];
+    }
+  }, opts);
+}
+
+/** The shared locked read-modify-write every keystore mutation goes through (A10 durability discipline). */
+async function updateKeystore(
+  filePath: string,
+  mutate: (store: ExpectKeystore) => void,
+  opts: KeystoreWriteOptions = {}
+): Promise<void> {
   const lockPath = `${filePath}.lock`;
   const retries = opts.lockRetries ?? 50;
   const retryDelayMs = opts.lockRetryDelayMs ?? 100;
@@ -294,7 +387,7 @@ export async function writeKeystoreEntry(
 
   try {
     const store = await readKeystore(filePath);
-    store.keys[keyId] = entry;
+    mutate(store);
     const tempPath = `${filePath}.tmp-${randomBytes(6).toString("hex")}`;
     let replaced = false;
     try {

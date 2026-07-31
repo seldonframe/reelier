@@ -2,6 +2,96 @@
 
 All notable changes to `reelier`. Dates are release dates.
 
+## 0.27.0 — The state gate: fail-closed, opt-in, per repo
+
+Breaking behavior: **none — additive, and off unless you turn it on.** A repo
+with no `state_gate` key in `.reelier/policy.yml` behaves byte-identically to
+0.26.0: the recorder stamps findings and never blocks a write.
+
+### Added
+- **`state_gate: refuse` — the one line that turns the recorder into a
+  gate.** Put it at the top level of `.reelier/policy.yml` and a write step
+  whose pre-state check lands `mismatch` (the world moved since the
+  approval) or `unevaluated` (the binding could not be checked) is
+  **refused before dispatch**: the step fails with an explicit reason, and
+  the record carries no `write` block and no `attest` — the call provably
+  never went out. The computed diagnosis survives the refusal, so the
+  receipt still names which declared fields moved.
+- **No flag overrides it.** `--allow-writes` and `--yes` are not consulted
+  on a state-gate refusal. That is the entire reason the opt-in lives in a
+  file a human commits rather than a flag an agent can pass: a control that
+  can be talked out of at invocation time is not a control.
+- **Refusing on `unevaluated` is deliberate.** After a key is deleted —
+  which is how a binding is revoked — the approval is no longer evidence,
+  and fail-closed is precisely what revocation should mean for a repo that
+  asked for it.
+- **Every run path resolves the gate**, not just `reelier run`: the
+  `reelier_replay` MCP tool honors the same policy file, so an agent
+  cannot bypass an opted-in repo's gate by choosing the other entrypoint.
+- **A malformed opt-in fails closed.** If `.reelier/policy.yml` names
+  `state_gate` but does not parse, the run is refused before step 1 with
+  the parse errors — silently ignoring a declared operator intent is the
+  one direction an opt-in gate must never fail. A malformed file that does
+  *not* name `state_gate` keeps today's behavior: warn on stderr, run
+  anyway. A malformed file can never opt a repo **in**.
+
+### Notes
+- Two controls, one job each, still: **fail open at the recorder, fail
+  closed at the gate.** Recorder mode remains the default everywhere.
+- A UTF-8 BOM (what Windows PowerShell's `>` and `Out-File` write by
+  default) never hides the opt-in, and a policy file that exists but
+  cannot be read is reported as an unknown intent rather than skipped
+  silently.
+
+## 0.26.0 — P1.5: name what moved, reach the headers, prune the keys
+
+Breaking behavior: **none — additive.** A fieldless binding hashes
+byte-identically to 0.25.0 (pinned), every existing projection selects
+byte-identically, and skills without `expect:` remain untouched end to end.
+
+### Added
+- **Per-field commitments (`expect.fields`) and mismatch diagnosis.**
+  `approve --probe` now also stamps one keyed commitment per projected
+  field (same per-approval key, domain-separated from the whole-projection
+  MAC). When a bound write later executes against moved state, the receipt
+  can name WHICH declared fields moved:
+  `fields changed since approval: body.compiled_truth` — names only, never
+  values, and only for fields present at both approve and execute. This is
+  an earned approve-time claim: per-field MAC inequality under the held
+  key proves the committed value differs. A 0.25.0-era fieldless binding
+  never fabricates a diagnosis. The whole-projection commitment stays the
+  only match/mismatch verdict.
+- **Projection namespaces.** `header.<name>` addresses a response header —
+  http's native `etag` / `last-modified`, the If-Match-class fields
+  explicit projections could never reach (matched case-insensitively,
+  exact match first). `body.<key>` is the explicit body form; a bare
+  `<key>` stays a top-level body key, byte-identical to the shipped
+  selection. The fixed-point lint sees through the prefixes
+  (`header.etag` is version-class). A `status` namespace is deliberately
+  deferred: a bare `status` already means a body key in shipped skills.
+- **`reelier approve --prune-keys [--all]`.** Lists keystore entries whose
+  keyId appears in no `*.md` under the current directory and removes them
+  only on explicit confirmation. Biased toward sparing on every edge:
+  standalone-only (refuses to combine with a skill path or any approve
+  flag), a reference scan at least as forgiving as the parser
+  (whitespace-tolerant, case-insensitive `.md`, symlinks followed), a
+  post-consent re-scan, and a minted-after-scan guard under the keystore
+  lock — removal is revocation, and the prompt names what the scan could
+  not see.
+- **gbrain example, part two: the owner promotion.** The quarantine story
+  now has its second half in CI — the owner promotes the quarantined
+  entity stubs (`extraction-review promote`, a local trust-boundary act),
+  and a read-only companion skill receipts the grown graph, backlinks
+  restored (`examples/gbrain/gbrain-verify-promoted.skill.md`).
+
+### Verified
+- Full state-conditioned loop green in CI against a real gbrain,
+  **including live receipt pushes**: match, mismatch (a real second
+  writer), key-unavailable `unevaluated`, owner promotion, and the
+  companion receipt — six receipts minted on live `/r/` pages, `/md`
+  render asserted and `reelier verify` re-run offline on each
+  (`.github/workflows/gbrain-state-e2e.yml`, run 30540918371).
+
 ## 0.25.0 — State-conditioned approval P1: approvals that expire when the world moves
 
 Breaking behavior: **none — additive.** Every already-approved skill remains

@@ -179,7 +179,7 @@ test("expectMac refuses a non-string probe tool name — the guard is for untype
 
 test("projectObservationTyped selects declared top-level body scalars, preserving type", () => {
   const body = JSON.stringify({ compiled_truth: "# hi", count: 3, flagged: false, nested: { a: 1 }, arr: [1], nil: null });
-  const out = projectObservationTyped(body, ["compiled_truth", "count", "flagged", "nested", "arr", "nil", "absent"]);
+  const out = projectObservationTyped({ body, headers: {} }, ["compiled_truth", "count", "flagged", "nested", "arr", "nil", "absent"]);
   assert.deepEqual(out, {
     "body.compiled_truth": "# hi",
     "body.count": 3,
@@ -188,8 +188,8 @@ test("projectObservationTyped selects declared top-level body scalars, preservin
 });
 
 test("projectObservationTyped mirrors projectObservation: non-JSON body → empty; array body → empty", () => {
-  assert.deepEqual(projectObservationTyped("not json", ["a"]), {});
-  assert.deepEqual(projectObservationTyped("[1,2]", ["a"]), {});
+  assert.deepEqual(projectObservationTyped({ body: "not json", headers: {} }, ["a"]), {});
+  assert.deepEqual(projectObservationTyped({ body: "[1,2]", headers: {} }, ["a"]), {});
 });
 
 test("a JSON scalar body projects to {} even when the projection names one of its intrinsic properties", () => {
@@ -235,7 +235,7 @@ test("drift pin: projectObservationTyped selects EXACTLY what projectObservation
     ["__proto__"],
   ];
   for (let i = 0; i < bodies.length; i++) {
-    const typed = projectObservationTyped(bodies[i], projections[i]);
+    const typed = projectObservationTyped({ body: bodies[i], headers: {} }, projections[i]);
     const stringified = projectObservation({ status: 200, headers: {}, body: bodies[i] }, projections[i]);
     assert.deepEqual(
       Object.fromEntries(Object.entries(typed).map(([k, v]) => [k, String(v)])),

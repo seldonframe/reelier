@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Hand-rolled argv parsing (no commander). Two subcommands: run, bench.
 
-import { readFile, writeFile, access, readdir } from "node:fs/promises";
+import { readFile, writeFile, access, readdir, realpath, stat } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
@@ -14,10 +14,12 @@ import { runSkill, dryRunSkill, readRunRecords, runProbe, DEFAULT_PROBE_TIMEOUT_
 import {
   mintExpectKey,
   expectMac,
+  expectFieldMac,
   projectObservationTyped,
   resolveKeystorePath,
   readKeystore,
   writeKeystoreEntry,
+  removeKeystoreEntries,
   loadExpectKey,
 } from "./expect-mac.js";
 import { pushSkill, PublicSubmissionError, type PushRecordResult } from "./push.js";
@@ -75,7 +77,14 @@ import {
   type SinceFilter,
 } from "./cost.js";
 import { BUNDLED_PRICES_RETRIEVED_AT } from "./prices.js";
-import { loadPolicyForWrap, summarizePolicyForWrapStart, parsePolicyStrict, hasEndpointRules, ENDPOINT_RULE_NOTE } from "./policy.js";
+import {
+  loadPolicyForWrap,
+  summarizePolicyForWrapStart,
+  parsePolicyStrict,
+  hasEndpointRules,
+  ENDPOINT_RULE_NOTE,
+  resolveStateGateForRun,
+} from "./policy.js";
 import { generateSigningKeypair, loadSigningKey, signRecordDigest, verifyRecordSignature, signingKeyDir } from "./signing.js";
 import { resolveVerifyPayload, evaluateVerifyClaims } from "./verify.js";
 import { writeCiWorkflow, PLACEHOLDER_SKILL_PATH } from "./ci-scaffold.js";
@@ -233,7 +242,8 @@ function buildWrappedToolRegistry(downstreams: DownstreamConnection[]): Record<s
  */
 export async function cmdRun(
   args: ParsedArgs,
-  connect: (spec: string) => Promise<DownstreamConnection> = connectDownstream
+  connect: (spec: string) => Promise<DownstreamConnection> = connectDownstream,
+  deps: { cwd?: string; homedir?: string } = {}
 ): Promise<number> {
   const skillPath = args.positional[0];
   if (!skillPath) {
@@ -243,6 +253,27 @@ export async function cmdRun(
         "[--fail N[=status] ...]"
     );
     return 1;
+  }
+
+  // S8 (§5.5): resolve the state-gate opt-in FIRST — a malformed file that
+  // DECLARES `state_gate` refuses the run before anything else happens
+  // (silently ignoring it would fail open against a declared operator
+  // intent, the one direction an opt-in gate must never fail). Repos
+  // without the key keep today's behavior on this path — a malformed
+  // policy without it warns (the warning line is the gap marker; the run
+  // record is never mutated for a repo that did not opt in).
+  const stateGate = await resolveStateGateForRun(deps.cwd ?? process.cwd(), deps.homedir ?? os.homedir());
+  if (stateGate.mode === "refuse-run") {
+    console.error(
+      `Refusing to run: ${stateGate.sourcePath} declares 'state_gate' but is malformed (${stateGate.errors.length} error(s)): ${stateGate.errors.join("; ")}`
+    );
+    console.error(
+      "A malformed state-gate opt-in fails closed. Fix the file ('reelier policy check') or remove the state_gate key for recorder mode."
+    );
+    return 1;
+  }
+  if (stateGate.mode === "off" && stateGate.warning !== undefined) {
+    console.error(stateGate.warning);
   }
 
   let maxLevel: 0 | 1 | 2;
@@ -366,6 +397,12 @@ export async function cmdRun(
       // stamped verbatim onto the RunRecord (see RunRecord.skillContentSha256).
       skillContentSha256: createHash("sha256").update(source, "utf8").digest("hex"),
       manifestIgnored,
+      // The directory whose policy governed the gate MUST be the directory
+      // that receives the run record (review finding): otherwise a
+      // programmatic caller passing deps.cwd gates on repo A and records
+      // into repo B. Same value, by construction.
+      ...(deps.cwd !== undefined ? { cwd: deps.cwd } : {}),
+      ...(stateGate.mode === "refuse" ? { stateGate: "refuse" as const } : {}),
       ...(args.fails.length > 0 ? { mockFailures } : {}),
       onStep: (rec) => {
         const icon =
@@ -399,8 +436,12 @@ export async function cmdRun(
     const okCount = record.totals.passed + record.totals.unchecked;
     const uncheckedTag = record.totals.unchecked > 0 ? ` (${record.totals.unchecked} unchecked)` : "";
     // §5.4: the summary gains `· N finding(s)` when any step stamped a
-    // pre-state mismatch. The stamp never flips PASSED/FAILED or the exit
-    // code (I-9) — a finding is about the world, not the run.
+    // pre-state mismatch (stamped in recorder mode, or refused under the
+    // S8 state gate). The stamp never flips PASSED/FAILED or the exit code
+    // (I-9) — a finding is about the world, not the run. In gate mode the
+    // REFUSAL flips the outcome (it lands in failures[]), so a refused run
+    // prints FAILED *and* a finding tag: two honest facts, not one signal
+    // leaking into the other.
     console.log(
       `${record.passed ? "PASSED" : "FAILED"}: ${okCount}/${record.totals.steps} steps ok${uncheckedTag}, ${
         record.totals.failed
@@ -872,7 +913,8 @@ async function cmdPolicyCheck(args: ParsedArgs): Promise<number> {
   }
 
   const policy = validation.policy!;
-  console.log(`${targetPath}: OK — ${policy.deny.length} deny rule(s), ${policy.dryRun.length} dry-run rule(s)`);
+  const gateNote = policy.stateGate === "refuse" ? ", state_gate: refuse (run-path gate — fail-closed on pre-state mismatch/unevaluated)" : "";
+  console.log(`${targetPath}: OK — ${policy.deny.length} deny rule(s), ${policy.dryRun.length} dry-run rule(s)${gateNote}`);
   if (hasEndpointRules(policy)) {
     console.log(ENDPOINT_RULE_NOTE);
   }
@@ -1333,12 +1375,165 @@ export interface ApproveDeps {
   /** A2: projected VALUES print only when stdout is a TTY and never under --all (CI logs are retained artifacts). */
   isTTY?: boolean;
   now?: () => number;
+  /** --prune-keys scan root (defaults to process.cwd()). */
+  cwd?: string;
+}
+
+/**
+ * Recursively collect every 16-hex keyId referenced by any `expect:` line in
+ * *.md files under `root`. Skips node_modules/.git/dist/dist-test/.stryker-tmp
+ * trees; follows symlinks (visited-realpath set guards cycles — a symlinked
+ * skills/ dir must still protect its keys); regex scan, not a full parse — a
+ * half-broken skill file must still protect its keys. The scan must therefore
+ * be at LEAST as forgiving as the parser (review finding): the parser accepts
+ * any JSON spacing and the filesystem may be case-insensitive, so the regex
+ * tolerates whitespace around the colon and the .md match ignores case —
+ * missing a live reference here deletes an unrecoverable key.
+ */
+async function collectReferencedKeyIds(root: string): Promise<Set<string>> {
+  const referenced = new Set<string>();
+  const SKIP = new Set(["node_modules", ".git", "dist", "dist-test", ".stryker-tmp"]);
+  const visited = new Set<string>();
+  const scanFile = async (file: string): Promise<void> => {
+    try {
+      const text = await readFile(file, "utf8");
+      for (const m of text.matchAll(/"keyId"\s*:\s*"([0-9a-f]{16})"/g)) referenced.add(m[1]);
+    } catch {
+      // unreadable file: skip — an unreadable skill must not orphan its key
+    }
+  };
+  const walk = async (dir: string): Promise<void> => {
+    let real: string;
+    try {
+      real = await realpath(dir);
+    } catch {
+      return;
+    }
+    if (visited.has(real)) return;
+    visited.add(real);
+    let entries;
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch {
+      return; // unreadable dir: skip, never crash a prune over permissions
+    }
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      let isDir = entry.isDirectory();
+      let isFile = entry.isFile();
+      if (entry.isSymbolicLink()) {
+        try {
+          const st = await stat(full); // follows the link
+          isDir = st.isDirectory();
+          isFile = st.isFile();
+        } catch {
+          continue; // broken link: nothing to protect behind it
+        }
+      }
+      if (isDir) {
+        if (!SKIP.has(entry.name)) await walk(full);
+      } else if (isFile && entry.name.toLowerCase().endsWith(".md")) {
+        await scanFile(full);
+      }
+    }
+  };
+  await walk(root);
+  return referenced;
+}
+
+/** `reelier approve --prune-keys [--all]` (P1.5, wave2 §3.4's named follow-up) — see the dispatch in cmdApprove. */
+async function cmdPruneKeys(args: ParsedArgs, deps: ApproveDeps): Promise<number> {
+  const now = deps.now ?? (() => Date.now());
+  // Captured BEFORE the store read: the keystore mutation later refuses to
+  // delete anything minted after this instant (review finding — a concurrent
+  // approve's mint order is keystore-entry-then-skill-file, §4.2.4).
+  const scanStart = new Date(now()).toISOString();
+  const keystorePath = resolveKeystorePath(deps.env ?? process.env, deps.homedir ?? os.homedir());
+  const store = await readKeystore(keystorePath);
+  const keyIds = Object.keys(store.keys);
+  if (keyIds.length === 0) {
+    console.log(`no keys in ${keystorePath} — nothing to prune`);
+    return 0;
+  }
+  const root = deps.cwd ?? process.cwd();
+  const referenced = await collectReferencedKeyIds(root);
+  const orphans = keyIds.filter((id) => !referenced.has(id));
+  if (orphans.length === 0) {
+    console.log(`${keyIds.length} key(s) in ${keystorePath}, all referenced by skills under ${root} — nothing to prune`);
+    return 0;
+  }
+  console.log(`${orphans.length} of ${keyIds.length} key(s) in ${keystorePath} are referenced by no skill under ${root}:`);
+  for (const id of orphans) {
+    const entry = store.keys[id];
+    const hint = entry.skill !== undefined ? ` (minted for ${entry.skill}${entry.step !== undefined ? ` step ${entry.step}` : ""})` : "";
+    console.log(`  ${id} — created ${entry.createdAt}${hint}`);
+  }
+  let yes = args.flags.has("all");
+  if (!yes) {
+    const rl = deps.ask === undefined ? createInterface({ input: process.stdin, output: process.stdout }) : undefined;
+    const ask = deps.ask ?? ((q: string) => rl!.question(q));
+    try {
+      // The prompt names what the scan could NOT see (review finding — spec
+      // §3.4's primary reason keys are never auto-deleted is exactly the
+      // out-of-scan-reach copies): other checkouts/branches/machines, plus
+      // the skipped node_modules/.git/dist trees.
+      const answer = (
+        await ask(
+          `Remove ${orphans.length} orphaned key(s)? Removal is revocation — a skill bound under one (a git revert, a parallel checkout or branch, anything outside ${root} or under node_modules/.git/dist, none of which this scan saw) degrades to 'unevaluated'. (y/N) `
+        )
+      )
+        .trim()
+        .toLowerCase();
+      yes = answer === "y" || answer === "yes";
+    } finally {
+      rl?.close();
+    }
+  }
+  if (!yes) {
+    console.log("nothing removed");
+    return 0;
+  }
+  // Re-scan AFTER consent (review finding): the prompt has human latency, and
+  // a concurrent approve may have stamped its skill file inside that window.
+  // Deletion is unrecoverable, so anything referenced by now is spared, and
+  // the keystore mutation itself skips entries minted after scanStart.
+  const stillReferenced = await collectReferencedKeyIds(root);
+  const confirmed = orphans.filter((id) => !stillReferenced.has(id));
+  if (confirmed.length < orphans.length) {
+    console.log(`${orphans.length - confirmed.length} key(s) became referenced during confirmation — spared`);
+  }
+  if (confirmed.length === 0) {
+    console.log("nothing removed");
+    return 0;
+  }
+  await removeKeystoreEntries(keystorePath, confirmed, { mintedBefore: scanStart });
+  console.log(`removed ${confirmed.length} key(s)`);
+  return 0;
 }
 
 export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Promise<number> {
+  // P1.5: `--prune-keys` takes no skill path — rotation leaves superseded
+  // entries behind on purpose (parallel checkouts, git revert); pruning is
+  // the explicit act, never a side effect. Same refusal standard as
+  // --drop-expect/--probe below (review finding — blocking): silently
+  // swallowing a skill path or approve flag would delete keys while the
+  // operator believes they ran an approve.
+  if (args.flags.has("prune-keys")) {
+    const conflicts = ["probe", "rebind", "drop-expect"].filter((f) => args.flags.has(f));
+    if (args.positional.length > 0 || conflicts.length > 0 || args.wraps.length > 0) {
+      const offender = args.positional.length > 0 ? `a skill path (${args.positional[0]})` : `--${conflicts[0] ?? "wrap"}`;
+      console.error(
+        `--prune-keys is a standalone command and cannot be combined with ${offender}. Run 'reelier approve --prune-keys [--all]' alone; --all skips the confirmation prompt.`
+      );
+      return 1;
+    }
+    return cmdPruneKeys(args, deps);
+  }
   const skillPath = args.positional[0];
   if (!skillPath) {
-    console.error('Usage: reelier approve <skill.md> [--all] [--probe] [--rebind] [--wrap "<cmd>"]... [--drop-expect]');
+    console.error(
+      'Usage: reelier approve <skill.md> [--all] [--probe] [--rebind] [--wrap "<cmd>"]... [--drop-expect] | reelier approve --prune-keys [--all]'
+    );
     return 1;
   }
 
@@ -1432,7 +1627,14 @@ export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Prom
     console.log(
       `  pre-state commitment: ${abbrevMac(mac)} (key ${keyId} in ${keystorePath} — the key never enters the skill file or any record)`
     );
-    step.expect = { at, keyId, pre: mac };
+    // P1.5 (§3.5): per-field commitments ride along so a future mismatch
+    // can name WHICH declared field moved — names only, same key, one MAC
+    // per projected field. The whole-projection `pre` stays the verdict.
+    const fieldMacs: Record<string, string> = {};
+    for (const [name, value] of Object.entries(typed)) {
+      fieldMacs[name] = expectFieldMac(key, step.attest!.tool, name, value);
+    }
+    step.expect = { at, keyId, pre: mac, fields: fieldMacs };
     step.approve = computeApprovalHash({ actionTool: step.actionTool, actionArgs: step.actionArgs, attest: step.attest, expect: step.expect });
   };
 
@@ -1452,7 +1654,13 @@ export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Prom
     } else {
       console.log(`    projected fields: ${Object.keys(typed).map(safeFieldName).join(", ")}`);
     }
-    const volatile = projection.filter((f) => (EXPECT_VOLATILE_FIELDS as readonly string[]).includes(f));
+    // P1.5 (review finding): strip a `body.`/`header.` namespace before the
+    // membership test — `header.etag` is the MOST version-class projection
+    // expressible, and a prefix-blind lint would print the ABA note (an
+    // affirmatively false line on the consent transcript) for exactly it.
+    const volatile = projection.filter((f) =>
+      (EXPECT_VOLATILE_FIELDS as readonly string[]).includes(f.replace(/^(?:body|header)\./, ""))
+    );
     if (volatile.length > 0) {
       console.log(
         `  warning: projection field(s) ${volatile.map(safeFieldName).join(", ")} are version-class — mutated by every write; a standing approval here self-invalidates after its own first run (fixed-point rule)`
@@ -1577,7 +1785,7 @@ export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Prom
           reVerifyUnavailable++;
           continue;
         }
-        const typed = projectObservationTyped(reVerify.obs.body, step.attest!.projection ?? []);
+        const typed = projectObservationTyped(reVerify.obs, step.attest!.projection ?? []);
         if (Object.keys(typed).length === 0) {
           console.log("  approved (current) — re-verify unavailable (empty-projection: probe returned no declared fields); binding left as-is");
           reVerifyUnavailable++;
@@ -1682,7 +1890,7 @@ export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Prom
           console.log(`failed (${probeResult.reason})`);
           notBindable = probeResult.reason;
         } else {
-          typed = projectObservationTyped(probeResult.obs.body, step.attest!.projection ?? []);
+          typed = projectObservationTyped(probeResult.obs, step.attest!.projection ?? []);
           if (Object.keys(typed).length === 0) {
             console.log("failed (empty-projection: probe returned no declared fields)");
             notBindable = "empty-projection: probe returned no declared fields";

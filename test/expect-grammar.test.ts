@@ -96,7 +96,10 @@ test("unknown expect key rejected with the spec's verbatim message shape", () =>
       parseSkill(
         SKILL(ATTEST, APPROVE, `- expect: {"at":"2026-07-30T00:00:00Z","keyId":"3c9a01d2e4f5b6a7","pre":"hmac-sha256:${"a".repeat(64)}","extra":1}`)
       ),
-    /Unknown 'expect' key "extra" — expected pre\/keyId\/at/
+    // Anchored through to the where-clause (review finding): an unanchored
+    // prefix match let the P1.5 "/fields" suffix land without this pin
+    // noticing — the key list must end exactly at the (step …) suffix.
+    /Unknown 'expect' key "extra" — expected pre\/keyId\/at\/fields \(step /
   );
 });
 

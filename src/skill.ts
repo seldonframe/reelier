@@ -61,6 +61,14 @@ export interface StepExpect {
   keyId: string;
   /** The keyed commitment over the approve-time projected observation: `hmac-sha256:<64 hex>`. */
   pre: string;
+  /**
+   * P1.5 (wave2 §3.5): optional per-field commitments under the same
+   * per-approval key — output-form field names (`body.<key>` /
+   * `header.<name>`) to `hmac-sha256:<64 hex>`. Diagnosis only: the
+   * whole-projection `pre` stays the match/mismatch verdict; these let a
+   * mismatch name WHICH declared fields moved (names, never values).
+   */
+  fields?: Record<string, string>;
 }
 
 /** One tool this skill's steps depend on, as recorded/stamped from a live downstream's advertised schema. */
@@ -260,8 +268,8 @@ function validateExpectShape(value: unknown, ctx: { step: number; line: number }
   }
   const obj = value as Record<string, unknown>;
   for (const key of Object.keys(obj)) {
-    if (key !== "at" && key !== "keyId" && key !== "pre") {
-      throw new SkillParseError(`Unknown 'expect' key ${JSON.stringify(key)} — expected pre/keyId/at`, ctx);
+    if (key !== "at" && key !== "keyId" && key !== "pre" && key !== "fields") {
+      throw new SkillParseError(`Unknown 'expect' key ${JSON.stringify(key)} — expected pre/keyId/at/fields`, ctx);
     }
   }
   if (typeof obj.pre !== "string" || !EXPECT_PRE_RE.test(obj.pre)) {
@@ -282,7 +290,26 @@ function validateExpectShape(value: unknown, ctx: { step: number; line: number }
       ctx
     );
   }
-  return { at: obj.at, keyId: obj.keyId, pre: obj.pre };
+  let fields: Record<string, string> | undefined;
+  if (obj.fields !== undefined) {
+    if (obj.fields === null || typeof obj.fields !== "object" || Array.isArray(obj.fields)) {
+      throw new SkillParseError("Malformed 'expect.fields' (expected an object of field-name → hmac-sha256:<64 hex>)", ctx);
+    }
+    fields = {};
+    for (const [name, mac] of Object.entries(obj.fields as Record<string, unknown>)) {
+      if (name.trim() === "" || name === "__proto__") {
+        throw new SkillParseError(`Invalid 'expect.fields' name ${JSON.stringify(name)}`, ctx);
+      }
+      if (typeof mac !== "string" || !EXPECT_PRE_RE.test(mac)) {
+        throw new SkillParseError(`Invalid 'expect.fields' value for ${JSON.stringify(name)} — expected hmac-sha256:<64 hex>`, ctx);
+      }
+      fields[name] = mac;
+    }
+    if (Object.keys(fields).length === 0) {
+      throw new SkillParseError("'expect.fields' must not be empty — omit it entirely for a fieldless binding", ctx);
+    }
+  }
+  return { at: obj.at, keyId: obj.keyId, pre: obj.pre, ...(fields !== undefined ? { fields } : {}) };
 }
 
 /** Minimal frontmatter parser: flat `key: value` pairs (name, description, optional manifest). */

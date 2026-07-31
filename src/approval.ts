@@ -56,7 +56,14 @@ export function computeApprovalHash(step: ApprovalHashInput): string {
     return digestSha256({
       args: step.actionArgs,
       attest: { args: step.attest.args, projection: step.attest.projection ?? null, tool: step.attest.tool },
-      expect: { at: step.expect.at, keyId: step.expect.keyId, pre: step.expect.pre },
+      // P1.5: `fields` joins the hash ONLY when present — fieldless
+      // bindings keep the exact 0.25.0 hash input (identity pinned by test).
+      expect: {
+        at: step.expect.at,
+        keyId: step.expect.keyId,
+        pre: step.expect.pre,
+        ...(step.expect.fields !== undefined ? { fields: step.expect.fields } : {}),
+      },
       tool: step.actionTool,
     });
   }
