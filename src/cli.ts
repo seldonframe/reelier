@@ -1949,15 +1949,28 @@ export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Prom
     // false-consent-transcript class the P1.5 review fixed for `header.etag`.
     // Conditional wording instead, and it REPLACES the other two branches:
     // one note per binding, or operators learn to read none of them.
+    // Review finding (blocking, round 2): this note used to REPLACE both
+    // branches below, so any projection merely CONTAINING `status.code`
+    // withheld the version-class warning about its OTHER fields —
+    // `["status.code","header.etag"]` said nothing about header.etag, which
+    // really is mutated by every write. Suppressing a true warning is the
+    // same false-consent-transcript class as printing a false note, with the
+    // sign flipped, and the operator loses more by the omission.
+    //
+    // They are different claims about different fields, so both print. What
+    // "one note per binding" actually forbids is the ABA note printing
+    // alongside this one — those two are competing statements about the SAME
+    // binding, and that suppression is preserved below.
     if (projection.includes(STATUS_CODE_ENTRY)) {
       console.log(
         "  note: binding on HTTP status — if the approved write creates or deletes the probed resource, this binding self-invalidates after its own first run (fixed-point rule); if the probe targets a resource the write leaves untouched, it is a fixed point"
       );
-    } else if (volatile.length > 0) {
+    }
+    if (volatile.length > 0) {
       console.log(
         `  warning: projection field(s) ${volatile.map(safeFieldName).join(", ")} are version-class — mutated by every write; a standing approval here self-invalidates after its own first run (fixed-point rule)`
       );
-    } else {
+    } else if (!projection.includes(STATUS_CODE_ENTRY)) {
       console.log(
         "  note: no version-class field in this projection — an excursion-and-return (ABA) between approval and execution is invisible; where the op permits, a monotonic version field resists it"
       );

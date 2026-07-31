@@ -410,3 +410,113 @@ test("W3-S5: the absence loop — bind on 404, match while still absent, mismatc
     assert.match(movedOut, /fields changed since approval: status\.code/, "W3-S3's diagnosis names it");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Review finding (blocking, round 2): the MCP refusal was approve-time ONLY.
+// `--wrap` lets an MCP tool shadow a probe name at RUN time, and
+// mcpResultToObservation fabricates `isError ? 500 : 200` — so a binding
+// stamped over http is satisfiable by a fabricated status the substrate never
+// produced. Under `state_gate: refuse` that MATCH dispatches the write: a
+// fail-open conversion of the one sanctioned fail-closed control, reached by
+// inducing an error rather than by forging anything.
+// ---------------------------------------------------------------------------
+
+/** Bind `status.code` over a real http tool, then run with an MCP tool of the same name. */
+async function bindHttpRunMcp(dir: string, mcpStatus: number) {
+  const skillPath = path.join(dir, "s.skill.md");
+  await writeFile(skillPath, SKILL('["status.code"]'), "utf8");
+  const httpReg: Record<string, Tool> = {
+    get_page: { effect: "read", run: async () => ({ status: mcpStatus, headers: {}, body: "{}" }) },
+    put_page: { effect: "idempotent-write", run: async () => ({ status: 200, headers: {}, body: "{}" }) },
+  };
+  await captureOutput(() => cmdApprove(fakeArgs([skillPath], ["probe", "all"]), deps(dir, { tools: httpReg })));
+  // Same names, same fabricated status — but served by a wrapped MCP server.
+  const writeCalls: unknown[] = [];
+  const mcpReg: Record<string, Tool> = {
+    get_page: { effect: "read", server: "gbrain", run: async () => ({ status: mcpStatus, headers: {}, body: "{}" }) },
+    put_page: {
+      effect: "idempotent-write",
+      server: "gbrain",
+      run: async (args) => {
+        writeCalls.push(args);
+        return { status: 200, headers: {}, body: "{}" };
+      },
+    },
+  };
+  const skill = parseSkill(await readFile(skillPath, "utf8"));
+  return { skill, mcpReg, writeCalls, dir };
+}
+
+test("W3-S5 (review): status.code through a wrapped MCP tool is UNEVALUATED at run time, never a match", async () => {
+  await withTempDir(async (dir) => {
+    const { skill, mcpReg, dir: d } = await bindHttpRunMcp(dir, 200);
+    const record = await runSkill(skill, {
+      tools: mcpReg,
+      vars: {},
+      cwd: d,
+      expectKeystorePath: path.join(d, "expect-keys.json"),
+    });
+    const sc = record.steps[0].stateCheck!;
+    assert.equal(sc.outcome, "unevaluated", "MCP has no HTTP status — a fabricated 200 establishes nothing");
+    assert.match(sc.reason!, /probe-substrate-mismatch/);
+  });
+});
+
+test("W3-S5 (review): under state_gate refuse, the MCP-substrate case REFUSES before dispatch — no write", async () => {
+  await withTempDir(async (dir) => {
+    const { skill, mcpReg, writeCalls, dir: d } = await bindHttpRunMcp(dir, 200);
+    const record = await runSkill(skill, {
+      tools: mcpReg,
+      vars: {},
+      cwd: d,
+      expectKeystorePath: path.join(d, "expect-keys.json"),
+      stateGate: "refuse",
+    });
+    const sc = record.steps[0].stateCheck!;
+    assert.equal(sc.action, "refused", "unevaluated under the gate fails closed");
+    assert.deepEqual(writeCalls, [], "the write must never dispatch on a status nobody observed");
+  });
+});
+
+test("W3-S5 (review): the same binding over a real http tool still evaluates — the guard names a substrate, not a token", async () => {
+  await withTempDir(async (dir) => {
+    const skillPath = path.join(dir, "s.skill.md");
+    await writeFile(skillPath, SKILL('["status.code"]'), "utf8");
+    const reg: Record<string, Tool> = {
+      get_page: { effect: "read", run: async () => ({ status: 200, headers: {}, body: "{}" }) },
+      put_page: { effect: "idempotent-write", run: async () => ({ status: 200, headers: {}, body: "{}" }) },
+    };
+    await captureOutput(() => cmdApprove(fakeArgs([skillPath], ["probe", "all"]), deps(dir, { tools: reg })));
+    const skill = parseSkill(await readFile(skillPath, "utf8"));
+    const record = await runSkill(skill, {
+      tools: reg,
+      vars: {},
+      cwd: dir,
+      expectKeystorePath: path.join(dir, "expect-keys.json"),
+    });
+    assert.equal(record.steps[0].stateCheck!.outcome, "match");
+  });
+});
+
+test("W3-S5 (review): a volatile co-field still gets its version-class warning alongside the status.code note", async () => {
+  await withTempDir(async (dir) => {
+    // Review finding (blocking, round 2): the status.code note REPLACED the
+    // version-class branch outright, so `["status.code","header.etag"]`
+    // withheld the one affirmatively true statement available — header.etag
+    // IS mutated by every write. Suppressing a true warning is the same
+    // false-consent-transcript class as printing a false note, sign flipped.
+    // They are different claims about different fields; both must print.
+    const skillPath = path.join(dir, "s.skill.md");
+    await writeFile(skillPath, SKILL('["status.code","header.etag"]'), "utf8");
+    const reg: Record<string, Tool> = {
+      get_page: { effect: "read", run: async () => ({ status: 200, headers: { etag: "v1" }, body: "{}" }) },
+      put_page: { effect: "idempotent-write", run: async () => ({ status: 200, headers: {}, body: "{}" }) },
+    };
+    const { out } = await captureOutput(() =>
+      cmdApprove(fakeArgs([skillPath], ["probe", "all"]), deps(dir, { tools: reg })),
+    );
+    assert.match(out, /note: binding on HTTP status/);
+    assert.match(out, /warning: projection field\(s\) header\.etag are version-class/);
+    assert.ok(!/no version-class field in this projection/.test(out), "the ABA note must not also print");
+  });
+});

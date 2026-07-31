@@ -696,6 +696,10 @@ function normalizeStateCheckReason(reason: string): string {
     // above (no probe ran, so wrapping it as `probe-failed:` would claim a
     // dispatch that never happened). Passed through verbatim.
     reason.startsWith("probe-args-mismatch:") ||
+    // W3-S5 review: the probe DID run and the observation is real — only the
+    // status half of it is a wrap-fabricated sentinel, so wrapping this as a
+    // probe failure would claim a dispatch problem that did not happen.
+    reason.startsWith("probe-substrate-mismatch:") ||
     reason.startsWith("key-unavailable:")
   ) {
     return reason;
@@ -1035,6 +1039,36 @@ async function executeStep(
         action: "proceeded",
         expectedAt,
         reason: normalizeStateCheckReason(preProbe === undefined ? "probe-failed: probe never ran" : preProbe.reason),
+      };
+    } else if (
+      step.attest?.projection?.includes(STATUS_CODE_ENTRY) === true &&
+      tools[step.attest.tool]?.server !== undefined
+    ) {
+      // Review finding (blocking, round 2): `approve --probe` refuses to MINT
+      // this binding over a wrapped MCP tool, but nothing stopped one minted
+      // over http from being EVALUATED against one. `--wrap` merges MCP tools
+      // over the builtins by name, and mcpResultToObservation fabricates
+      // `isError ? 500 : 200` — so a `status.code` binding is satisfiable by a
+      // status the substrate never produced, and an attacker only has to
+      // INDUCE AN ERROR rather than forge anything. A binding stamped at 500
+      // would then match every future failure of any kind.
+      //
+      // Left unevaluated rather than mismatched: nothing about the world was
+      // established, so a mismatch would be as unearned as the match. This is
+      // the load-bearing choice — under `state_gate: refuse` unevaluated fails
+      // closed (no dispatch), and it keeps the drift-watch `went_unevaluated`
+      // countermeasure alive, which a match would silence exactly when an
+      // evidence suppressor is inducing errors.
+      //
+      // The probe still dispatched, so `observedAt` is earned; only the
+      // comparison is refused. Substrate, not token: the same binding over an
+      // http builtin evaluates normally.
+      stateCheck = {
+        outcome: "unevaluated",
+        action: "proceeded",
+        expectedAt,
+        observedAt: preAt,
+        reason: `probe-substrate-mismatch: 'status.code' cannot be evaluated through the MCP tool '${step.attest.tool}' — MCP has no HTTP status, so the value compared would be a fabricated error sentinel (A12)`,
       };
     } else {
       const typed = projectObservationTyped(preProbe.obs, step.attest?.projection ?? []);

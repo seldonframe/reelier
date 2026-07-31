@@ -359,10 +359,18 @@ what an existing approval binds — and a body key literally named
 cannot be state-bound through a wrapped MCP tool and `approve --probe`
 REFUSES to: MCP has no HTTP status, so an error result is fabricated as
 500 and flows through as a *successful* observation, meaning a binding
-stamped at 500 would match on every future error of any kind. Binding
-on it prints a conditional fixed-point note (the binding self-invalidates
-only if the approved write creates or deletes the probed resource) —
-never the version-class warning, which would claim mutation as fact.
+stamped at 500 would match on every future error of any kind. The runner
+enforces the same rule at execute time, because `--wrap` can resolve a
+probe tool to an MCP server on a later run than the one that minted the
+binding: a `status.code` projection whose probe tool resolves to a wrapped
+MCP tool is `unevaluated` (reason `probe-substrate-mismatch: …`), never a
+match — so it fails closed under `state_gate: refuse` and still raises the
+drift-watch `went_unevaluated` signal. Binding on it prints a conditional
+fixed-point note (the binding self-invalidates only if the approved write
+creates or deletes the probed resource). That note never replaces the
+version-class warning for the projection's OTHER fields: the two are
+claims about different fields and both print when both apply. It does
+suppress the ABA note, which is a competing claim about the same binding.
 
 `expect: {"at":"<ISO-8601>","keyId":"<16 hex>","pre":"hmac-sha256:<64
 hex>"}` (state-conditioned approval) binds the step's approval to the
