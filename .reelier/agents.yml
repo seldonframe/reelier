@@ -1,0 +1,38 @@
+# Agent-PR allowlist — read by the reelier-receipts App from this repo's
+# default branch, matched case-insensitively against the PR author login
+# (reelier-cloud src/lib/pr-agent-detection.ts, `parseAgentsAllowlist`;
+# both sides lowercased).
+#
+# Why this file exists. Detection's cheap rules are: author login ends in
+# `[bot]`, OR head branch matches claude/|codex/|cursor/|copilot/. Every
+# agent PR in this repo is authored by "fixlyai" — a human login, so the
+# bot rule never fires — which leaves the branch prefix as the only
+# signal. Slices that landed on a docs/, feat/ or qa/ branch were
+# therefore invisible to it:
+#
+#   #29  docs/readme-app-fold          merged 2026-07-29, no receipt
+#   #30  feat/state-attestation        merged 2026-07-29, no receipt
+#   #59  qa/mutation-fuzz-hardening    merged 2026-07-31, no receipt
+#
+# while #58 (claude/f5-local-priors), merged six minutes before #59, got
+# one. Across PRs 27-60 the correlation is exact: every receipted PR is
+# either bot-authored or on a claude/* branch, and every merged PR that
+# missed a receipt is neither.
+#
+# Why allowlisting the account is the honest call rather than a
+# workaround. "fixlyai" is the account that drives every agent here; it is
+# the git author a squash-merged claude/* PR already carries, as
+# .reelier/scope.yml documents at length. The branch heuristic produces
+# false NEGATIVES in this repo, and a missing receipt on an agent PR is
+# precisely the gap FOUNDATION calls a bug with a deadline.
+#
+# The trade-off, stated plainly rather than buried: a PR this account
+# writes by hand will also carry a receipt labelled as an agent PR.
+# Accepted because in this repo that case is rare to nonexistent — the
+# account reviews and merges, agents author. Revisit if that changes.
+#
+# Note the deliberate non-entry: PR #28 (test/e2e-human-silence) is CLOSED
+# and was the fixture proving human PRs get no comment. Its missing
+# receipt is the system working, not a gap.
+agents:
+  - fixlyai
