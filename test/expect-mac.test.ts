@@ -177,6 +177,16 @@ test("projectObservationTyped mirrors projectObservation: non-JSON body → empt
   assert.deepEqual(projectObservationTyped("[1,2]", ["a"]), {});
 });
 
+test("a JSON scalar body projects to {} even when the projection names one of its intrinsic properties", () => {
+  // A bare JSON string parses fine and has real, scalar-valued properties
+  // ("length"), so it's the case that separates "rejected a non-object body"
+  // from "looked and found nothing". Without the object check, a string body
+  // would start contributing a projected value to the commitment.
+  assert.deepEqual(projectObservationTyped(`"hello"`, ["length"]), {});
+  assert.deepEqual(projectObservationTyped(`5`, ["toFixed", "length"]), {});
+  assert.deepEqual(projectObservationTyped(`true`, ["length"]), {});
+});
+
 test("an array body projects to {} even when the projection names indices — arrays are rejected as a body, not indexed into", () => {
   // Projecting ["a"] off an array can't tell "rejected the array" from
   // "looked and found nothing". Index names can: if the array guard stopped
@@ -290,7 +300,11 @@ test("readKeystore: malformed JSON and wrong shape are loud failures, never a si
   try {
     const badJson = path.join(dir, "bad.json");
     await writeFile(badJson, "{not json", "utf8");
-    await assert.rejects(() => readKeystore(badJson), /keystore/i);
+    // Specifically the JSON diagnosis — a generic /keystore/i also matches the
+    // downstream "malformed (expected an object)" you'd get if the parse
+    // failure were swallowed, which would send the operator looking for a
+    // shape bug in a file that simply doesn't parse.
+    await assert.rejects(() => readKeystore(badJson), /is not valid JSON/);
 
     const badShape = path.join(dir, "shape.json");
     await writeFile(badShape, JSON.stringify({ v: 2, keys: {} }), "utf8");

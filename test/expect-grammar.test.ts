@@ -137,6 +137,52 @@ test("expect.at must be a non-empty ISO-8601-parseable string", () => {
   }
 });
 
+// A test that expects a THROW only pins a validator shut if the input is one
+// a LOOSENED validator would let through. The cases below are exactly that:
+// each is accepted by a regex missing one anchor, so they prove both ends are
+// still there — which the existing too-short/uppercase cases cannot do.
+
+test("expect.pre is anchored at BOTH ends — a valid commitment with anything before or after it is still malformed", () => {
+  const body = "9f".repeat(32);
+  for (const badPre of [
+    `Xhmac-sha256:${body}`, // valid commitment with a PREFIX — survives a missing '^'
+    ` hmac-sha256:${body}`, // leading space, same class
+    `hmac-sha256:${body}X`, // valid commitment with a SUFFIX — survives a missing '$'
+    `hmac-sha256:${body}00`, // 66 hex chars: the leading 64 still match without '$'
+  ]) {
+    assert.throws(
+      () => parseSkill(SKILL(ATTEST, APPROVE, `- expect: {"at":"2026-07-30T00:00:00Z","keyId":"3c9a01d2e4f5b6a7","pre":${JSON.stringify(badPre)}}`)),
+      /'expect\.pre'/,
+      `pre ${JSON.stringify(badPre)} must be rejected`
+    );
+  }
+});
+
+test("expect.at rejects a valid ISO timestamp with anything around it", () => {
+  // Unlike expect.pre above, these cases cannot prove the AT regex's anchors
+  // are intact, and no case can: V8's Date.parse returns NaN for every
+  // decorated form of an ISO string (leading/trailing space, tab, newline,
+  // stray char, trailing "(UTC)"), so the `Number.isNaN(Date.parse(...))`
+  // clause independently rejects exactly what the anchors reject. Dropping
+  // either anchor is therefore an EQUIVALENT mutation — behaviour is
+  // unchanged, and a mutation report listing those two survivors is correct
+  // rather than a coverage gap. What this test does pin is the contract
+  // itself: a decorated timestamp is refused, by whichever gate gets there.
+  for (const badAt of [
+    " 2026-07-30T06:58:12.331Z",
+    "2026-07-30T06:58:12.331Z ",
+    "\t2026-07-30T06:58:12.331Z",
+    "2026-07-30T06:58:12.331Z (UTC)",
+  ]) {
+    assert.throws(
+      () =>
+        parseSkill(SKILL(ATTEST, APPROVE, `- expect: {"at":${JSON.stringify(badAt)},"keyId":"3c9a01d2e4f5b6a7","pre":"hmac-sha256:${"a".repeat(64)}"}`)),
+      /'expect\.at'/,
+      `at ${JSON.stringify(badAt)} must be rejected`
+    );
+  }
+});
+
 test("missing expect keys are each rejected", () => {
   for (const bad of [
     `- expect: {"keyId":"3c9a01d2e4f5b6a7","pre":"hmac-sha256:${"a".repeat(64)}"}`,
@@ -155,6 +201,88 @@ test("parse errors name the step and line", () => {
     assert.ok(err instanceof SkillParseError);
     assert.match((err as Error).message, /step 1/);
     assert.match((err as Error).message, /line \d+/);
+  }
+});
+
+/** 1-based line number of the first (or last) source line containing `needle`. */
+function lineOf(source: string, needle: string, which: "first" | "last" = "first"): number {
+  const lines = source.split("\n");
+  const idx = which === "first" ? lines.findIndex((l) => l.includes(needle)) : lines.map((l) => l.includes(needle)).lastIndexOf(true);
+  return idx + 1;
+}
+
+test("every expect rejection carries the step and the EXPECT BULLET's line — not the step header's, and never a bare message", () => {
+  // Two things are pinned here. First, that the context survives at all: a
+  // "malformed expect" with no step/line sends the operator hunting through
+  // the file by hand. Second, that the line points at the `expect:` bullet
+  // rather than falling back to the step header — the fallback is only for
+  // shapes where no expect line exists, and silently preferring it would
+  // point every state-binding error at the wrong line.
+  const cases: { src: string; label: string; which?: "first" | "last" }[] = [
+    // The duplicate is reported against the OFFENDING (second) bullet.
+    { src: SKILL(ATTEST, APPROVE, EXPECT, EXPECT), label: "duplicate expect", which: "last" },
+    { src: SKILL(ATTEST, APPROVE, `- expect: not json`), label: "invalid JSON" },
+    { src: SKILL(ATTEST, APPROVE, `- expect: {"bad":1}`), label: "unknown key" },
+    { src: SKILL(APPROVE, EXPECT), label: "expect without attest (I-12)" },
+    { src: SKILL(ATTEST, EXPECT), label: "expect without approve (I-12)" },
+  ];
+  for (const { src, label, which } of cases) {
+    const expectLine = lineOf(src, "- expect:", which);
+    const headerLine = lineOf(src, "### Step 1");
+    assert.notEqual(expectLine, headerLine, "fixture sanity: the two lines must differ");
+    try {
+      parseSkill(src);
+      assert.fail(`${label}: should have thrown`);
+    } catch (err) {
+      assert.ok(err instanceof SkillParseError, `${label}: wrong error type`);
+      const msg = (err as Error).message;
+      assert.match(msg, new RegExp(`\\(step 1, line ${expectLine}\\)`), `${label}: expected step 1 + line ${expectLine} in: ${msg}`);
+    }
+  }
+});
+
+test("expect on a read-effect step is refused, and the error points at the expect bullet (I-12 write-effect clause)", () => {
+  const src = `---
+name: t
+description: d
+---
+## Steps
+
+### Step 1 — read it
+- intent: i
+- action: gbrain.get_page {"slug":"p"}
+${ATTEST}
+${APPROVE}
+${EXPECT}
+- effect: read
+`;
+  const expectLine = lineOf(src, "- expect:");
+  try {
+    parseSkill(src);
+    assert.fail("should have thrown");
+  } catch (err) {
+    assert.ok(err instanceof SkillParseError);
+    const msg = (err as Error).message;
+    assert.match(msg, /'expect' requires a write-effect step/);
+    assert.match(msg, new RegExp(`\\(step 1, line ${expectLine}\\)`), `expected line ${expectLine} in: ${msg}`);
+  }
+});
+
+test("a step without approve/attest/expect omits those keys entirely — absent, not present-and-undefined", () => {
+  // `step.expect === undefined` reads the same either way, so only own-key
+  // presence can tell "this step was never state-bound" from "this step
+  // carries an empty binding". Optional-by-absence is the contract the
+  // Step type states and the serializer relies on.
+  const plain = parseSkill(SKILL()).steps[0];
+  for (const key of ["approve", "attest", "expect"]) {
+    assert.ok(!(key in plain), `a bare step must not carry an own '${key}' key`);
+  }
+  assert.deepEqual(Object.keys(plain).sort(), ["actionArgs", "actionTool", "asserts", "binds", "effect", "intent", "line", "n", "title"]);
+
+  // And the positive direction: a bound step carries exactly the three.
+  const bound = parseSkill(SKILL(ATTEST, APPROVE, EXPECT)).steps[0];
+  for (const key of ["approve", "attest", "expect"]) {
+    assert.ok(key in bound, `a bound step must carry '${key}'`);
   }
 });
 
