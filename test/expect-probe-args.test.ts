@@ -21,7 +21,7 @@ import { parseSkill, SkillParseError } from "../src/skill.js";
 import { serializeSkill } from "../src/writeback.js";
 import { computeApprovalHash } from "../src/approval.js";
 import { runSkill } from "../src/runner.js";
-import { mintExpectKey, probeArgsMac, expectMac, expectFieldMac, readKeystore } from "../src/expect-mac.js";
+import { mintExpectKey, probeArgsMac, expectMac, expectFieldMac, readKeystore, writeKeystoreEntry } from "../src/expect-mac.js";
 import type { Tool } from "../src/tools.js";
 
 // ---------------------------------------------------------------------------
@@ -529,6 +529,199 @@ test("W3-S4: transplant resistance — a probeArgs commitment lifted to another 
 // ===========================================================================
 // Registry item 8: the 32-entry changedFields cap, untested until now
 // ===========================================================================
+
+// ===========================================================================
+// Blocker 1 (wave-3 review, I-18) — `--drop-expect` and the interactive
+// "Approve WITHOUT state binding?" downgrade must both REFUSE on a
+// parameterized probe: stripping `expect` leaves the probe armed (attest
+// present, approved) but ungated (the I-18 gate keys on
+// `expect.probeArgs !== undefined`), so it would dispatch filling from the
+// WHOLE bindings map again — exactly the channel this slice closed.
+// ===========================================================================
+
+test("W3-S4 review-fix (blocker 1a): --drop-expect refuses on a parameterized probe — nothing dropped, non-zero exit", async () => {
+  await withTempDir(async (dir) => {
+    const { skillPath, tools } = await bindParam(dir, { target: "reelier-demo-page" });
+    const before = await readFile(skillPath, "utf8");
+    const { result: code, out } = await captureOutput(() =>
+      cmdApprove(fakeArgs([skillPath], ["drop-expect", "all"]), deps(dir, { tools })),
+    );
+    assert.equal(code, 1, out);
+    assert.match(
+      out,
+      /refusing to drop the binding on a parameterized probe — its args fill from run-time bindings, and without expect\.probeArgs nothing proves the filled args were approved\. Re-approve with --probe --var, or make the probe args literal\./,
+    );
+    assert.equal(await readFile(skillPath, "utf8"), before, "nothing written — the strip never persisted");
+  });
+});
+
+test("W3-S4 review-fix (blocker 1a): --drop-expect interactively also refuses, without even asking to approve", async () => {
+  await withTempDir(async (dir) => {
+    const { skillPath, tools } = await bindParam(dir, { target: "reelier-demo-page" });
+    const before = await readFile(skillPath, "utf8");
+    const asked: string[] = [];
+    const ask = async (q: string) => {
+      asked.push(q);
+      throw new Error(`unexpected prompt: ${q}`);
+    };
+    const { result: code, out } = await captureOutput(() =>
+      cmdApprove(fakeArgs([skillPath], ["drop-expect"]), deps(dir, { tools, ask })),
+    );
+    assert.equal(code, 1, out);
+    assert.match(out, /refusing to drop the binding on a parameterized probe/);
+    assert.deepEqual(asked, [], "outright refusal — never even asks");
+    assert.equal(await readFile(skillPath, "utf8"), before);
+  });
+});
+
+test("W3-S4 review-fix (blocker 1a): the interactive 'Approve WITHOUT state binding?' downgrade refuses on a parameterized probe, never asking", async () => {
+  await withTempDir(async (dir) => {
+    const skillPath = path.join(dir, "s.skill.md");
+    await writeFile(skillPath, SKILL_PARAM, "utf8");
+    // A probe tool that always fails (not a placeholder problem — the
+    // structural checks pass because --var fills the template), so the run
+    // reaches the "not state-bindable" downgrade offer.
+    const brokenTools: Record<string, Tool> = {
+      get_page: {
+        effect: "read",
+        run: async () => {
+          throw new Error("boom");
+        },
+      },
+      put_page: { effect: "idempotent-write", run: async () => ({ status: 200, headers: {}, body: "{}" }) },
+    };
+    const asked: string[] = [];
+    const ask = async (q: string) => {
+      asked.push(q);
+      throw new Error(`unexpected prompt: ${q}`);
+    };
+    const { result: code, out } = await captureOutput(() =>
+      cmdApprove(fakeArgs([skillPath], ["probe"], { target: "reelier-demo-page" }), deps(dir, { tools: brokenTools, ask })),
+    );
+    assert.equal(code, 1, out);
+    assert.match(out, /refusing to drop the binding on a parameterized probe/);
+    assert.deepEqual(asked, [], "never asks — the refusal is outright, not a declined prompt");
+    assert.ok(!/expect:/.test(await readFile(skillPath, "utf8")), "nothing bound, nothing downgraded");
+  });
+});
+
+test("W3-S4 review-fix (blocker 1a): a literal-args (non-parameterized) bound step still drops its binding fine via --drop-expect — no regression", async () => {
+  await withTempDir(async (dir) => {
+    const skillPath = path.join(dir, "s.skill.md");
+    await writeFile(skillPath, SKILL_PARAM.replace('"slug":"{{target}}"', '"slug":"reelier-demo-page"'), "utf8");
+    const { tools } = spyTools({ body: { compiled_truth: "# hi" } });
+    await captureOutput(() => cmdApprove(fakeArgs([skillPath], ["probe", "all"]), deps(dir, { tools })));
+    const boundBefore = parseSkill(await readFile(skillPath, "utf8")).steps[0];
+    assert.notEqual(boundBefore.expect, undefined, "fixture sanity: really bound");
+    const { result: code, out } = await captureOutput(() =>
+      cmdApprove(fakeArgs([skillPath], ["drop-expect", "all"]), deps(dir, { tools })),
+    );
+    assert.equal(code, 0, out);
+    const step = parseSkill(await readFile(skillPath, "utf8")).steps[0];
+    assert.equal(step.expect, undefined, "binding dropped, as before");
+  });
+});
+
+test("W3-S4 review-fix (blocker 1b, I-18): expect present + parameterized attest.args + NO probeArgs is a tampered/impossible shape — zero dispatches, unevaluated", async () => {
+  await withTempDir(async (dir) => {
+    // `reelier approve --probe` always commits probeArgs when the attest
+    // template is parameterized, so this shape can only arise by hand-editing
+    // the file after approval — but the approve HASH still has to match (the
+    // runner's belt-and-suspenders check at src/runner.ts ~line 815), so we
+    // recompute it over the tampered fields, exactly as a hand-editor with
+    // access to computeApprovalHash could.
+    const keystorePath = path.join(dir, "expect-keys.json");
+    const { key, keyId } = mintExpectKey();
+    await writeKeystoreEntry(keystorePath, keyId, { key: key.toString("base64"), createdAt: EXPECT_AT });
+    const attest = { tool: "get_page", args: { slug: "{{target}}" }, projection: ["compiled_truth"] };
+    const actionTool = "put_page";
+    const actionArgs = { content: "# hi", slug: "reelier-demo-page" };
+    const expect = { at: EXPECT_AT, keyId, pre: MAC_A }; // tampered: no probeArgs
+    const approve = computeApprovalHash({ actionTool, actionArgs, attest, expect });
+    const skillPath = path.join(dir, "s.skill.md");
+    await writeFile(
+      skillPath,
+      `---
+name: tampered
+description: hand-crafted — expect present, attest.args parameterized, no probeArgs commitment
+---
+
+### Step 1 — w
+- intent: i
+- action: ${actionTool} ${JSON.stringify(actionArgs)}
+- effect: idempotent-write
+- attest: ${JSON.stringify(attest)}
+- approve: ${approve}
+- expect: ${JSON.stringify(expect)}
+`,
+      "utf8",
+    );
+    const skill = parseSkill(await readFile(skillPath, "utf8"));
+    assert.equal(skill.steps[0].expect!.probeArgs, undefined, "fixture sanity: no probeArgs commitment");
+    const { tools, probeCalls, writeCalls } = spyTools({ body: { compiled_truth: "# hi" } });
+    const record = await runSkill(skill, {
+      tools,
+      vars: { target: "reelier-demo-page" },
+      cwd: dir,
+      expectKeystorePath: keystorePath,
+    });
+    const step = record.steps[0];
+    assert.deepEqual(probeCalls, [], "ZERO probe dispatches — a tampered shape must never dispatch either");
+    assert.equal(step.stateCheck!.outcome, "unevaluated");
+    assert.equal(step.stateCheck!.action, "proceeded", "recorder mode still fails open on the write");
+    assert.equal(step.stateCheck!.reason, "probe-args-mismatch: filled probe args differ from the approved ones");
+    assert.equal(step.stateCheck!.observedAt, undefined, "unevaluated before any observation");
+    assert.equal(writeCalls.length, 1, "never-list #5: the trust layer is not the reason a write fails");
+  });
+});
+
+test("W3-S4 review-fix (blocker 1b, I-18 gate mode): the same tampered shape refuses BEFORE anything dispatches", async () => {
+  await withTempDir(async (dir) => {
+    const keystorePath = path.join(dir, "expect-keys.json");
+    const { key, keyId } = mintExpectKey();
+    await writeKeystoreEntry(keystorePath, keyId, { key: key.toString("base64"), createdAt: EXPECT_AT });
+    const attest = { tool: "get_page", args: { slug: "{{target}}" }, projection: ["compiled_truth"] };
+    const actionTool = "put_page";
+    const actionArgs = { content: "# hi", slug: "reelier-demo-page" };
+    const expect = { at: EXPECT_AT, keyId, pre: MAC_A };
+    const approve = computeApprovalHash({ actionTool, actionArgs, attest, expect });
+    const skillPath = path.join(dir, "s.skill.md");
+    await writeFile(
+      skillPath,
+      `---
+name: tampered
+description: d
+---
+
+### Step 1 — w
+- intent: i
+- action: ${actionTool} ${JSON.stringify(actionArgs)}
+- effect: idempotent-write
+- attest: ${JSON.stringify(attest)}
+- approve: ${approve}
+- expect: ${JSON.stringify(expect)}
+`,
+      "utf8",
+    );
+    const skill = parseSkill(await readFile(skillPath, "utf8"));
+    const { tools, probeCalls, writeCalls } = spyTools({ body: { compiled_truth: "# hi" } });
+    const record = await runSkill(skill, {
+      tools,
+      vars: { target: "reelier-demo-page" },
+      cwd: dir,
+      expectKeystorePath: keystorePath,
+      stateGate: "refuse",
+    });
+    const step = record.steps[0];
+    assert.deepEqual(probeCalls, [], "ZERO probe dispatches");
+    assert.deepEqual(writeCalls, [], "ZERO write dispatches");
+    assert.equal(step.stateCheck!.outcome, "unevaluated");
+    assert.equal(step.stateCheck!.action, "refused");
+    assert.equal(step.stateCheck!.reason, "probe-args-mismatch: filled probe args differ from the approved ones");
+    assert.equal(step.write, undefined, "dispatch provably never issued");
+    assert.equal(step.outcome, "failed");
+  });
+});
 
 test("W3-S4: the 32-entry changedFields cap is real — a 40-field projection reports at most 32 names, each <= 120 chars", async () => {
   await withTempDir(async (dir) => {

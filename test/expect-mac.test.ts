@@ -16,6 +16,7 @@ import {
   deriveExpectKeyId,
   mintExpectKey,
   expectMac,
+  probeArgsMac,
   projectObservationTyped,
   resolveKeystorePath,
   readKeystore,
@@ -107,6 +108,35 @@ test("A6: a projected field literally named '__proto__' is refused, never silent
   // it, making MAC({__proto__:'a'}) === MAC({}) — a false MATCH.
   const hostile = JSON.parse(`{"__proto__":"a"}`) as Record<string, string>;
   assert.throws(() => expectMac(KEY_A, "t", hostile), /__proto__/);
+});
+
+// ---------------------------------------------------------------------------
+// probeArgsMac: RECURSIVE __proto__ guard (blocker 2, wave-3 review) — args
+// are arbitrary nested JSON, unlike expectMac/expectFieldMac's flat scalar
+// projection, so the guard has to walk the whole tree.
+// ---------------------------------------------------------------------------
+
+test("W3-S4 review-fix: probeArgsMac refuses a __proto__ key ANYWHERE in nested args, never silently dropping it (recursive false-MATCH guard)", () => {
+  // Object literals can't carry an own '__proto__' property, but JSON.parse
+  // output can — and canonicalJson's rebuild (bracket-assignment onto a
+  // plain {} at every level) would silently drop it at ANY depth, making
+  // probeArgsMac({a:{__proto__:{x:1}}}) === probeArgsMac({a:{}}) — a false
+  // MATCH between two different arg sets.
+  const hostile = JSON.parse(`{"a":{"__proto__":{"x":1}}}`) as Record<string, unknown>;
+  assert.throws(() => probeArgsMac(KEY_A, "t", hostile), /__proto__/);
+});
+
+test("W3-S4 review-fix: a __proto__ key nested inside an array element is refused too", () => {
+  const hostile = JSON.parse(`{"a":[{"__proto__":{"x":1}}]}`) as Record<string, unknown>;
+  assert.throws(() => probeArgsMac(KEY_A, "t", hostile), /__proto__/);
+});
+
+test("W3-S4 review-fix: a normal nested object (no __proto__ anywhere) still commits deterministically", () => {
+  const args = { a: { b: 1, c: [1, 2, { d: "x", e: [true, false] }] } };
+  const m1 = probeArgsMac(KEY_A, "t", args);
+  const m2 = probeArgsMac(KEY_A, "t", JSON.parse(JSON.stringify(args)));
+  assert.equal(m1, m2);
+  assert.match(m1, /^hmac-sha256:[0-9a-f]{64}$/);
 });
 
 test("expectMac is stable across projected-map key insertion order (canonical JSON)", () => {

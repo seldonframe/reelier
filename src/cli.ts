@@ -1452,6 +1452,21 @@ function isComputedDateName(name: string): boolean {
   return name === "today" || /^today[+-]\d+d$/.test(name);
 }
 
+/**
+ * I-18 blocker 1 (wave-3 review — blocking): the downgrade to a shape-only
+ * approval (dropping `expect`, whether via `--drop-expect` or the interactive
+ * "Approve WITHOUT state binding?" prompt) must REFUSE outright on a step
+ * whose `attest.args` are parameterized. The runner's probeArgs gate
+ * (src/runner.ts's I-18) keys on `expect.probeArgs !== undefined` — strip
+ * `expect` from a step whose attest is still armed (attest present, approved)
+ * and the probe is left ungated: it fills from the WHOLE bindings map again,
+ * the exact exfiltration channel W3-S4 closed. Never a new counter — this
+ * reuses the existing `skippedStateBoundChanged` skip/count path so `--all`
+ * degrades the same way every other never-silently-downgrade class does.
+ */
+const PARAMETERIZED_PROBE_DROP_REFUSAL =
+  "refusing to drop the binding on a parameterized probe — its args fill from run-time bindings, and without expect.probeArgs nothing proves the filled args were approved. Re-approve with --probe --var, or make the probe args literal.";
+
 /** `hmac-sha256:9f31…77aa` — enough to eyeball, never needed for anything else (the full value lands in the file). */
 function abbrevMac(mac: string): string {
   const hex = mac.slice("hmac-sha256:".length);
@@ -1979,6 +1994,16 @@ export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Prom
         console.log("  dropping state binding (--drop-expect)");
       }
 
+      // I-18 blocker 1a (wave-3 review): refuse the downgrade outright on a
+      // parameterized probe — never even ask. See PARAMETERIZED_PROBE_DROP_REFUSAL's
+      // doc comment for why: stripping `expect` here would leave the probe
+      // armed but ungated.
+      if (dropping && step.attest !== undefined && collectPlaceholders(step.attest.args).length > 0) {
+        console.log(`  ${PARAMETERIZED_PROBE_DROP_REFUSAL}`);
+        skippedStateBoundChanged++;
+        continue;
+      }
+
       // §4.4: re-approving a changed step that carries expect, without
       // --probe — refused per step; silent removal of a condition a human
       // approved under is never available.
@@ -2240,6 +2265,9 @@ export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Prom
 
       if (notBindable !== undefined) {
         if (all) {
+          // --all never offers the downgrade in the first place (this
+          // branch always `continue`s below) — every failure class,
+          // parameterized or not, already refuses to mint anything here.
           console.log(`  skipped (probe failed): ${notBindable}`);
           skippedProbeFailed++;
           continue;
@@ -2247,6 +2275,17 @@ export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Prom
         // §4.4: report the exact reason, THEN offer the downgrade explicitly.
         console.log(`  not state-bindable: ${notBindable}`);
         console.log(`  ${state}`);
+        // I-18 blocker 1a: refuse the downgrade outright — never even ask —
+        // on a parameterized attest.args. See PARAMETERIZED_PROBE_DROP_REFUSAL's
+        // doc comment: dropping `expect` here would leave the probe armed
+        // but ungated, for a structural reason (missing --var, a computed
+        // date var) as much as a runtime probe failure — the shape of the
+        // args is what matters, not why binding failed this time.
+        if (attestPlaceholders.length > 0) {
+          console.log(`  ${PARAMETERIZED_PROBE_DROP_REFUSAL}`);
+          skippedStateBoundChanged++;
+          continue;
+        }
         const downgrade = await askYes("  Approve WITHOUT state binding? (y/N) ");
         if (!downgrade) {
           skippedCount++;
@@ -2273,6 +2312,16 @@ export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Prom
         // for this step (bindStep mutates the step only after the keystore
         // write succeeds), earlier consents in this sitting still persist.
         const reason = `approve-probe-failed: keystore-unavailable: ${(err as Error).message}`;
+        // I-18 blocker 1a: same outright refusal — the probe already
+        // succeeded above (this catch only fires on the keystore write), so
+        // the observed values existed for a moment, but nothing was ever
+        // persisted; downgrading now would still leave a parameterized probe
+        // armed and ungated on every future run.
+        if (attestPlaceholders.length > 0) {
+          console.log(`  ${PARAMETERIZED_PROBE_DROP_REFUSAL}`);
+          skippedStateBoundChanged++;
+          continue;
+        }
         if (all) {
           console.log(`  skipped (probe failed): ${reason}`);
           skippedProbeFailed++;

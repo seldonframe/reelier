@@ -288,11 +288,40 @@ export function expectFieldMac(key: Uint8Array, probeTool: string, fieldName: st
  * different args and MUST commit differently (A6's false-MATCH class applies
  * here for the same reason it applies to projections).
  */
+/**
+ * Recursively refuse an own `__proto__` key anywhere in `value` (mirrors
+ * expectMac's/expectFieldMac's __proto__ guard, A6's false-MATCH class) — but
+ * RECURSIVE, unlike its siblings' flat scalar projection: `filledArgs` is
+ * arbitrary nested JSON, and canonicalJson's rebuild (src/canonical-json.ts,
+ * bracket-assignment onto a fresh `{}` at every level) silently drops an own
+ * `__proto__` key at ANY depth, which would make
+ * probeArgsMac(key, tool, {a:{__proto__:{x:1}}}) === probeArgsMac(key, tool, {a:{}})
+ * — two different arg sets committing alike, exactly the false-MATCH class
+ * the siblings' flat guard exists to close one level down.
+ */
+function assertNoProtoKeyDeep(value: unknown, at = "(root)"): void {
+  if (Array.isArray(value)) {
+    value.forEach((v, i) => assertNoProtoKeyDeep(v, `${at}[${i}]`));
+    return;
+  }
+  if (value !== null && typeof value === "object") {
+    for (const key of Object.keys(value as Record<string, unknown>)) {
+      if (key === "__proto__") {
+        throw new Error(
+          `probeArgsMac: arg key '__proto__' at ${at} cannot be committed faithfully — refusing to drop it silently (A6)`
+        );
+      }
+      assertNoProtoKeyDeep((value as Record<string, unknown>)[key], `${at}.${key}`);
+    }
+  }
+}
+
 export function probeArgsMac(key: Uint8Array, probeTool: string, filledArgs: unknown): string {
   assertUsableKey(key);
   if (typeof probeTool !== "string" || probeTool.trim() === "") {
     throw new Error("probeArgsMac: probe tool name must be a non-empty string");
   }
+  assertNoProtoKeyDeep(filledArgs);
   const input = canonicalJson({ args: filledArgs, probe: probeTool, v: 1 });
   return MAC_PREFIX + createHmac("sha256", Buffer.from(key)).update(input, "utf8").digest("hex");
 }

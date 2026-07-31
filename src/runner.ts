@@ -705,6 +705,28 @@ function normalizeStateCheckReason(reason: string): string {
  */
 const PROBE_ARGS_MISMATCH_REASON = "probe-args-mismatch: filled probe args differ from the approved ones";
 
+/**
+ * True iff any string leaf of `value` contains a `{{name}}` hole (the
+ * fillTemplate grammar, this module's `fillTemplate` above) — a cheap,
+ * non-throwing structural check used to detect a parameterized attest/probe
+ * template WITHOUT actually filling it. Mirrors src/cli.ts's
+ * `collectPlaceholders` regex (kept as a separate local copy: cli.ts imports
+ * from runner.ts, not the reverse, and this is the one place runner.ts needs
+ * the check — see the tampered-shape gate below, I-18 blocker 1b).
+ */
+function hasTemplatePlaceholder(value: unknown): boolean {
+  if (typeof value === "string") {
+    return /\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*|today[+-]\d+d)\s*\}\}/.test(value);
+  }
+  if (Array.isArray(value)) {
+    return value.some((v) => hasTemplatePlaceholder(v));
+  }
+  if (value !== null && typeof value === "object") {
+    return Object.values(value as Record<string, unknown>).some((v) => hasTemplatePlaceholder(v));
+  }
+  return false;
+}
+
 async function executeStep(
   step: Step,
   bindings: Record<string, unknown>,
@@ -897,6 +919,16 @@ async function executeStep(
   const expectKey =
     isWrite && step.expect !== undefined && expectStore !== undefined ? loadExpectKey(expectStore, step.expect.keyId) : undefined;
 
+  // NAMED RESIDUAL (wave-3 review, blocker 1 scope note — deliberately NOT
+  // "fixed" here): a step with NO `expect` at all still probes from the
+  // WHOLE merged `bindings` map below, placeholder or not. That is
+  // wave-2-era accepted behavior — the approval hash plus human review of
+  // the template is its stated defense — and changing it would degrade
+  // every shipped skill's attest from `exact` to `absent` the moment it
+  // carries a step-output `bind:` anywhere upstream. The approval hash is
+  // per-step, but the exfiltration channel it defends against is
+  // cross-step: an earlier step's `bind:` can introduce a value the
+  // reviewer of THIS step's template never saw. Left as-is by design.
   let probeBindings: Record<string, unknown> = bindings;
   let probeArgsBlocked: string | undefined;
   if (isWrite && step.expect?.probeArgs !== undefined && step.attest !== undefined) {
@@ -918,6 +950,21 @@ async function executeStep(
         probeArgsBlocked = PROBE_ARGS_MISMATCH_REASON;
       }
     }
+  } else if (isWrite && step.expect !== undefined && step.expect.probeArgs === undefined && step.attest !== undefined && hasTemplatePlaceholder(step.attest.args)) {
+    // I-18 blocker 1b (wave-3 review): `expect` guarantees attest+approve by
+    // grammar (I-12), and `reelier approve --probe` always commits
+    // `probeArgs` when the attest template is parameterized (cli.ts's
+    // structural-bindability check refuses to bind a placeholder-carrying
+    // attest without one) — so `expect` present + a parameterized
+    // attest.args + NO probeArgs commitment cannot arise from any approve
+    // path. It IS reachable by hand-editing the file after approval (the
+    // approve hash is recomputed over the tampered fields too, so the
+    // belt-and-suspenders check above this function can't catch it either).
+    // Treat it exactly like an ordinary probe-args gate block: no dispatch,
+    // ever — the same exfiltration channel I-18 closes is open here the
+    // instant the merged `bindings` map (not `vars`-only) reaches a probe.
+    probeBindings = { ...vars };
+    probeArgsBlocked = PROBE_ARGS_MISMATCH_REASON;
   }
 
   if (isWrite && step.attest && probeApproved) {
