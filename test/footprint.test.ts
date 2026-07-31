@@ -87,6 +87,13 @@ test("deriveFootprint is total -- it never throws on a degenerate or partial rec
     { skill: "x", passed: true },
     { steps: [{ n: 1 }] },
     {},
+    // A hand-edited or corrupted steps[] entry: readRunRecords is a bare
+    // JSON.parse (runner.ts:474-484), and null/undefined/a bare string are
+    // all valid JSON array entries.
+    { skill: "x", steps: [null], totals: { steps: 1, passed: 0, unchecked: 0, skipped: 0, failed: 0, ms: 0, llmInputTokens: 0, llmOutputTokens: 0 } },
+    { skill: "x", steps: [null], totals: { steps: 1, passed: 1, ms: 1 } },
+    { skill: "x", steps: [null, undefined, "x"] },
+    { skill: "x", steps: [, ,] }, // sparse array -- entries are `undefined` on iteration
   ];
   for (const s of shapes) {
     assert.doesNotThrow(() => deriveFootprint(s as RunRecord), `threw on ${JSON.stringify(s)}`);

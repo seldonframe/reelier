@@ -32,8 +32,8 @@ gate predicate. This is a recorder.
 
 All derived from the shipped `RunRecord` shape (`src/runner.ts`), verified
 field by field. Every per-run count is derived from `steps[]` rather than
-from `totals`, for the reason already documented at `cli.ts`'s
-`deriveRecordTotals`: the per-step outcomes were always recorded correctly
+from `totals`, for the reason already documented at `recordTotals` in
+`src/footprint.ts`: the per-step outcomes were always recorded correctly
 even in versions where the rollup that summed them was not.
 
 | signal | derivation |

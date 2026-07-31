@@ -219,9 +219,9 @@ interface RunShape {
 
 /**
  * Every count comes from `steps[]`, never from `totals`, for the reason
- * already documented at cli.ts's `deriveRecordTotals`: the per-step outcomes
- * were always recorded correctly even in the versions whose rollup that
- * summed them was not.
+ * already documented at `recordTotals` in footprint.ts: the per-step
+ * outcomes were always recorded correctly even in the versions whose
+ * rollup that summed them was not.
  *
  * NOTE — there is deliberately no "distinct tools touched" signal:
  * `StepRecord` carries no tool name (see docs/specs/run-shape-priors.md
