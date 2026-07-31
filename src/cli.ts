@@ -40,6 +40,8 @@ import { canonicalJson } from "./canonical-json.js";
 import { parseInstructionSkillFrontmatter } from "./from-skill.js";
 import { createLlmClient, resolveLlmConfig } from "./llm.js";
 import { renderAttestLines, renderStateCheckLines, findingsSummaryTag } from "./attest-render.js";
+import { computeRunShape } from "./priors.js";
+import { renderRunShapeDeviationLines, renderRunShapeReportLines } from "./priors-render.js";
 import {
   detectAgentConfig,
   reelierProxyCommandLine,
@@ -232,6 +234,39 @@ async function wireDownstreams(
 /** Builtins overlaid with the wrapped MCP downstreams' tools; `undefined` when nothing is wrapped (runSkill then falls back to builtins itself). */
 function buildWrappedToolRegistry(downstreams: DownstreamConnection[]): Record<string, Tool> | undefined {
   return downstreams.length > 0 ? { ...builtinTools, ...buildMcpTools(downstreams) } : undefined;
+}
+
+/** `.reelier/runs/<skill>.jsonl` under `cwd` — the exact path runSkill appends to (src/runner.ts's runRecordPath). */
+function runRecordPathFor(cwd: string, skillName: string): string {
+  return path.join(cwd, ".reelier", "runs", `${skillName}.jsonl`);
+}
+
+/**
+ * F5 local run-shape priors on the `reelier run` surface
+ * (docs/specs/run-shape-priors.md §6): print the deviation block, or print
+ * nothing at all.
+ *
+ * Every failure mode is swallowed on purpose. A missing, unreadable or
+ * corrupt run-record file must never affect a run that already happened —
+ * fail open at the recorder (never-list #5). There is also nothing honest to
+ * SAY about the failure on this surface: the report is advisory, and an
+ * advisory that cannot be computed is simply absent.
+ *
+ * No `now` is supplied: at the end of a run there is no silence to measure,
+ * so the silence signal is not emitted here (it is `reelier baseline`'s).
+ */
+async function printRunShapeDeviations(cwd: string, skillName: string): Promise<void> {
+  try {
+    const records = await readRunRecords(runRecordPathFor(cwd, skillName));
+    const lines = renderRunShapeDeviationLines(computeRunShape(records));
+    if (lines.length === 0) return;
+    console.log("");
+    for (const line of lines) {
+      console.log(line);
+    }
+  } catch {
+    // Intentionally silent — see above.
+  }
 }
 
 /**
@@ -459,6 +494,14 @@ export async function cmdRun(
       );
     }
 
+    // F5 local run-shape priors (docs/specs/run-shape-priors.md §6): an
+    // EXCEPTION report over this repo's own .reelier/runs/<skill>.jsonl,
+    // printed only when the run that just happened departed from that
+    // skill's own recent history. It is computed after the record is
+    // appended, so the run being reported on is in the file. It never
+    // touches the exit code below — a deviation is a difference, not a fault.
+    await printRunShapeDeviations(deps.cwd ?? process.cwd(), skill.name);
+
     return record.passed ? 0 : 1;
   } catch (err) {
     console.error(`Failed to connect --wrap downstream: ${(err as Error).message}`);
@@ -596,7 +639,7 @@ async function cmdBench(args: ParsedArgs): Promise<number> {
     throw err;
   }
 
-  const recordPath = path.join(process.cwd(), ".reelier", "runs", `${skill.name}.jsonl`);
+  const recordPath = runRecordPathFor(process.cwd(), skill.name);
   let records: RunRecord[];
   try {
     records = await readRunRecords(recordPath);
@@ -639,6 +682,67 @@ async function cmdBench(args: ParsedArgs): Promise<number> {
     console.log(`  per-step failure counts: none`);
   }
 
+  return 0;
+}
+
+/**
+ * `reelier baseline <skill.md>` — F5 local run-shape priors, standalone and
+ * read-only (docs/specs/run-shape-priors.md §6). Executes nothing, connects
+ * to nothing, transmits nothing: it reads this repo's own
+ * `.reelier/runs/<skill>.jsonl` and reports how the latest run sits against
+ * the previous ones. Suitable for a cron, which is why it prints the whole
+ * picture (a cron reading only exceptions cannot tell "nothing departed"
+ * from "this never ran") and why a deviation exits 0 like everything else —
+ * turning one into a non-zero exit would make it a gate, and this is a
+ * recorder.
+ *
+ * Exit 1 is reserved for what the operator must fix: no skill argument, an
+ * unreadable or malformed skill file, a missing or empty run-record file.
+ */
+async function cmdBaseline(args: ParsedArgs): Promise<number> {
+  const skillPath = args.positional[0];
+  if (!skillPath) {
+    console.error("Usage: reelier baseline <skill.md>");
+    return 1;
+  }
+
+  let source: string;
+  try {
+    source = await readFile(skillPath, "utf8");
+  } catch (err) {
+    console.error(`Could not read skill file ${skillPath}: ${(err as Error).message}`);
+    return 1;
+  }
+
+  let skill;
+  try {
+    skill = parseSkill(source);
+  } catch (err) {
+    if (err instanceof SkillParseError) {
+      console.error(`Malformed skill in ${skillPath}: ${err.message}`);
+      return 1;
+    }
+    throw err;
+  }
+
+  const recordPath = runRecordPathFor(process.cwd(), skill.name);
+  let records: RunRecord[];
+  try {
+    records = await readRunRecords(recordPath);
+  } catch (err) {
+    console.error(`No run records found at ${recordPath}: ${(err as Error).message}`);
+    return 1;
+  }
+  if (records.length === 0) {
+    console.error(`Run record file ${recordPath} is empty`);
+    return 1;
+  }
+
+  // The real clock: this is the only surface where `silence` (time since the
+  // latest run started) is a question anyone can meaningfully ask.
+  for (const line of renderRunShapeReportLines(computeRunShape(records, { now: Date.now() }), skill.name)) {
+    console.log(line);
+  }
   return 0;
 }
 
@@ -3258,7 +3362,7 @@ export async function cmdWhoami(fetchImpl: typeof fetch = fetch): Promise<number
 }
 
 const USAGE =
-  "Usage: reelier <run|bench|cost|prices|mcp|serve|trace|compile|manifest|approve|push|get|verify|diff|ci|policy|init|from-session|scan|install|uninstall|login|logout|whoami> [options]\n" +
+  "Usage: reelier <run|bench|baseline|cost|prices|mcp|serve|trace|compile|manifest|approve|push|get|verify|diff|ci|policy|init|from-session|scan|install|uninstall|login|logout|whoami> [options]\n" +
   "  login  — reelier login: connect this machine to Reelier Cloud via a device-code browser handshake; writes ~/.reelier/config.json.\n" +
   "  logout — reelier logout: clears the locally stored key (revoke it from the dashboard's Settings, not locally).\n" +
   "  whoami — reelier whoami: print the identity the stored key resolves to, or that you're not logged in.\n" +
@@ -3274,6 +3378,8 @@ const USAGE =
   "  init --signing — generate (or print the existing) Ed25519 signing key at ~/.reelier/signing/; idempotent.\n" +
   "  verify <permalink|file> [--key <pub.pem>] — recompute the record digest and check signature/timestamp claims.\n" +
   "  diff   — compare the last two runs of a skill; exit 1 on drift (gate a scheduled replay).\n" +
+  "  baseline — reelier baseline <skill.md>: the latest run against a median/MAD baseline of this skill's OWN previous runs,\n" +
+  "           computed from .reelier/runs/ on this disk. Reports deviations; executes nothing, gates nothing, always exits 0.\n" +
   "  cost   — reelier cost [skill] [--since 7d|30d|all]: $ per run from recorded LLM tokens + ~/.reelier/prices.yml.\n" +
   "  prices — reelier prices lists the active merged price table; 'reelier prices update' prints the bundled table's freshness.\n" +
   "  policy check [path] — lint a policy.yml (unknown keys, bad globs, empty rules); exit 1 on any error.\n" +
@@ -3306,6 +3412,8 @@ async function main(): Promise<number> {
       return cmdRun(args);
     case "bench":
       return cmdBench(args);
+    case "baseline":
+      return cmdBaseline(args);
     case "cost":
       return cmdCost(args);
     case "prices":

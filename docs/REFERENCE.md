@@ -67,6 +67,24 @@ A mocked step never calls its tool, so a write step is recovery-testable with no
 
 *Taxonomy (Determinism / Recovery / Drift) due to Mads Hansen's review of the launch post.*
 
+## Run-shape priors (`reelier baseline`)
+
+Your skill's own past runs are already on your disk, at `.reelier/runs/<skill>.jsonl`. `reelier baseline <skill.md>` computes a median + MAD baseline from the previous runs of *that* skill and reports how the latest one sits against it — steps, per-outcome counts, dispatched writes, duration, the gap since the previous run, and the silence since the latest one.
+
+```sh
+reelier baseline my-skill.skill.md   # read-only; executes nothing; always exits 0
+```
+
+Nothing is transmitted, nothing is compared across skills or machines, and you declare nothing — the run-shape signals exist as soon as there are four runs; gap and silence need five. `reelier run` prints the same block, but only when something actually departed; a repo with no history, or a run that matches its own history, prints exactly what it always did.
+
+What it reports is a **deviation** — a difference from this skill's own history:
+
+```
+! writes: 400 (previous 4 runs: median 1, min 1, max 2)
+```
+
+Not a cause, and not a verdict. A deviation is not a failure: it changes no outcome, no exit code, and no gate. The rule is one sentence — a value is reported when it lands more than 3 median-absolute-deviations *outside the range the previous runs actually spanned* — so a value your skill has already produced is never called a departure, and with fewer than three prior runs it says so instead of inventing a baseline. Full design, including what was deliberately left out: [`docs/specs/run-shape-priors.md`](specs/run-shape-priors.md).
+
 ## Assert grammar
 
 ```md
