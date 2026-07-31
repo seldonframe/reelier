@@ -4,12 +4,14 @@
 // that let a later run be compared against this one's own recent history.
 // It proves *shape changed*, never *something is wrong* — a footprint is not
 // a verdict, just a count. Pure + no IO — derivation is recorder-side and
-// must never break a run, so `deriveFootprint` is total: it degrades ANY
-// record shape this codebase has ever written or could hand-edit into a
-// zero-shaped footprint rather than throwing, including partial records,
-// pre-0.20.0 records, and a `steps[]` containing `null`/`undefined`/a
-// non-object entry (readRunRecords is a bare `JSON.parse`, runner.ts:474-484
-// — `[null]` is valid JSON on disk). `ms` is recorded on the footprint but
+// must never break a run, so `deriveFootprint` is total over the specific
+// hazards this module guards against: a missing/non-array `steps`, a
+// missing `totals`, partial and pre-0.20.0 records, and a `steps[]` entry
+// that is null/undefined/not-an-object (readRunRecords is a bare
+// `JSON.parse`, runner.ts:474-484 — `[null]` is valid JSON on disk). Every
+// field this module reads off a step (`write`, `llm`, `mocked`) is
+// re-checked for shape at the point of use, not just presence, because
+// `write` and `llm` are dereferenced. `ms` is recorded on the footprint but
 // is deliberately never a comparison input, the same discipline
 // `src/diff.ts:10` already holds for timing.
 
@@ -45,8 +47,10 @@ export interface RunFootprint {
  *
  * Moved from `cli.ts`'s private `deriveRecordTotals`, with one deliberate
  * widening: the original returned `r.totals.passed`/`.failed` verbatim on
- * the modern-shape branch, which is `undefined` on a record missing
- * `totals` altogether and fed a `NaN` into `computeBenchSummary`'s
+ * the modern-shape branch (the one keyed on `totals.unchecked !== undefined`),
+ * which is `undefined` on a record that HAS `totals` with `unchecked`
+ * defined but `passed`/`failed` missing — a shape neither branch of the
+ * original guarded against — and fed a `NaN` into `computeBenchSummary`'s
  * accumulator. `?? 0` here closes that gap; every other branch is
  * unchanged.
  */
@@ -85,8 +89,20 @@ export function recordTotals(r: RunRecord): { passed: number; unchecked: number;
  * every field before reading it, so a missing `steps`, a non-array `steps`,
  * a `steps[]` entry that is null/undefined/not-an-object, a missing
  * `totals`, or `{}` all yield a footprint of zeroes rather than a throw.
- * Never uses a non-null assertion. Called recorder-side on records going
- * back before 0.20.0 — derivation must never be the reason a run breaks.
+ * `write` and `llm` are DEREFERENCED (`write.resource.id`), not just tested
+ * for presence, so both are shape-checked (`typeof x === "object" && x !==
+ * null`) before use — a presence-only check would throw on a hand-edited
+ * `"write": null`. `mocked` is the literal `true`/absent per `StepRecord`,
+ * so it is compared with `=== true`, not presence, so `"mocked": false`
+ * cannot be counted as mocked. Never uses a non-null assertion. Called
+ * recorder-side on records going back before 0.20.0 — derivation must never
+ * be the reason a run breaks.
+ *
+ * `steps` counts raw array entries, including malformed ones — a corrupted
+ * `steps[]` can inflate `steps` even though every other counter on such an
+ * entry stays at zero. That is the one counter a corrupted file can move on
+ * its own; a comparison should not read a `steps` move alone as "shape
+ * changed" without also checking whether any other counter moved.
  */
 export function deriveFootprint(record: RunRecord): RunFootprint {
   const rawSteps: unknown[] = Array.isArray(record?.steps) ? record.steps : [];
@@ -105,19 +121,27 @@ export function deriveFootprint(record: RunRecord): RunFootprint {
     // null/undefined/not-an-object even though the array itself is present.
     if (!raw || typeof raw !== "object") continue;
     const s = raw as StepRecord;
-    if (s.write !== undefined) {
+    // `write` is dereferenced below (`.resource`), so a presence check
+    // alone is not enough -- "write": null passes `!== undefined` and then
+    // throws on `.resource`. Require it actually be an object.
+    if (typeof s.write === "object" && s.write !== null) {
       writesDispatched++;
       const id = s.write.resource?.id;
       if (typeof id === "string" && id.length > 0) writeResourceIds.add(id);
     }
-    if (s.llm !== undefined) escalations++;
+    // Same reasoning as `write`: `llm` is declared as an object, so a
+    // "null"/"false" hand-edit must not count as an escalation.
+    if (typeof s.llm === "object" && s.llm !== null) escalations++;
     // Explicit presence check, not a catch-all `else`: an absent, null, or
     // out-of-range `level` is not evidence the step "ran clean at L0" — it
     // is evidence of nothing, and must not be rendered as a pass.
     if (s.level === 0) healL0++;
     else if (s.level === 1) healL1++;
     else if (s.level === 2) healL2++;
-    if (s.mocked !== undefined) mocked++;
+    // `mocked` is declared as the literal `true` (never `false`) -- compare
+    // to the value, not presence, so a hand-edited "mocked": false/null
+    // cannot be counted as mocked.
+    if (s.mocked === true) mocked++;
   }
 
   return {

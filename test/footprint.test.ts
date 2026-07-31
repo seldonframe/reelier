@@ -94,6 +94,11 @@ test("deriveFootprint is total -- it never throws on a degenerate or partial rec
     { skill: "x", steps: [null], totals: { steps: 1, passed: 1, ms: 1 } },
     { skill: "x", steps: [null, undefined, "x"] },
     { skill: "x", steps: [, ,] }, // sparse array -- entries are `undefined` on iteration
+    // `write`/`llm` are dereferenced, not just tested for presence -- a
+    // hand-edited "write": null or "llm": null must not throw.
+    { skill: "x", steps: [step(1, "passed", { write: null as unknown as undefined })] },
+    { skill: "x", steps: [step(1, "passed", { llm: null as unknown as undefined })] },
+    { skill: "x", steps: [step(1, "passed", { mocked: false as unknown as true })] },
   ];
   for (const s of shapes) {
     assert.doesNotThrow(() => deriveFootprint(s as RunRecord), `threw on ${JSON.stringify(s)}`);
@@ -101,4 +106,24 @@ test("deriveFootprint is total -- it never throws on a degenerate or partial rec
   const empty = deriveFootprint({} as RunRecord);
   assert.equal(empty.steps, 0);
   assert.equal(empty.writesDispatched, 0);
+});
+
+test("deriveFootprint: a hand-edited write/llm/mocked that fails its declared shape counts as absent, not present", () => {
+  const nullWrite = deriveFootprint(run([step(1, "passed", { write: null as unknown as undefined })]));
+  assert.equal(nullWrite.writesDispatched, 0, "\"write\": null is not a dispatched write");
+  assert.equal(nullWrite.distinctWriteResources, 0);
+
+  const nullLlm = deriveFootprint(run([step(1, "passed", { llm: null as unknown as undefined })]));
+  assert.equal(nullLlm.escalations, 0, "\"llm\": null is not an escalation");
+
+  const falseMocked = deriveFootprint(run([step(1, "passed", { mocked: false as unknown as true })]));
+  assert.equal(falseMocked.mocked, 0, "\"mocked\": false is not mocked");
+
+  // A well-formed write/llm/mocked still counts, so the shape guard isn't
+  // accidentally suppressing the real signal.
+  const real = deriveFootprint(run([step(1, "passed", { write: { idempotencyKey: "k", approved: true, resource: { id: "A" } }, llm: { inputTokens: 1, outputTokens: 1 }, mocked: true })]));
+  assert.equal(real.writesDispatched, 1);
+  assert.equal(real.distinctWriteResources, 1);
+  assert.equal(real.escalations, 1);
+  assert.equal(real.mocked, 1);
 });
