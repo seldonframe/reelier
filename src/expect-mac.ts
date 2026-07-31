@@ -185,6 +185,12 @@ export const ABSENT_FIELD_NAME_MAX = 120;
  * an absent field.
  */
 export function typedKeyFor(entry: string): string {
+  // W3-S5: `status.code` keeps its own spelling as the output key. Without
+  // this arm it would normalize to `body.status.code` and a consumer holding
+  // the key space would conclude the projection never addresses the field it
+  // just projected — the twin-drift this function exists to prevent, caught
+  // by the W3-S5 absence-loop test the moment the two slices met.
+  if (entry === STATUS_CODE_ENTRY) return entry;
   if (entry.startsWith("header.")) return entry;
   return `body.${entry.startsWith("body.") ? entry.slice("body.".length) : entry}`;
 }
@@ -221,6 +227,9 @@ export function projectionMisses(
   const rec = parseBodyRecord(obs.body);
   for (const key of projection) {
     const outKey = typedKeyFor(key);
+    // Every observation carries a status, so `status.code` always projects —
+    // it can never be absent and never be unprojectable.
+    if (key === STATUS_CODE_ENTRY) continue;
     if (key.startsWith("header.")) {
       const v = lookupHeader(obs.headers, key.slice("header.".length));
       if (typeof v === "string" && v.length > 0) continue; // projected
