@@ -11,9 +11,21 @@
 // `JSON.parse`, runner.ts:474-484 — `[null]` is valid JSON on disk). Every
 // field this module reads off a step (`write`, `llm`, `mocked`) is
 // re-checked for shape at the point of use, not just presence, because
-// `write` and `llm` are dereferenced. `ms` is recorded on the footprint but
-// is deliberately never a comparison input, the same discipline
-// `src/diff.ts:10` already holds for timing.
+// `write` and `llm` are dereferenced.
+//
+// THE ONE DERIVATION. This is the only place in src/ that computes a run's
+// shape. `src/priors.ts` (F5) used to carry a second, near-identical one
+// (`shapeOf`); it now projects its metrics off this object, so a change to
+// what a counter means happens once. Everything here is derived from
+// `steps[]` — the outcome counts and `ms` included — never from the `totals`
+// rollup. `src/diff.ts` is a different question (did two runs' STEPS agree?)
+// and is untouched by this module.
+//
+// `ms` is a recorded measurement, not a judgement: nothing in this module
+// reads it, and `src/diff.ts:10`'s rule that timing is never drift still
+// stands. F5 does baseline it as its `duration` signal, which is a
+// difference reported to an operator and never an outcome, an exit code, or
+// a gate.
 
 import type { RunRecord, StepRecord } from "./runner.js";
 
@@ -35,6 +47,40 @@ export interface RunFootprint {
   mocked: number;
   manifestIgnored: boolean;
 }
+
+/**
+ * True only for a value that is actually a non-null, non-array object — the
+ * shape `StepRecord.write` and `.llm` are declared to have, and the shape
+ * this module dereferences them as. `typeof x === "object"` alone admits
+ * `null` and every array, and a bare `!== undefined` admits both plus every
+ * string and number a hand edit can leave behind. None of those is a
+ * dispatched write or an escalation, and counting one as such would inflate
+ * the two counters an operator is most likely to act on.
+ */
+function isObjectField<T extends object>(v: T | null | undefined): v is T {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/**
+ * `recordTotals` vs `deriveFootprint`: two functions that count the same four
+ * outcomes and are NOT duplicates of each other.
+ *
+ * `recordTotals` answers "what does this record CLAIM its totals were?", as
+ * honestly as the record allows — it takes `totals` at its word on the modern
+ * shape and falls back to `steps[]` only where SPEC §4.4 says the rollup is
+ * untrustworthy. That is what `reelier bench` needs: it summarises records,
+ * and a bench line that silently disagreed with the record it is summarising
+ * would be reporting a number the record does not contain.
+ *
+ * `deriveFootprint` answers "what shape did this run actually have?" and so
+ * counts from `steps[]` ALWAYS. Per-step outcomes were recorded correctly at
+ * every package version; the `totals` shortcut is only sometimes trustworthy,
+ * and a derivation that is right most of the time is the wrong basis for a
+ * baseline a later run is compared against.
+ *
+ * Deleting either in favour of the other would silently change the other's
+ * caller. Keep both; keep the reason above with them.
+ */
 
 /**
  * Per-record totals, honest across a mixed history: a record written before
@@ -103,11 +149,19 @@ export function recordTotals(r: RunRecord): { passed: number; unchecked: number;
  * entry stays at zero. That is the one counter a corrupted file can move on
  * its own; a comparison should not read a `steps` move alone as "shape
  * changed" without also checking whether any other counter moved.
+ *
+ * Every count here — the four outcomes and `ms` included — comes from
+ * `steps[]`, never from `totals`. See the note above `recordTotals` for why
+ * the two functions differ on that and why neither is redundant.
  */
 export function deriveFootprint(record: RunRecord): RunFootprint {
   const rawSteps: unknown[] = Array.isArray(record?.steps) ? record.steps : [];
-  const totals = recordTotals(record);
 
+  let passed = 0;
+  let unchecked = 0;
+  let skipped = 0;
+  let failed = 0;
+  let ms = 0;
   let writesDispatched = 0;
   const writeResourceIds = new Set<string>();
   let escalations = 0;
@@ -121,17 +175,29 @@ export function deriveFootprint(record: RunRecord): RunFootprint {
     // null/undefined/not-an-object even though the array itself is present.
     if (!raw || typeof raw !== "object") continue;
     const s = raw as StepRecord;
+    if (s.outcome === "passed") passed++;
+    else if (s.outcome === "unchecked") unchecked++;
+    else if (s.outcome === "skipped") skipped++;
+    else if (s.outcome === "failed") failed++;
+    // A step whose `ms` is not a finite number contributes nothing rather
+    // than making the whole duration unusable: a NaN or an Infinity on the
+    // footprint would propagate into a median downstream, and a duration
+    // short by one hand-edited step is a far smaller lie than one that is
+    // not a number at all.
+    if (typeof s.ms === "number" && Number.isFinite(s.ms)) ms += s.ms;
     // `write` is dereferenced below (`.resource`), so a presence check
     // alone is not enough -- "write": null passes `!== undefined` and then
-    // throws on `.resource`. Require it actually be an object.
-    if (typeof s.write === "object" && s.write !== null) {
+    // throws on `.resource`. Require it actually be an object, and not an
+    // array: `typeof [] === "object"` and `[] !== null`, so a hand-edited
+    // "write": [] would otherwise be counted as a dispatched write.
+    if (isObjectField(s.write)) {
       writesDispatched++;
       const id = s.write.resource?.id;
       if (typeof id === "string" && id.length > 0) writeResourceIds.add(id);
     }
     // Same reasoning as `write`: `llm` is declared as an object, so a
-    // "null"/"false" hand-edit must not count as an escalation.
-    if (typeof s.llm === "object" && s.llm !== null) escalations++;
+    // "null"/"false"/"[]" hand-edit must not count as an escalation.
+    if (isObjectField(s.llm)) escalations++;
     // Explicit presence check, not a catch-all `else`: an absent, null, or
     // out-of-range `level` is not evidence the step "ran clean at L0" — it
     // is evidence of nothing, and must not be rendered as a pass.
@@ -147,12 +213,12 @@ export function deriveFootprint(record: RunRecord): RunFootprint {
   return {
     skill: typeof record?.skill === "string" ? record.skill : "",
     finishedAt: typeof record?.finishedAt === "string" ? record.finishedAt : "",
-    ms: typeof record?.totals?.ms === "number" ? record.totals.ms : 0,
+    ms,
     steps: rawSteps.length,
-    passed: totals.passed,
-    failed: totals.failed,
-    unchecked: totals.unchecked,
-    skipped: totals.skipped,
+    passed,
+    failed,
+    unchecked,
+    skipped,
     writesDispatched,
     distinctWriteResources: writeResourceIds.size,
     escalations,

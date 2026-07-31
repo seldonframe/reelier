@@ -10,7 +10,32 @@
 // must not decide for them. Both surfaces say in words that nothing here
 // moves an outcome or an exit code, because someone will eventually try to
 // wire it into one.
-import { DEVIATION_MADS, type RunShapeReport, type RunShapeSignal } from "./priors.js";
+import { DEVIATION_MADS, type RunShapeMetric, type RunShapeReport, type RunShapeSignal } from "./priors.js";
+
+/**
+ * What a metric is CALLED in front of an operator, where that differs from
+ * what it is called in the type. Only the differences are listed; a metric
+ * whose identifier already reads as English is rendered verbatim.
+ *
+ * Two constraints on anything added here. It must fit the twelve-column row
+ * below — a label that overflows silently breaks the alignment of every row
+ * around it — and it must name a count, never characterise it: "resources"
+ * and "healed L2" describe what was counted, which is all this surface is
+ * allowed to say.
+ */
+const METRIC_LABELS: Partial<Record<RunShapeMetric, string>> = {
+  // Sits directly under `writes`, which is what makes the short form
+  // unambiguous: these are the distinct resources those writes landed on.
+  writeResources: "resources",
+  // "healed L1" is the phrasing `reelier run` already prints against a step
+  // that escalated (cli.ts:453), so the two surfaces agree.
+  healedL1: "healed L1",
+  healedL2: "healed L2",
+};
+
+function label(metric: RunShapeMetric): string {
+  return METRIC_LABELS[metric] ?? metric;
+}
 
 const SECOND = 1000;
 const MINUTE = 60 * SECOND;
@@ -105,7 +130,7 @@ export function renderRunShapeDeviationLines(report: RunShapeReport): string[] {
   if (deviating.length === 0) return [];
   return [
     `Run shape — this run vs this skill's own previous ${report.priorRuns} runs:`,
-    ...deviating.map((s) => `  ! ${s.metric}: ${fmtValue(s.latest, s.unit)} (${baselineText(s)})`),
+    ...deviating.map((s) => `  ! ${label(s.metric)}: ${fmtValue(s.latest, s.unit)} (${baselineText(s)})`),
     ...skillChangedNote(report),
     "  A deviation is a difference from this skill's own history — not a fault, not a verdict. It changes no outcome and no exit code.",
   ];
@@ -149,7 +174,7 @@ export function renderRunShapeReportLines(report: RunShapeReport, skillName: str
     "",
     ...report.signals.map(
       (s) =>
-        `${s.deviates ? "  ! " : "    "}${s.metric.padEnd(12)}${fmtValue(s.latest, s.unit).padEnd(11)}${baselineText(s)}`
+        `${s.deviates ? "  ! " : "    "}${label(s.metric).padEnd(12)}${fmtValue(s.latest, s.unit).padEnd(11)}${baselineText(s)}`
     ),
     "",
     // The excluded-record clause is attached HERE, not only to the note at

@@ -20,7 +20,8 @@
 // operator declares nothing and the run-shape signals exist the moment there
 // are four runs (`gap` and `silence`, computed over the intervals BETWEEN
 // runs, need five).
-import type { RunRecord, StepRecord } from "./runner.js";
+import { deriveFootprint, type RunFootprint } from "./footprint.js";
+import type { RunRecord } from "./runner.js";
 
 /**
  * Prior runs required before ANY baseline is computed.
@@ -73,6 +74,11 @@ export type RunShapeMetric =
   | "skipped"
   | "failed"
   | "writes"
+  | "writeResources"
+  | "escalations"
+  | "healedL1"
+  | "healedL2"
+  | "mocked"
   | "duration"
   | "gap"
   | "silence";
@@ -205,50 +211,41 @@ export function deviatesFromBaseline(
 
 // ---------------------------------------------------------------------------
 // Deriving one run's shape from a run record
+//
+// There is exactly one derivation in this package and it is
+// `deriveFootprint` (src/footprint.ts). This module used to carry its own
+// near-identical `shapeOf`; two functions computing "what shape did this run
+// have?" is how the answer to that question drifts apart, so the local one is
+// gone and the metrics below are a projection of the shared object.
+//
+// BEHAVIOUR CHANGE, stated rather than slipped in. `shapeOf` and
+// `deriveFootprint` agree on every well-formed record, and on the legacy
+// records SPEC §4.4 describes. They can disagree on a record whose `totals`
+// rollup contradicts its own `steps[]` — `deriveFootprint` counts from
+// `steps[]` unconditionally, which is the authoritative source. Where that
+// happens, an existing user's baseline moves by the size of the
+// contradiction. It is the correct direction and it is still a silent change
+// to a shipped surface, so: this cannot fire on a record this package wrote,
+// only on a hand-edited or externally generated one, and the only visible
+// effect is a run-shape row reporting the number the steps actually support.
+// Nothing about it can change an outcome or an exit code.
+//
+// The guards live in `deriveFootprint` and are not paranoia: it is fed by
+// JSON.parse over a file a human can edit. A malformed record degrades to a
+// zero-shaped run, never propagates NaN into a median and never throws — the
+// report is advisory and must never be the thing that breaks a run that has
+// already happened.
 // ---------------------------------------------------------------------------
 
-interface RunShape {
-  steps: number;
-  passed: number;
-  unchecked: number;
-  skipped: number;
-  failed: number;
-  writes: number;
-  duration: number;
-}
-
 /**
- * Every count comes from `steps[]`, never from `totals`, for the reason
- * already documented at `recordTotals` in footprint.ts: the per-step
- * outcomes were always recorded correctly even in the versions whose
- * rollup that summed them was not.
- *
- * NOTE — there is deliberately no "distinct tools touched" signal:
- * `StepRecord` carries no tool name (see docs/specs/run-shape-priors.md
- * §2.1). Inferring one from the skill file as it stands today, or from step
- * titles, would be a claim about prior runs that nothing observed.
- *
- * The guards are not paranoia: this function is fed by JSON.parse over a
- * file a human can edit. A malformed record must degrade to a zero-shaped
- * run, never propagate NaN into a median and never throw — the report is
- * advisory and must never be the thing that breaks a run that has already
- * happened.
+ * The numeric fields of a `RunFootprint` — the only ones a baseline can be
+ * computed over. `skill` and `finishedAt` are strings, and `manifestIgnored`
+ * is a boolean; `deviatesFromBaseline` is defined over numbers and there is
+ * no honest median of a flag.
  */
-function shapeOf(record: RunRecord): RunShape {
-  const steps: StepRecord[] = Array.isArray(record.steps) ? record.steps : [];
-  const shape: RunShape = { steps: steps.length, passed: 0, unchecked: 0, skipped: 0, failed: 0, writes: 0, duration: 0 };
-  for (const step of steps) {
-    if (step.outcome === "passed") shape.passed++;
-    else if (step.outcome === "unchecked") shape.unchecked++;
-    else if (step.outcome === "skipped") shape.skipped++;
-    else if (step.outcome === "failed") shape.failed++;
-    // `write` is present iff a write-effect step actually dispatched its
-    // tool call — a refused or mocked step never gets one (runner.ts).
-    if (step.write !== undefined) shape.writes++;
-    if (typeof step.ms === "number" && Number.isFinite(step.ms)) shape.duration += step.ms;
-  }
-  return shape;
-}
+type FootprintCounter = {
+  [K in keyof RunFootprint]: RunFootprint[K] extends number ? K : never;
+}[keyof RunFootprint];
 
 /** Epoch ms of a record's start, or undefined when the stamp is unparseable. */
 function startedMs(record: RunRecord): number | undefined {
@@ -260,14 +257,44 @@ function startedMs(record: RunRecord): number | undefined {
 // The report
 // ---------------------------------------------------------------------------
 
-const RUN_METRICS: ReadonlyArray<{ metric: RunShapeMetric; of: keyof RunShape; unit: "count" | "ms" }> = [
+/**
+ * The per-run signals, in the order an operator reads them, each projected
+ * off one `RunFootprint` counter. Adding a metric is adding a row here; there
+ * is no second place where a run's shape is computed.
+ *
+ * Two footprint counters are deliberately absent and must stay absent:
+ *
+ *  - **`healL0`** is `steps` minus `healL1` and `healL2`, so it carries no
+ *    information those three do not already carry. A run where one step
+ *    escalated would report the same single movement twice — once as a
+ *    healed-L1 row going up and once as a healed-L0 row going down — and a
+ *    surface that says the same thing twice is teaching the operator that
+ *    half of what it says is redundant.
+ *  - **`manifestIgnored`** is a boolean, and its absence is ambiguous between
+ *    "no manifest" and "preflight ran normally" (runner.ts:237-243). It is on
+ *    the footprint for persistence; a median of it would be a number with no
+ *    referent.
+ *
+ * NOTE — there is deliberately no "distinct tools touched" signal:
+ * `StepRecord` carries no tool name (see docs/specs/run-shape-priors.md
+ * §2.1). Inferring one from the skill file as it stands today, or from step
+ * titles, would be a claim about prior runs that nothing observed.
+ */
+const RUN_METRICS: ReadonlyArray<{ metric: RunShapeMetric; of: FootprintCounter; unit: "count" | "ms" }> = [
   { metric: "steps", of: "steps", unit: "count" },
   { metric: "passed", of: "passed", unit: "count" },
   { metric: "unchecked", of: "unchecked", unit: "count" },
   { metric: "skipped", of: "skipped", unit: "count" },
   { metric: "failed", of: "failed", unit: "count" },
-  { metric: "writes", of: "writes", unit: "count" },
-  { metric: "duration", of: "duration", unit: "ms" },
+  { metric: "writes", of: "writesDispatched", unit: "count" },
+  // Distinct resources, not writes: six updates to six records and six
+  // updates to one record are the same `writes` and a different blast radius.
+  { metric: "writeResources", of: "distinctWriteResources", unit: "count" },
+  { metric: "escalations", of: "escalations", unit: "count" },
+  { metric: "healedL1", of: "healL1", unit: "count" },
+  { metric: "healedL2", of: "healL2", unit: "count" },
+  { metric: "mocked", of: "mocked", unit: "count" },
+  { metric: "duration", of: "ms", unit: "ms" },
 ];
 
 /**
@@ -302,8 +329,8 @@ export function computeRunShape(records: readonly RunRecord[], options: RunShape
     };
   }
 
-  const latestShape = shapeOf(latest);
-  const priorShapes = priors.map(shapeOf);
+  const latestShape = deriveFootprint(latest);
+  const priorShapes = priors.map(deriveFootprint);
   const signals: RunShapeSignal[] = RUN_METRICS.map(({ metric, of, unit }) => {
     const baseline = baselineOf(priorShapes.map((s) => s[of]));
     return { metric, unit, sample: "runs" as const, latest: latestShape[of], baseline, deviates: deviatesFromBaseline(latestShape[of], baseline) };
