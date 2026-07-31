@@ -82,7 +82,20 @@ function childrenOf(
   if (ts.isTypeLiteralNode(inner)) return membersOf(inner.members, decls, seen, unresolved);
   if (ts.isTypeReferenceNode(inner) && ts.isIdentifier(inner.typeName)) {
     const name = inner.typeName.text;
-    if (DOCUMENTED_ELSEWHERE.has(name) || OPAQUE_TYPES.has(name) || seen.has(name)) return [];
+    if (DOCUMENTED_ELSEWHERE.has(name) || seen.has(name)) return [];
+    if (OPAQUE_TYPES.has(name)) {
+      // A structural built-in has no documentable key of its OWN, but its type arguments do.
+      // Recurse rather than return [], or `Array<ObservationRef>` -- a TypeReferenceNode that
+      // `unwrap` does not touch, since it only strips the `T[]` form -- would contribute zero
+      // paths AND zero `unresolved` entries, going silent end-to-end whenever both sides happen
+      // to use that spelling. Recursing makes `Array<T>` and `T[]` expand identically and keeps
+      // an unknown name inside a generic loud.
+      //
+      // For a keyed generic (`Record<string, X>`) this surfaces X's keys as if they were direct
+      // children, which is imprecise -- but it errs toward demanding documentation, never toward
+      // silence, and no current field uses that form.
+      return (inner.typeArguments ?? []).flatMap((arg) => childrenOf(arg, decls, seen, unresolved));
+    }
     const decl = decls.get(name);
     if (!decl) {
       // Fail LOUD, not open. Returning [] here silently drops every sub-key of a field typed
