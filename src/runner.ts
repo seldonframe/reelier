@@ -1056,7 +1056,7 @@ async function executeStep(
           // Output-form names per the P1.5 namespaces: bare entries are
           // body keys; header./body. prefixed entries keep their namespace.
           const absent = (step.attest?.projection ?? [])
-            .map((f) => (f.startsWith("header.") || f.startsWith("body.") ? f : `body.${f}`))
+            .map((f) => (f === STATUS_CODE_ENTRY ? f : f.startsWith("header.") || f.startsWith("body.") ? f : `body.${f}`))
             .filter((k) => !(k in typed))
             .slice(0, ABSENT_FIELDS_MAX)
             .map((n) => n.slice(0, ABSENT_FIELD_NAME_MAX));

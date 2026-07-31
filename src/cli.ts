@@ -1468,6 +1468,20 @@ function isComputedDateName(name: string): boolean {
 const PARAMETERIZED_PROBE_DROP_REFUSAL =
   "refusing to drop the binding on a parameterized probe — its args fill from run-time bindings, and without expect.probeArgs nothing proves the filled args were approved. Re-approve with --probe --var, or make the probe args literal.";
 
+/**
+ * W3-S5's `status.code` + MCP refusal (A12): MCP has no HTTP status, so
+ * `mcpResultToObservation` fabricates `isError ? 500 : 200`, and an isError
+ * result flows through as a SUCCESSFUL observation — a binding stamped at
+ * 500 would MATCH on every future error. THE SAME STRING everywhere this
+ * predicate is checked (I-18 blocker 4, wave-3 review): first-time bind
+ * (the structural-unbindability block below) AND re-verify/`--rebind` on an
+ * already-bound step (hoisted ahead of that branch — see the call site).
+ * Never forked; a second copy is how the two checks drift apart silently.
+ */
+function mcpStatusCodeRefusal(tool: string): string {
+  return `'status.code' cannot be state-bound through the MCP tool '${tool}' — MCP has no HTTP status, so an isError result is fabricated as 500 and flows through as a successful observation (A12): a binding stamped at 500 would MATCH on every future error. Use a read that reifies absence into a body field, or probe over http`;
+}
+
 /** `hmac-sha256:9f31…77aa` — enough to eyeball, never needed for anything else (the full value lands in the file). */
 function abbrevMac(mac: string): string {
   const hex = mac.slice("hmac-sha256:".length);
@@ -2061,6 +2075,26 @@ export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Prom
 
       // ---------------- probe mode (§4.2–§4.4) ----------------
 
+      // I-18 blocker 4 (wave-3 review): the status.code + MCP refusal below
+      // (structuralReason's last branch) sat AFTER this re-verify branch, so
+      // a step bound over plain http could be re-verified — or, worse,
+      // `--rebind`-ed — against a wrapped MCP tool resolved at THIS
+      // invocation, the exact fail-open the refusal exists to prevent
+      // (mcpStatusCodeRefusal's doc comment). Hoisted here, evaluated BEFORE
+      // any probe dispatch or --rebind consent, so it can never be reached
+      // by that path either. Same string, same predicate — never forked.
+      if (
+        isCurrent &&
+        step.expect !== undefined &&
+        step.attest !== undefined &&
+        step.attest.projection?.includes(STATUS_CODE_ENTRY) &&
+        probeTools?.[step.attest.tool]?.server !== undefined
+      ) {
+        console.log(`  approved (current) — re-verify unavailable (${mcpStatusCodeRefusal(step.attest.tool)}); binding left as-is`);
+        reVerifyUnavailable++;
+        continue;
+      }
+
       // Already approved-current AND state-bound: report-only re-verify
       // (§4.3 as amended by A2/A14 — nothing is ever re-bound automatically).
       // Re-verify UNAVAILABILITY is its own loud, non-zero class: an induced
@@ -2259,13 +2293,20 @@ export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Prom
         // triggered by error conditions; it also neutralizes B7 (an induced
         // isError would yield match, never unevaluated, so no alert fires).
         //
-        // Bind-time refusal is sufficient enforcement: `attest.projection`
-        // is covered by the approval hash, so a hand-added `status.code`
-        // after approval is an approval-hash mismatch the existing gate
-        // already refuses. `status.code` stays fully live on the http
-        // builtins, which carry real statuses. The predicate is `server`,
-        // set by mcpTool for every wrapped tool and absent on http builtins.
-        structuralReason = `'status.code' cannot be state-bound through the MCP tool '${step.attest.tool}' — MCP has no HTTP status, so an isError result is fabricated as 500 and flows through as a successful observation (A12): a binding stamped at 500 would MATCH on every future error. Use a read that reifies absence into a body field, or probe over http`;
+        // `attest.projection` is covered by the approval hash, so a
+        // hand-added `status.code` after approval is an approval-hash
+        // mismatch the existing gate already refuses. But WHICH tool `--wrap`
+        // resolves `step.attest.tool` to at THIS invocation is NOT covered by
+        // that hash — a step bound over plain http can be re-verified or
+        // `--rebind`-ed against a wrapped MCP tool of the same name on a
+        // later run (I-18 blocker 4, wave-3 review), so bind-time refusal
+        // alone is not sufficient enforcement; this predicate is hoisted and
+        // checked again ahead of the re-verify branch above (search
+        // mcpStatusCodeRefusal's other call site). `status.code` stays fully
+        // live on the http builtins, which carry real statuses. The
+        // predicate is `server`, set by mcpTool for every wrapped tool and
+        // absent on http builtins.
+        structuralReason = mcpStatusCodeRefusal(step.attest.tool);
       }
 
       // A structurally-unbindable step that is ALREADY approved-current and

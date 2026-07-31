@@ -17,7 +17,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { cmdApprove, type ParsedArgs, type ApproveDeps } from "../src/cli.js";
 import { parseSkill } from "../src/skill.js";
-import { projectObservation } from "../src/runner.js";
+import { projectObservation, runSkill } from "../src/runner.js";
 import { projectObservationTyped } from "../src/expect-mac.js";
 import type { Tool } from "../src/tools.js";
 
@@ -201,6 +201,54 @@ test("W3-S5: the MCP refusal covers a MIXED projection too, and offers the inter
   });
 });
 
+// ---------------------------------------------------------------------------
+// Blocker 4 (wave-3 review): the structural-unbindability block (which
+// carries the status.code + MCP refusal) sat AFTER the
+// `isCurrent && step.expect !== undefined` re-verify branch, so `--rebind`
+// could re-bind a status.code projection through a wrapped MCP tool — the
+// exact fail-open the refusal exists to prevent. Must be hoisted so it's
+// checked before that branch does anything.
+// ---------------------------------------------------------------------------
+
+test("W3-S5 review-fix (blocker 4): --rebind never re-binds a status.code projection through a wrapped MCP tool, even on an already-bound step", async () => {
+  await withTempDir(async (dir) => {
+    const skillPath = path.join(dir, "s.skill.md");
+    await writeFile(skillPath, SKILL('["status.code"]'), "utf8");
+    // Bind over plain http first — legitimate at bind time.
+    const { tools: httpReg } = tools("http", 404);
+    await captureOutput(() => cmdApprove(fakeArgs([skillPath], ["probe", "all"]), deps(dir, { tools: httpReg })));
+    const boundBefore = await readFile(skillPath, "utf8");
+    assert.match(boundBefore, /expect:/, "fixture sanity: really bound");
+    // Now re-verify with --rebind against a wrapped MCP tool under the SAME name.
+    const { tools: mcpReg, probeCalls } = tools("mcp", 200);
+    const { result: code, out } = await captureOutput(() =>
+      cmdApprove(fakeArgs([skillPath], ["probe", "all", "rebind"]), deps(dir, { tools: mcpReg })),
+    );
+    assert.equal(code, 1, out);
+    assert.match(out, /'status\.code' cannot be state-bound through the MCP tool 'get_page' — MCP has no HTTP status/);
+    assert.deepEqual(probeCalls, [], "refused before any dispatch — the exact fail-open the refusal exists to prevent");
+    assert.equal(await readFile(skillPath, "utf8"), boundBefore, "nothing re-bound");
+  });
+});
+
+test("W3-S5 review-fix (blocker 4): the SAME refusal also fires on a plain (non---rebind) re-verify against a wrapped MCP tool", async () => {
+  await withTempDir(async (dir) => {
+    const skillPath = path.join(dir, "s.skill.md");
+    await writeFile(skillPath, SKILL('["status.code"]'), "utf8");
+    const { tools: httpReg } = tools("http", 404);
+    await captureOutput(() => cmdApprove(fakeArgs([skillPath], ["probe", "all"]), deps(dir, { tools: httpReg })));
+    const boundBefore = await readFile(skillPath, "utf8");
+    const { tools: mcpReg, probeCalls } = tools("mcp", 200);
+    const { result: code, out } = await captureOutput(() =>
+      cmdApprove(fakeArgs([skillPath], ["probe", "all"]), deps(dir, { tools: mcpReg })),
+    );
+    assert.equal(code, 1, out);
+    assert.match(out, /'status\.code' cannot be state-bound through the MCP tool 'get_page'/);
+    assert.deepEqual(probeCalls, []);
+    assert.equal(await readFile(skillPath, "utf8"), boundBefore);
+  });
+});
+
 test("W3-S5: `status.code` binds fine on an http builtin — no server, a real status", async () => {
   await withTempDir(async (dir) => {
     const skillPath = path.join(dir, "s.skill.md");
@@ -273,6 +321,63 @@ test("W3-S5: a projection WITHOUT status.code keeps today's two-branch lint, byt
 // ---------------------------------------------------------------------------
 // Absence, end to end: bind while absent, match while absent, mismatch on create
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Blocker 3 (wave-3 review): the absentFields output-form mapping was a
+// two-way `f.startsWith("header.")||f.startsWith("body.") ? f : \`body.${f}\``,
+// which turns the declared entry "status.code" into "body.status.code" — a
+// field that was PRESENT (just changed value), reported as absent, on EVERY
+// status.code mismatch. Must be three-way, matching both projection twins.
+// ---------------------------------------------------------------------------
+
+test("W3-S5 review-fix (blocker 3): a status.code-only mismatch never fabricates an absentFields entry — status.code was PRESENT, just changed", async () => {
+  await withTempDir(async (dir) => {
+    const skillPath = path.join(dir, "s.skill.md");
+    await writeFile(skillPath, SKILL('["status.code"]'), "utf8");
+    const live = { status: 404 };
+    const reg: Record<string, Tool> = {
+      get_page: { effect: "read", run: async () => ({ status: live.status, headers: {}, body: "{}" }) },
+      put_page: { effect: "idempotent-write", run: async () => ({ status: 200, headers: {}, body: "{}" }) },
+    };
+    await captureOutput(() => cmdApprove(fakeArgs([skillPath], ["probe", "all"]), deps(dir, { tools: reg })));
+    live.status = 200; // the resource now exists — status.code mismatches
+    const skill = parseSkill(await readFile(skillPath, "utf8"));
+    const record = await runSkill(skill, {
+      tools: reg,
+      vars: {},
+      cwd: dir,
+      expectKeystorePath: path.join(dir, "expect-keys.json"),
+    });
+    const stateCheck = record.steps[0].stateCheck!;
+    assert.equal(stateCheck.outcome, "mismatch");
+    assert.equal(stateCheck.absentFields, undefined, "status.code was PRESENT (its value just changed) — never absent");
+  });
+});
+
+test("W3-S5 review-fix (blocker 3): a genuinely absent body field still reports, alongside a status.code mismatch", async () => {
+  await withTempDir(async (dir) => {
+    const skillPath = path.join(dir, "s.skill.md");
+    await writeFile(skillPath, SKILL('["status.code","compiled_truth"]'), "utf8");
+    const live: { status: number; body: Record<string, unknown> } = { status: 404, body: { compiled_truth: "x" } };
+    const reg: Record<string, Tool> = {
+      get_page: { effect: "read", run: async () => ({ status: live.status, headers: {}, body: JSON.stringify(live.body) }) },
+      put_page: { effect: "idempotent-write", run: async () => ({ status: 200, headers: {}, body: "{}" }) },
+    };
+    await captureOutput(() => cmdApprove(fakeArgs([skillPath], ["probe", "all"]), deps(dir, { tools: reg })));
+    live.status = 200;
+    live.body = {}; // compiled_truth genuinely absent now
+    const skill = parseSkill(await readFile(skillPath, "utf8"));
+    const record = await runSkill(skill, {
+      tools: reg,
+      vars: {},
+      cwd: dir,
+      expectKeystorePath: path.join(dir, "expect-keys.json"),
+    });
+    const stateCheck = record.steps[0].stateCheck!;
+    assert.equal(stateCheck.outcome, "mismatch");
+    assert.deepEqual(stateCheck.absentFields, ["body.compiled_truth"], "genuinely absent field still reports; status.code must not appear");
+  });
+});
 
 test("W3-S5: the absence loop — bind on 404, match while still absent, mismatch once it exists", async () => {
   await withTempDir(async (dir) => {
