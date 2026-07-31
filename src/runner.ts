@@ -70,6 +70,32 @@ export interface StepWrite {
   idempotencyKey: string;
   /** true = executed via a matching Step.approve hash; false = executed via the legacy --allow-writes/--yes flags. */
   approved: boolean;
+  /**
+   * WHICH approval authorized this write — the step's stamped `approve:`
+   * hash, verified equal to the recomputed hash before dispatch (the same
+   * equality `approved` is read off). Absent exactly when `approved` is
+   * false: a `--allow-writes`/`--yes` dispatch has no authorization to name.
+   *
+   * FOUNDATION's ten-year asset #1 is "what an agent declared it would
+   * change (scope, approval hash) joined to what actually changed" — this is
+   * the join key. `approved` alone says only THAT a write was authorized,
+   * never by which authorization, so pairs could not be grouped after the
+   * fact. Additive (I-11).
+   *
+   * Disclosure, stated precisely (review finding — the first version of this
+   * comment justified it with "the hash is already in the committed skill
+   * file", which is a non-sequitur: a receipt is publishable and the skill
+   * file may be private). This is an UNSALTED sha256 over the operation
+   * shape, so it is a stable correlator across runs and across tenants —
+   * that is the point — and any third party holding a candidate skill file
+   * can recompute it, making it a confirmation oracle for "did this receipt
+   * run THIS operation". The real argument is that it adds no new exposure
+   * CLASS: `idempotencyKey`, already in this same block, is an unsalted hash
+   * over the FILLED args and is strictly more revealing. This is the
+   * OPPOSITE property from `attest`'s salted commitments, whose design makes
+   * cross-run joins impossible — do not generalize that guarantee here.
+   */
+  approvalHash?: string;
   /** Best-effort, honestly-labeled extraction from the tool's JSON response body — absent when nothing was found. */
   resource?: { id?: string; version?: string };
   /** Set when an earlier step in THIS run wrote with the identical idempotencyKey — the step number of that earlier step. */
@@ -483,17 +509,31 @@ function extractResource(obs: Observation): { id?: string; version?: string } | 
   return { ...(id !== undefined ? { id } : {}), ...(version !== undefined ? { version } : {}) };
 }
 
-/** Build the write receipt for a write-effect step whose tool call just dispatched. See StepWrite. */
+/**
+ * Build the write receipt for a write-effect step whose tool call just
+ * dispatched. See StepWrite.
+ *
+ * `approvalHash` is the step's stamped hash when the write executed under a
+ * matched approval, and undefined on the legacy `--allow-writes`/`--yes`
+ * path. Both `approved` and `approvalHash` are derived from that ONE
+ * argument rather than passed separately, so a record cannot claim an
+ * approval it cannot name or name one it does not claim.
+ */
 function buildStepWrite(
   toolName: string,
   tool: Tool,
   filledArgs: unknown,
   obs: Observation,
-  approved: boolean
+  approvalHash: string | undefined
 ): StepWrite {
   const idempotencyKey = computeIdempotencyKey(toolName, tool.server ?? null, filledArgs);
   const resource = extractResource(obs);
-  return { idempotencyKey, approved, ...(resource ? { resource } : {}) };
+  return {
+    idempotencyKey,
+    approved: approvalHash !== undefined,
+    ...(approvalHash !== undefined ? { approvalHash } : {}),
+    ...(resource ? { resource } : {}),
+  };
 }
 
 /** Default projection field allowlists for response-derived attestation — identity/version class only, never content. Exported so tests fuzz the REAL lists instead of a copy that silently decays. */
@@ -1191,7 +1231,7 @@ async function executeStep(
   // stamped here, BEFORE assert evaluation, because the side effect already
   // happened regardless of whether the step's assertions later hold.
   const write = isWrite
-    ? { ...buildStepWrite(step.actionTool, tool, filledArgs, obs, step.approve !== undefined), ...(dispatchedAt !== undefined ? { dispatchedAt } : {}) }
+    ? { ...buildStepWrite(step.actionTool, tool, filledArgs, obs, step.approve), ...(dispatchedAt !== undefined ? { dispatchedAt } : {}) }
     : undefined;
 
   let attest: StepAttest | undefined;
@@ -1493,7 +1533,7 @@ async function attemptEscalation(
   // happened. `approved` is truthful here: if step.approve was defined, the
   // gate above already proved it matched THIS exact candidate template
   // before dispatch — a mismatch never reaches this line.
-  const l2Write = l2IsWrite ? buildStepWrite(step.actionTool, l2Tool, filledArgs, obs2, step.approve !== undefined) : undefined;
+  const l2Write = l2IsWrite ? buildStepWrite(step.actionTool, l2Tool, filledArgs, obs2, step.approve) : undefined;
   const l2Attest = l2IsWrite ? buildResponseDerivedAttest(obs2) : undefined;
 
   const reEval2 = reEvaluatePatch(l2.asserts, l2.binds, obs2);

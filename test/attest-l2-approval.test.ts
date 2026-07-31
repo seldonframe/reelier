@@ -107,6 +107,11 @@ test("F1: an approved+attested write step heals at L2 when the patched template 
       "no fabricated approval-mismatch reason may be recorded"
     );
     assert.equal(record.steps[0].write?.approved, true);
+    // The L2 gate proved l2ExpectedHash === step.approve before dispatch, so
+    // the healed re-execution ran under the SAME human approval and the
+    // receipt must name it. Without this, a mutation recording a different
+    // string at the L2 buildStepWrite call site survives the whole suite.
+    assert.equal(record.steps[0].write?.approvalHash, parseSkill(source).steps[0].approve);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
