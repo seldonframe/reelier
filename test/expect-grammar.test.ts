@@ -159,15 +159,14 @@ test("expect.pre is anchored at BOTH ends — a valid commitment with anything b
 });
 
 test("expect.at rejects a valid ISO timestamp with anything around it", () => {
-  // Unlike expect.pre above, these cases cannot prove the AT regex's anchors
-  // are intact, and no case can: V8's Date.parse returns NaN for every
-  // decorated form of an ISO string (leading/trailing space, tab, newline,
-  // stray char, trailing "(UTC)"), so the `Number.isNaN(Date.parse(...))`
-  // clause independently rejects exactly what the anchors reject. Dropping
-  // either anchor is therefore an EQUIVALENT mutation — behaviour is
-  // unchanged, and a mutation report listing those two survivors is correct
-  // rather than a coverage gap. What this test does pin is the contract
-  // itself: a decorated timestamp is refused, by whichever gate gets there.
+  // Unlike expect.pre above, no case here can pin the LEADING anchor: V8's
+  // Date.parse returns NaN for every prefixed form of an ISO string (space,
+  // tab, newline, stray char), so `Number.isNaN(Date.parse(...))`
+  // independently rejects exactly what a missing '^' would let through.
+  // Dropping that anchor is an equivalent mutation, and a mutation report
+  // listing it as surviving is correct rather than a coverage gap. What this
+  // test pins is the contract itself: a decorated timestamp is refused, by
+  // whichever gate reaches it first.
   for (const badAt of [
     " 2026-07-30T06:58:12.331Z",
     "2026-07-30T06:58:12.331Z ",

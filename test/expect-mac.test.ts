@@ -157,6 +157,21 @@ test("expectMac refuses an empty or whitespace-only probe tool name, never compu
   }
 });
 
+test("expectMac refuses a non-string probe tool name — the guard is for untyped callers, so it needs an untyped test", () => {
+  // TypeScript already forbids these at compile time, which is exactly why
+  // the runtime half of the guard is invisible to every typed test. The
+  // casts below are the only way to exercise it, and without them a
+  // commitment could be computed under `undefined` or `[object Object]` as
+  // its probe context.
+  for (const badProbe of [undefined, null, 42, {}, ["gbrain.get_page"]]) {
+    assert.throws(
+      () => expectMac(KEY_A, badProbe as unknown as string, { "body.etag": "abc" }),
+      /probe tool name must be a non-empty string/,
+      `probe ${JSON.stringify(badProbe)} must be refused`
+    );
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Typed projection: same selection semantics as projectObservation's
 // explicit-projection branch, types preserved (A6)
@@ -362,9 +377,15 @@ test("readKeystore rejects each malformed shape with its specific message — ne
     await rejects(`null`, /malformed \(expected an object\)/, "JSON null is not a keystore");
     await rejects(`"a string"`, /malformed \(expected an object\)/, "a JSON string is not a keystore");
 
-    // 'keys' must be a non-array object.
+    // 'keys' must be a non-array object. The scalar cases matter as much as
+    // the array/null ones: Object.entries(5) is a harmless [], so a store
+    // with a scalar 'keys' would otherwise read as an empty-but-valid
+    // keystore and silently strand every lookup.
     await rejects(`{"v":1,"keys":[]}`, /'keys' must be an object/, "keys as an array");
     await rejects(`{"v":1,"keys":null}`, /'keys' must be an object/, "keys as null");
+    await rejects(`{"v":1,"keys":5}`, /'keys' must be an object/, "keys as a number");
+    await rejects(`{"v":1,"keys":"x"}`, /'keys' must be an object/, "keys as a string");
+    await rejects(`{"v":1,"keys":true}`, /'keys' must be an object/, "keys as a boolean");
 
     // Entries must be non-array objects.
     await rejects(`{"v":1,"keys":{"${ID}":[]}}`, /entry '3c9a01d2e4f5b6a7' must be an object/, "entry as an array");
