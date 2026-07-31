@@ -75,6 +75,7 @@ import {
 } from "./scan.js";
 import { planInstall, applyInstall, findLatestBackup, restoreFromBackup, planWrapOffer, type InstallResult } from "./wrap.js";
 import { buildToolServer, runDiffTool } from "./serve.js";
+import { recordTotals } from "./footprint.js";
 import {
   costRun,
   loadPriceTable,
@@ -533,35 +534,6 @@ export interface BenchSummary {
   failureCounts: Map<string, number>;
 }
 
-/**
- * Per-record totals, honest across a mixed history: a record written before
- * 0.2.0 has no `totals.unchecked`/`totals.skipped` field (and its old
- * `totals.passed` counted "passed" OR "unchecked" together) — for those,
- * derive the split from the per-step outcomes instead, which were always
- * recorded correctly even when the rollup that summed them wasn't.
- */
-function deriveRecordTotals(r: RunRecord): { passed: number; unchecked: number; skipped: number; failed: number } {
-  if (r.totals.unchecked !== undefined) {
-    return {
-      passed: r.totals.passed,
-      unchecked: r.totals.unchecked,
-      skipped: r.totals.skipped ?? 0,
-      failed: r.totals.failed,
-    };
-  }
-  let passed = 0;
-  let unchecked = 0;
-  let skipped = 0;
-  let failed = 0;
-  for (const s of r.steps) {
-    if (s.outcome === "passed") passed++;
-    else if (s.outcome === "unchecked") unchecked++;
-    else if (s.outcome === "skipped") skipped++;
-    else if (s.outcome === "failed") failed++;
-  }
-  return { passed, unchecked, skipped, failed };
-}
-
 export function computeBenchSummary(records: RunRecord[]): BenchSummary {
   const first = records[0];
   const latest = records[records.length - 1];
@@ -579,7 +551,7 @@ export function computeBenchSummary(records: RunRecord[]): BenchSummary {
     llmInputTokens += r.totals.llmInputTokens ?? 0;
     llmOutputTokens += r.totals.llmOutputTokens ?? 0;
 
-    const t = deriveRecordTotals(r);
+    const t = recordTotals(r);
     totals.passed += t.passed;
     totals.unchecked += t.unchecked;
     totals.skipped += t.skipped;
