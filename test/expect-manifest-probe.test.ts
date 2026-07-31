@@ -123,6 +123,19 @@ test("addProbeToolsToManifest: adds only missing probe tools of bound steps, nev
   assert.equal(JSON.stringify(again.manifest), JSON.stringify(manifest));
 });
 
+test("addProbeToolsToManifest: an attest-only (expect-less) step adds NOTHING — the S5 zero-touch clause, at bind time too", () => {
+  // The twin of the build-time zero-touch test above: `expect` is what opts a
+  // skill into probe coverage, not `attest`. Without this, dropping the
+  // `step.expect === undefined` half of the guard would silently start
+  // stamping probe tools into the manifests of skills that never opted into
+  // state binding — flipping preflight enforcement on as a side effect.
+  const attestOnly = skillOf(writeStep(1, { attest: ATTEST, approve: `sha256:${"a".repeat(64)}` }));
+  const existing = { v: 1 as const, tools: [{ name: "put_page", server: "gbrain", digest: `sha256:${"d".repeat(64)}` }] };
+  const { manifest, added } = addProbeToolsToManifest(existing, attestOnly, [GBRAIN()]);
+  assert.deepEqual(added, [], "attest alone must never add a probe tool");
+  assert.equal(JSON.stringify(manifest), JSON.stringify(existing), "the manifest is returned byte-identical");
+});
+
 test("preflight diagnostic: a vanished probe tool whose trivial digest matches OTHER live tools reads 'missing', not a bogus rename hint", () => {
   const skill = skillOf(writeStep(1, { attest: ATTEST, approve: `sha256:${"a".repeat(64)}`, expect: EXPECT }));
   const manifest = buildManifestForSkill(skill, [GBRAIN()]);
@@ -132,6 +145,28 @@ test("preflight diagnostic: a vanished probe tool whose trivial digest matches O
   const drift = result.drifts.find((d) => d.name === "get_page")!;
   assert.match(drift.note, /missing: tool not exposed/);
   assert.ok(!/collision renaming/.test(drift.note), "a multi-match digest must not produce a rename hint");
+});
+
+test("preflight diagnostic: the rename hint requires an actual DIGEST match — an unrecorded live tool with a different schema is not a rename", () => {
+  // The rename hint's whole job is "same schema, different name". If the
+  // digest comparison stopped mattering, ANY single unrecorded live tool
+  // would be offered as the rename candidate — a confident, wrong diagnosis
+  // pointing at an unrelated tool. Here the only unrecorded live tool has a
+  // DIFFERENT schema, so the honest answer stays "missing".
+  const skill = skillOf(writeStep(1, { attest: ATTEST, approve: `sha256:${"a".repeat(64)}`, expect: EXPECT }));
+  const manifest = buildManifestForSkill(skill, [GBRAIN()]);
+  const probeGoneStrangerArrived = fakeConnection("gbrain", [
+    { name: "put_page", inputSchema: { type: "object", properties: { slug: {} } } },
+    // Not in the manifest, and deliberately NOT get_page's schema.
+    { name: "unrelated_tool", inputSchema: { type: "object", properties: { totally: {}, different: {} } } },
+  ]);
+  const result = preflightManifest(manifest, [probeGoneStrangerArrived]);
+  const drift = result.drifts.find((d) => d.name === "get_page")!;
+  assert.match(drift.note, /missing: tool not exposed/);
+  assert.ok(
+    !/unrelated_tool/.test(drift.note),
+    "a tool whose schema does not match must never be offered as the renamed candidate"
+  );
 });
 
 test("shared probe tool across several bound steps appears once", () => {
