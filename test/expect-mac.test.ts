@@ -227,9 +227,9 @@ test("a JSON scalar body projects to {} even when the projection names one of it
   // ("length"), so it's the case that separates "rejected a non-object body"
   // from "looked and found nothing". Without the object check, a string body
   // would start contributing a projected value to the commitment.
-  assert.deepEqual(projectObservationTyped({ body: `"hello"`, headers: {} }, ["length"]), {});
-  assert.deepEqual(projectObservationTyped({ body: `5`, headers: {} }, ["toFixed", "length"]), {});
-  assert.deepEqual(projectObservationTyped({ body: `true`, headers: {} }, ["length"]), {});
+  assert.deepEqual(projectObservationTyped({ body: `"hello"`, headers: {}, status: 200 }, ["length"]), {});
+  assert.deepEqual(projectObservationTyped({ body: `5`, headers: {}, status: 200 }, ["toFixed", "length"]), {});
+  assert.deepEqual(projectObservationTyped({ body: `true`, headers: {}, status: 200 }, ["length"]), {});
 });
 
 test("an array body projects to {} even when the projection names indices — arrays are rejected as a body, not indexed into", () => {
@@ -237,8 +237,8 @@ test("an array body projects to {} even when the projection names indices — ar
   // "looked and found nothing". Index names can: if the array guard stopped
   // firing, these would sail through as real projected scalars and the
   // commitment would silently start covering a shape the spec excludes.
-  assert.deepEqual(projectObservationTyped({ body: "[1,2]", headers: {} }, ["0", "1"]), {});
-  assert.deepEqual(projectObservationTyped({ body: `["a","b"]`, headers: {} }, ["0", "length"]), {});
+  assert.deepEqual(projectObservationTyped({ body: "[1,2]", headers: {}, status: 200 }, ["0", "1"]), {});
+  assert.deepEqual(projectObservationTyped({ body: `["a","b"]`, headers: {}, status: 200 }, ["0", "length"]), {});
 });
 
 test("drift pin: projectObservationTyped selects EXACTLY what projectObservation selects (spec: no second notion of state)", () => {

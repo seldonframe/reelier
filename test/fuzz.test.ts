@@ -638,7 +638,7 @@ test("fuzz property: projectObservationTyped and projectObservation select ident
         // Project a mix of keys that exist (any JSON type) and keys that don't.
         const projection = [...Object.keys(obj).slice(0, 3), ...extraKeys];
         const body = JSON.stringify(obj);
-        const typed = projectObservationTyped({ body, headers: {} }, projection);
+        const typed = projectObservationTyped({ body, headers: {}, status: 200 }, projection);
         const stringified = projectObservation({ status: 200, headers: {}, body }, projection);
         assert.deepEqual(
           Object.fromEntries(Object.entries(typed).map(([k, v]) => [k, String(v)])),
