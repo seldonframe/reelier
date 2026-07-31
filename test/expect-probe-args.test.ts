@@ -764,3 +764,36 @@ description: d
     for (const n of changed) assert.ok(n.length <= 120, `name over the 120-char cap: ${n.length}`);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Review finding (blocking, round 2): both guards on the parameterized-probe
+// downgrade key on `expect` being PRESENT — `--drop-expect` refuses loudly,
+// but hand-deleting the `- expect:` line reaches the same ungated state via a
+// plain `approve --all`, at exit 0, saying nothing. The state is legitimate
+// for a never-bound skill and indistinguishable from a laundered one in the
+// file, so it warns rather than refuses — but it is never silent.
+// ---------------------------------------------------------------------------
+
+test("W3-S4 (review): approving a parameterized probe with no probeArgs commitment warns that it fills from the whole bindings map", async () => {
+  await withTempDir(async (dir) => {
+    const skillPath = path.join(dir, "s.skill.md");
+    await writeFile(skillPath, SKILL_PARAM, "utf8");
+    const { tools } = spyTools({ body: { compiled_truth: "# hi" } });
+    const { result: code, out } = await captureOutput(() =>
+      cmdApprove(fakeArgs([skillPath], ["all"]), deps(dir, { tools })),
+    );
+    assert.equal(code, 0, "a never-bound parameterized skill still approves — this warns, it does not refuse");
+    assert.match(out, /warning: this step's probe args carry placeholders and no approved filled shape/);
+    assert.match(out, /an earlier step's bind: can reach a dispatched probe arg/);
+  });
+});
+
+test("W3-S4 (review): a LITERAL probe arg gets no such warning — the warning names a real shape, not every approve", async () => {
+  await withTempDir(async (dir) => {
+    const skillPath = path.join(dir, "s.skill.md");
+    await writeFile(skillPath, SKILL_PARAM.replace('"slug":"{{target}}"', '"slug":"reelier-demo-page"'), "utf8");
+    const { tools } = spyTools({ body: { compiled_truth: "# hi" } });
+    const { out } = await captureOutput(() => cmdApprove(fakeArgs([skillPath], ["all"]), deps(dir, { tools })));
+    assert.ok(!/warning: this step's probe args carry placeholders/.test(out), out);
+  });
+});

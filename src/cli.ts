@@ -2022,6 +2022,20 @@ export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Prom
           unchangedCount++;
           continue;
         }
+        // Review finding (blocking, round 2): approving a parameterized probe
+        // WITHOUT a probeArgs commitment leaves it filling from the whole
+        // merged bindings map at run time, so an upstream `bind:` can reach a
+        // dispatched probe arg. `--drop-expect` refuses this loudly; hand-
+        // deleting the `expect` line and re-approving reached the same state
+        // silently, at exit 0, because both guards above key on `expect` being
+        // PRESENT. The state is legitimate for a never-bound skill and cannot
+        // be distinguished from a laundered one in the file, so this warns
+        // rather than refuses — but it is never silent again.
+        if (step.attest !== undefined && step.expect?.probeArgs === undefined && collectPlaceholders(step.attest.args).length > 0) {
+          console.log(
+            "  warning: this step's probe args carry placeholders and no approved filled shape — at run time they fill from the whole bindings map, so an earlier step's bind: can reach a dispatched probe arg. Use --probe to commit the filled shape.",
+          );
+        }
         const yes = all || (await askYes("  Approve this step? (y/N) "));
         if (yes) {
           if (dropping) delete step.expect;

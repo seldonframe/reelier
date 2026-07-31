@@ -919,16 +919,30 @@ async function executeStep(
   const expectKey =
     isWrite && step.expect !== undefined && expectStore !== undefined ? loadExpectKey(expectStore, step.expect.keyId) : undefined;
 
-  // NAMED RESIDUAL (wave-3 review, blocker 1 scope note — deliberately NOT
-  // "fixed" here): a step with NO `expect` at all still probes from the
-  // WHOLE merged `bindings` map below, placeholder or not. That is
-  // wave-2-era accepted behavior — the approval hash plus human review of
-  // the template is its stated defense — and changing it would degrade
-  // every shipped skill's attest from `exact` to `absent` the moment it
-  // carries a step-output `bind:` anywhere upstream. The approval hash is
-  // per-step, but the exfiltration channel it defends against is
-  // cross-step: an earlier step's `bind:` can introduce a value the
-  // reviewer of THIS step's template never saw. Left as-is by design.
+  // NAMED RESIDUAL (wave-3 review round 2 — deliberately NOT closed here,
+  // and escalated rather than justified away): a step with NO `expect` at
+  // all still probes from the WHOLE merged `bindings` map below, so a
+  // step-output `bind:` can fill a probe-arg placeholder with a value the
+  // reviewer of THIS step's template never saw. That is wave-2-era accepted
+  // behavior; the approval hash plus human review of the template is its
+  // stated defense, and the hash is per-step while the channel is cross-step.
+  //
+  // An earlier version of this comment justified leaving it open by claiming
+  // that closing it "would degrade every shipped skill's attest from `exact`
+  // to `absent` the moment it carries a step-output `bind:` anywhere
+  // upstream". That is FALSE and the review proved it: `probeBindings` is
+  // consulted only to fill the probe template, so a skill whose probe args
+  // are literal fills identically either way. The only skills affected are
+  // those that today feed a step-output bind INTO a probe arg — which is
+  // precisely the channel. The true cost of closing it is therefore close to
+  // zero everywhere except the vulnerable shape.
+  //
+  // It is left open in THIS slice because closing it changes shipped
+  // behavior for a step class this slice does not otherwise touch, and that
+  // is a founder decision, not a review fix. It cannot be closed in the
+  // approve ceremony instead: a hand-deleted `expect` leaves a file
+  // byte-indistinguishable from a skill that was never state-bound, so no
+  // CLI predicate can separate the two. See the wave-3 spec's W3-S4 record.
   let probeBindings: Record<string, unknown> = bindings;
   let probeArgsBlocked: string | undefined;
   if (isWrite && step.expect?.probeArgs !== undefined && step.attest !== undefined) {
