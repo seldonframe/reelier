@@ -69,6 +69,17 @@ export interface StepExpect {
    * mismatch name WHICH declared fields moved (names, never values).
    */
   fields?: Record<string, string>;
+  /**
+   * W3-S4 (wave2 conflict C4): the keyed commitment over the FILLED probe
+   * args, present iff this binding's probe args were parameterized and
+   * filled from operator-supplied `--var`s at approve time. Same shape and
+   * prefix discipline as `pre`. The runner recomputes it over the args it is
+   * about to send and compares BEFORE any probe dispatches (I-18) — this,
+   * not the approval hash, is what preserves the exfiltration boundary that
+   * forced literal-only probes in P1: the hash covers the template TEXT,
+   * which a run-time fill leaves untouched.
+   */
+  probeArgs?: string;
 }
 
 /** One tool this skill's steps depend on, as recorded/stamped from a live downstream's advertised schema. */
@@ -268,8 +279,8 @@ function validateExpectShape(value: unknown, ctx: { step: number; line: number }
   }
   const obj = value as Record<string, unknown>;
   for (const key of Object.keys(obj)) {
-    if (key !== "at" && key !== "keyId" && key !== "pre" && key !== "fields") {
-      throw new SkillParseError(`Unknown 'expect' key ${JSON.stringify(key)} — expected pre/keyId/at/fields`, ctx);
+    if (key !== "at" && key !== "keyId" && key !== "pre" && key !== "fields" && key !== "probeArgs") {
+      throw new SkillParseError(`Unknown 'expect' key ${JSON.stringify(key)} — expected pre/keyId/at/fields/probeArgs`, ctx);
     }
   }
   if (typeof obj.pre !== "string" || !EXPECT_PRE_RE.test(obj.pre)) {
@@ -309,7 +320,27 @@ function validateExpectShape(value: unknown, ctx: { step: number; line: number }
       throw new SkillParseError("'expect.fields' must not be empty — omit it entirely for a fieldless binding", ctx);
     }
   }
-  return { at: obj.at, keyId: obj.keyId, pre: obj.pre, ...(fields !== undefined ? { fields } : {}) };
+  // W3-S4: same shape and prefix discipline as `pre`. `pre` is validated
+  // above and is REQUIRED, so a `probeArgs` without one is already a parse
+  // error — the spec's rule holds by construction, pinned rather than
+  // re-implemented.
+  let probeArgs: string | undefined;
+  if (obj.probeArgs !== undefined) {
+    if (typeof obj.probeArgs !== "string" || !EXPECT_PRE_RE.test(obj.probeArgs)) {
+      throw new SkillParseError(
+        `Invalid 'expect.probeArgs' ${JSON.stringify(obj.probeArgs)} — expected hmac-sha256:<64 hex>`,
+        ctx
+      );
+    }
+    probeArgs = obj.probeArgs;
+  }
+  return {
+    at: obj.at,
+    keyId: obj.keyId,
+    pre: obj.pre,
+    ...(fields !== undefined ? { fields } : {}),
+    ...(probeArgs !== undefined ? { probeArgs } : {}),
+  };
 }
 
 /** Minimal frontmatter parser: flat `key: value` pairs (name, description, optional manifest). */

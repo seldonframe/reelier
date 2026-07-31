@@ -63,6 +63,13 @@ export function computeApprovalHash(step: ApprovalHashInput): string {
         keyId: step.expect.keyId,
         pre: step.expect.pre,
         ...(step.expect.fields !== undefined ? { fields: step.expect.fields } : {}),
+        // W3-S4 / I-17: `probeArgs` joins the hash ONLY when present, exactly
+        // as `fields` does — a binding carrying neither hashes byte-identically
+        // to 0.26.0 (pinned against a literal captured digest, not a restated
+        // formula). Binding it means hand-editing the committed probe args, or
+        // deleting them to quietly un-condition the probe, is an approval
+        // mismatch refused by the existing final-boundary path.
+        ...(step.expect.probeArgs !== undefined ? { probeArgs: step.expect.probeArgs } : {}),
       },
       tool: step.actionTool,
     });

@@ -10,11 +10,12 @@ import { pathToFileURL } from "node:url";
 import { createInterface } from "node:readline/promises";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { parseSkill, SkillParseError, type Step } from "./skill.js";
-import { runSkill, dryRunSkill, readRunRecords, runProbe, DEFAULT_PROBE_TIMEOUT_MS, type RunRecord } from "./runner.js";
+import { runSkill, dryRunSkill, readRunRecords, runProbe, fillTemplate, DEFAULT_PROBE_TIMEOUT_MS, type RunRecord } from "./runner.js";
 import {
   mintExpectKey,
   expectMac,
   expectFieldMac,
+  probeArgsMac,
   projectObservationTyped,
   projectionMisses,
   typedKeyFor,
@@ -1451,6 +1452,21 @@ function isComputedDateName(name: string): boolean {
   return name === "today" || /^today[+-]\d+d$/.test(name);
 }
 
+/**
+ * I-18 blocker 1 (wave-3 review — blocking): the downgrade to a shape-only
+ * approval (dropping `expect`, whether via `--drop-expect` or the interactive
+ * "Approve WITHOUT state binding?" prompt) must REFUSE outright on a step
+ * whose `attest.args` are parameterized. The runner's probeArgs gate
+ * (src/runner.ts's I-18) keys on `expect.probeArgs !== undefined` — strip
+ * `expect` from a step whose attest is still armed (attest present, approved)
+ * and the probe is left ungated: it fills from the WHOLE bindings map again,
+ * the exact exfiltration channel W3-S4 closed. Never a new counter — this
+ * reuses the existing `skippedStateBoundChanged` skip/count path so `--all`
+ * degrades the same way every other never-silently-downgrade class does.
+ */
+const PARAMETERIZED_PROBE_DROP_REFUSAL =
+  "refusing to drop the binding on a parameterized probe — its args fill from run-time bindings, and without expect.probeArgs nothing proves the filled args were approved. Re-approve with --probe --var, or make the probe args literal.";
+
 /** `hmac-sha256:9f31…77aa` — enough to eyeball, never needed for anything else (the full value lands in the file). */
 function abbrevMac(mac: string): string {
   const hex = mac.slice("hmac-sha256:".length);
@@ -1736,7 +1752,7 @@ export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Prom
   const skillPath = args.positional[0];
   if (!skillPath) {
     console.error(
-      'Usage: reelier approve <skill.md> [--all] [--probe] [--rebind] [--wrap "<cmd>"]... [--drop-expect] | reelier approve --prune-keys [--all]'
+      'Usage: reelier approve <skill.md> [--all] [--probe] [--rebind] [--var name=value]... [--wrap "<cmd>"]... [--drop-expect] | reelier approve --prune-keys [--all]'
     );
     return 1;
   }
@@ -1814,10 +1830,45 @@ export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Prom
    * skill mutation — a crash between the two leaves an orphan key (harmless,
    * 32 bytes) and an unmodified skill, never a keyless `expect`.
    */
+  /**
+   * W3-S4: operator-supplied `--var` values for this invocation. Probe args
+   * are filled from these and NOTHING else — at approve time there are no
+   * step-output binds to confuse them with, and at run time the commitment
+   * minted here is what forbids one from sneaking in.
+   */
+  const approveVars: Record<string, string> = args.vars ?? {};
+
+  /**
+   * The probe args this invocation would actually send, plus whether the
+   * template was parameterized at all. Pure — no dispatch. `missing` names
+   * the placeholders no `--var` supplied, which is a refusal class at bind
+   * time and its own loud class at re-verify.
+   */
+  const resolveProbeArgs = (
+    step: Step
+  ): { filled: unknown; parameterized: boolean; missing: string[] } => {
+    const names = [...new Set(step.attest ? collectPlaceholders(step.attest.args) : [])];
+    const missing = names.filter((n) => !isComputedDateName(n) && !(n in approveVars));
+    if (missing.length > 0) return { filled: undefined, parameterized: names.length > 0, missing };
+    return { filled: fillTemplate(step.attest!.args, approveVars, now()), parameterized: names.length > 0, missing: [] };
+  };
+
+  /**
+   * §4.2.3's disclosure rule, for INPUTS rather than observations. The filled
+   * probe args print verbatim on EVERY path, `--all` and non-TTY included:
+   * A2's gate governs projected VALUES (observed state, which CI logs must
+   * not retain), and these are operator-supplied inputs the operator already
+   * typed. Stated here so nobody later suppresses them citing A2.
+   */
+  const showProbeArgs = (filled: unknown): void => {
+    console.log(`  probe args (filled): ${canonicalJson(filled)}`);
+  };
+
   const bindStep = async (
     step: Step,
     typed: Record<string, string | number | boolean>,
-    observedAtMs: number
+    observedAtMs: number,
+    probeArgs?: { filled: unknown }
   ): Promise<void> => {
     const at = new Date(observedAtMs).toISOString();
     const { key, keyId } = mintExpectKey();
@@ -1838,7 +1889,18 @@ export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Prom
     for (const [name, value] of Object.entries(typed)) {
       fieldMacs[name] = expectFieldMac(key, step.attest!.tool, name, value);
     }
-    step.expect = { at, keyId, pre: mac, fields: fieldMacs };
+    step.expect = {
+      at,
+      keyId,
+      pre: mac,
+      fields: fieldMacs,
+      // W3-S4: commit the FILLED probe args only when the template was
+      // parameterized. A literal probe needs no commitment — its execute-time
+      // fill is the identity function, which is exactly why P1 could ship
+      // literal-only probes with no second MAC at all (C4). Additive means a
+      // literal binding stays byte-identical to 0.26.0.
+      ...(probeArgs !== undefined ? { probeArgs: probeArgsMac(key, step.attest!.tool, probeArgs.filled) } : {}),
+    };
     step.approve = computeApprovalHash({ actionTool: step.actionTool, actionArgs: step.actionArgs, attest: step.attest, expect: step.expect });
   };
 
@@ -1932,6 +1994,16 @@ export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Prom
         console.log("  dropping state binding (--drop-expect)");
       }
 
+      // I-18 blocker 1a (wave-3 review): refuse the downgrade outright on a
+      // parameterized probe — never even ask. See PARAMETERIZED_PROBE_DROP_REFUSAL's
+      // doc comment for why: stripping `expect` here would leave the probe
+      // armed but ungated.
+      if (dropping && step.attest !== undefined && collectPlaceholders(step.attest.args).length > 0) {
+        console.log(`  ${PARAMETERIZED_PROBE_DROP_REFUSAL}`);
+        skippedStateBoundChanged++;
+        continue;
+      }
+
       // §4.4: re-approving a changed step that carries expect, without
       // --probe — refused per step; silent removal of a condition a human
       // approved under is never available.
@@ -1949,6 +2021,20 @@ export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Prom
           console.log("  unchanged");
           unchangedCount++;
           continue;
+        }
+        // Review finding (blocking, round 2): approving a parameterized probe
+        // WITHOUT a probeArgs commitment leaves it filling from the whole
+        // merged bindings map at run time, so an upstream `bind:` can reach a
+        // dispatched probe arg. `--drop-expect` refuses this loudly; hand-
+        // deleting the `expect` line and re-approving reached the same state
+        // silently, at exit 0, because both guards above key on `expect` being
+        // PRESENT. The state is legitimate for a never-bound skill and cannot
+        // be distinguished from a laundered one in the file, so this warns
+        // rather than refuses — but it is never silent again.
+        if (step.attest !== undefined && step.expect?.probeArgs === undefined && collectPlaceholders(step.attest.args).length > 0) {
+          console.log(
+            "  warning: this step's probe args carry placeholders and no approved filled shape — at run time they fill from the whole bindings map, so an earlier step's bind: can reach a dispatched probe arg. Use --probe to commit the filled shape.",
+          );
         }
         const yes = all || (await askYes("  Approve this step? (y/N) "));
         if (yes) {
@@ -1968,13 +2054,10 @@ export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Prom
       // Re-verify UNAVAILABILITY is its own loud, non-zero class: an induced
       // probe failure must never read as "unchanged" (A6/B7 in §8.1).
       if (isCurrent && step.expect !== undefined) {
-        const reVerify = await runProbe(step.attest!, probeTools!, {}, { allowDestructive: false }, now(), DEFAULT_PROBE_TIMEOUT_MS);
-        const reObservedAtMs = now();
-        if (!reVerify.ok) {
-          console.log(`  approved (current) — re-verify unavailable (${reVerify.reason}); binding left as-is`);
-          reVerifyUnavailable++;
-          continue;
-        }
+        // The key is loaded FIRST since W3-S4: on a probeArgs-bearing binding
+        // the filled-args comparison gates the probe DISPATCH, and it cannot
+        // happen without the key. Nothing below this point dispatches until
+        // the args are proven to be the approved ones.
         let key;
         try {
           const store = await readKeystore(keystorePath);
@@ -1989,18 +2072,72 @@ export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Prom
           reVerifyUnavailable++;
           continue;
         }
+        // W3-S4: a missing `--var`, or filled args whose MAC differs from the
+        // committed `probeArgs`, is its OWN loud class — never `unchanged`
+        // (an induced difference must not read as a clean re-verify: the A6
+        // suppression adversary applies at approve time too), and never "the
+        // world has moved" (the ARGS differ, not the world). No probe fires.
+        const reArgs = resolveProbeArgs(step);
+        // Set when --rebind is re-pointing the probe at different args: the
+        // whole-projection comparison below is then meaningless (it would
+        // compare two DIFFERENT resources), so it is skipped rather than
+        // reported as "the world has moved".
+        let rebindingArgs = false;
+        if (step.expect.probeArgs !== undefined) {
+          const differ =
+            reArgs.missing.length > 0 || probeArgsMac(key, step.attest!.tool, reArgs.filled) !== step.expect.probeArgs;
+          if (differ) {
+            // A missing var can never be rescued — there is nothing to fill,
+            // so there is nothing to consent to. Otherwise `--rebind` is the
+            // explicit act: "consent granted by whoever runs this command
+            // against whatever the world is now" (A2), which is precisely
+            // what re-committing probe args to this invocation's inputs is.
+            // Without it this is its own loud class and NOTHING dispatches.
+            if (reArgs.missing.length > 0 || !rebindFlag) {
+              console.log(
+                "  approved (current) — re-verify unavailable (probe-args-differ: filled probe args differ from the approved ones); binding left as-is"
+              );
+              reVerifyUnavailable++;
+              continue;
+            }
+            rebindingArgs = true;
+          }
+          showProbeArgs(reArgs.filled);
+        }
+        const reVerify = await runProbe(
+          step.attest!,
+          probeTools!,
+          approveVars,
+          { allowDestructive: false },
+          now(),
+          DEFAULT_PROBE_TIMEOUT_MS
+        );
+        const reObservedAtMs = now();
+        if (!reVerify.ok) {
+          console.log(`  approved (current) — re-verify unavailable (${reVerify.reason}); binding left as-is`);
+          reVerifyUnavailable++;
+          continue;
+        }
         const typed = projectObservationTyped(reVerify.obs, step.attest!.projection ?? []);
         if (Object.keys(typed).length === 0) {
           console.log("  approved (current) — re-verify unavailable (empty-projection: probe returned no declared fields); binding left as-is");
           reVerifyUnavailable++;
           continue;
         }
-        if (expectMac(key, step.attest!.tool, typed) === step.expect.pre) {
+        if (!rebindingArgs && expectMac(key, step.attest!.tool, typed) === step.expect.pre) {
           console.log("  unchanged (state re-verified against current binding)");
           unchangedCount++;
           continue;
         }
-        console.log(`  approved (current) — but the world has moved since ${step.expect.at}`);
+        if (rebindingArgs) {
+          // Not "the world has moved": these are different probe args, so the
+          // old and new observations describe different resources. Comparing
+          // them — or diagnosing which FIELD moved between them — would be a
+          // claim about a change that never happened.
+          console.log("  approved (current) — re-pointing this binding at different probe args (--rebind)");
+        } else {
+          console.log(`  approved (current) — but the world has moved since ${step.expect.at}`);
+        }
         // W3-S3 (P1.5 review N11): the whole-projection MAC just told us THAT
         // the world moved; the per-field commitments already in hand tell us
         // WHICH field moved, for free — the diagnosis was being thrown away.
@@ -2008,7 +2145,9 @@ export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Prom
         // the claim is exactly as earned here as it is there. Names only,
         // never values: this prints on every path including --all, because
         // A2's TTY gate governs projected VALUES, not field names.
-        reportReVerifyDiagnosis(step, key, typed, reVerify.obs);
+        // Suppressed while re-pointing the args (W3-S4): "changed since
+        // approval" would compare a field across two different resources.
+        if (!rebindingArgs) reportReVerifyDiagnosis(step, key, typed, reVerify.obs);
         // §4.2.3 holds for a re-bind too (review finding — blocking): the
         // yes must be granted against a SHOWN observation, never blind.
         showObservation(typed, step.attest!.projection ?? []);
@@ -2029,10 +2168,18 @@ export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Prom
           skippedCount++;
           continue;
         }
+        // W3-S4: `--rebind` re-commits the probe args over THIS invocation's
+        // `--var` values, so the consent copy has to say so — a re-bind that
+        // silently moved what the probe addresses would be the machine-minted
+        // consent A2 exists to forbid, one level down.
+        if (reArgs.parameterized && reArgs.missing.length === 0) {
+          console.log("  re-binding probe args to this invocation's --var values");
+          showProbeArgs(reArgs.filled);
+        }
         try {
           // reObservedAtMs, not consent time: `at` is the honest answer to
           // "when did the human look at the world" (§2.1, review finding).
-          await bindStep(step, typed, reObservedAtMs);
+          await bindStep(step, typed, reObservedAtMs, reArgs.parameterized && reArgs.missing.length === 0 ? { filled: reArgs.filled } : undefined);
         } catch (err) {
           console.log(`  re-bind failed (approve-probe-failed: keystore-unavailable: ${(err as Error).message}) — binding left as-is`);
           skippedProbeFailed++;
@@ -2066,8 +2213,16 @@ export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Prom
           .filter(isComputedDateName)
           .map((n) => `{{${n}}}`)
           .join(", ")}) — approve-day and execute-day fills would target different observations (not state-bindable in v1)`;
-      } else if (attestPlaceholders.length > 0) {
-        structuralReason = `attest args contain placeholders (${attestPlaceholders.map((n) => `{{${n}}}`).join(", ")}) — probe args must be fully literal in v1 (not state-bindable)`;
+      } else if (attestPlaceholders.length > 0 && resolveProbeArgs(step).missing.length > 0) {
+        // W3-S4 relaxes P1's blanket literal-only rule (C4) exactly this far:
+        // a placeholder is permitted when an operator-supplied `--var` fills
+        // it AT APPROVE TIME, in the ceremony, where the filled args are
+        // printed to the human whose yes they feed. Unfilled it stays
+        // refused — there is nothing to show and nothing to commit to.
+        const missing = resolveProbeArgs(step).missing;
+        structuralReason = `attest args contain placeholders with no --var supplied (${missing
+          .map((n) => `{{${n}}}`)
+          .join(", ")}) — pass --var ${missing[0]}=value to bind a parameterized probe`;
       } else if (actionPlaceholders.length > 0) {
         // A7 (write-target honesty; pick recorded in the spec: refuse): the
         // check conditions the PROBE's fixed resource — with placeholders in
@@ -2094,9 +2249,18 @@ export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Prom
       }
 
       let notBindable = structuralReason;
+      const freshArgs = notBindable === undefined ? resolveProbeArgs(step) : undefined;
       if (notBindable === undefined) {
+        if (freshArgs!.parameterized) showProbeArgs(freshArgs!.filled);
         process.stdout.write(`  probing pre-state (${step.attest!.tool})… `);
-        const probeResult = await runProbe(step.attest!, probeTools!, {}, { allowDestructive: false }, now(), DEFAULT_PROBE_TIMEOUT_MS);
+        const probeResult = await runProbe(
+          step.attest!,
+          probeTools!,
+          approveVars,
+          { allowDestructive: false },
+          now(),
+          DEFAULT_PROBE_TIMEOUT_MS
+        );
         observedAtMs = now();
         if (!probeResult.ok) {
           console.log(`failed (${probeResult.reason})`);
@@ -2115,6 +2279,9 @@ export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Prom
 
       if (notBindable !== undefined) {
         if (all) {
+          // --all never offers the downgrade in the first place (this
+          // branch always `continue`s below) — every failure class,
+          // parameterized or not, already refuses to mint anything here.
           console.log(`  skipped (probe failed): ${notBindable}`);
           skippedProbeFailed++;
           continue;
@@ -2122,6 +2289,17 @@ export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Prom
         // §4.4: report the exact reason, THEN offer the downgrade explicitly.
         console.log(`  not state-bindable: ${notBindable}`);
         console.log(`  ${state}`);
+        // I-18 blocker 1a: refuse the downgrade outright — never even ask —
+        // on a parameterized attest.args. See PARAMETERIZED_PROBE_DROP_REFUSAL's
+        // doc comment: dropping `expect` here would leave the probe armed
+        // but ungated, for a structural reason (missing --var, a computed
+        // date var) as much as a runtime probe failure — the shape of the
+        // args is what matters, not why binding failed this time.
+        if (attestPlaceholders.length > 0) {
+          console.log(`  ${PARAMETERIZED_PROBE_DROP_REFUSAL}`);
+          skippedStateBoundChanged++;
+          continue;
+        }
         const downgrade = await askYes("  Approve WITHOUT state binding? (y/N) ");
         if (!downgrade) {
           skippedCount++;
@@ -2141,13 +2319,23 @@ export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Prom
         continue;
       }
       try {
-        await bindStep(step, typed!, observedAtMs);
+        await bindStep(step, typed!, observedAtMs, freshArgs!.parameterized ? { filled: freshArgs!.filled } : undefined);
       } catch (err) {
         // §4.4/§8.6: keystore unwritable is a degrade class, not a crash —
         // "approve-probe-failed: keystore-unavailable", loud, nothing minted
         // for this step (bindStep mutates the step only after the keystore
         // write succeeds), earlier consents in this sitting still persist.
         const reason = `approve-probe-failed: keystore-unavailable: ${(err as Error).message}`;
+        // I-18 blocker 1a: same outright refusal — the probe already
+        // succeeded above (this catch only fires on the keystore write), so
+        // the observed values existed for a moment, but nothing was ever
+        // persisted; downgrading now would still leave a parameterized probe
+        // armed and ungated on every future run.
+        if (attestPlaceholders.length > 0) {
+          console.log(`  ${PARAMETERIZED_PROBE_DROP_REFUSAL}`);
+          skippedStateBoundChanged++;
+          continue;
+        }
         if (all) {
           console.log(`  skipped (probe failed): ${reason}`);
           skippedProbeFailed++;

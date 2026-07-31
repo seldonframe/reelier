@@ -343,7 +343,11 @@ description: attest without explicit projection
 
 test("--probe --all refuses every non-bindable class: skip + count + non-zero, nothing stamped weaker", async () => {
   for (const [name, src, reasonRe] of [
-    ["placeholder attest", SKILL_PLACEHOLDER_ATTEST, /probe args must be fully literal/],
+    // W3-S4 relaxed P1's blanket literal-only rule exactly as far as an
+    // operator-supplied --var reaches: a placeholder with NO --var to fill it
+    // is still refused, still skipped, still non-zero, still stamps nothing.
+    // (The filled case is pinned in test/expect-probe-args.test.ts.)
+    ["placeholder attest (no --var)", SKILL_PLACEHOLDER_ATTEST, /placeholders with no --var supplied \(\{\{page_slug\}\}\)/],
     ["date-var attest", SKILL_DATEVAR_ATTEST, /computed date vars.*different observations/],
     ["placeholder action (A7)", SKILL_PLACEHOLDER_ACTION, /write-target honesty/],
     ["default projection", SKILL_DEFAULT_PROJECTION, /requires an explicit projection/],
