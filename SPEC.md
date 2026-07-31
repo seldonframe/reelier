@@ -970,7 +970,29 @@ effect (`step.effect ?? tool.effect`):
   unavailable: N`, exit non-zero — never folded into "unchanged"). If the
   world moved, re-binding requires the interactive yes or the explicit
   `--rebind` flag — under `--all` without `--rebind` the step is skipped
-  (`skipped (world moved): N`, exit non-zero). Plain `approve` on a
+  (`skipped (world moved): N`, exit non-zero). A moved binding that carries
+  per-field commitments (`expect.fields`, §3.2) also reports WHICH field
+  moved, recomputed from the same key and the same live observation:
+  `fields changed since approval: <names>` for committed fields whose value
+  differs (the same claim, and the same label, the runner's mismatch stamp
+  uses) and `committed fields absent at re-verify: <names>` for committed
+  fields the re-verify observation no longer carries — a distinct label
+  because it is a distinct claim, honest here only because `expect.fields`'
+  key set IS the disclosed approve-time field set. Absence is established
+  against the RAW observation, never inferred from the projected map: a
+  field present but not projectable (a `null`/object/array value, a header
+  present but empty) and every body field of a body that did not parse are
+  reported as `committed fields the probe could not project at re-verify:
+  <names>` instead, because nothing about their presence was established
+  either way. A committed name the step's declared projection does not
+  address cannot have been minted by any approve run, so it is never named
+  as a committed field at all: it is reported as `note: the binding commits
+  fields this step never projects: <names>`. Names only, on every path
+  including `--all` (the TTY gate governs projected VALUES, not names); each
+  line prints only when non-empty, and a binding minted before per-field
+  commitments existed reports neither rather than fabricating a diagnosis.
+  Nothing here is recorded or pushed — it is a report to the approver.
+  Plain `approve` on a
   CHANGED step that carries `expect:` refuses (`state-bound step changed —
   re-approve with --probe, or pass --drop-expect to approve without state
   binding`); `--drop-expect` is the explicit, named downgrade that strips

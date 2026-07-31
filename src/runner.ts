@@ -43,6 +43,8 @@ import {
   expectFieldMac,
   lookupHeader,
   projectObservationTyped,
+  ABSENT_FIELDS_MAX,
+  ABSENT_FIELD_NAME_MAX,
   resolveKeystorePath,
   type ExpectKeystore,
 } from "./expect-mac.js";
@@ -684,9 +686,6 @@ function normalizeStateCheckReason(reason: string): string {
   return `probe-failed: ${reason}`;
 }
 
-/** Caps for stateCheck.absentFields (B5): the shipped cloud attest.ts limits, applied at the producer too so a record is honest before it ever ships. */
-const ABSENT_FIELDS_MAX = 32;
-const ABSENT_FIELD_NAME_MAX = 120;
 
 async function executeStep(
   step: Step,
