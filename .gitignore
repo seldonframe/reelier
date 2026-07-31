@@ -11,3 +11,4 @@ reports/
 *.mcpb
 .screenshots-tmp/
 .house-tenant-key.local
+.superpowers/
