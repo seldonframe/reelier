@@ -143,6 +143,21 @@ test("I-6: expectMac throws on an all-zero (placeholder) key", () => {
 });
 
 // ---------------------------------------------------------------------------
+// The probe-name guard: context binding is probe + v (A5), so an empty probe
+// name would commit under a blank context — refused, never computed.
+// ---------------------------------------------------------------------------
+
+test("expectMac refuses an empty or whitespace-only probe tool name, never computes a blank-context commitment", () => {
+  for (const badProbe of ["", "   ", "\t", "\n"]) {
+    assert.throws(
+      () => expectMac(KEY_A, badProbe, { "body.etag": "abc" }),
+      /probe tool name must be a non-empty string/,
+      `probe ${JSON.stringify(badProbe)} must be refused`
+    );
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Typed projection: same selection semantics as projectObservation's
 // explicit-projection branch, types preserved (A6)
 // ---------------------------------------------------------------------------
@@ -160,6 +175,15 @@ test("projectObservationTyped selects declared top-level body scalars, preservin
 test("projectObservationTyped mirrors projectObservation: non-JSON body → empty; array body → empty", () => {
   assert.deepEqual(projectObservationTyped("not json", ["a"]), {});
   assert.deepEqual(projectObservationTyped("[1,2]", ["a"]), {});
+});
+
+test("an array body projects to {} even when the projection names indices — arrays are rejected as a body, not indexed into", () => {
+  // Projecting ["a"] off an array can't tell "rejected the array" from
+  // "looked and found nothing". Index names can: if the array guard stopped
+  // firing, these would sail through as real projected scalars and the
+  // commitment would silently start covering a shape the spec excludes.
+  assert.deepEqual(projectObservationTyped("[1,2]", ["0", "1"]), {});
+  assert.deepEqual(projectObservationTyped(`["a","b"]`, ["0", "length"]), {});
 });
 
 test("drift pin: projectObservationTyped selects EXACTLY what projectObservation selects (spec: no second notion of state)", () => {
@@ -203,6 +227,16 @@ test("drift pin: projectObservationTyped selects EXACTLY what projectObservation
 test("resolveKeystorePath honors REELIER_EXPECT_KEYS, else ~/.reelier/expect-keys.json", () => {
   assert.equal(resolveKeystorePath({ REELIER_EXPECT_KEYS: "/ci/keys.json" }, "/home/u"), "/ci/keys.json");
   assert.equal(resolveKeystorePath({}, "/home/u"), path.join("/home/u", ".reelier", "expect-keys.json"));
+});
+
+test("resolveKeystorePath treats an empty or whitespace-only REELIER_EXPECT_KEYS as unset (a blank CI secret must not resolve to a blank path)", () => {
+  // An unset-but-declared CI secret arrives as "" — resolving that to a path
+  // of "" would send every mint and lookup to a file nobody can find, and
+  // every bound check would degrade to `unevaluated` with no explanation.
+  const fallback = path.join("/home/u", ".reelier", "expect-keys.json");
+  assert.equal(resolveKeystorePath({ REELIER_EXPECT_KEYS: "" }, "/home/u"), fallback);
+  assert.equal(resolveKeystorePath({ REELIER_EXPECT_KEYS: "   " }, "/home/u"), fallback);
+  assert.equal(resolveKeystorePath({ REELIER_EXPECT_KEYS: "\t" }, "/home/u"), fallback);
 });
 
 test("keystore round-trip: write two entries, read both back; superseded entries are never pruned (A10)", async () => {
@@ -291,6 +325,114 @@ test("readKeystore: malformed JSON and wrong shape are loud failures, never a si
   }
 });
 
+// Every branch of readKeystore's shape validation, each pinned to its OWN
+// message. A keystore that exists but can't be trusted must fail loudly and
+// specifically — "some error happened" is not enough, because the whole point
+// is that a malformed store never silently degrades to "no keys" (which would
+// flip every bound check to `unevaluated`).
+test("readKeystore rejects each malformed shape with its specific message — never a generic or silent failure", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "reelier-expect-"));
+  const goodKey = Buffer.alloc(32, 0x11).toString("base64");
+  const ID = "3c9a01d2e4f5b6a7";
+  let n = 0;
+  /** Write `raw` to a fresh file and assert readKeystore rejects it with `re`. */
+  const rejects = async (raw: string, re: RegExp, why: string) => {
+    const file = path.join(dir, `bad-${n++}.json`);
+    await writeFile(file, raw, "utf8");
+    await assert.rejects(() => readKeystore(file), re, why);
+  };
+  try {
+    // Top level must be a non-array object: an array and a bare `null` are
+    // both "parsed fine, wrong shape" — the branch a naive typeof check misses.
+    await rejects(`[]`, /malformed \(expected an object\)/, "a JSON array is not a keystore");
+    await rejects(`null`, /malformed \(expected an object\)/, "JSON null is not a keystore");
+    await rejects(`"a string"`, /malformed \(expected an object\)/, "a JSON string is not a keystore");
+
+    // 'keys' must be a non-array object.
+    await rejects(`{"v":1,"keys":[]}`, /'keys' must be an object/, "keys as an array");
+    await rejects(`{"v":1,"keys":null}`, /'keys' must be an object/, "keys as null");
+
+    // Entries must be non-array objects.
+    await rejects(`{"v":1,"keys":{"${ID}":[]}}`, /entry '3c9a01d2e4f5b6a7' must be an object/, "entry as an array");
+    await rejects(`{"v":1,"keys":{"${ID}":null}}`, /entry '3c9a01d2e4f5b6a7' must be an object/, "entry as null");
+    await rejects(`{"v":1,"keys":{"${ID}":"nope"}}`, /entry '3c9a01d2e4f5b6a7' must be an object/, "entry as a string");
+
+    // createdAt must be a NON-EMPTY string (empty is the case a bare typeof
+    // check waves through).
+    await rejects(
+      `{"v":1,"keys":{"${ID}":{"key":"${goodKey}","createdAt":""}}}`,
+      /needs a string 'createdAt'/,
+      "empty-string createdAt"
+    );
+    await rejects(
+      `{"v":1,"keys":{"${ID}":{"key":"${goodKey}","createdAt":17}}}`,
+      /needs a string 'createdAt'/,
+      "non-string createdAt"
+    );
+
+    // Optional bookkeeping fields are optional, but never wrong-typed.
+    await rejects(
+      `{"v":1,"keys":{"${ID}":{"key":"${goodKey}","createdAt":"x","skill":5}}}`,
+      /non-string 'skill'/,
+      "numeric skill"
+    );
+    await rejects(
+      `{"v":1,"keys":{"${ID}":{"key":"${goodKey}","createdAt":"x","step":"1"}}}`,
+      /non-number 'step'/,
+      "string step"
+    );
+
+    // A base64 'key' that decodes to the wrong length is refused at the
+    // store-read boundary (so expectMac's I-6 throw stays a programmer-error
+    // signal, never a mid-run detonation).
+    await rejects(
+      `{"v":1,"keys":{"${ID}":{"key":"${Buffer.alloc(16, 0x11).toString("base64")}","createdAt":"x"}}}`,
+      /base64 'key' decoding to 32 bytes/,
+      "16-byte key"
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("readKeystore's keyId check is anchored at BOTH ends — a 16-hex run buried in a longer keyId is still malformed", async () => {
+  // '__proto__' (covered above) is rejected by any of these regex variants, so
+  // it alone can't prove the anchors are intact. These two can: each is
+  // 17 chars containing a valid 16-hex run at one end, so dropping either
+  // anchor would wave one of them through and silently accept a corrupt keyId.
+  const dir = await mkdtemp(path.join(tmpdir(), "reelier-expect-"));
+  const goodKey = Buffer.alloc(32, 0x11).toString("base64");
+  try {
+    for (const badKeyId of [
+      "03c9a01d2e4f5b6a7", // 16 valid hex chars at the END — survives a missing '^'
+      "3c9a01d2e4f5b6a7f", // 16 valid hex chars at the START — survives a missing '$'
+      "z3c9a01d2e4f5b6a7", // non-hex prefix, hex run at the end
+    ]) {
+      const file = path.join(dir, `${badKeyId}.json`);
+      await writeFile(file, `{"v":1,"keys":{"${badKeyId}":{"key":"${goodKey}","createdAt":"x"}}}`, "utf8");
+      await assert.rejects(
+        () => readKeystore(file),
+        /is not 16 lowercase hex chars/,
+        `keyId ${JSON.stringify(badKeyId)} must be rejected`
+      );
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("readKeystore: only ENOENT is a fresh empty store — any other read failure is loud (never a silent 'no keys')", async () => {
+  // A store that exists but is unreadable (here: the path is a directory)
+  // must NOT read as "no keys yet". That degradation would flip every bound
+  // check to `unevaluated` while looking exactly like a normal first run.
+  const dir = await mkdtemp(path.join(tmpdir(), "reelier-expect-"));
+  try {
+    await assert.rejects(() => readKeystore(dir), /could not be read/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("writeKeystoreEntry retries on a held lock and fails loudly when it never frees (A10)", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "reelier-expect-"));
   const file = path.join(dir, "expect-keys.json");
@@ -310,6 +452,37 @@ test("writeKeystoreEntry retries on a held lock and fails loudly when it never f
     );
     // The held lock (not ours) must NOT have been deleted.
     assert.equal(await readFile(lock, "utf8"), "held");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("writeKeystoreEntry spends exactly the retries it was given — lockRetries: 0 fails on the first attempt without sleeping (A10 off-by-one)", async () => {
+  // Both the correct `attempt >= retries` and an off-by-one `attempt >`
+  // eventually throw the same message, so the retry BUDGET is only
+  // observable in time: an off-by-one burns one full retry delay before
+  // giving up. A 5s delay against a 2s bound makes that unmistakable while
+  // leaving enormous headroom on a loaded machine (the correct path performs
+  // no sleep at all).
+  const dir = await mkdtemp(path.join(tmpdir(), "reelier-expect-"));
+  const file = path.join(dir, "expect-keys.json");
+  const lock = `${file}.lock`;
+  try {
+    await writeFile(lock, "held", "utf8");
+    const a = mintExpectKey();
+    const startedAt = Date.now();
+    await assert.rejects(
+      () =>
+        writeKeystoreEntry(
+          file,
+          a.keyId,
+          { key: a.key.toString("base64"), createdAt: "2026-07-29T00:00:00.000Z" },
+          { lockRetries: 0, lockRetryDelayMs: 5000 }
+        ),
+      /lock/i
+    );
+    const elapsedMs = Date.now() - startedAt;
+    assert.ok(elapsedMs < 2000, `lockRetries: 0 must give up without sleeping, but took ${elapsedMs}ms`);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
