@@ -75,7 +75,7 @@ Your skill's own past runs are already on your disk, at `.reelier/runs/<skill>.j
 reelier baseline my-skill.skill.md   # read-only; executes nothing; always exits 0
 ```
 
-Nothing is transmitted, nothing is compared across skills or machines, and you declare nothing — the signal exists as soon as there are four runs. `reelier run` prints the same block, but only when something actually departed; a repo with no history, or a run that matches its own history, prints exactly what it always did.
+Nothing is transmitted, nothing is compared across skills or machines, and you declare nothing — the run-shape signals exist as soon as there are four runs; gap and silence need five. `reelier run` prints the same block, but only when something actually departed; a repo with no history, or a run that matches its own history, prints exactly what it always did.
 
 What it reports is a **deviation** — a difference from this skill's own history:
 

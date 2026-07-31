@@ -17,8 +17,9 @@
 //
 // SCOPE. n=1: one tenant, one skill, one disk. No network, no transmission,
 // no cross-skill or cross-tenant comparison, and no authoring cost — the
-// operator declares nothing and the signal exists the moment there are four
-// runs.
+// operator declares nothing and the run-shape signals exist the moment there
+// are four runs (`gap` and `silence`, computed over the intervals BETWEEN
+// runs, need five).
 import type { RunRecord, StepRecord } from "./runner.js";
 
 /**
@@ -88,10 +89,27 @@ export interface RunShapeSignal {
   deviates: boolean;
 }
 
+/**
+ * Whether the run this report is ABOUT is the newest record in the file it
+ * was computed from.
+ *
+ * It is not always: `--fail N` mock runs are excluded from the sample and
+ * from being the subject (§4), so a mock run appended after a real one leaves
+ * the subject one record back from the end of the file. Every caller that
+ * says or implies "this run" — the `reelier run` surface's entire claim — has
+ * to know that, and it must be a fact the report carries rather than one each
+ * caller re-derives from the raw records: the caller that forgets prints an
+ * older run's numbers under this run's headline.
+ */
+type SubjectPosition = {
+  /** False when the newest record on disk was excluded, so the subject is an EARLIER run than the last one recorded. */
+  subjectIsNewestRecord: boolean;
+};
+
 export type RunShapeReport =
   | { kind: "no-runs" }
-  | { kind: "insufficient-history"; latestStartedAt: string; priorRuns: number; required: number }
-  | {
+  | ({ kind: "insufficient-history"; latestStartedAt: string; priorRuns: number; required: number } & SubjectPosition)
+  | ({
       kind: "baseline";
       latestStartedAt: string;
       priorRuns: number;
@@ -102,7 +120,7 @@ export type RunShapeReport =
        * is UNKNOWN. Never render unknown as "unchanged" — never-list #1.
        */
       skillChanged: boolean | undefined;
-    };
+    } & SubjectPosition);
 
 export interface RunShapeOptions {
   /**
@@ -267,6 +285,12 @@ export function computeRunShape(records: readonly RunRecord[], options: RunShape
   if (usable.length === 0) return { kind: "no-runs" };
 
   const latest = usable[usable.length - 1];
+  // The subject is the newest USABLE record, which is not the same thing as
+  // the newest record: when a mock run was appended after it, the run this
+  // report describes is NOT the last run that happened. See SubjectPosition —
+  // the fact travels with the report because "this run" is a claim only the
+  // caller can make, and only when this is true.
+  const subjectIsNewestRecord = latest === records[records.length - 1];
   const priors = usable.slice(0, -1).slice(-MAX_BASELINE_RUNS);
   if (priors.length < MIN_PRIOR_RUNS) {
     return {
@@ -274,6 +298,7 @@ export function computeRunShape(records: readonly RunRecord[], options: RunShape
       latestStartedAt: latest.startedAt,
       priorRuns: priors.length,
       required: MIN_PRIOR_RUNS,
+      subjectIsNewestRecord,
     };
   }
 
@@ -324,5 +349,12 @@ export function computeRunShape(records: readonly RunRecord[], options: RunShape
   const priorSha = priors[priors.length - 1].skillContentSha256;
   const skillChanged = latestSha === undefined || priorSha === undefined ? undefined : latestSha !== priorSha;
 
-  return { kind: "baseline", latestStartedAt: latest.startedAt, priorRuns: priors.length, signals, skillChanged };
+  return {
+    kind: "baseline",
+    latestStartedAt: latest.startedAt,
+    priorRuns: priors.length,
+    signals,
+    skillChanged,
+    subjectIsNewestRecord,
+  };
 }

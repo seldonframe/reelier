@@ -51,6 +51,15 @@ function record(spec: { writes?: number; ms?: number; startedAt?: string; skillS
   };
 }
 
+/**
+ * A `reelier run --fail N` record: excluded from the baseline sample AND from
+ * being the subject (src/priors.ts), so one appended after a real run leaves
+ * the report describing a run that is no longer the newest on disk.
+ */
+function mockRecord(startedAt: string): RunRecord {
+  return { ...record({ startedAt }), mockFailures: [1] };
+}
+
 /** One record per write count, a day apart, all with the same step count. */
 function writeHistory(counts: number[], skillShas?: string[]): RunRecord[] {
   const width = Math.max(1, ...counts);
@@ -100,6 +109,27 @@ test("the post-run deviation block, verbatim", () => {
     "  ! writes: 400 (previous 4 runs: median 1, min 1, max 2)",
     "  A deviation is a difference from this skill's own history — not a fault, not a verdict. It changes no outcome and no exit code.",
   ]);
+});
+
+test("the post-run surface prints NOTHING when the run that just happened is not the subject", () => {
+  // `reelier run --fail 1` right after a real run that deviated: the mock run
+  // is the newest record on disk, so the subject is the run BEFORE it. This
+  // surface's entire claim is the words "this run", and the deviation on file
+  // belongs to an older one — so it says nothing at all. Attributing that
+  // number to the run that just happened would be a claim nobody earned.
+  const report = computeRunShape([...writeHistory([0, 0, 0, 0, 1]), mockRecord(dayStamp(5))]);
+  assert.ok(
+    report.kind === "baseline" && report.signals.some((s) => s.deviates),
+    "fixture must actually carry a deviation, or this test proves nothing"
+  );
+  assert.deepEqual(renderRunShapeDeviationLines(report), []);
+
+  // Byte-identical to the same history WITHOUT the deviating run: a mock run
+  // cannot make this surface speak, and cannot make it speak differently.
+  assert.deepEqual(
+    renderRunShapeDeviationLines(computeRunShape([...writeHistory([0, 0, 0, 0, 0]), mockRecord(dayStamp(5))])),
+    []
+  );
 });
 
 test("the skill-file note appears when the file changed, and NOT when it is unknown", () => {
@@ -180,6 +210,59 @@ test("standalone report: silence appears only with a reading instant, and explai
   assert.equal(noNow.includes("silence"), false);
 });
 
+test("standalone report: when the newest record on disk was excluded, the report SAYS so", () => {
+  // Here the whole picture is the point, so the report speaks — but it must
+  // name the exclusion, exactly as the no-runs copy already does. Without the
+  // line, "latest run: <day 4>" silently omits that day 5 is also on disk.
+  const withMock = renderRunShapeReportLines(
+    computeRunShape([...writeHistory([0, 0, 0, 0, 1]), mockRecord(dayStamp(5))]),
+    "gbrain"
+  );
+  const text = withMock.join("\n");
+  assert.equal(withMock[1], `  latest run: ${dayStamp(4)}`);
+  assert.match(text, /newest record in this file/);
+  assert.match(text, /--fail N/);
+
+  // Silence is counted from the run above, so with a newer record on disk
+  // "7d" must not read as "this machine has been quiet for a week": the row
+  // that could mislead carries the clause itself, not just the note on top.
+  const quiet = renderRunShapeReportLines(
+    computeRunShape([...writeHistory([0, 0, 0, 0, 1]), mockRecord(dayStamp(5))], { now: T0 + 11 * DAY }),
+    "gbrain"
+  ).join("\n");
+  assert.match(quiet, /silence = time since the latest run started\. The excluded newest record is not counted in it\./);
+
+  // Too little history takes the same note — the omission is identical there.
+  const short = renderRunShapeReportLines(
+    computeRunShape([...writeHistory([0, 0, 0]), mockRecord(dayStamp(5))]),
+    "gbrain"
+  ).join("\n");
+  assert.match(short, /Not enough history for a baseline/);
+  assert.match(short, /newest record in this file/);
+
+  // And a file whose newest record IS the subject says nothing of the kind.
+  const clean = renderRunShapeReportLines(computeRunShape(writeHistory([0, 0, 0, 0, 1])), "gbrain").join("\n");
+  assert.equal(/newest record in this file/.test(clean), false, clean);
+});
+
+test("standalone report: the legend agrees with the silence row it is describing", () => {
+  const runs = writeHistory([1, 1, 1, 1, 1]);
+  const lines = renderRunShapeReportLines(
+    computeRunShape(runs, { now: Date.parse(runs[4].startedAt) + HOUR }),
+    "gbrain"
+  );
+  const text = lines.join("\n");
+  // An hour IS outside everything the previous gaps did (they were all a day)
+  // and the silence row is deliberately NOT marked, because silence is
+  // one-sided. A legend that says "! = outside everything the previous runs
+  // did" and stops there is stating a rule this visible row does not follow.
+  assert.ok(text.includes("    silence     1h "), text);
+  const legend = lines.find((l) => l.startsWith("  ! = "));
+  assert.ok(legend, text);
+  assert.match(legend, /silence/);
+  assert.match(legend, /high side only/);
+});
+
 // --------------------------------------------------------------------------
 // The vocabulary ban — the whole product, in one test
 // --------------------------------------------------------------------------
@@ -215,6 +298,8 @@ test("no rendered line, on any surface or any report kind, ever calls a deviatio
     computeRunShape(writeHistory([1, 1, 1, 1])),
     computeRunShape(writeHistory([1, 1, 2, 1, 400], ["a", "a", "a", "a", "b"])),
     computeRunShape(writeHistory([1, 1, 1, 1, 1]), { now: T0 + 99 * DAY }),
+    computeRunShape([...writeHistory([0, 0, 0, 0, 1]), mockRecord(dayStamp(5))]),
+    computeRunShape([...writeHistory([0, 0, 0]), mockRecord(dayStamp(5))]),
   ];
   for (const report of cases) {
     const text = [

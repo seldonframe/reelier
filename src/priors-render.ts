@@ -68,14 +68,39 @@ function skillChangedNote(report: RunShapeReport): string[] {
 }
 
 /**
+ * Named, never implied: when the newest record in the file was excluded, the
+ * run being reported on is NOT the last run that happened, and an operator
+ * reading "latest run: <stamp>" has no way to know that from the stamp alone.
+ * Mirrors the no-runs copy, which already says why a mock run is not a
+ * receipt.
+ */
+function excludedNewestNote(report: RunShapeReport): string[] {
+  return report.kind !== "no-runs" && !report.subjectIsNewestRecord
+    ? [
+        "  note: the newest record in this file is NOT the run above — 'reelier run --fail N' mock runs are excluded (a mock run is a local recovery test, not a receipt).",
+      ]
+    : [];
+}
+
+/**
  * The `reelier run` surface: an EXCEPTION report. Returns no lines at all
  * unless the latest run actually departed from the baseline — which is what
  * makes the zero-touch guarantee hold (docs/specs/run-shape-priors.md §7):
  * no history, too little history, or a run that matches its own history all
  * leave the run's output exactly as it was before this shipped.
+ *
+ * And nothing at all when the subject is not the newest record on disk. This
+ * surface's entire claim is the words "this run": after `reelier run --fail
+ * N`, the mock run that just happened is excluded from being the subject, so
+ * the report describes an EARLIER run and its numbers belong to that run.
+ * Printing them here would attribute a departure to a run that did not make
+ * it. There is nothing honest to say instead — the run that just happened has
+ * no baseline of its own — so the surface stays silent and `reelier baseline`
+ * carries the whole picture, exclusion named.
  */
 export function renderRunShapeDeviationLines(report: RunShapeReport): string[] {
   if (report.kind !== "baseline") return [];
+  if (!report.subjectIsNewestRecord) return [];
   const deviating = report.signals.filter((s) => s.deviates);
   if (deviating.length === 0) return [];
   return [
@@ -104,12 +129,22 @@ export function renderRunShapeReportLines(report: RunShapeReport, skillName: str
     return [
       head,
       `  latest run: ${report.latestStartedAt}`,
+      ...excludedNewestNote(report),
       `  Not enough history for a baseline: ${report.priorRuns} prior run(s), ${report.required} required. No baseline computed.`,
     ];
   }
+  // The legend has to describe the rows an operator can actually see. Every
+  // row is two-sided EXCEPT silence, which is marked on the high side only
+  // (priors.ts: it is counted to now, so between runs it passes through every
+  // value from 0 upward) — so an hour of silence against a daily cadence sits
+  // below everything the previous gaps did and is deliberately unmarked. A
+  // legend that stopped at "outside everything the previous runs did" would
+  // be stating a rule that visible row does not follow.
+  const showsSilence = report.signals.some((s) => s.metric === "silence");
   return [
     head,
     `  latest run: ${report.latestStartedAt}`,
+    ...excludedNewestNote(report),
     `  baseline:   this skill's own previous ${report.priorRuns} runs`,
     "",
     ...report.signals.map(
@@ -117,9 +152,23 @@ export function renderRunShapeReportLines(report: RunShapeReport, skillName: str
         `${s.deviates ? "  ! " : "    "}${s.metric.padEnd(12)}${fmtValue(s.latest, s.unit).padEnd(11)}${baselineText(s)}`
     ),
     "",
-    ...(report.signals.some((s) => s.metric === "silence") ? ["  silence = time since the latest run started."] : []),
+    // The excluded-record clause is attached HERE, not only to the note at
+    // the top, because this is the row where the omission could mislead:
+    // silence is counted from the run above, so with a newer record on disk
+    // "7d" must not be read as "this machine has been quiet for a week".
+    ...(showsSilence
+      ? [
+          `  silence = time since the latest run started.${
+            report.subjectIsNewestRecord ? "" : " The excluded newest record is not counted in it."
+          }`,
+        ]
+      : []),
     ...skillChangedNote(report),
-    `  ! = outside everything the previous runs did, by more than ${DEVIATION_MADS} median-absolute-deviations.`,
+    `  ! = outside everything the previous runs did, by more than ${DEVIATION_MADS} median-absolute-deviations${
+      showsSilence
+        ? " — except silence, which is marked on the high side only: it is still running, so it passes through every value from 0 upward"
+        : ""
+    }.`,
     "  A deviation is a difference, not a fault. This command executed nothing and checked nothing, and always exits 0.",
   ];
 }

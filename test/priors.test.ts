@@ -220,6 +220,44 @@ test("a file of nothing but mock runs -> no-runs", () => {
   assert.equal(computeRunShape(records).kind, "no-runs");
 });
 
+// --------------------------------------------------------------------------
+// Whose run is this? The subject is the newest USABLE record, which is not
+// always the newest record on disk — and a caller whose whole claim is "this
+// run" must be able to tell the difference without re-deriving it.
+// --------------------------------------------------------------------------
+
+test("subjectIsNewestRecord is true when the run being reported on IS the last record on disk", () => {
+  assert.equal(baselineOf(computeRunShape(writeHistory([0, 0, 0, 0, 1]))).subjectIsNewestRecord, true);
+});
+
+test("subjectIsNewestRecord is FALSE when a mock run was appended after the subject", () => {
+  // The file's newest record is a `--fail 1` mock run, which is excluded from
+  // the sample and from being the subject. The deviation that survives (the
+  // day-4 run's write) is real — it simply is not about the newest run, and
+  // the report has to carry that fact or a caller will attribute it wrongly.
+  const records = [
+    ...writeHistory([0, 0, 0, 0, 1]),
+    record({ outcomes: ["failed"], startedAt: dayStamp(5), mockFailures: [1] }),
+  ];
+  const report = computeRunShape(records);
+  const base = baselineOf(report);
+  assert.equal(base.subjectIsNewestRecord, false);
+  assert.equal(base.latestStartedAt, dayStamp(4), "the subject is the day-4 real run, not the mock");
+  assert.deepEqual(deviatingMetrics(report), ["writes"]);
+});
+
+test("insufficient-history carries subjectIsNewestRecord too — the excluded newest record is not the caller's to guess", () => {
+  const records = [...dailyRuns(3), record({ outcomes: ["failed"], startedAt: dayStamp(3), mockFailures: [1] })];
+  const report = computeRunShape(records);
+  assert.equal(report.kind, "insufficient-history");
+  if (report.kind !== "insufficient-history") return;
+  assert.equal(report.subjectIsNewestRecord, false);
+  assert.equal(computeRunShape(dailyRuns(3)).kind === "insufficient-history", true);
+  const clean = computeRunShape(dailyRuns(3));
+  if (clean.kind !== "insufficient-history") return;
+  assert.equal(clean.subjectIsNewestRecord, true);
+});
+
 test("the baseline window is capped at MAX_BASELINE_RUNS most-recent priors", () => {
   assert.equal(MAX_BASELINE_RUNS, 20);
   // 30 ancient runs at 50 writes, then 20 recent ones at 1: the window must

@@ -6,7 +6,9 @@ that history and reports how the latest run departs from it.
 
 n=1. One tenant, one skill, one disk. Nothing is transmitted, no network call
 is made, no cross-skill or cross-tenant comparison happens, and the operator
-declares nothing — the signal exists the moment there are four runs.
+declares nothing — the run-shape signals exist the moment there are four
+runs, and `gap`/`silence`, computed over the intervals *between* runs, from
+five (§3.1).
 
 ## 1. What it is allowed to say
 
@@ -133,6 +135,34 @@ the baseline sample and the subject. An injected failure is a local recovery
 test, not a receipt — `reelier push` already refuses to push one — and
 including them would poison the outcome counts with failures nobody observed.
 
+### 4.1 The subject is not always the newest record
+
+Excluding a mock run from *being the subject* has a consequence that has to
+travel with the report: `reelier run --fail 1` immediately after a real run
+appends a record that is filtered out, so the run the report describes is the
+one BEFORE it — one record back from the end of the file.
+
+`RunShapeReport` therefore carries **`subjectIsNewestRecord`** on both the
+`baseline` and `insufficient-history` variants: false when the newest record
+on disk was excluded. It is a field on the report rather than a check each
+caller re-derives, because a caller that forgets prints an older run's numbers
+under this run's headline.
+
+- **`reelier run` prints nothing at all when it is false.** That surface's
+  entire claim is the words *this run*: a `--fail` run dispatches nothing, so
+  a `writes: 1` line under that heading would be a figure belonging to a
+  different run on a different day. There is nothing honest to print instead
+  — the run that just happened has no baseline of its own — so it is silent.
+- **`reelier baseline` names the exclusion** in a line of its own, the same
+  way the no-comparable-runs copy already does. That surface reports the
+  whole picture, and "latest run: \<stamp\>" without the note would quietly
+  omit that a newer record exists.
+
+Both are pinned end to end in `test/baseline-cli.test.ts`: a `--fail` run
+after a deviating real run is byte-identical to a `--fail` run in a repo with
+no history at all, and `reelier baseline` on that same file states the
+exclusion.
+
 Gaps computed from unparseable or non-monotonic timestamps are dropped from
 the sample rather than clamped, mirroring `attest-render.ts`'s
 `measuredWindowMs`: the figure is omitted, never invented.
@@ -150,10 +180,11 @@ the sample rather than clamped, mirroring `attest-render.ts`'s
 
 ## 6. Surfaces
 
-- **`reelier run`** prints the block only when at least one signal deviates.
-  Silent otherwise, and silent when the run-record file is missing,
-  unreadable, or has a corrupt line — the read is wrapped so that a report
-  that cannot be computed is simply absent (fail open at the recorder). No
+- **`reelier run`** prints the block only when at least one signal deviates
+  *and* the run that just happened is the subject (§4.1). Silent otherwise,
+  and silent when the run-record file is missing, unreadable, or has a
+  corrupt line — the read is wrapped so that a report that cannot be computed
+  is simply absent (fail open at the recorder). No
   `now` is supplied on this surface: at the end of a run there is no silence
   to measure, so the silence signal is not emitted.
 - **`reelier baseline <skill.md>`** is read-only and standalone: it executes
@@ -171,3 +202,38 @@ byte-identical `reelier run` output to the release before this existed. So
 does a repo with history whose latest run does not deviate. Pinned in
 `test/baseline-cli.test.ts` by comparing normalised stdout across a
 no-history repo and a matched-history repo.
+
+## 8. Left out, and why
+
+§2.1 covers the one signal that was designed and then dropped (distinct tools
+touched — `StepRecord` carries no tool name). Two further limits belong here,
+in front of the operator, rather than in a handoff note: both are properties
+of the design as shipped, and neither is a defect scheduled for repair.
+
+### 8.1 The thresholds are reasoned, not measured
+
+`MIN_PRIOR_RUNS = 3`, `MAX_BASELINE_RUNS = 20` and `DEVIATION_MADS = 3` are
+argued from first principles (§3, §3.1) and were fixed before any corpus of
+real run histories existed to calibrate them against. **No false-positive or
+false-negative rate is claimed anywhere, because none has been measured.** The
+argument for each number is a statistical property (a median that is an
+observed value and survives one outlier; a window that lets a regime change
+wash out; a rule conservative enough that the surface speaks rarely), not
+evidence about how often it will speak on your skill. They are exported
+constants precisely so that the first real measurement can move them.
+
+### 8.2 The rule gets strictly LESS sensitive as history grows
+
+A value is reported only when it lands outside the range the prior window
+*actually spanned*, so every run can widen that range and no run narrows it
+while it stays in the window: **one historical 400-write run silences every
+later 400-write run** until it falls out of the 20-run window — the next 20
+runs. Only the first occurrence of anything is ever reported.
+
+This is deliberate, and it is the same property that stops `[1,1,1,2,2]` from
+flagging a 2 (§3, pinned in `test/priors.test.ts`): a surface that flags a
+value the skill has already produced becomes noise, and a line the operator
+has learned to ignore is strictly worse than no line. The cost is stated
+plainly here so nobody mistakes silence for evidence — this reports
+departures from a skill's own history, and a repeat is not a departure. It is
+a recorder, never a detector (§1).
