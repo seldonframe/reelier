@@ -80,8 +80,20 @@ export interface StepWrite {
    * change (scope, approval hash) joined to what actually changed" — this is
    * the join key. `approved` alone says only THAT a write was authorized,
    * never by which authorization, so pairs could not be grouped after the
-   * fact. Additive (I-11), and no new exposure: the hash is already in the
-   * committed skill file.
+   * fact. Additive (I-11).
+   *
+   * Disclosure, stated precisely (review finding — the first version of this
+   * comment justified it with "the hash is already in the committed skill
+   * file", which is a non-sequitur: a receipt is publishable and the skill
+   * file may be private). This is an UNSALTED sha256 over the operation
+   * shape, so it is a stable correlator across runs and across tenants —
+   * that is the point — and any third party holding a candidate skill file
+   * can recompute it, making it a confirmation oracle for "did this receipt
+   * run THIS operation". The real argument is that it adds no new exposure
+   * CLASS: `idempotencyKey`, already in this same block, is an unsalted hash
+   * over the FILLED args and is strictly more revealing. This is the
+   * OPPOSITE property from `attest`'s salted commitments, whose design makes
+   * cross-run joins impossible — do not generalize that guarantee here.
    */
   approvalHash?: string;
   /** Best-effort, honestly-labeled extraction from the tool's JSON response body — absent when nothing was found. */
