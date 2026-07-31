@@ -32,6 +32,13 @@ import { canonicalJson } from "./canonical-json.js";
 /** Spec §3.3: 32 random bytes, minted per approval. */
 export const EXPECT_KEY_BYTES = 32;
 
+/**
+ * The ONE projection spelling that addresses the HTTP status (W3-S5, I-19).
+ * Exported so both projection twins and the approve-time lint agree by
+ * construction rather than by two copies of a string literal.
+ */
+export const STATUS_CODE_ENTRY = "status.code";
+
 const KEY_ID_DOMAIN = "reelier expect key v1\n";
 const MAC_PREFIX = "hmac-sha256:";
 
@@ -128,12 +135,25 @@ export function expectMac(key: Uint8Array, probeTool: string, projected: Record<
  * fork was sanctioned for the ENCODING, never the SELECTION.
  */
 export function projectObservationTyped(
-  obs: { body: string; headers: Record<string, string> },
+  // W3-S5 widened this to carry `status`: `status.code` projects it. Every
+  // existing call site already passes the full Observation, so nothing else
+  // moved.
+  obs: { body: string; headers: Record<string, string>; status: number },
   projection: string[]
 ): Record<string, string | number | boolean> {
   const out: Record<string, string | number | boolean> = {};
   const rec = parseBodyRecord(obs.body);
   for (const key of projection) {
+    // W3-S5 / I-19: `status.code` — and ONLY that spelling — addresses the
+    // HTTP status, as a NUMBER (a string here would collide with the body
+    // form under A6's false-MATCH rule). A bare `status` stays the top-level
+    // body key permanently, and a body key literally named "status.code" is
+    // still reachable as `body.status.code`. Checked before the body branch,
+    // which would otherwise swallow it as an unprefixed key.
+    if (key === STATUS_CODE_ENTRY) {
+      out[key] = obs.status;
+      continue;
+    }
     if (key.startsWith("header.")) {
       const name = key.slice("header.".length);
       const v = lookupHeader(obs.headers, name);
@@ -165,6 +185,12 @@ export const ABSENT_FIELD_NAME_MAX = 120;
  * an absent field.
  */
 export function typedKeyFor(entry: string): string {
+  // W3-S5: `status.code` keeps its own spelling as the output key. Without
+  // this arm it would normalize to `body.status.code` and a consumer holding
+  // the key space would conclude the projection never addresses the field it
+  // just projected — the twin-drift this function exists to prevent, caught
+  // by the W3-S5 absence-loop test the moment the two slices met.
+  if (entry === STATUS_CODE_ENTRY) return entry;
   if (entry.startsWith("header.")) return entry;
   return `body.${entry.startsWith("body.") ? entry.slice("body.".length) : entry}`;
 }
@@ -201,6 +227,9 @@ export function projectionMisses(
   const rec = parseBodyRecord(obs.body);
   for (const key of projection) {
     const outKey = typedKeyFor(key);
+    // Every observation carries a status, so `status.code` always projects —
+    // it can never be absent and never be unprojectable.
+    if (key === STATUS_CODE_ENTRY) continue;
     if (key.startsWith("header.")) {
       const v = lookupHeader(obs.headers, key.slice("header.".length));
       if (typeof v === "string" && v.length > 0) continue; // projected

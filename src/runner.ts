@@ -42,6 +42,7 @@ import {
   expectMac,
   expectFieldMac,
   probeArgsMac,
+  STATUS_CODE_ENTRY,
   lookupHeader,
   projectObservationTyped,
   ABSENT_FIELDS_MAX,
@@ -516,12 +517,19 @@ export function projectObservation(obs: Observation, projection?: string[]): Rec
     // last-modified — the If-Match-class fields explicit projections could
     // never reach); `body.<key>` is the explicit body form; a bare `<key>`
     // stays a top-level body key, byte-identical to the shipped selection
-    // (zero-touch for every existing skill). The `status` namespace is
-    // DEFERRED — a bare `status` entry already means the body key named
-    // "status" in shipped skills, and silently re-pointing it at the HTTP
-    // status would change what an existing approval binds (recorded in the
-    // P1.5 addendum).
+    // (zero-touch for every existing skill).
+    //
+    // W3-S5 / I-19: `status.code` — exactly that spelling — addresses the
+    // HTTP status. P1.5's deferral reason becomes permanent law rather than
+    // a postponement: a bare `status` already means the body key named
+    // "status" in shipped skills (one lives in this repo's own test tree),
+    // so it is NEVER re-pointed. A body key literally named "status.code"
+    // stays addressable as `body.status.code`.
     for (const key of projection) {
+      if (key === STATUS_CODE_ENTRY) {
+        out[key] = String(obs.status);
+        continue;
+      }
       if (key.startsWith("header.")) {
         const name = key.slice("header.".length);
         const v = lookupHeader(obs.headers, name);
@@ -688,6 +696,10 @@ function normalizeStateCheckReason(reason: string): string {
     // above (no probe ran, so wrapping it as `probe-failed:` would claim a
     // dispatch that never happened). Passed through verbatim.
     reason.startsWith("probe-args-mismatch:") ||
+    // W3-S5 review: the probe DID run and the observation is real — only the
+    // status half of it is a wrap-fabricated sentinel, so wrapping this as a
+    // probe failure would claim a dispatch problem that did not happen.
+    reason.startsWith("probe-substrate-mismatch:") ||
     reason.startsWith("key-unavailable:")
   ) {
     return reason;
@@ -1028,6 +1040,36 @@ async function executeStep(
         expectedAt,
         reason: normalizeStateCheckReason(preProbe === undefined ? "probe-failed: probe never ran" : preProbe.reason),
       };
+    } else if (
+      step.attest?.projection?.includes(STATUS_CODE_ENTRY) === true &&
+      tools[step.attest.tool]?.server !== undefined
+    ) {
+      // Review finding (blocking, round 2): `approve --probe` refuses to MINT
+      // this binding over a wrapped MCP tool, but nothing stopped one minted
+      // over http from being EVALUATED against one. `--wrap` merges MCP tools
+      // over the builtins by name, and mcpResultToObservation fabricates
+      // `isError ? 500 : 200` — so a `status.code` binding is satisfiable by a
+      // status the substrate never produced, and an attacker only has to
+      // INDUCE AN ERROR rather than forge anything. A binding stamped at 500
+      // would then match every future failure of any kind.
+      //
+      // Left unevaluated rather than mismatched: nothing about the world was
+      // established, so a mismatch would be as unearned as the match. This is
+      // the load-bearing choice — under `state_gate: refuse` unevaluated fails
+      // closed (no dispatch), and it keeps the drift-watch `went_unevaluated`
+      // countermeasure alive, which a match would silence exactly when an
+      // evidence suppressor is inducing errors.
+      //
+      // The probe still dispatched, so `observedAt` is earned; only the
+      // comparison is refused. Substrate, not token: the same binding over an
+      // http builtin evaluates normally.
+      stateCheck = {
+        outcome: "unevaluated",
+        action: "proceeded",
+        expectedAt,
+        observedAt: preAt,
+        reason: `probe-substrate-mismatch: 'status.code' cannot be evaluated through the MCP tool '${step.attest.tool}' — MCP has no HTTP status, so the value compared would be a fabricated error sentinel (A12)`,
+      };
     } else {
       const typed = projectObservationTyped(preProbe.obs, step.attest?.projection ?? []);
       if (Object.keys(typed).length === 0) {
@@ -1048,7 +1090,7 @@ async function executeStep(
           // Output-form names per the P1.5 namespaces: bare entries are
           // body keys; header./body. prefixed entries keep their namespace.
           const absent = (step.attest?.projection ?? [])
-            .map((f) => (f.startsWith("header.") || f.startsWith("body.") ? f : `body.${f}`))
+            .map((f) => (f === STATUS_CODE_ENTRY ? f : f.startsWith("header.") || f.startsWith("body.") ? f : `body.${f}`))
             .filter((k) => !(k in typed))
             .slice(0, ABSENT_FIELDS_MAX)
             .map((n) => n.slice(0, ABSENT_FIELD_NAME_MAX));

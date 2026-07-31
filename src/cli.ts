@@ -16,6 +16,7 @@ import {
   expectMac,
   expectFieldMac,
   probeArgsMac,
+  STATUS_CODE_ENTRY,
   projectObservationTyped,
   projectionMisses,
   typedKeyFor,
@@ -1467,6 +1468,20 @@ function isComputedDateName(name: string): boolean {
 const PARAMETERIZED_PROBE_DROP_REFUSAL =
   "refusing to drop the binding on a parameterized probe — its args fill from run-time bindings, and without expect.probeArgs nothing proves the filled args were approved. Re-approve with --probe --var, or make the probe args literal.";
 
+/**
+ * W3-S5's `status.code` + MCP refusal (A12): MCP has no HTTP status, so
+ * `mcpResultToObservation` fabricates `isError ? 500 : 200`, and an isError
+ * result flows through as a SUCCESSFUL observation — a binding stamped at
+ * 500 would MATCH on every future error. THE SAME STRING everywhere this
+ * predicate is checked (I-18 blocker 4, wave-3 review): first-time bind
+ * (the structural-unbindability block below) AND re-verify/`--rebind` on an
+ * already-bound step (hoisted ahead of that branch — see the call site).
+ * Never forked; a second copy is how the two checks drift apart silently.
+ */
+function mcpStatusCodeRefusal(tool: string): string {
+  return `'status.code' cannot be state-bound through the MCP tool '${tool}' — MCP has no HTTP status, so an isError result is fabricated as 500 and flows through as a successful observation (A12): a binding stamped at 500 would MATCH on every future error. Use a read that reifies absence into a body field, or probe over http`;
+}
+
 /** `hmac-sha256:9f31…77aa` — enough to eyeball, never needed for anything else (the full value lands in the file). */
 function abbrevMac(mac: string): string {
   const hex = mac.slice("hmac-sha256:".length);
@@ -1927,11 +1942,35 @@ export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Prom
     const volatile = projection.filter((f) =>
       (EXPECT_VOLATILE_FIELDS as readonly string[]).includes(f.replace(/^(?:body|header)\./, ""))
     );
+    // W3-S5: `status.code` gets its OWN note, and it is deliberately NOT a
+    // member of EXPECT_VOLATILE_FIELDS. That list's warning claims mutation
+    // as FACT ("mutated by every write"), which is affirmatively false for a
+    // guard probe of a resource the write never touches — the same
+    // false-consent-transcript class the P1.5 review fixed for `header.etag`.
+    // Conditional wording instead, and it REPLACES the other two branches:
+    // one note per binding, or operators learn to read none of them.
+    // Review finding (blocking, round 2): this note used to REPLACE both
+    // branches below, so any projection merely CONTAINING `status.code`
+    // withheld the version-class warning about its OTHER fields —
+    // `["status.code","header.etag"]` said nothing about header.etag, which
+    // really is mutated by every write. Suppressing a true warning is the
+    // same false-consent-transcript class as printing a false note, with the
+    // sign flipped, and the operator loses more by the omission.
+    //
+    // They are different claims about different fields, so both print. What
+    // "one note per binding" actually forbids is the ABA note printing
+    // alongside this one — those two are competing statements about the SAME
+    // binding, and that suppression is preserved below.
+    if (projection.includes(STATUS_CODE_ENTRY)) {
+      console.log(
+        "  note: binding on HTTP status — if the approved write creates or deletes the probed resource, this binding self-invalidates after its own first run (fixed-point rule); if the probe targets a resource the write leaves untouched, it is a fixed point"
+      );
+    }
     if (volatile.length > 0) {
       console.log(
         `  warning: projection field(s) ${volatile.map(safeFieldName).join(", ")} are version-class — mutated by every write; a standing approval here self-invalidates after its own first run (fixed-point rule)`
       );
-    } else {
+    } else if (!projection.includes(STATUS_CODE_ENTRY)) {
       console.log(
         "  note: no version-class field in this projection — an excursion-and-return (ABA) between approval and execution is invisible; where the op permits, a monotonic version field resists it"
       );
@@ -2048,6 +2087,26 @@ export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Prom
       }
 
       // ---------------- probe mode (§4.2–§4.4) ----------------
+
+      // I-18 blocker 4 (wave-3 review): the status.code + MCP refusal below
+      // (structuralReason's last branch) sat AFTER this re-verify branch, so
+      // a step bound over plain http could be re-verified — or, worse,
+      // `--rebind`-ed — against a wrapped MCP tool resolved at THIS
+      // invocation, the exact fail-open the refusal exists to prevent
+      // (mcpStatusCodeRefusal's doc comment). Hoisted here, evaluated BEFORE
+      // any probe dispatch or --rebind consent, so it can never be reached
+      // by that path either. Same string, same predicate — never forked.
+      if (
+        isCurrent &&
+        step.expect !== undefined &&
+        step.attest !== undefined &&
+        step.attest.projection?.includes(STATUS_CODE_ENTRY) &&
+        probeTools?.[step.attest.tool]?.server !== undefined
+      ) {
+        console.log(`  approved (current) — re-verify unavailable (${mcpStatusCodeRefusal(step.attest.tool)}); binding left as-is`);
+        reVerifyUnavailable++;
+        continue;
+      }
 
       // Already approved-current AND state-bound: report-only re-verify
       // (§4.3 as amended by A2/A14 — nothing is ever re-bound automatically).
@@ -2231,6 +2290,36 @@ export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Prom
       } else if (step.attest.projection === undefined) {
         structuralReason =
           "no explicit projection declared — a state binding requires an explicit projection (the default projection is version-class, volatile by design)";
+      } else if (
+        step.attest.projection.includes(STATUS_CODE_ENTRY) &&
+        probeTools?.[step.attest.tool]?.server !== undefined
+      ) {
+        // W3-S5, and it is a REFUSAL, not a lint (A7's precedent for a
+        // binding class that misleads about what is conditioned). On MCP
+        // there is no HTTP status: mcpResultToObservation fabricates
+        // `isError ? 500 : 200`, and an isError result flows through as a
+        // SUCCESSFUL observation. A binding stamped at 500 would therefore
+        // match on every future error of any kind — which in gate mode
+        // converts exactly the classes A12 sends to grey (and the gate
+        // refuses) into a match that DISPATCHES the write. That is a
+        // fail-OPEN conversion of the one sanctioned fail-closed control,
+        // triggered by error conditions; it also neutralizes B7 (an induced
+        // isError would yield match, never unevaluated, so no alert fires).
+        //
+        // `attest.projection` is covered by the approval hash, so a
+        // hand-added `status.code` after approval is an approval-hash
+        // mismatch the existing gate already refuses. But WHICH tool `--wrap`
+        // resolves `step.attest.tool` to at THIS invocation is NOT covered by
+        // that hash — a step bound over plain http can be re-verified or
+        // `--rebind`-ed against a wrapped MCP tool of the same name on a
+        // later run (I-18 blocker 4, wave-3 review), so bind-time refusal
+        // alone is not sufficient enforcement; this predicate is hoisted and
+        // checked again ahead of the re-verify branch above (search
+        // mcpStatusCodeRefusal's other call site). `status.code` stays fully
+        // live on the http builtins, which carry real statuses. The
+        // predicate is `server`, set by mcpTool for every wrapped tool and
+        // absent on http builtins.
+        structuralReason = mcpStatusCodeRefusal(step.attest.tool);
       }
 
       // A structurally-unbindable step that is ALREADY approved-current and
