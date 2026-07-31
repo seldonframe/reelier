@@ -22,7 +22,7 @@ import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { cmdApprove, type ParsedArgs, type ApproveDeps } from "../src/cli.js";
-import { parseSkill } from "../src/skill.js";
+import { parseSkill, type Step } from "../src/skill.js";
 import { serializeSkill } from "../src/writeback.js";
 import { computeApprovalHash } from "../src/approval.js";
 import type { Tool } from "../src/tools.js";
@@ -353,5 +353,153 @@ test("W3-S3: no grammar or hash change — the binding written by a --rebind is 
       computeApprovalHash({ actionTool: step.actionTool, actionArgs: step.actionArgs, attest: step.attest, expect: step.expect }),
       "the hash formula is untouched by this slice",
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Review findings — the absence line must be EARNED, not merely derived from
+// the file. Both cases below reach the same defect class from opposite sides:
+// the line asserts "committed ... at approve time, absent now" for names that
+// were never committed, and for fields that are present but unprojectable.
+// ---------------------------------------------------------------------------
+
+/** Re-stamp the file so a hand-edit to `expect` stays approval-hash-current. */
+async function restamp(skillPath: string, edit: (step: Step) => void): Promise<void> {
+  const skill = parseSkill(await readFile(skillPath, "utf8"));
+  const step = skill.steps[0];
+  edit(step);
+  step.approve = computeApprovalHash({
+    actionTool: step.actionTool,
+    actionArgs: step.actionArgs,
+    attest: step.attest,
+    expect: step.expect,
+  });
+  await writeFile(skillPath, serializeSkill(skill), "utf8");
+}
+
+test("W3-S3 (review): a fields entry the projection never addresses is NEVER named as committed-and-absent", async () => {
+  await withTempDir(async (dir) => {
+    // The absent branch runs no MAC comparison, so a hand-added entry needs
+    // only a syntactically valid hex value — not a forgeable MAC. Re-stamping
+    // keeps the approval current, so the run reaches the diagnosis.
+    const fake = `hmac-sha256:${"a".repeat(64)}`;
+    const { out } = await bindThenMove(
+      dir,
+      { compiled_truth: "# hi", content_flag: "clean" },
+      { compiled_truth: "moved", content_flag: "clean" },
+      ["probe", "all"],
+      (skillPath) =>
+        restamp(skillPath, (step) => {
+          step.expect!.fields!["body.never_projected"] = fake;
+          step.expect!.fields!["constructor"] = fake;
+          step.expect!.fields!["toString"] = fake;
+        }),
+    );
+    const absentLine = out.split("\n").find((l) => l.includes("committed fields absent at re-verify")) ?? "";
+    for (const fabricated of ["never_projected", "constructor", "toString"]) {
+      assert.ok(
+        !absentLine.includes(fabricated),
+        `named ${fabricated} as committed-and-absent, but the projection never addresses it — unearned claim in: ${absentLine}`,
+      );
+    }
+  });
+});
+
+// `null` first: a cleared flag is the commonest real shape here, and it is a
+// one-token edit of the shipped fixture — which is exactly why the omission
+// of it from the original matrix let the defect through.
+for (const [label, moved] of [
+  ["null (a cleared flag)", null],
+  ["an object", { nested: true }],
+  ["an array", [1, 2]],
+] as const) {
+  test(`W3-S3 (review): a projected field PRESENT as ${label} is never called absent`, async () => {
+    await withTempDir(async (dir) => {
+      const { out } = await bindThenMove(
+        dir,
+        { compiled_truth: "# hi", content_flag: "clean" },
+        { compiled_truth: "moved", content_flag: moved },
+      );
+      const absentLine = out.split("\n").find((l) => l.includes("committed fields absent at re-verify")) ?? "";
+      assert.ok(
+        !absentLine.includes("content_flag"),
+        `content_flag is in the observation — calling it absent is unearned: ${absentLine}`,
+      );
+      assert.match(
+        out,
+        /^ {2}committed fields the probe could not project at re-verify: body\.content_flag$/m,
+        "the weaker, earned claim must still be made — silence would hide the divergence",
+      );
+    });
+  });
+}
+
+test("W3-S3 (review): a committed field the projection never addresses is reported as the file oddity it is, not as a committed absence", async () => {
+  await withTempDir(async (dir) => {
+    const fake = `hmac-sha256:${"b".repeat(64)}`;
+    const { out } = await bindThenMove(
+      dir,
+      { compiled_truth: "# hi", content_flag: "clean" },
+      { compiled_truth: "moved", content_flag: "clean" },
+      ["probe", "all"],
+      (skillPath) => restamp(skillPath, (step) => { step.expect!.fields!["body.planted"] = fake; }),
+    );
+    assert.match(out, /^ {2}note: the binding commits fields this step never projects: body\.planted$/m);
+  });
+});
+
+test("W3-S3 (review): a committed name that resolves through Object.prototype is never read as present", async () => {
+  await withTempDir(async (dir) => {
+    // `typed["toString"]` without an own-property guard resolves to
+    // Object.prototype.toString — not undefined — so the name would flow into
+    // the MAC comparison and land on the transcript as a CHANGED field.
+    const fake = `hmac-sha256:${"c".repeat(64)}`;
+    const { out } = await bindThenMove(
+      dir,
+      { compiled_truth: "# hi", content_flag: "clean" },
+      { compiled_truth: "moved", content_flag: "clean" },
+      ["probe", "all"],
+      (skillPath) => restamp(skillPath, (step) => { step.expect!.fields!["toString"] = fake; }),
+    );
+    const changedLine = out.split("\n").find((l) => l.includes("fields changed since approval")) ?? "";
+    assert.ok(!changedLine.includes("toString"), `prototype read leaked onto the transcript: ${changedLine}`);
+  });
+});
+
+test("W3-S3 (review): a body that stops being JSON does not turn every committed body field into an absence claim", async () => {
+  await withTempDir(async (dir) => {
+    // A header keeps `typed` non-empty, so the whole-observation guard does
+    // not fire and the diagnosis runs on a body that yielded nothing at all.
+    const skillPath = path.join(dir, "s.skill.md");
+    await writeFile(
+      skillPath,
+      SKILL_TWO_FIELD.replace(
+        '"projection":["compiled_truth","content_flag"]',
+        '"projection":["header.etag","compiled_truth","content_flag"]',
+      ),
+      "utf8",
+    );
+    const shared = { body: JSON.stringify({ compiled_truth: "# hi", content_flag: "clean" }), etag: "v1" };
+    const tools: Record<string, Tool> = {
+      get_page: {
+        effect: "read",
+        run: async () => ({ status: 200, headers: { etag: shared.etag }, body: shared.body }),
+      },
+      put_page: { effect: "idempotent-write", run: async () => ({ status: 200, headers: {}, body: "{}" }) },
+    };
+    await captureOutput(() => cmdApprove(fakeArgs([skillPath], ["probe", "all"]), deps(dir, { tools })));
+
+    shared.body = "<html>502 Bad Gateway</html>";
+    shared.etag = "v2";
+    const { out } = await captureOutput(() =>
+      cmdApprove(fakeArgs([skillPath], ["probe", "all"]), deps(dir, { tools })),
+    );
+    const absentLine = out.split("\n").find((l) => l.includes("committed fields absent at re-verify")) ?? "";
+    for (const field of ["compiled_truth", "content_flag"]) {
+      assert.ok(
+        !absentLine.includes(field),
+        `the body did not parse, so nothing was observed for ${field} — absence is not what the probe established: ${absentLine}`,
+      );
+    }
   });
 });

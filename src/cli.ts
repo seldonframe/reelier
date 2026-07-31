@@ -16,6 +16,10 @@ import {
   expectMac,
   expectFieldMac,
   projectObservationTyped,
+  projectionMisses,
+  typedKeyFor,
+  ABSENT_FIELDS_MAX,
+  ABSENT_FIELD_NAME_MAX,
   resolveKeystorePath,
   readKeystore,
   writeKeystoreEntry,
@@ -1489,38 +1493,73 @@ function safeFieldName(name: string): string {
  * print. Each line prints only when non-empty, so an all-absence divergence
  * names no change (and vice versa) — never an empty claim.
  *
- * Stated limitation (wave3 registry item 8), and NOT a defect: a field that
- * was absent at approve but is present now appears in neither line. It was
- * never committed, so there is nothing to compare it against — and naming
- * it "appeared since approval" would be an approve-time presence claim of
- * exactly the kind A1 forbids.
+ * ABSENCE IS EARNED, NOT INFERRED (review finding — blocking). The projected
+ * map drops present-but-unprojectable data: a `null`/object/array value, a
+ * header present but empty, and — for EVERY body field at once — a body that
+ * did not parse. Reading "missing from the projection" as "absent from the
+ * world" asserts a fact the observation in hand disproves, and it asserts it
+ * to an operator standing at a re-bind consent prompt. So the three outcomes
+ * are separated against the RAW observation and worded for what each one
+ * establishes: gone, not established, or not projected by this step at all.
+ *
+ * Stated limitation, and a product choice rather than a constraint (review
+ * finding): a field present now but not committed at approve appears in no
+ * line. `expect.fields`' key set is the disclosed approve-time projected set,
+ * so naming such a field WOULD be earned — the same premise that licenses the
+ * absence line. It is left unbuilt because it is new copy this slice did not
+ * scope, not because A1 forbids it.
  */
 function reportReVerifyDiagnosis(
   step: Step,
   key: Uint8Array,
-  typed: Record<string, string | number | boolean>
+  typed: Record<string, string | number | boolean>,
+  obs: { body: string; headers: Record<string, string> }
 ): void {
   const committed = step.expect?.fields;
   if (committed === undefined) return;
+  const projection = step.attest?.projection ?? [];
+  // Only a name the declared projection actually addresses can have been
+  // committed by any approve run. `expect.fields` is hand-editable and the
+  // absent branch runs no MAC comparison, so without this intersection a
+  // planted entry prints as a committed field on the consent transcript.
+  const declared = new Set(projection.map(typedKeyFor));
+  const { unprojectable } = projectionMisses(obs, projection);
   const changed: string[] = [];
   const absent: string[] = [];
+  const notEstablished: string[] = [];
+  const unbacked: string[] = [];
   // Object.entries reads own enumerable keys only; the `typed` lookup below
   // is an own-property read for the same reason the runner's is — a fields
   // entry named "constructor"/"toString" would otherwise read through
   // Object.prototype and land a fabricated name on the consent transcript.
   for (const [name, recorded] of Object.entries(committed)) {
+    if (!declared.has(name)) {
+      unbacked.push(name);
+      continue;
+    }
     const liveValue = Object.prototype.hasOwnProperty.call(typed, name) ? typed[name] : undefined;
     if (liveValue === undefined) {
-      absent.push(name);
+      (unprojectable.has(name) ? notEstablished : absent).push(name);
       continue;
     }
     if (expectFieldMac(key, step.attest!.tool, name, liveValue) !== recorded) changed.push(name);
   }
+  const render = (names: string[]): string =>
+    names
+      .slice(0, ABSENT_FIELDS_MAX)
+      .map((n) => safeFieldName(n.slice(0, ABSENT_FIELD_NAME_MAX)))
+      .join(", ");
   if (changed.length > 0) {
-    console.log(`  fields changed since approval: ${changed.map(safeFieldName).join(", ")}`);
+    console.log(`  fields changed since approval: ${render(changed)}`);
   }
   if (absent.length > 0) {
-    console.log(`  committed fields absent at re-verify: ${absent.map(safeFieldName).join(", ")}`);
+    console.log(`  committed fields absent at re-verify: ${render(absent)}`);
+  }
+  if (notEstablished.length > 0) {
+    console.log(`  committed fields the probe could not project at re-verify: ${render(notEstablished)}`);
+  }
+  if (unbacked.length > 0) {
+    console.log(`  note: the binding commits fields this step never projects: ${render(unbacked)}`);
   }
 }
 
@@ -1969,7 +2008,7 @@ export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Prom
         // the claim is exactly as earned here as it is there. Names only,
         // never values: this prints on every path including --all, because
         // A2's TTY gate governs projected VALUES, not field names.
-        reportReVerifyDiagnosis(step, key, typed);
+        reportReVerifyDiagnosis(step, key, typed, reVerify.obs);
         // §4.2.3 holds for a re-bind too (review finding — blocking): the
         // yes must be granted against a SHOWN observation, never blind.
         showObservation(typed, step.attest!.projection ?? []);

@@ -132,26 +132,95 @@ export function projectObservationTyped(
   projection: string[]
 ): Record<string, string | number | boolean> {
   const out: Record<string, string | number | boolean> = {};
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(obs.body);
-  } catch {
-    parsed = undefined;
-  }
-  const rec = parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : undefined;
+  const rec = parseBodyRecord(obs.body);
   for (const key of projection) {
     if (key.startsWith("header.")) {
       const name = key.slice("header.".length);
       const v = lookupHeader(obs.headers, name);
-      if (typeof v === "string" && v.length > 0) out[key] = v;
+      if (typeof v === "string" && v.length > 0) out[typedKeyFor(key)] = v;
       continue;
     }
     if (!rec) continue;
-    const bodyKey = key.startsWith("body.") ? key.slice("body.".length) : key;
-    const v = rec[bodyKey];
-    if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") out[`body.${bodyKey}`] = v;
+    const v = rec[key.startsWith("body.") ? key.slice("body.".length) : key];
+    if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") out[typedKeyFor(key)] = v;
   }
   return out;
+}
+
+/**
+ * Field-list render caps, shared by every surface that names projected
+ * fields — the runner's record diagnosis and the approve-time transcript.
+ * One definition so the two cannot disagree about what a wide projection
+ * looks like ("one claim, one label, wherever an operator meets it").
+ */
+export const ABSENT_FIELDS_MAX = 32;
+export const ABSENT_FIELD_NAME_MAX = 120;
+
+/**
+ * The output-form key a projection entry produces — bare entries and `body.`
+ * entries both normalize to `body.<key>`, `header.` entries keep their
+ * spelling. Exported and used BY the projection itself so that any consumer
+ * reasoning about the key space cannot drift from the map that built it: a
+ * name-mapping added in one place is exactly how this lineage once fabricated
+ * an absent field.
+ */
+export function typedKeyFor(entry: string): string {
+  if (entry.startsWith("header.")) return entry;
+  return `body.${entry.startsWith("body.") ? entry.slice("body.".length) : entry}`;
+}
+
+function parseBodyRecord(body: string): Record<string, unknown> | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return undefined;
+  }
+  return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : undefined;
+}
+
+/**
+ * Why a declared projection entry yielded no value — the distinction between
+ * "the observation shows it is gone" and "the observation establishes nothing
+ * about it". `projectObservationTyped` drops both cases identically, so a
+ * consumer that infers absence from a missing key asserts a fact the raw
+ * observation can disprove (a `null`/object value, an empty header, or a body
+ * that did not parse at all). Absence is only earned in the first set.
+ *
+ * `absent` — the observation was usable for that namespace and the field is
+ * genuinely not in it. `unprojectable` — the field is present but not a
+ * scalar, the header is present but empty, or the body did not parse, so
+ * nothing was established about it either way.
+ */
+export function projectionMisses(
+  obs: { body: string; headers: Record<string, string> },
+  projection: string[]
+): { absent: Set<string>; unprojectable: Set<string> } {
+  const absent = new Set<string>();
+  const unprojectable = new Set<string>();
+  const rec = parseBodyRecord(obs.body);
+  for (const key of projection) {
+    const outKey = typedKeyFor(key);
+    if (key.startsWith("header.")) {
+      const v = lookupHeader(obs.headers, key.slice("header.".length));
+      if (typeof v === "string" && v.length > 0) continue; // projected
+      (v === undefined ? absent : unprojectable).add(outKey);
+      continue;
+    }
+    // A body that did not parse establishes nothing about ANY body field.
+    if (!rec) {
+      unprojectable.add(outKey);
+      continue;
+    }
+    const bodyKey = key.startsWith("body.") ? key.slice("body.".length) : key;
+    const v = rec[bodyKey];
+    if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") continue; // projected
+    // Own-property test, for the same reason the field loops use one: a
+    // projection entry named "constructor"/"toString" resolves through
+    // Object.prototype and would otherwise read as present-but-unprojectable.
+    (Object.prototype.hasOwnProperty.call(rec, bodyKey) ? unprojectable : absent).add(outKey);
+  }
+  return { absent, unprojectable };
 }
 
 /**
