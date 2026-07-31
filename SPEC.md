@@ -698,18 +698,16 @@ interface RunRecord {
 }
 ```
 
-`passed` is `true` iff zero steps have `outcome === "failed"` — an
-`"unchecked"` step does **not** make the run fail, but it also does not
-count toward `totals.passed`.
-
-`manifestIgnored` (0.19.0+, §6.1b) is `true` iff this run's manifest
-preflight was explicitly bypassed via `--ignore-manifest` — absent on every
-run that had no manifest to check, or whose preflight ran normally.
-
-`mockFailures` (0.19.0+, §6.1d) is the sorted list of step numbers that had
-an injected failure (`--fail N[=status]`) this run — present only when
-non-empty. A record carrying this field is a local recovery test, never a
-real receipt: `reelier push` (§8) refuses to push it, unconditionally.
+| Field | Semantics |
+| --- | --- |
+| `skill` | The skill's declared name, copied verbatim from the skill it ran, and the same name the record's file is keyed on (`.reelier/runs/<skill-name>.jsonl`). Always present. It identifies which skill ran by **name**, never which bytes ran — two different revisions of a skill produce records with the identical `skill`, so a consumer MUST NOT treat it as an identity of the content. `skillContentSha256` is the only field that identifies content. |
+| `startedAt`, `finishedAt` | ISO-8601 UTC instants bounding the run, both always present, read from the clock of the machine that ran the skill — immediately before the first step is attempted and immediately after the last one settles. They bound the whole run, escalation included. `totals.ms` is the **sum of the per-step durations**, not the difference of these two: it excludes the runner's own setup and teardown and is therefore normally smaller than the interval between them, so a consumer MUST NOT derive one from the other. Both are ordinary unattested wall-clock readings from an untrusted machine — nothing in the record proves the run happened when they say it did, and a consumer MUST NOT present them as a trusted time of execution. |
+| `passed` | `passed` is `true` iff zero steps have `outcome === "failed"` — an `"unchecked"` step does **not** make the run fail, but it also does not count toward `totals.passed`. Always present. Because a zero-assertion step can never fail, a run of nothing but `"unchecked"` steps is `passed: true` while proving nothing: `passed` is the absence of a detected failure, never evidence that anything was verified (§4.3). |
+| `skillContentSha256` | sha256 (64 lowercase hex chars) of the exact skill-file bytes that produced this run, stamped at run time by the caller from the source it had just read to parse the skill — the most truthful moment to capture it. Absent when the caller had no file bytes to hash, and absent on every record written before the field existed; `POST /api/v1/runs` (§8.2) describes the push-time fallback hash computed for those. It identifies **content only** — never authorship, never intent, never approval. A consumer MUST NOT read it as a signature, and MUST NOT read its absence as evidence that the skill was altered or is untrustworthy: absence means only that no hash was captured. |
+| `manifestIgnored` | `manifestIgnored` (0.19.0+, §6.1b) is `true` iff this run's manifest preflight was explicitly bypassed via `--ignore-manifest` — absent on every run that had no manifest to check, or whose preflight ran normally. Absence therefore conflates "there was nothing to check" with "the check passed" and is **not** evidence of a clean preflight; only the field's presence carries a claim, and the claim it carries is that a check was skipped. |
+| `mockFailures` | `mockFailures` (0.19.0+, §6.1d) is the sorted list of step numbers that had an injected failure (`--fail N[=status]`) this run — present only when non-empty. A record carrying this field is a local recovery test, never a real receipt: `reelier push` (§8) refuses to push it, unconditionally. |
+| `steps` | One `StepRecord` (§4.1) per step of the skill, in execution order. Always present. Every step of the skill appears, including those the runner never attempted because an earlier step diverged and did not heal — those carry `outcome: "skipped"` with `ms: 0`. A consumer MUST NOT infer from an entry's presence that the step ran; only its `outcome` says that. `steps.length` always equals `totals.steps`. |
+| `totals` | Roll-ups derived **entirely** from `steps` — the record carries no count that its own steps do not support. Always present, with all eight keys always present: `steps` is the number of step records; `passed`, `unchecked`, `skipped` and `failed` are the counts of steps with exactly that `outcome` (they partition `steps`, and per the honesty rule in §4.3 `passed` never absorbs `unchecked`); `ms` is the sum of the per-step `ms` values; `llmInputTokens` and `llmOutputTokens` are the sums of `steps[].llm.inputTokens`/`.outputTokens`, counting a step with no `llm` block as zero, so `0`/`0` is the honest reading of a run where escalation never ran. `unchecked` is a count of steps that ran without incident and asserted nothing: per §4.3 a consumer MUST NOT present `totals.unchecked`, or any total that includes it, as evidence of a passing check. |
 
 ### 4.3 Totals honesty rule (normative)
 
