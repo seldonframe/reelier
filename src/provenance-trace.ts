@@ -133,8 +133,10 @@ function isUsableSource(rec: Extract<TraceRecord, { t: "result" }>): boolean {
  */
 export function analyzeTrace(records: TraceRecord[]): TraceProvenance {
   const resultByCall = new Map<number, Extract<TraceRecord, { t: "result" }>>();
+  const provenanceByCall = new Map<number, Extract<TraceRecord, { t: "prov" }>>();
   for (const rec of records) {
     if (rec.t === "result" && !resultByCall.has(rec.i)) resultByCall.set(rec.i, rec);
+    if (rec.t === "prov" && !provenanceByCall.has(rec.i)) provenanceByCall.set(rec.i, rec);
   }
 
   const sources: ProvenanceSource[] = [];
@@ -149,6 +151,29 @@ export function analyzeTrace(records: TraceRecord[]): TraceProvenance {
       // arguments to account for — the same rule `write` and `attest` follow
       // (spec §8.2). Reporting one would describe a dispatch that never happened.
       if (outcome && !isUsableSource(outcome) && (outcome.denied === true || outcome.dryRun === true)) continue;
+
+      const recorded = provenanceByCall.get(rec.i);
+      if (recorded) {
+        const resolutions: LeafResolution[] = [
+          ...(recorded.resolved ?? []).map((row): LeafResolution => ({
+            path: row.path,
+            state: "grounded",
+            via: row.via,
+            from: { source: `#${row.from.call}`, at: row.from.at },
+          })),
+          ...(recorded.authored ?? []).map((path): LeafResolution => ({ path, state: "authored" })),
+          ...(recorded.unresolved ?? []).map((row): LeafResolution => ({
+            path: row.path,
+            state: "unresolved",
+            reason: row.reason,
+          })),
+        ];
+        counts.grounded += (recorded.resolved?.length ?? 0) + (recorded.truncated?.resolved ?? 0);
+        counts.authored += (recorded.authored?.length ?? 0) + (recorded.truncated?.authored ?? 0);
+        counts.unresolved += (recorded.unresolved?.length ?? 0) + (recorded.truncated?.unresolved ?? 0);
+        calls.push({ i: rec.i, tool: rec.tool, resolutions });
+        continue;
+      }
 
       const index = buildSourceIndex(sources);
       const corpusGap = gapNotes.length > 0 ? gapNotes.join("; ") : undefined;

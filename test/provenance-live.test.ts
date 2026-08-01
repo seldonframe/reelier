@@ -35,10 +35,35 @@ test("live recorder writes provenance before dispatch and grounds only from prio
     assert.equal(prov.t, "prov");
     if (prov.t !== "prov") return;
     assert.deepEqual(prov.resolved, [
-      { path: "args.phone", from: { call: 0, at: "body.phone" } },
+      { path: "args.phone", via: "exact", from: { call: 0, at: "body.phone" } },
     ]);
     assert.deepEqual(prov.authored, ["args.name"]);
     assert.equal("unresolved" in prov, false);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("live recorder persists the normalized tier instead of fabricating an exact match", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "reelier-prov-live-"));
+  try {
+    const recorder = new Recorder(dir);
+    const started = await recorder.start("demo", ["fake"]);
+    assert.equal(started.ok, true);
+    if (!started.ok) return;
+    const first = recorder.recordCall("read", {});
+    recorder.recordProvenance(first, {});
+    recorder.recordResult(first, true, 0, {
+      content: [{ type: "text", text: JSON.stringify({ company: "ACME" }) }],
+    });
+    const second = recorder.recordCall("write", { company: "acme" });
+    recorder.recordProvenance(second, { company: "acme" });
+    await recorder.stop();
+    const records = await readTrace(started.path);
+    const prov = records.find((r) => r.t === "prov" && r.i === second);
+    assert.ok(prov && prov.t === "prov");
+    if (!prov || prov.t !== "prov") return;
+    assert.equal(prov.resolved?.[0]?.via, "normalized");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

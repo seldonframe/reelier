@@ -92,7 +92,7 @@ export type TraceRecord =
       t: "prov";
       seq: number;
       i: number;
-      resolved?: Array<{ path: string; from: { call: number; at: string } }>;
+      resolved?: Array<{ path: string; via: "exact" | "normalized"; from: { call: number; at: string } }>;
       authored?: string[];
       unresolved?: Array<{ path: string; reason: string }>;
       truncated?: Partial<Record<"resolved" | "authored" | "unresolved", number>>;
@@ -262,6 +262,7 @@ export class Recorder {
     );
     const resolved = resolvedRows.slice(0, ABSENT_FIELDS_MAX).map((row) => ({
       path: clipProvName(row.path),
+      via: row.via,
       from: { call: Number(row.from.source.slice(1)), at: clipProvName(row.from.at) },
     }));
     const authoredCap = capNameList(authoredRows.map((row) => row.path));

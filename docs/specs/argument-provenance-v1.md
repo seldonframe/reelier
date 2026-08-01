@@ -20,12 +20,11 @@
 - **Implementation amendments:** §4.3, §4.4, §5.3, §5.4, §7.5 and §7.7, recorded below rather than folded in
   silently.
 
-Every code reference was read from `origin/main` @ `5d6d521` (v0.29.0) on 2026-08-01, by
-`git cat-file`, not from the working tree — this branch (`feat/policy-attestation`) carries
-uncommitted changes to `src/cli.ts`, `src/policy.ts`, `src/recorder.ts` and `src/trace.ts`, and
-two of those files are cited here. `src/runner.ts`, `src/skill.ts`, `src/assert.ts`,
-`src/escalate.ts` and `src/expect-mac.ts` are byte-identical between the working tree and the pin;
-the recorder is not. If the pin is stale, re-verify before building.
+The design pass read every code reference from `origin/main` @ `5d6d521` (v0.29.0) on 2026-08-01
+using `git cat-file`, rather than trusting a dirty working tree. The merge-preparation pass then
+transplanted the implementation onto and re-verified it against `origin/main` @ `e23af36`
+(v0.30.0 plus subsequent mainline changes) in a clean worktree. If that implementation pin is
+stale, re-verify the recorder chokepoint and exhaustive trace consumers before changing the record.
 
 Companion to `artifact-attestation-v1.md`, whose hashing primitives, name-list caps and
 record-shape discipline this reuses verbatim (§7.4, §8.3) and whose one exposure opt-in it
@@ -677,7 +676,8 @@ statistically meaningful session size. Changing it changes resource use, never a
 ```jsonc
 {
   "t": "prov", "seq": 41, "i": 7,
-  "resolved":   [{ "path": "args.customer.phone", "from": { "call": 3, "at": "body.phone" } }],
+  "resolved":   [{ "path": "args.customer.phone", "via": "exact",
+                    "from": { "call": 3, "at": "body.phone" } }],
   "authored":   ["args.customer.name"],
   "unresolved": [{ "path": "args.notes", "reason": "not-recording" }],
   "truncated":  { "authored": 4 }   // omitted when nothing was capped (§6)
@@ -689,6 +689,10 @@ existing bytes for every consumer (I-11, additive only). And it keeps a computed
 from a captured one, which is the concrete form §4.2's measured-vs-inferred line takes: a consumer
 that wants the lossless trace the module comment promises can drop `t: "prov"` and have exactly the
 file it had before.
+
+`resolved[].via` is required and is exactly `exact` or `normalized` (§7). Persisting the tier is
+necessary because post-redaction recomputation can be weaker than the pre-dispatch measurement, and
+must never fabricate `exact` for a value that resolved through the transformation tier.
 
 ### 8.2 Path B — one optional `StepRecord` block
 

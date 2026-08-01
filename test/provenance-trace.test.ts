@@ -6,7 +6,6 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import { analyzeTrace } from "../src/provenance-trace.js";
 import { parseTraceLines } from "../src/trace.js";
 import type { TraceRecord } from "../src/recorder.js";
@@ -31,6 +30,9 @@ function jsonBody(value: unknown): unknown {
 }
 function result(i: number, body: unknown, extra: Record<string, unknown> = {}): TraceRecord {
   return { t: "result", seq: seq++, i, ok: true, ms: 1, body, ...extra } as TraceRecord;
+}
+function prov(i: number, fields: Omit<Extract<TraceRecord, { t: "prov" }>, "t" | "seq" | "i">): TraceRecord {
+  return { t: "prov", seq: seq++, i, ...fields };
 }
 
 /** The resolution for one path of one call. */
@@ -63,6 +65,24 @@ test("a value in no response is authored", () => {
     call(1, "booking.create", { name: "not provided" }),
   ];
   assert.equal(leaf(records, 1, "args.name")?.state, "authored");
+});
+
+test("a recorded pre-dispatch measurement wins over weaker post-redaction recomputation", () => {
+  const records = [
+    meta(),
+    call(0, "crm.get", { id: "c1" }),
+    result(0, jsonBody({ phone: "«redacted»" })),
+    call(1, "booking.create", { phone: "«redacted»" }),
+    prov(1, {
+      resolved: [{ path: "args.phone", via: "exact", from: { call: 0, at: "body.phone" } }],
+    }),
+  ];
+  assert.deepEqual(leaf(records, 1, "args.phone"), {
+    path: "args.phone",
+    state: "grounded",
+    via: "exact",
+    from: { source: "#0", at: "body.phone" },
+  });
 });
 
 test("REGRESSION: a name is not grounded by the local part of an email in the trace", () => {
@@ -246,6 +266,15 @@ test("counts are reported per state, and are counts rather than a ratio", () => 
   assert.deepEqual(out.counts, { grounded: 2, authored: 2, unresolved: 0 });
 });
 
+test("recorded counts include entries omitted by the per-list cap", () => {
+  const records = [
+    meta(),
+    call(0, "put", { a: "x" }),
+    prov(0, { authored: ["args.a"], truncated: { authored: 4 } }),
+  ];
+  assert.deepEqual(analyzeTrace(records).counts, { grounded: 0, authored: 5, unresolved: 0 });
+});
+
 test("meta and note records contribute nothing", () => {
   const records: TraceRecord[] = [
     meta(),
@@ -268,11 +297,16 @@ test("an empty trace analyses to nothing", () => {
 // the shipped trace — proof this runs on a real file, not only on fixtures
 // ---------------------------------------------------------------------------
 
-test("the repo's own recorded trace analyses without throwing", async () => {
-  const source = await readFile(".reelier/traces/reelier-init-demo-1.jsonl", "utf8");
+test("a recorded JSONL trace analyses without relying on local untracked files", () => {
+  const source = [
+    JSON.stringify({ t: "meta", seq: 0, name: "real-shape", startedAt: "2026-08-01T00:00:00.000Z", wrapped: ["crm"] }),
+    JSON.stringify({ t: "call", seq: 1, i: 0, ts: "2026-08-01T00:00:00.001Z", tool: "crm.get", args: { id: "c1" } }),
+    JSON.stringify({ t: "result", seq: 2, i: 0, ok: true, ms: 4, body: { content: [{ type: "text", text: "{\"email\":\"a@example.com\"}" }] } }),
+    JSON.stringify({ t: "call", seq: 3, i: 1, ts: "2026-08-01T00:00:00.005Z", tool: "booking.create", args: { email: "a@example.com" } }),
+  ].join("\n");
   const out = analyzeTrace(parseTraceLines(source));
   assert.ok(out.calls.length > 0, "the demo trace has calls");
-  // The first call's URL is agent-supplied with nothing before it to come from.
+  // The first call's id is supplied with nothing before it to come from.
   const first = out.calls[0];
   assert.equal(first.resolutions.every((r) => r.state === "authored"), true);
 });
