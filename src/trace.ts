@@ -92,6 +92,18 @@ export function formatTrace(records: TraceRecord[]): string[] {
       case "call":
         lines.push(`[call #${rec.i}] ${rec.ts} — ${rec.tool} ${summarize(rec.args)}`);
         break;
+      case "prov":
+        const provCount = (kind: "resolved" | "authored" | "unresolved", shown: number): string => {
+          const dropped = rec.truncated?.[kind];
+          return dropped ? `${shown} ${kind === "resolved" ? "grounded" : kind} (+${dropped} truncated)` :
+            `${shown} ${kind === "resolved" ? "grounded" : kind}`;
+        };
+        lines.push(
+          `[prov #${rec.i}] ${provCount("resolved", rec.resolved?.length ?? 0)}, ` +
+            `${provCount("authored", rec.authored?.length ?? 0)}, ` +
+            provCount("unresolved", rec.unresolved?.length ?? 0)
+        );
+        break;
       case "result": {
         const tag = rec.denied ? "DENIED" : rec.dryRun ? "DRY-RUN" : rec.ok ? "ok" : "ERROR";
         const rule = rec.denied || rec.dryRun ? ` [policy: ${rec.rule}]` : "";

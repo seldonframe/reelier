@@ -116,18 +116,18 @@ test("proxy E2E: list tools, record a session, and verify exact trace + verbatim
     await proxyServer.close();
     await fakeDownstreamServer.close();
 
-    // Assert the trace file contents exactly: meta, note, call(echo), result(echo),
-    // call(fail_tool), result(fail_tool). Control-tool calls (start/note/stop)
+    // Assert the trace file contents exactly: every dispatched call is followed
+    // by its pre-dispatch provenance measurement, then its result. Control-tool calls (start/note/stop)
     // are never themselves recorded as "call"/"result" entries.
     const records = await readTrace(tracePath);
-    assert.equal(records.length, 6);
+    assert.equal(records.length, 8);
     assert.deepEqual(
       records.map((r) => r.t),
-      ["meta", "note", "call", "result", "call", "result"]
+      ["meta", "note", "call", "prov", "result", "call", "prov", "result"]
     );
     assert.deepEqual(
       records.map((r) => r.seq),
-      [0, 1, 2, 3, 4, 5]
+      [0, 1, 2, 3, 4, 5, 6, 7]
     );
 
     assert.equal(records[0].t, "meta");
@@ -152,27 +152,41 @@ test("proxy E2E: list tools, record a session, and verify exact trace + verbatim
       assert.deepEqual(records[2].args, { text: "«redacted»" });
     }
 
-    assert.equal(records[3].t, "result");
-    if (records[3].t === "result") {
+    assert.equal(records[3].t, "prov");
+    if (records[3].t === "prov") {
       assert.equal(records[3].i, 0);
-      assert.equal(records[3].ok, true);
-      assert.equal(typeof records[3].ms, "number");
-      assert.deepEqual(records[3].body, { content: [{ type: "text", text: "«redacted»" }] });
+      assert.deepEqual(records[3].authored, ["args.text"]);
     }
 
-    assert.equal(records[4].t, "call");
-    if (records[4].t === "call") {
-      assert.equal(records[4].i, 1);
-      assert.equal(records[4].tool, "fail_tool");
-      assert.deepEqual(records[4].args, {});
+    assert.equal(records[4].t, "result");
+    if (records[4].t === "result") {
+      assert.equal(records[4].i, 0);
+      assert.equal(records[4].ok, true);
+      assert.equal(typeof records[4].ms, "number");
+      assert.deepEqual(records[4].body, { content: [{ type: "text", text: "«redacted»" }] });
     }
 
-    assert.equal(records[5].t, "result");
-    if (records[5].t === "result") {
+    assert.equal(records[5].t, "call");
+    if (records[5].t === "call") {
       assert.equal(records[5].i, 1);
-      assert.equal(records[5].ok, false);
-      assert.equal(typeof records[5].ms, "number");
-      assert.deepEqual(records[5].body, { content: [{ type: "text", text: "boom" }], isError: true });
+      assert.equal(records[5].tool, "fail_tool");
+      assert.deepEqual(records[5].args, {});
+    }
+
+    assert.equal(records[6].t, "prov");
+    if (records[6].t === "prov") {
+      assert.equal(records[6].i, 1);
+      assert.equal("resolved" in records[6], false);
+      assert.equal("authored" in records[6], false);
+      assert.equal("unresolved" in records[6], false);
+    }
+
+    assert.equal(records[7].t, "result");
+    if (records[7].t === "result") {
+      assert.equal(records[7].i, 1);
+      assert.equal(records[7].ok, false);
+      assert.equal(typeof records[7].ms, "number");
+      assert.deepEqual(records[7].body, { content: [{ type: "text", text: "boom" }], isError: true });
     }
   } finally {
     await rm(traceDir, { recursive: true, force: true });
