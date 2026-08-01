@@ -43,6 +43,7 @@ import { compile, renderSkillMd, type CompileResult, type FromSkillProvenance } 
 import { buildManifestForSkill, preflightManifest, addProbeToolsToManifest } from "./manifest.js";
 import { serializeSkill, writeFileAtomic, appendChangelogLine } from "./writeback.js";
 import { computeApprovalHash } from "./approval.js";
+import { parseDuration, MAX_APPROVAL_TTL_MS } from "./duration.js";
 import { canonicalJson } from "./canonical-json.js";
 import { parseInstructionSkillFrontmatter } from "./from-skill.js";
 import { createLlmClient, resolveLlmConfig } from "./llm.js";
@@ -167,6 +168,7 @@ function parseArgv(argv: string[]): ParsedArgs {
       arg === "--agent" ||
       arg === "--from-skill" ||
       arg === "--since" ||
+      arg === "--expires" ||
       arg === "--key" ||
       arg === "--path"
     ) {
@@ -1740,7 +1742,12 @@ export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Prom
   const skillPath = args.positional[0];
   if (!skillPath) {
     console.error(
-      'Usage: reelier approve <skill.md> [--all] [--probe] [--rebind] [--var name=value]... [--wrap "<cmd>"]... [--drop-expect] | reelier approve --prune-keys [--all]'
+      'Usage: reelier approve <skill.md> [--all] [--probe] [--expires <30m|24h|7d>] [--rebind] [--var name=value]... [--wrap "<cmd>"]... [--drop-expect] | reelier approve --prune-keys [--all]\n' +
+        "  --expires <duration>  give the state binding a time-to-live: <positive integer><m|h|d>, at most 365d.\n" +
+        "                        Resolved against approve time and stamped as an ABSOLUTE instant, so it cannot\n" +
+        "                        re-arm itself. Past it the step's state check is 'unevaluated (approval-expired)',\n" +
+        "                        which under 'state_gate: refuse' refuses the write before dispatch. Requires\n" +
+        "                        --probe: a TTL lives on the state binding (expect:), which only --probe mints."
     );
     return 1;
   }
@@ -1784,6 +1791,36 @@ export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Prom
       "--drop-expect cannot be combined with --probe: --probe (re)binds state. Drop the binding first with plain 'reelier approve --drop-expect', or re-approve with --probe alone."
     );
     return 1;
+  }
+  // W5-T3: `--expires` is a SIBLING of `--probe`, not a variant of it —
+  // `--probe` makes an approval die when the world moves, `--expires` makes it
+  // die when nobody answers. A step may carry both.
+  //
+  // It is refused without `--probe` rather than silently accepted, because the
+  // TTL lives on `expect:` and only `--probe` mints one. A plain approved
+  // write cannot expire; that is a real scope boundary (SPEC.md §6.1c) and an
+  // operator meets it here, at the moment they ask for the thing, instead of
+  // discovering months later that the TTL they thought they set never fired.
+  const expiresRaw = args.opts.expires;
+  let expiresMs: number | undefined;
+  if (expiresRaw !== undefined) {
+    if (!probe) {
+      console.error(
+        "--expires requires --probe: a TTL lives on the state binding (expect:), and only --probe mints one. " +
+          "A plain approved write with no expect: cannot expire — re-approve with 'reelier approve --probe --expires " +
+          `${expiresRaw}', or drop --expires.`
+      );
+      return 1;
+    }
+    const parsed = parseDuration(expiresRaw);
+    if (parsed === null) {
+      console.error(
+        `Invalid --expires ${JSON.stringify(expiresRaw)} — expected a positive integer followed by m, h, or d ` +
+          `(e.g. 30m, 24h, 7d), at most ${MAX_APPROVAL_TTL_MS / 86_400_000}d. Nothing was approved.`
+      );
+      return 1;
+    }
+    expiresMs = parsed;
   }
   const now = deps.now ?? (() => Date.now());
   const isTTY = deps.isTTY ?? process.stdout.isTTY === true;
@@ -1877,10 +1914,18 @@ export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Prom
     for (const [name, value] of Object.entries(typed)) {
       fieldMacs[name] = expectFieldMac(key, step.attest!.tool, name, value);
     }
+    // W5-T3: an ABSOLUTE instant, resolved once against THIS observation's
+    // timestamp. Stamping the duration itself would re-arm the approval on
+    // every read, which is the opposite of expiring.
+    const expiresAt = expiresMs !== undefined ? new Date(observedAtMs + expiresMs).toISOString() : undefined;
+    if (expiresAt !== undefined) {
+      console.log(`  expires: ${expiresAt} (--expires ${expiresRaw}) — past it this step's state check is 'unevaluated (approval-expired)', never a pass`);
+    }
     step.expect = {
       at,
       keyId,
       pre: mac,
+      ...(expiresAt !== undefined ? { expiresAt } : {}),
       fields: fieldMacs,
       // W3-S4: commit the FILLED probe args only when the template was
       // parameterized. A literal probe needs no commitment — its execute-time

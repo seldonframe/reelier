@@ -48,13 +48,22 @@ async function captureOutput<T>(fn: () => Promise<T>): Promise<{ result: T; out:
   const chunks: string[] = [];
   const origLog = console.log;
   const origErr = console.error;
+  // `approve --probe` writes its progress line with a bare process.stdout.write
+  // (no newline, so the spinner can overwrite it) — capture that too, or the
+  // suite's output stops being pristine.
+  const origWrite = process.stdout.write.bind(process.stdout);
   console.log = (msg: unknown) => chunks.push(`${String(msg)}\n`);
   console.error = (msg: unknown) => chunks.push(`${String(msg)}\n`);
+  (process.stdout as unknown as { write: (c: string) => boolean }).write = (c: string) => {
+    chunks.push(String(c));
+    return true;
+  };
   try {
     return { result: await fn(), out: chunks.join("") };
   } finally {
     console.log = origLog;
     console.error = origErr;
+    (process.stdout as unknown as { write: typeof origWrite }).write = origWrite;
   }
 }
 
