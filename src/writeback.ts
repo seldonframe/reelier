@@ -80,6 +80,9 @@ export function renderStepBlock(step: Step): string[] {
   for (const a of step.asserts) lines.push(`- assert: ${a}`);
   for (const b of step.binds) lines.push(`- bind: ${b}`);
   lines.push(`- effect: ${step.effect}`);
+  // Only when the author stated it: absent means `internal` (SPEC §3.7), and
+  // emitting it would rewrite every existing skill file on the first heal.
+  if (step.exposure !== undefined) lines.push(`- exposure: ${step.exposure}`);
   if (step.attest !== undefined) {
     lines.push(`- attest: ${JSON.stringify({ tool: step.attest.tool, args: step.attest.args, ...(step.attest.projection ? { projection: step.attest.projection } : {}) })}`);
   }

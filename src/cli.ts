@@ -454,7 +454,14 @@ export async function cmdRun(
           rec.outcome === "passed" || rec.outcome === "unchecked" ? "✓" : rec.outcome === "skipped" ? "○" : "✗";
         const tag = rec.outcome === "unchecked" ? " (unchecked: no assertions)" : "";
         const levelTag = rec.level > 0 ? ` [healed L${rec.level}]` : "";
-        console.log(`${icon} Step ${rec.n} — ${rec.title} [${rec.outcome}${tag}]${levelTag} ${fmtDuration(rec.ms)}`);
+        // Shown only for `external-visible` (SPEC §3.7): internal is the
+        // overwhelming majority and the absent case, so tagging it would be
+        // noise. Plain text, no warning glyph and no error colour — it is a
+        // classification the author wrote down, not a finding.
+        const exposureTag = rec.exposure === "external-visible" ? " [external-visible]" : "";
+        console.log(
+          `${icon} Step ${rec.n} — ${rec.title} [${rec.outcome}${tag}]${levelTag}${exposureTag} ${fmtDuration(rec.ms)}`
+        );
         if (rec.mocked) {
           console.log(`    ⚡ INJECTED failure (--fail ${rec.n})`);
         }

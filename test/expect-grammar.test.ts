@@ -293,13 +293,13 @@ test("a step without approve/attest/expect omits those keys entirely — absent,
 });
 
 // ---------------------------------------------------------------------------
-// The closed bullet-key set: 8 keys, expect listed in the rejection message
+// The closed bullet-key set: 9 keys, expect listed in the rejection message
 // ---------------------------------------------------------------------------
 
 test("unrecognized step field message lists expect among the closed key set", () => {
   assert.throws(
     () => parseSkill(SKILL(`- exxpect: {}`)),
-    /Unrecognized step field, expected one of intent\/action\/assert\/bind\/effect\/approve\/attest\/expect/
+    /Unrecognized step field, expected one of intent\/action\/assert\/bind\/effect\/exposure\/approve\/attest\/expect/
   );
 });
 

@@ -4,6 +4,14 @@
 
 export type Effect = "read" | "idempotent-write" | "destructive";
 
+/**
+ * Whether an actor OUTSIDE the system may already have acted on a step's
+ * result. Orthogonal to `Effect`, which is mechanical (can this be repeated
+ * safely) — a `destructive` delete and a `destructive` send are the same
+ * `effect` and profoundly different in consequence. See SPEC §3.7.
+ */
+export type Exposure = "internal" | "external-visible";
+
 export interface Step {
   n: number;
   title: string;
@@ -13,6 +21,15 @@ export interface Step {
   asserts: string[];
   binds: string[];
   effect: Effect;
+  /**
+   * Whether an actor outside the system may already have acted on this
+   * step's result (SPEC §3.7). Independent of `effect`. Absent means
+   * `internal` — and stays ABSENT on the parsed step rather than being
+   * defaulted here, so a consumer can still tell "the author said internal"
+   * from "the author said nothing". Changes no gating behaviour in this
+   * version: no exit code, refusal, or check predicate reads it.
+   */
+  exposure?: Exposure;
   /**
    * Hash-bound write approval (docs/specs/flight-recorder-v2.md §2), stamped
    * by `reelier approve` (src/cli.ts). Absent = legacy/unapproved step — the
@@ -149,6 +166,12 @@ const EFFECTS: readonly Effect[] = ["read", "idempotent-write", "destructive"];
 
 function isEffect(value: string): value is Effect {
   return (EFFECTS as readonly string[]).includes(value);
+}
+
+export const EXPOSURES: readonly Exposure[] = ["internal", "external-visible"];
+
+function isExposure(value: string): value is Exposure {
+  return (EXPOSURES as readonly string[]).includes(value);
 }
 
 /**
@@ -500,6 +523,7 @@ export function parseSkill(source: string): Skill {
     const asserts: string[] = [];
     const binds: string[] = [];
     let effect: Effect | undefined;
+    let exposure: Exposure | undefined;
     let approve: string | undefined;
     let attest: StepAttestDecl | undefined;
     let expect: StepExpect | undefined;
@@ -511,13 +535,13 @@ export function parseSkill(source: string): Skill {
       if (line === "") continue;
       const curLine = bodyStartLine + i;
 
-      const bulletMatch = line.match(/^-\s*(intent|action|assert|bind|effect|approve|attest|expect)\s*:\s*(.*)$/);
+      const bulletMatch = line.match(/^-\s*(intent|action|assert|bind|effect|exposure|approve|attest|expect)\s*:\s*(.*)$/);
       if (!bulletMatch) {
         // Ignore non-bullet prose lines within a step block (e.g. blank/comment text),
         // but reject anything that looks like an attempted bullet with a typo'd key.
         if (line.startsWith("-")) {
           throw new SkillParseError(
-            `Unrecognized step field, expected one of intent/action/assert/bind/effect/approve/attest/expect: ${JSON.stringify(line)}`,
+            `Unrecognized step field, expected one of intent/action/assert/bind/effect/exposure/approve/attest/expect: ${JSON.stringify(line)}`,
             { step: n, line: curLine }
           );
         }
@@ -566,6 +590,18 @@ export function parseSkill(source: string): Skill {
             );
           }
           effect = rest.trim() as Effect;
+          break;
+        case "exposure":
+          if (exposure !== undefined) {
+            throw new SkillParseError("Duplicate 'exposure' field in step", { step: n, line: curLine });
+          }
+          if (!isExposure(rest.trim())) {
+            throw new SkillParseError(
+              `Invalid exposure ${JSON.stringify(rest.trim())} — must be one of ${EXPOSURES.join(", ")}`,
+              { step: n, line: curLine }
+            );
+          }
+          exposure = rest.trim() as Exposure;
           break;
         case "approve":
           if (approve !== undefined) {
@@ -654,6 +690,8 @@ export function parseSkill(source: string): Skill {
       asserts,
       binds,
       effect,
+      // Absent stays absent (never defaulted to "internal") — see Step.exposure.
+      ...(exposure !== undefined ? { exposure } : {}),
       ...(approve !== undefined ? { approve } : {}),
       ...(attest !== undefined ? { attest } : {}),
       ...(expect !== undefined ? { expect } : {}),

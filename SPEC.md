@@ -49,10 +49,10 @@ RFC 2119.
     parser SHOULD tolerate additional, unrecognized fields (forward
     compatibility for additive record fields in a future minor) but MUST
     treat every field documented in §2 as required and typed as specified.
-  - **SKILL.md step fields** are a **closed** set of eight bullet keys
-    (`intent`/`action`/`assert`/`bind`/`effect`/`approve`/`attest`/`expect`,
-    §3.2). `parseSkill` rejects any other `- <key>: ...` bullet inside a
-    step block outright (an "Unrecognized step field" `SkillParseError`);
+  - **SKILL.md step fields** are a **closed** set of nine bullet keys
+    (`intent`/`action`/`assert`/`bind`/`effect`/`exposure`/`approve`/`attest`/
+    `expect`, §3.2). `parseSkill` rejects any other `- <key>: ...` bullet
+    inside a step block outright (an "Unrecognized step field" `SkillParseError`);
     this is intentionally closed, not open-for-extension, because the field
     set is small enough that a typo should be caught, not silently ignored.
   - **Non-step sections** of a SKILL.md file (preamble, `## Open
@@ -383,13 +383,13 @@ trailing sections are never swallowed into the last step.
 
 Within a step's block, every non-blank line is either:
 
-- a **bullet** matching `/^-\s*(intent|action|assert|bind|effect|approve|attest|expect)\s*:\s*(.*)$/`, or
+- a **bullet** matching `/^-\s*(intent|action|assert|bind|effect|exposure|approve|attest|expect)\s*:\s*(.*)$/`, or
 - an **ignored prose line** (any non-blank line not starting with `-`), or
-- **rejected** if it starts with `-` but the key isn't one of the eight
+- **rejected** if it starts with `-` but the key isn't one of the nine
   above: `"Unrecognized step field, expected one of
-  intent/action/assert/bind/effect/approve/attest/expect: ..."`.
+  intent/action/assert/bind/effect/exposure/approve/attest/expect: ..."`.
 
-This makes the **eight bullet keys a closed set** (§0) but tolerates
+This makes the **nine bullet keys a closed set** (§0) but tolerates
 free-form prose commentary inside a step block, as long as it doesn't
 start with a hyphen.
 
@@ -403,12 +403,22 @@ start with a hyphen.
 | `assert` | No | 0 or more | (repeatable — each bullet appends) |
 | `bind` | No | 0 or more | (repeatable — each bullet appends) |
 | `effect` | **Yes** — `"Step is missing required 'effect' field"` | exactly 1 | `"Duplicate 'effect' field in step"` |
+| `exposure` | No (the exposure axis, 0.28.0+; §3.7) | 0 or 1 | `"Duplicate 'exposure' field in step"` |
 | `approve` | No (flight-recorder-v2, 0.19.0+) | 0 or 1 | `"Duplicate 'approve' field in step"` |
 | `attest` | No (state attestation, 0.22.0+) | 0 or 1 | `"Duplicate 'attest' field in step"` |
 | `expect` | No (state-conditioned approval; requires `attest` + `approve` on the step) | 0 or 1 | `"Duplicate 'expect' field in step"` |
 
 `assert` and `bind` are the only repeatable fields; every `- assert: ...`
 or `- bind: ...` bullet in the block is collected in file order.
+
+`exposure: internal | external-visible` (the exposure axis, 0.28.0+; §3.7)
+declares whether an actor outside the system may already have acted on the
+step's result. Optional and orthogonal to `effect`; an unrecognized value is
+rejected at parse time (`"Invalid exposure <value> — must be one of internal,
+external-visible"`). Absent means `internal`, and a step that omits it is
+serialized without the bullet — a skill predating the key serializes exactly
+as it did before the key existed. (That is not a claim of byte-identity with
+hand-formatted source; §3.8's canonicalization caveat is unchanged.)
 
 `approve: sha256:<64 hex>` (§6.1a) hash-binds a write/destructive step's
 tool + argument template — a value not matching `sha256:[0-9a-f]{64}`
@@ -663,13 +673,60 @@ effect <value> — must be one of read, idempotent-write, destructive"`.
 | `idempotent-write` | A write safe to repeat (create-if-absent, upsert, etc.). | **Read-only by default (0.10.0+):** refused unless the run was invoked with `--allow-writes` (or `--yes`, which implies it) — so replaying a skill never silently re-fires its writes. The runner records an honest failed step (`"Refusing to execute a write step … replay is read-only by default"`) instead of calling the tool. Gated on the **effective** effect (`step.effect ?? tool.effect`), so a POST-that-reads marked `effect: read` is never held back. |
 | `destructive` | Non-idempotent or irreversible (delete, charge, send, etc.). | Refused unless the run was invoked with `--yes`/`allowDestructive: true` — the runner prints the filled action instead of calling the tool (`executeStep`, `src/runner.ts:166-179`). **Never** re-executed by the escalation ladder's Level 2 (§7.3) regardless of `--yes` — that check is independent of `allowDestructive` and happens before L2 is even invoked (`level3Message`, `src/runner.ts:267-273`; `attemptEscalation`, `src/runner.ts:348-351`). |
 
+`effect` is the **mechanical** axis and the only one that gates: it answers
+"can this operation be repeated safely". Whether someone OUTSIDE the system
+may already have acted on the result is a separate, orthogonal question, and
+it has its own field — see §3.7's `exposure` axis. Neither axis constrains the
+other, and no fourth `effect` value is introduced to express exposure.
+
 The gating contract above is the **legacy** path — still exactly what
 happens for any write/destructive step with no `approve:` field. A step
 that carries `approve:` is gated differently (§6.1b, flight-recorder-v2,
 0.19.0+): the hash-bound approval is the FINAL word, and no flag
 (`--allow-writes`, `--yes`) overrides a mismatch.
 
-### 3.7 Non-Steps sections and the Changelog write-back convention
+### 3.7 The `exposure` axis (orthogonal to `effect`)
+
+`exposure` MUST be exactly one of the two literals below (`EXPOSURES`,
+`src/skill.ts`); anything else is rejected at parse time: `"Invalid exposure
+<value> — must be one of internal, external-visible"`. The field is
+**optional**, and **absent means `internal`** — but the absence is preserved,
+never rewritten to the string: a parsed `Step` and a `StepRecord` both leave
+`exposure` off entirely when the author said nothing, so a consumer can tell
+"the author declared internal" from "the author declared nothing".
+
+| Value | Meaning |
+| --- | --- |
+| `internal` | The step's effect stays inside the system under replay. Nobody outside it can have seen or acted on the result. |
+| `external-visible` | The step's effect is observable to an actor OUTSIDE the system — a message delivered, a webhook fired, a public record changed — so someone may already have acted on it. It says **may**, never **did**: no evidence that anyone in fact read or acted on anything is claimed, held, or implied. |
+
+**Why this is not another `effect` value.** `effect` (§3.6) is *mechanical*:
+can this operation be repeated safely. `exposure` is *consequential*: can it
+be taken back at all, given a human downstream may already have moved. The two
+are independent, and neither is derivable from the other. A `destructive`
+delete and a `destructive` send are the **same `effect`** and profoundly
+different in consequence — the deleted file reverts from backup, while the
+message that got read has already changed what the other person is doing. A
+`read` step can be `external-visible` too (a read that publishes an audit
+entry someone monitors). So `exposure` is a separate closed enum; `effect`'s
+three values are untouched.
+
+**In this version it changes no gating behaviour.** No exit code, refusal,
+write gate, escalation decision, or check predicate reads `exposure`. Two
+otherwise-identical runs — one with every step `external-visible`, one with
+none — produce the same exit code, the same per-step `outcome`, and the same
+`passed`. A consumer therefore MUST NOT infer from `exposure: external-visible`
+that the step was blocked, held, reviewed, or approved any differently than an
+`internal` one; it is a classification the skill's author wrote down, carried
+onto the record and displayed. Wiring it to a gate would be a behaviour change
+with its own evidence bar, and is not what this field does today.
+
+Renderers SHOULD surface `external-visible` and SHOULD stay silent on the
+internal/absent case, which is the overwhelming majority — `reelier run`
+appends a plain ` [external-visible]` to the step line, with no warning glyph
+and no error styling, because it is a classification and not a finding.
+
+### 3.8 Non-Steps sections and the Changelog write-back convention
 
 - **Preamble and trailing content are preserved verbatim** (§3.2) —
   `serializeSkill` is the faithful inverse of `parseSkill`: it re-emits the
@@ -695,7 +752,7 @@ that carries `approve:` is gated differently (§6.1b, flight-recorder-v2,
   a `## Changelog` section with non-heal-shaped bullets is legal and
   untouched.
 
-### 3.8 Example
+### 3.9 Example
 
 ```markdown
 ---
@@ -745,6 +802,7 @@ interface StepRecord {
   outcome: "passed" | "failed" | "unchecked" | "skipped";
   ms: number;
   failures: string[];
+  exposure?: "internal" | "external-visible";
   llm?: { inputTokens: number; outputTokens: number; model?: string };
   escalationAttempted?: 0 | 1 | 2;
   why?: { trigger?: string; change?: string };
@@ -786,6 +844,7 @@ interface StepRecord {
 | `level` | `0` = ran deterministically **or** never healed (including "escalation was attempted but didn't hold" — see the distinction below). `1`/`2` = **healed** at that escalation level. |
 | `failures` | Human-readable failure messages accumulated for this step; empty iff `outcome` is `"passed"`/`"unchecked"`. On a healed step, `failures` is reset to `[]`. |
 | `ms` | Wall-clock duration of this step, in whole milliseconds, measured by the runner around the step's own execution (escalation attempts included, since they happen inside the step). Present on **every** step, never absent. `0` on a `"skipped"` step — the step was never attempted, so there was nothing to time; `0` is therefore not a claim that anything ran fast. Duration is a measurement, never a verdict: a consumer MUST NOT read `ms` as evidence about whether this step's assertions held, and MUST NOT treat it as a reproducible quantity — it is machine- and network-dependent and will differ across replays of an identical skill. |
+| `exposure` (0.28.0+, §3.7) | The step's declared `exposure`, copied verbatim from the skill: whether an actor OUTSIDE the system may already have acted on this step's result. Present **iff** the step declared it; **absent** — never `"internal"` — when the author declared nothing, so a skill that does not use the key produces a byte-identical record and a consumer can distinguish "declared internal" from "declared nothing". Carried on every step the runner records, including a `"skipped"` one (nothing dispatched, but what the author declared is still what the author declared). Orthogonal to the step's `effect` and **gating-inert in this version**: no exit code, refusal, or write gate reads it, so a consumer MUST NOT infer that an `external-visible` step was blocked, held, reviewed, or approved differently from an `internal` one, and MUST NOT read `external-visible` as evidence that anyone outside the system in fact saw or acted on the result — it states only that they may have. |
 | `llm` | Present **iff** escalation ran for this step at all (any level, success or failure) — `inputTokens` and `outputTokens` are the summed input/output token counts across every attempt on this step. Absent, not `{inputTokens:0,...}`, when escalation never ran. `llm.model` (0.17.0+, the $ meter — flight-recorder-v1 §2) is the model of the **highest escalation level actually invoked** on this step (L2's model if L2 ran, else L1's) — a step that tried L1 then L2 with two different models has its summed tokens priced entirely at the L2 rate by `reelier cost`. Absent when the caller never passed `--llm-model`/`--llm-l2-model` and the runner's own default also went unresolved (never happens in practice — the runner always has a default), or on any pre-0.17.0 record. |
 | `escalationAttempted` | The **highest level TRIED**, present iff L1 was invoked at all. **Distinct from `level`**: a step can have `escalationAttempted: 2` and `level: 0` simultaneously — it burned L1 and L2 tokens and still never healed. `level` only ever reflects the level that *healed* it. |
 | `why` (0.8.0+) | Present **only** when this step's behavior changed: `trigger` = the load-bearing divergence (the first failure, verbatim from the real assertion/tool result) on a `"failed"` step; `change` = what the successful L1/L2 patch changed (`"L1: <reason>"` / `"L2: <reason>"`, the escalation's own reason) on a healed step. Absent on an unchanged step. **Never fabricated** — a producer MUST populate it only from observed engine data, never from generated narrative. |
@@ -1172,7 +1231,7 @@ effect (`step.effect ?? tool.effect`):
   shows its current state (`unapproved` / `approved (current)` / `approved
   (STALE — tool/args/attest changed)`), and on confirmation (or unconditionally under
   `--all`) stamps `step.approve = computeApprovalHash(step)`, serializes,
-  and appends one `## Changelog` line (§3.7).
+  and appends one `## Changelog` line (§3.8).
 - `reelier approve <skill.md> --probe [--rebind] [--wrap "<cmd>"]...`
   (state-conditioned approval) additionally binds each approval to the
   world it was granted against: the step's declared `attest:` probe is run
@@ -1513,7 +1572,7 @@ excluded from L2 regardless of `--yes`.
 A successful heal at L1 or L2 is applied to the **in-memory** `Skill`
 object (`step.asserts`, `step.binds`, and — L2 only, when `args` was
 proposed — `step.actionArgs`), a changelog line is appended to `trailing`
-(§3.7), the whole skill is re-serialized via `serializeSkill`, and written
+(§3.8), the whole skill is re-serialized via `serializeSkill`, and written
 to `skillPath` — **synchronously, before the run record is written**
 (`applyWritebackSafely`, `src/writeback.ts:158-168`, called from
 `attemptEscalation`, `src/runner.ts:322-330, 393-401`). This is mandatory,
