@@ -11,7 +11,7 @@
 import { execSync } from 'node:child_process';
 import { readFileSync, rmSync } from 'node:fs';
 import process from 'node:process';
-import { checkBadge } from './badge-check.mjs';
+import { checkBadge, describeCheckOutcome, parseSkippedCount } from './badge-check.mjs';
 
 const results = [];
 
@@ -163,10 +163,22 @@ console.log('reelier release preflight\n');
 
   if (readme !== null) {
     const result = checkBadge({ testOutput, readme });
-    if (result.ok) {
-      ok('badge matches actual pass count', result.message);
+    // The badge means one specific number: the pass count on the canonical
+    // CI platform (linux/ubuntu-latest — see badge-check.mjs). On that
+    // platform a mismatch is real drift and hard-fails. On any other
+    // platform (this machine included, most days) a raw mismatch isn't
+    // evidence of anything by itself — this platform's own runner may have
+    // skipped tests the canonical platform runs — so it's downgraded to a
+    // report instead of a fail or a pass; CI's ubuntu-latest run remains
+    // the authority. The rule (checkBadge) itself does not change; only
+    // this disposition does.
+    const outcome = describeCheckOutcome(result, { skippedCount: parseSkippedCount(testOutput) });
+    if (outcome.level === 'ok') {
+      ok('badge matches actual pass count', outcome.message);
+    } else if (outcome.level === 'fail') {
+      fail('badge matches actual pass count', outcome.message);
     } else {
-      fail('badge matches actual pass count', result.message);
+      warn('badge matches actual pass count', outcome.message);
     }
   }
 }

@@ -26,7 +26,12 @@ this file only covers cutting and shipping a release.
    - working tree not clean
    - the (just-bumped) `package.json` version is already published on npm
    - `npm run build` fails
-   - `npm test` fails, or the README tests badge ≠ the actual pass count
+   - `npm test` fails
+   - the README tests badge ≠ the actual pass count, **but only when cutting
+     from Linux** — the badge means "tests passing on ubuntu-latest" (the CI
+     leg that enforces it on every PR), so on any other OS this check can
+     only report the two numbers, not fail on them; see the comment at the
+     top of `scripts/badge-check.mjs`.
    It also prints **advisory warnings** (these do NOT block) if you're not on
    `main` or not yet synced with `origin/main` — both are expected right after a
    local `npm version` bump, before you push.

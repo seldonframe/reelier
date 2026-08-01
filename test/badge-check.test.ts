@@ -10,7 +10,8 @@ import { pathToFileURL } from "node:url";
 // rather than a relative specifier, so the import keeps working no matter
 // where tsc places the compiled test.
 const badgeCheckUrl = pathToFileURL(path.resolve(process.cwd(), "scripts/badge-check.mjs")).href;
-const { parsePassCount, parseBadgeCount, checkBadge } = await import(badgeCheckUrl);
+const { parsePassCount, parseSkippedCount, parseBadgeCount, checkBadge, describeCheckOutcome, CANONICAL_PLATFORM } =
+  await import(badgeCheckUrl);
 
 test("parsePassCount reads Node's '# pass N' summary line", () => {
   const output = "# tests 10\n# pass 10\n# fail 0\n";
@@ -24,6 +25,15 @@ test("parsePassCount reads the 'ℹ pass N' form", () => {
 
 test("parsePassCount returns null when no pass line is present", () => {
   assert.equal(parsePassCount("no test runner output here"), null);
+});
+
+test("parseSkippedCount reads Node's '# skipped N' summary line", () => {
+  const output = "# tests 10\n# pass 9\n# fail 0\n# skipped 1\n";
+  assert.equal(parseSkippedCount(output), 1);
+});
+
+test("parseSkippedCount returns null when no skipped line is present", () => {
+  assert.equal(parseSkippedCount("no test runner output here"), null);
 });
 
 test("parseBadgeCount reads the shields.io URL-encoded form", () => {
@@ -80,4 +90,59 @@ test("checkBadge fails when README has no badge at all", () => {
   assert.equal(result.ok, false);
   assert.equal(result.badgeCount, null);
   assert.match(result.message, /no tests badge found/);
+});
+
+// --- describeCheckOutcome: disposition (fail/report) varies by platform, ---
+// --- the underlying rule (checkBadge above) never does. ---------------------
+
+test("describeCheckOutcome passes through an ok result unchanged, regardless of platform", () => {
+  const result = { ok: true, actualPass: 960, badgeCount: 960, message: "README says 960, suite has 960" };
+  assert.deepEqual(describeCheckOutcome(result, { platform: "win32" }), { level: "ok", message: result.message });
+  assert.deepEqual(describeCheckOutcome(result, { platform: CANONICAL_PLATFORM }), {
+    level: "ok",
+    message: result.message,
+  });
+});
+
+test("describeCheckOutcome hard-fails a mismatch on the canonical platform (linux)", () => {
+  const result = checkBadge({ testOutput: "# pass 960\n# skipped 0\n", readme: "tests-803 passing" });
+  const outcome = describeCheckOutcome(result, { platform: CANONICAL_PLATFORM, skippedCount: 0 });
+  assert.equal(outcome.level, "fail");
+  assert.equal(outcome.message, result.message);
+});
+
+test("describeCheckOutcome never fails on a non-canonical platform, even for a large, unexplained mismatch", () => {
+  const result = checkBadge({ testOutput: "# pass 500\n# skipped 0\n", readme: "tests-960 passing" });
+  const outcome = describeCheckOutcome(result, { platform: "win32", skippedCount: 0 });
+  assert.equal(outcome.level, "report");
+  assert.notEqual(outcome.level, "fail");
+});
+
+// This is the exact shape of the real bug: one test skipped on win32
+// (test/expect-mac.test.ts) that runs and passes on linux. actualPass +
+// skippedCount reconciles with the badge, so the platform's own skip count
+// accounts for the whole gap -- report, not fail.
+test("describeCheckOutcome reports (not fails) a non-canonical mismatch fully explained by this run's own skipped count", () => {
+  const result = checkBadge({ testOutput: "# pass 1236\n# skipped 1\n", readme: "tests-1237 passing" });
+  const outcome = describeCheckOutcome(result, { platform: "win32", skippedCount: 1 });
+  assert.equal(outcome.level, "report");
+  assert.match(outcome.message, /1236 \+ 1 = 1237 matches the badge/);
+  assert.match(outcome.message, new RegExp(`means the count on '${CANONICAL_PLATFORM}'`));
+});
+
+test("describeCheckOutcome still only reports (never fails) when skips do NOT fully explain a non-canonical mismatch", () => {
+  const result = checkBadge({ testOutput: "# pass 1200\n# skipped 1\n", readme: "tests-1237 passing" });
+  const outcome = describeCheckOutcome(result, { platform: "win32", skippedCount: 1 });
+  assert.equal(outcome.level, "report");
+  assert.match(outcome.message, /still does not match the badge/);
+});
+
+test("describeCheckOutcome defaults to the running process's own platform when none is given", () => {
+  const result = { ok: false, actualPass: 1, badgeCount: 2, message: "mismatch" };
+  const outcome = describeCheckOutcome(result, { skippedCount: 0 });
+  // Whatever this machine is, the level must be one of the three the
+  // function ever returns -- and must be 'fail' only if this happens to be
+  // running on the canonical platform itself.
+  assert.ok(["fail", "report"].includes(outcome.level));
+  assert.equal(outcome.level, process.platform === CANONICAL_PLATFORM ? "fail" : "report");
 });
