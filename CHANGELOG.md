@@ -2,6 +2,313 @@
 
 All notable changes to `reelier`. Dates are release dates.
 
+## 0.30.0 — The seatbelt in the record
+
+Breaking behavior: **none — additive.** No API was removed, no existing record
+field changed meaning, and **no enforcement behavior changed at all**. What a
+`policy.yml` denies, intercepts or allows in 0.30.0 is exactly what it did in
+0.29.0. This release changes only what the record *says* about the policy, and
+every new field is optional — a trace or run record written before it existed
+stays byte-identical and still verifies.
+
+One thing to know before you upgrade, and it is a **reader** obligation rather
+than a behavior change: `meta.policyGap` is superseded by `meta.policy` and no
+writer emits it as of 0.30.0. Readers must keep parsing it. A record carrying
+`policyGap` and no `policy` normalizes to `policy: { status: "failed" }` with
+no `digest` — nothing hashed the file at record time and re-deriving one is
+impossible. A record carrying both must prefer `policy`.
+
+### Added
+
+- **A four-state `policy` claim, on both execution paths.** The wrap path
+  carries it on `TraceRecord.meta`, the replay path on the `RunRecord`.
+  `status` is `verified` (found, parsed clean, in force) / `failed` (found and
+  malformed, so enforcement degraded to deny-nothing for the session) /
+  `unchecked` (a file EXISTS and could not be read — EACCES, EISDIR, a lock —
+  so what it declared is unknown) / `absent` (no file at either the project or
+  the global candidate). The distinction that motivated the whole release:
+  before this, a run under a live enforcing policy and a run with no policy
+  file at all produced **identical evidence**. A consumer MUST NOT render
+  `unchecked` or `absent` as a pass, and MUST NOT render `unchecked` as
+  `failed` — the latter names a known-dead seatbelt, the former an unknown one.
+- **`digest` is `sha256:` over the raw file bytes**, never a canonical form. It
+  has to work in `failed`, where nothing parsed, and it has to be able to see
+  byte-level defects such as a leading UTF-8 BOM. It is computed in the same
+  read that produced the parsed policy, so it names the bytes actually in force
+  and never the bytes at that path now. A changed digest is **not** evidence of
+  a changed policy — a pure reformat changes it.
+- **`rules` and `unmatchedRules` — counts only, wrap path only.** A rule naming
+  a tool no wrapped server exposes can never fire, which is the difference
+  between a seatbelt being present and being able to fire. `rules.toolScoped`
+  is the honest denominator: an `endpoint` rule carries no tool glob and can
+  never be reported unmatched. These appear on the trace side alone — replay
+  has no live tool inventory to match against, and their absence on a
+  `RunRecord` is that statement.
+
+### Fixed
+
+- **An unreadable `policy.yml` is reported, never silently skipped.**
+  `loadPolicyForWrap`'s bare `catch { continue; }` could not tell ENOENT from
+  EACCES/EISDIR/a Windows lock, so a policy file that EXISTS but cannot be read
+  was skipped in silence — and the traversal fell through to the global file,
+  or to "no policy at all", which the wrap then reported to the operator as
+  "none configured … all calls pass through". A repo *with* a seatbelt was
+  indistinguishable from a repo without one, and the fall-through additionally
+  broke the documented first-existing-file rule. This mirrors the fix
+  `resolveStateGateForRun` has carried since the S8 review. It still fails
+  **safe, never closed** — the wrap starts with a deny-nothing policy, so an
+  unreadable file can never brick the agent.
+- **The wrap-start banner no longer conflates malformed with unreadable.** A
+  malformed file's rules are known and rejected; an unreadable file's rules are
+  unknown. Sending an operator to `reelier policy check` on a file nothing can
+  read points them at the wrong defect.
+- **`approve --probe --expires` prints the TTL instant before the consent
+  prompt**, not after. On the fresh-bind and re-bind paths the expiry line
+  previously landed after the y/N, so the operator agreed to arithmetic and was
+  shown the date once it was no longer declinable.
+
+### Notes
+
+- **A `RunRecord` reports the RUN-TIME policy, always.** A skill carries no
+  policy field in any version, so a skill recorded under one policy and
+  replayed under another inherits nothing. `meta.policy` describes the
+  recording, `RunRecord.policy` describes the run, and neither is derived from
+  the other — inheriting the recording-time policy would fabricate a claim
+  about the present out of the past.
+- **What this proves, and what it does not.** It proves the file loaded and, on
+  the wrap path, that its rules name real tools. It never proves a rule
+  *fired*, and it never proves every write went through the wrap. A consumer
+  MUST NOT read `status: "verified"` on a run record as evidence that any
+  `deny` or `dry_run` rule blocked or evaluated anything during replay — on
+  that path the file governs the state gate alone.
+- **Nothing in a record names a rule.** `rules`/`unmatchedRules` are integers
+  and `sourcePath` is `"project"` or `"global"`, never an absolute path — a
+  policy names internal tool names and destination hosts, and the global
+  candidate lives under the operator's home directory.
+- Absence of the whole object means "written before this field existed", never
+  `absent`. Verification never requires it, and its absence is not evidence
+  that no policy was in force.
+
+Design: `docs/specs/policy-attestation-v1.md`.
+
+## 0.29.0 — An approval that expires as a no, and a second axis for who outside may already have acted
+
+Breaking behavior: **none — additive.** No API was removed and no existing
+record field changed meaning. Every new field is optional and enters its hash
+only when present, so a binding with no TTL and a step with no `exposure`
+produce byte-identical approval hashes and byte-identical records — both
+pinned against literal captured values. Nothing in this release changes what a
+skill written for 0.28.0 does when you replay it.
+
+One thing to know before you upgrade, and it is a **documentation** correction
+rather than a behavior change: the normative `stateCheck.reason` registry in
+SPEC §4.1 grows from six values to eight. See **Fixed** — one of the two is a
+value 0.28.0's runner could already emit while 0.28.0's normative list omitted
+it, so a consumer that validated strictly against that list is already at risk
+of rejecting a record 0.28.0 itself was capable of producing.
+
+### Added
+- **`reelier approve --probe --expires <duration>` — an approval that expires
+  as a no.** A state binding may now carry a time-to-live. The duration
+  (`<positive integer>` + one of `m`/`h`/`d`, at most `365d` — no
+  combinations, no fractions, no seconds) is resolved against the approve-time
+  observation and stamped into `expect.expiresAt` as an **absolute ISO
+  instant**. The file never stores the duration: a stored duration would
+  re-resolve, and so silently re-arm, every time the file is read, which is
+  the opposite of expiring. Boundary is `>=` — at the named instant the
+  approval has already expired. The resolved instant is printed with the
+  binding, so the operator sees a date rather than doing arithmetic — though
+  note **where**: on a fresh bind, and on a re-bind after drift, the date is
+  printed as the binding is written, which is *after* the y/N prompt. Only the
+  re-stamp path (`--expires` on an already-bound step whose state re-verifies
+  clean) prints the resolved instant *before* asking. *(Superseded by issue #77:
+  as of the next release the instant prints before the prompt on **every**
+  path. This sentence describes 0.29.0 as shipped and stands as history, not
+  as current behavior.)* A grammar violation
+  is a clean usage error and **nothing is approved**; the parser returns a
+  value rather than throwing, so a typo in a duration is never a stack trace
+  out of the approval command.
+  `expiresAt` is **inside the approval hash** when present. That is the point:
+  the one control whose job is to expire would otherwise be the one anybody
+  could silently renew with an editor. Hand-extending a TTL is an approval
+  mismatch, which no flag overrides.
+- **The limitation, stated rather than left to be discovered: `--expires`
+  requires `--probe`.** The TTL lives on `expect:`, and only `--probe` mints
+  an `expect:`. A **plain approved write cannot expire.** Passing `--expires`
+  without `--probe` is refused by name, with that reason in the message. This
+  is a scope boundary of the release, not an oversight, and SPEC §3.2 records
+  it as one.
+- **At run time an expired binding is `unevaluated`, never `mismatch`.** The
+  check runs after the approval hash has matched — so the TTL read is provably
+  the approved one — and **before** the pre-probe dispatches. `unevaluated`
+  with reason `approval-expired: …` is the honest state: no probe ran, so a
+  `mismatch` would be exactly as unearned as a `match`. An expired approval
+  proves the TTL elapsed and nothing whatsoever about whether the write would
+  have been wrong. In gate mode (`state_gate: refuse`) the existing branch
+  already refuses every non-`match` outcome before dispatch — no second gate
+  path was added, and no flag is consulted. In recorder mode the write still
+  dispatches and the finding is stamped.
+  This reaches an existing surface: the run summary's `· N finding(s)` counter
+  now counts an `approval-expired` unevaluated. Every other `unevaluated`
+  reason (probe timeout, deleted key, …) still does not count — those are gaps
+  in evidence; this one is a fact about the approval, established with
+  certainty from the binding's own committed TTL.
+  **No skill written before this release can have an expired binding**, because
+  no released version could write `expiresAt`. Upgrading alone changes no run.
+- **An expired approval in recorder mode probes asymmetrically, deliberately —
+  and this is a change worth reading if you consume receipts.** The pre-probe
+  is withheld; the **post-probe now runs**. Before dispatch the verdict is
+  already settled by the TTL, and a probe that ran and then failed would
+  report `probe-failed` — a claim about the probe, not about the approval.
+  After dispatch the write has already gone out and the probe args were
+  hash-verified, so no exfiltration boundary is at stake. **When the
+  post-probe resolves a declared projection field**, the attest is
+  `confidence: "partial"` with a real `post` observation and
+  `reason: "pre: approval-expired: …"` — so the expired-approval receipt now
+  carries real post-state evidence, in exactly the case where an operator most
+  needs to know what the write actually did.
+  Stated precisely, because it is the kind of absolute a consumer encodes:
+  this is an opportunity, not a guarantee. If the post-probe fails, its tool
+  is unknown, or it resolves none of the declared fields — an ordinary outcome
+  for a `destructive` delete whose resource now 404s — the attest still
+  degrades to `confidence: "absent"`, with both reasons joined
+  (`"pre: approval-expired: …; post: …"`). What holds unconditionally is the
+  negative: the `pre` side is synthesized as a probe *failure*, never as an
+  observation, so no `pre` is ever fabricated. Gate mode is unaffected: the
+  write never dispatches, so there is nothing to observe afterward.
+- **`exposure: internal | external-visible` — a ninth step key, and a second
+  axis.** `effect` is *mechanical*: can this operation be repeated safely.
+  `exposure` is *consequential*: may an actor OUTSIDE the system already have
+  acted on the result. A `destructive` delete and a `destructive` send are the
+  same `effect` and nothing alike in consequence — the file reverts from
+  backup; the message that got read has already changed what someone else is
+  doing. So this is a separate closed enum and not a fourth `effect` value;
+  `effect`'s three values are untouched. A `read` step can be
+  `external-visible` too.
+  Optional. **Absent means `internal`, but the absence is preserved** — a
+  parsed `Step` and a `StepRecord` both leave `exposure` off entirely when the
+  author said nothing, so a consumer can tell "declared internal" from
+  "declared nothing", and a skill that does not use the key serializes and
+  records exactly as it did in 0.28.0. `external-visible` says **may**, never
+  **did**: no evidence that anyone in fact read or acted on anything is
+  claimed, held, or implied.
+  **In this release it changes no gating behaviour.** No exit code, refusal,
+  write gate, escalation decision, or check predicate reads it. Two otherwise
+  identical runs — one with every step `external-visible`, one with none —
+  produce the same exit code, the same per-step `outcome`, and the same
+  `passed`, under both gate settings; that is the load-bearing test of the
+  slice. A consumer MUST NOT infer that an `external-visible` step was
+  blocked, held, reviewed, or approved any differently. `reelier run` appends
+  a plain ` [external-visible]` to the step line and stays silent on the
+  internal/absent case — no glyph, no colour, because it is a classification
+  the author wrote down, not a finding.
+  Wiring it to a gate would be a behaviour change with its own evidence bar,
+  and is not what this field does today.
+- **The `./priors` export subpath.** The run-shape statistic behind `reelier
+  baseline` was written in 0.28.0 and left unreachable — `./priors` was not in
+  the `exports` map and deep imports are blocked. Now exported, with the seven
+  **runtime** names `priors.ts` already exports deliberately (its accompanying
+  types come along too): `deviatesFromBaseline`,
+  `computeRunShape`, `median`, `medianAbsoluteDeviation`, `MIN_PRIOR_RUNS`,
+  `MAX_BASELINE_RUNS`, `DEVIATION_MADS`. No new code and no behaviour change —
+  the alternative was a second implementation of the same arithmetic in a
+  downstream service, and two derivations of a run's shape can disagree about
+  the same run. One statistic, one implementation.
+  The `exports` map itself is now pinned by test. A subpath aimed at a module
+  that does not exist is invisible until a consumer hits
+  `ERR_MODULE_NOT_FOUND` after publish, in someone else's project.
+- **SPEC §0.3: the relationship to RFC 8785 (JCS), including the one place it
+  diverges.** Interop, not correctness — nothing Reelier ships depends on the
+  answer, but the receipt ecosystem forming around it canonicalizes with JCS,
+  so byte agreement is what lets a Reelier digest be re-verified by something
+  else. `test/jcs-conformance.test.ts` pins agreement across sorting (by
+  UTF-16 code unit, including the astral case that separates code-unit from
+  code-point ordering), recursion, array order, number serialization, string
+  escaping, literals, whitespace, and RFC 8785 §3.2.3's mixed-script sample.
+  **[Normative for consumers]** The divergence is exactly one, and it is
+  pinned rather than fixed: for an object carrying an **integer-like key**
+  (`"0"`, `"2"`, `"10"`, …), JavaScript hoists those properties to the front
+  and orders them numerically, so the sort is undone for those keys alone —
+  `canonicalJson({b:1,"2":2,a:3,"10":4})` yields `{"2":2,"10":4,"a":3,"b":1}`
+  where JCS requires `{"10":4,"2":2,"a":3,"b":1}`. Determinism is untouched
+  (every producer and verifier hoists identically), and changing what is
+  hashed would invalidate every signature and timestamp ever issued. Any
+  future JCS-interop digest must be a separate versioned field, never a
+  redefinition of this one.
+
+### Fixed
+- **The closed `stateCheck.reason` registry was published incomplete, and now
+  names all eight values.** 0.28.0 documented it as closed with six
+  (`probe-timeout`, `probe-failed`, `probe-tool-unknown`, `empty-projection`,
+  `key-unavailable`, `probe-args-mismatch`). Two are added here, and they are
+  not the same kind of thing:
+  - `approval-expired: …` is genuinely new behavior (above).
+  - `probe-substrate-mismatch: …` is a **documentation defect**, not new
+    behavior. The runner has emitted it since `status.code` projections
+    shipped in **0.28.0** — a `status.code` binding whose probe tool resolves
+    to a wrapped MCP tool — and 0.28.0's §3.2 described it, but §4.1's
+    *normative* registry enumeration left it out. So a consumer validating
+    against the published six could already reject a record 0.28.0 itself was
+    capable of producing.
+  **A consumer validating `stateCheck.reason` against the published six must
+  widen it to eight**, and should treat `probe-substrate-mismatch` as
+  something it may already have encountered.
+
+### Notes
+- **`--expires` composes with `--probe`; it does not replace it, and
+  re-running it on a healthy binding renews rather than reporting
+  `unchanged`.** An operator adding or resetting a TTL on a binding whose
+  state re-verifies clean is the main way this control gets used, and a
+  command that accepted `--expires` and wrote nothing would be the worst
+  available outcome for a control whose job is to expire. A re-stamp mints a
+  **fresh keystore key** and supersedes the previous one — the price of the
+  deadline living inside the approval hash, and worth knowing before scripting
+  it. Collect superseded entries with `reelier approve --prune-keys`. A
+  `--rebind` after benign drift carries a prior TTL forward **verbatim**,
+  never re-resolved, and says so as the binding is written — including a
+  warning when the carried instant is already in the past.
+- **Do not put `approve --all --probe --expires` on a schedule.** Under
+  `--all` the consent prompt is auto-answered, so a scheduled run renews the
+  deadline every tick, forever. A TTL renewed by a machine is not a TTL: the
+  whole claim of "expire as a no" is that *silence* ends the authorization,
+  and something answering on the operator's behalf converts it back into a
+  standing yes wearing a deadline — worse than no TTL, because the receipt
+  then shows a freshly stamped approval date. Deliberately not gated: the
+  one-shot `--all --expires` case is legitimate and the operator typed the
+  deadline themselves. This is a rule about who runs the command, not about
+  the command. SPEC §6.1c states it.
+- **SPEC §6.1c now answers the rubber-stamp decay mode**, which shipping a TTL
+  makes worse before it makes better — two clocks now invalidate approvals
+  instead of one. The section covers the three field classes, the fixed-point
+  property stated plainly (the projection should change when the thing you
+  care about changes, and not otherwise), a worked before/after on a version
+  bump, and the rule that a TTL is a *deliberate* cadence while projection
+  drift is an *accidental* one: narrow the projection first, then pick a TTL
+  you will actually honour.
+- **Three SPEC defects were caught inside this release and fixed before the
+  cut — no published version ever shipped any of them.** (a) §0's step-field
+  set said eight while §3.2 said nine; §3.2 cites §0 as the authority, so a
+  third party implementing from §0 would have rejected `- exposure:` as
+  unrecognized — the exact interop failure the spec exists to prevent. §0 now
+  enumerates nine. (b) `exposure` was annotated `0.28.0+` in three places
+  (§3.2's field table, §3.2's prose, §4.1's `StepRecord` row) for a key that
+  ships here; all three now read `0.29.0+`, so the SPEC and this changelog
+  agree on which release introduced it. (c) §3.2 and §4.1's registry entry
+  both said an expired approval is emitted "without dispatching either probe",
+  which the post-probe decision reversed for the post side — leaving §4.1
+  contradicting the `attest` row two rows above it. Both now state the
+  asymmetry and the reason for each side.
+- **Contributor-facing:** the README tests-badge check now runs on every PR
+  rather than only at release (`scripts/check-badge.mjs`), and `npm run
+  preflight` clears stale `dist/`/`dist-test/` before its counted build —
+  `tsc` does not remove orphaned output, so a compiled test file for a deleted
+  source could still run and inflate the count. Off the canonical
+  `ubuntu-latest` leg, preflight now *reports* the badge reconciliation rather
+  than failing on it. `.gitignore` was refusing to track `.reelier/agents.yml`
+  (and `config.yml`/`policy.yml`) under a deny-all rule that exists to protect
+  `.reelier/signing/`; the carve-outs are added, and this repo's own agent PRs
+  are now visible to detection. None of this affects the published package.
+
 ## 0.28.0 — A skill measured against its own history, and a name for the approval that let a write out
 
 Breaking behavior: **none — additive.** No API was removed, no record field

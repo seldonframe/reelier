@@ -111,7 +111,11 @@ test("detectStateGateKey: top-level key only — comments, indentation, and pref
 test("resolveStateGateForRun: off with no files; refuse from a valid opt-in; project file decides even when only global has the gate", async () => {
   await withTempDir(async (dir) => {
     const home = path.join(dir, "home");
-    assert.deepEqual(await resolveStateGateForRun(dir, home), { mode: "off" });
+    // Every resolution now also carries the four-state policy claim
+    // (policy-attestation-v1 §2.5). No file at either candidate is `absent`
+    // — a positive finding that a lookup happened and found nothing, never
+    // the same as "this version does not look".
+    assert.deepEqual(await resolveStateGateForRun(dir, home), { mode: "off", policy: { status: "absent" } });
 
     // Global opt-in, no project file → global decides.
     await mkdir(path.join(home, ".reelier"), { recursive: true });
@@ -123,7 +127,13 @@ test("resolveStateGateForRun: off with no files; refuse from a valid opt-in; pro
     // existing file decides, whole-file, exactly like loadPolicyForWrap.
     await mkdir(path.join(dir, ".reelier"), { recursive: true });
     await writeFile(path.join(dir, ".reelier", "policy.yml"), "version: 1\n", "utf8");
-    assert.deepEqual(await resolveStateGateForRun(dir, home), { mode: "off" });
+    const keyless = await resolveStateGateForRun(dir, home);
+    assert.equal(keyless.mode, "off");
+    // The gate is off, but the FILE is fine — `verified` is a claim about
+    // the file having been found and parsed, never about the gate being on.
+    assert.equal(keyless.policy.status, "verified");
+    assert.equal(keyless.policy.sourcePath, "project");
+    assert.match(keyless.policy.digest!, /^sha256:[0-9a-f]{64}$/);
 
     // Project opt-in → refuse, and the resolution names the file.
     await writeFile(path.join(dir, ".reelier", "policy.yml"), "state_gate: refuse\n", "utf8");

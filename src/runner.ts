@@ -36,6 +36,7 @@ import { resolveL1, resolveL2 } from "./escalate.js";
 import { applyWritebackSafely } from "./writeback.js";
 import { computeApprovalHash, computeIdempotencyKey } from "./approval.js";
 import { digestSha256 } from "./canonical-json.js";
+import type { PolicyClaim } from "./policy.js";
 import {
   readKeystore,
   loadExpectKey,
@@ -266,6 +267,26 @@ export interface RunRecord {
    */
   manifestIgnored?: true;
   /**
+   * The policy file in force for THIS RUN (docs/specs/policy-attestation-v1.md).
+   * Never the one that governed the recording this skill was compiled from —
+   * a RunRecord is evidence about one execution, and inheriting the
+   * recording-time policy would fabricate a claim about the present out of
+   * the past (§3). The skill file carries no policy field at all, so there
+   * is nothing to inherit even by accident.
+   *
+   * Carries NO `rules`/`unmatchedRules`: replay evaluates no deny or dry_run
+   * rule (flight-recorder-v2 non-goal), so a consumer MUST NOT read
+   * `status: "verified"` here as evidence that any rule blocked, intercepted
+   * or evaluated anything during this replay. On this path the file governs
+   * the state gate alone. The absence of the counts IS that statement (§2.4).
+   *
+   * Optional and additive: absent on every record written before the field
+   * existed and on any caller that reported nothing — which is NOT the same
+   * as `absent`, the positive finding that a lookup happened and found no
+   * file. Verification never requires it.
+   */
+  policy?: PolicyClaim;
+  /**
    * Sorted step numbers that had an injected failure this run (`--fail
    * N[=status]`, docs/specs/flight-recorder-v2.md §3) — present only when
    * `RunOptions.mockFailures` was non-empty. A mock run is a local recovery
@@ -349,6 +370,8 @@ export interface RunOptions {
    * mode, byte-identical to pre-S8 behavior.
    */
   stateGate?: "refuse";
+  /** The four-state policy claim for THIS run, resolved by the caller from the same read that decided the gate. Omitted -> the record carries no `policy` key. */
+  policy?: PolicyClaim;
   /**
    * W5-T3: the run's clock, epoch ms. Defaults to `Date.now()`, following the
    * `dryRunSkill(skill, vars, now = Date.now())` precedent. This is the SAME
@@ -1919,6 +1942,7 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
     passed: failedCount === 0,
     ...(options.skillContentSha256 ? { skillContentSha256: options.skillContentSha256 } : {}),
     ...(options.manifestIgnored ? { manifestIgnored: true } : {}),
+    ...(options.policy ? { policy: options.policy } : {}),
     ...(mockFailureSteps.length > 0 ? { mockFailures: mockFailureSteps } : {}),
     steps: stepRecords,
     totals: {
