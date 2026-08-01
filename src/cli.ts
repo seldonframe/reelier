@@ -52,6 +52,9 @@ import { computeRunShape } from "./priors.js";
 import { renderRunShapeDeviationLines, renderRunShapeReportLines } from "./priors-render.js";
 import {
   detectAgentConfig,
+  detectMcpConfigs,
+  knownMcpConfigPaths,
+  type KnownMcpConfig,
   reelierProxyCommandLine,
   planMcpConfigWrite,
   applyMcpConfigWrite,
@@ -75,7 +78,15 @@ import {
   type ScannedSession,
   type StubAgentId,
 } from "./scan.js";
-import { planInstall, applyInstall, findLatestBackup, restoreFromBackup, planWrapOffer, type InstallResult } from "./wrap.js";
+import {
+  planInstall,
+  applyInstall,
+  findLatestBackup,
+  restoreFromBackup,
+  planWrapOffer,
+  type InstallResult,
+  type InstallPlan,
+} from "./wrap.js";
 import { buildToolServer, runDiffTool } from "./serve.js";
 import { recordTotals } from "./footprint.js";
 import {
@@ -3006,67 +3017,92 @@ async function cmdScan(args: ParsedArgs): Promise<number> {
 async function cmdInstall(args: ParsedArgs): Promise<number> {
   const agent = args.opts.agent ?? "auto";
   if (agent !== "auto" && agent !== "claude") {
-    console.error(`Unsupported --agent '${agent}' — only 'claude' (or 'auto', which currently resolves to claude) is supported.`);
+    console.error(`Unsupported --agent '' — omit it: install now wraps every known host config it finds (Claude Code, Cursor, Windsurf). Use --config <path> to target one file.`);
     return 1;
   }
 
   const cwd = process.cwd();
   const homedir = os.homedir();
-  const detection = await detectAgentConfig(cwd, homedir);
-  const configPath = detection.projectConfigExists
-    ? detection.projectConfigPath
-    : detection.userConfigExists
-      ? detection.userConfigPath
-      : undefined;
 
-  if (!configPath) {
+  // `--config <path>` targets one file explicitly; otherwise every known host config that exists
+  // is wrapped. Wrapping all of them is the honest default: a machine with both a Claude Code and
+  // a Cursor config runs agents through both, and silently picking one would leave the other
+  // unrecorded while reporting success.
+  const explicit = args.opts.config;
+  const targets: KnownMcpConfig[] = explicit
+    ? [{ label: "explicit --config", path: explicit }]
+    : await detectMcpConfigs(cwd, homedir);
+
+  if (targets.length === 0) {
+    const checked = knownMcpConfigPaths(cwd, homedir)
+      .map((c) => `  ${c.label}: ${c.path}`)
+      .join("\n");
     console.error(
-      `No MCP config found — checked ${detection.projectConfigPath} and ${detection.userConfigPath}. Configure ` +
-        `at least one MCP server first (or run 'reelier init'), then re-run 'reelier install'.`
+      `No MCP config found. Checked:\n${checked}\n\nConfigure at least one MCP server first (or run ` +
+        `'reelier init'), then re-run 'reelier install'. To wrap a config somewhere else: ` +
+        `reelier install --config <path>`
     );
     return 1;
   }
 
-  console.log(`reelier install — wrapping the MCP servers in ${configPath} so recording is one phrase away.`);
+  console.log(`reelier install — wrapping MCP servers so every tool call is recorded.`);
   console.log("");
 
-  const plan = await planInstall(configPath);
-  for (const e of plan.entries) {
-    if (e.action === "wrap") console.log(`  ${e.name}: will wrap`);
-    else if (e.action === "already-wrapped") console.log(`  ${e.name}: already wrapped — left alone`);
-    else console.log(`  ${e.name}: skipped — ${e.reason}`);
+  const plans: { target: KnownMcpConfig; plan: InstallPlan }[] = [];
+  for (const target of targets) {
+    const plan = await planInstall(target.path);
+    plans.push({ target, plan });
+    console.log(`${target.label} — ${target.path}`);
+    if (plan.entries.length === 0) {
+      console.log("  (no mcpServers entries)");
+    }
+    for (const e of plan.entries) {
+      if (e.action === "wrap") console.log(`  ${e.name}: will wrap`);
+      else if (e.action === "already-wrapped") console.log(`  ${e.name}: already wrapped — left alone`);
+      else console.log(`  ${e.name}: skipped — ${e.reason}`);
+    }
+    console.log("");
   }
 
-  if (!plan.changed) {
-    console.log("");
+  const changed = plans.filter((p) => p.plan.changed);
+  if (changed.length === 0) {
     console.log("Nothing to do — every configured server is already wrapped or can't be wrapped.");
     return 0;
   }
 
   if (args.flags.has("dry-run")) {
-    console.log("");
-    console.log("Dry run — resulting config would be:");
-    console.log(
-      plan.after
-        .split("\n")
-        .map((l) => `  ${l}`)
-        .join("\n")
-    );
-    console.log("\nNothing written (--dry-run).");
+    for (const { target, plan } of changed) {
+      console.log(`Dry run — ${target.label} (${target.path}):`);
+      console.log(
+        diffLines(plan.before, plan.after)
+          .map((l) => `  ${l}`)
+          .join("\n")
+      );
+      console.log("");
+    }
+    console.log("Nothing written (--dry-run).");
     return 0;
   }
 
-  let result: InstallResult;
-  try {
-    result = await applyInstall(plan);
-  } catch (err) {
-    // The backup-or-abort guard (applyInstall) fires here: nothing was written.
-    console.error((err as Error).message);
-    return 1;
+  let wrapped = 0;
+  for (const { target, plan } of changed) {
+    let result: InstallResult;
+    try {
+      result = await applyInstall(plan);
+    } catch (err) {
+      // The backup-or-abort guard (applyInstall) fires here: nothing was written for THIS config.
+      // Earlier configs in the loop are already written and stay written — each has its own
+      // backup, and reporting a partial success honestly beats pretending it was all-or-nothing.
+      console.error(`${target.path}: ${(err as Error).message}`);
+      return 1;
+    }
+    wrapped += result.wrappedCount;
+    console.log(`Wrapped ${result.wrappedCount} server(s) in ${target.path}.`);
+    if (result.backupPath) console.log(`  Original backed up to ${result.backupPath}.`);
   }
+
   console.log("");
-  console.log(`Wrapped ${result.wrappedCount} server(s) in ${configPath}.`);
-  if (result.backupPath) console.log(`Original config backed up to ${result.backupPath}.`);
+  console.log(`${wrapped} server(s) wrapped across ${changed.length} config(s).`);
   console.log("");
   console.log("Restart your agent, then work normally. When you want to save a workflow, tell your agent:");
   console.log('  "record this" ... do the work ... "done"');
@@ -3076,10 +3112,35 @@ async function cmdInstall(args: ParsedArgs): Promise<number> {
   return 0;
 }
 
+/**
+ * A minimal line diff for `--dry-run`. Dumping the whole rewritten config (the previous behavior)
+ * buries a two-line change in a hundred lines of unchanged JSON, and a reader who cannot see what
+ * changed cannot consent to it — which is the entire job of a dry run.
+ *
+ * Deliberately not a real LCS diff: config rewrites here only ever replace a server's command line
+ * in place, so a positional walk with context is accurate for the change this command makes. If
+ * `planInstall` ever reorders or removes keys, this must be replaced rather than trusted.
+ */
+export function diffLines(before: string, after: string): string[] {
+  const b = before.split("\n");
+  const a = after.split("\n");
+  const out: string[] = [];
+  const max = Math.max(b.length, a.length);
+  let lastPrinted = -1;
+  for (let i = 0; i < max; i++) {
+    if (b[i] === a[i]) continue;
+    if (lastPrinted !== -1 && i - lastPrinted > 1) out.push("   ...");
+    if (b[i] !== undefined) out.push(`  - ${b[i].trim()}`);
+    if (a[i] !== undefined) out.push(`  + ${a[i].trim()}`);
+    lastPrinted = i;
+  }
+  return out.length > 0 ? out : ["  (no textual change)"];
+}
+
 async function cmdUninstall(args: ParsedArgs): Promise<number> {
   const agent = args.opts.agent ?? "auto";
   if (agent !== "auto" && agent !== "claude") {
-    console.error(`Unsupported --agent '${agent}' — only 'claude' (or 'auto', which currently resolves to claude) is supported.`);
+    console.error(`Unsupported --agent '' — omit it: install now wraps every known host config it finds (Claude Code, Cursor, Windsurf). Use --config <path> to target one file.`);
     return 1;
   }
 
