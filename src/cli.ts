@@ -449,6 +449,11 @@ export async function cmdRun(
       // into repo B. Same value, by construction.
       ...(deps.cwd !== undefined ? { cwd: deps.cwd } : {}),
       ...(stateGate.mode === "refuse" ? { stateGate: "refuse" as const } : {}),
+      // The policy in force for THIS run, from the same resolution that
+      // decided the gate — so the digest names the bytes that actually
+      // governed it. Never inherited from the trace this skill was compiled
+      // from (policy-attestation-v1 §3).
+      policy: stateGate.policy,
       ...(args.fails.length > 0 ? { mockFailures } : {}),
       onStep: (rec) => {
         const icon =

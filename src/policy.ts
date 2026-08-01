@@ -369,17 +369,35 @@ function stripBom(source: string): string {
  *    only: the warning line IS the gap marker on this path; the run
  *    record is never mutated for a repo that did not opt in (I-2).
  */
+/**
+ * Every resolution also carries `policy` — the four-state claim about the
+ * file it just resolved (docs/specs/policy-attestation-v1.md §2.5), built in
+ * the SAME read that decided the mode so the digest is bound to the bytes
+ * that actually governed this run.
+ *
+ * It never carries `rules`/`unmatchedRules`: replay evaluates no deny or
+ * dry_run rule at all (flight-recorder-v2 non-goal), so there is no live
+ * tool inventory to measure coverage against and no rule-level enforcement
+ * to have coverage OF. That absence is the statement (§2.4).
+ */
 export type StateGateResolution =
-  | { mode: "off"; warning?: string }
-  | { mode: "refuse"; sourcePath: string }
-  | { mode: "refuse-run"; sourcePath: string; errors: string[] };
+  | { mode: "off"; warning?: string; policy: PolicyClaim }
+  | { mode: "refuse"; sourcePath: string; policy: PolicyClaim }
+  | { mode: "refuse-run"; sourcePath: string; errors: string[]; policy: PolicyClaim };
 
 export async function resolveStateGateForRun(cwd: string, homedir: string): Promise<StateGateResolution> {
   const { project, global } = policyPaths(cwd, homedir);
-  for (const candidate of [project, global]) {
+  for (const [candidate, which] of [
+    [project, "project"],
+    [global, "global"],
+  ] as const) {
     let source: string;
+    let digest: string;
     try {
-      source = await readFile(candidate, "utf8");
+      // Bytes first, hashed in this same read — the binding rule (§2.1).
+      const bytes = await readFile(candidate);
+      digest = "sha256:" + createHash("sha256").update(bytes).digest("hex");
+      source = bytes.toString("utf8");
     } catch (err) {
       // ENOENT is "no file here" — try the next candidate. ANY OTHER read
       // error means a file exists whose declared intent we cannot inspect
@@ -393,28 +411,41 @@ export async function resolveStateGateForRun(cwd: string, homedir: string): Prom
       if ((err as NodeJS.ErrnoException).code === "ENOENT") continue;
       return {
         mode: "off",
+        // A file exists and could not be read: what it declared is UNKNOWN,
+        // which is exactly `unchecked` — strictly weaker than `failed`, and
+        // never to be rendered as it. No digest: bytes we never read cannot
+        // be hashed.
+        policy: { status: "unchecked", sourcePath: which },
         warning:
           `[reelier] policy: ${candidate} exists but could not be read (${(err as Error).message}) — ` +
           `state gate OFF and this file's declared intent is UNKNOWN (if it opts in with 'state_gate: refuse', that opt-in is NOT in effect). Fix the file's readability.`,
       };
     }
+    // The file parsed or it did not; either way the bytes are real and
+    // hashed. `rules` is deliberately never attached on this path (§2.4).
+    const verified: PolicyClaim = { status: "verified", digest, sourcePath: which };
+    const failed: PolicyClaim = { status: "failed", digest, sourcePath: which };
     if (detectStateGateKey(source)) {
       const validation = parsePolicyStrict(source);
       if (validation.errors.length > 0) {
-        return { mode: "refuse-run", sourcePath: candidate, errors: validation.errors };
+        // Refused before step 1, so no RunRecord is ever written — the
+        // absence of a receipt IS the artifact here. The claim is carried
+        // anyway so the shape is uniform for any future caller.
+        return { mode: "refuse-run", sourcePath: candidate, errors: validation.errors, policy: failed };
       }
       if (validation.policy!.stateGate === "refuse") {
-        return { mode: "refuse", sourcePath: candidate };
+        return { mode: "refuse", sourcePath: candidate, policy: verified };
       }
       // Unreachable today (a valid parse with the key present implies
       // "refuse" — every other value is a strict error). Kept explicit so
       // a future mode lands here as OFF, never as an accidental gate.
-      return { mode: "off" };
+      return { mode: "off", policy: verified };
     }
     const validation = parsePolicyStrict(source);
     if (validation.errors.length > 0) {
       return {
         mode: "off",
+        policy: failed,
         warning:
           // "no top-level 'state_gate' key DETECTED" — never "contains
           // no key" (review finding): the detector cannot know what the
@@ -424,9 +455,10 @@ export async function resolveStateGateForRun(cwd: string, homedir: string): Prom
           `(a malformed file cannot opt a repo in; enforcement gap). Run 'reelier policy check' to see every error.`,
       };
     }
-    return { mode: "off" };
+    return { mode: "off", policy: verified };
   }
-  return { mode: "off" };
+  // Neither candidate exists — a positive finding, not an absence of one.
+  return { mode: "off", policy: { status: "absent" } };
 }
 
 /** Parse + validate raw policy.yml text in one shot. A syntax error (bad subset) is reported as a single validation error, same bucket as a schema error — `policy check` doesn't need callers to distinguish the two. */
@@ -600,7 +632,13 @@ export type PolicyLoadResult =
  */
 export type PolicyStatus = "verified" | "failed" | "unchecked" | "absent";
 
-export interface PolicyRecord {
+/**
+ * The claim BOTH execution paths can make. The run path uses exactly this
+ * and nothing wider: §2.4's rule that a RunRecord never carries rule counts
+ * is enforced by the type, not by convention, so no future edit can attach
+ * them to a replay record and imply the deny list was live during it.
+ */
+export interface PolicyClaim {
   status: PolicyStatus;
   /**
    * `sha256:<hex>` over the RAW FILE BYTES — not a canonical form. It has to
@@ -619,6 +657,14 @@ export interface PolicyRecord {
    */
   digest?: string;
   sourcePath?: PolicySource;
+}
+
+/**
+ * The WRAP path's claim: everything above, plus rule coverage. Only the
+ * wrap holds a live tool inventory, so only the wrap can measure whether a
+ * rule is able to fire (§2.3, §2.4).
+ */
+export interface PolicyRecord extends PolicyClaim {
   /**
    * Counts only, never globs or hosts. `toolScoped` is the honest
    * denominator for `unmatchedRules`: an `endpoint` rule carries no tool
