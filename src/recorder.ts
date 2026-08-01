@@ -15,6 +15,13 @@ import type { ToolEffectAnnotations } from "./effect-verbs.js";
 import { digestSha256 } from "./canonical-json.js";
 import type { ManifestTool } from "./skill.js";
 import {
+  LiveProvenanceIndex,
+  addressableMcpResultBody,
+  capNameList,
+  type LeafResolution,
+} from "./provenance.js";
+import { ABSENT_FIELDS_MAX, ABSENT_FIELD_NAME_MAX } from "./expect-mac.js";
+import {
   emptyPolicy,
   evaluatePolicy,
   findUnmatchedToolRules,
@@ -82,6 +89,15 @@ export type TraceRecord =
   | { t: "note"; seq: number; ts: string; text: string }
   | { t: "call"; seq: number; i: number; ts: string; tool: string; args: unknown }
   | {
+      t: "prov";
+      seq: number;
+      i: number;
+      resolved?: Array<{ path: string; from: { call: number; at: string } }>;
+      authored?: string[];
+      unresolved?: Array<{ path: string; reason: string }>;
+      truncated?: Partial<Record<"resolved" | "authored" | "unresolved", number>>;
+    }
+  | {
       t: "result";
       seq: number;
       i: number;
@@ -100,12 +116,21 @@ function textResult(text: string): McpCallResult {
   return { content: [{ type: "text", text }] };
 }
 
+/** Hard memory bound for the live, hash-only response index. */
+export const LIVE_PROVENANCE_LEAF_CAP = 4096;
+
+function clipProvName(name: string): string {
+  return name.length > ABSENT_FIELD_NAME_MAX ? name.slice(0, ABSENT_FIELD_NAME_MAX) : name;
+}
+
 /**
  * Owns recording state + the append-only trace file. All writes are
  * serialized through a promise chain so concurrent tool calls can never
  * interleave out of seq order — order in the file IS the association.
  */
 export class Recorder {
+  /** Hash-only and process-local; reset for every recording window. */
+  private provenance = new LiveProvenanceIndex(LIVE_PROVENANCE_LEAF_CAP);
   private traceDir: string;
   private writeQueue: Promise<void> = Promise.resolve();
   private recording = false;
@@ -175,6 +200,7 @@ export class Recorder {
     this.seq = 0;
     this.callIndex = 0;
     this.callCount = 0;
+    this.provenance = new LiveProvenanceIndex(LIVE_PROVENANCE_LEAF_CAP);
     this.recording = true;
     this.write({
       t: "meta",
@@ -209,8 +235,70 @@ export class Recorder {
     return i;
   }
 
+  /** Record the pre-dispatch lineage measurement for a call that WILL dispatch. */
+  recordProvenance(i: number, args: unknown): void {
+    let rows: LeafResolution[];
+    try {
+      rows = this.provenance.resolve(args);
+    } catch {
+      // Provenance is record-only. A measurement failure must never become a
+      // dispatch refusal at the live proxy boundary.
+      this.write({
+        t: "prov",
+        seq: this.nextSeq(),
+        i,
+        unresolved: [{ path: "args", reason: "measurement-failed" }],
+      });
+      return;
+    }
+    const resolvedRows = rows.filter(
+      (row): row is Extract<LeafResolution, { state: "grounded" }> => row.state === "grounded"
+    );
+    const authoredRows = rows.filter(
+      (row): row is Extract<LeafResolution, { state: "authored" }> => row.state === "authored"
+    );
+    const unresolvedRows = rows.filter(
+      (row): row is Extract<LeafResolution, { state: "unresolved" }> => row.state === "unresolved"
+    );
+    const resolved = resolvedRows.slice(0, ABSENT_FIELDS_MAX).map((row) => ({
+      path: clipProvName(row.path),
+      from: { call: Number(row.from.source.slice(1)), at: clipProvName(row.from.at) },
+    }));
+    const authoredCap = capNameList(authoredRows.map((row) => row.path));
+    const unresolved = unresolvedRows.slice(0, ABSENT_FIELDS_MAX).map((row) => ({
+      path: clipProvName(row.path),
+      reason: row.reason,
+    }));
+    const truncated = {
+      ...(resolvedRows.length > resolved.length ? { resolved: resolvedRows.length - resolved.length } : {}),
+      ...(authoredCap.truncated ? { authored: authoredCap.truncated } : {}),
+      ...(unresolvedRows.length > unresolved.length ? { unresolved: unresolvedRows.length - unresolved.length } : {}),
+    };
+    this.write({
+      t: "prov",
+      seq: this.nextSeq(),
+      i,
+      ...(resolved.length > 0 ? { resolved } : {}),
+      ...(authoredCap.names.length > 0 ? { authored: authoredCap.names } : {}),
+      ...(unresolved.length > 0 ? { unresolved } : {}),
+      ...(Object.keys(truncated).length > 0 ? { truncated } : {}),
+    });
+  }
+
   recordResult(i: number, ok: boolean, ms: number, body: unknown): void {
     this.write({ t: "result", seq: this.nextSeq(), i, ok, ms, body: redact(body) });
+    if (!ok) return;
+    const value = addressableMcpResultBody(body);
+    if (value === undefined) this.provenance.addGap(`#${i}`);
+    else {
+      try {
+        this.provenance.addSource(`#${i}`, value);
+      } catch {
+        // The downstream result still returns verbatim. Only the index loses a
+        // source, which is represented as a gap on every later miss.
+        this.provenance.addGap(`#${i}`);
+      }
+    }
   }
 
   /** Record a call the policy DENIED — never dispatched downstream. `body` is the structured error handed back to the agent. */
@@ -431,6 +519,7 @@ export function buildProxyServer(downstreams: DownstreamConnection[], options: P
     }
 
     const callIndex = isRecording ? recorder.recordCall(name, args) : -1;
+    if (isRecording) recorder.recordProvenance(callIndex, args);
     let result: McpCallResult;
     let ok = true;
     try {
