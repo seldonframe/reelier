@@ -22,7 +22,7 @@ metadata:
 Reelier compiles a run that *worked* into a `SKILL.md` file that replays
 deterministically: no LLM, 0 tokens, per-step pass/fail, a receipt
 for every run. This skill teaches you **when** to reach for it inside
-OpenClaw — written against `reelier` 0.28.x. (`reelier --help` on the
+OpenClaw — written against `reelier` 0.29.x. (`reelier --help` on the
 installed CLI is always authoritative; this line is pinned to `package.json`
 by `test/skill-version-pin.test.ts` so it cannot quietly drift again — it
 previously claimed 0.12.x, fifteen minor versions behind.)

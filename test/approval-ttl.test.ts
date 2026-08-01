@@ -788,7 +788,11 @@ test("CLI review-IMPORTANT: a --rebind after benign drift CARRIES the TTL forwar
     );
     const after = parseSkill(await readFile(file, "utf8")).steps[0].expect!;
     assert.equal(after.expiresAt, ttl, "the TTL set a month ago survives a routine re-bind, verbatim");
-    assert.match(out, /carried forward unchanged from the previous binding/, "and the operator is told, on the consent line");
+    // Deliberately only "appears in the output": this runs under --all, where the
+    // prompt is auto-answered, and on the re-bind path the line is printed by
+    // bindStep — i.e. AFTER consent — so this cannot and does not assert ordering
+    // relative to the prompt. See SPEC §6.1c on which path prints the instant first.
+    assert.match(out, /carried forward unchanged from the previous binding/, "and the operator is told, in the approve output");
     // Verbatim, not re-resolved: a re-bind extends nothing.
     assert.notEqual(after.expiresAt, new Date(at + DAY + 30 * DAY).toISOString());
   });
