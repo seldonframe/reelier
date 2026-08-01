@@ -208,7 +208,11 @@ function tableRows(lines: string[]): { names: string[]; text: string }[] {
 
 const runnerSf = parse("runner.ts", readFileSync(path.join(REPO_ROOT, "src", "runner.ts"), "utf8"));
 const assertSf = parse("assert.ts", readFileSync(path.join(REPO_ROOT, "src", "assert.ts"), "utf8"));
-const REAL_SOURCES = [runnerSf, assertSf];
+// skill.ts declares the step-level types a record field can be typed by (e.g. `Exposure`).
+// Parsing it here is the guard's own prescribed fix for an unresolved name -- see the
+// `no unresolved type reference` test below.
+const skillSf = parse("skill.ts", readFileSync(path.join(REPO_ROOT, "src", "skill.ts"), "utf8"));
+const REAL_SOURCES = [runnerSf, assertSf, skillSf];
 
 const S41 = section("### 4.1 ", "### 4.2 ");
 const S42 = section("### 4.2 ", "### 4.3 ");
