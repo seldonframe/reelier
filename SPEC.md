@@ -1360,18 +1360,19 @@ and **nothing is approved**; the parser never throws. `--expires` requires
 a plain approved write cannot expire (§3.2's known scope boundary). At
 approve time the resolved instant is printed rather than the duration the
 operator typed, so the deadline is legible as a date and not as
-arithmetic. **[Reference implementation]** Where it is printed relative to
-the y/N prompt differs by path, and the difference is worth knowing:
-on the **re-stamp** path (`--expires` on an already-bound step whose state
-re-verifies clean) the resolved instant appears in the line *before* the
-prompt, so the operator sees the date they are agreeing to. On a **fresh
-bind** and on a **re-bind after drift** the instant is printed as the
-binding is written — that is, *after* consent — because the pre-prompt
-line on those paths states the approval's current state
-(`unapproved` / `approved (current)` / `approved (STALE …)`) and carries
-no instant. Bringing the fresh-bind path in line with the re-stamp path
-is a UX improvement, not a correctness one: the operator typed the
-duration themselves, and the written value is echoed either way.
+arithmetic. **[Reference implementation]** It is printed *before* the y/N
+on every path — fresh bind, re-bind after drift, and re-stamp alike — so
+the operator agrees to a date rather than to arithmetic they cannot do in
+their head: the duration resolves against the **observation**, not
+wall-clock-now. A re-bind that carries an earlier TTL forward says so in
+the same position, and says **ALREADY ELAPSED** there when the carried
+instant is dead, rather than disclosing it once consent is no longer
+declinable. The instant is echoed again as the binding is written; the
+two lines are the same sentence doing different jobs (what is about to be
+written, and the record of what was), and both render from a single
+resolution so the previewed and written instants cannot drift apart. A
+step with **no** TTL prints no expiry line at all — never
+`expires: never`, which would render an absence as a deliberate choice.
 `--expires` composes with `--probe`; it does not replace it.
 
 Re-running `--expires` on an already-bound step whose state re-verifies
