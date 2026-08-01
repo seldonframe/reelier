@@ -140,15 +140,26 @@ export function describeCheckOutcome(result, opts = {}) {
     return { level: 'ok', message: result.message };
   }
 
+  const { actualPass, badgeCount } = result;
+
+  // A structural failure — the pass count couldn't be parsed at all, or
+  // README has no badge in it — has nothing to do with platform skew. It
+  // means the check itself broke, on every platform, and must never be
+  // downgraded: reporting it as "platform skew" would explain away "the
+  // badge is missing" as a quirk of running on Windows, which is false and
+  // is the same silent-no-op pathology this whole PR exists to catch, one
+  // level down. These always fail, everywhere.
+  if (actualPass === null || badgeCount === null) {
+    return { level: 'fail', message: result.message };
+  }
+
   if (platform === CANONICAL_PLATFORM) {
     return { level: 'fail', message: result.message };
   }
 
-  const { actualPass, badgeCount } = result;
-  const base =
-    `README says ${badgeCount ?? 'unknown'}; this machine ('${platform}') ran and passed ${actualPass ?? 'unknown'}`;
+  const base = `README says ${badgeCount}; this machine ('${platform}') ran and passed ${actualPass}`;
 
-  if (actualPass !== null && badgeCount !== null && skippedCount !== null) {
+  if (skippedCount !== null) {
     const impliedCanonical = actualPass + skippedCount;
     if (impliedCanonical === badgeCount) {
       return {
@@ -171,7 +182,7 @@ export function describeCheckOutcome(result, opts = {}) {
   return {
     level: 'report',
     message:
-      `${result.message} — this machine ('${platform}') is not the canonical '${CANONICAL_PLATFORM}' CI ` +
-      `platform, so it cannot authoritatively confirm the badge. Trust CI's ubuntu-latest badge check.`,
+      `${base} — could not read this run's skipped count, so this machine cannot even attempt to reconcile ` +
+      `the gap. The badge means the count on '${CANONICAL_PLATFORM}' (CI's ubuntu-latest leg); trust that.`,
   };
 }

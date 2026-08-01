@@ -45,6 +45,9 @@ if (result.ok) {
   console.log(`✓ badge matches actual pass count — ${result.message}`);
   process.exit(0);
 } else {
-  console.log(`✗ badge matches actual pass count — ${result.message}`);
+  // stderr, not stdout: this is a failure, and the label says so instead of
+  // asserting the very thing that just failed ("badge matches...") right
+  // next to a message that contradicts it.
+  console.error(`✗ badge does not match actual pass count — ${result.message}`);
   process.exit(1);
 }

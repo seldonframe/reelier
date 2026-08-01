@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -137,6 +138,41 @@ test("describeCheckOutcome still only reports (never fails) when skips do NOT fu
   assert.match(outcome.message, /still does not match the badge/);
 });
 
+// A structural failure (the check itself broke) must never be laundered
+// into "platform skew" — that's the same silent-no-op pathology this PR
+// exists to catch, one level down. It fails everywhere, not just on the
+// canonical platform.
+test("describeCheckOutcome hard-fails an unparsable pass count even on a non-canonical platform", () => {
+  const result = checkBadge({ testOutput: "nothing useful here", readme: "tests-960 passing" });
+  assert.equal(result.actualPass, null);
+  const outcome = describeCheckOutcome(result, { platform: "win32", skippedCount: null });
+  assert.equal(outcome.level, "fail");
+  assert.equal(outcome.message, result.message);
+  assert.doesNotMatch(outcome.message, /platform/i);
+});
+
+test("describeCheckOutcome hard-fails a README with no badge at all, even on a non-canonical platform", () => {
+  const result = checkBadge({ testOutput: "# pass 960\n", readme: "# My Project, no badge here" });
+  assert.equal(result.badgeCount, null);
+  const outcome = describeCheckOutcome(result, { platform: "win32", skippedCount: 0 });
+  assert.equal(outcome.level, "fail");
+  assert.equal(outcome.message, result.message);
+  assert.doesNotMatch(outcome.message, /platform/i);
+});
+
+// The one branch of describeCheckOutcome with no reconciliation to attempt:
+// a real numeric mismatch, off-canonical, but this particular test run's
+// `npm test` output didn't carry a skipped count (parseSkippedCount
+// returned null) to reason from at all. Still never a hard fail off
+// canonical -- just an honest "can't even attempt it" rather than a
+// fabricated reconciliation.
+test("describeCheckOutcome reports (without attempting reconciliation) when skippedCount itself is unavailable", () => {
+  const result = checkBadge({ testOutput: "# pass 1200\n", readme: "tests-1237 passing" });
+  const outcome = describeCheckOutcome(result, { platform: "win32", skippedCount: null });
+  assert.equal(outcome.level, "report");
+  assert.match(outcome.message, /could not read this run's skipped count/);
+});
+
 test("describeCheckOutcome defaults to the running process's own platform when none is given", () => {
   const result = { ok: false, actualPass: 1, badgeCount: 2, message: "mismatch" };
   const outcome = describeCheckOutcome(result, { skippedCount: 0 });
@@ -145,4 +181,48 @@ test("describeCheckOutcome defaults to the running process's own platform when n
   // running on the canonical platform itself.
   assert.ok(["fail", "report"].includes(outcome.level));
   assert.equal(outcome.level, process.platform === CANONICAL_PLATFORM ? "fail" : "report");
+});
+
+// --- Cross-file coupling: ci.yml's badge-step guard vs. CANONICAL_PLATFORM.
+// Same idiom as test/action-version-pin.test.ts's action.yml<->package.json
+// check -- two files assert the same fact independently, and nothing but a
+// test stops them from drifting apart silently. Mutating CANONICAL_PLATFORM
+// to any other string (or editing ci.yml's guard) must fail THIS test.
+
+const RUNNER_OS_TO_NODE_PLATFORM: Record<string, string> = {
+  Linux: "linux",
+  Windows: "win32",
+  macOS: "darwin",
+};
+
+test("ci.yml's badge-check step guard resolves to badge-check.mjs's CANONICAL_PLATFORM", () => {
+  const ciYmlPath = path.resolve(process.cwd(), ".github/workflows/ci.yml");
+  const ciYml = fs.readFileSync(ciYmlPath, "utf8");
+
+  const stepMatch = ciYml.match(/Check README tests badge\r?\n\s*if:\s*(.+?)\r?\n/);
+  assert.ok(
+    stepMatch,
+    "could not find the 'Check README tests badge' step's `if:` guard in ci.yml -- " +
+      "did the step get renamed or restructured?"
+  );
+  const guard = stepMatch![1].trim();
+
+  const osMatch = guard.match(/runner\.os\s*==\s*'([^']+)'/);
+  assert.ok(
+    osMatch,
+    `ci.yml's badge-check guard is "${guard}", not the expected \`runner.os == '<OS>'\` form`
+  );
+  const runnerOs = osMatch![1];
+  const mappedPlatform = RUNNER_OS_TO_NODE_PLATFORM[runnerOs];
+  assert.ok(mappedPlatform, `unrecognized runner.os value "${runnerOs}" in ci.yml's badge-check guard`);
+
+  assert.equal(
+    mappedPlatform,
+    CANONICAL_PLATFORM,
+    `ci.yml gates the badge-check step on runner.os == '${runnerOs}' (Node platform ` +
+      `'${mappedPlatform}'), but scripts/badge-check.mjs's CANONICAL_PLATFORM is ` +
+      `'${CANONICAL_PLATFORM}' -- these define the same thing in two places and must ` +
+      `agree, or the badge's stated definition and the platform that actually enforces ` +
+      `it silently diverge.`
+  );
 });

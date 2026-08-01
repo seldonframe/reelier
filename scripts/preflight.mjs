@@ -119,6 +119,7 @@ console.log('reelier release preflight\n');
 }
 
 // --- 4. Build passes ---------------------------------------------------------
+let buildOk = false;
 {
   // tsc does not delete output for source files that no longer exist — a
   // stale dist/dist-test from a previous checkout state (a file that was
@@ -131,7 +132,8 @@ console.log('reelier release preflight\n');
   rmSync('dist-test', { recursive: true, force: true });
 
   const buildRes = runAllowFail('npm run build');
-  if (buildRes.ok) {
+  buildOk = buildRes.ok;
+  if (buildOk) {
     ok('build passes');
   } else {
     fail('build passes', 'npm run build failed — see output above');
@@ -140,7 +142,12 @@ console.log('reelier release preflight\n');
 }
 
 // --- 5. Tests pass + README badge matches -----------------------------------
-{
+// Skipped entirely when the build failed: dist/ was cleared before the
+// build attempt (step 4) and a failed build leaves it incomplete or empty,
+// so running `npm test` against it would fail for a second, confusing
+// reason (missing compiled modules) that has nothing to do with the tests
+// themselves. The build failure above is already fatal on its own.
+if (buildOk) {
   const testRes = runAllowFail('npm test');
   const testOutput = testRes.stdout;
 

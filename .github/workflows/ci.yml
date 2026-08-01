@@ -52,6 +52,11 @@ jobs:
       # `npm test`, so the badge-vs-suite check (scripts/check-badge.mjs,
       # sharing its rule with `npm run preflight` via scripts/badge-check.mjs)
       # runs on every PR without doubling the cost of the job.
+      # runner.os (not matrix.os) so this tracks the actual OS the job ran
+      # on rather than a runner-image label — immune to e.g. GitHub renaming
+      # or retiring the "ubuntu-latest" image name. Must agree with
+      # badge-check.mjs's CANONICAL_PLATFORM; test/action-version-pin.test.ts
+      # -style, test/badge-check.test.ts asserts the two can't drift apart.
       - name: Check README tests badge
-        if: matrix.os == 'ubuntu-latest'
+        if: runner.os == 'Linux'
         run: node scripts/check-badge.mjs test-output.txt

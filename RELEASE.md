@@ -35,6 +35,14 @@ this file only covers cutting and shipping a release.
    It also prints **advisory warnings** (these do NOT block) if you're not on
    `main` or not yet synced with `origin/main` — both are expected right after a
    local `npm version` bump, before you push.
+   **If you're cutting from Windows or macOS and the badge check only
+   reported** (didn't hard-fail): `npm publish` in step 4 below happens
+   immediately after `git push` in step 3 — before that push's own CI run
+   has had a chance to finish — so you can't lean on "this push's CI is
+   green" at publish time. Before publishing, confirm on GitHub Actions that
+   `test (ubuntu-latest)` was green on the most recent PR that changed the
+   pass count (i.e. the last time the suite grew or shrank). That PR's CI
+   run is what actually validated the number you're about to ship with.
 3. Push the commit and tag: `git push && git push --tags`.
 4. Publish from a **clean checkout at the tip of `main`** — never from a feature
    branch or a tree with local changes:
@@ -49,5 +57,9 @@ this file only covers cutting and shipping a release.
    `@v1` tag to the new release commit. This is a **deliberate,
    public-behavior-affecting change** — don't do it reflexively for every
    release, only when the Action itself changed.
-2. The README tests badge drift is caught by preflight going forward; if you ever
-   bypass preflight, update the badge manually.
+2. README tests badge drift is caught by CI on every PR (`scripts/check-badge.mjs`,
+   the `test (ubuntu-latest)` leg of `.github/workflows/ci.yml`) — not by
+   `npm run preflight`, which only hard-fails this check when run on Linux
+   (see "Cut the release" step 2 above; on Windows/macOS it reports, it
+   doesn't gate). If you ever bypass CI entirely (a direct push, an admin
+   merge), update the badge manually and let the next PR's CI confirm it.
