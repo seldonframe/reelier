@@ -93,6 +93,10 @@ between a useful line and a scary one.
 
 ### 2.3 One derivation: a behaviour change, named rather than slipped in
 
+*See also §2.4 (the two counters that are deliberately not signals) and §2.5
+(what `writeResources` is), appended after this one to keep §2.1's number
+stable — it is cited from `src/priors.ts`.*
+
 F5 originally carried its own `shapeOf`, a near-copy of `deriveFootprint`.
 Two functions answering "what shape did this run have?" is how the answer to
 that question drifts apart, so `shapeOf` is gone and the signals project off
@@ -103,17 +107,25 @@ one. `deriveFootprint` counts outcomes and duration from `steps[]`
 unconditionally; on any record whose `totals` rollup contradicts its own
 `steps[]`, F5's counts follow the steps, and an existing operator's baseline
 can move by the size of that contradiction. This is the correct direction —
-the steps are the measurement and the rollup is a claim about it — and it
-cannot arise from a record this package wrote, only from a hand-edited or
-externally generated one. Measured before the change against 1,835 real run
-records across 190 local run-record files: **zero** records changed any
-count, and **zero** modern records carried a `totals` rollup that disagreed
-with their own `steps[]`.
+the steps are the measurement and the rollup is a claim about it.
 
-The same swap tightened one guard: a step whose `write` or `llm` is present
-but is not a non-null, non-array object (a hand-edited `"write": []`, `0`, or
-a bare string) is no longer counted as a dispatched write or an escalation.
-Same corpus, same result: zero records affected.
+**Why no existing baseline moves, argued rather than sampled.** The old
+`shapeOf` already counted from `steps[]` and already summed per-step `ms`, so
+the two derivations are arithmetically identical on every record — the
+divergence class above is reachable only through `deriveFootprint`'s earlier,
+totals-trusting behaviour, which no longer exists. The one real difference is
+a tightened guard: a step whose `write` or `llm` is present but is not a
+non-null, non-array object (a hand-edited `"write": []`, `0`, or a bare
+string) is no longer counted as a dispatched write or an escalation. Neither
+shape can be produced by this package's writer.
+
+A sweep of 1,835 records across 190 local run-record files found zero
+changes, which is consistent with the argument above and is not independent
+evidence for it: those records were all written by this package, where both
+divergence classes are unreachable by construction. The guarantee rests on
+the construction. A hand-edited or externally generated `.jsonl` — which is
+what F5 is fed by — can still carry either shape, and on those the counts now
+follow the steps.
 
 Neither change can move an outcome or an exit code. §1 still holds.
 
@@ -147,6 +159,37 @@ surface does not say it is.
 extracted contributes nothing at all. It is not an "unknown" bucket, and the
 signal must not be read as "every resource this run touched" — only as "the
 distinct ones the record names".
+
+### 2.6 `duration`: exactly what `ms` is allowed to do
+
+The rule elsewhere in this codebase is that timing is never drift
+(`src/diff.ts:10`), and `duration` is a signal here, so the rule needs
+restating rather than waving at. It takes its authority from what a `diff`
+verdict does — it gates an exit code — and F5 provably cannot gate: it is a
+recorder (§1, `src/priors.ts:14-17`) and its only consumers are two
+print-only renderers. So `duration` is not an exception to the rule. The rule
+was worded for a surface that decides things, and this one does not.
+
+Stated for this surface:
+
+> `ms` never enters a gate, an exit code, or a check predicate, and is never
+> rendered as a fault or a saving. It may be reported as a local, advisory
+> difference against a skill's own history.
+
+**The carve-out, written down before the surface exists that would breach
+it.** `RunFootprint` is designed to be persisted, and a persisted footprint
+invites an alert — an email, a notification, something that arrives at an
+operator who was not looking. That is much closer to a verdict than a line
+printed under a run the operator is already watching, and `duration` is the
+most environment-sensitive signal in the set: a slow network, a cold cache or
+a laptop on battery moves it while saying nothing whatsoever about the skill.
+
+> **`duration` may be a locally rendered difference. `duration` must never be
+> able to raise an alert.**
+
+This applies to every consumer of `RunFootprint.ms`, in this package or any
+other. A `duration` deviation is not an alert condition, is not an input to
+one, and must not be one term of a compound condition that produces one.
 
 ## 3. The statistic
 

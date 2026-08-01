@@ -21,17 +21,29 @@
 // rollup. `src/diff.ts` is a different question (did two runs' STEPS agree?)
 // and is untouched by this module.
 //
-// `ms` is a recorded measurement, not a judgement: nothing in this module
-// reads it, and `src/diff.ts:10`'s rule that timing is never drift still
-// stands. F5 does baseline it as its `duration` signal, which is a
-// difference reported to an operator and never an outcome, an exit code, or
-// a gate.
+// `ms` is a recorded measurement, not a judgement. `src/diff.ts:10`'s rule
+// that timing is never drift stands there because a diff verdict gates an
+// exit code. F5 baselines `ms` as its `duration` signal and cannot gate
+// anything, so that is not an exception; the rule for this object is stated
+// once in docs/specs/run-shape-priors.md §2.6 and repeated on the field:
+// `ms` never enters a gate, an exit code, a check predicate, or an ALERT,
+// and is never rendered as a fault or a saving. It may be reported as a
+// local, advisory difference against a skill's own history.
 
 import type { RunRecord, StepRecord } from "./runner.js";
 
 export interface RunFootprint {
   skill: string;
   finishedAt: string;
+  /**
+   * Sum of `steps[].ms` — the measured time inside the steps, NOT the run's
+   * wall clock and NOT `totals.ms`. Steps whose `ms` is not a finite number
+   * contribute nothing, so this is always a finite number and safe to feed a
+   * median. Consumers: it may be rendered as a local, advisory difference
+   * against a skill's own history, and it may never enter a gate, an exit
+   * code, a check predicate, or an alert
+   * (docs/specs/run-shape-priors.md §2.6).
+   */
   ms: number;
   steps: number;
   passed: number;
