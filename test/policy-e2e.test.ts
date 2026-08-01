@@ -16,7 +16,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { connectDownstreamTransport } from "../src/mcp-client.js";
 import { buildProxyServer, type TraceRecord } from "../src/recorder.js";
-import { loadPolicyForWrap } from "../src/policy.js";
+import { loadPolicyForWrap, policyRecordFromLoad } from "../src/policy.js";
 
 /** A fake downstream with tools that exercise every rule shape: a delete verb (deny by tool glob), a stripe-bound webhook call (deny by endpoint glob), a gmail send gated by --allow-writes, and a crm.* create call (dry_run). */
 function buildFakeDownstream(): Server {
@@ -48,7 +48,14 @@ async function readTrace(filePath: string): Promise<TraceRecord[]> {
     .map((line) => JSON.parse(line) as TraceRecord);
 }
 
-async function wireProxy(policyOptions: { policy?: import("../src/policy.js").Policy; policyGap?: string; allowWrites?: boolean }, traceDir: string) {
+async function wireProxy(
+  policyOptions: {
+    policy?: import("../src/policy.js").Policy;
+    policyRecord?: import("../src/policy.js").PolicyRecord;
+    allowWrites?: boolean;
+  },
+  traceDir: string
+) {
   const [downstreamClientSide, downstreamServerSide] = InMemoryTransport.createLinkedPair();
   const fakeDownstreamServer = buildFakeDownstream();
   await fakeDownstreamServer.connect(downstreamServerSide);
@@ -210,7 +217,7 @@ test("policy e2e: a call matching neither list passes through untouched", async 
   }
 });
 
-test("policy e2e: malformed policy at wrap runtime degrades to pass-through + a gap marker in the trace meta, never bricks the call", async () => {
+test("policy e2e: malformed policy at wrap runtime degrades to pass-through + status 'failed' in the trace meta, never bricks the call", async () => {
   const cwd = await mkdtemp(path.join(tmpdir(), "reelier-policy-e2e-cwd-"));
   const home = await mkdtemp(path.join(tmpdir(), "reelier-policy-e2e-home-"));
   const traceDir = await mkdtemp(path.join(tmpdir(), "reelier-policy-e2e-trace-"));
@@ -222,7 +229,7 @@ test("policy e2e: malformed policy at wrap runtime degrades to pass-through + a 
     assert.equal(loaded.ok, false);
 
     const { testClient, close } = await wireProxy(
-      { policy: loaded.policy, policyGap: !loaded.ok ? loaded.error : undefined },
+      { policy: loaded.policy, policyRecord: policyRecordFromLoad(loaded) },
       traceDir
     );
 
@@ -241,7 +248,14 @@ test("policy e2e: malformed policy at wrap runtime degrades to pass-through + a 
     const meta = records.find((r) => r.t === "meta");
     assert.ok(meta && meta.t === "meta");
     if (meta && meta.t === "meta") {
-      assert.ok(meta.policyGap && meta.policyGap.length > 0);
+      // The superseding four-state claim (policy-attestation-v1 §3.1). A
+      // malformed file is `failed` — and it still carries a digest, because
+      // the digest is over raw bytes and an unparseable file has plenty of
+      // those. `policyGap` is no longer written by anything.
+      assert.equal(meta.policy?.status, "failed");
+      assert.match(meta.policy!.digest!, /^sha256:[0-9a-f]{64}$/);
+      assert.equal(meta.policy?.sourcePath, "project");
+      assert.equal("policyGap" in meta, false);
     }
   } finally {
     await rm(cwd, { recursive: true, force: true });

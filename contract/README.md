@@ -31,6 +31,19 @@ and update the locked sha256 constant in **both** repos' wire-contract
 tests. Do not update just one side; the whole point of this fixture is that
 it is the same file in both places.
 
+## Additive record-internal fields do NOT require regeneration
+
+The sha-lock pins the fixture's bytes and the **top-level** POST-body field
+set. Optional fields *inside* `record` (SPEC.md §4) are additive by
+construction: a consumer must tolerate their absence, and the fixture — a
+real captured payload, not an exhaustive schema — simply predates them.
+`manifestIgnored`, `mockFailures`, `StepRecord.refs`/`write`/`attest`, and
+`manifestChecked` (the positive "manifest declared + preflight passed"
+signal, mutually exclusive with `manifestIgnored`) all shipped this way
+without touching the fixture. Only a change to what `push.ts` emits at the
+top level — or a non-additive record change — triggers the lockstep
+regeneration above.
+
 ## Shipped in the npm package
 
 `contract/` is listed in `package.json`'s `files` array, so it ships inside

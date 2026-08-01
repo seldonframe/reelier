@@ -36,7 +36,7 @@ jobs:
         continue-on-error: true
         env:
           REELIER_CLOUD_URL: https://www.reelier.com
-          REELIER_CLOUD_KEY: ${{ secrets.REELIER_API_KEY }}
+          REELIER_CLOUD_KEY: ${{ secrets.REELIER_CLOUD_KEY }}
           REELIER_SIGNING_KEY: ${{ secrets.REELIER_SIGNING_KEY }}
         run: |
           if [ -n "$REELIER_SIGNING_KEY" ]; then
@@ -47,5 +47,5 @@ jobs:
             reelier push examples/portfolio/registry-latest.skill.md --timestamp --share
             reelier push examples/portfolio/github-repo-health.skill.md --timestamp --share
           else
-            echo "REELIER_API_KEY not set — skipping push (non-blocking)."
+            echo "REELIER_CLOUD_KEY not set — skipping push (non-blocking)."
           fi

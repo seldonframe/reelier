@@ -664,6 +664,10 @@ export function compile(records: TraceRecord[]): CompileResult {
 
   // Only tools THIS trace's own steps use — drift in a tool the skill never
   // calls must never fail a replay (docs/specs/flight-recorder-v2.md §1).
+  // Deliberately action tools only, unlike buildManifestForSkill
+  // (src/manifest.ts), which ALSO covers the probe tools of expect-bearing
+  // steps: a compiled skill carries no `expect:` yet (bindings arrive later
+  // via `approve --probe`, which additively stamps the probe tools then).
   const usedToolNames = new Set(steps.map((s) => s.tool));
   const filteredManifestTools = (metaToolManifest ?? []).filter((t) => usedToolNames.has(t.name));
   const manifest: SkillManifest | undefined = filteredManifestTools.length > 0 ? { v: 1, tools: filteredManifestTools } : undefined;

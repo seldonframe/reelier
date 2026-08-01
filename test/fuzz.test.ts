@@ -12,12 +12,20 @@
 // it must at least throw a proper `Error` with a non-empty message — not an
 // opaque "undefined is not a function" from an unguarded property access.
 //
+// A second flavor lives at the bottom of the file: POSITIVE-SPACE properties
+// for the wave-2 state-conditioned approval modules (expect grammar
+// round-trip, expectMac determinism/non-collision, keystore round-trip) —
+// same conventions, stronger invariants than "doesn't crash".
+//
 // Run counts are bounded (`FUZZ_RUNS` env var, default small) so this file
 // stays fast inside the serialized `npm test` suite. `npm run test:fuzz`
 // reruns the SAME assertions with a much higher run count for on-demand deep
 // fuzzing (not wired into CI).
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import fc from "fast-check";
 
 import { parseSkill, SkillParseError } from "../src/skill.js";
@@ -26,6 +34,16 @@ import { evalAssert, evalBind, AssertParseError, BindParseError, type Observatio
 import { canonicalJson, digestSha256 } from "../src/canonical-json.js";
 import { parseYamlSubset } from "../src/policy.js";
 import { buildTimeStampReq, imprintMatches } from "../src/tsa.js";
+import { serializeSkill } from "../src/writeback.js";
+import {
+  expectMac,
+  projectObservationTyped,
+  readKeystore,
+  writeKeystoreEntry,
+  loadExpectKey,
+  type ExpectKeystoreEntry,
+} from "../src/expect-mac.js";
+import { projectObservation } from "../src/runner.js";
 
 // Keep the serialized `npm test` run fast; `npm run test:fuzz` (FUZZ_RUNS env)
 // reruns the same properties with a much higher count for deep, on-demand
@@ -401,4 +419,294 @@ test("fuzz: imprintMatches never throws — always returns a boolean, even on ga
     }),
     { numRuns: NUM_RUNS }
   );
+});
+
+// ---------------------------------------------------------------------------
+// Wave 2 state-conditioned approval (spec §2.1, §3.3–§3.4): positive-space
+// properties, not crash resistance — round-trip stability of the expect
+// grammar, expectMac determinism + type-tag non-collision (A6), the I-6 key
+// guard's totality, and keystore write→read round-trip. Same NUM_RUNS /
+// pinned-seed conventions as the properties above; `npm run test:fuzz`
+// deep-runs these too.
+// ---------------------------------------------------------------------------
+
+const HEX_CHARS = "0123456789abcdef".split("");
+const hexStringArb = (len: number) => fc.array(fc.constantFrom(...HEX_CHARS), { minLength: len, maxLength: len }).map((cs) => cs.join(""));
+
+const expectPreArb = hexStringArb(64).map((h) => `hmac-sha256:${h}`);
+const expectKeyIdArb = hexStringArb(16);
+
+const pad = (n: number, w: number) => String(n).padStart(w, "0");
+
+// `expect.at` values that satisfy the grammar's shape anchor AND Date.parse:
+// toISOString() output (millis + Z), plus hand-built no-millis / long-fraction
+// / ±HH:MM-offset forms the regex also admits. Day is capped at 28 so every
+// generated calendar date is real (the validator also runs Date.parse).
+const isoMillisZArb = fc
+  .date({ min: new Date("1000-01-01T00:00:00Z"), max: new Date("9999-12-31T00:00:00Z"), noInvalidDate: true })
+  .map((d) => d.toISOString());
+const isoHandBuiltArb = fc
+  .record({
+    y: fc.integer({ min: 1000, max: 9999 }),
+    mo: fc.integer({ min: 1, max: 12 }),
+    d: fc.integer({ min: 1, max: 28 }),
+    h: fc.integer({ min: 0, max: 23 }),
+    mi: fc.integer({ min: 0, max: 59 }),
+    s: fc.integer({ min: 0, max: 59 }),
+    frac: fc.option(fc.array(fc.constantFrom(..."0123456789".split("")), { minLength: 1, maxLength: 6 }).map((ds) => ds.join("")), { nil: undefined }),
+    tz: fc.oneof(
+      fc.constant("Z"),
+      fc
+        .record({ sign: fc.constantFrom("+", "-"), oh: fc.integer({ min: 0, max: 13 }), om: fc.constantFrom(0, 15, 30, 45) })
+        .map(({ sign, oh, om }) => `${sign}${pad(oh, 2)}:${pad(om, 2)}`)
+    ),
+  })
+  .map(
+    ({ y, mo, d, h, mi, s, frac, tz }) =>
+      `${pad(y, 4)}-${pad(mo, 2)}-${pad(d, 2)}T${pad(h, 2)}:${pad(mi, 2)}:${pad(s, 2)}${frac !== undefined ? `.${frac}` : ""}${tz}`
+  );
+
+// fc.record yields null-prototype objects; rebuild as a plain literal so
+// deepEqual against parseSkill's output compares values, not prototypes.
+const stepExpectArb = fc
+  .record({
+    at: fc.oneof(isoMillisZArb, isoHandBuiltArb),
+    keyId: expectKeyIdArb,
+    pre: expectPreArb,
+  })
+  .map(({ at, keyId, pre }) => ({ at, keyId, pre }));
+
+// All six key orders a hand-editor (or a foreign tool) could write the JSON in.
+const expectKeyOrderArb = fc.constantFrom<Array<"at" | "keyId" | "pre">>(
+  ["at", "keyId", "pre"],
+  ["at", "pre", "keyId"],
+  ["keyId", "at", "pre"],
+  ["keyId", "pre", "at"],
+  ["pre", "at", "keyId"],
+  ["pre", "keyId", "at"]
+);
+
+const FUZZ_ATTEST = `- attest: {"tool":"gbrain.get_page","args":{"slug":"p"},"projection":["compiled_truth"]}`;
+const FUZZ_APPROVE = `- approve: sha256:${"a".repeat(64)}`;
+
+/** The expect-grammar test file's one-write-step skill, with the expect line's JSON rendered in an arbitrary key order. */
+function skillWithExpect(value: { at: string; keyId: string; pre: string }, order: Array<"at" | "keyId" | "pre">): string {
+  const json = `{${order.map((k) => `${JSON.stringify(k)}:${JSON.stringify(value[k])}`).join(",")}}`;
+  return `---
+name: t
+description: d
+---
+## Steps
+
+### Step 1 — write
+- intent: i
+- action: gbrain.put_page {"slug":"p","markdown":"# hi"}
+${FUZZ_ATTEST}
+${FUZZ_APPROVE}
+- expect: ${json}
+- effect: idempotent-write
+`;
+}
+
+test("fuzz property: expect grammar round-trips — parse→serialize→parse identity for arbitrary valid expect values, any key order", () => {
+  fc.assert(
+    fc.property(stepExpectArb, expectKeyOrderArb, (value, order) => {
+      const parsed = parseSkill(skillWithExpect(value, order));
+      // Parse fidelity: the StepExpect is exactly the generated value,
+      // regardless of the key order the JSON arrived in.
+      assert.deepEqual(parsed.steps[0].expect, value);
+      const rendered = serializeSkill(parsed);
+      const reparsed = parseSkill(rendered);
+      assert.deepEqual(reparsed.steps[0].expect, value);
+      // Byte-stable idempotence: a second serialize changes nothing.
+      assert.equal(serializeSkill(reparsed), rendered);
+    }),
+    { numRuns: NUM_RUNS }
+  );
+});
+
+const expectKeyArb = fc.uint8Array({ minLength: 32, maxLength: 32 }).filter((k) => k.some((b) => b !== 0));
+const probeArb = fc
+  .oneof(fc.string({ minLength: 1, maxLength: 20 }), fc.constantFrom("gbrain.get_page", "日本語.probe", "é probe"))
+  .filter((s) => s.trim() !== "");
+// '__proto__' is refused by expectMac by design (A6) — every other field name
+// is fair game, unicode included.
+const projectedFieldArb = fc
+  .oneof(fc.string({ maxLength: 12 }), fc.constantFrom("body.compiled_truth", "日本語", "é", " ", ""))
+  .filter((s) => s !== "__proto__");
+const projectedScalarArb = fc.oneof(
+  fc.string({ maxLength: 20 }),
+  fc.integer(),
+  fc.double({ noNaN: true, noDefaultInfinity: true }),
+  fc.boolean()
+);
+const projectedMapArb = fc.dictionary(projectedFieldArb, projectedScalarArb, { maxKeys: 6 });
+
+test("fuzz property: expectMac is deterministic and insertion-order independent for arbitrary keys/probes/maps", () => {
+  fc.assert(
+    fc.property(expectKeyArb, probeArb, projectedMapArb, (key, probe, map) => {
+      const mac1 = expectMac(key, probe, map);
+      const reversed: Record<string, string | number | boolean> = {};
+      for (const k of Object.keys(map).reverse()) reversed[k] = map[k];
+      const mac2 = expectMac(key, probe, reversed);
+      assert.equal(mac1, mac2);
+      assert.match(mac1, /^hmac-sha256:[0-9a-f]{64}$/);
+    }),
+    { numRuns: NUM_RUNS }
+  );
+});
+
+/**
+ * The faithful cross-type twin of a scalar, when one exists: the value that a
+ * type-collapsing MAC input (String(v)-style) would CONFLATE with `v`. Returns
+ * undefined when no exact twin exists (e.g. a string that doesn't read back as
+ * a number or boolean) — the property skips those.
+ */
+function crossTypeTwin(v: string | number | boolean): string | number | boolean | undefined {
+  if (typeof v === "number" || typeof v === "boolean") return String(v);
+  if (v === "true") return true;
+  if (v === "false") return false;
+  const n = Number(v);
+  if (v.trim() !== "" && !Number.isNaN(n) && String(n) === v) return n;
+  return undefined;
+}
+
+test("fuzz property: A6 non-collision — a value and its cross-type twin never share a MAC (number/string/bool variants stay distinct)", () => {
+  fc.assert(
+    fc.property(expectKeyArb, probeArb, projectedMapArb, fc.nat(), (key, probe, map, pick) => {
+      const fields = Object.keys(map);
+      fc.pre(fields.length > 0);
+      const field = fields[pick % fields.length];
+      const twin = crossTypeTwin(map[field]);
+      fc.pre(twin !== undefined);
+      const flipped = { ...map, [field]: twin! };
+      assert.notEqual(
+        expectMac(key, probe, map),
+        expectMac(key, probe, flipped),
+        `false MATCH across the type-tag boundary: ${JSON.stringify(map[field])} vs ${JSON.stringify(twin)}`
+      );
+    }),
+    { numRuns: NUM_RUNS }
+  );
+});
+
+test("fuzz property: a string value carrying a forged tag prefix never collides with the genuinely-typed value", () => {
+  fc.assert(
+    fc.property(
+      expectKeyArb,
+      probeArb,
+      projectedFieldArb,
+      fc.oneof(fc.integer(), fc.double({ noNaN: true, noDefaultInfinity: true }), fc.boolean()),
+      (key, probe, field, v) => {
+        const forged = typeof v === "number" ? `n:${String(v)}` : `b:${String(v)}`;
+        assert.notEqual(expectMac(key, probe, { [field]: v }), expectMac(key, probe, { [field]: forged }));
+      }
+    ),
+    { numRuns: NUM_RUNS }
+  );
+});
+
+test("fuzz property: expectMac binds the probe tool — two different probe names never share a MAC", () => {
+  fc.assert(
+    fc.property(expectKeyArb, probeArb, probeArb, projectedMapArb, (key, p1, p2, map) => {
+      fc.pre(p1 !== p2);
+      assert.notEqual(expectMac(key, p1, map), expectMac(key, p2, map));
+    }),
+    { numRuns: NUM_RUNS }
+  );
+});
+
+test("fuzz property: the I-6 guard is total — wrong-length or all-zero keys always throw, every usable key MACs", () => {
+  fc.assert(
+    fc.property(fc.uint8Array({ maxLength: 64 }), probeArb, projectedMapArb, (key, probe, map) => {
+      if (key.length !== 32 || key.every((b) => b === 0)) {
+        assert.throws(() => expectMac(key, probe, map), /I-6/);
+      } else {
+        assert.match(expectMac(key, probe, map), /^hmac-sha256:[0-9a-f]{64}$/);
+      }
+    }),
+    { numRuns: NUM_RUNS }
+  );
+});
+
+test("fuzz property: projectObservationTyped and projectObservation select identically on arbitrary JSON bodies (spec: one notion of state)", () => {
+  fc.assert(
+    fc.property(
+      fc.dictionary(fc.string({ maxLength: 8 }), fc.jsonValue(), { maxKeys: 6 }),
+      fc.array(fc.string({ maxLength: 8 }), { maxLength: 4 }),
+      (obj, extraKeys) => {
+        // Project a mix of keys that exist (any JSON type) and keys that don't.
+        const projection = [...Object.keys(obj).slice(0, 3), ...extraKeys];
+        const body = JSON.stringify(obj);
+        const typed = projectObservationTyped({ body, headers: {}, status: 200 }, projection);
+        const stringified = projectObservation({ status: 200, headers: {}, body }, projection);
+        assert.deepEqual(
+          Object.fromEntries(Object.entries(typed).map(([k, v]) => [k, String(v)])),
+          stringified
+        );
+      }
+    ),
+    { numRuns: NUM_RUNS }
+  );
+});
+
+// Real file I/O per case, so diversity (not volume) is what this one buys —
+// capped so the deep `npm run test:fuzz` pass doesn't turn into a disk
+// benchmark.
+const KEYSTORE_RUNS = Math.min(NUM_RUNS, 200);
+
+const keystoreEntryArb: fc.Arbitrary<ExpectKeystoreEntry> = fc
+  .record({
+    key: fc
+      .uint8Array({ minLength: 32, maxLength: 32 })
+      .filter((k) => k.some((b) => b !== 0))
+      .map((k) => Buffer.from(k).toString("base64")),
+    createdAt: fc.oneof(fc.string({ minLength: 1, maxLength: 30 }), fc.constantFrom("2026-07-30T00:00:00.000Z", "日本語", " ")),
+    skill: fc.option(fc.string({ maxLength: 15 }), { nil: undefined }),
+    // JSON-representable numbers only: NaN/±Infinity JSON.stringify to null,
+    // which readKeystore would (correctly, loudly) refuse on the next read —
+    // that write-side footgun is out of scope for a round-trip property.
+    step: fc.option(
+      fc.double({ noNaN: true, noDefaultInfinity: true }).map((v) => (Object.is(v, -0) ? 0 : v)),
+      { nil: undefined }
+    ),
+  })
+  .map(({ key, createdAt, skill, step }) => ({
+    key,
+    createdAt,
+    ...(skill !== undefined ? { skill } : {}),
+    ...(step !== undefined ? { step } : {}),
+  }));
+
+test("fuzz property: keystore write→read round-trips arbitrary valid entries (last write wins per keyId, no leftover temp/lock files)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "reelier-fuzz-keys-"));
+  let n = 0;
+  try {
+    await fc.assert(
+      fc.asyncProperty(fc.array(fc.tuple(expectKeyIdArb, keystoreEntryArb), { minLength: 1, maxLength: 4 }), async (entries) => {
+        const base = `store-${n++}`;
+        const file = path.join(dir, `${base}.json`);
+        const expected: Record<string, ExpectKeystoreEntry> = {};
+        for (const [keyId, entry] of entries) {
+          await writeKeystoreEntry(file, keyId, entry);
+          expected[keyId] = entry;
+        }
+        const store = await readKeystore(file);
+        assert.deepEqual(store, { v: 1, keys: expected });
+        for (const [keyId, entry] of Object.entries(expected)) {
+          assert.equal(loadExpectKey(store, keyId)?.toString("base64"), entry.key);
+        }
+        // Revoked-or-never-present reads as undefined (spec C7) — pick a
+        // keyId guaranteed absent from this run's generated set.
+        const absent = ["f".repeat(16), "e".repeat(16)].find((k) => !(k in expected))!;
+        assert.equal(loadExpectKey(store, absent), undefined);
+        // Durability discipline (A10): no .lock/.tmp-*/.bak-* left behind.
+        const leftovers = (await readdir(dir)).filter((f) => f.startsWith(`${base}.json.`));
+        assert.deepEqual(leftovers, []);
+      }),
+      { numRuns: KEYSTORE_RUNS }
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });

@@ -4,6 +4,14 @@
 
 export type Effect = "read" | "idempotent-write" | "destructive";
 
+/**
+ * Whether an actor OUTSIDE the system may already have acted on a step's
+ * result. Orthogonal to `Effect`, which is mechanical (can this be repeated
+ * safely) — a `destructive` delete and a `destructive` send are the same
+ * `effect` and profoundly different in consequence. See SPEC §3.7.
+ */
+export type Exposure = "internal" | "external-visible";
+
 export interface Step {
   n: number;
   title: string;
@@ -14,6 +22,15 @@ export interface Step {
   binds: string[];
   effect: Effect;
   /**
+   * Whether an actor outside the system may already have acted on this
+   * step's result (SPEC §3.7). Independent of `effect`. Absent means
+   * `internal` — and stays ABSENT on the parsed step rather than being
+   * defaulted here, so a consumer can still tell "the author said internal"
+   * from "the author said nothing". Changes no gating behaviour in this
+   * version: no exit code, refusal, or check predicate reads it.
+   */
+  exposure?: Exposure;
+  /**
    * Hash-bound write approval (docs/specs/flight-recorder-v2.md §2), stamped
    * by `reelier approve` (src/cli.ts). Absent = legacy/unapproved step — the
    * runner falls back to the `--allow-writes`/`--yes` flags for it. Present
@@ -21,8 +38,78 @@ export interface Step {
    * refuses to execute (no flag override) if it doesn't match verbatim.
    */
   approve?: string;
+  /**
+   * Declares the paired read for `declared-probe` attestation: a read-only
+   * call, run after this step's write, whose (optionally projected) result
+   * is bound into the receipt as evidence the write took effect. Covered by
+   * the approval hash (src/approval.ts) when present — see the security
+   * rationale there.
+   */
+  attest?: StepAttestDecl;
+  /**
+   * State-conditioned approval binding (state-conditioned-approval P1):
+   * a keyed commitment (`pre`, HMAC-SHA256 under a per-approval key that
+   * NEVER enters this file or any record — only its `keyId` does) over the
+   * approve-time observation of the step's declared probe (`attest:`),
+   * plus the observation timestamp (`at`, informational — time is never an
+   * input to the comparison). Machine-written by `reelier approve --probe`,
+   * never by hand. Requires BOTH `attest:` and `approve:` on the same step
+   * (invariant I-12) and is itself covered by the approval hash
+   * (src/approval.ts) — hand-editing or deleting it is an approval
+   * mismatch, refused at the final boundary.
+   */
+  expect?: StepExpect;
   /** 1-indexed line in the source file where this step's header starts. */
   line: number;
+}
+
+/** A step's declared paired read for `declared-probe` attestation (see `Step.attest`). */
+export interface StepAttestDecl {
+  tool: string;
+  args: unknown;
+  projection?: string[];
+}
+
+/** A step's state-conditioned approval binding (see `Step.expect`). */
+export interface StepExpect {
+  /** Approve-time observation timestamp (ISO-8601). Informational — never an input to the comparison. */
+  at: string;
+  /** Names which local keystore key computed `pre` — 16 hex, the signing keyId length convention. */
+  keyId: string;
+  /** The keyed commitment over the approve-time projected observation: `hmac-sha256:<64 hex>`. */
+  pre: string;
+  /**
+   * W5-T3: the approval's time-to-live, as an ABSOLUTE ISO-8601 instant —
+   * `reelier approve --probe --expires <duration>` resolves the operator's
+   * duration against approve time and stamps the result. Absolute, never a
+   * stored duration: a relative value would silently re-arm every time the
+   * file is read, which is the opposite of expiring. At or after this instant
+   * the state check is `unevaluated` with reason `approval-expired: …` —
+   * never a pass, never a mismatch (nothing about the world was established)
+   * — which the existing `state_gate: refuse` branch refuses before dispatch.
+   * Covered by the approval hash like every other `expect` field, so
+   * hand-extending a TTL is an approval mismatch.
+   */
+  expiresAt?: string;
+  /**
+   * P1.5 (wave2 §3.5): optional per-field commitments under the same
+   * per-approval key — output-form field names (`body.<key>` /
+   * `header.<name>`) to `hmac-sha256:<64 hex>`. Diagnosis only: the
+   * whole-projection `pre` stays the match/mismatch verdict; these let a
+   * mismatch name WHICH declared fields moved (names, never values).
+   */
+  fields?: Record<string, string>;
+  /**
+   * W3-S4 (wave2 conflict C4): the keyed commitment over the FILLED probe
+   * args, present iff this binding's probe args were parameterized and
+   * filled from operator-supplied `--var`s at approve time. Same shape and
+   * prefix discipline as `pre`. The runner recomputes it over the args it is
+   * about to send and compares BEFORE any probe dispatches (I-18) — this,
+   * not the approval hash, is what preserves the exfiltration boundary that
+   * forced literal-only probes in P1: the hash covers the template TEXT,
+   * which a run-time fill leaves untouched.
+   */
+  probeArgs?: string;
 }
 
 /** One tool this skill's steps depend on, as recorded/stamped from a live downstream's advertised schema. */
@@ -79,6 +166,12 @@ const EFFECTS: readonly Effect[] = ["read", "idempotent-write", "destructive"];
 
 function isEffect(value: string): value is Effect {
   return (EFFECTS as readonly string[]).includes(value);
+}
+
+export const EXPOSURES: readonly Exposure[] = ["internal", "external-visible"];
+
+function isExposure(value: string): value is Exposure {
+  return (EXPOSURES as readonly string[]).includes(value);
 }
 
 /**
@@ -170,6 +263,134 @@ function validateManifestShape(value: unknown): SkillManifest {
     return out;
   });
   return { v: 1, tools };
+}
+
+/**
+ * Validate the shape of a parsed `attest:` step-field value. Thrown errors
+ * are loud and specific (no Optimistic Path — a malformed attest decl must
+ * never silently degrade to "no attest").
+ */
+function validateAttestShape(value: unknown, ctx: { step: number; line: number }): StepAttestDecl {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new SkillParseError("Malformed 'attest' value (expected a JSON object)", ctx);
+  }
+  const obj = value as Record<string, unknown>;
+  for (const key of Object.keys(obj)) {
+    if (key !== "tool" && key !== "args" && key !== "projection") {
+      throw new SkillParseError(`Unknown 'attest' key ${JSON.stringify(key)} — expected tool/args/projection`, ctx);
+    }
+  }
+  if (typeof obj.tool !== "string" || obj.tool.trim() === "") {
+    throw new SkillParseError("'attest' is missing a non-empty string 'tool'", ctx);
+  }
+  if (!("args" in obj)) {
+    throw new SkillParseError("'attest' is missing 'args'", ctx);
+  }
+  let projection: string[] | undefined;
+  if (obj.projection !== undefined) {
+    if (!Array.isArray(obj.projection) || obj.projection.length === 0 || obj.projection.some((p) => typeof p !== "string" || p.trim() === "")) {
+      throw new SkillParseError("'attest.projection' must be a non-empty array of non-empty strings", ctx);
+    }
+    projection = obj.projection as string[];
+  }
+  return { tool: obj.tool, args: obj.args, ...(projection ? { projection } : {}) };
+}
+
+const EXPECT_PRE_RE = /^hmac-sha256:[0-9a-f]{64}$/;
+const EXPECT_KEY_ID_RE = /^[0-9a-f]{16}$/;
+// Shape-anchored, not just Date.parse: V8's Date.parse accepts plenty of
+// non-ISO strings ("March 5, 2026", "2026/07/30", "0", padded input), so a
+// bare parseability check would under-enforce the "ISO-8601" contract this
+// field's own error message states. Shape first, then parseability.
+const EXPECT_AT_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
+
+/**
+ * Validate the shape of a parsed `expect:` step-field value. Thrown errors
+ * are loud and specific (no Optimistic Path — a malformed expect binding
+ * must never silently degrade to "no binding"). Mirrors validateAttestShape.
+ */
+function validateExpectShape(value: unknown, ctx: { step: number; line: number }): StepExpect {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new SkillParseError("Malformed 'expect' value (expected a JSON object)", ctx);
+  }
+  const obj = value as Record<string, unknown>;
+  for (const key of Object.keys(obj)) {
+    if (key !== "at" && key !== "keyId" && key !== "pre" && key !== "expiresAt" && key !== "fields" && key !== "probeArgs") {
+      throw new SkillParseError(`Unknown 'expect' key ${JSON.stringify(key)} — expected pre/keyId/at/expiresAt/fields/probeArgs`, ctx);
+    }
+  }
+  if (typeof obj.pre !== "string" || !EXPECT_PRE_RE.test(obj.pre)) {
+    throw new SkillParseError(
+      `Invalid 'expect.pre' ${JSON.stringify(obj.pre)} — expected hmac-sha256:<64 hex>`,
+      ctx
+    );
+  }
+  if (typeof obj.keyId !== "string" || !EXPECT_KEY_ID_RE.test(obj.keyId)) {
+    throw new SkillParseError(
+      `Invalid 'expect.keyId' ${JSON.stringify(obj.keyId)} — expected 16 lowercase hex chars`,
+      ctx
+    );
+  }
+  if (typeof obj.at !== "string" || !EXPECT_AT_RE.test(obj.at) || Number.isNaN(Date.parse(obj.at))) {
+    throw new SkillParseError(
+      `Invalid 'expect.at' ${JSON.stringify(obj.at)} — expected a non-empty ISO-8601 timestamp`,
+      ctx
+    );
+  }
+  // W5-T3: an ABSOLUTE instant, validated by the same shape-anchored rule as
+  // `at` — a relative duration ("24h") must be a loud parse error here, not a
+  // string that Date.parse happens to reject later inside the runner.
+  let expiresAt: string | undefined;
+  if (obj.expiresAt !== undefined) {
+    if (typeof obj.expiresAt !== "string" || !EXPECT_AT_RE.test(obj.expiresAt) || Number.isNaN(Date.parse(obj.expiresAt))) {
+      throw new SkillParseError(
+        `Invalid 'expect.expiresAt' ${JSON.stringify(obj.expiresAt)} — expected an absolute ISO-8601 timestamp (not a relative duration)`,
+        ctx
+      );
+    }
+    expiresAt = obj.expiresAt;
+  }
+  let fields: Record<string, string> | undefined;
+  if (obj.fields !== undefined) {
+    if (obj.fields === null || typeof obj.fields !== "object" || Array.isArray(obj.fields)) {
+      throw new SkillParseError("Malformed 'expect.fields' (expected an object of field-name → hmac-sha256:<64 hex>)", ctx);
+    }
+    fields = {};
+    for (const [name, mac] of Object.entries(obj.fields as Record<string, unknown>)) {
+      if (name.trim() === "" || name === "__proto__") {
+        throw new SkillParseError(`Invalid 'expect.fields' name ${JSON.stringify(name)}`, ctx);
+      }
+      if (typeof mac !== "string" || !EXPECT_PRE_RE.test(mac)) {
+        throw new SkillParseError(`Invalid 'expect.fields' value for ${JSON.stringify(name)} — expected hmac-sha256:<64 hex>`, ctx);
+      }
+      fields[name] = mac;
+    }
+    if (Object.keys(fields).length === 0) {
+      throw new SkillParseError("'expect.fields' must not be empty — omit it entirely for a fieldless binding", ctx);
+    }
+  }
+  // W3-S4: same shape and prefix discipline as `pre`. `pre` is validated
+  // above and is REQUIRED, so a `probeArgs` without one is already a parse
+  // error — the spec's rule holds by construction, pinned rather than
+  // re-implemented.
+  let probeArgs: string | undefined;
+  if (obj.probeArgs !== undefined) {
+    if (typeof obj.probeArgs !== "string" || !EXPECT_PRE_RE.test(obj.probeArgs)) {
+      throw new SkillParseError(
+        `Invalid 'expect.probeArgs' ${JSON.stringify(obj.probeArgs)} — expected hmac-sha256:<64 hex>`,
+        ctx
+      );
+    }
+    probeArgs = obj.probeArgs;
+  }
+  return {
+    at: obj.at,
+    keyId: obj.keyId,
+    pre: obj.pre,
+    ...(expiresAt !== undefined ? { expiresAt } : {}),
+    ...(fields !== undefined ? { fields } : {}),
+    ...(probeArgs !== undefined ? { probeArgs } : {}),
+  };
 }
 
 /** Minimal frontmatter parser: flat `key: value` pairs (name, description, optional manifest). */
@@ -302,7 +523,11 @@ export function parseSkill(source: string): Skill {
     const asserts: string[] = [];
     const binds: string[] = [];
     let effect: Effect | undefined;
+    let exposure: Exposure | undefined;
     let approve: string | undefined;
+    let attest: StepAttestDecl | undefined;
+    let expect: StepExpect | undefined;
+    let expectLine: number | undefined;
 
     for (let i = startIdx + 1; i < endIdx; i++) {
       const raw = bodyLines[i];
@@ -310,13 +535,13 @@ export function parseSkill(source: string): Skill {
       if (line === "") continue;
       const curLine = bodyStartLine + i;
 
-      const bulletMatch = line.match(/^-\s*(intent|action|assert|bind|effect|approve)\s*:\s*(.*)$/);
+      const bulletMatch = line.match(/^-\s*(intent|action|assert|bind|effect|exposure|approve|attest|expect)\s*:\s*(.*)$/);
       if (!bulletMatch) {
         // Ignore non-bullet prose lines within a step block (e.g. blank/comment text),
         // but reject anything that looks like an attempted bullet with a typo'd key.
         if (line.startsWith("-")) {
           throw new SkillParseError(
-            `Unrecognized step field, expected one of intent/action/assert/bind/effect/approve: ${JSON.stringify(line)}`,
+            `Unrecognized step field, expected one of intent/action/assert/bind/effect/exposure/approve/attest/expect: ${JSON.stringify(line)}`,
             { step: n, line: curLine }
           );
         }
@@ -366,6 +591,18 @@ export function parseSkill(source: string): Skill {
           }
           effect = rest.trim() as Effect;
           break;
+        case "exposure":
+          if (exposure !== undefined) {
+            throw new SkillParseError("Duplicate 'exposure' field in step", { step: n, line: curLine });
+          }
+          if (!isExposure(rest.trim())) {
+            throw new SkillParseError(
+              `Invalid exposure ${JSON.stringify(rest.trim())} — must be one of ${EXPOSURES.join(", ")}`,
+              { step: n, line: curLine }
+            );
+          }
+          exposure = rest.trim() as Exposure;
+          break;
         case "approve":
           if (approve !== undefined) {
             throw new SkillParseError("Duplicate 'approve' field in step", { step: n, line: curLine });
@@ -381,6 +618,33 @@ export function parseSkill(source: string): Skill {
             approve = value;
           }
           break;
+        case "attest": {
+          if (attest !== undefined) {
+            throw new SkillParseError("Duplicate 'attest' field in step", { step: n, line: curLine });
+          }
+          let parsedAttest: unknown;
+          try {
+            parsedAttest = JSON.parse(rest.trim());
+          } catch (err) {
+            throw new SkillParseError(`Attest value is not valid JSON: ${(err as Error).message}`, { step: n, line: curLine });
+          }
+          attest = validateAttestShape(parsedAttest, { step: n, line: curLine });
+          break;
+        }
+        case "expect": {
+          if (expect !== undefined) {
+            throw new SkillParseError("Duplicate 'expect' field in step", { step: n, line: curLine });
+          }
+          let parsedExpect: unknown;
+          try {
+            parsedExpect = JSON.parse(rest.trim());
+          } catch (err) {
+            throw new SkillParseError(`Expect value is not valid JSON: ${(err as Error).message}`, { step: n, line: curLine });
+          }
+          expect = validateExpectShape(parsedExpect, { step: n, line: curLine });
+          expectLine = curLine;
+          break;
+        }
       }
     }
 
@@ -393,6 +657,29 @@ export function parseSkill(source: string): Skill {
     if (!effect) {
       throw new SkillParseError("Step is missing required 'effect' field", { step: n, line: fileLine });
     }
+    // Joint validation (state-conditioned-approval I-12): the only writer of
+    // `expect:` (`reelier approve --probe`) always writes the attest/approve/
+    // expect trio, so a lone `expect` can only be a hand edit — and there is
+    // no probe to compare with (attest) and no approval to condition (approve)
+    // without the other two. Rejected loudly, never silently ignored.
+    if (expect !== undefined && (attest === undefined || approve === undefined)) {
+      throw new SkillParseError("'expect' requires both 'attest:' and 'approve:' on the step", {
+        step: n,
+        line: expectLine ?? fileLine,
+      });
+    }
+    // And never on a read step (S4 adversarial-review finding): the runner's
+    // write gates — approval hash, state check, write receipt — all key off
+    // the write effect, so `expect` on an `effect: read` step would be a
+    // stamped binding NOTHING checks, silently rendering as a clean pass
+    // (never-list #1). `approve --probe` only ever binds write steps; this
+    // shape can only be a hand edit flipping the effect after binding.
+    if (expect !== undefined && effect === "read") {
+      throw new SkillParseError(
+        "'expect' requires a write-effect step — a read step has no gated dispatch to condition (did the step's 'effect' change after it was state-bound?)",
+        { step: n, line: expectLine ?? fileLine }
+      );
+    }
 
     steps.push({
       n,
@@ -403,7 +690,11 @@ export function parseSkill(source: string): Skill {
       asserts,
       binds,
       effect,
+      // Absent stays absent (never defaulted to "internal") — see Step.exposure.
+      ...(exposure !== undefined ? { exposure } : {}),
       ...(approve !== undefined ? { approve } : {}),
+      ...(attest !== undefined ? { attest } : {}),
+      ...(expect !== undefined ? { expect } : {}),
       line: fileLine,
     });
   }

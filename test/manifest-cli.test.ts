@@ -208,6 +208,49 @@ test("cmdRun: manifest matches live schema -> proceeds silently (no drift messag
   });
 });
 
+test("cmdRun: a passing manifest preflight stamps manifestChecked on the run record (never manifestIgnored)", async () => {
+  await withTempDir(async (dir) => {
+    const skillPath = path.join(dir, "s.skill.md");
+    await writeFile(skillPath, manifestSkillSource("run-cli-checked", TOOL_DIGEST), "utf8");
+    const fake = fakeStatusConnection();
+    const originalCwd = process.cwd();
+    process.chdir(dir);
+    let code: number;
+    try {
+      ({ result: code } = await captureConsoleError(() =>
+        cmdRun(runArgs([skillPath], ["fake-wrap-spec"]), async () => fake)
+      ));
+    } finally {
+      process.chdir(originalCwd);
+    }
+    assert.equal(code, 0);
+
+    const runLog = await readFile(path.join(dir, ".reelier", "runs", "run-cli-checked.jsonl"), "utf8");
+    const record = JSON.parse(runLog.trim().split("\n").pop()!);
+    assert.equal(record.manifestChecked, true);
+    assert.equal(record.manifestIgnored, undefined);
+  });
+});
+
+test("cmdRun: a manifest-less run stamps neither manifestChecked nor manifestIgnored", async () => {
+  await withTempDir(async (dir) => {
+    const skillPath = path.join(dir, "s.skill.md");
+    await writeFile(skillPath, NO_MANIFEST_SKILL, "utf8");
+    const originalCwd = process.cwd();
+    process.chdir(dir);
+    try {
+      await captureConsoleError(() => cmdRun(runArgs([skillPath])));
+    } finally {
+      process.chdir(originalCwd);
+    }
+
+    const runLog = await readFile(path.join(dir, ".reelier", "runs", "run-cli-no-manifest.jsonl"), "utf8");
+    const record = JSON.parse(runLog.trim().split("\n").pop()!);
+    assert.equal(record.manifestChecked, undefined);
+    assert.equal(record.manifestIgnored, undefined);
+  });
+});
+
 test("cmdRun: manifest drift refuses to replay, exit 1, BEFORE the tool is ever dispatched", async () => {
   await withTempDir(async (dir) => {
     const skillPath = path.join(dir, "s.skill.md");
@@ -262,6 +305,7 @@ test("cmdRun: --ignore-manifest bypasses drift, warns, and stamps manifestIgnore
     const runLog = await readFile(path.join(dir, ".reelier", "runs", "run-cli-ignore.jsonl"), "utf8");
     const record = JSON.parse(runLog.trim().split("\n").pop()!);
     assert.equal(record.manifestIgnored, true);
+    assert.equal(record.manifestChecked, undefined);
   });
 });
 
