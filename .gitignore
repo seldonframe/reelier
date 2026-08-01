@@ -1,8 +1,35 @@
 node_modules/
 dist/
 dist-test/
-.reelier/
+coverage/
+# Written by ci.yml's "Run tests" step (`npm test 2>&1 | tee test-output.txt`)
+# for the badge-check step to read. Reproducing that command locally
+# shouldn't leave an untracked file that trips preflight's own clean-tree
+# check.
+test-output.txt
+# .reelier/ is deny-all on purpose: it holds generated output (runs/,
+# traces/, push-state.json, prices/) AND .reelier/signing/, which is a
+# PRIVATE Ed25519 keypair. Never invert this to an allow-all — the
+# human-authored config files get explicit exceptions instead.
+#
+# Every file below is read from the committed default branch (scope.yml,
+# agents.yml, config.yml by the reelier-receipts App; policy.yml by the
+# CLI at replay time), so an un-exempted config is one git silently
+# refuses to track and the reader therefore never sees. That is exactly
+# how .reelier/agents.yml failed to land the first time.
+.reelier/*
+!.reelier/scope.yml
+!.reelier/agents.yml
+!.reelier/config.yml
+!.reelier/policy.yml
+.stryker-tmp/
+reports/
+.superpowers-*/
+# mex-agent local code graph — ~33MB binary SQLite db, rebuilt in ~36s by `mex graph`.
+# Never commit it; see CLAUDE.md §10.2 for the build rule.
+.mex/
 
 *.mcpb
 .screenshots-tmp/
 .house-tenant-key.local
+.superpowers/

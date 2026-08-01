@@ -45,7 +45,9 @@ The generated workflow:
 
 ## Guardrails: manifest and approve
 
-`reelier manifest` stamps a schema digest per tool a skill uses; drift or a missing tool fails closed — `MANIFEST DRIFT — refusing to replay`. `--ignore-manifest` is the break-glass override, recorded (`manifestIgnored: true`), never silent. A skill with no manifest gets an advisory note.
+`reelier manifest` stamps a schema digest per tool a skill uses; drift or a missing tool fails closed — `MANIFEST DRIFT — refusing to replay`. A passing preflight is stamped on the run record (`manifestChecked: true`) so a receipt can prove "declared + verified", not just infer it. `--ignore-manifest` is the break-glass override, recorded (`manifestIgnored: true`), never silent. A skill with no manifest gets an advisory note.
+
+**This is rug-pull detection.** The ecosystem's name for a tool server that presents one contract when you review it and a different one when you call it is a *rug pull*; the manifest is how a Reelier replay refuses to be on the wrong side of one. Worth knowing what it covers and what it does not: the digest is over each tool's `inputSchema`, so a server that keeps its schema and changes its *behavior* is not caught here — that is what the state check (`expect:`) and run-shape priors are for.
 
 ```sh
 reelier manifest <skill.md> --wrap "<your mcp server>"   # stamp/refresh the manifest from live servers
@@ -66,6 +68,24 @@ reelier approve <skill.md> --all    # approve every write step non-interactively
 A mocked step never calls its tool, so a write step is recovery-testable with no `--allow-writes`, no side effect — `reelier push` refuses to publish a mock run.
 
 *Taxonomy (Determinism / Recovery / Drift) due to Mads Hansen's review of the launch post.*
+
+## Run-shape priors (`reelier baseline`)
+
+Your skill's own past runs are already on your disk, at `.reelier/runs/<skill>.jsonl`. `reelier baseline <skill.md>` computes a median + MAD baseline from the previous runs of *that* skill and reports how the latest one sits against it — steps, per-outcome counts, dispatched writes, the distinct resources those writes landed on, escalations, the steps that healed at L1 and at L2, duration, the gap since the previous run, and the silence since the latest one.
+
+```sh
+reelier baseline my-skill.skill.md   # read-only; executes nothing; always exits 0
+```
+
+Nothing is transmitted, nothing is compared across skills or machines, and you declare nothing — the run-shape signals exist as soon as there are four runs; gap and silence need five. `reelier run` prints the same block, but only when something actually departed; a repo with no history, or a run that matches its own history, prints exactly what it always did.
+
+What it reports is a **deviation** — a difference from this skill's own history:
+
+```
+! writes: 400 (previous 4 runs: median 1, min 1, max 2)
+```
+
+Not a cause, and not a verdict. A deviation is not a failure: it changes no outcome, no exit code, and no gate. The rule is one sentence — a value is reported when it lands more than 3 median-absolute-deviations *outside the range the previous runs actually spanned* — so a value your skill has already produced is never called a departure, and with fewer than three prior runs it says so instead of inventing a baseline. Full design, including what was deliberately left out: [`docs/specs/run-shape-priors.md`](specs/run-shape-priors.md).
 
 ## Assert grammar
 
@@ -112,6 +132,40 @@ Only replayable calls — builtins or `mcp__<server>__<tool>` — compile into a
 - **reelier_replay** — replay at 0 tokens (read-only by default)
 - **reelier_diff** — SAME or DRIFTED per step; exit 1 on drift
 - **reelier_push** — sync a receipt to the [ledger](https://www.reelier.com/replays) (opt-in)
+
+## Login: `reelier login` / `logout` / `whoami`
+
+`reelier push`/`get`/`verify`/`serve` default `REELIER_CLOUD_URL` to
+`https://www.reelier.com` — no config needed. Credentials resolve in this
+order: `REELIER_CLOUD_KEY` env var, then the key stored in the local config
+file. Env vars remain the CI/self-hosting path; `login` is the interactive
+one.
+
+```sh
+reelier login    # connect this machine to Reelier Cloud
+reelier whoami    # print who the stored key resolves to
+reelier logout    # clear the locally stored key
+```
+
+**Device flow.** `reelier login` starts an OAuth-Device-Flow-shaped handshake
+against Reelier Cloud: the CLI requests a device code, prints a short user
+code (`XXXX-XXXX`) plus an `https://www.reelier.com/activate` link, and
+best-effort opens that link in your default browser (falling back to just
+printing it if the browser can't be launched). You approve the code on
+reelier.com — that's where GitHub OAuth happens; the CLI itself never talks
+to GitHub, it only polls Reelier Cloud. Once approved, the cloud mints an API
+key: the CLI never sees the user's GitHub credentials, and the minted key is
+shown to no one and stored **hashed** server-side. Device codes expire after
+15 minutes; an expired or denied code makes `login` exit non-zero with the
+reason. `reelier logout` only clears the local credential — it does not
+revoke the key server-side; revoke a leaked key from the dashboard's
+Settings.
+
+**Config file.** The key (and, if you ever pointed at a non-default cloud, the
+URL) are stored at `~/.reelier/config.json`, written with `chmod 0o600`
+best-effort (a no-op on platforms without POSIX permissions, e.g. Windows) —
+this restricts read access to the current OS user, but the file is **plain
+JSON on disk, not encrypted**. Treat it like any other local credential file.
 
 ## BYOK
 

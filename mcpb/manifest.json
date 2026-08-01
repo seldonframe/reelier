@@ -2,9 +2,9 @@
   "manifest_version": "0.2",
   "name": "reelier",
   "display_name": "Reelier",
-  "version": "0.13.0",
+  "version": "0.24.0",
   "description": "Record an agent's tool-call workflow once, replay it deterministically at 0 tokens, and diff runs to catch drift — CI + snapshot tests for MCP tool-call workflows.",
-  "long_description": "Reelier records an agent's tool-call session (MCP-native), compiles it into a SKILL.md with an assertion on every step, replays it at Level 0 (no LLM, milliseconds, byte-identical, read-only by default), and diffs runs to report SAME or DRIFTED per step with exit 1 on drift. Every run writes a receipt. MIT, local-first, BYOK.",
+  "long_description": "Reelier records an agent's tool-call session (MCP-native), compiles it into a SKILL.md with minimal per-step assertions, replays it at Level 0 (no LLM, milliseconds, byte-identical, read-only by default), and diffs runs to report SAME or DRIFTED per step with exit 1 on drift. Every run writes a receipt. MIT, local-first, BYOK.",
   "author": {
     "name": "Maxime Houle",
     "url": "https://www.reelier.com"
@@ -22,7 +22,7 @@
     "entry_point": "index.js",
     "mcp_config": {
       "command": "npx",
-      "args": ["-y", "reelier@0.13.0", "serve"],
+      "args": ["-y", "reelier@0.24.0", "serve"],
       "env": {}
     }
   },
@@ -34,7 +34,7 @@
   "tools": [
     { "name": "reelier_scan", "description": "Scan agent session history for replayable tool-call workflows" },
     { "name": "reelier_from_session", "description": "Compile a recorded session into a replayable SKILL.md" },
-    { "name": "reelier_replay", "description": "Replay a skill deterministically at 0 tokens with per-step assertions" },
+    { "name": "reelier_replay", "description": "Replay a skill deterministically at 0 tokens with a per-step pass/fail result" },
     { "name": "reelier_diff", "description": "Diff two runs of a skill — SAME or DRIFTED per step, exit 1 on drift" },
     { "name": "reelier_push", "description": "Sync a run receipt to the reelier.com ledger for a shareable permalink (opt-in)" }
   ]

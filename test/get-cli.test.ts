@@ -458,15 +458,20 @@ test("cmdGet --mine: a name containing '/' exits 1 without ever calling fetch", 
   });
 });
 
-test("cmdGet --mine: missing REELIER_CLOUD_URL/KEY exits 1 without calling fetch", async () => {
+test("cmdGet --mine: no key anywhere exits 1 without calling fetch", async () => {
   await withTempDir(async (dir) => {
-    await withEnv({ REELIER_CLOUD_URL: undefined, REELIER_CLOUD_KEY: undefined }, async () => {
-      const fn = fakeFetch([]);
-      const { result: exitCode, lines } = await withCapturedLogs(() =>
-        withCwd(dir, () => withFetch(fn, () => cmdGet(makeArgs("my-private-fixture", ["mine"]))))
-      );
-      assert.equal(exitCode, 1);
-      assert.ok(lines.some((l) => l.includes("REELIER_CLOUD_URL") && l.includes("REELIER_CLOUD_KEY")));
-    });
+    // HOME/USERPROFILE pinned to the isolated tmp dir so this never depends
+    // on the real machine's login state.
+    await withEnv(
+      { REELIER_CLOUD_URL: undefined, REELIER_CLOUD_KEY: undefined, HOME: dir, USERPROFILE: dir },
+      async () => {
+        const fn = fakeFetch([]);
+        const { result: exitCode, lines } = await withCapturedLogs(() =>
+          withCwd(dir, () => withFetch(fn, () => cmdGet(makeArgs("my-private-fixture", ["mine"]))))
+        );
+        assert.equal(exitCode, 1);
+        assert.ok(lines.some((l) => l.includes("Not logged in") && l.includes("REELIER_CLOUD_KEY")));
+      }
+    );
   });
 });

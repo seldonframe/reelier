@@ -4,24 +4,24 @@
 
 # Reelier
 
-### Agents make claims. Reelier writes receipts.
+### Let your agents write. Keep the receipts.
 
-Record the run that worked, replay it deterministically — **0 tokens, byte-identical, a receipt on every step** — and `reelier diff` catches the day it drifts.
+*Your agents worked all night. Here's exactly what changed.*
 
-**Think of it as CI + snapshot tests for your agent's tool-call workflows.**
+Reelier records the run that worked, freezes it as a replayable skill, and replays it deterministically — every run comes back as a receipt: proof of what the agent did and what changed because of it. **Agents make claims. Reelier writes receipts.**
 
 [![npm version](https://img.shields.io/npm/v/reelier.svg?color=blue)](https://www.npmjs.com/package/reelier)
 [![CI](https://github.com/seldonframe/reelier/actions/workflows/ci.yml/badge.svg)](https://github.com/seldonframe/reelier/actions/workflows/ci.yml)
-[![tests](https://img.shields.io/badge/tests-641%20passing-brightgreen.svg)](./test)
+[![tests](https://img.shields.io/badge/tests-1344%20passing-brightgreen.svg)](./test)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 [![Discord](https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white)](https://discord.gg/nSp5sd4v)
 [![stars](https://img.shields.io/github/stars/seldonframe/reelier?style=social)](https://github.com/seldonframe/reelier)
 
 **[Website](https://www.reelier.com)** · **[Docs](https://www.reelier.com/docs)** · **[SPEC.md](./SPEC.md)**
 
-<img src="https://raw.githubusercontent.com/seldonframe/reelier/main/docs/assets/reelier-demo.gif" width="760" alt="Reelier: record a run that worked, replay it deterministically at 0 tokens, diff for drift, a receipt on every step" />
+<img src="https://raw.githubusercontent.com/seldonframe/reelier/main/docs/assets/reelier-demo.gif" width="760" alt="Reelier: Dependabot bumps a dependency, Reelier replays your recorded agent run at 0 tokens and diffs it, catching the drift on the PR before you merge" />
 
-<sub><a href="https://www.reelier.com/reelier-explainer.mp4">▶ watch with sound (22s)</a></sub>
+<sub><a href="https://www.reelier.com/reelier-explainer.mp4">▶ watch with sound (27s)</a></sub>
 
 <a href="https://glama.ai/mcp/servers/seldonframe/reelier"><img width="380" height="200" src="https://glama.ai/mcp/servers/seldonframe/reelier/badge" alt="Reelier MCP server on Glama" /></a>
 
@@ -29,15 +29,33 @@ Record the run that worked, replay it deterministically — **0 tokens, byte-ide
 
 ---
 
+## Receipts on your agent PRs — install and done
+
+Agent-authored PRs (Dependabot, Claude, Codex, Cursor, …) get a receipt comment in seconds: author, files changed, declared scope vs. what actually changed, sensitive paths flagged. No workflow file, no CLI, no config.
+
+**[→ Install the Reelier receipts GitHub App](https://github.com/apps/reelier-receipts)** — free on public repos, forever.
+
+> **Reelier receipt — agent PR**
+> Author: `dependabot[bot]` · Files changed: 2 (+119 −41)
+> Declared scope: none (add `.reelier/scope.yml` to enable unexpected-write detection)
+> Sensitive paths touched: ⚠ 1 — `package-lock.json`
+> Proves scope and change, not correctness
+
+<sub>A real receipt from Reelier's own repos — [see one live](https://github.com/seldonframe/reelier/pull/27). Declare scope per agent in `.reelier/scope.yml` (or a <code>reelier-scope</code> block in the PR body) and the receipt reports unexpected writes. The receipt proves scope and change, never correctness or safety.</sub>
+
+---
+
 ## Why
 
-Your agent re-derives the same workflow every run. That burns tokens, and it quietly drifts — the same prompt takes a different path six weeks later and nobody notices until a client does. Reelier compiles the run that worked into a file that replays deterministically, no model in the loop: 0 tokens, and a receipt on every step.
+AI agents are non-deterministic — the same prompt, a different result every run — and they'll claim they did the work whether they did or not. Reelier records the run that worked, replays it deterministically, and writes a signed receipt that proves it. Point it at your existing CI in one workflow — it adds a verifiable receipt, it doesn't replace your stack.
 
 Measured on a real head-to-head benchmark, same task, same data ([full method](./docs/REFERENCE.md#benchmark-method)):
 
 - **1,000 / 1,000 replays byte-identical**
-- **~50× cheaper**
-- **~59× faster**
+- **Every replay ships a signed receipt** — proof of what ran and what changed, never a claim
+- **0 LLM calls at replay** — deterministic re-execution, not re-reasoning
+
+Deterministic replay is also [~50× cheaper and ~59× faster than re-running the agent, on the same benchmark](./docs/REFERENCE.md#benchmark-method).
 
 ## Install
 
@@ -63,10 +81,11 @@ reelier ci                          # write a workflow: drift-CI + PR receipts, 
 ```
 
 1. **Record.** `reelier mcp --wrap "<mcp server>"` proxies your tools live, or pull a session via `reelier scan`/`from-session`, or run the guided `reelier init`.
-2. **Compile.** `reelier compile` turns a trace into a `SKILL.md` — 0 LLM calls, an assertion per step, honest gaps printed as **Open questions**.
+2. **Compile.** `reelier compile` turns a trace into a `SKILL.md` — 0 LLM calls, minimal assertions, honest gaps printed as **Open questions**.
 3. **Replay.** `reelier run` replays it at Level 0 — no LLM, byte-identical, read-only by default (writes need `--allow-writes`).
 4. **Diff.** `reelier diff` reports SAME or DRIFTED per step, with the failing assertion as the *why* — exit 1 on drift.
-5. **Push.** Every run is a receipt; `reelier push` optionally syncs it to a ledger for a permalink and an embeddable verified-replay badge.
+5. **Log in.** `reelier login` connects this machine to Reelier Cloud with a device code in your browser — or set `REELIER_CLOUD_URL`/`REELIER_CLOUD_KEY` for CI and self-hosting.
+6. **Push.** Every run is a receipt; `reelier push` optionally syncs it to a ledger for a permalink and an embeddable verified-replay badge.
 
 Already have an Agent Skill? Convert it — your skill, minus the model:
 
@@ -84,6 +103,14 @@ reelier compile trace.jsonl --from-skill ./my-skill/SKILL.md
 
 *Taxonomy due to Mads Hansen's review of the launch post.* Full semantics for each test, including recovery injection and manifest guardrails: [docs/REFERENCE.md](./docs/REFERENCE.md).
 
+## Gate Dependabot / Renovate bump PRs
+
+Dependabot and Renovate open the PR and run your test suite — but neither knows what your agent actually *does* at runtime, so a dependency bump that silently changes a tool call's shape (a renamed field, a new default, a different error) sails through with green unit tests. This is the check they don't run.
+
+Copy [`.github/workflows/reelier-bump-check.yml`](.github/workflows/reelier-bump-check.yml) into your repo, point `skill:` at your own recorded `.skill.md` file(s), and it will: gate to PRs from `dependabot[bot]`/`renovate[bot]` (or a `dependencies` label), install the bumped dependency, replay your recorded skill live against it at `--max-level 0` (0 tokens), and fail the check on the exact step that drifted.
+
+This tests dependency and MCP-tool-call behavior — it does **not** test model upgrades; `--max-level 0` never calls an LLM. Full listing copy and setup: [`docs/marketplace-listing.md`](docs/marketplace-listing.md).
+
 ## Prove it
 
 A pushed receipt carries a ladder of independently-verifiable claims — not one blanket "verified." Depending on what you turn on, it can be signed, timestamped, CI-attested, and carry cross-checkable provider request-ids. `reelier verify` recomputes every claim offline, and a claim you haven't enabled just renders as an honest gap, never a shamed one.
@@ -91,6 +118,19 @@ A pushed receipt carries a ladder of independently-verifiable claims — not one
 See a real one: [reelier.com/r/HWBdmGob9KeHRqXi-OEaRD0z](https://www.reelier.com/r/HWBdmGob9KeHRqXi-OEaRD0z).
 
 Full 8-rung ladder, what each rung does and doesn't prove: [docs/REFERENCE.md](./docs/REFERENCE.md).
+
+## If your skills are employees
+
+| Employee lifecycle | Reelier equivalent |
+| --- | --- |
+| Skillify a session | `reelier from-session` |
+| Performance review | `reelier run` + `reelier diff` |
+| Fleet maintenance | scheduled replays + drift alerts |
+| The record | signed receipts |
+
+"Verified" describes the record, never the agent — a receipt proves what ran and what changed, not that the agent was good at its job.
+
+An employment contract doesn't make an employee good — it makes what they did visible and bounded. Same here: receipts prove scope and change, never correctness.
 
 ## Who it's for
 

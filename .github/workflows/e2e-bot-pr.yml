@@ -1,0 +1,40 @@
+# E2E smoke for the reelier-receipts GitHub App (Stage 1 Task 1.1):
+# opens (or updates) a PR authored by github-actions[bot] so the App's
+# pull_request webhook path can be verified end to end — receipt comment
+# in <60s on open, edited in place on synchronize. Run it twice to test
+# both events. The PR it opens is safe to close at any time.
+name: e2e bot PR (receipt smoke)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  bot-pr:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create or update the e2e branch and PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          BRANCH="e2e/receipt-smoke"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git fetch origin "$BRANCH" 2>/dev/null; then
+            git checkout -B "$BRANCH" "origin/$BRANCH"
+          else
+            git checkout -b "$BRANCH"
+          fi
+          date -u +"%Y-%m-%dT%H:%M:%SZ" >> .github/e2e-receipt-smoke.txt
+          git add .github/e2e-receipt-smoke.txt
+          git commit -m "test(e2e): receipt smoke touch"
+          git push origin "$BRANCH"
+          gh pr create --head "$BRANCH" \
+            --title "test(e2e): bot-authored PR for receipt smoke" \
+            --body "Automated e2e: verifies the reelier-receipts App comments a PR receipt (open) and edits it in place (synchronize). Safe to close." \
+            2>/dev/null || echo "PR already open — this run is a synchronize"

@@ -45,6 +45,49 @@ export function agentConfigPaths(cwd: string, homedir: string): AgentConfigPaths
   };
 }
 
+/** One MCP config file `reelier install` knows how to wrap, with a label for the operator. */
+export interface KnownMcpConfig {
+  /** Shown to the operator, e.g. "Cursor (project)". */
+  label: string;
+  path: string;
+}
+
+/**
+ * Every MCP config location `reelier install` knows about. Pure — no I/O.
+ *
+ * All of these store servers under the same top-level `mcpServers` object, which is why one
+ * planner (`planInstall`, src/wrap.ts) handles every one of them without a per-host adapter.
+ * Adding a host is a line here, not a code path.
+ *
+ * Deliberately NOT listed:
+ *  - `~/.codex/config.toml` — TOML, not JSON. `planInstall` parses JSON; wrapping it would need a
+ *    TOML writer that round-trips comments, which is a different piece of work. Codex users get
+ *    the printed `mcp --wrap` line instead, same as today.
+ *  - VS Code's `.vscode/mcp.json` — it nests servers under `servers`, not `mcpServers`. Listing it
+ *    here would make `install` report "nothing to wrap" on a file that plainly has servers in it,
+ *    which reads as a bug rather than as a limitation.
+ *
+ * An agent framework (LangGraph, CrewAI, AutoGen…) that speaks MCP is covered by whichever of
+ * these hosts its config lives in — there is nothing framework-specific to add, because the wrap
+ * happens at the transport rather than inside the framework.
+ */
+export function knownMcpConfigPaths(cwd: string, homedir: string): KnownMcpConfig[] {
+  return [
+    { label: "Claude Code (project)", path: path.join(cwd, ".mcp.json") },
+    { label: "Claude Code (user)", path: path.join(homedir, ".claude.json") },
+    { label: "Cursor (project)", path: path.join(cwd, ".cursor", "mcp.json") },
+    { label: "Cursor (user)", path: path.join(homedir, ".cursor", "mcp.json") },
+    { label: "Windsurf (user)", path: path.join(homedir, ".codeium", "windsurf", "mcp_config.json") },
+  ];
+}
+
+/** The subset of `knownMcpConfigPaths` that actually exists on disk, in the same order. */
+export async function detectMcpConfigs(cwd: string, homedir: string): Promise<KnownMcpConfig[]> {
+  const candidates = knownMcpConfigPaths(cwd, homedir);
+  const exists = await Promise.all(candidates.map((c) => fileExists(c.path)));
+  return candidates.filter((_, i) => exists[i]);
+}
+
 export interface AgentConfigDetection extends AgentConfigPaths {
   projectConfigExists: boolean;
   userConfigExists: boolean;

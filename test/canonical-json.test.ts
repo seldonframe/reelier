@@ -27,3 +27,29 @@ test("primitives and null round through", () => {
   assert.equal(canonicalJson("x"), '"x"');
   assert.equal(canonicalJson(3), "3");
 });
+
+test("undefined-valued object keys are excluded from the canonical form and digest", () => {
+  // The digest receipts are built on must NOT change when a key is explicitly
+  // set to undefined vs. absent — otherwise two equivalent records could hash
+  // to different receipts. This is the contract; the source guard is defensive.
+  assert.equal(canonicalJson({ a: 1, b: undefined }), '{"a":1}');
+  assert.equal(canonicalJson({ a: undefined }), "{}");
+  assert.equal(digestSha256({ a: 1 }), digestSha256({ a: 1, b: undefined }));
+});
+
+test("undefined nested inside an object is excluded at every depth", () => {
+  assert.equal(canonicalJson({ a: { c: 2, b: undefined } }), '{"a":{"c":2}}');
+});
+
+test("undefined inside an array becomes null and keeps its position", () => {
+  // Array elements are positional — unlike object keys they are NOT dropped;
+  // JSON serializes an undefined element as null. Pin this so a serializer
+  // refactor can't silently shift array-encoded data under the hash.
+  assert.equal(canonicalJson([1, undefined, 2]), "[1,null,2]");
+});
+
+test("empty object and empty array are stable and distinct", () => {
+  assert.equal(canonicalJson({}), "{}");
+  assert.equal(canonicalJson([]), "[]");
+  assert.notEqual(digestSha256({}), digestSha256([]));
+});

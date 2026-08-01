@@ -1,6 +1,6 @@
 {
   "name": "reelier",
-  "version": "0.21.0",
+  "version": "0.30.0",
   "mcpName": "io.github.seldonframe/reelier",
   "description": "Agents make claims, Reelier writes receipts - record an agent workflow once, replay it deterministically at 0 tokens, and get an asserted receipt on every run.",
   "license": "MIT",
@@ -17,10 +17,14 @@
     "./llm": "./dist/llm.js",
     "./writeback": "./dist/writeback.js",
     "./trace": "./dist/trace.js",
+    "./footprint": "./dist/footprint.js",
+    "./priors": "./dist/priors.js",
     "./mcp-client": "./dist/mcp-client.js",
     "./mcp-tool": "./dist/mcp-tool.js",
     "./tools": "./dist/tools.js",
-    "./serve": "./dist/serve.js"
+    "./serve": "./dist/serve.js",
+    "./contract/*": "./contract/*",
+    "./package.json": "./package.json"
   },
   "files": [
     "dist",
@@ -28,7 +32,8 @@
     "README.md",
     "LICENSE",
     "CHANGELOG.md",
-    "integrations"
+    "integrations",
+    "contract"
   ],
   "repository": {
     "type": "git",
@@ -61,14 +66,24 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "tsc -p tsconfig.test.json && node --test dist-test/test/*.test.js",
-    "prepublishOnly": "npm run build && npm test"
+    "test": "tsc -p tsconfig.test.json && node --test --test-concurrency=1 \"dist-test/test/**/*.test.js\"",
+    "test:coverage": "c8 npm test",
+    "test:fuzz": "tsc -p tsconfig.test.json && node scripts/run-fuzz.mjs",
+    "test:e2e": "node scripts/e2e-local.mjs",
+    "test:mutation": "stryker run",
+    "preflight": "node scripts/preflight.mjs",
+    "prepublishOnly": "npm run build && npm test",
+    "hooks:install": "git config core.hooksPath .githooks"
   },
   "publishConfig": {
     "access": "public"
   },
   "devDependencies": {
+    "@stryker-mutator/core": "^9.6.1",
+    "@stryker-mutator/typescript-checker": "^9.6.1",
     "@types/node": "^20.14.9",
+    "c8": "^10.1.3",
+    "fast-check": "^4.9.0",
     "typescript": "^5.5.4"
   },
   "dependencies": {

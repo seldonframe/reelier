@@ -43,9 +43,11 @@ import type { OpenQuestion } from "./compile.js";
 import { parseSkill } from "./skill.js";
 import { runSkill, builtinTools, readRunRecords, type RunRecord } from "./runner.js";
 import { diffRunRecords, type RunDiff } from "./diff.js";
+import { preflightManifest } from "./manifest.js";
 import { connectDownstream, type DownstreamConnection } from "./mcp-client.js";
 import { buildMcpTools } from "./mcp-tool.js";
 import { pushSkill, type PushResult } from "./push.js";
+import { resolveStateGateForRun } from "./policy.js";
 
 async function fileExists(p: string): Promise<boolean> {
   try {
@@ -197,6 +199,8 @@ export interface ReplayToolInput {
   /** Permit `idempotent-write` steps to execute. Default false — replay is read-only. */
   allowWrites?: boolean;
   cwd?: string;
+  /** Break-glass: replay despite an unverifiable/drifted manifest (mirrors the CLI's --ignore-manifest; the run record carries manifestIgnored: true). */
+  ignoreManifest?: boolean;
 }
 
 /**
@@ -204,16 +208,66 @@ export interface ReplayToolInput {
  * constructed or called from this surface) and return the real run record.
  * Never fabricates a passed/failed verdict: whatever runSkill actually
  * measured is what's returned, unmodified.
+ *
+ * Mirrors cmdRun's fail-closed preflights exactly — BOTH of them: the
+ * manifest check (a manifest-carrying skill gets its tool schemas verified
+ * against live downstreams before any step executes, unless ignoreManifest
+ * breaks glass) AND the state gate (wave2 §5.5, S8). The gate especially:
+ * this is the surface an AGENT drives, and the whole premise of a
+ * per-repo opt-in over a per-invocation flag is that it cannot be talked
+ * out of at invocation time (I-10). A gate honored by `reelier run` and
+ * ignored here would be a control an agent bypasses by picking the other
+ * entrypoint (review finding, blocking). Resolved from `input.cwd` — the
+ * same directory whose .reelier/runs receives the record.
  */
-export async function runReplayTool(input: ReplayToolInput): Promise<RunRecord> {
+export async function runReplayTool(
+  input: ReplayToolInput,
+  connect: (spec: string) => Promise<DownstreamConnection> = connectDownstream
+): Promise<RunRecord> {
   const source = await readFile(input.skillPath, "utf8");
   const skill = parseSkill(source);
+
+  // Resolved BEFORE any downstream is wired, exactly like cmdRun: a
+  // malformed policy that DECLARES state_gate refuses the whole replay.
+  const cwd = input.cwd ?? process.cwd();
+  const stateGate = await resolveStateGateForRun(cwd, os.homedir());
+  if (stateGate.mode === "refuse-run") {
+    throw new Error(
+      `Refusing to replay: ${stateGate.sourcePath} declares 'state_gate' but is malformed ` +
+        `(${stateGate.errors.length} error(s)): ${stateGate.errors.join("; ")} — a malformed state-gate opt-in fails closed.`
+    );
+  }
+  if (stateGate.mode === "off" && stateGate.warning !== undefined) {
+    console.error(stateGate.warning);
+  }
 
   const downstreams: DownstreamConnection[] = [];
   try {
     for (const spec of input.wrap ?? []) {
-      downstreams.push(await connectDownstream(spec));
+      downstreams.push(await connect(spec));
     }
+
+    let manifestIgnored = false;
+    let manifestChecked = false;
+    if (skill.manifest) {
+      if (input.ignoreManifest) {
+        manifestIgnored = true;
+      } else if (downstreams.length === 0) {
+        throw new Error(
+          "manifest present but no 'wrap' given — cannot verify tool schemas against live servers (fail closed). Pass wrap, or ignoreManifest: true to break-glass."
+        );
+      } else {
+        const { ok, drifts } = preflightManifest(skill.manifest, downstreams);
+        if (!ok) {
+          throw new Error(
+            "MANIFEST DRIFT — refusing to replay (fail closed): " +
+              drifts.map((d) => `${d.name} — recorded ${d.recorded}${d.live !== undefined ? ` live ${d.live}` : ""} (${d.note})`).join("; ")
+          );
+        }
+        manifestChecked = true;
+      }
+    }
+
     const tools = downstreams.length > 0 ? { ...builtinTools, ...buildMcpTools(downstreams) } : undefined;
 
     return await runSkill(skill, {
@@ -222,9 +276,12 @@ export async function runReplayTool(input: ReplayToolInput): Promise<RunRecord> 
       allowWrites: input.allowWrites ?? false,
       tools,
       maxLevel: 0,
-      cwd: input.cwd,
+      cwd,
       skillPath: input.skillPath,
       skillContentSha256: createHash("sha256").update(source, "utf8").digest("hex"),
+      ...(manifestIgnored ? { manifestIgnored: true } : {}),
+      ...(manifestChecked ? { manifestChecked: true } : {}),
+      ...(stateGate.mode === "refuse" ? { stateGate: "refuse" as const } : {}),
     });
   } finally {
     await Promise.all(downstreams.map((d) => d.close().catch(() => {})));
@@ -244,6 +301,11 @@ const replayToolInputSchema = {
     allowDestructive: { type: "boolean", description: "Allow steps whose effect is 'destructive' to run." },
     allowWrites: { type: "boolean", description: "Allow 'idempotent-write' steps to execute. Default false — replay is READ-ONLY, so re-running never re-fires writes." },
     cwd: { type: "string", description: "Working directory the run record is written under (default: process cwd)." },
+    ignoreManifest: {
+      type: "boolean",
+      description:
+        "Break-glass: replay despite an unverifiable/drifted manifest (mirrors the CLI's --ignore-manifest; the run record carries manifestIgnored: true).",
+    },
   },
   required: ["skillPath"],
 };
@@ -268,8 +330,11 @@ export type PushToolResult =
 
 /**
  * Push run records (and, on first push, the skill file) for a skill to
- * your receipt ledger. Reads REELIER_CLOUD_URL/REELIER_CLOUD_KEY from env, exactly
- * like `reelier push`. Missing config is reported as `skipped-no-key`, not
+ * your receipt ledger, exactly like `reelier push`. The cloud URL always
+ * resolves (env REELIER_CLOUD_URL, then the config file, then the bundled
+ * default) — whether push is "on" at all is gated on an apiKey being present
+ * (env REELIER_CLOUD_KEY, or the config file written by `reelier login`),
+ * NEVER on the URL. Missing apiKey is reported as `skipped-no-key`, not
  * silently treated as a no-op success; any other failure (read error, no run
  * records) is reported as `failed` with the real error message.
  */
@@ -284,7 +349,7 @@ export async function runPushTool(input: PushToolInput): Promise<PushToolResult>
     return { outcome: "ok", result };
   } catch (err) {
     const message = (err as Error).message;
-    if (message.includes("REELIER_CLOUD_URL") || message.includes("REELIER_CLOUD_KEY")) {
+    if (message.includes("Not logged in") || message.includes("REELIER_CLOUD_KEY")) {
       return { outcome: "skipped-no-key", message };
     }
     return { outcome: "failed", message };
@@ -386,8 +451,9 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
     "(reported as a refused/failed step) unless you pass allowWrites — so replaying never re-fires a write.",
   reelier_push:
     "Push a skill's local run records (and, on first push, the skill file) to your receipt ledger, where each receipt gets " +
-    "a shareable permalink + verified-replay badge. Requires REELIER_CLOUD_URL/REELIER_CLOUD_KEY in env — reports " +
-    "skipped-no-key honestly when they're absent. USE WHEN: a run's receipt should be durable or shareable.",
+    "a shareable permalink + verified-replay badge. Requires an apiKey — from `reelier login` (or REELIER_CLOUD_KEY in " +
+    "env) — reports skipped-no-key honestly when absent; the cloud URL always resolves on its own. USE WHEN: a run's " +
+    "receipt should be durable or shareable.",
   reelier_diff:
     "Compare two runs of the same skill and report SAME or DRIFTED — the drift-detector for a recorded baseline " +
     "replayed on a schedule. Compares per-step outcomes, structure, and heal-level from .reelier/runs/<skill>.jsonl " +

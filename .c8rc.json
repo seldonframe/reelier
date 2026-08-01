@@ -1,0 +1,9 @@
+{
+  "reporter": ["text", "lcov", "html"],
+  "include": ["src/**/*.ts"],
+  "exclude": ["test/**", "dist/**", "dist-test/**", "**/*.d.ts", "**/*.test.ts"],
+  "all": true,
+  "exclude-after-remap": true,
+  "reportsDirectory": "coverage",
+  "skip-full": false
+}

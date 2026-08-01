@@ -18,10 +18,12 @@
 // the same drift never has to escalate twice.
 
 import { mkdir, appendFile } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { createInterface } from "node:readline";
 import path from "node:path";
-import type { Skill, Step } from "./skill.js";
+import os from "node:os";
+import type { Exposure, Skill, Step, StepAttestDecl } from "./skill.js";
 import { evalAssert, evalBind, type Observation, type ObservationRef } from "./assert.js";
 import { builtinTools, type Tool, type ToolContext } from "./tools.js";
 // Re-exported from the "." package entry too (in addition to "./tools")
@@ -33,6 +35,23 @@ import type { LlmClient } from "./llm.js";
 import { resolveL1, resolveL2 } from "./escalate.js";
 import { applyWritebackSafely } from "./writeback.js";
 import { computeApprovalHash, computeIdempotencyKey } from "./approval.js";
+import { digestSha256 } from "./canonical-json.js";
+import type { PolicyClaim } from "./policy.js";
+import {
+  readKeystore,
+  loadExpectKey,
+  expectMac,
+  expectFieldMac,
+  probeArgsMac,
+  STATUS_CODE_ENTRY,
+  lookupHeader,
+  projectObservationTyped,
+  ABSENT_FIELDS_MAX,
+  ABSENT_FIELD_NAME_MAX,
+  resolveKeystorePath,
+  macEquals,
+  type ExpectKeystore,
+} from "./expect-mac.js";
 
 export type StepOutcome = "passed" | "failed" | "unchecked" | "skipped";
 
@@ -53,10 +72,111 @@ export interface StepWrite {
   idempotencyKey: string;
   /** true = executed via a matching Step.approve hash; false = executed via the legacy --allow-writes/--yes flags. */
   approved: boolean;
+  /**
+   * WHICH approval authorized this write — the step's stamped `approve:`
+   * hash, verified equal to the recomputed hash before dispatch (the same
+   * equality `approved` is read off). Absent exactly when `approved` is
+   * false: a `--allow-writes`/`--yes` dispatch has no authorization to name.
+   *
+   * FOUNDATION's ten-year asset #1 is "what an agent declared it would
+   * change (scope, approval hash) joined to what actually changed" — this is
+   * the join key. `approved` alone says only THAT a write was authorized,
+   * never by which authorization, so pairs could not be grouped after the
+   * fact. Additive (I-11).
+   *
+   * Disclosure, stated precisely (review finding — the first version of this
+   * comment justified it with "the hash is already in the committed skill
+   * file", which is a non-sequitur: a receipt is publishable and the skill
+   * file may be private). This is an UNSALTED sha256 over the operation
+   * shape, so it is a stable correlator across runs and across tenants —
+   * that is the point — and any third party holding a candidate skill file
+   * can recompute it, making it a confirmation oracle for "did this receipt
+   * run THIS operation". The real argument is that it adds no new exposure
+   * CLASS: `idempotencyKey`, already in this same block, is an unsalted hash
+   * over the FILLED args and is strictly more revealing. This is the
+   * OPPOSITE property from `attest`'s salted commitments, whose design makes
+   * cross-run joins impossible — do not generalize that guarantee here.
+   */
+  approvalHash?: string;
   /** Best-effort, honestly-labeled extraction from the tool's JSON response body — absent when nothing was found. */
   resource?: { id?: string; version?: string };
   /** Set when an earlier step in THIS run wrote with the identical idempotencyKey — the step number of that earlier step. */
   duplicateOf?: number;
+  /**
+   * The instant the write dispatch was issued (state-conditioned approval
+   * §2.3, additive): with `stateCheck.observedAt`, every checked receipt
+   * carries its own measured probe→dispatch window. Present ONLY on
+   * expect-bearing steps — a skill with no `expect:` produces byte-identical
+   * records (invariant I-2).
+   */
+  dispatchedAt?: string;
+}
+
+/**
+ * The execute-time state check of a state-conditioned approval (wave2 spec
+ * §2.3, additive-optional on the wire — the pinned wire-contract fixture is
+ * untouched, I-11). Present iff the step carried `expect:` AND the runner
+ * reached the check; a step refused earlier (approval mismatch, unknown
+ * tool, write gate) carries none. Outcomes and timestamps only — NO keyed
+ * MAC values ever land in a record (I-7). Three-valued honesty is
+ * load-bearing: `unevaluated` is its own state, never a pass (never-list
+ * #1), never a recorder block (never-list #5).
+ */
+export interface StepStateCheck {
+  outcome: "match" | "mismatch" | "unevaluated";
+  /** proceeded = match/unevaluated, write dispatched; stamped = mismatch recorded, write still dispatched (recorder mode); refused = gate mode (S8, §5.5): the repo's policy.yml opted into fail-closed and the write was refused BEFORE dispatch — no write block, no attest. */
+  action: "proceeded" | "stamped" | "refused";
+  /** expect.at — when the approved observation was made. Informational: time is never an input to the comparison (I-14). */
+  expectedAt: string;
+  /** When the execute-time observation resolved; absent iff unevaluated before any observation. */
+  observedAt?: string;
+  /**
+   * Present iff outcome === "unevaluated" — a CLOSED registry (§8.6). All
+   * eight values, in the order they are decided:
+   *   approval-expired          (W5-T3 — the TTL elapsed; no probe dispatched)
+   *   probe-args-mismatch       (W3-S4 — filled probe args are not the approved ones; no probe dispatched)
+   *   key-unavailable           (deletion IS revocation; indistinguishable from never-present)
+   *   probe-timeout / probe-failed / probe-tool-unknown
+   *   probe-substrate-mismatch  (W3-S5 — status.code through a wrapped MCP tool)
+   *   empty-projection
+   * This comment listed five for two slices while the code emitted more;
+   * it is normative documentation, so it is kept COMPLETE, not appended to.
+   * Adding a value requires a spec amendment (SPEC.md §4.1).
+   */
+  reason?: string;
+  /**
+   * Present only when outcome === "mismatch" and declared projection fields
+   * were absent at execute (B5/A9): names only (`delta.fields` precedent,
+   * A1 wording — never an approve-time presence claim), capped.
+   */
+  absentFields?: string[];
+  /**
+   * P1.5 (wave2 §3.5): present only when outcome === "mismatch" AND the
+   * binding carried per-field commitments — the declared fields whose
+   * recomputed field MAC differs from the approve-time one. Unlike
+   * absentFields, this IS an approve-time claim, and an earned one: under
+   * the held key, per-field MAC inequality proves the committed value
+   * differs. Names only, capped like absentFields.
+   */
+  changedFields?: string[];
+}
+
+export interface AttestState {
+  hash: string;
+  at: string;
+}
+
+export interface StepAttest {
+  method: "response-derived" | "declared-probe";
+  /** The probe TOOL NAME only (e.g. "github.get_comment") — identifies which tool observed
+   * the state. Never the args template: a record is a publishable artifact and the record
+   * format carries no other tool args. */
+  selector?: string;
+  pre?: AttestState;
+  post?: AttestState;
+  delta?: { changed: number; fields?: string[] };
+  confidence: "exact" | "partial" | "pending" | "absent";
+  reason?: string;
 }
 
 export interface StepRecord {
@@ -67,6 +187,16 @@ export interface StepRecord {
   outcome: StepOutcome;
   ms: number;
   failures: string[];
+  /**
+   * The step's declared `exposure` (SPEC §3.7), copied verbatim from the
+   * skill — whether an actor OUTSIDE the system may already have acted on
+   * this step's result. Absent exactly when the step declared nothing (which
+   * reads as `internal`), so a skill that does not use the key produces a
+   * byte-identical record. Orthogonal to the step's `effect`, and gating-inert
+   * in this version: a consumer MUST NOT infer that an `external-visible` step
+   * was blocked, reviewed, or approved differently.
+   */
+  exposure?: Exposure;
   /**
    * LLM token usage summed across every escalation attempt on this step
    * (incl. failed ones) — 0 attempts means this is absent, not zero.
@@ -91,6 +221,10 @@ export interface StepRecord {
   why?: StepWhy;
   /** Present iff this step's tool actually dispatched a write-effect call — see StepWrite. */
   write?: StepWrite;
+  /** State attestation (consequence-layer §1) — present iff a write-effect step actually dispatched. Hashes over a field projection, never raw values. absent/pending are never a pass. */
+  attest?: StepAttest;
+  /** The execute-time state check (state-conditioned approval) — present iff the step carried `expect:` and the runner reached the check. See StepStateCheck. */
+  stateCheck?: StepStateCheck;
   /**
    * Provider-issued request-id refs captured from this step's Observation
    * (trust-ladder spec §3) — extends the write receipt's honesty discipline
@@ -132,6 +266,32 @@ export interface RunRecord {
    * v2 ones) stay byte-identical.
    */
   manifestIgnored?: true;
+  /**
+   * Set only when this run declared a manifest and its preflight ran and
+   * passed. Mutually exclusive with `manifestIgnored`; absent when there was
+   * no manifest to check. A failed preflight writes no record.
+   */
+  manifestChecked?: true;
+  /**
+   * The policy file in force for THIS RUN (docs/specs/policy-attestation-v1.md).
+   * Never the one that governed the recording this skill was compiled from —
+   * a RunRecord is evidence about one execution, and inheriting the
+   * recording-time policy would fabricate a claim about the present out of
+   * the past (§3). The skill file carries no policy field at all, so there
+   * is nothing to inherit even by accident.
+   *
+   * Carries NO `rules`/`unmatchedRules`: replay evaluates no deny or dry_run
+   * rule (flight-recorder-v2 non-goal), so a consumer MUST NOT read
+   * `status: "verified"` here as evidence that any rule blocked, intercepted
+   * or evaluated anything during this replay. On this path the file governs
+   * the state gate alone. The absence of the counts IS that statement (§2.4).
+   *
+   * Optional and additive: absent on every record written before the field
+   * existed and on any caller that reported nothing — which is NOT the same
+   * as `absent`, the positive finding that a lookup happened and found no
+   * file. Verification never requires it.
+   */
+  policy?: PolicyClaim;
   /**
    * Sorted step numbers that had an injected failure this run (`--fail
    * N[=status]`, docs/specs/flight-recorder-v2.md §3) — present only when
@@ -188,6 +348,8 @@ export interface RunOptions {
   skillContentSha256?: string;
   /** Threaded verbatim onto RunRecord.manifestIgnored — set by the caller (cmdRun) when `--ignore-manifest` bypassed the manifest preflight. The runner itself never evaluates a manifest; this is purely a receipt annotation. */
   manifestIgnored?: boolean;
+  /** Threaded onto RunRecord.manifestChecked by callers after a declared manifest preflight passes. */
+  manifestChecked?: boolean;
   /**
    * `--fail N[=status]` (docs/specs/flight-recorder-v2.md §3): step number ->
    * HTTP status to inject as a synthetic Observation instead of dispatching
@@ -196,6 +358,58 @@ export interface RunOptions {
    * real failure would hit. Absent/empty = no injection, today's behavior.
    */
   mockFailures?: Record<number, number>;
+  /** Declared-probe timeout in ms (consequence-layer §1.6). Default 2000. A probe that exceeds it degrades the attestation, never the step. */
+  probeTimeoutMs?: number;
+  /**
+   * Expect keystore file for state-conditioned approvals (wave2 §3.4).
+   * Default: `REELIER_EXPECT_KEYS` env var, else `~/.reelier/expect-keys.json`.
+   * Read lazily, only when a step actually carries `expect:` — the read path
+   * and expect-less skills gain zero I/O (I-2).
+   */
+  expectKeystorePath?: string;
+  /**
+   * State gate (wave2 §5.5, S8): "refuse" = the repo's policy.yml opted
+   * into fail-closed — a write step whose pre-state check lands mismatch
+   * OR unevaluated is REFUSED before dispatch: outcome `failed`, the
+   * spec's refusal string in failures[], `stateCheck.action: "refused"`,
+   * no write block, no attest — dispatch provably never issued. Loaded
+   * from .reelier/policy.yml by cmdRun; the runner itself never reads a
+   * policy file (A3 holds at the library boundary). Absent = recorder
+   * mode, byte-identical to pre-S8 behavior.
+   */
+  stateGate?: "refuse";
+  /** The four-state policy claim for THIS run, resolved by the caller from the same read that decided the gate. Omitted -> the record carries no `policy` key. */
+  policy?: PolicyClaim;
+  /**
+   * W5-T3: the run's clock, epoch ms. Defaults to `Date.now()`, following the
+   * `dryRunSkill(skill, vars, now = Date.now())` precedent. This is the SAME
+   * snapshot `{{today}}`/`{{today±Nd}}` already resolve against (one snapshot
+   * per run, so no fill can straddle a UTC midnight), now injectable so an
+   * approval TTL can be tested at an exact instant.
+   *
+   * Deliberately NOT threaded through the `Date.now()` calls that produce
+   * recorded `ms` durations or the wall-clock `observedAt`/`dispatchedAt`
+   * stamps: those measure the RUN, not the approval, and rewriting them would
+   * be a regression risk with no test to justify it.
+   */
+  now?: number;
+}
+
+/**
+ * §5.5 refusal strings — stable API (they become gate-event labels),
+ * test-pinned verbatim against the spec. No flag overrides a state-gate
+ * refusal (I-10); the strings say so because the operator reading them
+ * will reach for the flag next.
+ */
+export const STATE_GATE_REFUSAL_MISMATCH =
+  "Refusing to dispatch write step: pre-state commitment mismatch — the world this approval was granted against has changed. " +
+  "Re-approve with 'reelier approve --probe'. (--allow-writes/--yes do not override a state-gate refusal.)";
+
+export function stateGateRefusalUnevaluated(reason: string): string {
+  return (
+    `Refusing to dispatch write step: pre-state binding could not be evaluated (${reason}) and this repo opts into the state gate. ` +
+    "(--allow-writes/--yes do not override a state-gate refusal.)"
+  );
 }
 
 export interface DryRunStep {
@@ -362,17 +576,182 @@ function extractResource(obs: Observation): { id?: string; version?: string } | 
   return { ...(id !== undefined ? { id } : {}), ...(version !== undefined ? { version } : {}) };
 }
 
-/** Build the write receipt for a write-effect step whose tool call just dispatched. See StepWrite. */
+/**
+ * Build the write receipt for a write-effect step whose tool call just
+ * dispatched. See StepWrite.
+ *
+ * `approvalHash` is the step's stamped hash when the write executed under a
+ * matched approval, and undefined on the legacy `--allow-writes`/`--yes`
+ * path. Both `approved` and `approvalHash` are derived from that ONE
+ * argument rather than passed separately, so a record cannot claim an
+ * approval it cannot name or name one it does not claim.
+ */
 function buildStepWrite(
   toolName: string,
   tool: Tool,
   filledArgs: unknown,
   obs: Observation,
-  approved: boolean
+  approvalHash: string | undefined
 ): StepWrite {
   const idempotencyKey = computeIdempotencyKey(toolName, tool.server ?? null, filledArgs);
   const resource = extractResource(obs);
-  return { idempotencyKey, approved, ...(resource ? { resource } : {}) };
+  return {
+    idempotencyKey,
+    approved: approvalHash !== undefined,
+    ...(approvalHash !== undefined ? { approvalHash } : {}),
+    ...(resource ? { resource } : {}),
+  };
+}
+
+/** Default projection field allowlists for response-derived attestation — identity/version class only, never content. Exported so tests fuzz the REAL lists instead of a copy that silently decays. */
+export const ATTEST_BODY_FIELDS = ["id", "_id", "version", "etag", "revision", "sha", "updated_at", "node_id"] as const;
+export const ATTEST_HEADER_FIELDS = ["etag", "last-modified"] as const;
+
+/**
+ * Project an Observation down to the fields that identify/version its
+ * resource. With an explicit projection: those top-level body keys only.
+ * Without: the conservative default allowlists above (body + headers).
+ * Values are stringified for hashing and NEVER stored in any record.
+ */
+export function projectObservation(obs: Observation, projection?: string[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  let body: unknown;
+  try { body = JSON.parse(obs.body); } catch { body = undefined; }
+  const rec = body !== null && typeof body === "object" && !Array.isArray(body) ? (body as Record<string, unknown>) : undefined;
+  if (projection) {
+    // Projection namespaces (state-conditioned approval P1.5, wave2 §6.1.3):
+    // `header.<name>` addresses a response header (http's native etag /
+    // last-modified — the If-Match-class fields explicit projections could
+    // never reach); `body.<key>` is the explicit body form; a bare `<key>`
+    // stays a top-level body key, byte-identical to the shipped selection
+    // (zero-touch for every existing skill).
+    //
+    // W3-S5 / I-19: `status.code` — exactly that spelling — addresses the
+    // HTTP status. P1.5's deferral reason becomes permanent law rather than
+    // a postponement: a bare `status` already means the body key named
+    // "status" in shipped skills (one lives in this repo's own test tree),
+    // so it is NEVER re-pointed. A body key literally named "status.code"
+    // stays addressable as `body.status.code`.
+    for (const key of projection) {
+      if (key === STATUS_CODE_ENTRY) {
+        out[key] = String(obs.status);
+        continue;
+      }
+      if (key.startsWith("header.")) {
+        const name = key.slice("header.".length);
+        const v = lookupHeader(obs.headers, name);
+        if (typeof v === "string" && v.length > 0) out[key] = v;
+        continue;
+      }
+      if (!rec) continue;
+      const bodyKey = key.startsWith("body.") ? key.slice("body.".length) : key;
+      const v = rec[bodyKey];
+      if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") out[`body.${bodyKey}`] = String(v);
+    }
+    return out;
+  }
+  if (rec) {
+    for (const key of ATTEST_BODY_FIELDS) {
+      const v = rec[key];
+      if (typeof v === "string" || typeof v === "number") out[`body.${key}`] = String(v);
+    }
+  }
+  for (const key of ATTEST_HEADER_FIELDS) {
+    const v = obs.headers[key];
+    if (typeof v === "string" && v.length > 0) out[`header.${key}`] = v;
+  }
+  return out;
+}
+
+/**
+ * A salted commitment over a field projection (final-review S3). A bare
+ * sha256 over a low-entropy projection (a boolean, an enum, a small id) is
+ * trivially preimage-reversible from a shared/pushed record, and the changed
+ * field NAMES in `delta.fields` hand the attacker the dictionary. The salt is
+ * per-attest, held in memory only, and NEVER recorded — pre and post for the
+ * SAME attest share it, so within-record change detection (pre === post iff
+ * the projection didn't change) survives, while cross-run hash joins are
+ * deliberately sacrificed. A hash is not encryption; this makes it not
+ * brute-forceable either.
+ */
+function newAttestSalt(): string {
+  return randomBytes(16).toString("hex");
+}
+
+function saltedProjectionHash(projected: Record<string, string>, salt: string): string {
+  return digestSha256({ projection: projected, salt });
+}
+
+/** Consequence-layer §1.3 `response-derived`: state derived from the write's own response. Ceiling `partial`; `absent` + reason when nothing derivable. Never fabricated. Hash is a salted commitment (see newAttestSalt). */
+export function buildResponseDerivedAttest(obs: Observation): StepAttest {
+  const projected = projectObservation(obs);
+  if (Object.keys(projected).length === 0) {
+    return { method: "response-derived", confidence: "absent", reason: "no-derivable-state" };
+  }
+  return {
+    method: "response-derived",
+    post: { hash: saltedProjectionHash(projected, newAttestSalt()), at: new Date().toISOString() },
+    confidence: "partial",
+  };
+}
+
+export const DEFAULT_PROBE_TIMEOUT_MS = 2000;
+
+export type ProbeResult =
+  | { ok: true; obs: Observation; projected: Record<string, string> }
+  | { ok: false; reason: string };
+
+/**
+ * Run the declared paired read with a hard timeout. Failure DEGRADES
+ * (returns a reason) — it must never fail or delay-fail the step
+ * (consequence-layer §1.6). Exported for `reelier approve --probe`
+ * (state-conditioned approval §4.2): probes dispatch in exactly two
+ * contexts — at run time under a matched approval, and at approve time
+ * interactively with literal args (I-13); this is the single code path
+ * for both. The raw `obs` rides along so the state-conditioned paths can
+ * compute their TYPE-TAGGED projection (src/expect-mac.ts) from the same
+ * single observation that feeds the salted attest projection (I-4).
+ */
+export async function runProbe(
+  decl: StepAttestDecl,
+  tools: Record<string, Tool>,
+  bindings: Record<string, unknown>,
+  ctx: ToolContext,
+  now: number,
+  timeoutMs: number
+): Promise<ProbeResult> {
+  const probeTool = tools[decl.tool];
+  if (!probeTool) return { ok: false, reason: `probe-tool-unknown: '${decl.tool}'` };
+  if (probeTool.effect !== "read") {
+    return { ok: false, reason: `probe-not-read: '${decl.tool}' has effect '${probeTool.effect}' — a probe must be a read` };
+  }
+  let filled: unknown;
+  try {
+    filled = fillTemplate(decl.args, bindings, now);
+  } catch (err) {
+    return { ok: false, reason: `probe-template: ${(err as Error).message}` };
+  }
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    const obs = await Promise.race([
+      probeTool.run(filled, ctx),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`probe timeout after ${timeoutMs}ms`)), timeoutMs);
+      }),
+    ]);
+    return { ok: true, obs, projected: projectObservation(obs, decl.projection) };
+  } catch (err) {
+    return { ok: false, reason: `probe-failed: ${(err as Error).message}` };
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+/** Changed projection-field NAMES between two captures — names only, never values. */
+function computeDelta(pre: Record<string, string>, post: Record<string, string>): { changed: number; fields?: string[] } {
+  const keys = [...new Set([...Object.keys(pre), ...Object.keys(post)])].sort();
+  const fields = keys.filter((k) => pre[k] !== post[k]);
+  return fields.length > 0 ? { changed: fields.length, fields } : { changed: 0 };
 }
 
 /** Evaluate a step's asserts/binds against `obs`, in place, into `failures`/`localBinds` (shared by the real-dispatch and mocked-dispatch paths in executeStep). */
@@ -407,13 +786,116 @@ function evaluateAssertsAndBinds(
   }
 }
 
+/**
+ * runProbe reasons → the closed stateCheck reason registry (§8.6/N1):
+ * timeouts get their own `probe-timeout:` label; `probe-tool-unknown:` is
+ * already registry-shaped; anything else folds under `probe-failed:`.
+ * Adding a reason to the registry requires a spec amendment.
+ */
+function normalizeStateCheckReason(reason: string): string {
+  if (reason.startsWith("probe-failed: probe timeout")) {
+    return `probe-timeout: ${reason.slice("probe-failed: ".length)}`;
+  }
+  if (
+    reason.startsWith("probe-tool-unknown:") ||
+    reason.startsWith("probe-failed:") ||
+    // W3-S4: already a registry member, synthesized by the probeArgs gate
+    // above (no probe ran, so wrapping it as `probe-failed:` would claim a
+    // dispatch that never happened). Passed through verbatim.
+    reason.startsWith("probe-args-mismatch:") ||
+    // W5-T3: same situation — a registry member synthesized without any
+    // dispatch, so folding it under `probe-failed:` would claim a probe
+    // problem that never happened. Passed through verbatim.
+    reason.startsWith("approval-expired:") ||
+    // W3-S5 review: the probe DID run and the observation is real — only the
+    // status half of it is a wrap-fabricated sentinel, so wrapping this as a
+    // probe failure would claim a dispatch problem that did not happen.
+    reason.startsWith("probe-substrate-mismatch:") ||
+    reason.startsWith("key-unavailable:")
+  ) {
+    return reason;
+  }
+  return `probe-failed: ${reason}`;
+}
+
+
+/**
+ * W3-S4 / I-18. A member of the CLOSED reason registry (wave2 N1 — these
+ * strings become gate-event labels), added by the wave-3 spec amendment
+ * that named it. Deliberately NOT "probe-target-mismatch", which wave2 §8.3
+ * pre-named it: MAC inequality proves the filled ARGS differ; whether that
+ * changes the probed TARGET is an inference the string must not claim.
+ */
+const PROBE_ARGS_MISMATCH_REASON = "probe-args-mismatch: filled probe args differ from the approved ones";
+
+/**
+ * W5-T3. The other member of the closed registry this slice adds, and the
+ * label for TIME expiry — the sibling of state-drift expiry (`--probe`), not
+ * a variant of it. A binding may carry both; they answer different questions
+ * and neither is implemented in terms of the other.
+ *
+ * Boundary is `>=`: the instant named in `expiresAt` is already expired. A
+ * trust boundary rounds toward refusing, and "valid until 09:00" reading as
+ * "still valid at exactly 09:00" is the kind of off-by-one nobody wants to
+ * discover from a receipt.
+ *
+ * The string names ONLY what elapsed. It is deliberately mute about the
+ * world: no probe ran, so an expired approval proves the TTL ran out and
+ * nothing whatsoever about whether the write would have been wrong.
+ */
+function approvalExpiredReason(expiresAt: string | undefined, now: number): string | undefined {
+  if (expiresAt === undefined) return undefined;
+  const deadline = Date.parse(expiresAt);
+  // Unparseable is unrepresentable via parseSkill (validateExpectShape
+  // shape-anchors it) and the approval hash covers the field, so a hand-edit
+  // is already a mismatch before this runs. Fail open here rather than mint a
+  // reason for a state that cannot arise: inventing "expired" from a value we
+  // could not read would be a claim we did not earn.
+  if (Number.isNaN(deadline)) return undefined;
+  if (now < deadline) return undefined;
+  return `approval-expired: this approval expired at ${expiresAt} (checked at ${new Date(now).toISOString()})`;
+}
+
+/**
+ * True iff any string leaf of `value` contains a `{{name}}` hole (the
+ * fillTemplate grammar, this module's `fillTemplate` above) — a cheap,
+ * non-throwing structural check used to detect a parameterized attest/probe
+ * template WITHOUT actually filling it. Mirrors src/cli.ts's
+ * `collectPlaceholders` regex (kept as a separate local copy: cli.ts imports
+ * from runner.ts, not the reverse, and this is the one place runner.ts needs
+ * the check — see the tampered-shape gate below, I-18 blocker 1b).
+ */
+function hasTemplatePlaceholder(value: unknown): boolean {
+  if (typeof value === "string") {
+    return /\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*|today[+-]\d+d)\s*\}\}/.test(value);
+  }
+  if (Array.isArray(value)) {
+    return value.some((v) => hasTemplatePlaceholder(v));
+  }
+  if (value !== null && typeof value === "object") {
+    return Object.values(value as Record<string, unknown>).some((v) => hasTemplatePlaceholder(v));
+  }
+  return false;
+}
+
 async function executeStep(
   step: Step,
   bindings: Record<string, unknown>,
   tools: Record<string, Tool>,
   ctx: ToolContext,
   now: number,
-  mockStatus?: number
+  mockStatus?: number,
+  probeTimeoutMs: number = DEFAULT_PROBE_TIMEOUT_MS,
+  expectKeys?: () => Promise<ExpectKeystore | undefined>,
+  stateGate?: "refuse",
+  /**
+   * The run's `--var`s ALONE — deliberately not the shared `bindings` map,
+   * which merges them with step-output `bind:` values. Probe args on a
+   * `probeArgs`-bearing step fill from this and nothing else (W3-S4): a
+   * `bind:` whose name collides with a probe-arg placeholder is precisely
+   * the exfiltration channel the commitment exists to close.
+   */
+  vars: Record<string, string> = {}
 ): Promise<{
   outcome: StepOutcome;
   ms: number;
@@ -421,6 +903,8 @@ async function executeStep(
   observation?: Observation;
   binds: Record<string, unknown>;
   write?: StepWrite;
+  attest?: StepAttest;
+  stateCheck?: StepStateCheck;
   mocked?: true;
 }> {
   const started = Date.now();
@@ -480,6 +964,18 @@ async function executeStep(
   const effectiveEffect = step.effect ?? tool.effect;
   const isWrite = effectiveEffect === "idempotent-write" || effectiveEffect === "destructive";
 
+  // Belt to the parse-time rule (S4 review finding): a state-bound step whose
+  // effective effect is NOT a write would dispatch with no approval gate, no
+  // state check, and no write receipt — a stamped binding nothing checks
+  // (never-list #1). parseSkill already rejects `expect` + `effect: read`;
+  // this catches hand-crafted Skill objects handed straight to runSkill().
+  if (step.expect !== undefined && !isWrite) {
+    failures.push(
+      `Refusing to execute state-bound step with non-write effect '${effectiveEffect}' — a binding on an ungated dispatch would never be checked. (Unrepresentable via parseSkill; fix the step's effect or re-approve.)`
+    );
+    return { outcome: "failed", ms: Date.now() - started, failures, binds: localBinds };
+  }
+
   if (isWrite) {
     if (step.approve !== undefined) {
       // Hash-bound approval (docs/specs/flight-recorder-v2.md §2) is the
@@ -488,10 +984,10 @@ async function executeStep(
       // matches, this executes with NO flag needed at all. If it doesn't —
       // the step drifted since it was approved — this fails closed and NO
       // flag (--allow-writes, --yes) can override that refusal.
-      const expected = computeApprovalHash(step);
+      const expected = computeApprovalHash({ actionTool: step.actionTool, actionArgs: step.actionArgs, attest: step.attest, expect: step.expect });
       if (step.approve !== expected) {
         failures.push(
-          `Approval mismatch on write step — the step's tool/args changed since it was approved. ` +
+          `Approval mismatch on write step — the step's tool/args/attest changed since it was approved. ` +
             `Re-review and re-approve: reelier approve <skill.md>. (--allow-writes/--yes do NOT override an approval mismatch.)`
         );
         return { outcome: "failed", ms: Date.now() - started, failures, binds: localBinds };
@@ -533,30 +1029,427 @@ async function executeStep(
     return { outcome: "failed", ms: Date.now() - started, failures, binds: localBinds };
   }
 
+  // A declared probe dispatches ONLY when this write executed via a matching
+  // `approve:` hash (final-review S2): the approval hash binding of `attest:`
+  // (src/approval.ts) is the sole defense against an unreviewed probe args
+  // template exfiltrating live bindings through a probe URL, and it only
+  // engages on the approve path. On the flag path (--allow-writes/--yes) the
+  // probe never fires and the attest degrades honestly (see below). A
+  // defined `step.approve` here is guaranteed to have MATCHED — a mismatch
+  // returned above before any dispatch.
+  const probeApproved = step.attest !== undefined && step.approve !== undefined;
+
+  // Pre-probe (declared-probe attestation, consequence-layer §1.2): captured
+  // strictly BEFORE dispatch or never. Runs only for write steps that
+  // declared one — reads never probe, and a probe failure never gates the
+  // write. The `pre` timestamp is captured HERE, the instant the pre-probe
+  // actually resolves, never stamped later — that's the honesty rule.
+  let preProbe: ProbeResult | undefined;
+  let preAt: string | undefined;
+  // ONE salt for this step's whole attest — pre and post commit with the same
+  // salt so within-record equality semantics hold (see newAttestSalt).
+  const attestSalt = newAttestSalt();
+
+  // ---- W3-S4 / I-18: the probeArgs gate, resolved BEFORE any dispatch ----
+  //
+  // On a binding carrying `expect.probeArgs`, fill the probe args from the
+  // run's --vars ONLY (a pure computation — no dispatch), recompute the MAC,
+  // and compare. On inequality NEITHER the pre-probe nor the post-probe is
+  // dispatched. The dispatch ban is the load-bearing half of the invariant:
+  // comparing AFTER the probe fires would reopen the exfiltration channel
+  // that forced literal-only probes in P1, and a build that exfiltrates and
+  // then honestly reports `unevaluated` satisfies a comparison-only rule
+  // while being exactly as wrong.
+  //
+  // The key is resolved here rather than in the state-check block below
+  // because the gate needs it first; the block reuses it. Without a key we
+  // cannot establish that these args are the approved ones, so we do not
+  // dispatch — and the existing `key-unavailable` reason (which the §5.1
+  // a→b→c order already puts first) is the honest label for it.
+  const expectStore = isWrite && step.expect !== undefined && expectKeys !== undefined ? await expectKeys() : undefined;
+  const expectKey =
+    isWrite && step.expect !== undefined && expectStore !== undefined ? loadExpectKey(expectStore, step.expect.keyId) : undefined;
+
+  // NAMED RESIDUAL (wave-3 review round 2 — deliberately NOT closed here,
+  // and escalated rather than justified away): a step with NO `expect` at
+  // all still probes from the WHOLE merged `bindings` map below, so a
+  // step-output `bind:` can fill a probe-arg placeholder with a value the
+  // reviewer of THIS step's template never saw. That is wave-2-era accepted
+  // behavior; the approval hash plus human review of the template is its
+  // stated defense, and the hash is per-step while the channel is cross-step.
+  //
+  // An earlier version of this comment justified leaving it open by claiming
+  // that closing it "would degrade every shipped skill's attest from `exact`
+  // to `absent` the moment it carries a step-output `bind:` anywhere
+  // upstream". That is FALSE and the review proved it: `probeBindings` is
+  // consulted only to fill the probe template, so a skill whose probe args
+  // are literal fills identically either way. The only skills affected are
+  // those that today feed a step-output bind INTO a probe arg — which is
+  // precisely the channel. The true cost of closing it is therefore close to
+  // zero everywhere except the vulnerable shape.
+  //
+  // It is left open in THIS slice because closing it changes shipped
+  // behavior for a step class this slice does not otherwise touch, and that
+  // is a founder decision, not a review fix. It cannot be closed in the
+  // approve ceremony instead: a hand-deleted `expect` leaves a file
+  // byte-indistinguishable from a skill that was never state-bound, so no
+  // CLI predicate can separate the two. See the wave-3 spec's W3-S4 record.
+  let probeBindings: Record<string, unknown> = bindings;
+  let probeArgsBlocked: string | undefined;
+  if (isWrite && step.expect?.probeArgs !== undefined && step.attest !== undefined) {
+    // --vars only. Never the merged map: a step-output `bind:` colliding with
+    // a probe-arg placeholder name is the channel this closes.
+    probeBindings = { ...vars };
+    if (expectKey === undefined) {
+      probeArgsBlocked = `key-unavailable: keyId '${step.expect.keyId}'`;
+    } else {
+      let filledProbeArgs: unknown;
+      try {
+        filledProbeArgs = fillTemplate(step.attest.args, probeBindings, now);
+      } catch {
+        // An unfilled hole is not the approved filled shape. Same class, same
+        // label — never a distinct reason minted at the point of failure.
+        probeArgsBlocked = PROBE_ARGS_MISMATCH_REASON;
+      }
+      if (probeArgsBlocked === undefined && probeArgsMac(expectKey, step.attest.tool, filledProbeArgs) !== step.expect.probeArgs) {
+        probeArgsBlocked = PROBE_ARGS_MISMATCH_REASON;
+      }
+    }
+  } else if (isWrite && step.expect !== undefined && step.expect.probeArgs === undefined && step.attest !== undefined && hasTemplatePlaceholder(step.attest.args)) {
+    // I-18 blocker 1b (wave-3 review): `expect` guarantees attest+approve by
+    // grammar (I-12), and `reelier approve --probe` always commits
+    // `probeArgs` when the attest template is parameterized (cli.ts's
+    // structural-bindability check refuses to bind a placeholder-carrying
+    // attest without one) — so `expect` present + a parameterized
+    // attest.args + NO probeArgs commitment cannot arise from any approve
+    // path. It IS reachable by hand-editing the file after approval (the
+    // approve hash is recomputed over the tampered fields too, so the
+    // belt-and-suspenders check above this function can't catch it either).
+    // Treat it exactly like an ordinary probe-args gate block: no dispatch,
+    // ever — the same exfiltration channel I-18 closes is open here the
+    // instant the merged `bindings` map (not `vars`-only) reaches a probe.
+    probeBindings = { ...vars };
+    probeArgsBlocked = PROBE_ARGS_MISMATCH_REASON;
+  }
+
+  // ---- W5-T3: time expiry, resolved BEFORE any probe dispatches ----
+  //
+  // Placed here, and not inside the state-check block below, because expiry
+  // is a PRE-PROBE fact: probing a binding whose clock already ran out spends
+  // a call to learn something that cannot change the verdict, and — worse —
+  // a probe that then fails would report `probe-failed`, which is a claim
+  // about the probe rather than about the approval. The operator asked for an
+  // approval that expires as a no; the receipt has to say so in those words.
+  //
+  // Reached only after the approval hash MATCHED (above), so the TTL read
+  // here is provably the approved one, not a hand-extended one.
+  const expiredReason = isWrite && step.expect !== undefined ? approvalExpiredReason(step.expect.expiresAt, now) : undefined;
+
+  if (isWrite && step.attest && probeApproved) {
+    if (expiredReason !== undefined) {
+      // Synthesized, never dispatched — the same discipline the probeArgs
+      // gate uses. The attest degrades honestly through the existing
+      // probe-failure path: no fabricated observation, no `observedAt`.
+      //
+      // The PRE side only. The post-probe below deliberately still runs in
+      // recorder mode — see its comment for why the two sides differ.
+      preProbe = { ok: false, reason: expiredReason };
+    } else if (probeArgsBlocked !== undefined) {
+      // Synthesized, never dispatched: the state check below reads this as an
+      // ordinary probe failure and the attest degrades through the existing
+      // probe-failure path — no fabricated observation, no `observedAt`.
+      preProbe = { ok: false, reason: probeArgsBlocked };
+    } else {
+      preProbe = await runProbe(step.attest, tools, probeBindings, ctx, now, probeTimeoutMs);
+      preAt = new Date().toISOString();
+    }
+  }
+
+  // The state check (state-conditioned approval §5.1 step 4): iff the step
+  // carries `expect:`, compare the pre-probe observation's keyed commitment
+  // against the approve-time one — strictly BEFORE dispatch (I-3), no clock
+  // in the predicate (I-14), no policy file read HERE (A3 at the library
+  // boundary — the gate arrives pre-resolved via options.stateGate, S8;
+  // without it this is recorder mode: fail open, record honestly, never
+  // block; never-list #5). `expect` guarantees attest+approve by grammar
+  // (I-12), so preProbe ran above.
+  let stateCheck: StepStateCheck | undefined;
+  if (isWrite && step.expect !== undefined) {
+    const expectedAt = step.expect.at;
+    // §5.1 step 4's normative a→b→c order: key first (a revocation signal —
+    // key-unavailable — must never be masked by a coincident probe flake;
+    // these reason strings are a closed, stable gate-event-label registry).
+    // Resolved above the pre-probe since W3-S4 (the probeArgs gate needs it
+    // before any dispatch); the ordering this branch encodes is unchanged.
+    const key = expectKey;
+    if (expiredReason !== undefined) {
+      // FIRST in the chain, ahead of even the key check: expiry needs no key
+      // and no observation, so it is decidable when nothing else is. It is
+      // `unevaluated` rather than `mismatch` for the same reason
+      // probe-substrate-mismatch is — nothing about the world was
+      // established, so a mismatch would be exactly as unearned as a match.
+      // Under `state_gate: refuse` the existing branch below turns this into
+      // a refusal before dispatch, which is the whole feature. In recorder
+      // mode it stamps and the write goes out: recorder records, gate
+      // refuses, and this slice does not blur the two.
+      stateCheck = {
+        outcome: "unevaluated",
+        // `stamped`, not `proceeded`: the runner recorded a finding about the
+        // approval rather than merely failing to evaluate one. No observedAt
+        // — nothing was observed.
+        action: "stamped",
+        expectedAt,
+        reason: expiredReason,
+      };
+    } else if (key === undefined) {
+      // Deletion IS revocation and is indistinguishable from never-present
+      // (C7) — one reason string, never a fake distinction. observedAt is
+      // present iff the probe actually resolved.
+      stateCheck = {
+        outcome: "unevaluated",
+        action: "proceeded",
+        expectedAt,
+        ...(preProbe !== undefined && preProbe.ok ? { observedAt: preAt } : {}),
+        reason: `key-unavailable: keyId '${step.expect.keyId}'`,
+      };
+    } else if (preProbe === undefined || !preProbe.ok) {
+      stateCheck = {
+        outcome: "unevaluated",
+        action: "proceeded",
+        expectedAt,
+        reason: normalizeStateCheckReason(preProbe === undefined ? "probe-failed: probe never ran" : preProbe.reason),
+      };
+    } else if (
+      step.attest?.projection?.includes(STATUS_CODE_ENTRY) === true &&
+      tools[step.attest.tool]?.server !== undefined
+    ) {
+      // Review finding (blocking, round 2): `approve --probe` refuses to MINT
+      // this binding over a wrapped MCP tool, but nothing stopped one minted
+      // over http from being EVALUATED against one. `--wrap` merges MCP tools
+      // over the builtins by name, and mcpResultToObservation fabricates
+      // `isError ? 500 : 200` — so a `status.code` binding is satisfiable by a
+      // status the substrate never produced, and an attacker only has to
+      // INDUCE AN ERROR rather than forge anything. A binding stamped at 500
+      // would then match every future failure of any kind.
+      //
+      // Left unevaluated rather than mismatched: nothing about the world was
+      // established, so a mismatch would be as unearned as the match. This is
+      // the load-bearing choice — under `state_gate: refuse` unevaluated fails
+      // closed (no dispatch), and it keeps the drift-watch `went_unevaluated`
+      // countermeasure alive, which a match would silence exactly when an
+      // evidence suppressor is inducing errors.
+      //
+      // The probe still dispatched, so `observedAt` is earned; only the
+      // comparison is refused. Substrate, not token: the same binding over an
+      // http builtin evaluates normally.
+      stateCheck = {
+        outcome: "unevaluated",
+        action: "proceeded",
+        expectedAt,
+        observedAt: preAt,
+        reason: `probe-substrate-mismatch: 'status.code' cannot be evaluated through the MCP tool '${step.attest.tool}' — MCP has no HTTP status, so the value compared would be a fabricated error sentinel (A12)`,
+      };
+    } else {
+      const typed = projectObservationTyped(preProbe.obs, step.attest?.projection ?? []);
+      if (Object.keys(typed).length === 0) {
+        stateCheck = {
+          outcome: "unevaluated",
+          action: "proceeded",
+          expectedAt,
+          observedAt: preAt,
+          reason: "empty-projection: probe returned no declared fields",
+        };
+      } else {
+        if (macEquals(expectMac(key, step.attest!.tool, typed), step.expect.pre)) {
+          stateCheck = { outcome: "match", action: "proceeded", expectedAt, observedAt: preAt };
+        } else {
+          // Real mismatch (§5.3/C5): the observable shape through the
+          // declared probe changed. absentFields names declared fields
+          // absent AT EXECUTE (A1 — never an approve-time presence claim).
+          // Output-form names per the P1.5 namespaces: bare entries are
+          // body keys; header./body. prefixed entries keep their namespace.
+          const absent = (step.attest?.projection ?? [])
+            .map((f) => (f === STATUS_CODE_ENTRY ? f : f.startsWith("header.") || f.startsWith("body.") ? f : `body.${f}`))
+            .filter((k) => !(k in typed))
+            .slice(0, ABSENT_FIELDS_MAX)
+            .map((n) => n.slice(0, ABSENT_FIELD_NAME_MAX));
+          // P1.5 diagnosis: fields present at BOTH times whose per-field
+          // MAC moved — only when the binding carried field commitments; a
+          // fieldless (0.25.0) binding never fabricates a diagnosis.
+          let changed: string[] = [];
+          if (step.expect.fields !== undefined) {
+            for (const [name, recorded] of Object.entries(step.expect.fields)) {
+              // Own-property read (review finding): `typed` is a plain object,
+              // so a fields entry named "constructor"/"toString" would read
+              // through Object.prototype and land a fabricated name in a
+              // signed record. Fourth door on the __proto__ hardening.
+              const liveValue = Object.prototype.hasOwnProperty.call(typed, name) ? typed[name] : undefined;
+              if (liveValue === undefined) continue; // absent → absentFields' job
+              if (!macEquals(expectFieldMac(key, step.attest!.tool, name, liveValue), recorded)) changed.push(name);
+            }
+            changed = changed.slice(0, ABSENT_FIELDS_MAX).map((n) => n.slice(0, ABSENT_FIELD_NAME_MAX));
+          }
+          stateCheck = {
+            outcome: "mismatch",
+            action: "stamped",
+            expectedAt,
+            observedAt: preAt,
+            ...(absent.length > 0 ? { absentFields: absent } : {}),
+            ...(changed.length > 0 ? { changedFields: changed } : {}),
+          };
+        }
+      }
+    }
+  }
+
+  // Gate mode (§5.5, S8 — explicit per-repo opt-in via policy.yml, never a
+  // flag): mismatch OR unevaluated refuses BEFORE dispatch. Refusing on
+  // unevaluated is deliberate — after key deletion (revocation) the binding
+  // is no longer evidence, and fail-closed is precisely what revocation
+  // should mean for an opted-in repo. A refusal is the control working,
+  // not the tool breaking (`action: "refused"` keeps the label stream
+  // honest about that). No flag overrides this (I-10): ctx.allowWrites and
+  // ctx.allowDestructive are deliberately not consulted — the policy file
+  // is exactly the surface that cannot be talked out of at invocation
+  // time. The already-computed diagnosis (changedFields/absentFields)
+  // survives the refusal: it is an observation, and it happened.
+  if (stateGate === "refuse" && stateCheck !== undefined && stateCheck.outcome !== "match") {
+    failures.push(
+      stateCheck.outcome === "mismatch"
+        ? STATE_GATE_REFUSAL_MISMATCH
+        : stateGateRefusalUnevaluated(stateCheck.reason ?? "(no reason recorded — malformed record)")
+    );
+    return {
+      outcome: "failed",
+      ms: Date.now() - started,
+      failures,
+      binds: localBinds,
+      stateCheck: { ...stateCheck, action: "refused" },
+    };
+  }
+
+  // dispatchedAt is stamped only for checked (expect-bearing) writes — an
+  // expect-less skill's record stays byte-identical (I-2). Captured at the
+  // instant the dispatch is issued, closing the measured window (§8.2).
+  const dispatchedAt = isWrite && step.expect !== undefined ? new Date().toISOString() : undefined;
+
   let obs: Observation;
   try {
     obs = await tool.run(filledArgs, ctx);
   } catch (err) {
     failures.push(`Tool execution failed: ${(err as Error).message}`);
-    return { outcome: "failed", ms: Date.now() - started, failures, binds: localBinds };
+    // A throw AFTER dispatch is not "never dispatched" — the write-effect
+    // call went out and its side effect may have landed server-side (e.g. a
+    // response timeout after the server applied the write). If the pre-probe
+    // already captured evidence, preserve it (final-review minor F4): a
+    // one-sided attest, confidence "partial", reason "dispatch-failed" —
+    // never silently drop the only state evidence for the incident.
+    let throwAttest: StepAttest | undefined;
+    if (isWrite && step.attest && probeApproved && preProbe !== undefined && preProbe.ok && Object.keys(preProbe.projected).length > 0) {
+      throwAttest = {
+        method: "declared-probe",
+        selector: step.attest.tool,
+        pre: { hash: saltedProjectionHash(preProbe.projected, attestSalt), at: preAt! },
+        confidence: "partial",
+        reason: "dispatch-failed",
+      };
+    }
+    // §8.6: the state check completed BEFORE dispatch — a dispatch throw
+    // never un-computes it.
+    return {
+      outcome: "failed",
+      ms: Date.now() - started,
+      failures,
+      binds: localBinds,
+      ...(throwAttest !== undefined ? { attest: throwAttest } : {}),
+      ...(stateCheck !== undefined ? { stateCheck } : {}),
+    };
   }
 
   // The write receipt reflects that the tool call actually dispatched — it's
   // stamped here, BEFORE assert evaluation, because the side effect already
   // happened regardless of whether the step's assertions later hold.
-  const write = isWrite ? buildStepWrite(step.actionTool, tool, filledArgs, obs, step.approve !== undefined) : undefined;
+  const write = isWrite
+    ? { ...buildStepWrite(step.actionTool, tool, filledArgs, obs, step.approve), ...(dispatchedAt !== undefined ? { dispatchedAt } : {}) }
+    : undefined;
+
+  let attest: StepAttest | undefined;
+  if (isWrite) {
+    if (step.attest && probeApproved) {
+      // W3-S4 / I-18: "neither the pre-probe nor the post-probe is
+      // dispatched". The post-probe would carry the same unapproved filled
+      // args out of the same hole, so the ban covers it identically —
+      // synthesized as a failure, never dispatched.
+      //
+      // W5-T3 does NOT ride that ban, and the asymmetry is deliberate
+      // (founder decision, 2026-08-01). An expired approval skips the PRE-probe
+      // because the verdict is already decided without it and a probe that ran
+      // and failed would report `probe-failed`, a claim about the probe rather
+      // than about the approval. None of that applies afterwards: by here the
+      // write has DISPATCHED (recorder mode — gate mode returned long before
+      // this line), and the probe args were hash-verified, so there is no
+      // exfiltration channel the way there is for probeArgs. Skipping the post
+      // side bought symmetry and nothing else, and it cost the receipt its only
+      // post-state evidence — making the expired-approval receipt the least
+      // informative in the system, in exactly the case where an operator most
+      // wants to know what the write actually did.
+      const postProbe: ProbeResult =
+        probeArgsBlocked !== undefined
+          ? { ok: false, reason: probeArgsBlocked }
+          : await runProbe(step.attest, tools, probeBindings, ctx, now, probeTimeoutMs);
+      const postAt = new Date().toISOString();
+      const selector = step.attest.tool;
+      const preSide = preProbe && preProbe.ok && Object.keys(preProbe.projected).length > 0 ? preProbe.projected : undefined;
+      const postSide = postProbe.ok && Object.keys(postProbe.projected).length > 0 ? postProbe.projected : undefined;
+      const reasons = [
+        preProbe && !preProbe.ok ? `pre: ${preProbe.reason}` : preSide === undefined ? "pre: empty-projection" : undefined,
+        !postProbe.ok ? `post: ${postProbe.reason}` : postSide === undefined ? "post: empty-projection" : undefined,
+      ].filter((r): r is string => r !== undefined);
+      if (preSide && postSide) {
+        attest = {
+          method: "declared-probe",
+          selector,
+          pre: { hash: saltedProjectionHash(preSide, attestSalt), at: preAt! },
+          post: { hash: saltedProjectionHash(postSide, attestSalt), at: postAt },
+          delta: computeDelta(preSide, postSide),
+          confidence: "exact",
+        };
+      } else if (preSide || postSide) {
+        attest = {
+          method: "declared-probe",
+          selector,
+          ...(preSide !== undefined ? { pre: { hash: saltedProjectionHash(preSide, attestSalt), at: preAt! } } : {}),
+          ...(postSide !== undefined ? { post: { hash: saltedProjectionHash(postSide, attestSalt), at: postAt } } : {}),
+          confidence: "partial",
+          reason: reasons.join("; "),
+        };
+      } else {
+        attest = { method: "declared-probe", selector, confidence: "absent", reason: reasons.join("; ") };
+      }
+    } else {
+      attest = buildResponseDerivedAttest(obs);
+      if (step.attest) {
+        // A probe WAS declared but this write executed via the flag path
+        // (--allow-writes/--yes), so no approval hash ever bound the probe's
+        // args template — the probe was withheld (see probeApproved above)
+        // and the attest honestly records why it degraded.
+        const reason = "probe-requires-approval";
+        attest = { ...attest, reason: attest.reason !== undefined ? `${attest.reason}; ${reason}` : reason };
+      }
+    }
+  }
 
   evaluateAssertsAndBinds(step, obs, failures, localBinds);
 
   const ms = Date.now() - started;
   if (failures.length > 0) {
-    return { outcome: "failed", ms, failures, observation: obs, binds: localBinds, write };
+    return { outcome: "failed", ms, failures, observation: obs, binds: localBinds, write, attest, stateCheck };
   }
   if (step.asserts.length === 0) {
     // Honest-success rule: zero assertions never counts as "passed".
-    return { outcome: "unchecked", ms, failures, observation: obs, binds: localBinds, write };
+    return { outcome: "unchecked", ms, failures, observation: obs, binds: localBinds, write, attest, stateCheck };
   }
-  return { outcome: "passed", ms, failures, observation: obs, binds: localBinds, write };
+  return { outcome: "passed", ms, failures, observation: obs, binds: localBinds, write, attest, stateCheck };
 }
 
 /** Re-evaluate a patched assert/bind set against a fixed observation. Never re-executes anything. */
@@ -603,19 +1496,23 @@ function level3Message(step: Step): string {
 }
 
 /**
- * L2 approval mismatch: the LLM's proposed args template leaves the
- * template a human approved (`step.approve`). Mirrors level3Message's
- * shape — spec §2: "patched args that leave the approved template → the
- * write is NOT re-executed at L2." The main-path gate (executeStep) already
- * proved `step.approve` matched the ORIGINAL template before this step ever
- * reached L2 (attemptEscalation only runs when the main path produced an
- * observation), so this only fires when L2's proposed args differ from what
- * was approved.
+ * L2 approval mismatch: the hash recomputed over the L2 candidate template
+ * (tool/args/attest) no longer matches `step.approve`. Mirrors
+ * level3Message's shape — spec §2: "patched args that leave the approved
+ * template → the write is NOT re-executed at L2." Two distinct causes land
+ * here: (1) the LLM's proposed args genuinely diverge from the approved
+ * template, or (2) the approval is simply stale — the step's `tool:`,
+ * `args:`, or `attest:` was edited by hand after `reelier approve` last ran,
+ * so even an L2 candidate identical to the step's own (edited) template no
+ * longer hashes to what was approved. Either way the write is NOT
+ * re-executed; this message doesn't try to distinguish them, it just names
+ * both possibilities and points at the fix.
  */
 function l2ApprovalMismatchMessage(step: Step): string {
   return (
-    `Approval mismatch on L2-patched write step ${step.n} (${step.title}) — the LLM's proposed args leave the ` +
-    `template a human approved. Level 2 auto-repair never re-executes a write whose args weren't approved. ` +
+    `Approval mismatch on L2-patched write step ${step.n} (${step.title}) — either the LLM's proposed args leave ` +
+    `the template a human approved, or the approval is stale because tool/args/attest was edited since it was ` +
+    `last approved. Level 2 auto-repair never re-executes a write whose approval doesn't match. ` +
     `Re-review and re-approve: reelier approve <skill.md>. (The write was NOT re-executed.)`
   );
 }
@@ -649,6 +1546,8 @@ async function attemptEscalation(
   write?: StepWrite;
   /** Fresh refs from the L2 re-execution's real tool call — same "absent when only L1 ran" rule as `write`. */
   refs?: ObservationRef[];
+  /** Fresh attest from the L2 re-execution's real tool call — same "absent when only L1 ran" rule as `write`. */
+  attest?: StepAttest;
 }> {
   const maxLevel = options.maxLevel ?? 0;
   if (maxLevel < 1 || !options.llm) {
@@ -709,6 +1608,19 @@ async function attemptEscalation(
     return { outcome: "failed", level: 0, failures, llm: usage, escalationAttempted };
   }
 
+  // B1 / I-15 (state-conditioned approval §5.1 step 0): an expect-bearing
+  // step is not L2-eligible. The escalation channel re-dispatches WITHOUT
+  // probes, so a healed write would never be state-checked — it would land
+  // byte-indistinguishable from an unbound legacy step and render as a
+  // clean pass (never-list #1). Same carve-out as destructive steps.
+  if (step.expect !== undefined) {
+    failures = [
+      ...failures,
+      `state-bound step: L2 heal ineligible — the escalation channel re-dispatches without a pre-state check, so a healed write would never be state-checked. Re-approve with 'reelier approve --probe' after fixing the drift, or heal by hand.`,
+    ];
+    return { outcome: "failed", level: 0, failures, llm: usage, escalationAttempted };
+  }
+
   escalationAttempted = 2;
 
   const l2Model = options.llmL2Model ?? "claude-sonnet-5";
@@ -748,7 +1660,11 @@ async function attemptEscalation(
     // what a human approved. This is the FINAL boundary extending to L2: no
     // flag overrides it, and a mismatch means the write is NEVER dispatched.
     const l2ArgsTemplate = l2.args !== undefined ? l2.args : step.actionArgs;
-    const l2ExpectedHash = computeApprovalHash({ actionTool: step.actionTool, actionArgs: l2ArgsTemplate });
+    // `attest` MUST be bound here exactly as cmdApprove stamped it — omitting
+    // it computes the legacy hash and makes an approved+attested step
+    // permanently un-healable at L2 with a fabricated mismatch reason
+    // (final-review S1/S4). ApprovalHashInput makes omission a compile error.
+    const l2ExpectedHash = computeApprovalHash({ actionTool: step.actionTool, actionArgs: l2ArgsTemplate, attest: step.attest, expect: step.expect });
     if (l2ExpectedHash !== step.approve) {
       failures = [...failures, l2ApprovalMismatchMessage(step)];
       return { outcome: "failed", level: 0, failures, llm: usage, escalationAttempted };
@@ -769,12 +1685,13 @@ async function attemptEscalation(
   // happened. `approved` is truthful here: if step.approve was defined, the
   // gate above already proved it matched THIS exact candidate template
   // before dispatch — a mismatch never reaches this line.
-  const l2Write = l2IsWrite ? buildStepWrite(step.actionTool, l2Tool, filledArgs, obs2, step.approve !== undefined) : undefined;
+  const l2Write = l2IsWrite ? buildStepWrite(step.actionTool, l2Tool, filledArgs, obs2, step.approve) : undefined;
+  const l2Attest = l2IsWrite ? buildResponseDerivedAttest(obs2) : undefined;
 
   const reEval2 = reEvaluatePatch(l2.asserts, l2.binds, obs2);
   if (!reEval2.ok) {
     failures = [...failures, ...reEval2.failures.map((f) => `L2 patch didn't hold: ${f}`)];
-    return { outcome: "failed", level: 0, failures, llm: usage, escalationAttempted, write: l2Write, refs: obs2.refs };
+    return { outcome: "failed", level: 0, failures, llm: usage, escalationAttempted, write: l2Write, refs: obs2.refs, attest: l2Attest };
   }
 
   Object.assign(bindings, reEval2.bindings);
@@ -802,6 +1719,7 @@ async function attemptEscalation(
     why: { change: `L2: ${l2.reason}` },
     write: l2Write,
     refs: obs2.refs,
+    attest: l2Attest,
   };
 }
 
@@ -818,7 +1736,34 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
   // A single snapshot for the whole run — every fillTemplate call inside this
   // run shares it, so {{today}}/{{today±Nd}} can never resolve to a
   // different calendar day mid-run (e.g. across a UTC midnight boundary).
-  const now = Date.now();
+  // Injectable since W5-T3 (options.now) so an approval TTL can be evaluated
+  // at an exact instant; unset, it is exactly today's `Date.now()`.
+  const now = options.now ?? Date.now();
+  const probeTimeoutMs = options.probeTimeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS;
+
+  // Expect keystore, loaded lazily and at most once — only a step that
+  // actually carries `expect:` triggers the read (I-2: the read path and
+  // expect-less skills gain zero I/O). An unreadable/malformed keystore is a
+  // loud stderr warning + every lookup degrading to key-unavailable
+  // (`unevaluated`, never a pass, never a block — the recorder must not
+  // crash the run over its own trust layer, never-list #5).
+  let expectStoreCache: ExpectKeystore | undefined;
+  let expectStoreLoaded = false;
+  const expectKeys = async (): Promise<ExpectKeystore | undefined> => {
+    if (!expectStoreLoaded) {
+      expectStoreLoaded = true;
+      const keystorePath = options.expectKeystorePath ?? resolveKeystorePath(process.env, os.homedir());
+      try {
+        expectStoreCache = await readKeystore(keystorePath);
+      } catch (err) {
+        console.error(
+          `WARNING: expect keystore unreadable (${(err as Error).message}) — state checks this run will record 'unevaluated' (key-unavailable), never a pass`
+        );
+        expectStoreCache = undefined;
+      }
+    }
+    return expectStoreCache;
+  };
 
   const startedAt = new Date().toISOString();
   const stepRecords: StepRecord[] = [];
@@ -830,7 +1775,17 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
 
   for (const step of skill.steps) {
     if (diverged) {
-      const rec: StepRecord = { n: step.n, title: step.title, level: 0, outcome: "skipped", ms: 0, failures: [] };
+      // A skipped step never dispatched, but what its author DECLARED about it
+      // is still true and belongs on the record — same reasoning as `title`.
+      const rec: StepRecord = {
+        n: step.n,
+        title: step.title,
+        level: 0,
+        outcome: "skipped",
+        ms: 0,
+        failures: [],
+        ...(step.exposure !== undefined ? { exposure: step.exposure } : {}),
+      };
       stepRecords.push(rec);
       options.onStep?.(rec, { tool: step.actionTool, args: step.actionArgs });
       continue;
@@ -838,7 +1793,21 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
 
     const started = Date.now();
     const mockStatus = options.mockFailures?.[step.n];
-    const exec = await executeStep(step, bindings, tools, toolCtx, now, mockStatus);
+    const exec = await executeStep(
+      step,
+      bindings,
+      tools,
+      toolCtx,
+      now,
+      mockStatus,
+      probeTimeoutMs,
+      expectKeys,
+      options.stateGate,
+      // W3-S4: the run's --vars ALONE, kept separate from `bindings` (which
+      // accumulates step-output binds as the run proceeds) so a probeArgs-
+      // bearing step's probe args can never fill from a colliding `bind:`.
+      options.vars ?? {}
+    );
     let outcome = exec.outcome;
     let failures = exec.failures;
     let level: 0 | 1 | 2 = 0;
@@ -846,6 +1815,7 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
     let escalationAttempted: 0 | 1 | 2 | undefined;
     let why: StepWhy | undefined;
     let write = exec.write;
+    let attest = exec.attest;
     // Extends the write receipt's discipline to EVERY executed step (spec
     // §3) — a read step's Observation can carry cross-checkable refs too.
     // `exec.observation` is set on every REAL (or mocked-synthetic) dispatch
@@ -912,6 +1882,9 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
       // refs (if any) are what THIS record should reflect. `escalated.refs`
       // is only set when a real L2 dispatch happened (see attemptEscalation).
       if (escalated.refs !== undefined) refs = escalated.refs;
+      // Same "fresh L2 dispatch supersedes the stale main-path attempt"
+      // reasoning as `write`/`refs` above.
+      if (escalated.attest !== undefined) attest = escalated.attest;
     }
     // A step that failed without an observation (tool threw) skips escalation —
     // still record why it diverged.
@@ -924,6 +1897,7 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
     if (exec.mocked) {
       write = undefined;
       refs = undefined;
+      attest = undefined;
     }
 
     const ms = Date.now() - started;
@@ -934,10 +1908,18 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
       outcome,
       ms,
       failures,
+      // Absent stays absent — the record must be able to distinguish "the
+      // author said internal" from "the author said nothing".
+      ...(step.exposure !== undefined ? { exposure: step.exposure } : {}),
       ...(llmUsage ? { llm: llmUsage } : {}),
       ...(escalationAttempted !== undefined ? { escalationAttempted } : {}),
       ...(why ? { why } : {}),
       ...(write ? { write } : {}),
+      ...(attest ? { attest } : {}),
+      // The main-path check, never post-hoc (I-3): L2 is ineligible for
+      // expect-bearing steps (B1), so escalation can never produce a
+      // fresher stateCheck to supersede this one.
+      ...(exec.stateCheck && !exec.mocked ? { stateCheck: exec.stateCheck } : {}),
       ...(refs && refs.length > 0 ? { refs } : {}),
       ...(exec.mocked ? { mocked: true as const } : {}),
     };
@@ -968,6 +1950,8 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
     passed: failedCount === 0,
     ...(options.skillContentSha256 ? { skillContentSha256: options.skillContentSha256 } : {}),
     ...(options.manifestIgnored ? { manifestIgnored: true } : {}),
+    ...(options.manifestChecked ? { manifestChecked: true } : {}),
+    ...(options.policy ? { policy: options.policy } : {}),
     ...(mockFailureSteps.length > 0 ? { mockFailures: mockFailureSteps } : {}),
     steps: stepRecords,
     totals: {

@@ -5,6 +5,42 @@ you type `reelier ...` at, `reelier serve` exposes Reelier's own commands
 as MCP tools any MCP-capable coding agent can call mid-session. Each
 subdirectory here is the glue for one agent.
 
+## The skill file works in more clients than its directory name suggests
+
+`claude-code/reelier/SKILL.md` is a plain **Agent Skill** — the open format
+originally published by Anthropic, now supported by a large and growing number
+of agent clients (Claude Code, Cursor, Copilot, VS Code, Codex, Gemini CLI,
+OpenCode, Goose, Letta, Factory, Amp, Kiro, Roo Code, and many more; see
+[agentskills.io](https://agentskills.io) for the current list and the format
+spec).
+
+Nothing in that file is Claude-Code-specific. It lives under `claude-code/`
+because that is where it was first written, and the path is kept so existing
+links and `curl` commands do not break. **Any client that loads Agent Skills
+can use it** — the install path is the only thing that differs:
+
+| Client | Where the skill goes |
+| --- | --- |
+| Claude Code | `~/.claude/skills/reelier/SKILL.md` (user) or `.claude/skills/reelier/SKILL.md` (project) |
+| OpenClaw | via clawhub — see `clawhub/reelier/SKILL.md`, which carries OpenClaw install metadata |
+| Others | each client documents its own skills directory; the file itself is unchanged |
+
+Two things worth knowing before you copy it around:
+
+- **The `description` field is the whole trigger.** Agent Skills load by
+  progressive disclosure: at startup a client reads only `name` and
+  `description`, and pulls the body in only when a task matches. If the
+  description does not say *when* to reach for Reelier — and, just as
+  importantly, when not to — the skill never fires.
+- **This is not a Reelier `*.skill.md`.** The Agent Skill is prose a model
+  reads; a Reelier skill file is a deterministic program the runner executes
+  with no model involved. Same word, different artifacts — SPEC.md §0.4 states
+  the distinction normatively. `reelier compile --from-skill` converts the
+  first into the second: your skill, minus the model.
+
+Cursor's `.mdc` and Windsurf's rules file are genuinely different formats and
+are maintained separately below.
+
 **Role split, worth repeating everywhere**: `reelier serve` is the
 tool-server that exposes Reelier's own commands (`reelier_scan`,
 `reelier_from_session`, `reelier_replay`, `reelier_push`). It is a
