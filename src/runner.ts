@@ -48,6 +48,7 @@ import {
   ABSENT_FIELDS_MAX,
   ABSENT_FIELD_NAME_MAX,
   resolveKeystorePath,
+  macEquals,
   type ExpectKeystore,
 } from "./expect-mac.js";
 
@@ -1121,7 +1122,7 @@ async function executeStep(
           reason: "empty-projection: probe returned no declared fields",
         };
       } else {
-        if (expectMac(key, step.attest!.tool, typed) === step.expect.pre) {
+        if (macEquals(expectMac(key, step.attest!.tool, typed), step.expect.pre)) {
           stateCheck = { outcome: "match", action: "proceeded", expectedAt, observedAt: preAt };
         } else {
           // Real mismatch (§5.3/C5): the observable shape through the
@@ -1146,7 +1147,7 @@ async function executeStep(
               // signed record. Fourth door on the __proto__ hardening.
               const liveValue = Object.prototype.hasOwnProperty.call(typed, name) ? typed[name] : undefined;
               if (liveValue === undefined) continue; // absent → absentFields' job
-              if (expectFieldMac(key, step.attest!.tool, name, liveValue) !== recorded) changed.push(name);
+              if (!macEquals(expectFieldMac(key, step.attest!.tool, name, liveValue), recorded)) changed.push(name);
             }
             changed = changed.slice(0, ABSENT_FIELDS_MAX).map((n) => n.slice(0, ABSENT_FIELD_NAME_MAX));
           }
