@@ -574,7 +574,7 @@ export function policyPaths(cwd: string, homedir: string): { project: string; gl
 
 export type PolicyLoadResult =
   | { ok: true; policy: Policy; sourcePath: string | undefined }
-  | { ok: false; policy: Policy; sourcePath: string; error: string };
+  | { ok: false; policy: Policy; sourcePath: string; error: string; unreadable?: true };
 
 /**
  * Load the active policy for a `reelier mcp` (wrap) run. NEVER throws —
@@ -592,8 +592,27 @@ export async function loadPolicyForWrap(cwd: string, homedir: string): Promise<P
     let source: string;
     try {
       source = await readFile(candidate, "utf8");
-    } catch {
-      continue; // not found (or unreadable) — try the next candidate, then fall through to "no policy"
+    } catch (err) {
+      // ENOENT is "no file here" — try the next candidate. ANY OTHER read
+      // error means a file EXISTS whose rules we cannot inspect (EACCES,
+      // EISDIR, a Windows lock). Skipping it silently would report a repo
+      // that HAS a policy as one that has none ("none configured … all calls
+      // pass through") AND would let the global file decide despite an
+      // existing project file, breaking the documented first-existing-file
+      // rule. Stop the traversal and report it instead — the exact fix
+      // resolveStateGateForRun already carries (see its comment above);
+      // this function never got it. Still fails SAFE, never closed: the
+      // wrap starts with a deny-nothing policy so an unreadable file can
+      // never brick the agent (Prime Directive), but the fact is now
+      // reportable rather than invisible.
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") continue;
+      return {
+        ok: false,
+        unreadable: true,
+        policy: emptyPolicy(),
+        sourcePath: candidate,
+        error: `${candidate} exists but could not be read (${(err as Error).message})`,
+      };
     }
     const validation = parsePolicyStrict(source);
     if (validation.errors.length > 0) {
@@ -631,6 +650,17 @@ export function hasEndpointRules(policy: Policy): boolean {
 
 export function summarizePolicyForWrapStart(result: PolicyLoadResult): string[] {
   if (!result.ok) {
+    if (result.unreadable) {
+      // A malformed file's rules are KNOWN and rejected; an unreadable
+      // file's rules are UNKNOWN. Never conflate the two — telling an
+      // operator to run 'policy check' on a file nothing can read sends
+      // them at the wrong defect, and claiming the rules are invalid
+      // asserts something we did not observe.
+      return [
+        `[reelier] policy: WARNING — ${result.error}`,
+        `[reelier] policy: enforcement DISABLED for this session (fail-safe — deny-nothing) and this file's rules are UNKNOWN — no rule in it is in force. Fix the file's readability.`,
+      ];
+    }
     return [
       `[reelier] policy: WARNING — ${result.error}`,
       `[reelier] policy: enforcement DISABLED for this session (fail-safe — deny-nothing) until the file is fixed. Run 'reelier policy check' to see every error.`,
