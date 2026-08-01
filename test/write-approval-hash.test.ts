@@ -62,7 +62,7 @@ ${step(2)}`;
 function stampedHash(): string {
   const s = parseSkill(skill());
   const step = s.steps[0];
-  return computeApprovalHash({
+  return computeApprovalHash({ emit: undefined,
     actionTool: step.actionTool,
     actionArgs: step.actionArgs,
     attest: step.attest,
@@ -146,7 +146,7 @@ test("approvalHash coexists with resource and duplicateOf without disturbing the
     const hash = (): string => {
       const s = parseSkill(TWO_STEP_SAME_WRITE(""));
       const step = s.steps[0];
-      return computeApprovalHash({
+      return computeApprovalHash({ emit: undefined,
         actionTool: step.actionTool,
         actionArgs: step.actionArgs,
         attest: step.attest,

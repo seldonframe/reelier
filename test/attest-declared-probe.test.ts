@@ -12,7 +12,7 @@ import type { Observation } from "../src/assert.js";
  * hash, so these probe-mechanics tests run on the approved path. */
 function withApprove(src: string): string {
   const s = parseSkill(src).steps[0];
-  const hash = computeApprovalHash({ actionTool: s.actionTool, actionArgs: s.actionArgs, attest: s.attest, expect: s.expect });
+  const hash = computeApprovalHash({ emit: undefined, actionTool: s.actionTool, actionArgs: s.actionArgs, attest: s.attest, expect: s.expect });
   return `${src}- approve: ${hash}\n`;
 }
 

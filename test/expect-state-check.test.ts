@@ -47,7 +47,7 @@ ${asserts.map((a) => `- assert: ${a}`).join("\n")}
 - expect: {"at":"${expect.at}","keyId":"${expect.keyId}","pre":"${expect.pre}"}
 `;
   const step = parseSkill(`${base}- approve: sha256:${"0".repeat(64)}\n`).steps[0];
-  const hash = computeApprovalHash({ actionTool: step.actionTool, actionArgs: step.actionArgs, attest: step.attest, expect: step.expect });
+  const hash = computeApprovalHash({ emit: undefined, actionTool: step.actionTool, actionArgs: step.actionArgs, attest: step.attest, expect: step.expect });
   const source = `${base}- approve: ${hash}\n`;
   return { source, keystorePath, keyId };
 }
@@ -200,7 +200,7 @@ description: approved write, no binding
 - attest: {"tool":"get_page","args":{"slug":"demo"},"projection":["compiled_truth"]}
 `;
   const step = parseSkill(`${plain}- approve: sha256:${"0".repeat(64)}\n`).steps[0];
-  const hash = computeApprovalHash({ actionTool: step.actionTool, actionArgs: step.actionArgs, attest: step.attest, expect: step.expect });
+  const hash = computeApprovalHash({ emit: undefined, actionTool: step.actionTool, actionArgs: step.actionArgs, attest: step.attest, expect: step.expect });
   const { tools } = gbrainTools(() => APPROVED_BODY);
   await withTempDir(async (dir) => {
     const record = await runSkill(parseSkill(`${plain}- approve: ${hash}\n`), { tools, cwd: dir });

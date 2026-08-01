@@ -189,7 +189,7 @@ test("W3-S3: a FIELDLESS binding keeps today's whole-MAC report, verbatim — no
       const skill = parseSkill(await readFile(skillPath, "utf8"));
       const step = skill.steps[0];
       delete step.expect!.fields;
-      step.approve = computeApprovalHash({
+      step.approve = computeApprovalHash({ emit: undefined,
         actionTool: step.actionTool,
         actionArgs: step.actionArgs,
         attest: step.attest,
@@ -350,7 +350,7 @@ test("W3-S3: no grammar or hash change — the binding written by a --rebind is 
     assert.deepEqual(Object.keys(step.expect!).sort(), ["at", "fields", "keyId", "pre"]);
     assert.equal(
       step.approve,
-      computeApprovalHash({ actionTool: step.actionTool, actionArgs: step.actionArgs, attest: step.attest, expect: step.expect }),
+      computeApprovalHash({ emit: undefined, actionTool: step.actionTool, actionArgs: step.actionArgs, attest: step.attest, expect: step.expect }),
       "the hash formula is untouched by this slice",
     );
   });
@@ -368,7 +368,7 @@ async function restamp(skillPath: string, edit: (step: Step) => void): Promise<v
   const skill = parseSkill(await readFile(skillPath, "utf8"));
   const step = skill.steps[0];
   edit(step);
-  step.approve = computeApprovalHash({
+  step.approve = computeApprovalHash({ emit: undefined,
     actionTool: step.actionTool,
     actionArgs: step.actionArgs,
     attest: step.attest,

@@ -21,7 +21,7 @@ const EXPECT: StepExpect = {
 // ---------------------------------------------------------------------------
 
 test("I-1: expect-less, attest-less hash is byte-identical to the pre-expect formula (pinned digest)", () => {
-  const h = computeApprovalHash({
+  const h = computeApprovalHash({ emit: undefined,
     actionTool: "mail.send",
     actionArgs: { subject: "Weekly", to: "ops@example.com" },
     attest: undefined,
@@ -31,7 +31,7 @@ test("I-1: expect-less, attest-less hash is byte-identical to the pre-expect for
 });
 
 test("I-1: expect-less, attest-bearing hash is byte-identical to the pre-expect formula (pinned digests)", () => {
-  const withProjection = computeApprovalHash({
+  const withProjection = computeApprovalHash({ emit: undefined,
     actionTool: "gbrain.put_page",
     actionArgs: { markdown: "# hi", slug: "demo", title: "Demo" },
     attest: { tool: "gbrain.get_page", args: { slug: "demo" }, projection: ["compiled_truth"] },
@@ -39,7 +39,7 @@ test("I-1: expect-less, attest-bearing hash is byte-identical to the pre-expect 
   });
   assert.equal(withProjection, "sha256:6ed11e9fe86e9b7c3a2ca7d08677f09a05d1996a2d0150022581113ff6cb63c3");
 
-  const withoutProjection = computeApprovalHash({
+  const withoutProjection = computeApprovalHash({ emit: undefined,
     actionTool: "gbrain.put_page",
     actionArgs: { markdown: "# hi", slug: "demo", title: "Demo" },
     attest: { tool: "gbrain.get_page", args: { slug: "demo" } },
@@ -54,22 +54,22 @@ test("I-1: expect-less, attest-bearing hash is byte-identical to the pre-expect 
 
 test("expect present changes the hash — adding, editing, or deleting expect is an approval mismatch", () => {
   const base = { actionTool: "gbrain.put_page", actionArgs: { slug: "demo" }, attest: ATTEST };
-  const without = computeApprovalHash({ ...base, expect: undefined });
-  const withExpect = computeApprovalHash({ ...base, expect: EXPECT });
+  const without = computeApprovalHash({ emit: undefined, ...base, expect: undefined });
+  const withExpect = computeApprovalHash({ emit: undefined, ...base, expect: EXPECT });
   assert.notEqual(withExpect, without);
 
-  const editedPre = computeApprovalHash({ ...base, expect: { ...EXPECT, pre: `hmac-sha256:${"ab".repeat(32)}` } });
+  const editedPre = computeApprovalHash({ emit: undefined, ...base, expect: { ...EXPECT, pre: `hmac-sha256:${"ab".repeat(32)}` } });
   assert.notEqual(editedPre, withExpect);
 
-  const editedAt = computeApprovalHash({ ...base, expect: { ...EXPECT, at: "2026-07-31T00:00:00.000Z" } });
+  const editedAt = computeApprovalHash({ emit: undefined, ...base, expect: { ...EXPECT, at: "2026-07-31T00:00:00.000Z" } });
   assert.notEqual(editedAt, withExpect);
 
-  const editedKeyId = computeApprovalHash({ ...base, expect: { ...EXPECT, keyId: "ffffffffffffffff" } });
+  const editedKeyId = computeApprovalHash({ emit: undefined, ...base, expect: { ...EXPECT, keyId: "ffffffffffffffff" } });
   assert.notEqual(editedKeyId, withExpect);
 });
 
 test("expect-bearing hash matches the spec §2.2 formula exactly", () => {
-  const h = computeApprovalHash({
+  const h = computeApprovalHash({ emit: undefined,
     actionTool: "gbrain.put_page",
     actionArgs: { slug: "demo" },
     attest: ATTEST,
@@ -87,8 +87,8 @@ test("expect-bearing hash matches the spec §2.2 formula exactly", () => {
 });
 
 test("expect-bearing hash is stable across expect property order", () => {
-  const h1 = computeApprovalHash({ actionTool: "t", actionArgs: { a: 1 }, attest: ATTEST, expect: EXPECT });
-  const h2 = computeApprovalHash({
+  const h1 = computeApprovalHash({ emit: undefined, actionTool: "t", actionArgs: { a: 1 }, attest: ATTEST, expect: EXPECT });
+  const h2 = computeApprovalHash({ emit: undefined,
     actionTool: "t",
     actionArgs: { a: 1 },
     attest: ATTEST,
@@ -104,7 +104,7 @@ test("expect-bearing hash is stable across expect property order", () => {
 
 test("expect without attest throws (unrepresentable by parseSkill; never a silent legacy hash)", () => {
   assert.throws(
-    () => computeApprovalHash({ actionTool: "t", actionArgs: {}, attest: undefined, expect: EXPECT }),
+    () => computeApprovalHash({ emit: undefined, actionTool: "t", actionArgs: {}, attest: undefined, expect: EXPECT }),
     /'expect' without 'attest'/
   );
 });

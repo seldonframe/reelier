@@ -2,14 +2,14 @@
 
 All notable changes to `reelier`. Dates are release dates.
 
-## 0.30.0 — The seatbelt in the record
+## 0.30.0 — The seatbelt in the record, and the artifact that left
 
-Breaking behavior: **none — additive.** No API was removed, no existing record
-field changed meaning, and **no enforcement behavior changed at all**. What a
-`policy.yml` denies, intercepts or allows in 0.30.0 is exactly what it did in
-0.29.0. This release changes only what the record *says* about the policy, and
-every new field is optional — a trace or run record written before it existed
-stays byte-identical and still verifies.
+Breaking format change: **yes, only for skills that opt into the new `emit:`
+field.** Such a skill is a parse error on Reelier older than 0.30.0 because the
+step grammar is deliberately closed. A skill that does not use `emit:` remains
+compatible: no API was removed, no existing record field changed meaning, and
+no policy-enforcement behavior changed. The policy-attestation fields below are
+additive and optional; pre-policy traces and run records remain valid.
 
 One thing to know before you upgrade, and it is a **reader** obligation rather
 than a behavior change: `meta.policyGap` is superseded by `meta.policy` and no
@@ -90,6 +90,109 @@ impossible. A record carrying both must prefer `policy`.
   that no policy was in force.
 
 Design: `docs/specs/policy-attestation-v1.md`.
+
+### Artifact attestation — the writes no probe can reach
+
+Breaking format change: **yes, and it is the whole headline.** The step grammar
+gains a tenth key, `emit:`. `parseSkill` rejects any unrecognised bulleted step
+field by design (there is no permissive default arm), so **a skill carrying
+`- emit:` is a parse error on every reelier older than 0.30.0** — not a field an
+older reader ignores. A skill that does not use the key is unaffected in every
+respect: byte-identical approval hashes (pinned against a literal captured
+digest), byte-identical records, byte-identical serialization.
+
+The problem this closes. `attest:` proves a write by reading the world back
+through a declared probe, and an entire class of write has no post-state to
+read: there is no "get the email you just sent." Sends, settled refunds, and
+anything a human has already read leave no resource to probe. For an
+irreversible external effect the attestable object is not the world's
+post-state — it is **the artifact that left**. You cannot hash the recipient's
+inbox; you can hash the exact rendered bytes, the recipient and the amount, and
+bind that to the approval before dispatch. No probe tool is involved.
+
+Scope, stated honestly. For a **fully-static** write the approval hash already
+binds the exact args and this adds a named commitment rather than a new
+binding. The gap it actually closes is the **templated** write, where the
+approval covers the args template (`{{placeholders}}` intact) and the run-time
+fill supplies the bytes — the same gap `probeArgs` closed one level over, using
+the same construction.
+
+### Added
+- **`emit:` — a pre-dispatch artifact commitment** (SPEC §3.2, §4.1, §6.1e;
+  design: `docs/specs/artifact-attestation-v1.md`). Declares which parts of the
+  **filled** action args constitute the artifact, as an ordered, duplicate-free
+  list of `args.<key>` entries. Computed after the fill and before dispatch —
+  never at the approval-hash gate, which runs against the template and has no
+  rendered artifact in hand.
+- **`StepRecord.emit`** carrying `artifactDigest`, the declared `projection`,
+  and the `resolved`/`unresolved` partition. Values never appear — hashes,
+  counts and field names only. `approvalHash` names which approval authorized
+  the emission and is absent exactly when `write.approved` is `false`.
+- **Declared coverage that did not resolve is a first-class finding**, reported
+  in `emit.unresolved` rather than dropped. This is what keeps a
+  server-side-rendered payload, a reference-valued field, or a two-call
+  draft→send composition visible instead of publishing a commitment that covers
+  less than the step declares.
+- **A coverage gate under the existing `state_gate: refuse` opt-in.** A write
+  whose declared projection did not fully resolve is refused before dispatch,
+  with no `write` block, no `attest` and no `emit` on the record — dispatch
+  provably never issued. No flag overrides it. In recorder mode the finding is
+  stamped and the write still dispatches: fail open at the recorder, fail closed
+  at the gate.
+- `emit:` enters the approval hash when present, so narrowing the declared
+  coverage — or deleting `emit:` to un-cover a send entirely — is an approval
+  mismatch at the boundary no flag overrides. This is the countermeasure to
+  RFC 9421 §7.2.1's "Insufficient Coverage", credited in the design doc.
+
+### Added — the deferred probe (slice 2)
+- **`attest.defer: "<duration>"`** — most sends DO produce a post-state, just
+  late: a provider message-id, an event API, a bounce or delivery webhook. A
+  deferred probe binds the expectation at dispatch and resolves it when the
+  provider's record appears. It dispatches NEITHER probe side at run time (the
+  record does not exist yet, and the per-run salt means a `pre` captured then
+  could never be compared against a `post` captured later).
+- **`attest.confidence: "pending"` is reachable for the first time.** It was
+  reserved in the wire format for exactly this. The closed `method` enum was
+  **not** changed to get there — a deferred probe is a declared probe that has
+  not run — so no consumer needs a migration. `deferredUntil` carries the
+  deadline, resolved against dispatch, which is why the file holds a duration
+  and the record holds an instant. A duration is bound into the approval hash:
+  a deadline nobody approved is not a deadline.
+- **Resolution grading** (`src/defer.ts`): an observation that resolves the
+  declared fields grades `partial`, **never `exact`** — it proves post-state at
+  resolution time, not a delta across the write. A deadline that elapses with
+  nothing resolved grades `absent` with `deferred-deadline-elapsed: …`, which
+  claims only that Reelier stopped waiting and is never evidence that the send
+  failed. Before the deadline, an unresolved probe stays `pending` rather than
+  manufacturing a finding out of ordinary latency.
+- **Resolution is a SECOND record**, joined by `write.approvalHash` and
+  `emit.artifactDigest` — never an amendment. Run records carry no id, the
+  ledger has one writer and it is an append, and the cloud exposes only POST
+  over hash-chained rows.
+
+**Not in this release: the `reelier resolve` command.** The primitives ship and
+are tested; the CLI entry point that walks the ledger, dispatches the probe
+through a wrapped server and appends the resolution record does not. A pending
+attestation therefore stays pending until it lands — the honest state, and the
+reason `pending` may never render as a pass.
+
+### Disclosure
+`artifactDigest` is an **unsalted** `sha256` and a deliberate cross-run
+correlator, like `write.approvalHash` and unlike `attest`'s salted
+commitments — that is what makes it checkable by a third party holding the
+artifact. It adds no new exposure *class* only because `idempotencyKey`, in the
+`write` block beside it on the same steps, already hashes **all** the filled
+args, which is strictly more revealing. That argument does not generalize. A
+projection over a single low-entropy field (a recipient, an amount) is a
+confirmation oracle for that value; project the named content fields you
+actually approved, exactly as SPEC §6.1c already teaches for `expect:`.
+
+### What this does not prove
+It attests what was **emitted**. Not that the artifact was delivered, not that
+it was read, not that anyone acted on it, and never that its content was
+correct (never-list #8). An L2 re-dispatch sends a different artifact, so the
+main-path commitment is dropped rather than carried onto a healed step —
+absent is honest, stale is not.
 
 ## 0.29.0 — An approval that expires as a no, and a second axis for who outside may already have acted
 

@@ -2,6 +2,9 @@
 // plus human-editable step blocks. Reject malformed skills loudly — never
 // silently skip a step or field (no Optimistic Path).
 
+import { ARTIFACT_NAMESPACE } from "./artifact.js";
+import { parseDuration } from "./duration.js";
+
 export type Effect = "read" | "idempotent-write" | "destructive";
 
 /**
@@ -59,6 +62,16 @@ export interface Step {
    * mismatch, refused at the final boundary.
    */
   expect?: StepExpect;
+  /**
+   * Pre-dispatch artifact attestation (docs/specs/artifact-attestation-v1.md
+   * §4): declares WHICH parts of the FILLED action args constitute the
+   * artifact that leaves. For the class of write with no post-state to probe
+   * — a send, a settled refund, anything a human already read — this is the
+   * only attestable object there is. Covered by the approval hash when
+   * present (src/approval.ts), which is what stops the declared coverage
+   * being quietly narrowed after a human approved it.
+   */
+  emit?: StepEmit;
   /** 1-indexed line in the source file where this step's header starts. */
   line: number;
 }
@@ -68,6 +81,40 @@ export interface StepAttestDecl {
   tool: string;
   args: unknown;
   projection?: string[];
+  /**
+   * Deferred probe (artifact-attestation-v1 §8): the declared probe resolves
+   * LATER, not synchronously around the dispatch. Most sends do produce a
+   * post-state, just late — a provider message-id, an event API, a bounce or
+   * delivery webhook — and probing at dispatch would only prove the record
+   * does not exist yet.
+   *
+   * A DURATION (`<positive integer><m|h|d>`, at most `365d`), not an instant:
+   * the deadline is relative to DISPATCH, which happens at run time, so the
+   * file carries the policy ("give the provider 24h") and the record carries
+   * the resolved absolute instant. This is the opposite of `expect.expiresAt`,
+   * which is stamped absolute precisely because it is resolved once at APPROVE
+   * time and a stored duration there would silently re-arm on every read.
+   *
+   * Requires `projection` — there is nothing for a later run to resolve
+   * otherwise. Bound into the approval hash when present.
+   */
+  defer?: string;
+}
+
+/**
+ * A step's artifact declaration (see `Step.emit`). The ordered list of
+ * request-side fields the emission commitment covers — RFC 9421's
+ * covered-components idea, credited in the spec's §11.1: an explicit,
+ * ordered, self-describing coverage list carried alongside the commitment, so
+ * a reader knows exactly what was and was not bound.
+ */
+export interface StepEmit {
+  /**
+   * Ordered, duplicate-free, every entry `args.<top-level key>`. Order is
+   * part of the declaration, not an implementation detail, and is preserved
+   * verbatim through serialization and into the record.
+   */
+  projection: string[];
 }
 
 /** A step's state-conditioned approval binding (see `Step.expect`). */
@@ -276,8 +323,8 @@ function validateAttestShape(value: unknown, ctx: { step: number; line: number }
   }
   const obj = value as Record<string, unknown>;
   for (const key of Object.keys(obj)) {
-    if (key !== "tool" && key !== "args" && key !== "projection") {
-      throw new SkillParseError(`Unknown 'attest' key ${JSON.stringify(key)} — expected tool/args/projection`, ctx);
+    if (key !== "tool" && key !== "args" && key !== "projection" && key !== "defer") {
+      throw new SkillParseError(`Unknown 'attest' key ${JSON.stringify(key)} — expected tool/args/projection/defer`, ctx);
     }
   }
   if (typeof obj.tool !== "string" || obj.tool.trim() === "") {
@@ -293,7 +340,79 @@ function validateAttestShape(value: unknown, ctx: { step: number; line: number }
     }
     projection = obj.projection as string[];
   }
-  return { tool: obj.tool, args: obj.args, ...(projection ? { projection } : {}) };
+  let defer: string | undefined;
+  if (obj.defer !== undefined) {
+    if (typeof obj.defer !== "string" || parseDuration(obj.defer) === null) {
+      throw new SkillParseError(
+        `Invalid 'attest.defer' ${JSON.stringify(obj.defer)} — expected a duration of the form <positive integer><m|h|d>, at most 365d`,
+        ctx
+      );
+    }
+    // A deferred probe with nothing declared to project has nothing a later
+    // run could resolve, and would sit `pending` until its deadline elapsed
+    // and then read `absent` — a state machine with no reachable evidence.
+    if (projection === undefined) {
+      throw new SkillParseError("'attest.defer' requires an explicit 'projection' — there is nothing to resolve otherwise", ctx);
+    }
+    defer = obj.defer;
+  }
+  return { tool: obj.tool, args: obj.args, ...(projection ? { projection } : {}), ...(defer !== undefined ? { defer } : {}) };
+}
+
+/**
+ * Validate the shape of a parsed `emit:` step-field value (artifact
+ * attestation §4). Loud and specific, mirroring validateAttestShape — a
+ * malformed artifact declaration must never silently degrade to "no emit",
+ * because the degraded state looks exactly like a step nobody meant to cover.
+ */
+function validateEmitShape(value: unknown, ctx: { step: number; line: number }): StepEmit {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new SkillParseError("Malformed 'emit' value (expected a JSON object)", ctx);
+  }
+  const obj = value as Record<string, unknown>;
+  for (const key of Object.keys(obj)) {
+    if (key !== "projection") {
+      // v1 has exactly one key. In particular there is no `constraints` slot:
+      // a reserved key with no defined types is an invitation to mint some,
+      // and AP2 verifiers MUST treat unknown constraint types as failing
+      // (spec §9).
+      throw new SkillParseError(`Unknown 'emit' key ${JSON.stringify(key)} — expected projection`, ctx);
+    }
+  }
+  const projection = obj.projection;
+  if (
+    !Array.isArray(projection) ||
+    projection.length === 0 ||
+    projection.some((p) => typeof p !== "string" || p.trim() === "")
+  ) {
+    throw new SkillParseError("'emit.projection' must be a non-empty array of non-empty strings", ctx);
+  }
+  const entries = projection as string[];
+  for (const entry of entries) {
+    if (!entry.startsWith(ARTIFACT_NAMESPACE)) {
+      throw new SkillParseError(
+        `Invalid 'emit.projection' entry ${JSON.stringify(entry)} — every entry must address the filled action args as '${ARTIFACT_NAMESPACE}<key>'; there is no bare form`,
+        ctx
+      );
+    }
+    if (entry.slice(ARTIFACT_NAMESPACE.length).trim() === "") {
+      throw new SkillParseError(`Invalid 'emit.projection' entry ${JSON.stringify(entry)} — addresses no field`, ctx);
+    }
+  }
+  const seen = new Set<string>();
+  for (const entry of entries) {
+    if (seen.has(entry)) {
+      // RFC 9421 §2.3: a covered-components list names each identifier once.
+      // A list that names a field twice is not a coverage declaration anyone
+      // can reason about, and it would double-count in `resolved`/`unresolved`.
+      throw new SkillParseError(
+        `Duplicate 'emit.projection' entry ${JSON.stringify(entry)} — a coverage list names each field exactly once`,
+        ctx
+      );
+    }
+    seen.add(entry);
+  }
+  return { projection: entries };
 }
 
 const EXPECT_PRE_RE = /^hmac-sha256:[0-9a-f]{64}$/;
@@ -528,6 +647,8 @@ export function parseSkill(source: string): Skill {
     let attest: StepAttestDecl | undefined;
     let expect: StepExpect | undefined;
     let expectLine: number | undefined;
+    let emit: StepEmit | undefined;
+    let emitLine: number | undefined;
 
     for (let i = startIdx + 1; i < endIdx; i++) {
       const raw = bodyLines[i];
@@ -535,13 +656,13 @@ export function parseSkill(source: string): Skill {
       if (line === "") continue;
       const curLine = bodyStartLine + i;
 
-      const bulletMatch = line.match(/^-\s*(intent|action|assert|bind|effect|exposure|approve|attest|expect)\s*:\s*(.*)$/);
+      const bulletMatch = line.match(/^-\s*(intent|action|assert|bind|effect|exposure|emit|approve|attest|expect)\s*:\s*(.*)$/);
       if (!bulletMatch) {
         // Ignore non-bullet prose lines within a step block (e.g. blank/comment text),
         // but reject anything that looks like an attempted bullet with a typo'd key.
         if (line.startsWith("-")) {
           throw new SkillParseError(
-            `Unrecognized step field, expected one of intent/action/assert/bind/effect/exposure/approve/attest/expect: ${JSON.stringify(line)}`,
+            `Unrecognized step field, expected one of intent/action/assert/bind/effect/exposure/emit/approve/attest/expect: ${JSON.stringify(line)}`,
             { step: n, line: curLine }
           );
         }
@@ -631,6 +752,20 @@ export function parseSkill(source: string): Skill {
           attest = validateAttestShape(parsedAttest, { step: n, line: curLine });
           break;
         }
+        case "emit": {
+          if (emit !== undefined) {
+            throw new SkillParseError("Duplicate 'emit' field in step", { step: n, line: curLine });
+          }
+          let parsedEmit: unknown;
+          try {
+            parsedEmit = JSON.parse(rest.trim());
+          } catch (err) {
+            throw new SkillParseError(`Emit value is not valid JSON: ${(err as Error).message}`, { step: n, line: curLine });
+          }
+          emit = validateEmitShape(parsedEmit, { step: n, line: curLine });
+          emitLine = curLine;
+          break;
+        }
         case "expect": {
           if (expect !== undefined) {
             throw new SkillParseError("Duplicate 'expect' field in step", { step: n, line: curLine });
@@ -681,6 +816,18 @@ export function parseSkill(source: string): Skill {
       );
     }
 
+    // An artifact declaration on a read step would be a declaration NOTHING
+    // records: `StepRecord.emit` is written only when a write-effect call
+    // actually dispatches, so the step would render as a clean pass carrying
+    // an unhonoured commitment (never-list #1). Same argument as `expect` on a
+    // read step, one field over.
+    if (emit !== undefined && effect === "read") {
+      throw new SkillParseError(
+        "'emit' requires a write-effect step — a read step dispatches no write whose artifact could be attested",
+        { step: n, line: emitLine ?? fileLine }
+      );
+    }
+
     steps.push({
       n,
       title,
@@ -692,6 +839,7 @@ export function parseSkill(source: string): Skill {
       effect,
       // Absent stays absent (never defaulted to "internal") — see Step.exposure.
       ...(exposure !== undefined ? { exposure } : {}),
+      ...(emit !== undefined ? { emit } : {}),
       ...(approve !== undefined ? { approve } : {}),
       ...(attest !== undefined ? { attest } : {}),
       ...(expect !== undefined ? { expect } : {}),

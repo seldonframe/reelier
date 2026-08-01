@@ -180,13 +180,13 @@ test("W3-S4 / I-17: a binding with neither fields nor probeArgs hashes byte-iden
   // Literal digests captured by running 0.26.0's computeApprovalHash before
   // this slice touched it. A restated formula would pass against its own bug.
   assert.equal(
-    computeApprovalHash({ ...base, attest: undefined, expect: undefined }),
+    computeApprovalHash({ emit: undefined, ...base, attest: undefined, expect: undefined }),
     "sha256:380a406c04f06e6a2a4a3fa15a571459623d30e009f3e350802a4989e7ae83b7",
   );
-  assert.equal(computeApprovalHash({ ...base, expect: undefined }), "sha256:90e4fe48c0395762f04362e4a852d903dcfad25f58cdb26976400cef7e4be34b");
-  assert.equal(computeApprovalHash({ ...base, expect: e }), "sha256:d9a268d91e885f3c857f577b763e42280cd8a7087a6ec54b4af0323634f8cd43");
+  assert.equal(computeApprovalHash({ emit: undefined, ...base, expect: undefined }), "sha256:90e4fe48c0395762f04362e4a852d903dcfad25f58cdb26976400cef7e4be34b");
+  assert.equal(computeApprovalHash({ emit: undefined, ...base, expect: e }), "sha256:d9a268d91e885f3c857f577b763e42280cd8a7087a6ec54b4af0323634f8cd43");
   assert.equal(
-    computeApprovalHash({ ...base, expect: { ...e, fields: { "body.compiled_truth": MAC_B } } }),
+    computeApprovalHash({ emit: undefined, ...base, expect: { ...e, fields: { "body.compiled_truth": MAC_B } } }),
     "sha256:94bfc0642ba701105be0c47fada3ce02788b7c314edff53592b37269d40ed7ac",
   );
 });
@@ -195,10 +195,10 @@ test("W3-S4 / I-17: adding probeArgs MOVES the hash — the commitment is under 
   const attest = { tool: "get_page", args: { slug: "reelier-demo-page" }, projection: ["compiled_truth"] };
   const base = { actionTool: "put_page", actionArgs: { content: "# hi", slug: "reelier-demo-page" }, attest };
   const e = { at: EXPECT_AT, keyId: KEY_ID, pre: MAC_A };
-  const bare = computeApprovalHash({ ...base, expect: e });
-  const withArgs = computeApprovalHash({ ...base, expect: { ...e, probeArgs: MAC_B } });
+  const bare = computeApprovalHash({ emit: undefined, ...base, expect: e });
+  const withArgs = computeApprovalHash({ emit: undefined, ...base, expect: { ...e, probeArgs: MAC_B } });
   assert.notEqual(withArgs, bare, "hand-editing probeArgs away is an approval mismatch, refused by the existing gate");
-  assert.notEqual(withArgs, computeApprovalHash({ ...base, expect: { ...e, probeArgs: MAC_A } }));
+  assert.notEqual(withArgs, computeApprovalHash({ emit: undefined, ...base, expect: { ...e, probeArgs: MAC_A } }));
 });
 
 // ===========================================================================
@@ -386,7 +386,7 @@ test("W3-S4 re-verify: --rebind re-commits probeArgs over THIS invocation's vars
     assert.equal(step.expect!.probeArgs, probeArgsMac(key, "get_page", { slug: "page-b" }));
     assert.equal(
       step.approve,
-      computeApprovalHash({ actionTool: step.actionTool, actionArgs: step.actionArgs, attest: step.attest, expect: step.expect }),
+      computeApprovalHash({ emit: undefined, actionTool: step.actionTool, actionArgs: step.actionArgs, attest: step.attest, expect: step.expect }),
     );
   });
 });
@@ -637,7 +637,7 @@ test("W3-S4 review-fix (blocker 1b, I-18): expect present + parameterized attest
     const actionTool = "put_page";
     const actionArgs = { content: "# hi", slug: "reelier-demo-page" };
     const expect = { at: EXPECT_AT, keyId, pre: MAC_A }; // tampered: no probeArgs
-    const approve = computeApprovalHash({ actionTool, actionArgs, attest, expect });
+    const approve = computeApprovalHash({ emit: undefined, actionTool, actionArgs, attest, expect });
     const skillPath = path.join(dir, "s.skill.md");
     await writeFile(
       skillPath,
@@ -684,7 +684,7 @@ test("W3-S4 review-fix (blocker 1b, I-18 gate mode): the same tampered shape ref
     const actionTool = "put_page";
     const actionArgs = { content: "# hi", slug: "reelier-demo-page" };
     const expect = { at: EXPECT_AT, keyId, pre: MAC_A };
-    const approve = computeApprovalHash({ actionTool, actionArgs, attest, expect });
+    const approve = computeApprovalHash({ emit: undefined, actionTool, actionArgs, attest, expect });
     const skillPath = path.join(dir, "s.skill.md");
     await writeFile(
       skillPath,

@@ -2051,7 +2051,7 @@ export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Prom
       // literal binding stays byte-identical to 0.26.0.
       ...(probeArgs !== undefined ? { probeArgs: probeArgsMac(key, step.attest!.tool, probeArgs.filled) } : {}),
     };
-    step.approve = computeApprovalHash({ actionTool: step.actionTool, actionArgs: step.actionArgs, attest: step.attest, expect: step.expect });
+    step.approve = computeApprovalHash({ actionTool: step.actionTool, actionArgs: step.actionArgs, attest: step.attest, expect: step.expect, emit: step.emit });
   };
 
   /**
@@ -2132,14 +2132,14 @@ export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Prom
       const dropping = dropExpect && step.expect !== undefined;
       const effectiveExpect = dropping ? undefined : step.expect;
 
-      const expected = computeApprovalHash({ actionTool: step.actionTool, actionArgs: step.actionArgs, attest: step.attest, expect: effectiveExpect });
+      const expected = computeApprovalHash({ actionTool: step.actionTool, actionArgs: step.actionArgs, attest: step.attest, expect: effectiveExpect, emit: step.emit });
       const isCurrent = !dropping && step.approve !== undefined && step.approve === expected;
       // Under --drop-expect the hash moves because WE removed expect from the
       // input — labeling an untouched step STALE would be false (review
       // finding): distinguish "current, binding being dropped" from real drift.
       const originalCurrent =
         step.approve !== undefined &&
-        step.approve === computeApprovalHash({ actionTool: step.actionTool, actionArgs: step.actionArgs, attest: step.attest, expect: step.expect });
+        step.approve === computeApprovalHash({ actionTool: step.actionTool, actionArgs: step.actionArgs, attest: step.attest, expect: step.expect, emit: step.emit });
       const state =
         step.approve === undefined
           ? "unapproved"
@@ -2599,7 +2599,7 @@ export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Prom
         }
         // Explicit, named downgrade: today's shape-only approval semantics.
         if (step.expect !== undefined) delete step.expect;
-        step.approve = computeApprovalHash({ actionTool: step.actionTool, actionArgs: step.actionArgs, attest: step.attest, expect: undefined });
+        step.approve = computeApprovalHash({ actionTool: step.actionTool, actionArgs: step.actionArgs, attest: step.attest, expect: undefined, emit: step.emit });
         approvedCount++;
         continue;
       }
@@ -2643,7 +2643,7 @@ export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Prom
           continue;
         }
         if (step.expect !== undefined) delete step.expect;
-        step.approve = computeApprovalHash({ actionTool: step.actionTool, actionArgs: step.actionArgs, attest: step.attest, expect: undefined });
+        step.approve = computeApprovalHash({ actionTool: step.actionTool, actionArgs: step.actionArgs, attest: step.attest, expect: undefined, emit: step.emit });
         approvedCount++;
         continue;
       }

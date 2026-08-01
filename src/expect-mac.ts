@@ -61,14 +61,14 @@ export function mintExpectKey(): { key: Buffer; keyId: string } {
  * A missing key must surface as `unevaluated` at the call site — reaching
  * this function with a bad key is a programmer error, refused loudly.
  */
-function assertUsableKey(key: Uint8Array): void {
+export function assertUsableKey(key: Uint8Array, who = "expectMac"): void {
   if (key.length !== EXPECT_KEY_BYTES) {
     throw new Error(
-      `expectMac: key must be exactly ${EXPECT_KEY_BYTES} bytes, got ${key.length} — never compute a commitment under a truncated or empty key (I-6)`
+      `${who}: key must be exactly ${EXPECT_KEY_BYTES} bytes, got ${key.length} — never compute a commitment under a truncated or empty key (I-6)`
     );
   }
   if (key.every((b) => b === 0)) {
-    throw new Error("expectMac: refusing an all-zero (placeholder) key — never compute a commitment under a default key (I-6)");
+    throw new Error(`${who}: refusing an all-zero (placeholder) key — never compute a commitment under a default key (I-6)`);
   }
 }
 
@@ -79,7 +79,7 @@ function assertUsableKey(key: Uint8Array): void {
  * tag prefix also can't be forged from inside a string value: a string
  * `"n:1"` tags to `"s:n:1"`, never colliding with number `1`'s `"n:1"`.
  */
-function tagScalar(v: string | number | boolean): string {
+export function tagScalar(v: string | number | boolean): string {
   if (typeof v === "string") return `s:${v}`;
   if (typeof v === "number") return `n:${String(v)}`;
   return `b:${String(v)}`;

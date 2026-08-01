@@ -153,7 +153,7 @@ test("approve --probe: full ceremony — probes, shows values (TTY), mints, stam
     assert.match(step.expect!.pre, /^hmac-sha256:[0-9a-f]{64}$/);
     assert.equal(
       step.approve,
-      computeApprovalHash({ actionTool: step.actionTool, actionArgs: step.actionArgs, attest: step.attest, expect: step.expect })
+      computeApprovalHash({ emit: undefined, actionTool: step.actionTool, actionArgs: step.actionArgs, attest: step.attest, expect: step.expect })
     );
     assert.match(written, /- approved 1 write step\(s\), 1 state-bound \(reelier approve --probe\)/);
 
@@ -255,7 +255,7 @@ test("--probe --all --rebind on a moved world: re-binds under a NEW key with exp
     assert.notEqual(step.expect!.keyId, firstKeyId, "re-bind mints a fresh key (rotation = re-approval)");
     assert.equal(
       step.approve,
-      computeApprovalHash({ actionTool: step.actionTool, actionArgs: step.actionArgs, attest: step.attest, expect: step.expect })
+      computeApprovalHash({ emit: undefined, actionTool: step.actionTool, actionArgs: step.actionArgs, attest: step.attest, expect: step.expect })
     );
     // Superseded key is NOT pruned (parallel checkouts / git revert — A10).
     const store = await readKeystore(path.join(dir, "expect-keys.json"));
@@ -387,7 +387,7 @@ test("--probe interactive degrade: probe tool unknown → explicit 'Approve WITH
     assert.equal(step.expect, undefined, "downgrade stamps a plain shape-only approval");
     assert.equal(
       step.approve,
-      computeApprovalHash({ actionTool: step.actionTool, actionArgs: step.actionArgs, attest: step.attest, expect: undefined })
+      computeApprovalHash({ emit: undefined, actionTool: step.actionTool, actionArgs: step.actionArgs, attest: step.attest, expect: undefined })
     );
   });
 });
@@ -521,7 +521,7 @@ test("--drop-expect is the explicit downgrade: strips the binding and stamps a p
     assert.equal(step.expect, undefined);
     assert.equal(
       step.approve,
-      computeApprovalHash({ actionTool: step.actionTool, actionArgs: step.actionArgs, attest: step.attest, expect: undefined })
+      computeApprovalHash({ emit: undefined, actionTool: step.actionTool, actionArgs: step.actionArgs, attest: step.attest, expect: undefined })
     );
   });
 });
