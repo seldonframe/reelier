@@ -90,6 +90,7 @@ import {
 import { BUNDLED_PRICES_RETRIEVED_AT } from "./prices.js";
 import {
   loadPolicyForWrap,
+  policyRecordFromLoad,
   summarizePolicyForWrapStart,
   parsePolicyStrict,
   hasEndpointRules,
@@ -941,7 +942,11 @@ async function cmdMcp(args: ParsedArgs): Promise<number> {
   const server = buildProxyServer(downstreams, {
     traceDir,
     policy: policyResult.policy,
-    policyGap: policyResult.ok ? undefined : policyResult.error,
+    // The four-state claim, not just the malformed case the old policyGap
+    // marked. Built from the load result — whose digest is bound to the read
+    // that produced the policy — so nothing here can re-read the file and
+    // claim `verified` over bytes that never enforced anything (§2.1).
+    policyRecord: policyRecordFromLoad(policyResult),
     allowWrites,
   });
   const transport = new StdioServerTransport();

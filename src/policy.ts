@@ -24,6 +24,7 @@
 // this parser ad hoc.
 
 import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { stripMcpNamespacePrefix } from "./effect-verbs.js";
 
@@ -572,9 +573,108 @@ export function policyPaths(cwd: string, homedir: string): { project: string; gl
   };
 }
 
+/**
+ * Which of the two documented candidates decided — NEVER the resolved
+ * absolute path. The global candidate is `<homedir>/.reelier/policy.yml`,
+ * so recording the path would ship the operator's home directory (and on
+ * Windows their username) into a publishable receipt. This answers the only
+ * question the field exists to answer — which candidate won the
+ * first-existing-file rule — and is identical across two machines running
+ * the same policy. See docs/specs/policy-attestation-v1.md §2.2.
+ */
+export type PolicySource = "project" | "global";
+
 export type PolicyLoadResult =
-  | { ok: true; policy: Policy; sourcePath: string | undefined }
-  | { ok: false; policy: Policy; sourcePath: string; error: string; unreadable?: true };
+  | { ok: true; policy: Policy; sourcePath: string | undefined; which?: PolicySource; digest?: string }
+  | { ok: false; policy: Policy; sourcePath: string; error: string; unreadable?: true; which?: PolicySource; digest?: string };
+
+/**
+ * The four-state policy claim carried by a trace's meta record and by a
+ * RunRecord (docs/specs/policy-attestation-v1.md §2). Uses the EXISTING
+ * four-state vocabulary with its existing meanings and no new ones.
+ *
+ * The whole object is optional on both structures. Its ABSENCE means the
+ * record was written by a version that predates it — never `absent`, which
+ * is a positive statement that a version capable of looking did look and
+ * found nothing. A consumer MUST NOT collapse the two.
+ */
+export type PolicyStatus = "verified" | "failed" | "unchecked" | "absent";
+
+export interface PolicyRecord {
+  status: PolicyStatus;
+  /**
+   * `sha256:<hex>` over the RAW FILE BYTES — not a canonical form. It has to
+   * work in the `failed` state (an unparseable file has no canonical form),
+   * and byte-level defects are the point: a UTF-8 BOM that masks a key is
+   * invisible to a canonical digest and visible to this one.
+   *
+   * Stated cost: reformatting a policy changes the digest with no change in
+   * enforcement. A consumer MUST NOT read a changed digest as a changed
+   * policy — it says the bytes differ, which is all it says.
+   *
+   * Omitted in `unchecked`/`absent` (nothing was read) and on a legacy
+   * record mapped from `policyGap` (nothing hashed the file at record time).
+   * A missing digest on a `failed` record therefore does NOT mean "no file
+   * was found" — `absent` is the state that means that.
+   */
+  digest?: string;
+  sourcePath?: PolicySource;
+  /**
+   * Counts only, never globs or hosts. `toolScoped` is the honest
+   * denominator for `unmatchedRules`: an `endpoint` rule carries no tool
+   * glob and can never be reported unmatched, so counting it would dilute
+   * the ratio and understate the dead-rule count.
+   */
+  rules?: { deny: number; dryRun: number; toolScoped: number };
+  /**
+   * Tool-scoped rules matching NONE of the wrapped tools — present versus
+   * able to fire. Wrap path only: the run path has no tool inventory to
+   * match against (docs/specs/policy-attestation-v1.md §2.4).
+   */
+  unmatchedRules?: number;
+}
+
+function countToolScoped(policy: Policy): number {
+  return policy.deny.filter((r) => r.tool !== undefined).length + policy.dryRun.filter((r) => r.tool !== undefined).length;
+}
+
+/**
+ * Project a `loadPolicyForWrap` result into the recorded claim.
+ *
+ * The safe-direction rule, and the reason this is a function rather than an
+ * inline object literal at each call site: a found policy whose bytes are
+ * not bound to the read that produced it degrades to `unchecked`, NEVER
+ * `verified`. `verified` is earned or it is not claimed — it is never a
+ * fallback, a default, or an inference.
+ */
+export function policyRecordFromLoad(result: PolicyLoadResult): PolicyRecord {
+  if (!result.ok) {
+    if (result.unreadable) {
+      // A file exists and could not be read: what it declared is UNKNOWN.
+      // Strictly weaker than `failed`, which names a KNOWN-dead seatbelt.
+      return { status: "unchecked", ...(result.which ? { sourcePath: result.which } : {}) };
+    }
+    return {
+      status: "failed",
+      ...(result.digest ? { digest: result.digest } : {}),
+      ...(result.which ? { sourcePath: result.which } : {}),
+    };
+  }
+  if (!result.sourcePath) return { status: "absent" };
+  if (!result.digest) {
+    return { status: "unchecked", ...(result.which ? { sourcePath: result.which } : {}) };
+  }
+  return {
+    status: "verified",
+    digest: result.digest,
+    ...(result.which ? { sourcePath: result.which } : {}),
+    rules: {
+      deny: result.policy.deny.length,
+      dryRun: result.policy.dryRun.length,
+      toolScoped: countToolScoped(result.policy),
+    },
+  };
+}
 
 /**
  * Load the active policy for a `reelier mcp` (wrap) run. NEVER throws —
@@ -588,10 +688,27 @@ export type PolicyLoadResult =
 export async function loadPolicyForWrap(cwd: string, homedir: string): Promise<PolicyLoadResult> {
   const { project, global } = policyPaths(cwd, homedir);
 
-  for (const candidate of [project, global]) {
+  for (const [candidate, which] of [
+    [project, "project"],
+    [global, "global"],
+  ] as const) {
     let source: string;
+    let digest: string;
     try {
-      source = await readFile(candidate, "utf8");
+      // Read the BYTES, hash them, then decode — one read, so the digest is
+      // structurally bound to the buffer the policy is parsed from and no
+      // caller can re-read the path at record-write time (the binding rule,
+      // docs/specs/policy-attestation-v1.md §2.1). Hashing a re-read would
+      // let a mid-session edit produce `verified` over bytes that never
+      // governed a single call.
+      //
+      // Bytes rather than a utf8 string because the digest must see
+      // byte-level defects: a UTF-8 BOM is exactly the class of thing that
+      // masked a key in the S8 review, and re-encoding a decoded string
+      // would launder invalid sequences into replacement characters.
+      const bytes = await readFile(candidate);
+      digest = "sha256:" + createHash("sha256").update(bytes).digest("hex");
+      source = bytes.toString("utf8"); // BOM preserved, exactly as readFile(…, "utf8") did
     } catch (err) {
       // ENOENT is "no file here" — try the next candidate. ANY OTHER read
       // error means a file EXISTS whose rules we cannot inspect (EACCES,
@@ -611,6 +728,7 @@ export async function loadPolicyForWrap(cwd: string, homedir: string): Promise<P
         unreadable: true,
         policy: emptyPolicy(),
         sourcePath: candidate,
+        which,
         error: `${candidate} exists but could not be read (${(err as Error).message})`,
       };
     }
@@ -620,10 +738,12 @@ export async function loadPolicyForWrap(cwd: string, homedir: string): Promise<P
         ok: false,
         policy: emptyPolicy(),
         sourcePath: candidate,
+        which,
+        digest,
         error: `${candidate} is malformed (${validation.errors.length} error(s)): ${validation.errors.join("; ")}`,
       };
     }
-    return { ok: true, policy: validation.policy!, sourcePath: candidate };
+    return { ok: true, policy: validation.policy!, sourcePath: candidate, which, digest };
   }
 
   return { ok: true, policy: emptyPolicy(), sourcePath: undefined };
