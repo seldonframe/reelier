@@ -208,7 +208,17 @@ function tableRows(lines: string[]): { names: string[]; text: string }[] {
 
 const runnerSf = parse("runner.ts", readFileSync(path.join(REPO_ROOT, "src", "runner.ts"), "utf8"));
 const assertSf = parse("assert.ts", readFileSync(path.join(REPO_ROOT, "src", "assert.ts"), "utf8"));
-const REAL_SOURCES = [runnerSf, assertSf];
+// skill.ts declares the step-level types a record field can be typed by (e.g. `Exposure`).
+// Parsing it here is the guard's own prescribed fix for an unresolved name -- see the
+// `no unresolved type reference` test below.
+const skillSf = parse("skill.ts", readFileSync(path.join(REPO_ROOT, "src", "skill.ts"), "utf8"));
+// policy.ts declares `PolicyClaim` (RunRecord.policy, policy-attestation-v1).
+// Same prescribed fix as skill.ts above. Note the run path is typed by the
+// NARROW `PolicyClaim`, not the wrap path's `PolicyRecord` -- so the spec's
+// rule that a replay record never carries rule counts is checked here
+// structurally, and a future edit that widened it would fail this guard.
+const policySf = parse("policy.ts", readFileSync(path.join(REPO_ROOT, "src", "policy.ts"), "utf8"));
+const REAL_SOURCES = [runnerSf, assertSf, skillSf, policySf];
 
 const S41 = section("### 4.1 ", "### 4.2 ");
 const S42 = section("### 4.2 ", "### 4.3 ");

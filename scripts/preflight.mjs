@@ -9,8 +9,9 @@
 // Dependency-free: node:child_process + node:fs + node:process only.
 
 import { execSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { readFileSync, rmSync } from 'node:fs';
 import process from 'node:process';
+import { checkBadge, describeCheckOutcome, parseSkippedCount } from './badge-check.mjs';
 
 const results = [];
 
@@ -118,9 +119,21 @@ console.log('reelier release preflight\n');
 }
 
 // --- 4. Build passes ---------------------------------------------------------
+let buildOk = false;
 {
+  // tsc does not delete output for source files that no longer exist — a
+  // stale dist/dist-test from a previous checkout state (a file that was
+  // renamed or removed since) survives an incremental build and keeps
+  // running/counting. That silently pollutes both "build passes" and the
+  // pass count the badge check validates against, so every counted run
+  // starts from a clean slate rather than trusting whatever was already on
+  // disk.
+  rmSync('dist', { recursive: true, force: true });
+  rmSync('dist-test', { recursive: true, force: true });
+
   const buildRes = runAllowFail('npm run build');
-  if (buildRes.ok) {
+  buildOk = buildRes.ok;
+  if (buildOk) {
     ok('build passes');
   } else {
     fail('build passes', 'npm run build failed — see output above');
@@ -129,7 +142,12 @@ console.log('reelier release preflight\n');
 }
 
 // --- 5. Tests pass + README badge matches -----------------------------------
-{
+// Skipped entirely when the build failed: dist/ was cleared before the
+// build attempt (step 4) and a failed build leaves it incomplete or empty,
+// so running `npm test` against it would fail for a second, confusing
+// reason (missing compiled modules) that has nothing to do with the tests
+// themselves. The build failure above is already fatal on its own.
+if (buildOk) {
   const testRes = runAllowFail('npm test');
   const testOutput = testRes.stdout;
 
@@ -140,45 +158,34 @@ console.log('reelier release preflight\n');
     ok('tests pass');
   }
 
-  // Parse Node's test runner TAP-ish summary: "# pass N" / "ℹ pass N".
-  // Node prints both a "# tests N" total line and a "# pass N" passing line
-  // (or "ℹ pass N" depending on reporter); we want the passing count.
-  const passMatch = testOutput.match(/^[#ℹ]\s*pass\s+(\d+)\s*$/m);
-  const actualPass = passMatch ? parseInt(passMatch[1], 10) : null;
+  // Badge-vs-suite comparison lives in scripts/badge-check.mjs so this
+  // release-time gate and the CI gate (scripts/check-badge.mjs) share one
+  // implementation instead of drifting apart from each other.
+  let readme = null;
+  try {
+    readme = readFileSync('README.md', 'utf8');
+  } catch (e) {
+    fail('badge matches actual pass count', `could not read README.md: ${e.message}`);
+  }
 
-  if (actualPass === null) {
-    fail('badge matches actual pass count', 'could not parse pass count from test output');
-  } else {
-    let readme;
-    try {
-      readme = readFileSync('README.md', 'utf8');
-    } catch (e) {
-      fail('badge matches actual pass count', `could not read README.md: ${e.message}`);
-      readme = null;
-    }
-
-    if (readme !== null) {
-      // Matches either the shields.io badge URL form:
-      //   tests-641%20passing
-      // or plain text form:
-      //   tests-641 passing / tests-641 passing
-      const badgeMatch =
-        readme.match(/tests-(\d+)(?:%20|-| )passing/i) ||
-        readme.match(/tests[\s-](\d+)\s+passing/i);
-
-      if (!badgeMatch) {
-        fail('badge matches actual pass count', 'no tests badge found in README.md');
-      } else {
-        const badgeCount = parseInt(badgeMatch[1], 10);
-        if (badgeCount === actualPass) {
-          ok('badge matches actual pass count', `README says ${badgeCount}, suite has ${actualPass}`);
-        } else {
-          fail(
-            'badge matches actual pass count',
-            `README badge says ${badgeCount} but suite has ${actualPass} — update the badge`
-          );
-        }
-      }
+  if (readme !== null) {
+    const result = checkBadge({ testOutput, readme });
+    // The badge means one specific number: the pass count on the canonical
+    // CI platform (linux/ubuntu-latest — see badge-check.mjs). On that
+    // platform a mismatch is real drift and hard-fails. On any other
+    // platform (this machine included, most days) a raw mismatch isn't
+    // evidence of anything by itself — this platform's own runner may have
+    // skipped tests the canonical platform runs — so it's downgraded to a
+    // report instead of a fail or a pass; CI's ubuntu-latest run remains
+    // the authority. The rule (checkBadge) itself does not change; only
+    // this disposition does.
+    const outcome = describeCheckOutcome(result, { skippedCount: parseSkippedCount(testOutput) });
+    if (outcome.level === 'ok') {
+      ok('badge matches actual pass count', outcome.message);
+    } else if (outcome.level === 'fail') {
+      fail('badge matches actual pass count', outcome.message);
+    } else {
+      warn('badge matches actual pass count', outcome.message);
     }
   }
 }

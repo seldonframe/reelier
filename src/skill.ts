@@ -4,6 +4,14 @@
 
 export type Effect = "read" | "idempotent-write" | "destructive";
 
+/**
+ * Whether an actor OUTSIDE the system may already have acted on a step's
+ * result. Orthogonal to `Effect`, which is mechanical (can this be repeated
+ * safely) — a `destructive` delete and a `destructive` send are the same
+ * `effect` and profoundly different in consequence. See SPEC §3.7.
+ */
+export type Exposure = "internal" | "external-visible";
+
 export interface Step {
   n: number;
   title: string;
@@ -13,6 +21,15 @@ export interface Step {
   asserts: string[];
   binds: string[];
   effect: Effect;
+  /**
+   * Whether an actor outside the system may already have acted on this
+   * step's result (SPEC §3.7). Independent of `effect`. Absent means
+   * `internal` — and stays ABSENT on the parsed step rather than being
+   * defaulted here, so a consumer can still tell "the author said internal"
+   * from "the author said nothing". Changes no gating behaviour in this
+   * version: no exit code, refusal, or check predicate reads it.
+   */
+  exposure?: Exposure;
   /**
    * Hash-bound write approval (docs/specs/flight-recorder-v2.md §2), stamped
    * by `reelier approve` (src/cli.ts). Absent = legacy/unapproved step — the
@@ -61,6 +78,19 @@ export interface StepExpect {
   keyId: string;
   /** The keyed commitment over the approve-time projected observation: `hmac-sha256:<64 hex>`. */
   pre: string;
+  /**
+   * W5-T3: the approval's time-to-live, as an ABSOLUTE ISO-8601 instant —
+   * `reelier approve --probe --expires <duration>` resolves the operator's
+   * duration against approve time and stamps the result. Absolute, never a
+   * stored duration: a relative value would silently re-arm every time the
+   * file is read, which is the opposite of expiring. At or after this instant
+   * the state check is `unevaluated` with reason `approval-expired: …` —
+   * never a pass, never a mismatch (nothing about the world was established)
+   * — which the existing `state_gate: refuse` branch refuses before dispatch.
+   * Covered by the approval hash like every other `expect` field, so
+   * hand-extending a TTL is an approval mismatch.
+   */
+  expiresAt?: string;
   /**
    * P1.5 (wave2 §3.5): optional per-field commitments under the same
    * per-approval key — output-form field names (`body.<key>` /
@@ -136,6 +166,12 @@ const EFFECTS: readonly Effect[] = ["read", "idempotent-write", "destructive"];
 
 function isEffect(value: string): value is Effect {
   return (EFFECTS as readonly string[]).includes(value);
+}
+
+export const EXPOSURES: readonly Exposure[] = ["internal", "external-visible"];
+
+function isExposure(value: string): value is Exposure {
+  return (EXPOSURES as readonly string[]).includes(value);
 }
 
 /**
@@ -279,8 +315,8 @@ function validateExpectShape(value: unknown, ctx: { step: number; line: number }
   }
   const obj = value as Record<string, unknown>;
   for (const key of Object.keys(obj)) {
-    if (key !== "at" && key !== "keyId" && key !== "pre" && key !== "fields" && key !== "probeArgs") {
-      throw new SkillParseError(`Unknown 'expect' key ${JSON.stringify(key)} — expected pre/keyId/at/fields/probeArgs`, ctx);
+    if (key !== "at" && key !== "keyId" && key !== "pre" && key !== "expiresAt" && key !== "fields" && key !== "probeArgs") {
+      throw new SkillParseError(`Unknown 'expect' key ${JSON.stringify(key)} — expected pre/keyId/at/expiresAt/fields/probeArgs`, ctx);
     }
   }
   if (typeof obj.pre !== "string" || !EXPECT_PRE_RE.test(obj.pre)) {
@@ -300,6 +336,19 @@ function validateExpectShape(value: unknown, ctx: { step: number; line: number }
       `Invalid 'expect.at' ${JSON.stringify(obj.at)} — expected a non-empty ISO-8601 timestamp`,
       ctx
     );
+  }
+  // W5-T3: an ABSOLUTE instant, validated by the same shape-anchored rule as
+  // `at` — a relative duration ("24h") must be a loud parse error here, not a
+  // string that Date.parse happens to reject later inside the runner.
+  let expiresAt: string | undefined;
+  if (obj.expiresAt !== undefined) {
+    if (typeof obj.expiresAt !== "string" || !EXPECT_AT_RE.test(obj.expiresAt) || Number.isNaN(Date.parse(obj.expiresAt))) {
+      throw new SkillParseError(
+        `Invalid 'expect.expiresAt' ${JSON.stringify(obj.expiresAt)} — expected an absolute ISO-8601 timestamp (not a relative duration)`,
+        ctx
+      );
+    }
+    expiresAt = obj.expiresAt;
   }
   let fields: Record<string, string> | undefined;
   if (obj.fields !== undefined) {
@@ -338,6 +387,7 @@ function validateExpectShape(value: unknown, ctx: { step: number; line: number }
     at: obj.at,
     keyId: obj.keyId,
     pre: obj.pre,
+    ...(expiresAt !== undefined ? { expiresAt } : {}),
     ...(fields !== undefined ? { fields } : {}),
     ...(probeArgs !== undefined ? { probeArgs } : {}),
   };
@@ -473,6 +523,7 @@ export function parseSkill(source: string): Skill {
     const asserts: string[] = [];
     const binds: string[] = [];
     let effect: Effect | undefined;
+    let exposure: Exposure | undefined;
     let approve: string | undefined;
     let attest: StepAttestDecl | undefined;
     let expect: StepExpect | undefined;
@@ -484,13 +535,13 @@ export function parseSkill(source: string): Skill {
       if (line === "") continue;
       const curLine = bodyStartLine + i;
 
-      const bulletMatch = line.match(/^-\s*(intent|action|assert|bind|effect|approve|attest|expect)\s*:\s*(.*)$/);
+      const bulletMatch = line.match(/^-\s*(intent|action|assert|bind|effect|exposure|approve|attest|expect)\s*:\s*(.*)$/);
       if (!bulletMatch) {
         // Ignore non-bullet prose lines within a step block (e.g. blank/comment text),
         // but reject anything that looks like an attempted bullet with a typo'd key.
         if (line.startsWith("-")) {
           throw new SkillParseError(
-            `Unrecognized step field, expected one of intent/action/assert/bind/effect/approve/attest/expect: ${JSON.stringify(line)}`,
+            `Unrecognized step field, expected one of intent/action/assert/bind/effect/exposure/approve/attest/expect: ${JSON.stringify(line)}`,
             { step: n, line: curLine }
           );
         }
@@ -539,6 +590,18 @@ export function parseSkill(source: string): Skill {
             );
           }
           effect = rest.trim() as Effect;
+          break;
+        case "exposure":
+          if (exposure !== undefined) {
+            throw new SkillParseError("Duplicate 'exposure' field in step", { step: n, line: curLine });
+          }
+          if (!isExposure(rest.trim())) {
+            throw new SkillParseError(
+              `Invalid exposure ${JSON.stringify(rest.trim())} — must be one of ${EXPOSURES.join(", ")}`,
+              { step: n, line: curLine }
+            );
+          }
+          exposure = rest.trim() as Exposure;
           break;
         case "approve":
           if (approve !== undefined) {
@@ -627,6 +690,8 @@ export function parseSkill(source: string): Skill {
       asserts,
       binds,
       effect,
+      // Absent stays absent (never defaulted to "internal") — see Step.exposure.
+      ...(exposure !== undefined ? { exposure } : {}),
       ...(approve !== undefined ? { approve } : {}),
       ...(attest !== undefined ? { attest } : {}),
       ...(expect !== undefined ? { expect } : {}),

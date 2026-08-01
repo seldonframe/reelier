@@ -24,6 +24,7 @@
 // this parser ad hoc.
 
 import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { stripMcpNamespacePrefix } from "./effect-verbs.js";
 
@@ -368,17 +369,35 @@ function stripBom(source: string): string {
  *    only: the warning line IS the gap marker on this path; the run
  *    record is never mutated for a repo that did not opt in (I-2).
  */
+/**
+ * Every resolution also carries `policy` — the four-state claim about the
+ * file it just resolved (docs/specs/policy-attestation-v1.md §2.5), built in
+ * the SAME read that decided the mode so the digest is bound to the bytes
+ * that actually governed this run.
+ *
+ * It never carries `rules`/`unmatchedRules`: replay evaluates no deny or
+ * dry_run rule at all (flight-recorder-v2 non-goal), so there is no live
+ * tool inventory to measure coverage against and no rule-level enforcement
+ * to have coverage OF. That absence is the statement (§2.4).
+ */
 export type StateGateResolution =
-  | { mode: "off"; warning?: string }
-  | { mode: "refuse"; sourcePath: string }
-  | { mode: "refuse-run"; sourcePath: string; errors: string[] };
+  | { mode: "off"; warning?: string; policy: PolicyClaim }
+  | { mode: "refuse"; sourcePath: string; policy: PolicyClaim }
+  | { mode: "refuse-run"; sourcePath: string; errors: string[]; policy: PolicyClaim };
 
 export async function resolveStateGateForRun(cwd: string, homedir: string): Promise<StateGateResolution> {
   const { project, global } = policyPaths(cwd, homedir);
-  for (const candidate of [project, global]) {
+  for (const [candidate, which] of [
+    [project, "project"],
+    [global, "global"],
+  ] as const) {
     let source: string;
+    let digest: string;
     try {
-      source = await readFile(candidate, "utf8");
+      // Bytes first, hashed in this same read — the binding rule (§2.1).
+      const bytes = await readFile(candidate);
+      digest = "sha256:" + createHash("sha256").update(bytes).digest("hex");
+      source = bytes.toString("utf8");
     } catch (err) {
       // ENOENT is "no file here" — try the next candidate. ANY OTHER read
       // error means a file exists whose declared intent we cannot inspect
@@ -392,28 +411,41 @@ export async function resolveStateGateForRun(cwd: string, homedir: string): Prom
       if ((err as NodeJS.ErrnoException).code === "ENOENT") continue;
       return {
         mode: "off",
+        // A file exists and could not be read: what it declared is UNKNOWN,
+        // which is exactly `unchecked` — strictly weaker than `failed`, and
+        // never to be rendered as it. No digest: bytes we never read cannot
+        // be hashed.
+        policy: { status: "unchecked", sourcePath: which },
         warning:
           `[reelier] policy: ${candidate} exists but could not be read (${(err as Error).message}) — ` +
           `state gate OFF and this file's declared intent is UNKNOWN (if it opts in with 'state_gate: refuse', that opt-in is NOT in effect). Fix the file's readability.`,
       };
     }
+    // The file parsed or it did not; either way the bytes are real and
+    // hashed. `rules` is deliberately never attached on this path (§2.4).
+    const verified: PolicyClaim = { status: "verified", digest, sourcePath: which };
+    const failed: PolicyClaim = { status: "failed", digest, sourcePath: which };
     if (detectStateGateKey(source)) {
       const validation = parsePolicyStrict(source);
       if (validation.errors.length > 0) {
-        return { mode: "refuse-run", sourcePath: candidate, errors: validation.errors };
+        // Refused before step 1, so no RunRecord is ever written — the
+        // absence of a receipt IS the artifact here. The claim is carried
+        // anyway so the shape is uniform for any future caller.
+        return { mode: "refuse-run", sourcePath: candidate, errors: validation.errors, policy: failed };
       }
       if (validation.policy!.stateGate === "refuse") {
-        return { mode: "refuse", sourcePath: candidate };
+        return { mode: "refuse", sourcePath: candidate, policy: verified };
       }
       // Unreachable today (a valid parse with the key present implies
       // "refuse" — every other value is a strict error). Kept explicit so
       // a future mode lands here as OFF, never as an accidental gate.
-      return { mode: "off" };
+      return { mode: "off", policy: verified };
     }
     const validation = parsePolicyStrict(source);
     if (validation.errors.length > 0) {
       return {
         mode: "off",
+        policy: failed,
         warning:
           // "no top-level 'state_gate' key DETECTED" — never "contains
           // no key" (review finding): the detector cannot know what the
@@ -423,9 +455,10 @@ export async function resolveStateGateForRun(cwd: string, homedir: string): Prom
           `(a malformed file cannot opt a repo in; enforcement gap). Run 'reelier policy check' to see every error.`,
       };
     }
-    return { mode: "off" };
+    return { mode: "off", policy: verified };
   }
-  return { mode: "off" };
+  // Neither candidate exists — a positive finding, not an absence of one.
+  return { mode: "off", policy: { status: "absent" } };
 }
 
 /** Parse + validate raw policy.yml text in one shot. A syntax error (bad subset) is reported as a single validation error, same bucket as a schema error — `policy check` doesn't need callers to distinguish the two. */
@@ -572,9 +605,141 @@ export function policyPaths(cwd: string, homedir: string): { project: string; gl
   };
 }
 
+/**
+ * Which of the two documented candidates decided — NEVER the resolved
+ * absolute path. The global candidate is `<homedir>/.reelier/policy.yml`,
+ * so recording the path would ship the operator's home directory (and on
+ * Windows their username) into a publishable receipt. This answers the only
+ * question the field exists to answer — which candidate won the
+ * first-existing-file rule — and is identical across two machines running
+ * the same policy. See docs/specs/policy-attestation-v1.md §2.2.
+ */
+export type PolicySource = "project" | "global";
+
 export type PolicyLoadResult =
-  | { ok: true; policy: Policy; sourcePath: string | undefined }
-  | { ok: false; policy: Policy; sourcePath: string; error: string };
+  | { ok: true; policy: Policy; sourcePath: string | undefined; which?: PolicySource; digest?: string }
+  | { ok: false; policy: Policy; sourcePath: string; error: string; unreadable?: true; which?: PolicySource; digest?: string };
+
+/**
+ * The four-state policy claim carried by a trace's meta record and by a
+ * RunRecord (docs/specs/policy-attestation-v1.md §2). Uses the EXISTING
+ * four-state vocabulary with its existing meanings and no new ones.
+ *
+ * The whole object is optional on both structures. Its ABSENCE means the
+ * record was written by a version that predates it — never `absent`, which
+ * is a positive statement that a version capable of looking did look and
+ * found nothing. A consumer MUST NOT collapse the two.
+ */
+export type PolicyStatus = "verified" | "failed" | "unchecked" | "absent";
+
+/**
+ * The claim BOTH execution paths can make. The run path uses exactly this
+ * and nothing wider: §2.4's rule that a RunRecord never carries rule counts
+ * is enforced by the type, not by convention, so no future edit can attach
+ * them to a replay record and imply the deny list was live during it.
+ */
+export interface PolicyClaim {
+  status: PolicyStatus;
+  /**
+   * `sha256:<hex>` over the RAW FILE BYTES — not a canonical form. It has to
+   * work in the `failed` state (an unparseable file has no canonical form),
+   * and byte-level defects are the point: a UTF-8 BOM that masks a key is
+   * invisible to a canonical digest and visible to this one.
+   *
+   * Stated cost: reformatting a policy changes the digest with no change in
+   * enforcement. A consumer MUST NOT read a changed digest as a changed
+   * policy — it says the bytes differ, which is all it says.
+   *
+   * Omitted in `unchecked`/`absent` (nothing was read) and on a legacy
+   * record mapped from `policyGap` (nothing hashed the file at record time).
+   * A missing digest on a `failed` record therefore does NOT mean "no file
+   * was found" — `absent` is the state that means that.
+   */
+  digest?: string;
+  sourcePath?: PolicySource;
+}
+
+/**
+ * The WRAP path's claim: everything above, plus rule coverage. Only the
+ * wrap holds a live tool inventory, so only the wrap can measure whether a
+ * rule is able to fire (§2.3, §2.4).
+ */
+export interface PolicyRecord extends PolicyClaim {
+  /**
+   * Counts only, never globs or hosts. `toolScoped` is the honest
+   * denominator for `unmatchedRules`: an `endpoint` rule carries no tool
+   * glob and can never be reported unmatched, so counting it would dilute
+   * the ratio and understate the dead-rule count.
+   */
+  rules?: { deny: number; dryRun: number; toolScoped: number };
+  /**
+   * Tool-scoped rules matching NONE of the wrapped tools — present versus
+   * able to fire. Wrap path only: the run path has no tool inventory to
+   * match against (docs/specs/policy-attestation-v1.md §2.4).
+   */
+  unmatchedRules?: number;
+}
+
+/**
+ * Attach the dead-rule count to a record that has rules to count
+ * (docs/specs/policy-attestation-v1.md §2.3). Wrap path only — it needs the
+ * live tool inventory, which `reelier run` does not have (§2.4).
+ *
+ * Added ONLY when `rules` is present, i.e. only on `verified`: a `failed`,
+ * `unchecked` or `absent` record parsed no rules, so there is nothing to
+ * match and a count would be a number about nothing.
+ *
+ * `0` is recorded, not omitted. Zero unmatched rules is a measurement — the
+ * policy was checked against the wrapped tools and every rule named a real
+ * one — and dropping it would make "checked, all live" indistinguishable
+ * from "never checked".
+ */
+export function withUnmatchedRules(record: PolicyRecord, policy: Policy, availableToolNames: string[]): PolicyRecord {
+  if (!record.rules) return record;
+  return { ...record, unmatchedRules: findUnmatchedToolRules(policy, availableToolNames).length };
+}
+
+function countToolScoped(policy: Policy): number {
+  return policy.deny.filter((r) => r.tool !== undefined).length + policy.dryRun.filter((r) => r.tool !== undefined).length;
+}
+
+/**
+ * Project a `loadPolicyForWrap` result into the recorded claim.
+ *
+ * The safe-direction rule, and the reason this is a function rather than an
+ * inline object literal at each call site: a found policy whose bytes are
+ * not bound to the read that produced it degrades to `unchecked`, NEVER
+ * `verified`. `verified` is earned or it is not claimed — it is never a
+ * fallback, a default, or an inference.
+ */
+export function policyRecordFromLoad(result: PolicyLoadResult): PolicyRecord {
+  if (!result.ok) {
+    if (result.unreadable) {
+      // A file exists and could not be read: what it declared is UNKNOWN.
+      // Strictly weaker than `failed`, which names a KNOWN-dead seatbelt.
+      return { status: "unchecked", ...(result.which ? { sourcePath: result.which } : {}) };
+    }
+    return {
+      status: "failed",
+      ...(result.digest ? { digest: result.digest } : {}),
+      ...(result.which ? { sourcePath: result.which } : {}),
+    };
+  }
+  if (!result.sourcePath) return { status: "absent" };
+  if (!result.digest) {
+    return { status: "unchecked", ...(result.which ? { sourcePath: result.which } : {}) };
+  }
+  return {
+    status: "verified",
+    digest: result.digest,
+    ...(result.which ? { sourcePath: result.which } : {}),
+    rules: {
+      deny: result.policy.deny.length,
+      dryRun: result.policy.dryRun.length,
+      toolScoped: countToolScoped(result.policy),
+    },
+  };
+}
 
 /**
  * Load the active policy for a `reelier mcp` (wrap) run. NEVER throws —
@@ -588,12 +753,49 @@ export type PolicyLoadResult =
 export async function loadPolicyForWrap(cwd: string, homedir: string): Promise<PolicyLoadResult> {
   const { project, global } = policyPaths(cwd, homedir);
 
-  for (const candidate of [project, global]) {
+  for (const [candidate, which] of [
+    [project, "project"],
+    [global, "global"],
+  ] as const) {
     let source: string;
+    let digest: string;
     try {
-      source = await readFile(candidate, "utf8");
-    } catch {
-      continue; // not found (or unreadable) — try the next candidate, then fall through to "no policy"
+      // Read the BYTES, hash them, then decode — one read, so the digest is
+      // structurally bound to the buffer the policy is parsed from and no
+      // caller can re-read the path at record-write time (the binding rule,
+      // docs/specs/policy-attestation-v1.md §2.1). Hashing a re-read would
+      // let a mid-session edit produce `verified` over bytes that never
+      // governed a single call.
+      //
+      // Bytes rather than a utf8 string because the digest must see
+      // byte-level defects: a UTF-8 BOM is exactly the class of thing that
+      // masked a key in the S8 review, and re-encoding a decoded string
+      // would launder invalid sequences into replacement characters.
+      const bytes = await readFile(candidate);
+      digest = "sha256:" + createHash("sha256").update(bytes).digest("hex");
+      source = bytes.toString("utf8"); // BOM preserved, exactly as readFile(…, "utf8") did
+    } catch (err) {
+      // ENOENT is "no file here" — try the next candidate. ANY OTHER read
+      // error means a file EXISTS whose rules we cannot inspect (EACCES,
+      // EISDIR, a Windows lock). Skipping it silently would report a repo
+      // that HAS a policy as one that has none ("none configured … all calls
+      // pass through") AND would let the global file decide despite an
+      // existing project file, breaking the documented first-existing-file
+      // rule. Stop the traversal and report it instead — the exact fix
+      // resolveStateGateForRun already carries (see its comment above);
+      // this function never got it. Still fails SAFE, never closed: the
+      // wrap starts with a deny-nothing policy so an unreadable file can
+      // never brick the agent (Prime Directive), but the fact is now
+      // reportable rather than invisible.
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") continue;
+      return {
+        ok: false,
+        unreadable: true,
+        policy: emptyPolicy(),
+        sourcePath: candidate,
+        which,
+        error: `${candidate} exists but could not be read (${(err as Error).message})`,
+      };
     }
     const validation = parsePolicyStrict(source);
     if (validation.errors.length > 0) {
@@ -601,10 +803,12 @@ export async function loadPolicyForWrap(cwd: string, homedir: string): Promise<P
         ok: false,
         policy: emptyPolicy(),
         sourcePath: candidate,
+        which,
+        digest,
         error: `${candidate} is malformed (${validation.errors.length} error(s)): ${validation.errors.join("; ")}`,
       };
     }
-    return { ok: true, policy: validation.policy!, sourcePath: candidate };
+    return { ok: true, policy: validation.policy!, sourcePath: candidate, which, digest };
   }
 
   return { ok: true, policy: emptyPolicy(), sourcePath: undefined };
@@ -631,6 +835,17 @@ export function hasEndpointRules(policy: Policy): boolean {
 
 export function summarizePolicyForWrapStart(result: PolicyLoadResult): string[] {
   if (!result.ok) {
+    if (result.unreadable) {
+      // A malformed file's rules are KNOWN and rejected; an unreadable
+      // file's rules are UNKNOWN. Never conflate the two — telling an
+      // operator to run 'policy check' on a file nothing can read sends
+      // them at the wrong defect, and claiming the rules are invalid
+      // asserts something we did not observe.
+      return [
+        `[reelier] policy: WARNING — ${result.error}`,
+        `[reelier] policy: enforcement DISABLED for this session (fail-safe — deny-nothing) and this file's rules are UNKNOWN — no rule in it is in force. Fix the file's readability.`,
+      ];
+    }
     return [
       `[reelier] policy: WARNING — ${result.error}`,
       `[reelier] policy: enforcement DISABLED for this session (fail-safe — deny-nothing) until the file is fixed. Run 'reelier policy check' to see every error.`,

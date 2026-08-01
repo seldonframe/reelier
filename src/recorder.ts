@@ -19,7 +19,9 @@ import {
   evaluatePolicy,
   findUnmatchedToolRules,
   formatUnmatchedToolRuleWarnings,
+  withUnmatchedRules,
   type Policy,
+  type PolicyRecord,
 } from "./policy.js";
 
 export type TraceRecord =
@@ -38,13 +40,29 @@ export type TraceRecord =
        */
       toolAnnotations?: Record<string, ToolEffectAnnotations>;
       /**
+       * SUPERSEDED by `policy` below (docs/specs/policy-attestation-v1.md
+       * §3.1). Still PARSED forever — traces on operators' disks predate the
+       * replacement — but never WRITTEN: a writer emits `policy` or
+       * (historically) `policyGap`, never both. `parseTraceLines` normalizes
+       * a bare `policyGap` to `{ status: "failed" }` on read, so no consumer
+       * downstream of the reader has to know this field existed.
+       *
        * Set only when the active policy.yml failed to parse at wrap start —
-       * the Prime Directive's "a missing record must be visible, never
-       * silent" gap marker. Enforcement degrades to deny-nothing while this
-       * is set; absent entirely on every trace recorded under a valid (or
-       * absent) policy, so pre-policy traces stay byte-identical.
+       * one condition of four, carrying no digest, no source and no counts.
        */
       policyGap?: string;
+      /**
+       * The policy governing THIS RECORDING (§2). Describes the recording
+       * session and nothing else: a skill compiled from this trace carries
+       * NO policy field, and a later replay's RunRecord reports the policy
+       * in force at THAT run. Inheriting this one would fabricate a claim
+       * about the present out of the past (§3).
+       *
+       * Omitted entirely by callers that pass nothing, so pre-policy traces
+       * stay byte-identical. Its ABSENCE means "written before this field
+       * existed" — never `absent`, which is a positive finding.
+       */
+      policy?: PolicyRecord;
       /**
        * Per-EXPOSED-tool schema digests, captured at wrap time — the source
        * material for Skill.manifest (docs/specs/flight-recorder-v2.md §1).
@@ -141,7 +159,7 @@ export class Recorder {
     name: string,
     wrapped: string[],
     toolAnnotations?: Record<string, ToolEffectAnnotations>,
-    policyGap?: string,
+    policy?: PolicyRecord,
     toolManifest?: ManifestTool[],
     manifestGap?: string[]
   ): Promise<{ ok: true; path: string } | { ok: false; message: string }> {
@@ -167,7 +185,7 @@ export class Recorder {
       // Omit the key entirely when nothing is annotated — annotation-free
       // traces stay byte-identical to older ones.
       ...(toolAnnotations && Object.keys(toolAnnotations).length > 0 ? { toolAnnotations } : {}),
-      ...(policyGap ? { policyGap } : {}),
+      ...(policy ? { policy } : {}),
       ...(toolManifest && toolManifest.length > 0 ? { toolManifest } : {}),
       ...(manifestGap && manifestGap.length > 0 ? { manifestGap } : {}),
     });
@@ -236,8 +254,14 @@ export interface ProxyServerOptions {
   traceDir: string;
   /** The seatbelt (spec §1). Omitted/undefined behaves exactly like the empty policy — everything allowed, no enforcement overhead beyond the (cheap) empty-array checks. */
   policy?: Policy;
-  /** Set when the policy file that produced `policy` failed to parse — carried into the trace meta record as a gap marker. Only meaningful when `policy` is passed. */
-  policyGap?: string;
+  /**
+   * The four-state claim about the policy file that produced `policy`,
+   * carried into the trace meta record (docs/specs/policy-attestation-v1.md
+   * §2). Supersedes the old `policyGap` string, which marked only the
+   * malformed case. Omitted → the meta record carries no `policy` key and
+   * the trace stays byte-identical to a pre-policy one.
+   */
+  policyRecord?: PolicyRecord;
   /** Whether this wrap process was started with --allow-writes — the one `unless` escape flag deny rules can reference. */
   allowWrites?: boolean;
 }
@@ -309,6 +333,13 @@ export function buildProxyServer(downstreams: DownstreamConnection[], options: P
   for (const line of formatUnmatchedToolRuleWarnings(findUnmatchedToolRules(policy, availableToolNames), availableToolNames)) {
     console.error(line);
   }
+  // The same computation, carried into the record instead of only to stderr
+  // (docs/specs/policy-attestation-v1.md §2.3). This is the ONLY place with
+  // a live tool inventory, which is why the count exists on the wrap path
+  // and never on a RunRecord (§2.4). Counts only — the offending globs stay
+  // on the terminal, where the reader is the operator; a record is a
+  // publishable artifact and a glob is an internal tool name.
+  const policyRecord = options.policyRecord ? withUnmatchedRules(options.policyRecord, policy, availableToolNames) : undefined;
 
   const server = new Server({ name: "reelier-proxy", version: "0.0.1" }, { capabilities: { tools: {} } });
 
@@ -347,7 +378,7 @@ export function buildProxyServer(downstreams: DownstreamConnection[], options: P
         return { ...textResult("reelier_start_recording requires a string 'name' argument."), isError: true };
       }
       const wrapped = downstreams.map((d) => d.name);
-      const result = await recorder.start(traceName, wrapped, toolAnnotations, options.policyGap, toolManifest, manifestGap);
+      const result = await recorder.start(traceName, wrapped, toolAnnotations, policyRecord, toolManifest, manifestGap);
       return result.ok ? textResult(`Recording started: ${result.path}`) : textResult(result.message);
     }
 

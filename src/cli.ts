@@ -43,6 +43,7 @@ import { compile, renderSkillMd, type CompileResult, type FromSkillProvenance } 
 import { buildManifestForSkill, preflightManifest, addProbeToolsToManifest } from "./manifest.js";
 import { serializeSkill, writeFileAtomic, appendChangelogLine } from "./writeback.js";
 import { computeApprovalHash } from "./approval.js";
+import { parseDuration, MAX_APPROVAL_TTL_MS } from "./duration.js";
 import { canonicalJson } from "./canonical-json.js";
 import { parseInstructionSkillFrontmatter } from "./from-skill.js";
 import { createLlmClient, resolveLlmConfig } from "./llm.js";
@@ -100,6 +101,7 @@ import {
 import { BUNDLED_PRICES_RETRIEVED_AT } from "./prices.js";
 import {
   loadPolicyForWrap,
+  policyRecordFromLoad,
   summarizePolicyForWrapStart,
   parsePolicyStrict,
   hasEndpointRules,
@@ -178,6 +180,7 @@ function parseArgv(argv: string[]): ParsedArgs {
       arg === "--agent" ||
       arg === "--from-skill" ||
       arg === "--since" ||
+      arg === "--expires" ||
       arg === "--key" ||
       arg === "--path"
     ) {
@@ -457,13 +460,25 @@ export async function cmdRun(
       // into repo B. Same value, by construction.
       ...(deps.cwd !== undefined ? { cwd: deps.cwd } : {}),
       ...(stateGate.mode === "refuse" ? { stateGate: "refuse" as const } : {}),
+      // The policy in force for THIS run, from the same resolution that
+      // decided the gate — so the digest names the bytes that actually
+      // governed it. Never inherited from the trace this skill was compiled
+      // from (policy-attestation-v1 §3).
+      policy: stateGate.policy,
       ...(args.fails.length > 0 ? { mockFailures } : {}),
       onStep: (rec) => {
         const icon =
           rec.outcome === "passed" || rec.outcome === "unchecked" ? "✓" : rec.outcome === "skipped" ? "○" : "✗";
         const tag = rec.outcome === "unchecked" ? " (unchecked: no assertions)" : "";
         const levelTag = rec.level > 0 ? ` [healed L${rec.level}]` : "";
-        console.log(`${icon} Step ${rec.n} — ${rec.title} [${rec.outcome}${tag}]${levelTag} ${fmtDuration(rec.ms)}`);
+        // Shown only for `external-visible` (SPEC §3.7): internal is the
+        // overwhelming majority and the absent case, so tagging it would be
+        // noise. Plain text, no warning glyph and no error colour — it is a
+        // classification the author wrote down, not a finding.
+        const exposureTag = rec.exposure === "external-visible" ? " [external-visible]" : "";
+        console.log(
+          `${icon} Step ${rec.n} — ${rec.title} [${rec.outcome}${tag}]${levelTag}${exposureTag} ${fmtDuration(rec.ms)}`
+        );
         if (rec.mocked) {
           console.log(`    ⚡ INJECTED failure (--fail ${rec.n})`);
         }
@@ -943,7 +958,11 @@ async function cmdMcp(args: ParsedArgs): Promise<number> {
   const server = buildProxyServer(downstreams, {
     traceDir,
     policy: policyResult.policy,
-    policyGap: policyResult.ok ? undefined : policyResult.error,
+    // The four-state claim, not just the malformed case the old policyGap
+    // marked. Built from the load result — whose digest is bound to the read
+    // that produced the policy — so nothing here can re-read the file and
+    // claim `verified` over bytes that never enforced anything (§2.1).
+    policyRecord: policyRecordFromLoad(policyResult),
     allowWrites,
   });
   const transport = new StdioServerTransport();
@@ -1730,6 +1749,72 @@ async function cmdPruneKeys(args: ParsedArgs, deps: ApproveDeps): Promise<number
   return 0;
 }
 
+/**
+ * The approval TTL this binding would carry, resolved ONCE (issue #77).
+ *
+ * `--expires 7d` resolves against the OBSERVATION's timestamp, not
+ * wall-clock-now — arithmetic no operator does in their head, which is the
+ * whole reason the resolved instant is shown before the y/N rather than after
+ * it. The preview and the write therefore have to be the SAME value, not two
+ * expressions that agree today and drift on the next edit; hence one function
+ * with two call sites rather than a duplicated inline calculation.
+ *
+ * `source` and `elapsed` ride along so the preview and `bindStep`'s echo can
+ * render the same three cases without re-deriving them from the instant.
+ */
+type ResolvedExpiry =
+  | { expiresAt: string; source: "new"; elapsed: false }
+  | { expiresAt: string; source: "carried"; elapsed: boolean }
+  | { expiresAt: undefined; source: "none"; elapsed: false };
+
+function resolveExpiresAt(step: Step, observedAtMs: number, expiresMs: number | undefined): ResolvedExpiry {
+  // W5-T3 (§3.2): an ABSOLUTE instant, resolved once against THIS
+  // observation's timestamp. Stamping the duration itself would re-arm the
+  // approval on every read, which is the opposite of expiring.
+  if (expiresMs !== undefined) return { expiresAt: new Date(observedAtMs + expiresMs).toISOString(), source: "new", elapsed: false };
+  // Review finding (IMPORTANT): with no `--expires`, a prior TTL is CARRIED
+  // FORWARD rather than dropped. `bindStep` is also the re-bind path, so
+  // resolving from `expiresMs` alone meant a routine `approve --probe
+  // --rebind` after benign drift silently deleted a TTL the operator set
+  // weeks earlier — a downgrade, and §4.4 forbids silent downgrades of
+  // exactly this kind.
+  //
+  // Carried VERBATIM, not re-resolved against this observation: the file
+  // stores an instant, not the duration behind it, and re-resolving would
+  // require guessing that duration. Verbatim is also the safe direction — a
+  // re-bind extends nothing, and an already-elapsed TTL stays elapsed, so
+  // re-binding state drift can never quietly renew a time-expired approval.
+  const carried = step.expect?.expiresAt;
+  if (carried !== undefined) return { expiresAt: carried, source: "carried", elapsed: Date.parse(carried) <= observedAtMs };
+  // Brand invariant 1, one level down: no TTL prints NO line. "expires:
+  // never" would render an absence as a deliberate choice.
+  return { expiresAt: undefined, source: "none", elapsed: false };
+}
+
+/**
+ * One sentence, rendered from one resolution — so the operator reads the same
+ * words in the pre-prompt preview and in the echo of what was written, rather
+ * than two phrasings of the same fact.
+ */
+function expiryConsentLine(resolved: ResolvedExpiry, expiresRaw: string | undefined): string | undefined {
+  if (resolved.source === "new") {
+    return `  expires: ${resolved.expiresAt} (--expires ${expiresRaw}) — past it this step's state check is 'unevaluated (approval-expired)', never a pass`;
+  }
+  if (resolved.source === "carried") {
+    // Review finding (MINOR): a carried instant that has ALREADY elapsed
+    // produces an approval that is dead on arrival — safe, because it fails
+    // closed at the first run, but `expires: 2026-07-04T…` reads like a live
+    // deadline to anyone scanning the output. Say which one it is.
+    return (
+      `  expires: ${resolved.expiresAt} (carried forward unchanged from the previous binding` +
+      (resolved.elapsed
+        ? " — ALREADY ELAPSED, so this binding is expired the moment it is written; pass --expires <duration> to set a new one)"
+        : " — pass --expires <duration> to set a new one)")
+    );
+  }
+  return undefined;
+}
+
 export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Promise<number> {
   // P1.5: `--prune-keys` takes no skill path — rotation leaves superseded
   // entries behind on purpose (parallel checkouts, git revert); pruning is
@@ -1738,7 +1823,12 @@ export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Prom
   // swallowing a skill path or approve flag would delete keys while the
   // operator believes they ran an approve.
   if (args.flags.has("prune-keys")) {
+    // W5-T3 (review): the conflict list checked FLAGS only, so
+    // `--prune-keys --expires 24h` pruned and dropped the TTL request on the
+    // floor — the same silent-acceptance family as the re-verify bug below.
+    // Value-taking options have to be checked by presence, not membership.
     const conflicts = ["probe", "rebind", "drop-expect"].filter((f) => args.flags.has(f));
+    if (args.opts.expires !== undefined) conflicts.push("expires");
     if (args.positional.length > 0 || conflicts.length > 0 || args.wraps.length > 0) {
       const offender = args.positional.length > 0 ? `a skill path (${args.positional[0]})` : `--${conflicts[0] ?? "wrap"}`;
       console.error(
@@ -1751,7 +1841,12 @@ export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Prom
   const skillPath = args.positional[0];
   if (!skillPath) {
     console.error(
-      'Usage: reelier approve <skill.md> [--all] [--probe] [--rebind] [--var name=value]... [--wrap "<cmd>"]... [--drop-expect] | reelier approve --prune-keys [--all]'
+      'Usage: reelier approve <skill.md> [--all] [--probe] [--expires <30m|24h|7d>] [--rebind] [--var name=value]... [--wrap "<cmd>"]... [--drop-expect] | reelier approve --prune-keys [--all]\n' +
+        "  --expires <duration>  give the state binding a time-to-live: <positive integer><m|h|d>, at most 365d.\n" +
+        "                        Resolved against approve time and stamped as an ABSOLUTE instant, so it cannot\n" +
+        "                        re-arm itself. Past it the step's state check is 'unevaluated (approval-expired)',\n" +
+        "                        which under 'state_gate: refuse' refuses the write before dispatch. Requires\n" +
+        "                        --probe: a TTL lives on the state binding (expect:), which only --probe mints."
     );
     return 1;
   }
@@ -1795,6 +1890,36 @@ export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Prom
       "--drop-expect cannot be combined with --probe: --probe (re)binds state. Drop the binding first with plain 'reelier approve --drop-expect', or re-approve with --probe alone."
     );
     return 1;
+  }
+  // W5-T3: `--expires` is a SIBLING of `--probe`, not a variant of it —
+  // `--probe` makes an approval die when the world moves, `--expires` makes it
+  // die when nobody answers. A step may carry both.
+  //
+  // It is refused without `--probe` rather than silently accepted, because the
+  // TTL lives on `expect:` and only `--probe` mints one. A plain approved
+  // write cannot expire; that is a real scope boundary (SPEC.md §6.1c) and an
+  // operator meets it here, at the moment they ask for the thing, instead of
+  // discovering months later that the TTL they thought they set never fired.
+  const expiresRaw = args.opts.expires;
+  let expiresMs: number | undefined;
+  if (expiresRaw !== undefined) {
+    if (!probe) {
+      console.error(
+        "--expires requires --probe: a TTL lives on the state binding (expect:), and only --probe mints one. " +
+          "A plain approved write with no expect: cannot expire — re-approve with 'reelier approve --probe --expires " +
+          `${expiresRaw}', or drop --expires.`
+      );
+      return 1;
+    }
+    const parsed = parseDuration(expiresRaw);
+    if (parsed === null) {
+      console.error(
+        `Invalid --expires ${JSON.stringify(expiresRaw)} — expected a positive integer followed by m, h, or d ` +
+          `(e.g. 30m, 24h, 7d), at most ${MAX_APPROVAL_TTL_MS / 86_400_000}d. Nothing was approved.`
+      );
+      return 1;
+    }
+    expiresMs = parsed;
   }
   const now = deps.now ?? (() => Date.now());
   const isTTY = deps.isTTY ?? process.stdout.isTTY === true;
@@ -1863,6 +1988,20 @@ export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Prom
     console.log(`  probe args (filled): ${canonicalJson(filled)}`);
   };
 
+  /**
+   * Issue #77: the resolved deadline, printed immediately BEFORE the y/N so
+   * the operator agrees to a date rather than to arithmetic. `--expires 7d`
+   * resolves against the observation, not wall-clock-now, and a date shown
+   * after consent is a date nobody had the chance to decline.
+   *
+   * Prints nothing when there is no TTL — never "expires: never", which would
+   * render an absence as a deliberate setting.
+   */
+  const showExpiry = (step: Step, observedAtMs: number): void => {
+    const line = expiryConsentLine(resolveExpiresAt(step, observedAtMs, expiresMs), expiresRaw);
+    if (line !== undefined) console.log(line);
+  };
+
   const bindStep = async (
     step: Step,
     typed: Record<string, string | number | boolean>,
@@ -1888,10 +2027,22 @@ export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Prom
     for (const [name, value] of Object.entries(typed)) {
       fieldMacs[name] = expectFieldMac(key, step.attest!.tool, name, value);
     }
+    // W5-T3, resolved by the shared `resolveExpiresAt` — which is also what
+    // the pre-prompt preview calls (issue #77), so the instant the operator
+    // agreed to and the instant written here are ONE value by construction
+    // rather than two expressions that happen to agree today.
+    //
+    // This echo stays. The preview says what is about to be written; this is
+    // the record of what was. Same sentence, two jobs.
+    const resolved = resolveExpiresAt(step, observedAtMs, expiresMs);
+    const { expiresAt } = resolved;
+    const echo = expiryConsentLine(resolved, expiresRaw);
+    if (echo !== undefined) console.log(echo);
     step.expect = {
       at,
       keyId,
       pre: mac,
+      ...(expiresAt !== undefined ? { expiresAt } : {}),
       fields: fieldMacs,
       // W3-S4: commit the FILLED probe args only when the template was
       // parameterized. A literal probe needs no commitment — its execute-time
@@ -2167,9 +2318,69 @@ export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Prom
           reVerifyUnavailable++;
           continue;
         }
-        if (!rebindingArgs && macEquals(expectMac(key, step.attest!.tool, typed), step.expect.pre)) {
+        // W5-T3 (review finding — CRITICAL): the state re-verified clean, so
+        // this branch used to print "unchanged", write nothing and exit 0 —
+        // INCLUDING when the operator passed `--expires`. That is the exact
+        // moment someone decides to arm a TTL on a healthy binding, and the
+        // command accepted the flag and armed nothing. A control whose whole
+        // purpose is "expire as a no" must never report success having done
+        // nothing; silently succeeding is the one outcome that is off the
+        // table (the same rule that made `--expires` without `--probe` a
+        // refusal rather than a no-op).
+        //
+        // Resolved against THIS observation, like every other stamp: asking
+        // for `--expires 24h` today means 24h from today, so a re-run with the
+        // same duration legitimately RENEWS the deadline rather than reporting
+        // "unchanged". That is a deliberate re-approval cadence being reset by
+        // hand, which is what the operator just typed.
+        const stateUnchanged = !rebindingArgs && macEquals(expectMac(key, step.attest!.tool, typed), step.expect.pre);
+        // Issue #77: through the SAME resolver `bindStep` writes from, so the
+        // instant previewed on this path is the instant stamped rather than a
+        // second expression that agrees by identical arithmetic. Narrowed to
+        // `source === "new"` because `ttlMoves` below asks specifically
+        // "did the operator request a deadline, and is it different?" — a
+        // carried-forward instant is not a request and must not read as one.
+        const requestedExpiry = resolveExpiresAt(step, reObservedAtMs, expiresMs);
+        const requestedExpiresAt = requestedExpiry.source === "new" ? requestedExpiry.expiresAt : undefined;
+        const ttlMoves = requestedExpiresAt !== undefined && requestedExpiresAt !== step.expect.expiresAt;
+        if (stateUnchanged && !ttlMoves) {
           console.log("  unchanged (state re-verified against current binding)");
           unchangedCount++;
+          continue;
+        }
+        if (stateUnchanged) {
+          // State is fine; the TTL is the only thing moving. Re-stamping is a
+          // hash change on an already-approved step, so it takes the same
+          // shown-observation + consent ceremony a fresh bind takes (§4.2.3) —
+          // never a machine-minted re-approval. It does NOT require --rebind:
+          // --rebind is consent to a world that moved underneath the operator,
+          // and nothing moved here except the deadline they just typed.
+          console.log(
+            step.expect.expiresAt === undefined
+              ? `  approved (current) — state re-verified; arming an approval TTL (expires ${requestedExpiresAt})`
+              : `  approved (current) — state re-verified; renewing the approval TTL (was ${step.expect.expiresAt}, now ${requestedExpiresAt})`
+          );
+          showObservation(typed, step.attest!.projection ?? []);
+          const yes = all || (await askYes("  Re-stamp this approval with the new TTL? (y/N) "));
+          if (!yes) {
+            skippedCount++;
+            continue;
+          }
+          try {
+            await bindStep(
+              step,
+              typed,
+              reObservedAtMs,
+              reArgs.parameterized && reArgs.missing.length === 0 ? { filled: reArgs.filled } : undefined
+            );
+          } catch (err) {
+            console.log(`  re-stamp failed (approve-probe-failed: keystore-unavailable: ${(err as Error).message}) — binding left as-is`);
+            skippedProbeFailed++;
+            continue;
+          }
+          console.log("  re-stamped with the new TTL");
+          approvedCount++;
+          stateBoundCount++;
           continue;
         }
         if (rebindingArgs) {
@@ -2197,16 +2408,24 @@ export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Prom
         // Re-binding is an act of consent (A2): interactive yes or the
         // explicit --rebind flag ("consent granted by whoever runs this
         // command against whatever the world is now") — never automatic.
-        let consent: boolean;
-        if (rebindFlag) {
-          consent = true;
-        } else if (all) {
+        //
+        // The --all-without---rebind refusal is hoisted ABOVE the expiry
+        // preview (issue #77): nothing is written on that path, and "carried
+        // forward unchanged from the previous binding" would assert a
+        // carry-forward that never happens. Same three outcomes, same order
+        // of precedence — only the skip moved earlier.
+        if (!rebindFlag && all) {
           console.log("  skipped (world moved) — pass --rebind to re-bind to the current state");
           skippedWorldMoved++;
           continue;
-        } else {
-          consent = await askYes("  Re-bind this approval to the current state? (y/N) ");
         }
+        // Issue #77: the yes is granted against a SHOWN deadline as well as a
+        // shown observation. A re-bind with no `--expires` carries the old TTL
+        // forward — including one that has already elapsed, which the operator
+        // must learn before consenting to a binding that is dead on arrival,
+        // not after.
+        showExpiry(step, reObservedAtMs);
+        const consent = rebindFlag || (await askYes("  Re-bind this approval to the current state? (y/N) "));
         if (!consent) {
           skippedCount++;
           continue;
@@ -2386,6 +2605,9 @@ export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Prom
       }
 
       console.log(`  ${state}`);
+      // Issue #77: the deadline is part of what is being consented to, so it
+      // precedes the question — same as the re-stamp path already did.
+      showExpiry(step, observedAtMs);
       const yes = all || (await askYes("  Approve this step against this observed state? (y/N) "));
       if (!yes) {
         skippedCount++;
