@@ -491,10 +491,11 @@ only when present, so a binding without one hashes byte-identically to
 in the committed file is an approval mismatch refused at the final
 boundary, with no flag override. At or after the instant the runner emits
 `stateCheck.outcome: "unevaluated"` with reason `approval-expired: …`
-**without dispatching either probe** (expiry is a pre-probe fact; probing
-would spend a call that cannot change the verdict and could mislabel the
-result `probe-failed`), which under `state_gate: refuse` refuses the write
-before dispatch.
+**without dispatching either probe** — expiry is a pre-probe fact, and a
+probe that ran and then failed would report `probe-failed`, which is a
+claim about the probe rather than about the approval; the call it also
+saves is a consequence, not the reason. Under `state_gate: refuse` this
+refuses the write before dispatch.
 
 `--expires` and `--probe` are **siblings, not variants**, and a step may
 carry both: `--probe` makes an approval die when the world moves

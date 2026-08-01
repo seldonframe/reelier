@@ -137,14 +137,34 @@ export function renderStateCheckLines(check: StepStateCheck, dispatchedAt: strin
 }
 
 /**
- * Mismatches only — stamped (recorder) OR refused (gate mode, S8): both
- * observed the same fact about the world, and a refusal must never erase
- * the evidence that produced it. Match is not a finding (it's a fact) and
- * unevaluated is not a finding (nothing was observed to differ). Feeds the
- * run summary's `· N finding(s)`.
+ * Mismatches — stamped (recorder) OR refused (gate mode, S8): both observed
+ * the same fact about the world, and a refusal must never erase the evidence
+ * that produced it. Match is not a finding (it's a fact).
+ *
+ * `unevaluated` is generally not a finding either: nothing was observed to
+ * differ, so a probe timeout or a deleted key is a gap in evidence rather
+ * than something learned. W5-T3 adds the ONE exception, and it is narrow by
+ * construction — `approval-expired` is a finding about the APPROVAL rather
+ * than about the world. The runner established it with certainty from the
+ * binding's own committed TTL, no probe required, which is exactly what
+ * separates it from every other unevaluated reason.
+ *
+ * Without this, a recorder-mode run whose approval had expired printed
+ * `PASSED` with no finding tag: the per-step line said "not evaluated —
+ * approval-expired", the summary said nothing, and "in recorder mode it must
+ * not silently look fine" held at the step and failed at the summary.
+ *
+ * Matched on the reason prefix, not on `action`, deliberately: gate mode
+ * rewrites `action` to `"refused"` for EVERY unevaluated outcome, so keying
+ * on that would newly count key-unavailable and probe-timeout refusals as
+ * findings — a behaviour change this slice has no business making.
  */
 export function stateCheckFindingsCount(steps: Array<{ stateCheck?: StepStateCheck }>): number {
-  return steps.filter((s) => s.stateCheck?.outcome === "mismatch").length;
+  return steps.filter(
+    (s) =>
+      s.stateCheck?.outcome === "mismatch" ||
+      (s.stateCheck?.outcome === "unevaluated" && s.stateCheck.reason?.startsWith("approval-expired:") === true)
+  ).length;
 }
 
 /**

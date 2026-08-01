@@ -1729,7 +1729,12 @@ export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Prom
   // swallowing a skill path or approve flag would delete keys while the
   // operator believes they ran an approve.
   if (args.flags.has("prune-keys")) {
+    // W5-T3 (review): the conflict list checked FLAGS only, so
+    // `--prune-keys --expires 24h` pruned and dropped the TTL request on the
+    // floor — the same silent-acceptance family as the re-verify bug below.
+    // Value-taking options have to be checked by presence, not membership.
     const conflicts = ["probe", "rebind", "drop-expect"].filter((f) => args.flags.has(f));
+    if (args.opts.expires !== undefined) conflicts.push("expires");
     if (args.positional.length > 0 || conflicts.length > 0 || args.wraps.length > 0) {
       const offender = args.positional.length > 0 ? `a skill path (${args.positional[0]})` : `--${conflicts[0] ?? "wrap"}`;
       console.error(
@@ -1917,9 +1922,27 @@ export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Prom
     // W5-T3: an ABSOLUTE instant, resolved once against THIS observation's
     // timestamp. Stamping the duration itself would re-arm the approval on
     // every read, which is the opposite of expiring.
-    const expiresAt = expiresMs !== undefined ? new Date(observedAtMs + expiresMs).toISOString() : undefined;
-    if (expiresAt !== undefined) {
+    //
+    // Review finding (IMPORTANT): when no `--expires` is given, a prior TTL is
+    // CARRIED FORWARD rather than dropped. `bindStep` is also the re-bind
+    // path, so building `expect` from `expiresMs` alone meant a routine
+    // `approve --probe --rebind` after benign drift silently deleted a TTL the
+    // operator set weeks earlier — a downgrade, and §4.4 forbids silent
+    // downgrades of exactly this kind.
+    //
+    // Carried VERBATIM, not re-resolved against this observation: the file
+    // stores an instant, not the duration behind it, and re-resolving would
+    // require guessing that duration. Verbatim is also the safe direction — a
+    // re-bind extends nothing, and an already-elapsed TTL stays elapsed, so
+    // re-binding state drift can never quietly renew a time-expired approval.
+    const carriedExpiresAt = step.expect?.expiresAt;
+    const expiresAt = expiresMs !== undefined ? new Date(observedAtMs + expiresMs).toISOString() : carriedExpiresAt;
+    if (expiresMs !== undefined) {
       console.log(`  expires: ${expiresAt} (--expires ${expiresRaw}) — past it this step's state check is 'unevaluated (approval-expired)', never a pass`);
+    } else if (carriedExpiresAt !== undefined) {
+      console.log(
+        `  expires: ${carriedExpiresAt} (carried forward unchanged from the previous binding — pass --expires <duration> to set a new one)`
+      );
     }
     step.expect = {
       at,
@@ -2201,9 +2224,62 @@ export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Prom
           reVerifyUnavailable++;
           continue;
         }
-        if (!rebindingArgs && macEquals(expectMac(key, step.attest!.tool, typed), step.expect.pre)) {
+        // W5-T3 (review finding — CRITICAL): the state re-verified clean, so
+        // this branch used to print "unchanged", write nothing and exit 0 —
+        // INCLUDING when the operator passed `--expires`. That is the exact
+        // moment someone decides to arm a TTL on a healthy binding, and the
+        // command accepted the flag and armed nothing. A control whose whole
+        // purpose is "expire as a no" must never report success having done
+        // nothing; silently succeeding is the one outcome that is off the
+        // table (the same rule that made `--expires` without `--probe` a
+        // refusal rather than a no-op).
+        //
+        // Resolved against THIS observation, like every other stamp: asking
+        // for `--expires 24h` today means 24h from today, so a re-run with the
+        // same duration legitimately RENEWS the deadline rather than reporting
+        // "unchanged". That is a deliberate re-approval cadence being reset by
+        // hand, which is what the operator just typed.
+        const stateUnchanged = !rebindingArgs && macEquals(expectMac(key, step.attest!.tool, typed), step.expect.pre);
+        const requestedExpiresAt = expiresMs !== undefined ? new Date(reObservedAtMs + expiresMs).toISOString() : undefined;
+        const ttlMoves = requestedExpiresAt !== undefined && requestedExpiresAt !== step.expect.expiresAt;
+        if (stateUnchanged && !ttlMoves) {
           console.log("  unchanged (state re-verified against current binding)");
           unchangedCount++;
+          continue;
+        }
+        if (stateUnchanged) {
+          // State is fine; the TTL is the only thing moving. Re-stamping is a
+          // hash change on an already-approved step, so it takes the same
+          // shown-observation + consent ceremony a fresh bind takes (§4.2.3) —
+          // never a machine-minted re-approval. It does NOT require --rebind:
+          // --rebind is consent to a world that moved underneath the operator,
+          // and nothing moved here except the deadline they just typed.
+          console.log(
+            step.expect.expiresAt === undefined
+              ? `  approved (current) — state re-verified; arming an approval TTL (expires ${requestedExpiresAt})`
+              : `  approved (current) — state re-verified; renewing the approval TTL (was ${step.expect.expiresAt}, now ${requestedExpiresAt})`
+          );
+          showObservation(typed, step.attest!.projection ?? []);
+          const yes = all || (await askYes("  Re-stamp this approval with the new TTL? (y/N) "));
+          if (!yes) {
+            skippedCount++;
+            continue;
+          }
+          try {
+            await bindStep(
+              step,
+              typed,
+              reObservedAtMs,
+              reArgs.parameterized && reArgs.missing.length === 0 ? { filled: reArgs.filled } : undefined
+            );
+          } catch (err) {
+            console.log(`  re-stamp failed (approve-probe-failed: keystore-unavailable: ${(err as Error).message}) — binding left as-is`);
+            skippedProbeFailed++;
+            continue;
+          }
+          console.log("  re-stamped with the new TTL");
+          approvedCount++;
+          stateBoundCount++;
           continue;
         }
         if (rebindingArgs) {

@@ -8,9 +8,12 @@
 // is the whole point; a grammar that can express "90000s" invites a TTL nobody
 // can read off the file.
 //
-// Pure, no IO, and it NEVER throws. Two callers depend on that: the CLI turns
-// `null` into a clean usage error, and a parser that threw inside the runner
-// would be a crash in the trust layer.
+// Pure, no IO, and it NEVER throws. There is exactly one caller today —
+// `cmdApprove`, which turns `null` into a clean usage error and approves
+// nothing. Returning a value rather than throwing is what keeps a typo in a
+// duration a usage error instead of a stack trace out of the approval
+// command. (The runner does not import this: it reads the already-resolved
+// absolute instant from the file, never a duration.)
 
 const MS_PER_MINUTE = 60_000;
 const MS_PER_HOUR = 60 * MS_PER_MINUTE;

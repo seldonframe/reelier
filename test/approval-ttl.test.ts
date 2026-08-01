@@ -28,6 +28,7 @@ import { computeApprovalHash } from "../src/approval.js";
 import { runSkill } from "../src/runner.js";
 import { cmdApprove, type ParsedArgs, type ApproveDeps } from "../src/cli.js";
 import { mintExpectKey, expectMac, expectFieldMac, projectObservationTyped, writeKeystoreEntry } from "../src/expect-mac.js";
+import { renderStateCheckLines, stateCheckFindingsCount, findingsSummaryTag } from "../src/attest-render.js";
 import type { Tool } from "../src/tools.js";
 
 const EXPECT_AT = "2026-07-30T06:58:12.331Z";
@@ -633,6 +634,167 @@ test("CLI: an unparseable --expires is a clean usage error, never a crash and ne
       assert.match(out, /Invalid --expires/, out);
       assert.equal(await readFile(file, "utf8"), CLI_SKILL, `--expires ${bad} must not stamp anything`);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Review findings. Every test above started from an UNAPPROVED skill, so
+// nothing in the suite exercised the path an operator actually takes when
+// adding a TTL: a healthy, already-bound skill whose world has not moved.
+// These start there.
+// ---------------------------------------------------------------------------
+
+/** Approve once (fresh bind), then hand the caller the file to approve again. */
+async function alreadyBound(dir: string, at: number, extraOpts: Record<string, string> = {}): Promise<string> {
+  const file = path.join(dir, "s.md");
+  await writeFile(file, CLI_SKILL);
+  const { result } = await captureOutput(() => cmdApprove(fakeArgs([file], ["all", "probe"], extraOpts), approveDeps(dir, at)));
+  assert.equal(result, 0, "fixture setup: the first approve must succeed");
+  return file;
+}
+
+test("CLI review-CRITICAL: --expires on an already-bound, unchanged step ARMS the TTL — never 'unchanged' with nothing written", async () => {
+  await withTempDir(async (dir) => {
+    const at = Date.parse(BOUND_AT);
+    // Bound with NO TTL — the healthy steady state an operator starts from.
+    const file = await alreadyBound(dir, at);
+    assert.equal(parseSkill(await readFile(file, "utf8")).steps[0].expect!.expiresAt, undefined);
+    const before = await readFile(file, "utf8");
+
+    // The exact moment someone decides to add an expiry control.
+    const later = at + 5 * HOUR;
+    const { result: code, out } = await captureOutput(() =>
+      cmdApprove(fakeArgs([file], ["all", "probe"], { expires: "24h" }), approveDeps(dir, later)),
+    );
+    assert.equal(code, 0);
+    // The precise regression: the per-step "unchanged (state re-verified …)"
+    // line, which used to be all this command did. (The summary's tally line
+    // legitimately contains the word "unchanged" — assert on the step line.)
+    assert.doesNotMatch(out, /unchanged \(state re-verified/, "reporting 'unchanged' while arming nothing is the failure this closes");
+    assert.match(out, /arming an approval TTL/);
+    assert.match(out, /approved 1, skipped 0, unchanged 0/, "and it is counted as an approval, not a no-op");
+
+    const after = parseSkill(await readFile(file, "utf8"));
+    assert.notEqual(await readFile(file, "utf8"), before, "the file must actually change");
+    assert.equal(after.steps[0].expect!.expiresAt, new Date(later + 24 * HOUR).toISOString());
+    // And the armed TTL is live: it must actually refuse past the instant.
+    const late = spiedTools(() => ({ compiled_truth: "# v1" }));
+    const record = await runSkill(after, {
+      tools: late.tools,
+      expectKeystorePath: path.join(dir, "expect-keys.json"),
+      cwd: dir,
+      stateGate: "refuse",
+      now: later + 25 * HOUR,
+    });
+    assert.equal(record.steps[0].outcome, "failed");
+    assert.match(record.steps[0].stateCheck!.reason!, /^approval-expired: /);
+    assert.equal(late.writes.length, 0);
+  });
+});
+
+test("CLI review-CRITICAL: re-running --expires on a bound step RENEWS the deadline, and says which one it replaced", async () => {
+  await withTempDir(async (dir) => {
+    const at = Date.parse(BOUND_AT);
+    const file = await alreadyBound(dir, at, { expires: "24h" });
+    const first = parseSkill(await readFile(file, "utf8")).steps[0].expect!.expiresAt!;
+
+    const later = at + 12 * HOUR;
+    const { result: code, out } = await captureOutput(() =>
+      cmdApprove(fakeArgs([file], ["all", "probe"], { expires: "7d" }), approveDeps(dir, later)),
+    );
+    assert.equal(code, 0);
+    assert.match(out, /renewing the approval TTL/);
+    assert.match(out, new RegExp(`was ${first}`), "the operator is told which deadline they are replacing");
+    const renewed = parseSkill(await readFile(file, "utf8")).steps[0].expect!.expiresAt;
+    assert.equal(renewed, new Date(later + 7 * DAY).toISOString());
+  });
+});
+
+test("CLI review-CRITICAL: with no --expires, an already-bound unchanged step is still a true no-op", async () => {
+  await withTempDir(async (dir) => {
+    const at = Date.parse(BOUND_AT);
+    const file = await alreadyBound(dir, at, { expires: "24h" });
+    const before = await readFile(file, "utf8");
+    const { result: code, out } = await captureOutput(() =>
+      cmdApprove(fakeArgs([file], ["all", "probe"]), approveDeps(dir, at + HOUR)),
+    );
+    assert.equal(code, 0);
+    assert.match(out, /unchanged \(state re-verified against current binding\)/);
+    assert.equal(await readFile(file, "utf8"), before, "idempotence is preserved when no TTL is requested");
+  });
+});
+
+test("CLI review-IMPORTANT: a --rebind after benign drift CARRIES the TTL forward — never silently drops it", async () => {
+  await withTempDir(async (dir) => {
+    const at = Date.parse(BOUND_AT);
+    const file = path.join(dir, "s.md");
+    await writeFile(file, CLI_SKILL);
+    let world = "# v1";
+    const deps = (msAt: number): ApproveDeps => ({
+      ...approveDeps(dir, msAt),
+      tools: {
+        get_page: { effect: "read", run: async () => ({ status: 200, headers: {}, body: JSON.stringify({ compiled_truth: world }) }) },
+        put_page: { effect: "idempotent-write", run: async () => ({ status: 200, headers: {}, body: "{}" }) },
+      },
+    });
+    await captureOutput(() => cmdApprove(fakeArgs([file], ["all", "probe"], { expires: "30d" }), deps(at)));
+    const ttl = parseSkill(await readFile(file, "utf8")).steps[0].expect!.expiresAt!;
+    assert.equal(ttl, new Date(at + 30 * DAY).toISOString());
+
+    // A benign edit moves the world; the operator re-binds, with no --expires.
+    world = "# v2";
+    const { out } = await captureOutput(() =>
+      cmdApprove(fakeArgs([file], ["all", "probe", "rebind"]), deps(at + DAY)),
+    );
+    const after = parseSkill(await readFile(file, "utf8")).steps[0].expect!;
+    assert.equal(after.expiresAt, ttl, "the TTL set a month ago survives a routine re-bind, verbatim");
+    assert.match(out, /carried forward unchanged from the previous binding/, "and the operator is told, on the consent line");
+    // Verbatim, not re-resolved: a re-bind extends nothing.
+    assert.notEqual(after.expiresAt, new Date(at + DAY + 30 * DAY).toISOString());
+  });
+});
+
+test("CLI review-MINOR: --prune-keys refuses to swallow --expires", async () => {
+  await withTempDir(async (dir) => {
+    const { result: code, out } = await captureOutput(() =>
+      cmdApprove(fakeArgs([], ["prune-keys", "all"], { expires: "24h" }), approveDeps(dir, Date.parse(BOUND_AT))),
+    );
+    assert.equal(code, 1);
+    assert.match(out, /--prune-keys is a standalone command and cannot be combined with --expires/);
+  });
+});
+
+test("review-IMPORTANT: an expired approval counts as a finding, so a recorder run cannot look clean at the summary", async () => {
+  await withTempDir(async (dir) => {
+    const { skill, keystorePath } = await boundSkill(dir, { compiled_truth: "# v1" }, { expiresAt: EXPIRES_AT });
+    const { tools } = spiedTools(() => ({ compiled_truth: "# v1" }));
+    const record = await runSkill(skill, { tools, expectKeystorePath: keystorePath, cwd: dir, now: T_EXPIRY + 60_000 });
+    // Recorder mode: the step passes and the write went out — that is the
+    // rule. But the summary must not read as if nothing was found.
+    assert.equal(record.steps[0].outcome, "passed");
+    assert.equal(stateCheckFindingsCount(record.steps), 1);
+    assert.equal(findingsSummaryTag(record.steps), " · 1 finding");
+    // The per-step line stays honest too, and never says "pass".
+    const lines = renderStateCheckLines(record.steps[0].stateCheck!, undefined);
+    assert.match(lines[0], /^pre-state check: not evaluated — approval-expired: /);
+  });
+});
+
+test("review-IMPORTANT: the finding exception is narrow — other unevaluated reasons are still not findings", async () => {
+  await withTempDir(async (dir) => {
+    // key-unavailable: a gap in evidence, not something learned. Unchanged.
+    const { skill } = await boundSkill(dir, { compiled_truth: "# v1" }, { expiresAt: null });
+    const { tools } = spiedTools(() => ({ compiled_truth: "# v1" }));
+    const record = await runSkill(skill, {
+      tools,
+      expectKeystorePath: path.join(dir, "no-such-keys.json"),
+      cwd: dir,
+      now: Date.parse(BOUND_AT),
+    });
+    assert.equal(record.steps[0].stateCheck!.outcome, "unevaluated");
+    assert.match(record.steps[0].stateCheck!.reason!, /key-unavailable/);
+    assert.equal(stateCheckFindingsCount(record.steps), 0);
+    assert.equal(findingsSummaryTag(record.steps), "");
   });
 });
 
