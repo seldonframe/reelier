@@ -32,7 +32,10 @@ of rejecting a record 0.28.0 itself was capable of producing.
   note **where**: on a fresh bind, and on a re-bind after drift, the date is
   printed as the binding is written, which is *after* the y/N prompt. Only the
   re-stamp path (`--expires` on an already-bound step whose state re-verifies
-  clean) prints the resolved instant *before* asking. A grammar violation
+  clean) prints the resolved instant *before* asking. *(Superseded by issue #77:
+  as of the next release the instant prints before the prompt on **every**
+  path. This sentence describes 0.29.0 as shipped and stands as history, not
+  as current behavior.)* A grammar violation
   is a clean usage error and **nothing is approved**; the parser returns a
   value rather than throwing, so a typo in a duration is never a stack trace
   out of the approval command.

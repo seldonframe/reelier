@@ -788,10 +788,11 @@ test("CLI review-IMPORTANT: a --rebind after benign drift CARRIES the TTL forwar
     );
     const after = parseSkill(await readFile(file, "utf8")).steps[0].expect!;
     assert.equal(after.expiresAt, ttl, "the TTL set a month ago survives a routine re-bind, verbatim");
-    // Deliberately only "appears in the output": this runs under --all, where the
-    // prompt is auto-answered, and on the re-bind path the line is printed by
-    // bindStep — i.e. AFTER consent — so this cannot and does not assert ordering
-    // relative to the prompt. See SPEC §6.1c on which path prints the instant first.
+    // Presence only, on purpose: this runs under --all --rebind, where there
+    // is no prompt to order the line against. That the instant precedes the
+    // y/N on the interactive path is asserted by index in the issue #77 block
+    // at the end of this file — the distinction that let the ordering bug sit
+    // under a passing assertion.
     assert.match(out, /carried forward unchanged from the previous binding/, "and the operator is told, in the approve output");
     // Verbatim, not re-resolved: a re-bind extends nothing.
     assert.notEqual(after.expiresAt, new Date(at + DAY + 30 * DAY).toISOString());
@@ -895,5 +896,150 @@ test("CLI: --expires on a step with no attest: cannot bind — the step is skipp
     // that must never happen is a stamped approval that claims to expire.
     assert.equal(after.steps[0].expect, undefined);
     assert.ok(code === 0 || code === 1);
+  });
+});
+
+// ===========================================================================
+// Issue #77 — the resolved instant is shown BEFORE the consent prompt.
+//
+// `--expires 7d` resolves against the OBSERVATION time, not wall-clock-now.
+// That is arithmetic no operator does in their head, and a date printed after
+// the y/N is a date they had no opportunity to decline. These tests assert
+// ORDERING — the index of the expiry line against the index of the prompt —
+// because the pre-existing coverage asserted only that the instant appeared
+// SOMEWHERE in the output, under `--all`, where the prompt is auto-answered.
+// Presence was already true while the ordering was wrong; only an index
+// comparison can tell the two apart.
+// ===========================================================================
+
+const FRESH_PROMPT = "Approve this step against this observed state?";
+const REBIND_PROMPT = "Re-bind this approval to the current state?";
+
+/**
+ * A real readline echoes its question to stdout, so the prompt and the
+ * console.log lines share one stream and can be ordered against each other.
+ * `captureOutput` patches process.stdout.write, so this reproduces that.
+ */
+function promptingDeps(dir: string, atMs: number, answer = "y"): ApproveDeps {
+  return {
+    ...approveDeps(dir, atMs),
+    ask: async (q: string) => {
+      process.stdout.write(q);
+      return answer;
+    },
+  };
+}
+
+/** Same, but the probe's view of the world is a live closure, so it can drift. */
+function driftingDeps(dir: string, atMs: number, world: () => string, answer = "y"): ApproveDeps {
+  return {
+    ...promptingDeps(dir, atMs, answer),
+    tools: {
+      get_page: { effect: "read", run: async () => ({ status: 200, headers: {}, body: JSON.stringify({ compiled_truth: world() }) }) },
+      put_page: { effect: "idempotent-write", run: async () => ({ status: 200, headers: {}, body: "{}" }) },
+    },
+  };
+}
+
+function assertBefore(out: string, needle: string, prompt: string, why: string): void {
+  const iNeedle = out.indexOf(needle);
+  const iPrompt = out.indexOf(prompt);
+  assert.notEqual(iNeedle, -1, `${why}: ${JSON.stringify(needle)} never printed at all`);
+  assert.notEqual(iPrompt, -1, `${why}: the prompt ${JSON.stringify(prompt)} never printed at all`);
+  assert.ok(iNeedle < iPrompt, `${why} — ${JSON.stringify(needle)} is at index ${iNeedle}, the prompt at ${iPrompt}: the operator answered before seeing the date`);
+}
+
+test("issue #77: a fresh bind prints the resolved instant BEFORE the consent prompt, not after it", async () => {
+  await withTempDir(async (dir) => {
+    const file = path.join(dir, "s.md");
+    await writeFile(file, CLI_SKILL);
+    const at = Date.parse(BOUND_AT);
+    const { result: code, out } = await captureOutput(() =>
+      cmdApprove(fakeArgs([file], ["probe"], { expires: "7d" }), promptingDeps(dir, at)),
+    );
+    assert.equal(code, 0);
+    assertBefore(out, "  expires: ", FRESH_PROMPT, "the fresh-bind path must show the deadline before asking for consent");
+  });
+});
+
+test("issue #77: the previewed instant and the instant written to the file are byte-identical", async () => {
+  await withTempDir(async (dir) => {
+    const file = path.join(dir, "s.md");
+    await writeFile(file, CLI_SKILL);
+    const at = Date.parse(BOUND_AT);
+    const { out } = await captureOutput(() => cmdApprove(fakeArgs([file], ["probe"], { expires: "7d" }), promptingDeps(dir, at)));
+
+    const preConsent = out.slice(0, out.indexOf(FRESH_PROMPT));
+    const previewed = /^ {2}expires: (\S+)/m.exec(preConsent)?.[1];
+    const written = parseSkill(await readFile(file, "utf8")).steps[0].expect!.expiresAt;
+    assert.equal(written, new Date(at + 7 * DAY).toISOString(), "sanity: resolved against the observation, not wall-clock-now");
+    // One computation, two call sites — not two expressions that agree today.
+    assert.equal(previewed, written, "the date the operator agreed to must be the date that was written");
+  });
+});
+
+test("issue #77: a bind with NO TTL prints no expiry line at all — an absence is never rendered as a choice", async () => {
+  await withTempDir(async (dir) => {
+    const file = path.join(dir, "s.md");
+    await writeFile(file, CLI_SKILL);
+    const { result: code, out } = await captureOutput(() =>
+      cmdApprove(fakeArgs([file], ["probe"]), promptingDeps(dir, Date.parse(BOUND_AT))),
+    );
+    assert.equal(code, 0);
+    assert.equal(parseSkill(await readFile(file, "utf8")).steps[0].expect!.expiresAt, undefined);
+    // "expires: never" would read as a deliberate setting rather than as the
+    // absence of one — brand invariant 1, one level down.
+    assert.doesNotMatch(out, /expires:/, "no TTL means no expiry line, in either position");
+  });
+});
+
+test("issue #77: a re-bind after drift shows the carried instant BEFORE the re-bind prompt", async () => {
+  await withTempDir(async (dir) => {
+    const at = Date.parse(BOUND_AT);
+    const file = path.join(dir, "s.md");
+    await writeFile(file, CLI_SKILL);
+    let world = "# v1";
+    await captureOutput(() => cmdApprove(fakeArgs([file], ["all", "probe"], { expires: "30d" }), driftingDeps(dir, at, () => world)));
+    const ttl = parseSkill(await readFile(file, "utf8")).steps[0].expect!.expiresAt!;
+
+    world = "# v2";
+    const { out } = await captureOutput(() =>
+      cmdApprove(fakeArgs([file], ["probe"]), driftingDeps(dir, at + DAY, () => world)),
+    );
+    assertBefore(out, `  expires: ${ttl}`, REBIND_PROMPT, "a re-bind carries a TTL forward, so the operator must see it before consenting");
+    assert.equal(parseSkill(await readFile(file, "utf8")).steps[0].expect!.expiresAt, ttl, "and it is still carried verbatim");
+  });
+});
+
+test("issue #77: a carried TTL that has ALREADY elapsed says so before the prompt, not after", async () => {
+  await withTempDir(async (dir) => {
+    const at = Date.parse(BOUND_AT);
+    const file = path.join(dir, "s.md");
+    await writeFile(file, CLI_SKILL);
+    let world = "# v1";
+    await captureOutput(() => cmdApprove(fakeArgs([file], ["all", "probe"], { expires: "24h" }), driftingDeps(dir, at, () => world)));
+
+    // Drift arrives a week after the 24h deadline ran out: the re-bind carries
+    // the dead instant forward (correct — it must not renew), and the operator
+    // has to learn the binding is expired on arrival BEFORE they say yes.
+    world = "# v2";
+    const { out } = await captureOutput(() =>
+      cmdApprove(fakeArgs([file], ["probe"]), driftingDeps(dir, at + 7 * DAY, () => world)),
+    );
+    assertBefore(out, "ALREADY ELAPSED", REBIND_PROMPT, "a dead deadline must not be disclosed only after consent");
+  });
+});
+
+test("issue #77: --all auto-answers the prompt but never suppresses the instant", async () => {
+  await withTempDir(async (dir) => {
+    const file = path.join(dir, "s.md");
+    await writeFile(file, CLI_SKILL);
+    const at = Date.parse(BOUND_AT);
+    const { result: code, out } = await captureOutput(() =>
+      cmdApprove(fakeArgs([file], ["all", "probe"], { expires: "7d" }), approveDeps(dir, at)),
+    );
+    assert.equal(code, 0);
+    assert.match(out, new RegExp(`expires: ${new Date(at + 7 * DAY).toISOString()}`));
+    assert.match(out, /approved 1, skipped 0/);
   });
 });
