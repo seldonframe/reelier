@@ -327,6 +327,19 @@ export interface RunOptions {
    * mode, byte-identical to pre-S8 behavior.
    */
   stateGate?: "refuse";
+  /**
+   * W5-T3: the run's clock, epoch ms. Defaults to `Date.now()`, following the
+   * `dryRunSkill(skill, vars, now = Date.now())` precedent. This is the SAME
+   * snapshot `{{today}}`/`{{today±Nd}}` already resolve against (one snapshot
+   * per run, so no fill can straddle a UTC midnight), now injectable so an
+   * approval TTL can be tested at an exact instant.
+   *
+   * Deliberately NOT threaded through the `Date.now()` calls that produce
+   * recorded `ms` durations or the wall-clock `observedAt`/`dispatchedAt`
+   * stamps: those measure the RUN, not the approval, and rewriting them would
+   * be a regression risk with no test to justify it.
+   */
+  now?: number;
 }
 
 /**
@@ -1585,7 +1598,9 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
   // A single snapshot for the whole run — every fillTemplate call inside this
   // run shares it, so {{today}}/{{today±Nd}} can never resolve to a
   // different calendar day mid-run (e.g. across a UTC midnight boundary).
-  const now = Date.now();
+  // Injectable since W5-T3 (options.now) so an approval TTL can be evaluated
+  // at an exact instant; unset, it is exactly today's `Date.now()`.
+  const now = options.now ?? Date.now();
   const probeTimeoutMs = options.probeTimeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS;
 
   // Expect keystore, loaded lazily and at most once — only a step that

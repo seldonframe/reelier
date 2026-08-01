@@ -62,6 +62,19 @@ export interface StepExpect {
   /** The keyed commitment over the approve-time projected observation: `hmac-sha256:<64 hex>`. */
   pre: string;
   /**
+   * W5-T3: the approval's time-to-live, as an ABSOLUTE ISO-8601 instant —
+   * `reelier approve --probe --expires <duration>` resolves the operator's
+   * duration against approve time and stamps the result. Absolute, never a
+   * stored duration: a relative value would silently re-arm every time the
+   * file is read, which is the opposite of expiring. At or after this instant
+   * the state check is `unevaluated` with reason `approval-expired: …` —
+   * never a pass, never a mismatch (nothing about the world was established)
+   * — which the existing `state_gate: refuse` branch refuses before dispatch.
+   * Covered by the approval hash like every other `expect` field, so
+   * hand-extending a TTL is an approval mismatch.
+   */
+  expiresAt?: string;
+  /**
    * P1.5 (wave2 §3.5): optional per-field commitments under the same
    * per-approval key — output-form field names (`body.<key>` /
    * `header.<name>`) to `hmac-sha256:<64 hex>`. Diagnosis only: the
@@ -279,8 +292,8 @@ function validateExpectShape(value: unknown, ctx: { step: number; line: number }
   }
   const obj = value as Record<string, unknown>;
   for (const key of Object.keys(obj)) {
-    if (key !== "at" && key !== "keyId" && key !== "pre" && key !== "fields" && key !== "probeArgs") {
-      throw new SkillParseError(`Unknown 'expect' key ${JSON.stringify(key)} — expected pre/keyId/at/fields/probeArgs`, ctx);
+    if (key !== "at" && key !== "keyId" && key !== "pre" && key !== "expiresAt" && key !== "fields" && key !== "probeArgs") {
+      throw new SkillParseError(`Unknown 'expect' key ${JSON.stringify(key)} — expected pre/keyId/at/expiresAt/fields/probeArgs`, ctx);
     }
   }
   if (typeof obj.pre !== "string" || !EXPECT_PRE_RE.test(obj.pre)) {
@@ -300,6 +313,19 @@ function validateExpectShape(value: unknown, ctx: { step: number; line: number }
       `Invalid 'expect.at' ${JSON.stringify(obj.at)} — expected a non-empty ISO-8601 timestamp`,
       ctx
     );
+  }
+  // W5-T3: an ABSOLUTE instant, validated by the same shape-anchored rule as
+  // `at` — a relative duration ("24h") must be a loud parse error here, not a
+  // string that Date.parse happens to reject later inside the runner.
+  let expiresAt: string | undefined;
+  if (obj.expiresAt !== undefined) {
+    if (typeof obj.expiresAt !== "string" || !EXPECT_AT_RE.test(obj.expiresAt) || Number.isNaN(Date.parse(obj.expiresAt))) {
+      throw new SkillParseError(
+        `Invalid 'expect.expiresAt' ${JSON.stringify(obj.expiresAt)} — expected an absolute ISO-8601 timestamp (not a relative duration)`,
+        ctx
+      );
+    }
+    expiresAt = obj.expiresAt;
   }
   let fields: Record<string, string> | undefined;
   if (obj.fields !== undefined) {
@@ -338,6 +364,7 @@ function validateExpectShape(value: unknown, ctx: { step: number; line: number }
     at: obj.at,
     keyId: obj.keyId,
     pre: obj.pre,
+    ...(expiresAt !== undefined ? { expiresAt } : {}),
     ...(fields !== undefined ? { fields } : {}),
     ...(probeArgs !== undefined ? { probeArgs } : {}),
   };

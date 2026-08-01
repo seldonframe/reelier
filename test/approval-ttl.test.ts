@@ -1,0 +1,643 @@
+// Approval TTL — "expire as a no" (wave-5 T3).
+//
+// Reelier already had STATE-DRIFT expiry: `approve --probe` makes an approval
+// die when the world moves. It had no TIME expiry. This adds one:
+// `reelier approve --probe --expires 24h` resolves the duration against
+// approve-time and stamps an ABSOLUTE ISO instant into `expect.expiresAt`.
+// Absolute, not relative, because a stored duration would silently re-arm on
+// every read — the opposite of expiring.
+//
+// The two controls are SIBLINGS, not variants, and a step may carry both:
+//   --probe   → the approval dies when the world moves (state drift)
+//   --expires → the approval dies when nobody answers (time)
+// Neither is implemented in terms of the other, and neither swallows the other.
+//
+// The mechanism is deliberately small. An expired binding produces
+// `stateCheck.outcome: "unevaluated"` with `reason: "approval-expired: …"`,
+// and the EXISTING `state_gate: refuse` branch already refuses every
+// non-`match` outcome before dispatch. There is no second gate path.
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { parseDuration, MAX_APPROVAL_TTL_MS } from "../src/duration.js";
+import { parseSkill, SkillParseError } from "../src/skill.js";
+import { serializeSkill } from "../src/writeback.js";
+import { computeApprovalHash } from "../src/approval.js";
+import { runSkill } from "../src/runner.js";
+import { cmdApprove, type ParsedArgs, type ApproveDeps } from "../src/cli.js";
+import { mintExpectKey, expectMac, expectFieldMac, projectObservationTyped, writeKeystoreEntry } from "../src/expect-mac.js";
+import type { Tool } from "../src/tools.js";
+
+const EXPECT_AT = "2026-07-30T06:58:12.331Z";
+const KEY_ID = "3c9a01d2e4f5b6a7";
+const MAC_A = `hmac-sha256:${"a".repeat(64)}`;
+const MAC_B = `hmac-sha256:${"b".repeat(64)}`;
+
+async function withTempDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
+  const dir = await mkdtemp(path.join(tmpdir(), "reelier-ttl-"));
+  try {
+    return await fn(dir);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+async function captureOutput<T>(fn: () => Promise<T>): Promise<{ result: T; out: string }> {
+  const chunks: string[] = [];
+  const origLog = console.log;
+  const origErr = console.error;
+  console.log = (msg: unknown) => chunks.push(`${String(msg)}\n`);
+  console.error = (msg: unknown) => chunks.push(`${String(msg)}\n`);
+  try {
+    return { result: await fn(), out: chunks.join("") };
+  } finally {
+    console.log = origLog;
+    console.error = origErr;
+  }
+}
+
+function fakeArgs(positional: string[], flags: string[] = [], opts: Record<string, string> = {}): ParsedArgs {
+  return { positional, flags: new Set(flags), vars: {}, wraps: [], opts, fails: [] };
+}
+
+function skillWithExpect(expectJson: string): string {
+  return `---
+name: g
+description: d
+---
+
+### Step 1 — w
+- intent: i
+- action: put_page {"slug":"s"}
+- effect: idempotent-write
+- attest: {"tool":"get_page","args":{"slug":"s"},"projection":["compiled_truth"]}
+- approve: sha256:${"0".repeat(64)}
+- expect: ${expectJson}
+`;
+}
+
+// ===========================================================================
+// Task 1a — the duration parser. First one in src/: nothing existed.
+// ===========================================================================
+
+const HOUR = 3_600_000;
+const DAY = 24 * HOUR;
+
+test("parseDuration: a single integer + unit from {m,h,d}, in ms", () => {
+  assert.equal(parseDuration("30m"), 30 * 60_000);
+  assert.equal(parseDuration("1m"), 60_000);
+  assert.equal(parseDuration("24h"), 24 * HOUR);
+  assert.equal(parseDuration("1h"), HOUR);
+  assert.equal(parseDuration("7d"), 7 * DAY);
+  assert.equal(parseDuration("1d"), DAY);
+});
+
+test("parseDuration: returns null on every rejection and NEVER throws", () => {
+  const rejected = [
+    "0h", // an approval valid for zero time is a usage error, not a TTL
+    "0m",
+    "0d",
+    "-1h",
+    "-0h",
+    "+1h",
+    "", // empty
+    "  ",
+    "24", // bare number, no unit
+    "h", // unit, no number
+    "24s", // unknown unit — seconds are not an approval cadence
+    "24w",
+    "24H", // case-sensitive: the CLI grammar is lowercase
+    "1.5h", // float
+    "1e3h",
+    " 24h", // whitespace is not silently trimmed into a valid duration
+    "24h ",
+    "24h30m", // combinations are out of scope, and must not parse as "24h"
+    "24hx",
+    "0x18h",
+    "Infinity",
+    "NaN",
+  ];
+  for (const bad of rejected) {
+    let out: number | null | undefined;
+    assert.doesNotThrow(() => {
+      out = parseDuration(bad);
+    }, `parseDuration(${JSON.stringify(bad)}) must never throw`);
+    assert.equal(out, null, `parseDuration(${JSON.stringify(bad)}) should be null`);
+  }
+});
+
+test("parseDuration: caps absurd values — an approval valid for 100 years is not an approval", () => {
+  // The cap is documented and exact: anything at or under it parses, anything
+  // over it is null. Pinned at the boundary in BOTH directions so a
+  // wrong-side-of-the-fence regression is visible.
+  assert.equal(MAX_APPROVAL_TTL_MS, 365 * DAY);
+  assert.equal(parseDuration("365d"), MAX_APPROVAL_TTL_MS);
+  assert.equal(parseDuration("366d"), null);
+  assert.equal(parseDuration("8760h"), 365 * DAY);
+  assert.equal(parseDuration("8761h"), null);
+  assert.equal(parseDuration("99999999999999999999d"), null);
+});
+
+// ===========================================================================
+// Task 1b — the TTL is under the approval hash.
+//
+// Byte-identity is pinned against LITERAL digests captured from the build
+// BEFORE this slice touched computeApprovalHash (the same literals
+// test/expect-probe-args.test.ts:176 pins for the probeArgs case). A restated
+// formula would pass against its own bug.
+// ===========================================================================
+
+const HASH_BASE = {
+  actionTool: "put_page",
+  actionArgs: { content: "# hi", slug: "reelier-demo-page" },
+  attest: { tool: "get_page", args: { slug: "reelier-demo-page" }, projection: ["compiled_truth"] },
+};
+const EXPECT_BARE = { at: EXPECT_AT, keyId: KEY_ID, pre: MAC_A };
+
+test("TTL hash coverage: a skill with NO expect at all hashes byte-identically", () => {
+  assert.equal(
+    computeApprovalHash({ ...HASH_BASE, attest: undefined, expect: undefined }),
+    "sha256:380a406c04f06e6a2a4a3fa15a571459623d30e009f3e350802a4989e7ae83b7",
+  );
+  assert.equal(
+    computeApprovalHash({ ...HASH_BASE, expect: undefined }),
+    "sha256:90e4fe48c0395762f04362e4a852d903dcfad25f58cdb26976400cef7e4be34b",
+  );
+});
+
+test("TTL hash coverage: a binding with expect: but NO expiresAt hashes byte-identically", () => {
+  assert.equal(computeApprovalHash({ ...HASH_BASE, expect: EXPECT_BARE }), "sha256:d9a268d91e885f3c857f577b763e42280cd8a7087a6ec54b4af0323634f8cd43");
+  assert.equal(
+    computeApprovalHash({ ...HASH_BASE, expect: { ...EXPECT_BARE, fields: { "body.compiled_truth": MAC_B } } }),
+    "sha256:94bfc0642ba701105be0c47fada3ce02788b7c314edff53592b37269d40ed7ac",
+  );
+});
+
+test("TTL hash coverage: adding expiresAt MOVES the hash, and changing it moves it again", () => {
+  const bare = computeApprovalHash({ ...HASH_BASE, expect: EXPECT_BARE });
+  const a = computeApprovalHash({ ...HASH_BASE, expect: { ...EXPECT_BARE, expiresAt: "2026-08-02T00:00:00.000Z" } });
+  const b = computeApprovalHash({ ...HASH_BASE, expect: { ...EXPECT_BARE, expiresAt: "2027-08-02T00:00:00.000Z" } });
+  assert.notEqual(a, bare, "a TTL is under the yes, like everything else in expect:");
+  assert.notEqual(b, a, "extending the TTL is a different approval");
+});
+
+test("TTL grammar: expiresAt accepts an ISO-8601 instant, rejects a relative duration and every other shape", () => {
+  const ok = parseSkill(skillWithExpect(`{"at":"${EXPECT_AT}","expiresAt":"2026-08-02T00:00:00.000Z","keyId":"${KEY_ID}","pre":"${MAC_A}"}`));
+  assert.equal(ok.steps[0].expect!.expiresAt, "2026-08-02T00:00:00.000Z");
+  for (const bad of [`"24h"`, `"tomorrow"`, `"2026-08-02"`, `"2026/08/02T00:00:00Z"`, `""`, `42`, `null`, `{}`]) {
+    assert.throws(
+      () => parseSkill(skillWithExpect(`{"at":"${EXPECT_AT}","expiresAt":${bad},"keyId":"${KEY_ID}","pre":"${MAC_A}"}`)),
+      SkillParseError,
+      `should reject expiresAt ${bad}`,
+    );
+  }
+});
+
+test("TTL grammar: the closed unknown-key error names expiresAt, verbatim", () => {
+  assert.throws(
+    () => parseSkill(skillWithExpect(`{"at":"${EXPECT_AT}","keyId":"${KEY_ID}","pre":"${MAC_A}","nope":"x"}`)),
+    (err: Error) => {
+      assert.equal(
+        err.message.split("\n")[0].includes(`Unknown 'expect' key "nope" — expected pre/keyId/at/expiresAt/fields/probeArgs`),
+        true,
+        err.message,
+      );
+      return true;
+    },
+  );
+});
+
+test("TTL grammar: serialization is alphabetical (at, expiresAt, fields, keyId, pre, probeArgs) and round-trips byte-stably", () => {
+  const src = skillWithExpect(
+    `{"at":"${EXPECT_AT}","expiresAt":"2026-08-02T00:00:00.000Z","fields":{"body.compiled_truth":"${MAC_A}"},"keyId":"${KEY_ID}","pre":"${MAC_A}","probeArgs":"${MAC_B}"}`,
+  );
+  const once = serializeSkill(parseSkill(src));
+  assert.equal(serializeSkill(parseSkill(once)), once, "byte-stable round-trip");
+  const line = once.split("\n").find((l) => l.startsWith("- expect:"))!;
+  const order = ['"at"', '"expiresAt"', '"fields"', '"keyId"', '"pre"', '"probeArgs"'].map((k) => line.indexOf(k));
+  assert.deepEqual(
+    order,
+    [...order].sort((x, y) => x - y),
+    `alphabetical, matching canonicalJson's sort so file and hash input agree: ${line}`,
+  );
+});
+
+// ===========================================================================
+// Task 2 — expire at execute time.
+// ===========================================================================
+
+/** Spies on BOTH the probe and the write: "the probe never ran" is a claim only a spy at zero can make. */
+function spiedTools(body: () => Record<string, unknown>) {
+  const probes: unknown[] = [];
+  const writes: unknown[] = [];
+  const tools: Record<string, Tool> = {
+    get_page: {
+      effect: "read",
+      run: async (args) => {
+        probes.push(args);
+        return { status: 200, headers: {}, body: JSON.stringify(body()) };
+      },
+    },
+    put_page: {
+      effect: "idempotent-write",
+      run: async (args) => {
+        writes.push(args);
+        return { status: 200, headers: {}, body: "{}" };
+      },
+    },
+  };
+  return { tools, probes, writes };
+}
+
+/** A probe tool that EXPLODES if dispatched — proves expiry is decided before any call goes out. */
+function explodingProbeTools() {
+  const writes: unknown[] = [];
+  const probes: unknown[] = [];
+  const tools: Record<string, Tool> = {
+    get_page: {
+      effect: "read",
+      run: async (args) => {
+        probes.push(args);
+        throw new Error("the probe must never be dispatched on an expired approval");
+      },
+    },
+    put_page: {
+      effect: "idempotent-write",
+      run: async (args) => {
+        writes.push(args);
+        return { status: 200, headers: {}, body: "{}" };
+      },
+    },
+  };
+  return { tools, probes, writes };
+}
+
+const BOUND_AT = "2026-08-01T00:00:00.000Z";
+const EXPIRES_AT = "2026-08-02T00:00:00.000Z";
+const T_EXPIRY = Date.parse(EXPIRES_AT);
+
+/**
+ * A bound skill, stamped exactly as `approve --probe [--expires]` would.
+ * `expiresAt: null` means no TTL — the 0.28.0 shape, byte-for-byte.
+ */
+async function boundSkill(
+  dir: string,
+  observedState: Record<string, unknown>,
+  opts: { expiresAt?: string | null; tamperExpiresAt?: string } = {},
+) {
+  const keystorePath = path.join(dir, "keys.json");
+  const { key, keyId } = mintExpectKey();
+  await writeKeystoreEntry(keystorePath, keyId, { key: key.toString("base64"), createdAt: BOUND_AT });
+  const typed = projectObservationTyped({ headers: {}, status: 200, body: JSON.stringify(observedState) }, ["compiled_truth"]);
+  const pre = expectMac(key, "get_page", typed);
+  const fields = Object.fromEntries(Object.entries(typed).map(([n, v]) => [n, expectFieldMac(key, "get_page", n, v)]));
+  const expect = {
+    at: BOUND_AT,
+    ...(opts.expiresAt != null ? { expiresAt: opts.expiresAt } : {}),
+    fields,
+    keyId,
+    pre,
+  };
+  const base = `---
+name: ttl-bound
+description: d
+---
+
+### Step 1 — w
+- intent: i
+- action: put_page {"slug":"demo"}
+- assert: status == 200
+- effect: idempotent-write
+- attest: {"tool":"get_page","args":{"slug":"demo"},"projection":["compiled_truth"]}
+- expect: ${JSON.stringify(expect)}
+`;
+  const probeStep = parseSkill(`${base}- approve: sha256:${"0".repeat(64)}\n`).steps[0];
+  const hash = computeApprovalHash({
+    actionTool: probeStep.actionTool,
+    actionArgs: probeStep.actionArgs,
+    attest: probeStep.attest,
+    expect: probeStep.expect,
+  });
+  // The tamper happens AFTER the hash is computed over the honest binding —
+  // exactly what hand-editing the committed file does.
+  const finalBase = opts.tamperExpiresAt !== undefined ? base.replace(JSON.stringify(expect.expiresAt ?? ""), JSON.stringify(opts.tamperExpiresAt)) : base;
+  return { skill: parseSkill(`${finalBase}- approve: ${hash}\n`), keystorePath };
+}
+
+test("TTL end-to-end: hand-editing expiresAt in the file is an approval MISMATCH — the hole the hash closes", async () => {
+  await withTempDir(async (dir) => {
+    // Approved with a 1-day TTL; someone quietly extends it by a year.
+    const { skill, keystorePath } = await boundSkill(dir, { compiled_truth: "# v1" }, {
+      expiresAt: EXPIRES_AT,
+      tamperExpiresAt: "2027-08-02T00:00:00.000Z",
+    });
+    const { tools, probes, writes } = spiedTools(() => ({ compiled_truth: "# v1" }));
+    const record = await runSkill(skill, {
+      tools,
+      expectKeystorePath: keystorePath,
+      cwd: dir,
+      // Well before either instant: only the tamper can fail this run.
+      now: Date.parse(BOUND_AT) + 1000,
+    });
+    const step = record.steps[0];
+    assert.equal(step.outcome, "failed");
+    assert.match(step.failures[0], /Approval mismatch on write step/);
+    assert.equal(step.write, undefined, "no write block — dispatch never issued");
+    assert.equal(writes.length, 0, "the write tool was never dispatched");
+    assert.equal(probes.length, 0, "the probe never ran either — the mismatch is decided first");
+  });
+});
+
+test("TTL recorder mode: an expired approval EXECUTES and stamps the finding — recorder records, gate refuses", async () => {
+  await withTempDir(async (dir) => {
+    const { skill, keystorePath } = await boundSkill(dir, { compiled_truth: "# v1" }, { expiresAt: EXPIRES_AT });
+    const { tools, writes } = spiedTools(() => ({ compiled_truth: "# v1" }));
+    const record = await runSkill(skill, { tools, expectKeystorePath: keystorePath, cwd: dir, now: T_EXPIRY + 60_000 });
+    const step = record.steps[0];
+    assert.equal(step.stateCheck!.outcome, "unevaluated", "never a pass, and never a mismatch — its own reason");
+    assert.match(step.stateCheck!.reason!, /^approval-expired: /);
+    assert.equal(step.stateCheck!.action, "stamped", "the recorder stamps a finding it did not act on");
+    assert.equal(step.stateCheck!.observedAt, undefined, "nothing was observed — the probe never ran");
+    assert.equal(writes.length, 1, "recorder mode does not block: the write dispatched");
+    assert.ok(step.write, "and the receipt records it");
+  });
+});
+
+test("TTL gate mode: expired + state_gate refuse → failed, no write block, no attest, nothing dispatched", async () => {
+  await withTempDir(async (dir) => {
+    const { skill, keystorePath } = await boundSkill(dir, { compiled_truth: "# v1" }, { expiresAt: EXPIRES_AT });
+    const { tools, probes, writes } = spiedTools(() => ({ compiled_truth: "# v1" }));
+    const record = await runSkill(skill, {
+      tools,
+      expectKeystorePath: keystorePath,
+      cwd: dir,
+      stateGate: "refuse",
+      now: T_EXPIRY + 60_000,
+    });
+    const step = record.steps[0];
+    assert.equal(step.outcome, "failed");
+    assert.equal(step.stateCheck!.outcome, "unevaluated");
+    assert.equal(step.stateCheck!.action, "refused");
+    assert.match(step.stateCheck!.reason!, /^approval-expired: /);
+    assert.match(step.failures[0], /approval-expired/);
+    assert.match(step.failures[0], /do not override a state-gate refusal/);
+    assert.equal(step.write, undefined, "no write block — dispatch provably never issued");
+    assert.equal(step.attest, undefined, "no attest — nothing was executed to attest");
+    assert.equal(writes.length, 0, "the write tool was never dispatched");
+    assert.equal(probes.length, 0, "and neither was the probe");
+  });
+});
+
+test("TTL gate mode: no flag rescues an expired approval — --allow-writes and --yes are not consulted", async () => {
+  await withTempDir(async (dir) => {
+    const { skill, keystorePath } = await boundSkill(dir, { compiled_truth: "# v1" }, { expiresAt: EXPIRES_AT });
+    const { tools, writes } = spiedTools(() => ({ compiled_truth: "# v1" }));
+    const record = await runSkill(skill, {
+      tools,
+      expectKeystorePath: keystorePath,
+      cwd: dir,
+      stateGate: "refuse",
+      allowWrites: true,
+      allowDestructive: true,
+      now: T_EXPIRY + 60_000,
+    });
+    assert.equal(record.steps[0].outcome, "failed");
+    assert.equal(record.steps[0].stateCheck!.action, "refused");
+    assert.match(record.steps[0].stateCheck!.reason!, /^approval-expired: /);
+    assert.equal(writes.length, 0);
+  });
+});
+
+test("TTL not yet expired: normal behaviour, and a record identical to the same run with no TTL at all", async () => {
+  await withTempDir(async (dir) => {
+    const before = T_EXPIRY - 60_000;
+    const withTtl = await boundSkill(dir, { compiled_truth: "# v1" }, { expiresAt: EXPIRES_AT });
+    const a = await runSkill(withTtl.skill, {
+      tools: spiedTools(() => ({ compiled_truth: "# v1" })).tools,
+      expectKeystorePath: withTtl.keystorePath,
+      cwd: dir,
+      now: before,
+    });
+    assert.equal(a.steps[0].outcome, "passed");
+    assert.equal(a.steps[0].stateCheck!.outcome, "match");
+    assert.equal(a.steps[0].stateCheck!.action, "proceeded");
+    assert.equal(a.steps[0].stateCheck!.reason, undefined);
+
+    const noTtl = await boundSkill(dir, { compiled_truth: "# v1" }, { expiresAt: null });
+    const b = await runSkill(noTtl.skill, {
+      tools: spiedTools(() => ({ compiled_truth: "# v1" })).tools,
+      expectKeystorePath: noTtl.keystorePath,
+      cwd: dir,
+      now: before,
+    });
+    // Compare the stateCheck shape rather than the whole record: `ms` and the
+    // wall-clock `observedAt`/`dispatchedAt` stamps are not clock-injected on
+    // purpose (they measure the run, not the approval).
+    assert.deepEqual(Object.keys(a.steps[0].stateCheck!).sort(), Object.keys(b.steps[0].stateCheck!).sort());
+    assert.equal(a.steps[0].stateCheck!.outcome, b.steps[0].stateCheck!.outcome);
+    assert.equal(a.steps[0].stateCheck!.action, b.steps[0].stateCheck!.action);
+  });
+});
+
+test("TTL boundary: expiry is >= — the instant named in expiresAt is already expired, one ms earlier is not", async () => {
+  await withTempDir(async (dir) => {
+    const mk = () => boundSkill(dir, { compiled_truth: "# v1" }, { expiresAt: EXPIRES_AT });
+    const justBefore = await mk();
+    const atInstant = await mk();
+    const a = await runSkill(justBefore.skill, {
+      tools: spiedTools(() => ({ compiled_truth: "# v1" })).tools,
+      expectKeystorePath: justBefore.keystorePath,
+      cwd: dir,
+      now: T_EXPIRY - 1,
+    });
+    assert.equal(a.steps[0].stateCheck!.outcome, "match", "one ms before the instant, the approval still holds");
+    const b = await runSkill(atInstant.skill, {
+      tools: spiedTools(() => ({ compiled_truth: "# v1" })).tools,
+      expectKeystorePath: atInstant.keystorePath,
+      cwd: dir,
+      now: T_EXPIRY,
+    });
+    assert.equal(b.steps[0].stateCheck!.outcome, "unevaluated", "at the instant itself, it has expired (fail-closed boundary)");
+    assert.match(b.steps[0].stateCheck!.reason!, /^approval-expired: /);
+  });
+});
+
+test("TTL before probe: with a probe that throws if dispatched, an expired binding still reports approval-expired", async () => {
+  await withTempDir(async (dir) => {
+    const { skill, keystorePath } = await boundSkill(dir, { compiled_truth: "# v1" }, { expiresAt: EXPIRES_AT });
+    const { tools, probes, writes } = explodingProbeTools();
+    const record = await runSkill(skill, {
+      tools,
+      expectKeystorePath: keystorePath,
+      cwd: dir,
+      stateGate: "refuse",
+      now: T_EXPIRY + 60_000,
+    });
+    const step = record.steps[0];
+    assert.match(step.stateCheck!.reason!, /^approval-expired: /);
+    assert.doesNotMatch(step.stateCheck!.reason!, /probe-failed/, "expiry is a pre-probe fact — never mislabelled as a probe failure");
+    assert.equal(probes.length, 0, "the probe tool was never called");
+    assert.equal(writes.length, 0);
+  });
+});
+
+test("TTL composes with --probe: expired wins over state drift; unexpired drift still reports mismatch", async () => {
+  await withTempDir(async (dir) => {
+    // Both controls on one step, both would fire: the world moved AND the
+    // clock ran out. Expiry is decided first, and says so honestly — it does
+    // not claim the world moved, because it never looked.
+    const expired = await boundSkill(dir, { compiled_truth: "# v1" }, { expiresAt: EXPIRES_AT });
+    const drifted = spiedTools(() => ({ compiled_truth: "# MOVED" }));
+    const a = await runSkill(expired.skill, {
+      tools: drifted.tools,
+      expectKeystorePath: expired.keystorePath,
+      cwd: dir,
+      now: T_EXPIRY + 60_000,
+    });
+    assert.equal(a.steps[0].stateCheck!.outcome, "unevaluated");
+    assert.match(a.steps[0].stateCheck!.reason!, /^approval-expired: /);
+    assert.equal(drifted.probes.length, 0, "no probe: expiry needs no observation");
+
+    // Same step, same drift, inside the TTL → the state-drift control fires
+    // and the TTL does not swallow it.
+    const fresh = await boundSkill(dir, { compiled_truth: "# v1" }, { expiresAt: EXPIRES_AT });
+    const drifted2 = spiedTools(() => ({ compiled_truth: "# MOVED" }));
+    const b = await runSkill(fresh.skill, {
+      tools: drifted2.tools,
+      expectKeystorePath: fresh.keystorePath,
+      cwd: dir,
+      now: T_EXPIRY - 60_000,
+    });
+    assert.equal(b.steps[0].stateCheck!.outcome, "mismatch");
+    assert.equal(b.steps[0].stateCheck!.reason, undefined);
+    assert.deepEqual(b.steps[0].stateCheck!.changedFields, ["body.compiled_truth"]);
+    assert.ok(drifted2.probes.length > 0, "the probe DID run — this is the state-drift control, not the clock");
+  });
+});
+
+test("TTL is inert on a binding without one: an expect: with no expiresAt never expires, at any clock", async () => {
+  await withTempDir(async (dir) => {
+    const { skill, keystorePath } = await boundSkill(dir, { compiled_truth: "# v1" }, { expiresAt: null });
+    const { tools } = spiedTools(() => ({ compiled_truth: "# v1" }));
+    const record = await runSkill(skill, {
+      tools,
+      expectKeystorePath: keystorePath,
+      cwd: dir,
+      stateGate: "refuse",
+      now: Date.parse("2099-01-01T00:00:00.000Z"),
+    });
+    assert.equal(record.steps[0].outcome, "passed");
+    assert.equal(record.steps[0].stateCheck!.outcome, "match");
+  });
+});
+
+// ===========================================================================
+// Task 3 — the CLI surface. `--expires` is a sibling of `--probe`, and the
+// expect-only limitation is refused out loud rather than silently accepted.
+// ===========================================================================
+
+const CLI_SKILL = `---
+name: ttl-cli
+description: one write step with a declared probe
+---
+
+### Step 1 — Capture a page
+- intent: Save a page
+- action: put_page {"content":"# hi","slug":"demo"}
+- assert: status == 200
+- effect: idempotent-write
+- attest: {"tool":"get_page","args":{"slug":"demo"},"projection":["compiled_truth"]}
+`;
+
+const CLI_SKILL_NO_ATTEST = CLI_SKILL.split("\n").filter((l) => !l.startsWith("- attest:")).join("\n");
+
+function approveDeps(dir: string, atMs: number): ApproveDeps {
+  return {
+    env: { REELIER_EXPECT_KEYS: path.join(dir, "expect-keys.json") },
+    homedir: dir,
+    isTTY: false,
+    now: () => atMs,
+    tools: {
+      get_page: { effect: "read", run: async () => ({ status: 200, headers: {}, body: JSON.stringify({ compiled_truth: "# v1" }) }) },
+      put_page: { effect: "idempotent-write", run: async () => ({ status: 200, headers: {}, body: "{}" }) },
+    },
+  };
+}
+
+test("CLI: approve --probe --expires 24h stamps an absolute instant, and the TTL survives approve → run", async () => {
+  await withTempDir(async (dir) => {
+    const file = path.join(dir, "s.md");
+    await writeFile(file, CLI_SKILL);
+    const at = Date.parse(BOUND_AT);
+    const { result: code } = await captureOutput(() =>
+      cmdApprove(fakeArgs([file], ["all", "probe"], { expires: "24h" }), approveDeps(dir, at)),
+    );
+    assert.equal(code, 0);
+    const stamped = parseSkill(await readFile(file, "utf8"));
+    // Absolute, not relative: re-reading the file a week later must not re-arm it.
+    assert.equal(stamped.steps[0].expect!.expiresAt, new Date(at + 24 * HOUR).toISOString());
+
+    const keystorePath = path.join(dir, "expect-keys.json");
+    const fresh = spiedTools(() => ({ compiled_truth: "# v1" }));
+    const inside = await runSkill(stamped, { tools: fresh.tools, expectKeystorePath: keystorePath, cwd: dir, now: at + HOUR });
+    assert.equal(inside.steps[0].stateCheck!.outcome, "match");
+
+    const late = spiedTools(() => ({ compiled_truth: "# v1" }));
+    const outside = await runSkill(stamped, {
+      tools: late.tools,
+      expectKeystorePath: keystorePath,
+      cwd: dir,
+      stateGate: "refuse",
+      now: at + 25 * HOUR,
+    });
+    assert.equal(outside.steps[0].outcome, "failed");
+    assert.match(outside.steps[0].stateCheck!.reason!, /^approval-expired: /);
+    assert.equal(late.writes.length, 0);
+  });
+});
+
+test("CLI: --expires without --probe is refused, naming the expect-only limitation", async () => {
+  await withTempDir(async (dir) => {
+    const file = path.join(dir, "s.md");
+    await writeFile(file, CLI_SKILL);
+    const { result: code, out } = await captureOutput(() =>
+      cmdApprove(fakeArgs([file], ["all"], { expires: "24h" }), approveDeps(dir, Date.parse(BOUND_AT))),
+    );
+    assert.equal(code, 1);
+    assert.match(out, /--expires requires --probe/);
+    assert.match(out, /expect:/, "the error names the limitation rather than leaving it to be discovered");
+    assert.equal(await readFile(file, "utf8"), CLI_SKILL, "and the file is untouched");
+  });
+});
+
+test("CLI: an unparseable --expires is a clean usage error, never a crash and never a silent no-TTL approval", async () => {
+  await withTempDir(async (dir) => {
+    const file = path.join(dir, "s.md");
+    await writeFile(file, CLI_SKILL);
+    for (const bad of ["24", "0h", "1.5h", "100y", "366d"]) {
+      const { result: code, out } = await captureOutput(() =>
+        cmdApprove(fakeArgs([file], ["all", "probe"], { expires: bad }), approveDeps(dir, Date.parse(BOUND_AT))),
+      );
+      assert.equal(code, 1, `--expires ${bad} should exit 1`);
+      assert.match(out, /Invalid --expires/, out);
+      assert.equal(await readFile(file, "utf8"), CLI_SKILL, `--expires ${bad} must not stamp anything`);
+    }
+  });
+});
+
+test("CLI: --expires on a step with no attest: cannot bind — the step is skipped, never silently approved with a dead TTL", async () => {
+  await withTempDir(async (dir) => {
+    const file = path.join(dir, "s.md");
+    await writeFile(file, CLI_SKILL_NO_ATTEST);
+    const { result: code } = await captureOutput(() =>
+      cmdApprove(fakeArgs([file], ["all", "probe"], { expires: "24h" }), approveDeps(dir, Date.parse(BOUND_AT))),
+    );
+    const after = parseSkill(await readFile(file, "utf8"));
+    // No attest → no expect → no TTL. Whatever the exit code, the one thing
+    // that must never happen is a stamped approval that claims to expire.
+    assert.equal(after.steps[0].expect, undefined);
+    assert.ok(code === 0 || code === 1);
+  });
+});
