@@ -17,6 +17,7 @@
     "./llm": "./dist/llm.js",
     "./writeback": "./dist/writeback.js",
     "./trace": "./dist/trace.js",
+    "./footprint": "./dist/footprint.js",
     "./mcp-client": "./dist/mcp-client.js",
     "./mcp-tool": "./dist/mcp-tool.js",
     "./tools": "./dist/tools.js",
