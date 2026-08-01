@@ -78,7 +78,6 @@ export type RunShapeMetric =
   | "escalations"
   | "healedL1"
   | "healedL2"
-  | "mocked"
   | "duration"
   | "gap"
   | "silence";
@@ -262,7 +261,11 @@ function startedMs(record: RunRecord): number | undefined {
  * off one `RunFootprint` counter. Adding a metric is adding a row here; there
  * is no second place where a run's shape is computed.
  *
- * Two footprint counters are deliberately absent and must stay absent:
+ * A footprint counter earns a row here only if it can be non-zero on a
+ * record this module KEEPS. That is a stricter test than "is it a number",
+ * and applying the weaker one is how `mocked` briefly shipped as a row that
+ * could never be anything but 0 (see below). Three counters are deliberately
+ * absent and must stay absent:
  *
  *  - **`healL0`** is `steps` minus `healL1` and `healL2`, so it carries no
  *    information those three do not already carry. A run where one step
@@ -274,6 +277,19 @@ function startedMs(record: RunRecord): number | undefined {
  *    "no manifest" and "preflight ran normally" (runner.ts:237-243). It is on
  *    the footprint for persistence; a median of it would be a number with no
  *    referent.
+ *  - **`mocked`** is structurally unobservable HERE, which is a different
+ *    reason from the other two. `StepRecord.mocked` is set only by
+ *    `executeStep`'s mock branch (runner.ts:853-858), reachable only when
+ *    `options.mockFailures[step.n]` is defined — and any run with
+ *    `mockFailures` writes the record-level `mockFailures` array, which is
+ *    exactly what the filter above strips out. So `footprint.mocked > 0`
+ *    implies the record is not in the sample and is not the subject: the row
+ *    could only ever read `mocked 0, median 0, min 0, max 0`, forever, on the
+ *    surface whose written law is that noise is worse than silence.
+ *
+ * The general rule the `mocked` mistake teaches: walking `RunFootprint`'s
+ * numeric fields is not how this list is populated. Ask, per counter,
+ * whether the record filter leaves it observable.
  *
  * NOTE — there is deliberately no "distinct tools touched" signal:
  * `StepRecord` carries no tool name (see docs/specs/run-shape-priors.md
@@ -293,7 +309,6 @@ const RUN_METRICS: ReadonlyArray<{ metric: RunShapeMetric; of: FootprintCounter;
   { metric: "escalations", of: "escalations", unit: "count" },
   { metric: "healedL1", of: "healL1", unit: "count" },
   { metric: "healedL2", of: "healL2", unit: "count" },
-  { metric: "mocked", of: "mocked", unit: "count" },
   { metric: "duration", of: "ms", unit: "ms" },
 ];
 

@@ -7,8 +7,8 @@
 // must never break a run, so `deriveFootprint` is total over the specific
 // hazards this module guards against: a missing/non-array `steps`, a
 // missing `totals`, partial and pre-0.20.0 records, and a `steps[]` entry
-// that is null/undefined/not-an-object (readRunRecords is a bare
-// `JSON.parse`, runner.ts:474-484 — `[null]` is valid JSON on disk). Every
+// that is null/undefined/not-an-object (`readRunRecords` in runner.ts is a
+// bare `JSON.parse` per line — `[null]` is valid JSON on disk). Every
 // field this module reads off a step (`write`, `llm`, `mocked`) is
 // re-checked for shape at the point of use, not just presence, because
 // `write` and `llm` are dereferenced.
@@ -74,27 +74,17 @@ function isObjectField<T extends object>(v: T | null | undefined): v is T {
 }
 
 /**
- * `recordTotals` vs `deriveFootprint`: two functions that count the same four
- * outcomes and are NOT duplicates of each other.
+ * NOT A DUPLICATE OF `deriveFootprint`, though both count the same four
+ * outcomes. `recordTotals` answers "what does this record CLAIM its totals
+ * were?", as honestly as the record allows — it takes `totals` at its word on
+ * the modern shape and falls back to `steps[]` only where SPEC §4.4 says the
+ * rollup is untrustworthy. That is what `reelier bench` needs: it summarises
+ * records, and a bench line that silently disagreed with the record it is
+ * summarising would be reporting a number the record does not contain.
+ * `deriveFootprint` answers the different question "what shape did this run
+ * actually have?" and so counts from `steps[]` ALWAYS. Deleting either in
+ * favour of the other would silently change the other's caller.
  *
- * `recordTotals` answers "what does this record CLAIM its totals were?", as
- * honestly as the record allows — it takes `totals` at its word on the modern
- * shape and falls back to `steps[]` only where SPEC §4.4 says the rollup is
- * untrustworthy. That is what `reelier bench` needs: it summarises records,
- * and a bench line that silently disagreed with the record it is summarising
- * would be reporting a number the record does not contain.
- *
- * `deriveFootprint` answers "what shape did this run actually have?" and so
- * counts from `steps[]` ALWAYS. Per-step outcomes were recorded correctly at
- * every package version; the `totals` shortcut is only sometimes trustworthy,
- * and a derivation that is right most of the time is the wrong basis for a
- * baseline a later run is compared against.
- *
- * Deleting either in favour of the other would silently change the other's
- * caller. Keep both; keep the reason above with them.
- */
-
-/**
  * Per-record totals, honest across a mixed history: a record written before
  * 0.2.0 has no `totals.unchecked`/`totals.skipped` field (and its old
  * `totals.passed` counted "passed" OR "unchecked" together) — for those,

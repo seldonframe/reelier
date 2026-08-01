@@ -119,6 +119,17 @@ non-null, non-array object (a hand-edited `"write": []`, `0`, or a bare
 string) is no longer counted as a dispatched write or an escalation. Neither
 shape can be produced by this package's writer.
 
+**A third change, and the only one an operator can see today.** The old
+`shapeOf` dereferenced each entry of `steps[]` without checking it, so a
+record containing `null` in that array threw. `printRunShapeDeviations`
+(`src/cli.ts:266-276`) wraps the whole read in a bare `catch` and stays
+silent, so on such a file the entire run-shape block vanished with no
+explanation — indistinguishable from "nothing departed", which §1 forbids
+this surface from implying. `deriveFootprint` is total, so the block now
+renders, counting the malformed entry in `steps` and nothing else. This is a
+fix, not a regression, and it is listed here because this is the paragraph
+whose job is naming behaviour changes.
+
 A sweep of 1,835 records across 190 local run-record files found zero
 changes, which is consistent with the argument above and is not independent
 evidence for it: those records were all written by this package, where both
@@ -129,7 +140,12 @@ follow the steps.
 
 Neither change can move an outcome or an exit code. §1 still holds.
 
-### 2.4 Two footprint counters that are deliberately NOT signals
+### 2.4 Three footprint counters that are deliberately NOT signals
+
+A counter earns a row in §2 only if it can be non-zero **on a record §4
+keeps**. That is a stricter test than "is it a number", and applying the
+weaker one is how `mocked` briefly shipped as a row that could never read
+anything but 0.
 
 - **`healL0`.** It is `steps` minus `healL1` and `healL2`, so it carries no
   information those three do not already carry. A run where one step
@@ -141,9 +157,34 @@ Neither change can move an outcome or an exit code. §1 still holds.
   also ambiguous between "no manifest" and "preflight ran normally"
   (`src/runner.ts:237-243`), so no consumer may read `false` as "preflight
   passed". It stays on `RunFootprint` for persistence and is never baselined.
+- **`mocked`** — excluded for a third, different reason: **§4 excludes every
+  record that could carry it.** `StepRecord.mocked` is set only by
+  `executeStep`'s mock branch (`src/runner.ts:853-858`), reachable only when
+  `options.mockFailures[step.n]` is defined; any run with `mockFailures`
+  writes the record-level `mockFailures` array, which is exactly what §4
+  strips out. So `footprint.mocked > 0` implies the record is neither in the
+  sample nor the subject, and a `mocked` row could only ever read
+  `mocked 0, median 0, min 0, max 0` — forever, on the surface whose written
+  law (§1, §3) is that noise is worse than silence. It stays on
+  `RunFootprint`, where the record it describes is not filtered out.
 
-Both exclusions are pinned in `test/priors.test.ts`, which asserts the metric
-list verbatim: a counter cannot drift onto this surface unnoticed.
+All three exclusions are pinned in `test/priors.test.ts`, which asserts the
+metric list verbatim, plus a test that pins `mocked`'s structural argument
+against a fixture carrying **both** the step-level flag and the record-level
+`mockFailures` — the only shape the runner can actually produce. A test that
+set the step flag alone would pin behaviour no record has ever had and read
+as coverage.
+
+**Heal level is now reported by two surfaces with different rules, and they
+do not conflict.** `src/diff.ts:16`'s `healed-differently` is a *per-step*
+comparison against a recorded baseline run, and it feeds a verdict that gates
+an exit code. F5's `healedL1` / `healedL2` are *aggregate counts* for one run
+against that skill's own recent history, and they gate nothing. An earlier
+draft excluded heal levels here on the grounds that "heal level is `diff.ts`'s
+job"; that reasoning conflated the two. The question `diff` answers is "did
+this run's step 4 heal differently from the recorded one?" — the question here
+is "did this run heal more than this skill usually does?" Neither answer is
+available from the other, and only one of them can fail a build.
 
 ### 2.5 `writeResources` is not a second write count
 
@@ -316,6 +357,52 @@ the sample rather than clamped, mirroring `attest-render.ts`'s
   clock, so it is the only surface where `silence` appears. It exits 1 only
   for things the operator must fix: no skill argument, an unreadable or
   malformed skill file, a missing run-record file, an empty one.
+
+### 6.1 One escalation event prints one line
+
+A single L1 heal moves two counters at once: `runner.ts:1443` returns
+`{ level: 1, llm: usage, … }`, so `escalations` and `healedL1` both go up by
+one. Both are near-always-zero counters, so both have a window of `[0,0,0,0]`
+— median 0, MAD 0 — and §3's rule reports the first time either is ever
+non-zero. Left alone, one step escalating prints two lines saying the same
+thing, on the surface every user gets by default. §1's law cuts against that
+directly: an operator who learns to ignore the line has lost the signal.
+
+So on the `reelier run` surface those lines collapse into one. **Only when
+the collapsed line is exactly true of every counter named in it** — three
+conditions, all required:
+
+1. `escalations` and at least one of `healedL1` / `healedL2` both deviated.
+2. The heal movements **sum** to the escalation movement, each measured
+   against its own median, and every movement points the same way. Two
+   counters that moved by different amounts moved for different reasons and
+   are two facts, not one.
+3. All of them were computed over an **identical baseline window** (same
+   median, MAD, min, max and n). The collapsed line prints a single
+   `previous N runs: …` clause, and without this condition that clause would
+   be the first counter's baseline presented as everyone's — a small lie in
+   the one place this surface is supposed to be exact. In the realistic
+   all-zero case it holds trivially, so it suppresses nothing real.
+
+Anything else prints separate rows. The rendered form names every counter and
+keeps every value its own:
+
+> `! escalations: 1, healed L1: 1 (previous 4 runs: median 0, min 0, max 0)`
+
+It deliberately does **not** read "escalations: 1, healed at L1", which is
+better English and asserts that the same step caused both movements. That is
+true in every record the runner writes and is still an inference the record
+does not carry.
+
+**A failed escalation is why both metrics stay.** A step that burned tokens
+and did not heal returns `level: 0` with an `llm` block
+(`src/runner.ts:1451`), so it moves `escalations` and no heal level, fails
+condition 1, and reports on its own line. That distinction is the whole
+reason the two counters are not one counter.
+
+**`reelier baseline` collapses nothing.** It prints a row per signal by
+contract — the whole picture, including what did not move — so hiding a row
+there would answer a question nobody asked.
 
 ## 7. Zero-touch guarantee
 

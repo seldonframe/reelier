@@ -421,7 +421,6 @@ const NEW_METRICS: ReadonlyArray<{ metric: RunShapeSignal["metric"]; carrying: (
   { metric: "escalations", carrying: (v) => ({ escalations: v }) },
   { metric: "healedL1", carrying: (v) => ({ levels: levelsAt(1, v) }) },
   { metric: "healedL2", carrying: (v) => ({ levels: levelsAt(2, v) }) },
-  { metric: "mocked", carrying: (v) => ({ mocked: v }) },
 ];
 
 test("each new metric is reported when it lands outside everything the previous runs did", () => {
@@ -456,11 +455,12 @@ test("writeResources moves independently of writes — same count of writes, col
   assert.deepEqual(deviatingMetrics(report), ["writeResources"]);
 });
 
-test("the metric set is exactly this, and healL0 and manifestIgnored are deliberately not in it", () => {
+test("the metric set is exactly this — healL0, manifestIgnored and mocked are deliberately not in it", () => {
   // healL0 is `steps` minus the other two levels and carries no independent
   // information — including it would report the same movement a third time.
   // manifestIgnored is a boolean, and `deviatesFromBaseline` is defined over
-  // numbers; it lives on RunFootprint for persistence and is never a metric.
+  // numbers. `mocked` is unobservable on this surface entirely — see the test
+  // below. All three live on RunFootprint for persistence and are not metrics.
   const metrics = baselineOf(computeRunShape(dailyRuns(6), { now: T0 + 6 * DAY })).signals.map((s) => s.metric);
   assert.deepEqual(metrics, [
     "steps",
@@ -473,11 +473,39 @@ test("the metric set is exactly this, and healL0 and manifestIgnored are deliber
     "escalations",
     "healedL1",
     "healedL2",
-    "mocked",
     "duration",
     "gap",
     "silence",
   ]);
+});
+
+test("`mocked` is not a metric: every record that CAN carry a mocked step is one §4 excludes", () => {
+  // The structural argument, pinned so nobody re-adds the row. A step gets
+  // `mocked: true` only from executeStep's mock branch (runner.ts:853-858),
+  // reachable only when `options.mockFailures[step.n]` is defined — and any
+  // run with mockFailures writes the record-level `mockFailures` array, which
+  // is exactly what §4's filter strips. So a `mocked` signal could never read
+  // anything but a constant 0, forever, on the surface whose law is that
+  // noise is worse than silence.
+  //
+  // Note the fixture sets BOTH fields, which is the only shape the runner can
+  // actually produce. A test that set step-level `mocked` alone would pin
+  // behaviour no record has ever had, and would read as coverage.
+  const mockRun = record({
+    outcomes: ["passed", "passed", "passed"],
+    mocked: 3,
+    mockFailures: [1],
+    startedAt: dayStamp(4),
+  });
+  const report = computeRunShape([...dailyRuns(4), mockRun]);
+  const base = baselineOf(report);
+  assert.equal(base.subjectIsNewestRecord, false, "the record carrying the mocked steps is not even the subject");
+  assert.equal(base.latestStartedAt, dayStamp(3));
+  assert.equal(
+    base.signals.map((s) => String(s.metric)).includes("mocked"),
+    false,
+    "a counter that can only ever be 0 here does not get a row"
+  );
 });
 
 test("steps is its own signal (a skill that grew steps reports as a shape change)", () => {

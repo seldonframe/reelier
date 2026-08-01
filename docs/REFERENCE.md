@@ -69,7 +69,7 @@ A mocked step never calls its tool, so a write step is recovery-testable with no
 
 ## Run-shape priors (`reelier baseline`)
 
-Your skill's own past runs are already on your disk, at `.reelier/runs/<skill>.jsonl`. `reelier baseline <skill.md>` computes a median + MAD baseline from the previous runs of *that* skill and reports how the latest one sits against it — steps, per-outcome counts, dispatched writes, duration, the gap since the previous run, and the silence since the latest one.
+Your skill's own past runs are already on your disk, at `.reelier/runs/<skill>.jsonl`. `reelier baseline <skill.md>` computes a median + MAD baseline from the previous runs of *that* skill and reports how the latest one sits against it — steps, per-outcome counts, dispatched writes, the distinct resources those writes landed on, escalations, the steps that healed at L1 and at L2, duration, the gap since the previous run, and the silence since the latest one.
 
 ```sh
 reelier baseline my-skill.skill.md   # read-only; executes nothing; always exits 0
