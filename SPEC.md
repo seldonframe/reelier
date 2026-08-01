@@ -1333,6 +1333,21 @@ inside the approval hash, which is what makes it non-forgeable.
 Superseded entries are never auto-deleted; collect them with
 `reelier approve --prune-keys`.
 
+**Do not put `approve --all --probe --expires` on a schedule.** Under
+`--all` the consent prompt is auto-answered, so a cron job or pre-commit
+hook running that command renews the deadline on every tick, forever: the
+state re-verifies clean, the TTL resets, and no human ever reads
+anything. **A scheduled renewal is not a re-approval, and a TTL renewed
+by a machine is not a TTL.** The entire claim of "expire as a no" is that
+*silence* ends the authorization — something that answers on the
+operator's behalf converts it back into a standing yes wearing a
+deadline, which is strictly worse than no TTL at all because the receipt
+now shows a freshly-stamped approval date. This is the §6.1c
+rubber-stamp failure mode with the last human step automated away. The
+tool does not block it — the one-shot `--all --expires` case is
+legitimate, and the operator typed the deadline themselves — so it is a
+rule about who runs the command, not about the command.
+
 **Choosing a projection, and the rubber-stamp failure mode
 [Reference].** Every approval control in this spec invalidates an
 approval when something changes. The failure mode they share is that

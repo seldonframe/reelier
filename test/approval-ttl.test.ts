@@ -794,6 +794,47 @@ test("CLI review-IMPORTANT: a --rebind after benign drift CARRIES the TTL forwar
   });
 });
 
+test("CLI review-MINOR: a carried TTL that has ALREADY elapsed says so — a dead deadline must not read as a live one", async () => {
+  await withTempDir(async (dir) => {
+    const at = Date.parse(BOUND_AT);
+    const file = path.join(dir, "s.md");
+    await writeFile(file, CLI_SKILL);
+    let world = "# v1";
+    const deps = (msAt: number): ApproveDeps => ({
+      ...approveDeps(dir, msAt),
+      tools: {
+        get_page: { effect: "read", run: async () => ({ status: 200, headers: {}, body: JSON.stringify({ compiled_truth: world }) }) },
+        put_page: { effect: "idempotent-write", run: async () => ({ status: 200, headers: {}, body: "{}" }) },
+      },
+    });
+    await captureOutput(() => cmdApprove(fakeArgs([file], ["all", "probe"], { expires: "24h" }), deps(at)));
+    const ttl = parseSkill(await readFile(file, "utf8")).steps[0].expect!.expiresAt!;
+
+    // Drift arrives a week later — long after the 24h TTL ran out. The
+    // re-bind carries the dead instant forward (correct: it must not renew),
+    // but the operator has to be told the binding is expired on arrival.
+    world = "# v2";
+    const wayLater = at + 7 * DAY;
+    const { out } = await captureOutput(() => cmdApprove(fakeArgs([file], ["all", "probe", "rebind"]), deps(wayLater)));
+    const after = parseSkill(await readFile(file, "utf8"));
+    assert.equal(after.steps[0].expect!.expiresAt, ttl, "still carried verbatim — a re-bind renews nothing");
+    assert.match(out, /ALREADY ELAPSED/, "and the output does not let a dead deadline read as a live one");
+
+    // The claim is earned: the freshly written binding really is expired.
+    const late = spiedTools(() => ({ compiled_truth: "# v2" }));
+    const record = await runSkill(after, {
+      tools: late.tools,
+      expectKeystorePath: path.join(dir, "expect-keys.json"),
+      cwd: dir,
+      stateGate: "refuse",
+      now: wayLater,
+    });
+    assert.equal(record.steps[0].outcome, "failed");
+    assert.match(record.steps[0].stateCheck!.reason!, /^approval-expired: /);
+    assert.equal(late.writes.length, 0);
+  });
+});
+
 test("CLI review-MINOR: --prune-keys refuses to swallow --expires", async () => {
   await withTempDir(async (dir) => {
     const { result: code, out } = await captureOutput(() =>

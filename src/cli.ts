@@ -1947,8 +1947,16 @@ export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Prom
     if (expiresMs !== undefined) {
       console.log(`  expires: ${expiresAt} (--expires ${expiresRaw}) — past it this step's state check is 'unevaluated (approval-expired)', never a pass`);
     } else if (carriedExpiresAt !== undefined) {
+      // Review finding (MINOR): a carried instant that has ALREADY elapsed
+      // produces an approval that is dead on arrival — safe, because it fails
+      // closed at the first run, but `expires: 2026-07-04T…` reads like a live
+      // deadline to anyone scanning the output. Say which one it is.
+      const elapsed = Date.parse(carriedExpiresAt) <= observedAtMs;
       console.log(
-        `  expires: ${carriedExpiresAt} (carried forward unchanged from the previous binding — pass --expires <duration> to set a new one)`
+        `  expires: ${carriedExpiresAt} (carried forward unchanged from the previous binding` +
+          (elapsed
+            ? " — ALREADY ELAPSED, so this binding is expired the moment it is written; pass --expires <duration> to set a new one)"
+            : " — pass --expires <duration> to set a new one)")
       );
     }
     step.expect = {
