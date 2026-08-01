@@ -392,6 +392,7 @@ export async function cmdRun(
     // valid) beyond a one-line advisory note.
     const ignoreManifest = args.flags.has("ignore-manifest");
     let manifestIgnored = false;
+    let manifestChecked = false;
     if (skill.manifest) {
       if (ignoreManifest) {
         console.error("WARNING: --ignore-manifest — replaying despite unverified tool schemas");
@@ -412,6 +413,7 @@ export async function cmdRun(
           );
           return 1;
         }
+        manifestChecked = true;
       }
     } else {
       console.error(
@@ -454,6 +456,7 @@ export async function cmdRun(
       // stamped verbatim onto the RunRecord (see RunRecord.skillContentSha256).
       skillContentSha256: createHash("sha256").update(source, "utf8").digest("hex"),
       manifestIgnored,
+      manifestChecked,
       // The directory whose policy governed the gate MUST be the directory
       // that receives the run record (review finding): otherwise a
       // programmatic caller passing deps.cwd gates on repo A and records
