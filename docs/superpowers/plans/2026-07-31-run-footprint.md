@@ -631,10 +631,19 @@ counters it is missing — so the repo has one derivation and one statistic rath
 - Modify: `docs/specs/run-shape-priors.md` — document the new metrics
 - Modify: `test/priors.test.ts`, `test/priors-render.test.ts`, `test/footprint.test.ts`
 
-**The five metrics F5 is missing:** `distinctWriteResources`, `escalations`, `mocked`, and the heal
-distribution. Add them as `RunShapeMetric` values with `unit: "count"`. **Do not add
-`manifestIgnored`** — it is a boolean, not a counter, and `deviatesFromBaseline` is defined over
-numbers. It stays on `RunFootprint` for persistence and is never a deviation metric.
+**The metrics F5 is missing:** `distinctWriteResources`, `escalations`, and the heal distribution.
+Add them as `RunShapeMetric` values with `unit: "count"`. **Do not add `manifestIgnored`** — it is a
+boolean, not a counter, and `deviatesFromBaseline` is defined over numbers. It stays on
+`RunFootprint` for persistence and is never a deviation metric.
+
+> **CORRECTED 2026-07-31 — `mocked` is NOT one of them. Do not add it.** It was in the original
+> list and the final whole-branch review found it structurally dead: `mocked: true` steps only
+> exist on records carrying `mockFailures`, and `computeRunShape` strips exactly those records
+> (`src/priors.ts:311`), so the row could never be non-zero and would print
+> `mocked 0  previous N runs: median 0` forever. It stays on `RunFootprint` for persistence, like
+> `healL0` and `manifestIgnored`. The general rule now lives in spec §2.4 and the `RUN_METRICS`
+> docblock: **a counter earns a row only if it can be non-zero on a record §4 keeps** — walking
+> `RunFootprint`'s numeric fields is not how that list is populated.
 
 **Heal levels: add `healL1` and `healL2` only, not `healL0`.** `healL0` is `steps` minus the other
 two and carries no independent information; including it would triple-count the same movement.
@@ -693,7 +702,9 @@ twice and a third rendering of the same idea is duplication, not a feature.
 
 - [ ] `deriveFootprint` is total across every shape in the totality test, including `[null]`.
 - [ ] Exactly one derivation of a run's shape exists in `src/` — `shapeOf` is gone.
-- [ ] The five new metrics deviate correctly, and the banned-word test passes unmodified.
+- [ ] The four new metrics (`writeResources`, `escalations`, `healedL1`, `healedL2` — **not**
+      `mocked`, see the correction above) deviate correctly, and the banned-word test passes
+      unmodified.
 - [ ] `manifestIgnored` and `healL0` are on the footprint but are not deviation metrics.
 - [ ] `./footprint` resolves from the built package.
 - [ ] Full suite green.

@@ -120,8 +120,8 @@ export function recordTotals(r: RunRecord): { passed: number; unchecked: number;
   for (const s of steps) {
     // Guard against a hand-edited or corrupted `steps[]` entry that is
     // null/undefined/not-an-object (readRunRecords does a bare JSON.parse —
-    // `[null]` is valid JSON on disk, src/priors.ts:231-235 documents the
-    // same threat model for the same class of function).
+    // `[null]` is valid JSON on disk). This is the authoritative site for
+    // that guard — src/priors.ts's run-shape section comment points here.
     if (!s || typeof s !== "object") continue;
     const outcome = (s as StepRecord).outcome;
     if (outcome === "passed") passed++;
