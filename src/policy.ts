@@ -634,6 +634,25 @@ export interface PolicyRecord {
   unmatchedRules?: number;
 }
 
+/**
+ * Attach the dead-rule count to a record that has rules to count
+ * (docs/specs/policy-attestation-v1.md §2.3). Wrap path only — it needs the
+ * live tool inventory, which `reelier run` does not have (§2.4).
+ *
+ * Added ONLY when `rules` is present, i.e. only on `verified`: a `failed`,
+ * `unchecked` or `absent` record parsed no rules, so there is nothing to
+ * match and a count would be a number about nothing.
+ *
+ * `0` is recorded, not omitted. Zero unmatched rules is a measurement — the
+ * policy was checked against the wrapped tools and every rule named a real
+ * one — and dropping it would make "checked, all live" indistinguishable
+ * from "never checked".
+ */
+export function withUnmatchedRules(record: PolicyRecord, policy: Policy, availableToolNames: string[]): PolicyRecord {
+  if (!record.rules) return record;
+  return { ...record, unmatchedRules: findUnmatchedToolRules(policy, availableToolNames).length };
+}
+
 function countToolScoped(policy: Policy): number {
   return policy.deny.filter((r) => r.tool !== undefined).length + policy.dryRun.filter((r) => r.tool !== undefined).length;
 }

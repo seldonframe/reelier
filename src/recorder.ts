@@ -19,6 +19,7 @@ import {
   evaluatePolicy,
   findUnmatchedToolRules,
   formatUnmatchedToolRuleWarnings,
+  withUnmatchedRules,
   type Policy,
   type PolicyRecord,
 } from "./policy.js";
@@ -332,6 +333,13 @@ export function buildProxyServer(downstreams: DownstreamConnection[], options: P
   for (const line of formatUnmatchedToolRuleWarnings(findUnmatchedToolRules(policy, availableToolNames), availableToolNames)) {
     console.error(line);
   }
+  // The same computation, carried into the record instead of only to stderr
+  // (docs/specs/policy-attestation-v1.md §2.3). This is the ONLY place with
+  // a live tool inventory, which is why the count exists on the wrap path
+  // and never on a RunRecord (§2.4). Counts only — the offending globs stay
+  // on the terminal, where the reader is the operator; a record is a
+  // publishable artifact and a glob is an internal tool name.
+  const policyRecord = options.policyRecord ? withUnmatchedRules(options.policyRecord, policy, availableToolNames) : undefined;
 
   const server = new Server({ name: "reelier-proxy", version: "0.0.1" }, { capabilities: { tools: {} } });
 
@@ -370,7 +378,7 @@ export function buildProxyServer(downstreams: DownstreamConnection[], options: P
         return { ...textResult("reelier_start_recording requires a string 'name' argument."), isError: true };
       }
       const wrapped = downstreams.map((d) => d.name);
-      const result = await recorder.start(traceName, wrapped, toolAnnotations, options.policyRecord, toolManifest, manifestGap);
+      const result = await recorder.start(traceName, wrapped, toolAnnotations, policyRecord, toolManifest, manifestGap);
       return result.ok ? textResult(`Recording started: ${result.path}`) : textResult(result.message);
     }
 

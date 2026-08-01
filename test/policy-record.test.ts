@@ -4,7 +4,14 @@ import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import { loadPolicyForWrap, policyPaths, policyRecordFromLoad, emptyPolicy, type PolicyRecord } from "../src/policy.js";
+import {
+  loadPolicyForWrap,
+  policyPaths,
+  policyRecordFromLoad,
+  withUnmatchedRules,
+  emptyPolicy,
+  type PolicyRecord,
+} from "../src/policy.js";
 
 // ---------------------------------------------------------------------------
 // docs/specs/policy-attestation-v1.md §2 — the policy record.
@@ -233,4 +240,111 @@ test("policy record: absent/unchecked records carry no undefined keys (omitted, 
   } finally {
     await cleanup();
   }
+});
+
+// ---------------------------------------------------------------------------
+// S4 (§2.3) — the dead-rule signal. `findUnmatchedToolRules` already runs at
+// wrap start and already computes this; today the whole result goes to
+// stderr and is gone. Carrying the count upgrades the claim from "a policy
+// was loaded" to "a policy was loaded, and M of its N tool-scoped rules
+// match none of the tools that were wrapped" — present versus able to fire.
+// ---------------------------------------------------------------------------
+
+test("withUnmatchedRules: a verified record gains the count of tool rules that match no wrapped tool", () => {
+  const base: PolicyRecord = {
+    status: "verified",
+    digest: "sha256:" + "d".repeat(64),
+    sourcePath: "project",
+    rules: { deny: 2, dryRun: 1, toolScoped: 3 },
+  };
+  const policy = {
+    version: 1 as const,
+    deny: [{ tool: "crm.create_*" }, { tool: "typo.nothing_matches_*" }],
+    dryRun: [{ tool: "also.missing_*" }],
+  };
+  const rec = withUnmatchedRules(base, policy, ["crm.create_contact", "crm.get_contact"]);
+  assert.equal(rec.unmatchedRules, 2);
+  assert.deepEqual(rec.rules, base.rules, "the denominator is untouched");
+});
+
+test("withUnmatchedRules: zero unmatched is still RECORDED — 0 is a measurement, not an absence", () => {
+  const base: PolicyRecord = {
+    status: "verified",
+    digest: "sha256:" + "e".repeat(64),
+    sourcePath: "project",
+    rules: { deny: 1, dryRun: 0, toolScoped: 1 },
+  };
+  const rec = withUnmatchedRules(base, { version: 1, deny: [{ tool: "crm.*" }], dryRun: [] }, ["crm.create_contact"]);
+  assert.equal(rec.unmatchedRules, 0);
+});
+
+test("withUnmatchedRules: never added to failed/unchecked/absent — no parsed rules means nothing to match", () => {
+  for (const status of ["failed", "unchecked", "absent"] as const) {
+    const rec = withUnmatchedRules({ status }, emptyPolicy(), ["a.b"]);
+    assert.equal(rec.unmatchedRules, undefined, `${status} must not carry unmatchedRules`);
+    assert.equal(rec.rules, undefined);
+  }
+});
+
+test("withUnmatchedRules: unmatchedRules never exceeds rules.toolScoped, and endpoint rules never count", () => {
+  const base: PolicyRecord = {
+    status: "verified",
+    digest: "sha256:" + "f".repeat(64),
+    sourcePath: "project",
+    rules: { deny: 3, dryRun: 0, toolScoped: 1 },
+  };
+  const policy = {
+    version: 1 as const,
+    deny: [{ endpoint: "*.a.example" }, { endpoint: "*.b.example" }, { tool: "nope.*" }],
+    dryRun: [],
+  };
+  const rec = withUnmatchedRules(base, policy, ["real.tool"]);
+  assert.equal(rec.unmatchedRules, 1);
+  assert.ok(rec.unmatchedRules! <= rec.rules!.toolScoped);
+});
+
+test("withUnmatchedRules: an MCP namespace prefix is normalized away — a live rule is never over-reported as dead", () => {
+  const base: PolicyRecord = {
+    status: "verified",
+    digest: "sha256:" + "0".repeat(64),
+    sourcePath: "project",
+    rules: { deny: 1, dryRun: 0, toolScoped: 1 },
+  };
+  // `stripMcpNamespacePrefix` strips `<name>__` groups, so a rule written
+  // against the bare tool name still matches the namespaced exposed name.
+  // Over-reporting a rule that DOES fire would be its own dishonesty.
+  const rec = withUnmatchedRules(base, { version: 1, deny: [{ tool: "gmail.send_email" }], dryRun: [] }, [
+    "composio__gmail.send_email",
+  ]);
+  assert.equal(rec.unmatchedRules, 0);
+});
+
+test("withUnmatchedRules: a rule that ignores the <i>_ collision rename IS reported dead — that is the whole feature", () => {
+  const base: PolicyRecord = {
+    status: "verified",
+    digest: "sha256:" + "0".repeat(64),
+    sourcePath: "project",
+    rules: { deny: 1, dryRun: 0, toolScoped: 1 },
+  };
+  // When two downstreams expose the same tool name, buildToolRoutes renames
+  // the second to `<downstreamIndex>_<name>` — a SINGLE underscore, which is
+  // deliberately NOT stripped (that form is `<name>__`). flight-recorder-v1
+  // §1 states the consequence plainly: "Collision-renamed tools need their
+  // own rules … the wrap-start warning catches a rule that ends up matching
+  // nothing." So this rule is dead, and the record must say so. Present is
+  // not the same as able to fire.
+  const rec = withUnmatchedRules(base, { version: 1, deny: [{ tool: "delete_message" }], dryRun: [] }, ["1_delete_message"]);
+  assert.equal(rec.unmatchedRules, 1);
+});
+
+test("withUnmatchedRules: still carries no rule content", () => {
+  const base: PolicyRecord = {
+    status: "verified",
+    digest: "sha256:" + "1".repeat(64),
+    sourcePath: "project",
+    rules: { deny: 1, dryRun: 0, toolScoped: 1 },
+  };
+  const rec = withUnmatchedRules(base, { version: 1, deny: [{ tool: "acme_secret.wipe_*" }], dryRun: [] }, ["x.y"]);
+  assert.equal(JSON.stringify(rec).includes("acme_secret"), false);
+  assert.equal(rec.unmatchedRules, 1);
 });
