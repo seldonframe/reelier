@@ -175,6 +175,22 @@ export interface StepRecord {
   ms: number;
   failures: string[];
   /**
+   * The step's declared `exposure` (SPEC §3.7), copied verbatim from the
+   * skill — whether an actor OUTSIDE the system may already have acted on
+   * this step's result. Absent exactly when the step declared nothing (which
+   * reads as `internal`), so a skill that does not use the key produces a
+   * byte-identical record. Orthogonal to the step's `effect`, and gating-inert
+   * in this version: a consumer MUST NOT infer that an `external-visible` step
+   * was blocked, reviewed, or approved differently.
+   *
+   * Spelled as the literal union rather than as skill.ts's `Exposure` so the
+   * published record shape is self-describing here and in SPEC §4.1. The two
+   * cannot drift apart unnoticed: the runner assigns `step.exposure` straight
+   * into this field, so widening `Exposure` without widening this fails to
+   * compile.
+   */
+  exposure?: "internal" | "external-visible";
+  /**
    * LLM token usage summed across every escalation attempt on this step
    * (incl. failed ones) — 0 attempts means this is absent, not zero.
    * `model` (added for the $ meter, src/cost.ts) is the model of the
@@ -1622,7 +1638,17 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
 
   for (const step of skill.steps) {
     if (diverged) {
-      const rec: StepRecord = { n: step.n, title: step.title, level: 0, outcome: "skipped", ms: 0, failures: [] };
+      // A skipped step never dispatched, but what its author DECLARED about it
+      // is still true and belongs on the record — same reasoning as `title`.
+      const rec: StepRecord = {
+        n: step.n,
+        title: step.title,
+        level: 0,
+        outcome: "skipped",
+        ms: 0,
+        failures: [],
+        ...(step.exposure !== undefined ? { exposure: step.exposure } : {}),
+      };
       stepRecords.push(rec);
       options.onStep?.(rec, { tool: step.actionTool, args: step.actionArgs });
       continue;
@@ -1745,6 +1771,9 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
       outcome,
       ms,
       failures,
+      // Absent stays absent — the record must be able to distinguish "the
+      // author said internal" from "the author said nothing".
+      ...(step.exposure !== undefined ? { exposure: step.exposure } : {}),
       ...(llmUsage ? { llm: llmUsage } : {}),
       ...(escalationAttempted !== undefined ? { escalationAttempted } : {}),
       ...(why ? { why } : {}),
