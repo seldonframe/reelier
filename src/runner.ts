@@ -23,7 +23,7 @@ import { createReadStream } from "node:fs";
 import { createInterface } from "node:readline";
 import path from "node:path";
 import os from "node:os";
-import type { Skill, Step, StepAttestDecl } from "./skill.js";
+import type { Exposure, Skill, Step, StepAttestDecl } from "./skill.js";
 import { evalAssert, evalBind, type Observation, type ObservationRef } from "./assert.js";
 import { builtinTools, type Tool, type ToolContext } from "./tools.js";
 // Re-exported from the "." package entry too (in addition to "./tools")
@@ -174,6 +174,16 @@ export interface StepRecord {
   outcome: StepOutcome;
   ms: number;
   failures: string[];
+  /**
+   * The step's declared `exposure` (SPEC §3.7), copied verbatim from the
+   * skill — whether an actor OUTSIDE the system may already have acted on
+   * this step's result. Absent exactly when the step declared nothing (which
+   * reads as `internal`), so a skill that does not use the key produces a
+   * byte-identical record. Orthogonal to the step's `effect`, and gating-inert
+   * in this version: a consumer MUST NOT infer that an `external-visible` step
+   * was blocked, reviewed, or approved differently.
+   */
+  exposure?: Exposure;
   /**
    * LLM token usage summed across every escalation attempt on this step
    * (incl. failed ones) — 0 attempts means this is absent, not zero.
@@ -1622,7 +1632,17 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
 
   for (const step of skill.steps) {
     if (diverged) {
-      const rec: StepRecord = { n: step.n, title: step.title, level: 0, outcome: "skipped", ms: 0, failures: [] };
+      // A skipped step never dispatched, but what its author DECLARED about it
+      // is still true and belongs on the record — same reasoning as `title`.
+      const rec: StepRecord = {
+        n: step.n,
+        title: step.title,
+        level: 0,
+        outcome: "skipped",
+        ms: 0,
+        failures: [],
+        ...(step.exposure !== undefined ? { exposure: step.exposure } : {}),
+      };
       stepRecords.push(rec);
       options.onStep?.(rec, { tool: step.actionTool, args: step.actionArgs });
       continue;
@@ -1745,6 +1765,9 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
       outcome,
       ms,
       failures,
+      // Absent stays absent — the record must be able to distinguish "the
+      // author said internal" from "the author said nothing".
+      ...(step.exposure !== undefined ? { exposure: step.exposure } : {}),
       ...(llmUsage ? { llm: llmUsage } : {}),
       ...(escalationAttempted !== undefined ? { escalationAttempted } : {}),
       ...(why ? { why } : {}),
