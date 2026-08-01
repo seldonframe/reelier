@@ -47,6 +47,8 @@ The generated workflow:
 
 `reelier manifest` stamps a schema digest per tool a skill uses; drift or a missing tool fails closed — `MANIFEST DRIFT — refusing to replay`. `--ignore-manifest` is the break-glass override, recorded (`manifestIgnored: true`), never silent. A skill with no manifest gets an advisory note.
 
+**This is rug-pull detection.** The ecosystem's name for a tool server that presents one contract when you review it and a different one when you call it is a *rug pull*; the manifest is how a Reelier replay refuses to be on the wrong side of one. Worth knowing what it covers and what it does not: the digest is over each tool's `inputSchema`, so a server that keeps its schema and changes its *behavior* is not caught here — that is what the state check (`expect:`) and run-shape priors are for.
+
 ```sh
 reelier manifest <skill.md> --wrap "<your mcp server>"   # stamp/refresh the manifest from live servers
 reelier run <skill.md> --wrap "<your mcp server>"         # preflight checks the manifest BEFORE step 1 runs

@@ -72,6 +72,49 @@ RFC 2119.
   same — never silently drop a step, a call/result record, or an assert/bind
   line that fails to parse.
 
+### 0.1 Document conventions: normative vs. reference
+
+This spec describes both a **contract** and the **implementation that
+happens to ship in this repo**. Those are different things, and until now
+they were interleaved — normative requirements sit next to line references
+like `src/runner.ts:166-179`, which leaves a third-party implementer unable
+to tell which parts they MUST reproduce and which are merely how Reelier
+does it today. Since the credibility of an open verifier rests on anyone
+being able to build a second one, that ambiguity is a defect in the spec,
+not a convenience.
+
+From this version, sections and claims MAY carry one of two markers:
+
+- **[Normative]** — a requirement every conforming implementation MUST
+  satisfy, regardless of language, runtime, or deployment. Wherever a
+  `src/…` path appears inside a [Normative] block, it is a *pointer to
+  where this repo happens to satisfy the requirement*, never part of the
+  requirement itself.
+- **[Reference implementation]** — behavior of the CLI published from this
+  repo. A conforming implementation MAY substitute anything else that
+  satisfies the surrounding [Normative] requirements. Depending on a
+  [Reference implementation] detail is depending on an implementation
+  choice, not on the format.
+
+An unmarked section carries its existing force: MUST/SHOULD/MAY keywords
+inside it are normative, prose describing this repo's internals is not.
+Markers are being added incrementally; their **absence is not a signal**.
+
+### 0.2 What the record digest covers (stability rule)
+
+`digestSha256` (§4.6) takes **the entire `RunRecord`**, not an enumerated
+list of fields. This is a deliberate and load-bearing property: every
+additive `RunRecord`/`StepRecord` field is covered by the digest — and
+therefore by any signature and timestamp over it — from the moment it
+exists, with no spec change and no version selector.
+
+**[Normative]** An implementation MUST compute the record digest over the
+complete record it serializes. It MUST NOT substitute an enumerated subset
+of fields, even one that matches today's shape. A subset would silently
+stop covering the next additive field, and a signature that stops covering
+new fields without saying so is exactly the overclaim §4.6 exists to
+prevent.
+
 ---
 
 ## 1. The five atoms
@@ -759,6 +802,77 @@ readable without a migration step — old records never need to be rewritten.
   }
 }
 ```
+
+### 4.6 Digest coverage (normative)
+
+A receipt asserts several independent claims, and they do not all cover the
+same bytes. This section states exactly which bytes the record digest
+covers, so that no consumer — and no badge, page, or product surface —
+credits the signature with proving something it never touched.
+
+**The digest input.** `digestSha256(record)` is computed over the complete
+`RunRecord` as serialized into the push body, after any push-time stamping
+and after record-time redaction: *sign what ships, not what ran*. Every
+field described in §4.1 and §4.2 is therefore covered, including additive
+fields introduced after this version (§0.2).
+
+#### 4.6.1 What the digest does NOT cover [Normative]
+
+The push body (§8.2) carries the record alongside **sibling fields**. A
+sibling is not part of the record and is therefore **not** covered by the
+signature or the timestamp:
+
+| Sibling | Why it is outside |
+| --- | --- |
+| `signature` | Cannot be inside a digest it is computed from. |
+| `timestamp` | Same — the TSA signs the digest, so it post-dates it. |
+| `ciAttestation` | Self-authenticating separately (the OIDC token carries its own issuer signature); it is not vouched for by the record's key. |
+| `ciHeadSha` | **Operator-asserted.** Not present in the OIDC token. The ledger honors it only against an actually-open PR's head in the attested repo — that check, not the producer's signature, is what constrains it. |
+| `costUsd`, `priceTableDate` | Derived at push time from a local price table. Unsigned. |
+| `skillName`, `share` | Routing and intent, not evidence. |
+| `skillContentSha256` (sibling copy) | A convenience duplicate of the in-record field. **The in-record one is signed; the sibling is not.** |
+
+**A verifier MUST NOT treat any sibling as covered by
+`unaltered-since-push`.** A party able to modify the push body in flight, or
+the stored row afterwards, can alter any of the above without invalidating
+the signature. This is not a defect being disclosed — it is the necessary
+consequence of signing a record rather than an envelope — but a consumer
+that renders a sibling next to a green signature check, without saying which
+is which, has produced exactly the overclaim never-list #8 forbids.
+
+**Where a field appears both inside the record and as a sibling, a consumer
+MUST prefer the in-record value** and MUST NOT infer that the sibling was
+verified because the record verified. Today this applies to
+`skillContentSha256`.
+
+#### 4.6.2 Verification results are not producer claims [Normative]
+
+A ledger that ingests a record MAY compute and store its own verification
+results (signature validity, timestamp imprint match, CI attestation
+validity) and MAY render them. Those results are **the ledger's
+computation**, not assertions signed by the producer, and they are not
+covered by the record digest.
+
+- A consumer MUST NOT treat a stored verification result as equivalent to
+  having verified the receipt.
+- A consumer wanting an independent check MUST recompute it — `reelier
+  verify <permalink|file> [--key <pub.pem>]` does this offline, recomputing
+  the digest locally and evaluating each claim on its own (§4.6.3).
+- A verification result MUST only ever be written by the verifier that
+  produced it. Backfilling or hand-setting one — even to a value known to
+  be true — destroys the only property that makes the column worth reading.
+
+#### 4.6.3 Per-claim independence [Normative]
+
+Each claim over a receipt is evaluated and reported **separately**, and the
+four-state discipline of §4.3 applies to each: `verified` / `failed` /
+`unchecked` / `absent`. An implementation MUST NOT collapse them into a
+single pass/fail, and MUST NOT let an `absent` or `unchecked` claim render
+as a pass. An absent claim never fails an exit code; a *present* claim that
+failed verification always does.
+
+This is why an unsigned push is never shamed and never marked suspect: "not
+signed" is `absent`, which is an honest state, not a failure.
 
 ---
 

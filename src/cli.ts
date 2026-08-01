@@ -23,6 +23,7 @@ import {
   ABSENT_FIELDS_MAX,
   ABSENT_FIELD_NAME_MAX,
   resolveKeystorePath,
+  macEquals,
   readKeystore,
   writeKeystoreEntry,
   removeKeystoreEntries,
@@ -1545,7 +1546,7 @@ function reportReVerifyDiagnosis(
       (unprojectable.has(name) ? notEstablished : absent).push(name);
       continue;
     }
-    if (expectFieldMac(key, step.attest!.tool, name, liveValue) !== recorded) changed.push(name);
+    if (!macEquals(expectFieldMac(key, step.attest!.tool, name, liveValue), recorded)) changed.push(name);
   }
   const render = (names: string[]): string =>
     names
@@ -2155,7 +2156,7 @@ export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Prom
           reVerifyUnavailable++;
           continue;
         }
-        if (!rebindingArgs && expectMac(key, step.attest!.tool, typed) === step.expect.pre) {
+        if (!rebindingArgs && macEquals(expectMac(key, step.attest!.tool, typed), step.expect.pre)) {
           console.log("  unchanged (state re-verified against current binding)");
           unchangedCount++;
           continue;

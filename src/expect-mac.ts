@@ -24,7 +24,7 @@
 // survives). Revocation = deletion, and it is loud: a check bound under a
 // deleted key degrades to `unevaluated`, never a silent pass.
 
-import { createHash, createHmac, randomBytes } from "node:crypto";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { canonicalJson } from "./canonical-json.js";
@@ -119,6 +119,32 @@ export function expectMac(key: Uint8Array, probeTool: string, projected: Record<
   }
   const input = canonicalJson({ probe: probeTool, projection: tagged, v: 1 });
   return MAC_PREFIX + createHmac("sha256", Buffer.from(key)).update(input, "utf8").digest("hex");
+}
+
+/**
+ * Constant-time equality for two MAC strings — the ONLY sanctioned way to compare a value
+ * produced by `expectMac`/`expectFieldMac`. `test/expect-mac-timing.test.ts` lints for a raw
+ * `===`/`!==` on either, because the per-field diagnosis site was missed the first time this
+ * was fixed by hand.
+ *
+ * These are HMACs under the per-approval keystore secret, so a short-circuiting `===` leaks a
+ * timing signal about a keyed value. Severity is low — forging `expect.pre` needs write access
+ * to the skill file, and the approval hash already covers `expect:` at a boundary no flag
+ * overrides — but this is defense in depth on a secret-keyed comparison and costs nothing.
+ * `AUDIT-COMPLIANCE-1.0` §4.4 specs timing-safe comparison as a MUST for the same class of check.
+ *
+ * Length is deliberately NOT protected: a MAC is a fixed-width `hmac-sha256:<64 hex>` string, so
+ * an early return on a length mismatch reveals nothing the format does not already publish.
+ * `crypto.timingSafeEqual` THROWS on unequal lengths, and a throw here would convert an honest
+ * mismatch verdict into a crashed run — so the length check must come first, and it must return
+ * `false`, never propagate.
+ */
+export function macEquals(a: string, b: string): boolean {
+  if (typeof a !== "string" || typeof b !== "string") return false;
+  const left = Buffer.from(a, "utf8");
+  const right = Buffer.from(b, "utf8");
+  if (left.length !== right.length || left.length === 0) return false;
+  return timingSafeEqual(left, right);
 }
 
 /**
