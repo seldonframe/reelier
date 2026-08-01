@@ -101,8 +101,9 @@ test("unknown expect key rejected with the spec's verbatim message shape", () =>
     // noticing — the key list must end exactly at the (step …) suffix.
     // W3-S4 added `probeArgs` to the closed key set; the error string moves
     // with it in the SAME PR — otherwise every binding this slice stamps
-    // becomes a parse error under the old message's promise.
-    /Unknown 'expect' key "extra" — expected pre\/keyId\/at\/fields\/probeArgs \(step /
+    // becomes a parse error under the old message's promise. W5-T3 added
+    // `expiresAt` under the same rule.
+    /Unknown 'expect' key "extra" — expected pre\/keyId\/at\/expiresAt\/fields\/probeArgs \(step /
   );
 });
 

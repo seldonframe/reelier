@@ -142,7 +142,7 @@ test("W3-S4 grammar: the closed unknown-key error names probeArgs, verbatim", ()
   assert.throws(
     () => parseSkill(skillWithExpect(`{"at":"${EXPECT_AT}","keyId":"${KEY_ID}","pre":"${MAC_A}","nope":"x"}`)),
     (err: Error) => {
-      assert.equal(err.message.split("\n")[0].includes(`Unknown 'expect' key "nope" — expected pre/keyId/at/fields/probeArgs`), true, err.message);
+      assert.equal(err.message.split("\n")[0].includes(`Unknown 'expect' key "nope" — expected pre/keyId/at/expiresAt/fields/probeArgs`), true, err.message);
       return true;
     },
   );

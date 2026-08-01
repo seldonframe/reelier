@@ -62,6 +62,14 @@ export function computeApprovalHash(step: ApprovalHashInput): string {
         at: step.expect.at,
         keyId: step.expect.keyId,
         pre: step.expect.pre,
+        // W5-T3: the approval TTL joins the hash ONLY when present, exactly as
+        // `fields` and `probeArgs` do — a binding with no TTL hashes
+        // byte-identically to 0.28.0 (pinned against literal captured
+        // digests). Binding it is what makes hand-extending a TTL in the
+        // committed file an approval mismatch: without it, the one control
+        // whose whole job is to expire would be the one control anybody could
+        // silently renew.
+        ...(step.expect.expiresAt !== undefined ? { expiresAt: step.expect.expiresAt } : {}),
         ...(step.expect.fields !== undefined ? { fields: step.expect.fields } : {}),
         // W3-S4 / I-17: `probeArgs` joins the hash ONLY when present, exactly
         // as `fields` does — a binding carrying neither hashes byte-identically

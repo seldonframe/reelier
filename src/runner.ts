@@ -129,7 +129,19 @@ export interface StepStateCheck {
   expectedAt: string;
   /** When the execute-time observation resolved; absent iff unevaluated before any observation. */
   observedAt?: string;
-  /** Present iff outcome === "unevaluated" — a closed registry (§8.6): probe-timeout / probe-failed / probe-tool-unknown / empty-projection / key-unavailable. */
+  /**
+   * Present iff outcome === "unevaluated" — a CLOSED registry (§8.6). All
+   * eight values, in the order they are decided:
+   *   approval-expired          (W5-T3 — the TTL elapsed; no probe dispatched)
+   *   probe-args-mismatch       (W3-S4 — filled probe args are not the approved ones; no probe dispatched)
+   *   key-unavailable           (deletion IS revocation; indistinguishable from never-present)
+   *   probe-timeout / probe-failed / probe-tool-unknown
+   *   probe-substrate-mismatch  (W3-S5 — status.code through a wrapped MCP tool)
+   *   empty-projection
+   * This comment listed five for two slices while the code emitted more;
+   * it is normative documentation, so it is kept COMPLETE, not appended to.
+   * Adding a value requires a spec amendment (SPEC.md §4.1).
+   */
   reason?: string;
   /**
    * Present only when outcome === "mismatch" and declared projection fields
@@ -337,6 +349,19 @@ export interface RunOptions {
    * mode, byte-identical to pre-S8 behavior.
    */
   stateGate?: "refuse";
+  /**
+   * W5-T3: the run's clock, epoch ms. Defaults to `Date.now()`, following the
+   * `dryRunSkill(skill, vars, now = Date.now())` precedent. This is the SAME
+   * snapshot `{{today}}`/`{{today±Nd}}` already resolve against (one snapshot
+   * per run, so no fill can straddle a UTC midnight), now injectable so an
+   * approval TTL can be tested at an exact instant.
+   *
+   * Deliberately NOT threaded through the `Date.now()` calls that produce
+   * recorded `ms` durations or the wall-clock `observedAt`/`dispatchedAt`
+   * stamps: those measure the RUN, not the approval, and rewriting them would
+   * be a regression risk with no test to justify it.
+   */
+  now?: number;
 }
 
 /**
@@ -747,6 +772,10 @@ function normalizeStateCheckReason(reason: string): string {
     // above (no probe ran, so wrapping it as `probe-failed:` would claim a
     // dispatch that never happened). Passed through verbatim.
     reason.startsWith("probe-args-mismatch:") ||
+    // W5-T3: same situation — a registry member synthesized without any
+    // dispatch, so folding it under `probe-failed:` would claim a probe
+    // problem that never happened. Passed through verbatim.
+    reason.startsWith("approval-expired:") ||
     // W3-S5 review: the probe DID run and the observation is real — only the
     // status half of it is a wrap-fabricated sentinel, so wrapping this as a
     // probe failure would claim a dispatch problem that did not happen.
@@ -767,6 +796,34 @@ function normalizeStateCheckReason(reason: string): string {
  * changes the probed TARGET is an inference the string must not claim.
  */
 const PROBE_ARGS_MISMATCH_REASON = "probe-args-mismatch: filled probe args differ from the approved ones";
+
+/**
+ * W5-T3. The other member of the closed registry this slice adds, and the
+ * label for TIME expiry — the sibling of state-drift expiry (`--probe`), not
+ * a variant of it. A binding may carry both; they answer different questions
+ * and neither is implemented in terms of the other.
+ *
+ * Boundary is `>=`: the instant named in `expiresAt` is already expired. A
+ * trust boundary rounds toward refusing, and "valid until 09:00" reading as
+ * "still valid at exactly 09:00" is the kind of off-by-one nobody wants to
+ * discover from a receipt.
+ *
+ * The string names ONLY what elapsed. It is deliberately mute about the
+ * world: no probe ran, so an expired approval proves the TTL ran out and
+ * nothing whatsoever about whether the write would have been wrong.
+ */
+function approvalExpiredReason(expiresAt: string | undefined, now: number): string | undefined {
+  if (expiresAt === undefined) return undefined;
+  const deadline = Date.parse(expiresAt);
+  // Unparseable is unrepresentable via parseSkill (validateExpectShape
+  // shape-anchors it) and the approval hash covers the field, so a hand-edit
+  // is already a mismatch before this runs. Fail open here rather than mint a
+  // reason for a state that cannot arise: inventing "expired" from a value we
+  // could not read would be a claim we did not earn.
+  if (Number.isNaN(deadline)) return undefined;
+  if (now < deadline) return undefined;
+  return `approval-expired: this approval expired at ${expiresAt} (checked at ${new Date(now).toISOString()})`;
+}
 
 /**
  * True iff any string leaf of `value` contains a `{{name}}` hole (the
@@ -1044,8 +1101,29 @@ async function executeStep(
     probeArgsBlocked = PROBE_ARGS_MISMATCH_REASON;
   }
 
+  // ---- W5-T3: time expiry, resolved BEFORE any probe dispatches ----
+  //
+  // Placed here, and not inside the state-check block below, because expiry
+  // is a PRE-PROBE fact: probing a binding whose clock already ran out spends
+  // a call to learn something that cannot change the verdict, and — worse —
+  // a probe that then fails would report `probe-failed`, which is a claim
+  // about the probe rather than about the approval. The operator asked for an
+  // approval that expires as a no; the receipt has to say so in those words.
+  //
+  // Reached only after the approval hash MATCHED (above), so the TTL read
+  // here is provably the approved one, not a hand-extended one.
+  const expiredReason = isWrite && step.expect !== undefined ? approvalExpiredReason(step.expect.expiresAt, now) : undefined;
+
   if (isWrite && step.attest && probeApproved) {
-    if (probeArgsBlocked !== undefined) {
+    if (expiredReason !== undefined) {
+      // Synthesized, never dispatched — the same discipline the probeArgs
+      // gate uses. The attest degrades honestly through the existing
+      // probe-failure path: no fabricated observation, no `observedAt`.
+      //
+      // The PRE side only. The post-probe below deliberately still runs in
+      // recorder mode — see its comment for why the two sides differ.
+      preProbe = { ok: false, reason: expiredReason };
+    } else if (probeArgsBlocked !== undefined) {
       // Synthesized, never dispatched: the state check below reads this as an
       // ordinary probe failure and the attest degrades through the existing
       // probe-failure path — no fabricated observation, no `observedAt`.
@@ -1073,7 +1151,26 @@ async function executeStep(
     // Resolved above the pre-probe since W3-S4 (the probeArgs gate needs it
     // before any dispatch); the ordering this branch encodes is unchanged.
     const key = expectKey;
-    if (key === undefined) {
+    if (expiredReason !== undefined) {
+      // FIRST in the chain, ahead of even the key check: expiry needs no key
+      // and no observation, so it is decidable when nothing else is. It is
+      // `unevaluated` rather than `mismatch` for the same reason
+      // probe-substrate-mismatch is — nothing about the world was
+      // established, so a mismatch would be exactly as unearned as a match.
+      // Under `state_gate: refuse` the existing branch below turns this into
+      // a refusal before dispatch, which is the whole feature. In recorder
+      // mode it stamps and the write goes out: recorder records, gate
+      // refuses, and this slice does not blur the two.
+      stateCheck = {
+        outcome: "unevaluated",
+        // `stamped`, not `proceeded`: the runner recorded a finding about the
+        // approval rather than merely failing to evaluate one. No observedAt
+        // — nothing was observed.
+        action: "stamped",
+        expectedAt,
+        reason: expiredReason,
+      };
+    } else if (key === undefined) {
       // Deletion IS revocation and is indistinguishable from never-present
       // (C7) — one reason string, never a fake distinction. observedAt is
       // present iff the probe actually resolved.
@@ -1252,6 +1349,19 @@ async function executeStep(
       // dispatched". The post-probe would carry the same unapproved filled
       // args out of the same hole, so the ban covers it identically —
       // synthesized as a failure, never dispatched.
+      //
+      // W5-T3 does NOT ride that ban, and the asymmetry is deliberate
+      // (founder decision, 2026-08-01). An expired approval skips the PRE-probe
+      // because the verdict is already decided without it and a probe that ran
+      // and failed would report `probe-failed`, a claim about the probe rather
+      // than about the approval. None of that applies afterwards: by here the
+      // write has DISPATCHED (recorder mode — gate mode returned long before
+      // this line), and the probe args were hash-verified, so there is no
+      // exfiltration channel the way there is for probeArgs. Skipping the post
+      // side bought symmetry and nothing else, and it cost the receipt its only
+      // post-state evidence — making the expired-approval receipt the least
+      // informative in the system, in exactly the case where an operator most
+      // wants to know what the write actually did.
       const postProbe: ProbeResult =
         probeArgsBlocked !== undefined
           ? { ok: false, reason: probeArgsBlocked }
@@ -1595,7 +1705,9 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
   // A single snapshot for the whole run — every fillTemplate call inside this
   // run shares it, so {{today}}/{{today±Nd}} can never resolve to a
   // different calendar day mid-run (e.g. across a UTC midnight boundary).
-  const now = Date.now();
+  // Injectable since W5-T3 (options.now) so an approval TTL can be evaluated
+  // at an exact instant; unset, it is exactly today's `Date.now()`.
+  const now = options.now ?? Date.now();
   const probeTimeoutMs = options.probeTimeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS;
 
   // Expect keystore, loaded lazily and at most once — only a step that
