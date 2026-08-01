@@ -242,7 +242,7 @@ MUST split on `\r\n` or `\n`, skip blank/whitespace-only lines, and
 - The **`meta` record MUST be first** (`seq: 0`). `Recorder.start` writes it
   immediately upon `reelier_start_recording` and nothing else is written
   before it.
-- `call` and `result` records additionally share a **call-index `i`**,
+- `call`, `prov`, and `result` records additionally share a **call-index `i`**,
   independent of `seq`, monotonic from 0, incremented once per call
   (`Recorder.callIndex`). **A `call` record's `i` is emitted before the
   matching `result` record's `i`** — the pairing rule a compiler or replay
@@ -252,6 +252,10 @@ MUST split on `\r\n` or `\n`, skip blank/whitespace-only lines, and
   are in flight concurrently, since each `call`→`result` normally happens
   back-to-back per `CallToolRequestSchema` handler invocation —
   `src/recorder.ts:184-234`).
+- For a call that actually dispatches, a `prov` record with the same `i` is
+  written immediately after `call` and before downstream dispatch. A denied or
+  dry-run call has no `prov`: nothing went out. `prov` is observational only;
+  no state it carries changes dispatch, policy, outcome or exit code.
 - `note` records carry no `i` — a note is trace-global narration, not
   attached to a call index. The compiler associates the immediately
   preceding run of `note`s with the next `call` (see §6 below and
@@ -273,12 +277,18 @@ type TraceRecord =
       policyGap?: string }
   | { t: "note";   seq: number; ts: string; text: string }
   | { t: "call";   seq: number; i: number; ts: string; tool: string; args: unknown }
+  | { t: "prov";   seq: number; i: number;
+      resolved?: Array<{ path: string; via: "exact" | "normalized";
+                         from: { call: number; at: string } }>;
+      authored?: string[];
+      unresolved?: Array<{ path: string; reason: string }>;
+      truncated?: Partial<Record<"resolved" | "authored" | "unresolved", number>> }
   | { t: "result"; seq: number; i: number; ok: boolean; ms: number; body: unknown };
 ```
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `t` | `"meta" \| "note" \| "call" \| "result"` | Discriminator. Closed set — see §0. |
+| `t` | `"meta" \| "note" \| "call" \| "prov" \| "result"` | Discriminator. Closed set — see §0. |
 | `seq` | integer ≥ 0 | File-scoped monotonic sequence number (§2.1). |
 | `name` (meta) | string | The trace's own name, as given to `reelier_start_recording`. |
 | `startedAt` (meta) | ISO-8601 string | Recording start time (`new Date().toISOString()`). |
@@ -288,9 +298,13 @@ type TraceRecord =
 | `toolAnnotations` (meta, optional, 0.13.0+) | `Record<string, {readOnlyHint?, destructiveHint?, idempotentHint?}>` | MCP `tools/list` annotation hints per **exposed** tool name (post collision-prefixing, matching `call.tool`), captured once at recording start (`collectToolAnnotations`, `src/recorder.ts`). A writer MUST include only hints the downstream actually declared (never fabricated defaults) and SHOULD omit the field entirely when no wrapped tool declares any of the three — so annotation-free traces are byte-identical to pre-0.13.0 ones. Additive per §0's forward-compatibility rule; a pre-0.13.0 reader tolerates and ignores it. Consumers treat these as **hints, not security**: the compiler's effect classifier (`classifyEffect`, `src/effect-verbs.ts`) applies a strict trust ladder — `destructiveHint: true` always wins; **no annotation ever downgrades a verb-list match** (not the destructive tier, and not an idempotent-write verb either — `create_note` + `readOnlyHint: true` stays `idempotent-write`); a hint may only tighten a read verb-match (`idempotentHint`) or refine a tool whose verbs the lists don't recognize — and replay write-gating (§3.6) still applies to everything classified `idempotent-write` or worse. |
 | `ts` (note/call) | ISO-8601 string | Timestamp the record was written. |
 | `text` (note) | string | Free-text narration passed to `reelier_note`. |
-| `i` (call/result) | integer ≥ 0 | Call index; shared between a `call` and its `result` (§2.1). |
+| `i` (call/prov/result) | integer ≥ 0 | Call index; shared between a `call`, its optional `prov`, and its `result` (§2.1). |
 | `tool` (call) | string | The **exposed** tool name (post collision-prefixing — §5.3), never the raw downstream name. |
 | `args` (call) | JSON value | The tool call's arguments, **after redaction** (§2.3). |
+| `resolved` (prov, optional, 0.31.0+) | array | Argument scalar paths that matched a prior successful downstream response before dispatch. `from.call` names that prior call index and `from.at` its response path; `via` is exactly `exact` or `normalized`. Values and per-value digests are never recorded. |
+| `authored` (prov, optional, 0.31.0+) | string[] | Argument scalar paths absent from the complete retained source index. Neutral fact, never a verdict: authored does not mean wrong, fabricated or unsafe. |
+| `unresolved` (prov, optional, 0.31.0+) | array | Argument scalar paths for which neither grounded nor authored was established, with a deterministic reason. A consumer MUST render this as neither pass nor fail. |
+| `truncated` (prov, optional, 0.31.0+) | object | Number of additional entries omitted from each displayed list by the shared per-list cap. Omitted when nothing was capped; a renderer MUST expose these counts rather than present a capped list as complete. |
 | `ok` (result) | boolean | `true` unless the downstream call raised, or its MCP result set `isError: true`. |
 | `ms` (result) | integer ≥ 0 | Wall-clock duration of the call, in milliseconds. |
 | `body` (result) | JSON value | The full MCP `CallToolResult`-shaped return value (`{content: [...], isError?}`), **after redaction** — not just the tool's payload. |
@@ -299,6 +313,23 @@ type TraceRecord =
 `reelier_note`, and `reelier_stop_recording` themselves never produce
 `call`/`result` records — only tools proxied from a `--wrap`'d downstream
 do (`src/recorder.ts:184-234`).
+
+#### 2.2.1 Argument provenance honesty boundary
+
+`prov` answers only where each outbound scalar value can be traced: `grounded`,
+`authored`, or `unresolved`. Ungrounded is not wrong. A summary, subject line or
+generated slug is legitimately authored, and the proxy does not see values a
+person supplied outside MCP traffic. A grounded value can still be the wrong
+record. Consumers MUST NOT render any state as a correctness or safety verdict,
+MUST NOT turn the counts into a score, and MUST NOT gate from this record.
+
+The live source index is process-local, hash-only and reset at recording start.
+It accepts at most 4,096 scalar source leaves. Once saturated, retained hits can
+still be grounded, but every miss is `unresolved` with
+`source-index-cap: 4096 leaves`; saturation can never manufacture `authored`.
+Only successful real downstream results enter the index. Failed calls, denials,
+and dry-run stubs are not sources. Full derivation and non-goals:
+`docs/specs/argument-provenance-v1.md`.
 
 ### 2.3 Redaction (writer-side SHOULD)
 
