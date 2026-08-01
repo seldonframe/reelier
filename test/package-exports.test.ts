@@ -26,7 +26,11 @@ test("every exports subpath points at a file the build actually emits", () => {
   const missing: string[] = [];
   for (const [subpath, target] of Object.entries(pkg.exports)) {
     // Wildcards (e.g. "./contract/*") name a directory, not a file — check the directory.
-    const rel = target.includes("*") ? path.dirname(target.replace("*", "")) : target;
+    // Strip the star and keep the trailing slash; `existsSync("./contract/")` is true and
+    // `existsSync("./contract-nope/")` is false on both POSIX and Windows. Do NOT wrap this
+    // in path.dirname — dirname("./contract/") is ".", the repo root, which always exists,
+    // and the check silently degrades to "does this repo exist".
+    const rel = target.includes("*") ? target.replace("*", "") : target;
     if (!existsSync(path.join(REPO_ROOT, rel))) missing.push(`${subpath} -> ${target}`);
   }
   assert.deepEqual(
