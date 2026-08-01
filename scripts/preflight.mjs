@@ -9,7 +9,7 @@
 // Dependency-free: node:child_process + node:fs + node:process only.
 
 import { execSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { readFileSync, rmSync } from 'node:fs';
 import process from 'node:process';
 import { checkBadge } from './badge-check.mjs';
 
@@ -120,6 +120,16 @@ console.log('reelier release preflight\n');
 
 // --- 4. Build passes ---------------------------------------------------------
 {
+  // tsc does not delete output for source files that no longer exist — a
+  // stale dist/dist-test from a previous checkout state (a file that was
+  // renamed or removed since) survives an incremental build and keeps
+  // running/counting. That silently pollutes both "build passes" and the
+  // pass count the badge check validates against, so every counted run
+  // starts from a clean slate rather than trusting whatever was already on
+  // disk.
+  rmSync('dist', { recursive: true, force: true });
+  rmSync('dist-test', { recursive: true, force: true });
+
   const buildRes = runAllowFail('npm run build');
   if (buildRes.ok) {
     ok('build passes');

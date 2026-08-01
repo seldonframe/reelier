@@ -25,6 +25,17 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      # Belt-and-suspenders, not a fix for anything seen on this runner:
+      # actions/checkout@v4 always starts from an empty workspace and
+      # nothing here caches dist/dist-test, so there is nothing to clean
+      # today. It's here because tsc does not delete output for source
+      # files that no longer exist — a stale dist-test can keep running (and
+      # counting) a compiled test whose source was renamed or deleted, which
+      # is exactly the kind of thing an future "speed up CI" cache on these
+      # directories would reintroduce silently. Cheap now, guards later.
+      - name: Clean build output
+        shell: bash
+        run: rm -rf dist dist-test
       - run: npm run build
       # `shell: bash` is explicit (not just the Linux default) because it
       # also runs on windows-latest via the runner's bundled Git Bash — the
