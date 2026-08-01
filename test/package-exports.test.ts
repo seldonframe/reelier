@@ -22,7 +22,20 @@ const pkg = JSON.parse(readFileSync(path.join(REPO_ROOT, "package.json"), "utf8"
   exports: Record<string, string>;
 };
 
-test("every exports subpath points at a file the build actually emits", () => {
+/**
+ * Map an exports target to the source that must produce it. `npm test` compiles only
+ * `dist-test/`, never `dist/`, so asserting on `dist/` alone makes this test pass or fail
+ * depending on whether someone ran `npm run build` earlier in that directory — the same
+ * order-dependence that let a stale `dist-test/` inflate the pass count. The source check
+ * is build-independent and catches the real defect: a subpath naming a module that does
+ * not exist. The emitted file is checked too, but only when a build is actually present.
+ */
+function sourceFor(target: string): string | undefined {
+  const m = /^\.\/dist\/(.+)\.js$/.exec(target);
+  return m ? `src/${m[1]}.ts` : undefined;
+}
+
+test("every exports subpath points at a module that exists in source", () => {
   const missing: string[] = [];
   for (const [subpath, target] of Object.entries(pkg.exports)) {
     // Wildcards (e.g. "./contract/*") name a directory, not a file — check the directory.
@@ -30,14 +43,20 @@ test("every exports subpath points at a file the build actually emits", () => {
     // `existsSync("./contract-nope/")` is false on both POSIX and Windows. Do NOT wrap this
     // in path.dirname — dirname("./contract/") is ".", the repo root, which always exists,
     // and the check silently degrades to "does this repo exist".
+    const rel = target.includes("*") ? target.replace("*", "") : (sourceFor(target) ?? target);
+    if (!existsSync(path.join(REPO_ROOT, rel))) missing.push(`${subpath} -> ${target} (looked for ${rel})`);
+  }
+  assert.deepEqual(missing, [], `exports map names modules that do not exist: ${missing.join(", ")}`);
+});
+
+test("when a build is present, every exports subpath resolves to an emitted file", () => {
+  if (!existsSync(path.join(REPO_ROOT, "dist"))) return; // no build here; the source test above still ran
+  const missing: string[] = [];
+  for (const [subpath, target] of Object.entries(pkg.exports)) {
     const rel = target.includes("*") ? target.replace("*", "") : target;
     if (!existsSync(path.join(REPO_ROOT, rel))) missing.push(`${subpath} -> ${target}`);
   }
-  assert.deepEqual(
-    missing,
-    [],
-    `exports map points at files that do not exist (run \`npm run build\` first): ${missing.join(", ")}`
-  );
+  assert.deepEqual(missing, [], `exports map points at files the build did not emit: ${missing.join(", ")}`);
 });
 
 test("the subpaths reelier-cloud imports are present — removing one is a breaking change", () => {
