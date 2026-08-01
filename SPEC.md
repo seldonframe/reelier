@@ -155,6 +155,48 @@ implementation is therefore sound for every record without such a key, and a
 future JCS-interop digest — if one is ever needed — MUST be a separate,
 explicitly versioned field rather than a redefinition of this one.
 
+### 0.4 Two senses of "skill"
+
+The word is overloaded in this ecosystem, and this spec uses it in exactly one
+sense. Both things exist in this repository, both are called "skill" in casual
+use, and they are **not the same artifact**.
+
+| | **Agent Skill** | **Reelier skill file** |
+| --- | --- | --- |
+| File | `SKILL.md` in a folder | `<name>.skill.md` (§3) |
+| Body | free-form prose instructions | `## Steps` with the five atoms (§1) |
+| Read by | a **model**, on demand | `reelier run`, with **no model in the loop** |
+| Purpose | tells an agent *when* to reach for a capability | *is* the capability — a deterministic program |
+| Format owner | the open Agent Skills standard | this spec |
+
+**The Agent Skill format is not defined here.** It is an open standard,
+originally published by Anthropic and supported by many agent clients. Reelier
+ships one — `integrations/claude-code/reelier/SKILL.md` — whose entire job is
+to teach an agent when to reach for the CLI. It contains no steps, no
+assertions, and nothing this spec describes.
+
+**A Reelier skill file is the compiled artifact this spec defines.** It is
+executable in the only sense that matters here: `reelier run` dispatches its
+steps deterministically and a model never reads it.
+
+They share a filename convention and nothing else. `reelier compile
+--from-skill <SKILL.md>` converts the first into the second — *your skill,
+minus the model.*
+
+**[Normative]** A consumer MUST NOT treat one as the other. An Agent Skill
+handed to `reelier run` has no `## Steps` section and MUST be rejected by
+`parseSkill` with the usual typed error, never coerced or partially executed. A
+Reelier skill file placed in an agent's skills directory is not a valid Agent
+Skill and MUST NOT be published as one.
+
+**Naming note, recorded rather than resolved.** `<name>.skill.md` predates the
+Agent Skills standard's adoption in this ecosystem. The extension is a
+*convention*, not a requirement — `reelier run` accepts any path, and only
+discovery (`reelier ci`) and default output naming glob for `*.skill.md`. A
+future rename to a non-colliding extension is therefore additive rather than
+breaking, and is deliberately **not** decided here: names spread with every
+receipt and are chosen once.
+
 ---
 
 ## 1. The five atoms
