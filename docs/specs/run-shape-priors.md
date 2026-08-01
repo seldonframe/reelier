@@ -31,19 +31,41 @@ gate predicate. This is a recorder.
 ## 2. Signals
 
 All derived from the shipped `RunRecord` shape (`src/runner.ts`), verified
-field by field. Every per-run count is derived from `steps[]` rather than
-from `totals`, for the reason already documented at `recordTotals` in
-`src/footprint.ts`: the per-step outcomes were always recorded correctly
-even in versions where the rollup that summed them was not.
+field by field.
 
-| signal | derivation |
-|---|---|
-| `steps` | `steps.length` |
-| `passed` / `unchecked` / `skipped` / `failed` | count of `steps[].outcome` — four separate signals, never collapsed |
-| `writes` | count of steps carrying a `write` block (`StepRecord.write` is present iff a write-effect step actually dispatched) |
-| `duration` | sum of `steps[].ms` |
-| `gap` | this run's `startedAt` minus the previous run's `startedAt` |
-| `silence` | the reading instant minus the latest run's `startedAt` |
+Every per-run signal is a projection of one counter on the `RunFootprint`
+that `deriveFootprint` (`src/footprint.ts`) computes — **the single place in
+this package where a run's shape is derived**. Every one of those counters
+comes from `steps[]` rather than from `totals`: the per-step outcomes were
+always recorded correctly even in versions where the rollup that summed them
+was not, so the steps are authoritative and the rollup is only sometimes
+trustworthy. (`recordTotals`, in the same file, deliberately *does* read
+`totals` where SPEC §4.4 says it can be trusted. It answers a different
+question — "what does this record claim its totals were?", which is what
+`reelier bench` needs — and the two functions carry a comment each saying why
+they are not duplicates.)
+
+| signal | footprint counter | derivation |
+|---|---|---|
+| `steps` | `steps` | `steps.length` |
+| `passed` / `unchecked` / `skipped` / `failed` | same | count of `steps[].outcome` — four separate signals, never collapsed |
+| `writes` | `writesDispatched` | count of steps carrying a `write` block (`StepRecord.write` is present iff a write-effect step actually dispatched) |
+| `writeResources` | `distinctWriteResources` | count of **distinct present** `write.resource.id` values; a dispatched write whose resource could not be extracted contributes nothing and is not an "unknown" bucket |
+| `escalations` | `escalations` | count of steps carrying an `llm` block — an escalation that actually ran (`llm` is *absent*, not zero, when it did not) |
+| `healedL1` / `healedL2` | `healL1` / `healL2` | count of steps recorded at that heal level |
+| `mocked` | `mocked` | count of steps marked `mocked: true` |
+| `duration` | `ms` | sum of `steps[].ms`, skipping any step whose `ms` is not a finite number |
+| `gap` | — | this run's `startedAt` minus the previous run's `startedAt` |
+| `silence` | — | the reading instant minus the latest run's `startedAt` |
+
+Rendered labels differ from the metric names where the identifier does not
+read as English: `writeResources` prints as `resources` (directly under
+`writes`, which is what makes the short form unambiguous) and `healedL1` /
+`healedL2` print as `healed L1` / `healed L2`, matching the `[healed L1]` tag
+`reelier run` already prints against an escalated step.
+
+Section numbers below are stable and referenced from `src/priors.ts`; new
+subsections are appended rather than inserted.
 
 ### 2.1 Not shipped: distinct tools touched
 
@@ -68,6 +90,63 @@ changes essentially only when the skill file itself changed. That is why the
 report carries the skill-file note (§5): a `steps` deviation with a changed
 skill file is the operator's own edit, and saying so is the difference
 between a useful line and a scary one.
+
+### 2.3 One derivation: a behaviour change, named rather than slipped in
+
+F5 originally carried its own `shapeOf`, a near-copy of `deriveFootprint`.
+Two functions answering "what shape did this run have?" is how the answer to
+that question drifts apart, so `shapeOf` is gone and the signals project off
+the shared object.
+
+That swap is a **silent change to a shipped surface** and is recorded here as
+one. `deriveFootprint` counts outcomes and duration from `steps[]`
+unconditionally; on any record whose `totals` rollup contradicts its own
+`steps[]`, F5's counts follow the steps, and an existing operator's baseline
+can move by the size of that contradiction. This is the correct direction —
+the steps are the measurement and the rollup is a claim about it — and it
+cannot arise from a record this package wrote, only from a hand-edited or
+externally generated one. Measured before the change against 1,835 real run
+records across 190 local run-record files: **zero** records changed any
+count, and **zero** modern records carried a `totals` rollup that disagreed
+with their own `steps[]`.
+
+The same swap tightened one guard: a step whose `write` or `llm` is present
+but is not a non-null, non-array object (a hand-edited `"write": []`, `0`, or
+a bare string) is no longer counted as a dispatched write or an escalation.
+Same corpus, same result: zero records affected.
+
+Neither change can move an outcome or an exit code. §1 still holds.
+
+### 2.4 Two footprint counters that are deliberately NOT signals
+
+- **`healL0`.** It is `steps` minus `healL1` and `healL2`, so it carries no
+  information those three do not already carry. A run where one step
+  escalated would report a single movement twice — a healed-L1 row going up
+  and a healed-L0 row coming down — and a surface that says the same thing
+  twice teaches the operator that half of what it says is redundant.
+- **`manifestIgnored`.** It is a boolean, and the deviation rule (§3) is
+  defined over numbers: there is no honest median of a flag. Its absence is
+  also ambiguous between "no manifest" and "preflight ran normally"
+  (`src/runner.ts:237-243`), so no consumer may read `false` as "preflight
+  passed". It stays on `RunFootprint` for persistence and is never baselined.
+
+Both exclusions are pinned in `test/priors.test.ts`, which asserts the metric
+list verbatim: a counter cannot drift onto this surface unnoticed.
+
+### 2.5 `writeResources` is not a second write count
+
+Six writes landing on six records and six writes landing on the same record
+are the same `writes` and a different blast radius. `writes` cannot see the
+difference; this signal is the only row that can. It is still only a
+difference — a collapse to one resource is not evidence of a fault, and this
+surface does not say it is.
+
+`distinctWriteResources` counts **distinct present** ids. `resource` and
+`resource.id` are best-effort and frequently absent, never fabricated
+(`src/runner.ts:487-493`), so a dispatched write whose resource could not be
+extracted contributes nothing at all. It is not an "unknown" bucket, and the
+signal must not be read as "every resource this run touched" — only as "the
+distinct ones the record names".
 
 ## 3. The statistic
 
