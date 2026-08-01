@@ -1109,6 +1109,9 @@ async function executeStep(
       // Synthesized, never dispatched — the same discipline the probeArgs
       // gate uses. The attest degrades honestly through the existing
       // probe-failure path: no fabricated observation, no `observedAt`.
+      //
+      // The PRE side only. The post-probe below deliberately still runs in
+      // recorder mode — see its comment for why the two sides differ.
       preProbe = { ok: false, reason: expiredReason };
     } else if (probeArgsBlocked !== undefined) {
       // Synthesized, never dispatched: the state check below reads this as an
@@ -1336,15 +1339,23 @@ async function executeStep(
       // dispatched". The post-probe would carry the same unapproved filled
       // args out of the same hole, so the ban covers it identically —
       // synthesized as a failure, never dispatched.
-      // W5-T3 rides the same ban: a probe skipped before the write must stay
-      // skipped after it, or "the probe was never called on an expired
-      // approval" would be true only of the half nobody checks.
+      //
+      // W5-T3 does NOT ride that ban, and the asymmetry is deliberate
+      // (founder decision, 2026-08-01). An expired approval skips the PRE-probe
+      // because the verdict is already decided without it and a probe that ran
+      // and failed would report `probe-failed`, a claim about the probe rather
+      // than about the approval. None of that applies afterwards: by here the
+      // write has DISPATCHED (recorder mode — gate mode returned long before
+      // this line), and the probe args were hash-verified, so there is no
+      // exfiltration channel the way there is for probeArgs. Skipping the post
+      // side bought symmetry and nothing else, and it cost the receipt its only
+      // post-state evidence — making the expired-approval receipt the least
+      // informative in the system, in exactly the case where an operator most
+      // wants to know what the write actually did.
       const postProbe: ProbeResult =
-        expiredReason !== undefined
-          ? { ok: false, reason: expiredReason }
-          : probeArgsBlocked !== undefined
-            ? { ok: false, reason: probeArgsBlocked }
-            : await runProbe(step.attest, tools, probeBindings, ctx, now, probeTimeoutMs);
+        probeArgsBlocked !== undefined
+          ? { ok: false, reason: probeArgsBlocked }
+          : await runProbe(step.attest, tools, probeBindings, ctx, now, probeTimeoutMs);
       const postAt = new Date().toISOString();
       const selector = step.attest.tool;
       const preSide = preProbe && preProbe.ok && Object.keys(preProbe.projected).length > 0 ? preProbe.projected : undefined;

@@ -363,15 +363,49 @@ test("TTL end-to-end: hand-editing expiresAt in the file is an approval MISMATCH
 test("TTL recorder mode: an expired approval EXECUTES and stamps the finding — recorder records, gate refuses", async () => {
   await withTempDir(async (dir) => {
     const { skill, keystorePath } = await boundSkill(dir, { compiled_truth: "# v1" }, { expiresAt: EXPIRES_AT });
-    const { tools, writes } = spiedTools(() => ({ compiled_truth: "# v1" }));
+    const { tools, probes, writes } = spiedTools(() => ({ compiled_truth: "# v1" }));
     const record = await runSkill(skill, { tools, expectKeystorePath: keystorePath, cwd: dir, now: T_EXPIRY + 60_000 });
     const step = record.steps[0];
     assert.equal(step.stateCheck!.outcome, "unevaluated", "never a pass, and never a mismatch — its own reason");
     assert.match(step.stateCheck!.reason!, /^approval-expired: /);
     assert.equal(step.stateCheck!.action, "stamped", "the recorder stamps a finding it did not act on");
-    assert.equal(step.stateCheck!.observedAt, undefined, "nothing was observed — the probe never ran");
+    assert.equal(step.stateCheck!.observedAt, undefined, "the VERDICT used no observation — the pre-probe never ran");
     assert.equal(writes.length, 1, "recorder mode does not block: the write dispatched");
     assert.ok(step.write, "and the receipt records it");
+
+    // Founder decision 2026-08-01: the probes are ASYMMETRIC on purpose. The
+    // pre-probe is skipped (the verdict is already decided, and a probe that
+    // failed would mislabel it `probe-failed`); the post-probe RUNS, because
+    // the write already went out and this is the receipt's only evidence of
+    // what it actually did. Withholding it bought symmetry and cost the
+    // operator the one thing they most want to see.
+    assert.equal(probes.length, 1, "exactly one probe: the post side, not the pre side");
+    assert.ok(step.attest, "an expired approval still attests");
+    assert.equal(step.attest!.method, "declared-probe");
+    assert.equal(step.attest!.confidence, "partial", "one-sided evidence is 'partial' — never 'absent', never 'exact'");
+    assert.equal(step.attest!.pre, undefined, "no fabricated pre observation");
+    assert.ok(step.attest!.post, "and a REAL post observation");
+    assert.match(step.attest!.post!.hash, /^sha256:[0-9a-f]{64}$/);
+    assert.match(step.attest!.reason!, /^pre: approval-expired: /, "the missing half is named honestly");
+    assert.equal(step.attest!.delta, undefined, "no delta — a one-sided attest has nothing to compare");
+  });
+});
+
+test("TTL gate mode: the post-probe asymmetry does NOT apply — no dispatch means nothing to observe afterward", async () => {
+  await withTempDir(async (dir) => {
+    const { skill, keystorePath } = await boundSkill(dir, { compiled_truth: "# v1" }, { expiresAt: EXPIRES_AT });
+    const { tools, probes, writes } = spiedTools(() => ({ compiled_truth: "# v1" }));
+    const record = await runSkill(skill, {
+      tools,
+      expectKeystorePath: keystorePath,
+      cwd: dir,
+      stateGate: "refuse",
+      now: T_EXPIRY + 60_000,
+    });
+    assert.equal(record.steps[0].outcome, "failed");
+    assert.equal(record.steps[0].attest, undefined);
+    assert.equal(writes.length, 0);
+    assert.equal(probes.length, 0, "neither probe — the refusal returns before the post side is reached");
   });
 });
 
@@ -508,7 +542,13 @@ test("TTL composes with --probe: expired wins over state drift; unexpired drift 
     });
     assert.equal(a.steps[0].stateCheck!.outcome, "unevaluated");
     assert.match(a.steps[0].stateCheck!.reason!, /^approval-expired: /);
-    assert.equal(drifted.probes.length, 0, "no probe: expiry needs no observation");
+    // The VERDICT consumed no observation — that is what "expiry needs no
+    // probe" means, and `observedAt` is where it is visible. Recorder mode
+    // still runs the POST probe afterwards (founder decision 2026-08-01), so
+    // the spy sits at exactly one: the post side, never the pre side. Under
+    // the gate it sits at zero, pinned separately.
+    assert.equal(a.steps[0].stateCheck!.observedAt, undefined, "the expiry verdict looked at nothing");
+    assert.equal(drifted.probes.length, 1, "post-probe only — the pre side never ran");
 
     // Same step, same drift, inside the TTL → the state-drift control fires
     // and the TTL does not swallow it.
