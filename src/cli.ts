@@ -90,6 +90,7 @@ import {
 import { BUNDLED_PRICES_RETRIEVED_AT } from "./prices.js";
 import {
   loadPolicyForWrap,
+  policyRecordFromLoad,
   summarizePolicyForWrapStart,
   parsePolicyStrict,
   hasEndpointRules,
@@ -448,6 +449,11 @@ export async function cmdRun(
       // into repo B. Same value, by construction.
       ...(deps.cwd !== undefined ? { cwd: deps.cwd } : {}),
       ...(stateGate.mode === "refuse" ? { stateGate: "refuse" as const } : {}),
+      // The policy in force for THIS run, from the same resolution that
+      // decided the gate — so the digest names the bytes that actually
+      // governed it. Never inherited from the trace this skill was compiled
+      // from (policy-attestation-v1 §3).
+      policy: stateGate.policy,
       ...(args.fails.length > 0 ? { mockFailures } : {}),
       onStep: (rec) => {
         const icon =
@@ -941,7 +947,11 @@ async function cmdMcp(args: ParsedArgs): Promise<number> {
   const server = buildProxyServer(downstreams, {
     traceDir,
     policy: policyResult.policy,
-    policyGap: policyResult.ok ? undefined : policyResult.error,
+    // The four-state claim, not just the malformed case the old policyGap
+    // marked. Built from the load result — whose digest is bound to the read
+    // that produced the policy — so nothing here can re-read the file and
+    // claim `verified` over bytes that never enforced anything (§2.1).
+    policyRecord: policyRecordFromLoad(policyResult),
     allowWrites,
   });
   const transport = new StdioServerTransport();

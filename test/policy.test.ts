@@ -346,6 +346,122 @@ test("loadPolicyForWrap: a malformed project policy.yml fails SAFE (deny nothing
   }
 });
 
+// ---------------------------------------------------------------------------
+// S1 (policy-attestation-v1 §1.1) — an existing-but-unreadable policy file.
+// The bare `catch { continue; }` this replaces could not tell ENOENT from
+// EACCES/EISDIR/a Windows lock, so it skipped a file that EXISTS and fell
+// through to the global one — or to "no policy at all", which the wrap then
+// reported as "none configured … all calls pass through". Mirrors
+// resolveStateGateForRun (src/policy.ts): ENOENT continues, anything else
+// stops the traversal and is reported.
+//
+// FIXTURE NOTE (load-bearing): the unreadable file is a DIRECTORY at the
+// policy path (EISDIR). `chmod` is a no-op for this purpose on Windows, this
+// project's primary platform, so a permissions-based fixture would silently
+// degrade to "readable" and the test would pass without testing anything.
+// EISDIR is a genuine non-ENOENT read error on every platform CI runs on.
+// ---------------------------------------------------------------------------
+
+test("loadPolicyForWrap: an unreadable project policy.yml is reported unreadable, never silently skipped", async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "reelier-policy-cwd-"));
+  const home = await mkdtemp(path.join(tmpdir(), "reelier-policy-home-"));
+  try {
+    const { project } = policyPaths(cwd, home);
+    await mkdir(project, { recursive: true }); // a directory where the file should be
+
+    const result = await loadPolicyForWrap(cwd, home);
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.unreadable, true);
+      assert.equal(result.sourcePath, project);
+      assert.deepEqual(result.policy, emptyPolicy()); // fails safe — deny-nothing, never bricks the agent
+      assert.match(result.error, /could not be read/i);
+    }
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("loadPolicyForWrap: an unreadable project policy.yml does NOT fall through to the global one", async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "reelier-policy-cwd-"));
+  const home = await mkdtemp(path.join(tmpdir(), "reelier-policy-home-"));
+  try {
+    const { project, global } = policyPaths(cwd, home);
+    await mkdir(project, { recursive: true });
+    await mkdir(path.dirname(global), { recursive: true });
+    await writeFile(global, 'version: 1\ndeny:\n  - tool: "global.*"\n', "utf8");
+
+    const result = await loadPolicyForWrap(cwd, home);
+    // The documented first-existing-file rule: a project file EXISTS, so the
+    // global file never decides. Letting it decide here is the bug — the
+    // operator's project policy is silently replaced by a different one.
+    assert.equal(result.ok, false);
+    assert.equal(result.sourcePath, project);
+    assert.deepEqual(result.policy, emptyPolicy());
+    assert.notDeepEqual(result.policy.deny, [{ tool: "global.*" }]);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("loadPolicyForWrap: an unreadable GLOBAL policy.yml stops the traversal too (no silent 'none configured')", async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "reelier-policy-cwd-"));
+  const home = await mkdtemp(path.join(tmpdir(), "reelier-policy-home-"));
+  try {
+    const { global } = policyPaths(cwd, home);
+    await mkdir(global, { recursive: true }); // no project file at all; global is unreadable
+
+    const result = await loadPolicyForWrap(cwd, home);
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.unreadable, true);
+      assert.equal(result.sourcePath, global);
+    }
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("loadPolicyForWrap: ENOENT still continues — a missing project file falls through to global as before", async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "reelier-policy-cwd-"));
+  const home = await mkdtemp(path.join(tmpdir(), "reelier-policy-home-"));
+  try {
+    const { global } = policyPaths(cwd, home);
+    await mkdir(path.dirname(global), { recursive: true });
+    await writeFile(global, 'version: 1\ndeny:\n  - tool: "global.*"\n', "utf8");
+
+    const result = await loadPolicyForWrap(cwd, home);
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.equal(result.sourcePath, global);
+      assert.deepEqual(result.policy.deny, [{ tool: "global.*" }]);
+    }
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("summarizePolicyForWrapStart: an unreadable policy file WARNs and says the file's intent is unknown", () => {
+  const lines = summarizePolicyForWrapStart({
+    ok: false,
+    unreadable: true,
+    policy: emptyPolicy(),
+    sourcePath: "/x/.reelier/policy.yml",
+    error: "/x/.reelier/policy.yml exists but could not be read (EISDIR: …)",
+  });
+  const joined = lines.join(" ");
+  assert.match(joined, /WARNING/);
+  assert.match(joined, /disabled/i);
+  // The distinction that matters: a malformed file's rules are KNOWN and
+  // rejected; an unreadable file's rules are UNKNOWN. Never conflate them.
+  assert.match(joined, /unknown/i);
+  assert.doesNotMatch(joined, /none configured/);
+});
+
 test("summarizePolicyForWrapStart: 1-2 lines, WARN + gap language on failure, plain summary on success", () => {
   const okNone = summarizePolicyForWrapStart({ ok: true, policy: emptyPolicy(), sourcePath: undefined });
   assert.equal(okNone.length, 1);
