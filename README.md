@@ -4,15 +4,15 @@
 
 # Reelier
 
-### Agents make claims. Reelier writes receipts.
+### Let your agents write. Keep the receipts.
 
-A dependency bump shouldn't silently break your agent. Reelier re-runs your recorded workflows against the new version at zero LLM cost and diffs them — so you see exactly what changed before you merge.
+*Your agents worked all night. Here's exactly what changed.*
 
-**Think of it as CI + snapshot tests for your agent's tool-call workflows.**
+Reelier records the run that worked, freezes it as a replayable skill, and replays it deterministically — every run comes back as a receipt: proof of what the agent did and what changed because of it. **Agents make claims. Reelier writes receipts.**
 
 [![npm version](https://img.shields.io/npm/v/reelier.svg?color=blue)](https://www.npmjs.com/package/reelier)
 [![CI](https://github.com/seldonframe/reelier/actions/workflows/ci.yml/badge.svg)](https://github.com/seldonframe/reelier/actions/workflows/ci.yml)
-[![tests](https://img.shields.io/badge/tests-730%20passing-brightgreen.svg)](./test)
+[![tests](https://img.shields.io/badge/tests-1344%20passing-brightgreen.svg)](./test)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 [![Discord](https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white)](https://discord.gg/nSp5sd4v)
 [![stars](https://img.shields.io/github/stars/seldonframe/reelier?style=social)](https://github.com/seldonframe/reelier)
@@ -47,13 +47,15 @@ Agent-authored PRs (Dependabot, Claude, Codex, Cursor, …) get a receipt commen
 
 ## Why
 
-AI agents are non-deterministic — the same prompt, a different result every run — and they'll claim they did the work whether they did or not. Reelier records the run that worked, replays it deterministically at $0, and writes a signed receipt that proves it. Point it at your existing CI in one workflow — it adds a verifiable receipt, it doesn't replace your stack.
+AI agents are non-deterministic — the same prompt, a different result every run — and they'll claim they did the work whether they did or not. Reelier records the run that worked, replays it deterministically, and writes a signed receipt that proves it. Point it at your existing CI in one workflow — it adds a verifiable receipt, it doesn't replace your stack.
 
 Measured on a real head-to-head benchmark, same task, same data ([full method](./docs/REFERENCE.md#benchmark-method)):
 
 - **1,000 / 1,000 replays byte-identical**
-- **~50× cheaper**
-- **~59× faster**
+- **Every replay ships a signed receipt** — proof of what ran and what changed, never a claim
+- **0 LLM calls at replay** — deterministic re-execution, not re-reasoning
+
+Deterministic replay is also [~50× cheaper and ~59× faster than re-running the agent, on the same benchmark](./docs/REFERENCE.md#benchmark-method).
 
 ## Install
 
@@ -116,6 +118,19 @@ A pushed receipt carries a ladder of independently-verifiable claims — not one
 See a real one: [reelier.com/r/HWBdmGob9KeHRqXi-OEaRD0z](https://www.reelier.com/r/HWBdmGob9KeHRqXi-OEaRD0z).
 
 Full 8-rung ladder, what each rung does and doesn't prove: [docs/REFERENCE.md](./docs/REFERENCE.md).
+
+## If your skills are employees
+
+| Employee lifecycle | Reelier equivalent |
+| --- | --- |
+| Skillify a session | `reelier from-session` |
+| Performance review | `reelier run` + `reelier diff` |
+| Fleet maintenance | scheduled replays + drift alerts |
+| The record | signed receipts |
+
+"Verified" describes the record, never the agent — a receipt proves what ran and what changed, not that the agent was good at its job.
+
+An employment contract doesn't make an employee good — it makes what they did visible and bounded. Same here: receipts prove scope and change, never correctness.
 
 ## Who it's for
 

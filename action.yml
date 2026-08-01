@@ -52,12 +52,12 @@ inputs:
       Pinned on purpose: a determinism tool should itself install
       deterministically. `reelier` is still 0.x, so npm's caret range
       (`^0.12`) only floats the PATCH digit — it resolves to a max of
-      0.12.1, never 0.24.0+ — which silently shipped a 12-versions-stale
+      0.12.1, never 0.25.0+ — which silently shipped a 12-versions-stale
       CLI (from before signing, the trust ladder, and the audit log
       existed) to every adopter of this action. Override to test against a
       newer or older CLI; leave at the default for normal use.
     required: false
-    default: "0.24.0"
+    default: "0.30.0"
   vars:
     description: >-
       Newline-separated `name=value` pairs, forwarded to `reelier run` as
@@ -129,7 +129,7 @@ runs:
         CLI_VERSION: ${{ inputs.cli-version }}
       # Exact-pinned, not `reelier@^0.12`-style: reelier is still 0.x, so a
       # caret range only floats the PATCH digit — `^0.12` tops out at
-      # 0.12.1, never reaching 0.24.0+. That's exactly the bug that used
+      # 0.12.1, never reaching 0.25.0+. That's exactly the bug that used
       # to live here (see the `cli-version` input's description above).
       run: npm install -g "reelier@${CLI_VERSION}"
 

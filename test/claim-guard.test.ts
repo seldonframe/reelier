@@ -46,6 +46,11 @@ const SKIP_DIRS = new Set([
   "dist-test",
   ".vercel",
   "coverage",
+  // Mutation-testing artifacts: the live Stryker sandbox holds a COPY of the
+  // repo (allowlisted files reappear under sandbox-relative paths and false-
+  // positive), and the generated HTML report embeds mutated source verbatim.
+  ".stryker-tmp",
+  "reports",
 ]);
 
 const SCAN_EXT = [".ts", ".tsx", ".js", ".mjs", ".md", ".mdx", ".json", ".svg", ".html", ".txt", ".yml", ".yaml"];

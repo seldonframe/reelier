@@ -49,10 +49,10 @@ RFC 2119.
     parser SHOULD tolerate additional, unrecognized fields (forward
     compatibility for additive record fields in a future minor) but MUST
     treat every field documented in §2 as required and typed as specified.
-  - **SKILL.md step fields** are a **closed** set of five bullet keys
-    (`intent`/`action`/`assert`/`bind`/`effect`, §3.2). `parseSkill` rejects
-    any other `- <key>: ...` bullet inside a step block outright (an
-    "Unrecognized step field" `SkillParseError` — `src/skill.ts:205-216`);
+  - **SKILL.md step fields** are a **closed** set of nine bullet keys
+    (`intent`/`action`/`assert`/`bind`/`effect`/`exposure`/`approve`/`attest`/
+    `expect`, §3.2). `parseSkill` rejects any other `- <key>: ...` bullet
+    inside a step block outright (an "Unrecognized step field" `SkillParseError`);
     this is intentionally closed, not open-for-extension, because the field
     set is small enough that a typo should be caught, not silently ignored.
   - **Non-step sections** of a SKILL.md file (preamble, `## Open
@@ -71,6 +71,131 @@ RFC 2119.
   coercing bad input. A conformant third-party implementation MUST do the
   same — never silently drop a step, a call/result record, or an assert/bind
   line that fails to parse.
+
+### 0.1 Document conventions: normative vs. reference
+
+This spec describes both a **contract** and the **implementation that
+happens to ship in this repo**. Those are different things, and until now
+they were interleaved — normative requirements sit next to line references
+like `src/runner.ts:166-179`, which leaves a third-party implementer unable
+to tell which parts they MUST reproduce and which are merely how Reelier
+does it today. Since the credibility of an open verifier rests on anyone
+being able to build a second one, that ambiguity is a defect in the spec,
+not a convenience.
+
+From this version, sections and claims MAY carry one of two markers:
+
+- **[Normative]** — a requirement every conforming implementation MUST
+  satisfy, regardless of language, runtime, or deployment. Wherever a
+  `src/…` path appears inside a [Normative] block, it is a *pointer to
+  where this repo happens to satisfy the requirement*, never part of the
+  requirement itself.
+- **[Reference implementation]** — behavior of the CLI published from this
+  repo. A conforming implementation MAY substitute anything else that
+  satisfies the surrounding [Normative] requirements. Depending on a
+  [Reference implementation] detail is depending on an implementation
+  choice, not on the format.
+
+An unmarked section carries its existing force: MUST/SHOULD/MAY keywords
+inside it are normative, prose describing this repo's internals is not.
+Markers are being added incrementally; their **absence is not a signal**.
+
+### 0.2 What the record digest covers (stability rule)
+
+`digestSha256` (§4.6) takes **the entire `RunRecord`**, not an enumerated
+list of fields. This is a deliberate and load-bearing property: every
+additive `RunRecord`/`StepRecord` field is covered by the digest — and
+therefore by any signature and timestamp over it — from the moment it
+exists, with no spec change and no version selector.
+
+**[Normative]** An implementation MUST compute the record digest over the
+complete record it serializes. It MUST NOT substitute an enumerated subset
+of fields, even one that matches today's shape. A subset would silently
+stop covering the next additive field, and a signature that stops covering
+new fields without saying so is exactly the overclaim §4.6 exists to
+prevent.
+
+### 0.3 Relationship to RFC 8785 (JCS)
+
+The canonical form is a recursive key sort plus `JSON.stringify`. That lands
+on the same four properties RFC 8785 (JSON Canonicalization Scheme) requires
+— property sorting by UTF-16 code units, ECMAScript `Number::toString` number
+serialization, ECMAScript string escaping, and no whitespace — and
+`test/jcs-conformance.test.ts` pins the agreement across sorting, nesting,
+arrays, numbers, escaping, literals, and RFC 8785 §3.2.3's mixed-script
+ordering sample.
+
+**One divergence is known, and it is not going to be fixed.**
+
+**[Normative for consumers]** For any object carrying an **integer-like key**
+(`"0"`, `"2"`, `"10"`, …), this canonical form is **not** byte-identical to
+JCS. JavaScript hoists integer-like properties to the front of an object and
+orders them numerically regardless of insertion order, so the sort is undone
+for exactly those keys after it is applied:
+
+```
+canonicalJson({b:1, "2":2, a:3, "10":4})  ->  {"2":2,"10":4,"a":3,"b":1}
+JCS requires                              ->  {"10":4,"2":2,"a":3,"b":1}
+```
+
+(Under JCS `"10"` precedes `"2"`, because the ordering is lexicographic over
+code units rather than numeric.)
+
+This costs nothing that Reelier's own claims rest on. Every producer and every
+verifier hoists identically, so the same logical record always yields the same
+digest — determinism, and therefore every signature and timestamp ever issued,
+is unaffected. **A consumer MUST NOT "correct" this**: changing what is hashed
+would invalidate every existing signature and break the pinned wire-contract
+fixture (§7).
+
+What it does mean, stated so nobody has to discover it: a Reelier digest and a
+JCS digest of the same record **will disagree when the record contains an
+integer-like key, and only then**. Cross-ecosystem verification against a JCS
+implementation is therefore sound for every record without such a key, and a
+future JCS-interop digest — if one is ever needed — MUST be a separate,
+explicitly versioned field rather than a redefinition of this one.
+
+### 0.4 Two senses of "skill"
+
+The word is overloaded in this ecosystem, and this spec uses it in exactly one
+sense. Both things exist in this repository, both are called "skill" in casual
+use, and they are **not the same artifact**.
+
+| | **Agent Skill** | **Reelier skill file** |
+| --- | --- | --- |
+| File | `SKILL.md` in a folder | `<name>.skill.md` (§3) |
+| Body | free-form prose instructions | `## Steps` with the five atoms (§1) |
+| Read by | a **model**, on demand | `reelier run`, with **no model in the loop** |
+| Purpose | tells an agent *when* to reach for a capability | *is* the capability — a deterministic program |
+| Format owner | the open Agent Skills standard | this spec |
+
+**The Agent Skill format is not defined here.** It is an open standard,
+originally published by Anthropic and supported by many agent clients. Reelier
+ships one — `integrations/claude-code/reelier/SKILL.md` — whose entire job is
+to teach an agent when to reach for the CLI. It contains no steps, no
+assertions, and nothing this spec describes.
+
+**A Reelier skill file is the compiled artifact this spec defines.** It is
+executable in the only sense that matters here: `reelier run` dispatches its
+steps deterministically and a model never reads it.
+
+They share a filename convention and nothing else. `reelier compile
+--from-skill <SKILL.md>` converts the first into the second — *your skill,
+minus the model.*
+
+**[Normative]** A consumer MUST NOT treat one as the other. An Agent Skill
+handed to `reelier run` has no `## Steps` section and MUST be rejected by
+`parseSkill` with the usual typed error, never coerced or partially executed. A
+Reelier skill file placed in an agent's skills directory is not a valid Agent
+Skill and MUST NOT be published as one.
+
+**Naming note, recorded rather than resolved.** `<name>.skill.md` predates the
+Agent Skills standard's adoption in this ecosystem. The extension is a
+*convention*, not a requirement — `reelier run` accepts any path, and only
+discovery (`reelier ci`) and default output naming glob for `*.skill.md`. A
+future rename to a non-colliding extension is therefore additive rather than
+breaking, and is deliberately **not** decided here: names spread with every
+receipt and are chosen once.
 
 ---
 
@@ -137,7 +262,15 @@ MUST split on `\r\n` or `\n`, skip blank/whitespace-only lines, and
 ```ts
 type TraceRecord =
   | { t: "meta";   seq: number; name: string; startedAt: string; wrapped: string[];
-      toolAnnotations?: Record<string, { readOnlyHint?: boolean; destructiveHint?: boolean; idempotentHint?: boolean }> }
+      toolAnnotations?: Record<string, { readOnlyHint?: boolean; destructiveHint?: boolean; idempotentHint?: boolean }>;
+      policy?: {
+        status: "verified" | "failed" | "unchecked" | "absent";
+        digest?: string;
+        sourcePath?: "project" | "global";
+        rules?: { deny: number; dryRun: number; toolScoped: number };
+        unmatchedRules?: number;
+      };
+      policyGap?: string }
   | { t: "note";   seq: number; ts: string; text: string }
   | { t: "call";   seq: number; i: number; ts: string; tool: string; args: unknown }
   | { t: "result"; seq: number; i: number; ok: boolean; ms: number; body: unknown };
@@ -150,6 +283,8 @@ type TraceRecord =
 | `name` (meta) | string | The trace's own name, as given to `reelier_start_recording`. |
 | `startedAt` (meta) | ISO-8601 string | Recording start time (`new Date().toISOString()`). |
 | `wrapped` (meta) | string[] | Downstream server names wrapped for this recording, in `--wrap` order. |
+| `policy` (meta, optional, 0.30.0+) | see the type above | The policy file governing **this recording session** (`docs/specs/policy-attestation-v1.md`). `status` uses the four-state vocabulary with its existing meanings: `verified` — found at a candidate path, parsed clean, in force; `failed` — found and malformed, so whole-file enforcement degraded to deny-nothing for the session; `unchecked` — a file EXISTS at the candidate path and could not be read (EACCES/EISDIR/a lock), so what it declared is unknown; `absent` — no file at either the project or the global candidate. **A consumer MUST NOT render `unchecked` or `absent` as a pass, and MUST NOT render `unchecked` as `failed`** — the latter names a known-dead seatbelt, the former an unknown one. `digest` is `sha256:<64 lowercase hex>` over the **raw file bytes** (never a canonical form — it must work in `failed`, where nothing parsed, and it must be able to see byte-level defects such as a leading UTF-8 BOM); it is computed in the same read that produced the parsed policy, so it names the bytes actually in force and **never** the bytes at that path now. A consumer MUST NOT read a changed digest as a changed policy — it states only that the bytes differ, so a pure reformat changes it. `digest` is omitted in `unchecked`/`absent` (nothing was read) and on a record normalized from a legacy `policyGap`; **a missing `digest` is never evidence that no file was found** — `absent` is the state that carries that claim. `sourcePath` names WHICH documented candidate decided, `"project"` or `"global"`, and is **never** an absolute path: the global candidate is `<homedir>/.reelier/policy.yml`, so a path would ship the operator's home directory into a publishable artifact. `rules` and `unmatchedRules` are **counts only, never globs or hosts** — a policy names internal tool names and destination hosts, and no writer may put rule content in a record. `rules.toolScoped` is the honest denominator for `unmatchedRules` (an `endpoint` rule carries no tool glob and can never be reported unmatched). `rules`/`unmatchedRules` appear on the **wrap path only**: the replay path has no live tool inventory to match against, so a `RunRecord` (§4.2) omits both. Additive per §0; the whole object is omitted by a writer with nothing to report, so pre-0.30.0 traces stay byte-identical, and **its absence means "written before this field existed", never `absent`**. |
+| `policyGap` (meta, optional, 0.16.0–0.29.0, **superseded**) | string | The predecessor of `policy`: a prose string set on exactly one of the four conditions above (found and malformed), carrying no digest, no source and no counts. **No writer emits it as of 0.30.0**, and a writer MUST NOT emit both it and `policy`. Readers MUST continue to parse it: a record carrying `policyGap` and no `policy` normalizes to `policy: { status: "failed" }` with no `digest` (nothing hashed the file at record time and re-deriving one is impossible), and a record carrying both MUST prefer `policy`. |
 | `toolAnnotations` (meta, optional, 0.13.0+) | `Record<string, {readOnlyHint?, destructiveHint?, idempotentHint?}>` | MCP `tools/list` annotation hints per **exposed** tool name (post collision-prefixing, matching `call.tool`), captured once at recording start (`collectToolAnnotations`, `src/recorder.ts`). A writer MUST include only hints the downstream actually declared (never fabricated defaults) and SHOULD omit the field entirely when no wrapped tool declares any of the three — so annotation-free traces are byte-identical to pre-0.13.0 ones. Additive per §0's forward-compatibility rule; a pre-0.13.0 reader tolerates and ignores it. Consumers treat these as **hints, not security**: the compiler's effect classifier (`classifyEffect`, `src/effect-verbs.ts`) applies a strict trust ladder — `destructiveHint: true` always wins; **no annotation ever downgrades a verb-list match** (not the destructive tier, and not an idempotent-write verb either — `create_note` + `readOnlyHint: true` stays `idempotent-write`); a hint may only tighten a read verb-match (`idempotentHint`) or refine a tool whose verbs the lists don't recognize — and replay write-gating (§3.6) still applies to everything classified `idempotent-write` or worse. |
 | `ts` (note/call) | ISO-8601 string | Timestamp the record was written. |
 | `text` (note) | string | Free-text narration passed to `reelier_note`. |
@@ -300,18 +435,18 @@ trailing sections are never swallowed into the last step.
 
 Within a step's block, every non-blank line is either:
 
-- a **bullet** matching `/^-\s*(intent|action|assert|bind|effect|approve)\s*:\s*(.*)$/`, or
+- a **bullet** matching `/^-\s*(intent|action|assert|bind|effect|exposure|approve|attest|expect)\s*:\s*(.*)$/`, or
 - an **ignored prose line** (any non-blank line not starting with `-`), or
-- **rejected** if it starts with `-` but the key isn't one of the six
+- **rejected** if it starts with `-` but the key isn't one of the nine
   above: `"Unrecognized step field, expected one of
-  intent/action/assert/bind/effect/approve: ..."`.
+  intent/action/assert/bind/effect/exposure/approve/attest/expect: ..."`.
 
-This makes the **six bullet keys a closed set** (§0) but tolerates
+This makes the **nine bullet keys a closed set** (§0) but tolerates
 free-form prose commentary inside a step block, as long as it doesn't
 start with a hyphen.
 
-**Field requiredness and cardinality** (exactly as enforced by `parseSkill`,
-`src/skill.ts:218-263`):
+**Field requiredness and cardinality** (exactly as enforced by
+`parseSkill`'s per-step field loop, `src/skill.ts`):
 
 | Field | Required? | Cardinality | Duplicate → |
 | --- | --- | --- | --- |
@@ -320,15 +455,187 @@ start with a hyphen.
 | `assert` | No | 0 or more | (repeatable — each bullet appends) |
 | `bind` | No | 0 or more | (repeatable — each bullet appends) |
 | `effect` | **Yes** — `"Step is missing required 'effect' field"` | exactly 1 | `"Duplicate 'effect' field in step"` |
+| `exposure` | No (the exposure axis, 0.29.0+; §3.7) | 0 or 1 | `"Duplicate 'exposure' field in step"` |
 | `approve` | No (flight-recorder-v2, 0.19.0+) | 0 or 1 | `"Duplicate 'approve' field in step"` |
+| `attest` | No (state attestation, 0.22.0+) | 0 or 1 | `"Duplicate 'attest' field in step"` |
+| `expect` | No (state-conditioned approval; requires `attest` + `approve` on the step) | 0 or 1 | `"Duplicate 'expect' field in step"` |
 
 `assert` and `bind` are the only repeatable fields; every `- assert: ...`
 or `- bind: ...` bullet in the block is collected in file order.
+
+`exposure: internal | external-visible` (the exposure axis, 0.29.0+; §3.7)
+declares whether an actor outside the system may already have acted on the
+step's result. Optional and orthogonal to `effect`; an unrecognized value is
+rejected at parse time (`"Invalid exposure <value> — must be one of internal,
+external-visible"`). Absent means `internal`, and a step that omits it is
+serialized without the bullet — a skill predating the key serializes exactly
+as it did before the key existed. (That is not a claim of byte-identity with
+hand-formatted source; §3.8's canonicalization caveat is unchanged.)
 
 `approve: sha256:<64 hex>` (§6.1a) hash-binds a write/destructive step's
 tool + argument template — a value not matching `sha256:[0-9a-f]{64}`
 exactly is rejected at parse time, not silently accepted. Written by
 `reelier approve <skill.md> [--all]`, never by hand.
+
+`attest: {"tool":"<read tool>","args":{...},"projection":["field",...]}`
+(state attestation, 0.22.0+; record shape §4.1's `attest` block) declares
+the paired read for `declared-probe` attestation. A
+closed shape (`tool`/`args`/`projection` — an unknown key is rejected:
+`"Unknown 'attest' key ... — expected tool/args/projection"`); `tool` MUST
+be a non-empty string, `args` MUST be present, `projection` (optional)
+MUST be a non-empty array of non-empty strings. Malformed shape is
+rejected loudly, never silently degraded to "no attest". Projection
+entries are namespaced (P1.5) on EVERY path that projects — the attest
+pipeline's `delta.fields` names and salted projection hash included, not
+just `approve --probe`: `header.<name>` addresses a response header
+(matched case-insensitively, exact match first — fetch lowercases header
+names but `--replay` fixtures and hand-authored registries need not),
+`body.<key>` is the explicit body form, and a bare `<key>` stays a
+top-level body key, byte-identical to the pre-P1.5 selection. The entry
+`status.code` — exactly that spelling — addresses the response's HTTP
+status (a NUMBER in the typed twin, so `404` and `"404"` never commit
+alike), which is what makes "approve this write against a resource that
+is currently ABSENT" expressible: bind on a 404 and the check matches
+while the resource stays absent, and mismatches once it exists. A bare
+`status` remains the top-level body key named "status" **permanently** —
+it already means that in shipped skills, so re-pointing it would change
+what an existing approval binds — and a body key literally named
+"status.code" stays addressable as `body.status.code`. `status.code`
+cannot be state-bound through a wrapped MCP tool and `approve --probe`
+REFUSES to: MCP has no HTTP status, so an error result is fabricated as
+500 and flows through as a *successful* observation, meaning a binding
+stamped at 500 would match on every future error of any kind. The runner
+enforces the same rule at execute time, because `--wrap` can resolve a
+probe tool to an MCP server on a later run than the one that minted the
+binding: a `status.code` projection whose probe tool resolves to a wrapped
+MCP tool is `unevaluated` (reason `probe-substrate-mismatch: …`), never a
+match — so it fails closed under `state_gate: refuse` and still raises the
+drift-watch `went_unevaluated` signal. Binding on it prints a conditional
+fixed-point note (the binding self-invalidates only if the approved write
+creates or deletes the probed resource). That note never replaces the
+version-class warning for the projection's OTHER fields: the two are
+claims about different fields and both print when both apply. It does
+suppress the ABA note, which is a competing claim about the same binding.
+
+`expect: {"at":"<ISO-8601>","keyId":"<16 hex>","pre":"hmac-sha256:<64
+hex>"}` (state-conditioned approval) binds the step's approval to the
+world it was granted against: `pre` is a keyed commitment (HMAC-SHA256
+under a per-approval key held in a local keystore, NEVER in this file or
+any record) over the approve-time observation of the step's declared
+probe; `keyId` names the key; `at` is the approve-time observation
+timestamp (informational — time is never an input to the comparison).
+Machine-written by `reelier approve --probe`, never by hand. A closed
+shape: unknown keys are rejected (`"Unknown 'expect' key ... — expected
+pre/keyId/at/expiresAt/fields/probeArgs"`), `pre` MUST match `hmac-sha256:[0-9a-f]{64}` exactly,
+`keyId` MUST match `[0-9a-f]{16}` exactly, `at` MUST be a non-empty
+ISO-8601-parseable string. `expect` without BOTH `attest:` and `approve:`
+on the same step is a parse error (`"'expect' requires both 'attest:' and
+'approve:' on the step"`) — there is no probe to compare with otherwise,
+and the only writer always writes the trio. `expect` on an `effect: read`
+step is also a parse error (`"'expect' requires a write-effect step …"`):
+every gate that checks a binding keys off the write effect, so a bound
+read step would carry a stamped condition nothing ever checks — the shape
+can only arise from a hand edit flipping the effect after binding.
+An optional key, `expiresAt` (approval TTL, 0.29.0+), carries the
+approval's time-to-live as an **absolute ISO-8601 instant**, in the same
+shape `at` uses. `reelier approve --probe --expires <duration>` resolves
+the operator's duration (`<positive integer><m|h|d>`, at most `365d`)
+against approve time and stamps the resulting instant; the file NEVER
+stores a relative duration, because a stored duration would re-resolve —
+and so silently re-arm — every time the file is read, which is the
+opposite of expiring. A relative value in the field is a parse error
+(`"Invalid 'expect.expiresAt' … — expected an absolute ISO-8601 timestamp
+(not a relative duration)"`). **Boundary semantics: `>=`.** At the named
+instant the approval has already expired; one millisecond earlier it has
+not. Like `fields` and `probeArgs`, `expiresAt` enters the approval hash
+only when present, so a binding without one hashes byte-identically to
+0.28.0 — and because it IS in the hash when present, hand-extending a TTL
+in the committed file is an approval mismatch refused at the final
+boundary, with no flag override. At or after the instant the runner emits
+`stateCheck.outcome: "unevaluated"` with reason `approval-expired: …`
+**without dispatching the PRE-probe** — expiry is a pre-probe fact, and a
+probe that ran and then failed would report `probe-failed`, which is a
+claim about the probe rather than about the approval; the call it also
+saves is a consequence, not the reason. Under `state_gate: refuse` this
+refuses the write before dispatch.
+
+**The two probe sides are deliberately asymmetric here**, and the
+asymmetry is a design decision rather than an oversight — §4.1's `attest`
+row states it in full. The pre side is withheld for the reason just
+given: the verdict is already settled by the TTL, so probing spends a
+call that cannot change it and risks mislabelling the finding. None of
+that survives the dispatch. In **recorder mode** the write still goes out
+and the POST-probe **does** dispatch afterwards: by then the write has
+happened and the probe args were hash-verified, so no exfiltration
+boundary is at stake, and withholding it would buy symmetry alone while
+costing the receipt its only post-state evidence — making the
+expired-approval receipt the least informative in the system, exactly
+where an operator most needs to know what the write did. So an expired
+recorder-mode step attests `confidence: "partial"` with a real `post` and
+`reason: "pre: approval-expired: …"` **when the post-probe resolves a
+declared projection field**. When it does not — the probe fails, its tool
+is unknown, or it returns none of the declared fields, which is an
+ordinary outcome for a `destructive` delete whose resource now 404s —
+neither side exists and the attest degrades to `confidence: "absent"`
+with both reasons joined (`"pre: approval-expired: …; post: …"`). What
+never happens either way is a fabricated `pre`: the pre side is
+synthesized as a probe FAILURE, never as an observation. In **gate mode**
+the write never dispatches, so
+there is nothing to observe afterwards and neither side runs. The
+`stateCheck` itself is unaffected either way: its comparison reads the
+pre-probe only, so `observedAt` is absent regardless of what the post
+side did.
+
+`--expires` and `--probe` are **siblings, not variants**, and a step may
+carry both: `--probe` makes an approval die when the world moves
+(state drift), `--expires` makes it die when nobody answers (time).
+Neither is implemented in terms of the other; on a step carrying both,
+expiry is decided first and reports `approval-expired` rather than
+`mismatch`, because no pre-probe ran and a mismatch would be exactly as
+unearned as a match.
+
+**Known scope boundary — a TTL requires `expect:`.** A plain approved
+write with no `expect:` cannot expire. The finding surface for expiry is
+`stateCheck`, and only `expect:`-bearing steps carry one; there is
+nowhere on an unbound approval to record the outcome and nothing for
+`state_gate: refuse` to act on. `reelier approve --expires` therefore
+REFUSES without `--probe` rather than accepting a TTL that would never
+fire. Widening this would mean giving expect-less writes a `stateCheck`,
+which is a larger change than a TTL.
+
+An optional fourth key, `fields` (P1.5), maps output-form projection
+field names (`body.<key>` / `header.<name>`) to per-field
+`hmac-sha256:<64 hex>` commitments under the same per-approval key —
+diagnosis only: a mismatch can then name WHICH declared fields moved
+(names, never values); the whole-projection `pre` stays the verdict, and
+a fieldless binding hashes byte-identically to 0.25.0. Malformed `fields`
+is rejected loudly (`"Malformed 'expect.fields' (expected an object of
+field-name → hmac-sha256:<64 hex>)"`; an empty map is likewise rejected:
+`"'expect.fields' must not be empty — omit it entirely for a fieldless
+binding"`). Accepted trade beyond the per-field dictionary surface: the
+`fields` key names publish the approve-time projected-field-name set
+(which declared fields were present and scalar at approve) into the
+committed, often-public skill file — a fact the opaque whole-projection
+MAC previously hid; names only, values stay uncommitted everywhere.
+An optional fifth key, `probeArgs`, carries the keyed commitment over the
+**filled** probe args (same `hmac-sha256:<64 hex>` shape and the same
+per-approval key), present iff the probe args were parameterized and
+filled from operator-supplied `--var`s at approve time. It is what makes
+a parameterized probe safe at all: the approval hash covers the args
+TEMPLATE, which a run-time fill leaves untouched, so only a commitment
+over the filled values can tell approved args from substituted ones.
+Before dispatching ANY probe on such a step, the runner fills the args
+from the run's `--var`s alone — never from step-output `bind:` values,
+whose collision with a placeholder name is exactly the exfiltration
+channel this closes — recomputes the commitment, and compares. On
+inequality **neither the pre-probe nor the post-probe is dispatched**;
+the check is `unevaluated` with reason `probe-args-mismatch: …`. Like
+`fields`, `probeArgs` enters the approval hash only when present, so a
+binding carrying neither hashes byte-identically to 0.26.0. Canonical key
+order inside the value is alphabetical, matching the hash input's own sort.
+Serialized canonically with alphabetical key order (`at`, `expiresAt`,
+`fields`, `keyId`, `pre`, `probeArgs`), matching the canonical-JSON sort,
+so the file line and the approval-hash input agree byte-for-byte.
 
 After the last step's field block, everything remaining in the body is the
 **trailing** section (`## Open questions`, `## Changelog`, anything else)
@@ -445,13 +752,60 @@ effect <value> — must be one of read, idempotent-write, destructive"`.
 | `idempotent-write` | A write safe to repeat (create-if-absent, upsert, etc.). | **Read-only by default (0.10.0+):** refused unless the run was invoked with `--allow-writes` (or `--yes`, which implies it) — so replaying a skill never silently re-fires its writes. The runner records an honest failed step (`"Refusing to execute a write step … replay is read-only by default"`) instead of calling the tool. Gated on the **effective** effect (`step.effect ?? tool.effect`), so a POST-that-reads marked `effect: read` is never held back. |
 | `destructive` | Non-idempotent or irreversible (delete, charge, send, etc.). | Refused unless the run was invoked with `--yes`/`allowDestructive: true` — the runner prints the filled action instead of calling the tool (`executeStep`, `src/runner.ts:166-179`). **Never** re-executed by the escalation ladder's Level 2 (§7.3) regardless of `--yes` — that check is independent of `allowDestructive` and happens before L2 is even invoked (`level3Message`, `src/runner.ts:267-273`; `attemptEscalation`, `src/runner.ts:348-351`). |
 
+`effect` is the **mechanical** axis and the only one that gates: it answers
+"can this operation be repeated safely". Whether someone OUTSIDE the system
+may already have acted on the result is a separate, orthogonal question, and
+it has its own field — see §3.7's `exposure` axis. Neither axis constrains the
+other, and no fourth `effect` value is introduced to express exposure.
+
 The gating contract above is the **legacy** path — still exactly what
 happens for any write/destructive step with no `approve:` field. A step
 that carries `approve:` is gated differently (§6.1b, flight-recorder-v2,
 0.19.0+): the hash-bound approval is the FINAL word, and no flag
 (`--allow-writes`, `--yes`) overrides a mismatch.
 
-### 3.7 Non-Steps sections and the Changelog write-back convention
+### 3.7 The `exposure` axis (orthogonal to `effect`)
+
+`exposure` MUST be exactly one of the two literals below (`EXPOSURES`,
+`src/skill.ts`); anything else is rejected at parse time: `"Invalid exposure
+<value> — must be one of internal, external-visible"`. The field is
+**optional**, and **absent means `internal`** — but the absence is preserved,
+never rewritten to the string: a parsed `Step` and a `StepRecord` both leave
+`exposure` off entirely when the author said nothing, so a consumer can tell
+"the author declared internal" from "the author declared nothing".
+
+| Value | Meaning |
+| --- | --- |
+| `internal` | The step's effect stays inside the system under replay. Nobody outside it can have seen or acted on the result. |
+| `external-visible` | The step's effect is observable to an actor OUTSIDE the system — a message delivered, a webhook fired, a public record changed — so someone may already have acted on it. It says **may**, never **did**: no evidence that anyone in fact read or acted on anything is claimed, held, or implied. |
+
+**Why this is not another `effect` value.** `effect` (§3.6) is *mechanical*:
+can this operation be repeated safely. `exposure` is *consequential*: can it
+be taken back at all, given a human downstream may already have moved. The two
+are independent, and neither is derivable from the other. A `destructive`
+delete and a `destructive` send are the **same `effect`** and profoundly
+different in consequence — the deleted file reverts from backup, while the
+message that got read has already changed what the other person is doing. A
+`read` step can be `external-visible` too (a read that publishes an audit
+entry someone monitors). So `exposure` is a separate closed enum; `effect`'s
+three values are untouched.
+
+**In this version it changes no gating behaviour.** No exit code, refusal,
+write gate, escalation decision, or check predicate reads `exposure`. Two
+otherwise-identical runs — one with every step `external-visible`, one with
+none — produce the same exit code, the same per-step `outcome`, and the same
+`passed`. A consumer therefore MUST NOT infer from `exposure: external-visible`
+that the step was blocked, held, reviewed, or approved any differently than an
+`internal` one; it is a classification the skill's author wrote down, carried
+onto the record and displayed. Wiring it to a gate would be a behaviour change
+with its own evidence bar, and is not what this field does today.
+
+Renderers SHOULD surface `external-visible` and SHOULD stay silent on the
+internal/absent case, which is the overwhelming majority — `reelier run`
+appends a plain ` [external-visible]` to the step line, with no warning glyph
+and no error styling, because it is a classification and not a finding.
+
+### 3.8 Non-Steps sections and the Changelog write-back convention
 
 - **Preamble and trailing content are preserved verbatim** (§3.2) —
   `serializeSkill` is the faithful inverse of `parseSkill`: it re-emits the
@@ -477,7 +831,7 @@ that carries `approve:` is gated differently (§6.1b, flight-recorder-v2,
   a `## Changelog` section with non-heal-shaped bullets is legal and
   untouched.
 
-### 3.8 Example
+### 3.9 Example
 
 ```markdown
 ---
@@ -527,14 +881,17 @@ interface StepRecord {
   outcome: "passed" | "failed" | "unchecked" | "skipped";
   ms: number;
   failures: string[];
+  exposure?: "internal" | "external-visible";
   llm?: { inputTokens: number; outputTokens: number; model?: string };
   escalationAttempted?: 0 | 1 | 2;
   why?: { trigger?: string; change?: string };
   write?: {
     idempotencyKey: string;
     approved: boolean;
+    approvalHash?: string;
     resource?: { id?: string; version?: string };
     duplicateOf?: number;
+    dispatchedAt?: string;
   };
   refs?: { source: "header" | "body"; key: string; value: string }[];
   attest?: {
@@ -546,6 +903,15 @@ interface StepRecord {
     confidence: "exact" | "partial" | "pending" | "absent";
     reason?: string;
   };
+  stateCheck?: {
+    outcome: "match" | "mismatch" | "unevaluated";
+    action: "proceeded" | "stamped" | "refused";
+    expectedAt: string;
+    observedAt?: string;
+    reason?: string;
+    absentFields?: string[];
+    changedFields?: string[];
+  };
   mocked?: true;
 }
 ```
@@ -556,12 +922,15 @@ interface StepRecord {
 | `outcome` | `"passed"` — ran, had ≥1 assertion, all held. `"unchecked"` — ran, had zero assertions (honest-success rule, §4.3). `"failed"` — an assertion or bind failed, a tool errored, a template var was unbound, or an unknown tool/destructive-without-`--yes` refusal occurred, **and** it did not heal via escalation. `"skipped"` — an earlier step diverged and the run stopped before this step was attempted. |
 | `level` | `0` = ran deterministically **or** never healed (including "escalation was attempted but didn't hold" — see the distinction below). `1`/`2` = **healed** at that escalation level. |
 | `failures` | Human-readable failure messages accumulated for this step; empty iff `outcome` is `"passed"`/`"unchecked"`. On a healed step, `failures` is reset to `[]`. |
-| `llm` | Present **iff** escalation ran for this step at all (any level, success or failure) — summed input/output tokens across every attempt on this step. Absent, not `{inputTokens:0,...}`, when escalation never ran. `llm.model` (0.17.0+, the $ meter — flight-recorder-v1 §2) is the model of the **highest escalation level actually invoked** on this step (L2's model if L2 ran, else L1's) — a step that tried L1 then L2 with two different models has its summed tokens priced entirely at the L2 rate by `reelier cost`. Absent when the caller never passed `--llm-model`/`--llm-l2-model` and the runner's own default also went unresolved (never happens in practice — the runner always has a default), or on any pre-0.17.0 record. |
+| `ms` | Wall-clock duration of this step, in whole milliseconds, measured by the runner around the step's own execution (escalation attempts included, since they happen inside the step). Present on **every** step, never absent. `0` on a `"skipped"` step — the step was never attempted, so there was nothing to time; `0` is therefore not a claim that anything ran fast. Duration is a measurement, never a verdict: a consumer MUST NOT read `ms` as evidence about whether this step's assertions held, and MUST NOT treat it as a reproducible quantity — it is machine- and network-dependent and will differ across replays of an identical skill. |
+| `exposure` (0.29.0+, §3.7) | The step's declared `exposure`, copied verbatim from the skill: whether an actor OUTSIDE the system may already have acted on this step's result. Present **iff** the step declared it; **absent** — never `"internal"` — when the author declared nothing, so a skill that does not use the key produces a byte-identical record and a consumer can distinguish "declared internal" from "declared nothing". Carried on every step the runner records, including a `"skipped"` one (nothing dispatched, but what the author declared is still what the author declared). Orthogonal to the step's `effect` and **gating-inert in this version**: no exit code, refusal, or write gate reads it, so a consumer MUST NOT infer that an `external-visible` step was blocked, held, reviewed, or approved differently from an `internal` one, and MUST NOT read `external-visible` as evidence that anyone outside the system in fact saw or acted on the result — it states only that they may have. |
+| `llm` | Present **iff** escalation ran for this step at all (any level, success or failure) — `inputTokens` and `outputTokens` are the summed input/output token counts across every attempt on this step. Absent, not `{inputTokens:0,...}`, when escalation never ran. `llm.model` (0.17.0+, the $ meter — flight-recorder-v1 §2) is the model of the **highest escalation level actually invoked** on this step (L2's model if L2 ran, else L1's) — a step that tried L1 then L2 with two different models has its summed tokens priced entirely at the L2 rate by `reelier cost`. Absent when the caller never passed `--llm-model`/`--llm-l2-model` and the runner's own default also went unresolved (never happens in practice — the runner always has a default), or on any pre-0.17.0 record. |
 | `escalationAttempted` | The **highest level TRIED**, present iff L1 was invoked at all. **Distinct from `level`**: a step can have `escalationAttempted: 2` and `level: 0` simultaneously — it burned L1 and L2 tokens and still never healed. `level` only ever reflects the level that *healed* it. |
 | `why` (0.8.0+) | Present **only** when this step's behavior changed: `trigger` = the load-bearing divergence (the first failure, verbatim from the real assertion/tool result) on a `"failed"` step; `change` = what the successful L1/L2 patch changed (`"L1: <reason>"` / `"L2: <reason>"`, the escalation's own reason) on a healed step. Absent on an unchanged step. **Never fabricated** — a producer MUST populate it only from observed engine data, never from generated narrative. |
-| `write` (0.19.0+, §6.1c) | Present **iff** this step's tool call actually dispatched a write-effect (`idempotent-write`/`destructive`) call — never for a refused, skipped, or mocked step. `approved` is `true` iff dispatched via a matching `Step.approve` hash, `false` via the legacy `--allow-writes`/`--yes` flags. `resource` is a best-effort, honestly-labeled extraction from the response body; absent, never fabricated, when nothing was found. `duplicateOf` is the step number of an earlier step in the SAME run that wrote the identical `idempotencyKey`. |
-| `refs` (0.20.0+, trust-ladder §3) | Provider-issued request-id references captured from this step's response (allowlist-only — never scraped or fabricated). Omitted when none were captured, and always absent on a mocked step. This field shipped in 0.20.0; earlier printings of this table omitted it — that was a spec/implementation gap, not a behavior change. |
-| `attest` (state-attestation P1) | Present **iff** this step's tool call actually dispatched a write-effect call — never for a refused, skipped, or mocked step (the same caveat the `write` row carries). A dispatch that **throws** after a successful approved pre-probe still carries the captured `pre` side as confidence `"partial"` with reason `"dispatch-failed"` — the call went out even though no observation came back. `response-derived`: a hash over identity/version fields of the write's own response — confidence ceiling `"partial"`. `declared-probe`: the step's declared paired read captured before dispatch (`pre`) and after the result (`post`) — both present ⇒ `"exact"`, one side ⇒ `"partial"`, none ⇒ `"absent"` with `reason`. `selector` (declared-probe only) is the probe's tool name alone (e.g. `"github.get_comment"`) — never the args template, since a record is a publishable artifact and the record format carries no other tool args. The declared probe dispatches **only** when the step executed via a matching `approve:` hash (the approval hash binds `attest:`, so a human reviewed the probe's args template); on the flag path (`--allow-writes`/`--yes`) the probe is withheld and attest degrades to `response-derived` with reason `probe-requires-approval`. `delta` lists changed projection-field **names** only. Hashes are `sha256:<hex>` **salted commitments** for change-detection: each attest mixes a per-attest random salt (held in memory only, never recorded) into the canonical-JSON field projection, with `pre`/`post` of the same attest sharing one salt — so `pre.hash === post.hash` iff the projection didn't change, while cross-run hash joins are deliberately impossible. A hash is not encryption; without the salt it cannot be brute-forced, and it is not recomputable by third parties. Raw state never appears in a record, and a probe failure degrades the attestation, never the step. `absent`/`pending` MUST NOT be rendered as a pass by any consumer. |
+| `write` (0.19.0+, §6.1c) | Present **iff** this step's tool call actually dispatched a write-effect (`idempotent-write`/`destructive`) call — never for a refused, skipped, or mocked step. `approved` is `true` iff dispatched via a matching `Step.approve` hash, `false` via the legacy `--allow-writes`/`--yes` flags. `approvalHash` (0.28.0+) names WHICH approval authorized it — the step's stamped hash, verified equal to the recomputed hash before dispatch (the same equality `approved` is read off) — and is absent exactly when `approved` is `false`, because a flag dispatch has no authorization to point at. The two are derived from one value, so a record can never claim an approval it cannot name or name one it does not claim. **Unlike `attest`'s salted commitments below, this value is an UNSALTED `sha256` over the operation shape and is deliberately a stable correlator across runs and across tenants — that is its purpose (it is the join key of an expectation↔outcome pair). It is therefore recomputable by any third party holding a candidate skill file, i.e. a confirmation oracle for "did this receipt execute THIS operation". No new exposure class: `idempotencyKey` in the same block is already an unsalted hash over the FILLED args, which is strictly more revealing. Do not read §4.1's "cross-run hash joins are deliberately impossible" as covering this field; that sentence governs `attest` only.** `resource` is a best-effort, honestly-labeled extraction from the response body; absent, never fabricated, when nothing was found. Its two keys — `id` (from the response body's `id`, else `_id`) and `version` (from `version`, else `etag`, else `revision`, else `sha`) — are read only when the raw value is a string or number, stringified verbatim, and are **each independently optional**: `resource` may carry one, the other, or both, and is omitted entirely (never `{}`) when the body is not a JSON object or carries neither. A missing key means "the response did not state it" — never a default, never a fabricated value. Neither key is verified against the provider: they are copied out of the response the write itself returned, so a consumer MUST NOT read them as independent confirmation that the resource exists or is at that version. `duplicateOf` is the step number of an earlier step in the SAME run that wrote the identical `idempotencyKey`. `dispatchedAt` (state-conditioned approval) is the instant the dispatch was issued — present **only** on `expect:`-bearing steps (a skill with no `expect:` produces byte-identical records); with `stateCheck.observedAt` it carries the measured observation→dispatch window, which renderers omit (never clamp, never fabricate) when negative or absurd. |
+| `refs` (0.20.0+, trust-ladder §3) | Provider-issued request-id references captured from this step's response (allowlist-only — never scraped or fabricated). Each entry carries all three of `source` (`"header"` if the reference came from a response header, `"body"` if from a top-level field of a single-JSON-object body — it states where the value was read, never who issued it), `key` (the header or field name it was read from, as allowlisted) and `value` (the captured reference, passed through the same redactor every recorded string gets: any `REELIER_REDACT`-named env var whose value is **at least 6 characters** has that value replaced by `«redacted:<ENV_VAR_NAME>»` — a declared secret shorter than 6 characters is registered as no mask at all and passes through in the clear — **and** `sk-…`- and `Bearer …`-shaped substrings are replaced by a bare `«redacted»` unconditionally, whether or not they were declared). A `value` is therefore the reference verbatim only when it tripped none of those; a consumer MUST NOT assume the string it reads is byte-identical to what the provider returned, and MUST NOT treat either marker form as a capture failure. Both forms exist: matching only the literal `«redacted»` misses every env-var mask, which carries the variable's **name** (never its value) inside the marker. Omitted when none were captured — never `[]` — and always absent on a mocked step. A ref is a pointer for cross-checking against the provider's own logs; the verifier does not contact the provider, so a consumer MUST NOT read the presence of a ref as the provider having confirmed anything. This field shipped in 0.20.0; earlier printings of this table omitted it — that was a spec/implementation gap, not a behavior change. |
+| `attest` (state-attestation P1) | Present **iff** this step's tool call actually dispatched a write-effect call — never for a refused, skipped, or mocked step (the same caveat the `write` row carries). A dispatch that **throws** after a successful approved pre-probe still carries the captured `pre` side as confidence `"partial"` with reason `"dispatch-failed"` — the call went out even though no observation came back. `method` names how the state was observed, and is always present. `response-derived`: a hash over identity/version fields of the write's own response — confidence ceiling `"partial"`. `declared-probe`: the step's declared paired read captured before dispatch (`pre`) and after the result (`post`) — both present ⇒ `confidence: "exact"`, one side ⇒ `"partial"`, none ⇒ `"absent"` with `reason`. `confidence` is always present and is the field a consumer reads to know how much this attestation is worth — `"exact"` and `"partial"` are earned by the evidence above, while `"pending"` and `"absent"` are their own states (see the closing rule on this row). Each of `pre` and `post` carries exactly two keys, both required when that side exists: `hash` (the salted commitment described below) and `at` (the instant that observation resolved). `at` is a timestamp of the observation only — it is never an input to any comparison, and a consumer MUST NOT infer from it that the state was unchanged between the two instants. `selector` (declared-probe only) is the probe's tool name alone (e.g. `"github.get_comment"`) — never the args template, since a record is a publishable artifact and the record format carries no other tool args. The declared probe dispatches **only** when the step executed via a matching `approve:` hash (the approval hash binds `attest:`, so a human reviewed the probe's args template); on the flag path (`--allow-writes`/`--yes`) the probe is withheld and attest degrades to `response-derived` with reason `probe-requires-approval`. `delta` (present only when both sides were captured and compared) carries `changed`, the count of declared projection fields whose value differs between `pre` and `post`, and optional `fields`, those fields' **names** only — never their values. `fields` is present **exactly when** `changed` is non-zero and absent exactly when `changed` is `0`; it is never the empty array, and it always has exactly `changed` entries. A `changed` of `0` says the declared projection did not move; it is not a claim that nothing else did. Hashes are `sha256:<hex>` **salted commitments** for change-detection: each attest mixes a per-attest random salt (held in memory only, never recorded) into the canonical-JSON field projection, with `pre`/`post` of the same attest sharing one salt — so `pre.hash === post.hash` iff the projection didn't change, while cross-run hash joins are deliberately impossible. A hash is not encryption; without the salt it cannot be brute-forced, and it is not recomputable by third parties. Raw state never appears in a record, and a probe failure degrades the attestation, never the step. **Expired approvals probe asymmetrically, deliberately (0.29.0+).** On a step whose `expect.expiresAt` has elapsed, the PRE-probe is NOT dispatched and the post-probe IS (recorder mode; in gate mode the write never dispatches, so there is nothing to observe afterward). The two sides are not the same question. Before dispatch, the verdict is already decided by the TTL alone, and a probe that ran and then failed would report `probe-failed` — a claim about the probe, not about the approval. After dispatch, the write has already happened and the probe args were hash-verified, so no exfiltration boundary is at stake; withholding the post-probe would buy symmetry alone and would make the expired-approval receipt the LEAST informative in the system, exactly when an operator most needs to know what the write did. The resulting attest is therefore one-sided **when the post-probe resolves a declared projection field**: `confidence: "partial"` with `reason: "pre: approval-expired: …"` and a real `post` observation. When it does not — a failed or unknown-tool probe, or one returning none of the declared fields, which is an ordinary outcome for a `destructive` delete whose resource now 404s — neither side exists and the attest degrades to `confidence: "absent"` with both reasons joined (`"pre: approval-expired: …; post: …"`), exactly as any other two-sided probe failure does. A consumer MUST NOT read "the approval expired" as a guarantee of a `post` observation. What is guaranteed on this path is the negative: the `pre` side is synthesized as a probe FAILURE and never as an observation, so no `pre` is ever fabricated. `absent`/`pending` MUST NOT be rendered as a pass by any consumer. |
+| `stateCheck` (state-conditioned approval) | Present **iff** the step carried `expect:` (§3.2) AND the runner reached the check (a step refused earlier — approval mismatch, unknown tool, write gate — carries none; a mocked step never does). The execute-time comparison of the step's pre-probe observation against the approve-time keyed commitment, computed strictly **before** dispatch. Outcomes: `match` (commitment equality — of the **declared projection only**, never the whole world, never a semantic-correctness or safety claim), `mismatch` (recorder mode records `action: "stamped"` and the write **still dispatches** — the stamp never flips `outcome`, `passed`, or the exit code), `unevaluated` (its own state — a consumer MUST NOT render it as a pass, and in recorder mode it never blocks). `action` (always present) records what the runner then DID, which is not derivable from `outcome` alone: `"proceeded"` (write dispatched — `match`, or `unevaluated` in recorder mode), `"stamped"` (a finding was recorded and the write still dispatched — a `mismatch`, or an `unevaluated` whose reason is a finding about the APPROVAL rather than a failure to evaluate it, i.e. `approval-expired`), `"refused"` (write not dispatched). `action: "refused"` (gate mode, S8): the repo's `.reelier/policy.yml` declares `state_gate: refuse` and the write was refused **before dispatch** on `mismatch` OR `unevaluated` — the step's `outcome` is `failed` with the spec's refusal string in `failures[]` (the `StepOutcome` enum is unchanged; the distinction lives here), and the record carries **no `write` block and no `attest`** (dispatch provably never issued). The computed diagnosis (`changedFields`/`absentFields`) survives a refusal — it is an observation, and it happened. No flag overrides a state-gate refusal (`--allow-writes`/`--yes` are not consulted). `expectedAt` = `expect.at` (informational — **time is never an input to the comparison**); `observedAt` = when the execute-time observation resolved, absent iff unevaluated before any observation. `reason` (present iff `unevaluated`) is a **closed registry**: `probe-timeout: …`, `probe-failed: …`, `probe-tool-unknown: '<tool>'`, `empty-projection: probe returned no declared fields`, `key-unavailable: keyId '<id>'`, `probe-args-mismatch: filled probe args differ from the approved ones`, `probe-substrate-mismatch: …` (§3.2 — a `status.code` projection whose probe tool resolves to a wrapped MCP tool), `approval-expired: …` (§3.2 — the binding's `expiresAt` instant has been reached; emitted **without dispatching the PRE-probe**, so `observedAt` is absent and the reason claims ONLY that the TTL elapsed, never that the write would have been wrong. The two probe sides are **deliberately asymmetric**, and the `attest` row above states it in full: the pre side is withheld because the verdict is already settled by the TTL and a probe that ran and then failed would report `probe-failed` — a claim about the probe rather than about the approval — while in **recorder mode** the POST-probe DOES dispatch after the write, so the receipt can carry real post-state evidence (`confidence: "partial"` with a real `post`) rather than nothing at all. That is an opportunity, not a guarantee: if the post-probe fails or resolves none of the declared fields, the attest still degrades to `confidence: "absent"` with both reasons joined — see the `attest` row. In gate mode the write never dispatches, so neither side runs. Either way the `stateCheck` comparison reads the pre-probe alone, which is why `observedAt` is absent regardless) — a deleted key and a never-present key are deliberately indistinguishable (deletion IS revocation). `probe-args-mismatch` is emitted **without dispatching either probe** on a `probeArgs`-bearing binding whose filled args do not match the approved ones; `observedAt` is absent, because nothing was observed. It deliberately does NOT claim the probed TARGET changed — MAC inequality proves the ARGS differ, and no more. `absentFields` (only on `mismatch`) lists declared projection fields absent **at execute** — names only, capped at 32 entries / 120 chars each; it never asserts anything about approve-time presence. `changedFields` (P1.5, only on `mismatch`, only when the binding carried per-field commitments) lists declared fields whose recomputed per-field MAC differs from the approve-time one — an EARNED approve-time claim (MAC inequality under the held key proves the committed value differs), names only, same caps. No keyed commitment values (and no keyId beyond a reason string) ever appear in a record. |
 | `mocked` (0.19.0+, §6.1d) | `true` iff this step's observation was a synthetic injected failure (`--fail N[=status]`) rather than a real tool dispatch. Absent for every real step. |
 
 ### 4.2 `RunRecord`
@@ -575,6 +944,11 @@ interface RunRecord {
   skillContentSha256?: string;
   manifestIgnored?: true;
   manifestChecked?: true;
+  policy?: {
+    status: "verified" | "failed" | "unchecked" | "absent";
+    digest?: string;
+    sourcePath?: "project" | "global";
+  };
   mockFailures?: number[];
   steps: StepRecord[];
   totals: {
@@ -590,28 +964,18 @@ interface RunRecord {
 }
 ```
 
-`passed` is `true` iff zero steps have `outcome === "failed"` — an
-`"unchecked"` step does **not** make the run fail, but it also does not
-count toward `totals.passed`.
-
-`manifestIgnored` (0.19.0+, §6.1b) is `true` iff this run's manifest
-preflight was explicitly bypassed via `--ignore-manifest` — absent on every
-run that had no manifest to check, or whose preflight ran normally.
-
-`manifestChecked` (§6.1b) is `true` iff this run's skill declared a manifest
-AND its preflight ran and passed — the positive "declared + verified" signal,
-mutually exclusive with `manifestIgnored`. Absent when the skill declared no
-manifest, and absent on the `--ignore-manifest` break-glass path — so a
-consumer (e.g. the cloud receipt ladder) can distinguish "declared + passed"
-from "never declared" without inferring from absence. A failed preflight
-never produces a record at all (the run refuses fail-closed, §6.1b), so a
-record can never carry `manifestChecked` for a preflight that did not pass.
-Absent on every record that predates the field (additive).
-
-`mockFailures` (0.19.0+, §6.1d) is the sorted list of step numbers that had
-an injected failure (`--fail N[=status]`) this run — present only when
-non-empty. A record carrying this field is a local recovery test, never a
-real receipt: `reelier push` (§8) refuses to push it, unconditionally.
+| Field | Semantics |
+| --- | --- |
+| `skill` | The skill's declared name, copied verbatim from the skill it ran, and the same name the record's file is keyed on (`.reelier/runs/<skill-name>.jsonl`). Always present. It identifies which skill ran by **name**, never which bytes ran — two different revisions of a skill produce records with the identical `skill`, so a consumer MUST NOT treat it as an identity of the content. `skillContentSha256` is the only field that identifies content. |
+| `startedAt`, `finishedAt` | ISO-8601 UTC instants bounding the run, both always present, read from the clock of the machine that ran the skill — immediately before the first step is attempted and immediately after the last one settles. They bound the whole run, escalation included. `totals.ms` is the **sum of the per-step durations**, not the difference of these two: it excludes the runner's own setup and teardown and is therefore normally smaller than the interval between them, so a consumer MUST NOT derive one from the other. Both are ordinary unattested wall-clock readings from an untrusted machine — nothing in the record proves the run happened when they say it did, and a consumer MUST NOT present them as a trusted time of execution. |
+| `passed` | `passed` is `true` iff zero steps have `outcome === "failed"` — an `"unchecked"` step does **not** make the run fail, but it also does not count toward `totals.passed`. Always present. Because an `"unchecked"` step is by definition one whose final outcome carried no failure and which asserted nothing — which includes a step that diverged and was then **healed** by L1/L2 into a zero-assertion state (`level: 1`/`2`, `failures` reset to `[]`), and a synthetic `--fail` step that never really dispatched — a run of nothing but `"unchecked"` steps is `passed: true` while proving nothing (a step with zero assertions is not immune to failing — a tool error, an unbound template var, a bind failure or a refusal still makes it `"failed"`, per the `outcome` row in §4.1; it simply cannot fail an *assertion* it never made): `passed` is the absence of a detected failure, never evidence that anything was verified (§4.3). |
+| `skillContentSha256` | sha256 (64 lowercase hex chars) of the exact skill-file bytes that produced this run, stamped at run time by the caller from the source it had just read to parse the skill — the most truthful moment to capture it. Absent when the caller had no file bytes to hash, and absent on every record written before the field existed; `POST /api/v1/runs` (§8.2) describes the push-time fallback hash computed for those. It identifies **content only** — never authorship, never intent, never approval. A consumer MUST NOT read it as a signature, and MUST NOT read its absence as evidence that the skill was altered or is untrustworthy: absence means only that no hash was captured. |
+| `policy` (0.30.0+) | The policy file in force for **this run** (`docs/specs/policy-attestation-v1.md`), resolved from the same read that decided this run's state gate. `status` uses the four-state vocabulary exactly as §2.2 defines it for the trace side, and the same consumer rules apply: **`unchecked` and `absent` MUST NOT be rendered as a pass, and `unchecked` MUST NOT be rendered as `failed`.** `digest` is `sha256:<64 lowercase hex>` over the raw file bytes, bound to the read that produced the parsed policy, so it names the bytes that governed this run and never the bytes at that path now; omitted in `unchecked`/`absent`. `sourcePath` is `"project"` or `"global"` — which documented candidate decided — and never an absolute path. **This record reports the RUN-TIME policy, always.** A skill carries no policy field in any version, so a skill recorded under one policy and replayed under another inherits nothing: `TraceRecord.meta.policy` (§2.2) describes the recording, this field describes the run, and neither is derived from the other. Inheriting the recording-time policy would fabricate a claim about the present out of the past. **`rules`/`unmatchedRules` never appear here**, unlike on the trace side: replay performs no policy evaluation at all (§6, and flight-recorder-v2's non-goals), so there is no live tool inventory to measure rule coverage against. A consumer therefore MUST NOT read `status: "verified"` on a run record as evidence that any `deny` or `dry_run` rule blocked, intercepted, or evaluated anything during the replay — on this path the file governs the state gate (§6.1c) alone, and the absence of the counts is that statement. Note that a `state_gate`-declaring file that fails to parse refuses the run before step 1, so **no record is written at all** in that case; `status: "failed"` on a run record is therefore always the malformed-without-a-`state_gate`-key case. Optional and additive: absent on every record written before the field existed and on any caller that reported nothing — which is **not** `absent`, the positive finding that a lookup happened and found no file. **Verification never requires this field**, and a consumer MUST NOT treat its absence as evidence that no policy was in force. |
+| `manifestIgnored` | `manifestIgnored` (0.19.0+, §6.1b) is `true` iff this run's manifest preflight was explicitly bypassed via `--ignore-manifest` — absent on every run that had no manifest to check, or whose preflight ran normally. Absence therefore conflates "there was nothing to check" with "the check passed" and is **not** evidence of a clean preflight; only the field's presence carries a claim, and the claim it carries is that a check was skipped. |
+| `manifestChecked` | `true` iff this run's skill declared a manifest and its preflight ran and passed. Mutually exclusive with `manifestIgnored`; absent when the skill declared no manifest and on the break-glass path. A failed preflight refuses before execution and writes no record. This is the positive signal that distinguishes "declared + verified" from "never declared" without inferring from absence. Optional and additive; absent on pre-existing records. |
+| `mockFailures` | `mockFailures` (0.19.0+, §6.1d) is the sorted list of step numbers that had an injected failure (`--fail N[=status]`) this run — present only when non-empty. A record carrying this field is a local recovery test, never a real receipt: `reelier push` (§8) refuses to push it, unconditionally. |
+| `steps` | One `StepRecord` (§4.1) per step of the skill, in execution order. Always present. Every step of the skill appears, including those the runner never attempted because an earlier step diverged and did not heal — those carry `outcome: "skipped"` with `ms: 0`. A consumer MUST NOT infer from an entry's presence that the step ran; only its `outcome` says that. `steps.length` always equals `totals.steps`. |
+| `totals` | Roll-ups derived **entirely** from `steps` — the record carries no count that its own steps do not support. Always present, with all eight keys always present: `steps` is the number of step records; `passed`, `unchecked`, `skipped` and `failed` are the counts of steps with exactly that `outcome` (they partition `steps`, and per the honesty rule in §4.3 `passed` never absorbs `unchecked`); `ms` is the sum of the per-step `ms` values; `llmInputTokens` and `llmOutputTokens` are the sums of `steps[].llm.inputTokens`/`.outputTokens`, counting a step with no `llm` block as zero, so `0`/`0` is the honest reading of a run where escalation never ran. `unchecked` is a count of steps whose final outcome carried no failure and which asserted nothing (see the `passed` row above — a healed step and a mocked step can both land here): per §4.3 a consumer MUST NOT present `totals.unchecked`, or any total that includes it, as evidence of a passing check. |
 
 ### 4.3 Totals honesty rule (normative)
 
@@ -663,6 +1027,77 @@ readable without a migration step — old records never need to be rewritten.
   }
 }
 ```
+
+### 4.6 Digest coverage (normative)
+
+A receipt asserts several independent claims, and they do not all cover the
+same bytes. This section states exactly which bytes the record digest
+covers, so that no consumer — and no badge, page, or product surface —
+credits the signature with proving something it never touched.
+
+**The digest input.** `digestSha256(record)` is computed over the complete
+`RunRecord` as serialized into the push body, after any push-time stamping
+and after record-time redaction: *sign what ships, not what ran*. Every
+field described in §4.1 and §4.2 is therefore covered, including additive
+fields introduced after this version (§0.2).
+
+#### 4.6.1 What the digest does NOT cover [Normative]
+
+The push body (§8.2) carries the record alongside **sibling fields**. A
+sibling is not part of the record and is therefore **not** covered by the
+signature or the timestamp:
+
+| Sibling | Why it is outside |
+| --- | --- |
+| `signature` | Cannot be inside a digest it is computed from. |
+| `timestamp` | Same — the TSA signs the digest, so it post-dates it. |
+| `ciAttestation` | Self-authenticating separately (the OIDC token carries its own issuer signature); it is not vouched for by the record's key. |
+| `ciHeadSha` | **Operator-asserted.** Not present in the OIDC token. The ledger honors it only against an actually-open PR's head in the attested repo — that check, not the producer's signature, is what constrains it. |
+| `costUsd`, `priceTableDate` | Derived at push time from a local price table. Unsigned. |
+| `skillName`, `share` | Routing and intent, not evidence. |
+| `skillContentSha256` (sibling copy) | A convenience duplicate of the in-record field. **The in-record one is signed; the sibling is not.** |
+
+**A verifier MUST NOT treat any sibling as covered by
+`unaltered-since-push`.** A party able to modify the push body in flight, or
+the stored row afterwards, can alter any of the above without invalidating
+the signature. This is not a defect being disclosed — it is the necessary
+consequence of signing a record rather than an envelope — but a consumer
+that renders a sibling next to a green signature check, without saying which
+is which, has produced exactly the overclaim never-list #8 forbids.
+
+**Where a field appears both inside the record and as a sibling, a consumer
+MUST prefer the in-record value** and MUST NOT infer that the sibling was
+verified because the record verified. Today this applies to
+`skillContentSha256`.
+
+#### 4.6.2 Verification results are not producer claims [Normative]
+
+A ledger that ingests a record MAY compute and store its own verification
+results (signature validity, timestamp imprint match, CI attestation
+validity) and MAY render them. Those results are **the ledger's
+computation**, not assertions signed by the producer, and they are not
+covered by the record digest.
+
+- A consumer MUST NOT treat a stored verification result as equivalent to
+  having verified the receipt.
+- A consumer wanting an independent check MUST recompute it — `reelier
+  verify <permalink|file> [--key <pub.pem>]` does this offline, recomputing
+  the digest locally and evaluating each claim on its own (§4.6.3).
+- A verification result MUST only ever be written by the verifier that
+  produced it. Backfilling or hand-setting one — even to a value known to
+  be true — destroys the only property that makes the column worth reading.
+
+#### 4.6.3 Per-claim independence [Normative]
+
+Each claim over a receipt is evaluated and reported **separately**, and the
+four-state discipline of §4.3 applies to each: `verified` / `failed` /
+`unchecked` / `absent`. An implementation MUST NOT collapse them into a
+single pass/fail, and MUST NOT let an `absent` or `unchecked` claim render
+as a pass. An absent claim never fails an exit code; a *present* claim that
+failed verification always does.
+
+This is why an unsigned push is never shamed and never marked suspect: "not
+signed" is `absent`, which is an honest state, not a failure.
 
 ---
 
@@ -818,26 +1253,38 @@ documented CLI flag — the CLI itself always defaults to the real clock.
 ### 6.1b Manifest preflight (`reelier manifest`, flight-recorder-v2, 0.19.0+)
 
 Source of truth: `src/manifest.ts` (`buildManifestForSkill`,
-`preflightManifest`), `src/cli.ts` (`cmdManifest`, `cmdRun`),
-`test/manifest.test.ts`, `test/manifest-cli.test.ts`.
+`addProbeToolsToManifest`, `preflightManifest`), `src/cli.ts`
+(`cmdManifest`, `cmdRun`, `cmdApprove`), `test/manifest-build.test.ts`,
+`test/expect-manifest-probe.test.ts`.
 
 - `reelier manifest <skill.md> --wrap "<command>"` connects the given
   downstream(s), resolves tool routes the same way replay does
   (`buildToolRoutes`, §5.3), and stamps `skill.manifest` (§3.1) with one
-  entry per tool the skill's steps actually use — `digest = sha256(canonical
-  JSON of the tool's inputSchema)`. Printed per-tool as `unchanged` /
-  `updated` / `added` / `removed` against whatever manifest was already
-  stamped. No `--wrap` given is a usage error, exit 1.
+  entry per tool the skill's steps actually use — plus, for every
+  `expect:`-bearing step (state-conditioned approval), the step's declared
+  probe tool (`attest.tool`): a probe-tool schema drift on a state-bound
+  step fails the preflight closed before step 1 instead of surfacing only
+  as a per-step `unevaluated`. `reelier approve --probe` also adds any
+  missing probe-tool entries to an EXISTING manifest when it binds
+  (additive only — existing entries are never re-digested; blessing
+  unrelated drift stays `reelier manifest`'s explicit act), and prints an
+  advisory when there is no manifest to extend. A builtin `http.*` probe
+  is never in a manifest (builtins have no downstream schema) — its drift
+  remains detectable only at run time. `digest = sha256(canonical JSON of
+  the tool's inputSchema)`. Printed per-tool as `unchanged` / `updated` /
+  `added` / `removed` against whatever manifest was already stamped. No
+  `--wrap` given is a usage error, exit 1.
 - `reelier run <skill.md> --wrap ...` runs the preflight **before step 1
-  executes** whenever `skill.manifest` is present: `ok` → proceed silently
-  and stamp `RunRecord.manifestChecked: true` (§4.2) — the positive
-  "declared + verified" signal; any missing tool or schema mismatch →
-  `MANIFEST DRIFT — refusing to replay (fail closed)` printed per drifted
-  tool, exit 1, and the fake/real downstream's `call` is never invoked. A
-  manifest present with no `--wrap` at all is also a hard refusal (nothing
-  to preflight against). A skill with no manifest gets an advisory note
-  only and runs normally — every pre-0.19.0 skill is unaffected, and its
-  record carries neither `manifestChecked` nor `manifestIgnored`.
+  executes** whenever `skill.manifest` is present: `ok` → proceed and stamp
+  `RunRecord.manifestChecked: true` (§4.2), the positive "declared + verified"
+  signal;
+  any missing tool or schema mismatch → `MANIFEST DRIFT — refusing to
+  replay (fail closed)` printed per drifted tool, exit 1, and the fake/real
+  downstream's `call` is never invoked. A manifest present with no `--wrap`
+  at all is also a hard refusal (nothing to preflight against). A skill
+  with no manifest gets an advisory note only and runs normally — every
+  pre-0.19.0 skill is unaffected and its record carries neither
+  `manifestChecked` nor `manifestIgnored`.
 - `--ignore-manifest` is the explicit break-glass override: skips the
   preflight, prints a `WARNING: --ignore-manifest` line, and stamps
   `RunRecord.manifestIgnored: true` (§4.2) — never a silent bypass.
@@ -859,9 +1306,13 @@ effect (`step.effect ?? tool.effect`):
   - `step.approve === computeApprovalHash(step)` (a hash over the step's
     tool name + argument *template*, `{{placeholders}}` intact — never the
     filled args, and never including the server, so `reelier approve` can
-    run fully offline) → the step executes with **no flag needed at all**,
-    even a `destructive` one.
-  - Any mismatch (the step's tool, args, or `attest:` declaration changed since it was approved) →
+    run fully offline; when the step carries an `attest:` declaration
+    and/or an `expect:` binding (§3.2), those are bound into the hash too)
+    → the step executes with **no flag needed at all**, even a
+    `destructive` one.
+  - Any mismatch (the step's tool, args, `attest:` declaration, or
+    `expect:` binding changed since it was approved — deleting `expect:`
+    to quietly un-condition a step counts) →
     `"failed"` with `"Approval mismatch on write step … Re-review and
     re-approve: reelier approve <skill.md>"` — **no flag overrides this**,
     including `--allow-writes` and `--yes` together. The tool is never
@@ -870,7 +1321,240 @@ effect (`step.effect ?? tool.effect`):
   shows its current state (`unapproved` / `approved (current)` / `approved
   (STALE — tool/args/attest changed)`), and on confirmation (or unconditionally under
   `--all`) stamps `step.approve = computeApprovalHash(step)`, serializes,
-  and appends one `## Changelog` line (§3.7).
+  and appends one `## Changelog` line (§3.8).
+- `reelier approve <skill.md> --probe [--rebind] [--wrap "<cmd>"]...`
+  (state-conditioned approval) additionally binds each approval to the
+  world it was granted against: the step's declared `attest:` probe is run
+  live at approve time (read-effect enforced, 2000 ms timeout, literal
+  args only — any `{{placeholder}}` in probe OR action args refuses the
+  binding, as does a missing explicit `projection`; projection entries
+  may address response headers as `header.<name>` and body keys
+  explicitly as `body.<key>` — a bare `<key>` stays a top-level body key,
+  byte-identical to before, and the `status` namespace is deferred since
+  a bare `status` entry already means the body key of that name in
+  shipped skills — P1.5), the projected
+  observation is shown to the approver before EVERY consent, fresh bind
+  and re-bind alike (values print only on a TTY and never under `--all` —
+  CI logs are retained artifacts; names otherwise), and the yes stamps
+  `approve:` and `expect:` alongside the declared `attest:` (the §3.2
+  trio). The per-approval key lands in `~/.reelier/expect-keys.json`
+  (`REELIER_EXPECT_KEYS` override) BEFORE the skill file is touched; it
+  never enters the file or any record. A step that cannot be bound is
+  never silently approved weaker: interactive mode offers the explicit
+  downgrade (`Approve WITHOUT state binding?`), `--all` skips it, counts
+  it (`skipped (probe failed): N`), and exits non-zero — a failing
+  keystore is the same class (`approve-probe-failed:
+  keystore-unavailable`). Re-running `--probe` on an unchanged bound step
+  re-verifies and reports (`unchanged (state re-verified against current
+  binding)`), writing nothing; a re-verify that CANNOT run (probe failure,
+  deleted key, empty projection) is its own loud class (`re-verify
+  unavailable: N`, exit non-zero — never folded into "unchanged"). If the
+  world moved, re-binding requires the interactive yes or the explicit
+  `--rebind` flag — under `--all` without `--rebind` the step is skipped
+  (`skipped (world moved): N`, exit non-zero). A moved binding that carries
+  per-field commitments (`expect.fields`, §3.2) also reports WHICH field
+  moved, recomputed from the same key and the same live observation:
+  `fields changed since approval: <names>` for committed fields whose value
+  differs (the same claim, and the same label, the runner's mismatch stamp
+  uses) and `committed fields absent at re-verify: <names>` for committed
+  fields the re-verify observation no longer carries — a distinct label
+  because it is a distinct claim, honest here only because `expect.fields`'
+  key set IS the disclosed approve-time field set. Absence is established
+  against the RAW observation, never inferred from the projected map: a
+  field present but not projectable (a `null`/object/array value, a header
+  present but empty) and every body field of a body that did not parse are
+  reported as `committed fields the probe could not project at re-verify:
+  <names>` instead, because nothing about their presence was established
+  either way. A committed name the step's declared projection does not
+  address cannot have been minted by any approve run, so it is never named
+  as a committed field at all: it is reported as `note: the binding commits
+  fields this step never projects: <names>`. Names only, on every path
+  including `--all` (the TTY gate governs projected VALUES, not names); each
+  line prints only when non-empty, and a binding minted before per-field
+  commitments existed reports neither rather than fabricating a diagnosis.
+  Nothing here is recorded or pushed — it is a report to the approver.
+  Plain `approve` on a
+  CHANGED step that carries `expect:` refuses (`state-bound step changed —
+  re-approve with --probe, or pass --drop-expect to approve without state
+  binding`); `--drop-expect` is the explicit, named downgrade that strips
+  the binding and stamps a shape-only approval — it is a plain-approve
+  flag and conflicts with `--probe` (refused up front: `--probe` (re)binds
+  state, the two flags answer opposite questions). `reelier approve
+  --prune-keys [--all]` (P1.5) is a standalone command — combining it
+  with a skill path or any other approve flag is refused up front, never
+  silently absorbed. It lists keystore entries whose keyId appears in no
+  `*.md` file under cwd (matched case-insensitively; symlinks followed
+  with a cycle guard; `node_modules`/`.git`/`dist`/`dist-test`/
+  `.stryker-tmp` trees skipped; the reference regex tolerates any JSON
+  spacing — the scan must be at least as forgiving as the parser, since
+  a missed reference deletes an unrecoverable key) and removes them only
+  on explicit confirmation (`--all` skips the prompt) — removal is
+  revocation, the prompt says so and names what the scan could not see
+  (other checkouts/branches/machines, the skipped trees). After consent
+  the scan re-runs (the prompt has human latency; anything referenced by
+  then is spared) and the keystore mutation itself refuses, under the
+  lock, to delete entries minted after the scan began. Superseded
+  entries are otherwise never auto-deleted.
+
+**Approval TTL (`--expires <duration>`, 0.29.0+).** `reelier approve
+--probe --expires 24h` gives the state binding a time-to-live: the
+duration (`<positive integer><m|h|d>`, at most `365d`) is resolved against
+the approve-time observation and stamped into `expect.expiresAt` as an
+absolute instant (§3.2). Grammar violations — a bare number, `0h`, a
+float, an unknown unit, anything over the cap — are a clean usage error
+and **nothing is approved**; the parser never throws. `--expires` requires
+`--probe` and says why when it is missing: the TTL lives on `expect:`, and
+a plain approved write cannot expire (§3.2's known scope boundary). At
+approve time the resolved instant is printed rather than the duration the
+operator typed, so the deadline is legible as a date and not as
+arithmetic. **[Reference implementation]** It is printed *before* the y/N
+on every path — fresh bind, re-bind after drift, and re-stamp alike — so
+the operator agrees to a date rather than to arithmetic they cannot do in
+their head: the duration resolves against the **observation**, not
+wall-clock-now. A re-bind that carries an earlier TTL forward says so in
+the same position, and says **ALREADY ELAPSED** there when the carried
+instant is dead, rather than disclosing it once consent is no longer
+declinable. The instant is echoed again as the binding is written; the
+two lines are the same sentence doing different jobs (what is about to be
+written, and the record of what was), and both render from a single
+resolution so the previewed and written instants cannot drift apart. A
+step with **no** TTL prints no expiry line at all — never
+`expires: never`, which would render an absence as a deliberate choice.
+`--expires` composes with `--probe`; it does not replace it.
+
+Re-running `--expires` on an already-bound step whose state re-verifies
+clean **renews** the deadline rather than reporting `unchanged`: the
+duration resolves against *this* observation, so `--expires 24h` always
+means 24 hours from now. That is deliberate — an operator adding or
+resetting a TTL on a healthy binding is the main way this control gets
+used, and a command that accepted `--expires` and wrote nothing would be
+the worst available outcome for a control whose job is to expire.
+Consequence worth knowing before scripting `approve --expires` in a loop:
+each renewal is a re-stamp, so it mints a **fresh keystore key** and
+supersedes the previous one. That is the price of the deadline living
+inside the approval hash, which is what makes it non-forgeable.
+Superseded entries are never auto-deleted; collect them with
+`reelier approve --prune-keys`.
+
+**Do not put `approve --all --probe --expires` on a schedule.** Under
+`--all` the consent prompt is auto-answered, so a cron job or pre-commit
+hook running that command renews the deadline on every tick, forever: the
+state re-verifies clean, the TTL resets, and no human ever reads
+anything. **A scheduled renewal is not a re-approval, and a TTL renewed
+by a machine is not a TTL.** The entire claim of "expire as a no" is that
+*silence* ends the authorization — something that answers on the
+operator's behalf converts it back into a standing yes wearing a
+deadline, which is strictly worse than no TTL at all because the receipt
+now shows a freshly-stamped approval date. This is the §6.1c
+rubber-stamp failure mode with the last human step automated away. The
+tool does not block it — the one-shot `--all --expires` case is
+legitimate, and the operator typed the deadline themselves — so it is a
+rule about who runs the command, not about the command.
+
+**Choosing a projection, and the rubber-stamp failure mode
+[Reference].** Every approval control in this spec invalidates an
+approval when something changes. The failure mode they share is that
+**an approval which fires constantly trains the operator to stamp
+without reading, which is strictly worse than no approval at all** — the
+ceremony still happens, the receipt still says a human approved, and the
+human has stopped looking. A model-version bump, a schema tweak, a
+changed ETag: each is benign, each invalidates the chain, and the
+operator learns that re-approval is a formality.
+
+The countermeasure is the projection, and the property to aim for is a
+**fixed point**: *the projection should change when the thing you care
+about changes, and not otherwise.* Both halves are load-bearing. A
+projection that never fires is not an approval; a projection that fires
+on every deploy is not one either.
+
+Three field classes, and what to do with each:
+
+- **Version-class fields** — `version`, `revision`, `updated_at`,
+  `etag`, `build`, model identifiers, anything that bumps on deploy.
+  They carry no meaning for the decision being made. **Leave them out.**
+  `approve --probe` already prints a version-class warning when a
+  binding includes one; the warning exists because these are the single
+  largest source of accidental re-approval.
+- **Named content fields** — the thing you actually approved: the body
+  text you reviewed, the recipient, the amount, the target slug.
+  **These are the projection.**
+- **Background-mutated noise** — view counters, `last_seen`, queue
+  depths, anything a third party writes on its own schedule. Including
+  one makes the approval expire at a rate set by strangers. **Leave them
+  out.**
+
+Worked example. A binding over a whole response body:
+
+```
+- attest: {"tool":"get_page","args":{"slug":"pricing"}}
+```
+
+With no `projection`, the commitment covers every top-level body key.
+The next deploy bumps `revision` from 41 to 42, the state check reports
+`mismatch`, and the operator re-approves — having read nothing, because
+nothing they care about moved. Do that weekly and the yes is worthless.
+
+The same binding, narrowed:
+
+```
+- attest: {"tool":"get_page","args":{"slug":"pricing"},"projection":["compiled_truth"]}
+```
+
+Now the revision bump changes nothing the commitment covers: the check
+still reports `match` and the write proceeds unremarked. Edit the page
+body and it reports `mismatch` — with `expect.fields` (§3.2), naming
+`body.compiled_truth` as the field that moved. That is the fixed point:
+one signal, and it means something.
+
+**How a TTL interacts.** A TTL is a **deliberate** re-approval cadence —
+you chose 30 days and you intend to look again in 30 days. Projection
+drift is an **accidental** one, set by whoever last deployed. Adding a
+TTL to a badly-scoped projection makes the decay mode worse, because now
+two clocks invalidate the approval and the operator has twice the reason
+to stop reading. **Narrow the projection first; then pick a TTL you are
+willing to honour.** If you would not actually re-review at the interval
+you are about to type, type a longer one — an honoured 90-day TTL is a
+real control, and a rubber-stamped 24-hour one is theatre.
+
+**State gate (S8 — `state_gate: refuse`).** Fail-closed is an **explicit
+per-repo opt-in**, never a per-invocation flag: `.reelier/policy.yml`
+(project, falling back to `~/.reelier/policy.yml` — first existing file
+decides, whole-file, same precedence as the wrap loader) gains one
+top-level scalar, `state_gate: refuse` — the only supported value; any
+other is a strict parse error. **Every run path resolves it before
+anything else** — `reelier run` AND the `reelier_replay` MCP tool
+(`reelier serve`): a gate honored by one entrypoint and ignored by the
+other would be a control an agent bypasses by picking the second door,
+which defeats the entire reason the opt-in lives in a file rather than a
+flag. A leading UTF-8 BOM never hides the key (the platform whose default
+shell redirect writes one is a first-class target), and a policy file that
+exists but cannot be READ is reported as an unknown intent, never skipped
+in silence. Strict consequences are scoped to files whose **raw text contains a
+top-level `state_gate` key** (comment-stripped, indent-0): a malformed
+file that DECLARES the key refuses the whole run before step 1, loudly
+(`Refusing to run: <path> declares 'state_gate' but is malformed …` —
+silently ignoring a declared operator intent is the one direction an
+opt-in gate must never fail); a malformed file WITHOUT the key warns on
+stderr (the warning line is the gap marker) and fails open — a malformed
+file cannot opt a repo in, and the run record is never mutated for a repo
+that did not opt in. With the gate on, a write step whose pre-state check
+lands `mismatch` OR `unevaluated` is refused before dispatch with the
+refusal strings pinned in §4.1's `stateCheck` row semantics
+(`Refusing to dispatch write step: pre-state commitment mismatch — the
+world this approval was granted against has changed. Re-approve with
+'reelier approve --probe'. (--allow-writes/--yes do not override a
+state-gate refusal.)` / `Refusing to dispatch write step: pre-state
+binding could not be evaluated (<reason>) and this repo opts into the
+state gate. (--allow-writes/--yes do not override a state-gate
+refusal.)`). Refusing on `unevaluated` is deliberate: after key deletion
+(revocation) the binding is no longer evidence, and fail-closed is
+precisely what revocation should mean for an opted-in repo — a refusal is
+the control working, not the tool breaking. `match` proceeds exactly as
+recorder mode would; expect-less writes are untouched (the gate gates
+bindings, not writes in general); repos without the opt-in are
+byte-identical to recorder mode. The wrap runtime accepts the key (its
+banner names where enforcement lives) but never gates on it — deny/dry_run
+enforcement is the wrap's job, the state gate is the run path's.
 
 **Write receipts.** Whenever a write/destructive step's tool call actually
 dispatches (approved-hash path or legacy-flag path alike), `StepRecord`
@@ -878,7 +1562,8 @@ dispatches (approved-hash path or legacy-flag path alike), `StepRecord`
 tool.server ?? null, filledArgs)` — the tool + the FILLED args + the
 downstream server, never enforced against external state), `approved`
 (`true` iff executed via a matching approval hash, `false` via the legacy
-flags), an optional best-effort `resource` (`id`/`version`, extracted from
+flags), `approvalHash` (0.28.0+ — WHICH approval authorized it; absent
+exactly when `approved` is `false`), an optional best-effort `resource` (`id`/`version`, extracted from
 a JSON response body's `id`/`_id` and `version`/`etag`/`revision`/`sha`
 fields when present — honestly omitted, never guessed, otherwise), and an
 optional `duplicateOf` (the step number of an earlier step in the SAME run
@@ -1005,7 +1690,7 @@ excluded from L2 regardless of `--yes`.
 A successful heal at L1 or L2 is applied to the **in-memory** `Skill`
 object (`step.asserts`, `step.binds`, and — L2 only, when `args` was
 proposed — `step.actionArgs`), a changelog line is appended to `trailing`
-(§3.7), the whole skill is re-serialized via `serializeSkill`, and written
+(§3.8), the whole skill is re-serialized via `serializeSkill`, and written
 to `skillPath` — **synchronously, before the run record is written**
 (`applyWritebackSafely`, `src/writeback.ts:158-168`, called from
 `attemptEscalation`, `src/runner.ts:322-330, 393-401`). This is mandatory,
@@ -1131,6 +1816,7 @@ cross-checked against line-by-line:
 | Computed date template vars (`{{today}}`, `{{today±Nd}}`) | `test/runner.test.ts` |
 | Escalation ladder (L1/L2, grammar validation, destructive gating, write-back) | `test/runner-escalate.test.ts`, `test/escalate.test.ts` |
 | Run-record legacy-derivation (`reelier bench`) | `test/bench-cli.test.ts` |
+| Policy record (four states, raw-byte digest, run-path narrowness) | `test/policy-record.test.ts`, `test/policy-run-record.test.ts`, `test/policy-trace-meta.test.ts` |
 | Redaction patterns | `test/redact.test.ts` |
 | Cloud sync (`reelier push`): cursor math, `--all`, mid-batch failure, auth abort, skill-upload-on-first-push, `--dry-run` | `test/push.test.ts` |
 

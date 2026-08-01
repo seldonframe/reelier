@@ -80,10 +80,29 @@ export function renderStepBlock(step: Step): string[] {
   for (const a of step.asserts) lines.push(`- assert: ${a}`);
   for (const b of step.binds) lines.push(`- bind: ${b}`);
   lines.push(`- effect: ${step.effect}`);
+  // Only when the author stated it: absent means `internal` (SPEC §3.7), and
+  // emitting it would rewrite every existing skill file on the first heal.
+  if (step.exposure !== undefined) lines.push(`- exposure: ${step.exposure}`);
   if (step.attest !== undefined) {
     lines.push(`- attest: ${JSON.stringify({ tool: step.attest.tool, args: step.attest.args, ...(step.attest.projection ? { projection: step.attest.projection } : {}) })}`);
   }
   if (step.approve !== undefined) lines.push(`- approve: ${step.approve}`);
+  if (step.expect !== undefined) {
+    // Canonical (alphabetical) so the file line and the approval-hash input
+    // agree byte-for-byte (wave2 spec §2.1). canonicalJson sorts keys, so the
+    // emitted order is alphabetical — at, expiresAt, fields, keyId, pre,
+    // probeArgs — matching the approval-hash input's own sort.
+    lines.push(
+      `- expect: ${canonicalJson({
+        at: step.expect.at,
+        keyId: step.expect.keyId,
+        pre: step.expect.pre,
+        ...(step.expect.expiresAt !== undefined ? { expiresAt: step.expect.expiresAt } : {}),
+        ...(step.expect.fields !== undefined ? { fields: step.expect.fields } : {}),
+        ...(step.expect.probeArgs !== undefined ? { probeArgs: step.expect.probeArgs } : {}),
+      })}`
+    );
+  }
   lines.push("");
   return lines;
 }

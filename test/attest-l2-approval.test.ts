@@ -46,7 +46,7 @@ description: approved+attested write step that diverges then reaches L2
 /** Skill text with a CURRENT approve: hash stamped exactly as cmdApprove would (attest bound in). */
 function approvedSkillSource(): string {
   const s = parseSkill(BODY).steps[0];
-  const hash = computeApprovalHash({ actionTool: s.actionTool, actionArgs: s.actionArgs, attest: s.attest });
+  const hash = computeApprovalHash({ actionTool: s.actionTool, actionArgs: s.actionArgs, attest: s.attest, expect: s.expect });
   return `${BODY}- approve: ${hash}\n`;
 }
 
@@ -107,6 +107,11 @@ test("F1: an approved+attested write step heals at L2 when the patched template 
       "no fabricated approval-mismatch reason may be recorded"
     );
     assert.equal(record.steps[0].write?.approved, true);
+    // The L2 gate proved l2ExpectedHash === step.approve before dispatch, so
+    // the healed re-execution ran under the SAME human approval and the
+    // receipt must name it. Without this, a mutation recording a different
+    // string at the L2 buildStepWrite call site survives the whole suite.
+    assert.equal(record.steps[0].write?.approvalHash, parseSkill(source).steps[0].approve);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

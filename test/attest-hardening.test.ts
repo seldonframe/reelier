@@ -273,7 +273,7 @@ description: d
  * fix-wave F2 the declared probe only dispatches on the approved path. */
 function approvedProbeSkill(): string {
   const s = parseSkill(PROBE_SKILL).steps[0];
-  const hash = computeApprovalHash({ actionTool: s.actionTool, actionArgs: s.actionArgs, attest: s.attest });
+  const hash = computeApprovalHash({ actionTool: s.actionTool, actionArgs: s.actionArgs, attest: s.attest, expect: s.expect });
   return `${PROBE_SKILL}- approve: ${hash}\n`;
 }
 
@@ -414,7 +414,7 @@ description: one pre-approved write step with no attest
 - effect: destructive
 `;
     const parsed = parseSkill(withoutHash);
-    const currentHash = computeApprovalHash({ ...parsed.steps[0], attest: parsed.steps[0].attest });
+    const currentHash = computeApprovalHash({ ...parsed.steps[0], attest: parsed.steps[0].attest, expect: parsed.steps[0].expect });
     const skillSource = `---
 name: attest-advisory-current
 description: one pre-approved write step with no attest

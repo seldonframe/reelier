@@ -1,5 +1,5 @@
 ---
-description: When to use the Reelier MCP tools (reelier_scan, reelier_from_session, reelier_replay, reelier_push) to freeze and replay deterministic tool-call workflows.
+description: When to use the Reelier MCP tools (reelier_scan, reelier_from_session, reelier_replay, reelier_diff, reelier_push) to freeze and replay deterministic tool-call workflows.
 alwaysApply: false
 ---
 
