@@ -2313,7 +2313,14 @@ export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Prom
         // "unchanged". That is a deliberate re-approval cadence being reset by
         // hand, which is what the operator just typed.
         const stateUnchanged = !rebindingArgs && macEquals(expectMac(key, step.attest!.tool, typed), step.expect.pre);
-        const requestedExpiresAt = expiresMs !== undefined ? new Date(reObservedAtMs + expiresMs).toISOString() : undefined;
+        // Issue #77: through the SAME resolver `bindStep` writes from, so the
+        // instant previewed on this path is the instant stamped rather than a
+        // second expression that agrees by identical arithmetic. Narrowed to
+        // `source === "new"` because `ttlMoves` below asks specifically
+        // "did the operator request a deadline, and is it different?" — a
+        // carried-forward instant is not a request and must not read as one.
+        const requestedExpiry = resolveExpiresAt(step, reObservedAtMs, expiresMs);
+        const requestedExpiresAt = requestedExpiry.source === "new" ? requestedExpiry.expiresAt : undefined;
         const ttlMoves = requestedExpiresAt !== undefined && requestedExpiresAt !== step.expect.expiresAt;
         if (stateUnchanged && !ttlMoves) {
           console.log("  unchanged (state re-verified against current binding)");
