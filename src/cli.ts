@@ -1728,6 +1728,72 @@ async function cmdPruneKeys(args: ParsedArgs, deps: ApproveDeps): Promise<number
   return 0;
 }
 
+/**
+ * The approval TTL this binding would carry, resolved ONCE (issue #77).
+ *
+ * `--expires 7d` resolves against the OBSERVATION's timestamp, not
+ * wall-clock-now — arithmetic no operator does in their head, which is the
+ * whole reason the resolved instant is shown before the y/N rather than after
+ * it. The preview and the write therefore have to be the SAME value, not two
+ * expressions that agree today and drift on the next edit; hence one function
+ * with two call sites rather than a duplicated inline calculation.
+ *
+ * `source` and `elapsed` ride along so the preview and `bindStep`'s echo can
+ * render the same three cases without re-deriving them from the instant.
+ */
+type ResolvedExpiry =
+  | { expiresAt: string; source: "new"; elapsed: false }
+  | { expiresAt: string; source: "carried"; elapsed: boolean }
+  | { expiresAt: undefined; source: "none"; elapsed: false };
+
+function resolveExpiresAt(step: Step, observedAtMs: number, expiresMs: number | undefined): ResolvedExpiry {
+  // W5-T3 (§3.2): an ABSOLUTE instant, resolved once against THIS
+  // observation's timestamp. Stamping the duration itself would re-arm the
+  // approval on every read, which is the opposite of expiring.
+  if (expiresMs !== undefined) return { expiresAt: new Date(observedAtMs + expiresMs).toISOString(), source: "new", elapsed: false };
+  // Review finding (IMPORTANT): with no `--expires`, a prior TTL is CARRIED
+  // FORWARD rather than dropped. `bindStep` is also the re-bind path, so
+  // resolving from `expiresMs` alone meant a routine `approve --probe
+  // --rebind` after benign drift silently deleted a TTL the operator set
+  // weeks earlier — a downgrade, and §4.4 forbids silent downgrades of
+  // exactly this kind.
+  //
+  // Carried VERBATIM, not re-resolved against this observation: the file
+  // stores an instant, not the duration behind it, and re-resolving would
+  // require guessing that duration. Verbatim is also the safe direction — a
+  // re-bind extends nothing, and an already-elapsed TTL stays elapsed, so
+  // re-binding state drift can never quietly renew a time-expired approval.
+  const carried = step.expect?.expiresAt;
+  if (carried !== undefined) return { expiresAt: carried, source: "carried", elapsed: Date.parse(carried) <= observedAtMs };
+  // Brand invariant 1, one level down: no TTL prints NO line. "expires:
+  // never" would render an absence as a deliberate choice.
+  return { expiresAt: undefined, source: "none", elapsed: false };
+}
+
+/**
+ * One sentence, rendered from one resolution — so the operator reads the same
+ * words in the pre-prompt preview and in the echo of what was written, rather
+ * than two phrasings of the same fact.
+ */
+function expiryConsentLine(resolved: ResolvedExpiry, expiresRaw: string | undefined): string | undefined {
+  if (resolved.source === "new") {
+    return `  expires: ${resolved.expiresAt} (--expires ${expiresRaw}) — past it this step's state check is 'unevaluated (approval-expired)', never a pass`;
+  }
+  if (resolved.source === "carried") {
+    // Review finding (MINOR): a carried instant that has ALREADY elapsed
+    // produces an approval that is dead on arrival — safe, because it fails
+    // closed at the first run, but `expires: 2026-07-04T…` reads like a live
+    // deadline to anyone scanning the output. Say which one it is.
+    return (
+      `  expires: ${resolved.expiresAt} (carried forward unchanged from the previous binding` +
+      (resolved.elapsed
+        ? " — ALREADY ELAPSED, so this binding is expired the moment it is written; pass --expires <duration> to set a new one)"
+        : " — pass --expires <duration> to set a new one)")
+    );
+  }
+  return undefined;
+}
+
 export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Promise<number> {
   // P1.5: `--prune-keys` takes no skill path — rotation leaves superseded
   // entries behind on purpose (parallel checkouts, git revert); pruning is
@@ -1901,6 +1967,20 @@ export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Prom
     console.log(`  probe args (filled): ${canonicalJson(filled)}`);
   };
 
+  /**
+   * Issue #77: the resolved deadline, printed immediately BEFORE the y/N so
+   * the operator agrees to a date rather than to arithmetic. `--expires 7d`
+   * resolves against the observation, not wall-clock-now, and a date shown
+   * after consent is a date nobody had the chance to decline.
+   *
+   * Prints nothing when there is no TTL — never "expires: never", which would
+   * render an absence as a deliberate setting.
+   */
+  const showExpiry = (step: Step, observedAtMs: number): void => {
+    const line = expiryConsentLine(resolveExpiresAt(step, observedAtMs, expiresMs), expiresRaw);
+    if (line !== undefined) console.log(line);
+  };
+
   const bindStep = async (
     step: Step,
     typed: Record<string, string | number | boolean>,
@@ -1926,39 +2006,17 @@ export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Prom
     for (const [name, value] of Object.entries(typed)) {
       fieldMacs[name] = expectFieldMac(key, step.attest!.tool, name, value);
     }
-    // W5-T3: an ABSOLUTE instant, resolved once against THIS observation's
-    // timestamp. Stamping the duration itself would re-arm the approval on
-    // every read, which is the opposite of expiring.
+    // W5-T3, resolved by the shared `resolveExpiresAt` — which is also what
+    // the pre-prompt preview calls (issue #77), so the instant the operator
+    // agreed to and the instant written here are ONE value by construction
+    // rather than two expressions that happen to agree today.
     //
-    // Review finding (IMPORTANT): when no `--expires` is given, a prior TTL is
-    // CARRIED FORWARD rather than dropped. `bindStep` is also the re-bind
-    // path, so building `expect` from `expiresMs` alone meant a routine
-    // `approve --probe --rebind` after benign drift silently deleted a TTL the
-    // operator set weeks earlier — a downgrade, and §4.4 forbids silent
-    // downgrades of exactly this kind.
-    //
-    // Carried VERBATIM, not re-resolved against this observation: the file
-    // stores an instant, not the duration behind it, and re-resolving would
-    // require guessing that duration. Verbatim is also the safe direction — a
-    // re-bind extends nothing, and an already-elapsed TTL stays elapsed, so
-    // re-binding state drift can never quietly renew a time-expired approval.
-    const carriedExpiresAt = step.expect?.expiresAt;
-    const expiresAt = expiresMs !== undefined ? new Date(observedAtMs + expiresMs).toISOString() : carriedExpiresAt;
-    if (expiresMs !== undefined) {
-      console.log(`  expires: ${expiresAt} (--expires ${expiresRaw}) — past it this step's state check is 'unevaluated (approval-expired)', never a pass`);
-    } else if (carriedExpiresAt !== undefined) {
-      // Review finding (MINOR): a carried instant that has ALREADY elapsed
-      // produces an approval that is dead on arrival — safe, because it fails
-      // closed at the first run, but `expires: 2026-07-04T…` reads like a live
-      // deadline to anyone scanning the output. Say which one it is.
-      const elapsed = Date.parse(carriedExpiresAt) <= observedAtMs;
-      console.log(
-        `  expires: ${carriedExpiresAt} (carried forward unchanged from the previous binding` +
-          (elapsed
-            ? " — ALREADY ELAPSED, so this binding is expired the moment it is written; pass --expires <duration> to set a new one)"
-            : " — pass --expires <duration> to set a new one)")
-      );
-    }
+    // This echo stays. The preview says what is about to be written; this is
+    // the record of what was. Same sentence, two jobs.
+    const resolved = resolveExpiresAt(step, observedAtMs, expiresMs);
+    const { expiresAt } = resolved;
+    const echo = expiryConsentLine(resolved, expiresRaw);
+    if (echo !== undefined) console.log(echo);
     step.expect = {
       at,
       keyId,
@@ -2322,16 +2380,24 @@ export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Prom
         // Re-binding is an act of consent (A2): interactive yes or the
         // explicit --rebind flag ("consent granted by whoever runs this
         // command against whatever the world is now") — never automatic.
-        let consent: boolean;
-        if (rebindFlag) {
-          consent = true;
-        } else if (all) {
+        //
+        // The --all-without---rebind refusal is hoisted ABOVE the expiry
+        // preview (issue #77): nothing is written on that path, and "carried
+        // forward unchanged from the previous binding" would assert a
+        // carry-forward that never happens. Same three outcomes, same order
+        // of precedence — only the skip moved earlier.
+        if (!rebindFlag && all) {
           console.log("  skipped (world moved) — pass --rebind to re-bind to the current state");
           skippedWorldMoved++;
           continue;
-        } else {
-          consent = await askYes("  Re-bind this approval to the current state? (y/N) ");
         }
+        // Issue #77: the yes is granted against a SHOWN deadline as well as a
+        // shown observation. A re-bind with no `--expires` carries the old TTL
+        // forward — including one that has already elapsed, which the operator
+        // must learn before consenting to a binding that is dead on arrival,
+        // not after.
+        showExpiry(step, reObservedAtMs);
+        const consent = rebindFlag || (await askYes("  Re-bind this approval to the current state? (y/N) "));
         if (!consent) {
           skippedCount++;
           continue;
@@ -2511,6 +2577,9 @@ export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Prom
       }
 
       console.log(`  ${state}`);
+      // Issue #77: the deadline is part of what is being consented to, so it
+      // precedes the question — same as the re-stamp path already did.
+      showExpiry(step, observedAtMs);
       const yes = all || (await askYes("  Approve this step against this observed state? (y/N) "));
       if (!yes) {
         skippedCount++;
