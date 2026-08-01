@@ -2,6 +2,95 @@
 
 All notable changes to `reelier`. Dates are release dates.
 
+## 0.30.0 — The seatbelt in the record
+
+Breaking behavior: **none — additive.** No API was removed, no existing record
+field changed meaning, and **no enforcement behavior changed at all**. What a
+`policy.yml` denies, intercepts or allows in 0.30.0 is exactly what it did in
+0.29.0. This release changes only what the record *says* about the policy, and
+every new field is optional — a trace or run record written before it existed
+stays byte-identical and still verifies.
+
+One thing to know before you upgrade, and it is a **reader** obligation rather
+than a behavior change: `meta.policyGap` is superseded by `meta.policy` and no
+writer emits it as of 0.30.0. Readers must keep parsing it. A record carrying
+`policyGap` and no `policy` normalizes to `policy: { status: "failed" }` with
+no `digest` — nothing hashed the file at record time and re-deriving one is
+impossible. A record carrying both must prefer `policy`.
+
+### Added
+
+- **A four-state `policy` claim, on both execution paths.** The wrap path
+  carries it on `TraceRecord.meta`, the replay path on the `RunRecord`.
+  `status` is `verified` (found, parsed clean, in force) / `failed` (found and
+  malformed, so enforcement degraded to deny-nothing for the session) /
+  `unchecked` (a file EXISTS and could not be read — EACCES, EISDIR, a lock —
+  so what it declared is unknown) / `absent` (no file at either the project or
+  the global candidate). The distinction that motivated the whole release:
+  before this, a run under a live enforcing policy and a run with no policy
+  file at all produced **identical evidence**. A consumer MUST NOT render
+  `unchecked` or `absent` as a pass, and MUST NOT render `unchecked` as
+  `failed` — the latter names a known-dead seatbelt, the former an unknown one.
+- **`digest` is `sha256:` over the raw file bytes**, never a canonical form. It
+  has to work in `failed`, where nothing parsed, and it has to be able to see
+  byte-level defects such as a leading UTF-8 BOM. It is computed in the same
+  read that produced the parsed policy, so it names the bytes actually in force
+  and never the bytes at that path now. A changed digest is **not** evidence of
+  a changed policy — a pure reformat changes it.
+- **`rules` and `unmatchedRules` — counts only, wrap path only.** A rule naming
+  a tool no wrapped server exposes can never fire, which is the difference
+  between a seatbelt being present and being able to fire. `rules.toolScoped`
+  is the honest denominator: an `endpoint` rule carries no tool glob and can
+  never be reported unmatched. These appear on the trace side alone — replay
+  has no live tool inventory to match against, and their absence on a
+  `RunRecord` is that statement.
+
+### Fixed
+
+- **An unreadable `policy.yml` is reported, never silently skipped.**
+  `loadPolicyForWrap`'s bare `catch { continue; }` could not tell ENOENT from
+  EACCES/EISDIR/a Windows lock, so a policy file that EXISTS but cannot be read
+  was skipped in silence — and the traversal fell through to the global file,
+  or to "no policy at all", which the wrap then reported to the operator as
+  "none configured … all calls pass through". A repo *with* a seatbelt was
+  indistinguishable from a repo without one, and the fall-through additionally
+  broke the documented first-existing-file rule. This mirrors the fix
+  `resolveStateGateForRun` has carried since the S8 review. It still fails
+  **safe, never closed** — the wrap starts with a deny-nothing policy, so an
+  unreadable file can never brick the agent.
+- **The wrap-start banner no longer conflates malformed with unreadable.** A
+  malformed file's rules are known and rejected; an unreadable file's rules are
+  unknown. Sending an operator to `reelier policy check` on a file nothing can
+  read points them at the wrong defect.
+- **`approve --probe --expires` prints the TTL instant before the consent
+  prompt**, not after. On the fresh-bind and re-bind paths the expiry line
+  previously landed after the y/N, so the operator agreed to arithmetic and was
+  shown the date once it was no longer declinable.
+
+### Notes
+
+- **A `RunRecord` reports the RUN-TIME policy, always.** A skill carries no
+  policy field in any version, so a skill recorded under one policy and
+  replayed under another inherits nothing. `meta.policy` describes the
+  recording, `RunRecord.policy` describes the run, and neither is derived from
+  the other — inheriting the recording-time policy would fabricate a claim
+  about the present out of the past.
+- **What this proves, and what it does not.** It proves the file loaded and, on
+  the wrap path, that its rules name real tools. It never proves a rule
+  *fired*, and it never proves every write went through the wrap. A consumer
+  MUST NOT read `status: "verified"` on a run record as evidence that any
+  `deny` or `dry_run` rule blocked or evaluated anything during replay — on
+  that path the file governs the state gate alone.
+- **Nothing in a record names a rule.** `rules`/`unmatchedRules` are integers
+  and `sourcePath` is `"project"` or `"global"`, never an absolute path — a
+  policy names internal tool names and destination hosts, and the global
+  candidate lives under the operator's home directory.
+- Absence of the whole object means "written before this field existed", never
+  `absent`. Verification never requires it, and its absence is not evidence
+  that no policy was in force.
+
+Design: `docs/specs/policy-attestation-v1.md`.
+
 ## 0.29.0 — An approval that expires as a no, and a second axis for who outside may already have acted
 
 Breaking behavior: **none — additive.** No API was removed and no existing
