@@ -14,7 +14,7 @@ import path from "node:path";
 import { parseSkill, SkillParseError } from "../src/skill.js";
 import { runSkill } from "../src/runner.js";
 import { computeApprovalHash } from "../src/approval.js";
-import { buildResolutionRecord, pendingAttestations, resolveDeferred } from "../src/defer.js";
+import { buildResolutionRecord, pendingAttestations, resolveDeferred, selectUnresolved } from "../src/defer.js";
 import type { Tool } from "../src/tools.js";
 
 function skill(attestJson: string, approve?: string): string {
@@ -269,4 +269,70 @@ test("an all-elapsed resolution record still totals honestly and never claims a 
 
 test("resolving nothing produces no record at all", () => {
   assert.equal(buildResolutionRecord("s", [], T_AFTER, T_AFTER), undefined);
+});
+
+// ---------------------------------------------------------------------------
+// Idempotence across ledger scans (§8.2's immutability, taken seriously)
+// ---------------------------------------------------------------------------
+
+test("every resolution outcome names WHICH deadline it resolved", () => {
+  // The original record is immutable and says `pending` forever, so the only
+  // way a later scan can tell resolved from unresolved is for the resolution
+  // to carry the deadline it answered. Present on every arm, not just pending.
+  for (const probe of [
+    { ok: true as const, projected: { "body.delivered": "true" } },
+    { ok: false as const, reason: "probe-failed: 404" },
+  ]) {
+    for (const now of [T_BEFORE, T_AFTER]) {
+      assert.equal(resolveDeferred(PENDING, probe, now).deferredUntil, PENDING.deferredUntil);
+    }
+  }
+});
+
+function ledger(...steps: unknown[][]): never[] {
+  return steps.map((s) => ({ steps: s })) as never;
+}
+
+const pendingStep = (n: number, until: string) => ({
+  n, attest: { method: "declared-probe", selector: "get_message", confidence: "pending", deferredUntil: until },
+});
+const resolutionStep = (n: number, until: string, confidence: string) => ({
+  n, attest: { method: "declared-probe", selector: "get_message", confidence, deferredUntil: until },
+});
+
+test("selectUnresolved skips a deadline a later record already resolved", () => {
+  const recs = ledger(
+    [pendingStep(1, "2026-08-02T09:00:00.000Z")],
+    [resolutionStep(1, "2026-08-02T09:00:00.000Z", "partial")]
+  );
+  assert.deepEqual(selectUnresolved(recs), []);
+});
+
+test("selectUnresolved skips one resolved as absent too — a closed deadline is closed", () => {
+  const recs = ledger(
+    [pendingStep(1, "2026-08-02T09:00:00.000Z")],
+    [resolutionStep(1, "2026-08-02T09:00:00.000Z", "absent")]
+  );
+  assert.deepEqual(selectUnresolved(recs), []);
+});
+
+test("selectUnresolved keeps a still-unresolved deadline, and distinguishes runs of the SAME step", () => {
+  // Two dispatches of step 1 on different days are two different emissions,
+  // and resolving one must never mark the other resolved.
+  const recs = ledger(
+    [pendingStep(1, "2026-08-02T09:00:00.000Z")],
+    [pendingStep(1, "2026-08-03T09:00:00.000Z")],
+    [resolutionStep(1, "2026-08-02T09:00:00.000Z", "partial")]
+  );
+  const left = selectUnresolved(recs);
+  assert.equal(left.length, 1);
+  assert.equal(left[0].deferredUntil, "2026-08-03T09:00:00.000Z");
+});
+
+test("a sync attest is never mistaken for a resolution — it carries no deadline", () => {
+  const recs = ledger(
+    [pendingStep(1, "2026-08-02T09:00:00.000Z")],
+    [{ n: 1, attest: { method: "declared-probe", selector: "x", confidence: "exact" } }]
+  );
+  assert.equal(selectUnresolved(recs).length, 1);
 });
