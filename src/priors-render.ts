@@ -10,7 +10,32 @@
 // must not decide for them. Both surfaces say in words that nothing here
 // moves an outcome or an exit code, because someone will eventually try to
 // wire it into one.
-import { DEVIATION_MADS, type RunShapeReport, type RunShapeSignal } from "./priors.js";
+import { DEVIATION_MADS, type MetricBaseline, type RunShapeMetric, type RunShapeReport, type RunShapeSignal } from "./priors.js";
+
+/**
+ * What a metric is CALLED in front of an operator, where that differs from
+ * what it is called in the type. Only the differences are listed; a metric
+ * whose identifier already reads as English is rendered verbatim.
+ *
+ * Two constraints on anything added here. It must fit the twelve-column row
+ * below — a label that overflows silently breaks the alignment of every row
+ * around it — and it must name a count, never characterise it: "resources"
+ * and "healed L2" describe what was counted, which is all this surface is
+ * allowed to say.
+ */
+const METRIC_LABELS: Partial<Record<RunShapeMetric, string>> = {
+  // Sits directly under `writes`, which is what makes the short form
+  // unambiguous: these are the distinct resources those writes landed on.
+  writeResources: "resources",
+  // "healed L1" is the phrasing `reelier run` already prints against a step
+  // that escalated (cli.ts:453), so the two surfaces agree.
+  healedL1: "healed L1",
+  healedL2: "healed L2",
+};
+
+function label(metric: RunShapeMetric): string {
+  return METRIC_LABELS[metric] ?? metric;
+}
 
 const SECOND = 1000;
 const MINUTE = 60 * SECOND;
@@ -52,6 +77,61 @@ function baselineText(signal: RunShapeSignal): string {
     `previous ${baseline.n} ${sample}: median ${fmtValue(baseline.median, unit)}, ` +
     `min ${fmtValue(baseline.min, unit)}, max ${fmtValue(baseline.max, unit)}`
   );
+}
+
+/**
+ * One escalation event moves two counters. `runner.ts:1443` returns
+ * `{ level: 1, llm: usage, … }` from a single L1 heal, so `escalations` and
+ * `healedL1` both go up by one — and because a near-always-zero counter has
+ * a window of `[0,0,0,0]`, median 0 and MAD 0, the deviation rule reports the
+ * FIRST time either is ever non-zero. Left alone, one step escalating prints
+ * two lines saying the same thing on the surface every user sees by default,
+ * and this module's own law is that noise here is worse than silence.
+ *
+ * So they collapse into one line — but only when the line is exactly true of
+ * every counter in it. Three conditions, all required:
+ *
+ *  - `escalations` and at least one heal level both deviated;
+ *  - the heal levels' movements SUM to the escalation movement, each measured
+ *    against its own median, and every movement points the same way. Two
+ *    counters that moved by different amounts moved for different reasons and
+ *    are two facts, not one;
+ *  - all of them were computed over an identical baseline window, so the
+ *    single `previous N runs: …` clause the collapsed line prints is the real
+ *    baseline of each counter named in it and not just of the first.
+ *
+ * Anything else prints separate rows. A FAILED escalation is the case that
+ * makes keeping both metrics necessary: it moves `escalations` and no heal
+ * level at all, so it fails the first condition and reports on its own —
+ * which is the whole distinction the two metrics exist to carry.
+ *
+ * Only the exception surface collapses. `reelier baseline` prints a row per
+ * signal by contract (it is the WHOLE picture, including what did not move),
+ * so hiding a row there would answer a different question than the one asked.
+ */
+function sameWindow(a: MetricBaseline, b: MetricBaseline): boolean {
+  return a.median === b.median && a.mad === b.mad && a.min === b.min && a.max === b.max && a.n === b.n;
+}
+
+function collapsibleEscalationGroup(deviating: readonly RunShapeSignal[]): RunShapeSignal[] | null {
+  const escalations = deviating.find((s) => s.metric === "escalations");
+  if (!escalations) return null;
+  const heals = deviating.filter((s) => s.metric === "healedL1" || s.metric === "healedL2");
+  if (heals.length === 0) return null;
+  if (!heals.every((h) => sameWindow(h.baseline, escalations.baseline))) return null;
+  const moved = (s: RunShapeSignal): number => s.latest - s.baseline.median;
+  const escalationMove = moved(escalations);
+  if (escalationMove === 0) return null;
+  if (heals.reduce((sum, h) => sum + moved(h), 0) !== escalationMove) return null;
+  if (!heals.every((h) => Math.sign(moved(h)) === Math.sign(escalationMove))) return null;
+  // `signals` is built in RUN_METRICS order, so `escalations` precedes both
+  // heal levels and this array is already in reading order.
+  return [escalations, ...heals];
+}
+
+/** "escalations: 1, healed L1: 1" — every counter named, every value its own. */
+function collapsedText(group: readonly RunShapeSignal[]): string {
+  return group.map((s) => `${label(s.metric)}: ${fmtValue(s.latest, s.unit)}`).join(", ");
 }
 
 /**
@@ -103,9 +183,19 @@ export function renderRunShapeDeviationLines(report: RunShapeReport): string[] {
   if (!report.subjectIsNewestRecord) return [];
   const deviating = report.signals.filter((s) => s.deviates);
   if (deviating.length === 0) return [];
+  const group = collapsibleEscalationGroup(deviating);
+  const lines: string[] = [];
+  for (const s of deviating) {
+    if (group?.includes(s)) {
+      // Rendered once, at the position of the first counter in the group.
+      if (s === group[0]) lines.push(`  ! ${collapsedText(group)} (${baselineText(s)})`);
+      continue;
+    }
+    lines.push(`  ! ${label(s.metric)}: ${fmtValue(s.latest, s.unit)} (${baselineText(s)})`);
+  }
   return [
     `Run shape — this run vs this skill's own previous ${report.priorRuns} runs:`,
-    ...deviating.map((s) => `  ! ${s.metric}: ${fmtValue(s.latest, s.unit)} (${baselineText(s)})`),
+    ...lines,
     ...skillChangedNote(report),
     "  A deviation is a difference from this skill's own history — not a fault, not a verdict. It changes no outcome and no exit code.",
   ];
@@ -149,7 +239,7 @@ export function renderRunShapeReportLines(report: RunShapeReport, skillName: str
     "",
     ...report.signals.map(
       (s) =>
-        `${s.deviates ? "  ! " : "    "}${s.metric.padEnd(12)}${fmtValue(s.latest, s.unit).padEnd(11)}${baselineText(s)}`
+        `${s.deviates ? "  ! " : "    "}${label(s.metric).padEnd(12)}${fmtValue(s.latest, s.unit).padEnd(11)}${baselineText(s)}`
     ),
     "",
     // The excluded-record clause is attached HERE, not only to the note at

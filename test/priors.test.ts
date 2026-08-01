@@ -38,6 +38,14 @@ interface RunShapeSpec {
   outcomes?: StepOutcome[];
   /** How many of those steps carry a `write` block (a dispatched write). */
   writes?: number;
+  /** Distinct `write.resource.id` values, attached to the first `writes` steps in order. */
+  resourceIds?: string[];
+  /** How many steps carry an `llm` block (an escalation that actually ran). */
+  escalations?: number;
+  /** How many steps are marked `mocked: true`. */
+  mocked?: number;
+  /** Heal level per step; every unnamed step is L0, which is what the runner records for a step that never escalated. */
+  levels?: Array<0 | 1 | 2>;
   /** Total run duration, spread across the steps so their sum is exactly this. */
   ms?: number;
   startedAt?: string;
@@ -48,18 +56,26 @@ interface RunShapeSpec {
 function record(spec: RunShapeSpec = {}): RunRecord {
   const outcomes = spec.outcomes ?? ["passed"];
   const writes = spec.writes ?? 0;
+  const resourceIds = spec.resourceIds ?? [];
+  const escalations = spec.escalations ?? 0;
+  const mocked = spec.mocked ?? 0;
+  const levels = spec.levels ?? [];
   const totalMs = spec.ms ?? 0;
   const per = Math.floor(totalMs / outcomes.length);
   const steps: StepRecord[] = outcomes.map((outcome, i) => ({
     n: i + 1,
     title: `step ${i + 1}`,
-    level: 0,
+    level: levels[i] ?? 0,
     outcome,
     // The last step absorbs the remainder so sum(steps[].ms) is exactly
     // `ms` — the duration signal is that sum, not totals.ms.
     ms: i === outcomes.length - 1 ? totalMs - per * (outcomes.length - 1) : per,
     failures: [],
-    ...(i < writes ? { write: { idempotencyKey: `k${i}`, approved: true } } : {}),
+    ...(i < writes
+      ? { write: { idempotencyKey: `k${i}`, approved: true, ...(i < resourceIds.length ? { resource: { id: resourceIds[i] } } : {}) } }
+      : {}),
+    ...(i < escalations ? { llm: { inputTokens: 1, outputTokens: 1 } } : {}),
+    ...(i < mocked ? { mocked: true as const } : {}),
   }));
   const startedAt = spec.startedAt ?? dayStamp(0);
   return {
@@ -368,6 +384,128 @@ test("duration is the sum of steps[].ms and carries the ms unit", () => {
   assert.equal(duration.unit, "ms");
   assert.equal(duration.sample, "runs");
   assert.ok(duration.deviates);
+});
+
+// --------------------------------------------------------------------------
+// The five metrics F5 gained when `shapeOf` was replaced by `deriveFootprint`
+// --------------------------------------------------------------------------
+
+/** Every record the same width, so only the metric under test can move. */
+const WIDTH = 6;
+
+/**
+ * One record per value, a day apart, oldest first, identical except for the
+ * fields `carrying` turns that value into. The whole point is that the metric
+ * under test is the ONLY thing that differs between the runs: a test that
+ * accidentally moves `steps` too proves nothing about the metric it names.
+ */
+function shapeHistory(values: number[], carrying: (v: number) => RunShapeSpec): RunRecord[] {
+  return values.map((v, i) =>
+    record({ outcomes: Array.from({ length: WIDTH }, () => "passed" as StepOutcome), startedAt: dayStamp(i), ...carrying(v) })
+  );
+}
+
+function ids(n: number): string[] {
+  return Array.from({ length: n }, (_, i) => `res-${i}`);
+}
+
+function levelsAt(level: 1 | 2, n: number): Array<0 | 1 | 2> {
+  return Array.from({ length: WIDTH }, (_, i) => (i < n ? level : 0));
+}
+
+const NEW_METRICS: ReadonlyArray<{ metric: RunShapeSignal["metric"]; carrying: (v: number) => RunShapeSpec }> = [
+  // Same six writes every run — only how many DISTINCT resources they landed
+  // on changes, which is the difference between six updates to six records
+  // and six updates to one.
+  { metric: "writeResources", carrying: (v) => ({ writes: WIDTH, resourceIds: ids(v) }) },
+  { metric: "escalations", carrying: (v) => ({ escalations: v }) },
+  { metric: "healedL1", carrying: (v) => ({ levels: levelsAt(1, v) }) },
+  { metric: "healedL2", carrying: (v) => ({ levels: levelsAt(2, v) }) },
+];
+
+test("each new metric is reported when it lands outside everything the previous runs did", () => {
+  for (const { metric, carrying } of NEW_METRICS) {
+    const report = computeRunShape(shapeHistory([0, 0, 0, 0, 4], carrying));
+    assert.equal(signal(report, metric).latest, 4, metric);
+    assert.equal(signal(report, metric).unit, "count", metric);
+    assert.deepEqual(deviatingMetrics(report), [metric], `${metric} must be the only signal that moved`);
+  }
+});
+
+test("each new metric stays quiet on a value the skill has already produced", () => {
+  // The property `deviatesFromBaseline` exists to provide (§3): window
+  // [0,1,1,0] contains 1, so a run at 1 is not outside anything — and a
+  // surface that flagged it would be teaching the operator to ignore it.
+  for (const { metric, carrying } of NEW_METRICS) {
+    const report = computeRunShape(shapeHistory([0, 1, 1, 0, 1], carrying));
+    assert.equal(signal(report, metric).latest, 1, metric);
+    assert.equal(signal(report, metric).deviates, false, `${metric} repeated a value from its own window`);
+    assert.deepEqual(deviatingMetrics(report), [], metric);
+  }
+});
+
+test("writeResources moves independently of writes — same count of writes, collapsed onto one resource", () => {
+  // Six writes every run either way. The prior runs spread them over six
+  // records; this one put all six on the same record. `writes` cannot see
+  // that at all, which is exactly why the resource count is its own signal.
+  const report = computeRunShape(shapeHistory([6, 6, 6, 6, 1], (v) => ({ writes: WIDTH, resourceIds: ids(v) })));
+  assert.equal(signal(report, "writes").latest, WIDTH);
+  assert.equal(signal(report, "writes").deviates, false);
+  assert.equal(signal(report, "writeResources").latest, 1);
+  assert.deepEqual(deviatingMetrics(report), ["writeResources"]);
+});
+
+test("the metric set is exactly this — healL0, manifestIgnored and mocked are deliberately not in it", () => {
+  // healL0 is `steps` minus the other two levels and carries no independent
+  // information — including it would report the same movement a third time.
+  // manifestIgnored is a boolean, and `deviatesFromBaseline` is defined over
+  // numbers. `mocked` is unobservable on this surface entirely — see the test
+  // below. All three live on RunFootprint for persistence and are not metrics.
+  const metrics = baselineOf(computeRunShape(dailyRuns(6), { now: T0 + 6 * DAY })).signals.map((s) => s.metric);
+  assert.deepEqual(metrics, [
+    "steps",
+    "passed",
+    "unchecked",
+    "skipped",
+    "failed",
+    "writes",
+    "writeResources",
+    "escalations",
+    "healedL1",
+    "healedL2",
+    "duration",
+    "gap",
+    "silence",
+  ]);
+});
+
+test("`mocked` is not a metric: every record that CAN carry a mocked step is one §4 excludes", () => {
+  // The structural argument, pinned so nobody re-adds the row. A step gets
+  // `mocked: true` only from executeStep's mock branch (runner.ts:853-858),
+  // reachable only when `options.mockFailures[step.n]` is defined — and any
+  // run with mockFailures writes the record-level `mockFailures` array, which
+  // is exactly what §4's filter strips. So a `mocked` signal could never read
+  // anything but a constant 0, forever, on the surface whose law is that
+  // noise is worse than silence.
+  //
+  // Note the fixture sets BOTH fields, which is the only shape the runner can
+  // actually produce. A test that set step-level `mocked` alone would pin
+  // behaviour no record has ever had, and would read as coverage.
+  const mockRun = record({
+    outcomes: ["passed", "passed", "passed"],
+    mocked: 3,
+    mockFailures: [1],
+    startedAt: dayStamp(4),
+  });
+  const report = computeRunShape([...dailyRuns(4), mockRun]);
+  const base = baselineOf(report);
+  assert.equal(base.subjectIsNewestRecord, false, "the record carrying the mocked steps is not even the subject");
+  assert.equal(base.latestStartedAt, dayStamp(3));
+  assert.equal(
+    base.signals.map((s) => String(s.metric)).includes("mocked"),
+    false,
+    "a counter that can only ever be 0 here does not get a row"
+  );
 });
 
 test("steps is its own signal (a skill that grew steps reports as a shape change)", () => {
