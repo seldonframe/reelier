@@ -115,6 +115,46 @@ stop covering the next additive field, and a signature that stops covering
 new fields without saying so is exactly the overclaim §4.6 exists to
 prevent.
 
+### 0.3 Relationship to RFC 8785 (JCS)
+
+The canonical form is a recursive key sort plus `JSON.stringify`. That lands
+on the same four properties RFC 8785 (JSON Canonicalization Scheme) requires
+— property sorting by UTF-16 code units, ECMAScript `Number::toString` number
+serialization, ECMAScript string escaping, and no whitespace — and
+`test/jcs-conformance.test.ts` pins the agreement across sorting, nesting,
+arrays, numbers, escaping, literals, and RFC 8785 §3.2.3's mixed-script
+ordering sample.
+
+**One divergence is known, and it is not going to be fixed.**
+
+**[Normative for consumers]** For any object carrying an **integer-like key**
+(`"0"`, `"2"`, `"10"`, …), this canonical form is **not** byte-identical to
+JCS. JavaScript hoists integer-like properties to the front of an object and
+orders them numerically regardless of insertion order, so the sort is undone
+for exactly those keys after it is applied:
+
+```
+canonicalJson({b:1, "2":2, a:3, "10":4})  ->  {"2":2,"10":4,"a":3,"b":1}
+JCS requires                              ->  {"10":4,"2":2,"a":3,"b":1}
+```
+
+(Under JCS `"10"` precedes `"2"`, because the ordering is lexicographic over
+code units rather than numeric.)
+
+This costs nothing that Reelier's own claims rest on. Every producer and every
+verifier hoists identically, so the same logical record always yields the same
+digest — determinism, and therefore every signature and timestamp ever issued,
+is unaffected. **A consumer MUST NOT "correct" this**: changing what is hashed
+would invalidate every existing signature and break the pinned wire-contract
+fixture (§7).
+
+What it does mean, stated so nobody has to discover it: a Reelier digest and a
+JCS digest of the same record **will disagree when the record contains an
+integer-like key, and only then**. Cross-ecosystem verification against a JCS
+implementation is therefore sound for every record without such a key, and a
+future JCS-interop digest — if one is ever needed — MUST be a separate,
+explicitly versioned field rather than a redefinition of this one.
+
 ---
 
 ## 1. The five atoms

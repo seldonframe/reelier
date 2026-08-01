@@ -2,8 +2,21 @@ node_modules/
 dist/
 dist-test/
 coverage/
+# .reelier/ is deny-all on purpose: it holds generated output (runs/,
+# traces/, push-state.json, prices/) AND .reelier/signing/, which is a
+# PRIVATE Ed25519 keypair. Never invert this to an allow-all — the
+# human-authored config files get explicit exceptions instead.
+#
+# Every file below is read from the committed default branch (scope.yml,
+# agents.yml, config.yml by the reelier-receipts App; policy.yml by the
+# CLI at replay time), so an un-exempted config is one git silently
+# refuses to track and the reader therefore never sees. That is exactly
+# how .reelier/agents.yml failed to land the first time.
 .reelier/*
 !.reelier/scope.yml
+!.reelier/agents.yml
+!.reelier/config.yml
+!.reelier/policy.yml
 .stryker-tmp/
 reports/
 .superpowers-*/
