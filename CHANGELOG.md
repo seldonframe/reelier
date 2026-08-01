@@ -170,11 +170,16 @@ the same construction.
   ledger has one writer and it is an append, and the cloud exposes only POST
   over hash-chained rows.
 
-**Not in this release: the `reelier resolve` command.** The primitives ship and
-are tested; the CLI entry point that walks the ledger, dispatches the probe
-through a wrapped server and appends the resolution record does not. A pending
-attestation therefore stays pending until it lands — the honest state, and the
-reason `pending` may never render as a pass.
+- **`reelier resolve <skill.md> --wrap "<command>"`** walks the ledger, probes
+  for the provider record, and appends the answer. A POLLING command an
+  operator or CI runs — never a listener, because the CLI has no inbound HTTP
+  surface and no daemon. Two rules do the real work: a resolution is written
+  **only** for an attestation that actually moved to `partial` or `absent`
+  (writing a still-`pending` one would make the next scan read this command's
+  own output), and every resolution **names the deadline it answered**, keyed
+  on `(step, deferredUntil)` — two dispatches of the same step on different
+  days are different emissions, and resolving one must never mark the other
+  resolved. Re-running is a no-op; the original record is never touched.
 
 ### Disclosure
 `artifactDigest` is an **unsalted** `sha256` and a deliberate cross-run

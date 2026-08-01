@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Hand-rolled argv parsing (no commander). Two subcommands: run, bench.
 
-import { readFile, writeFile, access, readdir, realpath, stat } from "node:fs/promises";
+import { readFile, writeFile, appendFile, access, readdir, realpath, stat } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
@@ -9,8 +9,9 @@ import os from "node:os";
 import { pathToFileURL } from "node:url";
 import { createInterface } from "node:readline/promises";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { parseSkill, SkillParseError, type Step } from "./skill.js";
-import { runSkill, dryRunSkill, readRunRecords, runProbe, fillTemplate, DEFAULT_PROBE_TIMEOUT_MS, type RunRecord } from "./runner.js";
+import { parseSkill, SkillParseError, type Skill, type Step } from "./skill.js";
+import { runSkill, dryRunSkill, readRunRecords, runProbe, fillTemplate, DEFAULT_PROBE_TIMEOUT_MS, type RunRecord, type StepAttest } from "./runner.js";
+import { buildResolutionRecord, resolveDeferred, selectUnresolved, type PendingAttestation } from "./defer.js";
 import {
   mintExpectKey,
   expectMac,
@@ -34,7 +35,7 @@ import { getSkill, getMineSkill, type GetOutcome, type GetMineOutcome } from "./
 import { DEFAULT_CLOUD_URL, readCliConfig, writeCliConfig, clearCliCredentials } from "./cloud-config.js";
 import { startLogin, pollForToken, openBrowser } from "./login.js";
 import type { spawn } from "node:child_process";
-import { builtinTools, type Tool } from "./tools.js";
+import { builtinTools, type Tool, type ToolContext } from "./tools.js";
 import { connectDownstream, type DownstreamConnection } from "./mcp-client.js";
 import { buildMcpTools } from "./mcp-tool.js";
 import { buildProxyServer, Recorder } from "./recorder.js";
@@ -1324,6 +1325,130 @@ async function cmdCompile(args: ParsedArgs): Promise<number> {
   }
 
   return 0;
+}
+
+
+/**
+ * `reelier resolve <skill.md> --wrap "…"` — resolve deferred attestations
+ * (docs/specs/artifact-attestation-v1.md §8).
+ *
+ * A deferred probe (`attest.defer`) records `confidence: "pending"` at dispatch
+ * because the provider's record — a message-id row, an event API entry, a
+ * bounce/delivery webhook landing — does not exist yet. This walks the ledger,
+ * probes for the ones that may exist by now, and appends the answer.
+ *
+ * It is a POLLING command an operator or CI runs, never a listener: the CLI has
+ * no inbound HTTP surface and no daemon, and pretending otherwise would be a
+ * capability claim the package cannot honour.
+ *
+ * Two rules do the real work:
+ *
+ *  1. **A resolution is a SECOND record, never an amendment.** Run records
+ *     carry no id, the ledger has one append-only writer, and the cloud exposes
+ *     only POST over hash-chained rows. The original stays byte-identical.
+ *  2. **Nothing is written for an attestation that did not move.** A probe that
+ *     has not resolved and whose deadline has not passed appends NOTHING —
+ *     otherwise the ledger grows a record per invocation and the next scan
+ *     starts reading this command's own output.
+ */
+export async function cmdResolve(
+  args: ParsedArgs,
+  connect: (spec: string) => Promise<DownstreamConnection> = connectDownstream,
+  deps: { cwd?: string; now?: number } = {}
+): Promise<number> {
+  const skillPath = args.positional[0];
+  if (!skillPath) {
+    console.error('Usage: reelier resolve <skill.md> --wrap "<command>" [--wrap ...] [--var name=value ...]');
+    return 1;
+  }
+  let skill: Skill;
+  try {
+    skill = parseSkill(await readFile(skillPath, "utf8"));
+  } catch (err) {
+    console.error(`Could not read ${skillPath}: ${(err as Error).message}`);
+    return 1;
+  }
+
+  const cwd = deps.cwd ?? process.cwd();
+  const recordPath = runRecordPathFor(cwd, skill.name);
+  let records: RunRecord[];
+  try {
+    records = await readRunRecords(recordPath);
+  } catch (err) {
+    console.error(`Could not read the run ledger at ${recordPath}: ${(err as Error).message}`);
+    return 1;
+  }
+
+  const unresolved = selectUnresolved(records);
+  if (unresolved.length === 0) {
+    console.log(`${skill.name}: no deferred attestations awaiting resolution.`);
+    return 0;
+  }
+
+  // --wrap is required for the same reason `reelier manifest` requires it: a
+  // probe has to reach a live server, and there is nothing honest to do
+  // without one. Checked AFTER the ledger scan so "nothing to resolve" never
+  // reports as a usage error.
+  if (args.wraps.length === 0) {
+    console.error(
+      `${skill.name}: ${unresolved.length} deferred attestation(s) awaiting resolution, but no --wrap was given.
+` +
+        'A probe needs a live server to reach. Usage: reelier resolve <skill.md> --wrap "<command>"'
+    );
+    return 1;
+  }
+
+  const downstreams: DownstreamConnection[] = [];
+  try {
+    for (const spec of args.wraps) downstreams.push(await connect(spec));
+    const tools = buildWrappedToolRegistry(downstreams);
+    if (tools === undefined) {
+      console.error("No downstream tools available.");
+      return 1;
+    }
+    // Probes are read-effect by construction (runProbe enforces it), so no
+    // write permission is granted here and none is needed.
+    const ctx: ToolContext = { allowDestructive: false };
+    const now = deps.now ?? Date.now();
+    const startedAt = now;
+    const resolutions: { pending: PendingAttestation; attest: StepAttest }[] = [];
+
+    for (const pending of unresolved) {
+      const decl = skill.steps.find((st: Step) => st.n === pending.step)?.attest;
+      if (decl === undefined) {
+        // The skill no longer declares a probe for that step. Skipped rather
+        // than guessed: the ledger names a tool, but the args and projection
+        // that made the observation meaningful are gone.
+        console.log(`  step ${pending.step}: skipped — the skill no longer declares an attest for it`);
+        continue;
+      }
+      const probe = await runProbe(decl, tools, args.vars, ctx, now, DEFAULT_PROBE_TIMEOUT_MS);
+      const attest = resolveDeferred(
+        pending,
+        probe.ok ? { ok: true, projected: probe.projected } : { ok: false, reason: probe.reason },
+        now
+      );
+      // Rule 2: only an attestation that actually moved earns a record.
+      if (attest.confidence === "pending") {
+        console.log(`  step ${pending.step}: still pending (due ${pending.deferredUntil}) — nothing written`);
+        continue;
+      }
+      console.log(`  step ${pending.step}: ${attest.confidence} (was due ${pending.deferredUntil})`);
+      resolutions.push({ pending, attest });
+    }
+
+    const record = buildResolutionRecord(skill.name, resolutions, startedAt, deps.now ?? Date.now());
+    if (record === undefined) {
+      console.log(`${skill.name}: nothing resolved this pass.`);
+      return 0;
+    }
+    await appendFile(recordPath, `${JSON.stringify(record)}
+`, "utf8");
+    console.log(`${skill.name}: appended ${resolutions.length} resolution(s) to ${recordPath}`);
+    return 0;
+  } finally {
+    for (const d of downstreams) await d.close().catch(() => {});
+  }
 }
 
 /**
@@ -4009,6 +4134,7 @@ const USAGE =
   "  whoami — reelier whoami: print the identity the stored key resolves to, or that you're not logged in.\n" +
   "  ci     — reelier ci [--force] [--path <dir>]: writes .github/workflows/reelier-replay.yml — drift-CI + PR receipts in one command.\n" +
   "  manifest — reelier manifest <skill.md> --wrap \"<command>\": stamp/refresh the skill's tool-schema manifest from live servers.\n" +
+  "  resolve — reelier resolve <skill.md> --wrap \"<command>\": resolve deferred attestations (attest.defer) by probing for the provider record. Appends the answer as a NEW record; never amends the original, and writes nothing for one still legitimately waiting.\n" +
   "  approve — reelier approve <skill.md> [--all]: hash-bind approval onto each write/destructive step (the final replay boundary).\n" +
   "  mcp    — RECORDER: fronts your own --wrap'd MCP server(s) to capture their calls into a trace.\n" +
   "           Enforces .reelier/policy.yml (or ~/.reelier/policy.yml) — deny/dry-run rules; pass --allow-writes\n" +
@@ -4069,6 +4195,8 @@ async function main(): Promise<number> {
       return cmdCompile(args);
     case "manifest":
       return cmdManifest(args);
+    case "resolve":
+      return cmdResolve(args);
     case "approve":
       return cmdApprove(args);
     case "push":

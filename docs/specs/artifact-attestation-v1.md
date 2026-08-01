@@ -1,6 +1,6 @@
 # Pre-dispatch artifact attestation (v1)
 
-**Status: §§0–8 SHIPPED in 0.30.0, except the `reelier resolve` CLI entry point.**
+**Status: §§0–8 SHIPPED in 0.30.0.**
 Slice 1 — the `emit:` grammar, the `args.` namespace, the unsalted artifact digest, the keyed
 per-field commitment primitive, `StepRecord.emit`, the approval-hash binding and the coverage gate —
 is live: `src/artifact.ts`, `src/skill.ts`, `src/writeback.ts`, `src/approval.ts`, `src/runner.ts`,
@@ -13,11 +13,17 @@ in `src/runner.ts`, covered by `test/deferred-probe.test.ts`. `attest.confidence
 reachable for the first time and the closed `method` enum was NOT changed to get there: a deferred
 probe is a declared probe that has not run.
 
-**One piece of §8 is not built: the `reelier resolve` command.** Everything it would call exists and
-is tested (`pendingAttestations`, `resolveDeferred`, `buildResolutionRecord`); what is missing is the
-CLI entry point that reads the ledger, connects a `--wrap`ped server to dispatch the probe, and
-appends the record. Until it lands, a `pending` attestation stays pending — which is the honest state,
-and is exactly why the design refuses to let `pending` read as a pass.
+`reelier resolve <skill.md> --wrap "…"` walks the ledger, probes for the provider record, and appends
+the answer. It is a POLLING command an operator or CI runs, never a listener — the CLI has no inbound
+HTTP surface and no daemon, and §8.4 says so rather than implying otherwise.
+
+Two rules in that command are load-bearing and were not obvious from §8 as drafted. **A resolution is
+written only for an attestation that actually moved** to `partial` or `absent`: writing a still-
+`pending` resolution would make the next scan read the command's own output. And because the original
+record is immutable and says `pending` forever, **every resolution names the deadline it answered**
+(`deferredUntil` on every arm), which is the only thing that lets a rescan subtract — keyed on
+`(step, deferredUntil)`, never the step number alone, since two dispatches of the same step on
+different days are different emissions.
 
 Three things landed differently from the text below, recorded here rather than left for a reader to
 discover:
