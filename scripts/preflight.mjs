@@ -11,6 +11,7 @@
 import { execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import process from 'node:process';
+import { checkBadge } from './badge-check.mjs';
 
 const results = [];
 
@@ -140,45 +141,22 @@ console.log('reelier release preflight\n');
     ok('tests pass');
   }
 
-  // Parse Node's test runner TAP-ish summary: "# pass N" / "ℹ pass N".
-  // Node prints both a "# tests N" total line and a "# pass N" passing line
-  // (or "ℹ pass N" depending on reporter); we want the passing count.
-  const passMatch = testOutput.match(/^[#ℹ]\s*pass\s+(\d+)\s*$/m);
-  const actualPass = passMatch ? parseInt(passMatch[1], 10) : null;
+  // Badge-vs-suite comparison lives in scripts/badge-check.mjs so this
+  // release-time gate and the CI gate (scripts/check-badge.mjs) share one
+  // implementation instead of drifting apart from each other.
+  let readme = null;
+  try {
+    readme = readFileSync('README.md', 'utf8');
+  } catch (e) {
+    fail('badge matches actual pass count', `could not read README.md: ${e.message}`);
+  }
 
-  if (actualPass === null) {
-    fail('badge matches actual pass count', 'could not parse pass count from test output');
-  } else {
-    let readme;
-    try {
-      readme = readFileSync('README.md', 'utf8');
-    } catch (e) {
-      fail('badge matches actual pass count', `could not read README.md: ${e.message}`);
-      readme = null;
-    }
-
-    if (readme !== null) {
-      // Matches either the shields.io badge URL form:
-      //   tests-641%20passing
-      // or plain text form:
-      //   tests-641 passing / tests-641 passing
-      const badgeMatch =
-        readme.match(/tests-(\d+)(?:%20|-| )passing/i) ||
-        readme.match(/tests[\s-](\d+)\s+passing/i);
-
-      if (!badgeMatch) {
-        fail('badge matches actual pass count', 'no tests badge found in README.md');
-      } else {
-        const badgeCount = parseInt(badgeMatch[1], 10);
-        if (badgeCount === actualPass) {
-          ok('badge matches actual pass count', `README says ${badgeCount}, suite has ${actualPass}`);
-        } else {
-          fail(
-            'badge matches actual pass count',
-            `README badge says ${badgeCount} but suite has ${actualPass} — update the badge`
-          );
-        }
-      }
+  if (readme !== null) {
+    const result = checkBadge({ testOutput, readme });
+    if (result.ok) {
+      ok('badge matches actual pass count', result.message);
+    } else {
+      fail('badge matches actual pass count', result.message);
     }
   }
 }

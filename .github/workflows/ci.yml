@@ -26,4 +26,21 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
-      - run: npm test
+      # `shell: bash` is explicit (not just the Linux default) because it
+      # also runs on windows-latest via the runner's bundled Git Bash — the
+      # `tee`/`pipefail` combo below needs one shell that behaves the same
+      # on both matrix legs so the captured output and the exit code stay
+      # trustworthy on Windows too.
+      - name: Run tests
+        shell: bash
+        run: |
+          set -o pipefail
+          npm test 2>&1 | tee test-output.txt
+      # The badge is OS-independent, so this only needs to run once. It
+      # reads the output captured by the step above rather than re-running
+      # `npm test`, so the badge-vs-suite check (scripts/check-badge.mjs,
+      # sharing its rule with `npm run preflight` via scripts/badge-check.mjs)
+      # runs on every PR without doubling the cost of the job.
+      - name: Check README tests badge
+        if: matrix.os == 'ubuntu-latest'
+        run: node scripts/check-badge.mjs test-output.txt
