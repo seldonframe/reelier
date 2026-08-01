@@ -32,26 +32,21 @@ import path from "node:path";
 import { parseSkill, type Skill } from "./skill.js";
 import { writeFileAtomic } from "./writeback.js";
 import { resolvePushConfig, type PushConfig } from "./push.js";
+import { DEFAULT_CLOUD_URL, readCliConfig, type CliConfig } from "./cloud-config.js";
 
 export interface GetConfig {
   baseUrl: string;
 }
 
 /**
- * Resolve the registry base URL from env. Reuses the same REELIER_CLOUD_URL
- * push.ts already relies on — `get` is anonymous, so REELIER_CLOUD_KEY is
+ * Resolve the registry base URL: env.REELIER_CLOUD_URL, then the config
+ * file's `cloudUrl`, then the bundled `DEFAULT_CLOUD_URL` — this always
+ * resolves and never throws. `get` is anonymous, so REELIER_CLOUD_KEY is
  * never read or required here (spec §1: "the API key stays a publish-side
  * concept").
  */
-export function resolveGetConfig(env: NodeJS.ProcessEnv = process.env): GetConfig {
-  const baseUrl = env.REELIER_CLOUD_URL;
-  if (!baseUrl) {
-    throw new Error(
-      "'reelier get' requires REELIER_CLOUD_URL to be set — point it at your Reelier Cloud instance. " +
-        "No API key is needed; registry fetches are anonymous."
-    );
-  }
-  return { baseUrl };
+export function resolveGetConfig(env: NodeJS.ProcessEnv = process.env, fileConfig: CliConfig = {}): GetConfig {
+  return { baseUrl: env.REELIER_CLOUD_URL || fileConfig.cloudUrl || DEFAULT_CLOUD_URL };
 }
 
 export interface SkillRef {
@@ -232,12 +227,10 @@ export async function getSkill(ref: string, options: GetOptions = {}): Promise<G
     return { kind: "error", message: (err as Error).message };
   }
 
-  let config: GetConfig;
-  try {
-    config = resolveGetConfig();
-  } catch (err) {
-    return { kind: "error", message: (err as Error).message };
-  }
+  // `get` is anonymous and resolveGetConfig never throws — no try/catch
+  // needed here (unlike getMineSkill below, which needs an apiKey).
+  const fileConfig = await readCliConfig();
+  const config = resolveGetConfig(process.env, fileConfig);
 
   const fetchResult = await fetchRegistrySkill(config, parsedRef);
   if (!fetchResult.ok) {
@@ -445,7 +438,8 @@ export async function getMineSkill(name: string, options: GetOptions = {}): Prom
 
   let config: PushConfig;
   try {
-    config = resolvePushConfig();
+    const fileConfig = await readCliConfig();
+    config = resolvePushConfig(process.env, fileConfig);
   } catch (err) {
     return { kind: "error", message: (err as Error).message };
   }

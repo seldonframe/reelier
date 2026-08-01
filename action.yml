@@ -1,7 +1,5 @@
 name: "Reelier replay"
-description: >-
-  Snapshot tests for AI agents: deterministic replay of MCP tool-call
-  workflows. 0 LLM tokens, exit 1 on drift, PR receipts.
+description: "Gate Dependabot/Renovate bumps: replay recorded agent tool-call workflows at 0 LLM tokens, fail the PR check on drift."
 author: "Reelier"
 branding:
   icon: "check-circle"
@@ -36,8 +34,30 @@ inputs:
       When unset, the replay is local-only — the job summary is still
       written, nothing is pushed anywhere. Pass this as a GitHub secret,
       never inline.
+      WARNING for Dependabot-triggered workflows: a run triggered by
+      `dependabot[bot]` only receives secrets from the repo's Dependabot
+      secrets scope (Settings → Secrets and variables → Dependabot), NOT
+      the regular Actions secrets scope — those are two separate stores.
+      If you pass `secrets.REELIER_CLOUD_KEY` here and only added it under
+      Actions secrets, it resolves to an empty string on Dependabot PRs,
+      the `if: inputs.cloud-key != ''` guard below is false, and the push
+      is silently skipped — no error, no log line calling it out. Add the
+      secret under the Dependabot scope too if you want pushes on
+      Dependabot-triggered runs.
     required: false
     default: ""
+  cli-version:
+    description: >-
+      Exact version of the `reelier` npm package to install for this run.
+      Pinned on purpose: a determinism tool should itself install
+      deterministically. `reelier` is still 0.x, so npm's caret range
+      (`^0.12`) only floats the PATCH digit — it resolves to a max of
+      0.12.1, never 0.25.0+ — which silently shipped a 12-versions-stale
+      CLI (from before signing, the trust ladder, and the audit log
+      existed) to every adopter of this action. Override to test against a
+      newer or older CLI; leave at the default for normal use.
+    required: false
+    default: "0.30.0"
   vars:
     description: >-
       Newline-separated `name=value` pairs, forwarded to `reelier run` as
@@ -45,6 +65,29 @@ inputs:
       their own inputs and need none.
     required: false
     default: ""
+  wrap:
+    description: >-
+      Newline-separated command lines, forwarded to `reelier run` as
+      `--wrap "<command>"` for each line (repeatable, same as the CLI).
+      Use this to front your own MCP server / tool process so the replay
+      exercises the code that actually changed in a dependency bump —
+      e.g. `wrap: "node ./mcp-server.js"`. Required only when the skill
+      carries a manifest (`reelier manifest`) or otherwise needs live
+      tools instead of the built-in ones (http, fs). Optional — skills
+      that only use built-in tools need no wrap.
+    required: false
+    default: ""
+  share:
+    description: >-
+      Whether the `reelier push` step should pass `--share`, which mints a
+      PUBLIC receipt permalink (the CLI is privacy-first by default — a
+      push never creates a public receipt unless `--share` is passed).
+      Opt-in on purpose: only set this to "true" if you want this run's
+      receipt readable by anyone with the link (e.g. so the PR comment can
+      carry a public "Verify this receipt" link). "true" or "false"
+      (default).
+    required: false
+    default: "false"
   pr-comment:
     description: >-
       Upsert one sticky PR comment carrying this run's receipt. Applies
@@ -67,9 +110,9 @@ outputs:
     value: ${{ steps.write-summary.outputs.record-path }}
   receipt-url:
     description: >-
-      Reserved: the public receipt URL when the push step prints one. The
-      action's push does not currently pass `--share`, so this is empty
-      today — populated once a share input exists.
+      The public receipt URL, populated when `share: "true"` was set and
+      the push step succeeded in minting one. Empty otherwise (share not
+      requested, no cloud-key, or the push failed) — never fabricated.
     value: ${{ steps.push-cloud.outputs.receipt-url }}
 
 runs:
@@ -82,7 +125,13 @@ runs:
 
     - name: Install reelier
       shell: bash
-      run: npm install -g reelier@^0.12
+      env:
+        CLI_VERSION: ${{ inputs.cli-version }}
+      # Exact-pinned, not `reelier@^0.12`-style: reelier is still 0.x, so a
+      # caret range only floats the PATCH digit — `^0.12` tops out at
+      # 0.12.1, never reaching 0.25.0+. That's exactly the bug that used
+      # to live here (see the `cli-version` input's description above).
+      run: npm install -g "reelier@${CLI_VERSION}"
 
     - name: Run skill (reelier run)
       id: run-skill
@@ -91,6 +140,7 @@ runs:
         SKILL: ${{ inputs.skill }}
         MAX_LEVEL: ${{ inputs.max-level }}
         VARS: ${{ inputs.vars }}
+        WRAP: ${{ inputs.wrap }}
       run: |
         set +e
         VAR_ARGS=()
@@ -101,8 +151,16 @@ runs:
           done <<< "$VARS"
         fi
 
+        WRAP_ARGS=()
+        if [ -n "$WRAP" ]; then
+          while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            WRAP_ARGS+=(--wrap "$line")
+          done <<< "$WRAP"
+        fi
+
         echo "::group::reelier run $SKILL --max-level $MAX_LEVEL"
-        reelier run "$SKILL" --max-level "$MAX_LEVEL" "${VAR_ARGS[@]}"
+        reelier run "$SKILL" --max-level "$MAX_LEVEL" "${VAR_ARGS[@]}" "${WRAP_ARGS[@]}"
         RUN_EXIT_CODE=$?
         echo "::endgroup::"
 
@@ -122,10 +180,16 @@ runs:
         SKILL: ${{ inputs.skill }}
         REELIER_CLOUD_URL: ${{ inputs.cloud-url }}
         REELIER_CLOUD_KEY: ${{ inputs.cloud-key }}
+        SHARE: ${{ inputs.share }}
       run: |
         set +e
+        SHARE_ARGS=()
+        if [ "$SHARE" = "true" ]; then
+          SHARE_ARGS+=(--share)
+        fi
+
         echo "::group::reelier push $SKILL"
-        PUSH_OUTPUT=$(reelier push "$SKILL" 2>&1)
+        PUSH_OUTPUT=$(reelier push "$SKILL" "${SHARE_ARGS[@]}" 2>&1)
         PUSH_EXIT_CODE=$?
         printf '%s\n' "$PUSH_OUTPUT"
         echo "::endgroup::"
@@ -134,8 +198,8 @@ runs:
         else
           echo "status=failed" >> "$GITHUB_OUTPUT"
         fi
-        # Only set when this push also carried `--share` (not passed by this
-        # action today) and the cloud actually minted a public receipt token
+        # Only set when this push also carried `--share` (see the `share`
+        # input above) and the cloud actually minted a public receipt token
         # — absent otherwise, never fabricated.
         RECEIPT_URL=$(printf '%s\n' "$PUSH_OUTPUT" | grep -oE 'Receipt: https://\S+' | head -1 | sed 's/^Receipt: //')
         echo "receipt-url=$RECEIPT_URL" >> "$GITHUB_OUTPUT"

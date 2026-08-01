@@ -293,13 +293,18 @@ test("runPushTool: missing cloud config is reported as skipped-no-key, never a s
     };
     await writeFile(path.join(runsDir, "serve-replay-fixture.jsonl"), JSON.stringify(record) + "\n", "utf8");
 
-    await withEnv({ REELIER_CLOUD_URL: undefined, REELIER_CLOUD_KEY: undefined }, async () => {
-      const result = await runPushTool({ skillPath, cwd: dir });
-      assert.equal(result.outcome, "skipped-no-key");
-      if (result.outcome === "skipped-no-key") {
-        assert.match(result.message, /REELIER_CLOUD_URL|REELIER_CLOUD_KEY/);
+    // HOME/USERPROFILE pinned to the isolated tmp dir (no ~/.reelier/config.json
+    // there) so this never depends on the real machine's login state.
+    await withEnv(
+      { REELIER_CLOUD_URL: undefined, REELIER_CLOUD_KEY: undefined, HOME: dir, USERPROFILE: dir },
+      async () => {
+        const result = await runPushTool({ skillPath, cwd: dir });
+        assert.equal(result.outcome, "skipped-no-key");
+        if (result.outcome === "skipped-no-key") {
+          assert.match(result.message, /Not logged in.*REELIER_CLOUD_KEY/s);
+        }
       }
-    });
+    );
   });
 });
 

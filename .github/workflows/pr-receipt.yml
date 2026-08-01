@@ -1,0 +1,51 @@
+# Dogfood: reelier replays its own example skills on the repo's own PRs and
+# posts the sticky receipt comment — the same loop as pr-receipt-pr-demo.yml,
+# but wired to real `pull_request` events against main instead of a demo
+# branch. This is the screenshot: every reelier PR gets a reelier receipt.
+#
+# Non-blocking by design. A receipt hiccup (missing secret, transient push
+# failure, etc.) must never turn a PR red — `continue-on-error: true` on the
+# push step, and the job overall never fails the check.
+
+name: PR receipt
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install reelier
+        run: npm i -g reelier
+      - name: Replay a couple of the repo's own example skills
+        continue-on-error: true
+        run: |
+          reelier run examples/portfolio/registry-latest.skill.md
+          reelier run examples/portfolio/github-repo-health.skill.md
+      - name: Push an attested receipt (sends ciHeadSha)
+        continue-on-error: true
+        env:
+          REELIER_CLOUD_URL: https://www.reelier.com
+          REELIER_CLOUD_KEY: ${{ secrets.REELIER_CLOUD_KEY }}
+          REELIER_SIGNING_KEY: ${{ secrets.REELIER_SIGNING_KEY }}
+        run: |
+          if [ -n "$REELIER_SIGNING_KEY" ]; then
+            mkdir -p ~/.reelier/signing
+            printf '%s\n' "$REELIER_SIGNING_KEY" > ~/.reelier/signing/9158fc9cd0fb4e9b.pem
+          fi
+          if [ -n "$REELIER_CLOUD_KEY" ]; then
+            reelier push examples/portfolio/registry-latest.skill.md --timestamp --share
+            reelier push examples/portfolio/github-repo-health.skill.md --timestamp --share
+          else
+            echo "REELIER_CLOUD_KEY not set — skipping push (non-blocking)."
+          fi

@@ -1,0 +1,553 @@
+# State-conditioned approval dogfood e2e (wave2 §6.1.5 stages 0-6, slice S7
+# — the wave's exit bar). Runs the WHOLE loop against a live gbrain on a
+# zero-config pglite database: seed the page, prove the fixed point, hold
+# the approval ceremony (probe + bind), Run 1 (match), interfere like a
+# second fleet agent, Run 2 (the mismatch stamp — the write executes, the
+# run passes, the receipt carries the finding), prove the key-unavailable
+# path renders `unevaluated` (never a pass), and — when pushing is enabled —
+# push all three receipts and assert their /md twins render per §7.
+#
+# Uses the CLI BUILT FROM THIS CHECKOUT, never npm — the wave's S1-S4 land
+# behind one release boundary (B6), so no published reelier carries
+# `--probe` until that release is cut. This workflow is how a Windows dev
+# machine drives the loop (the spec's own instruction): trigger it from
+# the Actions tab. First runs are EXPECTED to be a discovery loop (the
+# shipped example was never live-recorded — its own HONESTY NOTE says so;
+# args/projection corrections ARE the demo material and land in the skill
+# file's changelog).
+#
+# Founder setup: none for stages 0-5 (the expect keystore is minted
+# in-job — approve and run share the runner). Stage 6 needs BOTH the
+# repo variable GBRAIN_E2E_PUSH=true AND the REELIER_CLOUD_KEY secret;
+# the step fails loudly if the variable is set without the secret.
+
+name: gbrain state e2e
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    # Weekly, off-peak minute (same convention as gbrain-replay).
+    - cron: "41 6 * * 1"
+
+permissions:
+  contents: read
+  id-token: write # optional CI attestation on `reelier push`
+
+defaults:
+  run:
+    # Explicit bash => `bash -eo pipefail` (Actions' default {0} shell has
+    # NO pipefail, which silently swallows failures left of `| tee`).
+    shell: bash
+
+jobs:
+  state-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SKILL: examples/gbrain/gbrain-capture-enrich.skill.md
+    steps:
+      - uses: actions/checkout@v4
+
+      # ---- Stage 0 — make the example real -------------------------------
+      - name: Set up Bun (gbrain is Bun-only)
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ">=1.3.10"
+
+      - name: Install gbrain
+        run: bun install -g github:garrytan/gbrain
+
+      - name: Zero-config gbrain database (pglite, no embedding keys)
+        run: gbrain init --pglite --no-embedding
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build reelier from THIS checkout (B6 — the wave ships behind one release)
+        run: |
+          npm ci
+          npm run build
+          echo "REELIER=node $GITHUB_WORKSPACE/dist/cli.js" >> "$GITHUB_ENV"
+          echo "REELIER_EXPECT_KEYS=$RUNNER_TEMP/e2e-expect-keys.json" >> "$GITHUB_ENV"
+
+      - name: Stamp a real manifest against live gbrain
+        env:
+          MCP_STDIO: "1" # required whenever gbrain serve is wrapped — see examples/gbrain/README.md
+        run: $REELIER manifest "$SKILL" --wrap "gbrain serve"
+
+      # ---- Seed + Stage-1 fixed-point pre-check (N5, precondition) -------
+      # The page must EXIST before the ceremony: absence-CAS is out of v1
+      # (§6.1.3) — a probe against a missing slug is an empty projection and
+      # `approve --probe` refuses to bind it. The seed run is Stage 0's
+      # record-execution analog. Then an undisturbed re-run must hold the
+      # projection fixed (§6.1.2) before any interference makes Run 2's
+      # mismatch meaningful.
+      - name: Seed run (creates the page; plain shape approval)
+        env:
+          MCP_STDIO: "1"
+        run: |
+          $REELIER approve "$SKILL" --all
+          $REELIER run "$SKILL" --wrap "gbrain serve" --max-level 0 | tee /tmp/seed.log
+          grep -E "^PASSED:" /tmp/seed.log
+
+      - name: Stage-1 fixed-point pre-check — an undisturbed re-run must not move the projection
+        env:
+          MCP_STDIO: "1"
+        run: |
+          $REELIER run "$SKILL" --wrap "gbrain serve" --max-level 0 | tee /tmp/fixed1.log
+          grep -E "^PASSED:" /tmp/fixed1.log
+          # The attest delta on step 1 must show no change on an undisturbed
+          # re-run — if gbrain's enrichment rewrites compiled_truth between
+          # identical writes, the projection is NOT a fixed point and must
+          # be re-picked (that discovery loop is part of the point, §6.1.5).
+          grep -E "state: exact — no observed change" /tmp/fixed1.log
+
+      # ---- Stage 2 — the approval ceremony -------------------------------
+      - name: Approve with state binding (probe + mint + stamp; CI = names only, never values)
+        env:
+          MCP_STDIO: "1"
+        run: |
+          $REELIER approve "$SKILL" --probe --all --wrap "gbrain serve" | tee /tmp/approve.log
+          grep -E "probing pre-state \(get_page\)… ok" /tmp/approve.log
+          grep -E "pre-state commitment: hmac-sha256:" /tmp/approve.log
+          grep -E "· state-bound 1$" /tmp/approve.log
+          # A2: names only in CI — the values footer must be absent AND the
+          # names-only line present (pin the branch, not just the negation).
+          grep -E "projected fields: body\.compiled_truth" /tmp/approve.log
+          if grep -q "values shown for review only" /tmp/approve.log; then
+            echo "::error::projected values printed under --all — A2 violation"; exit 1
+          fi
+
+      # ---- Stage 3 — Run 1, the match ------------------------------------
+      - name: Run 1 — the muted match fact (no --allow-writes; the approval carries the write)
+        env:
+          MCP_STDIO: "1"
+        run: |
+          $REELIER run "$SKILL" --wrap "gbrain serve" --max-level 0 | tee /tmp/run1.log
+          grep -E "^PASSED:" /tmp/run1.log
+          grep -E "pre-state check: match \(approved .* · observed .*\)" /tmp/run1.log
+          # The copy law, live: no endorsement words anywhere in the output.
+          if grep -Eiq "\bverified\b|no drift|\bsafe\b" /tmp/run1.log; then
+            echo "::error::forbidden phrase in run output"; exit 1
+          fi
+
+      # ---- Stage 4 — the interference ------------------------------------
+      - name: A second writer clobbers the slug (the fleet-mate this check exists for)
+        run: |
+          gbrain put reelier-demo-page --content "clobbered: another agent rewrote this page overnight"
+
+      # ---- Stage 5 — Run 2, the mismatch stamp ---------------------------
+      - name: Run 2 — the stamp; the write executes, the run passes, the receipt tells the truth
+        env:
+          MCP_STDIO: "1"
+        run: |
+          set +e
+          $REELIER run "$SKILL" --wrap "gbrain serve" --max-level 0 > /tmp/run2.log 2>&1
+          code=$?
+          set -e
+          cat /tmp/run2.log
+          grep -E "executed against state that differs from the state this approval was granted against" /tmp/run2.log
+          grep -E "pre-state commitment mismatch \(approved .* · observed .*\)" /tmp/run2.log
+          # §6.1.5 stage 5: the attest tells the same story in its own voice.
+          grep -E "state: exact — 1 field changed \(body\.compiled_truth\)" /tmp/run2.log
+          grep -E "^PASSED:.*· 1 finding$" /tmp/run2.log
+          # I-9: the stamp never flips the exit code.
+          test "$code" = "0"
+
+      # ---- Key-unavailable path (S7 accept: never a silent pass) ---------
+      - name: Deleted-keystore run — `unevaluated`, never a pass, never a block
+        env:
+          MCP_STDIO: "1"
+        run: |
+          REELIER_EXPECT_KEYS=$RUNNER_TEMP/nonexistent-keystore.json \
+            $REELIER run "$SKILL" --wrap "gbrain serve" --max-level 0 | tee /tmp/run3.log
+          grep -E "pre-state check: not evaluated — key-unavailable: keyId '" /tmp/run3.log
+          grep -E "^PASSED:" /tmp/run3.log
+
+      # ---- Owner review + the restored punchline -------------------------
+      # extraction_review is owner-only BY DESIGN (localOnly: a remote caller
+      # who could promote would make the quarantine lane decorative) — so
+      # promotion is a host-machine CLI act, never a wrapped skill step. In
+      # CI the runner IS the host. The read-only companion skill then
+      # receipts what the promotion changed: verified stub + non-empty
+      # backlink graph — the original capture-enrich punchline, restored on
+      # the honest side of the trust boundary.
+      - name: Owner promotes the quarantined stubs (local CLI — the trust boundary is the demo)
+        run: |
+          gbrain extraction-review promote --slugs people/garry-tan,companies/reelier-inc
+
+      - name: Verify the promotion took — receipted read of the grown graph
+        env:
+          MCP_STDIO: "1"
+        run: |
+          # Read-only skill: nothing to approve, replaying re-fires nothing.
+          $REELIER run examples/gbrain/gbrain-verify-promoted.skill.md --wrap "gbrain serve" --max-level 0 | tee /tmp/verify-promoted.log
+          grep -E "^PASSED:" /tmp/verify-promoted.log
+
+      # ---- W3-S4 exit-bar lane — a {{var}}-parameterized probe binds and --
+      # survives re-verify (wave3 spec §3 W3-S4). A standalone skill with its
+      # own ledger: its one write step attests against get_page with a probe
+      # arg supplied ONLY via --var — the shape P1 could not express, and the
+      # shape I-18 forbids filling from anything but an operator --var. Uses
+      # the gbrain lane already live in this job; no new substrate.
+      - name: W3-S4 — write the parameterized-probe skill (heredoc, not checked into examples/)
+        run: |
+          cat > "$RUNNER_TEMP/gbrain-probe-args-param.skill.md" <<'SKILL_EOF'
+          ---
+          name: gbrain-probe-args-param
+          description: W3-S4 exit-bar lane — a {{var}}-parameterized probe binds and survives re-verify
+          ---
+
+          ### Step 1 — Capture the parameterized-probe demo page
+          - intent: Save a page whose state-binding probe target is supplied only via --var, never a literal (W3-S4 exit-bar)
+          - action: put_page {"slug": "gbrain-probe-param-demo", "content": "# gbrain x reelier — W3-S4 parameterized probe lane"}
+          - assert: status == 200
+          - effect: idempotent-write
+          - attest: {"tool":"get_page","args":{"slug":"{{target}}"},"projection":["compiled_truth"]}
+          SKILL_EOF
+
+      # Review finding (blocking): the bind below probes a slug that NOTHING
+      # in this job had created. `approve --probe` refuses an empty projection
+      # ("failed (empty-projection: probe returned no declared fields)") and
+      # exits 1, so the lane could never go green — and the assertion that was
+      # supposed to catch that greps `probe args (filled)`, which cmdApprove
+      # prints BEFORE the probe dispatches, so it passed on a run that bound
+      # nothing. Seed first, exactly as Stage 0 does for the wave-2 lane, and
+      # assert the MINT rather than the intent to probe.
+      - name: W3-S4 — seed the parameterized-probe page (absence-CAS is out of v1)
+        env:
+          MCP_STDIO: "1"
+        run: |
+          $REELIER approve "$RUNNER_TEMP/gbrain-probe-args-param.skill.md" --all
+          $REELIER run "$RUNNER_TEMP/gbrain-probe-args-param.skill.md" --wrap "gbrain serve" --max-level 0 \
+            --var target=gbrain-probe-param-demo | tee /tmp/param-seed.log
+          grep -E "^PASSED:" /tmp/param-seed.log
+
+      - name: W3-S4 — bind the parameterized probe (approve --probe --all --var target=...)
+        env:
+          MCP_STDIO: "1"
+        run: |
+          $REELIER approve "$RUNNER_TEMP/gbrain-probe-args-param.skill.md" --probe --all --wrap "gbrain serve" \
+            --var target=gbrain-probe-param-demo | tee /tmp/param-bind.log
+          grep -F 'probe args (filled): {"slug":"gbrain-probe-param-demo"}' /tmp/param-bind.log
+          # The load-bearing one: a binding was actually minted. Printed only
+          # after the probe returned a non-empty projection, so unlike the
+          # line above it cannot pass on a run that bound nothing.
+          grep -E "· state-bound 1$" /tmp/param-bind.log
+
+      - name: W3-S4 — re-verify with an IDENTICAL --var reports unchanged
+        env:
+          MCP_STDIO: "1"
+        run: |
+          $REELIER approve "$RUNNER_TEMP/gbrain-probe-args-param.skill.md" --probe --all --wrap "gbrain serve" \
+            --var target=gbrain-probe-param-demo | tee /tmp/param-reverify.log
+          grep -F "unchanged (state re-verified against current binding)" /tmp/param-reverify.log
+
+      - name: W3-S4 — run the bound skill once (the ledger record Stage 6 pushes)
+        env:
+          MCP_STDIO: "1"
+        run: |
+          $REELIER run "$RUNNER_TEMP/gbrain-probe-args-param.skill.md" --wrap "gbrain serve" --max-level 0 \
+            --var target=gbrain-probe-param-demo | tee /tmp/param-run.log
+          grep -E "^PASSED:" /tmp/param-run.log
+
+      # ---- W3-S5 exit-bar lane — status.code binds a real HTTP absence ---
+      # (wave3 spec §3 W3-S5; wave2 §6.1.3's deferred absence-CAS). gbrain has
+      # no writable endpoint that 404s then exists, and MCP has no HTTP
+      # status at all (approve --probe REFUSES to bind status.code through a
+      # wrapped MCP tool, A12 — see test/expect-status-code.test.ts) — so
+      # this lane runs a tiny in-job HTTP stub instead of gbrain, with no
+      # --wrap, so the builtin http.get/http.post tools apply. The stub only
+      # exposes GET/POST, so the write step uses the http.post builtin
+      # (idempotent-write) as its "PUT-like" create — src/tools.ts ships no
+      # http.put. The stub is started and torn down inside this one step.
+      - name: W3-S5 — status.code binds true absence, then catches the world moving
+        run: |
+          cat > "$RUNNER_TEMP/http-status-stub.cjs" <<'STUB_EOF'
+          const http = require("node:http");
+          const state = {};
+          const server = http.createServer((req, res) => {
+            const url = new URL(req.url, "http://127.0.0.1");
+            if (url.pathname === "/health") {
+              res.writeHead(200, { "content-type": "application/json" });
+              res.end("{}");
+              return;
+            }
+            const m = url.pathname.match(/^\/pages\/(.+)$/);
+            if (!m) {
+              res.writeHead(404, { "content-type": "application/json" });
+              res.end(JSON.stringify({ error: "no such route" }));
+              return;
+            }
+            const slug = decodeURIComponent(m[1]);
+            if (req.method === "GET") {
+              if (state[slug] === undefined) {
+                res.writeHead(404, { "content-type": "application/json" });
+                res.end(JSON.stringify({ error: "not found", slug }));
+              } else {
+                res.writeHead(200, { "content-type": "application/json" });
+                res.end(JSON.stringify({ slug, content: state[slug] }));
+              }
+              return;
+            }
+            if (req.method === "POST") {
+              let body = "";
+              req.on("data", (c) => (body += c));
+              req.on("end", () => {
+                state[slug] = body;
+                res.writeHead(200, { "content-type": "application/json" });
+                res.end(JSON.stringify({ slug, ok: true }));
+              });
+              return;
+            }
+            res.writeHead(405, { "content-type": "application/json" });
+            res.end(JSON.stringify({ error: "method not allowed" }));
+          });
+          server.listen(8934, "127.0.0.1");
+          STUB_EOF
+
+          node "$RUNNER_TEMP/http-status-stub.cjs" &
+          STUB_PID=$!
+          trap 'kill "$STUB_PID" 2>/dev/null || true' EXIT
+
+          # Bounded readiness poll — never a bare sleep.
+          ready=""
+          for i in $(seq 1 50); do
+            if curl -fsS "http://127.0.0.1:8934/health" > /dev/null 2>&1; then ready=1; break; fi
+            sleep 0.2
+          done
+          test -n "$ready"
+
+          cat > "$RUNNER_TEMP/http-status-absence.skill.md" <<'SKILL_EOF'
+          ---
+          name: http-status-absence
+          description: W3-S5 exit-bar lane — status.code binds a real HTTP absence, then catches the world moving
+          ---
+
+          ### Step 1 — Write the probed page via a plain HTTP builtin
+          - intent: Write to the local stub's /pages/<slug> endpoint, state-bound against its own HTTP status (absent at bind time)
+          - action: http.post {"url": "http://127.0.0.1:8934/pages/http-status-demo", "body": "seed content"}
+          - assert: status == 200
+          - effect: idempotent-write
+          - attest: {"tool":"http.get","args":{"url":"http://127.0.0.1:8934/pages/http-status-demo"},"projection":["status.code"]}
+          SKILL_EOF
+
+          HTTP_SKILL="$RUNNER_TEMP/http-status-absence.skill.md"
+
+          echo "-- bind while the resource is absent (probe observes 404) --"
+          $REELIER approve "$HTTP_SKILL" --probe --all | tee /tmp/http-bind.log
+          grep -F "note: binding on HTTP status" /tmp/http-bind.log
+
+          echo "-- re-verify while STILL absent: unchanged --"
+          $REELIER approve "$HTTP_SKILL" --probe --all | tee /tmp/http-reverify-absent.log
+          grep -F "unchanged (state re-verified against current binding)" /tmp/http-reverify-absent.log
+
+          echo "-- run the skill: the write creates the resource --"
+          $REELIER run "$HTTP_SKILL" --max-level 0 | tee /tmp/http-run.log
+          grep -E "^PASSED:" /tmp/http-run.log
+
+          echo "-- re-verify now that the resource EXISTS: the world has moved --"
+          set +e
+          $REELIER approve "$HTTP_SKILL" --probe --all > /tmp/http-reverify-moved.log 2>&1
+          moved_code=$?
+          set -e
+          cat /tmp/http-reverify-moved.log
+          test "$moved_code" != "0"
+          grep -F "but the world has moved" /tmp/http-reverify-moved.log
+          grep -F "fields changed since approval: status.code" /tmp/http-reverify-moved.log
+
+          kill "$STUB_PID" 2>/dev/null || true
+
+      # ---- W3-S2.3 exit-bar lane — the gate stage (wave3 spec §3 W3-S2.3, --
+      # §5.5). NORMATIVE ORDERING: policy resolution is cwd-based, so this
+      # stage must run LAST among every `reelier run` stage in this job, and
+      # must delete .reelier/policy.yml immediately after its own run,
+      # before any later `reelier run` call — otherwise the gate would
+      # silently re-gate stages that never opted into it. Nothing after this
+      # stage calls `reelier run` again; only `reelier push`/`verify` follow.
+      - name: W3-S2.3 — a second interference, then state_gate refuse — the write is refused before dispatch
+        env:
+          MCP_STDIO: "1"
+        run: |
+          gbrain put reelier-demo-page --content "clobbered again: state-gate exit-bar interference"
+
+          mkdir -p .reelier
+          printf 'state_gate: refuse\n' > .reelier/policy.yml
+
+          set +e
+          $REELIER run "$SKILL" --wrap "gbrain serve" --max-level 0 > /tmp/gate-refused.log 2>&1
+          gate_code=$?
+          set -e
+          # Delete the policy file BEFORE anything else — a crash between
+          # the run above and this line would leave the gate silently ON for
+          # every later `reelier run` in this job (there is none after this
+          # stage, but the ordering rule holds regardless of what gets added
+          # here later).
+          rm -f .reelier/policy.yml
+
+          cat /tmp/gate-refused.log
+          test "$gate_code" != "0"
+          grep -F "Refusing to dispatch write step: pre-state commitment mismatch" /tmp/gate-refused.log
+          grep -F "pre-state check: mismatch — write refused before dispatch" /tmp/gate-refused.log
+
+      - name: W3-S2.3 — prove no dispatch happened, from the gated run's own record
+        run: |
+          # Review finding (blocking): this used to prove "no dispatch" by
+          # running the skill AGAIN and inferring from the second run's stamp
+          # that the first write never landed. That inference holds only if a
+          # dispatched put_page would synchronously return compiled_truth at
+          # the bound value — and this workflow's own header hedges on exactly
+          # that ("if gbrain's enrichment rewrites compiled_truth between
+          # identical writes, the projection is NOT a fixed point"). If
+          # enrichment lags by one step, a run whose gated write DID dispatch
+          # still reports mismatch, and the proof passes over a real dispatch.
+          #
+          # The direct observation is already on disk and needs no new gbrain
+          # verb: the runner appends a record per run, and a write step that
+          # was refused before dispatch carries NO `write` block at all (the
+          # block is minted at the instant of issue). So the gated run's own
+          # record IS the evidence, and it is Reelier's own artifact rather
+          # than a downstream's rendering of one.
+          ledger=$(ls -1 .reelier/runs/*.jsonl | head -1)
+          test -n "$ledger"
+          gated=$(tail -1 "$ledger")
+          echo "$gated" | jq -e '.steps[0].stateCheck.action == "refused"' > /dev/null
+          echo "$gated" | jq -e '.steps[0].write == null' > /dev/null \
+            || { echo "::error::the gated run recorded a write block — the refusal did not prevent dispatch"; exit 1; }
+          echo "no write block on the refused step — dispatch provably did not happen"
+
+      - name: W3-S2.3 — the follow-up recorder run (a real ledger record for Stage 6)
+        env:
+          MCP_STDIO: "1"
+        run: |
+          # Kept as a SECOND, independent signal and as a legitimate extra
+          # ledger record for Stage 6 to push — no longer load-bearing for the
+          # no-dispatch claim, which the step above establishes directly.
+          # .reelier/policy.yml is already gone, so this executes in plain
+          # recorder mode and its own write does dispatch.
+          $REELIER run "$SKILL" --wrap "gbrain serve" --max-level 0 | tee /tmp/gate-followup.log
+          grep -F "executed against state that differs from the state this approval was granted against" /tmp/gate-followup.log
+
+      # ---- Stage 6 — push all receipts; assert the /md twins (N5) --------
+      # Review finding: with GBRAIN_E2E_PUSH unset the whole Stage-6 block is
+      # skipped and the job reports GREEN having proven none of the four /r/
+      # claims this workflow exists to prove. A green run that establishes
+      # nothing is the never-list-#1 shape at the CI layer. The bar is now
+      # explicit in the job's own output either way.
+      - name: Stage 6 preconditions — say plainly when the exit bar is NOT being proven
+        if: ${{ vars.GBRAIN_E2E_PUSH != 'true' }}
+        run: |
+          echo "::warning::GBRAIN_E2E_PUSH is not set — Stage 6 is skipped, so NONE of the four /r/ receipt claims were proven. This run is not the wave-3 exit bar."
+          {
+            echo "### Wave-3 exit bar: NOT proven"
+            echo
+            echo "Stages 0-5 ran, but \`GBRAIN_E2E_PUSH\` is unset, so no receipts were pushed"
+            echo "and none of the match / mismatch / unevaluated / refused \`/r/\` twins were asserted."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Push receipts + assert /md renders + verify
+        if: ${{ vars.GBRAIN_E2E_PUSH == 'true' }}
+        env:
+          REELIER_CLOUD_KEY: ${{ secrets.REELIER_CLOUD_KEY }}
+        run: |
+          if [ -z "$REELIER_CLOUD_KEY" ]; then
+            echo "::error::GBRAIN_E2E_PUSH is set but the REELIER_CLOUD_KEY secret is missing"; exit 1
+          fi
+
+          # Four skills now carry ledger records (wave-2's three-run loop on
+          # $SKILL, PLUS the W3-S2.3 gate's two extra runs on that SAME
+          # skill, plus W3-S4's and W3-S5's own one-run ledgers) — mapping
+          # receipts by array INDEX broke the moment the gate stage added
+          # records to $SKILL's ledger. Every pushed receipt's /md is fetched
+          # into its own file and the required lines are found by CONTENT,
+          # never by position.
+          mkdir -p /tmp/receipts
+          all_urls=()
+
+          push_and_collect() {
+            # Sets the global `urls` array (via mapfile, no `local`) to this
+            # call's own pushed receipt URLs, and appends them to $all_urls.
+            local skill_path="$1"
+            local log_file="$2"
+            $REELIER push "$skill_path" --share | tee "$log_file"
+            # Only the "Receipt: <url>" lines — the badge markdown line
+            # embeds the same token twice and would double-count.
+            mapfile -t urls < <(grep -E "^\s*Receipt: " "$log_file" | grep -Eo "https://[^ ]+")
+            test "${#urls[@]}" -ge 1
+            for u in "${urls[@]}"; do
+              all_urls+=("$u")
+              n=${#all_urls[@]}
+              echo "Receipt URL ($skill_path): $u"
+              curl -fsSL "$u/md" > "/tmp/receipts/receipt-$n.md"
+              echo "$u" > "/tmp/receipts/receipt-$n.md.url"
+            done
+          }
+
+          echo "== pushing \$SKILL (seed, fixed-point, run1, run2, run3, gate-refused, gate-followup) =="
+          push_and_collect "$SKILL" /tmp/push.log
+          test "${#urls[@]}" -ge 3
+
+          # Review finding: `| head -1` over `receipt-*.md` is a POSITIONAL
+          # tiebreak wearing a content-selection label. The glob sorts
+          # lexicographically, so receipt-10 lands between receipt-1 and
+          # receipt-2 as soon as a tenth record exists and the selection
+          # shifts silently — exactly what this stage's comment claims to
+          # have removed. Sort numerically and take the NEWEST match, which
+          # is deterministic at any record count. (`sed -n 1p` over `head`
+          # also avoids the SIGPIPE-under-pipefail flake.)
+          newest_matching() {
+            grep -lF "$1" /tmp/receipts/receipt-*.md | sort -t- -k2 -rn | sed -n '1p'
+          }
+          match_file=$(newest_matching "pre-state check: match (approved")
+          mismatch_file=$(newest_matching "finding: executed against state that differs")
+          uneval_file=$(newest_matching "pre-state check: not evaluated — key-unavailable")
+          refuse_file=$(newest_matching "finding: write refused before dispatch")
+          test -n "$match_file"
+          test -n "$mismatch_file"
+          test -n "$uneval_file"
+          test -n "$refuse_file"
+
+          grep -F "pre-state check: match (approved" "$match_file"
+
+          grep -F "finding: executed against state that differs" "$mismatch_file"
+          grep -F "PASSED" "$mismatch_file"
+          # W3-S1: the mismatch twin now names WHICH field moved.
+          grep -F "· fields changed since approval: body.compiled_truth" "$mismatch_file"
+
+          grep -F "pre-state check: not evaluated — key-unavailable" "$uneval_file"
+
+          # W3-S2.3/W3-S2: the refusal's own receipt, refused before dispatch.
+          grep -F "finding: write refused before dispatch" "$refuse_file"
+
+          # The promotion companion's receipt too — its own skill, own ledger.
+          echo "== pushing the promotion-verify skill =="
+          push_and_collect examples/gbrain/gbrain-verify-promoted.skill.md /tmp/push-verify.log
+          promoted_file="/tmp/receipts/receipt-${#all_urls[@]}.md"
+          grep -F "PASSED" "$promoted_file"
+
+          # W3-S4's and W3-S5's own ledgers — pushed and folded into the same
+          # receipt trail (their required-line coverage is exercised inline,
+          # in the CLI output, by the stages that created them above).
+          echo "== pushing the W3-S4 parameterized-probe skill's ledger =="
+          push_and_collect "$RUNNER_TEMP/gbrain-probe-args-param.skill.md" /tmp/push-param.log
+
+          echo "== pushing the W3-S5 http-status-absence skill's ledger =="
+          push_and_collect "$RUNNER_TEMP/http-status-absence.skill.md" /tmp/push-http.log
+
+          echo "== every pushed receipt URL this run =="
+          printf '%s\n' "${all_urls[@]}"
+          test "${#all_urls[@]}" -ge 5
+
+          # The verifier recomputes offline math over the published record;
+          # a non-zero exit fails this step (pipefail is on).
+          $REELIER verify "$(cat "${match_file}.url")"
+          $REELIER verify "$(cat "${mismatch_file}.url")"
+
+      - name: Upload logs (the whole loop, for the receipt trail)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gbrain-state-e2e-logs
+          path: /tmp/*.log

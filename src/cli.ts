@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Hand-rolled argv parsing (no commander). Two subcommands: run, bench.
 
-import { readFile, writeFile, access, readdir } from "node:fs/promises";
+import { readFile, writeFile, access, readdir, realpath, stat } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
@@ -10,23 +10,51 @@ import { pathToFileURL } from "node:url";
 import { createInterface } from "node:readline/promises";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { parseSkill, SkillParseError, type Step } from "./skill.js";
-import { runSkill, dryRunSkill, readRunRecords, type RunRecord } from "./runner.js";
+import { runSkill, dryRunSkill, readRunRecords, runProbe, fillTemplate, DEFAULT_PROBE_TIMEOUT_MS, type RunRecord } from "./runner.js";
+import {
+  mintExpectKey,
+  expectMac,
+  expectFieldMac,
+  probeArgsMac,
+  STATUS_CODE_ENTRY,
+  projectObservationTyped,
+  projectionMisses,
+  typedKeyFor,
+  ABSENT_FIELDS_MAX,
+  ABSENT_FIELD_NAME_MAX,
+  resolveKeystorePath,
+  macEquals,
+  readKeystore,
+  writeKeystoreEntry,
+  removeKeystoreEntries,
+  loadExpectKey,
+} from "./expect-mac.js";
 import { pushSkill, PublicSubmissionError, type PushRecordResult } from "./push.js";
 import { getSkill, getMineSkill, type GetOutcome, type GetMineOutcome } from "./get.js";
-import { builtinTools } from "./tools.js";
+import { DEFAULT_CLOUD_URL, readCliConfig, writeCliConfig, clearCliCredentials } from "./cloud-config.js";
+import { startLogin, pollForToken, openBrowser } from "./login.js";
+import type { spawn } from "node:child_process";
+import { builtinTools, type Tool } from "./tools.js";
 import { connectDownstream, type DownstreamConnection } from "./mcp-client.js";
 import { buildMcpTools } from "./mcp-tool.js";
 import { buildProxyServer, Recorder } from "./recorder.js";
 import { parseTraceLines, formatTrace } from "./trace.js";
 import { compile, renderSkillMd, type CompileResult, type FromSkillProvenance } from "./compile.js";
-import { buildManifestForSkill, preflightManifest } from "./manifest.js";
+import { buildManifestForSkill, preflightManifest, addProbeToolsToManifest } from "./manifest.js";
 import { serializeSkill, writeFileAtomic, appendChangelogLine } from "./writeback.js";
 import { computeApprovalHash } from "./approval.js";
+import { parseDuration, MAX_APPROVAL_TTL_MS } from "./duration.js";
 import { canonicalJson } from "./canonical-json.js";
 import { parseInstructionSkillFrontmatter } from "./from-skill.js";
 import { createLlmClient, resolveLlmConfig } from "./llm.js";
+import { renderAttestLines, renderStateCheckLines, findingsSummaryTag } from "./attest-render.js";
+import { computeRunShape } from "./priors.js";
+import { renderRunShapeDeviationLines, renderRunShapeReportLines } from "./priors-render.js";
 import {
   detectAgentConfig,
+  detectMcpConfigs,
+  knownMcpConfigPaths,
+  type KnownMcpConfig,
   reelierProxyCommandLine,
   planMcpConfigWrite,
   applyMcpConfigWrite,
@@ -50,8 +78,17 @@ import {
   type ScannedSession,
   type StubAgentId,
 } from "./scan.js";
-import { planInstall, applyInstall, findLatestBackup, restoreFromBackup, planWrapOffer, type InstallResult } from "./wrap.js";
+import {
+  planInstall,
+  applyInstall,
+  findLatestBackup,
+  restoreFromBackup,
+  planWrapOffer,
+  type InstallResult,
+  type InstallPlan,
+} from "./wrap.js";
 import { buildToolServer, runDiffTool } from "./serve.js";
+import { recordTotals } from "./footprint.js";
 import {
   costRun,
   loadPriceTable,
@@ -62,7 +99,15 @@ import {
   type SinceFilter,
 } from "./cost.js";
 import { BUNDLED_PRICES_RETRIEVED_AT } from "./prices.js";
-import { loadPolicyForWrap, summarizePolicyForWrapStart, parsePolicyStrict, hasEndpointRules, ENDPOINT_RULE_NOTE } from "./policy.js";
+import {
+  loadPolicyForWrap,
+  policyRecordFromLoad,
+  summarizePolicyForWrapStart,
+  parsePolicyStrict,
+  hasEndpointRules,
+  ENDPOINT_RULE_NOTE,
+  resolveStateGateForRun,
+} from "./policy.js";
 import { generateSigningKeypair, loadSigningKey, signRecordDigest, verifyRecordSignature, signingKeyDir } from "./signing.js";
 import { resolveVerifyPayload, evaluateVerifyClaims } from "./verify.js";
 import { writeCiWorkflow, PLACEHOLDER_SKILL_PATH } from "./ci-scaffold.js";
@@ -135,6 +180,7 @@ function parseArgv(argv: string[]): ParsedArgs {
       arg === "--agent" ||
       arg === "--from-skill" ||
       arg === "--since" ||
+      arg === "--expires" ||
       arg === "--key" ||
       arg === "--path"
     ) {
@@ -185,6 +231,67 @@ function parseMaxLevel(raw: string | undefined): 0 | 1 | 2 {
 }
 
 /**
+ * Shared downstream/tool-registry construction, factored from cmdRun for
+ * `reelier approve --probe` (state-conditioned approval §4.2 — the one
+ * refactor that flow needs): connect every `--wrap` spec in order. On a
+ * partial connect failure the already-opened downstreams are closed before
+ * the error propagates, so a caller's `finally` never leaks the survivors.
+ */
+async function wireDownstreams(
+  wraps: string[],
+  connect: (spec: string) => Promise<DownstreamConnection>
+): Promise<DownstreamConnection[]> {
+  const downstreams: DownstreamConnection[] = [];
+  try {
+    for (const spec of wraps) {
+      downstreams.push(await connect(spec));
+    }
+  } catch (err) {
+    await Promise.all(downstreams.map((d) => d.close().catch(() => {})));
+    throw err;
+  }
+  return downstreams;
+}
+
+/** Builtins overlaid with the wrapped MCP downstreams' tools; `undefined` when nothing is wrapped (runSkill then falls back to builtins itself). */
+function buildWrappedToolRegistry(downstreams: DownstreamConnection[]): Record<string, Tool> | undefined {
+  return downstreams.length > 0 ? { ...builtinTools, ...buildMcpTools(downstreams) } : undefined;
+}
+
+/** `.reelier/runs/<skill>.jsonl` under `cwd` — the exact path runSkill appends to (src/runner.ts's runRecordPath). */
+function runRecordPathFor(cwd: string, skillName: string): string {
+  return path.join(cwd, ".reelier", "runs", `${skillName}.jsonl`);
+}
+
+/**
+ * F5 local run-shape priors on the `reelier run` surface
+ * (docs/specs/run-shape-priors.md §6): print the deviation block, or print
+ * nothing at all.
+ *
+ * Every failure mode is swallowed on purpose. A missing, unreadable or
+ * corrupt run-record file must never affect a run that already happened —
+ * fail open at the recorder (never-list #5). There is also nothing honest to
+ * SAY about the failure on this surface: the report is advisory, and an
+ * advisory that cannot be computed is simply absent.
+ *
+ * No `now` is supplied: at the end of a run there is no silence to measure,
+ * so the silence signal is not emitted here (it is `reelier baseline`'s).
+ */
+async function printRunShapeDeviations(cwd: string, skillName: string): Promise<void> {
+  try {
+    const records = await readRunRecords(runRecordPathFor(cwd, skillName));
+    const lines = renderRunShapeDeviationLines(computeRunShape(records));
+    if (lines.length === 0) return;
+    console.log("");
+    for (const line of lines) {
+      console.log(line);
+    }
+  } catch {
+    // Intentionally silent — see above.
+  }
+}
+
+/**
  * `connect` is injectable (defaults to the real `connectDownstream`, which
  * spawns a subprocess) so tests can drive the manifest preflight against an
  * in-process fake DownstreamConnection instead — same reasoning as
@@ -192,7 +299,8 @@ function parseMaxLevel(raw: string | undefined): 0 | 1 | 2 {
  */
 export async function cmdRun(
   args: ParsedArgs,
-  connect: (spec: string) => Promise<DownstreamConnection> = connectDownstream
+  connect: (spec: string) => Promise<DownstreamConnection> = connectDownstream,
+  deps: { cwd?: string; homedir?: string } = {}
 ): Promise<number> {
   const skillPath = args.positional[0];
   if (!skillPath) {
@@ -202,6 +310,27 @@ export async function cmdRun(
         "[--fail N[=status] ...]"
     );
     return 1;
+  }
+
+  // S8 (§5.5): resolve the state-gate opt-in FIRST — a malformed file that
+  // DECLARES `state_gate` refuses the run before anything else happens
+  // (silently ignoring it would fail open against a declared operator
+  // intent, the one direction an opt-in gate must never fail). Repos
+  // without the key keep today's behavior on this path — a malformed
+  // policy without it warns (the warning line is the gap marker; the run
+  // record is never mutated for a repo that did not opt in).
+  const stateGate = await resolveStateGateForRun(deps.cwd ?? process.cwd(), deps.homedir ?? os.homedir());
+  if (stateGate.mode === "refuse-run") {
+    console.error(
+      `Refusing to run: ${stateGate.sourcePath} declares 'state_gate' but is malformed (${stateGate.errors.length} error(s)): ${stateGate.errors.join("; ")}`
+    );
+    console.error(
+      "A malformed state-gate opt-in fails closed. Fix the file ('reelier policy check') or remove the state_gate key for recorder mode."
+    );
+    return 1;
+  }
+  if (stateGate.mode === "off" && stateGate.warning !== undefined) {
+    console.error(stateGate.warning);
   }
 
   let maxLevel: 0 | 1 | 2;
@@ -252,11 +381,9 @@ export async function cmdRun(
     return 0;
   }
 
-  const downstreams: DownstreamConnection[] = [];
+  let downstreams: DownstreamConnection[] = [];
   try {
-    for (const spec of args.wraps) {
-      downstreams.push(await connect(spec));
-    }
+    downstreams = await wireDownstreams(args.wraps, connect);
 
     // Fail-closed manifest preflight (docs/specs/flight-recorder-v2.md §1):
     // prove the tools this skill was recorded/stamped against are still the
@@ -265,6 +392,7 @@ export async function cmdRun(
     // valid) beyond a one-line advisory note.
     const ignoreManifest = args.flags.has("ignore-manifest");
     let manifestIgnored = false;
+    let manifestChecked = false;
     if (skill.manifest) {
       if (ignoreManifest) {
         console.error("WARNING: --ignore-manifest — replaying despite unverified tool schemas");
@@ -285,6 +413,7 @@ export async function cmdRun(
           );
           return 1;
         }
+        manifestChecked = true;
       }
     } else {
       console.error(
@@ -292,7 +421,7 @@ export async function cmdRun(
       );
     }
 
-    const tools = downstreams.length > 0 ? { ...builtinTools, ...buildMcpTools(downstreams) } : undefined;
+    const tools = buildWrappedToolRegistry(downstreams);
 
     if (args.fails.length > 0) {
       const stepNums = Object.keys(mockFailures)
@@ -327,13 +456,32 @@ export async function cmdRun(
       // stamped verbatim onto the RunRecord (see RunRecord.skillContentSha256).
       skillContentSha256: createHash("sha256").update(source, "utf8").digest("hex"),
       manifestIgnored,
+      manifestChecked,
+      // The directory whose policy governed the gate MUST be the directory
+      // that receives the run record (review finding): otherwise a
+      // programmatic caller passing deps.cwd gates on repo A and records
+      // into repo B. Same value, by construction.
+      ...(deps.cwd !== undefined ? { cwd: deps.cwd } : {}),
+      ...(stateGate.mode === "refuse" ? { stateGate: "refuse" as const } : {}),
+      // The policy in force for THIS run, from the same resolution that
+      // decided the gate — so the digest names the bytes that actually
+      // governed it. Never inherited from the trace this skill was compiled
+      // from (policy-attestation-v1 §3).
+      policy: stateGate.policy,
       ...(args.fails.length > 0 ? { mockFailures } : {}),
       onStep: (rec) => {
         const icon =
           rec.outcome === "passed" || rec.outcome === "unchecked" ? "✓" : rec.outcome === "skipped" ? "○" : "✗";
         const tag = rec.outcome === "unchecked" ? " (unchecked: no assertions)" : "";
         const levelTag = rec.level > 0 ? ` [healed L${rec.level}]` : "";
-        console.log(`${icon} Step ${rec.n} — ${rec.title} [${rec.outcome}${tag}]${levelTag} ${fmtDuration(rec.ms)}`);
+        // Shown only for `external-visible` (SPEC §3.7): internal is the
+        // overwhelming majority and the absent case, so tagging it would be
+        // noise. Plain text, no warning glyph and no error colour — it is a
+        // classification the author wrote down, not a finding.
+        const exposureTag = rec.exposure === "external-visible" ? " [external-visible]" : "";
+        console.log(
+          `${icon} Step ${rec.n} — ${rec.title} [${rec.outcome}${tag}]${levelTag}${exposureTag} ${fmtDuration(rec.ms)}`
+        );
         if (rec.mocked) {
           console.log(`    ⚡ INJECTED failure (--fail ${rec.n})`);
         }
@@ -343,16 +491,33 @@ export async function cmdRun(
         if (rec.write?.duplicateOf !== undefined) {
           console.log(`    ! duplicate write (same idempotency key as step ${rec.write.duplicateOf})`);
         }
+        if (rec.attest) {
+          for (const line of renderAttestLines(rec.attest)) {
+            console.log(`   ${line}`);
+          }
+        }
+        if (rec.stateCheck) {
+          for (const line of renderStateCheckLines(rec.stateCheck, rec.write?.dispatchedAt)) {
+            console.log(`   ${line}`);
+          }
+        }
       },
     });
 
     console.log("");
     const okCount = record.totals.passed + record.totals.unchecked;
     const uncheckedTag = record.totals.unchecked > 0 ? ` (${record.totals.unchecked} unchecked)` : "";
+    // §5.4: the summary gains `· N finding(s)` when any step stamped a
+    // pre-state mismatch (stamped in recorder mode, or refused under the
+    // S8 state gate). The stamp never flips PASSED/FAILED or the exit code
+    // (I-9) — a finding is about the world, not the run. In gate mode the
+    // REFUSAL flips the outcome (it lands in failures[]), so a refused run
+    // prints FAILED *and* a finding tag: two honest facts, not one signal
+    // leaking into the other.
     console.log(
       `${record.passed ? "PASSED" : "FAILED"}: ${okCount}/${record.totals.steps} steps ok${uncheckedTag}, ${
         record.totals.failed
-      } failed, ${fmtDuration(record.totals.ms)} total`
+      } failed, ${fmtDuration(record.totals.ms)} total${findingsSummaryTag(record.steps)}`
     );
     if (record.totals.llmInputTokens > 0 || record.totals.llmOutputTokens > 0) {
       console.log(`LLM tokens: ${record.totals.llmInputTokens} in / ${record.totals.llmOutputTokens} out`);
@@ -365,6 +530,14 @@ export async function cmdRun(
         "note: write steps executed via --allow-writes/--yes without per-step approval — approve them: reelier approve <skill.md>"
       );
     }
+
+    // F5 local run-shape priors (docs/specs/run-shape-priors.md §6): an
+    // EXCEPTION report over this repo's own .reelier/runs/<skill>.jsonl,
+    // printed only when the run that just happened departed from that
+    // skill's own recent history. It is computed after the record is
+    // appended, so the run being reported on is in the file. It never
+    // touches the exit code below — a deviation is a difference, not a fault.
+    await printRunShapeDeviations(deps.cwd ?? process.cwd(), skill.name);
 
     return record.passed ? 0 : 1;
   } catch (err) {
@@ -391,35 +564,6 @@ export interface BenchSummary {
   failureCounts: Map<string, number>;
 }
 
-/**
- * Per-record totals, honest across a mixed history: a record written before
- * 0.2.0 has no `totals.unchecked`/`totals.skipped` field (and its old
- * `totals.passed` counted "passed" OR "unchecked" together) — for those,
- * derive the split from the per-step outcomes instead, which were always
- * recorded correctly even when the rollup that summed them wasn't.
- */
-function deriveRecordTotals(r: RunRecord): { passed: number; unchecked: number; skipped: number; failed: number } {
-  if (r.totals.unchecked !== undefined) {
-    return {
-      passed: r.totals.passed,
-      unchecked: r.totals.unchecked,
-      skipped: r.totals.skipped ?? 0,
-      failed: r.totals.failed,
-    };
-  }
-  let passed = 0;
-  let unchecked = 0;
-  let skipped = 0;
-  let failed = 0;
-  for (const s of r.steps) {
-    if (s.outcome === "passed") passed++;
-    else if (s.outcome === "unchecked") unchecked++;
-    else if (s.outcome === "skipped") skipped++;
-    else if (s.outcome === "failed") failed++;
-  }
-  return { passed, unchecked, skipped, failed };
-}
-
 export function computeBenchSummary(records: RunRecord[]): BenchSummary {
   const first = records[0];
   const latest = records[records.length - 1];
@@ -437,7 +581,7 @@ export function computeBenchSummary(records: RunRecord[]): BenchSummary {
     llmInputTokens += r.totals.llmInputTokens ?? 0;
     llmOutputTokens += r.totals.llmOutputTokens ?? 0;
 
-    const t = deriveRecordTotals(r);
+    const t = recordTotals(r);
     totals.passed += t.passed;
     totals.unchecked += t.unchecked;
     totals.skipped += t.skipped;
@@ -503,7 +647,7 @@ async function cmdBench(args: ParsedArgs): Promise<number> {
     throw err;
   }
 
-  const recordPath = path.join(process.cwd(), ".reelier", "runs", `${skill.name}.jsonl`);
+  const recordPath = runRecordPathFor(process.cwd(), skill.name);
   let records: RunRecord[];
   try {
     records = await readRunRecords(recordPath);
@@ -546,6 +690,67 @@ async function cmdBench(args: ParsedArgs): Promise<number> {
     console.log(`  per-step failure counts: none`);
   }
 
+  return 0;
+}
+
+/**
+ * `reelier baseline <skill.md>` — F5 local run-shape priors, standalone and
+ * read-only (docs/specs/run-shape-priors.md §6). Executes nothing, connects
+ * to nothing, transmits nothing: it reads this repo's own
+ * `.reelier/runs/<skill>.jsonl` and reports how the latest run sits against
+ * the previous ones. Suitable for a cron, which is why it prints the whole
+ * picture (a cron reading only exceptions cannot tell "nothing departed"
+ * from "this never ran") and why a deviation exits 0 like everything else —
+ * turning one into a non-zero exit would make it a gate, and this is a
+ * recorder.
+ *
+ * Exit 1 is reserved for what the operator must fix: no skill argument, an
+ * unreadable or malformed skill file, a missing or empty run-record file.
+ */
+async function cmdBaseline(args: ParsedArgs): Promise<number> {
+  const skillPath = args.positional[0];
+  if (!skillPath) {
+    console.error("Usage: reelier baseline <skill.md>");
+    return 1;
+  }
+
+  let source: string;
+  try {
+    source = await readFile(skillPath, "utf8");
+  } catch (err) {
+    console.error(`Could not read skill file ${skillPath}: ${(err as Error).message}`);
+    return 1;
+  }
+
+  let skill;
+  try {
+    skill = parseSkill(source);
+  } catch (err) {
+    if (err instanceof SkillParseError) {
+      console.error(`Malformed skill in ${skillPath}: ${err.message}`);
+      return 1;
+    }
+    throw err;
+  }
+
+  const recordPath = runRecordPathFor(process.cwd(), skill.name);
+  let records: RunRecord[];
+  try {
+    records = await readRunRecords(recordPath);
+  } catch (err) {
+    console.error(`No run records found at ${recordPath}: ${(err as Error).message}`);
+    return 1;
+  }
+  if (records.length === 0) {
+    console.error(`Run record file ${recordPath} is empty`);
+    return 1;
+  }
+
+  // The real clock: this is the only surface where `silence` (time since the
+  // latest run started) is a question anyone can meaningfully ask.
+  for (const line of renderRunShapeReportLines(computeRunShape(records, { now: Date.now() }), skill.name)) {
+    console.log(line);
+  }
   return 0;
 }
 
@@ -756,7 +961,11 @@ async function cmdMcp(args: ParsedArgs): Promise<number> {
   const server = buildProxyServer(downstreams, {
     traceDir,
     policy: policyResult.policy,
-    policyGap: policyResult.ok ? undefined : policyResult.error,
+    // The four-state claim, not just the malformed case the old policyGap
+    // marked. Built from the load result — whose digest is bound to the read
+    // that produced the policy — so nothing here can re-read the file and
+    // claim `verified` over bytes that never enforced anything (§2.1).
+    policyRecord: policyRecordFromLoad(policyResult),
     allowWrites,
   });
   const transport = new StdioServerTransport();
@@ -820,7 +1029,8 @@ async function cmdPolicyCheck(args: ParsedArgs): Promise<number> {
   }
 
   const policy = validation.policy!;
-  console.log(`${targetPath}: OK — ${policy.deny.length} deny rule(s), ${policy.dryRun.length} dry-run rule(s)`);
+  const gateNote = policy.stateGate === "refuse" ? ", state_gate: refuse (run-path gate — fail-closed on pre-state mismatch/unevaluated)" : "";
+  console.log(`${targetPath}: OK — ${policy.deny.length} deny rule(s), ${policy.dryRun.length} dry-run rule(s)${gateNote}`);
   if (hasEndpointRules(policy)) {
     console.log(ENDPOINT_RULE_NOTE);
   }
@@ -1224,10 +1434,423 @@ function isWriteEffectStep(step: Step): boolean {
  * tool + args template — see src/approval.ts's doc comment on why `server`
  * is deliberately excluded).
  */
-export async function cmdApprove(args: ParsedArgs): Promise<number> {
+/** Projection fields that every write mutates (version-class). An expect binding over one self-invalidates after its own first run — warn-only lint, spec §6.1.2 (fixed-point rule). */
+const EXPECT_VOLATILE_FIELDS = ["version", "etag", "revision", "sha", "updated_at"] as const;
+
+/** Collect `{{placeholder}}` names from string leaves of a JSON-like value (the fillTemplate hole grammar, src/runner.ts). */
+function collectPlaceholders(value: unknown, out: string[] = []): string[] {
+  if (typeof value === "string") {
+    for (const m of value.matchAll(/\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*|today[+-]\d+d)\s*\}\}/g)) {
+      out.push(m[1]);
+    }
+    return out;
+  }
+  if (Array.isArray(value)) {
+    for (const v of value) collectPlaceholders(v, out);
+    return out;
+  }
+  if (value !== null && typeof value === "object") {
+    for (const v of Object.values(value as Record<string, unknown>)) collectPlaceholders(v, out);
+  }
+  return out;
+}
+
+function isComputedDateName(name: string): boolean {
+  return name === "today" || /^today[+-]\d+d$/.test(name);
+}
+
+/**
+ * I-18 blocker 1 (wave-3 review — blocking): the downgrade to a shape-only
+ * approval (dropping `expect`, whether via `--drop-expect` or the interactive
+ * "Approve WITHOUT state binding?" prompt) must REFUSE outright on a step
+ * whose `attest.args` are parameterized. The runner's probeArgs gate
+ * (src/runner.ts's I-18) keys on `expect.probeArgs !== undefined` — strip
+ * `expect` from a step whose attest is still armed (attest present, approved)
+ * and the probe is left ungated: it fills from the WHOLE bindings map again,
+ * the exact exfiltration channel W3-S4 closed. Never a new counter — this
+ * reuses the existing `skippedStateBoundChanged` skip/count path so `--all`
+ * degrades the same way every other never-silently-downgrade class does.
+ */
+const PARAMETERIZED_PROBE_DROP_REFUSAL =
+  "refusing to drop the binding on a parameterized probe — its args fill from run-time bindings, and without expect.probeArgs nothing proves the filled args were approved. Re-approve with --probe --var, or make the probe args literal.";
+
+/**
+ * W3-S5's `status.code` + MCP refusal (A12): MCP has no HTTP status, so
+ * `mcpResultToObservation` fabricates `isError ? 500 : 200`, and an isError
+ * result flows through as a SUCCESSFUL observation — a binding stamped at
+ * 500 would MATCH on every future error. THE SAME STRING everywhere this
+ * predicate is checked (I-18 blocker 4, wave-3 review): first-time bind
+ * (the structural-unbindability block below) AND re-verify/`--rebind` on an
+ * already-bound step (hoisted ahead of that branch — see the call site).
+ * Never forked; a second copy is how the two checks drift apart silently.
+ */
+function mcpStatusCodeRefusal(tool: string): string {
+  return `'status.code' cannot be state-bound through the MCP tool '${tool}' — MCP has no HTTP status, so an isError result is fabricated as 500 and flows through as a successful observation (A12): a binding stamped at 500 would MATCH on every future error. Use a read that reifies absence into a body field, or probe over http`;
+}
+
+/** `hmac-sha256:9f31…77aa` — enough to eyeball, never needed for anything else (the full value lands in the file). */
+function abbrevMac(mac: string): string {
+  const hex = mac.slice("hmac-sha256:".length);
+  return `hmac-sha256:${hex.slice(0, 4)}…${hex.slice(-4)}`;
+}
+
+/**
+ * Projection field names are skill-author-controlled text that lands on the
+ * consent transcript — a name embedding \n or ANSI escapes could forge the
+ * very ceremony lines the approver reads before saying yes (review finding).
+ * Clean names print bare; anything else prints JSON-escaped.
+ */
+function safeFieldName(name: string): string {
+  return /^[\w.$-]+$/.test(name) ? name : JSON.stringify(name);
+}
+
+/**
+ * W3-S3 (wave3 §3, P1.5 review N11 — "free diagnosis left on the table"):
+ * when a `--probe` re-verify finds the world has moved, recompute the
+ * per-field MACs it already holds and name what actually moved. Terminal
+ * output only — no record, no receipt, no persisted claim.
+ *
+ * Two claims, deliberately distinct labels:
+ *
+ * - `fields changed since approval` — the phrase P1.5 already ships on the
+ *   runner's mismatch render (src/attest-render.ts) and W3-S1 mirrors onto
+ *   the cloud. Same label because it is the same claim, earned the same way:
+ *   per-field MAC inequality under the held key proves the committed value
+ *   differs. One claim, one label, wherever an operator meets it.
+ * - `committed fields absent at re-verify` — its own label, because it is a
+ *   DIFFERENT claim from the runner's `declared fields absent at execute`.
+ *   A1 forbids the runner from asserting approve-time presence (the opaque
+ *   whole MAC hides it). Here it is honest: `expect.fields`' key set IS the
+ *   approve-time projected-field set, disclosed in the committed skill file
+ *   by P1.5's accepted-disclosure record. Naming it "since approval" would
+ *   quietly borrow the other claim's wording for a different fact.
+ *
+ * Silent on a fieldless (pre-P1.5) binding: there is no per-field evidence,
+ * and a diagnosis nothing earned is exactly what this codebase must never
+ * print. Each line prints only when non-empty, so an all-absence divergence
+ * names no change (and vice versa) — never an empty claim.
+ *
+ * ABSENCE IS EARNED, NOT INFERRED (review finding — blocking). The projected
+ * map drops present-but-unprojectable data: a `null`/object/array value, a
+ * header present but empty, and — for EVERY body field at once — a body that
+ * did not parse. Reading "missing from the projection" as "absent from the
+ * world" asserts a fact the observation in hand disproves, and it asserts it
+ * to an operator standing at a re-bind consent prompt. So the three outcomes
+ * are separated against the RAW observation and worded for what each one
+ * establishes: gone, not established, or not projected by this step at all.
+ *
+ * Stated limitation, and a product choice rather than a constraint (review
+ * finding): a field present now but not committed at approve appears in no
+ * line. `expect.fields`' key set is the disclosed approve-time projected set,
+ * so naming such a field WOULD be earned — the same premise that licenses the
+ * absence line. It is left unbuilt because it is new copy this slice did not
+ * scope, not because A1 forbids it.
+ */
+function reportReVerifyDiagnosis(
+  step: Step,
+  key: Uint8Array,
+  typed: Record<string, string | number | boolean>,
+  obs: { body: string; headers: Record<string, string> }
+): void {
+  const committed = step.expect?.fields;
+  if (committed === undefined) return;
+  const projection = step.attest?.projection ?? [];
+  // Only a name the declared projection actually addresses can have been
+  // committed by any approve run. `expect.fields` is hand-editable and the
+  // absent branch runs no MAC comparison, so without this intersection a
+  // planted entry prints as a committed field on the consent transcript.
+  const declared = new Set(projection.map(typedKeyFor));
+  const { unprojectable } = projectionMisses(obs, projection);
+  const changed: string[] = [];
+  const absent: string[] = [];
+  const notEstablished: string[] = [];
+  const unbacked: string[] = [];
+  // Object.entries reads own enumerable keys only; the `typed` lookup below
+  // is an own-property read for the same reason the runner's is — a fields
+  // entry named "constructor"/"toString" would otherwise read through
+  // Object.prototype and land a fabricated name on the consent transcript.
+  for (const [name, recorded] of Object.entries(committed)) {
+    if (!declared.has(name)) {
+      unbacked.push(name);
+      continue;
+    }
+    const liveValue = Object.prototype.hasOwnProperty.call(typed, name) ? typed[name] : undefined;
+    if (liveValue === undefined) {
+      (unprojectable.has(name) ? notEstablished : absent).push(name);
+      continue;
+    }
+    if (!macEquals(expectFieldMac(key, step.attest!.tool, name, liveValue), recorded)) changed.push(name);
+  }
+  const render = (names: string[]): string =>
+    names
+      .slice(0, ABSENT_FIELDS_MAX)
+      .map((n) => safeFieldName(n.slice(0, ABSENT_FIELD_NAME_MAX)))
+      .join(", ");
+  if (changed.length > 0) {
+    console.log(`  fields changed since approval: ${render(changed)}`);
+  }
+  if (absent.length > 0) {
+    console.log(`  committed fields absent at re-verify: ${render(absent)}`);
+  }
+  if (notEstablished.length > 0) {
+    console.log(`  committed fields the probe could not project at re-verify: ${render(notEstablished)}`);
+  }
+  if (unbacked.length > 0) {
+    console.log(`  note: the binding commits fields this step never projects: ${render(unbacked)}`);
+  }
+}
+
+/**
+ * Injectable seams for cmdApprove — same reasoning as cmdRun's `connect`
+ * override: tests drive the probe flow against in-process fakes, no
+ * subprocess, no real stdin, no real home directory.
+ */
+export interface ApproveDeps {
+  connect?: (spec: string) => Promise<DownstreamConnection>;
+  /** Test override: the probe tool registry, bypassing --wrap wiring entirely. */
+  tools?: Record<string, Tool>;
+  env?: Record<string, string | undefined>;
+  homedir?: string;
+  /** Test override for interactive prompts; default builds a readline over stdin. */
+  ask?: (question: string) => Promise<string>;
+  /** A2: projected VALUES print only when stdout is a TTY and never under --all (CI logs are retained artifacts). */
+  isTTY?: boolean;
+  now?: () => number;
+  /** --prune-keys scan root (defaults to process.cwd()). */
+  cwd?: string;
+}
+
+/**
+ * Recursively collect every 16-hex keyId referenced by any `expect:` line in
+ * *.md files under `root`. Skips node_modules/.git/dist/dist-test/.stryker-tmp
+ * trees; follows symlinks (visited-realpath set guards cycles — a symlinked
+ * skills/ dir must still protect its keys); regex scan, not a full parse — a
+ * half-broken skill file must still protect its keys. The scan must therefore
+ * be at LEAST as forgiving as the parser (review finding): the parser accepts
+ * any JSON spacing and the filesystem may be case-insensitive, so the regex
+ * tolerates whitespace around the colon and the .md match ignores case —
+ * missing a live reference here deletes an unrecoverable key.
+ */
+async function collectReferencedKeyIds(root: string): Promise<Set<string>> {
+  const referenced = new Set<string>();
+  const SKIP = new Set(["node_modules", ".git", "dist", "dist-test", ".stryker-tmp"]);
+  const visited = new Set<string>();
+  const scanFile = async (file: string): Promise<void> => {
+    try {
+      const text = await readFile(file, "utf8");
+      for (const m of text.matchAll(/"keyId"\s*:\s*"([0-9a-f]{16})"/g)) referenced.add(m[1]);
+    } catch {
+      // unreadable file: skip — an unreadable skill must not orphan its key
+    }
+  };
+  const walk = async (dir: string): Promise<void> => {
+    let real: string;
+    try {
+      real = await realpath(dir);
+    } catch {
+      return;
+    }
+    if (visited.has(real)) return;
+    visited.add(real);
+    let entries;
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch {
+      return; // unreadable dir: skip, never crash a prune over permissions
+    }
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      let isDir = entry.isDirectory();
+      let isFile = entry.isFile();
+      if (entry.isSymbolicLink()) {
+        try {
+          const st = await stat(full); // follows the link
+          isDir = st.isDirectory();
+          isFile = st.isFile();
+        } catch {
+          continue; // broken link: nothing to protect behind it
+        }
+      }
+      if (isDir) {
+        if (!SKIP.has(entry.name)) await walk(full);
+      } else if (isFile && entry.name.toLowerCase().endsWith(".md")) {
+        await scanFile(full);
+      }
+    }
+  };
+  await walk(root);
+  return referenced;
+}
+
+/** `reelier approve --prune-keys [--all]` (P1.5, wave2 §3.4's named follow-up) — see the dispatch in cmdApprove. */
+async function cmdPruneKeys(args: ParsedArgs, deps: ApproveDeps): Promise<number> {
+  const now = deps.now ?? (() => Date.now());
+  // Captured BEFORE the store read: the keystore mutation later refuses to
+  // delete anything minted after this instant (review finding — a concurrent
+  // approve's mint order is keystore-entry-then-skill-file, §4.2.4).
+  const scanStart = new Date(now()).toISOString();
+  const keystorePath = resolveKeystorePath(deps.env ?? process.env, deps.homedir ?? os.homedir());
+  const store = await readKeystore(keystorePath);
+  const keyIds = Object.keys(store.keys);
+  if (keyIds.length === 0) {
+    console.log(`no keys in ${keystorePath} — nothing to prune`);
+    return 0;
+  }
+  const root = deps.cwd ?? process.cwd();
+  const referenced = await collectReferencedKeyIds(root);
+  const orphans = keyIds.filter((id) => !referenced.has(id));
+  if (orphans.length === 0) {
+    console.log(`${keyIds.length} key(s) in ${keystorePath}, all referenced by skills under ${root} — nothing to prune`);
+    return 0;
+  }
+  console.log(`${orphans.length} of ${keyIds.length} key(s) in ${keystorePath} are referenced by no skill under ${root}:`);
+  for (const id of orphans) {
+    const entry = store.keys[id];
+    const hint = entry.skill !== undefined ? ` (minted for ${entry.skill}${entry.step !== undefined ? ` step ${entry.step}` : ""})` : "";
+    console.log(`  ${id} — created ${entry.createdAt}${hint}`);
+  }
+  let yes = args.flags.has("all");
+  if (!yes) {
+    const rl = deps.ask === undefined ? createInterface({ input: process.stdin, output: process.stdout }) : undefined;
+    const ask = deps.ask ?? ((q: string) => rl!.question(q));
+    try {
+      // The prompt names what the scan could NOT see (review finding — spec
+      // §3.4's primary reason keys are never auto-deleted is exactly the
+      // out-of-scan-reach copies): other checkouts/branches/machines, plus
+      // the skipped node_modules/.git/dist trees.
+      const answer = (
+        await ask(
+          `Remove ${orphans.length} orphaned key(s)? Removal is revocation — a skill bound under one (a git revert, a parallel checkout or branch, anything outside ${root} or under node_modules/.git/dist, none of which this scan saw) degrades to 'unevaluated'. (y/N) `
+        )
+      )
+        .trim()
+        .toLowerCase();
+      yes = answer === "y" || answer === "yes";
+    } finally {
+      rl?.close();
+    }
+  }
+  if (!yes) {
+    console.log("nothing removed");
+    return 0;
+  }
+  // Re-scan AFTER consent (review finding): the prompt has human latency, and
+  // a concurrent approve may have stamped its skill file inside that window.
+  // Deletion is unrecoverable, so anything referenced by now is spared, and
+  // the keystore mutation itself skips entries minted after scanStart.
+  const stillReferenced = await collectReferencedKeyIds(root);
+  const confirmed = orphans.filter((id) => !stillReferenced.has(id));
+  if (confirmed.length < orphans.length) {
+    console.log(`${orphans.length - confirmed.length} key(s) became referenced during confirmation — spared`);
+  }
+  if (confirmed.length === 0) {
+    console.log("nothing removed");
+    return 0;
+  }
+  await removeKeystoreEntries(keystorePath, confirmed, { mintedBefore: scanStart });
+  console.log(`removed ${confirmed.length} key(s)`);
+  return 0;
+}
+
+/**
+ * The approval TTL this binding would carry, resolved ONCE (issue #77).
+ *
+ * `--expires 7d` resolves against the OBSERVATION's timestamp, not
+ * wall-clock-now — arithmetic no operator does in their head, which is the
+ * whole reason the resolved instant is shown before the y/N rather than after
+ * it. The preview and the write therefore have to be the SAME value, not two
+ * expressions that agree today and drift on the next edit; hence one function
+ * with two call sites rather than a duplicated inline calculation.
+ *
+ * `source` and `elapsed` ride along so the preview and `bindStep`'s echo can
+ * render the same three cases without re-deriving them from the instant.
+ */
+type ResolvedExpiry =
+  | { expiresAt: string; source: "new"; elapsed: false }
+  | { expiresAt: string; source: "carried"; elapsed: boolean }
+  | { expiresAt: undefined; source: "none"; elapsed: false };
+
+function resolveExpiresAt(step: Step, observedAtMs: number, expiresMs: number | undefined): ResolvedExpiry {
+  // W5-T3 (§3.2): an ABSOLUTE instant, resolved once against THIS
+  // observation's timestamp. Stamping the duration itself would re-arm the
+  // approval on every read, which is the opposite of expiring.
+  if (expiresMs !== undefined) return { expiresAt: new Date(observedAtMs + expiresMs).toISOString(), source: "new", elapsed: false };
+  // Review finding (IMPORTANT): with no `--expires`, a prior TTL is CARRIED
+  // FORWARD rather than dropped. `bindStep` is also the re-bind path, so
+  // resolving from `expiresMs` alone meant a routine `approve --probe
+  // --rebind` after benign drift silently deleted a TTL the operator set
+  // weeks earlier — a downgrade, and §4.4 forbids silent downgrades of
+  // exactly this kind.
+  //
+  // Carried VERBATIM, not re-resolved against this observation: the file
+  // stores an instant, not the duration behind it, and re-resolving would
+  // require guessing that duration. Verbatim is also the safe direction — a
+  // re-bind extends nothing, and an already-elapsed TTL stays elapsed, so
+  // re-binding state drift can never quietly renew a time-expired approval.
+  const carried = step.expect?.expiresAt;
+  if (carried !== undefined) return { expiresAt: carried, source: "carried", elapsed: Date.parse(carried) <= observedAtMs };
+  // Brand invariant 1, one level down: no TTL prints NO line. "expires:
+  // never" would render an absence as a deliberate choice.
+  return { expiresAt: undefined, source: "none", elapsed: false };
+}
+
+/**
+ * One sentence, rendered from one resolution — so the operator reads the same
+ * words in the pre-prompt preview and in the echo of what was written, rather
+ * than two phrasings of the same fact.
+ */
+function expiryConsentLine(resolved: ResolvedExpiry, expiresRaw: string | undefined): string | undefined {
+  if (resolved.source === "new") {
+    return `  expires: ${resolved.expiresAt} (--expires ${expiresRaw}) — past it this step's state check is 'unevaluated (approval-expired)', never a pass`;
+  }
+  if (resolved.source === "carried") {
+    // Review finding (MINOR): a carried instant that has ALREADY elapsed
+    // produces an approval that is dead on arrival — safe, because it fails
+    // closed at the first run, but `expires: 2026-07-04T…` reads like a live
+    // deadline to anyone scanning the output. Say which one it is.
+    return (
+      `  expires: ${resolved.expiresAt} (carried forward unchanged from the previous binding` +
+      (resolved.elapsed
+        ? " — ALREADY ELAPSED, so this binding is expired the moment it is written; pass --expires <duration> to set a new one)"
+        : " — pass --expires <duration> to set a new one)")
+    );
+  }
+  return undefined;
+}
+
+export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Promise<number> {
+  // P1.5: `--prune-keys` takes no skill path — rotation leaves superseded
+  // entries behind on purpose (parallel checkouts, git revert); pruning is
+  // the explicit act, never a side effect. Same refusal standard as
+  // --drop-expect/--probe below (review finding — blocking): silently
+  // swallowing a skill path or approve flag would delete keys while the
+  // operator believes they ran an approve.
+  if (args.flags.has("prune-keys")) {
+    // W5-T3 (review): the conflict list checked FLAGS only, so
+    // `--prune-keys --expires 24h` pruned and dropped the TTL request on the
+    // floor — the same silent-acceptance family as the re-verify bug below.
+    // Value-taking options have to be checked by presence, not membership.
+    const conflicts = ["probe", "rebind", "drop-expect"].filter((f) => args.flags.has(f));
+    if (args.opts.expires !== undefined) conflicts.push("expires");
+    if (args.positional.length > 0 || conflicts.length > 0 || args.wraps.length > 0) {
+      const offender = args.positional.length > 0 ? `a skill path (${args.positional[0]})` : `--${conflicts[0] ?? "wrap"}`;
+      console.error(
+        `--prune-keys is a standalone command and cannot be combined with ${offender}. Run 'reelier approve --prune-keys [--all]' alone; --all skips the confirmation prompt.`
+      );
+      return 1;
+    }
+    return cmdPruneKeys(args, deps);
+  }
   const skillPath = args.positional[0];
   if (!skillPath) {
-    console.error("Usage: reelier approve <skill.md> [--all]");
+    console.error(
+      'Usage: reelier approve <skill.md> [--all] [--probe] [--expires <30m|24h|7d>] [--rebind] [--var name=value]... [--wrap "<cmd>"]... [--drop-expect] | reelier approve --prune-keys [--all]\n' +
+        "  --expires <duration>  give the state binding a time-to-live: <positive integer><m|h|d>, at most 365d.\n" +
+        "                        Resolved against approve time and stamped as an ABSOLUTE instant, so it cannot\n" +
+        "                        re-arm itself. Past it the step's state check is 'unevaluated (approval-expired)',\n" +
+        "                        which under 'state_gate: refuse' refuses the write before dispatch. Requires\n" +
+        "                        --probe: a TTL lives on the state binding (expect:), which only --probe mints."
+    );
     return 1;
   }
 
@@ -1257,61 +1880,823 @@ export async function cmdApprove(args: ParsedArgs): Promise<number> {
   }
 
   const all = args.flags.has("all");
-  const rl = all ? undefined : createInterface({ input: process.stdin, output: process.stdout });
+  const probe = args.flags.has("probe");
+  const rebindFlag = args.flags.has("rebind");
+  const dropExpect = args.flags.has("drop-expect");
+  // Flag conflict (review finding — blocking): --drop-expect under --probe
+  // would route a bound step AROUND the re-verify/world-moved consent gate
+  // into the fresh-bind path, i.e. a machine-minted re-bind (the exact thing
+  // A2 forbids) wearing a "dropping state binding" label. The two flags
+  // answer opposite questions; refuse the combination outright.
+  if (probe && dropExpect) {
+    console.error(
+      "--drop-expect cannot be combined with --probe: --probe (re)binds state. Drop the binding first with plain 'reelier approve --drop-expect', or re-approve with --probe alone."
+    );
+    return 1;
+  }
+  // W5-T3: `--expires` is a SIBLING of `--probe`, not a variant of it —
+  // `--probe` makes an approval die when the world moves, `--expires` makes it
+  // die when nobody answers. A step may carry both.
+  //
+  // It is refused without `--probe` rather than silently accepted, because the
+  // TTL lives on `expect:` and only `--probe` mints one. A plain approved
+  // write cannot expire; that is a real scope boundary (SPEC.md §6.1c) and an
+  // operator meets it here, at the moment they ask for the thing, instead of
+  // discovering months later that the TTL they thought they set never fired.
+  const expiresRaw = args.opts.expires;
+  let expiresMs: number | undefined;
+  if (expiresRaw !== undefined) {
+    if (!probe) {
+      console.error(
+        "--expires requires --probe: a TTL lives on the state binding (expect:), and only --probe mints one. " +
+          "A plain approved write with no expect: cannot expire — re-approve with 'reelier approve --probe --expires " +
+          `${expiresRaw}', or drop --expires.`
+      );
+      return 1;
+    }
+    const parsed = parseDuration(expiresRaw);
+    if (parsed === null) {
+      console.error(
+        `Invalid --expires ${JSON.stringify(expiresRaw)} — expected a positive integer followed by m, h, or d ` +
+          `(e.g. 30m, 24h, 7d), at most ${MAX_APPROVAL_TTL_MS / 86_400_000}d. Nothing was approved.`
+      );
+      return 1;
+    }
+    expiresMs = parsed;
+  }
+  const now = deps.now ?? (() => Date.now());
+  const isTTY = deps.isTTY ?? process.stdout.isTTY === true;
+  const keystorePath = resolveKeystorePath(deps.env ?? process.env, deps.homedir ?? os.homedir());
+
+  const rl = !all && deps.ask === undefined ? createInterface({ input: process.stdin, output: process.stdout }) : undefined;
+  const ask = deps.ask ?? (rl ? (q: string) => rl.question(q) : undefined);
+  const askYes = async (question: string): Promise<boolean> => {
+    const answer = (await ask!(question)).trim().toLowerCase();
+    return answer === "y" || answer === "yes";
+  };
 
   let approvedCount = 0;
   let skippedCount = 0;
   let unchangedCount = 0;
+  let stateBoundCount = 0;
+  // The never-silently-downgrade classes (§4.4 + A2): each drives a named
+  // summary line and a non-zero exit — a scripted `approve --all --probe`
+  // must not quietly mint weaker approvals than asked for. Re-verify
+  // unavailability is its own class for the same reason (A6/B7: an induced
+  // probe failure must never read as "unchanged" with a clean exit).
+  let skippedProbeFailed = 0;
+  let skippedWorldMoved = 0;
+  let skippedStateBoundChanged = 0;
+  let reVerifyUnavailable = 0;
+
+  let downstreams: DownstreamConnection[] = [];
+  let probeTools: Record<string, Tool> | undefined = deps.tools;
+
+  /**
+   * Mint-and-stamp, in the spec's §4.2.4 order: keystore entry BEFORE any
+   * skill mutation — a crash between the two leaves an orphan key (harmless,
+   * 32 bytes) and an unmodified skill, never a keyless `expect`.
+   */
+  /**
+   * W3-S4: operator-supplied `--var` values for this invocation. Probe args
+   * are filled from these and NOTHING else — at approve time there are no
+   * step-output binds to confuse them with, and at run time the commitment
+   * minted here is what forbids one from sneaking in.
+   */
+  const approveVars: Record<string, string> = args.vars ?? {};
+
+  /**
+   * The probe args this invocation would actually send, plus whether the
+   * template was parameterized at all. Pure — no dispatch. `missing` names
+   * the placeholders no `--var` supplied, which is a refusal class at bind
+   * time and its own loud class at re-verify.
+   */
+  const resolveProbeArgs = (
+    step: Step
+  ): { filled: unknown; parameterized: boolean; missing: string[] } => {
+    const names = [...new Set(step.attest ? collectPlaceholders(step.attest.args) : [])];
+    const missing = names.filter((n) => !isComputedDateName(n) && !(n in approveVars));
+    if (missing.length > 0) return { filled: undefined, parameterized: names.length > 0, missing };
+    return { filled: fillTemplate(step.attest!.args, approveVars, now()), parameterized: names.length > 0, missing: [] };
+  };
+
+  /**
+   * §4.2.3's disclosure rule, for INPUTS rather than observations. The filled
+   * probe args print verbatim on EVERY path, `--all` and non-TTY included:
+   * A2's gate governs projected VALUES (observed state, which CI logs must
+   * not retain), and these are operator-supplied inputs the operator already
+   * typed. Stated here so nobody later suppresses them citing A2.
+   */
+  const showProbeArgs = (filled: unknown): void => {
+    console.log(`  probe args (filled): ${canonicalJson(filled)}`);
+  };
+
+  /**
+   * Issue #77: the resolved deadline, printed immediately BEFORE the y/N so
+   * the operator agrees to a date rather than to arithmetic. `--expires 7d`
+   * resolves against the observation, not wall-clock-now, and a date shown
+   * after consent is a date nobody had the chance to decline.
+   *
+   * Prints nothing when there is no TTL — never "expires: never", which would
+   * render an absence as a deliberate setting.
+   */
+  const showExpiry = (step: Step, observedAtMs: number): void => {
+    const line = expiryConsentLine(resolveExpiresAt(step, observedAtMs, expiresMs), expiresRaw);
+    if (line !== undefined) console.log(line);
+  };
+
+  const bindStep = async (
+    step: Step,
+    typed: Record<string, string | number | boolean>,
+    observedAtMs: number,
+    probeArgs?: { filled: unknown }
+  ): Promise<void> => {
+    const at = new Date(observedAtMs).toISOString();
+    const { key, keyId } = mintExpectKey();
+    await writeKeystoreEntry(keystorePath, keyId, {
+      key: key.toString("base64"),
+      createdAt: at,
+      skill: skill.name,
+      step: step.n,
+    });
+    const mac = expectMac(key, step.attest!.tool, typed);
+    console.log(
+      `  pre-state commitment: ${abbrevMac(mac)} (key ${keyId} in ${keystorePath} — the key never enters the skill file or any record)`
+    );
+    // P1.5 (§3.5): per-field commitments ride along so a future mismatch
+    // can name WHICH declared field moved — names only, same key, one MAC
+    // per projected field. The whole-projection `pre` stays the verdict.
+    const fieldMacs: Record<string, string> = {};
+    for (const [name, value] of Object.entries(typed)) {
+      fieldMacs[name] = expectFieldMac(key, step.attest!.tool, name, value);
+    }
+    // W5-T3, resolved by the shared `resolveExpiresAt` — which is also what
+    // the pre-prompt preview calls (issue #77), so the instant the operator
+    // agreed to and the instant written here are ONE value by construction
+    // rather than two expressions that happen to agree today.
+    //
+    // This echo stays. The preview says what is about to be written; this is
+    // the record of what was. Same sentence, two jobs.
+    const resolved = resolveExpiresAt(step, observedAtMs, expiresMs);
+    const { expiresAt } = resolved;
+    const echo = expiryConsentLine(resolved, expiresRaw);
+    if (echo !== undefined) console.log(echo);
+    step.expect = {
+      at,
+      keyId,
+      pre: mac,
+      ...(expiresAt !== undefined ? { expiresAt } : {}),
+      fields: fieldMacs,
+      // W3-S4: commit the FILLED probe args only when the template was
+      // parameterized. A literal probe needs no commitment — its execute-time
+      // fill is the identity function, which is exactly why P1 could ship
+      // literal-only probes with no second MAC at all (C4). Additive means a
+      // literal binding stays byte-identical to 0.26.0.
+      ...(probeArgs !== undefined ? { probeArgs: probeArgsMac(key, step.attest!.tool, probeArgs.filled) } : {}),
+    };
+    step.approve = computeApprovalHash({ actionTool: step.actionTool, actionArgs: step.actionArgs, attest: step.attest, expect: step.expect });
+  };
+
+  /**
+   * §4.2.3, normative for EVERY binding (fresh or re-bind — review finding:
+   * a consent taken without showing the observation is exactly the gap this
+   * feature closes): projected names AND values on a TTY, names only under
+   * --all/non-TTY (A2: CI logs are retained artifacts). Follows with the
+   * §6.1.2 fixed-point lint or the §8.2.3 ABA note.
+   */
+  const showObservation = (typed: Record<string, string | number | boolean>, projection: string[]): void => {
+    if (isTTY && !all) {
+      for (const [field, value] of Object.entries(typed)) {
+        console.log(`    ${safeFieldName(field)} = ${JSON.stringify(value)}`);
+      }
+      console.log("    (values shown for review only — never written to any file)");
+    } else {
+      console.log(`    projected fields: ${Object.keys(typed).map(safeFieldName).join(", ")}`);
+    }
+    // P1.5 (review finding): strip a `body.`/`header.` namespace before the
+    // membership test — `header.etag` is the MOST version-class projection
+    // expressible, and a prefix-blind lint would print the ABA note (an
+    // affirmatively false line on the consent transcript) for exactly it.
+    const volatile = projection.filter((f) =>
+      (EXPECT_VOLATILE_FIELDS as readonly string[]).includes(f.replace(/^(?:body|header)\./, ""))
+    );
+    // W3-S5: `status.code` gets its OWN note, and it is deliberately NOT a
+    // member of EXPECT_VOLATILE_FIELDS. That list's warning claims mutation
+    // as FACT ("mutated by every write"), which is affirmatively false for a
+    // guard probe of a resource the write never touches — the same
+    // false-consent-transcript class the P1.5 review fixed for `header.etag`.
+    // Conditional wording instead, and it REPLACES the other two branches:
+    // one note per binding, or operators learn to read none of them.
+    // Review finding (blocking, round 2): this note used to REPLACE both
+    // branches below, so any projection merely CONTAINING `status.code`
+    // withheld the version-class warning about its OTHER fields —
+    // `["status.code","header.etag"]` said nothing about header.etag, which
+    // really is mutated by every write. Suppressing a true warning is the
+    // same false-consent-transcript class as printing a false note, with the
+    // sign flipped, and the operator loses more by the omission.
+    //
+    // They are different claims about different fields, so both print. What
+    // "one note per binding" actually forbids is the ABA note printing
+    // alongside this one — those two are competing statements about the SAME
+    // binding, and that suppression is preserved below.
+    if (projection.includes(STATUS_CODE_ENTRY)) {
+      console.log(
+        "  note: binding on HTTP status — if the approved write creates or deletes the probed resource, this binding self-invalidates after its own first run (fixed-point rule); if the probe targets a resource the write leaves untouched, it is a fixed point"
+      );
+    }
+    if (volatile.length > 0) {
+      console.log(
+        `  warning: projection field(s) ${volatile.map(safeFieldName).join(", ")} are version-class — mutated by every write; a standing approval here self-invalidates after its own first run (fixed-point rule)`
+      );
+    } else if (!projection.includes(STATUS_CODE_ENTRY)) {
+      console.log(
+        "  note: no version-class field in this projection — an excursion-and-return (ABA) between approval and execution is invisible; where the op permits, a monotonic version field resists it"
+      );
+    }
+  };
+
   try {
+    if (probe && probeTools === undefined) {
+      try {
+        downstreams = await wireDownstreams(args.wraps, deps.connect ?? connectDownstream);
+      } catch (err) {
+        console.error(`Failed to connect --wrap downstream: ${(err as Error).message}`);
+        return 1;
+      }
+      // §4.2.2: --wrap for MCP downstreams, builtin http tools otherwise.
+      probeTools = buildWrappedToolRegistry(downstreams) ?? builtinTools;
+    }
+
     for (const step of writeSteps) {
-      const expected = computeApprovalHash(step);
-      const isCurrent = step.approve !== undefined && step.approve === expected;
-      const state = step.approve === undefined ? "unapproved" : isCurrent ? "approved (current)" : "approved (STALE — args changed)";
+      // --drop-expect (§4.4): the explicit, named downgrade. The strip is
+      // computed here but only PERSISTED at stamp time — a declined prompt
+      // must never leave a half-dropped binding in memory that a later
+      // step's file write would silently persist.
+      const dropping = dropExpect && step.expect !== undefined;
+      const effectiveExpect = dropping ? undefined : step.expect;
+
+      const expected = computeApprovalHash({ actionTool: step.actionTool, actionArgs: step.actionArgs, attest: step.attest, expect: effectiveExpect });
+      const isCurrent = !dropping && step.approve !== undefined && step.approve === expected;
+      // Under --drop-expect the hash moves because WE removed expect from the
+      // input — labeling an untouched step STALE would be false (review
+      // finding): distinguish "current, binding being dropped" from real drift.
+      const originalCurrent =
+        step.approve !== undefined &&
+        step.approve === computeApprovalHash({ actionTool: step.actionTool, actionArgs: step.actionArgs, attest: step.attest, expect: step.expect });
+      const state =
+        step.approve === undefined
+          ? "unapproved"
+          : dropping
+            ? originalCurrent
+              ? "approved (current — binding will be dropped)"
+              : "approved (STALE — tool/args/attest changed)"
+            : isCurrent
+              ? "approved (current)"
+              : "approved (STALE — tool/args/attest changed)";
 
       console.log(`Step ${step.n} — ${step.title}`);
       console.log(`  ${step.actionTool} ${canonicalJson(step.actionArgs)}`);
       console.log(`  effect: ${step.effect}`);
-      console.log(`  ${state}`);
+      if (step.attest === undefined) {
+        console.log(
+          "  note: no 'attest:' declared — state attestation for this write is response-derived (partial) at best. " +
+            "Exact pre/post attestation needs BOTH an attest: declaration AND this approval (the probe only runs on an approved step): " +
+            '- attest: {"tool":"<read tool>","args":{...},"projection":["field",...]}'
+        );
+      } else if (probe) {
+        const projLabel = step.attest.projection ? `projection [${step.attest.projection.join(", ")}]` : "projection (default)";
+        console.log(`  attest: ${step.attest.tool} ${canonicalJson(step.attest.args)} → ${projLabel}`);
+      }
+      if (dropping) {
+        console.log("  dropping state binding (--drop-expect)");
+      }
 
-      // Idempotent — mirrors `reelier manifest`'s "unchanged" behavior
-      // (fr2-slice2-review.md #5): an already-current step is a true no-op.
-      // Never prompted, never re-stamped (the hash wouldn't change anyway),
-      // never counted toward approvedCount — so a second `approve --all` on
-      // an untouched skill writes nothing back at all.
-      if (isCurrent) {
-        console.log("  unchanged");
+      // I-18 blocker 1a (wave-3 review): refuse the downgrade outright on a
+      // parameterized probe — never even ask. See PARAMETERIZED_PROBE_DROP_REFUSAL's
+      // doc comment for why: stripping `expect` here would leave the probe
+      // armed but ungated.
+      if (dropping && step.attest !== undefined && collectPlaceholders(step.attest.args).length > 0) {
+        console.log(`  ${PARAMETERIZED_PROBE_DROP_REFUSAL}`);
+        skippedStateBoundChanged++;
+        continue;
+      }
+
+      // §4.4: re-approving a changed step that carries expect, without
+      // --probe — refused per step; silent removal of a condition a human
+      // approved under is never available.
+      if (!probe && !dropping && step.expect !== undefined && !isCurrent) {
+        console.log("  state-bound step changed — re-approve with --probe, or pass --drop-expect to approve without state binding");
+        skippedStateBoundChanged++;
+        continue;
+      }
+
+      if (!probe) {
+        console.log(`  ${state}`);
+        // Idempotent — mirrors `reelier manifest`'s "unchanged" behavior
+        // (fr2-slice2-review.md #5): an already-current step is a true no-op.
+        if (isCurrent) {
+          console.log("  unchanged");
+          unchangedCount++;
+          continue;
+        }
+        // Review finding (blocking, round 2): approving a parameterized probe
+        // WITHOUT a probeArgs commitment leaves it filling from the whole
+        // merged bindings map at run time, so an upstream `bind:` can reach a
+        // dispatched probe arg. `--drop-expect` refuses this loudly; hand-
+        // deleting the `expect` line and re-approving reached the same state
+        // silently, at exit 0, because both guards above key on `expect` being
+        // PRESENT. The state is legitimate for a never-bound skill and cannot
+        // be distinguished from a laundered one in the file, so this warns
+        // rather than refuses — but it is never silent again.
+        if (step.attest !== undefined && step.expect?.probeArgs === undefined && collectPlaceholders(step.attest.args).length > 0) {
+          console.log(
+            "  warning: this step's probe args carry placeholders and no approved filled shape — at run time they fill from the whole bindings map, so an earlier step's bind: can reach a dispatched probe arg. Use --probe to commit the filled shape.",
+          );
+        }
+        const yes = all || (await askYes("  Approve this step? (y/N) "));
+        if (yes) {
+          if (dropping) delete step.expect;
+          step.approve = expected;
+          approvedCount++;
+        } else {
+          skippedCount++;
+        }
+        continue;
+      }
+
+      // ---------------- probe mode (§4.2–§4.4) ----------------
+
+      // I-18 blocker 4 (wave-3 review): the status.code + MCP refusal below
+      // (structuralReason's last branch) sat AFTER this re-verify branch, so
+      // a step bound over plain http could be re-verified — or, worse,
+      // `--rebind`-ed — against a wrapped MCP tool resolved at THIS
+      // invocation, the exact fail-open the refusal exists to prevent
+      // (mcpStatusCodeRefusal's doc comment). Hoisted here, evaluated BEFORE
+      // any probe dispatch or --rebind consent, so it can never be reached
+      // by that path either. Same string, same predicate — never forked.
+      if (
+        isCurrent &&
+        step.expect !== undefined &&
+        step.attest !== undefined &&
+        step.attest.projection?.includes(STATUS_CODE_ENTRY) &&
+        probeTools?.[step.attest.tool]?.server !== undefined
+      ) {
+        console.log(`  approved (current) — re-verify unavailable (${mcpStatusCodeRefusal(step.attest.tool)}); binding left as-is`);
+        reVerifyUnavailable++;
+        continue;
+      }
+
+      // Already approved-current AND state-bound: report-only re-verify
+      // (§4.3 as amended by A2/A14 — nothing is ever re-bound automatically).
+      // Re-verify UNAVAILABILITY is its own loud, non-zero class: an induced
+      // probe failure must never read as "unchanged" (A6/B7 in §8.1).
+      if (isCurrent && step.expect !== undefined) {
+        // The key is loaded FIRST since W3-S4: on a probeArgs-bearing binding
+        // the filled-args comparison gates the probe DISPATCH, and it cannot
+        // happen without the key. Nothing below this point dispatches until
+        // the args are proven to be the approved ones.
+        let key;
+        try {
+          const store = await readKeystore(keystorePath);
+          key = loadExpectKey(store, step.expect.keyId);
+        } catch (err) {
+          console.log(`  approved (current) — re-verify unavailable (keystore-unavailable: ${(err as Error).message}); binding left as-is`);
+          reVerifyUnavailable++;
+          continue;
+        }
+        if (key === undefined) {
+          console.log(`  approved (current) — re-verify unavailable (key-unavailable: keyId '${step.expect.keyId}'); binding left as-is`);
+          reVerifyUnavailable++;
+          continue;
+        }
+        // W3-S4: a missing `--var`, or filled args whose MAC differs from the
+        // committed `probeArgs`, is its OWN loud class — never `unchanged`
+        // (an induced difference must not read as a clean re-verify: the A6
+        // suppression adversary applies at approve time too), and never "the
+        // world has moved" (the ARGS differ, not the world). No probe fires.
+        const reArgs = resolveProbeArgs(step);
+        // Set when --rebind is re-pointing the probe at different args: the
+        // whole-projection comparison below is then meaningless (it would
+        // compare two DIFFERENT resources), so it is skipped rather than
+        // reported as "the world has moved".
+        let rebindingArgs = false;
+        if (step.expect.probeArgs !== undefined) {
+          const differ =
+            reArgs.missing.length > 0 || probeArgsMac(key, step.attest!.tool, reArgs.filled) !== step.expect.probeArgs;
+          if (differ) {
+            // A missing var can never be rescued — there is nothing to fill,
+            // so there is nothing to consent to. Otherwise `--rebind` is the
+            // explicit act: "consent granted by whoever runs this command
+            // against whatever the world is now" (A2), which is precisely
+            // what re-committing probe args to this invocation's inputs is.
+            // Without it this is its own loud class and NOTHING dispatches.
+            if (reArgs.missing.length > 0 || !rebindFlag) {
+              console.log(
+                "  approved (current) — re-verify unavailable (probe-args-differ: filled probe args differ from the approved ones); binding left as-is"
+              );
+              reVerifyUnavailable++;
+              continue;
+            }
+            rebindingArgs = true;
+          }
+          showProbeArgs(reArgs.filled);
+        }
+        const reVerify = await runProbe(
+          step.attest!,
+          probeTools!,
+          approveVars,
+          { allowDestructive: false },
+          now(),
+          DEFAULT_PROBE_TIMEOUT_MS
+        );
+        const reObservedAtMs = now();
+        if (!reVerify.ok) {
+          console.log(`  approved (current) — re-verify unavailable (${reVerify.reason}); binding left as-is`);
+          reVerifyUnavailable++;
+          continue;
+        }
+        const typed = projectObservationTyped(reVerify.obs, step.attest!.projection ?? []);
+        if (Object.keys(typed).length === 0) {
+          console.log("  approved (current) — re-verify unavailable (empty-projection: probe returned no declared fields); binding left as-is");
+          reVerifyUnavailable++;
+          continue;
+        }
+        // W5-T3 (review finding — CRITICAL): the state re-verified clean, so
+        // this branch used to print "unchanged", write nothing and exit 0 —
+        // INCLUDING when the operator passed `--expires`. That is the exact
+        // moment someone decides to arm a TTL on a healthy binding, and the
+        // command accepted the flag and armed nothing. A control whose whole
+        // purpose is "expire as a no" must never report success having done
+        // nothing; silently succeeding is the one outcome that is off the
+        // table (the same rule that made `--expires` without `--probe` a
+        // refusal rather than a no-op).
+        //
+        // Resolved against THIS observation, like every other stamp: asking
+        // for `--expires 24h` today means 24h from today, so a re-run with the
+        // same duration legitimately RENEWS the deadline rather than reporting
+        // "unchanged". That is a deliberate re-approval cadence being reset by
+        // hand, which is what the operator just typed.
+        const stateUnchanged = !rebindingArgs && macEquals(expectMac(key, step.attest!.tool, typed), step.expect.pre);
+        // Issue #77: through the SAME resolver `bindStep` writes from, so the
+        // instant previewed on this path is the instant stamped rather than a
+        // second expression that agrees by identical arithmetic. Narrowed to
+        // `source === "new"` because `ttlMoves` below asks specifically
+        // "did the operator request a deadline, and is it different?" — a
+        // carried-forward instant is not a request and must not read as one.
+        const requestedExpiry = resolveExpiresAt(step, reObservedAtMs, expiresMs);
+        const requestedExpiresAt = requestedExpiry.source === "new" ? requestedExpiry.expiresAt : undefined;
+        const ttlMoves = requestedExpiresAt !== undefined && requestedExpiresAt !== step.expect.expiresAt;
+        if (stateUnchanged && !ttlMoves) {
+          console.log("  unchanged (state re-verified against current binding)");
+          unchangedCount++;
+          continue;
+        }
+        if (stateUnchanged) {
+          // State is fine; the TTL is the only thing moving. Re-stamping is a
+          // hash change on an already-approved step, so it takes the same
+          // shown-observation + consent ceremony a fresh bind takes (§4.2.3) —
+          // never a machine-minted re-approval. It does NOT require --rebind:
+          // --rebind is consent to a world that moved underneath the operator,
+          // and nothing moved here except the deadline they just typed.
+          console.log(
+            step.expect.expiresAt === undefined
+              ? `  approved (current) — state re-verified; arming an approval TTL (expires ${requestedExpiresAt})`
+              : `  approved (current) — state re-verified; renewing the approval TTL (was ${step.expect.expiresAt}, now ${requestedExpiresAt})`
+          );
+          showObservation(typed, step.attest!.projection ?? []);
+          const yes = all || (await askYes("  Re-stamp this approval with the new TTL? (y/N) "));
+          if (!yes) {
+            skippedCount++;
+            continue;
+          }
+          try {
+            await bindStep(
+              step,
+              typed,
+              reObservedAtMs,
+              reArgs.parameterized && reArgs.missing.length === 0 ? { filled: reArgs.filled } : undefined
+            );
+          } catch (err) {
+            console.log(`  re-stamp failed (approve-probe-failed: keystore-unavailable: ${(err as Error).message}) — binding left as-is`);
+            skippedProbeFailed++;
+            continue;
+          }
+          console.log("  re-stamped with the new TTL");
+          approvedCount++;
+          stateBoundCount++;
+          continue;
+        }
+        if (rebindingArgs) {
+          // Not "the world has moved": these are different probe args, so the
+          // old and new observations describe different resources. Comparing
+          // them — or diagnosing which FIELD moved between them — would be a
+          // claim about a change that never happened.
+          console.log("  approved (current) — re-pointing this binding at different probe args (--rebind)");
+        } else {
+          console.log(`  approved (current) — but the world has moved since ${step.expect.at}`);
+        }
+        // W3-S3 (P1.5 review N11): the whole-projection MAC just told us THAT
+        // the world moved; the per-field commitments already in hand tell us
+        // WHICH field moved, for free — the diagnosis was being thrown away.
+        // Same key, same probe tool, same MAC function the runner uses, so
+        // the claim is exactly as earned here as it is there. Names only,
+        // never values: this prints on every path including --all, because
+        // A2's TTY gate governs projected VALUES, not field names.
+        // Suppressed while re-pointing the args (W3-S4): "changed since
+        // approval" would compare a field across two different resources.
+        if (!rebindingArgs) reportReVerifyDiagnosis(step, key, typed, reVerify.obs);
+        // §4.2.3 holds for a re-bind too (review finding — blocking): the
+        // yes must be granted against a SHOWN observation, never blind.
+        showObservation(typed, step.attest!.projection ?? []);
+        // Re-binding is an act of consent (A2): interactive yes or the
+        // explicit --rebind flag ("consent granted by whoever runs this
+        // command against whatever the world is now") — never automatic.
+        //
+        // The --all-without---rebind refusal is hoisted ABOVE the expiry
+        // preview (issue #77): nothing is written on that path, and "carried
+        // forward unchanged from the previous binding" would assert a
+        // carry-forward that never happens. Same three outcomes, same order
+        // of precedence — only the skip moved earlier.
+        if (!rebindFlag && all) {
+          console.log("  skipped (world moved) — pass --rebind to re-bind to the current state");
+          skippedWorldMoved++;
+          continue;
+        }
+        // Issue #77: the yes is granted against a SHOWN deadline as well as a
+        // shown observation. A re-bind with no `--expires` carries the old TTL
+        // forward — including one that has already elapsed, which the operator
+        // must learn before consenting to a binding that is dead on arrival,
+        // not after.
+        showExpiry(step, reObservedAtMs);
+        const consent = rebindFlag || (await askYes("  Re-bind this approval to the current state? (y/N) "));
+        if (!consent) {
+          skippedCount++;
+          continue;
+        }
+        // W3-S4: `--rebind` re-commits the probe args over THIS invocation's
+        // `--var` values, so the consent copy has to say so — a re-bind that
+        // silently moved what the probe addresses would be the machine-minted
+        // consent A2 exists to forbid, one level down.
+        if (reArgs.parameterized && reArgs.missing.length === 0) {
+          console.log("  re-binding probe args to this invocation's --var values");
+          showProbeArgs(reArgs.filled);
+        }
+        try {
+          // reObservedAtMs, not consent time: `at` is the honest answer to
+          // "when did the human look at the world" (§2.1, review finding).
+          await bindStep(step, typed, reObservedAtMs, reArgs.parameterized && reArgs.missing.length === 0 ? { filled: reArgs.filled } : undefined);
+        } catch (err) {
+          console.log(`  re-bind failed (approve-probe-failed: keystore-unavailable: ${(err as Error).message}) — binding left as-is`);
+          skippedProbeFailed++;
+          continue;
+        }
+        console.log("  re-bound to current state");
+        approvedCount++;
+        stateBoundCount++;
+        continue;
+      }
+
+      // (Re)approval path under --probe: check bindability, probe, then
+      // mint + stamp — or degrade EXPLICITLY (§4.4: a silent downgrade to a
+      // weaker approval than the human asked for is forbidden).
+      let typed: Record<string, string | number | boolean> | undefined;
+      let observedAtMs = 0;
+
+      // STRUCTURAL unbindability — decidable from the file alone, before any
+      // probe dispatch. Kept strictly separate from probe-time failures: the
+      // no-op guard below may ONLY ever fire on this class (review finding —
+      // treating a probe timeout as "not state-bindable" would hand the A6
+      // evidence suppressor a clean exit code, and the printed verdict would
+      // be a lie about a perfectly bindable step).
+      const attestPlaceholders = step.attest ? collectPlaceholders(step.attest.args) : [];
+      const actionPlaceholders = collectPlaceholders(step.actionArgs);
+      let structuralReason: string | undefined;
+      if (step.attest === undefined) {
+        structuralReason = "no 'attest:' declared — a state binding needs a declared probe";
+      } else if (attestPlaceholders.some(isComputedDateName)) {
+        structuralReason = `attest args use computed date vars (${attestPlaceholders
+          .filter(isComputedDateName)
+          .map((n) => `{{${n}}}`)
+          .join(", ")}) — approve-day and execute-day fills would target different observations (not state-bindable in v1)`;
+      } else if (attestPlaceholders.length > 0 && resolveProbeArgs(step).missing.length > 0) {
+        // W3-S4 relaxes P1's blanket literal-only rule (C4) exactly this far:
+        // a placeholder is permitted when an operator-supplied `--var` fills
+        // it AT APPROVE TIME, in the ceremony, where the filled args are
+        // printed to the human whose yes they feed. Unfilled it stays
+        // refused — there is nothing to show and nothing to commit to.
+        const missing = resolveProbeArgs(step).missing;
+        structuralReason = `attest args contain placeholders with no --var supplied (${missing
+          .map((n) => `{{${n}}}`)
+          .join(", ")}) — pass --var ${missing[0]}=value to bind a parameterized probe`;
+      } else if (actionPlaceholders.length > 0) {
+        // A7 (write-target honesty; pick recorded in the spec: refuse): the
+        // check conditions the PROBE's fixed resource — with placeholders in
+        // the action args the WRITTEN resource varies per run.
+        structuralReason = `action args contain placeholders (${actionPlaceholders.map((n) => `{{${n}}}`).join(", ")}) — the written resource varies per run (write-target honesty, not state-bindable in v1)`;
+      } else if (step.attest.projection === undefined) {
+        structuralReason =
+          "no explicit projection declared — a state binding requires an explicit projection (the default projection is version-class, volatile by design)";
+      } else if (
+        step.attest.projection.includes(STATUS_CODE_ENTRY) &&
+        probeTools?.[step.attest.tool]?.server !== undefined
+      ) {
+        // W3-S5, and it is a REFUSAL, not a lint (A7's precedent for a
+        // binding class that misleads about what is conditioned). On MCP
+        // there is no HTTP status: mcpResultToObservation fabricates
+        // `isError ? 500 : 200`, and an isError result flows through as a
+        // SUCCESSFUL observation. A binding stamped at 500 would therefore
+        // match on every future error of any kind — which in gate mode
+        // converts exactly the classes A12 sends to grey (and the gate
+        // refuses) into a match that DISPATCHES the write. That is a
+        // fail-OPEN conversion of the one sanctioned fail-closed control,
+        // triggered by error conditions; it also neutralizes B7 (an induced
+        // isError would yield match, never unevaluated, so no alert fires).
+        //
+        // `attest.projection` is covered by the approval hash, so a
+        // hand-added `status.code` after approval is an approval-hash
+        // mismatch the existing gate already refuses. But WHICH tool `--wrap`
+        // resolves `step.attest.tool` to at THIS invocation is NOT covered by
+        // that hash — a step bound over plain http can be re-verified or
+        // `--rebind`-ed against a wrapped MCP tool of the same name on a
+        // later run (I-18 blocker 4, wave-3 review), so bind-time refusal
+        // alone is not sufficient enforcement; this predicate is hoisted and
+        // checked again ahead of the re-verify branch above (search
+        // mcpStatusCodeRefusal's other call site). `status.code` stays fully
+        // live on the http builtins, which carry real statuses. The
+        // predicate is `server`, set by mcpTool for every wrapped tool and
+        // absent on http builtins.
+        structuralReason = mcpStatusCodeRefusal(step.attest.tool);
+      }
+
+      // A structurally-unbindable step that is ALREADY approved-current and
+      // unbound: nothing to consent to and nothing minted weaker — a skip
+      // here would make `approve --probe --all` on any mixed skill exit
+      // non-zero forever (S7 integration finding), and an interactive yes
+      // would restamp the identical hash with a duplicate changelog line
+      // (§4.3's "safe to run repeatedly"). Probe-time failures NEVER take
+      // this path, and the A2 never-silently-weaker rule still governs
+      // unapproved unbindable steps below.
+      if (structuralReason !== undefined && isCurrent && step.expect === undefined) {
+        console.log(`  not state-bindable: ${structuralReason}`);
+        console.log("  unchanged (already approved; not state-bindable)");
         unchangedCount++;
         continue;
       }
 
-      let yes: boolean;
-      if (all) {
-        yes = true;
-      } else {
-        const answer = (await rl!.question("  Approve this step? (y/N) ")).trim().toLowerCase();
-        yes = answer === "y" || answer === "yes";
+      let notBindable = structuralReason;
+      const freshArgs = notBindable === undefined ? resolveProbeArgs(step) : undefined;
+      if (notBindable === undefined) {
+        if (freshArgs!.parameterized) showProbeArgs(freshArgs!.filled);
+        process.stdout.write(`  probing pre-state (${step.attest!.tool})… `);
+        const probeResult = await runProbe(
+          step.attest!,
+          probeTools!,
+          approveVars,
+          { allowDestructive: false },
+          now(),
+          DEFAULT_PROBE_TIMEOUT_MS
+        );
+        observedAtMs = now();
+        if (!probeResult.ok) {
+          console.log(`failed (${probeResult.reason})`);
+          notBindable = probeResult.reason;
+        } else {
+          typed = projectObservationTyped(probeResult.obs, step.attest!.projection ?? []);
+          if (Object.keys(typed).length === 0) {
+            console.log("failed (empty-projection: probe returned no declared fields)");
+            notBindable = "empty-projection: probe returned no declared fields";
+          } else {
+            console.log("ok");
+            showObservation(typed, step.attest!.projection ?? []);
+          }
+        }
       }
 
-      if (yes) {
-        step.approve = expected;
+      if (notBindable !== undefined) {
+        if (all) {
+          // --all never offers the downgrade in the first place (this
+          // branch always `continue`s below) — every failure class,
+          // parameterized or not, already refuses to mint anything here.
+          console.log(`  skipped (probe failed): ${notBindable}`);
+          skippedProbeFailed++;
+          continue;
+        }
+        // §4.4: report the exact reason, THEN offer the downgrade explicitly.
+        console.log(`  not state-bindable: ${notBindable}`);
+        console.log(`  ${state}`);
+        // I-18 blocker 1a: refuse the downgrade outright — never even ask —
+        // on a parameterized attest.args. See PARAMETERIZED_PROBE_DROP_REFUSAL's
+        // doc comment: dropping `expect` here would leave the probe armed
+        // but ungated, for a structural reason (missing --var, a computed
+        // date var) as much as a runtime probe failure — the shape of the
+        // args is what matters, not why binding failed this time.
+        if (attestPlaceholders.length > 0) {
+          console.log(`  ${PARAMETERIZED_PROBE_DROP_REFUSAL}`);
+          skippedStateBoundChanged++;
+          continue;
+        }
+        const downgrade = await askYes("  Approve WITHOUT state binding? (y/N) ");
+        if (!downgrade) {
+          skippedCount++;
+          continue;
+        }
+        // Explicit, named downgrade: today's shape-only approval semantics.
+        if (step.expect !== undefined) delete step.expect;
+        step.approve = computeApprovalHash({ actionTool: step.actionTool, actionArgs: step.actionArgs, attest: step.attest, expect: undefined });
         approvedCount++;
-      } else {
-        skippedCount++;
+        continue;
       }
+
+      console.log(`  ${state}`);
+      // Issue #77: the deadline is part of what is being consented to, so it
+      // precedes the question — same as the re-stamp path already did.
+      showExpiry(step, observedAtMs);
+      const yes = all || (await askYes("  Approve this step against this observed state? (y/N) "));
+      if (!yes) {
+        skippedCount++;
+        continue;
+      }
+      try {
+        await bindStep(step, typed!, observedAtMs, freshArgs!.parameterized ? { filled: freshArgs!.filled } : undefined);
+      } catch (err) {
+        // §4.4/§8.6: keystore unwritable is a degrade class, not a crash —
+        // "approve-probe-failed: keystore-unavailable", loud, nothing minted
+        // for this step (bindStep mutates the step only after the keystore
+        // write succeeds), earlier consents in this sitting still persist.
+        const reason = `approve-probe-failed: keystore-unavailable: ${(err as Error).message}`;
+        // I-18 blocker 1a: same outright refusal — the probe already
+        // succeeded above (this catch only fires on the keystore write), so
+        // the observed values existed for a moment, but nothing was ever
+        // persisted; downgrading now would still leave a parameterized probe
+        // armed and ungated on every future run.
+        if (attestPlaceholders.length > 0) {
+          console.log(`  ${PARAMETERIZED_PROBE_DROP_REFUSAL}`);
+          skippedStateBoundChanged++;
+          continue;
+        }
+        if (all) {
+          console.log(`  skipped (probe failed): ${reason}`);
+          skippedProbeFailed++;
+          continue;
+        }
+        console.log(`  not state-bindable: ${reason}`);
+        const downgrade = await askYes("  Approve WITHOUT state binding? (y/N) ");
+        if (!downgrade) {
+          skippedCount++;
+          continue;
+        }
+        if (step.expect !== undefined) delete step.expect;
+        step.approve = computeApprovalHash({ actionTool: step.actionTool, actionArgs: step.actionArgs, attest: step.attest, expect: undefined });
+        approvedCount++;
+        continue;
+      }
+      approvedCount++;
+      stateBoundCount++;
     }
   } finally {
     rl?.close();
+    await Promise.all(downstreams.map((d) => d.close().catch(() => {})));
   }
 
   if (approvedCount > 0) {
-    const changelogLine = `- approved ${approvedCount} write step(s) (reelier approve)`;
+    // §8.6 probe coverage at bind time (S5): a freshly-bound step's probe
+    // tool joins an EXISTING manifest additively (existing entries never
+    // re-digested — blessing unrelated drift is `reelier manifest`'s
+    // explicit act, not a side effect of approve). Without a manifest or
+    // without --wrap there is nothing to stamp against — advise instead:
+    // probe-tool drift then only surfaces at run time as `unevaluated`.
+    if (probe && stateBoundCount > 0) {
+      if (skill.manifest && downstreams.length > 0) {
+        const { manifest: updated, added } = addProbeToolsToManifest(skill.manifest, skill, downstreams);
+        if (added.length > 0) {
+          skill.manifest = updated;
+          console.log(`manifest: added probe tool(s) ${added.join(", ")} — probe-tool drift now fails the preflight closed`);
+        }
+      } else {
+        console.log(
+          `note: probe-tool schema drift on state-bound steps is only detectable before step 1 via a manifest — stamp one: reelier manifest ${skillPath} --wrap …`
+        );
+      }
+    }
+    const changelogLine = probe
+      ? `- approved ${approvedCount} write step(s), ${stateBoundCount} state-bound (reelier approve --probe)`
+      : `- approved ${approvedCount} write step(s) (reelier approve)`;
     skill.trailing = appendChangelogLine(skill.trailing, changelogLine);
     const rendered = serializeSkill(skill);
     await writeFileAtomic(skillPath, rendered);
   }
 
-  console.log(`approved ${approvedCount}, skipped ${skippedCount}, unchanged ${unchangedCount}`);
-  return 0;
+  const summary = `approved ${approvedCount}, skipped ${skippedCount + skippedProbeFailed + skippedWorldMoved + skippedStateBoundChanged}, unchanged ${unchangedCount}`;
+  console.log(probe ? `${summary} · state-bound ${stateBoundCount}` : summary);
+  if (skippedProbeFailed > 0) console.log(`skipped (probe failed): ${skippedProbeFailed}`);
+  if (skippedWorldMoved > 0) console.log(`skipped (world moved): ${skippedWorldMoved}`);
+  if (skippedStateBoundChanged > 0) console.log(`skipped (state-bound changed): ${skippedStateBoundChanged}`);
+  if (reVerifyUnavailable > 0) console.log(`re-verify unavailable: ${reVerifyUnavailable}`);
+  // §4.4/A2: a refused-or-skipped downgrade class is a command that did NOT
+  // do what was asked — exit non-zero so scripts can't miss it. Re-verify
+  // unavailability counts too (A6/B7: an induced probe failure must never
+  // exit clean). An ordinary interactive "no" stays exit 0 (a human choice).
+  return skippedProbeFailed > 0 || skippedWorldMoved > 0 || skippedStateBoundChanged > 0 || reVerifyUnavailable > 0 ? 1 : 0;
 }
 
 /**
@@ -1635,67 +3020,92 @@ async function cmdScan(args: ParsedArgs): Promise<number> {
 async function cmdInstall(args: ParsedArgs): Promise<number> {
   const agent = args.opts.agent ?? "auto";
   if (agent !== "auto" && agent !== "claude") {
-    console.error(`Unsupported --agent '${agent}' — only 'claude' (or 'auto', which currently resolves to claude) is supported.`);
+    console.error(`Unsupported --agent '' — omit it: install now wraps every known host config it finds (Claude Code, Cursor, Windsurf). Use --config <path> to target one file.`);
     return 1;
   }
 
   const cwd = process.cwd();
   const homedir = os.homedir();
-  const detection = await detectAgentConfig(cwd, homedir);
-  const configPath = detection.projectConfigExists
-    ? detection.projectConfigPath
-    : detection.userConfigExists
-      ? detection.userConfigPath
-      : undefined;
 
-  if (!configPath) {
+  // `--config <path>` targets one file explicitly; otherwise every known host config that exists
+  // is wrapped. Wrapping all of them is the honest default: a machine with both a Claude Code and
+  // a Cursor config runs agents through both, and silently picking one would leave the other
+  // unrecorded while reporting success.
+  const explicit = args.opts.config;
+  const targets: KnownMcpConfig[] = explicit
+    ? [{ label: "explicit --config", path: explicit }]
+    : await detectMcpConfigs(cwd, homedir);
+
+  if (targets.length === 0) {
+    const checked = knownMcpConfigPaths(cwd, homedir)
+      .map((c) => `  ${c.label}: ${c.path}`)
+      .join("\n");
     console.error(
-      `No MCP config found — checked ${detection.projectConfigPath} and ${detection.userConfigPath}. Configure ` +
-        `at least one MCP server first (or run 'reelier init'), then re-run 'reelier install'.`
+      `No MCP config found. Checked:\n${checked}\n\nConfigure at least one MCP server first (or run ` +
+        `'reelier init'), then re-run 'reelier install'. To wrap a config somewhere else: ` +
+        `reelier install --config <path>`
     );
     return 1;
   }
 
-  console.log(`reelier install — wrapping the MCP servers in ${configPath} so recording is one phrase away.`);
+  console.log(`reelier install — wrapping MCP servers so every tool call is recorded.`);
   console.log("");
 
-  const plan = await planInstall(configPath);
-  for (const e of plan.entries) {
-    if (e.action === "wrap") console.log(`  ${e.name}: will wrap`);
-    else if (e.action === "already-wrapped") console.log(`  ${e.name}: already wrapped — left alone`);
-    else console.log(`  ${e.name}: skipped — ${e.reason}`);
+  const plans: { target: KnownMcpConfig; plan: InstallPlan }[] = [];
+  for (const target of targets) {
+    const plan = await planInstall(target.path);
+    plans.push({ target, plan });
+    console.log(`${target.label} — ${target.path}`);
+    if (plan.entries.length === 0) {
+      console.log("  (no mcpServers entries)");
+    }
+    for (const e of plan.entries) {
+      if (e.action === "wrap") console.log(`  ${e.name}: will wrap`);
+      else if (e.action === "already-wrapped") console.log(`  ${e.name}: already wrapped — left alone`);
+      else console.log(`  ${e.name}: skipped — ${e.reason}`);
+    }
+    console.log("");
   }
 
-  if (!plan.changed) {
-    console.log("");
+  const changed = plans.filter((p) => p.plan.changed);
+  if (changed.length === 0) {
     console.log("Nothing to do — every configured server is already wrapped or can't be wrapped.");
     return 0;
   }
 
   if (args.flags.has("dry-run")) {
-    console.log("");
-    console.log("Dry run — resulting config would be:");
-    console.log(
-      plan.after
-        .split("\n")
-        .map((l) => `  ${l}`)
-        .join("\n")
-    );
-    console.log("\nNothing written (--dry-run).");
+    for (const { target, plan } of changed) {
+      console.log(`Dry run — ${target.label} (${target.path}):`);
+      console.log(
+        diffLines(plan.before, plan.after)
+          .map((l) => `  ${l}`)
+          .join("\n")
+      );
+      console.log("");
+    }
+    console.log("Nothing written (--dry-run).");
     return 0;
   }
 
-  let result: InstallResult;
-  try {
-    result = await applyInstall(plan);
-  } catch (err) {
-    // The backup-or-abort guard (applyInstall) fires here: nothing was written.
-    console.error((err as Error).message);
-    return 1;
+  let wrapped = 0;
+  for (const { target, plan } of changed) {
+    let result: InstallResult;
+    try {
+      result = await applyInstall(plan);
+    } catch (err) {
+      // The backup-or-abort guard (applyInstall) fires here: nothing was written for THIS config.
+      // Earlier configs in the loop are already written and stay written — each has its own
+      // backup, and reporting a partial success honestly beats pretending it was all-or-nothing.
+      console.error(`${target.path}: ${(err as Error).message}`);
+      return 1;
+    }
+    wrapped += result.wrappedCount;
+    console.log(`Wrapped ${result.wrappedCount} server(s) in ${target.path}.`);
+    if (result.backupPath) console.log(`  Original backed up to ${result.backupPath}.`);
   }
+
   console.log("");
-  console.log(`Wrapped ${result.wrappedCount} server(s) in ${configPath}.`);
-  if (result.backupPath) console.log(`Original config backed up to ${result.backupPath}.`);
+  console.log(`${wrapped} server(s) wrapped across ${changed.length} config(s).`);
   console.log("");
   console.log("Restart your agent, then work normally. When you want to save a workflow, tell your agent:");
   console.log('  "record this" ... do the work ... "done"');
@@ -1705,10 +3115,35 @@ async function cmdInstall(args: ParsedArgs): Promise<number> {
   return 0;
 }
 
+/**
+ * A minimal line diff for `--dry-run`. Dumping the whole rewritten config (the previous behavior)
+ * buries a two-line change in a hundred lines of unchanged JSON, and a reader who cannot see what
+ * changed cannot consent to it — which is the entire job of a dry run.
+ *
+ * Deliberately not a real LCS diff: config rewrites here only ever replace a server's command line
+ * in place, so a positional walk with context is accurate for the change this command makes. If
+ * `planInstall` ever reorders or removes keys, this must be replaced rather than trusted.
+ */
+export function diffLines(before: string, after: string): string[] {
+  const b = before.split("\n");
+  const a = after.split("\n");
+  const out: string[] = [];
+  const max = Math.max(b.length, a.length);
+  let lastPrinted = -1;
+  for (let i = 0; i < max; i++) {
+    if (b[i] === a[i]) continue;
+    if (lastPrinted !== -1 && i - lastPrinted > 1) out.push("   ...");
+    if (b[i] !== undefined) out.push(`  - ${b[i].trim()}`);
+    if (a[i] !== undefined) out.push(`  + ${a[i].trim()}`);
+    lastPrinted = i;
+  }
+  return out.length > 0 ? out : ["  (no textual change)"];
+}
+
 async function cmdUninstall(args: ParsedArgs): Promise<number> {
   const agent = args.opts.agent ?? "auto";
   if (agent !== "auto" && agent !== "claude") {
-    console.error(`Unsupported --agent '${agent}' — only 'claude' (or 'auto', which currently resolves to claude) is supported.`);
+    console.error(`Unsupported --agent '' — omit it: install now wraps every known host config it finds (Claude Code, Cursor, Windsurf). Use --config <path> to target one file.`);
     return 1;
   }
 
@@ -1868,10 +3303,11 @@ export async function cmdPush(args: ParsedArgs): Promise<number> {
       console.log("share requested, but the cloud returned no receipt link (older cloud or share failure)");
     }
     if (!share || !sawShareUrl) {
-      const cloudUrl = (process.env.REELIER_CLOUD_URL ?? "").replace(/\/+$/, "");
-      if (cloudUrl) {
-        console.log(`Dashboard: ${cloudUrl}/dashboard/runs`);
-      }
+      // The URL always resolves now (env -> config file -> DEFAULT_CLOUD_URL)
+      // — same chain resolvePushConfig used to actually push this run.
+      const fileConfig = await readCliConfig();
+      const cloudUrl = (process.env.REELIER_CLOUD_URL || fileConfig.cloudUrl || DEFAULT_CLOUD_URL).replace(/\/+$/, "");
+      console.log(`Dashboard: ${cloudUrl}/dashboard/runs`);
       console.log("  tip: add --share for a public receipt link");
     }
   }
@@ -2451,8 +3887,129 @@ export async function cmdInit(args: ParsedArgs): Promise<number> {
   return initCode !== 0 ? initCode : offerCode;
 }
 
+/** env -> config file -> DEFAULT_CLOUD_URL — same chain resolvePushConfig uses to resolve a base URL. */
+async function resolveBaseUrl(): Promise<string> {
+  const fileConfig = await readCliConfig();
+  return (process.env.REELIER_CLOUD_URL || fileConfig.cloudUrl || DEFAULT_CLOUD_URL).replace(/\/+$/, "");
+}
+
+/**
+ * `reelier login` — OAuth-Device-Flow-shaped handshake against Reelier
+ * Cloud: start the device code, print it + the confirm URL, best-effort open
+ * a browser, then poll until the user approves (or Ctrl-C cancels). Writes
+ * the resulting key to ~/.reelier/config.json. Never prints the key itself —
+ * only the resolved identity ("Logged in as ...").
+ *
+ * `fetchImpl`/`sleepImpl`/`spawnImpl` are injection seams for tests (house
+ * default-parameter pattern, as in push.ts) — they pass straight through to
+ * login.ts's own `startLogin`/`pollForToken`/`openBrowser` opts rather than
+ * duplicating any polling/spawn logic here.
+ */
+export async function cmdLogin(
+  fetchImpl: typeof fetch = fetch,
+  sleepImpl?: (ms: number) => Promise<void>,
+  spawnImpl?: typeof spawn
+): Promise<number> {
+  const baseUrl = await resolveBaseUrl();
+  let start;
+  try {
+    start = await startLogin(baseUrl, fetchImpl);
+  } catch (err) {
+    console.error(`Failed to start login: ${(err as Error).message}`);
+    return 1;
+  }
+
+  console.log("Confirm this code in your browser:\n");
+  console.log(`    ${start.userCode}\n`);
+  console.log(start.verificationUriComplete);
+  console.log("\nWaiting for approval (Ctrl-C to cancel)...");
+
+  openBrowser(start.verificationUriComplete, undefined, spawnImpl);
+
+  let apiKey: string;
+  let tenant: { name: string; githubLogin: string | null };
+  try {
+    ({ apiKey, tenant } = await pollForToken(baseUrl, start.deviceCode, {
+      intervalSeconds: start.interval,
+      fetchImpl,
+      sleepImpl,
+    }));
+  } catch (err) {
+    console.error((err as Error).message);
+    return 1;
+  }
+
+  await writeCliConfig({
+    cloudUrl: baseUrl === DEFAULT_CLOUD_URL ? undefined : baseUrl,
+    apiKey,
+    tenantName: tenant.name,
+    githubLogin: tenant.githubLogin ?? undefined,
+  });
+
+  console.log(`Logged in as ${tenant.githubLogin ?? tenant.name}. 'reelier push <skill>' now syncs receipts.`);
+  return 0;
+}
+
+/**
+ * `reelier logout` — clears the locally stored key. Does NOT revoke the key
+ * server-side; that happens from the dashboard (Settings), which is worth
+ * saying out loud since a lingering key would otherwise silently work again.
+ */
+export async function cmdLogout(): Promise<number> {
+  await clearCliCredentials();
+  console.log("Logged out.");
+  console.log("Note: this only clears the key on this machine — revoke it from the dashboard (Settings) if it may have leaked.");
+  return 0;
+}
+
+/**
+ * `reelier whoami` — GET /api/v1/me with the stored key, prints the resolved
+ * identity or a precise reason it couldn't (no key at all vs. a rejected key).
+ * `fetchImpl` is an injection seam for tests (house default-parameter
+ * pattern, as in push.ts).
+ */
+export async function cmdWhoami(fetchImpl: typeof fetch = fetch): Promise<number> {
+  const baseUrl = await resolveBaseUrl();
+  const fileConfig = await readCliConfig();
+  const apiKey = process.env.REELIER_CLOUD_KEY || fileConfig.apiKey;
+  if (!apiKey) {
+    console.error("Not logged in. Run 'reelier login'.");
+    return 1;
+  }
+
+  let res;
+  try {
+    res = await fetchImpl(`${baseUrl}/api/v1/me`, {
+      headers: { authorization: `Bearer ${apiKey}` },
+    });
+  } catch (err) {
+    console.error(`Failed to look up identity: ${(err as Error).message}`);
+    return 1;
+  }
+  if (res.status === 401) {
+    console.error("API key is invalid or revoked. Run 'reelier login' again.");
+    return 1;
+  }
+  if (!res.ok) {
+    console.error(`Failed to look up identity (HTTP ${res.status}).`);
+    return 1;
+  }
+  let tenant: { name: string; githubLogin: string | null };
+  try {
+    ({ tenant } = (await res.json()) as { tenant: { name: string; githubLogin: string | null } });
+  } catch (err) {
+    console.error(`Failed to look up identity: ${(err as Error).message}`);
+    return 1;
+  }
+  console.log(`${tenant.githubLogin ?? tenant.name} (${baseUrl})`);
+  return 0;
+}
+
 const USAGE =
-  "Usage: reelier <run|bench|cost|prices|mcp|serve|trace|compile|manifest|approve|push|get|verify|diff|ci|policy|init|from-session|scan|install|uninstall> [options]\n" +
+  "Usage: reelier <run|bench|baseline|cost|prices|mcp|serve|trace|compile|manifest|approve|push|get|verify|diff|ci|policy|init|from-session|scan|install|uninstall|login|logout|whoami> [options]\n" +
+  "  login  — reelier login: connect this machine to Reelier Cloud via a device-code browser handshake; writes ~/.reelier/config.json.\n" +
+  "  logout — reelier logout: clears the locally stored key (revoke it from the dashboard's Settings, not locally).\n" +
+  "  whoami — reelier whoami: print the identity the stored key resolves to, or that you're not logged in.\n" +
   "  ci     — reelier ci [--force] [--path <dir>]: writes .github/workflows/reelier-replay.yml — drift-CI + PR receipts in one command.\n" +
   "  manifest — reelier manifest <skill.md> --wrap \"<command>\": stamp/refresh the skill's tool-schema manifest from live servers.\n" +
   "  approve — reelier approve <skill.md> [--all]: hash-bind approval onto each write/destructive step (the final replay boundary).\n" +
@@ -2465,6 +4022,8 @@ const USAGE =
   "  init --signing — generate (or print the existing) Ed25519 signing key at ~/.reelier/signing/; idempotent.\n" +
   "  verify <permalink|file> [--key <pub.pem>] — recompute the record digest and check signature/timestamp claims.\n" +
   "  diff   — compare the last two runs of a skill; exit 1 on drift (gate a scheduled replay).\n" +
+  "  baseline — reelier baseline <skill.md>: the latest run against a median/MAD baseline of this skill's OWN previous runs,\n" +
+  "           computed from .reelier/runs/ on this disk. Reports deviations; executes nothing, gates nothing, always exits 0.\n" +
   "  cost   — reelier cost [skill] [--since 7d|30d|all]: $ per run from recorded LLM tokens + ~/.reelier/prices.yml.\n" +
   "  prices — reelier prices lists the active merged price table; 'reelier prices update' prints the bundled table's freshness.\n" +
   "  policy check [path] — lint a policy.yml (unknown keys, bad globs, empty rules); exit 1 on any error.\n" +
@@ -2497,6 +4056,8 @@ async function main(): Promise<number> {
       return cmdRun(args);
     case "bench":
       return cmdBench(args);
+    case "baseline":
+      return cmdBaseline(args);
     case "cost":
       return cmdCost(args);
     case "prices":
@@ -2535,6 +4096,12 @@ async function main(): Promise<number> {
       return cmdInstall(args);
     case "uninstall":
       return cmdUninstall(args);
+    case "login":
+      return cmdLogin();
+    case "logout":
+      return cmdLogout();
+    case "whoami":
+      return cmdWhoami();
     default:
       console.error(USAGE);
       return 1;

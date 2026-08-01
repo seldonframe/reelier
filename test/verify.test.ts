@@ -15,6 +15,7 @@ import {
 } from "../src/verify.js";
 import { generateSigningKeypair, loadSigningKey, signRecordDigest } from "../src/signing.js";
 import { digestSha256 } from "../src/canonical-json.js";
+import { DEFAULT_CLOUD_URL } from "../src/cloud-config.js";
 import type { RunRecord } from "../src/runner.js";
 
 // Review finding #1/#2: a genuine RFC-3161 TimeStampResp is a CMS
@@ -333,6 +334,60 @@ test("resolveVerifyPayload: a bare token with no matching local file resolves ag
     cwd: "/definitely/does/not/exist/anywhere",
   });
   assert.equal(requestedUrl, "https://cloud.example/r/abc123/json");
+  assert.equal(outcome.ok, true);
+});
+
+test("resolveVerifyPayload: a bare token with no REELIER_CLOUD_URL resolves against the config file's cloudUrl (same resolution 'get' uses)", async () => {
+  const record = makeRecord(0);
+  let requestedUrl = "";
+  const fetchImpl = (async (url: string) => {
+    requestedUrl = url;
+    return { ok: true, status: 200, text: async () => JSON.stringify({ record }) } as unknown as Response;
+  }) as typeof fetch;
+
+  const outcome = await resolveVerifyPayload("abc123", {
+    fetchImpl,
+    env: {} as NodeJS.ProcessEnv,
+    fileConfig: { cloudUrl: "https://file.example" },
+    cwd: "/definitely/does/not/exist/anywhere",
+  });
+  assert.equal(requestedUrl, "https://file.example/r/abc123/json");
+  assert.equal(outcome.ok, true);
+});
+
+test("resolveVerifyPayload: REELIER_CLOUD_URL overrides a conflicting config-file cloudUrl", async () => {
+  const record = makeRecord(0);
+  let requestedUrl = "";
+  const fetchImpl = (async (url: string) => {
+    requestedUrl = url;
+    return { ok: true, status: 200, text: async () => JSON.stringify({ record }) } as unknown as Response;
+  }) as typeof fetch;
+
+  const outcome = await resolveVerifyPayload("abc123", {
+    fetchImpl,
+    env: { REELIER_CLOUD_URL: "https://env.example" } as NodeJS.ProcessEnv,
+    fileConfig: { cloudUrl: "https://file.example" },
+    cwd: "/definitely/does/not/exist/anywhere",
+  });
+  assert.equal(requestedUrl, "https://env.example/r/abc123/json");
+  assert.equal(outcome.ok, true);
+});
+
+test("resolveVerifyPayload: no REELIER_CLOUD_URL and no fileConfig -> resolves DEFAULT_CLOUD_URL (never throws, mirrors 'get')", async () => {
+  const record = makeRecord(0);
+  let requestedUrl = "";
+  const fetchImpl = (async (url: string) => {
+    requestedUrl = url;
+    return { ok: true, status: 200, text: async () => JSON.stringify({ record }) } as unknown as Response;
+  }) as typeof fetch;
+
+  const outcome = await resolveVerifyPayload("abc123", {
+    fetchImpl,
+    env: {} as NodeJS.ProcessEnv,
+    fileConfig: {},
+    cwd: "/definitely/does/not/exist/anywhere",
+  });
+  assert.equal(requestedUrl, `${DEFAULT_CLOUD_URL}/r/abc123/json`);
   assert.equal(outcome.ok, true);
 });
 
