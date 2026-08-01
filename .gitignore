@@ -25,6 +25,9 @@ test-output.txt
 .stryker-tmp/
 reports/
 .superpowers-*/
+# mex-agent local code graph — ~33MB binary SQLite db, rebuilt in ~36s by `mex graph`.
+# Never commit it; see CLAUDE.md §10.2 for the build rule.
+.mex/
 
 *.mcpb
 .screenshots-tmp/
