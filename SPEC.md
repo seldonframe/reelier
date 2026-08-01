@@ -49,10 +49,10 @@ RFC 2119.
     parser SHOULD tolerate additional, unrecognized fields (forward
     compatibility for additive record fields in a future minor) but MUST
     treat every field documented in §2 as required and typed as specified.
-  - **SKILL.md step fields** are a **closed** set of eight bullet keys
-    (`intent`/`action`/`assert`/`bind`/`effect`/`approve`/`attest`/`expect`,
-    §3.2). `parseSkill` rejects any other `- <key>: ...` bullet inside a
-    step block outright (an "Unrecognized step field" `SkillParseError`);
+  - **SKILL.md step fields** are a **closed** set of nine bullet keys
+    (`intent`/`action`/`assert`/`bind`/`effect`/`exposure`/`approve`/`attest`/
+    `expect`, §3.2). `parseSkill` rejects any other `- <key>: ...` bullet
+    inside a step block outright (an "Unrecognized step field" `SkillParseError`);
     this is intentionally closed, not open-for-extension, because the field
     set is small enough that a typo should be caught, not silently ignored.
   - **Non-step sections** of a SKILL.md file (preamble, `## Open
@@ -376,8 +376,9 @@ declares whether an actor outside the system may already have acted on the
 step's result. Optional and orthogonal to `effect`; an unrecognized value is
 rejected at parse time (`"Invalid exposure <value> — must be one of internal,
 external-visible"`). Absent means `internal`, and a step that omits it is
-serialized without the bullet, so a skill predating the key round-trips
-byte-identically.
+serialized without the bullet — a skill predating the key serializes exactly
+as it did before the key existed. (That is not a claim of byte-identity with
+hand-formatted source; §3.8's canonicalization caveat is unchanged.)
 
 `approve: sha256:<64 hex>` (§6.1a) hash-binds a write/destructive step's
 tool + argument template — a value not matching `sha256:[0-9a-f]{64}`

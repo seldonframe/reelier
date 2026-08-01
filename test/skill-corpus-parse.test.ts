@@ -63,11 +63,11 @@ for (const file of corpus) {
     // Same skill, field for field — the parse is not perturbed by the trip.
     // `Step.line` is excluded, and only that: it is a pointer into the SOURCE
     // text, and serializeSkill canonicalizes step-block formatting (it does
-    // not promise a byte-for-byte copy of hand-written input — SPEC §3.7), so
+    // not promise a byte-for-byte copy of hand-written input — SPEC §3.8), so
     // a hand-formatted file legitimately re-parses at a different line. Every
     // field that carries meaning is compared.
     assert.deepEqual(withoutLines(reparsed), withoutLines(skill), `${rel} did not survive parse → serialize → parse`);
-    // And idempotent from the second pass onward (SPEC §3.7).
+    // And idempotent from the second pass onward (SPEC §3.8).
     assert.equal(serializeSkill(reparsed), serialized, `${rel} re-serialize is not byte-stable`);
   });
 }

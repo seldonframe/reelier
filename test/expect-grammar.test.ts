@@ -292,7 +292,7 @@ test("a step without approve/attest/expect omits those keys entirely — absent,
 });
 
 // ---------------------------------------------------------------------------
-// The closed bullet-key set: 8 keys, expect listed in the rejection message
+// The closed bullet-key set: 9 keys, expect listed in the rejection message
 // ---------------------------------------------------------------------------
 
 test("unrecognized step field message lists expect among the closed key set", () => {

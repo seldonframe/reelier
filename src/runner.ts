@@ -23,7 +23,7 @@ import { createReadStream } from "node:fs";
 import { createInterface } from "node:readline";
 import path from "node:path";
 import os from "node:os";
-import type { Skill, Step, StepAttestDecl } from "./skill.js";
+import type { Exposure, Skill, Step, StepAttestDecl } from "./skill.js";
 import { evalAssert, evalBind, type Observation, type ObservationRef } from "./assert.js";
 import { builtinTools, type Tool, type ToolContext } from "./tools.js";
 // Re-exported from the "." package entry too (in addition to "./tools")
@@ -182,14 +182,8 @@ export interface StepRecord {
    * byte-identical record. Orthogonal to the step's `effect`, and gating-inert
    * in this version: a consumer MUST NOT infer that an `external-visible` step
    * was blocked, reviewed, or approved differently.
-   *
-   * Spelled as the literal union rather than as skill.ts's `Exposure` so the
-   * published record shape is self-describing here and in SPEC §4.1. The two
-   * cannot drift apart unnoticed: the runner assigns `step.exposure` straight
-   * into this field, so widening `Exposure` without widening this fails to
-   * compile.
    */
-  exposure?: "internal" | "external-visible";
+  exposure?: Exposure;
   /**
    * LLM token usage summed across every escalation attempt on this step
    * (incl. failed ones) — 0 attempts means this is absent, not zero.
