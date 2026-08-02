@@ -131,13 +131,13 @@ test("DecisionContext parses as an independently versioned closed wire object", 
   assert.deepEqual(parseAuthorityWire("decision-context", acceptedDecisionContext), acceptedDecisionContext);
   assert.deepEqual(parseAuthorityWire("decision-context", refusedDecisionContext), refusedDecisionContext);
   assert.throws(() => parseAuthorityWire("decision-context", { ...acceptedDecisionContext, extra: true }), /additional properties/i);
-  for (const field of ["contractDigest", "capabilityId", "capabilityDigest", "outcomeKey", "effectDigest"] as const) {
+  for (const field of ["definitionAlias", "contractDigest", "capabilityId", "capabilityDigest", "outcomeKey", "effectDigest"] as const) {
     assert.throws(() => parseAuthorityWire("decision-context", without(acceptedDecisionContext, field)), /required property/i, field);
   }
   for (const field of ["sourceBundleDigest", "authorityStateDigest"] as const) {
     assert.throws(() => parseAuthorityWire("decision-context", { ...acceptedDecisionContext, snapshots: without(acceptedDecisionContext.snapshots, field) }), /required property/i, field);
   }
-  for (const field of ["tenant", "requester", "requestId", "capabilityId"] as const) {
+  for (const field of ["tenant", "requester", "definitionAlias", "requestId", "capabilityId"] as const) {
     assert.throws(() => parseAuthorityWire("decision-context", { ...acceptedDecisionContext, [field]: "" }), /pattern/i, field);
   }
   for (const field of ["requestDigest", "requestKey", "contractDigest", "capabilityDigest", "outcomeKey", "effectDigest"] as const) {
@@ -183,6 +183,7 @@ test("every DecisionContext field is digest-bound and breaks an unchanged receip
     ["v", { ...acceptedDecisionContext, v: "reelier.decision-context/v2" }],
     ["tenant", { ...acceptedDecisionContext, tenant: "tenant_2" }],
     ["requester", { ...acceptedDecisionContext, requester: "requester_2" }],
+    ["definitionAlias", { ...acceptedDecisionContext, definitionAlias: "definition_2" }],
     ["requestId", { ...acceptedDecisionContext, requestId: "request_2" }],
     ["requestDigest", { ...acceptedDecisionContext, requestDigest: "sha256:" + "9".repeat(64) }],
     ["requestKey", { ...acceptedDecisionContext, requestKey: "sha256:" + "a".repeat(64) }],
