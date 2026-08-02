@@ -159,6 +159,10 @@ test("amended wire required fields and nested objects are closed", () => {
     () => parseAuthorityWire("outcome-contract", { ...contract, limits: without(limits, field as keyof typeof limits) }),
     /required property/i, `limits.${field}`,
   );
+  for (const field of Object.keys(limits)) assert.throws(
+    () => parseAuthorityWire("delegation-grant", { ...rootGrant, constraints: { ...constraints, limits: without(limits, field as keyof typeof limits) } }),
+    /required property/i, `constraints.limits.${field}`,
+  );
   for (const field of Object.keys(constraints)) assert.throws(
     () => parseAuthorityWire("delegation-grant", { ...rootGrant, constraints: without(constraints, field as keyof typeof constraints) }),
     /required property/i, `constraints.${field}`,
@@ -216,6 +220,26 @@ test("standing authority enforces lower and upper bounds table", () => {
   assert.doesNotThrow(() => parseAuthorityWire("outcome-contract", { ...contract, sourceAuthority: { ...contract.sourceAuthority, authorizedProjectionPointers: [pointer512] } }));
   assert.throws(() => parseAuthorityWire("outcome-contract", { ...contract, sourceAuthority: { ...contract.sourceAuthority, authorizedProjectionPointers: [""] } }), /pattern/i);
   assert.throws(() => parseAuthorityWire("outcome-contract", { ...contract, sourceAuthority: { ...contract.sourceAuthority, authorizedProjectionPointers: [pointer512 + "x"] } }), /more than 512 characters/i);
+});
+
+test("policy commitment Base64 accepts exact valid JCS boundaries and refuses outside them", () => {
+  const commitmentFor = (value: unknown) => {
+    const bytes = authorityCanonicalBytes(value);
+    return { schemaId: contract.policyCommitment.schemaId, jcsBase64: bytes.toString("base64"), digest: "sha256:" + createHash("sha256").update(bytes).digest("hex") };
+  };
+  const exactMinimum = commitmentFor(0);
+  assert.equal(exactMinimum.jcsBase64.length, 4);
+  assert.doesNotThrow(() => parseAuthorityWire("outcome-contract", { ...contract, policyCommitment: exactMinimum }));
+
+  const exactMaximum = commitmentFor("x".repeat(49_150));
+  assert.equal(Buffer.from(exactMaximum.jcsBase64, "base64").length, 49_152);
+  assert.equal(exactMaximum.jcsBase64.length, 65_536);
+  assert.doesNotThrow(() => parseAuthorityWire("outcome-contract", { ...contract, policyCommitment: exactMaximum }));
+
+  assert.throws(() => parseAuthorityWire("outcome-contract", { ...contract, policyCommitment: { ...exactMinimum, jcsBase64: "MA=" } }), /fewer than 4 characters|pattern/i);
+  const aboveMaximum = commitmentFor("x".repeat(49_151));
+  assert.equal(aboveMaximum.jcsBase64.length, 65_540);
+  assert.throws(() => parseAuthorityWire("outcome-contract", { ...contract, policyCommitment: aboveMaximum }), /more than 65536 characters/i);
 });
 
 test("all comparable authority arrays are nonempty, bounded, and unique", () => {
