@@ -158,6 +158,7 @@ const SHA = /^sha256:[0-9a-f]{64}$/;
 const ZERO_SHA = `sha256:${"0".repeat(64)}`;
 const ID = /^[A-Za-z0-9._~-]{1,128}$/;
 const FILE_HEX = /^[0-9a-f]{64}$/;
+const INGRESS_FILE = /^([0-9a-f]{64})\.json$/;
 const JOURNAL_FILE = /^(\d{16})-([0-9a-f]{64})$/;
 const LEGAL = new Set(["reserved>dispatched", "dispatched>acknowledged", "dispatched>definitive-failure", "dispatched>ambiguous", "acknowledged>reconciled", "ambiguous>reconciled"]);
 const TOMBSTONE_REASONS = new Set<ReserveReason>(["idempotency-conflict", "semantic-duplicate", "capability-integrity", "capability-already-reserved", "limit-exceeded"]);
@@ -200,7 +201,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
     return this.withLock("ingress",async()=>{
       await this.ensureLayout();await this.assertNoLinks();
       await this.verifyIngressDirectory();
-      const relative=path.join("ingress",attempted.requestKey.slice(7));
+      const relative=path.join("ingress",`${attempted.requestKey.slice(7)}.json`);
       let existing:IngressRecord|undefined;try{existing=await this.readIngress(attempted.requestKey);}catch(error){if(!hasCode(error,"ENOENT"))throw error;}
       if(existing){const ingressClaimDigest=authorityDigest(existing);if(canonicalBytes(existing).equals(canonicalBytes(attempted)))return frozen({ok:true as const,status:"exact-existing" as const,evaluationEligible:false as const,ingressClaimDigest});return frozen({ok:false as const,reason:"conflict" as const,evaluationEligible:false as const,ingressClaimDigest});}
       await this.writeImmutable(relative,attempted,"ingress");
@@ -422,7 +423,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
     return view;
   }
 
-  private async verifyIngressDirectory():Promise<void>{const names=await readdir(this.absolute("ingress"));if(names.some(name=>!FILE_HEX.test(name)))throw new LedgerCorruption("invalid ingress filename");for(const name of names)await this.readIngress(`sha256:${name}`);}
+  private async verifyIngressDirectory():Promise<void>{const names=await readdir(this.absolute("ingress"));for(const name of names){const match=INGRESS_FILE.exec(name);if(!match)throw new LedgerCorruption("invalid ingress filename");await this.readIngress(`sha256:${match[1]}`);}}
 
   private async ensureLayout(): Promise<void> {
     for (const directory of ["transactions", "claims", "journal", "tombstones", "ingress"]) await mkdir(this.absolute(directory), { recursive: true });
@@ -593,7 +594,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
 
   private async readIngress(requestKey:string):Promise<IngressRecord>{
     if(!SHA.test(requestKey)||requestKey===ZERO_SHA)throw new LedgerCorruption("invalid ingress request key");
-    const name=requestKey.slice(7);const bytes=await readFile(this.absolute(path.join("ingress",name)));const value=parseCanonical(bytes) as IngressRecord;
+    const name=`${requestKey.slice(7)}.json`;const bytes=await readFile(this.absolute(path.join("ingress",name)));const value=parseCanonical(bytes) as IngressRecord;
     assertExactKeys(value,["canonicalRequestBase64","definitionAlias","requestDigest","requestId","requestKey","requester","tenant","v"]);
     if(value.v!=="reelier.authority-ingress-claim/internal-v1"||value.requestKey!==requestKey)throw new LedgerCorruption("ingress filename or key mismatch");
     normalizeIngressRecord(value);return value;
