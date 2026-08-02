@@ -161,6 +161,20 @@ or mutating the replacement target. It never removes another live stage.
 Filesystem identity is read with non-following `lstat({ bigint: true })`; device, inode/file ID, mode,
 and link count remain exact bigint values throughout comparison and are never rounded through a
 JavaScript `number`. Two distinct adjacent identities above `Number.MAX_SAFE_INTEGER` remain distinct.
+Contention uses no additional durable handoff or queue artifact. After one fully classified generation
+has had its root-name set closed and every live stage revalidated by exact name, canonical bytes, and
+frozen non-following filesystem identity, exact stage names are ordered lexicographically. Only the
+eligible head may exact-revalidate its own stage and attempt the atomic stage-to-`lock` rename. A
+non-head contender may optimize subsequent bounded waiting polls by inspecting only the active lock and
+its exact predecessor from that closed generation, with monotonic backoff. Predecessor disappearance,
+replacement, death, or unverifiable liveness, and any root-name generation change, invalidate the
+optimization and require a new complete closed-generation enumeration, classification, and election
+before promotion. Corrupt, ambiguous, foreign, or unverifiable artifacts continue to fail closed.
+After publication, the active owner closes and exact-revalidates the live generation before callback
+entry. The exact `after-lock-publication-generation-closed` hook exposes a closed generation before
+the elected branch, and `before-lock-publication-predecessor-validation` exposes each optimized
+non-head predecessor poll. This deterministic predecessor election bounds redundant peer scans; it
+does not claim starvation-free FIFO ordering.
 The exact closed per-attempt order is `before-publication-stage-final-validation`, then
 `before-publication-stage-final-liveness`, then `before-publication-stage-remove-attempt`. The final
 validation revalidates the exact directory and owner identity/type/link count/name/bytes; final
