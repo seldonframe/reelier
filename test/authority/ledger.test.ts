@@ -12,7 +12,10 @@ import {
 } from "../../src/authority/ledger.js";
 import {
   FsAuthorityLedger,
+  dispatchFaultPoints,
   ledgerFaultPoints,
+  reservationFaultPoints,
+  resultFaultPoints,
 } from "../../src/authority/host/fs-ledger.js";
 
 const t0 = Date.parse("2026-08-02T12:00:00.000Z");
@@ -207,18 +210,56 @@ test("caller-owned bytes and returned snapshots are detached and immutable", asy
 });
 
 test("faults at every durable reservation and transition point recover to prior state or safe committed state", { timeout: 120_000 }, async () => {
-  for (const point of ledgerFaultPoints) await withRoot(async root => {
-    let armed = true;
+  const classified = [...reservationFaultPoints, ...dispatchFaultPoints, ...resultFaultPoints];
+  assert.equal(new Set(classified).size, classified.length, "each fault point belongs to exactly one operation");
+  assert.deepEqual([...classified].sort(), [...ledgerFaultPoints].sort(), "new fault points require an explicit operation classification");
+
+  for (const point of reservationFaultPoints) await withRoot(async root => {
+    let fired = false;
     const crashing = new FsAuthorityLedger(root, { now: () => t0, faultInjector: (observed: string) => {
-      if (armed && observed === point) { armed = false; throw new Error(`fault:${point}`); }
+      if (!fired && observed === point) { fired = true; throw new Error(`fault:${point}`); }
     } });
     try { await crashing.reserve(intent()); } catch (error) { assert.match(String(error), /fault:/); }
+    assert.equal(fired, true, point);
     const recovered = await new FsAuthorityLedger(root, { now: () => t0 }).recover();
     if (!recovered.ok) assert.equal(recovered.reason, "corruption");
     else {
       assert.ok(recovered.reservations.length <= 1);
-      if (recovered.reservations[0]) assert.ok(["reserved", "ambiguous"].includes(recovered.reservations[0].state));
+      if (recovered.reservations[0]) assert.equal(recovered.reservations[0].state, "reserved");
     }
+  });
+
+  for (const point of dispatchFaultPoints) await withRoot(async root => {
+    const setup = new FsAuthorityLedger(root, { now: () => t0 });
+    const created = await setup.reserve(intent());
+    assert.equal(created.ok, true);
+    if (!created.ok) return;
+    let fired = false;
+    const crashing = new FsAuthorityLedger(root, { now: () => t0, faultInjector: (observed: string) => {
+      if (!fired && observed === point) { fired = true; throw new Error(`fault:${point}`); }
+    } });
+    try { await crashing.transition(created.reservation.reservationId, "reserved", { to: "dispatched", at: new Date(t0).toISOString() }); } catch (error) { assert.match(String(error), /fault:/); }
+    assert.equal(fired, true, point);
+    const recovered = await new FsAuthorityLedger(root, { now: () => t0 }).recover();
+    if (recovered.ok) assert.ok(["reserved", "ambiguous"].includes(recovered.reservations[0].state));
+    else assert.equal(recovered.reason, "corruption");
+  });
+
+  for (const point of resultFaultPoints) await withRoot(async root => {
+    const setup = new FsAuthorityLedger(root, { now: () => t0 });
+    const created = await setup.reserve(intent());
+    assert.equal(created.ok, true);
+    if (!created.ok) return;
+    await setup.transition(created.reservation.reservationId, "reserved", { to: "dispatched", at: new Date(t0).toISOString() });
+    let fired = false;
+    const crashing = new FsAuthorityLedger(root, { now: () => t0, faultInjector: (observed: string) => {
+      if (!fired && observed === point) { fired = true; throw new Error(`fault:${point}`); }
+    } });
+    try { await crashing.transition(created.reservation.reservationId, "dispatched", { to: "acknowledged", at: new Date(t0).toISOString(), resultDigest: digest("a") }); } catch (error) { assert.match(String(error), /fault:/); }
+    assert.equal(fired, true, point);
+    const recovered = await new FsAuthorityLedger(root, { now: () => t0 }).recover();
+    if (recovered.ok) assert.ok(["ambiguous", "acknowledged"].includes(recovered.reservations[0].state));
+    else assert.equal(recovered.reason, "corruption");
   });
 });
 
