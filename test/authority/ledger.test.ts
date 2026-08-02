@@ -799,8 +799,10 @@ function retirementMarkerName(owner:Readonly<{pid:number;nonce:string}>,disposit
 function cleanupAck(owner:Readonly<{host:string;nonce:string;pid:number;v:1}>,markerName:string,disposition:TestRetirementDisposition,journalHead:string|null){const closedOwner={host:owner.host,nonce:owner.nonce,pid:owner.pid,v:1 as const};return {disposition,journalHead,markerName,owner:closedOwner,ownerDigest:authorityDigest(closedOwner),v:"reelier.authority-ledger-lock-cleanup-ack/v1"};}
 function cleanupAckName(ack:ReturnType<typeof cleanupAck>):string{return `.authority-ledger-lock-cleanup-${authorityDigest(ack).slice(7)}.ack`;}
 function cleanupStageName(owner:Readonly<{pid:number;nonce:string}>,ack:ReturnType<typeof cleanupAck>):string{return `.authority-ledger-lock-cleanup-stage-${owner.pid}-${owner.nonce}-${authorityDigest(ack).slice(7)}.tmp`;}
+function publicationHostDigest(host:string):string{return createHash("sha256").update(host,"utf8").digest("hex");}
+function publicationStageName(owner:Readonly<{host:string;pid:number;nonce:string}>):string{return `.authority-ledger-lock-publication-${publicationHostDigest(owner.host)}-${owner.pid}-${owner.nonce}.tmp`;}
 
-const publicationCrashPoints=["after-lock-publication-stage-create","after-lock-publication-owner-sync","after-lock-publication-stage-sync","after-lock-publication-rename","after-lock-publication-root-sync"] as const;
+const publicationCrashPoints=["after-lock-publication-stage-create","after-lock-publication-owner-create","after-lock-publication-owner-partial-write","after-lock-publication-owner-sync","after-lock-publication-stage-sync","after-lock-publication-rename","after-lock-publication-root-sync"] as const;
 
 async function hardExitAtPublicationPoint(root:string,point:typeof publicationCrashPoints[number]):Promise<Readonly<{code:number|null,pid:number}>>{
   const moduleUrl=pathToFileURL(path.resolve("dist-test/src/authority/host/fs-ledger.js")).href,source=`import {FsAuthorityLedger} from ${JSON.stringify(moduleUrl)};const ledger=new FsAuthorityLedger(process.argv[1],{now:()=>${t0},faultInjector(observed){if(observed===process.argv[2])process.exit(93);}});await ledger.recover();process.exit(94);`;
@@ -826,17 +828,22 @@ test("owner publication hard-exit boundaries never expose an ownerless shared lo
   for(const point of publicationCrashPoints)await t.test(point,()=>withRoot(async root=>{
     const child=await hardExitAtPublicationPoint(root,point);
     assert.equal(child.code,93,`${point} must be an exact product crash hook`);
-    const names=await readdir(root),stages=names.filter(name=>/^\.authority-ledger-lock-publication-\d+-[0-9a-f]{64}\.tmp$/.test(name));
+    const names=await readdir(root),stages=names.filter(name=>/^\.authority-ledger-lock-publication-[0-9a-f]{64}-\d+-[0-9a-f]{64}\.tmp$/.test(name));
     assert.ok(stages.length<=1,point);
     if(existsSync(path.join(root,"lock"))){
       const bytes=await readFile(path.join(root,"lock","owner.json")),owner=JSON.parse(bytes.toString("utf8"));
       assert.deepEqual(bytes,authorityCanonicalBytes(owner),point);assert.equal(owner.pid,child.pid,point);assert.match(owner.nonce,/^[0-9a-f]{64}$/,point);
     }
     if(stages.length===1){
-      const match=/^\.authority-ledger-lock-publication-(\d+)-([0-9a-f]{64})\.tmp$/.exec(stages[0]);assert.ok(match);assert.equal(Number(match[1]),child.pid,point);
-      const entries=await readdir(path.join(root,stages[0]));assert.deepEqual(entries,["owner.json"],point);
-      const bytes=await readFile(path.join(root,stages[0],"owner.json"));
-      if(point!=="after-lock-publication-stage-create"){const owner=JSON.parse(bytes.toString("utf8"));assert.deepEqual(bytes,authorityCanonicalBytes(owner),point);assert.equal(owner.pid,child.pid,point);assert.equal(owner.nonce,match[2],point);}
+      const match=/^\.authority-ledger-lock-publication-([0-9a-f]{64})-(\d+)-([0-9a-f]{64})\.tmp$/.exec(stages[0]);assert.ok(match);assert.equal(match[1],publicationHostDigest(hostname()),point);assert.equal(Number(match[2]),child.pid,point);
+      const entries=await readdir(path.join(root,stages[0]));
+      if(point==="after-lock-publication-stage-create")assert.deepEqual(entries,[],point);
+      else{
+        assert.deepEqual(entries,["owner.json"],point);const bytes=await readFile(path.join(root,stages[0],"owner.json"));
+        if(point==="after-lock-publication-owner-create")assert.equal(bytes.length,0,point);
+        else if(point==="after-lock-publication-owner-partial-write"){assert.ok(bytes.length>0,point);assert.throws(()=>JSON.parse(bytes.toString("utf8")),point);}
+        else{const owner=JSON.parse(bytes.toString("utf8"));assert.deepEqual(bytes,authorityCanonicalBytes(owner),point);assert.equal(owner.host,hostname(),point);assert.equal(owner.pid,child.pid,point);assert.equal(owner.nonce,match[3],point);}
+      }
     }
     assert.equal((await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:200}).recover()).ok,true,`${point}: successor recovers exact publication state`);
     assert.equal(existsSync(path.join(root,"lock")),false,`${point}: successor retires its lock`);
@@ -844,11 +851,29 @@ test("owner publication hard-exit boundaries never expose an ownerless shared lo
   }));
 });
 
+test("a live publisher's empty and complete pre-rename stages are busy and byte-identical",{timeout:60_000},async t=>{
+  for(const point of ["after-lock-publication-stage-create","after-lock-publication-stage-sync"] as const)await t.test(point,()=>withRoot(async root=>new Promise<void>((resolve,reject)=>{
+    const moduleUrl=pathToFileURL(path.resolve("dist-test/src/authority/host/fs-ledger.js")).href,source=`import {FsAuthorityLedger} from ${JSON.stringify(moduleUrl)};const wait=new Int32Array(new SharedArrayBuffer(4));const ledger=new FsAuthorityLedger(process.argv[1],{now:()=>${t0},faultInjector(observed){if(observed===process.argv[2]){process.stdout.write("READY\\n");Atomics.wait(wait,0,0);}}});await ledger.recover();process.exit(94);`,child=spawn(process.execPath,["--input-type=module","-e",source,root,point],{stdio:["ignore","pipe","ignore"]});
+    let settled=false,output="";const finish=(error?:unknown)=>{if(settled)return;settled=true;if(child.exitCode===null)child.kill();error?reject(error):resolve();};
+    const run=async()=>{assert.ok(Number.isSafeInteger(child.pid));const stageName=(await readdir(root)).find(name=>new RegExp(`^\\.authority-ledger-lock-publication-${publicationHostDigest(hostname())}-${child.pid}-[0-9a-f]{64}\\.tmp$`).test(name));assert.ok(stageName,point);const stage=path.join(root,stageName),entries=await readdir(stage),before=entries.length===0?Buffer.alloc(0):await readFile(path.join(stage,"owner.json"));if(point==="after-lock-publication-stage-create")assert.deepEqual(entries,[]);else{assert.deepEqual(entries,["owner.json"]);const owner=JSON.parse(before.toString("utf8"));assert.deepEqual(before,authorityCanonicalBytes(owner));assert.equal(owner.pid,child.pid);}assert.deepEqual(await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20}).recover(),{ok:false,reason:"busy"});assert.deepEqual(await readdir(stage),entries);if(entries.length)assert.deepEqual(await readFile(path.join(stage,"owner.json")),before);child.once("close",async()=>{try{assert.equal((await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:200}).recover()).ok,true);assert.equal(existsSync(stage),false);finish();}catch(error){finish(error);}});child.kill();};
+    child.stdout.on("data",chunk=>{output+=chunk.toString();if(output.includes("READY\n"))void run().catch(finish);});child.once("error",finish);child.once("close",code=>{if(!settled&&!output.includes("READY\n"))finish(new assert.AssertionError({message:`${point} must pause at the exact live-stage hook`,actual:code,expected:"READY"}));});
+  })));
+});
+
+async function exitedChildPid():Promise<number>{let pid:number|undefined;const code=await new Promise<number|null>((resolve,reject)=>{const child=spawn(process.execPath,["-e","process.exit(0)"],{stdio:"ignore"});pid=child.pid;child.on("error",reject);child.on("close",resolve);});assert.equal(code,0);assert.ok(Number.isSafeInteger(pid));return pid!;}
+
+test("publication-stage multiplicity permits distinct dead publishers but rejects one PID with two nonces",async()=>{
+  const writeComplete=async(root:string,owner:Readonly<{host:string;nonce:string;pid:number;v:1}>)=>{const stage=path.join(root,publicationStageName(owner));await mkdir(stage);await writeFile(path.join(stage,"owner.json"),authorityCanonicalBytes(owner));return stage;};
+  await withRoot(async root=>{const first={host:hostname(),nonce:"4".repeat(64),pid:await exitedChildPid(),v:1 as const},second={host:hostname(),nonce:"5".repeat(64),pid:await exitedChildPid(),v:1 as const};assert.notEqual(first.pid,second.pid);const stages=[await writeComplete(root,first),await writeComplete(root,second)];assert.equal((await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:200}).recover()).ok,true);for(const stage of stages)assert.equal(existsSync(stage),false);});
+  await withRoot(async root=>{const pid=await exitedChildPid(),first={host:hostname(),nonce:"6".repeat(64),pid,v:1 as const},second={...first,nonce:"7".repeat(64)};const stages=[await writeComplete(root,first),await writeComplete(root,second)];assert.deepEqual(await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:200}).recover(),{ok:false,reason:"corruption"});for(const stage of stages)assert.equal(existsSync(stage),true);});
+});
+
 test("publication stages reject malformed topology and owner bindings without target mutation",async t=>{
-  const nonce="d".repeat(64),owner={host:hostname(),nonce,pid:process.pid,v:1 as const},exact=`.authority-ledger-lock-publication-${owner.pid}-${nonce}.tmp`,sentinel=Buffer.from("publication-external-target");
+  const nonce="d".repeat(64),owner={host:hostname(),nonce,pid:process.pid,v:1 as const},exact=publicationStageName(owner),sentinel=Buffer.from("publication-external-target");
   await t.test("malformed-name",()=>withRoot(async root=>{const stage=path.join(root,".authority-ledger-lock-publication-malformed.tmp");await mkdir(stage);assert.deepEqual(await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20}).recover(),{ok:false,reason:"corruption"});assert.equal(existsSync(stage),true);}));
   await t.test("extra-content",()=>withRoot(async root=>{const stage=path.join(root,exact);await mkdir(stage);await writeFile(path.join(stage,"owner.json"),authorityCanonicalBytes(owner));await writeFile(path.join(stage,"extra"),sentinel);assert.deepEqual(await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20}).recover(),{ok:false,reason:"corruption"});assert.deepEqual(await readFile(path.join(stage,"extra")),sentinel);}));
   await t.test("owner-mismatch",()=>withRoot(async root=>{const stage=path.join(root,exact);await mkdir(stage);await writeFile(path.join(stage,"owner.json"),authorityCanonicalBytes({...owner,nonce:"e".repeat(64)}));assert.deepEqual(await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20}).recover(),{ok:false,reason:"corruption"});assert.equal(existsSync(stage),true);}));
+  await t.test("foreign-host",()=>withRoot(async root=>{const foreign={...owner,host:"foreign.invalid"},stage=path.join(root,publicationStageName(foreign));await mkdir(stage);await writeFile(path.join(stage,"owner.json"),authorityCanonicalBytes(foreign));assert.deepEqual(await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20}).recover(),{ok:false,reason:"corruption"});assert.equal(existsSync(stage),true);}));
   await t.test("hard-linked-owner",()=>withRoot(async root=>{const stage=path.join(root,exact),external=path.join(root,"transactions","publication-owner");await mkdir(stage);await mkdir(path.dirname(external),{recursive:true});await writeFile(external,authorityCanonicalBytes(owner));const before=await readFile(external);await link(external,path.join(stage,"owner.json"));assert.deepEqual(await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20}).recover(),{ok:false,reason:"corruption"});assert.equal(existsSync(stage),true);assert.deepEqual(await readFile(external),before);}));
   await t.test("reparse-stage",()=>withRoot(async root=>{const external=await tempRoot(),stage=path.join(root,exact);try{await writeFile(path.join(external,"sentinel"),sentinel);await symlink(external,stage,process.platform==="win32"?"junction":"dir");assert.deepEqual(await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20}).recover(),{ok:false,reason:"corruption"});assert.deepEqual(await readFile(path.join(external,"sentinel")),sentinel);}finally{await rm(external,{recursive:true,force:true});}}));
 });
@@ -892,6 +917,12 @@ test("cleanup acknowledgments reject malformed names, digests, bindings, heads, 
   await run(async root=>{const ack=cleanupAck(owner,markerName,"released",null),target=path.join(root,`.authority-ledger-lock-cleanup-${"0".repeat(64)}.ack`);await writeFile(target,authorityCanonicalBytes(ack));return target;});
   await run(async root=>{const ack=cleanupAck(owner,`${markerName}.other`,"released",null),target=path.join(root,cleanupAckName(ack));await writeFile(target,authorityCanonicalBytes(ack));return target;});
   await run(async root=>{const ack={...cleanupAck(owner,markerName,"released",null),ownerDigest:digest("7")},target=path.join(root,`.authority-ledger-lock-cleanup-${authorityDigest(ack).slice(7)}.ack`);await writeFile(target,authorityCanonicalBytes(ack));return target;});
+  const nestedOwnerCase=(mutate:(value:Record<string,unknown>)=>Record<string,unknown>)=>run(async root=>{const nested=mutate({host:owner.host,nonce:owner.nonce,pid:owner.pid,v:1}),ack={...cleanupAck(owner,markerName,"released",null),owner:nested,ownerDigest:authorityDigest(nested)},target=path.join(root,`.authority-ledger-lock-cleanup-${authorityDigest(ack).slice(7)}.ack`);await writeFile(target,authorityCanonicalBytes(ack));return target;});
+  await nestedOwnerCase(value=>({...value,host:"foreign.invalid"}));
+  await nestedOwnerCase(value=>({...value,pid:owner.pid+1}));
+  await nestedOwnerCase(value=>{const copy={...value};delete copy.host;return copy;});
+  await nestedOwnerCase(value=>({...value,unexpected:true}));
+  await nestedOwnerCase(value=>({...value,v:2}));
   await withRoot(async root=>{const pending=retirementMarkerName(owner,"recovery-pending"),directory=path.join(root,pending),ack=cleanupAck(owner,pending,"recovery-pending",digest("8")),ackPath=path.join(root,cleanupAckName(ack));await mkdir(directory);await writeFile(path.join(directory,"owner.json"),authorityCanonicalBytes(owner));await writeFile(ackPath,authorityCanonicalBytes(ack));assert.deepEqual(await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20}).recover(),{ok:false,reason:"corruption"});assert.equal(existsSync(ackPath),true);});
   await run(async root=>{const incomplete={disposition:"released",journalHead:null,markerName,v:"reelier.authority-ledger-lock-cleanup-ack/v1"},target=path.join(root,`.authority-ledger-lock-cleanup-${authorityDigest(incomplete).slice(7)}.ack`);await writeFile(target,authorityCanonicalBytes(incomplete));return target;});
   await run(async root=>{const base=cleanupAck(owner,markerName,"released",null),ack={...base,unexpected:true},target=path.join(root,`.authority-ledger-lock-cleanup-${authorityDigest(ack).slice(7)}.ack`);await writeFile(target,authorityCanonicalBytes(ack));return target;});
@@ -909,6 +940,10 @@ test("orphan cleanup acknowledgments authenticate their self-contained owner",as
 
 test("pre-service confinement audit precedes retirement housekeeping",async()=>{
   await withRoot(async root=>{const initialized=await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:200}).recover();assert.equal(initialized.ok,true);const external=await tempRoot();try{await rm(path.join(root,"journal"),{recursive:true});const sentinel=Buffer.from("external-journal-sentinel");await writeFile(path.join(external,"sentinel"),sentinel);await symlink(external,path.join(root,"journal"),process.platform==="win32"?"junction":"dir");const owner={host:hostname(),nonce:"3".repeat(64),pid:process.pid,v:1 as const},markerName=retirementMarkerName(owner,"released"),marker=path.join(root,markerName),ownerBytes=authorityCanonicalBytes(owner);await mkdir(marker);await writeFile(path.join(marker,"owner.json"),ownerBytes);assert.deepEqual(await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20}).recover(),{ok:false,reason:"corruption"});assert.equal(existsSync(marker),true,"confinement failure must precede marker cleanup");assert.deepEqual(await readFile(path.join(marker,"owner.json")),ownerBytes);assert.deepEqual(await readFile(path.join(external,"sentinel")),sentinel);}finally{await rm(external,{recursive:true,force:true});}});
+});
+
+test("pre-service confinement preserves valid orphan and marker-bound acknowledgments",async()=>{
+  await withRoot(async root=>{const initialized=await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:200}).recover();assert.equal(initialized.ok,true);const external=await tempRoot();try{const orphanOwner={host:hostname(),nonce:"8".repeat(64),pid:process.pid,v:1 as const},orphanMarkerName=retirementMarkerName(orphanOwner,"released"),orphanAck=cleanupAck(orphanOwner,orphanMarkerName,"released",null),orphanAckPath=path.join(root,cleanupAckName(orphanAck)),markerOwner={host:hostname(),nonce:"9".repeat(64),pid:process.pid,v:1 as const},markerName=retirementMarkerName(markerOwner,"released"),marker=path.join(root,markerName),markerBytes=authorityCanonicalBytes(markerOwner),markerAck=cleanupAck(markerOwner,markerName,"released",null),markerAckPath=path.join(root,cleanupAckName(markerAck)),orphanBytes=authorityCanonicalBytes(orphanAck),markerAckBytes=authorityCanonicalBytes(markerAck),sentinel=Buffer.from("external-journal-with-acks");await writeFile(orphanAckPath,orphanBytes);await mkdir(marker);await writeFile(path.join(marker,"owner.json"),markerBytes);await writeFile(markerAckPath,markerAckBytes);await rm(path.join(root,"journal"),{recursive:true});await writeFile(path.join(external,"sentinel"),sentinel);await symlink(external,path.join(root,"journal"),process.platform==="win32"?"junction":"dir");assert.deepEqual(await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20}).recover(),{ok:false,reason:"corruption"});assert.deepEqual(await readFile(orphanAckPath),orphanBytes);assert.deepEqual(await readFile(markerAckPath),markerAckBytes);assert.deepEqual(await readFile(path.join(marker,"owner.json")),markerBytes);assert.deepEqual(await readFile(path.join(external,"sentinel")),sentinel);}finally{await rm(external,{recursive:true,force:true});}});
 });
 
 test("owner-bound cleanup staging recovers create, partial-write, and file-sync crashes",async t=>{
