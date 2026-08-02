@@ -170,6 +170,7 @@ const LEGAL = new Set(["reserved>dispatched", "dispatched>acknowledged", "dispat
 const TOMBSTONE_REASONS = new Set<ReserveReason>(["idempotency-conflict", "semantic-duplicate", "capability-integrity", "capability-already-reserved", "limit-exceeded"]);
 
 class LedgerCorruption extends Error {}
+class RetiredLockTransient extends Error {}
 
 export class AuthorityLedgerReadError extends Error {
   constructor(readonly code: "busy" | "lock-owner-unverifiable" | "corruption") {
@@ -367,8 +368,6 @@ export class FsAuthorityLedger implements AuthorityLedger {
   private async acquireLock(): Promise<LockResult> {
     const deadline = monotonicNow() + this.options.lockTimeoutMs;
     let reclaimed = false;
-    try { await this.cleanupRetiredLocks(deadline); }
-    catch { return { ok: false, reason: "corruption" }; }
     while (true) {
       const owner: LockOwner = { v: 1, host: hostname(), pid: process.pid, nonce: randomBytes(32).toString("hex") };
       try {
@@ -399,7 +398,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
           continue;
         }
         try {
-          if (!await this.retireOwnedLock(existing, deadline, false)) continue;
+          if (!await this.retireOwnedLock(existing, deadline, false, false)) continue;
           reclaimed = true;
         } catch (retireError) {
           if (isTransientLockError(retireError) && monotonicNow() < deadline) { await delay(5); continue; }
@@ -415,17 +414,22 @@ export class FsAuthorityLedger implements AuthorityLedger {
         await this.syncDirectory(this.absolute("lock"));
         this.fault("after-lock-directory-sync");
         await this.syncDirectory(this.root);
-        return { ok: true, owner, reclaimed };
       } catch (error) {
-        try { await this.retireOwnedLock(owner, deadline, false); } catch { /* Preserve any replacement owner and the publication failure. */ }
+        try { await this.retireOwnedLock(owner, deadline, false, true); } catch { /* Preserve any replacement owner and the publication failure. */ }
         throw error;
       }
+      try { await this.cleanupRetiredLocks(deadline); }
+      catch {
+        try { await this.retireOwnedLock(owner, deadline, false, true); } catch { /* Leave only a complete owned lock or validated tombstone. */ }
+        return { ok: false, reason: "corruption" };
+      }
+      return { ok: true, owner, reclaimed };
     }
   }
 
   private async releaseLock(owner: LockOwner): Promise<void> {
     const deadline = monotonicNow() + this.options.lockTimeoutMs;
-    try { await this.retireOwnedLock(owner, deadline, true); }
+    try { await this.retireOwnedLock(owner, deadline, true, false); }
     catch { /* A crash/corrupt owner must remain for the next fail-closed acquisition. */ }
   }
 
@@ -433,7 +437,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
     return `.authority-ledger-lock-${owner.pid}-${owner.nonce}.retired`;
   }
 
-  private async retireOwnedLock(owner: LockOwner, deadline: number, injectFaults: boolean): Promise<boolean> {
+  private async retireOwnedLock(owner: LockOwner, deadline: number, injectFaults: boolean, cleanup: boolean): Promise<boolean> {
     const expected = canonicalBytes(owner);
     let current: Buffer;
     try { current = await readFile(this.absolute(path.join("lock", "owner.json"))); }
@@ -454,7 +458,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
     await this.syncDirectory(this.root);
     const retired = await this.validateRetiredLock(retiredName);
     if (!retired.ownerBytes.equals(expected)) throw new LedgerCorruption("retired lock owner changed");
-    await this.cleanupRetiredLock(retired, deadline);
+    if (cleanup) await this.cleanupRetiredLock(retired, deadline);
     return true;
   }
 
@@ -463,7 +467,8 @@ export class FsAuthorityLedger implements AuthorityLedger {
     for (const entry of entries) {
       if (!entry.name.startsWith(".authority-ledger-lock-")) continue;
       if (!RETIRED_LOCK.test(entry.name)) throw new LedgerCorruption("invalid retired lock name");
-      const retired = await this.validateRetiredLock(entry.name);
+      const retired = await this.validateRetiredLockUntil(entry.name, deadline);
+      if (!retired) continue;
       await this.cleanupRetiredLock(retired, deadline);
     }
   }
@@ -477,12 +482,25 @@ export class FsAuthorityLedger implements AuthorityLedger {
     const directoryStat = await lstat(directory);
     if (directoryStat.isSymbolicLink() || !directoryStat.isDirectory()) throw new LedgerCorruption("invalid retired lock directory");
     const entries = await readdir(directory, { withFileTypes: true });
+    if (entries.length === 0) throw new RetiredLockTransient("retired lock cleanup in progress");
     if (entries.length !== 1 || entries[0].name !== "owner.json" || entries[0].isSymbolicLink() || !entries[0].isFile()) throw new LedgerCorruption("invalid retired lock contents");
     const ownerBytes = await readFile(path.join(directory, "owner.json"));
     const owner = parseCanonical(ownerBytes) as LockOwner;
     assertLockOwner(owner);
     if (owner.host !== hostname() || owner.pid !== pid || owner.nonce !== match[2]) throw new LedgerCorruption("retired lock owner mismatch");
     return { directory, owner, ownerBytes };
+  }
+
+  private async validateRetiredLockUntil(name: string, deadline: number): Promise<RetiredLock | undefined> {
+    for (;;) {
+      try { return await this.validateRetiredLock(name); }
+      catch (error) {
+        if (hasCode(error, "ENOENT")) return undefined;
+        if ((error instanceof RetiredLockTransient || isTransientLockError(error)) && monotonicNow() < deadline) { await delay(5); continue; }
+        if (error instanceof RetiredLockTransient) throw new LedgerCorruption("incomplete retired lock cleanup");
+        throw error;
+      }
+    }
   }
 
   private async cleanupRetiredLock(retired: RetiredLock, deadline: number): Promise<void> {
@@ -495,7 +513,8 @@ export class FsAuthorityLedger implements AuthorityLedger {
         return;
       } catch (error) {
         if (hasCode(error, "ENOENT")) return;
-        if (isTransientLockError(error) && monotonicNow() < deadline) { await delay(5); continue; }
+        if ((error instanceof RetiredLockTransient || isTransientLockError(error)) && monotonicNow() < deadline) { await delay(5); continue; }
+        if (error instanceof RetiredLockTransient) throw new LedgerCorruption("incomplete retired lock cleanup");
         throw error;
       }
     }
@@ -532,7 +551,10 @@ export class FsAuthorityLedger implements AuthorityLedger {
       const entries=volatile?await volatileRead(()=>readdir(directory,{withFileTypes:true})):await readdir(directory,{withFileTypes:true});if(!entries)return;
       for (const entry of entries) {
         if (entry.isSymbolicLink()) throw new LedgerCorruption("symlink or reparse point below ledger root");
-        if (root && RETIRED_LOCK.test(entry.name)) { await this.validateRetiredLock(entry.name); continue; }
+        if (root && RETIRED_LOCK.test(entry.name)) {
+          await this.validateRetiredLockUntil(entry.name, monotonicNow() + 1_000);
+          continue;
+        }
         if (root && !allowedRoot.has(entry.name)) throw new LedgerCorruption("unexpected ledger root entry");
         const full = path.join(directory, entry.name);
         const actual=volatile?await volatileRead(()=>stat(full)):await stat(full);if(!actual)continue;
