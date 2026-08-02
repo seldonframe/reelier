@@ -199,7 +199,7 @@ test("simultaneous trusted-candidate failures use union precedence instead of me
 
 test("compiled endpoint and risk refusals bind the rejected effect under distinct post-compile reason codes",async()=>{
   const shared={pack:{writeEndpointIds:["write_1","write_2"],riskClasses:["message","elevated"]},contract:{riskClasses:["message","elevated"]},grant:{constraints:{...grantConstraints(),riskClasses:["message","elevated"]}}};
-  for(const [specific,want] of [[{effect:{endpointId:"write_2"}},"effect-endpoint-not-allowed"],[{effect:{riskClass:"elevated"}},"effect-risk-not-allowed"]] as const){
+  for(const [specific,want,wantEffectDigest] of [[{effect:{endpointId:"write_2"}},"effect-endpoint-not-allowed","sha256:353185bd3c35775a647e6351be088e6b9ef659275d1c110c1f48c749a42fc6da"],[{effect:{riskClass:"elevated"}},"effect-risk-not-allowed","sha256:b49dfecd1d4a4d21f1b5cfda76106ca17e611c8f38a744e3ec29c6e511640da1"]] as const){
     const f=await fixture({...shared,...specific});
     try{
       const result=await f.gate.decide(f.request);
@@ -213,8 +213,11 @@ test("compiled endpoint and risk refusals bind the rejected effect under distinc
       assert.notEqual(record.decisionContext.contractDigest,null);
       assert.notEqual(record.decisionContext.snapshots.authorityStateDigest,null);
       assert.notEqual(record.decisionContext.snapshots.sourceBundleDigest,null);
-      assert.notEqual(record.decisionContext.outcomeKey,null);
-      assert.notEqual(record.decisionContext.effectDigest,null);
+      assert.equal(
+        record.decisionContext.outcomeKey,
+        "sha256:89b5aba40b436ae0e90b4e4d98d0701d63e3c270864eaeaa0cc1a548d31cab37",
+      );
+      assert.equal(record.decisionContext.effectDigest,wantEffectDigest);
       assert.equal(record.decisionContext.capabilityId,null);
       assert.equal(record.decisionContext.capabilityDigest,null);
     }finally{await f.cleanup();}
