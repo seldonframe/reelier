@@ -4,7 +4,8 @@ import { mkdtemp, rm, writeFile, mkdir, readFile, readdir, rename, symlink, unli
 import { hostname, tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { spawn } from "node:child_process";
+import { execFile,spawn } from "node:child_process";
+import { promisify } from "node:util";
 import { createHash } from "node:crypto";
 import { authorityCanonicalBytes, authorityDigest } from "../../src/authority/wire.js";
 import { authenticateOutcomeRequest, authenticatedOutcomeRequestState } from "../../src/authority/keys.js";
@@ -757,6 +758,23 @@ test("the process lock is bounded, never lease-stolen, and refuses foreign or co
     await mkdir(path.join(root, "lock"));
     await writeFile(path.join(root, "lock", "owner.json"), JSON.stringify({ host: "another-host", nonce: "b".repeat(64), pid: 999999, v: 1 }));
     assert.deepEqual(await new FsAuthorityLedger(root, { now: () => t0, lockTimeoutMs: 20 }).recover(), { ok: false, reason: "lock-owner-unverifiable" });
+  });
+});
+
+test("ledger lock acquisition remains bounded when the ambient wall clock rolls backward",{timeout:10_000},async()=>{
+  await withRoot(async root=>{
+    const lock=path.join(root,"lock");await mkdir(lock);await writeFile(path.join(lock,"owner.json"),JSON.stringify({host:hostname(),nonce:"d".repeat(64),pid:process.pid,v:1}));
+    const moduleUrl=pathToFileURL(path.resolve("dist-test/src/authority/host/fs-ledger.js")).href,run=promisify(execFile);
+    const source='const {FsAuthorityLedger}=await import(process.argv[1]);let wall=1000;Date.now=()=>--wall;const result=await new FsAuthorityLedger(process.argv[2],{now:()=>1768478430000,lockTimeoutMs:1}).recover();process.stdout.write(JSON.stringify(result));';
+    const output=await run(process.execPath,["--input-type=module","-e",source,moduleUrl,root],{timeout:2_000});assert.deepEqual(JSON.parse(output.stdout),{ok:false,reason:"busy"});
+  });
+});
+
+test("volatile decisions-subtree audit retries never consult the ambient wall clock",async()=>{
+  await withRoot(async root=>{
+    await mkdir(path.join(root,"decisions"));const original=Date.now;let calls=0;Date.now=()=>{if(++calls>1)throw new Error("ambient wall clock consulted by decisions audit");return 1_000;};
+    try{const result=await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20}).recover();assert.equal(result.ok,true);}
+    finally{Date.now=original;}
   });
 });
 
