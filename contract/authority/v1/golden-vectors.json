@@ -26,8 +26,8 @@
     }
   },
   "source-bundle": {
-    "canonical": "{\"freshUntil\":\"2026-01-01T00:01:00.000Z\",\"observedAt\":\"2026-01-01T00:00:00.000Z\",\"projection\":{},\"rawDigest\":\"sha256:0000000000000000000000000000000000000000000000000000000000000000\",\"sourceIdentity\":\"source_1\",\"tenant\":\"tenant_1\",\"triggerIdentity\":\"trigger_1\",\"v\":\"reelier.source-bundle/v1\"}",
-    "digest": "sha256:5ca9ac1b9b85e4b5cd6005b239ff8d64f407ba76a086621c3c8f7ff027b9b613",
+    "canonical": "{\"claims\":{\"authored\":[],\"grounded\":[],\"unresolved\":[]},\"freshUntil\":\"2026-01-01T00:01:00.000Z\",\"observedAt\":\"2026-01-01T00:00:00.000Z\",\"projection\":{},\"provenance\":{\"endpointId\":\"read_1\",\"resolverId\":\"resolver_1\"},\"rawDigest\":\"sha256:0000000000000000000000000000000000000000000000000000000000000000\",\"sourceIdentity\":\"source_1\",\"tenant\":\"tenant_1\",\"triggerIdentity\":\"trigger_1\",\"v\":\"reelier.source-bundle/v1\"}",
+    "digest": "sha256:d0a253ff5cf8d4b8858e1f2541f18a265e4d3ccc70fe56affbe51ea298f5d11b",
     "value": {
       "v": "reelier.source-bundle/v1",
       "tenant": "tenant_1",
@@ -36,6 +36,15 @@
       "observedAt": "2026-01-01T00:00:00.000Z",
       "rawDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
       "freshUntil": "2026-01-01T00:01:00.000Z",
+      "provenance": {
+        "resolverId": "resolver_1",
+        "endpointId": "read_1"
+      },
+      "claims": {
+        "grounded": [],
+        "authored": [],
+        "unresolved": []
+      },
       "projection": {}
     }
   },
@@ -66,19 +75,24 @@
     }
   },
   "transport-effect": {
-    "canonical": "{\"bodyBase64\":\"e30=\",\"endpointId\":\"connector_1\",\"headers\":{\"Content-Type\":\"application/json\"},\"idempotency\":\"native\",\"method\":\"POST\",\"path\":\"/v1/messages\",\"riskClass\":\"message\",\"v\":\"reelier.transport-effect/v1\"}",
-    "digest": "sha256:7603bd4bba244bc899b232a827d4dee42b75e7431b9d0b2ea45de49258fd41f1",
+    "canonical": "{\"bodyBase64\":\"e30=\",\"endpointId\":\"connector_1\",\"headers\":{\"Content-Type\":\"application/json\"},\"idempotency\":\"native\",\"method\":\"POST\",\"path\":\"/v1/messages\",\"preconditions\":[],\"query\":[],\"reconciliation\":{\"recipeId\":\"message-readback\"},\"riskClass\":\"message\",\"v\":\"reelier.transport-effect/v1\"}",
+    "digest": "sha256:9016ab99a7ca6434d82cdab0d5afe9acbc32f9ea0b8b926b9161cce1caf3d5ae",
     "value": {
       "v": "reelier.transport-effect/v1",
       "endpointId": "connector_1",
       "method": "POST",
       "path": "/v1/messages",
+      "query": [],
       "headers": {
         "Content-Type": "application/json"
       },
       "bodyBase64": "e30=",
       "riskClass": "message",
-      "idempotency": "native"
+      "idempotency": "native",
+      "preconditions": [],
+      "reconciliation": {
+        "recipeId": "message-readback"
+      }
     }
   },
   "compiled-capability": {
@@ -106,15 +120,20 @@
     }
   },
   "authority-receipt": {
-    "canonical": "{\"claims\":{\"authorization\":\"verified\",\"topology\":\"unchecked\"},\"gateEventDigest\":\"sha256:0000000000000000000000000000000000000000000000000000000000000000\",\"receiptId\":\"receipt_1\",\"v\":\"reelier.authority-receipt/v1\"}",
-    "digest": "sha256:5be566ec7424a91a2c1eb7b26b8eaa0b03b431d33c3340a51c792accb3605255",
+    "canonical": "{\"claims\":{\"authorization\":\"verified\",\"completeness\":\"unchecked\",\"dispatch\":\"verified\",\"providerAcknowledgment\":\"unchecked\",\"reconciliation\":\"absent\",\"sourceCompleteness\":\"verified\",\"topology\":\"unchecked\"},\"gateEventDigest\":\"sha256:0000000000000000000000000000000000000000000000000000000000000000\",\"receiptId\":\"receipt_1\",\"v\":\"reelier.authority-receipt/v1\"}",
+    "digest": "sha256:381e8326f01653521a517c594aeef77ca4f12c6bebda3a50499905f1d6fc6751",
     "value": {
       "v": "reelier.authority-receipt/v1",
       "receiptId": "receipt_1",
       "gateEventDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
       "claims": {
         "authorization": "verified",
-        "topology": "unchecked"
+        "sourceCompleteness": "verified",
+        "dispatch": "verified",
+        "providerAcknowledgment": "unchecked",
+        "reconciliation": "absent",
+        "topology": "unchecked",
+        "completeness": "unchecked"
       }
     }
   },

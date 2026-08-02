@@ -279,6 +279,12 @@ export interface VerifyResult {
 }
 
 export function evaluateVerifyClaims(payload: VerifyPayload, publicPem?: string): VerifyResult {
+  if ((payload.record as unknown as { v?: unknown }).v === "reelier.authority-receipt/v1") {
+    return {
+      claims: [{ claim: "unaltered-since-push", status: "failed", line: "unsupported authority receipt: upgrade to an authority-aware verifier" }],
+      exitCode: 1,
+    };
+  }
   const claims = [evaluateUnalteredSincePushClaim(payload, publicPem), evaluateTimestampClaim(payload)];
   const exitCode = claims.some((c) => c.status === "failed") ? 1 : 0;
   return { claims, exitCode };

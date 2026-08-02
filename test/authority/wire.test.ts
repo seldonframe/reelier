@@ -9,6 +9,7 @@ import {
   parseAuthorityWire,
 } from "../../src/authority/wire.js";
 import type { AuthorityKind } from "../../src/authority/types.js";
+import { evaluateVerifyClaims } from "../../src/verify.js";
 
 const request = {
   v: "reelier.outcome-request/v1",
@@ -27,6 +28,37 @@ test("OutcomeRequest parses only the closed v1 request boundary", () => {
     () => parseAuthorityWire("outcome-request", { ...request, sourceRefs: { appointment: "https://example.test/write" } }),
     /pattern/i,
   );
+  for (const key of ["tenant", "body", "url", "credentials", "providerArgs"]) {
+    assert.throws(() => parseAuthorityWire("outcome-request", { ...request, choices: { [key]: "x" } }), /property name/i, key);
+  }
+  assert.throws(() => parseAuthorityWire("outcome-request", { ...request, choices: { x: { nested: "no" } } }), /must be/i);
+  assert.throws(() => parseAuthorityWire("outcome-request", { ...request, choices: { x: "x".repeat(257) } }), /more than 256 characters/i);
+});
+
+test("TransportEffect seals headers, query, base64 bytes, preconditions, and reconciliation", () => {
+  const effect = {
+    v: "reelier.transport-effect/v1", endpointId: "connector_1", method: "POST", path: "/v1/messages", query: [],
+    headers: { "Content-Type": "application/json" }, bodyBase64: "e30=", riskClass: "message", idempotency: "native",
+    preconditions: [], reconciliation: { recipeId: "message-readback" },
+  };
+  assert.deepEqual(parseAuthorityWire("transport-effect", effect), effect);
+  for (const header of ["AUTHORIZATION", "cOOKIE", "HOST"]) assert.throws(() => parseAuthorityWire("transport-effect", { ...effect, headers: { [header]: "x" } }), /property name/i);
+  assert.throws(() => parseAuthorityWire("transport-effect", { ...effect, bodyBase64: "e3=" }), /pattern/i);
+  assert.throws(() => parseAuthorityWire("transport-effect", { ...effect, query: [{ key: "z", value: "y" }, { key: "a", value: "y" }] }), /canonically ordered/i);
+});
+
+test("SourceBundle provenance and AuthorityReceipt fixed evidence claims are closed", () => {
+  const source = { v: "reelier.source-bundle/v1", tenant: "tenant_1", sourceIdentity: "source_1", triggerIdentity: "trigger_1", observedAt: "2026-01-01T00:00:00.000Z", rawDigest: "sha256:" + "0".repeat(64), freshUntil: "2026-01-01T00:01:00.000Z", provenance: { resolverId: "resolver_1", endpointId: "read_1" }, claims: { grounded: ["x"], authored: [], unresolved: [] }, projection: {} };
+  assert.deepEqual(parseAuthorityWire("source-bundle", source), source);
+  const claims = { authorization: "verified", sourceCompleteness: "verified", dispatch: "verified", providerAcknowledgment: "unchecked", reconciliation: "absent", topology: "unchecked", completeness: "unchecked" };
+  assert.deepEqual(parseAuthorityWire("authority-receipt", { v: "reelier.authority-receipt/v1", receiptId: "receipt_1", gateEventDigest: "sha256:" + "0".repeat(64), claims }), { v: "reelier.authority-receipt/v1", receiptId: "receipt_1", gateEventDigest: "sha256:" + "0".repeat(64), claims });
+  assert.throws(() => parseAuthorityWire("authority-receipt", { v: "reelier.authority-receipt/v1", receiptId: "receipt_1", gateEventDigest: "sha256:" + "0".repeat(64), claims: { ...claims, safe: "verified" } }), /additional properties/i);
+});
+
+test("legacy verifier refuses an authority receipt instead of awarding a legacy pass", () => {
+  const result = evaluateVerifyClaims({ record: { v: "reelier.authority-receipt/v1" } as never });
+  assert.equal(result.exitCode, 1);
+  assert.match(result.claims[0].line, /unsupported authority receipt/);
 });
 
 test("authority canonical bytes are JCS and digests are sha256-prefixed", () => {
