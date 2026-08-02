@@ -110,6 +110,13 @@ test("compiler recomposes source authority against the selected contract", () =>
   assert.throws(() => compileOutcome(f.packs, { contract: f.validatedContract, source, choices: {}, now }), /projection exceeds contract authority/i);
 });
 
+test("validated contract and source authority is single-context and cannot be reused at another instant", () => {
+  const f = fixture();
+  assert.doesNotThrow(() => compileOutcome(f.packs, { contract: f.validatedContract, source: f.validatedSource, choices: {}, now }));
+  assert.throws(() => compileOutcome(f.packs, { contract: f.validatedContract, source: f.validatedSource, choices: {}, now: new Date(now.getTime() + 1) }), /validation instant|same context/i);
+  assert.throws(() => compileOutcome(f.packs, { contract: f.validatedContract, source: f.validatedSource, choices: {}, now: new Date(now.getTime() - 1) }), /validation instant|same context/i);
+});
+
 test("semantic outcome keys are length-delimited, field-ordered, and use UTF-8 byte lengths", () => {
   const key = deriveSemanticOutcomeKey({ tenant: "ténant", contractDigest: "sha256:" + "0".repeat(64), definitionAlias: "définition", sourceIdentity: "source", triggerIdentity: "trigger" });
   assert.equal(key, "sha256:2a25254fcd69933350cdeaeeb2a66302ab7dcaadfc8f91a1cf4e71b466f37a36");

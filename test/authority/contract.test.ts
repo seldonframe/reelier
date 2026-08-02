@@ -56,3 +56,17 @@ test("contract validation refuses tampering, wrong purpose/trust/tenant, state d
   const wrongDigest = authorityDigest(wrongTenant.contract);
   assert.throws(() => validateStoredContract({ stored: { ...wrongTenant, digest: wrongDigest, signature: signAuthorityDigest(f.gate.privateKey, "outcome-contract", wrongDigest) }, trustRoots: f.roots, delegation: f.chain, registeredDefinitions: f.registry, stateEvents: [], tenant: "tenant_2", requester: "requester_1", now: new Date("2026-01-15T00:00:00.000Z") }), /untrusted.*tenant|tenant/i);
 });
+
+test("contract validation refuses forged, copied, or structurally mutated delegation authority", () => {
+  const f = fixture();
+  const forged = {
+    grants: [...f.chain.grants], digests: [...f.chain.digests], leaf: f.chain.leaf,
+    leafDigest: f.chain.leafDigest, leafGrantee: f.chain.leafGrantee,
+  };
+  const input = { stored: f.stored, trustRoots: f.roots, registeredDefinitions: f.registry, stateEvents: [{ kind: "activated" as const, contractDigest: f.digest, at: "2026-01-03T00:00:00.000Z" }], tenant: "tenant_1", requester: "requester_1", now: new Date("2026-01-15T00:00:00.000Z") };
+  assert.throws(() => validateStoredContract({ ...input, delegation: forged as never }), /validated delegation/i);
+  assert.throws(() => validateStoredContract({ ...input, delegation: { ...f.chain } as never }), /validated delegation/i);
+  assert.throws(() => validateStoredContract({ ...input, delegation: structuredClone(f.chain) as never }), /validated delegation/i);
+  assert.throws(() => { (f.chain as { leafGrantee: string }).leafGrantee = "attacker"; }, /read only|Cannot assign/i);
+  assert.doesNotThrow(() => validateStoredContract({ ...input, delegation: f.chain }));
+});
