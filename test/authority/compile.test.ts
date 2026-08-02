@@ -170,9 +170,8 @@ test("semantic outcome keys are length-delimited, field-ordered, and use UTF-8 b
 
 test("static first-party compiler source conformance refuses ambient I/O, clock, randomness, and code loading", () => {
   const compilerSource = readFileSync("src/authority/compile.ts", "utf8");
-  const compilerCandidate = { file: "src/authority/compile.ts", source: compilerSource, allowedRuntimeSpecifiers: ["node:crypto"] } as Parameters<typeof assertStaticFirstPartySourcesConform>[0][number];
-  assert.doesNotThrow(() => assertStaticFirstPartySourcesConform([compilerCandidate]));
-  const builtins = ["fs", "fs/promises", "http", "https", "net", "tls", "dns", "dgram", "child_process", "worker_threads", "cluster", "vm", "module", "process"];
+  assert.doesNotThrow(() => assertStaticFirstPartySourcesConform([{ file: "src/authority/compile.ts", source: compilerSource }]));
+  const builtins = ["fs", "fs/promises", "http", "https", "net", "tls", "dns", "dgram", "child_process", "worker_threads", "cluster", "vm", "module", "process", "crypto"];
   for (const specifier of builtins.flatMap(name => [name, `node:${name}`])) {
     assert.throws(() => assertStaticFirstPartySourcesConform([{ file: "bad-pack.ts", source: `import forbidden from ${JSON.stringify(specifier)};` }]), /static first-party purity.*runtime module specifier/i, specifier);
   }
