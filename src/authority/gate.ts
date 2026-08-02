@@ -95,8 +95,8 @@ export function createAuthorityGate(deps:AuthorityGateDependencies):AuthorityGat
         }
         const current=reevaluated.selected,connector=lookupConnectorRegistration(deps.connectors,request.tenant,current.validated.contract.connectorId,current.validated.contract.accountId);
         if(!connector)return{kind:"unavailable" as const,reason:"internal-integrity-unavailable" as const};
-        if(!connector.allowedWriteEndpointIds.includes(compiled.effect.endpointId))return{kind:"refusal" as const,reason:"endpoint-not-allowed" as const,contractDigest:current.contractDigest};
-        if(!connector.riskClasses.includes(compiled.effect.riskClass))return{kind:"refusal" as const,reason:"risk-not-allowed" as const,contractDigest:current.contractDigest};
+        if(!connector.allowedWriteEndpointIds.includes(compiled.effect.endpointId))return{kind:"refusal" as const,reason:"effect-endpoint-not-allowed" as const,contractDigest:current.contractDigest,outcomeKey:compiled.outcomeKey,effectDigest:compiled.effectDigest};
+        if(!connector.riskClasses.includes(compiled.effect.riskClass))return{kind:"refusal" as const,reason:"effect-risk-not-allowed" as const,contractDigest:current.contractDigest,outcomeKey:compiled.outcomeKey,effectDigest:compiled.effectDigest};
         let capabilityId:string;
         try{capabilityId=deps.capabilityId();}catch{return{kind:"unavailable" as const,reason:"capability-id-unavailable" as const};}
         if(!ID.test(capabilityId))return{kind:"unavailable" as const,reason:"capability-id-unavailable" as const};
@@ -120,7 +120,7 @@ export function createAuthorityGate(deps:AuthorityGateDependencies):AuthorityGat
     }
     if(leased.value.kind==="unavailable")return unavailable(leased.value.reason);
     if(leased.value.kind==="refusal"){
-      const refusalParts:ContextParts={...sourcedParts,contractDigest:leased.value.contractDigest??null};
+      const refusalParts:ContextParts={...sourcedParts,contractDigest:leased.value.contractDigest??null,outcomeKey:"outcomeKey" in leased.value&&typeof leased.value.outcomeKey==="string"?leased.value.outcomeKey:null,effectDigest:"effectDigest" in leased.value&&typeof leased.value.effectDigest==="string"?leased.value.effectDigest:null};
       return refuse(request,ingress.ingressClaimDigest,refusalParts,leased.value.reason,decisionClock.at);
     }
     const {compiled,current,capability,capabilityBytes,capabilityDigest,decisionContext,eventId,limitSlots,reserved}=leased.value;

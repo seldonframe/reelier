@@ -203,7 +203,8 @@ pack-mismatch | definition-mismatch | resolver-mismatch | connector-mismatch | a
 endpoint-not-allowed | risk-not-allowed
 source-read-refused | source-observation-invalid | source-projection-invalid | source-ungrounded |
 source-stale
-choices-invalid | compile-refused | effect-refused
+choices-invalid | compile-refused | effect-refused | effect-endpoint-not-allowed |
+effect-risk-not-allowed
 reservation-idempotency-conflict | semantic-duplicate | capability-integrity |
 capability-already-reserved | limit-exceeded | not-yet-valid | expired | clock-rollback |
 integrity-failure | busy | lock-owner-unverifiable | corruption
@@ -226,6 +227,7 @@ signed refusal. Accepted GateEvents use `reasonCode:"accepted"`.
 | source read, observation, projection, grounding, or freshness refusal | digest | digest | null | null | null |
 | state changed or contract expires after validated source | digest | digest | digest | null | null |
 | choices, compile, or effect refusal | digest | digest | digest | null | null |
+| post-compile connector endpoint or risk refusal | digest | digest | digest | both present | null |
 | reservation refusal | digest | digest | digest | both present | ID and digest present |
 | accepted | digest | digest | digest | both present | ID and digest present |
 

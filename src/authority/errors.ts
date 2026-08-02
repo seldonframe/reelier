@@ -4,7 +4,7 @@ export const GATE_REFUSAL_REASONS = Object.freeze([
   "contract-alias-mismatch","contract-audience-mismatch","contract-inactive","contract-revoked","contract-not-yet-valid","contract-expired","delegation-invalid",
   "pack-mismatch","definition-mismatch","resolver-mismatch","connector-mismatch","account-mismatch","endpoint-not-allowed","risk-not-allowed",
   "source-read-refused","source-observation-invalid","source-projection-invalid","source-ungrounded","source-stale",
-  "choices-invalid","compile-refused","effect-refused","reservation-idempotency-conflict","semantic-duplicate","capability-integrity","capability-already-reserved","limit-exceeded","not-yet-valid","expired","clock-rollback","integrity-failure","busy","lock-owner-unverifiable","corruption",
+  "choices-invalid","compile-refused","effect-refused","effect-endpoint-not-allowed","effect-risk-not-allowed","reservation-idempotency-conflict","semantic-duplicate","capability-integrity","capability-already-reserved","limit-exceeded","not-yet-valid","expired","clock-rollback","integrity-failure","busy","lock-owner-unverifiable","corruption",
 ] as const);
 export type GateRefusalReason = typeof GATE_REFUSAL_REASONS[number];
 

@@ -215,7 +215,7 @@ test("compiled endpoint and risk refusals bind the rejected effect under distinc
       assert.notEqual(record.decisionContext.snapshots.sourceBundleDigest,null);
       assert.equal(
         record.decisionContext.outcomeKey,
-        "sha256:89b5aba40b436ae0e90b4e4d98d0701d63e3c270864eaeaa0cc1a548d31cab37",
+        "sha256:858ff9a740afcf83e93ad0c05bcb770eb6df9da9810223abe67b913eb776e285",
       );
       assert.equal(record.decisionContext.effectDigest,wantEffectDigest);
       assert.equal(record.decisionContext.capabilityId,null);
