@@ -12,7 +12,6 @@ import {
   readdir,
   rename,
   rm,
-  stat,
   unlink,
 } from "node:fs/promises";
 import { hostname } from "node:os";
@@ -78,6 +77,9 @@ export const clockFaultPoints = Object.freeze([
   "clock-before-directory-sync", "clock-after-directory-sync",
 ] as const);
 export const ledgerLockFaultPoints = Object.freeze([
+  "after-lock-publication-stage-create", "after-lock-publication-owner-create",
+  "after-lock-publication-owner-partial-write", "after-lock-publication-owner-sync",
+  "after-lock-publication-stage-sync", "after-lock-publication-rename", "after-lock-publication-root-sync",
   "after-owner-file-sync", "after-lock-directory-sync", "before-lock-retire", "after-lock-retire",
 ] as const);
 export const ledgerFaultPoints = Object.freeze([...reservationFaultPoints, ...dispatchFaultPoints, ...resultFaultPoints, ...ingressFaultPoints, ...clockFaultPoints, ...ledgerLockFaultPoints]);
@@ -157,7 +159,8 @@ interface LedgerView {
 interface LockOwner { readonly v: 1; readonly host: string; readonly pid: number; readonly nonce: string }
 type RetirementDisposition = "released" | "recovery-pending" | "publication-aborted";
 interface RetiredLock { readonly name: string; readonly directory: string; readonly disposition: RetirementDisposition; readonly owner: LockOwner; readonly ownerBytes: Buffer }
-interface CleanupAck { readonly disposition: RetirementDisposition; readonly journalHead: string | null; readonly markerName: string; readonly ownerDigest: string; readonly v: "reelier.authority-ledger-lock-cleanup-ack/v1" }
+interface PublicationStage { readonly name:string;readonly directory:string;readonly hostDigest:string;readonly pid:number;readonly nonce:string;readonly state:"empty"|"zero"|"partial"|"complete";readonly ownerBytes?:Buffer;readonly owner?:LockOwner }
+interface CleanupAck { readonly disposition: RetirementDisposition; readonly journalHead: string | null; readonly markerName: string; readonly owner: LockOwner; readonly ownerDigest: string; readonly v: "reelier.authority-ledger-lock-cleanup-ack/v1" }
 type TombstoneResolution = Readonly<{ kind: "refused"; reason: ReserveReason }> | Readonly<{ kind: "existing"; reservationId: string }>;
 type LockResult = { ok: true; owner: LockOwner; reclaimed: boolean } | { ok: false; reason: "busy" | "lock-owner-unverifiable" | "corruption" };
 
@@ -167,6 +170,7 @@ const ID = /^[A-Za-z0-9._~-]{1,128}$/;
 const FILE_HEX = /^[0-9a-f]{64}$/;
 const INGRESS_FILE = /^([0-9a-f]{64})\.json$/;
 const RETIRED_LOCK = /^\.authority-ledger-lock-([1-9][0-9]*)-([0-9a-f]{64})\.(released|recovery-pending|publication-aborted)$/;
+const PUBLICATION_STAGE = /^\.authority-ledger-lock-publication-([0-9a-f]{64})-([1-9][0-9]*)-([0-9a-f]{64})\.tmp$/;
 const CLEANUP_ACK = /^\.authority-ledger-lock-cleanup-([0-9a-f]{64})\.ack$/;
 const CLEANUP_STAGE = /^\.authority-ledger-lock-cleanup-stage-([1-9][0-9]*)-([0-9a-f]{64})-([0-9a-f]{64})\.tmp$/;
 const JOURNAL_FILE = /^(\d{16})-([0-9a-f]{64})$/;
@@ -358,10 +362,13 @@ export class FsAuthorityLedger implements AuthorityLedger {
       const lock = await this.acquireLock();
       if (!lock.ok) return frozen({ ok: false, reason: lock.reason });
       try {
+        await this.assertNoLinks();
         await this.ensureLayout();
         const housekeepingDeadline=monotonicNow()+this.options.lockTimeoutMs;
+        await this.servicePublicationStages(housekeepingDeadline,true);
         const pending=await this.serviceRetirementArtifacts(housekeepingDeadline);
         if(pending.length>0){const recovered=await this.prepare(true,false,context);const journalHead=recovered.eventDigests.at(-1)??null;for(const marker of pending)await this.acknowledgeAndCleanup(marker,journalHead,housekeepingDeadline);}
+        await this.assertNoLinks();
         if (context === "reservation") this.fault("after-lock-acquire");
         return await operation(false);
       } catch (error) {
@@ -375,57 +382,75 @@ export class FsAuthorityLedger implements AuthorityLedger {
 
   private async acquireLock(): Promise<LockResult> {
     const deadline = monotonicNow() + this.options.lockTimeoutMs;
+    const owner: LockOwner = { v: 1, host: hostname(), pid: process.pid, nonce: randomBytes(32).toString("hex") };
+    const stageName=this.publicationStageName(owner),stagePath=this.absolute(stageName),ownerPath=path.join(stagePath,"owner.json"),ownerBytes=canonicalBytes(owner);
+    let stageCreated=false,published=false,expectedStageBytes:Buffer|undefined|null=null;
     while (true) {
-      const owner: LockOwner = { v: 1, host: hostname(), pid: process.pid, nonce: randomBytes(32).toString("hex") };
       try {
-        await mkdir(this.absolute("lock"));
-      } catch (error) {
-        if (!hasCode(error, "EEXIST")) {
-          if (isTransientLockError(error) && monotonicNow() < deadline) { await delay(5); continue; }
-          return { ok: false, reason: "corruption" };
+        const active=await this.inspectActiveLock(deadline);
+        if(active!=="absent"){
+          if(active!=="wait")return active;
+          if(monotonicNow()>=deadline){if(stageCreated)await this.removeOwnedPublicationStage(stageName,expectedStageBytes);return {ok:false,reason:"busy"};}
+          await delay(5);continue;
         }
-        let ownerBytes: Buffer;
-        try { ownerBytes = await readFile(this.absolute(path.join("lock", "owner.json"))); }
-        catch (readError) {
-          if (isTransientLockError(readError) && monotonicNow() < deadline) { await delay(5); continue; }
-          return { ok: false, reason: "corruption" };
+        if(!stageCreated){
+          const publicationBusy=await this.servicePublicationStages(deadline,false);
+          if(publicationBusy){if(monotonicNow()>=deadline)return {ok:false,reason:"busy"};await delay(5);continue;}
+          try{await mkdir(stagePath);stageCreated=true;expectedStageBytes=undefined;this.fault("after-lock-publication-stage-create");}
+          catch(error){if(hasCode(error,"EEXIST")){continue;}throw error;}
+          let handle;
+          try{
+            handle=await open(ownerPath,"wx",0o600);expectedStageBytes=Buffer.alloc(0);this.fault("after-lock-publication-owner-create");
+            await handle.write(ownerBytes.subarray(0,1),0,1,0);expectedStageBytes=ownerBytes.subarray(0,1);this.fault("after-lock-publication-owner-partial-write");
+            await handle.write(ownerBytes.subarray(1),0,ownerBytes.length-1,1);expectedStageBytes=ownerBytes;await handle.sync();this.fault("after-lock-publication-owner-sync");this.fault("after-owner-file-sync");
+          }finally{if(handle)await handle.close();}
+          await this.syncDirectory(stagePath);this.fault("after-lock-publication-stage-sync");this.fault("after-lock-directory-sync");
         }
-        let existing: LockOwner;
-        try { existing = parseCanonical(ownerBytes) as LockOwner; assertLockOwner(existing); }
-        catch {
-          if (monotonicNow() < deadline) { await delay(5); continue; }
-          return { ok: false, reason: "corruption" };
-        }
-        if (existing.host !== hostname()) return { ok: false, reason: "lock-owner-unverifiable" };
-        const liveness = processLiveness(existing.pid);
-        if (liveness === "unverifiable") return { ok: false, reason: "lock-owner-unverifiable" };
-        if (liveness === "alive") {
-          if (monotonicNow() >= deadline) return { ok: false, reason: "busy" };
-          await delay(5);
-          continue;
-        }
-        try {
-          if (!await this.retireOwnedLock(existing, "recovery-pending", deadline, false)) continue;
-        } catch (retireError) {
-          if (isTransientLockError(retireError) && monotonicNow() < deadline) { await delay(5); continue; }
-          return { ok: false, reason: "corruption" };
-        }
-        continue;
-      }
-
-      try {
-        const handle = await open(this.absolute(path.join("lock", "owner.json")), "wx", 0o600);
-        try { await handle.writeFile(canonicalBytes(owner)); await handle.sync(); } finally { await handle.close(); }
-        this.fault("after-owner-file-sync");
-        await this.syncDirectory(this.absolute("lock"));
-        this.fault("after-lock-directory-sync");
+        try{await rename(stagePath,this.absolute("lock"));published=true;stageCreated=false;this.fault("after-lock-publication-rename");}
+        catch(error){if(hasCode(error,"EEXIST")||hasCode(error,"ENOTEMPTY")||isTransientLockError(error)){if(monotonicNow()>=deadline){await this.removeOwnedPublicationStage(stageName,expectedStageBytes);return {ok:false,reason:"busy"};}await delay(5);continue;}throw error;}
         await this.syncDirectory(this.root);
+        this.fault("after-lock-publication-root-sync");
+        return { ok: true, owner, reclaimed:false };
       } catch (error) {
-        try { await this.retireOwnedLock(owner, "publication-aborted", deadline, false); } catch { /* Preserve any replacement owner and the publication failure. */ }
+        if(error instanceof LedgerCorruption){if(stageCreated)try{await this.removeOwnedPublicationStage(stageName,expectedStageBytes);}catch{}return {ok:false,reason:"corruption"};}
+        if(stageCreated)try{await this.removeOwnedPublicationStage(stageName,expectedStageBytes);}catch{}
+        if(published)try{await this.retireOwnedLock(owner,"publication-aborted",deadline,false);}catch{}
         throw error;
       }
-      return { ok: true, owner, reclaimed:false };
     }
+  }
+
+  private publicationStageName(owner:LockOwner):string{return `.authority-ledger-lock-publication-${this.hostDigest(owner.host)}-${owner.pid}-${owner.nonce}.tmp`;}
+  private hostDigest(host:string):string{return createHash("sha256").update(host,"utf8").digest("hex");}
+
+  private async inspectActiveLock(deadline:number):Promise<"absent"|"wait"|Extract<LockResult,{ok:false}>>{
+    const directory=this.absolute("lock");let directoryStat;
+    try{directoryStat=await lstat(directory);}catch(error){if(hasCode(error,"ENOENT"))return "absent";if(isTransientLockError(error)&&monotonicNow()<deadline)return "wait";throw error;}
+    if(directoryStat.isSymbolicLink()||!directoryStat.isDirectory())throw new LedgerCorruption("invalid active lock directory");
+    const entries=await readdir(directory,{withFileTypes:true});if(entries.length!==1||entries[0].name!=="owner.json"||entries[0].isSymbolicLink()||!entries[0].isFile())throw new LedgerCorruption("invalid active lock contents");
+    const target=path.join(directory,"owner.json"),info=await lstat(target);if(info.isSymbolicLink()||!info.isFile()||info.nlink!==1)throw new LedgerCorruption("invalid active lock owner object");
+    const bytes=await readFile(target);let existing:LockOwner;try{existing=parseCanonical(bytes) as LockOwner;assertLockOwner(existing);}catch{throw new LedgerCorruption("invalid active lock owner");}
+    if(existing.host!==hostname())return {ok:false,reason:"lock-owner-unverifiable"};const liveness=processLiveness(existing.pid);if(liveness==="unverifiable")return {ok:false,reason:"lock-owner-unverifiable"};if(liveness==="alive")return "wait";
+    if(!await this.retireOwnedLock(existing,"recovery-pending",deadline,false))return "wait";return "absent";
+  }
+
+  private async validatePublicationStage(name:string):Promise<PublicationStage>{
+    const match=PUBLICATION_STAGE.exec(name);if(!match)throw new LedgerCorruption("invalid publication stage name");const pid=Number(match[2]);if(!Number.isSafeInteger(pid)||pid<=0||match[1]!==this.hostDigest(hostname()))throw new LedgerCorruption("invalid publication stage provenance");
+    const directory=this.absolute(name),directoryStat=await lstat(directory);if(directoryStat.isSymbolicLink()||!directoryStat.isDirectory())throw new LedgerCorruption("invalid publication stage directory");const entries=await readdir(directory,{withFileTypes:true});
+    if(entries.length===0)return {name,directory,hostDigest:match[1],pid,nonce:match[3],state:"empty"};if(entries.length!==1||entries[0].name!=="owner.json"||entries[0].isSymbolicLink()||!entries[0].isFile())throw new LedgerCorruption("invalid publication stage contents");
+    const ownerPath=path.join(directory,"owner.json"),ownerStat=await lstat(ownerPath);if(ownerStat.isSymbolicLink()||!ownerStat.isFile()||ownerStat.nlink!==1)throw new LedgerCorruption("invalid publication stage owner object");const ownerBytes=await readFile(ownerPath);if(ownerBytes.length===0)return {name,directory,hostDigest:match[1],pid,nonce:match[3],state:"zero",ownerBytes};
+    let owner:LockOwner;try{owner=parseCanonical(ownerBytes) as LockOwner;assertLockOwner(owner);}catch{try{JSON.parse(ownerBytes.toString("utf8"));}catch{return {name,directory,hostDigest:match[1],pid,nonce:match[3],state:"partial",ownerBytes};}throw new LedgerCorruption("invalid complete publication owner");}
+    if(owner.host!==hostname()||this.hostDigest(owner.host)!==match[1]||owner.pid!==pid||owner.nonce!==match[3])throw new LedgerCorruption("publication stage owner mismatch");return {name,directory,hostDigest:match[1],pid,nonce:match[3],state:"complete",ownerBytes,owner};
+  }
+
+  private async servicePublicationStages(deadline:number,activeOwner:boolean):Promise<boolean>{
+    const names=(await readdir(this.root)).filter(name=>name.startsWith(".authority-ledger-lock-publication-"));for(const name of names)if(!PUBLICATION_STAGE.test(name))throw new LedgerCorruption("invalid publication stage name");const stages:PublicationStage[]=[];const identities=new Set<string>();
+    for(const name of names){const stage=await this.validatePublicationStage(name),identity=`${stage.hostDigest}:${stage.pid}`;if(identities.has(identity))throw new LedgerCorruption("ambiguous publication stages");identities.add(identity);stages.push(stage);}
+    let live=false,removed=false;for(const stage of stages){const liveness=processLiveness(stage.pid);if(liveness==="unverifiable")throw new LedgerCorruption("unverifiable publication stage owner");if(liveness==="alive"){live=true;continue;}const current=await this.validatePublicationStage(stage.name);if(current.state!==stage.state||!sameOptionalBytes(current.ownerBytes,stage.ownerBytes))throw new LedgerCorruption("publication stage changed");await this.removeWithRetry(stage.directory,deadline,true);removed=true;}if(removed)await this.syncDirectory(this.root);return !activeOwner&&live;
+  }
+
+  private async removeOwnedPublicationStage(name:string,expected:Buffer|undefined|null):Promise<void>{
+    if(expected===null)return;let stage:PublicationStage;try{stage=await this.validatePublicationStage(name);}catch(error){if(hasCode(error,"ENOENT"))return;throw error;}if(expected===undefined){if(stage.state!=="empty")return;}else if(!sameOptionalBytes(stage.ownerBytes,expected))return;await rm(stage.directory,{recursive:true});await this.syncDirectory(this.root);
   }
 
   private async releaseLock(owner: LockOwner): Promise<void> {
@@ -473,21 +498,23 @@ export class FsAuthorityLedger implements AuthorityLedger {
     const entries = await readdir(directory, { withFileTypes: true });
     if (entries.length === 0) throw new LedgerCorruption("incomplete retirement marker");
     if (entries.length !== 1 || entries[0].name !== "owner.json" || entries[0].isSymbolicLink() || !entries[0].isFile()) throw new LedgerCorruption("invalid retired lock contents");
-    const ownerBytes = await readFile(path.join(directory, "owner.json"));
+    const ownerPath=path.join(directory,"owner.json"),ownerStat=await lstat(ownerPath);
+    if(ownerStat.isSymbolicLink()||!ownerStat.isFile()||ownerStat.nlink!==1)throw new LedgerCorruption("invalid retired lock owner object");
+    const ownerBytes = await readFile(ownerPath);
     const owner = parseCanonical(ownerBytes) as LockOwner;
     assertLockOwner(owner);
     if (owner.host !== hostname() || owner.pid !== pid || owner.nonce !== match[2]) throw new LedgerCorruption("retired lock owner mismatch");
     return { name,directory,disposition:match[3] as RetirementDisposition,owner,ownerBytes };
   }
 
-  private cleanupAck(marker:RetiredLock,journalHead:string|null):CleanupAck{return {disposition:marker.disposition,journalHead,markerName:marker.name,ownerDigest:authorityDigest(marker.owner),v:"reelier.authority-ledger-lock-cleanup-ack/v1"};}
+  private cleanupAck(marker:RetiredLock,journalHead:string|null):CleanupAck{const owner={host:marker.owner.host,nonce:marker.owner.nonce,pid:marker.owner.pid,v:1 as const};return {disposition:marker.disposition,journalHead,markerName:marker.name,owner,ownerDigest:authorityDigest(owner),v:"reelier.authority-ledger-lock-cleanup-ack/v1"};}
   private cleanupAckName(ack:CleanupAck):string{return `.authority-ledger-lock-cleanup-${authorityDigest(ack).slice(7)}.ack`;}
   private cleanupStageName(marker:RetiredLock,ack:CleanupAck):string{return `.authority-ledger-lock-cleanup-stage-${marker.owner.pid}-${marker.owner.nonce}-${authorityDigest(ack).slice(7)}.tmp`;}
 
   private async serviceRetirementArtifacts(deadline:number):Promise<RetiredLock[]>{
     let names=await readdir(this.root);
     const prefixed=()=>names.filter(name=>name.startsWith(".authority-ledger-lock-"));
-    for(const name of prefixed())if(!RETIRED_LOCK.test(name)&&!CLEANUP_ACK.test(name)&&!CLEANUP_STAGE.test(name))throw new LedgerCorruption("invalid ledger lock artifact name");
+    for(const name of prefixed())if(!RETIRED_LOCK.test(name)&&!CLEANUP_ACK.test(name)&&!CLEANUP_STAGE.test(name)&&!PUBLICATION_STAGE.test(name))throw new LedgerCorruption("invalid ledger lock artifact name");
 
     const acknowledged=new Map<string,string>();
     for(const name of names.filter(name=>CLEANUP_ACK.test(name))){const ack=await this.readCleanupAck(name);if(acknowledged.has(ack.markerName))throw new LedgerCorruption("duplicate cleanup acknowledgment");acknowledged.set(ack.markerName,name);await this.finishAcknowledgedCleanup(name,ack,deadline);}
@@ -505,18 +532,18 @@ export class FsAuthorityLedger implements AuthorityLedger {
 
     names=await readdir(this.root);
     const pending:RetiredLock[]=[];
-    for(const name of names){if(!name.startsWith(".authority-ledger-lock-"))continue;if(CLEANUP_ACK.test(name)||CLEANUP_STAGE.test(name))throw new LedgerCorruption("unresolved cleanup artifact");if(!RETIRED_LOCK.test(name))throw new LedgerCorruption("invalid retirement marker");const marker=await this.validateRetiredLock(name);if(marker.disposition==="recovery-pending")pending.push(marker);else await this.acknowledgeAndCleanup(marker,null,deadline);}
+    for(const name of names){if(!name.startsWith(".authority-ledger-lock-")||PUBLICATION_STAGE.test(name))continue;if(CLEANUP_ACK.test(name)||CLEANUP_STAGE.test(name))throw new LedgerCorruption("unresolved cleanup artifact");if(!RETIRED_LOCK.test(name))throw new LedgerCorruption("invalid retirement marker");const marker=await this.validateRetiredLock(name);if(marker.disposition==="recovery-pending")pending.push(marker);else await this.acknowledgeAndCleanup(marker,null,deadline);}
     return pending;
   }
 
   private async cleanupJournalHead(disposition:RetirementDisposition):Promise<string|null>{if(disposition!=="recovery-pending")return null;const view=await this.loadView();return view.eventDigests.at(-1)??null;}
 
   private async readCleanupAck(name:string):Promise<CleanupAck>{
-    const match=CLEANUP_ACK.exec(name);if(!match)throw new LedgerCorruption("invalid cleanup acknowledgment name");const target=this.absolute(name),info=await lstat(target);if(info.isSymbolicLink()||!info.isFile()||info.nlink!==1)throw new LedgerCorruption("invalid cleanup acknowledgment object");const ack=parseCanonical(await readFile(target)) as CleanupAck;assertCleanupAck(ack);if(authorityDigest(ack).slice(7)!==match[1])throw new LedgerCorruption("cleanup acknowledgment digest mismatch");const marker=RETIRED_LOCK.exec(ack.markerName);if(!marker||marker[3]!==ack.disposition)throw new LedgerCorruption("cleanup acknowledgment marker mismatch");const expectedHead=await this.cleanupJournalHead(ack.disposition);if(ack.journalHead!==expectedHead)throw new LedgerCorruption("cleanup acknowledgment journal head mismatch");return ack;
+    const match=CLEANUP_ACK.exec(name);if(!match)throw new LedgerCorruption("invalid cleanup acknowledgment name");const target=this.absolute(name),info=await lstat(target);if(info.isSymbolicLink()||!info.isFile()||info.nlink!==1)throw new LedgerCorruption("invalid cleanup acknowledgment object");const ack=parseCanonical(await readFile(target)) as CleanupAck;assertCleanupAck(ack);if(authorityDigest(ack).slice(7)!==match[1])throw new LedgerCorruption("cleanup acknowledgment digest mismatch");const marker=RETIRED_LOCK.exec(ack.markerName);if(!marker||marker[3]!==ack.disposition||Number(marker[1])!==ack.owner.pid||marker[2]!==ack.owner.nonce)throw new LedgerCorruption("cleanup acknowledgment marker mismatch");if(ack.owner.host!==hostname()||authorityDigest(ack.owner)!==ack.ownerDigest)throw new LedgerCorruption("cleanup acknowledgment owner mismatch");const expectedHead=await this.cleanupJournalHead(ack.disposition);if(ack.journalHead!==expectedHead)throw new LedgerCorruption("cleanup acknowledgment journal head mismatch");return ack;
   }
 
   private async finishAcknowledgedCleanup(ackName:string,ack:CleanupAck,deadline:number):Promise<void>{
-    const markerPath=this.absolute(ack.markerName);let markerExists=true;try{const info=await lstat(markerPath);if(info.isSymbolicLink()||!info.isDirectory())throw new LedgerCorruption("invalid acknowledged marker object");const entries=await readdir(markerPath,{withFileTypes:true});if(entries.length===1&&entries[0].name==="owner.json"&&entries[0].isFile()&&!entries[0].isSymbolicLink()){const marker=await this.validateRetiredLock(ack.markerName);if(authorityDigest(marker.owner)!==ack.ownerDigest||marker.disposition!==ack.disposition)throw new LedgerCorruption("cleanup acknowledgment owner mismatch");}else if(entries.length!==0)throw new LedgerCorruption("invalid partial acknowledged marker");}catch(error){if(hasCode(error,"ENOENT"))markerExists=false;else throw error;}
+    const markerPath=this.absolute(ack.markerName);let markerExists=true;try{const info=await lstat(markerPath);if(info.isSymbolicLink()||!info.isDirectory())throw new LedgerCorruption("invalid acknowledged marker object");const entries=await readdir(markerPath,{withFileTypes:true});if(entries.length===1&&entries[0].name==="owner.json"&&entries[0].isFile()&&!entries[0].isSymbolicLink()){const marker=await this.validateRetiredLock(ack.markerName);if(authorityDigest(marker.owner)!==ack.ownerDigest||!marker.ownerBytes.equals(canonicalBytes(ack.owner))||marker.disposition!==ack.disposition)throw new LedgerCorruption("cleanup acknowledgment owner mismatch");}else if(entries.length!==0)throw new LedgerCorruption("invalid partial acknowledged marker");}catch(error){if(hasCode(error,"ENOENT"))markerExists=false;else throw error;}
     if(markerExists)await this.removeWithRetry(markerPath,deadline,true);await this.syncDirectory(this.root);await this.unlinkWithRetry(this.absolute(ackName),deadline);await this.syncDirectory(this.root);
   }
 
@@ -561,15 +588,17 @@ export class FsAuthorityLedger implements AuthorityLedger {
       const entries=volatile?await volatileRead(()=>readdir(directory,{withFileTypes:true})):await readdir(directory,{withFileTypes:true});if(!entries)return;
       for (const entry of entries) {
         if (entry.isSymbolicLink()) throw new LedgerCorruption("symlink or reparse point below ledger root");
-        if (root && RETIRED_LOCK.test(entry.name)) {
-          await this.validateRetiredLock(entry.name);
-          continue;
-        }
-        if (root && !allowedRoot.has(entry.name)) throw new LedgerCorruption("unexpected ledger root entry");
+        const rootDirectoryArtifact=root&&(RETIRED_LOCK.test(entry.name)||PUBLICATION_STAGE.test(entry.name));
+        const rootFileArtifact=root&&(CLEANUP_ACK.test(entry.name)||CLEANUP_STAGE.test(entry.name));
+        if(root&&!allowedRoot.has(entry.name)&&!rootDirectoryArtifact&&!rootFileArtifact)throw new LedgerCorruption("unexpected ledger root entry");
         const full = path.join(directory, entry.name);
-        const actual=volatile?await volatileRead(()=>stat(full)):await stat(full);if(!actual)continue;
-        if (actual.isDirectory()) await walk(full,false,volatile||(root&&entry.name==="decisions"));
-        else if (!actual.isFile()) throw new LedgerCorruption("unexpected filesystem object");
+        const childVolatile=volatile||(root&&entry.name==="decisions")||(root&&PUBLICATION_STAGE.test(entry.name));
+        const actual=childVolatile?await volatileRead(()=>lstat(full)):await lstat(full);if(!actual)continue;
+        if(actual.isSymbolicLink())throw new LedgerCorruption("symlink or reparse point below ledger root");
+        if(rootFileArtifact&&(!actual.isFile()||actual.nlink!==1))throw new LedgerCorruption("invalid root artifact object");
+        if((rootDirectoryArtifact||root&&allowedRoot.has(entry.name))&&!actual.isDirectory())throw new LedgerCorruption("invalid ledger directory object");
+        if(actual.isDirectory())await walk(full,false,childVolatile);
+        else if(!actual.isFile()||actual.nlink!==1)throw new LedgerCorruption("unexpected filesystem object");
       }
     };
     await walk(this.root, true);
@@ -1054,7 +1083,7 @@ function hasValidResultDigest(to: unknown, resultDigest: unknown): boolean {
 function assertLockOwner(value: LockOwner): void {
   if (!value || value.v !== 1 || typeof value.host !== "string" || value.host.length === 0 || !Number.isSafeInteger(value.pid) || value.pid <= 0 || !/^[0-9a-f]{64}$/.test(value.nonce) || Object.keys(value).sort().join(",") !== "host,nonce,pid,v") throw new LedgerCorruption("invalid lock owner");
 }
-function assertCleanupAck(value:CleanupAck):void{if(!value||value.v!=="reelier.authority-ledger-lock-cleanup-ack/v1"||!(["released","recovery-pending","publication-aborted"] as unknown[]).includes(value.disposition)||typeof value.markerName!=="string"||!SHA.test(value.ownerDigest)||value.ownerDigest===ZERO_SHA||(value.journalHead!==null&&(!SHA.test(value.journalHead)||value.journalHead===ZERO_SHA))||Object.keys(value).sort().join(",")!=="disposition,journalHead,markerName,ownerDigest,v")throw new LedgerCorruption("invalid cleanup acknowledgment");}
+function assertCleanupAck(value:CleanupAck):void{if(!value||value.v!=="reelier.authority-ledger-lock-cleanup-ack/v1"||!(["released","recovery-pending","publication-aborted"] as unknown[]).includes(value.disposition)||typeof value.markerName!=="string"||!SHA.test(value.ownerDigest)||value.ownerDigest===ZERO_SHA||(value.journalHead!==null&&(!SHA.test(value.journalHead)||value.journalHead===ZERO_SHA))||Object.keys(value).sort().join(",")!=="disposition,journalHead,markerName,owner,ownerDigest,v")throw new LedgerCorruption("invalid cleanup acknowledgment");assertLockOwner(value.owner);}
 function processLiveness(pid: number): "alive" | "dead" | "unverifiable" {
   try { process.kill(pid, 0); return "alive"; }
   catch (error) {
@@ -1075,6 +1104,7 @@ function frozen<T>(value: T): T {
 }
 function normalizePath(value: string): string { return process.platform === "win32" ? value.toLowerCase() : value; }
 function hasCode(error: unknown, code: string): boolean { return Boolean(error && typeof error === "object" && "code" in error && (error as { code?: string }).code === code); }
+function sameOptionalBytes(left:Buffer|undefined,right:Buffer|undefined):boolean{return left===undefined?right===undefined:right!==undefined&&left.equals(right);}
 function isTransientLockError(error: unknown): boolean { return ["ENOENT", "EPERM", "EACCES", "ENOTEMPTY"].some(code => hasCode(error, code)); }
 function monotonicNow():number{return Number(process.hrtime.bigint()/1_000_000n);}
 function delay(ms: number): Promise<void> { return new Promise(resolve => setTimeout(resolve, ms)); }
