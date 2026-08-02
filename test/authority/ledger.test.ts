@@ -57,6 +57,7 @@ function intent(overrides: Partial<ReservationIntent> = {}): ReservationIntent {
     requestId: "request_1",
     requestKey: deriveRequestKey(overrides),
     ingressClaimDigest: digest("9"),
+    decisionContextDigest: digest("7"),
     contractDigest: digest("a"), sourceBundleDigest: digest("b"), sourceSnapshotDigest: digest("c"), authorityStateDigest: digest("d"), limits,
     limitsDigest: "",
     capabilityId: "capability_1",
@@ -492,6 +493,7 @@ test("reservation scalar identities must equal the closed canonical request and 
     ["sourceBundleDigest", value => ({ ...value, sourceBundleDigest: digest("8") })],
     ["sourceSnapshotDigest", value => ({ ...value, sourceSnapshotDigest: digest("8") })],
     ["authorityStateDigest", value => ({ ...value, authorityStateDigest: digest("8") })],
+    ["decisionContextDigest", value => ({ ...value, decisionContextDigest: "sha256:" + "0".repeat(64) })],
     ["limits", value => ({ ...value, limits: { ...value.limits!, maxBodyBytes: value.limits!.maxBodyBytes + 1 } })],
     ["limitsDigest", value => ({ ...value, limitsDigest: digest("8") })],
     ["outcomeKey", value => ({ ...value, outcomeKey: digest("8") })],
@@ -854,10 +856,10 @@ test("every ingress and standalone-clock crash boundary recovers only prior, com
   for(const point of clockFaultPoints)await withRoot(async root=>{assert.equal((await new RawFsAuthorityLedger(root,{now:()=>t0}).observeClock()).ok,true);let fired=false;const crashing=new RawFsAuthorityLedger(root,{now:()=>t0+1,faultInjector(observed){if(!fired&&observed===point){fired=true;throw new Error(`fault:${point}`);}}});try{await crashing.observeClock();}catch(error){assert.match(String(error),/fault:/);}assert.equal(fired,true,point);const recovered=await new RawFsAuthorityLedger(root,{now:()=>t0+1}).recover();if(!recovered.ok)assert.equal(recovered.reason,"corruption");else assert.ok([new Date(t0).toISOString(),new Date(t0+1).toISOString()].includes(recovered.highWaterMark!));});
 });
 
-test("ingress filename, bytes, digest linkage, and pre-v3 transactions fail closed on recovery",async()=>{
+test("ingress filename, bytes, digest linkage, and pre-v4 transactions fail closed on recovery",async()=>{
   await withRoot(async root=>{const authenticated=authenticateOutcomeRequest({tenant:"tenant_1",requester:"requester_1",definitionAlias:"definition_1",request:{v:"reelier.outcome-request/v1",requestId:"request_1",sourceRefs:{source:"ref_1"},choices:{}}});const state=authenticatedOutcomeRequestState(authenticated);assert.equal((await new RawFsAuthorityLedger(root,{now:()=>t0}).bindIngress(authenticated)).ok,true);await writeFile(path.join(root,"ingress",`${state.requestKey.slice(7)}.json`),"{");assert.deepEqual(await new RawFsAuthorityLedger(root,{now:()=>t0}).recover(),{ok:false,reason:"corruption"});});
   await withRoot(async root=>{const ledger=new FsAuthorityLedger(root,{now:()=>t0});const created=await ledger.reserve(intent());assert.equal(created.ok,true);const ingress=await readdir(path.join(root,"ingress"));await unlink(path.join(root,"ingress",ingress[0]));assert.deepEqual(await new RawFsAuthorityLedger(root,{now:()=>t0}).recover(),{ok:false,reason:"corruption"});});
-  for(const version of ["v1","v2"])await withRoot(async root=>{assert.equal((await new RawFsAuthorityLedger(root,{now:()=>t0}).recover()).ok,true);const bytes=authorityCanonicalBytes({v:`reelier.authority-ledger-transaction/${version}`,intent:{}});const name=createHash("sha256").update(bytes).digest("hex");await writeFile(path.join(root,"transactions",name),bytes);assert.deepEqual(await new RawFsAuthorityLedger(root,{now:()=>t0}).recover(),{ok:false,reason:"corruption"});});
+  for(const version of ["v1","v2","v3"])await withRoot(async root=>{assert.equal((await new RawFsAuthorityLedger(root,{now:()=>t0}).recover()).ok,true);const bytes=authorityCanonicalBytes({v:`reelier.authority-ledger-transaction/${version}`,intent:{}});const name=createHash("sha256").update(bytes).digest("hex");await writeFile(path.join(root,"transactions",name),bytes);assert.deepEqual(await new RawFsAuthorityLedger(root,{now:()=>t0}).recover(),{ok:false,reason:"corruption"});});
 });
 
 test("bindIngress refuses evaluation eligibility when any existing ingress record is corrupt",async()=>{
@@ -876,6 +878,7 @@ test("reservation linkage lookup returns only the verified ingress/capability/co
       capabilityId:reserved.reservation.intent.capabilityId,
       capabilityDigest:reserved.reservation.intent.capabilityDigest,
       authorityStateDigest:reserved.reservation.intent.authorityStateDigest,
+      decisionContextDigest:reserved.reservation.intent.decisionContextDigest,
       state:"reserved",
       updatedAt:new Date(t0).toISOString(),
     });
