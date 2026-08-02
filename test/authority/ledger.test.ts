@@ -21,6 +21,7 @@ import {
   FsAuthorityLedger as RawFsAuthorityLedger,
   dispatchFaultPoints,
   ledgerFaultPoints,
+  ledgerLockFaultPoints,
   reservationFaultPoints,
   resultFaultPoints,
   ingressFaultPoints,
@@ -891,10 +892,11 @@ test("reserve requires the exact live ingress claim before writing any transacti
   });
 });
 
-test("new ingress and clock fault-point sets are complete and disjoint", () => {
+test("new ingress, clock, and ledger-lock fault-point sets are complete and disjoint", () => {
   assert.deepEqual(ingressFaultPoints, ["ingress-before-create","ingress-after-create","ingress-before-write","ingress-after-write","ingress-before-file-sync","ingress-after-file-sync","ingress-before-close","ingress-after-close","ingress-before-directory-sync","ingress-after-directory-sync"]);
   assert.deepEqual(clockFaultPoints, ["clock-before-clock-high-water-write","clock-after-clock-high-water-write","clock-before-create","clock-after-create","clock-before-write","clock-after-write","clock-before-file-sync","clock-after-file-sync","clock-before-close","clock-after-close","clock-before-directory-sync","clock-after-directory-sync"]);
-  const all=[...reservationFaultPoints,...dispatchFaultPoints,...resultFaultPoints,...ingressFaultPoints,...clockFaultPoints];
+  assert.deepEqual(ledgerLockFaultPoints, ledgerLockDurabilityPoints);
+  const all=[...reservationFaultPoints,...dispatchFaultPoints,...resultFaultPoints,...ingressFaultPoints,...clockFaultPoints,...ledgerLockFaultPoints];
   assert.equal(new Set(all).size,all.length);
   assert.deepEqual([...all].sort(),[...ledgerFaultPoints].sort());
 });

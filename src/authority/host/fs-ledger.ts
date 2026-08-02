@@ -5,12 +5,13 @@ import {
   realpathSync,
 } from "node:fs";
 import {
+  lstat,
   mkdir,
   open,
   readFile,
   readdir,
+  rename,
   rm,
-  rmdir,
   stat,
   unlink,
 } from "node:fs/promises";
@@ -76,7 +77,10 @@ export const clockFaultPoints = Object.freeze([
   "clock-before-file-sync", "clock-after-file-sync", "clock-before-close", "clock-after-close",
   "clock-before-directory-sync", "clock-after-directory-sync",
 ] as const);
-export const ledgerFaultPoints = Object.freeze([...reservationFaultPoints, ...dispatchFaultPoints, ...resultFaultPoints, ...ingressFaultPoints, ...clockFaultPoints]);
+export const ledgerLockFaultPoints = Object.freeze([
+  "after-owner-file-sync", "after-lock-directory-sync", "before-lock-retire", "after-lock-retire",
+] as const);
+export const ledgerFaultPoints = Object.freeze([...reservationFaultPoints, ...dispatchFaultPoints, ...resultFaultPoints, ...ingressFaultPoints, ...clockFaultPoints, ...ledgerLockFaultPoints]);
 export type LedgerFaultPoint = (typeof ledgerFaultPoints)[number];
 
 export interface FsAuthorityLedgerOptions {
@@ -151,6 +155,7 @@ interface LedgerView {
 }
 
 interface LockOwner { readonly v: 1; readonly host: string; readonly pid: number; readonly nonce: string }
+interface RetiredLock { readonly directory: string; readonly owner: LockOwner; readonly ownerBytes: Buffer }
 type TombstoneResolution = Readonly<{ kind: "refused"; reason: ReserveReason }> | Readonly<{ kind: "existing"; reservationId: string }>;
 type LockResult = { ok: true; owner: LockOwner; reclaimed: boolean } | { ok: false; reason: "busy" | "lock-owner-unverifiable" | "corruption" };
 
@@ -159,6 +164,7 @@ const ZERO_SHA = `sha256:${"0".repeat(64)}`;
 const ID = /^[A-Za-z0-9._~-]{1,128}$/;
 const FILE_HEX = /^[0-9a-f]{64}$/;
 const INGRESS_FILE = /^([0-9a-f]{64})\.json$/;
+const RETIRED_LOCK = /^\.authority-ledger-lock-([1-9][0-9]*)-([0-9a-f]{64})\.retired$/;
 const JOURNAL_FILE = /^(\d{16})-([0-9a-f]{64})$/;
 const LEGAL = new Set(["reserved>dispatched", "dispatched>acknowledged", "dispatched>definitive-failure", "dispatched>ambiguous", "acknowledged>reconciled", "ambiguous>reconciled"]);
 const TOMBSTONE_REASONS = new Set<ReserveReason>(["idempotency-conflict", "semantic-duplicate", "capability-integrity", "capability-already-reserved", "limit-exceeded"]);
@@ -361,63 +367,138 @@ export class FsAuthorityLedger implements AuthorityLedger {
   private async acquireLock(): Promise<LockResult> {
     const deadline = monotonicNow() + this.options.lockTimeoutMs;
     let reclaimed = false;
+    try { await this.cleanupRetiredLocks(deadline); }
+    catch { return { ok: false, reason: "corruption" }; }
     while (true) {
       const owner: LockOwner = { v: 1, host: hostname(), pid: process.pid, nonce: randomBytes(32).toString("hex") };
       try {
         await mkdir(this.absolute("lock"));
-        const handle = await open(this.absolute(path.join("lock", "owner.json")), "wx", 0o600);
-        try { await handle.writeFile(canonicalBytes(owner)); await handle.sync(); } finally { await handle.close(); }
-        await this.syncDirectory(this.root);
-        return { ok: true, owner, reclaimed };
       } catch (error) {
         if (!hasCode(error, "EEXIST")) {
           if (isTransientLockError(error) && monotonicNow() < deadline) { await delay(5); continue; }
           return { ok: false, reason: "corruption" };
         }
-      }
-      let ownerBytes: Buffer;
-      try { ownerBytes = await readFile(this.absolute(path.join("lock", "owner.json"))); }
-      catch (error) {
-        if (isTransientLockError(error) && monotonicNow() < deadline) { await delay(5); continue; }
-        return { ok: false, reason: "corruption" };
-      }
-      let existing: LockOwner;
-      try { existing = parseCanonical(ownerBytes) as LockOwner; assertLockOwner(existing); }
-      catch {
-        if (monotonicNow() < deadline) { await delay(5); continue; }
-        return { ok: false, reason: "corruption" };
-      }
-      if (existing.host !== hostname()) return { ok: false, reason: "lock-owner-unverifiable" };
-      const liveness = processLiveness(existing.pid);
-      if (liveness === "unverifiable") return { ok: false, reason: "lock-owner-unverifiable" };
-      if (liveness === "alive") {
-        if (monotonicNow() >= deadline) return { ok: false, reason: "busy" };
-        await delay(5);
+        let ownerBytes: Buffer;
+        try { ownerBytes = await readFile(this.absolute(path.join("lock", "owner.json"))); }
+        catch (readError) {
+          if (isTransientLockError(readError) && monotonicNow() < deadline) { await delay(5); continue; }
+          return { ok: false, reason: "corruption" };
+        }
+        let existing: LockOwner;
+        try { existing = parseCanonical(ownerBytes) as LockOwner; assertLockOwner(existing); }
+        catch {
+          if (monotonicNow() < deadline) { await delay(5); continue; }
+          return { ok: false, reason: "corruption" };
+        }
+        if (existing.host !== hostname()) return { ok: false, reason: "lock-owner-unverifiable" };
+        const liveness = processLiveness(existing.pid);
+        if (liveness === "unverifiable") return { ok: false, reason: "lock-owner-unverifiable" };
+        if (liveness === "alive") {
+          if (monotonicNow() >= deadline) return { ok: false, reason: "busy" };
+          await delay(5);
+          continue;
+        }
+        try {
+          if (!await this.retireOwnedLock(existing, deadline, false)) continue;
+          reclaimed = true;
+        } catch (retireError) {
+          if (isTransientLockError(retireError) && monotonicNow() < deadline) { await delay(5); continue; }
+          return { ok: false, reason: "corruption" };
+        }
         continue;
       }
+
       try {
-        const current = await readFile(this.absolute(path.join("lock", "owner.json")));
-        if (!current.equals(ownerBytes)) continue;
-        await unlink(this.absolute(path.join("lock", "owner.json")));
-        await rmdir(this.absolute("lock"));
+        const handle = await open(this.absolute(path.join("lock", "owner.json")), "wx", 0o600);
+        try { await handle.writeFile(canonicalBytes(owner)); await handle.sync(); } finally { await handle.close(); }
+        this.fault("after-owner-file-sync");
+        await this.syncDirectory(this.absolute("lock"));
+        this.fault("after-lock-directory-sync");
         await this.syncDirectory(this.root);
-        reclaimed = true;
+        return { ok: true, owner, reclaimed };
       } catch (error) {
-        if (!isTransientLockError(error)) return { ok: false, reason: "corruption" };
-        if (monotonicNow() < deadline) { await delay(5); continue; }
-        return { ok: false, reason: "corruption" };
+        try { await this.retireOwnedLock(owner, deadline, false); } catch { /* Preserve any replacement owner and the publication failure. */ }
+        throw error;
       }
     }
   }
 
   private async releaseLock(owner: LockOwner): Promise<void> {
-    try {
-      const bytes = await readFile(this.absolute(path.join("lock", "owner.json")));
-      if (!bytes.equals(canonicalBytes(owner))) return;
-      await unlink(this.absolute(path.join("lock", "owner.json")));
-      await rmdir(this.absolute("lock"));
-      await this.syncDirectory(this.root);
-    } catch { /* A crash/corrupt owner must remain for the next fail-closed acquisition. */ }
+    const deadline = monotonicNow() + this.options.lockTimeoutMs;
+    try { await this.retireOwnedLock(owner, deadline, true); }
+    catch { /* A crash/corrupt owner must remain for the next fail-closed acquisition. */ }
+  }
+
+  private retiredLockName(owner: LockOwner): string {
+    return `.authority-ledger-lock-${owner.pid}-${owner.nonce}.retired`;
+  }
+
+  private async retireOwnedLock(owner: LockOwner, deadline: number, injectFaults: boolean): Promise<boolean> {
+    const expected = canonicalBytes(owner);
+    let current: Buffer;
+    try { current = await readFile(this.absolute(path.join("lock", "owner.json"))); }
+    catch (error) { if (hasCode(error, "ENOENT")) return false; throw error; }
+    if (!current.equals(expected)) return false;
+    if (injectFaults) this.fault("before-lock-retire");
+    const retiredName = this.retiredLockName(owner);
+    const retiredDirectory = this.absolute(retiredName);
+    for (;;) {
+      try { await rename(this.absolute("lock"), retiredDirectory); break; }
+      catch (error) {
+        if (hasCode(error, "ENOENT")) return false;
+        if (isTransientLockError(error) && monotonicNow() < deadline) { await delay(5); continue; }
+        throw error;
+      }
+    }
+    if (injectFaults) this.fault("after-lock-retire");
+    await this.syncDirectory(this.root);
+    const retired = await this.validateRetiredLock(retiredName);
+    if (!retired.ownerBytes.equals(expected)) throw new LedgerCorruption("retired lock owner changed");
+    await this.cleanupRetiredLock(retired, deadline);
+    return true;
+  }
+
+  private async cleanupRetiredLocks(deadline: number): Promise<void> {
+    const entries = await readdir(this.root, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.name.startsWith(".authority-ledger-lock-")) continue;
+      if (!RETIRED_LOCK.test(entry.name)) throw new LedgerCorruption("invalid retired lock name");
+      const retired = await this.validateRetiredLock(entry.name);
+      await this.cleanupRetiredLock(retired, deadline);
+    }
+  }
+
+  private async validateRetiredLock(name: string): Promise<RetiredLock> {
+    const match = RETIRED_LOCK.exec(name);
+    if (!match) throw new LedgerCorruption("invalid retired lock name");
+    const pid = Number(match[1]);
+    if (!Number.isSafeInteger(pid) || pid <= 0) throw new LedgerCorruption("invalid retired lock pid");
+    const directory = this.absolute(name);
+    const directoryStat = await lstat(directory);
+    if (directoryStat.isSymbolicLink() || !directoryStat.isDirectory()) throw new LedgerCorruption("invalid retired lock directory");
+    const entries = await readdir(directory, { withFileTypes: true });
+    if (entries.length !== 1 || entries[0].name !== "owner.json" || entries[0].isSymbolicLink() || !entries[0].isFile()) throw new LedgerCorruption("invalid retired lock contents");
+    const ownerBytes = await readFile(path.join(directory, "owner.json"));
+    const owner = parseCanonical(ownerBytes) as LockOwner;
+    assertLockOwner(owner);
+    if (owner.host !== hostname() || owner.pid !== pid || owner.nonce !== match[2]) throw new LedgerCorruption("retired lock owner mismatch");
+    return { directory, owner, ownerBytes };
+  }
+
+  private async cleanupRetiredLock(retired: RetiredLock, deadline: number): Promise<void> {
+    for (;;) {
+      try {
+        const current = await this.validateRetiredLock(path.basename(retired.directory));
+        if (!current.ownerBytes.equals(retired.ownerBytes)) throw new LedgerCorruption("retired lock owner changed");
+        await rm(retired.directory, { recursive: true });
+        await this.syncDirectory(this.root);
+        return;
+      } catch (error) {
+        if (hasCode(error, "ENOENT")) return;
+        if (isTransientLockError(error) && monotonicNow() < deadline) { await delay(5); continue; }
+        throw error;
+      }
+    }
   }
 
   private async prepare(reclaimed: boolean, makeDispatchedAmbiguous: boolean, context: OperationContext): Promise<LedgerView> {
@@ -451,6 +532,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
       const entries=volatile?await volatileRead(()=>readdir(directory,{withFileTypes:true})):await readdir(directory,{withFileTypes:true});if(!entries)return;
       for (const entry of entries) {
         if (entry.isSymbolicLink()) throw new LedgerCorruption("symlink or reparse point below ledger root");
+        if (root && RETIRED_LOCK.test(entry.name)) { await this.validateRetiredLock(entry.name); continue; }
         if (root && !allowedRoot.has(entry.name)) throw new LedgerCorruption("unexpected ledger root entry");
         const full = path.join(directory, entry.name);
         const actual=volatile?await volatileRead(()=>stat(full)):await stat(full);if(!actual)continue;

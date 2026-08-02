@@ -115,12 +115,20 @@ missing/tampered ingress records, and broken reservation-to-ingress linkage fail
 recovery never migrates them by inference.
 
 Cross-process mutation is serialized by atomic lock-directory creation and an exclusive-created,
-cryptographically random owner record. Acquisition is bounded. A live same-host owner is never evicted
-because time elapsed; a foreign, corrupt, or otherwise unverifiable owner refuses. An abandoned lock is
-reclaimed only after same-host process liveness proves that its recorded PID is dead, and full recovery
-runs before another reservation may be authorized. Lock acquisition/reclaim and transient Windows
-`decisions/`-subtree audit retries use monotonic deadlines. They never consult the provider/authority
-semantic `now`, which remains reserved for durable high-water, validity, and lifecycle decisions.
+cryptographically random owner record. Owner publication writes and syncs the owner file, syncs the
+lock directory, then syncs the ledger root. Publication failure removes the self-created lock only
+after a byte-identical owner reread, so it cannot delete a replacement owner or leave an ownerless
+active lock. Acquisition is bounded. A live same-host owner is never evicted because time elapsed; a
+foreign, corrupt, or otherwise unverifiable owner refuses. An abandoned lock is reclaimed only after
+same-host process liveness proves that its recorded PID is dead and the owner bytes remain identical.
+Reclaim and release atomically rename the whole lock directory to an exact PID-and-nonce-bound
+retirement tombstone. Cleanup accepts only a canonical same-host owner whose PID and full nonce match
+that exact tombstone name, revalidates its bytes before deletion, and otherwise preserves the topology
+and fails closed. Validated stale tombstones are cleaned before acquisition, and full recovery runs
+before another reservation may be authorized. Lock acquisition, retirement cleanup, and transient
+Windows `decisions/`-subtree audit retries use monotonic deadlines. They never consult the
+provider/authority semantic `now`, which remains reserved for durable high-water, validity, and
+lifecycle decisions.
 
 The only lifecycle is `issued -> reserved -> dispatched -> acknowledged | definitive-failure |
 ambiguous`, with `acknowledged | ambiguous -> reconciled`. Transitions are durable compare-and-transition
