@@ -55,11 +55,12 @@ test("TransportEffect seals headers, query, base64 bytes, preconditions, and rec
     preconditions: [], reconciliation: { recipeId: "message-readback" },
   };
   assert.deepEqual(parseAuthorityWire("transport-effect", effect), effect);
+  assert.deepEqual(parseAuthorityWire("transport-effect", { ...effect, query: "name=%C3%A9" }), { ...effect, query: "name=%C3%A9" });
   for (const header of ["AUTHORIZATION", "cOOKIE", "HOST"]) assert.throws(() => parseAuthorityWire("transport-effect", { ...effect, headers: { [header]: "x" } }), /property name/i);
   assert.throws(() => parseAuthorityWire("transport-effect", { ...effect, bodyBase64: "e3=" }), /pattern/i);
   assert.throws(() => parseAuthorityWire("transport-effect", { ...effect, query: "mode=send&account=tenant_1" }), /canonically encoded/i);
   assert.throws(() => parseAuthorityWire("transport-effect", { ...effect, query: "x=%af" }), /pattern/i);
-  for (const query of ["&", "a==b", "a=%41", "a=1&a=2", "b=1&a=2", "a=%af", "a=%C3%28", "a+b=c", "a=1#x", "a=hello world"]) {
+  for (const query of ["&", "a==b", "a=%41", "a=1&a=2", "b=1&a=2", "a=%af", "a=%C3", "a=%C3%28", "a+b=c", "a=1#x", "a=hello world"]) {
     assert.throws(() => parseAuthorityWire("transport-effect", { ...effect, query }), /invalid transport-effect/i, query);
   }
 });

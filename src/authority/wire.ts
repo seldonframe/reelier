@@ -70,7 +70,8 @@ export function parseAuthorityWire<K extends AuthorityKind>(kind: K, value: unkn
         const value = pair.slice(split + 1);
         try {
           for (const encoded of [...key.matchAll(/%[0-9A-F]{2}/g), ...value.matchAll(/%[0-9A-F]{2}/g)]) {
-            if (/^[A-Za-z0-9._~-]$/.test(decodeURIComponent(encoded[0]))) throw new TypeError("unreserved escape");
+            const byte = Number.parseInt(encoded[0].slice(1), 16);
+            if ((byte >= 0x41 && byte <= 0x5a) || (byte >= 0x61 && byte <= 0x7a) || (byte >= 0x30 && byte <= 0x39) || "._~-".includes(String.fromCharCode(byte))) throw new TypeError("unreserved escape");
           }
           decodeURIComponent(key); decodeURIComponent(value);
         } catch { throw new TypeError("invalid transport-effect: query is not canonically encoded"); }
