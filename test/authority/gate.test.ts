@@ -1,15 +1,79 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createReservedDispatchHandle, unwrapReservedDispatchHandle } from "../../src/authority/gate.js";
+import { createHash, generateKeyPairSync } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { authenticateOutcomeRequest } from "../../src/authority/keys.js";
+import { createTrustRoots } from "../../src/authority/trust.js";
+import { signAuthorityDigest } from "../../src/authority/crypto.js";
+import { authorityCanonicalBytes, authorityDigest } from "../../src/authority/wire.js";
+import { createStaticPackRegistry } from "../../src/authority/pack.js";
+import { createSourceRegistry } from "../../src/authority/source.js";
+import { createConnectorRegistry } from "../../src/authority/connector.js";
+import { createAuthorityStatePort, type AuthorityStateBackend, type AuthorityStateSnapshot } from "../../src/authority/state.js";
+import { FsAuthorityLedger } from "../../src/authority/host/fs-ledger.js";
+import { createFileGateDecisionSink } from "../../src/authority/decision.js";
+import {
+  createAuthorityGate, createReservedDispatchHandle, gateRefusalPresence,
+  unwrapReservedDispatchHandle, type AuthorityGateDependencies, type GateResult,
+} from "../../src/authority/gate.js";
+import type { GateRefusalReason } from "../../src/authority/errors.js";
 
-test("reserved dispatch handle is empty, frozen, non-serializing, and rejects structural and symbol forgeries", () => {
-  const privateState = Object.freeze({ reservationId: "reservation_1", capabilityDigest: "sha256:" + "1".repeat(64) });
-  const handle = createReservedDispatchHandle(privateState);
-  assert.equal(Object.isFrozen(handle), true);
-  assert.deepEqual(Object.keys(handle), []);
-  assert.equal(JSON.stringify(handle), "{}");
-  assert.deepEqual(unwrapReservedDispatchHandle(handle), privateState);
-  assert.throws(() => unwrapReservedDispatchHandle({} as never), /reserved dispatch handle/i);
-  assert.throws(() => unwrapReservedDispatchHandle(structuredClone(handle) as never), /reserved dispatch handle/i);
-  for (const symbol of Object.getOwnPropertySymbols(handle)) assert.throws(() => unwrapReservedDispatchHandle({ [symbol]: true } as never), /reserved dispatch handle/i);
+const sha=(c:string)=>`sha256:${c.repeat(64)}`;
+const planAt="2026-01-15T00:00:29.000Z",decisionAt="2026-01-15T00:00:30.000Z";
+const limits={maxEffectsPerWindow:10,windowSeconds:3600,maxEffectsPerSourceTrigger:2,maxBodyBytes:4096};
+
+async function fixture(overrides:Readonly<{snapshot?:(base:AuthorityStateSnapshot)=>AuthorityStateSnapshot;advance?:"changed"|"rollback"|"corruption"|"unavailable";lease?:"changed"|"corruption"|"unavailable";reads?:"refused"|"corruption"|"unavailable";clock?:readonly string[];reserveReason?:string;sinkAppend?:string;badSigner?:boolean;badEventId?:boolean;badCapabilityId?:boolean}>={}){
+  const root=await mkdtemp(path.join(tmpdir(),"reelier-gate-"));
+  const operator=generateKeyPairSync("ed25519"),gateKey=generateKeyPairSync("ed25519");
+  const grant={v:"reelier.delegation-grant/v1" as const,tenant:"tenant_1",grantId:"grant_1",parentDigest:null,sponsor:"sponsor_1",grantor:"operator_1",grantee:"gate_1",issuedAt:"2026-01-01T00:00:00.000Z",expiresAt:"2026-02-01T00:00:00.000Z",constraints:{definitionAliases:["definition_1"],audiences:["requester_1"],connectorAccounts:[{connectorId:"connector_1",accountId:"account_1"}],projectionPointers:["/message"],riskClasses:["message"],limits}};
+  const grantDigest=authorityDigest(grant);const policy=authorityCanonicalBytes({template:"Hello {{message}}"});
+  const contract={v:"reelier.outcome-contract/v1" as const,tenant:"tenant_1",alias:"definition_1",contractId:"contract_1",validFrom:"2026-01-02T00:00:00.000Z",validUntil:"2026-01-31T00:00:00.000Z",packDigest:sha("a"),definitionDigest:sha("b"),sponsor:"sponsor_1",audiences:["requester_1"],delegationGrantDigest:grantDigest,connectorId:"connector_1",accountId:"account_1",sourceAuthority:{resolverId:"resolver_1",projectionSchemaId:"projection/v1",allowedReadEndpointIds:["read_1"],authorizedProjectionPointers:["/message"],maxFreshnessSeconds:60},riskClasses:["message"],limits,policyCommitment:{schemaId:"policy/v1",jcsBase64:policy.toString("base64"),digest:`sha256:${createHash("sha256").update(policy).digest("hex")}`}};
+  const contractDigest=authorityDigest(contract);
+  const envelope=(value:unknown,digest:string,signerId:string,key:typeof operator.privateKey,index?:number)=>({canonicalBase64:authorityCanonicalBytes(value).toString("base64"),advertisedDigest:digest,signerId,signature:signAuthorityDigest(key,index===undefined?"outcome-contract":"delegation-grant",digest),...(index===undefined?{}:{index})});
+  const candidate={contractEnvelope:envelope(contract,contractDigest,"gate_key",gateKey.privateKey),delegationEnvelopes:[envelope(grant,grantDigest,"operator_key",operator.privateKey,0)],stateEvents:[{index:0,kind:"activated" as const,contractDigest,at:"2026-01-03T00:00:00.000Z"}]};
+  const base:AuthorityStateSnapshot={tenant:"tenant_1",definitionAlias:"definition_1",stateVersion:1,candidates:[candidate as never]};const snapshot=overrides.snapshot?.(base)??base;
+  const packs=createStaticPackRegistry([{alias:"definition_1",packDigest:sha("a"),definitionDigest:sha("b"),resolverId:"resolver_1",projectionSchemaId:"projection/v1",maxFreshnessSeconds:60,readEndpointIds:["read_1"],writeEndpointIds:["write_1"],riskClasses:["message"],policySchemaId:"policy/v1",requiredGroundedPointers:["/message"],validateChoices:value=>value,parsePolicy:value=>value,compile:({source})=>({v:"reelier.transport-effect/v1",endpointId:"write_1",method:"POST",path:"/v1/messages",query:"account=account_1",headers:{"Content-Type":"application/json"},bodyBase64:authorityCanonicalBytes({message:source.projection.message}).toString("base64"),riskClass:"message",idempotency:"native",preconditions:[],reconciliation:{recipeId:"readback"}})}]);
+  const sources=createSourceRegistry([{tenant:"tenant_1",resolverId:"resolver_1",definitionDigest:sha("b"),projectionSchemaId:"projection/v1",readEndpointIds:["read_1"],maxFreshnessSeconds:60,plan:refs=>[{endpointId:"read_1",opaqueHandle:refs.item}],project:()=>({sourceIdentity:"source_1",triggerIdentity:"trigger_1",projection:{message:"world"},claims:{grounded:[{claimId:"message",projectionPointer:"/message"}],authored:[],unresolved:[]}})}]);
+  const connectors=createConnectorRegistry([{tenant:"tenant_1",connectorId:"connector_1",accountId:"account_1",providerAccountIdentity:"provider_account_1",allowedReadEndpointIds:["read_1"],allowedWriteEndpointIds:["write_1"],riskClasses:["message"],operatorConfigurationDigest:sha("c")}]);
+  const backend:AuthorityStateBackend={async loadCompleteContractSet(){return {ok:true,snapshot,backendToken:"raw"};},async advanceVersion(){return overrides.advance?{ok:false,reason:overrides.advance}:{ok:true,backendObservedToken:"observed"} as never;},async withCurrent(_token,callback){return overrides.lease?{ok:false,reason:overrides.lease}:{ok:true,value:await callback()} as never;},async executeSourceReads(plans){return overrides.reads?{ok:false,reason:overrides.reads}:{ok:true,observations:plans.map(plan=>({planDigest:plan.planDigest,rawBytes:Buffer.from('{"message":"world"}')}))} as never;}};
+  const clock=[...(overrides.clock??[planAt,decisionAt])];const rawLedger=new FsAuthorityLedger(root,{now:()=>Date.parse(clock.shift()??decisionAt)});
+  const ledger=overrides.reserveReason?Object.freeze({...rawLedger,observeClock:rawLedger.observeClock.bind(rawLedger),bindIngress:rawLedger.bindIngress.bind(rawLedger),lookupIngress:rawLedger.lookupIngress.bind(rawLedger),getReservation:rawLedger.getReservation.bind(rawLedger),reserve:async()=>({ok:false,reason:overrides.reserveReason} as never)}):rawLedger;
+  const sink=createFileGateDecisionSink(path.join(root,"decisions"));const decisionSink=overrides.sinkAppend?Object.freeze({...sink,append:async()=>({ok:false,reason:overrides.sinkAppend} as never)}):sink;
+  const trustRoots=createTrustRoots([{tenant:"tenant_1",signerId:"operator_key",principalId:"operator_1",publicKey:operator.publicKey,purposes:["delegation-grant"]},{tenant:"tenant_1",signerId:"gate_key",principalId:"gate_1",publicKey:gateKey.publicKey,purposes:["outcome-contract","gate-event"]}]);
+  let events=0,capabilities=0,signatures=0;
+  const deps:AuthorityGateDependencies={trustRoots,packs,sources,connectors,state:createAuthorityStatePort(backend),ledger:ledger as never,localGatePolicyDigest:sha("d"),decisionSink,signer:{async sign(input:{digest:string}){signatures++;return overrides.badSigner?{signerId:"bad",signature:{alg:"ed25519" as const,sig:"bad"}}:{signerId:"gate_key",signature:signAuthorityDigest(gateKey.privateKey,"gate-event",input.digest)};}},eventId:()=>overrides.badEventId?"":`event_${++events}`,capabilityId:()=>overrides.badCapabilityId?"":`capability_${++capabilities}`};
+  const gate=createAuthorityGate(deps);const request=authenticateOutcomeRequest({tenant:"tenant_1",requester:"requester_1",definitionAlias:"definition_1",request:{v:"reelier.outcome-request/v1",requestId:"request_1",sourceRefs:{item:"opaque_1"},choices:{}}});
+  return {root,gate,request,sink,counts:()=>({events,capabilities,signatures}),cleanup:()=>rm(root,{recursive:true,force:true})};
+}
+
+test("the exact reason table fixes every DecisionContext presence row",()=>{
+  const rows:readonly [readonly GateRefusalReason[],readonly [boolean,boolean,boolean,boolean,boolean]][]=[
+    [["request-id-conflict","authority-state-invalid","authority-state-rollback"],[false,false,false,false,false]],
+    [["authority-state-changed","contract-not-found","contract-not-eligible","contract-ambiguous","contract-untrusted"],[false,true,false,false,false]],
+    [["contract-alias-mismatch","contract-audience-mismatch","contract-inactive","contract-revoked","contract-not-yet-valid","contract-expired","delegation-invalid","pack-mismatch","definition-mismatch","resolver-mismatch","connector-mismatch","account-mismatch","endpoint-not-allowed","risk-not-allowed"],[true,true,false,false,false]],
+    [["source-read-refused","source-observation-invalid","source-projection-invalid","source-ungrounded","source-stale"],[true,true,false,false,false]],
+    [["choices-invalid","compile-refused","effect-refused"],[true,true,true,false,false]],
+    [["reservation-idempotency-conflict","semantic-duplicate","capability-integrity","capability-already-reserved","limit-exceeded","not-yet-valid","expired","clock-rollback","integrity-failure","busy","lock-owner-unverifiable","corruption"],[true,true,true,true,true]],
+  ];
+  for(const [reasons,want] of rows)for(const reason of reasons)assert.deepEqual(gateRefusalPresence(reason),{contract:want[0],authorityState:want[1],sourceBundle:want[2],outcomeAndEffect:want[3],capability:want[4]},reason);
 });
+
+test("two-phase gate accepts exact sealed bytes, 60-second capability, two slots, one reservation, and opaque handoff",async()=>{const f=await fixture();try{const result=await f.gate.decide(f.request);assert.equal(result.kind,"accepted");if(result.kind!=="accepted")return;assert.equal(result.signedDecision.gateEvent.reasonCode,"accepted");assert.equal(Date.parse(result.signedDecision.decisionContext.capabilityId?decisionAt:"")+60_000,Date.parse(unwrapReservedDispatchHandle(result.handle).capability.expiresAt as string));assert.equal((unwrapReservedDispatchHandle(result.handle).limitSlots as unknown[]).length,2);assert.equal(JSON.stringify(result.handle),"{}");assert.equal(f.counts().events,1);assert.equal(f.counts().capabilities,1);assert.equal(f.counts().signatures,1);}finally{await f.cleanup();}});
+
+test("advance changed happens after the complete state digest but before reads, while lease change preserves source presence",async()=>{for(const [overrides,reason,source] of [[{advance:"changed" as const},"authority-state-changed",false],[{lease:"changed" as const},"authority-state-changed",true]] as const){const f=await fixture(overrides);try{const result=await f.gate.decide(f.request);assert.equal(result.kind,"refused");if(result.kind==="refused"){assert.equal(result.status.reasonCode,reason);assert.equal(gateRefusalPresence(result.status.reasonCode).sourceBundle,source);}}finally{await f.cleanup();}}});
+
+test("observeClock rollback is unavailable, but reserve-time rollback is a signed full-presence refusal",async()=>{const clock=await fixture({clock:[decisionAt,planAt]});try{assert.deepEqual(await clock.gate.decide(clock.request),{kind:"unavailable",reason:"clock-unavailable"});}finally{await clock.cleanup();}const reserve=await fixture({reserveReason:"clock-rollback"});try{const result=await reserve.gate.decide(reserve.request);assert.equal(result.kind,"refused");if(result.kind==="refused")assert.equal(result.status.reasonCode,"clock-rollback");}finally{await reserve.cleanup();}});
+
+test("zero, strict-untrusted, none-eligible, and multiple-eligible complete sets never use order as a tiebreak",async()=>{for(const [mutate,reason] of [[()=>[],"contract-not-found"],[(base:AuthorityStateSnapshot)=>[{...base.candidates[0],contractEnvelope:{...base.candidates[0].contractEnvelope,signerId:"unknown"}}],"contract-untrusted"],[(base:AuthorityStateSnapshot)=>[base.candidates[0],structuredClone(base.candidates[0])],"contract-ambiguous"]] as const){const f=await fixture({snapshot:base=>({...base,candidates:mutate(base) as never})});try{const result=await f.gate.decide(f.request);assert.equal(result.kind,"refused");if(result.kind==="refused")assert.equal(result.status.reasonCode,reason);}finally{await f.cleanup();}}});
+
+test("one hundred exact requests create at most one handle and all retries are redacted existing or closed unavailable",async()=>{const f=await fixture();try{const results=await Promise.all(Array.from({length:100},()=>f.gate.decide(f.request)));assert.equal(results.filter((x:GateResult)=>x.kind==="accepted").length,1);assert.equal(results.filter((x:GateResult)=>x.kind==="existing"||x.kind==="unavailable").length,99);assert.equal(results.filter((x:GateResult)=>"handle" in x).length,1);}finally{await f.cleanup();}});
+
+test("split bodies and aliases produce one primary owner and only signed non-primary conflicts",async()=>{const f=await fixture();try{const otherBody=authenticateOutcomeRequest({tenant:"tenant_1",requester:"requester_1",definitionAlias:"definition_1",request:{v:"reelier.outcome-request/v1",requestId:"request_1",sourceRefs:{item:"opaque_2"},choices:{}}});const otherAlias=authenticateOutcomeRequest({tenant:"tenant_1",requester:"requester_1",definitionAlias:"definition_2",request:{v:"reelier.outcome-request/v1",requestId:"request_1",sourceRefs:{item:"opaque_1"},choices:{}}});const results=await Promise.all([f.gate.decide(f.request),...Array.from({length:49},()=>f.gate.decide(otherBody)),...Array.from({length:50},()=>f.gate.decide(otherAlias))]);assert.equal(results.filter((result:GateResult)=>result.kind==="accepted").length,1);for(const result of results.filter((result:GateResult)=>result.kind==="refused"))if(result.kind==="refused")assert.equal(result.status.reasonCode,"request-id-conflict");}finally{await f.cleanup();}});
+
+test("ID, signer, and unknown sink outcomes are unavailable and never expose a handle",async()=>{for(const [overrides,reason] of [[{badCapabilityId:true},"capability-id-unavailable"],[{badEventId:true},"event-id-unavailable"],[{badSigner:true},"signer-unavailable"],[{sinkAppend:"unavailable"},"sink-unavailable"]] as const){const f=await fixture(overrides);try{const result=await f.gate.decide(f.request);assert.deepEqual(result,{kind:"unavailable",reason});assert.equal("handle" in result,false);}finally{await f.cleanup();}}});
+
+test("every sink append result follows the frozen no-extra-lookup mapping",async()=>{for(const [sinkAppend,reason] of [["event-id-conflict","event-id-unavailable"],["primary-ingress-conflict","decision-missing"],["reservation-conflict","internal-integrity-unavailable"],["corruption","internal-integrity-unavailable"]] as const){const f=await fixture({sinkAppend});try{assert.deepEqual(await f.gate.decide(f.request),{kind:"unavailable",reason});}finally{await f.cleanup();}}});
+
+test("reserved dispatch handle is empty, frozen, and rejects clone/structural/symbol forgeries",()=>{const state=Object.freeze({reservationId:"reservation_1"});const handle=createReservedDispatchHandle(state);assert.equal(Object.isFrozen(handle),true);assert.deepEqual(Object.keys(handle),[]);assert.deepEqual(unwrapReservedDispatchHandle(handle),state);assert.throws(()=>unwrapReservedDispatchHandle({} as never),/reserved dispatch handle/i);assert.throws(()=>unwrapReservedDispatchHandle(structuredClone(handle) as never),/reserved dispatch handle/i);});

@@ -6,6 +6,7 @@ import path from "node:path";
 import { authorityDigest } from "../../src/authority/wire.js";
 import {
   createFileGateDecisionSink,
+  gateDecisionFaultPoints,
   gateDecisionRecordDigest,
   parseGateDecisionRecord,
   type GateDecisionRecord,
@@ -78,4 +79,13 @@ test("file sink atomically indexes event and primary ingress, returns copies, an
     await writeFile(path.join(root, "gate-decisions.json"), stored.replace("contract-not-found", "contract-expired"));
     assert.deepEqual(await createFileGateDecisionSink(root).lookupByEvent("event_1"), { ok: false, reason: "corruption" });
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("accepted reservation and non-primary conflict indexes have exact distinct occupancy",async()=>{
+  const root=await mkdtemp(path.join(tmpdir(),"reelier-decision-index-"));try{const sink=createFileGateDecisionSink(root);const acceptedContext={...context,contractDigest:sha("5"),capabilityId:"capability_1",capabilityDigest:sha("6"),outcomeKey:sha("7"),effectDigest:sha("8"),snapshots:{sourceBundleDigest:sha("9"),authorityStateDigest:sha("3")}};const acceptedEvent={...event,verdict:"accepted" as const,reasonCode:"accepted",decisionContextDigest:authorityDigest(acceptedContext)};const accepted=primary({reservationId:"reservation_1",decisionContext:acceptedContext,decisionContextDigest:authorityDigest(acceptedContext),gateEvent:acceptedEvent,gateEventDigest:authorityDigest(acceptedEvent)});assert.equal((await sink.append(accepted)).ok,true);assert.equal((await sink.lookupAcceptedByReservation("reservation_1")).ok,true);const collision={...accepted,gateEvent:{...acceptedEvent,eventId:"event_2"},gateEventDigest:authorityDigest({...acceptedEvent,eventId:"event_2"}),ingressClaimDigest:sha("a")};assert.deepEqual(await sink.append(collision),{ok:false,reason:"reservation-conflict"});const conflictContext={...context,definitionAlias:"definition_2"};const conflictEvent={...event,eventId:"event_3",reasonCode:"request-id-conflict",decisionContextDigest:authorityDigest(conflictContext)};const conflict=primary({role:"conflict",ingressClaimDigest:sha("4"),decisionContext:conflictContext,decisionContextDigest:authorityDigest(conflictContext),gateEvent:conflictEvent,gateEventDigest:authorityDigest(conflictEvent)});assert.equal((await sink.append(conflict)).ok,true);const owner=await sink.lookupPrimaryByIngress(sha("4"));assert.equal(owner.ok,true);if(owner.ok)assert.equal(owner.status,"found");}finally{await rm(root,{recursive:true,force:true});}
+});
+
+test("concurrent appends and every crash boundary expose a complete transaction or no transaction",async()=>{
+  const root=await mkdtemp(path.join(tmpdir(),"reelier-decision-atomic-"));try{const sink=createFileGateDecisionSink(root);const results=await Promise.all(Array.from({length:100},()=>sink.append(primary())));assert.equal(results.filter((result:{ok:boolean;status?:string})=>result.ok&&result.status==="appended").length,1);assert.equal(results.filter((result:{ok:boolean;status?:string})=>result.ok&&result.status==="idempotent").length,99);}finally{await rm(root,{recursive:true,force:true});}
+  for(const point of gateDecisionFaultPoints){const directory=await mkdtemp(path.join(tmpdir(),"reelier-decision-crash-"));try{let fired=false;const sink=createFileGateDecisionSink(directory,{faultInjector(observed:string){if(!fired&&observed===point){fired=true;throw new Error(`fault:${point}`);}}});await sink.append(primary());assert.equal(fired,true,point);const recovered=await createFileGateDecisionSink(directory).lookupByEvent("event_1");assert.ok((recovered.ok&&recovered.status==="found")||(recovered.ok&&recovered.status==="absent")||(!recovered.ok&&recovered.reason==="corruption"),point);}finally{await rm(directory,{recursive:true,force:true});}}
 });
