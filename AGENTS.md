@@ -1,3 +1,3 @@
-# Reelier execution paths (audited 2026-08-01, branch `codex/universal-compiled-authority`)
+# Reelier execution paths (audited 2026-08-01, code pin `deb605a6c36060f138a1064390093407fa2052eb`)
 
 Pinned capability summary: Path A (`reelier mcp --wrap`) records live MCP traffic and applies its policy seatbelt; malformed policy fails open with a warning/attestation claim. Path B (`reelier run`) replays a frozen skill and fails closed on manifest/state-gate drift. Path C currently ships only its v1 closed wire schemas, JCS digest/signature primitives, vectors, and public export. Its gate, ledger, ingress, credential broker, HTTPS driver, and packs remain designed/unbuilt. Path C's intended promise is to delegate outcomes, not credentials, and to prove bounded scope rather than safety or content correctness.
