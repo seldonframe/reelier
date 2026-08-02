@@ -104,23 +104,26 @@ test("concurrent appends and every crash boundary expose a complete transaction 
   const exactRoot=await mkdtemp(path.join(tmpdir(),"reelier-decision-exact-"));
   try{const results=await Promise.all(Array.from({length:100},()=>createFileGateDecisionSink(exactRoot).append(primary())));assert.equal(results.filter((result:{ok:boolean;status?:string})=>result.ok&&result.status==="appended").length,1);assert.equal(results.filter((result:{ok:boolean;status?:string})=>result.ok&&result.status==="idempotent").length,99);}finally{await rm(exactRoot,{recursive:true,force:true});}
 
+  const eventRoot=await mkdtemp(path.join(tmpdir(),"reelier-decision-event-race-"));
+  try{const records=Array.from({length:100},(_,index)=>primary({signerId:`gate_signer_${index}`}));const results=await Promise.all(records.map(record=>createFileGateDecisionSink(eventRoot).append(record)));assert.equal(results.filter((result:{ok:boolean;status?:string})=>result.ok&&result.status==="appended").length,1);assert.equal(results.filter((result:{ok:boolean;reason?:string})=>!result.ok&&result.reason==="event-id-conflict").length,99);}finally{await rm(eventRoot,{recursive:true,force:true});}
+
   const primaryRoot=await mkdtemp(path.join(tmpdir(),"reelier-decision-primary-race-"));
   try{const records=Array.from({length:100},(_,index)=>{const gateEvent={...event,eventId:`event_primary_${index}`};return primary({gateEvent,gateEventDigest:authorityDigest(gateEvent)});});const results=await Promise.all(records.map(record=>createFileGateDecisionSink(primaryRoot).append(record)));assert.equal(results.filter((result:{ok:boolean;status?:string})=>result.ok&&result.status==="appended").length,1);assert.equal(results.filter((result:{ok:boolean;reason?:string})=>!result.ok&&result.reason==="primary-ingress-conflict").length,99);}finally{await rm(primaryRoot,{recursive:true,force:true});}
 
   const reservationRoot=await mkdtemp(path.join(tmpdir(),"reelier-decision-reservation-race-"));
   try{const records=Array.from({length:100},(_,index)=>accepted(`event_reservation_${index}`,`sha256:${index.toString(16).padStart(64,"0")}`));const results=await Promise.all(records.map(record=>createFileGateDecisionSink(reservationRoot).append(record)));assert.equal(results.filter((result:{ok:boolean;status?:string})=>result.ok&&result.status==="appended").length,1);assert.equal(results.filter((result:{ok:boolean;reason?:string})=>!result.ok&&result.reason==="reservation-conflict").length,99);}finally{await rm(reservationRoot,{recursive:true,force:true});}
 
-  const childRoot=await mkdtemp(path.join(tmpdir(),"reelier-decision-child-race-"));
-  try{
-    const moduleUrl=pathToFileURL(path.resolve("dist-test/src/authority/decision.js")).href;
-    const script='const {createFileGateDecisionSink}=await import(process.argv[1]);const result=await createFileGateDecisionSink(process.argv[2]).append(JSON.parse(process.argv[3]));process.stdout.write(JSON.stringify(result));';
-    const run=promisify(execFile);
-    const records=Array.from({length:20},(_,index)=>accepted(`event_child_${index}`,`sha256:${(index+200).toString(16).padStart(64,"0")}`));
-    const outputs=await Promise.all(records.map(record=>run(process.execPath,["--input-type=module","-e",script,moduleUrl,childRoot,JSON.stringify(record)])));
-    const results=outputs.map(output=>JSON.parse(output.stdout) as {ok:boolean;status?:string;reason?:string});
-    assert.equal(results.filter(result=>result.ok&&result.status==="appended").length,1);
-    assert.equal(results.filter(result=>!result.ok&&result.reason==="reservation-conflict").length,19);
-  }finally{await rm(childRoot,{recursive:true,force:true});}
+  const moduleUrl=pathToFileURL(path.resolve("dist-test/src/authority/decision.js")).href;
+  const script='const {createFileGateDecisionSink}=await import(process.argv[1]);const result=await createFileGateDecisionSink(process.argv[2]).append(JSON.parse(process.argv[3]));process.stdout.write(JSON.stringify(result));';
+  const run=promisify(execFile);
+  for(const [label,records,conflictReason] of [
+    ["event",Array.from({length:20},(_,index)=>primary({signerId:`child_signer_${index}`})),"event-id-conflict"],
+    ["primary",Array.from({length:20},(_,index)=>{const gateEvent={...event,eventId:`event_child_primary_${index}`};return primary({gateEvent,gateEventDigest:authorityDigest(gateEvent)});}),"primary-ingress-conflict"],
+    ["reservation",Array.from({length:20},(_,index)=>accepted(`event_child_reservation_${index}`,`sha256:${(index+200).toString(16).padStart(64,"0")}`)),"reservation-conflict"],
+  ] as const){
+    const childRoot=await mkdtemp(path.join(tmpdir(),`reelier-decision-child-${label}-race-`));
+    try{const outputs=await Promise.all(records.map(record=>run(process.execPath,["--input-type=module","-e",script,moduleUrl,childRoot,JSON.stringify(record)])));const results=outputs.map(output=>JSON.parse(output.stdout) as {ok:boolean;status?:string;reason?:string});assert.equal(results.filter(result=>result.ok&&result.status==="appended").length,1,label);assert.equal(results.filter(result=>!result.ok&&result.reason===conflictReason).length,19,label);}finally{await rm(childRoot,{recursive:true,force:true});}
+  }
 
   const expectedFaultPoints=["before-write","after-write","before-file-sync","after-file-sync","before-rename","after-rename","before-directory-sync","after-directory-sync"] as const;
   assert.deepEqual(gateDecisionFaultPoints,expectedFaultPoints);
