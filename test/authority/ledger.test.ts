@@ -815,11 +815,81 @@ test("a validated retired lock from a proved-dead owner hands recovery to its su
 });
 
 test("recovery evidence remains durable when its first successor faults before prepare",{timeout:30_000},async()=>{
-  await withRoot(async root=>{const ledger=new FsAuthorityLedger(root,{now:()=>t0});const reserved=await ledger.reserve(intent());assert.equal(reserved.ok,true);if(!reserved.ok)return;assert.equal((await ledger.transition(reserved.reservation.reservationId,"reserved",{to:"dispatched"})).ok,true);for(const name of await readdir(root))if(/^\.authority-ledger-lock-/.test(name))await rm(path.join(root,name),{recursive:true});const deadOwner={host:hostname(),nonce:"e".repeat(64),pid:2_147_483_647,v:1},deadName=`.authority-ledger-lock-${deadOwner.pid}-${deadOwner.nonce}.retired`,deadDirectory=path.join(root,deadName);await mkdir(deadDirectory);await writeFile(path.join(deadDirectory,"owner.json"),authorityCanonicalBytes(deadOwner));const moduleUrl=pathToFileURL(path.resolve("dist-test/src/authority/host/fs-ledger.js")).href,source=`import {FsAuthorityLedger} from ${JSON.stringify(moduleUrl)};let fired=false;const ledger=new FsAuthorityLedger(process.argv[1],{now:()=>${t0},faultInjector(point){if(!fired&&point==="after-lock-acquire"){fired=true;throw new Error("fault:after-recovery-evidence");}}});try{await ledger.getReservation(${JSON.stringify(reserved.reservation.reservationId)});}catch{process.stdout.write("faulted\\n");setInterval(()=>{},1_000);}`;const child=spawn(process.execPath,["--input-type=module","-e",source,root],{stdio:["ignore","pipe","ignore"]});try{await new Promise<void>((resolve,reject)=>{let output="";child.stdout.setEncoding("utf8").on("data",chunk=>{output+=chunk;if(output.includes("faulted\n"))resolve();});child.on("error",reject);child.on("close",code=>reject(new Error(`fault child exited early: ${code}`)));});const successor=new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:200});assert.equal((await successor.observeClock()).ok,true);assert.equal((await successor.getReservation(reserved.reservation.reservationId))?.state,"ambiguous");}finally{child.kill();}});
+  await withRoot(async root => {
+    const ledger = new FsAuthorityLedger(root, { now: () => t0 });
+    const reserved = await ledger.reserve(intent());
+    assert.equal(reserved.ok, true); if (!reserved.ok) return;
+    assert.equal((await ledger.transition(reserved.reservation.reservationId, "reserved", { to: "dispatched" })).ok, true);
+    for (const name of await readdir(root)) if (/^\.authority-ledger-lock-/.test(name)) await rm(path.join(root, name), { recursive: true });
+    const deadOwner = { host: hostname(), nonce: "e".repeat(64), pid: 2_147_483_647, v: 1 };
+    const deadName = `.authority-ledger-lock-${deadOwner.pid}-${deadOwner.nonce}.retired`;
+    await mkdir(path.join(root, deadName));
+    await writeFile(path.join(root, deadName, "owner.json"), authorityCanonicalBytes(deadOwner));
+    const moduleUrl = pathToFileURL(path.resolve("dist-test/src/authority/host/fs-ledger.js")).href;
+    const source = `import {FsAuthorityLedger} from ${JSON.stringify(moduleUrl)};let fired=false;const ledger=new FsAuthorityLedger(process.argv[1],{now:()=>${t0},faultInjector(point){if(!fired&&point==="after-lock-acquire"){fired=true;throw new Error("fault:after-recovery-evidence");}}});try{await ledger.getReservation(${JSON.stringify(reserved.reservation.reservationId)});process.exit(94);}catch(error){if(!fired||String(error)!=="Error: fault:after-recovery-evidence")process.exit(93);process.stdout.write("exact-fault\\n");setInterval(()=>{},1_000);}`;
+    const child = spawn(process.execPath, ["--input-type=module", "-e", source, root], { stdio: ["ignore", "pipe", "ignore"] });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("fault child handshake timed out")), 5_000);
+        let output = "";
+        child.stdout.setEncoding("utf8").on("data", chunk => { output += chunk; if (output === "exact-fault\n") { clearTimeout(timer); resolve(); } });
+        child.on("error", error => { clearTimeout(timer); reject(error); });
+        child.on("close", code => { clearTimeout(timer); reject(new Error(`fault child exited early: ${code}`)); });
+      });
+      const successor = new RawFsAuthorityLedger(root, { now: () => t0, lockTimeoutMs: 200 });
+      assert.equal((await successor.observeClock()).ok, true);
+      assert.equal((await successor.getReservation(reserved.reservation.reservationId))?.state, "ambiguous");
+    } finally { child.kill(); }
+  });
 });
 
 test("an ingress-only callback cannot bypass pending ledger recovery",async()=>{
   await withRoot(async root=>{const ledger=new FsAuthorityLedger(root,{now:()=>t0});const candidate=intent(),reserved=await ledger.reserve(candidate);assert.equal(reserved.ok,true);if(!reserved.ok)return;assert.equal((await ledger.transition(reserved.reservation.reservationId,"reserved",{to:"dispatched"})).ok,true);for(const name of await readdir(root))if(/^\.authority-ledger-lock-/.test(name))await rm(path.join(root,name),{recursive:true});const owner={host:hostname(),nonce:"f".repeat(64),pid:2_147_483_647,v:1},name=`.authority-ledger-lock-${owner.pid}-${owner.nonce}.retired`,directory=path.join(root,name);await mkdir(directory);await writeFile(path.join(directory,"owner.json"),authorityCanonicalBytes(owner));const successor=new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:200});assert.ok(await successor.lookupIngress(candidate.requestKey));assert.equal((await successor.getReservation(reserved.reservation.reservationId))?.state,"ambiguous");});
+});
+
+test("durable recovery-pending disposition overrides a currently live reused pid",async()=>{
+  await withRoot(async root => {
+    const ledger = new FsAuthorityLedger(root, { now: () => t0 });
+    const reserved = await ledger.reserve(intent());
+    assert.equal(reserved.ok, true); if (!reserved.ok) return;
+    assert.equal((await ledger.transition(reserved.reservation.reservationId, "reserved", { to: "dispatched" })).ok, true);
+    for (const name of await readdir(root)) if (/^\.authority-ledger-lock-/.test(name)) await rm(path.join(root, name), { recursive: true });
+    const owner = { host: hostname(), nonce: "1".repeat(64), pid: process.pid, v: 1 };
+    const marker = `.authority-ledger-lock-${owner.pid}-${owner.nonce}.recovery-pending`;
+    await mkdir(path.join(root, marker));
+    await writeFile(path.join(root, marker, "owner.json"), authorityCanonicalBytes(owner));
+    const successor = new RawFsAuthorityLedger(root, { now: () => t0, lockTimeoutMs: 200 });
+    assert.equal((await successor.observeClock()).ok, true, "durable disposition, not current PID liveness, controls recovery");
+    assert.equal((await successor.getReservation(reserved.reservation.reservationId))?.state, "ambiguous");
+  });
+});
+
+test("a durable recovery transition is acknowledged before exact evidence cleanup",async()=>{
+  await withRoot(async root => {
+    const ledger = new FsAuthorityLedger(root, { now: () => t0 });
+    const reserved = await ledger.reserve(intent());
+    assert.equal(reserved.ok, true); if (!reserved.ok) return;
+    assert.equal((await ledger.transition(reserved.reservation.reservationId, "reserved", { to: "dispatched" })).ok, true);
+    for (const name of await readdir(root)) if (/^\.authority-ledger-lock-/.test(name)) await rm(path.join(root, name), { recursive: true });
+    const owner = { host: hostname(), nonce: "2".repeat(64), pid: 2_147_483_647, v: 1 };
+    const marker = `.authority-ledger-lock-${owner.pid}-${owner.nonce}.retired`;
+    await mkdir(path.join(root, marker));
+    await writeFile(path.join(root, marker, "owner.json"), authorityCanonicalBytes(owner));
+    let fired = false;
+    const crashing = new RawFsAuthorityLedger(root, { now: () => t0, faultInjector(point) {
+      if (!fired && point === "result-after-directory-sync") { fired = true; throw new Error("fault:after-durable-recovery-transition"); }
+    } });
+    await assert.rejects(() => crashing.observeClock(), /fault:after-durable-recovery-transition/);
+    assert.equal(fired, true);
+    assert.equal(existsSync(path.join(root, marker)), true, "unacknowledged recovery evidence remains durable");
+    const countAmbiguous = async () => (await Promise.all((await readdir(path.join(root, "journal"))).map(async name => JSON.parse(await readFile(path.join(root, "journal", name), "utf8"))))).filter(event => event.type === "transition" && event.to === "ambiguous").length;
+    assert.equal(await countAmbiguous(), 1, "the recovery transition is already durable");
+    const successor = new RawFsAuthorityLedger(root, { now: () => t0 });
+    assert.equal((await successor.observeClock()).ok, true);
+    assert.equal((await successor.getReservation(reserved.reservation.reservationId))?.state, "ambiguous");
+    assert.equal(await countAmbiguous(), 1, "recovery replay never duplicates the transition");
+    assert.equal(existsSync(path.join(root, marker)), false, "exact evidence is cleaned only after durable acknowledgment");
+  });
 });
 
 test("a proved-dead same-host lock is reclaimed and recovery runs before reservation", async () => {
