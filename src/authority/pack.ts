@@ -110,7 +110,7 @@ const FORBIDDEN_SOURCE_PATTERNS: readonly [RegExp, string][] = [
 ];
 
 const STATIC_RUNTIME_SPECIFIER_ALLOWLIST: Readonly<Record<string, ReadonlySet<string>>> = Object.freeze({
-  "src/authority/compile.ts": new Set(["node:crypto", "./types.js", "./wire.js", "./contract.js", "./source.js", "./pack.js"]),
+  "src/authority/compile.ts": new Set(["node:crypto", "./types.js", "./wire.js", "./contract.js", "./source.js", "./pack.js", "./errors.js"]),
 });
 const STATIC_RUNTIME_SPECIFIER = /\b(?:import|export)\s+(?!type\b)(?:(?:[^"'`;]*?\bfrom\s*)?["']([^"']+)["'])/gs;
 

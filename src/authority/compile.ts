@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { TransportEffect } from "./types.js";
 import { authorityCanonicalBytes, authorityDigest, parseAuthorityWire } from "./wire.js";
+import { AuthorityBoundaryError } from "./errors.js";
 import type { ValidatedContract } from "./contract.js";
 import { assertValidatedContract } from "./contract.js";
 import type { ValidatedSourceBundle } from "./source.js";
@@ -69,14 +70,10 @@ export function compileOutcome(registry: StaticPackRegistry, input: Readonly<{ c
   for (const pointer of projectionLeafPointers(source.projection)) if (!authorizedPointers.has(pointer)) throw new TypeError("validated source projection exceeds contract authority");
   if (definition.policySchemaId !== contract.policyCommitment.schemaId) throw new TypeError("policy schema drift");
   if (definition.requiredGroundedPointers.some(pointer => !source.claims.grounded.some(claim => claim.projectionPointer === pointer))) throw new TypeError("definition required field is not grounded");
-  const choices = definition.validateChoices(validateChoiceBoundary(input.choices));
+  let choices:unknown;try{choices=definition.validateChoices(validateChoiceBoundary(input.choices));}catch(error){if(error instanceof AuthorityBoundaryError)throw error;if(error instanceof TypeError)throw new AuthorityBoundaryError("choices","choices-invalid",error.message);throw error;}
   const policyBytes = Buffer.from(contract.policyCommitment.jcsBase64, "base64");
-  const policy = definition.parsePolicy(JSON.parse(policyBytes.toString("utf8")) as unknown);
-  const emitted = definition.compile({ contract, source, choices: deepFreeze(choices), policy: deepFreeze(policy), now: new Date(input.now.getTime()), connectorAccount: Object.freeze({ connectorId: contract.connectorId, accountId: contract.accountId }) });
-  const effect = deepFreeze(parseAuthorityWire("transport-effect", emitted));
-  if (!definition.writeEndpointIds.includes(effect.endpointId)) throw new TypeError("pack emitted unknown write endpoint");
-  if (!definition.riskClasses.includes(effect.riskClass) || !contract.riskClasses.includes(effect.riskClass)) throw new TypeError("pack emitted unknown or unauthorized risk class");
-  if (Buffer.from(effect.bodyBase64, "base64").length > contract.limits.maxBodyBytes) throw new TypeError("pack effect body exceeds contract limit");
+  let policy:unknown,emitted:unknown;try{policy=definition.parsePolicy(JSON.parse(policyBytes.toString("utf8")) as unknown);emitted=definition.compile({ contract, source, choices: deepFreeze(choices), policy: deepFreeze(policy), now: new Date(input.now.getTime()), connectorAccount: Object.freeze({ connectorId: contract.connectorId, accountId: contract.accountId }) });}catch(error){if(error instanceof AuthorityBoundaryError)throw error;if(error instanceof TypeError)throw new AuthorityBoundaryError("compile","compile-refused",error.message);throw error;}
+  let effect:TransportEffect;try{effect=deepFreeze(parseAuthorityWire("transport-effect", emitted));if (!definition.writeEndpointIds.includes(effect.endpointId)) throw new TypeError("pack emitted unknown write endpoint");if (!definition.riskClasses.includes(effect.riskClass) || !contract.riskClasses.includes(effect.riskClass)) throw new TypeError("pack emitted unknown or unauthorized risk class");if (Buffer.from(effect.bodyBase64, "base64").length > contract.limits.maxBodyBytes) throw new TypeError("pack effect body exceeds contract limit");}catch(error){if(error instanceof AuthorityBoundaryError)throw error;if(error instanceof TypeError)throw new AuthorityBoundaryError("effect","effect-refused",error.message);throw error;}
   const effectCanonicalBase64 = authorityCanonicalBytes(effect).toString("base64");
   const effectDigest = authorityDigest(effect);
   const outcomeKey = deriveSemanticOutcomeKey({ tenant: contract.tenant, contractDigest: input.contract.digest, definitionAlias: contract.alias, sourceIdentity: source.sourceIdentity, triggerIdentity: source.triggerIdentity });

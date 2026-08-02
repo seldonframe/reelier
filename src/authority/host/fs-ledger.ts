@@ -174,6 +174,7 @@ export class AuthorityLedgerReadError extends Error {
 export class FsAuthorityLedger implements AuthorityLedger {
   readonly root: string;
   readonly options: Required<Pick<FsAuthorityLedgerOptions, "now" | "lockTimeoutMs">> & Pick<FsAuthorityLedgerOptions, "faultInjector">;
+  private lockTail:Promise<void>=Promise.resolve();
 
   constructor(root: string, options: FsAuthorityLedgerOptions = {}) {
     const resolved = path.resolve(root);
@@ -214,6 +215,12 @@ export class FsAuthorityLedger implements AuthorityLedger {
     if(!SHA.test(requestKey)||requestKey===ZERO_SHA)return undefined;
     const result=await this.withLock("ingress",async()=>{await this.ensureLayout();await this.assertNoLinks();let record:IngressRecord;try{record=await this.readIngress(requestKey);}catch(error){if(hasCode(error,"ENOENT"))return undefined;throw error;}return frozen({requestId:record.requestId,requestKey:record.requestKey,definitionAlias:record.definitionAlias,ingressClaimDigest:authorityDigest(record),bindingStatus:"bound" as const});});
     if(isLockFailure(result))throw new AuthorityLedgerReadError(result.reason);return result as RedactedIngressBinding|undefined;
+  }
+
+  async lookupIngressClaimLinkage(requestKey:string){
+    if(!SHA.test(requestKey)||requestKey===ZERO_SHA)return undefined;
+    const result=await this.withLock("ingress",async()=>{await this.ensureLayout();await this.assertNoLinks();let record:IngressRecord;try{record=await this.readIngress(requestKey);}catch(error){if(hasCode(error,"ENOENT"))return undefined;throw error;}return frozen({tenant:record.tenant,requester:record.requester,requestId:record.requestId,definitionAlias:record.definitionAlias,requestDigest:record.requestDigest,requestKey:record.requestKey,ingressClaimDigest:authorityDigest(record)});});
+    if(isLockFailure(result))throw new AuthorityLedgerReadError(result.reason);return result as import("../ledger.js").VerifiedIngressClaimLinkage|undefined;
   }
 
   async reserve(input: ReservationIntent): Promise<ReserveResult> {
@@ -303,7 +310,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
 
   async lookupReservationLinkage(reservationId:string) {
     const reservation=await this.getReservation(reservationId);if(!reservation)return undefined;
-    return frozen({reservationId:reservation.reservationId,state:reservation.state,ingressClaimDigest:reservation.intent.ingressClaimDigest,capabilityDigest:reservation.intent.capabilityDigest,decisionContextDigest:reservation.intent.decisionContextDigest,updatedAt:reservation.updatedAt,...(reservation.resultDigest?{receiptRef:reservation.resultDigest}:{})});
+    return frozen({reservationId:reservation.reservationId,state:reservation.state,ingressClaimDigest:reservation.intent.ingressClaimDigest,capabilityId:reservation.intent.capabilityId,capabilityDigest:reservation.intent.capabilityDigest,authorityStateDigest:reservation.intent.authorityStateDigest,decisionContextDigest:reservation.intent.decisionContextDigest,updatedAt:reservation.updatedAt,...(reservation.resultDigest?{receiptRef:reservation.resultDigest}:{})});
   }
 
   async getReservationHistory(reservationId: string): Promise<ReservationHistory | undefined> {
@@ -335,17 +342,20 @@ export class FsAuthorityLedger implements AuthorityLedger {
   }
 
   private async withLock<T>(context: OperationContext, operation: (reclaimed: boolean) => Promise<T>): Promise<T | Readonly<{ ok: false; reason: "busy" | "lock-owner-unverifiable" | "corruption" }>> {
-    const lock = await this.acquireLock();
-    if (!lock.ok) return frozen({ ok: false, reason: lock.reason });
+    const preceding=this.lockTail;let release!:()=>void;this.lockTail=new Promise<void>(resolve=>{release=resolve;});await preceding;
     try {
-      if (context === "reservation") this.fault("after-lock-acquire");
-      return await operation(lock.reclaimed);
-    } catch (error) {
-      if (error instanceof LedgerCorruption) return frozen({ ok: false, reason: "corruption" });
-      throw error;
-    } finally {
-      await this.releaseLock(lock.owner);
-    }
+      const lock = await this.acquireLock();
+      if (!lock.ok) return frozen({ ok: false, reason: lock.reason });
+      try {
+        if (context === "reservation") this.fault("after-lock-acquire");
+        return await operation(lock.reclaimed);
+      } catch (error) {
+        if (error instanceof LedgerCorruption) return frozen({ ok: false, reason: "corruption" });
+        throw error;
+      } finally {
+        await this.releaseLock(lock.owner);
+      }
+    } finally { release(); }
   }
 
   private async acquireLock(): Promise<LockResult> {
@@ -435,14 +445,15 @@ export class FsAuthorityLedger implements AuthorityLedger {
   }
 
   private async assertNoLinks(): Promise<void> {
-    const allowedRoot = new Set(["transactions", "claims", "journal", "tombstones", "ingress", "lock"]);
-    const walk = async (directory: string, root = false): Promise<void> => {
-      for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const allowedRoot = new Set(["transactions", "claims", "journal", "tombstones", "ingress", "decisions", "lock"]);
+    const walk = async (directory: string, root = false, volatile = false): Promise<void> => {
+      let entries;try{entries=await readdir(directory,{withFileTypes:true});}catch(error){if(volatile&&hasCode(error,"ENOENT"))return;throw error;}
+      for (const entry of entries) {
         if (entry.isSymbolicLink()) throw new LedgerCorruption("symlink or reparse point below ledger root");
         if (root && !allowedRoot.has(entry.name)) throw new LedgerCorruption("unexpected ledger root entry");
         const full = path.join(directory, entry.name);
-        const actual = await stat(full);
-        if (actual.isDirectory()) await walk(full);
+        let actual;try{actual=await stat(full);}catch(error){if(volatile&&hasCode(error,"ENOENT"))continue;throw error;}
+        if (actual.isDirectory()) await walk(full,false,volatile||(root&&entry.name==="decisions"));
         else if (!actual.isFile()) throw new LedgerCorruption("unexpected filesystem object");
       }
     };

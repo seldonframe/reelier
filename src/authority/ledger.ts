@@ -47,7 +47,7 @@ export interface StoredReservationIntent extends Omit<ReservationIntent, "canoni
   readonly capabilityBase64: string;
   readonly limitSlots: readonly LimitSlotIntent[];
 }
-export interface ReservationLinkage {readonly reservationId:string;readonly state:Exclude<LedgerState,"issued">;readonly ingressClaimDigest:string;readonly capabilityDigest:string;readonly decisionContextDigest:string;readonly updatedAt:string;readonly receiptRef?:string}
+export interface ReservationLinkage {readonly reservationId:string;readonly state:Exclude<LedgerState,"issued">;readonly ingressClaimDigest:string;readonly capabilityId:string;readonly capabilityDigest:string;readonly authorityStateDigest:string;readonly decisionContextDigest:string;readonly updatedAt:string;readonly receiptRef?:string}
 
 export interface ReservationSnapshot {
   readonly reservationId: string;
@@ -127,11 +127,13 @@ export type BindIngressResult =
   | Readonly<{ok:false;reason:"conflict";evaluationEligible:false;ingressClaimDigest:string}>
   | Readonly<{ok:false;reason:"integrity-failure"|"busy"|"lock-owner-unverifiable"|"corruption"}>;
 export interface RedactedIngressBinding {readonly requestId:string;readonly requestKey:string;readonly definitionAlias:string;readonly ingressClaimDigest:string;readonly bindingStatus:"bound"}
+export interface VerifiedIngressClaimLinkage {readonly tenant:string;readonly requester:string;readonly requestId:string;readonly definitionAlias:string;readonly requestDigest:string;readonly requestKey:string;readonly ingressClaimDigest:string}
 
 export interface AuthorityLedger {
   observeClock(): Promise<ObserveClockResult>;
   bindIngress(request: import("./keys.js").AuthenticatedOutcomeRequest): Promise<BindIngressResult>;
   lookupIngress(requestKey:string):Promise<RedactedIngressBinding|undefined>;
+  lookupIngressClaimLinkage(requestKey:string):Promise<VerifiedIngressClaimLinkage|undefined>;
   reserve(intent: ReservationIntent): Promise<ReserveResult>;
   transition(reservationId: string, expectedState: LedgerState, event: TransitionEvent): Promise<TransitionResult>;
   recover(): Promise<RecoverResult>;
