@@ -184,10 +184,16 @@ wire version, local host, PID, and random nonce. A live same-host owner is busy;
 malformed, changed, or unverifiable owner remains unavailable. Reclaim is permitted only after
 same-host process death is positively established, followed by a byte-identical owner reread before
 atomically renaming the whole lock directory to a unique retirement tombstone. Release uses the same
-exact-owner atomic retirement. The owner is reverified inside the renamed directory before bounded
-tombstone cleanup; a failed rename leaves the original complete owner metadata in place. Malformed JSON, invalid
-records, and duplicate durable indexes are explicitly classified as sink corruption; environmental
-filesystem and lock failures are unavailable. These classifications never depend on exception text.
+exact-owner atomic retirement. Owner publication writes and syncs the owner file, syncs the lock
+directory, then syncs the decision root; a publication failure atomically removes the self-created
+lock rather than leaving an ownerless directory. The owner is reverified inside the renamed directory
+before bounded tombstone cleanup; a failed rename leaves the original complete owner metadata in
+place. The constructor fixes a resolved, non-symlink/reparse root identity, rejects traversal through
+such paths, and later refuses root substitution without writing through it. Lock timeouts are finite
+positive integers no greater than 60,000 milliseconds, and every retry deadline uses monotonic time so
+wall-clock rollback cannot extend acquisition or cleanup. Malformed JSON, invalid records, and
+duplicate durable indexes are explicitly classified as sink corruption; environmental filesystem and
+lock failures are unavailable. These classifications never depend on exception text.
 
 ## Closed reason and presence protocol
 
