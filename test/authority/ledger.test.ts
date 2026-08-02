@@ -829,12 +829,14 @@ test("owner publication hard-exit boundaries never expose an ownerless shared lo
     const child=await hardExitAtPublicationPoint(root,point);
     assert.equal(child.code,93,`${point} must be an exact product crash hook`);
     const names=await readdir(root),stages=names.filter(name=>/^\.authority-ledger-lock-publication-[0-9a-f]{64}-\d+-[0-9a-f]{64}\.tmp$/.test(name));
-    assert.ok(stages.length<=1,point);
-    if(existsSync(path.join(root,"lock"))){
+    const afterRename=point==="after-lock-publication-rename"||point==="after-lock-publication-root-sync";
+    assert.equal(existsSync(path.join(root,"lock")),afterRename,`${point}: exact lock presence`);
+    assert.equal(stages.length,afterRename?0:1,`${point}: exact publication-stage count`);
+    if(afterRename){
       const bytes=await readFile(path.join(root,"lock","owner.json")),owner=JSON.parse(bytes.toString("utf8"));
-      assert.deepEqual(bytes,authorityCanonicalBytes(owner),point);assert.equal(owner.pid,child.pid,point);assert.match(owner.nonce,/^[0-9a-f]{64}$/,point);
+      assert.deepEqual(bytes,authorityCanonicalBytes(owner),point);assert.equal(owner.host,hostname(),point);assert.equal(owner.pid,child.pid,point);assert.match(owner.nonce,/^[0-9a-f]{64}$/,point);
     }
-    if(stages.length===1){
+    else{
       const match=/^\.authority-ledger-lock-publication-([0-9a-f]{64})-(\d+)-([0-9a-f]{64})\.tmp$/.exec(stages[0]);assert.ok(match);assert.equal(match[1],publicationHostDigest(hostname()),point);assert.equal(Number(match[2]),child.pid,point);
       const entries=await readdir(path.join(root,stages[0]));
       if(point==="after-lock-publication-stage-create")assert.deepEqual(entries,[],point);
@@ -862,10 +864,15 @@ test("a live publisher's empty and complete pre-rename stages are busy and byte-
 
 async function exitedChildPid():Promise<number>{let pid:number|undefined;const code=await new Promise<number|null>((resolve,reject)=>{const child=spawn(process.execPath,["-e","process.exit(0)"],{stdio:"ignore"});pid=child.pid;child.on("error",reject);child.on("close",resolve);});assert.equal(code,0);assert.ok(Number.isSafeInteger(pid));return pid!;}
 
-test("publication-stage multiplicity permits distinct dead publishers but rejects one PID with two nonces",async()=>{
+async function exitedConcurrentChildPids():Promise<readonly [number,number]>{
+  const children=[spawn(process.execPath,["-e","setInterval(()=>{},1000)"],{stdio:"ignore"}),spawn(process.execPath,["-e","setInterval(()=>{},1000)"],{stdio:"ignore"})] as const,closed=children.map(child=>new Promise<void>((resolve,reject)=>{child.once("error",reject);child.once("close",()=>resolve());}));
+  const pids=children.map(child=>child.pid);try{assert.ok(Number.isSafeInteger(pids[0]));assert.ok(Number.isSafeInteger(pids[1]));assert.notEqual(pids[0],pids[1]);assert.equal(children[0].exitCode,null);assert.equal(children[1].exitCode,null);}finally{for(const child of children)if(child.exitCode===null)child.kill();await Promise.all(closed);}return [pids[0]!,pids[1]!];
+}
+
+test("publication-stage multiplicity permits distinct dead publishers but rejects one PID with two nonces",async t=>{
   const writeComplete=async(root:string,owner:Readonly<{host:string;nonce:string;pid:number;v:1}>)=>{const stage=path.join(root,publicationStageName(owner));await mkdir(stage);await writeFile(path.join(stage,"owner.json"),authorityCanonicalBytes(owner));return stage;};
-  await withRoot(async root=>{const first={host:hostname(),nonce:"4".repeat(64),pid:await exitedChildPid(),v:1 as const},second={host:hostname(),nonce:"5".repeat(64),pid:await exitedChildPid(),v:1 as const};assert.notEqual(first.pid,second.pid);const stages=[await writeComplete(root,first),await writeComplete(root,second)];assert.equal((await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:200}).recover()).ok,true);for(const stage of stages)assert.equal(existsSync(stage),false);});
-  await withRoot(async root=>{const pid=await exitedChildPid(),first={host:hostname(),nonce:"6".repeat(64),pid,v:1 as const},second={...first,nonce:"7".repeat(64)};const stages=[await writeComplete(root,first),await writeComplete(root,second)];assert.deepEqual(await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:200}).recover(),{ok:false,reason:"corruption"});for(const stage of stages)assert.equal(existsSync(stage),true);});
+  await t.test("distinct concurrent PIDs",()=>withRoot(async root=>{const [firstPid,secondPid]=await exitedConcurrentChildPids(),first={host:hostname(),nonce:"4".repeat(64),pid:firstPid,v:1 as const},second={host:hostname(),nonce:"5".repeat(64),pid:secondPid,v:1 as const},stages=[await writeComplete(root,first),await writeComplete(root,second)];assert.equal((await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:200}).recover()).ok,true);for(const stage of stages)assert.equal(existsSync(stage),false);}));
+  await t.test("one PID with two nonces",()=>withRoot(async root=>{const pid=await exitedChildPid(),first={host:hostname(),nonce:"6".repeat(64),pid,v:1 as const},second={...first,nonce:"7".repeat(64)},stages=[await writeComplete(root,first),await writeComplete(root,second)];assert.deepEqual(await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:200}).recover(),{ok:false,reason:"corruption"});for(const stage of stages)assert.equal(existsSync(stage),true);}));
 });
 
 test("publication stages reject malformed topology and owner bindings without target mutation",async t=>{
@@ -873,6 +880,8 @@ test("publication stages reject malformed topology and owner bindings without ta
   await t.test("malformed-name",()=>withRoot(async root=>{const stage=path.join(root,".authority-ledger-lock-publication-malformed.tmp");await mkdir(stage);assert.deepEqual(await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20}).recover(),{ok:false,reason:"corruption"});assert.equal(existsSync(stage),true);}));
   await t.test("extra-content",()=>withRoot(async root=>{const stage=path.join(root,exact);await mkdir(stage);await writeFile(path.join(stage,"owner.json"),authorityCanonicalBytes(owner));await writeFile(path.join(stage,"extra"),sentinel);assert.deepEqual(await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20}).recover(),{ok:false,reason:"corruption"});assert.deepEqual(await readFile(path.join(stage,"extra")),sentinel);}));
   await t.test("owner-mismatch",()=>withRoot(async root=>{const stage=path.join(root,exact);await mkdir(stage);await writeFile(path.join(stage,"owner.json"),authorityCanonicalBytes({...owner,nonce:"e".repeat(64)}));assert.deepEqual(await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20}).recover(),{ok:false,reason:"corruption"});assert.equal(existsSync(stage),true);}));
+  await t.test("wrong-host-digest",()=>withRoot(async root=>{const stage=path.join(root,`.authority-ledger-lock-publication-${"0".repeat(64)}-${owner.pid}-${owner.nonce}.tmp`),ownerBytes=authorityCanonicalBytes(owner);await mkdir(stage);await writeFile(path.join(stage,"owner.json"),ownerBytes);assert.deepEqual(await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20}).recover(),{ok:false,reason:"corruption"});assert.deepEqual(await readFile(path.join(stage,"owner.json")),ownerBytes);}));
+  await t.test("pid-name-mismatch",()=>withRoot(async root=>{const stage=path.join(root,`.authority-ledger-lock-publication-${publicationHostDigest(owner.host)}-${owner.pid+1}-${owner.nonce}.tmp`),ownerBytes=authorityCanonicalBytes(owner);await mkdir(stage);await writeFile(path.join(stage,"owner.json"),ownerBytes);assert.deepEqual(await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20}).recover(),{ok:false,reason:"corruption"});assert.deepEqual(await readFile(path.join(stage,"owner.json")),ownerBytes);}));
   await t.test("foreign-host",()=>withRoot(async root=>{const foreign={...owner,host:"foreign.invalid"},stage=path.join(root,publicationStageName(foreign));await mkdir(stage);await writeFile(path.join(stage,"owner.json"),authorityCanonicalBytes(foreign));assert.deepEqual(await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20}).recover(),{ok:false,reason:"corruption"});assert.equal(existsSync(stage),true);}));
   await t.test("hard-linked-owner",()=>withRoot(async root=>{const stage=path.join(root,exact),external=path.join(root,"transactions","publication-owner");await mkdir(stage);await mkdir(path.dirname(external),{recursive:true});await writeFile(external,authorityCanonicalBytes(owner));const before=await readFile(external);await link(external,path.join(stage,"owner.json"));assert.deepEqual(await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20}).recover(),{ok:false,reason:"corruption"});assert.equal(existsSync(stage),true);assert.deepEqual(await readFile(external),before);}));
   await t.test("reparse-stage",()=>withRoot(async root=>{const external=await tempRoot(),stage=path.join(root,exact);try{await writeFile(path.join(external,"sentinel"),sentinel);await symlink(external,stage,process.platform==="win32"?"junction":"dir");assert.deepEqual(await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20}).recover(),{ok:false,reason:"corruption"});assert.deepEqual(await readFile(path.join(external,"sentinel")),sentinel);}finally{await rm(external,{recursive:true,force:true});}}));
@@ -936,6 +945,11 @@ test("orphan cleanup acknowledgments authenticate their self-contained owner",as
   const owner={host:hostname(),nonce:"1".repeat(64),pid:process.pid,v:1 as const},markerName=retirementMarkerName(owner,"released");
   await withRoot(async root=>{const ack={...cleanupAck(owner,markerName,"released",null),ownerDigest:digest("7")},ackPath=path.join(root,cleanupAckName(ack));await writeFile(ackPath,authorityCanonicalBytes(ack));assert.deepEqual(await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20}).recover(),{ok:false,reason:"corruption"});assert.equal(existsSync(ackPath),true);});
   await withRoot(async root=>{const mismatched={...owner,nonce:"2".repeat(64)},ack=cleanupAck(mismatched,markerName,"released",null),ackPath=path.join(root,cleanupAckName(ack));await writeFile(ackPath,authorityCanonicalBytes(ack));assert.deepEqual(await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20}).recover(),{ok:false,reason:"corruption"});assert.equal(existsSync(ackPath),true);});
+  const malformedOrphan=(nestedOwner:Record<string,unknown>,boundMarkerName=markerName)=>withRoot(async root=>{const ack={...cleanupAck(owner,boundMarkerName,"released",null),owner:nestedOwner,ownerDigest:authorityDigest(nestedOwner)},ackPath=path.join(root,`.authority-ledger-lock-cleanup-${authorityDigest(ack).slice(7)}.ack`),ackBytes=authorityCanonicalBytes(ack),markerPath=path.join(root,boundMarkerName);assert.equal(existsSync(markerPath),false,"fixture is a true orphan");await writeFile(ackPath,ackBytes);assert.deepEqual(await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20}).recover(),{ok:false,reason:"corruption"});assert.equal(existsSync(markerPath),false);assert.deepEqual(await readFile(ackPath),ackBytes);});
+  await malformedOrphan({...owner,host:"foreign.invalid"});
+  await malformedOrphan({...owner,pid:owner.pid+1});
+  const missingHost:Record<string,unknown>={...owner};delete missingHost.host;await malformedOrphan(missingHost);
+  await malformedOrphan({...owner,unexpected:true});
 });
 
 test("pre-service confinement audit precedes retirement housekeeping",async()=>{
