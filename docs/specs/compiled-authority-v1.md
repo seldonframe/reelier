@@ -108,8 +108,9 @@ junctions/reparse paths, root escape, malformed/truncated or noncanonical JSON, 
 mismatch, unknown records, illegal transitions, and journal gaps refuse recovery rather than being
 guessed through.
 
-The pre-release transaction/intent record is `reelier.authority-ledger-transaction/v3`. It requires
-the exact verified ingress-claim digest in addition to all v2 authority fields. V1 and v2 records,
+The pre-release transaction/intent record is `reelier.authority-ledger-transaction/v4`. It requires
+the exact verified ingress-claim digest and complete decision-context digest in addition to the v2
+authority fields. V1 through v3 records,
 missing/tampered ingress records, and broken reservation-to-ingress linkage fail closed as corruption;
 recovery never migrates them by inference.
 
@@ -148,3 +149,93 @@ Recovery verifies canonical ownership and journal continuity, completes an aband
 when every remaining claim is provably available, otherwise writes an immutable tombstone and removes
 only claims verified as owned by that uncommitted transaction. A committed `dispatched` reservation
 with no durable result becomes `ambiguous` on recovery and is never dispatch-eligible again.
+
+## Signed gate decision
+
+The gate is a closed, injected decision boundary with no network driver or credential dependency. It
+binds ingress before loading authority, observes durable `planNow`, commits and advances the complete
+authority-state snapshot, plans and performs bounded source reads, observes durable `decisionNow`,
+materializes source evidence, then revalidates and compiles under the current-state lease. It obtains
+one Event ID immediately before reservation. A successful reservation under that lease is the write-
+authorization linearization point; signing and durable decision append occur afterward. No provider
+write or lifecycle transition to `dispatched` occurs at this boundary.
+
+Every accepted or refused outcome is a signed closed `reelier.gate-decision-record/internal-v1` with
+role `primary` or `conflict`, verified ingress-claim digest, nullable reservation ID, complete
+DecisionContext and digest, GateEvent and digest, signer ID, and signature. A conflict is only a
+refused `request-id-conflict` linked to a verified owner claim and differing attempted alias or request
+digest. Accepted primary decisions must link a verified reservation with the same ingress,
+capability, authority-state, and decision-context commitments. Refused primary decisions have no
+reservation. Every lookup re-parses and verifies the record, signature, ingress ownership, and any
+reservation linkage before returning status.
+
+The durable sink installs the record and all applicable unique Event, primary-ingress, and accepted-
+reservation indexes atomically. `appended` and `idempotent` results require rereading every applicable
+index. Event collision is `event-id-unavailable`; primary collision permits one verified existing
+status lookup; reservation collision is an internal-integrity failure even when the conflicting
+record is otherwise valid. Corruption, absence, I/O failure, and unknown append outcome remain closed
+and never produce a dispatch handle. An exact retry reads only the persisted primary decision and
+returns redacted current status; it never re-evaluates, resigns, or reconstructs a handle.
+
+## Closed reason and presence protocol
+
+The ordered refusal protocol is:
+
+```text
+request-id-conflict
+authority-state-invalid | authority-state-rollback | authority-state-changed
+contract-not-found | contract-not-eligible | contract-ambiguous | contract-untrusted
+contract-alias-mismatch | contract-audience-mismatch | contract-inactive | contract-revoked |
+contract-not-yet-valid | contract-expired | delegation-invalid
+pack-mismatch | definition-mismatch | resolver-mismatch | connector-mismatch | account-mismatch |
+endpoint-not-allowed | risk-not-allowed
+source-read-refused | source-observation-invalid | source-projection-invalid | source-ungrounded |
+source-stale
+choices-invalid | compile-refused | effect-refused
+reservation-idempotency-conflict | semantic-duplicate | capability-integrity |
+capability-already-reserved | limit-exceeded | not-yet-valid | expired | clock-rollback |
+integrity-failure | busy | lock-owner-unverifiable | corruption
+```
+
+One strict stored candidate reports the first applicable reason in that order after state validity.
+Zero candidates, one strict-but-untrusted candidate, several candidates with none eligible, and more
+than one eligible candidate report `contract-not-found`, `contract-untrusted`, `contract-not-eligible`,
+and `contract-ambiguous`, respectively. Candidate order, timestamps, learned scores, and heuristics do
+not break ambiguity. Unknown exceptions are unavailable, never converted from message text into a
+signed refusal. Accepted GateEvents use `reasonCode:"accepted"`.
+
+| Stage/reasons | contract | authority state | source bundle | outcome + effect | capability |
+|---|---:|---:|---:|---:|---:|
+| request conflict | null | null | null | null | null |
+| invalid or rollback state | null | null | null | null | null |
+| state changed before reads | null | digest | null | null | null |
+| not found, not eligible, ambiguous, or untrusted | null | digest | null | null | null |
+| one trusted candidate fails planning eligibility | digest | digest | null | null | null |
+| source read, observation, projection, grounding, or freshness refusal | digest | digest | null | null | null |
+| state changed or contract expires after validated source | digest | digest | digest | null | null |
+| choices, compile, or effect refusal | digest | digest | digest | null | null |
+| reservation refusal | digest | digest | digest | both present | ID and digest present |
+| accepted | digest | digest | digest | both present | ID and digest present |
+
+Planning refusals use `planNow`; definitive source-read refusal obtains a fresh durable instant; all
+post-read, compilation, reservation, and accepted events use `decisionNow`. Rollback at either gate
+clock observation is unavailable `clock-unavailable`; only a later reserve-time rollback is a signed
+full-presence `clock-rollback` refusal.
+
+## Redacted status and opaque handoff
+
+Accepted and refused first attempts return only their frozen gate result. Existing results expose
+request ID/key, verdict, closed reason, decision-context and GateEvent digests, lifecycle state,
+kernel-owned update time, and optional receipt reference. Refused status has lifecycle `refused` and
+uses the GateEvent time. Accepted existing status uses the live reverified reservation lifecycle and
+time. No status exposes Event/capability IDs, full context, signer/signature, compiled effect, or
+credentials.
+
+Only a newly appended, locally reverified accepted decision receives a
+`ReservedDispatchHandle`. The handle is an empty frozen branded object whose private state binds the
+authenticated request, ingress claim, observed authority token/version/digest, revalidated contract,
+delegation and source, compiled effect and capability bytes/digests, limits, reservation, and signed
+decision. JSON serialization is empty; structured clones, structural lookalikes, and forged symbols
+cannot unwrap it. It is intentionally absent from the public `reelier/authority` runtime exports.
+Later dispatch code must independently recheck current authority, expiry, and exact recompilation
+before recording `dispatched` and performing external I/O.
