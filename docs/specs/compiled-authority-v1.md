@@ -138,11 +138,22 @@ durably and idempotently before every callback, including ingress-only callbacks
 reservation is durably non-dispatched. Cleanup is authorized by an immutable canonical
 `reelier.authority-ledger-lock-cleanup-ack/v1` root file named
 `.authority-ledger-lock-cleanup-<64-lower-hex-record-digest>.ack`. The closed record binds the exact
-marker name, canonical owner digest, disposition, and post-recovery journal head; the head is null only
-for a marker requiring no recovery or an empty recovered journal. The ack file is file-synced and the
-ledger root directory is synced before marker removal. An interrupted partial/empty marker is removable
-only with its exact valid ack; otherwise it is corruption. Cleanup then removes the marker, syncs the
-root, removes the ack, and syncs the root again, so every interruption is recoverable without inferring
+marker name, canonical owner digest, disposition, and post-recovery journal head. Its exact keys are
+`{ disposition, journalHead, markerName, ownerDigest, v }`; `v` is the literal
+`reelier.authority-ledger-lock-cleanup-ack/v1`, `ownerDigest` is the authority digest of the exact
+canonical owner bytes, and `journalHead` is the nonzero authority digest of the latest canonical journal
+event after recovery. `journalHead` is null only for `released`/`publication-aborted`, or for
+`recovery-pending` when the recovered journal is empty. The filename digest is the authority digest of
+that exact canonical closed ack record, without its `sha256:` prefix. Marker name, owner digest,
+disposition, and non-null journal head must all match current verified state.
+
+The ack is exclusive-created, written, file-synced, closed, and followed by a root-directory sync before
+marker removal. A crash leaving a partial ack is corruption and never authorizes cleanup. An interrupted
+partial/empty marker is removable only with its exact canonical, digest-named valid ack; otherwise it is
+corruption. Cleanup then removes the marker, syncs the root, removes the ack, and syncs the root again.
+A valid orphan ack whose exact marker is absent represents the post-marker-sync/pre-ack-removal crash
+window and is removed after validation; malformed, owner-digest-less, marker-mismatched, or otherwise
+invalid orphan acks fail closed. Thus every acknowledged interruption is recoverable without inferring
 state. A fresh monotonic housekeeping deadline begins only after owner publication succeeds; it does
 not reuse a nearly expired acquisition deadline. Lock acquisition, retirement cleanup, and transient
 Windows `decisions/`-subtree audit retries use monotonic deadlines. They never consult the
