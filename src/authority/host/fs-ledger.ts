@@ -446,13 +446,14 @@ export class FsAuthorityLedger implements AuthorityLedger {
 
   private async assertNoLinks(): Promise<void> {
     const allowedRoot = new Set(["transactions", "claims", "journal", "tombstones", "ingress", "decisions", "lock"]);
+    const volatileRead=async<T>(operation:()=>Promise<T>):Promise<T|undefined>=>{const deadline=Date.now()+1_000;for(;;){try{return await operation();}catch(error){if(hasCode(error,"ENOENT"))return undefined;if(process.platform!=="win32"||!(hasCode(error,"EPERM")||hasCode(error,"EACCES")||hasCode(error,"EBUSY"))||Date.now()>=deadline)throw error;await delay(2);}}};
     const walk = async (directory: string, root = false, volatile = false): Promise<void> => {
-      let entries;try{entries=await readdir(directory,{withFileTypes:true});}catch(error){if(volatile&&hasCode(error,"ENOENT"))return;throw error;}
+      const entries=volatile?await volatileRead(()=>readdir(directory,{withFileTypes:true})):await readdir(directory,{withFileTypes:true});if(!entries)return;
       for (const entry of entries) {
         if (entry.isSymbolicLink()) throw new LedgerCorruption("symlink or reparse point below ledger root");
         if (root && !allowedRoot.has(entry.name)) throw new LedgerCorruption("unexpected ledger root entry");
         const full = path.join(directory, entry.name);
-        let actual;try{actual=await stat(full);}catch(error){if(volatile&&hasCode(error,"ENOENT"))continue;throw error;}
+        const actual=volatile?await volatileRead(()=>stat(full)):await stat(full);if(!actual)continue;
         if (actual.isDirectory()) await walk(full,false,volatile||(root&&entry.name==="decisions"));
         else if (!actual.isFile()) throw new LedgerCorruption("unexpected filesystem object");
       }
