@@ -127,10 +127,10 @@ test("DecisionContext parses as an independently versioned closed wire object", 
     assert.throws(() => parseAuthorityWire("decision-context", { ...acceptedDecisionContext, [field]: "" }), /pattern/i, field);
   }
   for (const field of ["requestDigest", "requestKey", "contractDigest", "capabilityDigest", "outcomeKey", "effectDigest"] as const) {
-    assert.throws(() => parseAuthorityWire("decision-context", { ...acceptedDecisionContext, [field]: zeroDigest }), /pattern/i, field);
+    for (const invalid of ["", zeroDigest]) assert.throws(() => parseAuthorityWire("decision-context", { ...acceptedDecisionContext, [field]: invalid }), /pattern/i, `${field}=${invalid}`);
   }
   for (const field of ["sourceBundleDigest", "authorityStateDigest"] as const) {
-    assert.throws(() => parseAuthorityWire("decision-context", { ...acceptedDecisionContext, snapshots: { ...acceptedDecisionContext.snapshots, [field]: zeroDigest } }), /pattern/i, field);
+    for (const invalid of ["", zeroDigest]) assert.throws(() => parseAuthorityWire("decision-context", { ...acceptedDecisionContext, snapshots: { ...acceptedDecisionContext.snapshots, [field]: invalid } }), /pattern/i, `${field}=${invalid}`);
   }
 });
 
