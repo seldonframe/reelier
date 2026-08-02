@@ -12,6 +12,7 @@ import {
   type LedgerState,
   type ReservationIntent,
   type ReservationSnapshot,
+  type TransitionEvent,
 } from "../../src/authority/ledger.js";
 import {
   FsAuthorityLedger,
@@ -23,6 +24,14 @@ import {
 
 const t0 = Date.parse("2026-08-02T12:00:00.000Z");
 const digest = (character: string) => `sha256:${character.repeat(64)}`;
+const kernelTimedTransition: TransitionEvent = { to: "dispatched" };
+const callerTimedTransition: TransitionEvent = {
+  to: "dispatched",
+  // @ts-expect-error lifecycle time is kernel-owned, never caller-authored
+  at: new Date(t0).toISOString(),
+};
+void kernelTimedTransition;
+void callerTimedTransition;
 
 function intent(overrides: Partial<ReservationIntent> = {}): ReservationIntent {
   const scalar = {
@@ -213,7 +222,7 @@ test("transition timestamps are stamped from the single durable kernel observati
     assert.equal(created.ok, true);
     if (!created.ok) return;
     now = t0 + 10;
-    const transitioned = await ledger.transition(created.reservation.reservationId, "reserved", { to: "dispatched", at: new Date(t0 + 50_000).toISOString() });
+    const transitioned = await ledger.transition(created.reservation.reservationId, "reserved", { to: "dispatched" });
     assert.equal(transitioned.ok, true);
     if (!transitioned.ok) return;
     assert.equal(transitionClockReads, 1);
@@ -228,7 +237,7 @@ test("recovery refuses recomputed transition timestamps that differ from durable
     const created = await ledger.reserve(intent());
     assert.equal(created.ok, true);
     if (!created.ok) return;
-    assert.equal((await ledger.transition(created.reservation.reservationId, "reserved", { to: "dispatched", at: new Date(t0).toISOString() })).ok, true);
+    assert.equal((await ledger.transition(created.reservation.reservationId, "reserved", { to: "dispatched" })).ok, true);
     await rewriteJournal(root, event => event.type === "transition" ? { ...event, at: new Date(t0 + offset).toISOString() } : event);
     assert.deepEqual(await new FsAuthorityLedger(root, { now: () => t0 }).recover(), { ok: false, reason: "corruption" }, String(offset));
   });
@@ -242,7 +251,7 @@ test("clock rollback recovery makes dispatched work ambiguous at the durable hig
     assert.equal(created.ok, true);
     if (!created.ok) return;
     now = t0 + 10;
-    assert.equal((await ledger.transition(created.reservation.reservationId, "reserved", { to: "dispatched", at: new Date(now).toISOString() })).ok, true);
+    assert.equal((await ledger.transition(created.reservation.reservationId, "reserved", { to: "dispatched" })).ok, true);
     const recovered = await new FsAuthorityLedger(root, { now: () => t0 - 1 }).recover();
     assert.equal(recovered.ok, true);
     if (!recovered.ok) return;
@@ -270,17 +279,16 @@ test("result digest presence is enforced by target state before journal mutation
     if (!created.ok) return;
     let expected: LedgerState = "reserved";
     if (value.target !== "dispatched") {
-      assert.equal((await ledger.transition(created.reservation.reservationId, "reserved", { to: "dispatched", at: new Date(t0).toISOString() })).ok, true);
+      assert.equal((await ledger.transition(created.reservation.reservationId, "reserved", { to: "dispatched" })).ok, true);
       expected = "dispatched";
       if (value.target === "reconciled") {
-        assert.equal((await ledger.transition(created.reservation.reservationId, "dispatched", { to: "acknowledged", at: new Date(t0).toISOString(), resultDigest: digest("a") })).ok, true);
+        assert.equal((await ledger.transition(created.reservation.reservationId, "dispatched", { to: "acknowledged", resultDigest: digest("a") })).ok, true);
         expected = "acknowledged";
       }
     }
     const before = await readdir(path.join(root, "journal"));
     const result = await ledger.transition(created.reservation.reservationId, expected, {
       to: value.target,
-      at: new Date(t0).toISOString(),
       ...(value.digest === undefined ? {} : { resultDigest: value.digest }),
     });
     assert.deepEqual(result, { ok: false, reason: "corruption" }, value.target);
@@ -300,9 +308,9 @@ test("replay refuses target-specific result digest violations after canonical jo
     const created = await ledger.reserve(intent());
     assert.equal(created.ok, true);
     if (!created.ok) return;
-    assert.equal((await ledger.transition(created.reservation.reservationId, "reserved", { to: "dispatched", at: new Date(t0).toISOString() })).ok, true);
+    assert.equal((await ledger.transition(created.reservation.reservationId, "reserved", { to: "dispatched" })).ok, true);
     if (value.target !== "dispatched") {
-      assert.equal((await ledger.transition(created.reservation.reservationId, "dispatched", { to: value.target, at: new Date(t0).toISOString(), ...(value.target === "ambiguous" ? {} : { resultDigest: digest("a") }) })).ok, true);
+      assert.equal((await ledger.transition(created.reservation.reservationId, "dispatched", { to: value.target, ...(value.target === "ambiguous" ? {} : { resultDigest: digest("a") }) })).ok, true);
     }
     await rewriteJournal(root, event => event.type === "transition" && event.to === value.target
       ? { ...event, ...(value.resultDigest === undefined ? { resultDigest: undefined } : { resultDigest: value.resultDigest }) }
@@ -320,11 +328,11 @@ test("verified reservation history preserves distinct acknowledgement and reconc
     if (!created.ok) return;
     const id = created.reservation.reservationId;
     now += 1;
-    assert.equal((await ledger.transition(id, "reserved", { to: "dispatched", at: new Date(now).toISOString() })).ok, true);
+    assert.equal((await ledger.transition(id, "reserved", { to: "dispatched" })).ok, true);
     now += 1;
-    assert.equal((await ledger.transition(id, "dispatched", { to: "acknowledged", at: new Date(now).toISOString(), resultDigest: digest("a") })).ok, true);
+    assert.equal((await ledger.transition(id, "dispatched", { to: "acknowledged", resultDigest: digest("a") })).ok, true);
     now += 1;
-    assert.equal((await ledger.transition(id, "acknowledged", { to: "reconciled", at: new Date(now).toISOString(), resultDigest: digest("b") })).ok, true);
+    assert.equal((await ledger.transition(id, "acknowledged", { to: "reconciled", resultDigest: digest("b") })).ok, true);
     const historyLedger = ledger as unknown as { getReservationHistory(reservationId: string): Promise<{
       reservation: ReservationSnapshot;
       entries: ReadonlyArray<{ sequence: number; from: LedgerState; to: LedgerState; at: string; eventDigest: string; resultDigest?: string }>;
@@ -403,7 +411,7 @@ test("lifetime boundaries and monotonic wall-clock high-water are exact", async 
     assert.equal(reserved.ok, true);
     if (!reserved.ok) return;
     now = t0 + CAPABILITY_LIFETIME_MS;
-    assert.deepEqual(await ledger.transition(reserved.reservation.reservationId, "reserved", { to: "dispatched", at: new Date(now).toISOString() }), { ok: false, reason: "expired" });
+    assert.deepEqual(await ledger.transition(reserved.reservation.reservationId, "reserved", { to: "dispatched" }), { ok: false, reason: "expired" });
     now = t0 - 1;
     assert.deepEqual(await ledger.reserve(intent({ requestId: "rollback" })), { ok: false, reason: "clock-rollback" });
     now = t0;
@@ -423,12 +431,12 @@ test("transition is durable compare-and-transition over the exact legal graph", 
     assert.equal(created.ok, true);
     if (!created.ok) return;
     const id = created.reservation.reservationId;
-    assert.equal((await ledger.transition(id, "reserved", { to: "dispatched", at: new Date(now).toISOString() })).ok, true);
-    assert.deepEqual(await ledger.transition(id, "reserved", { to: "dispatched", at: new Date(now).toISOString() }), { ok: false, reason: "state-conflict" });
-    assert.deepEqual(await ledger.transition(id, "dispatched", { to: "reconciled", at: new Date(now).toISOString() }), { ok: false, reason: "illegal-transition" });
-    assert.equal((await ledger.transition(id, "dispatched", { to: "acknowledged", at: new Date(now).toISOString(), resultDigest: digest("a") })).ok, true);
-    assert.equal((await ledger.transition(id, "acknowledged", { to: "reconciled", at: new Date(now).toISOString(), resultDigest: digest("b") })).ok, true);
-    assert.deepEqual(await ledger.transition(id, "reconciled", { to: "ambiguous", at: new Date(now).toISOString() }), { ok: false, reason: "illegal-transition" });
+    assert.equal((await ledger.transition(id, "reserved", { to: "dispatched" })).ok, true);
+    assert.deepEqual(await ledger.transition(id, "reserved", { to: "dispatched" }), { ok: false, reason: "state-conflict" });
+    assert.deepEqual(await ledger.transition(id, "dispatched", { to: "reconciled", resultDigest: digest("a") }), { ok: false, reason: "illegal-transition" });
+    assert.equal((await ledger.transition(id, "dispatched", { to: "acknowledged", resultDigest: digest("a") })).ok, true);
+    assert.equal((await ledger.transition(id, "acknowledged", { to: "reconciled", resultDigest: digest("b") })).ok, true);
+    assert.deepEqual(await ledger.transition(id, "reconciled", { to: "ambiguous" }), { ok: false, reason: "illegal-transition" });
     assert.equal((await ledger.getReservation(id))?.state, "reconciled");
   });
 
@@ -439,8 +447,9 @@ test("transition is durable compare-and-transition over the exact legal graph", 
     assert.equal(created.ok, true);
     if (!created.ok) return;
     const id = created.reservation.reservationId;
-    assert.equal((await ledger.transition(id, "reserved", { to: "dispatched", at: new Date(t0).toISOString() })).ok, true);
-    assert.equal((await ledger.transition(id, "dispatched", { to: target, at: new Date(t0).toISOString() })).ok, true);
+    assert.equal((await ledger.transition(id, "reserved", { to: "dispatched" })).ok, true);
+    const event = target === "ambiguous" ? { to: target } : { to: target, resultDigest: digest("a") };
+    assert.equal((await ledger.transition(id, "dispatched", event)).ok, true);
   });
 });
 
@@ -450,7 +459,7 @@ test("recovery turns a durable dispatched reservation without a result into ambi
     const created = await ledger.reserve(intent());
     assert.equal(created.ok, true);
     if (!created.ok) return;
-    await ledger.transition(created.reservation.reservationId, "reserved", { to: "dispatched", at: new Date(t0).toISOString() });
+    await ledger.transition(created.reservation.reservationId, "reserved", { to: "dispatched" });
     const recovered = await new FsAuthorityLedger(root, { now: () => t0 }).recover();
     assert.equal(recovered.ok, true);
     if (recovered.ok) assert.equal(recovered.reservations[0].state, "ambiguous");
@@ -507,7 +516,7 @@ test("faults at every durable reservation and transition point recover to prior 
     const crashing = new FsAuthorityLedger(root, { now: () => t0, faultInjector: (observed: string) => {
       if (!fired && observed === point) { fired = true; throw new Error(`fault:${point}`); }
     } });
-    try { await crashing.transition(created.reservation.reservationId, "reserved", { to: "dispatched", at: new Date(t0).toISOString() }); } catch (error) { assert.match(String(error), /fault:/); }
+    try { await crashing.transition(created.reservation.reservationId, "reserved", { to: "dispatched" }); } catch (error) { assert.match(String(error), /fault:/); }
     assert.equal(fired, true, point);
     const recovered = await new FsAuthorityLedger(root, { now: () => t0 }).recover();
     if (recovered.ok) assert.ok(["reserved", "ambiguous"].includes(recovered.reservations[0].state));
@@ -519,12 +528,12 @@ test("faults at every durable reservation and transition point recover to prior 
     const created = await setup.reserve(intent());
     assert.equal(created.ok, true);
     if (!created.ok) return;
-    await setup.transition(created.reservation.reservationId, "reserved", { to: "dispatched", at: new Date(t0).toISOString() });
+    await setup.transition(created.reservation.reservationId, "reserved", { to: "dispatched" });
     let fired = false;
     const crashing = new FsAuthorityLedger(root, { now: () => t0, faultInjector: (observed: string) => {
       if (!fired && observed === point) { fired = true; throw new Error(`fault:${point}`); }
     } });
-    try { await crashing.transition(created.reservation.reservationId, "dispatched", { to: "acknowledged", at: new Date(t0).toISOString(), resultDigest: digest("a") }); } catch (error) { assert.match(String(error), /fault:/); }
+    try { await crashing.transition(created.reservation.reservationId, "dispatched", { to: "acknowledged", resultDigest: digest("a") }); } catch (error) { assert.match(String(error), /fault:/); }
     assert.equal(fired, true, point);
     const recovered = await new FsAuthorityLedger(root, { now: () => t0 }).recover();
     if (recovered.ok) assert.ok(["ambiguous", "acknowledged"].includes(recovered.reservations[0].state));
