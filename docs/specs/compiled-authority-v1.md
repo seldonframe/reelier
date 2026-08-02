@@ -158,6 +158,14 @@ when its bytes are identical. A changed inode/file identity, increased link coun
 refuses. Replacing a regular owner with a directory or reparse point, or replacing a real stage
 directory with a regular file or reparse point, is likewise preserved and refuses without traversing
 or mutating the replacement target. It never removes another live stage.
+Filesystem identity is read with non-following `lstat({ bigint: true })`; device, inode/file ID, mode,
+and link count remain exact bigint values throughout comparison and are never rounded through a
+JavaScript `number`. Two distinct adjacent identities above `Number.MAX_SAFE_INTEGER` remain distinct.
+The exact `before-publication-stage-remove` fault point occurs immediately before every destructive
+publication-stage removal attempt. Each attempt first re-enumerates the root generation, revalidates
+the exact directory and owner identity/type/link count/name/bytes, and re-probes owner liveness. A
+transient failure never retries `rm` directly: it restarts those validations against the same
+monotonic deadline. A same-name replacement installed before or during any attempt is preserved.
 Acquisition is bounded. A live same-host owner is never evicted because time elapsed; a
 foreign, corrupt, or otherwise unverifiable owner refuses. An abandoned lock is reclaimed only after
 same-host process liveness proves that its recorded PID is dead and the owner bytes remain identical.
@@ -237,6 +245,18 @@ contender's publication does not begin. Transient Windows `EPERM`, `EACCES`,
 and `EBUSY` at either boundary retry against the same monotonic acquisition deadline. Persistent
 failure refuses as corruption without mutating any artifact. The default acquisition timeout remains
 30,000 milliseconds; tests may select a smaller valid timeout without changing that default.
+The exact `before-publication-stage-root-reenumeration` fault point precedes the generation-closing
+root enumeration. Transient sharing failures at every enumeration, validation, final pre-delete
+validation, and removal boundary restart the whole bounded generation; none escapes as a raw error.
+After publishing its own owner, the active holder applies the same protocol until it has one fully
+classified stable generation. A retry result is never discarded: malformed replacement generations
+refuse before retirement housekeeping or the operation-callback entry, preserving every artifact.
+Immediately before every dead-stage removal attempt, liveness is probed again. PID reuse to a live
+process preserves the stage and yields busy/retry; an unverifiable final probe preserves it and refuses.
+On rename-to-`lock` collision the creator retains its exact fully synced stage object and retries the
+atomic rename of that same identity. It does not recreate or resync the stage and removes it only on a
+terminal timeout/refusal/error after exact revalidation. The exact
+`after-lock-publication-rename-collision` hook exposes that retained-object boundary.
 
 The only lifecycle is `issued -> reserved -> dispatched -> acknowledged | definitive-failure |
 ambiguous`, with `acknowledged | ambiguous -> reconciled`. Transitions are durable compare-and-transition
