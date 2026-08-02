@@ -188,6 +188,7 @@ test("static first-party compiler source conformance refuses ambient I/O, clock,
   for (const source of [
     'process.getBuiltinModule("fs")', 'process.binding("fs")', 'process._linkedBinding("fs")', 'process.dlopen(module, "addon.node")', "process.mainModule.require('fs')",
     'module.createRequire(import.meta.url)', 'Module.createRequire(import.meta.url)', 'globalThis.process.getBuiltinModule("fs")', 'global.process["binding"]("fs")',
+    'globalThis["process"]["getBuiltinModule"]("fs")', 'global["process"]._linkedBinding("fs")', 'globalThis["module"]["createRequire"](import.meta.url)',
   ]) assert.throws(() => assertStaticFirstPartySourcesConform([{ file: "bad-pack.ts", source }]), /static first-party purity.*module loader/i, source);
   for (const source of [
     "process.env.SECRET", "fetch('https://example.test')", "Date.now()", "new Date()", "Math.random()", "createRequire(import.meta.url)",

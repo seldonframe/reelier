@@ -85,14 +85,16 @@ const FORBIDDEN_SOURCE_PATTERNS: readonly [RegExp, string][] = [
   [/\bMath\.random\s*\(/, "ambient randomness"],
   [/\b(?:randomUUID|randomBytes|randomFill|randomFillSync|generateKeyPair|generateKeyPairSync)\s*\(/, "crypto randomness"],
   [/\bimport\s*\(/, "dynamic import"],
-  [/\brequire\s*\(/, "runtime require"],
+  [/\b(?:(?:globalThis|global)\s*(?:\.\s*process|\[\s*["']process["']\s*\])|process)\s*(?:\.\s*(?:getBuiltinModule|binding|_linkedBinding|dlopen|mainModule)\b|\[\s*["'](?:getBuiltinModule|binding|_linkedBinding|dlopen|mainModule)["']\s*\])/, "ambient process module loader"],
+  [/\b(?:(?:globalThis|global)\s*(?:\.\s*module|\[\s*["']module["']\s*\])|module|Module)\s*(?:\.\s*createRequire\b|\[\s*["']createRequire["']\s*\])/, "ambient module loader"],
   [/\bcreateRequire\b/, "runtime module loader"],
+  [/\brequire\s*\(/, "runtime require"],
   [/\beval\s*\(/, "eval"],
   [/\b(?:new\s+)?Function\s*\(/, "function construction"],
 ];
 
 const STATIC_RUNTIME_SPECIFIER_ALLOWLIST: Readonly<Record<string, ReadonlySet<string>>> = Object.freeze({
-  "src/authority/compile.ts": new Set(["node:crypto"]),
+  "src/authority/compile.ts": new Set(["node:crypto", "./types.js", "./wire.js", "./contract.js", "./source.js", "./pack.js"]),
 });
 const STATIC_RUNTIME_SPECIFIER = /\b(?:import|export)\s+(?!type\b)(?:(?:[^"'`;]*?\bfrom\s*)?["']([^"']+)["'])/gs;
 
@@ -101,9 +103,8 @@ export function assertStaticFirstPartySourcesConform(sources: readonly Readonly<
   for (const candidate of sources) {
     for (const match of candidate.source.matchAll(STATIC_RUNTIME_SPECIFIER)) {
       const specifier = match[1];
-      const relativeFirstParty = specifier.startsWith("./") || specifier.startsWith("../");
       const explicitlyAllowed = STATIC_RUNTIME_SPECIFIER_ALLOWLIST[candidate.file]?.has(specifier) === true;
-      if (!relativeFirstParty && !explicitlyAllowed) throw new TypeError(`static first-party purity violation in ${candidate.file}: runtime module specifier ${specifier} is not allowlisted`);
+      if (!explicitlyAllowed) throw new TypeError(`static first-party purity violation in ${candidate.file}: runtime module specifier ${specifier} is not allowlisted`);
     }
     for (const [pattern, reason] of FORBIDDEN_SOURCE_PATTERNS) {
       if (pattern.test(candidate.source)) throw new TypeError(`static first-party purity violation in ${candidate.file}: ${reason}`);
