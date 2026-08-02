@@ -20,6 +20,8 @@ import type {
   AuthorityLedger,
   LedgerState,
   RecoverResult,
+  ReservationHistory,
+  ReservationHistoryEntry,
   ReservationIntent,
   ReservationSnapshot,
   ReserveReason,
@@ -132,6 +134,7 @@ type TombstoneResolution = Readonly<{ kind: "refused"; reason: ReserveReason }> 
 type LockResult = { ok: true; owner: LockOwner; reclaimed: boolean } | { ok: false; reason: "busy" | "lock-owner-unverifiable" | "corruption" };
 
 const SHA = /^sha256:[0-9a-f]{64}$/;
+const ZERO_SHA = `sha256:${"0".repeat(64)}`;
 const ID = /^[A-Za-z0-9._~-]{1,128}$/;
 const FILE_HEX = /^[0-9a-f]{64}$/;
 const JOURNAL_FILE = /^(\d{16})-([0-9a-f]{64})$/;
@@ -192,7 +195,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
   }
 
   async transition(reservationId: string, expectedState: LedgerState, event: TransitionEvent): Promise<TransitionResult> {
-    if (!SHA.test(reservationId) || !isIso(event.at) || (event.resultDigest !== undefined && !SHA.test(event.resultDigest))) return frozen({ ok: false, reason: "corruption" });
+    if (!SHA.test(reservationId) || !isTransitionEventInput(event)) return frozen({ ok: false, reason: "corruption" });
     const context: OperationContext = event.to === "dispatched" ? "dispatch" : "result";
     return this.withLock(context, async reclaimed => {
       let view = await this.prepare(reclaimed, false, context);
@@ -205,10 +208,12 @@ export class FsAuthorityLedger implements AuthorityLedger {
       if (event.to === "dispatched" && now >= parseIso(current.intent.expiresAt)) return frozen({ ok: false, reason: "expired" });
       if (view.highWaterMark !== null && now < parseIso(view.highWaterMark)) return frozen({ ok: false, reason: "clock-rollback" });
       view = await this.persistClock(view, now, context);
+      const at = new Date(now).toISOString();
+      const resultDigest = "resultDigest" in event ? event.resultDigest : undefined;
       this.fault(`${context}-before-journal-transition` as LedgerFaultPoint);
       const transition = await this.appendEvent(view, {
-        type: "transition", reservationId, from: current.state, to: event.to, at: event.at,
-        ...(event.resultDigest === undefined ? {} : { resultDigest: event.resultDigest }),
+        type: "transition", reservationId, from: current.state, to: event.to, at,
+        ...(resultDigest === undefined ? {} : { resultDigest }),
       }, context) as TransitionJournalEvent;
       this.fault(`${context}-after-journal-transition` as LedgerFaultPoint);
       const next = applyTransition(current, transition);
@@ -241,6 +246,28 @@ export class FsAuthorityLedger implements AuthorityLedger {
     });
     if (isLockFailure(result)) throw new AuthorityLedgerReadError(result.reason);
     return result as ReservationSnapshot | undefined;
+  }
+
+  async getReservationHistory(reservationId: string): Promise<ReservationHistory | undefined> {
+    const result = await this.withLock("reservation", async reclaimed => {
+      const view = await this.prepare(reclaimed, false, "reservation");
+      const reservation = view.reservations.get(reservationId);
+      if (!reservation) return undefined;
+      const entries: ReservationHistoryEntry[] = [];
+      for (let index = 0; index < view.events.length; index++) {
+        const event = view.events[index];
+        if (event.type === "reserve" && event.reservation.reservationId === reservationId) entries.push({
+          sequence: event.sequence, from: "issued", to: "reserved", at: event.reservation.updatedAt, eventDigest: view.eventDigests[index],
+        });
+        if (event.type === "transition" && event.reservationId === reservationId) entries.push({
+          sequence: event.sequence, from: event.from, to: event.to, at: event.at, eventDigest: view.eventDigests[index],
+          ...(event.resultDigest === undefined ? {} : { resultDigest: event.resultDigest }),
+        });
+      }
+      return frozen({ reservation: detachReservation(reservation), entries: Object.freeze(entries.map(entry => frozen(entry))) });
+    });
+    if (isLockFailure(result)) throw new AuthorityLedgerReadError(result.reason);
+    return result as ReservationHistory | undefined;
   }
 
   async getHighWaterMark(): Promise<Readonly<{ observedAt: string | null }>> {
@@ -333,7 +360,8 @@ export class FsAuthorityLedger implements AuthorityLedger {
     if (reclaimed || makeDispatchedAmbiguous) {
       for (const reservation of [...view.reservations.values()]) {
         if (reservation.state !== "dispatched") continue;
-        const transition = await this.appendEvent(view, { type: "transition", reservationId: reservation.reservationId, from: "dispatched", to: "ambiguous", at: new Date(this.options.now()).toISOString() }, "result") as TransitionJournalEvent;
+        if (view.highWaterMark === null) throw new LedgerCorruption("dispatched reservation has no durable clock");
+        const transition = await this.appendEvent(view, { type: "transition", reservationId: reservation.reservationId, from: "dispatched", to: "ambiguous", at: view.highWaterMark }, "result") as TransitionJournalEvent;
         view = await this.loadView();
         if (!view.reservations.has(transition.reservationId)) throw new LedgerCorruption("lost recovered reservation");
       }
@@ -417,7 +445,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
       const occupied = new Set(existingAssignments.map(item => item.index));
       const index = Array.from({ length: committedMaximum }, (_, value) => value).find(value => !occupied.has(value));
       if (index === undefined) return this.abort(transactionDigest, "limit-exceeded");
-      assignments.push({ key: slot.key, index, maximum: committedMaximum });
+      assignments.push({ key: slot.key, index, maximum: slot.maximum });
     }
 
     const descriptors: ClaimDescriptor[] = [
@@ -446,7 +474,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
       intent,
       limitAssignments: Object.freeze(assignments.map(value => frozen({ ...value }))),
       sequence: nextSequence,
-      updatedAt: new Date(this.options.now()).toISOString(),
+      updatedAt: view.highWaterMark ?? (() => { throw new LedgerCorruption("reservation commit has no durable clock"); })(),
     });
     await this.appendEvent(view, { type: "reserve", transactionDigest, reservation }, "reservation");
     this.fault("reservation-after-commit-marker");
@@ -565,12 +593,16 @@ export class FsAuthorityLedger implements AuthorityLedger {
       } else if (event.type === "reserve") {
         if (!SHA.test(event.transactionDigest) || committedTransactions.has(event.transactionDigest)) throw new LedgerCorruption("duplicate or invalid transaction commit");
         validateReservation(event.reservation);
-        if (event.reservation.reservationId !== event.transactionDigest || event.reservation.sequence !== event.sequence || reservations.has(event.reservation.reservationId)) throw new LedgerCorruption("reservation commit mismatch");
+        if (event.reservation.reservationId !== event.transactionDigest || event.reservation.sequence !== event.sequence || reservations.has(event.reservation.reservationId) || highWaterMark === null || event.reservation.updatedAt !== highWaterMark) throw new LedgerCorruption("reservation commit mismatch");
         reservations.set(event.reservation.reservationId, detachReservation(event.reservation));
         committedTransactions.add(event.transactionDigest);
       } else if (event.type === "transition") {
         const current = reservations.get(event.reservationId);
-        if (!current || current.state !== event.from || !LEGAL.has(`${event.from}>${event.to}`) || !isIso(event.at)) throw new LedgerCorruption("illegal journal transition");
+        if (
+          !current || current.state !== event.from || !LEGAL.has(`${event.from}>${event.to}`) || !isIso(event.at) ||
+          highWaterMark === null || event.at !== highWaterMark || parseIso(event.at) < parseIso(current.updatedAt) ||
+          !hasValidResultDigest(event.to, event.resultDigest)
+        ) throw new LedgerCorruption("illegal journal transition");
         reservations.set(event.reservationId, applyTransition(current, event));
       } else throw new LedgerCorruption("unexpected journal record");
       events.push(event);
@@ -694,9 +726,14 @@ function validateReservation(value: ReservationSnapshot): void {
   assertExactKeys(value, ["intent", "limitAssignments", "reservationId", "sequence", "state", "updatedAt"]);
   normalizeStoredIntent(value.intent);
   if (!Array.isArray(value.limitAssignments) || value.limitAssignments.length !== value.intent.limitSlots.length) throw new LedgerCorruption("invalid limit assignments");
-  for (const assignment of value.limitAssignments) {
+  for (let index = 0; index < value.limitAssignments.length; index++) {
+    const assignment = value.limitAssignments[index];
+    const slot = value.intent.limitSlots[index];
     assertExactKeys(assignment, ["index", "key", "maximum"]);
-    if (!SHA.test(assignment.key) || !Number.isSafeInteger(assignment.index) || assignment.index < 0 || assignment.index >= assignment.maximum) throw new LedgerCorruption("invalid limit assignment");
+    if (
+      !SHA.test(assignment.key) || assignment.key !== slot.key || assignment.maximum !== slot.maximum ||
+      !Number.isSafeInteger(assignment.index) || assignment.index < 0 || assignment.index >= assignment.maximum
+    ) throw new LedgerCorruption("invalid limit assignment");
   }
 }
 
@@ -718,7 +755,7 @@ function assertJournalEvent(event: JournalEvent): void {
     assertExactKeys(event, event.resultDigest === undefined
       ? ["at", "from", "previousDigest", "reservationId", "sequence", "to", "type", "v"]
       : ["at", "from", "previousDigest", "reservationId", "resultDigest", "sequence", "to", "type", "v"]);
-    if (!SHA.test(event.reservationId) || !isIso(event.at) || (event.resultDigest !== undefined && !SHA.test(event.resultDigest))) throw new LedgerCorruption("invalid transition event identity");
+    if (!SHA.test(event.reservationId) || !isIso(event.at) || !hasValidResultDigest(event.to, event.resultDigest)) throw new LedgerCorruption("invalid transition event identity");
   }
   else throw new LedgerCorruption("unexpected journal event type");
 }
@@ -774,6 +811,20 @@ function isIso(value: unknown): value is string {
   if (typeof value !== "string") return false;
   const parsed = Date.parse(value);
   return Number.isFinite(parsed) && new Date(parsed).toISOString() === value;
+}
+function isTransitionEventInput(value: unknown): value is TransitionEvent {
+  if (!value || typeof value !== "object" || !("to" in value) || typeof value.to !== "string") return false;
+  const resultDigest = "resultDigest" in value ? value.resultDigest : undefined;
+  if (!hasValidResultDigest(value.to, resultDigest)) return false;
+  const expectedKeys = resultDigest === undefined ? ["to"] : ["resultDigest", "to"];
+  return Object.keys(value).sort().join("\0") === expectedKeys.join("\0");
+}
+function hasValidResultDigest(to: unknown, resultDigest: unknown): boolean {
+  if (to === "dispatched" || to === "ambiguous") return resultDigest === undefined;
+  if (to === "acknowledged" || to === "definitive-failure" || to === "reconciled") {
+    return typeof resultDigest === "string" && SHA.test(resultDigest) && resultDigest !== ZERO_SHA;
+  }
+  return false;
 }
 function assertLockOwner(value: LockOwner): void {
   if (!value || value.v !== 1 || typeof value.host !== "string" || value.host.length === 0 || !Number.isSafeInteger(value.pid) || value.pid <= 0 || !/^[0-9a-f]{64}$/.test(value.nonce) || Object.keys(value).sort().join(",") !== "host,nonce,pid,v") throw new LedgerCorruption("invalid lock owner");

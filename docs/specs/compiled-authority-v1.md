@@ -36,7 +36,10 @@ semantic duplicate, capability integrity conflict, then limit exhaustion. A clai
 never authority: a reservation becomes visible only through its exact verified journal commit.
 The stored `requestKey` and capability ID, outcome key, effect digest, issue time, and expiry time must
 equal the values inside the strictly parsed closed canonical `CompiledCapability`; detached scalar
-identities are refused before any claim is acquired.
+identities are refused before any claim is acquired. Each committed limit assignment has exactly one
+matching signed intent slot in canonical key order, carries that slot's exact signed maximum, and has
+an index in `[0, maximum)`. Capacity across independently committed intents is evaluated against the
+minimum signed maximum without rewriting any reservation's own assignment.
 
 The filesystem implementation uses canonical content-addressed transaction records, exclusive-created
 claim files, and immutable sequence-numbered journal entries. It does not rely on multi-process append
@@ -56,10 +59,24 @@ runs before another reservation may be authorized.
 
 The only lifecycle is `issued -> reserved -> dispatched -> acknowledged | definitive-failure |
 ambiguous`, with `acknowledged | ambiguous -> reconciled`. Transitions are durable compare-and-transition
-operations. Capability lifetime is exactly 60,000 milliseconds; reservation and dispatch require
+operations. Callers choose only the target state and, where required, the result digest; lifecycle time
+is kernel-owned. Capability lifetime is exactly 60,000 milliseconds; reservation and dispatch require
 `issuedAt <= now < expiresAt`. Before either authorization, the ledger commits a wall-clock high-water
-observation. Equality is allowed and rollback refuses. Recovery verifies canonical ownership and
-journal continuity, completes an abandoned reservation only when every remaining claim is provably
-available, otherwise writes an immutable tombstone and removes only claims verified as owned by that
-uncommitted transaction. A committed `dispatched` reservation with no durable result becomes
-`ambiguous` on recovery and is never dispatch-eligible again.
+observation, then stamps the reservation or transition from that exact same observation. Equality is
+allowed and rollback refuses. Replay requires each lifecycle timestamp to equal the latest preceding
+durable high-water instant and never precede the reservation's prior lifecycle timestamp. Recovery
+under clock rollback conservatively marks durable dispatched work ambiguous at the existing high-water
+instant; it never backdates the journal or creates new dispatch eligibility.
+
+`dispatched` and `ambiguous` transitions carry no result digest. `acknowledged`, `definitive-failure`,
+and `reconciled` require a nonzero SHA-256 result digest. Invalid presence or absence refuses before any
+journal mutation and is corruption during replay. The verified history read returns the current
+reservation plus its ordered reserve and transition entries, including sequence, from/to state,
+kernel timestamp, journal event digest, and only the result digest appropriate to that target. History
+is detached and deeply immutable, so acknowledgement and later reconciliation evidence remain distinct
+even though the current snapshot retains only the latest result digest.
+
+Recovery verifies canonical ownership and journal continuity, completes an abandoned reservation only
+when every remaining claim is provably available, otherwise writes an immutable tombstone and removes
+only claims verified as owned by that uncommitted transaction. A committed `dispatched` reservation
+with no durable result becomes `ambiguous` on recovery and is never dispatch-eligible again.

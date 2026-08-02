@@ -312,10 +312,11 @@ test("result digest presence is enforced by target state before journal mutation
       }
     }
     const before = await readdir(path.join(root, "journal"));
-    const result = await ledger.transition(created.reservation.reservationId, expected, {
+    const invalidEvent = {
       to: value.target,
       ...(value.digest === undefined ? {} : { resultDigest: value.digest }),
-    });
+    } as unknown as TransitionEvent;
+    const result = await ledger.transition(created.reservation.reservationId, expected, invalidEvent);
     assert.deepEqual(result, { ok: false, reason: "corruption" }, value.target);
     assert.deepEqual(await readdir(path.join(root, "journal")), before, `${value.target} mutated the journal`);
   });
@@ -335,7 +336,10 @@ test("replay refuses target-specific result digest violations after canonical jo
     if (!created.ok) return;
     assert.equal((await ledger.transition(created.reservation.reservationId, "reserved", { to: "dispatched" })).ok, true);
     if (value.target !== "dispatched") {
-      assert.equal((await ledger.transition(created.reservation.reservationId, "dispatched", { to: value.target, ...(value.target === "ambiguous" ? {} : { resultDigest: digest("a") }) })).ok, true);
+      const validEvent: TransitionEvent = value.target === "ambiguous"
+        ? { to: "ambiguous" }
+        : { to: value.target, resultDigest: digest("a") };
+      assert.equal((await ledger.transition(created.reservation.reservationId, "dispatched", validEvent)).ok, true);
     }
     await rewriteJournal(root, event => event.type === "transition" && event.to === value.target
       ? { ...event, ...(value.resultDigest === undefined ? { resultDigest: undefined } : { resultDigest: value.resultDigest }) }

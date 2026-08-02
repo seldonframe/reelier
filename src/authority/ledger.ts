@@ -47,10 +47,22 @@ export interface ReservationSnapshot {
   readonly resultDigest?: string;
 }
 
-export interface TransitionEvent {
-  readonly to: Exclude<LedgerState, "issued" | "reserved">;
+export type TransitionEvent =
+  | Readonly<{ to: "dispatched" | "ambiguous" }>
+  | Readonly<{ to: "acknowledged" | "definitive-failure" | "reconciled"; resultDigest: string }>;
+
+export interface ReservationHistoryEntry {
+  readonly sequence: number;
+  readonly from: LedgerState;
+  readonly to: Exclude<LedgerState, "issued">;
   readonly at: string;
+  readonly eventDigest: string;
   readonly resultDigest?: string;
+}
+
+export interface ReservationHistory {
+  readonly reservation: ReservationSnapshot;
+  readonly entries: readonly ReservationHistoryEntry[];
 }
 
 export type ReserveReason =
@@ -99,5 +111,6 @@ export interface AuthorityLedger {
   transition(reservationId: string, expectedState: LedgerState, event: TransitionEvent): Promise<TransitionResult>;
   recover(): Promise<RecoverResult>;
   getReservation(reservationId: string): Promise<ReservationSnapshot | undefined>;
+  getReservationHistory(reservationId: string): Promise<ReservationHistory | undefined>;
   getHighWaterMark(): Promise<Readonly<{ observedAt: string | null }>>;
 }
