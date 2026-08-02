@@ -122,12 +122,29 @@ active lock. Acquisition is bounded. A live same-host owner is never evicted bec
 foreign, corrupt, or otherwise unverifiable owner refuses. An abandoned lock is reclaimed only after
 same-host process liveness proves that its recorded PID is dead and the owner bytes remain identical.
 Reclaim and release atomically rename the whole lock directory to an exact PID-and-nonce-bound
-retirement tombstone. Cleanup accepts only a canonical same-host owner whose PID and full nonce match
-that exact tombstone name, revalidates its bytes before deletion, and otherwise preserves the topology
-and fails closed. A validated same-host tombstone whose owner is proved dead is a durable recovery
-handoff: the successor retains that fact while cleaning it and runs full recovery before any operation,
-even if the original reclaimer lost the post-rename acquisition race. Validated stale tombstones are
-cleaned before acquisition completes. Lock acquisition, retirement cleanup, and transient
+retirement marker. Its exact root name is
+`.authority-ledger-lock-<positive-safe-pid>-<64-lower-hex-nonce>.<disposition>`, where the closed
+disposition is `released`, `recovery-pending`, or `publication-aborted`. Release uses `released`; a
+proved-dead active owner is renamed to `recovery-pending`; failed publication of a byte-identical
+self-created owner uses `publication-aborted`. PID liveness never changes or interprets a durable
+disposition. Before cleanup a marker is a real directory containing exactly one real regular
+`owner.json` whose canonical closed owner PID and full nonce match its name; unknown/malformed
+dispositions, name/owner mismatch, links/reparse points, path confusion, and extra contents fail closed.
+
+Retirement paths only rename, sync the ledger root, validate, and leave the immutable marker. The next
+complete active-lock owner is the sole marker scanner. It services every `recovery-pending` marker
+durably and idempotently before every callback, including ingress-only callbacks, while `released` and
+`publication-aborted` require no recovery. The recovery marker remains until every prior dispatched
+reservation is durably non-dispatched. Cleanup is authorized by an immutable canonical
+`reelier.authority-ledger-lock-cleanup-ack/v1` root file named
+`.authority-ledger-lock-cleanup-<64-lower-hex-record-digest>.ack`. The closed record binds the exact
+marker name, canonical owner digest, disposition, and post-recovery journal head; the head is null only
+for a marker requiring no recovery or an empty recovered journal. The ack file is file-synced and the
+ledger root directory is synced before marker removal. An interrupted partial/empty marker is removable
+only with its exact valid ack; otherwise it is corruption. Cleanup then removes the marker, syncs the
+root, removes the ack, and syncs the root again, so every interruption is recoverable without inferring
+state. A fresh monotonic housekeeping deadline begins only after owner publication succeeds; it does
+not reuse a nearly expired acquisition deadline. Lock acquisition, retirement cleanup, and transient
 Windows `decisions/`-subtree audit retries use monotonic deadlines. They never consult the
 provider/authority semantic `now`, which remains reserved for durable high-water, validity, and
 lifecycle decisions.

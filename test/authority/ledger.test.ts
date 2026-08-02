@@ -782,6 +782,13 @@ test("volatile decisions-subtree audit retries never consult the ambient wall cl
 
 const ledgerLockDurabilityPoints=["after-owner-file-sync","after-lock-directory-sync","before-lock-retire","after-lock-retire"] as const;
 
+async function seedDeadActiveLock(root:string,nonce:string):Promise<void>{
+  for(const name of await readdir(root))if(/^\.authority-ledger-lock-/.test(name))await rm(path.join(root,name),{recursive:true});
+  const owner={host:hostname(),nonce,pid:2_147_483_647,v:1};
+  await mkdir(path.join(root,"lock"));
+  await writeFile(path.join(root,"lock","owner.json"),authorityCanonicalBytes(owner));
+}
+
 test("ledger lock publication and whole-lock retirement expose the exact durability fault order",async()=>{
   await withRoot(async root=>{const observed:string[]=[];assert.equal((await new RawFsAuthorityLedger(root,{now:()=>t0,faultInjector:(point:string)=>{if((ledgerLockDurabilityPoints as readonly string[]).includes(point))observed.push(point);}} as never).recover()).ok,true);assert.deepEqual(observed,ledgerLockDurabilityPoints);});
 });
@@ -810,8 +817,19 @@ test("canonical retired owner bytes that mismatch the tombstone name remain and 
   await withRoot(async root=>{const name=`.authority-ledger-lock-999-${"a".repeat(64)}.retired`,directory=path.join(root,name),ownerBytes=authorityCanonicalBytes({host:hostname(),nonce:"b".repeat(64),pid:process.pid,v:1});await mkdir(directory);await writeFile(path.join(directory,"owner.json"),ownerBytes);assert.deepEqual(await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20}).recover(),{ok:false,reason:"corruption"});assert.deepEqual(await readFile(path.join(directory,"owner.json")),ownerBytes);});
 });
 
+test("closed retirement dispositions reject unknown, malformed, mismatched, and extra-content markers",async()=>{
+  const nonce="3".repeat(64),owner={host:hostname(),nonce,pid:process.pid,v:1};
+  for(const name of [`.authority-ledger-lock-${owner.pid}-${nonce}.unknown`,`.authority-ledger-lock-${owner.pid}-${nonce}.recovery_pending`,`.authority-ledger-lock-${owner.pid}-${nonce}.recovery-pending.extra`])await withRoot(async root=>{const directory=path.join(root,name);await mkdir(directory);await writeFile(path.join(directory,"owner.json"),authorityCanonicalBytes(owner));assert.deepEqual(await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20}).recover(),{ok:false,reason:"corruption"});assert.equal(existsSync(directory),true);});
+  await withRoot(async root=>{const name=`.authority-ledger-lock-${owner.pid}-${nonce}.recovery-pending`,directory=path.join(root,name);await mkdir(directory);await writeFile(path.join(directory,"owner.json"),authorityCanonicalBytes({...owner,nonce:"4".repeat(64)}));assert.deepEqual(await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20}).recover(),{ok:false,reason:"corruption"});assert.equal(existsSync(directory),true);});
+  await withRoot(async root=>{const name=`.authority-ledger-lock-${owner.pid}-${nonce}.released`,directory=path.join(root,name);await mkdir(directory);await writeFile(path.join(directory,"owner.json"),authorityCanonicalBytes(owner));await writeFile(path.join(directory,"extra"),"unexpected");assert.deepEqual(await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20}).recover(),{ok:false,reason:"corruption"});assert.equal(existsSync(directory),true);});
+});
+
+test("retirement marker owner links remain fail-closed and unmodified",async()=>{
+  await withRoot(async root=>{const nonce="5".repeat(64),name=`.authority-ledger-lock-${process.pid}-${nonce}.publication-aborted`,directory=path.join(root,name),target=path.join(root,"transactions","marker-target");await mkdir(target,{recursive:true});await writeFile(path.join(target,"owner.json"),authorityCanonicalBytes({host:hostname(),nonce,pid:process.pid,v:1}));await symlink(target,directory,process.platform==="win32"?"junction":"dir");assert.deepEqual(await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20}).recover(),{ok:false,reason:"corruption"});assert.equal(existsSync(directory),true);});
+});
+
 test("a validated retired lock from a proved-dead owner hands recovery to its successor",async()=>{
-  await withRoot(async root=>{const ledger=new FsAuthorityLedger(root,{now:()=>t0});const reserved=await ledger.reserve(intent());assert.equal(reserved.ok,true);if(!reserved.ok)return;assert.equal((await ledger.transition(reserved.reservation.reservationId,"reserved",{to:"dispatched"})).ok,true);for(const name of await readdir(root))if(/^\.authority-ledger-lock-/.test(name))await rm(path.join(root,name),{recursive:true});const owner={host:hostname(),nonce:"d".repeat(64),pid:2_147_483_647,v:1},name=`.authority-ledger-lock-${owner.pid}-${owner.nonce}.retired`,directory=path.join(root,name);await mkdir(directory);await writeFile(path.join(directory,"owner.json"),authorityCanonicalBytes(owner));const successor=new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:200});assert.equal((await successor.observeClock()).ok,true);assert.equal((await successor.getReservation(reserved.reservation.reservationId))?.state,"ambiguous");});
+  await withRoot(async root=>{const ledger=new FsAuthorityLedger(root,{now:()=>t0});const reserved=await ledger.reserve(intent());assert.equal(reserved.ok,true);if(!reserved.ok)return;assert.equal((await ledger.transition(reserved.reservation.reservationId,"reserved",{to:"dispatched"})).ok,true);await seedDeadActiveLock(root,"d".repeat(64));const successor=new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:200});assert.equal((await successor.observeClock()).ok,true);assert.equal((await successor.getReservation(reserved.reservation.reservationId))?.state,"ambiguous");});
 });
 
 test("recovery evidence remains durable when its first successor faults before prepare",{timeout:30_000},async()=>{
@@ -820,11 +838,7 @@ test("recovery evidence remains durable when its first successor faults before p
     const reserved = await ledger.reserve(intent());
     assert.equal(reserved.ok, true); if (!reserved.ok) return;
     assert.equal((await ledger.transition(reserved.reservation.reservationId, "reserved", { to: "dispatched" })).ok, true);
-    for (const name of await readdir(root)) if (/^\.authority-ledger-lock-/.test(name)) await rm(path.join(root, name), { recursive: true });
-    const deadOwner = { host: hostname(), nonce: "e".repeat(64), pid: 2_147_483_647, v: 1 };
-    const deadName = `.authority-ledger-lock-${deadOwner.pid}-${deadOwner.nonce}.retired`;
-    await mkdir(path.join(root, deadName));
-    await writeFile(path.join(root, deadName, "owner.json"), authorityCanonicalBytes(deadOwner));
+    await seedDeadActiveLock(root,"e".repeat(64));
     const moduleUrl = pathToFileURL(path.resolve("dist-test/src/authority/host/fs-ledger.js")).href;
     const source = `import {FsAuthorityLedger} from ${JSON.stringify(moduleUrl)};let fired=false;const ledger=new FsAuthorityLedger(process.argv[1],{now:()=>${t0},faultInjector(point){if(!fired&&point==="after-lock-acquire"){fired=true;throw new Error("fault:after-recovery-evidence");}}});try{await ledger.getReservation(${JSON.stringify(reserved.reservation.reservationId)});process.exit(94);}catch(error){if(!fired||String(error)!=="Error: fault:after-recovery-evidence")process.exit(93);process.stdout.write("exact-fault\\n");setInterval(()=>{},1_000);}`;
     const child = spawn(process.execPath, ["--input-type=module", "-e", source, root], { stdio: ["ignore", "pipe", "ignore"] });
@@ -844,7 +858,7 @@ test("recovery evidence remains durable when its first successor faults before p
 });
 
 test("an ingress-only callback cannot bypass pending ledger recovery",async()=>{
-  await withRoot(async root=>{const ledger=new FsAuthorityLedger(root,{now:()=>t0});const candidate=intent(),reserved=await ledger.reserve(candidate);assert.equal(reserved.ok,true);if(!reserved.ok)return;assert.equal((await ledger.transition(reserved.reservation.reservationId,"reserved",{to:"dispatched"})).ok,true);for(const name of await readdir(root))if(/^\.authority-ledger-lock-/.test(name))await rm(path.join(root,name),{recursive:true});const owner={host:hostname(),nonce:"f".repeat(64),pid:2_147_483_647,v:1},name=`.authority-ledger-lock-${owner.pid}-${owner.nonce}.retired`,directory=path.join(root,name);await mkdir(directory);await writeFile(path.join(directory,"owner.json"),authorityCanonicalBytes(owner));const successor=new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:200});assert.ok(await successor.lookupIngress(candidate.requestKey));assert.equal((await successor.getReservation(reserved.reservation.reservationId))?.state,"ambiguous");});
+  await withRoot(async root=>{const ledger=new FsAuthorityLedger(root,{now:()=>t0});const candidate=intent(),reserved=await ledger.reserve(candidate);assert.equal(reserved.ok,true);if(!reserved.ok)return;assert.equal((await ledger.transition(reserved.reservation.reservationId,"reserved",{to:"dispatched"})).ok,true);await seedDeadActiveLock(root,"f".repeat(64));const successor=new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:200});assert.ok(await successor.lookupIngress(candidate.requestKey));assert.equal((await successor.getReservation(reserved.reservation.reservationId))?.state,"ambiguous");});
 });
 
 test("durable recovery-pending disposition overrides a currently live reused pid",async()=>{
@@ -864,31 +878,32 @@ test("durable recovery-pending disposition overrides a currently live reused pid
   });
 });
 
-test("a durable recovery transition is acknowledged before exact evidence cleanup",async()=>{
+test("a partial durable recovery is acknowledged before exact evidence cleanup",{timeout:30_000},async()=>{
   await withRoot(async root => {
     const ledger = new FsAuthorityLedger(root, { now: () => t0 });
-    const reserved = await ledger.reserve(intent());
-    assert.equal(reserved.ok, true); if (!reserved.ok) return;
-    assert.equal((await ledger.transition(reserved.reservation.reservationId, "reserved", { to: "dispatched" })).ok, true);
-    for (const name of await readdir(root)) if (/^\.authority-ledger-lock-/.test(name)) await rm(path.join(root, name), { recursive: true });
-    const owner = { host: hostname(), nonce: "2".repeat(64), pid: 2_147_483_647, v: 1 };
-    const marker = `.authority-ledger-lock-${owner.pid}-${owner.nonce}.retired`;
-    await mkdir(path.join(root, marker));
-    await writeFile(path.join(root, marker, "owner.json"), authorityCanonicalBytes(owner));
-    let fired = false;
-    const crashing = new RawFsAuthorityLedger(root, { now: () => t0, faultInjector(point) {
-      if (!fired && point === "result-after-directory-sync") { fired = true; throw new Error("fault:after-durable-recovery-transition"); }
-    } });
-    await assert.rejects(() => crashing.observeClock(), /fault:after-durable-recovery-transition/);
-    assert.equal(fired, true);
-    assert.equal(existsSync(path.join(root, marker)), true, "unacknowledged recovery evidence remains durable");
-    const countAmbiguous = async () => (await Promise.all((await readdir(path.join(root, "journal"))).map(async name => JSON.parse(await readFile(path.join(root, "journal", name), "utf8"))))).filter(event => event.type === "transition" && event.to === "ambiguous").length;
-    assert.equal(await countAmbiguous(), 1, "the recovery transition is already durable");
+    const first = await ledger.reserve(intent());
+    const secondCandidate=intent({requestId:"request_2",capabilityId:"capability_2",outcomeKey:digest("8"),effectDigest:digest("9"),sourceBundleDigest:digest("e"),sourceSnapshotDigest:digest("f"),limitSlots:[{kind:"contract-window",key:digest("5"),maximum:2},{kind:"source-trigger",key:digest("2"),maximum:1}]});
+    const second = await ledger.reserve(secondCandidate);
+    assert.equal(first.ok, true); assert.equal(second.ok, true); if (!first.ok || !second.ok) return;
+    assert.equal((await ledger.transition(first.reservation.reservationId, "reserved", { to: "dispatched" })).ok, true);
+    assert.equal((await ledger.transition(second.reservation.reservationId, "reserved", { to: "dispatched" })).ok, true);
+    await seedDeadActiveLock(root,"2".repeat(64));
+    const moduleUrl=pathToFileURL(path.resolve("dist-test/src/authority/host/fs-ledger.js")).href;
+    const childSource=`import {FsAuthorityLedger} from ${JSON.stringify(moduleUrl)};const ledger=new FsAuthorityLedger(process.argv[1],{now:()=>${t0},faultInjector(point){if(point==="result-after-directory-sync")process.exit(95);}});await ledger.observeClock();process.exit(96);`;
+    const code=await new Promise<number|null>((resolve,reject)=>{const child=spawn(process.execPath,["--input-type=module","-e",childSource,root],{stdio:"ignore"});child.on("error",reject);child.on("close",resolve);});
+    assert.equal(code,95,"child exits only after the first ambiguous transition is directory-synced");
+    const readEvents=async()=>Promise.all((await readdir(path.join(root,"journal"))).map(async name=>JSON.parse(await readFile(path.join(root,"journal",name),"utf8"))));
+    const countAmbiguous=async(reservationId:string)=>(await readEvents()).filter(event=>event.type==="transition"&&event.to==="ambiguous"&&event.reservationId===reservationId).length;
+    assert.equal(await countAmbiguous(first.reservation.reservationId),1,"the first recovery transition is durable exactly once");
+    assert.equal(await countAmbiguous(second.reservation.reservationId),0,"the hard exit precedes the second recovery transition");
+    assert.equal((await readdir(root)).some(name=>name.endsWith(".recovery-pending")),true,"unacknowledged recovery disposition remains durable");
     const successor = new RawFsAuthorityLedger(root, { now: () => t0 });
     assert.equal((await successor.observeClock()).ok, true);
-    assert.equal((await successor.getReservation(reserved.reservation.reservationId))?.state, "ambiguous");
-    assert.equal(await countAmbiguous(), 1, "recovery replay never duplicates the transition");
-    assert.equal(existsSync(path.join(root, marker)), false, "exact evidence is cleaned only after durable acknowledgment");
+    assert.equal((await successor.getReservation(first.reservation.reservationId))?.state,"ambiguous");
+    assert.equal((await successor.getReservation(second.reservation.reservationId))?.state,"ambiguous");
+    assert.equal(await countAmbiguous(first.reservation.reservationId),1,"recovery replay never duplicates the first transition");
+    assert.equal(await countAmbiguous(second.reservation.reservationId),1,"the successor completes the remaining transition");
+    assert.equal((await readdir(root)).some(name=>name.endsWith(".recovery-pending")),false,"exact evidence is cleaned only after durable acknowledgment");
   });
 });
 
