@@ -33,7 +33,7 @@ function primary(overrides: Partial<GateDecisionRecord> = {}): GateDecisionRecor
   return Object.freeze({
     v: "reelier.gate-decision-record/internal-v1", role: "primary", ingressClaimDigest: sha("4"),
     reservationId: null, decisionContext: context, decisionContextDigest: authorityDigest(context), gateEvent: event,
-    gateEventDigest: authorityDigest(event), signerId: "gate_signer_1", signature: { alg: "ed25519", sig: Buffer.alloc(64, 7).toString("base64") },
+    gateEventDigest: authorityDigest(event), signerId: "gate_signer_1", signature: { alg: "ed25519" as const, sig: Buffer.alloc(64, 7).toString("base64") },
     ...overrides,
   });
 }
