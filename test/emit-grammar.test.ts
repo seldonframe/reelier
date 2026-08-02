@@ -76,6 +76,26 @@ test("emit: on a read step is rejected — a read never dispatches a write to at
   assert.throws(() => parseSkill(skill(VALID, "read")), /write-effect step/);
 });
 
+test("emit.projection rejects more than 32 names and names longer than 120 characters", () => {
+  const tooMany = JSON.stringify({ projection: Array.from({ length: 33 }, (_, i) => `args.field_${i}`) });
+  assert.throws(() => parseSkill(skill(`- emit: ${tooMany}\n`)), /at most 32/i);
+
+  const tooLong = JSON.stringify({ projection: [`args.${"x".repeat(116)}`] });
+  assert.throws(() => parseSkill(skill(`- emit: ${tooLong}\n`)), /at most 120/i);
+});
+
+test("attest.defer requires emit: so every resolution has both normative join keys", () => {
+  const deferred =
+    '- attest: {"tool":"get_message","args":{"id":"m1"},"projection":["delivered"],"defer":"24h"}\n';
+  assert.throws(() => parseSkill(skill(deferred)), /defer.*requires.*emit/i);
+});
+
+test("attest.defer may be parsed before approve stamps its authorization", () => {
+  const deferred =
+    VALID + '- attest: {"tool":"get_message","args":{"id":"m1"},"projection":["delivered"],"defer":"24h"}\n';
+  assert.equal(parseSkill(skill(deferred)).steps[0].approve, undefined);
+});
+
 test("emit: does NOT require approve: — a flag-path write still records what left", () => {
   // §6: emit.approvalHash is absent exactly when write.approved is false.
   // An unapproved write has no authorization to name, and still has an artifact.

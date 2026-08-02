@@ -1,6 +1,6 @@
 # Pre-dispatch artifact attestation (v1)
 
-**Status: §§0–8 SHIPPED in 0.30.0.**
+**Status: §§ 0–8 IMPLEMENTED for 0.31.0; not yet released.**
 Slice 1 — the `emit:` grammar, the `args.` namespace, the unsalted artifact digest, the keyed
 per-field commitment primitive, `StepRecord.emit`, the approval-hash binding and the coverage gate —
 is live: `src/artifact.ts`, `src/skill.ts`, `src/writeback.ts`, `src/approval.ts`, `src/runner.ts`,
@@ -22,8 +22,10 @@ written only for an attestation that actually moved** to `partial` or `absent`: 
 `pending` resolution would make the next scan read the command's own output. And because the original
 record is immutable and says `pending` forever, **every resolution names the deadline it answered**
 (`deferredUntil` on every arm), which is the only thing that lets a rescan subtract — keyed on
-`(step, deferredUntil)`, never the step number alone, since two dispatches of the same step on
-different days are different emissions.
+`(step, deferredUntil, approvalHash, artifactDigest, dispatchId)`, never the step number alone,
+since two identical dispatches of the same step — even at the same deadline — may be different
+emissions. `dispatchId` is an opaque per-dispatch UUID carried only on deferred writes and is not a
+content or authorization claim.
 
 Three things landed differently from the text below, recorded here rather than left for a reader to
 discover:
@@ -39,6 +41,21 @@ discover:
    no commitment of its own, and a commitment naming the first artifact beside a receipt for the
    second is exactly the overclaim this feature exists to prevent. Absent is honest; stale is not.
    This limit is not stated anywhere below and belongs in §10.
+4. **A deferred declaration without `emit:` or a matching approval refuses before dispatch.** The
+   grammar still accepts it so `reelier approve` can stamp the hash; the runtime will not create a
+   `pending` claim that lacks both an artifact join and authorization.
+5. **A dispatch throw preserves `write`, `emit`, and deferred `pending`.** The call crossed the tool
+   boundary and may have landed; erasing those blocks because the response was lost would turn an
+   incident into "nothing dispatched" evidence.
+6. **A resolution record is explicitly marked and non-passing.** `RunRecord.deferredResolution: true`
+   tells consumers this is neither a passing nor failing execution, `passed` is conservatively false,
+   and `StepRecord.resolutionOf` carries all four immutable join values, including `dispatchId`.
+7. **The resolver repeats manifest preflight and binds every parameterized probe.** It refuses before
+   probing when the live wrapped schemas drift, and computed date placeholders are still parameterized:
+   every filled deferred probe must match `expect.probeArgs`.
+8. **Resolution observations use a fresh unrecorded salt.** Only `emit.artifactDigest` is an unsalted
+   cross-record join. A later `attest.post.hash` remains deliberately unjoinable, like every other
+   state-attestation commitment.
 
 Every code reference was read from `origin/main` @ `5d6d521` (v0.29.0) on 2026-08-01. Line numbers
 below are that pin's and have since moved; the named functions and files are current.
@@ -485,12 +502,25 @@ Three independent blockers, each verified, and the design follows from them rath
    /api/v1/runs` — no PATCH, no PUT — and rows are hash-chained per tenant, so an in-place edit is a
    detectable chain break.
 3. **No salt.** The attest salt is per-run, in-memory, never recorded. A later-computed `post` hash is
-   not comparable to the original `pre` even if it could be written.
+   not comparable to the original `pre` even if it could be written. The resolution uses a fresh,
+   unrecorded salt of its own; being incomparable is the honest property, not a reason to publish an
+   unsalted state hash.
 
 **[Normative]** A deferred resolution MUST be a new record joined to the original by
-`write.approvalHash` and `emit.artifactDigest`, never an amendment of a pushed receipt. It publishes
-its own independent observation — which proves post-state at resolution time, **not** a delta across
-the write — and MUST be graded accordingly rather than flattened into `exact`.
+`write.approvalHash`, `emit.artifactDigest`, and the opaque per-dispatch `write.dispatchId`, never an
+amendment of a pushed receipt. The new step's `resolutionOf` block MUST carry all four values,
+including the exact `deferredUntil` it closes. A pending
+record missing either join is unresolvable and MUST be skipped rather than guessed. The second record
+MUST carry `deferredResolution: true` and MUST NOT serialize as a passing run: `passed` is false while
+`totals.failed` remains zero, and consumers render the attestation confidence rather than PASS/FAIL.
+It publishes its own independently salted observation — which proves post-state at resolution time,
+**not** a delta across the write — and MUST be graded accordingly rather than flattened into `exact`.
+
+Before dispatching a resolution probe, the resolver MUST recompute the current step's approval hash
+and compare it with the original record's join. A changed skill makes the resolution unclaimable. A
+parameterized probe MUST also verify `expect.probeArgs` under the named local key; without that
+commitment it is refused before probing. A later fill must never escape the approval simply because
+the action happened in an earlier process.
 
 The cloud already ships this exact shape for a different deadline: the stale sweep resolves a pending
 condition by inserting a `drift_alerts` row that FK-references the run record, deduplicated by query
@@ -697,8 +727,6 @@ says nothing about whether a library implements the spec.
   recipient and body" rule would close it and would live in `.reelier/policy.yml` beside
   `state_gate` — but that is a policy vocabulary, and policy vocabularies are where custom constraint
   types get minted by accident (§9). Unresolved, and the most important gap in this spec.
-- **Does `state_gate` widen to `emit:`-bearing steps?** §7.1. Today it gates `expect:`-bearing steps
-  only. Widening is the largest implementation decision here and deserves its own evidence bar.
 - **Nested artifact addressing.** §4 ships top-level only. Real send tools nest (`{"message":{"to":…}}`),
   so the limit will bite early — but a path grammar would be a third selection semantics, and the
   existing two are pinned to each other by drift tests. Possibly the honest answer is a fourth
@@ -709,10 +737,6 @@ says nothing about whether a library implements the spec.
 - **Does the artifact digest belong in `write` rather than in its own block?** It is a join key of the
   same class. Kept separate here because `write` is present on every dispatched write and `emit` only
   on declared ones, and collapsing them would make `write`'s shape conditional on a declaration.
-- **What grades a slice-2 resolution?** `partial` is the obvious answer (post-state at resolution time,
-  no delta across the write), but `attest.method` is a closed two-value enum
-  (`response-derived` | `declared-probe`) and a third value is a wire change requiring a spec
-  amendment.
 
 ---
 

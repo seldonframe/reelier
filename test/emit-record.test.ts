@@ -167,6 +167,52 @@ test("a step that declares no emit: produces no emit block at all", async () => 
   });
 });
 
+test("a hand-authored emit step whose effective tool effect is read is refused, never silently unrecorded", async () => {
+  await withTempDir(async (dir) => {
+    const parsed = parseSkill(skill({ emit: COVERS_ALL }));
+    delete (parsed.steps[0] as unknown as { effect?: unknown }).effect;
+    let calls = 0;
+    const readTool: Tool = {
+      effect: "read",
+      run: async () => {
+        calls += 1;
+        return { status: 200, headers: {}, body: "{}" };
+      },
+    };
+    const record = await runSkill(parsed, { tools: { send_email: readTool }, vars: VARS, cwd: dir });
+    assert.equal(calls, 0);
+    assert.equal(record.steps[0].outcome, "failed");
+    assert.match(record.steps[0].failures.join(" "), /emit.*non-write|non-write.*emit/i);
+    assert.equal(record.steps[0].emit, undefined);
+  });
+});
+
+test("a tool throw after dispatch preserves the emission commitment — the side effect may have landed", async () => {
+  await withTempDir(async (dir) => {
+    const calls: unknown[] = [];
+    const throwing: Tool = {
+      effect: "idempotent-write",
+      run: async (args) => {
+        calls.push(args);
+        throw new Error("response lost after provider accepted the call");
+      },
+    };
+    const record = await runSkill(parseSkill(skill({ emit: COVERS_ALL })), {
+      tools: { send_email: throwing },
+      vars: VARS,
+      cwd: dir,
+      allowWrites: true,
+    });
+    assert.equal(calls.length, 1, "tool.run was invoked: dispatch happened even though the result threw");
+    assert.equal(record.steps[0].outcome, "failed");
+    assert.ok(record.steps[0].emit, "the record must not erase an artifact that may have left");
+    assert.equal(
+      record.steps[0].emit?.artifactDigest,
+      artifactDigest("send_email", projectArtifact(calls[0], ["args.to", "args.subject", "args.body"])),
+    );
+  });
+});
+
 // ---------------------------------------------------------------------------
 // The gate (§7) — refuse, never downgrade
 // ---------------------------------------------------------------------------

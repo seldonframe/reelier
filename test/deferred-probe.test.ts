@@ -12,7 +12,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { parseSkill, SkillParseError } from "../src/skill.js";
-import { runSkill } from "../src/runner.js";
+import { executionRecords, runSkill } from "../src/runner.js";
+import { runDisplayVerdict } from "../src/cli.js";
 import { computeApprovalHash } from "../src/approval.js";
 import { buildResolutionRecord, pendingAttestations, resolveDeferred, selectUnresolved } from "../src/defer.js";
 import type { Tool } from "../src/tools.js";
@@ -28,6 +29,7 @@ description: a send whose post-state arrives late
 - action: send_email {"to": "ops@example.com", "subject": "hi", "body": "b"}
 - assert: status == 200
 - effect: idempotent-write
+- emit: {"projection":["args.to","args.subject","args.body"]}
 - attest: ${attestJson}
 ${approve !== undefined ? `- approve: ${approve}\n` : ""}`;
 }
@@ -68,6 +70,20 @@ async function withTempDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
 
 test("attest.defer parses a duration", () => {
   assert.equal(parseSkill(skill(DEFERRED)).steps[0].attest!.defer, "24h");
+});
+
+test("a pending attestation without both join keys is unresolvable, never guessed", () => {
+  const record = {
+    skill: "s",
+    startedAt: "2026-08-02T08:00:00.000Z",
+    finishedAt: "2026-08-02T08:00:00.000Z",
+    passed: true,
+    steps: [{ n: 1, title: "x", level: 0, outcome: "unchecked", ms: 0, failures: [], attest: {
+      method: "declared-probe", selector: "get_message", confidence: "pending", deferredUntil: "2026-08-02T09:00:00.000Z",
+    } }],
+    totals: { steps: 1, passed: 0, unchecked: 1, skipped: 0, failed: 0, ms: 0, llmInputTokens: 0, llmOutputTokens: 0 },
+  } as import("../src/runner.js").RunRecord;
+  assert.deepEqual(pendingAttestations(record), []);
 });
 
 test("a sync attest leaves defer absent — never defaulted", () => {
@@ -137,13 +153,87 @@ test("a pending attest carries NO pre and NO post — a side that can never be c
   });
 });
 
-test("the deadline is stamped as an absolute instant resolved against dispatch", async () => {
+test("the deadline is resolved against dispatch start, not a late provider response", async () => {
   await withTempDir(async (dir) => {
     const src = skill(DEFERRED, stamped(skill(DEFERRED)));
-    const before = Date.now();
-    const record = await runSkill(parseSkill(src), { tools: tools().reg, vars: {}, cwd: dir });
-    const until = Date.parse(record.steps[0].attest!.deferredUntil!);
-    assert.ok(until >= before + 24 * 3600_000 - 5000 && until <= Date.now() + 24 * 3600_000 + 5000);
+    const realNow = Date.now;
+    let clock = 1_000;
+    Date.now = () => clock;
+    try {
+      const reg = tools().reg;
+      reg.send_email = {
+        effect: "idempotent-write",
+        run: async () => {
+          clock = 61_000;
+          return { status: 200, headers: {}, body: "{}" };
+        },
+      };
+      const record = await runSkill(parseSkill(src), { tools: reg, vars: {}, cwd: dir });
+      assert.equal(
+        Date.parse(record.steps[0].attest!.deferredUntil!),
+        1_000 + 24 * 3600_000,
+        "provider response latency must not silently extend the resolution window",
+      );
+    } finally {
+      Date.now = realNow;
+    }
+  });
+});
+
+test("a deferred write without approval is refused before dispatch, even with allowWrites", async () => {
+  await withTempDir(async (dir) => {
+    let sends = 0;
+    const reg = tools().reg;
+    reg.send_email = {
+      effect: "idempotent-write",
+      run: async () => {
+        sends += 1;
+        return { status: 200, headers: {}, body: "{}" };
+      },
+    };
+    const record = await runSkill(parseSkill(skill(DEFERRED)), {
+      tools: reg, vars: {}, cwd: dir, allowWrites: true,
+    });
+    assert.equal(sends, 0);
+    assert.equal(record.steps[0].outcome, "failed");
+    assert.match(record.steps[0].failures.join(" "), /deferred.*approve/i);
+  });
+});
+
+test("the runtime belt refuses a hand-built deferred declaration without emit before dispatch", async () => {
+  await withTempDir(async (dir) => {
+    let sends = 0;
+    const parsed = parseSkill(skill(DEFERRED, stamped(skill(DEFERRED))));
+    parsed.steps[0].emit = undefined;
+    const reg = tools().reg;
+    reg.send_email = {
+      effect: "idempotent-write",
+      run: async () => {
+        sends += 1;
+        return { status: 200, headers: {}, body: "{}" };
+      },
+    };
+    const record = await runSkill(parsed, { tools: reg, vars: {}, cwd: dir });
+    assert.equal(sends, 0);
+    assert.match(record.steps[0].failures.join(" "), /deferred.*emit/i);
+  });
+});
+
+test("a dispatch throw still carries write, emit, and pending joins because the send may have landed", async () => {
+  await withTempDir(async (dir) => {
+    const src = skill(DEFERRED, stamped(skill(DEFERRED)));
+    const reg = tools().reg;
+    reg.send_email = {
+      effect: "idempotent-write",
+      run: async () => { throw new Error("response lost"); },
+    };
+    const record = await runSkill(parseSkill(src), { tools: reg, vars: {}, cwd: dir });
+    const step = record.steps[0];
+    assert.equal(step.outcome, "failed");
+    assert.equal(step.write?.approvalHash, parseSkill(src).steps[0].approve);
+    assert.equal(step.emit?.approvalHash, step.write?.approvalHash);
+    assert.equal(step.attest?.confidence, "pending");
+    assert.ok(step.attest?.deferredUntil);
   });
 });
 
@@ -153,6 +243,7 @@ test("pending never flips the step outcome — the recorder records, it does not
     const record = await runSkill(parseSkill(src), { tools: tools().reg, vars: {}, cwd: dir });
     assert.equal(record.steps[0].outcome, "passed");
     assert.equal(record.passed, true);
+    assert.equal(runDisplayVerdict(record), "ATTESTATION PENDING");
   });
 });
 
@@ -176,6 +267,8 @@ const PENDING = {
   selector: "get_message",
   deferredUntil: "2026-08-02T09:00:00.000Z",
   approvalHash: "sha256:" + "a".repeat(64),
+  artifactDigest: "sha256:" + "b".repeat(64),
+  dispatchId: "dispatch-1",
 };
 
 const T_BEFORE = Date.parse("2026-08-02T08:00:00.000Z");
@@ -184,7 +277,12 @@ const T_AFTER = Date.parse("2026-08-02T10:00:00.000Z");
 test("pendingAttestations finds the deferred steps and the join keys they resolve back through", () => {
   const record = {
     steps: [
-      { n: 1, attest: { method: "declared-probe", selector: "get_message", confidence: "pending", deferredUntil: PENDING.deferredUntil }, write: { approvalHash: PENDING.approvalHash } },
+      {
+        n: 1,
+        attest: { method: "declared-probe", selector: "get_message", confidence: "pending", deferredUntil: PENDING.deferredUntil },
+        write: { approvalHash: PENDING.approvalHash, dispatchId: PENDING.dispatchId },
+        emit: { artifactDigest: PENDING.artifactDigest },
+      },
       { n: 2, attest: { method: "declared-probe", selector: "x", confidence: "exact" } },
       { n: 3 },
     ],
@@ -204,6 +302,13 @@ test("a probe that resolves the declared fields yields 'partial' — never 'exac
   assert.ok(out.post, "the resolution carries its own observation");
   assert.equal(out.pre, undefined, "there is no comparable pre side, and none is fabricated");
   assert.match(out.reason!, /resolution time/i);
+});
+
+test("independent resolution observations remain salted and cannot be joined across records", () => {
+  const probe = { ok: true as const, projected: { "body.delivered": "true" } };
+  const first = resolveDeferred(PENDING, probe, T_BEFORE).post!.hash;
+  const second = resolveDeferred(PENDING, probe, T_BEFORE).post!.hash;
+  assert.notEqual(first, second, "a resolution must not create an unsalted confirmation oracle");
 });
 
 test("a deadline that elapsed with nothing resolved becomes 'absent', never a pass and never pending forever", () => {
@@ -243,11 +348,19 @@ test("a resolution record carries the resolved attest and the join keys, and ass
   assert.equal(step.attest!.confidence, "partial");
   // The join back to the authorization and the emission — §8.2's whole point.
   assert.equal(step.write, undefined, "a resolution writes nothing");
+  assert.deepEqual(step.resolutionOf, {
+    approvalHash: PENDING.approvalHash,
+    artifactDigest: PENDING.artifactDigest,
+    deferredUntil: PENDING.deferredUntil,
+    dispatchId: PENDING.dispatchId,
+  });
   assert.match(step.title, /resolution/i);
   // A resolution makes no assertion; its claim IS the attest block. `unchecked`
   // is the honest-success state for "ran, zero assertions" (SPEC §4.3).
   assert.equal(step.outcome, "unchecked");
   assert.equal(step.failures.length, 0);
+  assert.equal(rec.deferredResolution, true);
+  assert.equal(rec.passed, false, "a deferred resolution can never serialize as a passing run");
 });
 
 test("a resolution record is never marked as a mock run — push must not refuse the batch", () => {
@@ -295,9 +408,34 @@ function ledger(...steps: unknown[][]): never[] {
 
 const pendingStep = (n: number, until: string) => ({
   n, attest: { method: "declared-probe", selector: "get_message", confidence: "pending", deferredUntil: until },
+  write: { approvalHash: PENDING.approvalHash, dispatchId: `dispatch:${until}` },
+  emit: { artifactDigest: `${PENDING.artifactDigest}:${until}` },
 });
-const resolutionStep = (n: number, until: string, confidence: string) => ({
+
+test("resolution records are excluded from execution-history consumers", () => {
+  const ordinary = { skill: "s", deferredResolution: undefined } as never;
+  const resolution = { skill: "s", deferredResolution: true } as never;
+  assert.deepEqual(executionRecords([ordinary, resolution]), [ordinary]);
+});
+
+test("identical payloads dispatched under the same approval remain distinct by dispatch id", () => {
+  const first = {
+    skill: "s", steps: [{ n: 1, write: { approvalHash: PENDING.approvalHash, dispatchId: "d1" }, emit: { artifactDigest: PENDING.artifactDigest }, attest: { method: "declared-probe", confidence: "pending", deferredUntil: PENDING.deferredUntil } }],
+  } as never;
+  const second = {
+    skill: "s", steps: [{ n: 1, write: { approvalHash: PENDING.approvalHash, dispatchId: "d2" }, emit: { artifactDigest: PENDING.artifactDigest }, attest: { method: "declared-probe", confidence: "pending", deferredUntil: PENDING.deferredUntil } }],
+  } as never;
+  assert.deepEqual(selectUnresolved([first, second]).map((p) => p.dispatchId), ["d1", "d2"]);
+});
+const resolutionStep = (
+  n: number,
+  until: string,
+  confidence: string,
+  approvalHash = PENDING.approvalHash,
+  artifactDigest = `${PENDING.artifactDigest}:${until}`,
+) => ({
   n, attest: { method: "declared-probe", selector: "get_message", confidence, deferredUntil: until },
+  resolutionOf: { approvalHash, artifactDigest, deferredUntil: until, dispatchId: `dispatch:${until}` },
 });
 
 test("selectUnresolved skips a deadline a later record already resolved", () => {
@@ -335,4 +473,23 @@ test("a sync attest is never mistaken for a resolution — it carries no deadlin
     [{ n: 1, attest: { method: "declared-probe", selector: "x", confidence: "exact" } }]
   );
   assert.equal(selectUnresolved(recs).length, 1);
+});
+
+test("resolution identity includes both join keys, not only step and deadline", () => {
+  const until = "2026-08-02T09:00:00.000Z";
+  const first = pendingStep(1, until);
+  const second = {
+    ...pendingStep(1, until),
+    write: { approvalHash: "sha256:" + "c".repeat(64), dispatchId: `dispatch:${until}` },
+    emit: { artifactDigest: "sha256:" + "d".repeat(64) },
+  };
+  const recs = ledger(
+    [first],
+    [second],
+    [resolutionStep(1, until, "partial")],
+  );
+  const left = selectUnresolved(recs);
+  assert.equal(left.length, 1);
+  assert.equal(left[0].approvalHash, second.write.approvalHash);
+  assert.equal(left[0].artifactDigest, second.emit.artifactDigest);
 });

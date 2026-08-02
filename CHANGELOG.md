@@ -2,7 +2,7 @@
 
 All notable changes to `reelier`. Dates are release dates.
 
-## 0.30.0 — The seatbelt in the record, and the artifact that left
+## 0.30.0 — The seatbelt in the record
 
 Breaking format change: **yes, only for skills that opt into the new `emit:`
 field.** Such a skill is a parse error on Reelier older than 0.30.0 because the
@@ -91,13 +91,13 @@ impossible. A record carrying both must prefer `policy`.
 
 Design: `docs/specs/policy-attestation-v1.md`.
 
-### Artifact attestation — the writes no probe can reach
+## Unreleased — The artifact that left
 
 Breaking format change: **yes, and it is the whole headline.** The step grammar
 gains a tenth key, `emit:`. `parseSkill` rejects any unrecognised bulleted step
 field by design (there is no permissive default arm), so **a skill carrying
-`- emit:` is a parse error on every reelier older than 0.30.0** — not a field an
-older reader ignores. A skill that does not use the key is unaffected in every
+`- emit:` is a parse error on every reelier older than 0.31.0** — not a field an
+older reader ignores. This is targeted for 0.31.0. A skill that does not use the key is unaffected in every
 respect: byte-identical approval hashes (pinned against a literal captured
 digest), byte-identical records, byte-identical serialization.
 
@@ -165,8 +165,11 @@ the same construction.
   claims only that Reelier stopped waiting and is never evidence that the send
   failed. Before the deadline, an unresolved probe stays `pending` rather than
   manufacturing a finding out of ordinary latency.
-- **Resolution is a SECOND record**, joined by `write.approvalHash` and
-  `emit.artifactDigest` — never an amendment. Run records carry no id, the
+- **Resolution is a SECOND, non-passing record**, joined by `write.approvalHash` and
+  `emit.artifactDigest` through `StepRecord.resolutionOf` — never an amendment. It carries
+  `RunRecord.deferredResolution: true`, `passed: false`, and zero failed steps, so consumers render
+  attestation confidence rather than PASS or FAIL. Its observation hash uses a fresh unrecorded salt;
+  only `emit.artifactDigest` is an unsalted cross-record join. Run records carry no id, the
   ledger has one writer and it is an append, and the cloud exposes only POST
   over hash-chained rows.
 
@@ -177,8 +180,8 @@ the same construction.
   **only** for an attestation that actually moved to `partial` or `absent`
   (writing a still-`pending` one would make the next scan read this command's
   own output), and every resolution **names the deadline it answered**, keyed
-  on `(step, deferredUntil)` — two dispatches of the same step on different
-  days are different emissions, and resolving one must never mark the other
+  on `(step, deferredUntil, approvalHash, artifactDigest, dispatchId)` — two identical dispatches of
+  the same step at the same deadline are different emissions, and resolving one must never mark the other
   resolved. Re-running is a no-op; the original record is never touched.
 
 ### Disclosure

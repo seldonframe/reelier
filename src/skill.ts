@@ -2,7 +2,7 @@
 // plus human-editable step blocks. Reject malformed skills loudly — never
 // silently skip a step or field (no Optimistic Path).
 
-import { ARTIFACT_NAMESPACE } from "./artifact.js";
+import { assertArtifactProjection } from "./artifact.js";
 import { parseDuration } from "./duration.js";
 
 export type Effect = "read" | "idempotent-write" | "destructive";
@@ -380,38 +380,12 @@ function validateEmitShape(value: unknown, ctx: { step: number; line: number }):
     }
   }
   const projection = obj.projection;
-  if (
-    !Array.isArray(projection) ||
-    projection.length === 0 ||
-    projection.some((p) => typeof p !== "string" || p.trim() === "")
-  ) {
-    throw new SkillParseError("'emit.projection' must be a non-empty array of non-empty strings", ctx);
+  try {
+    assertArtifactProjection(projection);
+  } catch (err) {
+    throw new SkillParseError(`Invalid 'emit.projection': ${(err as Error).message}`, ctx);
   }
-  const entries = projection as string[];
-  for (const entry of entries) {
-    if (!entry.startsWith(ARTIFACT_NAMESPACE)) {
-      throw new SkillParseError(
-        `Invalid 'emit.projection' entry ${JSON.stringify(entry)} — every entry must address the filled action args as '${ARTIFACT_NAMESPACE}<key>'; there is no bare form`,
-        ctx
-      );
-    }
-    if (entry.slice(ARTIFACT_NAMESPACE.length).trim() === "") {
-      throw new SkillParseError(`Invalid 'emit.projection' entry ${JSON.stringify(entry)} — addresses no field`, ctx);
-    }
-  }
-  const seen = new Set<string>();
-  for (const entry of entries) {
-    if (seen.has(entry)) {
-      // RFC 9421 §2.3: a covered-components list names each identifier once.
-      // A list that names a field twice is not a coverage declaration anyone
-      // can reason about, and it would double-count in `resolved`/`unresolved`.
-      throw new SkillParseError(
-        `Duplicate 'emit.projection' entry ${JSON.stringify(entry)} — a coverage list names each field exactly once`,
-        ctx
-      );
-    }
-    seen.add(entry);
-  }
+  const entries = projection;
   return { projection: entries };
 }
 
@@ -825,6 +799,12 @@ export function parseSkill(source: string): Skill {
       throw new SkillParseError(
         "'emit' requires a write-effect step — a read step dispatches no write whose artifact could be attested",
         { step: n, line: emitLine ?? fileLine }
+      );
+    }
+    if (attest?.defer !== undefined && emit === undefined) {
+      throw new SkillParseError(
+        "'attest.defer' requires 'emit:' so a later resolution has both the approval and artifact join keys",
+        { step: n, line: fileLine }
       );
     }
 

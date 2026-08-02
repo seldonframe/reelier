@@ -34,7 +34,13 @@
 
 import { createHmac } from "node:crypto";
 import { canonicalJson, digestSha256 } from "./canonical-json.js";
-import { assertUsableKey, tagScalar } from "./expect-mac.js";
+import {
+  ABSENT_FIELDS_MAX,
+  ABSENT_FIELD_NAME_MAX,
+  assertNoProtoKeyDeep,
+  assertUsableKey,
+  tagScalar,
+} from "./expect-mac.js";
 
 /**
  * The ONE namespace an `emit:` projection entry may use (spec §4, Normative).
@@ -78,6 +84,30 @@ function artifactArgsKey(entry: string): string {
   return key;
 }
 
+/** One validation belt for parser and runtime callers, sharing expect's field-list caps. */
+export function assertArtifactProjection(projection: unknown): asserts projection is string[] {
+  if (!Array.isArray(projection) || projection.length === 0) {
+    throw new Error("emit.projection must be a non-empty array of non-empty strings");
+  }
+  if (projection.length > ABSENT_FIELDS_MAX) {
+    throw new Error(`emit.projection may name at most ${ABSENT_FIELDS_MAX} fields`);
+  }
+  const seen = new Set<string>();
+  for (const entry of projection) {
+    if (typeof entry !== "string" || entry.trim() === "") {
+      throw new Error("emit.projection must be a non-empty array of non-empty strings");
+    }
+    if (entry.length > ABSENT_FIELD_NAME_MAX) {
+      throw new Error(`emit.projection field names may be at most ${ABSENT_FIELD_NAME_MAX} characters`);
+    }
+    artifactArgsKey(entry);
+    if (seen.has(entry)) {
+      throw new Error(`duplicate emit.projection entry ${JSON.stringify(entry)}`);
+    }
+    seen.add(entry);
+  }
+}
+
 /** Filled action args are only projectable when they are a JSON object; a string, array or null establishes nothing. */
 function argsRecord(filledArgs: unknown): Record<string, unknown> | undefined {
   return filledArgs !== null && typeof filledArgs === "object" && !Array.isArray(filledArgs)
@@ -99,6 +129,8 @@ export function projectArtifact(
   filledArgs: unknown,
   projection: string[]
 ): Record<string, string | number | boolean> {
+  assertArtifactProjection(projection);
+  assertNoProtoKeyDeep(filledArgs, "projectArtifact");
   const out: Record<string, string | number | boolean> = {};
   const rec = argsRecord(filledArgs);
   for (const entry of projection) {
@@ -163,6 +195,7 @@ export function artifactDigest(actionTool: string, projected: Record<string, str
   if (typeof actionTool !== "string" || actionTool.trim() === "") {
     throw new Error("artifactDigest: action tool name must be a non-empty string");
   }
+  assertNoProtoKeyDeep(projected, "artifactDigest");
   const tagged: Record<string, string> = {};
   for (const [field, value] of Object.entries(projected)) {
     tagged[field] = tagScalar(value);
@@ -176,7 +209,7 @@ export function artifactDigest(actionTool: string, projected: Record<string, str
  * field of an artifact differs without ever carrying its value.
  *
  * Domain-separated from the three existing MACs by canonical-JSON input
- * shape: `{field,tool,v,value}` here versus `{field,probe,v,value}` per expect
+ * shape: `{artifact,field,tool,v,value}` here versus `{field,probe,v,value}` per expect
  * field, `{probe,projection,v}` whole-projection, `{args,probe,v}` probe-args.
  * The key sets differ regardless of the values, so no collision is
  * constructible.
@@ -197,6 +230,6 @@ export function artifactFieldMac(
   if (typeof fieldName !== "string" || fieldName.trim() === "" || fieldName === "__proto__") {
     throw new Error(`artifactFieldMac: invalid field name ${JSON.stringify(fieldName)}`);
   }
-  const input = canonicalJson({ field: fieldName, tool: actionTool, v: 1, value: tagScalar(value) });
+  const input = canonicalJson({ artifact: true, field: fieldName, tool: actionTool, v: 1, value: tagScalar(value) });
   return MAC_PREFIX + createHmac("sha256", Buffer.from(key)).update(input, "utf8").digest("hex");
 }

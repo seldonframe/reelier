@@ -354,19 +354,19 @@ export function expectFieldMac(key: Uint8Array, probeTool: string, fieldName: st
  * — two different arg sets committing alike, exactly the false-MATCH class
  * the siblings' flat guard exists to close one level down.
  */
-function assertNoProtoKeyDeep(value: unknown, at = "(root)"): void {
+export function assertNoProtoKeyDeep(value: unknown, operation = "probeArgsMac", at = "(root)"): void {
   if (Array.isArray(value)) {
-    value.forEach((v, i) => assertNoProtoKeyDeep(v, `${at}[${i}]`));
+    value.forEach((v, i) => assertNoProtoKeyDeep(v, operation, `${at}[${i}]`));
     return;
   }
   if (value !== null && typeof value === "object") {
     for (const key of Object.keys(value as Record<string, unknown>)) {
       if (key === "__proto__") {
         throw new Error(
-          `probeArgsMac: arg key '__proto__' at ${at} cannot be committed faithfully — refusing to drop it silently (A6)`
+          `${operation}: arg key '__proto__' at ${at} cannot be committed faithfully — refusing to drop it silently (A6)`
         );
       }
-      assertNoProtoKeyDeep((value as Record<string, unknown>)[key], `${at}.${key}`);
+      assertNoProtoKeyDeep((value as Record<string, unknown>)[key], operation, `${at}.${key}`);
     }
   }
 }

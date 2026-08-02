@@ -79,12 +79,20 @@ test("bench: handles a mix of pre-0.2.0 (legacy) and 0.2.0 run records without c
     const runsDir = path.join(dir, ".reelier", "runs");
     await mkdir(runsDir, { recursive: true });
     const runFile = path.join(runsDir, "bench-fixture.jsonl");
-    await writeFile(runFile, [JSON.stringify(LEGACY_RECORD), JSON.stringify(NEW_RECORD)].join("\n") + "\n", "utf8");
+    const resolution = {
+      ...NEW_RECORD,
+      passed: false,
+      deferredResolution: true,
+      steps: [{ n: 1, title: "Deferred resolution", level: 0, outcome: "unchecked", ms: 0, failures: [] }],
+      totals: { ...NEW_RECORD.totals, steps: 1, passed: 0, unchecked: 1, failed: 0, ms: 0 },
+    };
+    await writeFile(runFile, [JSON.stringify(LEGACY_RECORD), JSON.stringify(NEW_RECORD), JSON.stringify(resolution)].join("\n") + "\n", "utf8");
 
     const result = await execFileAsync("node", [CLI_PATH, "bench", skillPath], { cwd: dir });
 
     assert.match(result.stdout, /Bench: bench-fixture/);
     assert.match(result.stdout, /runs:\s+2/);
+    assert.doesNotMatch(result.stdout, /runs:\s+3/, "deferred follow-ups are not benchmark executions");
     // Honest split across BOTH records, derived per-record (legacy record's
     // per-step outcomes, not its old totals.passed=2 rollup):
     // legacy: passed=1, unchecked=1 ; new: passed=1, failed=1

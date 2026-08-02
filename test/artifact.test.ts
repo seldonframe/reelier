@@ -4,6 +4,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createHmac } from "node:crypto";
 import {
   ARTIFACT_NAMESPACE,
   artifactDigest,
@@ -36,6 +37,19 @@ test("projectArtifact refuses an entry without the args. prefix — there is no 
 
 test("projectArtifact refuses args.__proto__ rather than silently dropping it (A6 false-MATCH class)", () => {
   assert.throws(() => projectArtifact({ x: 1 }, ["args.__proto__"]), /__proto__/);
+});
+
+test("projectArtifact refuses an own __proto__ key at any depth, even under an unresolved non-scalar", () => {
+  const args = JSON.parse('{"message":{"__proto__":{"leak":true}}}') as unknown;
+  assert.throws(() => projectArtifact(args, ["args.message"]), /__proto__.*message/i);
+});
+
+test("artifact coverage uses the shared absent-field caps: at most 32 names of at most 120 chars", () => {
+  assert.throws(
+    () => projectArtifact({}, Array.from({ length: 33 }, (_, i) => `args.field_${i}`)),
+    /at most 32/i,
+  );
+  assert.throws(() => projectArtifact({}, [`args.${"x".repeat(116)}`]), /at most 120/i);
 });
 
 test("a non-scalar value is not projected — object, array and null alike", () => {
@@ -122,8 +136,21 @@ test("artifactFieldMac is an hmac-sha256:<64 hex> under the per-approval key", (
   assert.match(artifactFieldMac(key, "send_email", "args.to", "a@example.com"), /^hmac-sha256:[0-9a-f]{64}$/);
 });
 
+test("artifactFieldMac uses the normative {artifact,field,tool,v,value} domain shape", () => {
+  const key = Buffer.alloc(32, 7);
+  const expected =
+    "hmac-sha256:" +
+    createHmac("sha256", key)
+      .update(
+        '{"artifact":true,"field":"args.to","tool":"send_email","v":1,"value":"s:a@example.com"}',
+        "utf8",
+      )
+      .digest("hex");
+  assert.equal(artifactFieldMac(key, "send_email", "args.to", "a@example.com"), expected);
+});
+
 test("artifactFieldMac is domain-separated from expectFieldMac for identical inputs", () => {
-  // §5.2: separated by canonical-JSON input SHAPE ({field,tool,v,value} vs
+  // §5.2: separated by canonical-JSON input SHAPE ({artifact,field,tool,v,value} vs
   // {field,probe,v,value}). Same key, same names, same value — different MAC.
   const { key } = mintExpectKey();
   const mine = artifactFieldMac(key, "send_email", "args.to", "a@example.com");

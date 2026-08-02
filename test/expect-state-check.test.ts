@@ -384,7 +384,8 @@ test("§8.6: a dispatch that throws AFTER the check keeps the computed stateChec
     const record = await runSkill(parseSkill(source), { tools, expectKeystorePath: keystorePath, cwd: dir });
     const step = record.steps[0];
     assert.equal(step.outcome, "failed");
-    assert.equal(step.write, undefined, "no write receipt — no observation came back");
+    assert.equal(step.write?.approved, true, "dispatch happened even though no response observation came back");
+    assert.ok(step.write?.idempotencyKey, "the filled call identity is knowable before dispatch");
     assert.equal(step.stateCheck!.outcome, "mismatch", "the pre-dispatch check survives the throw");
     assert.equal(step.attest!.confidence, "partial");
     assert.equal(step.attest!.reason, "dispatch-failed");

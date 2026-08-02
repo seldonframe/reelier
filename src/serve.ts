@@ -41,7 +41,7 @@ import { scanTranscripts, replayableRateStats, type ScannedSession, type Replaya
 import { compileSessionTranscript, type SessionSkip } from "./session.js";
 import type { OpenQuestion } from "./compile.js";
 import { parseSkill } from "./skill.js";
-import { runSkill, builtinTools, readRunRecords, type RunRecord } from "./runner.js";
+import { runSkill, builtinTools, readRunRecords, executionRecords, type RunRecord } from "./runner.js";
 import { diffRunRecords, type RunDiff } from "./diff.js";
 import { preflightManifest } from "./manifest.js";
 import { connectDownstream, type DownstreamConnection } from "./mcp-client.js";
@@ -388,7 +388,7 @@ export async function runDiffTool(input: DiffToolInput): Promise<DiffToolResult>
   const file = path.join(cwd, ".reelier", "runs", `${input.skill}.jsonl`);
   let records: RunRecord[] = [];
   try {
-    records = await readRunRecords(file);
+    records = executionRecords(await readRunRecords(file));
   } catch {
     records = [];
   }
