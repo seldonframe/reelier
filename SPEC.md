@@ -242,7 +242,7 @@ MUST split on `\r\n` or `\n`, skip blank/whitespace-only lines, and
 - The **`meta` record MUST be first** (`seq: 0`). `Recorder.start` writes it
   immediately upon `reelier_start_recording` and nothing else is written
   before it.
-- `call` and `result` records additionally share a **call-index `i`**,
+- `call`, `prov`, and `result` records additionally share a **call-index `i`**,
   independent of `seq`, monotonic from 0, incremented once per call
   (`Recorder.callIndex`). **A `call` record's `i` is emitted before the
   matching `result` record's `i`** — the pairing rule a compiler or replay
@@ -252,6 +252,10 @@ MUST split on `\r\n` or `\n`, skip blank/whitespace-only lines, and
   are in flight concurrently, since each `call`→`result` normally happens
   back-to-back per `CallToolRequestSchema` handler invocation —
   `src/recorder.ts:184-234`).
+- For a call that actually dispatches, a `prov` record with the same `i` is
+  written immediately after `call` and before downstream dispatch. A denied or
+  dry-run call has no `prov`: nothing went out. `prov` is observational only;
+  no state it carries changes dispatch, policy, outcome or exit code.
 - `note` records carry no `i` — a note is trace-global narration, not
   attached to a call index. The compiler associates the immediately
   preceding run of `note`s with the next `call` (see §6 below and
@@ -273,12 +277,18 @@ type TraceRecord =
       policyGap?: string }
   | { t: "note";   seq: number; ts: string; text: string }
   | { t: "call";   seq: number; i: number; ts: string; tool: string; args: unknown }
+  | { t: "prov";   seq: number; i: number;
+      resolved?: Array<{ path: string; via: "exact" | "normalized";
+                         from: { call: number; at: string } }>;
+      authored?: string[];
+      unresolved?: Array<{ path: string; reason: string }>;
+      truncated?: Partial<Record<"resolved" | "authored" | "unresolved", number>> }
   | { t: "result"; seq: number; i: number; ok: boolean; ms: number; body: unknown };
 ```
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `t` | `"meta" \| "note" \| "call" \| "result"` | Discriminator. Closed set — see §0. |
+| `t` | `"meta" \| "note" \| "call" \| "prov" \| "result"` | Discriminator. Closed set — see §0. |
 | `seq` | integer ≥ 0 | File-scoped monotonic sequence number (§2.1). |
 | `name` (meta) | string | The trace's own name, as given to `reelier_start_recording`. |
 | `startedAt` (meta) | ISO-8601 string | Recording start time (`new Date().toISOString()`). |
@@ -288,9 +298,13 @@ type TraceRecord =
 | `toolAnnotations` (meta, optional, 0.13.0+) | `Record<string, {readOnlyHint?, destructiveHint?, idempotentHint?}>` | MCP `tools/list` annotation hints per **exposed** tool name (post collision-prefixing, matching `call.tool`), captured once at recording start (`collectToolAnnotations`, `src/recorder.ts`). A writer MUST include only hints the downstream actually declared (never fabricated defaults) and SHOULD omit the field entirely when no wrapped tool declares any of the three — so annotation-free traces are byte-identical to pre-0.13.0 ones. Additive per §0's forward-compatibility rule; a pre-0.13.0 reader tolerates and ignores it. Consumers treat these as **hints, not security**: the compiler's effect classifier (`classifyEffect`, `src/effect-verbs.ts`) applies a strict trust ladder — `destructiveHint: true` always wins; **no annotation ever downgrades a verb-list match** (not the destructive tier, and not an idempotent-write verb either — `create_note` + `readOnlyHint: true` stays `idempotent-write`); a hint may only tighten a read verb-match (`idempotentHint`) or refine a tool whose verbs the lists don't recognize — and replay write-gating (§3.6) still applies to everything classified `idempotent-write` or worse. |
 | `ts` (note/call) | ISO-8601 string | Timestamp the record was written. |
 | `text` (note) | string | Free-text narration passed to `reelier_note`. |
-| `i` (call/result) | integer ≥ 0 | Call index; shared between a `call` and its `result` (§2.1). |
+| `i` (call/prov/result) | integer ≥ 0 | Call index; shared between a `call`, its optional `prov`, and its `result` (§2.1). |
 | `tool` (call) | string | The **exposed** tool name (post collision-prefixing — §5.3), never the raw downstream name. |
 | `args` (call) | JSON value | The tool call's arguments, **after redaction** (§2.3). |
+| `resolved` (prov, optional, 0.31.0+) | array | Argument scalar paths that matched a prior successful downstream response before dispatch. `from.call` names that prior call index and `from.at` its response path; `via` is exactly `exact` or `normalized`. Values and per-value digests are never recorded. |
+| `authored` (prov, optional, 0.31.0+) | string[] | Argument scalar paths absent from the complete retained source index. Neutral fact, never a verdict: authored does not mean wrong, fabricated or unsafe. |
+| `unresolved` (prov, optional, 0.31.0+) | array | Argument scalar paths for which neither grounded nor authored was established, with a deterministic reason. A consumer MUST render this as neither pass nor fail. |
+| `truncated` (prov, optional, 0.31.0+) | object | Number of additional entries omitted from each displayed list by the shared per-list cap. Omitted when nothing was capped; a renderer MUST expose these counts rather than present a capped list as complete. |
 | `ok` (result) | boolean | `true` unless the downstream call raised, or its MCP result set `isError: true`. |
 | `ms` (result) | integer ≥ 0 | Wall-clock duration of the call, in milliseconds. |
 | `body` (result) | JSON value | The full MCP `CallToolResult`-shaped return value (`{content: [...], isError?}`), **after redaction** — not just the tool's payload. |
@@ -299,6 +313,23 @@ type TraceRecord =
 `reelier_note`, and `reelier_stop_recording` themselves never produce
 `call`/`result` records — only tools proxied from a `--wrap`'d downstream
 do (`src/recorder.ts:184-234`).
+
+#### 2.2.1 Argument provenance honesty boundary
+
+`prov` answers only where each outbound scalar value can be traced: `grounded`,
+`authored`, or `unresolved`. Ungrounded is not wrong. A summary, subject line or
+generated slug is legitimately authored, and the proxy does not see values a
+person supplied outside MCP traffic. A grounded value can still be the wrong
+record. Consumers MUST NOT render any state as a correctness or safety verdict,
+MUST NOT turn the counts into a score, and MUST NOT gate from this record.
+
+The live source index is process-local, hash-only and reset at recording start.
+It accepts at most 4,096 scalar source leaves. Once saturated, retained hits can
+still be grounded, but every miss is `unresolved` with
+`source-index-cap: 4096 leaves`; saturation can never manufacture `authored`.
+Only successful real downstream results enter the index. Failed calls, denials,
+and dry-run stubs are not sources. Full derivation and non-goals:
+`docs/specs/argument-provenance-v1.md`.
 
 ### 2.3 Redaction (writer-side SHOULD)
 
@@ -1001,6 +1032,7 @@ interface RunRecord {
   deferredResolution?: true;
   skillContentSha256?: string;
   manifestIgnored?: true;
+  manifestChecked?: true;
   policy?: {
     status: "verified" | "failed" | "unchecked" | "absent";
     digest?: string;
@@ -1030,6 +1062,7 @@ interface RunRecord {
 | `skillContentSha256` | sha256 (64 lowercase hex chars) of the exact skill-file bytes that produced this run, stamped at run time by the caller from the source it had just read to parse the skill — the most truthful moment to capture it. Absent when the caller had no file bytes to hash, and absent on every record written before the field existed; `POST /api/v1/runs` (§8.2) describes the push-time fallback hash computed for those. It identifies **content only** — never authorship, never intent, never approval. A consumer MUST NOT read it as a signature, and MUST NOT read its absence as evidence that the skill was altered or is untrustworthy: absence means only that no hash was captured. |
 | `policy` (0.30.0+) | The policy file in force for **this run** (`docs/specs/policy-attestation-v1.md`), resolved from the same read that decided this run's state gate. `status` uses the four-state vocabulary exactly as §2.2 defines it for the trace side, and the same consumer rules apply: **`unchecked` and `absent` MUST NOT be rendered as a pass, and `unchecked` MUST NOT be rendered as `failed`.** `digest` is `sha256:<64 lowercase hex>` over the raw file bytes, bound to the read that produced the parsed policy, so it names the bytes that governed this run and never the bytes at that path now; omitted in `unchecked`/`absent`. `sourcePath` is `"project"` or `"global"` — which documented candidate decided — and never an absolute path. **This record reports the RUN-TIME policy, always.** A skill carries no policy field in any version, so a skill recorded under one policy and replayed under another inherits nothing: `TraceRecord.meta.policy` (§2.2) describes the recording, this field describes the run, and neither is derived from the other. Inheriting the recording-time policy would fabricate a claim about the present out of the past. **`rules`/`unmatchedRules` never appear here**, unlike on the trace side: replay performs no policy evaluation at all (§6, and flight-recorder-v2's non-goals), so there is no live tool inventory to measure rule coverage against. A consumer therefore MUST NOT read `status: "verified"` on a run record as evidence that any `deny` or `dry_run` rule blocked, intercepted, or evaluated anything during the replay — on this path the file governs the state gate (§6.1c) alone, and the absence of the counts is that statement. Note that a `state_gate`-declaring file that fails to parse refuses the run before step 1, so **no record is written at all** in that case; `status: "failed"` on a run record is therefore always the malformed-without-a-`state_gate`-key case. Optional and additive: absent on every record written before the field existed and on any caller that reported nothing — which is **not** `absent`, the positive finding that a lookup happened and found no file. **Verification never requires this field**, and a consumer MUST NOT treat its absence as evidence that no policy was in force. |
 | `manifestIgnored` | `manifestIgnored` (0.19.0+, §6.1b) is `true` iff this run's manifest preflight was explicitly bypassed via `--ignore-manifest` — absent on every run that had no manifest to check, or whose preflight ran normally. Absence therefore conflates "there was nothing to check" with "the check passed" and is **not** evidence of a clean preflight; only the field's presence carries a claim, and the claim it carries is that a check was skipped. |
+| `manifestChecked` | `true` iff this run's skill declared a manifest and its preflight ran and passed. Mutually exclusive with `manifestIgnored`; absent when the skill declared no manifest and on the break-glass path. A failed preflight refuses before execution and writes no record. This is the positive signal that distinguishes "declared + verified" from "never declared" without inferring from absence. Optional and additive; absent on pre-existing records. |
 | `mockFailures` | `mockFailures` (0.19.0+, §6.1d) is the sorted list of step numbers that had an injected failure (`--fail N[=status]`) this run — present only when non-empty. A record carrying this field is a local recovery test, never a real receipt: `reelier push` (§8) refuses to push it, unconditionally. |
 | `steps` | One `StepRecord` (§4.1) per step of the skill, in execution order. Always present. Every step of the skill appears, including those the runner never attempted because an earlier step diverged and did not heal — those carry `outcome: "skipped"` with `ms: 0`. A consumer MUST NOT infer from an entry's presence that the step ran; only its `outcome` says that. `steps.length` always equals `totals.steps`. |
 | `totals` | Roll-ups derived **entirely** from `steps` — the record carries no count that its own steps do not support. Always present, with all eight keys always present: `steps` is the number of step records; `passed`, `unchecked`, `skipped` and `failed` are the counts of steps with exactly that `outcome` (they partition `steps`, and per the honesty rule in §4.3 `passed` never absorbs `unchecked`); `ms` is the sum of the per-step `ms` values; `llmInputTokens` and `llmOutputTokens` are the sums of `steps[].llm.inputTokens`/`.outputTokens`, counting a step with no `llm` block as zero, so `0`/`0` is the honest reading of a run where escalation never ran. `unchecked` is a count of steps whose final outcome carried no failure and which asserted nothing (see the `passed` row above — a healed step and a mocked step can both land here): per §4.3 a consumer MUST NOT present `totals.unchecked`, or any total that includes it, as evidence of a passing check. |
@@ -1332,13 +1365,16 @@ Source of truth: `src/manifest.ts` (`buildManifestForSkill`,
   `added` / `removed` against whatever manifest was already stamped. No
   `--wrap` given is a usage error, exit 1.
 - `reelier run <skill.md> --wrap ...` runs the preflight **before step 1
-  executes** whenever `skill.manifest` is present: `ok` → proceed silently;
+  executes** whenever `skill.manifest` is present: `ok` → proceed and stamp
+  `RunRecord.manifestChecked: true` (§4.2), the positive "declared + verified"
+  signal;
   any missing tool or schema mismatch → `MANIFEST DRIFT — refusing to
   replay (fail closed)` printed per drifted tool, exit 1, and the fake/real
   downstream's `call` is never invoked. A manifest present with no `--wrap`
   at all is also a hard refusal (nothing to preflight against). A skill
   with no manifest gets an advisory note only and runs normally — every
-  pre-0.19.0 skill is unaffected.
+  pre-0.19.0 skill is unaffected and its record carries neither
+  `manifestChecked` nor `manifestIgnored`.
 - `--ignore-manifest` is the explicit break-glass override: skips the
   preflight, prints a `WARNING: --ignore-manifest` line, and stamps
   `RunRecord.manifestIgnored: true` (§4.2) — never a silent bypass.

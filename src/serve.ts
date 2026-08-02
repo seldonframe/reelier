@@ -220,7 +220,10 @@ export interface ReplayToolInput {
  * entrypoint (review finding, blocking). Resolved from `input.cwd` — the
  * same directory whose .reelier/runs receives the record.
  */
-export async function runReplayTool(input: ReplayToolInput): Promise<RunRecord> {
+export async function runReplayTool(
+  input: ReplayToolInput,
+  connect: (spec: string) => Promise<DownstreamConnection> = connectDownstream
+): Promise<RunRecord> {
   const source = await readFile(input.skillPath, "utf8");
   const skill = parseSkill(source);
 
@@ -241,10 +244,11 @@ export async function runReplayTool(input: ReplayToolInput): Promise<RunRecord> 
   const downstreams: DownstreamConnection[] = [];
   try {
     for (const spec of input.wrap ?? []) {
-      downstreams.push(await connectDownstream(spec));
+      downstreams.push(await connect(spec));
     }
 
     let manifestIgnored = false;
+    let manifestChecked = false;
     if (skill.manifest) {
       if (input.ignoreManifest) {
         manifestIgnored = true;
@@ -260,6 +264,7 @@ export async function runReplayTool(input: ReplayToolInput): Promise<RunRecord> 
               drifts.map((d) => `${d.name} — recorded ${d.recorded}${d.live !== undefined ? ` live ${d.live}` : ""} (${d.note})`).join("; ")
           );
         }
+        manifestChecked = true;
       }
     }
 
@@ -275,6 +280,7 @@ export async function runReplayTool(input: ReplayToolInput): Promise<RunRecord> 
       skillPath: input.skillPath,
       skillContentSha256: createHash("sha256").update(source, "utf8").digest("hex"),
       ...(manifestIgnored ? { manifestIgnored: true } : {}),
+      ...(manifestChecked ? { manifestChecked: true } : {}),
       ...(stateGate.mode === "refuse" ? { stateGate: "refuse" as const } : {}),
     });
   } finally {

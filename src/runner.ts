@@ -339,6 +339,12 @@ export interface RunRecord {
    */
   manifestIgnored?: true;
   /**
+   * Set only when this run declared a manifest and its preflight ran and
+   * passed. Mutually exclusive with `manifestIgnored`; absent when there was
+   * no manifest to check. A failed preflight writes no record.
+   */
+  manifestChecked?: true;
+  /**
    * The policy file in force for THIS RUN (docs/specs/policy-attestation-v1.md).
    * Never the one that governed the recording this skill was compiled from —
    * a RunRecord is evidence about one execution, and inheriting the
@@ -419,6 +425,8 @@ export interface RunOptions {
   skillContentSha256?: string;
   /** Threaded verbatim onto RunRecord.manifestIgnored — set by the caller (cmdRun) when `--ignore-manifest` bypassed the manifest preflight. The runner itself never evaluates a manifest; this is purely a receipt annotation. */
   manifestIgnored?: boolean;
+  /** Threaded onto RunRecord.manifestChecked by callers after a declared manifest preflight passes. */
+  manifestChecked?: boolean;
   /**
    * `--fail N[=status]` (docs/specs/flight-recorder-v2.md §3): step number ->
    * HTTP status to inject as a synthetic Observation instead of dispatching
@@ -2169,6 +2177,7 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
     passed: failedCount === 0,
     ...(options.skillContentSha256 ? { skillContentSha256: options.skillContentSha256 } : {}),
     ...(options.manifestIgnored ? { manifestIgnored: true } : {}),
+    ...(options.manifestChecked ? { manifestChecked: true } : {}),
     ...(options.policy ? { policy: options.policy } : {}),
     ...(mockFailureSteps.length > 0 ? { mockFailures: mockFailureSteps } : {}),
     steps: stepRecords,

@@ -78,6 +78,11 @@ export function assertUsableKey(key: Uint8Array, who = "expectMac"): void {
  * false-MATCH class, the one direction the scheme must never produce. The
  * tag prefix also can't be forged from inside a string value: a string
  * `"n:1"` tags to `"s:n:1"`, never colliding with number `1`'s `"n:1"`.
+ *
+ * Exported so src/provenance.ts commits argument values under the SAME tagging
+ * as every other commitment in this package (argument-provenance-v1 §7.4). A
+ * second copy is how the false-MATCH rule drifts apart from the one place that
+ * states it — the `shapeOf`/`deriveFootprint` lesson, run-shape-priors §2.3.
  */
 export function tagScalar(v: string | number | boolean): string {
   if (typeof v === "string") return `s:${v}`;
@@ -353,20 +358,24 @@ export function expectFieldMac(key: Uint8Array, probeTool: string, fieldName: st
  * probeArgsMac(key, tool, {a:{__proto__:{x:1}}}) === probeArgsMac(key, tool, {a:{}})
  * — two different arg sets committing alike, exactly the false-MATCH class
  * the siblings' flat guard exists to close one level down.
+ *
+ * `who` names the caller in the message and defaults to `probeArgsMac`, so every
+ * pre-existing message is byte-identical; src/provenance.ts passes its own label
+ * rather than carrying a second copy of the walk (argument-provenance-v1 §7.4).
  */
-export function assertNoProtoKeyDeep(value: unknown, operation = "probeArgsMac", at = "(root)"): void {
-  if (Array.isArray(value)) {
-    value.forEach((v, i) => assertNoProtoKeyDeep(v, operation, `${at}[${i}]`));
+ export function assertNoProtoKeyDeep(value: unknown, at = "(root)", who = "probeArgsMac"): void {
+   if (Array.isArray(value)) {
+     value.forEach((v, i) => assertNoProtoKeyDeep(v, `${at}[${i}]`, who));
     return;
   }
   if (value !== null && typeof value === "object") {
     for (const key of Object.keys(value as Record<string, unknown>)) {
       if (key === "__proto__") {
         throw new Error(
-          `${operation}: arg key '__proto__' at ${at} cannot be committed faithfully — refusing to drop it silently (A6)`
+          `${who}: arg key '__proto__' at ${at} cannot be committed faithfully — refusing to drop it silently (A6)`
         );
       }
-      assertNoProtoKeyDeep((value as Record<string, unknown>)[key], operation, `${at}.${key}`);
+      assertNoProtoKeyDeep((value as Record<string, unknown>)[key], `${at}.${key}`, who);
     }
   }
 }

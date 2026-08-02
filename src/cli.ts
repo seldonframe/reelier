@@ -40,6 +40,7 @@ import { connectDownstream, type DownstreamConnection } from "./mcp-client.js";
 import { buildMcpTools } from "./mcp-tool.js";
 import { buildProxyServer, Recorder } from "./recorder.js";
 import { parseTraceLines, formatTrace } from "./trace.js";
+import { analyzeTrace, formatProvenance } from "./provenance-trace.js";
 import { compile, renderSkillMd, type CompileResult, type FromSkillProvenance } from "./compile.js";
 import { buildManifestForSkill, preflightManifest, addProbeToolsToManifest } from "./manifest.js";
 import { serializeSkill, writeFileAtomic, appendChangelogLine } from "./writeback.js";
@@ -393,6 +394,7 @@ export async function cmdRun(
     // valid) beyond a one-line advisory note.
     const ignoreManifest = args.flags.has("ignore-manifest");
     let manifestIgnored = false;
+    let manifestChecked = false;
     if (skill.manifest) {
       if (ignoreManifest) {
         console.error("WARNING: --ignore-manifest — replaying despite unverified tool schemas");
@@ -413,6 +415,7 @@ export async function cmdRun(
           );
           return 1;
         }
+        manifestChecked = true;
       }
     } else {
       console.error(
@@ -455,6 +458,7 @@ export async function cmdRun(
       // stamped verbatim onto the RunRecord (see RunRecord.skillContentSha256).
       skillContentSha256: createHash("sha256").update(source, "utf8").digest("hex"),
       manifestIgnored,
+      manifestChecked,
       // The directory whose policy governed the gate MUST be the directory
       // that receives the run record (review finding): otherwise a
       // programmatic caller passing deps.cwd gates on repo A and records
@@ -1187,6 +1191,18 @@ async function cmdTrace(args: ParsedArgs): Promise<number> {
 
   for (const line of formatTrace(records)) {
     console.log(line);
+  }
+
+  // `--provenance` ADDS a block; it never replaces or reshapes the trace output
+  // above, so `reelier trace` without the flag stays byte-identical to the
+  // release before this existed (docs/specs/argument-provenance-v1.md; pinned by
+  // test/provenance-cli.test.ts). It is read-only and gates nothing: this
+  // command's exit code does not move for any provenance state (§2, rule 4).
+  if (args.flags.has("provenance")) {
+    console.log("");
+    for (const line of formatProvenance(analyzeTrace(records))) {
+      console.log(line);
+    }
   }
   return 0;
 }

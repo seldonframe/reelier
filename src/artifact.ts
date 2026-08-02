@@ -130,7 +130,7 @@ export function projectArtifact(
   projection: string[]
 ): Record<string, string | number | boolean> {
   assertArtifactProjection(projection);
-  assertNoProtoKeyDeep(filledArgs, "projectArtifact");
+  assertNoProtoKeyDeep(filledArgs, "(root)", "projectArtifact");
   const out: Record<string, string | number | boolean> = {};
   const rec = argsRecord(filledArgs);
   for (const entry of projection) {
@@ -195,7 +195,7 @@ export function artifactDigest(actionTool: string, projected: Record<string, str
   if (typeof actionTool !== "string" || actionTool.trim() === "") {
     throw new Error("artifactDigest: action tool name must be a non-empty string");
   }
-  assertNoProtoKeyDeep(projected, "artifactDigest");
+  assertNoProtoKeyDeep(projected, "(root)", "artifactDigest");
   const tagged: Record<string, string> = {};
   for (const [field, value] of Object.entries(projected)) {
     tagged[field] = tagScalar(value);
