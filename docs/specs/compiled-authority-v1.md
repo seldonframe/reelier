@@ -188,10 +188,13 @@ exact-owner atomic retirement. Owner publication writes and syncs the owner file
 directory, then syncs the decision root; a publication failure atomically removes the self-created
 lock rather than leaving an ownerless directory. The owner is reverified inside the renamed directory
 before bounded tombstone cleanup; a failed rename leaves the original complete owner metadata in
-place. The constructor fixes a resolved, non-symlink/reparse root identity, rejects traversal through
-such paths, and later refuses root substitution without writing through it. Lock timeouts are finite
-positive integers no greater than 60,000 milliseconds, and every retry deadline uses monotonic time so
-wall-clock rollback cannot extend acquisition or cleanup. Malformed JSON, invalid records, and
+place. The constructor requires an already-existing real directory, performs no lazy root creation,
+fixes its resolved non-symlink/reparse identity, rejects traversal through such paths, and refuses a
+substitution observed before a later operation without writing through it. Portable Node path checks
+cannot defeat an actively concurrent same-user filesystem swap; hard topology therefore requires a
+separate OS identity with no agent mutation permission and is otherwise `unchecked`. Lock timeouts are
+finite positive integers no greater than 60,000 milliseconds, and every retry deadline uses monotonic
+time so wall-clock rollback cannot extend acquisition or cleanup. Malformed JSON, invalid records, and
 duplicate durable indexes are explicitly classified as sink corruption; environmental filesystem and
 lock failures are unavailable. These classifications never depend on exception text.
 
