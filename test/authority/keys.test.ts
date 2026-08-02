@@ -32,7 +32,7 @@ test("authenticated requests seal exact detached wire bytes, digest, tuple key, 
   assert.equal(state.definitionAlias, "definition_1");
   assert.equal(state.canonicalRequestBase64, Buffer.from('{"choices":{},"requestId":"request_1","sourceRefs":{"appointment":"ref_1"},"v":"reelier.outcome-request/v1"}').toString("base64"));
   assert.equal(state.requestDigest, "sha256:b0627231c94f6e288b46bae793b7c64e90429f7e3fc27bc3e870ec23ee0b4245");
-  assert.equal(state.requestKey, "sha256:bae96dac3066021e685a9f48c205a4bd9a367ef646c4637d1e36e1200bb44004");
+  assert.equal(state.requestKey, "sha256:49de5cbfa7babc3f01ef63e5c53388c64844a570b073fe673432ad0cd659cc69");
   assert.equal(Object.isFrozen(state), true);
   assert.equal(Object.isFrozen(state.request.sourceRefs), true);
   assert.throws(() => authenticatedOutcomeRequestState({ ...authenticated }), /unrecognized authenticated request/i);
@@ -43,13 +43,13 @@ test("request digest and global key reject alias/body confusion and delimiter co
   assert.equal(digestOutcomeRequest(request), "sha256:b0627231c94f6e288b46bae793b7c64e90429f7e3fc27bc3e870ec23ee0b4245");
   assert.equal(
     deriveAuthorityRequestKey({ tenant: "ténant", requester: "requester|1", requestId: "request_1" }),
-    "sha256:bae96dac3066021e685a9f48c205a4bd9a367ef646c4637d1e36e1200bb44004",
+    "sha256:49de5cbfa7babc3f01ef63e5c53388c64844a570b073fe673432ad0cd659cc69",
   );
   assert.notEqual(
     deriveAuthorityRequestKey({ tenant: "a", requester: "bc", requestId: "d" }),
     deriveAuthorityRequestKey({ tenant: "ab", requester: "c", requestId: "d" }),
   );
-  assert.throws(() => authenticateOutcomeRequest({ tenant: "tenant_1", requester: "requester_1", definitionAlias: "definition_1", request: { ...request, choices: { connectorId: "evil" } } }), /forbidden/i);
+  assert.throws(() => authenticateOutcomeRequest({ tenant: "tenant_1", requester: "requester_1", definitionAlias: "definition_1", request: { ...request, choices: { connector: "evil" } } }), /forbidden/i);
 });
 
 test("contract-window and provider-trigger limit keys bind exact closed preimages", () => {

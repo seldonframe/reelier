@@ -8,6 +8,7 @@ import { createHash } from "node:crypto";
 import { authorityCanonicalBytes, authorityDigest } from "../../src/authority/wire.js";
 import { CAPABILITY_LIFETIME_MS, type ReservationIntent } from "../../src/authority/ledger.js";
 import { FsAuthorityLedger } from "../../src/authority/host/fs-ledger.js";
+import { authenticateOutcomeRequest, authenticatedOutcomeRequestState } from "../../src/authority/keys.js";
 
 const at = Date.parse("2026-08-02T12:00:00.000Z");
 const hex = (value: number) => `sha256:${value.toString(16).padStart(64, "0")}`;
@@ -22,13 +23,15 @@ test("fixed-seed bounded ledger state-machine fuzz never creates two committed r
         for (const operation of operations) {
           const requestId = `request_${operation.request}`;
           const capabilityId = `capability_${operation.capability}`;
-          const requestKey = hex(50 + operation.request);
+          const authenticated = authenticateOutcomeRequest({ tenant: "tenant", requester: "requester", definitionAlias: "definition", request: { v: "reelier.outcome-request/v1", requestId, sourceRefs: { source: `ref_${operation.request}` }, choices: {} } });
+          const requestState = authenticatedOutcomeRequestState(authenticated);
+          const requestKey = requestState.requestKey;
           const outcomeKey = hex(200 + operation.outcome);
           const effectDigest = hex(300 + operation.outcome);
           const issuedAt = new Date(at).toISOString();
           const expiresAt = new Date(at + CAPABILITY_LIFETIME_MS).toISOString();
           const requestBytes = authorityCanonicalBytes({ v: "reelier.outcome-request/v1", requestId, sourceRefs: { source: `ref_${operation.request}` }, choices: {} });
-          const requestDigest = `sha256:${createHash("sha256").update(requestBytes).digest("hex")}`;
+          const requestDigest = requestState.requestDigest;
           const contractDigest = hex(500);
           const sourceBundleDigest = hex(501);
           const sourceSnapshotDigest = hex(502);
@@ -36,8 +39,11 @@ test("fixed-seed bounded ledger state-machine fuzz never creates two committed r
           const limits = { maxEffectsPerWindow: 30, windowSeconds: 3600, maxEffectsPerSourceTrigger: 1, maxBodyBytes: 4096 };
           const limitsDigest = authorityDigest({ v: "reelier.capability-limits/internal-v1", contractDigest, limits });
           const capabilityBytes = authorityCanonicalBytes({ v: "reelier.compiled-capability/v1", tenant: "tenant", requester: "requester", definitionAlias: "definition", requestDigest, requestKey, contractDigest, sourceBundleDigest, sourceSnapshotDigest, authorityStateDigest, limits, limitsDigest, capabilityId, outcomeKey, effectDigest, issuedAt, expiresAt });
+          const binding = await ledger.bindIngress(authenticated);
+          assert.equal(binding.ok, true); if (!binding.ok) continue;
           const candidate: ReservationIntent = {
             tenant: "tenant", requester: "requester", definitionAlias: "definition", requestId, requestDigest, requestKey,
+            ingressClaimDigest: binding.ingressClaimDigest,
             canonicalRequestDigest: requestDigest, canonicalRequestBytes: requestBytes,
             capabilityId, capabilityDigest: `sha256:${createHash("sha256").update(capabilityBytes).digest("hex")}`, capabilityBytes,
             contractDigest, sourceBundleDigest, sourceSnapshotDigest, authorityStateDigest, limits, limitsDigest,

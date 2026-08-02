@@ -7,6 +7,7 @@ import { pathToFileURL } from "node:url";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { authorityCanonicalBytes, authorityDigest } from "../../src/authority/wire.js";
+import { authenticateOutcomeRequest, authenticatedOutcomeRequestState } from "../../src/authority/keys.js";
 import {
   CAPABILITY_LIFETIME_MS,
   type LedgerState,
@@ -20,6 +21,8 @@ import {
   ledgerFaultPoints,
   reservationFaultPoints,
   resultFaultPoints,
+  ingressFaultPoints,
+  clockFaultPoints,
 } from "../../src/authority/host/fs-ledger.js";
 
 const t0 = Date.parse("2026-08-02T12:00:00.000Z");
@@ -767,4 +770,58 @@ test("a crash-held lock is reclaimed only after the child process is proved dead
     const result = await new FsAuthorityLedger(root, { now: () => t0, lockTimeoutMs: 200 }).recover();
     assert.equal(result.ok, true);
   });
+});
+
+test("bindIngress atomically elects one exact owner and aliases or bytes cannot reuse its tuple", async () => {
+  await withRoot(async root => {
+    const ledger = new FsAuthorityLedger(root, { now: () => t0 });
+    const exact = authenticateOutcomeRequest({ tenant: "tenant_1", requester: "requester_1", definitionAlias: "definition_1", request: { v: "reelier.outcome-request/v1", requestId: "request_1", sourceRefs: { source: "ref_1" }, choices: {} } });
+    const results = await Promise.all(Array.from({ length: 100 }, () => ledger.bindIngress(exact)));
+    assert.equal(results.filter(result => result.ok && result.status === "claimed").length, 1);
+    assert.equal(results.filter(result => result.ok && result.status === "exact-existing").length, 99);
+    const ownerDigest = results[0].ingressClaimDigest;
+    assert.ok(results.every(result => result.ingressClaimDigest === ownerDigest));
+    const aliasConflict = authenticateOutcomeRequest({ tenant: "tenant_1", requester: "requester_1", definitionAlias: "definition_2", request: { v: "reelier.outcome-request/v1", requestId: "request_1", sourceRefs: { source: "ref_1" }, choices: {} } });
+    const bodyConflict = authenticateOutcomeRequest({ tenant: "tenant_1", requester: "requester_1", definitionAlias: "definition_1", request: { v: "reelier.outcome-request/v1", requestId: "request_1", sourceRefs: { source: "other" }, choices: {} } });
+    assert.deepEqual(await ledger.bindIngress(aliasConflict), { ok: false, reason: "conflict", evaluationEligible: false, ingressClaimDigest: ownerDigest });
+    assert.deepEqual(await ledger.bindIngress(bodyConflict), { ok: false, reason: "conflict", evaluationEligible: false, ingressClaimDigest: ownerDigest });
+    assert.deepEqual(await ledger.lookupIngress(authenticatedOutcomeRequestState(exact).requestKey), { requestId: "request_1", requestKey: authenticatedOutcomeRequestState(exact).requestKey, definitionAlias: "definition_1", ingressClaimDigest: ownerDigest, bindingStatus: "bound" });
+    assert.deepEqual(await readdir(path.join(root, "transactions")).catch(() => []), []);
+    assert.deepEqual(await readdir(path.join(root, "journal")).catch(() => []), []);
+  });
+});
+
+test("observeClock durably advances, is idempotent at equality, and refuses rollback or invalid clocks", async () => {
+  await withRoot(async root => {
+    let now = t0;
+    const ledger = new FsAuthorityLedger(root, { now: () => now });
+    assert.deepEqual(await ledger.observeClock(), { ok: true, status: "advanced", observedAt: new Date(t0).toISOString() });
+    assert.deepEqual(await ledger.observeClock(), { ok: true, status: "equal", observedAt: new Date(t0).toISOString() });
+    now--;
+    assert.deepEqual(await ledger.observeClock(), { ok: false, reason: "clock-rollback" });
+    assert.equal((await new FsAuthorityLedger(root, { now: () => t0 }).observeClock()).status, "equal");
+  });
+  await withRoot(async root => assert.deepEqual(await new FsAuthorityLedger(root, { now: () => Number.NaN }).observeClock(), { ok: false, reason: "clock-unavailable" }));
+  await withRoot(async root => assert.deepEqual(await new FsAuthorityLedger(root, { now: () => { throw new Error("clock"); } }).observeClock(), { ok: false, reason: "clock-unavailable" }));
+});
+
+test("reserve requires the exact live ingress claim before writing any transaction", async () => {
+  await withRoot(async root => {
+    const authenticated = authenticateOutcomeRequest({ tenant: "tenant_1", requester: "requester_1", definitionAlias: "definition_1", request: { v: "reelier.outcome-request/v1", requestId: "request_1", sourceRefs: { source: "ref_1" }, choices: {} } });
+    const state = authenticatedOutcomeRequestState(authenticated);
+    const candidate = intent({ requestKey: state.requestKey, requestDigest: state.requestDigest, canonicalRequestBytes: Buffer.from(state.canonicalRequestBase64, "base64") });
+    assert.deepEqual(await new FsAuthorityLedger(root, { now: () => t0 }).reserve({ ...candidate, ingressClaimDigest: digest("9") }), { ok: false, reason: "integrity-failure" });
+    assert.deepEqual(await readdir(path.join(root, "transactions")).catch(() => []), []);
+    const bound = await new FsAuthorityLedger(root, { now: () => t0 }).bindIngress(authenticated);
+    assert.equal(bound.ok, true); if (!bound.ok) return;
+    assert.equal((await new FsAuthorityLedger(root, { now: () => t0 }).reserve({ ...candidate, ingressClaimDigest: bound.ingressClaimDigest })).ok, true);
+  });
+});
+
+test("new ingress and clock fault-point sets are complete and disjoint", () => {
+  assert.deepEqual(ingressFaultPoints, ["ingress-before-create","ingress-after-create","ingress-before-write","ingress-after-write","ingress-before-file-sync","ingress-after-file-sync","ingress-before-close","ingress-after-close","ingress-before-directory-sync","ingress-after-directory-sync"]);
+  assert.deepEqual(clockFaultPoints, ["clock-before-clock-high-water-write","clock-after-clock-high-water-write","clock-before-create","clock-after-create","clock-before-write","clock-after-write","clock-before-file-sync","clock-after-file-sync","clock-before-close","clock-after-close","clock-before-directory-sync","clock-after-directory-sync"]);
+  const all=[...reservationFaultPoints,...dispatchFaultPoints,...resultFaultPoints,...ingressFaultPoints,...clockFaultPoints];
+  assert.equal(new Set(all).size,all.length);
+  assert.deepEqual([...all].sort(),[...ledgerFaultPoints].sort());
 });
