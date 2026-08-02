@@ -134,6 +134,20 @@ test("decision-lock reclaim refuses owner mutation and every unverifiable or liv
   }finally{await rm(root,{recursive:true,force:true});}
 });
 
+test("a failed atomic decision-lock retirement leaves the complete verified owner in place",async()=>{
+  const root=await mkdtemp(path.join(tmpdir(),"reelier-decision-lock-retire-failure-")),ownerFile=path.join(root,".gate-decisions.lock","owner.json");let injected=false;
+  try{
+    const sink=createFileGateDecisionSink(root,{lockTimeoutMs:20,lockFaultInjector:(point:string)=>{if(point==="before-lock-retire"&&!injected){injected=true;throw new Error("injected lock retirement failure");}}} as never);
+    assert.deepEqual(await sink.append(primary()),{ok:true,status:"appended",recordDigest:authorityDigest(primary())});
+    assert.equal(injected,true);
+    const preserved=await readFile(ownerFile),parsed=JSON.parse(preserved.toString("utf8"));
+    assert.deepEqual(Object.keys(parsed).sort(),["host","nonce","pid","v"]);
+    assert.equal(parsed.v,"reelier.gate-decision-lock/internal-v1");
+    assert.deepEqual(await createFileGateDecisionSink(root,{lockTimeoutMs:20}).append(primary({gateEvent:{...event,eventId:"event_after_failed_release"},gateEventDigest:authorityDigest({...event,eventId:"event_after_failed_release"})})),{ok:false,reason:"unavailable"});
+    assert.deepEqual(await readFile(ownerFile),preserved);
+  }finally{await rm(root,{recursive:true,force:true});}
+});
+
 test("accepted reservation and non-primary conflict indexes have exact distinct occupancy",async()=>{
   const root=await mkdtemp(path.join(tmpdir(),"reelier-decision-index-"));try{const sink=createFileGateDecisionSink(root);const acceptedContext={...context,contractDigest:sha("5"),capabilityId:"capability_1",capabilityDigest:sha("6"),outcomeKey:sha("7"),effectDigest:sha("8"),snapshots:{sourceBundleDigest:sha("9"),authorityStateDigest:sha("3")}};const acceptedEvent={...event,verdict:"accepted" as const,reasonCode:"accepted",decisionContextDigest:authorityDigest(acceptedContext)};const accepted=primary({reservationId:"reservation_1",decisionContext:acceptedContext,decisionContextDigest:authorityDigest(acceptedContext),gateEvent:acceptedEvent,gateEventDigest:authorityDigest(acceptedEvent)});assert.equal((await sink.append(accepted)).ok,true);assert.equal((await sink.lookupAcceptedByReservation("reservation_1")).ok,true);const collision={...accepted,gateEvent:{...acceptedEvent,eventId:"event_2"},gateEventDigest:authorityDigest({...acceptedEvent,eventId:"event_2"}),ingressClaimDigest:sha("a")};assert.deepEqual(await sink.append(collision),{ok:false,reason:"reservation-conflict"});const conflictContext={...context,definitionAlias:"definition_2"};const conflictEvent={...event,eventId:"event_3",reasonCode:"request-id-conflict",decisionContextDigest:authorityDigest(conflictContext)};const conflict=primary({role:"conflict",ingressClaimDigest:sha("4"),decisionContext:conflictContext,decisionContextDigest:authorityDigest(conflictContext),gateEvent:conflictEvent,gateEventDigest:authorityDigest(conflictEvent)});assert.equal((await sink.append(conflict)).ok,true);const owner=await sink.lookupPrimaryByIngress(sha("4"));assert.equal(owner.ok,true);if(owner.ok)assert.equal(owner.status,"found");}finally{await rm(root,{recursive:true,force:true});}
 });

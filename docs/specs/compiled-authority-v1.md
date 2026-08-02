@@ -183,7 +183,9 @@ Cross-process decision append uses a purpose-specific lock owner record containi
 wire version, local host, PID, and random nonce. A live same-host owner is busy; a foreign-host,
 malformed, changed, or unverifiable owner remains unavailable. Reclaim is permitted only after
 same-host process death is positively established, followed by a byte-identical owner reread before
-removal. Release likewise removes only the caller's byte-identical owner. Malformed JSON, invalid
+atomically renaming the whole lock directory to a unique retirement tombstone. Release uses the same
+exact-owner atomic retirement. The owner is reverified inside the renamed directory before bounded
+tombstone cleanup; a failed rename leaves the original complete owner metadata in place. Malformed JSON, invalid
 records, and duplicate durable indexes are explicitly classified as sink corruption; environmental
 filesystem and lock failures are unavailable. These classifications never depend on exception text.
 
