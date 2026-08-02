@@ -537,6 +537,12 @@ test("AuthorityReceipt refuses empty and all-zero GateEvent digest sentinels", (
   }
 });
 
+test("DecisionContext refuses unpaired outcome/effect presence in either direction", () => {
+  const base = { ...acceptedDecisionContext, capabilityId: null, capabilityDigest: null };
+  assert.throws(() => parseAuthorityWire("decision-context", { ...base, outcomeKey: validDigest, effectDigest: null }), /paired nullability/i);
+  assert.throws(() => parseAuthorityWire("decision-context", { ...base, outcomeKey: null, effectDigest: validDigest }), /paired nullability/i);
+});
+
 test("legacy verifier refuses an authority receipt instead of awarding a legacy pass", () => {
   const result = evaluateVerifyClaims({ record: { v: "reelier.authority-receipt/v1" } as never });
   assert.equal(result.exitCode, 1);
