@@ -124,8 +124,10 @@ same-host process liveness proves that its recorded PID is dead and the owner by
 Reclaim and release atomically rename the whole lock directory to an exact PID-and-nonce-bound
 retirement tombstone. Cleanup accepts only a canonical same-host owner whose PID and full nonce match
 that exact tombstone name, revalidates its bytes before deletion, and otherwise preserves the topology
-and fails closed. Validated stale tombstones are cleaned before acquisition, and full recovery runs
-before another reservation may be authorized. Lock acquisition, retirement cleanup, and transient
+and fails closed. A validated same-host tombstone whose owner is proved dead is a durable recovery
+handoff: the successor retains that fact while cleaning it and runs full recovery before any operation,
+even if the original reclaimer lost the post-rename acquisition race. Validated stale tombstones are
+cleaned before acquisition completes. Lock acquisition, retirement cleanup, and transient
 Windows `decisions/`-subtree audit retries use monotonic deadlines. They never consult the
 provider/authority semantic `now`, which remains reserved for durable high-water, validity, and
 lifecycle decisions.

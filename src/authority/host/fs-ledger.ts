@@ -418,7 +418,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
         try { await this.retireOwnedLock(owner, deadline, false, true); } catch { /* Preserve any replacement owner and the publication failure. */ }
         throw error;
       }
-      try { await this.cleanupRetiredLocks(deadline); }
+      try { reclaimed = await this.cleanupRetiredLocks(deadline) || reclaimed; }
       catch {
         try { await this.retireOwnedLock(owner, deadline, false, true); } catch { /* Leave only a complete owned lock or validated tombstone. */ }
         return { ok: false, reason: "corruption" };
@@ -462,15 +462,20 @@ export class FsAuthorityLedger implements AuthorityLedger {
     return true;
   }
 
-  private async cleanupRetiredLocks(deadline: number): Promise<void> {
+  private async cleanupRetiredLocks(deadline: number): Promise<boolean> {
+    let requiresRecovery = false;
     const entries = await readdir(this.root, { withFileTypes: true });
     for (const entry of entries) {
       if (!entry.name.startsWith(".authority-ledger-lock-")) continue;
       if (!RETIRED_LOCK.test(entry.name)) throw new LedgerCorruption("invalid retired lock name");
       const retired = await this.validateRetiredLockUntil(entry.name, deadline);
       if (!retired) continue;
+      const liveness = processLiveness(retired.owner.pid);
+      if (liveness === "unverifiable") throw new LedgerCorruption("retired lock owner liveness unverifiable");
+      if (liveness === "dead") requiresRecovery = true;
       await this.cleanupRetiredLock(retired, deadline);
     }
+    return requiresRecovery;
   }
 
   private async validateRetiredLock(name: string): Promise<RetiredLock> {
