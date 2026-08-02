@@ -58,7 +58,7 @@ function fixture(def = definition()) {
   const sourceRegistry = createSourceRegistry([{ tenant: "tenant_1", resolverId: "resolver_1", definitionDigest, projectionSchemaId: "projection/v1", readEndpointIds: ["read_1"], plan: refs => [{ endpointId: "read_1", opaqueHandle: refs.item }] }]);
   const sourceBundle = { v: "reelier.source-bundle/v1" as const, tenant: "tenant_1", definitionDigest, projectionSchemaId: "projection/v1", sourceIdentity: "source_1", triggerIdentity: "trigger_1", observedAt: "2026-01-15T00:00:00.000Z", rawDigest: "sha256:" + createHash("sha256").update(raw).digest("hex"), freshUntil: "2026-01-15T00:01:00.000Z", provenance: { resolverId: "resolver_1", endpointId: "read_1" }, claims: { grounded: [{ claimId: "message", projectionPointer: "/message" }], authored: [], unresolved: [] }, projection: { message: "world" } };
   const validatedSource = validateSourceBundle(sourceRegistry, { bundle: sourceBundle, rawResponse: raw, authority: { tenant: "tenant_1", definitionDigest, resolverId: "resolver_1", projectionSchemaId: "projection/v1", allowedReadEndpointIds: ["read_1"], authorizedProjectionPointers: ["/message"], requiredGroundedPointers: ["/message"] }, now });
-  return { packs, validatedContract, validatedSource, contract, sourceBundle };
+  return { packs, validatedContract, validatedSource, contract, sourceBundle, sourceRegistry, raw };
 }
 
 test("static pack registry refuses alias and definition-digest collisions", () => {
@@ -68,7 +68,13 @@ test("static pack registry refuses alias and definition-digest collisions", () =
 
 test("compilation is byte-identical, canonical, policy-bound, choice-bounded, and frozen", () => {
   const f = fixture();
-  const first = compileOutcome(f.packs, { contract: f.validatedContract, source: f.validatedSource, choices: { urgent: true }, now });
+  const originalDateNow = Date.now;
+  const originalRandom = Math.random;
+  Date.now = () => { throw new Error("ambient clock used"); };
+  Math.random = () => { throw new Error("ambient randomness used"); };
+  let first: ReturnType<typeof compileOutcome>;
+  try { first = compileOutcome(f.packs, { contract: f.validatedContract, source: f.validatedSource, choices: { urgent: true }, now }); }
+  finally { Date.now = originalDateNow; Math.random = originalRandom; }
   const second = compileOutcome(f.packs, { contract: f.validatedContract, source: f.validatedSource, choices: { urgent: true }, now });
   assert.equal(first.effectBytes.equals(second.effectBytes), true);
   assert.equal(first.effectDigest, second.effectDigest);
@@ -77,6 +83,10 @@ test("compilation is byte-identical, canonical, policy-bound, choice-bounded, an
   assert.equal(first.effect.query, "account=account_1&mode=send");
   assert.equal(Object.isFrozen(first.effect), true);
   assert.throws(() => compileOutcome(f.packs, { contract: f.validatedContract, source: f.validatedSource, choices: { recipient: "attacker" }, now }), /bounded choices/i);
+  f.contract.policyCommitment.jcsBase64 = authorityCanonicalBytes({ template: "Attacker {{message}}" }).toString("base64");
+  assert.equal(Buffer.from(compileOutcome(f.packs, { contract: f.validatedContract, source: f.validatedSource, choices: {}, now }).effect.bodyBase64, "base64").toString("utf8"), '{"message":"Hello world","urgent":false}');
+  const drifted = fixture(definition({ policySchemaId: "policy/v2" }));
+  assert.throws(() => compileOutcome(drifted.packs, { contract: drifted.validatedContract, source: drifted.validatedSource, choices: {}, now }), /policy schema drift/i);
 });
 
 test("compiler refuses unknown endpoint/risk and every malformed pack-emitted transport boundary", () => {
@@ -93,9 +103,16 @@ test("compiler refuses unknown endpoint/risk and every malformed pack-emitted tr
   }
 });
 
+test("compiler recomposes source authority against the selected contract", () => {
+  const f = fixture();
+  const broader = { ...f.sourceBundle, claims: { ...f.sourceBundle.claims, grounded: [...f.sourceBundle.claims.grounded, { claimId: "extra", projectionPointer: "/extra" }] }, projection: { ...f.sourceBundle.projection, extra: true } };
+  const source = validateSourceBundle(f.sourceRegistry, { bundle: broader, rawResponse: f.raw, authority: { tenant: "tenant_1", definitionDigest, resolverId: "resolver_1", projectionSchemaId: "projection/v1", allowedReadEndpointIds: ["read_1"], authorizedProjectionPointers: ["/message", "/extra"], requiredGroundedPointers: ["/message"] }, now });
+  assert.throws(() => compileOutcome(f.packs, { contract: f.validatedContract, source, choices: {}, now }), /projection exceeds contract authority/i);
+});
+
 test("semantic outcome keys are length-delimited, field-ordered, and use UTF-8 byte lengths", () => {
   const key = deriveSemanticOutcomeKey({ tenant: "ténant", contractDigest: "sha256:" + "0".repeat(64), definitionAlias: "définition", sourceIdentity: "source", triggerIdentity: "trigger" });
-  assert.equal(key, "sha256:19489f13cafeec1eb96b8204414d5302335ba7e9f3937e8e2211f6ca45a6d3bb");
+  assert.equal(key, "sha256:2a25254fcd69933350cdeaeeb2a66302ab7dcaadfc8f91a1cf4e71b466f37a36");
   assert.notEqual(
     deriveSemanticOutcomeKey({ tenant: "a", contractDigest: "bc", definitionAlias: "d", sourceIdentity: "e", triggerIdentity: "f" }),
     deriveSemanticOutcomeKey({ tenant: "ab", contractDigest: "c", definitionAlias: "d", sourceIdentity: "e", triggerIdentity: "f" }),

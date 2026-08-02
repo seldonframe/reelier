@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { generateKeyPairSync, type KeyObject } from "node:crypto";
 import { signAuthorityDigest } from "../../src/authority/crypto.js";
 import { authorityDigest } from "../../src/authority/wire.js";
+import type { DelegationGrant } from "../../src/authority/types.js";
 import { createTrustRoots } from "../../src/authority/trust.js";
 import { validateDelegationChain, validateContractAgainstDelegation, type StoredSignedGrant } from "../../src/authority/delegation.js";
 
@@ -11,7 +12,7 @@ const limits = { maxEffectsPerWindow: 10, windowSeconds: 3600, maxEffectsPerSour
 const constraints = { definitionAliases: ["definition_1", "definition_2"], audiences: ["requester_1", "requester_2"], connectorAccounts: [{ connectorId: "connector_1", accountId: "account_1" }], projectionPointers: ["/message", "/recipient"], riskClasses: ["message", "profile"], limits };
 const root = { v: "reelier.delegation-grant/v1" as const, tenant: "tenant_1", grantId: "root", parentDigest: null, sponsor: "sponsor_1", grantor: "operator_1", grantee: "delegate_1", issuedAt: "2026-01-01T00:00:00.000Z", expiresAt: "2026-02-01T00:00:00.000Z", constraints };
 
-function signed(grant: typeof root, signerId: string, privateKey: KeyObject): StoredSignedGrant {
+function signed(grant: DelegationGrant, signerId: string, privateKey: KeyObject): StoredSignedGrant {
   const digest = authorityDigest(grant);
   return { grant, digest, signerId, signature: signAuthorityDigest(privateKey, "delegation-grant", digest) };
 }
@@ -34,9 +35,9 @@ test("a root-first delegation chain validates linkage, principals, sponsor, tena
   assert.equal(chain.leafDigest, f.childSigned.digest);
   assert.equal(chain.leafGrantee, "gate_1");
 
-  const childMutations: [string, (child: typeof f.child) => typeof f.child][] = [
-    ["definition", c => ({ ...c, constraints: { ...c.constraints, definitionAliases: ["definition_2"] } })],
-    ["audience", c => ({ ...c, constraints: { ...c.constraints, audiences: ["requester_2"] } })],
+  const childMutations: [string, (child: typeof f.child) => DelegationGrant][] = [
+    ["definition", c => ({ ...c, constraints: { ...c.constraints, definitionAliases: ["definition_3"] } })],
+    ["audience", c => ({ ...c, constraints: { ...c.constraints, audiences: ["requester_3"] } })],
     ["connector", c => ({ ...c, constraints: { ...c.constraints, connectorAccounts: [{ connectorId: "connector_2", accountId: "account_1" }] } })],
     ["projection", c => ({ ...c, constraints: { ...c.constraints, projectionPointers: ["/recipient", "/extra"] } })],
     ["risk", c => ({ ...c, constraints: { ...c.constraints, riskClasses: ["profile", "unknown"] } })],
@@ -78,5 +79,5 @@ test("the contract must fit and bind the leaf grant in every delegated dimension
     ["definition", { alias: "definition_2" }], ["audience", { audiences: ["requester_2"] }], ["account", { accountId: "account_2" }],
     ["projection", { sourceAuthority: { authorizedProjectionPointers: ["/recipient"] } }], ["risk", { riskClasses: ["profile"] }],
     ["limits", { limits: { ...f.child.constraints.limits, maxBodyBytes: 4096 } }], ["validity", { validUntil: "2026-02-01T00:00:00.000Z" }],
-  ] as const) assert.throws(() => validateContractAgainstDelegation({ ...contract, ...amended }, chain), /leaf|tenant|sponsor|definition|audience|connector|projection|risk|limit|validity/i, label);
+  ] as const) assert.throws(() => validateContractAgainstDelegation({ ...contract, ...amended } as Parameters<typeof validateContractAgainstDelegation>[0], chain), /leaf|tenant|sponsor|definition|audience|connector|projection|risk|limit|validity/i, label);
 });

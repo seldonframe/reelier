@@ -25,7 +25,7 @@ test("source validation binds raw bytes, provenance, freshness, schemas, project
   assert.equal(validated.digest, authorityDigest(bundle));
   assert.equal(Object.isFrozen(validated.bundle), true);
 
-  const rejects: [string, typeof bundle, Buffer?][] = [
+  const rejects: [string, unknown][] = [
     ["raw", { ...bundle, rawDigest: "sha256:" + "0".repeat(64) }],
     ["stale", { ...bundle, freshUntil: "2026-01-14T00:00:00.000Z" }],
     ["observed", { ...bundle, observedAt: "2026-01-16T00:00:00.000Z" }],
@@ -41,4 +41,6 @@ test("source validation binds raw bytes, provenance, freshness, schemas, project
   ];
   for (const [label, candidate] of rejects) assert.throws(() => validateSourceBundle(registry, { bundle: candidate, rawResponse: raw, authority, now: new Date("2026-01-15T00:00:30.000Z") }), /raw digest|stale|observed|tenant|resolver|endpoint|definition|schema|unauthorized|grounded|required/i, label);
   assert.throws(() => validateSourceBundle(registry, { bundle: { ...bundle, claims: { grounded: [{ claimId: "escaped", projectionPointer: "/a~0b/missing" }], authored: [], unresolved: [] } }, rawResponse: raw, authority, now: new Date("2026-01-15T00:00:30.000Z") }), /own path|required/i);
+  assert.throws(() => validateSourceBundle(registry, { bundle: { ...bundle, claims: { grounded: bundle.claims.grounded, authored: [{ claimId: "copy", projectionPointer: "/message" }], unresolved: [] } }, rawResponse: raw, authority, now: new Date("2026-01-15T00:00:30.000Z") }), /more than one class/i);
+  assert.throws(() => validateSourceBundle(registry, { bundle: { ...bundle, claims: { grounded: bundle.claims.grounded, authored: [{ claimId: "message", projectionPointer: "/authored" }], unresolved: [] } }, rawResponse: raw, authority: { ...authority, authorizedProjectionPointers: [...authority.authorizedProjectionPointers, "/authored"] }, now: new Date("2026-01-15T00:00:30.000Z") }), /claim id.*unique/i);
 });
