@@ -121,22 +121,36 @@ staging directory
 where `host-digest` is SHA-256 over the UTF-8 bytes of the exact canonical owner hostname, without a
 `sha256:` prefix. The name therefore carries same-host provenance before any owner bytes exist.
 The publisher creates that real directory exclusively, creates a real regular single-link
-`owner.json` exclusively, writes its complete canonical owner, file-syncs it, syncs the staging
-directory, atomically renames the whole staging directory to `lock`, and syncs the ledger root. The
+`owner.json` exclusively, writes its complete canonical owner with a progress-checked write-all loop,
+file-syncs it, rereads and verifies the exact canonical bytes, syncs the staging directory, rereads
+and verifies again, atomically renames the whole staging directory to `lock`, rereads and verifies the
+published owner, syncs the ledger root, and rereads and verifies once more before any callback. A zero
+or out-of-range `bytesWritten`, a changed object/type/link count, or any byte mismatch fails closed and
+preserves the untrusted artifact; no callback runs. The
 shared `lock` path is never publication staging and is therefore never ownerless. The exact durability
 fault topology is closed: after stage creation through stage-directory sync, `lock` is absent and
 exactly one publication stage exists; that stage is respectively an empty directory, contains a
-zero-byte `owner.json`, contains a nonempty non-JSON partial owner, or contains the complete canonical
+zero-byte `owner.json`, contains a nonempty strict-prefix partial owner, or contains the complete canonical
 owner after owner-file sync and stage-directory sync. After whole-directory rename and after root sync,
 `lock` contains the complete canonical owner and no publication stage remains. A live same-host
 publisher's byte-identical empty, zero-byte-owner, partial-owner, or complete-owner stage is busy and
 preserved. After its named same-host PID is proved dead, each of those exact states is recoverable by a
 successor, but only the creator may publish its own stage: a successor never renames another owner's
-stage to `lock`. Foreign-host or unverifiable stage provenance, malformed or mismatched owner bytes,
+stage to `lock`. `empty` means no owner file; `zero` means an exact zero-byte owner file; `partial`
+means only a nonempty proper byte prefix of the uniquely reconstructed canonical
+`{ host, nonce, pid, v: 1 }` owner committed by the stage name. `complete` means only those exact full
+canonical bytes. Arbitrary non-JSON bytes, valid JSON of another shape or value, suffixes, trailing or
+extra bytes, and all non-prefix truncations are corruption and remain byte-identical. Foreign-host or unverifiable stage provenance, malformed or mismatched owner bytes,
 links/reparse points, hard-linked owner files, and extra contents fail closed without target mutation.
 Multiple stages with distinct valid host/PID identities may coexist as real contenders and are
 independently validated; two stages for the same host and PID but different nonces are ambiguous and
-fail closed. Acquisition is bounded. A live same-host owner is never evicted because time elapsed; a
+fail closed. Every publication artifact name, type, link count, byte state, binding, and owner liveness
+is classified before any candidate is mutated. A corrupt, transiently unreadable, or unverifiable
+artifact prevents deletion of every otherwise recoverable stage. Mutation candidates are revalidated
+byte-for-byte immediately before creator-only cleanup or dead-owner cleanup. Creator cleanup may remove
+only its exact name/host/PID/nonce/type/single-link object and exact expected empty, zero, strict-prefix,
+or complete bytes; any replacement is preserved and refuses. It never removes another live stage.
+Acquisition is bounded. A live same-host owner is never evicted because time elapsed; a
 foreign, corrupt, or otherwise unverifiable owner refuses. An abandoned lock is reclaimed only after
 same-host process liveness proves that its recorded PID is dead and the owner bytes remain identical.
 Reclaim and release atomically rename the whole lock directory to an exact PID-and-nonce-bound
@@ -202,6 +216,12 @@ not reuse a nearly expired acquisition deadline. Lock acquisition, retirement cl
 Windows `decisions/`-subtree audit retries use monotonic deadlines. They never consult the
 provider/authority semantic `now`, which remains reserved for durable high-water, validity, and
 lifecycle decisions.
+An active lock that disappears between non-following metadata and content inspection, or a publication
+stage that disappears between enumeration and validation, invalidates the whole acquisition snapshot;
+the bounded scan restarts and never interprets the partial view. Transient Windows `EPERM`, `EACCES`,
+and `EBUSY` at either boundary retry against the same monotonic acquisition deadline. Persistent
+failure refuses as corruption without mutating any artifact. The default acquisition timeout remains
+30,000 milliseconds; tests may select a smaller valid timeout without changing that default.
 
 The only lifecycle is `issued -> reserved -> dispatched -> acknowledged | definitive-failure |
 ambiguous`, with `acknowledged | ambiguous -> reconciled`. Transitions are durable compare-and-transition
