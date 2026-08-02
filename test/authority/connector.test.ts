@@ -50,6 +50,8 @@ test("trust, definition, resolver, and signature commitments bind sorted closed 
   } satisfies StaticPackDefinition;
   const packs = createStaticPackRegistry([definition]);
   assert.match(definitionRegistrationDigest(packs, "definition_1"), /^sha256:(?!0{64}$)[0-9a-f]{64}$/);
+  assert.throws(() => createStaticPackRegistry([{ ...definition, credential: "secret" } as never]), /closed|field|property/i);
+  assert.throws(() => createStaticPackRegistry([{ ...definition, definitionDigest: sha("0") }]), /zero|digest/i);
 
   const resolver = {
     tenant: "tenant_1", resolverId: "resolver_1", definitionDigest: sha("2"), projectionSchemaId: "projection/v1", readEndpointIds: ["read_z", "read_a"], maxFreshnessSeconds: 60,
@@ -58,6 +60,8 @@ test("trust, definition, resolver, and signature commitments bind sorted closed 
   const sources = createSourceRegistry([resolver]);
   assert.match(sourceResolverRegistrationDigest(sources, "tenant_1", "resolver_1"), /^sha256:(?!0{64}$)[0-9a-f]{64}$/);
   assert.throws(() => sourceResolverRegistrationDigest(sources, "tenant_2", "resolver_1"), /missing|unknown/i);
+  assert.throws(() => createSourceRegistry([{ ...resolver, credential: "secret" } as never]), /closed|field|property/i);
+  assert.throws(() => createSourceRegistry([{ ...resolver, definitionDigest: sha("0") }]), /zero|digest/i);
 
   assert.match(authoritySignatureDigest({ alg: "ed25519", sig: Buffer.alloc(64, 7).toString("base64") }), /^sha256:(?!0{64}$)[0-9a-f]{64}$/);
   assert.throws(() => authoritySignatureDigest({ alg: "ed25519", sig: "AA==" }), /64|signature/i);
