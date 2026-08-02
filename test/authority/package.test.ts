@@ -4,10 +4,19 @@ import { existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 
-test("public production export parses a frozen object against packaged schemas", async () => {
+test("public production export parses all amended standing-authority objects against packaged schemas", async () => {
   execFileSync(process.execPath, ["./dist/authority/wire.js"], { cwd: process.cwd() });
   const authority = await import("reelier/authority");
   const request = { v: "reelier.outcome-request/v1", requestId: "request_1", sourceRefs: { appointment: "ref_1" }, choices: {} };
   assert.deepEqual(authority.parseAuthorityWire("outcome-request", request), request);
-  assert.ok(existsSync(path.join(process.cwd(), "dist", "authority", "schemas", "outcome-request.schema.json")));
+  const digest = "sha256:" + "0".repeat(64);
+  const limits = { maxEffectsPerWindow: 1, windowSeconds: 60, maxEffectsPerSourceTrigger: 1, maxBodyBytes: 1024 };
+  const policy = Buffer.from("{}", "utf8");
+  const contract = { v: "reelier.outcome-contract/v1", tenant: "tenant_1", alias: "definition_1", contractId: "contract_1", validFrom: "2026-01-01T00:00:00.000Z", validUntil: "2026-02-01T00:00:00.000Z", packDigest: digest, definitionDigest: digest, sponsor: "sponsor_1", audiences: ["requester_1"], delegationGrantDigest: digest, connectorId: "connector_1", accountId: "account_1", sourceAuthority: { resolverId: "resolver_1", projectionSchemaId: "projection/v1", allowedReadEndpointIds: ["read_1"], authorizedProjectionPointers: ["/x"] }, riskClasses: ["message"], limits, policyCommitment: { schemaId: "policy/v1", jcsBase64: policy.toString("base64"), digest: "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a" } };
+  const grant = { v: "reelier.delegation-grant/v1", tenant: "tenant_1", grantId: "grant_1", parentDigest: null, sponsor: "sponsor_1", grantor: "operator_1", grantee: "gate_1", issuedAt: "2026-01-01T00:00:00.000Z", expiresAt: "2026-02-01T00:00:00.000Z", constraints: { definitionAliases: ["definition_1"], audiences: ["requester_1"], connectorAccounts: [{ connectorId: "connector_1", accountId: "account_1" }], projectionPointers: ["/x"], riskClasses: ["message"], limits } };
+  const source = { v: "reelier.source-bundle/v1", tenant: "tenant_1", definitionDigest: digest, projectionSchemaId: "projection/v1", sourceIdentity: "source_1", triggerIdentity: "trigger_1", observedAt: "2026-01-01T00:00:00.000Z", rawDigest: digest, freshUntil: "2026-01-01T00:01:00.000Z", provenance: { resolverId: "resolver_1", endpointId: "read_1" }, claims: { grounded: [{ claimId: "x", projectionPointer: "/x" }], authored: [], unresolved: [] }, projection: { x: 1 } };
+  assert.deepEqual(authority.parseAuthorityWire("outcome-contract", contract), contract);
+  assert.deepEqual(authority.parseAuthorityWire("delegation-grant", grant), grant);
+  assert.deepEqual(authority.parseAuthorityWire("source-bundle", source), source);
+  for (const kind of ["outcome-contract", "delegation-grant", "source-bundle"]) assert.ok(existsSync(path.join(process.cwd(), "dist", "authority", "schemas", `${kind}.schema.json`)));
 });

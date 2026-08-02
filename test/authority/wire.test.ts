@@ -12,6 +12,29 @@ import {
 import type { AuthorityKind } from "../../src/authority/types.js";
 import { evaluateVerifyClaims } from "../../src/verify.js";
 
+const zeroDigest = "sha256:" + "0".repeat(64);
+const policyBytes = Buffer.from('{"channel":"sms","template":"Appointment {{time}}"}', "utf8");
+const limits = { maxEffectsPerWindow: 10, windowSeconds: 3600, maxEffectsPerSourceTrigger: 1, maxBodyBytes: 4096 };
+const constraints = {
+  definitionAliases: ["definition_1"], audiences: ["requester_1"],
+  connectorAccounts: [{ connectorId: "highlevel", accountId: "location_1" }],
+  projectionPointers: ["/appointment/startTime", "/contact/phone"], riskClasses: ["message"], limits,
+};
+const contract = {
+  v: "reelier.outcome-contract/v1", tenant: "tenant_1", alias: "definition_1", contractId: "contract_1",
+  validFrom: "2026-01-01T00:00:00.000Z", validUntil: "2026-02-01T00:00:00.000Z", packDigest: zeroDigest,
+  definitionDigest: zeroDigest, sponsor: "sponsor_1", audiences: ["requester_1"], delegationGrantDigest: zeroDigest,
+  connectorId: "highlevel", accountId: "location_1",
+  sourceAuthority: { resolverId: "highlevel_appointment", projectionSchemaId: "highlevel.appointment-reminder/v1", allowedReadEndpointIds: ["appointments.get", "contacts.get"], authorizedProjectionPointers: ["/appointment/startTime", "/contact/phone"] },
+  riskClasses: ["message"], limits,
+  policyCommitment: { schemaId: "highlevel.sms-reminder-policy/v1", jcsBase64: policyBytes.toString("base64"), digest: "sha256:" + createRequire(import.meta.url)("node:crypto").createHash("sha256").update(policyBytes).digest("hex") },
+};
+const rootGrant = {
+  v: "reelier.delegation-grant/v1", tenant: "tenant_1", grantId: "grant_root", parentDigest: null,
+  sponsor: "sponsor_1", grantor: "operator_1", grantee: "gate_1", issuedAt: "2026-01-01T00:00:00.000Z",
+  expiresAt: "2026-02-01T00:00:00.000Z", constraints,
+};
+
 const request = {
   v: "reelier.outcome-request/v1",
   requestId: "req_01HZY3Y7V6K8M4Q2P9N5R1T0X",
@@ -65,9 +88,43 @@ test("TransportEffect seals headers, query, base64 bytes, preconditions, and rec
   }
 });
 
-test("SourceBundle provenance and AuthorityReceipt fixed evidence claims are closed", () => {
-  const source = { v: "reelier.source-bundle/v1", tenant: "tenant_1", sourceIdentity: "source_1", triggerIdentity: "trigger_1", observedAt: "2026-01-01T00:00:00.000Z", rawDigest: "sha256:" + "0".repeat(64), freshUntil: "2026-01-01T00:01:00.000Z", provenance: { resolverId: "resolver_1", endpointId: "read_1" }, claims: { grounded: ["x"], authored: [], unresolved: [] }, projection: {} };
+test("OutcomeContract binds the complete signed standing authority and validates its policy commitment", () => {
+  assert.deepEqual(parseAuthorityWire("outcome-contract", contract), contract);
+  for (const field of ["sponsor", "audiences", "delegationGrantDigest", "connectorId", "accountId", "sourceAuthority", "riskClasses", "limits", "policyCommitment"] as const) {
+    const { [field]: _, ...missing } = contract;
+    assert.throws(() => parseAuthorityWire("outcome-contract", missing), /required property/i, field);
+  }
+  assert.throws(() => parseAuthorityWire("outcome-contract", { ...contract, audiences: [] }), /fewer than 1/i);
+  assert.throws(() => parseAuthorityWire("outcome-contract", { ...contract, audiences: ["requester_1", "requester_1"] }), /unique items/i);
+  assert.throws(() => parseAuthorityWire("outcome-contract", { ...contract, sourceAuthority: { ...contract.sourceAuthority, authorizedProjectionPointers: ["not/a/pointer"] } }), /pattern/i);
+  assert.throws(() => parseAuthorityWire("outcome-contract", { ...contract, limits: { ...limits, maxBodyBytes: 0 } }), /must be >= 1/i);
+  assert.throws(() => parseAuthorityWire("outcome-contract", { ...contract, policyCommitment: { ...contract.policyCommitment, jcsBase64: contract.policyCommitment.jcsBase64.replace(/=$/, "") } }), /base64/i);
+  const nonJson = Buffer.from("not json", "utf8").toString("base64");
+  assert.throws(() => parseAuthorityWire("outcome-contract", { ...contract, policyCommitment: { ...contract.policyCommitment, jcsBase64: nonJson } }), /policy commitment.*JSON/i);
+  const nonJcs = Buffer.from('{"template":"Appointment {{time}}", "channel":"sms"}', "utf8").toString("base64");
+  assert.throws(() => parseAuthorityWire("outcome-contract", { ...contract, policyCommitment: { ...contract.policyCommitment, jcsBase64: nonJcs } }), /policy commitment.*JCS/i);
+  assert.throws(() => parseAuthorityWire("outcome-contract", { ...contract, policyCommitment: { ...contract.policyCommitment, digest: "sha256:" + "1".repeat(64) } }), /policy commitment.*digest/i);
+});
+
+test("DelegationGrant has explicit root or child parent and closed attenuable constraints", () => {
+  assert.deepEqual(parseAuthorityWire("delegation-grant", rootGrant), rootGrant);
+  assert.deepEqual(parseAuthorityWire("delegation-grant", { ...rootGrant, grantId: "grant_child", parentDigest: zeroDigest }), { ...rootGrant, grantId: "grant_child", parentDigest: zeroDigest });
+  assert.throws(() => parseAuthorityWire("delegation-grant", { ...rootGrant, parentDigest: "" }), /must match a schema in anyOf/i);
+  assert.throws(() => parseAuthorityWire("delegation-grant", { ...rootGrant, constraints: { ...constraints, definitionAliases: [] } }), /fewer than 1/i);
+  assert.throws(() => parseAuthorityWire("delegation-grant", { ...rootGrant, constraints: { ...constraints, audiences: ["requester_1", "requester_1"] } }), /unique items/i);
+  assert.throws(() => parseAuthorityWire("delegation-grant", { ...rootGrant, constraints: { ...constraints, wildcard: true } }), /additional properties/i);
+});
+
+test("SourceBundle claim entries bind disjoint canonical projection paths", () => {
+  const source = { v: "reelier.source-bundle/v1", tenant: "tenant_1", definitionDigest: zeroDigest, projectionSchemaId: "highlevel.appointment-reminder/v1", sourceIdentity: "source_1", triggerIdentity: "trigger_1", observedAt: "2026-01-01T00:00:00.000Z", rawDigest: zeroDigest, freshUntil: "2026-01-01T00:01:00.000Z", provenance: { resolverId: "resolver_1", endpointId: "read_1" }, claims: { grounded: [{ claimId: "appointment_time", projectionPointer: "/appointment/startTime" }], authored: [], unresolved: [] }, projection: { appointment: { startTime: "2026-01-02T12:00:00.000Z" } } };
   assert.deepEqual(parseAuthorityWire("source-bundle", source), source);
+  assert.throws(() => parseAuthorityWire("source-bundle", { ...source, claims: { ...source.claims, authored: [{ claimId: "copy", projectionPointer: "/appointment/startTime" }] } }), /projection pointer.*more than one class/i);
+  assert.throws(() => parseAuthorityWire("source-bundle", { ...source, claims: { ...source.claims, authored: [{ claimId: "appointment_time", projectionPointer: "/copy" }] } }), /claim id.*unique/i);
+  assert.throws(() => parseAuthorityWire("source-bundle", { ...source, claims: { ...source.claims, grounded: [{ claimId: "appointment_time", projectionPointer: "appointment/startTime" }] } }), /pattern/i);
+  assert.throws(() => parseAuthorityWire("source-bundle", { ...source, claims: { ...source.claims, grounded: [{ claimId: "missing", projectionPointer: "/appointment/missing" }] } }), /projection pointer.*own path/i);
+});
+
+test("AuthorityReceipt fixed evidence claims are closed", () => {
   const claims = { authorization: "verified", sourceCompleteness: "verified", dispatch: "verified", providerAcknowledgment: "unchecked", reconciliation: "absent", topology: "unchecked", completeness: "unchecked" };
   assert.deepEqual(parseAuthorityWire("authority-receipt", { v: "reelier.authority-receipt/v1", receiptId: "receipt_1", gateEventDigest: "sha256:" + "0".repeat(64), claims }), { v: "reelier.authority-receipt/v1", receiptId: "receipt_1", gateEventDigest: "sha256:" + "0".repeat(64), claims });
   assert.throws(() => parseAuthorityWire("authority-receipt", { v: "reelier.authority-receipt/v1", receiptId: "receipt_1", gateEventDigest: "sha256:" + "0".repeat(64), claims: { ...claims, safe: "verified" } }), /additional properties/i);

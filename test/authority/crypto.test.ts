@@ -4,6 +4,7 @@ import { createPublicKey, generateKeyPairSync } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { signAuthorityDigest, verifyAuthoritySignature } from "../../src/authority/crypto.js";
+import { authorityDigest } from "../../src/authority/wire.js";
 
 test("authority signatures are purpose-bound and refuse tampering", () => {
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
@@ -24,4 +25,17 @@ MCowBQYDK2VwAyEAa5QRvL1tMishctZLJ/isDZfQF25TUiR0Af0u70V2J6Q=
 -----END PUBLIC KEY-----`);
   const vectors = JSON.parse(readFileSync(path.join(process.cwd(), "contract/authority/v1/golden-vectors.json"), "utf8")) as Record<string, { digest: string; signature: { alg: "ed25519"; sig: string } }>;
   for (const [purpose, vector] of Object.entries(vectors)) assert.equal(verifyAuthoritySignature(publicKey, purpose as never, vector.digest, vector.signature), true, purpose);
+});
+
+test("standing-authority signatures bind sponsor, audience, target, projection, limits, and policy bytes", () => {
+  const publicKey = createPublicKey(`-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAa5QRvL1tMishctZLJ/isDZfQF25TUiR0Af0u70V2J6Q=
+-----END PUBLIC KEY-----`);
+  const vectors = JSON.parse(readFileSync(path.join(process.cwd(), "contract/authority/v1/golden-vectors.json"), "utf8")) as Record<string, { digest: string; signature: { alg: "ed25519"; sig: string }; value: Record<string, unknown> }>;
+  const vector = vectors["outcome-contract"];
+  for (const [field, value] of [["sponsor", "sponsor_2"], ["audiences", ["requester_2"]], ["accountId", "location_2"], ["sourceAuthority", { ...(vector.value.sourceAuthority as object), authorizedProjectionPointers: ["/other"] }], ["limits", { ...(vector.value.limits as object), maxBodyBytes: 1 }], ["policyCommitment", { ...(vector.value.policyCommitment as object), schemaId: "other/v1" }]] as const) {
+    const tamperedDigest = authorityDigest({ ...vector.value, [field]: value });
+    assert.notEqual(tamperedDigest, vector.digest, field);
+    assert.equal(verifyAuthoritySignature(publicKey, "outcome-contract", tamperedDigest, vector.signature), false, field);
+  }
 });
