@@ -1,10 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile, mkdir, readFile, readdir, symlink } from "node:fs/promises";
+import { mkdtemp, rm, writeFile, mkdir, readFile, readdir, rename, symlink, unlink } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
+import { authorityCanonicalBytes } from "../../src/authority/wire.js";
 import {
   CAPABILITY_LIFETIME_MS,
   type LedgerState,
@@ -22,15 +24,12 @@ const t0 = Date.parse("2026-08-02T12:00:00.000Z");
 const digest = (character: string) => `sha256:${character.repeat(64)}`;
 
 function intent(overrides: Partial<ReservationIntent> = {}): ReservationIntent {
-  return {
+  const scalar = {
     tenant: "tenant_1",
     requester: "requester_1",
     requestId: "request_1",
-    canonicalRequestDigest: digest("1"),
-    canonicalRequestBytes: Buffer.from('{"requestId":"request_1"}', "utf8"),
+    requestKey: digest("7"),
     capabilityId: "capability_1",
-    capabilityDigest: digest("2"),
-    capabilityBytes: Buffer.from('{"capabilityId":"capability_1"}', "utf8"),
     outcomeKey: digest("3"),
     effectDigest: digest("4"),
     issuedAt: new Date(t0).toISOString(),
@@ -41,6 +40,27 @@ function intent(overrides: Partial<ReservationIntent> = {}): ReservationIntent {
     ],
     ...overrides,
   };
+  const canonicalRequestBytes = overrides.canonicalRequestBytes === undefined
+    ? requestWireBytes(scalar.requestId)
+    : Buffer.from(overrides.canonicalRequestBytes);
+  const capabilityBytes = overrides.capabilityBytes === undefined
+    ? capabilityWireBytes(scalar)
+    : Buffer.from(overrides.capabilityBytes);
+  return {
+    ...scalar,
+    canonicalRequestBytes,
+    capabilityBytes,
+    canonicalRequestDigest: `sha256:${createHash("sha256").update(canonicalRequestBytes).digest("hex")}`,
+    capabilityDigest: `sha256:${createHash("sha256").update(capabilityBytes).digest("hex")}`,
+  };
+}
+
+function requestWireBytes(requestId: string, sourceRef = "ref_1"): Buffer {
+  return authorityCanonicalBytes({ v: "reelier.outcome-request/v1", requestId, sourceRefs: { source: sourceRef }, choices: {} });
+}
+
+function capabilityWireBytes(value: Pick<ReservationIntent, "capabilityId" | "requestKey" | "outcomeKey" | "effectDigest" | "issuedAt" | "expiresAt">): Buffer {
+  return authorityCanonicalBytes({ v: "reelier.compiled-capability/v1", capabilityId: value.capabilityId, requestKey: value.requestKey, outcomeKey: value.outcomeKey, effectDigest: value.effectDigest, issuedAt: value.issuedAt, expiresAt: value.expiresAt });
 }
 
 async function tempRoot(): Promise<string> {
@@ -82,7 +102,7 @@ test("100 real processes converge on one committed reservation and one dispatch 
   await withRoot(async root => {
     const results = await Promise.all(Array.from({ length: 100 }, () => spawnReserve(root, intent())));
     const successes = results as Array<{ ok: boolean; status: string; dispatchEligible: boolean; reservation: { reservationId: string } }>;
-    assert.equal(successes.every(result => result.ok), true);
+    assert.equal(successes.every(result => result.ok), true, JSON.stringify(successes.filter(result => !result.ok)));
     assert.equal(new Set(successes.map(result => result.reservation.reservationId)).size, 1);
     assert.equal(successes.filter(result => result.dispatchEligible).length, 1);
     const recovered = await new FsAuthorityLedger(root, { now: () => t0 }).recover();
@@ -98,34 +118,92 @@ test("cross-process collisions use ingress, semantic, capability, then limit pre
     assert.equal(identical[0].reservation.reservationId, identical[1].reservation.reservationId);
 
     const requestConflict = await spawnReserve(root, intent({
-      canonicalRequestDigest: digest("7"),
-      canonicalRequestBytes: Buffer.from("different"),
+      canonicalRequestBytes: requestWireBytes("request_1", "different_ref"),
       outcomeKey: digest("8"),
       capabilityId: "capability_2",
-      capabilityDigest: digest("9"),
-      capabilityBytes: Buffer.from("capability-2"),
     })) as { ok: boolean; reason: string };
     assert.deepEqual({ ok: requestConflict.ok, reason: requestConflict.reason }, { ok: false, reason: "idempotency-conflict" });
 
     const semantic = await spawnReserve(root, intent({
-      requestId: "request_2", canonicalRequestDigest: digest("a"), canonicalRequestBytes: Buffer.from("request-2"),
-      capabilityId: "capability_3", capabilityDigest: digest("b"), capabilityBytes: Buffer.from("capability-3"),
+      requestId: "request_2",
+      capabilityId: "capability_3",
     })) as { ok: boolean; reason: string };
     assert.deepEqual({ ok: semantic.ok, reason: semantic.reason }, { ok: false, reason: "semantic-duplicate" });
 
     const capability = await spawnReserve(root, intent({
-      requestId: "request_3", canonicalRequestDigest: digest("c"), canonicalRequestBytes: Buffer.from("request-3"),
-      outcomeKey: digest("d"), capabilityDigest: digest("e"), capabilityBytes: Buffer.from("changed-capability"),
+      requestId: "request_3",
+      outcomeKey: digest("d"),
     })) as { ok: boolean; reason: string };
     assert.deepEqual({ ok: capability.ok, reason: capability.reason }, { ok: false, reason: "capability-integrity" });
 
     const limited = await Promise.all(["4", "5"].map((suffix, index) => spawnReserve(root, intent({
-      requestId: `request_${suffix}`, canonicalRequestDigest: digest(index ? "f" : "9"), canonicalRequestBytes: Buffer.from(`request-${suffix}`),
-      outcomeKey: digest(index ? "8" : "7"), capabilityId: `capability_${suffix}`, capabilityDigest: digest(index ? "6" : "5"), capabilityBytes: Buffer.from(`capability-${suffix}`),
+      requestId: `request_${suffix}`,
+      outcomeKey: digest(index ? "8" : "7"), capabilityId: `capability_${suffix}`,
       limitSlots: [{ key: digest("f"), maximum: 1 }],
     })))) as Array<{ ok: boolean; reason?: string }>;
     assert.equal(limited.filter(result => result.ok).length, 1);
     assert.deepEqual(limited.find(result => !result.ok)?.reason, "limit-exceeded");
+  });
+});
+
+test("a caller cannot widen an already committed fixed-window maximum", async () => {
+  await withRoot(async root => {
+    const ledger = new FsAuthorityLedger(root, { now: () => t0 });
+    const shared = digest("f");
+    assert.equal((await ledger.reserve(intent({ limitSlots: [{ key: shared, maximum: 1 }] }))).ok, true);
+    const widened = await ledger.reserve(intent({
+      requestId: "request_widen",
+      outcomeKey: digest("e"), capabilityId: "capability_widen",
+      limitSlots: [{ key: shared, maximum: 100 }],
+    }));
+    assert.deepEqual(widened, { ok: false, reason: "limit-exceeded" });
+  });
+});
+
+test("identical ingress bytes with a different transaction digest reuse the committed reservation without dispatch eligibility", async () => {
+  await withRoot(async root => {
+    const ledger = new FsAuthorityLedger(root, { now: () => t0 });
+    const first = await ledger.reserve(intent());
+    assert.equal(first.ok, true);
+    if (!first.ok) return;
+    const divergent = intent({
+      capabilityId: "different_capability",
+      outcomeKey: digest("e"),
+      effectDigest: digest("f"),
+    });
+    const retry = await ledger.reserve(divergent);
+    assert.equal(retry.ok, true);
+    if (!retry.ok) return;
+    assert.equal(retry.status, "existing");
+    assert.equal(retry.dispatchEligible, false);
+    assert.equal(retry.reservation.reservationId, first.reservation.reservationId);
+    assert.deepEqual(await ledger.reserve(divergent), retry, "the redundant transaction resolution must be durable");
+    const recovered = await ledger.recover();
+    assert.equal(recovered.ok, true);
+    if (recovered.ok) assert.equal(recovered.reservations.length, 1);
+  });
+});
+
+test("reservation scalar identities must equal the closed canonical request and capability preimages", async () => {
+  const mutations: Array<[string, (value: ReservationIntent) => ReservationIntent]> = [
+    ["requestId", value => ({ ...value, requestId: "detached_request" })],
+    ["requestKey", value => ({ ...value, requestKey: digest("8") })],
+    ["capabilityId", value => ({ ...value, capabilityId: "detached_capability" })],
+    ["outcomeKey", value => ({ ...value, outcomeKey: digest("8") })],
+    ["effectDigest", value => ({ ...value, effectDigest: digest("8") })],
+    ["issuedAt", value => ({ ...value, issuedAt: new Date(t0 + 1).toISOString(), expiresAt: new Date(t0 + CAPABILITY_LIFETIME_MS + 1).toISOString() })],
+    ["expiresAt", value => ({ ...value, issuedAt: new Date(t0 - 1).toISOString(), expiresAt: new Date(t0 + CAPABILITY_LIFETIME_MS - 1).toISOString() })],
+  ];
+  for (const [field, mutate] of mutations) await withRoot(async root => {
+    assert.deepEqual(await new FsAuthorityLedger(root, { now: () => t0 }).reserve(mutate(intent())), { ok: false, reason: "integrity-failure" }, field);
+  });
+  await withRoot(async root => {
+    const noncanonicalRequest = Buffer.from(JSON.stringify({ requestId: "request_1", v: "reelier.outcome-request/v1", sourceRefs: { source: "ref_1" }, choices: {} }));
+    assert.deepEqual(await new FsAuthorityLedger(root, { now: () => t0 }).reserve(intent({ canonicalRequestBytes: noncanonicalRequest })), { ok: false, reason: "integrity-failure" });
+  });
+  await withRoot(async root => {
+    const extraCapability = authorityCanonicalBytes({ v: "reelier.compiled-capability/v1", capabilityId: "capability_1", requestKey: digest("7"), outcomeKey: digest("3"), effectDigest: digest("4"), issuedAt: new Date(t0).toISOString(), expiresAt: new Date(t0 + CAPABILITY_LIFETIME_MS).toISOString(), extra: true });
+    assert.deepEqual(await new FsAuthorityLedger(root, { now: () => t0 }).reserve(intent({ capabilityBytes: extraCapability })), { ok: false, reason: "integrity-failure" });
   });
 });
 
@@ -137,6 +215,9 @@ test("lifetime boundaries and monotonic wall-clock high-water are exact", async 
     now = t0;
     const reserved = await ledger.reserve(intent());
     assert.equal(reserved.ok, true);
+    if (!reserved.ok) return;
+    now = t0 + CAPABILITY_LIFETIME_MS;
+    assert.deepEqual(await ledger.transition(reserved.reservation.reservationId, "reserved", { to: "dispatched", at: new Date(now).toISOString() }), { ok: false, reason: "expired" });
     now = t0 - 1;
     assert.deepEqual(await ledger.reserve(intent({ requestId: "rollback" })), { ok: false, reason: "clock-rollback" });
     now = t0;
@@ -165,10 +246,10 @@ test("transition is durable compare-and-transition over the exact legal graph", 
     assert.equal((await ledger.getReservation(id))?.state, "reconciled");
   });
 
-  const terminalTargets: LedgerState[] = ["acknowledged", "definitive-failure", "ambiguous"];
+  const terminalTargets = ["acknowledged", "definitive-failure", "ambiguous"] as const;
   for (const target of terminalTargets) await withRoot(async root => {
     const ledger = new FsAuthorityLedger(root, { now: () => t0 });
-    const created = await ledger.reserve(intent({ requestId: `for_${target}`, canonicalRequestBytes: Buffer.from(target) }));
+    const created = await ledger.reserve(intent({ requestId: `for_${target}` }));
     assert.equal(created.ok, true);
     if (!created.ok) return;
     const id = created.reservation.reservationId;
@@ -192,8 +273,10 @@ test("recovery turns a durable dispatched reservation without a result into ambi
 
 test("caller-owned bytes and returned snapshots are detached and immutable", async () => {
   await withRoot(async root => {
-    const requestBytes = Buffer.from("original-request");
-    const capabilityBytes = Buffer.from("original-capability");
+    const requestBytes = requestWireBytes("request_1");
+    const capabilityBytes = capabilityWireBytes(intent());
+    const requestBase64 = requestBytes.toString("base64");
+    const capabilityBase64 = capabilityBytes.toString("base64");
     const slots = [{ key: digest("5"), maximum: 2 }];
     const ledger = new FsAuthorityLedger(root, { now: () => t0 });
     const created = await ledger.reserve(intent({ canonicalRequestBytes: requestBytes, capabilityBytes, limitSlots: slots }));
@@ -201,8 +284,8 @@ test("caller-owned bytes and returned snapshots are detached and immutable", asy
     if (!created.ok) return;
     requestBytes.fill(0); capabilityBytes.fill(0); slots[0].maximum = 999;
     const reread = await ledger.getReservation(created.reservation.reservationId);
-    assert.equal(reread?.intent.canonicalRequestBase64, Buffer.from("original-request").toString("base64"));
-    assert.equal(reread?.intent.capabilityBase64, Buffer.from("original-capability").toString("base64"));
+    assert.equal(reread?.intent.canonicalRequestBase64, requestBase64);
+    assert.equal(reread?.intent.capabilityBase64, capabilityBase64);
     assert.equal(reread?.intent.limitSlots[0].maximum, 2);
     assert.equal(Object.isFrozen(reread), true);
     assert.equal(Object.isFrozen(reread?.intent.limitSlots), true);
@@ -274,6 +357,33 @@ test("corruption, truncation, journal gaps, digest mismatch, traversal, and syml
     assert.deepEqual(await new FsAuthorityLedger(root, { now: () => t0 }).recover(), { ok: false, reason: "corruption" });
   });
   await withRoot(async root => {
+    const ledger = new FsAuthorityLedger(root, { now: () => t0 });
+    assert.equal((await ledger.reserve(intent())).ok, true);
+    const claims = path.join(root, "claims");
+    const [claim] = await readdir(claims);
+    await unlink(path.join(claims, claim));
+    assert.deepEqual(await new FsAuthorityLedger(root, { now: () => t0 }).recover(), { ok: false, reason: "corruption" });
+  });
+  await withRoot(async root => {
+    const ledger = new FsAuthorityLedger(root, { now: () => t0 });
+    assert.equal((await ledger.reserve(intent())).ok, true);
+    const claims = path.join(root, "claims");
+    const [claim] = await readdir(claims);
+    const original = await readFile(path.join(claims, claim), "utf8");
+    const withExtra = original.replace(',"transactionDigest"', ',"extra":true,"transactionDigest"');
+    await writeFile(path.join(claims, claim), withExtra);
+    assert.deepEqual(await new FsAuthorityLedger(root, { now: () => t0 }).recover(), { ok: false, reason: "corruption" });
+  });
+  await withRoot(async root => {
+    const ledger = new FsAuthorityLedger(root, { now: () => t0 });
+    assert.equal((await ledger.reserve(intent())).ok, true);
+    const journal = path.join(root, "journal");
+    const [entry] = await readdir(journal);
+    const [prefix] = entry.split("-");
+    await rename(path.join(journal, entry), path.join(journal, `${prefix}-${"f".repeat(64)}`));
+    assert.deepEqual(await new FsAuthorityLedger(root, { now: () => t0 }).recover(), { ok: false, reason: "corruption" });
+  });
+  await withRoot(async root => {
     await mkdir(path.join(root, "journal"), { recursive: true });
     await writeFile(path.join(root, "journal", `0000000000000002-${"a".repeat(64)}`), "{}\n");
     assert.deepEqual(await new FsAuthorityLedger(root, { now: () => t0 }).recover(), { ok: false, reason: "corruption" });
@@ -281,10 +391,10 @@ test("corruption, truncation, journal gaps, digest mismatch, traversal, and syml
   await withRoot(async root => {
     assert.throws(() => new FsAuthorityLedger(path.join(root, "..", "escape"), { now: () => t0 }), /root|exist|directory/i);
   });
-  if (process.platform !== "win32") await withRoot(async root => {
+  await withRoot(async root => {
     const outside = await tempRoot();
     try {
-      await symlink(outside, path.join(root, "journal"), "dir");
+      await symlink(outside, path.join(root, "journal"), process.platform === "win32" ? "junction" : "dir");
       assert.deepEqual(await new FsAuthorityLedger(root, { now: () => t0 }).recover(), { ok: false, reason: "corruption" });
     } finally { await rm(outside, { recursive: true, force: true }); }
   });
@@ -305,12 +415,13 @@ test("the process lock is bounded, never lease-stolen, and refuses foreign or co
   await withRoot(async root => {
     const lock = path.join(root, "lock");
     await mkdir(lock);
-    await writeFile(path.join(lock, "owner.json"), JSON.stringify({ v: 1, host: hostname(), pid: process.pid, nonce: "a".repeat(64) }));
+    const liveOwner = JSON.stringify({ host: hostname(), nonce: "a".repeat(64), pid: process.pid, v: 1 });
+    await writeFile(path.join(lock, "owner.json"), liveOwner);
     const started = Date.now();
     const result = await new FsAuthorityLedger(root, { now: () => t0, lockTimeoutMs: 75 }).recover();
     assert.deepEqual(result, { ok: false, reason: "busy" });
     assert.ok(Date.now() - started < 2_000, "lock acquisition must be bounded");
-    assert.equal(await readFile(path.join(lock, "owner.json"), "utf8"), JSON.stringify({ v: 1, host: hostname(), pid: process.pid, nonce: "a".repeat(64) }));
+    assert.equal(await readFile(path.join(lock, "owner.json"), "utf8"), liveOwner);
   });
   await withRoot(async root => {
     await mkdir(path.join(root, "lock"));
@@ -319,7 +430,7 @@ test("the process lock is bounded, never lease-stolen, and refuses foreign or co
   });
   await withRoot(async root => {
     await mkdir(path.join(root, "lock"));
-    await writeFile(path.join(root, "lock", "owner.json"), JSON.stringify({ v: 1, host: "another-host", pid: 999999, nonce: "b".repeat(64) }));
+    await writeFile(path.join(root, "lock", "owner.json"), JSON.stringify({ host: "another-host", nonce: "b".repeat(64), pid: 999999, v: 1 }));
     assert.deepEqual(await new FsAuthorityLedger(root, { now: () => t0, lockTimeoutMs: 20 }).recover(), { ok: false, reason: "lock-owner-unverifiable" });
   });
 });
@@ -327,7 +438,7 @@ test("the process lock is bounded, never lease-stolen, and refuses foreign or co
 test("a proved-dead same-host lock is reclaimed and recovery runs before reservation", async () => {
   await withRoot(async root => {
     await mkdir(path.join(root, "lock"));
-    await writeFile(path.join(root, "lock", "owner.json"), JSON.stringify({ v: 1, host: hostname(), pid: 2_147_483_647, nonce: "c".repeat(64) }));
+    await writeFile(path.join(root, "lock", "owner.json"), JSON.stringify({ host: hostname(), nonce: "c".repeat(64), pid: 2_147_483_647, v: 1 }));
     const ledger = new FsAuthorityLedger(root, { now: () => t0, lockTimeoutMs: 100 });
     const result = await ledger.reserve(intent());
     assert.equal(result.ok, true);

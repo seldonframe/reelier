@@ -25,3 +25,41 @@ The DecisionContext digest is the ordinary authority digest, exactly SHA-256 ove
 Verification, authorization, source completeness, dispatch, acknowledgement, reconciliation, topology, and completeness use `verified`, `failed`, `unchecked`, or `absent`. Neither `verified` nor a signature means safe, wise, semantically correct, or complete. Hard enforcement needs separate OS identity/container, authenticated ingress, agent-inaccessible secrets, and restricted provider egress; same-user topology is `unchecked`.
 
 N-1 readers must reject `reelier.authority-receipt/v1` or render its authority claims unchecked. They must never create a whole-receipt pass. Path A/B readers and fixtures remain compatible and byte-identical.
+
+## Durable authority ledger
+
+The Path C ledger atomically binds the ingress tuple `(tenant, requester, requestId)` to the exact
+closed canonical `OutcomeRequest` bytes and digest, while independently claiming `(tenant, outcomeKey)`, the
+capability ID and canonical capability bytes/digest, the effect digest, and every deterministic
+fixed-window limit slot. Collision precedence is ingress-identical reuse, ingress byte conflict,
+semantic duplicate, capability integrity conflict, then limit exhaustion. A claim file by itself is
+never authority: a reservation becomes visible only through its exact verified journal commit.
+The stored `requestKey` and capability ID, outcome key, effect digest, issue time, and expiry time must
+equal the values inside the strictly parsed closed canonical `CompiledCapability`; detached scalar
+identities are refused before any claim is acquired.
+
+The filesystem implementation uses canonical content-addressed transaction records, exclusive-created
+claim files, and immutable sequence-numbered journal entries. It does not rely on multi-process append
+atomicity. Every file is synced before its commit becomes visible. Parent directories are synced on
+POSIX; Windows directory flushing is best-effort and is reported as such, never as verified durability.
+The operator supplies one resolved existing root. Tenant, requester, request, provider, and capability
+strings never become path components; derived filenames are lowercase SHA-256 hex. Symlinks, Windows
+junctions/reparse paths, root escape, malformed/truncated or noncanonical JSON, filename/content digest
+mismatch, unknown records, illegal transitions, and journal gaps refuse recovery rather than being
+guessed through.
+
+Cross-process mutation is serialized by atomic lock-directory creation and an exclusive-created,
+cryptographically random owner record. Acquisition is bounded. A live same-host owner is never evicted
+because time elapsed; a foreign, corrupt, or otherwise unverifiable owner refuses. An abandoned lock is
+reclaimed only after same-host process liveness proves that its recorded PID is dead, and full recovery
+runs before another reservation may be authorized.
+
+The only lifecycle is `issued -> reserved -> dispatched -> acknowledged | definitive-failure |
+ambiguous`, with `acknowledged | ambiguous -> reconciled`. Transitions are durable compare-and-transition
+operations. Capability lifetime is exactly 60,000 milliseconds; reservation and dispatch require
+`issuedAt <= now < expiresAt`. Before either authorization, the ledger commits a wall-clock high-water
+observation. Equality is allowed and rollback refuses. Recovery verifies canonical ownership and
+journal continuity, completes an abandoned reservation only when every remaining claim is provably
+available, otherwise writes an immutable tombstone and removes only claims verified as owned by that
+uncommitted transaction. A committed `dispatched` reservation with no durable result becomes
+`ambiguous` on recovery and is never dispatch-eligible again.

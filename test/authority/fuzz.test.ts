@@ -4,6 +4,8 @@ import fc from "fast-check";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { createHash } from "node:crypto";
+import { authorityCanonicalBytes } from "../../src/authority/wire.js";
 import { CAPABILITY_LIFETIME_MS, type ReservationIntent } from "../../src/authority/ledger.js";
 import { FsAuthorityLedger } from "../../src/authority/host/fs-ledger.js";
 
@@ -18,12 +20,20 @@ test("fixed-seed bounded ledger state-machine fuzz never creates two committed r
       try {
         const ledger = new FsAuthorityLedger(root, { now: () => at });
         for (const operation of operations) {
+          const requestId = `request_${operation.request}`;
+          const capabilityId = `capability_${operation.capability}`;
+          const requestKey = hex(50 + operation.request);
+          const outcomeKey = hex(200 + operation.outcome);
+          const effectDigest = hex(300 + operation.outcome);
+          const issuedAt = new Date(at).toISOString();
+          const expiresAt = new Date(at + CAPABILITY_LIFETIME_MS).toISOString();
+          const requestBytes = authorityCanonicalBytes({ v: "reelier.outcome-request/v1", requestId, sourceRefs: { source: `ref_${operation.request}` }, choices: {} });
+          const capabilityBytes = authorityCanonicalBytes({ v: "reelier.compiled-capability/v1", capabilityId, requestKey, outcomeKey, effectDigest, issuedAt, expiresAt });
           const candidate: ReservationIntent = {
-            tenant: "tenant", requester: "requester", requestId: `request_${operation.request}`,
-            canonicalRequestDigest: hex(operation.request), canonicalRequestBytes: Buffer.from(`request:${operation.request}`),
-            capabilityId: `capability_${operation.capability}`, capabilityDigest: hex(100 + operation.capability), capabilityBytes: Buffer.from(`capability:${operation.capability}`),
-            outcomeKey: hex(200 + operation.outcome), effectDigest: hex(300 + operation.outcome),
-            issuedAt: new Date(at).toISOString(), expiresAt: new Date(at + CAPABILITY_LIFETIME_MS).toISOString(),
+            tenant: "tenant", requester: "requester", requestId, requestKey,
+            canonicalRequestDigest: `sha256:${createHash("sha256").update(requestBytes).digest("hex")}`, canonicalRequestBytes: requestBytes,
+            capabilityId, capabilityDigest: `sha256:${createHash("sha256").update(capabilityBytes).digest("hex")}`, capabilityBytes,
+            outcomeKey, effectDigest, issuedAt, expiresAt,
             limitSlots: [{ key: hex(400), maximum: 30 }],
           };
           await ledger.reserve(candidate);

@@ -55,6 +55,12 @@ const renderedVectors = Object.fromEntries(Object.entries(vectors).map(([kind, v
 renderedVectors["decision-context"].variants = { preCompileRefusal: makeVector("decision-context", refusedDecisionContext) };
 const rendered = JSON.stringify(renderedVectors, null, 2) + "\n";
 const target = new URL("../contract/authority/v1/golden-vectors.json", import.meta.url);
+const decisionContextSchema = JSON.parse(await readFile(new URL("../contract/authority/v1/decision-context.schema.json", import.meta.url), "utf8"));
+const receiptSchema = JSON.parse(await readFile(new URL("../contract/authority/v1/authority-receipt.schema.json", import.meta.url), "utf8"));
+const { $schema: _decisionMetaSchema, $id: _decisionId, ...decisionContextBody } = decisionContextSchema;
+if (canonicalize(decisionContextBody) !== canonicalize(receiptSchema?.properties?.decisionContext)) {
+  throw new Error("authority schema drift: receipt-embedded DecisionContext must equal the standalone DecisionContext schema");
+}
 if (process.argv.includes("--copy-schemas")) {
   await mkdir(new URL("../dist/authority/schemas/", import.meta.url), { recursive: true });
   await cp(new URL("../contract/authority/v1/", import.meta.url), new URL("../dist/authority/schemas/", import.meta.url), { recursive: true });
