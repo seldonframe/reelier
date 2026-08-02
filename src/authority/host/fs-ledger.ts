@@ -359,7 +359,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
   }
 
   private async acquireLock(): Promise<LockResult> {
-    const deadline = Date.now() + this.options.lockTimeoutMs;
+    const deadline = monotonicNow() + this.options.lockTimeoutMs;
     let reclaimed = false;
     while (true) {
       const owner: LockOwner = { v: 1, host: hostname(), pid: process.pid, nonce: randomBytes(32).toString("hex") };
@@ -371,27 +371,27 @@ export class FsAuthorityLedger implements AuthorityLedger {
         return { ok: true, owner, reclaimed };
       } catch (error) {
         if (!hasCode(error, "EEXIST")) {
-          if (isTransientLockError(error) && Date.now() < deadline) { await delay(5); continue; }
+          if (isTransientLockError(error) && monotonicNow() < deadline) { await delay(5); continue; }
           return { ok: false, reason: "corruption" };
         }
       }
       let ownerBytes: Buffer;
       try { ownerBytes = await readFile(this.absolute(path.join("lock", "owner.json"))); }
       catch (error) {
-        if (isTransientLockError(error) && Date.now() < deadline) { await delay(5); continue; }
+        if (isTransientLockError(error) && monotonicNow() < deadline) { await delay(5); continue; }
         return { ok: false, reason: "corruption" };
       }
       let existing: LockOwner;
       try { existing = parseCanonical(ownerBytes) as LockOwner; assertLockOwner(existing); }
       catch {
-        if (Date.now() < deadline) { await delay(5); continue; }
+        if (monotonicNow() < deadline) { await delay(5); continue; }
         return { ok: false, reason: "corruption" };
       }
       if (existing.host !== hostname()) return { ok: false, reason: "lock-owner-unverifiable" };
       const liveness = processLiveness(existing.pid);
       if (liveness === "unverifiable") return { ok: false, reason: "lock-owner-unverifiable" };
       if (liveness === "alive") {
-        if (Date.now() >= deadline) return { ok: false, reason: "busy" };
+        if (monotonicNow() >= deadline) return { ok: false, reason: "busy" };
         await delay(5);
         continue;
       }
@@ -404,7 +404,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
         reclaimed = true;
       } catch (error) {
         if (!isTransientLockError(error)) return { ok: false, reason: "corruption" };
-        if (Date.now() < deadline) { await delay(5); continue; }
+        if (monotonicNow() < deadline) { await delay(5); continue; }
         return { ok: false, reason: "corruption" };
       }
     }
@@ -446,7 +446,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
 
   private async assertNoLinks(): Promise<void> {
     const allowedRoot = new Set(["transactions", "claims", "journal", "tombstones", "ingress", "decisions", "lock"]);
-    const volatileRead=async<T>(operation:()=>Promise<T>):Promise<T|undefined>=>{const deadline=Date.now()+1_000;for(;;){try{return await operation();}catch(error){if(hasCode(error,"ENOENT"))return undefined;if(process.platform!=="win32"||!(hasCode(error,"EPERM")||hasCode(error,"EACCES")||hasCode(error,"EBUSY"))||Date.now()>=deadline)throw error;await delay(2);}}};
+    const volatileRead=async<T>(operation:()=>Promise<T>):Promise<T|undefined>=>{const deadline=monotonicNow()+1_000;for(;;){try{return await operation();}catch(error){if(hasCode(error,"ENOENT"))return undefined;if(process.platform!=="win32"||!(hasCode(error,"EPERM")||hasCode(error,"EACCES")||hasCode(error,"EBUSY"))||monotonicNow()>=deadline)throw error;await delay(2);}}};
     const walk = async (directory: string, root = false, volatile = false): Promise<void> => {
       const entries=volatile?await volatileRead(()=>readdir(directory,{withFileTypes:true})):await readdir(directory,{withFileTypes:true});if(!entries)return;
       for (const entry of entries) {
@@ -961,6 +961,7 @@ function frozen<T>(value: T): T {
 function normalizePath(value: string): string { return process.platform === "win32" ? value.toLowerCase() : value; }
 function hasCode(error: unknown, code: string): boolean { return Boolean(error && typeof error === "object" && "code" in error && (error as { code?: string }).code === code); }
 function isTransientLockError(error: unknown): boolean { return ["ENOENT", "EPERM", "EACCES", "ENOTEMPTY"].some(code => hasCode(error, code)); }
+function monotonicNow():number{return Number(process.hrtime.bigint()/1_000_000n);}
 function delay(ms: number): Promise<void> { return new Promise(resolve => setTimeout(resolve, ms)); }
 function isLockFailure(value: unknown): value is { ok: false; reason: "busy" | "lock-owner-unverifiable" | "corruption" } {
   return Boolean(value && typeof value === "object" && "ok" in value && (value as { ok: unknown }).ok === false);

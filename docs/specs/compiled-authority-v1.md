@@ -118,7 +118,9 @@ Cross-process mutation is serialized by atomic lock-directory creation and an ex
 cryptographically random owner record. Acquisition is bounded. A live same-host owner is never evicted
 because time elapsed; a foreign, corrupt, or otherwise unverifiable owner refuses. An abandoned lock is
 reclaimed only after same-host process liveness proves that its recorded PID is dead, and full recovery
-runs before another reservation may be authorized.
+runs before another reservation may be authorized. Lock acquisition/reclaim and transient Windows
+`decisions/`-subtree audit retries use monotonic deadlines. They never consult the provider/authority
+semantic `now`, which remains reserved for durable high-water, validity, and lifecycle decisions.
 
 The only lifecycle is `issued -> reserved -> dispatched -> acknowledged | definitive-failure |
 ambiguous`, with `acknowledged | ambiguous -> reconciled`. Transitions are durable compare-and-transition
