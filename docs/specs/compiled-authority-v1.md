@@ -147,9 +147,12 @@ independently validated; two stages for the same host and PID but different nonc
 fail closed. Every publication artifact name, type, link count, byte state, binding, and owner liveness
 is classified before any candidate is mutated. A corrupt, transiently unreadable, or unverifiable
 artifact prevents deletion of every otherwise recoverable stage. Mutation candidates are revalidated
-byte-for-byte immediately before creator-only cleanup or dead-owner cleanup. Creator cleanup may remove
-only its exact name/host/PID/nonce/type/single-link object and exact expected empty, zero, strict-prefix,
-or complete bytes; any replacement is preserved and refuses. It never removes another live stage.
+byte-for-byte and by the frozen non-following filesystem object identity immediately before
+creator-only cleanup or dead-owner cleanup. Creator cleanup may remove only its exact
+name/host/PID/nonce/type/single-link directory and owner identities and exact expected empty, zero,
+strict-prefix, or complete bytes; an atomic same-name directory or owner replacement is preserved even
+when its bytes are identical. A changed inode/file identity, increased link count, or different bytes
+refuses. It never removes another live stage.
 Acquisition is bounded. A live same-host owner is never evicted because time elapsed; a
 foreign, corrupt, or otherwise unverifiable owner refuses. An abandoned lock is reclaimed only after
 same-host process liveness proves that its recorded PID is dead and the owner bytes remain identical.
@@ -217,8 +220,11 @@ Windows `decisions/`-subtree audit retries use monotonic deadlines. They never c
 provider/authority semantic `now`, which remains reserved for durable high-water, validity, and
 lifecycle decisions.
 An active lock that disappears between non-following metadata and content inspection, or a publication
-stage that disappears between enumeration and validation, invalidates the whole acquisition snapshot;
-the bounded scan restarts and never interprets the partial view. Transient Windows `EPERM`, `EACCES`,
+stage that disappears between enumeration and validation, invalidates the whole acquisition snapshot,
+including every name and artifact generation previously observed; the bounded scan re-enumerates and
+reclassifies the complete root and never interprets or mutates from the partial view. A same-name
+replacement or a blocker introduced after the invalidated enumeration belongs only to the next
+generation and cannot be missed by treating local `ENOENT` as a skipped entry. Transient Windows `EPERM`, `EACCES`,
 and `EBUSY` at either boundary retry against the same monotonic acquisition deadline. Persistent
 failure refuses as corruption without mutating any artifact. The default acquisition timeout remains
 30,000 milliseconds; tests may select a smaller valid timeout without changing that default.
