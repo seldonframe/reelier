@@ -85,7 +85,7 @@ export const ledgerLockFaultPoints = Object.freeze([
   "after-publication-stage-enumeration", "before-publication-stage-validation",
   "after-lock-publication-rename-collision", "before-publication-stage-root-reenumeration",
   "before-publication-stage-final-validation", "before-publication-stage-final-liveness",
-  "before-publication-stage-remove-attempt",
+  "before-publication-stage-remove-attempt", "after-publication-stage-cleanup-root-sync",
   "after-lock-publication-generation-closed", "before-lock-publication-predecessor-validation",
   "before-ledger-operation-callback",
   "after-owner-file-sync", "after-lock-directory-sync", "before-lock-retire", "after-lock-retire",
@@ -183,6 +183,7 @@ interface PublicationStage {
 interface PublicationSettlementState {
   readonly removalAuthorizations:Map<string,PublicationStage>;
   rootSyncPending:boolean;
+  generationInvalidated:boolean;
 }
 interface PublicationElection {
   readonly predecessor:PublicationStage;
@@ -342,7 +343,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
         if (error instanceof LedgerCorruption) return frozen({ ok: false as const, reason: "corruption" as const });
         throw error;
       }
-    });
+    },false);
   }
 
   async getReservation(reservationId: string): Promise<ReservationSnapshot | undefined> {
@@ -388,10 +389,10 @@ export class FsAuthorityLedger implements AuthorityLedger {
     return result as Readonly<{ observedAt: string | null }>;
   }
 
-  private async withLock<T>(context: OperationContext, operation: (reclaimed: boolean) => Promise<T>): Promise<T | Readonly<{ ok: false; reason: "busy" | "lock-owner-unverifiable" | "corruption" }>> {
+  private async withLock<T>(context: OperationContext, operation: (reclaimed: boolean) => Promise<T>,admitContender=true): Promise<T | Readonly<{ ok: false; reason: "busy" | "lock-owner-unverifiable" | "corruption" }>> {
     const preceding=this.lockTail;let release!:()=>void;this.lockTail=new Promise<void>(resolve=>{release=resolve;});await preceding;
     try {
-      const lock = await this.acquireLock();
+      const lock = await this.acquireLock(admitContender);
       if (!lock.ok) return frozen({ ok: false, reason: lock.reason });
       try {
         await this.assertNoLinks();
@@ -413,7 +414,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
     } finally { release(); }
   }
 
-  private async acquireLock(): Promise<LockResult> {
+  private async acquireLock(admitContender:boolean): Promise<LockResult> {
     const deadline = monotonicNow() + this.options.lockTimeoutMs;
     const owner: LockOwner = { v: 1, host: hostname(), pid: process.pid, nonce: randomBytes(32).toString("hex") };
     const stageName=this.publicationStageName(owner),stagePath=this.absolute(stageName),ownerPath=path.join(stagePath,"owner.json"),ownerBytes=canonicalBytes(owner);
@@ -430,9 +431,10 @@ export class FsAuthorityLedger implements AuthorityLedger {
           if(monotonicNow()>=deadline)return {ok:false,reason:"busy"};
           await delay(5);continue;
         }
+        if(stageCreated&&monotonicNow()>=deadline)return {ok:false,reason:"busy"};
         if(!stageCreated){
           const existingStages=await this.settlePublicationStages(deadline,false,null);
-          if(existingStages.length>0){
+          if(existingStages.length>0&&!admitContender){
             if(monotonicNow()>=deadline)return {ok:false,reason:"busy"};
             await delay(5);continue;
           }
@@ -516,15 +518,16 @@ export class FsAuthorityLedger implements AuthorityLedger {
   }
 
   private async settlePublicationStages(deadline:number,activeOwner:boolean,ownedStage:PublicationStage|null=null):Promise<PublicationStage[]>{
-    const state:PublicationSettlementState={removalAuthorizations:new Map<string,PublicationStage>(),rootSyncPending:false};
+    const state:PublicationSettlementState={removalAuthorizations:new Map<string,PublicationStage>(),rootSyncPending:false,generationInvalidated:false};
     for(;;){
       try{
-        if(state.rootSyncPending){await this.syncDirectory(this.root);state.rootSyncPending=false;}
+        if(state.rootSyncPending){await this.syncDirectory(this.root);state.rootSyncPending=false;this.fault("after-publication-stage-cleanup-root-sync");}
         const result=await this.servicePublicationGeneration(state,activeOwner,ownedStage);
         if(result!=="retry")return result;
         if(state.rootSyncPending)continue;
       }catch(error){
         if(!this.shouldRetrySnapshot(error,deadline))throw error;
+        state.generationInvalidated=true;
       }
       if(monotonicNow()>=deadline)throw new LedgerCorruption("publication snapshot deadline exhausted");
       await delay(5);
@@ -547,33 +550,40 @@ export class FsAuthorityLedger implements AuthorityLedger {
     if(initialLiveness.some(value=>value==="unverifiable"))throw new LedgerCorruption("unverifiable publication stage owner");
     this.fault("before-publication-stage-root-reenumeration");
     const closedNames=await this.publicationStageNames();
-    if(!sameStrings(names,closedNames))return this.publicationMembershipChanged(activeOwner,names,closedNames);
+    if(!sameStrings(names,closedNames)){state.generationInvalidated=true;return this.publicationMembershipChanged(activeOwner,names,closedNames);}
     if(stages.length>0)this.fault("after-lock-publication-generation-closed");
     const finalNames=await this.publicationStageNames();
-    if(!sameStrings(closedNames,finalNames))return this.publicationMembershipChanged(activeOwner,closedNames,finalNames);
+    if(!sameStrings(closedNames,finalNames)){state.generationInvalidated=true;return this.publicationMembershipChanged(activeOwner,closedNames,finalNames);}
     const finalStages:PublicationStage[]=[];
     for(const stage of stages){
       const current=await this.validatePublicationStage(stage.name);
       if(!samePublicationStage(stage,current)){
         if(ownedStage?.name===stage.name||activeOwner&&!isPublicationStageProgress(stage,current))throw new LedgerCorruption("publication stage changed after generation closure");
+        state.generationInvalidated=true;
         return "retry";
       }
       finalStages.push(current);
     }
     const finalLiveness=finalStages.map(stage=>processLiveness(stage.pid));
     if(finalLiveness.some(value=>value==="unverifiable"))throw new LedgerCorruption("unverifiable publication stage owner");
-    if(finalLiveness.some(value=>value==="alive"))return finalStages;
-    const deadIndex=finalLiveness.findIndex(value=>value==="dead");
-    if(deadIndex>=0){
-      const deadStage=finalStages[deadIndex];
+    const deadStages=finalStages.filter((_,index)=>finalLiveness[index]==="dead");
+    if(state.generationInvalidated&&deadStages.length>0&&deadStages.length<finalStages.length)return finalStages;
+    const removedNames:string[]=[];
+    for(const deadStage of deadStages){
+      const expectedNames=finalStages.filter(stage=>!removedNames.includes(stage.name)).map(stage=>stage.name);
+      this.fault("before-publication-stage-root-reenumeration");
+      if(!sameStrings(expectedNames,await this.publicationStageNames()))return "retry";
       const removal=await this.removeDeadPublicationStage(deadStage,state.removalAuthorizations);
       if(removal==="removed"){
         state.removalAuthorizations.delete(deadStage.name);
         state.rootSyncPending=true;
+        removedNames.push(deadStage.name);
+        continue;
       }
       if(removal==="live")return finalStages;
       return "retry";
     }
+    if(removedNames.length>0)return "retry";
     return finalStages;
   }
 
