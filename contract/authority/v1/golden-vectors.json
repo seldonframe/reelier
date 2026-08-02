@@ -209,32 +209,103 @@
       "expiresAt": "2026-01-01T00:01:00.000Z"
     }
   },
-  "gate-event": {
-    "canonical": "{\"at\":\"2026-01-01T00:00:00.000Z\",\"eventId\":\"event_1\",\"reasonCode\":\"accepted\",\"v\":\"reelier.gate-event/v1\",\"verdict\":\"accepted\"}",
-    "digest": "sha256:274d01036b2c1d5392edd82e68dd86c2e5533aeaf2a78de74a3a2f9e5928a1ee",
+  "decision-context": {
+    "canonical": "{\"capabilityDigest\":\"sha256:4444444444444444444444444444444444444444444444444444444444444444\",\"capabilityId\":\"capability_1\",\"contractDigest\":\"sha256:3333333333333333333333333333333333333333333333333333333333333333\",\"effectDigest\":\"sha256:6666666666666666666666666666666666666666666666666666666666666666\",\"outcomeKey\":\"sha256:5555555555555555555555555555555555555555555555555555555555555555\",\"requestDigest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"requestId\":\"request_1\",\"requestKey\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\",\"requester\":\"requester_1\",\"snapshots\":{\"authorityStateDigest\":\"sha256:8888888888888888888888888888888888888888888888888888888888888888\",\"sourceBundleDigest\":\"sha256:7777777777777777777777777777777777777777777777777777777777777777\"},\"tenant\":\"tenant_1\",\"v\":\"reelier.decision-context/v1\"}",
+    "digest": "sha256:e50a94c30ab511ed1dde3f6c141e94e116bb33c71d8ee8008219c43c0edb02d8",
     "signature": {
       "alg": "ed25519",
-      "sig": "VvgmX7UtTjL59MdEKYWtJYomX2DIhAiATwZGVJsftgO6qNW8DRBYqRiOI9ByTRyoGREIVKAksgtJnxm361QOCQ=="
+      "sig": "FXb/SsfwsUOXeG0zdyEvXoQfMJhX/DTQ2tnk1ssLbQ5YO9PI4tX0lO3sDKqREVVHUxs3QDtyWzqajetPXfXqCQ=="
+    },
+    "value": {
+      "v": "reelier.decision-context/v1",
+      "tenant": "tenant_1",
+      "requester": "requester_1",
+      "requestId": "request_1",
+      "requestDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "requestKey": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "contractDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "capabilityId": "capability_1",
+      "capabilityDigest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+      "outcomeKey": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+      "effectDigest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+      "snapshots": {
+        "sourceBundleDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+        "authorityStateDigest": "sha256:8888888888888888888888888888888888888888888888888888888888888888"
+      }
+    },
+    "variants": {
+      "preCompileRefusal": {
+        "canonical": "{\"capabilityDigest\":null,\"capabilityId\":null,\"contractDigest\":null,\"effectDigest\":null,\"outcomeKey\":null,\"requestDigest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"requestId\":\"request_1\",\"requestKey\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\",\"requester\":\"requester_1\",\"snapshots\":{\"authorityStateDigest\":null,\"sourceBundleDigest\":null},\"tenant\":\"tenant_1\",\"v\":\"reelier.decision-context/v1\"}",
+        "digest": "sha256:9911b4468c13e9c5301c5da69d4a8e919d1bdedf8285a0c33359bf340484221b",
+        "signature": {
+          "alg": "ed25519",
+          "sig": "d6SwkBdH4U6P8uoJscpgLJQnCJpkzj43FNvFcs2t1Vj8JmHCT8UrxcjclZTUaFBylKUosTdAmvzQYTliD+jZBw=="
+        },
+        "value": {
+          "v": "reelier.decision-context/v1",
+          "tenant": "tenant_1",
+          "requester": "requester_1",
+          "requestId": "request_1",
+          "requestDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "requestKey": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+          "contractDigest": null,
+          "capabilityId": null,
+          "capabilityDigest": null,
+          "outcomeKey": null,
+          "effectDigest": null,
+          "snapshots": {
+            "sourceBundleDigest": null,
+            "authorityStateDigest": null
+          }
+        }
+      }
+    }
+  },
+  "gate-event": {
+    "canonical": "{\"at\":\"2026-01-01T00:00:00.000Z\",\"decisionContextDigest\":\"sha256:e50a94c30ab511ed1dde3f6c141e94e116bb33c71d8ee8008219c43c0edb02d8\",\"eventId\":\"event_1\",\"reasonCode\":\"accepted\",\"v\":\"reelier.gate-event/v1\",\"verdict\":\"accepted\"}",
+    "digest": "sha256:e4f3a188f5a05138374b9fcfaa85f878b7bc1ca7ec7dce3f6bc649ee89b96f3b",
+    "signature": {
+      "alg": "ed25519",
+      "sig": "1nTedreC7bgHlEsui7sw2J8zokhS3ie+lvfW71fBqEogvZANrX9PkomxOkmiVYqJleg2UIw7jJYWEGq8zVvCDw=="
     },
     "value": {
       "v": "reelier.gate-event/v1",
       "eventId": "event_1",
       "at": "2026-01-01T00:00:00.000Z",
       "verdict": "accepted",
-      "reasonCode": "accepted"
+      "reasonCode": "accepted",
+      "decisionContextDigest": "sha256:e50a94c30ab511ed1dde3f6c141e94e116bb33c71d8ee8008219c43c0edb02d8"
     }
   },
   "authority-receipt": {
-    "canonical": "{\"claims\":{\"authorization\":\"verified\",\"completeness\":\"unchecked\",\"dispatch\":\"verified\",\"providerAcknowledgment\":\"unchecked\",\"reconciliation\":\"absent\",\"sourceCompleteness\":\"verified\",\"topology\":\"unchecked\"},\"gateEventDigest\":\"sha256:0000000000000000000000000000000000000000000000000000000000000000\",\"receiptId\":\"receipt_1\",\"v\":\"reelier.authority-receipt/v1\"}",
-    "digest": "sha256:381e8326f01653521a517c594aeef77ca4f12c6bebda3a50499905f1d6fc6751",
+    "canonical": "{\"claims\":{\"authorization\":\"verified\",\"completeness\":\"unchecked\",\"dispatch\":\"verified\",\"providerAcknowledgment\":\"unchecked\",\"reconciliation\":\"absent\",\"sourceCompleteness\":\"verified\",\"topology\":\"unchecked\"},\"decisionContext\":{\"capabilityDigest\":\"sha256:4444444444444444444444444444444444444444444444444444444444444444\",\"capabilityId\":\"capability_1\",\"contractDigest\":\"sha256:3333333333333333333333333333333333333333333333333333333333333333\",\"effectDigest\":\"sha256:6666666666666666666666666666666666666666666666666666666666666666\",\"outcomeKey\":\"sha256:5555555555555555555555555555555555555555555555555555555555555555\",\"requestDigest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"requestId\":\"request_1\",\"requestKey\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\",\"requester\":\"requester_1\",\"snapshots\":{\"authorityStateDigest\":\"sha256:8888888888888888888888888888888888888888888888888888888888888888\",\"sourceBundleDigest\":\"sha256:7777777777777777777777777777777777777777777777777777777777777777\"},\"tenant\":\"tenant_1\",\"v\":\"reelier.decision-context/v1\"},\"decisionContextDigest\":\"sha256:e50a94c30ab511ed1dde3f6c141e94e116bb33c71d8ee8008219c43c0edb02d8\",\"gateEventDigest\":\"sha256:e4f3a188f5a05138374b9fcfaa85f878b7bc1ca7ec7dce3f6bc649ee89b96f3b\",\"receiptId\":\"receipt_1\",\"v\":\"reelier.authority-receipt/v1\"}",
+    "digest": "sha256:74578051fc47bd235eafdfa7b929eccd73d94362520f706b307bd11790eb87d7",
     "signature": {
       "alg": "ed25519",
-      "sig": "M+02A+5cMrI89vip8lWjIqtlV98DylTRH7ZW/eELptSe/vYMWJn34u9GJumZO6yNx4gvSv9asVxZ4Q13OyocAw=="
+      "sig": "aV8s7NDstASP6trmXwiawCAa8I2oHrtn9cE7c8Qt/4BF1p732A1MBY1Gjs0nTaNBhfi3RO0H5e3AkdtmgCi4CA=="
     },
     "value": {
       "v": "reelier.authority-receipt/v1",
       "receiptId": "receipt_1",
-      "gateEventDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "gateEventDigest": "sha256:e4f3a188f5a05138374b9fcfaa85f878b7bc1ca7ec7dce3f6bc649ee89b96f3b",
+      "decisionContextDigest": "sha256:e50a94c30ab511ed1dde3f6c141e94e116bb33c71d8ee8008219c43c0edb02d8",
+      "decisionContext": {
+        "v": "reelier.decision-context/v1",
+        "tenant": "tenant_1",
+        "requester": "requester_1",
+        "requestId": "request_1",
+        "requestDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "requestKey": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "contractDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "capabilityId": "capability_1",
+        "capabilityDigest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+        "outcomeKey": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+        "effectDigest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+        "snapshots": {
+          "sourceBundleDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+          "authorityStateDigest": "sha256:8888888888888888888888888888888888888888888888888888888888888888"
+        }
+      },
       "claims": {
         "authorization": "verified",
         "sourceCompleteness": "verified",

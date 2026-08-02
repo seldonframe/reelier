@@ -15,6 +15,19 @@ const constraints = {
 const vectorPrivateKey = createPrivateKey(`-----BEGIN PRIVATE KEY-----
 MC4CAQAwBQYDK2VwBCIEIO2e0HCVJ9AnRKWoiI+A2JXFNQeKOiEQDB7P8clr8OyJ
 -----END PRIVATE KEY-----`);
+const acceptedDecisionContext = {
+  v: "reelier.decision-context/v1", tenant: "tenant_1", requester: "requester_1", requestId: "request_1",
+  requestDigest: "sha256:" + "1".repeat(64), requestKey: "sha256:" + "2".repeat(64), contractDigest: "sha256:" + "3".repeat(64),
+  capabilityId: "capability_1", capabilityDigest: "sha256:" + "4".repeat(64), outcomeKey: "sha256:" + "5".repeat(64), effectDigest: "sha256:" + "6".repeat(64),
+  snapshots: { sourceBundleDigest: "sha256:" + "7".repeat(64), authorityStateDigest: "sha256:" + "8".repeat(64) },
+};
+const refusedDecisionContext = {
+  ...acceptedDecisionContext, contractDigest: null, capabilityId: null, capabilityDigest: null, outcomeKey: null, effectDigest: null,
+  snapshots: { sourceBundleDigest: null, authorityStateDigest: null },
+};
+const decisionContextDigest = "sha256:" + createHash("sha256").update(canonicalize(acceptedDecisionContext), "utf8").digest("hex");
+const gateEvent = { v: "reelier.gate-event/v1", eventId: "event_1", at, verdict: "accepted", reasonCode: "accepted", decisionContextDigest };
+const gateEventDigest = "sha256:" + createHash("sha256").update(canonicalize(gateEvent), "utf8").digest("hex");
 const vectors = {
   principal: { v: "reelier.principal/v1", id: "operator_1", kind: "operator" },
   "delegation-grant": { v: "reelier.delegation-grant/v1", tenant: "tenant_1", grantId: "grant_1", parentDigest: null, sponsor: "sponsor_1", grantor: "operator_1", grantee: "gate_1", issuedAt: at, expiresAt: "2026-02-01T00:00:00.000Z", constraints },
@@ -23,17 +36,24 @@ const vectors = {
   "outcome-request": { v: "reelier.outcome-request/v1", requestId: "request_1", sourceRefs: { appointment: "ref_1" }, choices: {} },
   "transport-effect": { v: "reelier.transport-effect/v1", endpointId: "connector_1", method: "POST", path: "/v1/messages", query: "account=tenant_1&mode=send", headers: { "Content-Type": "application/json" }, bodyBase64: "e30=", riskClass: "message", idempotency: "native", preconditions: [], reconciliation: { recipeId: "message-readback" } },
   "compiled-capability": { v: "reelier.compiled-capability/v1", capabilityId: "capability_1", requestKey: digest, outcomeKey: digest, effectDigest: digest, issuedAt: at, expiresAt: "2026-01-01T00:01:00.000Z" },
-  "gate-event": { v: "reelier.gate-event/v1", eventId: "event_1", at, verdict: "accepted", reasonCode: "accepted" },
-  "authority-receipt": { v: "reelier.authority-receipt/v1", receiptId: "receipt_1", gateEventDigest: digest, claims: { authorization: "verified", sourceCompleteness: "verified", dispatch: "verified", providerAcknowledgment: "unchecked", reconciliation: "absent", topology: "unchecked", completeness: "unchecked" } },
+  "decision-context": acceptedDecisionContext,
+  "gate-event": gateEvent,
+  "authority-receipt": { v: "reelier.authority-receipt/v1", receiptId: "receipt_1", gateEventDigest, decisionContextDigest, decisionContext: acceptedDecisionContext, claims: { authorization: "verified", sourceCompleteness: "verified", dispatch: "verified", providerAcknowledgment: "unchecked", reconciliation: "absent", topology: "unchecked", completeness: "unchecked" } },
   "pack-manifest": { v: "reelier.outcome-pack-manifest/v1", packId: "first_party", packDigest: digest, definitions: ["definition_1"] },
 };
-const rendered = JSON.stringify(Object.fromEntries(Object.entries(vectors).map(([kind, value]) => {
+function makeVector(kind, value) {
   const canonical = canonicalize(value);
   const digest = "sha256:" + createHash("sha256").update(canonical, "utf8").digest("hex");
   const purposeDigest = "sha256:" + createHash("sha256").update(canonicalize({ digest, purpose: kind }), "utf8").digest("hex");
   const sig = sign(null, Buffer.from(`reelier-authority-v1\n${purposeDigest}`, "utf8"), vectorPrivateKey).toString("base64");
-  return [kind, { canonical, digest, signature: { alg: "ed25519", sig }, value, ...(kind === "transport-effect" ? { compiledRequest: { target: `${value.path}?${value.query}`, bodyUtf8: Buffer.from(value.bodyBase64, "base64").toString("utf8") } } : {}) }];
-})), null, 2) + "\n";
+  return { canonical, digest, signature: { alg: "ed25519", sig }, value };
+}
+const renderedVectors = Object.fromEntries(Object.entries(vectors).map(([kind, value]) => [kind, {
+  ...makeVector(kind, value),
+  ...(kind === "transport-effect" ? { compiledRequest: { target: `${value.path}?${value.query}`, bodyUtf8: Buffer.from(value.bodyBase64, "base64").toString("utf8") } } : {}),
+}]));
+renderedVectors["decision-context"].variants = { preCompileRefusal: makeVector("decision-context", refusedDecisionContext) };
+const rendered = JSON.stringify(renderedVectors, null, 2) + "\n";
 const target = new URL("../contract/authority/v1/golden-vectors.json", import.meta.url);
 if (process.argv.includes("--copy-schemas")) {
   await mkdir(new URL("../dist/authority/schemas/", import.meta.url), { recursive: true });

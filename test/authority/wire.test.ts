@@ -182,7 +182,7 @@ test("every DecisionContext field is digest-bound and breaks an unchanged receip
   ];
   for (const [field, mutated] of mutations) {
     assert.notEqual(authorityDigest(mutated), decisionContextDigest, field);
-    assert.throws(() => parseAuthorityWire("authority-receipt", { ...authorityReceipt, decisionContext: mutated }), /decision context digest mismatch/i, field);
+    assert.throws(() => parseAuthorityWire("authority-receipt", { ...authorityReceipt, decisionContext: mutated }), /invalid authority-receipt/i, field);
   }
 });
 

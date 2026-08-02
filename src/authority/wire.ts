@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import type { AuthorityKind, AuthorityWire, AuthorityWireByKind } from "./types.js";
+import type { AuthorityKind, AuthorityWire, AuthorityWireByKind, DecisionArtifactPresence, DecisionContext, DecisionContextPresence } from "./types.js";
 
 const packagedSchemaDirectory = fileURLToPath(new URL("./schemas/", import.meta.url));
 const schemaDirectory = existsSync(packagedSchemaDirectory)
@@ -82,6 +82,16 @@ export function parseAuthorityWire<K extends AuthorityKind>(kind: K, value: unkn
       }
     }
   }
+  if (kind === "decision-context") {
+    assertIntrinsicDecisionContext(parsed as AuthorityWireByKind["decision-context"]);
+  }
+  if (kind === "authority-receipt") {
+    const receipt = parsed as AuthorityWireByKind["authority-receipt"];
+    const context = parseAuthorityWire("decision-context", receipt.decisionContext);
+    if (authorityDigest(context) !== receipt.decisionContextDigest) {
+      throw new TypeError("invalid authority-receipt: decision context digest mismatch");
+    }
+  }
   if (kind === "transport-effect") {
     const effect = parsed as AuthorityWireByKind["transport-effect"];
     if (Object.keys(effect.headers).some((key) => ["authorization", "cookie", "host"].includes(key.toLowerCase()))) throw new TypeError("invalid transport-effect: forbidden header property name");
@@ -108,6 +118,64 @@ export function parseAuthorityWire<K extends AuthorityKind>(kind: K, value: unkn
     }
   }
   return parsed;
+}
+
+function assertIntrinsicDecisionContext(context: DecisionContext): void {
+  if ((context.capabilityId === null) !== (context.capabilityDigest === null)) {
+    throw new TypeError("invalid decision-context: capability id and digest must have paired nullability");
+  }
+  if (context.outcomeKey !== null && context.contractDigest === null) {
+    throw new TypeError("invalid decision-context: artifact dependency requires contract before outcome");
+  }
+  if (context.effectDigest !== null && (context.contractDigest === null || context.outcomeKey === null || context.snapshots.sourceBundleDigest === null || context.snapshots.authorityStateDigest === null)) {
+    throw new TypeError("invalid decision-context: artifact dependency requires contract, outcome, and snapshots before effect");
+  }
+  if (context.capabilityId !== null && (context.contractDigest === null || context.outcomeKey === null || context.effectDigest === null || context.snapshots.sourceBundleDigest === null || context.snapshots.authorityStateDigest === null)) {
+    throw new TypeError("invalid decision-context: artifact dependency requires compiled artifacts and snapshots before capability");
+  }
+}
+
+/** Requires the complete context needed by an accepted dispatch decision. */
+export function assertAcceptedDecisionContext(value: unknown): DecisionContext {
+  const context = parseAuthorityWire("decision-context", value);
+  if (
+    context.contractDigest === null || context.capabilityId === null || context.capabilityDigest === null ||
+    context.outcomeKey === null || context.effectDigest === null || context.snapshots.sourceBundleDigest === null ||
+    context.snapshots.authorityStateDigest === null
+  ) {
+    throw new TypeError("accepted decision context requires every nullable artifact and snapshot to be non-null");
+  }
+  return context;
+}
+
+/** Reports only presence. Task 3 assigns evidence claim semantics. */
+export function decisionContextPresence(value: unknown): DecisionContextPresence {
+  const context = parseAuthorityWire("decision-context", value);
+  const presence = (artifact: string | null): DecisionArtifactPresence => artifact === null ? "absent" : "unchecked";
+  return {
+    contract: presence(context.contractDigest),
+    capability: presence(context.capabilityId),
+    outcome: presence(context.outcomeKey),
+    effect: presence(context.effectDigest),
+    sourceBundleSnapshot: presence(context.snapshots.sourceBundleDigest),
+    authorityStateSnapshot: presence(context.snapshots.authorityStateDigest),
+  };
+}
+
+/** Parses a portable evidence bundle and refuses any broken decision or event digest edge. */
+export function parsePortableAuthorityEvidence(gateEventValue: unknown, receiptValue: unknown): Readonly<{
+  gateEvent: AuthorityWireByKind["gate-event"];
+  receipt: AuthorityWireByKind["authority-receipt"];
+}> {
+  const gateEvent = parseAuthorityWire("gate-event", gateEventValue);
+  const receipt = parseAuthorityWire("authority-receipt", receiptValue);
+  if (receipt.decisionContextDigest !== gateEvent.decisionContextDigest) {
+    throw new TypeError("invalid portable authority evidence: decision context digest does not match GateEvent");
+  }
+  if (receipt.gateEventDigest !== authorityDigest(gateEvent)) {
+    throw new TypeError("invalid portable authority evidence: GateEvent digest mismatch");
+  }
+  return { gateEvent, receipt };
 }
 
 function hasOwnJsonPointer(root: Record<string, unknown>, pointer: string): boolean {
