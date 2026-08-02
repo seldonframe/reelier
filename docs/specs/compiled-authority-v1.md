@@ -161,9 +161,12 @@ or mutating the replacement target. It never removes another live stage.
 Filesystem identity is read with non-following `lstat({ bigint: true })`; device, inode/file ID, mode,
 and link count remain exact bigint values throughout comparison and are never rounded through a
 JavaScript `number`. Two distinct adjacent identities above `Number.MAX_SAFE_INTEGER` remain distinct.
-The exact `before-publication-stage-remove` fault point occurs immediately before every destructive
-publication-stage removal attempt. Each attempt first re-enumerates the root generation, revalidates
-the exact directory and owner identity/type/link count/name/bytes, and re-probes owner liveness. A
+The exact closed per-attempt order is `before-publication-stage-final-validation`, then
+`before-publication-stage-final-liveness`, then `before-publication-stage-remove-attempt`. The final
+validation revalidates the exact directory and owner identity/type/link count/name/bytes; final
+liveness re-probes the owner; and the remove-attempt hook occurs immediately before the destructive
+publication-stage removal attempt. Each transient attempt restarts with complete root-generation
+enumeration before that whole order repeats. A
 transient failure never retries `rm` directly: it restarts those validations against the same
 monotonic deadline. A same-name replacement installed before or during any attempt is preserved.
 Acquisition is bounded. A live same-host owner is never evicted because time elapsed; a
