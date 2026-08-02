@@ -25,6 +25,7 @@ export interface ReservationIntent {
   readonly canonicalRequestBytes: Uint8Array;
   readonly requestKey: string;
   readonly ingressClaimDigest: string;
+  readonly decisionContextDigest: string;
   readonly capabilityId: string;
   readonly capabilityDigest: string;
   readonly capabilityBytes: Uint8Array;
@@ -46,6 +47,7 @@ export interface StoredReservationIntent extends Omit<ReservationIntent, "canoni
   readonly capabilityBase64: string;
   readonly limitSlots: readonly LimitSlotIntent[];
 }
+export interface ReservationLinkage {readonly reservationId:string;readonly state:Exclude<LedgerState,"issued">;readonly ingressClaimDigest:string;readonly capabilityDigest:string;readonly decisionContextDigest:string;readonly updatedAt:string;readonly receiptRef?:string}
 
 export interface ReservationSnapshot {
   readonly reservationId: string;
@@ -134,6 +136,7 @@ export interface AuthorityLedger {
   transition(reservationId: string, expectedState: LedgerState, event: TransitionEvent): Promise<TransitionResult>;
   recover(): Promise<RecoverResult>;
   getReservation(reservationId: string): Promise<ReservationSnapshot | undefined>;
+  lookupReservationLinkage(reservationId:string):Promise<ReservationLinkage|undefined>;
   getReservationHistory(reservationId: string): Promise<ReservationHistory | undefined>;
   getHighWaterMark(): Promise<Readonly<{ observedAt: string | null }>>;
 }

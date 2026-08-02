@@ -86,7 +86,7 @@ export interface FsAuthorityLedgerOptions {
 }
 
 interface TransactionRecord {
-  readonly v: "reelier.authority-ledger-transaction/v3";
+  readonly v: "reelier.authority-ledger-transaction/v4";
   readonly intent: StoredReservationIntent;
 }
 
@@ -227,7 +227,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
       if (clockReason) return frozen({ ok: false, reason: clockReason });
       view = await this.persistClock(view, now, "reservation");
 
-      const transaction: TransactionRecord = frozen({ v: "reelier.authority-ledger-transaction/v3", intent: normalized });
+      const transaction: TransactionRecord = frozen({ v: "reelier.authority-ledger-transaction/v4", intent: normalized });
       const transactionDigest = rawDigest(canonicalBytes(transaction));
       const transactionHex = transactionDigest.slice(7);
       await this.writeImmutable(path.join("transactions", transactionHex), transaction, "reservation");
@@ -299,6 +299,11 @@ export class FsAuthorityLedger implements AuthorityLedger {
     });
     if (isLockFailure(result)) throw new AuthorityLedgerReadError(result.reason);
     return result as ReservationSnapshot | undefined;
+  }
+
+  async lookupReservationLinkage(reservationId:string) {
+    const reservation=await this.getReservation(reservationId);if(!reservation)return undefined;
+    return frozen({reservationId:reservation.reservationId,state:reservation.state,ingressClaimDigest:reservation.intent.ingressClaimDigest,capabilityDigest:reservation.intent.capabilityDigest,decisionContextDigest:reservation.intent.decisionContextDigest,updatedAt:reservation.updatedAt,...(reservation.resultDigest?{receiptRef:reservation.resultDigest}:{})});
   }
 
   async getReservationHistory(reservationId: string): Promise<ReservationHistory | undefined> {
@@ -586,7 +591,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
     const value = parseCanonical(bytes) as TransactionRecord;
     if (!value || typeof value !== "object") throw new LedgerCorruption("invalid transaction");
     assertExactKeys(value, ["intent", "v"]);
-    if (value.v !== "reelier.authority-ledger-transaction/v3") throw new LedgerCorruption("invalid transaction version");
+    if (value.v !== "reelier.authority-ledger-transaction/v4") throw new LedgerCorruption("invalid transaction version");
     const normalized = normalizeStoredIntent(value.intent);
     if (!canonicalBytes(normalized).equals(canonicalBytes(value.intent))) throw new LedgerCorruption("transaction intent is not closed");
     return value;
@@ -761,7 +766,7 @@ function normalizeIngressRecord(value:IngressRecord):IngressRecord{
 function normalizeIntent(input: ReservationIntent): StoredReservationIntent {
   if (!input || typeof input !== "object") throw new TypeError("reservation intent required");
   for (const id of [input.tenant, input.requester, input.definitionAlias, input.requestId, input.capabilityId]) if (typeof id !== "string" || !ID.test(id)) throw new TypeError("invalid reservation identity");
-  for (const digest of [input.requestDigest, input.canonicalRequestDigest, input.requestKey, input.ingressClaimDigest, input.capabilityDigest, input.contractDigest, input.sourceBundleDigest, input.sourceSnapshotDigest, input.authorityStateDigest, input.limitsDigest, input.outcomeKey, input.effectDigest]) if (typeof digest !== "string" || !SHA.test(digest) || digest === ZERO_SHA) throw new TypeError("invalid reservation digest");
+  for (const digest of [input.requestDigest, input.canonicalRequestDigest, input.requestKey, input.ingressClaimDigest,input.decisionContextDigest, input.capabilityDigest, input.contractDigest, input.sourceBundleDigest, input.sourceSnapshotDigest, input.authorityStateDigest, input.limitsDigest, input.outcomeKey, input.effectDigest]) if (typeof digest !== "string" || !SHA.test(digest) || digest === ZERO_SHA) throw new TypeError("invalid reservation digest");
   if (!input.limits) throw new TypeError("sealed limits required");
   const sealed = input as ReservationIntent & Required<Pick<ReservationIntent, "definitionAlias" | "requestDigest" | "contractDigest" | "sourceBundleDigest" | "sourceSnapshotDigest" | "authorityStateDigest" | "limits" | "limitsDigest">>;
   const request = Buffer.from(input.canonicalRequestBytes);
@@ -793,7 +798,7 @@ function normalizeIntent(input: ReservationIntent): StoredReservationIntent {
   if (slots.length !== 2 || slots[0].kind !== "contract-window" || slots[1].kind !== "source-trigger" || slots[0].maximum !== sealed.limits.maxEffectsPerWindow || slots[1].maximum !== sealed.limits.maxEffectsPerSourceTrigger || new Set(slots.map(slot => slot.key)).size !== slots.length) throw new TypeError("limit slots must exactly match sealed limits");
   return frozen({
     tenant: input.tenant, requester: input.requester, definitionAlias: sealed.definitionAlias, requestId: input.requestId, requestDigest: sealed.requestDigest,
-    canonicalRequestDigest: input.canonicalRequestDigest, canonicalRequestBase64: request.toString("base64"), requestKey: input.requestKey,ingressClaimDigest:input.ingressClaimDigest,
+    canonicalRequestDigest: input.canonicalRequestDigest, canonicalRequestBase64: request.toString("base64"), requestKey: input.requestKey,ingressClaimDigest:input.ingressClaimDigest,decisionContextDigest:input.decisionContextDigest,
     capabilityId: input.capabilityId, capabilityDigest: input.capabilityDigest, capabilityBase64: capability.toString("base64"),
     contractDigest: sealed.contractDigest, sourceBundleDigest: sealed.sourceBundleDigest, sourceSnapshotDigest: sealed.sourceSnapshotDigest,
     authorityStateDigest: sealed.authorityStateDigest, limits: frozen({ ...sealed.limits }), limitsDigest: sealed.limitsDigest,
@@ -804,7 +809,7 @@ function normalizeIntent(input: ReservationIntent): StoredReservationIntent {
 
 function normalizeStoredIntent(input: StoredReservationIntent): StoredReservationIntent {
   if (!input || typeof input !== "object" || typeof input.canonicalRequestBase64 !== "string" || typeof input.capabilityBase64 !== "string") throw new LedgerCorruption("malformed stored intent");
-  assertExactKeys(input, ["authorityStateDigest", "capabilityBase64", "capabilityDigest", "capabilityId", "canonicalRequestBase64", "canonicalRequestDigest", "contractDigest", "definitionAlias", "effectDigest", "expiresAt", "ingressClaimDigest", "issuedAt", "limitSlots", "limits", "limitsDigest", "outcomeKey", "requestDigest", "requestId", "requestKey", "requester", "sourceBundleDigest", "sourceSnapshotDigest", "tenant"]);
+  assertExactKeys(input, ["authorityStateDigest", "capabilityBase64", "capabilityDigest", "capabilityId", "canonicalRequestBase64", "canonicalRequestDigest", "contractDigest", "decisionContextDigest", "definitionAlias", "effectDigest", "expiresAt", "ingressClaimDigest", "issuedAt", "limitSlots", "limits", "limitsDigest", "outcomeKey", "requestDigest", "requestId", "requestKey", "requester", "sourceBundleDigest", "sourceSnapshotDigest", "tenant"]);
   if (!Array.isArray(input.limitSlots)) throw new LedgerCorruption("malformed stored limit slots");
   for (const slot of input.limitSlots) assertExactKeys(slot, ["key", "kind", "maximum"]);
   const request = Buffer.from(input.canonicalRequestBase64, "base64");

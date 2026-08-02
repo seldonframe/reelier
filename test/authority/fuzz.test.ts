@@ -43,7 +43,7 @@ test("fixed-seed bounded ledger state-machine fuzz never creates two committed r
           assert.equal(binding.ok, true); if (!binding.ok) continue;
           const candidate: ReservationIntent = {
             tenant: "tenant", requester: "requester", definitionAlias: "definition", requestId, requestDigest, requestKey,
-            ingressClaimDigest: binding.ingressClaimDigest,
+            ingressClaimDigest: binding.ingressClaimDigest, decisionContextDigest: hex(399),
             canonicalRequestDigest: requestDigest, canonicalRequestBytes: requestBytes,
             capabilityId, capabilityDigest: `sha256:${createHash("sha256").update(capabilityBytes).digest("hex")}`, capabilityBytes,
             contractDigest, sourceBundleDigest, sourceSnapshotDigest, authorityStateDigest, limits, limitsDigest,

@@ -41,6 +41,13 @@ export function connectorRegistrationDigest(registry:ConnectorRegistry,tenant:st
   const registration=requireStates(registry).get(key(tenant,connectorId,accountId));if(!registration)throw new TypeError("missing connector registration");
   return authorityDigest({v:"reelier.connector-registration/internal-v1",...registration});
 }
+export function connectorRegistrationStatus(registry:ConnectorRegistry,tenant:string,connectorId:string,accountId:string):Readonly<{status:"found"|"connector-missing"|"account-missing";digest:string}> {
+  const states=requireStates(registry),registration=states.get(key(tenant,connectorId,accountId));
+  if(registration)return Object.freeze({status:"found" as const,digest:connectorRegistrationDigest(registry,tenant,connectorId,accountId)});
+  const connectorExists=[...states.values()].some(value=>value.tenant===tenant&&value.connectorId===connectorId);
+  const status=connectorExists?"account-missing" as const:"connector-missing" as const;
+  return Object.freeze({status,digest:authorityDigest({v:"reelier.connector-registration-status/internal-v1",tenant,connectorId,accountId,status})});
+}
 
 function requireStates(registry:ConnectorRegistry){const state=registryStates.get(registry as object);if(!state)throw new TypeError("unrecognized connector registry");return state;}
 function detached(value:ConnectorRegistration):ConnectorRegistration{return Object.freeze({...value,allowedReadEndpointIds:Object.freeze([...value.allowedReadEndpointIds]),allowedWriteEndpointIds:Object.freeze([...value.allowedWriteEndpointIds]),riskClasses:Object.freeze([...value.riskClasses])});}

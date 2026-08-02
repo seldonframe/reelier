@@ -1,12 +1,12 @@
 import type { AuthoritySignature, OutcomeContract } from "./types.js";
 import type { RawSourceObservation, SourceReadPlan, SourceRegistry } from "./source.js";
-import { sourceResolverRegistrationDigest } from "./source.js";
+import { sourceResolverRegistrationStatus } from "./source.js";
 import type { TrustRoots } from "./trust.js";
 import { authoritySignatureDigest, trustRootSetDigest } from "./trust.js";
 import type { StaticPackRegistry } from "./pack.js";
 import { definitionRegistrationDigest } from "./pack.js";
 import type { ConnectorRegistry } from "./connector.js";
-import { connectorRegistrationDigest } from "./connector.js";
+import { connectorRegistrationStatus } from "./connector.js";
 import { authorityDigest, parseCanonicalAuthorityJson } from "./wire.js";
 
 const SHA=/^sha256:[0-9a-f]{64}$/;const ZERO_SHA=`sha256:${"0".repeat(64)}`;
@@ -67,8 +67,8 @@ function candidateCommitment(candidate:AuthorityStateCandidate,tenant:string,sou
   const delegation=candidate.delegationEnvelopes.map((envelope,index)=>{if(envelope.index!==index)throw new TypeError("delegation indexes must be contiguous zero-based");const parsed=parsedEnvelope("delegation-grant",envelope);return {index,...parsed};});
   let previous=-1;const stateEvents=candidate.stateEvents.map((event,index)=>{if(!event||typeof event!=="object"||Object.keys(event).length!==4||event.index!==index||!(["activated","revoked"] as unknown[]).includes(event.kind)||!SHA.test(event.contractDigest)||event.contractDigest===ZERO_SHA)throw new TypeError("invalid authority state event");const instant=Date.parse(event.at);if(!Number.isFinite(instant)||new Date(instant).toISOString()!==event.at||instant<previous)throw new TypeError("authority state events must be chronological exact instants");previous=instant;return {...event};});
   const contractValue=contract.value as OutcomeContract;if(contractValue.tenant!==tenant)throw new TypeError("candidate contract tenant mismatch");
-  resolverDigests.add(sourceResolverRegistrationDigest(sources,tenant,contractValue.sourceAuthority.resolverId));
-  connectorDigests.add(connectorRegistrationDigest(connectors,tenant,contractValue.connectorId,contractValue.accountId));
+  resolverDigests.add(sourceResolverRegistrationStatus(sources,tenant,contractValue.sourceAuthority.resolverId).digest);
+  connectorDigests.add(connectorRegistrationStatus(connectors,tenant,contractValue.connectorId,contractValue.accountId).digest);
   const recordPreimage={v:"reelier.authority-state-candidate/internal-v1",contract:{canonicalBase64:contract.canonicalBase64,valueDigest:contract.valueDigest,advertisedDigest:contract.advertisedDigest,signerId:contract.signerId,signatureDigest:contract.signatureDigest},delegation:delegation.map(({value:_,...item})=>item),stateEvents};
   const recordDigest=authorityDigest(recordPreimage);
   return {recordDigest,advertisedContractDigest:contract.advertisedDigest,contractValueDigest:contract.valueDigest,contractSignerId:contract.signerId,contractSignatureDigest:contract.signatureDigest,delegation:delegation.map(item=>({index:item.index,advertisedDigest:item.advertisedDigest,valueDigest:item.valueDigest,signerId:item.signerId,signatureDigest:item.signatureDigest})),stateEvents};

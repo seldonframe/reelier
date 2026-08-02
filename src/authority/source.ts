@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { SourceBundle, SourceClaim, SourceObservationEvidence } from "./types.js";
 import { authorityDigest, parseAuthorityWire } from "./wire.js";
+import { AuthorityBoundaryError } from "./errors.js";
 
 export interface UnboundSourceRead { readonly endpointId:string; readonly opaqueHandle:string }
 export interface PlannedSourceRead extends UnboundSourceRead { readonly index:number; readonly planDigest:string }
@@ -44,6 +45,11 @@ export function sourceResolverRegistrationDigest(registry:SourceRegistry,tenant:
   const states=registryStates.get(registry as object);if(!states)throw new TypeError("unrecognized source registry");const resolver=states.get(resolverKey(tenant,resolverId));if(!resolver)throw new TypeError("missing source resolver registration");
   return authorityDigest({v:"reelier.source-resolver-registration/internal-v1",tenant,resolverId,definitionDigest:resolver.definitionDigest,projectionSchemaId:resolver.projectionSchemaId,readEndpointIds:resolver.readEndpointIds,maxFreshnessSeconds:resolver.maxFreshnessSeconds});
 }
+export function sourceResolverRegistrationStatus(registry:SourceRegistry,tenant:string,resolverId:string):Readonly<{status:"found"|"resolver-missing";digest:string}> {
+  const states=registryStates.get(registry as object);if(!states)throw new TypeError("unrecognized source registry");
+  if(states.has(resolverKey(tenant,resolverId)))return Object.freeze({status:"found" as const,digest:sourceResolverRegistrationDigest(registry,tenant,resolverId)});
+  return Object.freeze({status:"resolver-missing" as const,digest:authorityDigest({v:"reelier.source-resolver-registration-status/internal-v1",tenant,resolverId,status:"resolver-missing"})});
+}
 
 export function planSourceReads(registry:SourceRegistry,input:Readonly<{tenant:string;resolverId:string;definitionDigest:string;sourceRefs:Readonly<Record<string,string>>;allowedReadEndpointIds:readonly string[]}>):readonly PlannedSourceRead[]{
   for(const handle of Object.values(input.sourceRefs)) if(!OPAQUE.test(handle)) throw new TypeError("source reference must be an opaque handle");
@@ -61,7 +67,7 @@ export function planSourceReads(registry:SourceRegistry,input:Readonly<{tenant:s
   if(new Set(plans.map(p=>p.planDigest)).size!==plans.length) throw new TypeError("duplicate source read plan");return Object.freeze(plans);
 }
 
-export function materializeSourceBundle(registry:SourceRegistry,input:Readonly<SourceValidationAuthority&{sourceRefs:Readonly<Record<string,string>>;observedAt:Date;plans:readonly PlannedSourceRead[];observations:readonly RawSourceObservation[]}>):ValidatedSourceBundle{
+export function materializeSourceBundle(registry:SourceRegistry,input:Readonly<SourceValidationAuthority&{sourceRefs:Readonly<Record<string,string>>;observedAt:Date;validationNow:Date;plans:readonly PlannedSourceRead[];observations:readonly RawSourceObservation[]}>):ValidatedSourceBundle{
   const resolver=requireResolver(registry,input.tenant,input.resolverId,input.definitionDigest);
   if(input.projectionSchemaId!==resolver.projectionSchemaId) throw new TypeError("source projection schema mismatch");
   if(!Number.isSafeInteger(input.maxFreshnessSeconds)||input.maxFreshnessSeconds<1||input.maxFreshnessSeconds>resolver.maxFreshnessSeconds) throw new TypeError("contract freshness exceeds resolver maximum");
@@ -71,16 +77,17 @@ export function materializeSourceBundle(registry:SourceRegistry,input:Readonly<S
   for(const observation of input.observations){if(byDigest.has(observation.planDigest)) throw new TypeError("duplicate source observation");if(!planned.some(p=>p.planDigest===observation.planDigest)) throw new TypeError("unknown or extra source observation");byDigest.set(observation.planDigest,Uint8Array.from(observation.rawBytes));}
   if(byDigest.size!==planned.length) throw new TypeError("missing source observation");
   const resolverObservations=Object.freeze(planned.map(plan=>{const raw=byDigest.get(plan.planDigest)!;return Object.freeze({index:plan.index,planDigest:plan.planDigest,endpointId:plan.endpointId,rawDigest:sha(raw),bodyBase64:Buffer.from(raw).toString("base64")});}));
-  const observedAt=input.observedAt.toISOString();if(!Number.isFinite(input.observedAt.getTime())) throw new TypeError("invalid observed time");
+  if(!(input.observedAt instanceof Date)||!Number.isFinite(input.observedAt.getTime())||!(input.validationNow instanceof Date)||!Number.isFinite(input.validationNow.getTime()))throw new AuthorityBoundaryError("source","source-stale","source validation requires exact kernel instants");
+  const observedAt=input.observedAt.toISOString(),validationInstant=input.validationNow.toISOString();
   const projected=resolver.project(Object.freeze({plans:planned,observations:resolverObservations,observedAt}));
   const claims=canonicalClaims(projected.claims,projected.projection,input.authorizedProjectionPointers,input.requiredGroundedPointers);
   const sourceRefs=deepFreeze({...input.sourceRefs});const sourceRefsDigest=authorityDigest({v:"reelier.source-refs/internal-v1",sourceRefs});
   const evidence=resolverObservations.map(({index,planDigest,endpointId,rawDigest})=>({index,planDigest,endpointId,rawDigest}));
   const readSetDigest=authorityDigest({v:"reelier.source-read-set/internal-v1",sourceRefsDigest,observations:evidence});
-  const freshness=Math.min(input.maxFreshnessSeconds,resolver.maxFreshnessSeconds);const until=input.observedAt.getTime()+freshness*1000;if(!Number.isSafeInteger(until)) throw new TypeError("source freshness overflow");
+  const freshness=Math.min(input.maxFreshnessSeconds,resolver.maxFreshnessSeconds);const until=input.observedAt.getTime()+freshness*1000;if(!Number.isSafeInteger(until)) throw new TypeError("source freshness overflow");if(input.observedAt.getTime()>input.validationNow.getTime()||input.validationNow.getTime()>=until)throw new AuthorityBoundaryError("source","source-stale","source observation is outside its freshness interval");
   const bundle=deepFreeze(parseAuthorityWire("source-bundle",{v:"reelier.source-bundle/v1",tenant:input.tenant,definitionDigest:input.definitionDigest,projectionSchemaId:input.projectionSchemaId,sourceRefsDigest,readSetDigest,sourceIdentity:projected.sourceIdentity,triggerIdentity:projected.triggerIdentity,observedAt,freshUntil:new Date(until).toISOString(),provenance:{resolverId:input.resolverId,observations:evidence},claims,projection:projected.projection}));
   const digest=authorityDigest(bundle);const sourceSnapshotDigest=authorityDigest({v:"reelier.source-snapshot/internal-v1",bundleDigest:digest,sourceRefsDigest,readSetDigest,resolverId:input.resolverId,observations:evidence});
-  const result=Object.freeze({bundle,digest,validationInstant:observedAt,sourceSnapshotDigest}) as ValidatedSourceBundle;validated.add(result);return result;
+  const result=Object.freeze({bundle,digest,validationInstant,sourceSnapshotDigest}) as ValidatedSourceBundle;validated.add(result);return result;
 }
 
 /** Legacy candidate validation is deliberately disabled: kernel materialization is required. */
