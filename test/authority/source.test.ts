@@ -28,6 +28,20 @@ test("resolver cannot fabricate claim ownership or leave projection leaves uncla
 
 test("freshness is kernel-owned, integral, bounded, and capped by resolver registration",()=>{for(const value of [0,121,1.5,301]){const f=input();assert.throws(()=>materializeSourceBundle(f.local,{...f.args,maxFreshnessSeconds:value}),/freshness/i);}assert.throws(()=>createSourceRegistry([resolver({maxFreshnessSeconds:0})]),/freshness/i);});
 
-test("observation and validation instants are distinct kernel inputs with exact-boundary stale refusal",()=>{const f=input();const same=materializeSourceBundle(f.local,f.args);assert.equal(same.bundle.observedAt,observedAt.toISOString());assert.equal(same.validationInstant,observedAt.toISOString());const boundary=new Date(observedAt.getTime()+60_000);assert.throws(()=>materializeSourceBundle(f.local,{...f.args,validationNow:boundary}),(error:unknown)=>Boolean(error&&typeof error==="object"&&"authorityCode" in error&&(error as {authorityCode?:unknown}).authorityCode==="source-stale"));const future=new Date(observedAt.getTime()-1);assert.throws(()=>materializeSourceBundle(f.local,{...f.args,validationNow:future}),(error:unknown)=>Boolean(error&&typeof error==="object"&&"authorityCode" in error));});
+test("observation and validation instants are distinct required kernel inputs",()=>{
+  const f=input();
+  const accepted=materializeSourceBundle(f.local,f.args);
+  assert.equal(accepted.bundle.observedAt,"2026-01-15T00:00:00.000Z");
+  assert.equal(accepted.bundle.freshUntil,"2026-01-15T00:01:00.000Z");
+  assert.equal(accepted.validationInstant,"2026-01-15T00:00:00.000Z");
+
+  const isSourceStale=(error:unknown)=>Boolean(error&&typeof error==="object"&&"authorityCode" in error&&(error as {authorityCode?:unknown}).authorityCode==="source-stale");
+  assert.throws(()=>materializeSourceBundle(f.local,{...f.args,validationNow:new Date("2026-01-15T00:01:00.000Z")}),isSourceStale,"the exact freshness boundary is stale");
+  assert.throws(()=>materializeSourceBundle(f.local,{...f.args,observedAt:new Date("2026-01-15T00:00:00.001Z"),validationNow:observedAt}),isSourceStale,"an observation in the future is stale");
+
+  const missingValidationNow={...f.args} as Record<string,unknown>;
+  delete missingValidationNow.validationNow;
+  assert.throws(()=>materializeSourceBundle(f.local,missingValidationNow as never),(error:unknown)=>Boolean(error&&typeof error==="object"&&"authorityCode" in error),"validationNow has no compatibility default");
+});
 
 test("planning rejects URL/path handles, tenant drift, endpoint drift, and mutable resolver replacement",()=>{const item=resolver();const local=createSourceRegistry([item]);for(const value of ["https://evil.test","../secret","C:\\secret"])assert.throws(()=>planSourceReads(local,{tenant:"tenant_1",resolverId:"resolver_1",definitionDigest,sourceRefs:{...refs,appointment:value},allowedReadEndpointIds:item.readEndpointIds}),/opaque/i);(item as {plan:RegisteredSourceResolver["plan"]}).plan=()=>[{endpointId:"evil",opaqueHandle:"x"}];assert.equal(planSourceReads(local,{tenant:"tenant_1",resolverId:"resolver_1",definitionDigest,sourceRefs:refs,allowedReadEndpointIds:item.readEndpointIds})[0].endpointId,"appointment.read");});

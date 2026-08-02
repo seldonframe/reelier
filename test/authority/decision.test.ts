@@ -3,6 +3,9 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { pathToFileURL } from "node:url";
 import { authorityDigest } from "../../src/authority/wire.js";
 import {
   createFileGateDecisionSink,
@@ -33,6 +36,18 @@ function primary(overrides: Partial<GateDecisionRecord> = {}): GateDecisionRecor
     gateEventDigest: authorityDigest(event), signerId: "gate_signer_1", signature: { alg: "ed25519", sig: Buffer.alloc(64, 7).toString("base64") },
     ...overrides,
   });
+}
+
+function accepted(eventId="event_accepted",ingressClaimDigest=sha("4"),reservationId="reservation_1"):GateDecisionRecord{
+  const decisionContext={...context,contractDigest:sha("5"),capabilityId:"capability_1",capabilityDigest:sha("6"),outcomeKey:sha("7"),effectDigest:sha("8"),snapshots:{sourceBundleDigest:sha("9"),authorityStateDigest:sha("3")}};
+  const gateEvent={...event,eventId,verdict:"accepted" as const,reasonCode:"accepted",decisionContextDigest:authorityDigest(decisionContext)};
+  return primary({ingressClaimDigest,reservationId,decisionContext,decisionContextDigest:authorityDigest(decisionContext),gateEvent,gateEventDigest:authorityDigest(gateEvent)});
+}
+
+function conflict(eventId="event_conflict"):GateDecisionRecord{
+  const decisionContext={...context,definitionAlias:"definition_2"};
+  const gateEvent={...event,eventId,reasonCode:"request-id-conflict",decisionContextDigest:authorityDigest(decisionContext)};
+  return primary({role:"conflict",decisionContext,decisionContextDigest:authorityDigest(decisionContext),gateEvent,gateEventDigest:authorityDigest(gateEvent)});
 }
 
 test("the closed reason protocol has the exact approved order and no free-form escape hatch", () => {
@@ -86,25 +101,43 @@ test("accepted reservation and non-primary conflict indexes have exact distinct 
 });
 
 test("concurrent appends and every crash boundary expose a complete transaction or no transaction",async()=>{
-  const root=await mkdtemp(path.join(tmpdir(),"reelier-decision-atomic-"));try{const sink=createFileGateDecisionSink(root);const results=await Promise.all(Array.from({length:100},()=>sink.append(primary())));assert.equal(results.filter((result:{ok:boolean;status?:string})=>result.ok&&result.status==="appended").length,1);assert.equal(results.filter((result:{ok:boolean;status?:string})=>result.ok&&result.status==="idempotent").length,99);}finally{await rm(root,{recursive:true,force:true});}
+  const exactRoot=await mkdtemp(path.join(tmpdir(),"reelier-decision-exact-"));
+  try{const results=await Promise.all(Array.from({length:100},()=>createFileGateDecisionSink(exactRoot).append(primary())));assert.equal(results.filter((result:{ok:boolean;status?:string})=>result.ok&&result.status==="appended").length,1);assert.equal(results.filter((result:{ok:boolean;status?:string})=>result.ok&&result.status==="idempotent").length,99);}finally{await rm(exactRoot,{recursive:true,force:true});}
+
+  const primaryRoot=await mkdtemp(path.join(tmpdir(),"reelier-decision-primary-race-"));
+  try{const records=Array.from({length:100},(_,index)=>{const gateEvent={...event,eventId:`event_primary_${index}`};return primary({gateEvent,gateEventDigest:authorityDigest(gateEvent)});});const results=await Promise.all(records.map(record=>createFileGateDecisionSink(primaryRoot).append(record)));assert.equal(results.filter((result:{ok:boolean;status?:string})=>result.ok&&result.status==="appended").length,1);assert.equal(results.filter((result:{ok:boolean;reason?:string})=>!result.ok&&result.reason==="primary-ingress-conflict").length,99);}finally{await rm(primaryRoot,{recursive:true,force:true});}
+
+  const reservationRoot=await mkdtemp(path.join(tmpdir(),"reelier-decision-reservation-race-"));
+  try{const records=Array.from({length:100},(_,index)=>accepted(`event_reservation_${index}`,`sha256:${index.toString(16).padStart(64,"0")}`));const results=await Promise.all(records.map(record=>createFileGateDecisionSink(reservationRoot).append(record)));assert.equal(results.filter((result:{ok:boolean;status?:string})=>result.ok&&result.status==="appended").length,1);assert.equal(results.filter((result:{ok:boolean;reason?:string})=>!result.ok&&result.reason==="reservation-conflict").length,99);}finally{await rm(reservationRoot,{recursive:true,force:true});}
+
+  const childRoot=await mkdtemp(path.join(tmpdir(),"reelier-decision-child-race-"));
+  try{
+    const moduleUrl=pathToFileURL(path.resolve("dist-test/src/authority/decision.js")).href;
+    const script='const {createFileGateDecisionSink}=await import(process.argv[1]);const result=await createFileGateDecisionSink(process.argv[2]).append(JSON.parse(process.argv[3]));process.stdout.write(JSON.stringify(result));';
+    const run=promisify(execFile);
+    const records=Array.from({length:20},(_,index)=>accepted(`event_child_${index}`,`sha256:${(index+200).toString(16).padStart(64,"0")}`));
+    const outputs=await Promise.all(records.map(record=>run(process.execPath,["--input-type=module","-e",script,moduleUrl,childRoot,JSON.stringify(record)])));
+    const results=outputs.map(output=>JSON.parse(output.stdout) as {ok:boolean;status?:string;reason?:string});
+    assert.equal(results.filter(result=>result.ok&&result.status==="appended").length,1);
+    assert.equal(results.filter(result=>!result.ok&&result.reason==="reservation-conflict").length,19);
+  }finally{await rm(childRoot,{recursive:true,force:true});}
+
   const expectedFaultPoints=["before-write","after-write","before-file-sync","after-file-sync","before-rename","after-rename","before-directory-sync","after-directory-sync"] as const;
   assert.deepEqual(gateDecisionFaultPoints,expectedFaultPoints);
-  for(const point of expectedFaultPoints){
+  for(const [shape,record,indexes] of [["conflict",conflict(),["event"] as readonly string[]],["refused-primary",primary(),["event","primary"] as readonly string[]],["accepted",accepted(),["event","primary","reservation"] as readonly string[]]] as const)for(const point of expectedFaultPoints){
     const directory=await mkdtemp(path.join(tmpdir(),"reelier-decision-crash-"));
     try{
       let fired=false;
       const sink=createFileGateDecisionSink(directory,{faultInjector(observed:string){if(!fired&&observed===point){fired=true;throw new Error(`fault:${point}`);}}});
-      await sink.append(primary());
-      assert.equal(fired,true,point);
+      await sink.append(record);
+      assert.equal(fired,true,`${shape}:${point}`);
       const recovered=createFileGateDecisionSink(directory);
-      const byEvent=await recovered.lookupByEvent("event_1");
-      const byPrimary=await recovered.lookupPrimaryByIngress(sha("4"));
-      assert.equal(byEvent.ok,true,`${point}: event index`);
-      assert.equal(byPrimary.ok,true,`${point}: primary index`);
-      if(byEvent.ok&&byPrimary.ok){
-        assert.equal(byEvent.status,byPrimary.status,`${point}: indexes are atomic`);
-        assert.ok(byEvent.status==="found"||byEvent.status==="absent",point);
-      }
+      const lookups=[];
+      if(indexes.includes("event"))lookups.push(await recovered.lookupByEvent(record.gateEvent.eventId));
+      if(indexes.includes("primary"))lookups.push(await recovered.lookupPrimaryByIngress(record.ingressClaimDigest));
+      if(indexes.includes("reservation"))lookups.push(await recovered.lookupAcceptedByReservation(record.reservationId!));
+      for(const lookup of lookups)assert.equal(lookup.ok,true,`${shape}:${point}: lookup is never corrupt`);
+      if(lookups.every(lookup=>lookup.ok)){assert.equal(new Set(lookups.map(lookup=>lookup.status)).size,1,`${shape}:${point}: all indexes share one visibility state`);assert.ok(lookups[0].status==="found"||lookups[0].status==="absent");}
     }finally{await rm(directory,{recursive:true,force:true});}
   }
 });

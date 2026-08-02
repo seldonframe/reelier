@@ -28,12 +28,23 @@ test("public production export parses DecisionContext and its portable evidence 
   assert.deepEqual(authority.parseAuthorityWire("gate-event", gate), gate);
   assert.deepEqual(authority.parseAuthorityWire("authority-receipt", receipt), receipt);
   assert.deepEqual(authority.parsePortableAuthorityEvidence(gate, receipt), { gateEvent: gate, receipt });
+  assert.deepEqual(Object.keys(authority).sort(),[
+    "AuthorityLedgerReadError","CAPABILITY_LIFETIME_MS","FsAuthorityLedger","assertAcceptedDecisionContext","authorityCanonicalBytes","authorityDigest","authorityKinds","createSourceRegistry","decisionContextPresence","deriveAuthorityRequestKey","deriveContractWindowLimitKey","deriveProviderSourceTriggerLimitKey","deriveSemanticOutcomeKey","digestOutcomeRequest","dispatchFaultPoints","isValidatedContract","isValidatedSourceBundle","ledgerFaultPoints","materializeSourceBundle","parseAuthorityWire","parseCanonicalAuthorityJson","parsePortableAuthorityEvidence","planSourceReads","reservationFaultPoints","resultFaultPoints","signAuthorityDigest","validateStoredContract","validateVerifiedContractEligibility","verifyAuthoritySignature","verifyStoredContract",
+  ],"the public runtime export surface is an exact allowlist");
   for (const helper of ["verifyStoredContract", "validateVerifiedContractEligibility", "validateStoredContract", "createSourceRegistry", "planSourceReads", "materializeSourceBundle"]) assert.equal(typeof (authority as unknown as Record<string, unknown>)[helper], "function", helper);
   for (const helper of ["digestOutcomeRequest", "deriveAuthorityRequestKey", "deriveSemanticOutcomeKey", "deriveContractWindowLimitKey", "deriveProviderSourceTriggerLimitKey"]) assert.equal(typeof (authority as unknown as Record<string, unknown>)[helper], "function", helper);
   for (const internal of ["authenticateOutcomeRequest", "authenticatedOutcomeRequestState", "createConnectorRegistry", "connectorRegistrationDigest", "createAuthorityStatePort", "digestAuthorityState", "trustRootSetDigest", "definitionRegistrationDigest", "sourceResolverRegistrationDigest", "authoritySignatureDigest", "ingressFaultPoints", "clockFaultPoints"]) assert.equal(internal in authority, false, internal);
   assert.equal("validateSourceBundle" in authority, false, "candidate SourceBundle constructors stay private");
   for (const internal of ["createAuthorityGate", "createReservedDispatchHandle", "unwrapReservedDispatchHandle", "createFileGateDecisionSink", "parseGateDecisionRecord", "GateDecisionSink", "GateDecisionSigner", "ReservedDispatchHandle"]) assert.equal(internal in authority, false, internal);
   const declarations=readFileSync(path.join(process.cwd(),"dist","authority","index.d.ts"),"utf8");
-  for(const forbidden of ["AuthorityGate","GateResult","GateDecisionSink","GateDecisionSigner","ReservedDispatchHandle","unwrapReservedDispatchHandle"])assert.doesNotMatch(declarations,new RegExp(`\\b${forbidden}\\b`),`${forbidden} must stay out of packaged type exports`);
+  const normalizedDeclarations=declarations.replace(/\s+/g," ").trim();
+  assert.equal(normalizedDeclarations,[
+    'export * from "./types.js";','export * from "./wire.js";','export * from "./crypto.js";','export * from "./ledger.js";',
+    'export { AuthorityLedgerReadError, FsAuthorityLedger, reservationFaultPoints, dispatchFaultPoints, resultFaultPoints, ledgerFaultPoints, type LedgerFaultPoint, type FsAuthorityLedgerOptions, } from "./host/fs-ledger.js";',
+    'export { digestOutcomeRequest, deriveAuthorityRequestKey, deriveContractWindowLimitKey, deriveProviderSourceTriggerLimitKey, } from "./keys.js";',
+    'export { deriveSemanticOutcomeKey } from "./compile.js";',
+    'export { verifyStoredContract, validateVerifiedContractEligibility, validateStoredContract, isValidatedContract, type VerifiedStoredContract, type ValidatedContract, type StoredSignedContract, } from "./contract.js";',
+    'export { createSourceRegistry, planSourceReads, materializeSourceBundle, isValidatedSourceBundle, type RegisteredSourceResolver, type PlannedSourceRead, type RawSourceObservation, type SourceProjection, type ValidatedSourceBundle, } from "./source.js";',
+  ].join(" "),"the public declaration export surface is an exact allowlist");
   for (const kind of ["outcome-contract", "delegation-grant", "source-bundle", "decision-context", "gate-event", "authority-receipt"]) assert.ok(existsSync(path.join(process.cwd(), "dist", "authority", "schemas", `${kind}.schema.json`)));
 });
