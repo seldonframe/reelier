@@ -51,7 +51,7 @@ export function parseAuthorityWire<K extends AuthorityKind>(kind: K, value: unkn
   const parsed = JSON.parse(authorityCanonicalBytes(value).toString("utf8")) as AuthorityWireByKind[K];
   if (kind === "outcome-request") {
     const choices = (parsed as AuthorityWireByKind["outcome-request"]).choices;
-    if (Object.keys(choices).some((key) => ["tenant", "provideraccount", "account", "connector", "pack", "endpoint", "recipient", "template", "body", "url", "providerargs", "credentials"].includes(key.toLowerCase()))) {
+    if (Object.keys(choices).some((key) => ["tenant", "provideraccount", "account", "connector", "pack", "endpoint", "recipient", "template", "body", "url", "providerargs", "providerarguments", "credentials"].includes(key.toLowerCase()))) {
       throw new TypeError("invalid outcome-request: forbidden choice property name");
     }
   }
@@ -59,7 +59,25 @@ export function parseAuthorityWire<K extends AuthorityKind>(kind: K, value: unkn
     const effect = parsed as AuthorityWireByKind["transport-effect"];
     if (Object.keys(effect.headers).some((key) => ["authorization", "cookie", "host"].includes(key.toLowerCase()))) throw new TypeError("invalid transport-effect: forbidden header property name");
     if (Buffer.from(effect.bodyBase64, "base64").toString("base64") !== effect.bodyBase64) throw new TypeError("invalid transport-effect: noncanonical base64");
-    if (effect.query !== effect.query.split("&").sort().join("&")) throw new TypeError("invalid transport-effect: query is not canonically encoded");
+    if (effect.query) {
+      const pairs = effect.query.split("&");
+      let previous = "";
+      const keys = new Set<string>();
+      for (const pair of pairs) {
+        const split = pair.indexOf("=");
+        if (split <= 0 || split !== pair.lastIndexOf("=")) throw new TypeError("invalid transport-effect: query is not canonically encoded");
+        const key = pair.slice(0, split);
+        const value = pair.slice(split + 1);
+        try {
+          for (const encoded of [...key.matchAll(/%[0-9A-F]{2}/g), ...value.matchAll(/%[0-9A-F]{2}/g)]) {
+            if (/^[A-Za-z0-9._~-]$/.test(decodeURIComponent(encoded[0]))) throw new TypeError("unreserved escape");
+          }
+          decodeURIComponent(key); decodeURIComponent(value);
+        } catch { throw new TypeError("invalid transport-effect: query is not canonically encoded"); }
+        if (keys.has(key) || (previous && previous >= key)) throw new TypeError("invalid transport-effect: query is not canonically encoded");
+        keys.add(key); previous = key;
+      }
+    }
   }
   return parsed;
 }

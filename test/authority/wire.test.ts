@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
 import {
   authorityCanonicalBytes,
@@ -35,6 +36,18 @@ test("OutcomeRequest parses only the closed v1 request boundary", () => {
   assert.throws(() => parseAuthorityWire("outcome-request", { ...request, choices: { x: "x".repeat(257) } }), /more than 256 characters/i);
 });
 
+test("OutcomeRequest forbidden names are denied by both the schema and parser", () => {
+  const Ajv2020 = createRequire(import.meta.url)("ajv/dist/2020").default;
+  const ajv = new Ajv2020({ strict: true });
+  const schema = JSON.parse(readFileSync(path.join(process.cwd(), "contract/authority/v1/outcome-request.schema.json"), "utf8"));
+  const validate = ajv.compile(schema);
+  for (const key of ["tenant", "TENANT", "account", "providerAccount", "connector", "pack", "endpoint", "recipient", "template", "body", "URL", "providerArgs", "providerArguments", "credentials"]) {
+    const candidate = { ...request, choices: { [key]: "x" } };
+    assert.equal(validate(candidate), false, `schema must deny ${key}`);
+    assert.throws(() => parseAuthorityWire("outcome-request", candidate), /forbidden choice property name|property name/i, key);
+  }
+});
+
 test("TransportEffect seals headers, query, base64 bytes, preconditions, and reconciliation", () => {
   const effect = {
     v: "reelier.transport-effect/v1", endpointId: "connector_1", method: "POST", path: "/v1/messages", query: "account=tenant_1&mode=send",
@@ -46,6 +59,9 @@ test("TransportEffect seals headers, query, base64 bytes, preconditions, and rec
   assert.throws(() => parseAuthorityWire("transport-effect", { ...effect, bodyBase64: "e3=" }), /pattern/i);
   assert.throws(() => parseAuthorityWire("transport-effect", { ...effect, query: "mode=send&account=tenant_1" }), /canonically encoded/i);
   assert.throws(() => parseAuthorityWire("transport-effect", { ...effect, query: "x=%af" }), /pattern/i);
+  for (const query of ["&", "a==b", "a=%41", "a=1&a=2", "b=1&a=2", "a=%af", "a=%C3%28", "a+b=c", "a=1#x", "a=hello world"]) {
+    assert.throws(() => parseAuthorityWire("transport-effect", { ...effect, query }), /invalid transport-effect/i, query);
+  }
 });
 
 test("SourceBundle provenance and AuthorityReceipt fixed evidence claims are closed", () => {
