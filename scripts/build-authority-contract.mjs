@@ -1,9 +1,12 @@
 import canonicalize from "canonicalize";
-import { createHash } from "node:crypto";
+import { createHash, createPrivateKey, sign } from "node:crypto";
 import { cp, mkdir, readFile, writeFile } from "node:fs/promises";
 
 const digest = "sha256:" + "0".repeat(64);
 const at = "2026-01-01T00:00:00.000Z";
+const vectorPrivateKey = createPrivateKey(`-----BEGIN PRIVATE KEY-----
+MC4CAQAwBQYDK2VwBCIEIO2e0HCVJ9AnRKWoiI+A2JXFNQeKOiEQDB7P8clr8OyJ
+-----END PRIVATE KEY-----`);
 const vectors = {
   principal: { v: "reelier.principal/v1", id: "operator_1", kind: "operator" },
   "delegation-grant": { v: "reelier.delegation-grant/v1", tenant: "tenant_1", grantId: "grant_1", parentDigest: digest, grantor: "operator_1", grantee: "gate_1", issuedAt: at, expiresAt: "2026-02-01T00:00:00.000Z", scope: ["definition_1"] },
@@ -18,7 +21,10 @@ const vectors = {
 };
 const rendered = JSON.stringify(Object.fromEntries(Object.entries(vectors).map(([kind, value]) => {
   const canonical = canonicalize(value);
-  return [kind, { canonical, digest: "sha256:" + createHash("sha256").update(canonical, "utf8").digest("hex"), value }];
+  const digest = "sha256:" + createHash("sha256").update(canonical, "utf8").digest("hex");
+  const purposeDigest = "sha256:" + createHash("sha256").update(canonicalize({ digest, purpose: kind }), "utf8").digest("hex");
+  const sig = sign(null, Buffer.from(`reelier-authority-v1\n${purposeDigest}`, "utf8"), vectorPrivateKey).toString("base64");
+  return [kind, { canonical, digest, signature: { alg: "ed25519", sig }, value }];
 })), null, 2) + "\n";
 const target = new URL("../contract/authority/v1/golden-vectors.json", import.meta.url);
 if (process.argv.includes("--copy-schemas")) {

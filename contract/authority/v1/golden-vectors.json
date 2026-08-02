@@ -2,6 +2,10 @@
   "principal": {
     "canonical": "{\"id\":\"operator_1\",\"kind\":\"operator\",\"v\":\"reelier.principal/v1\"}",
     "digest": "sha256:28b442775639001094da48c1fd5801ae4515687b92379aaa9c812186247c9d8d",
+    "signature": {
+      "alg": "ed25519",
+      "sig": "89kwKe899ecT9Ju02RE3oFFVKLqKfTYf/wp/hYzMVt5Z+OZk0yd5o6Vc+paqOKMBqkqpBcoxcrVfRpEVbZuHDA=="
+    },
     "value": {
       "v": "reelier.principal/v1",
       "id": "operator_1",
@@ -11,6 +15,10 @@
   "delegation-grant": {
     "canonical": "{\"expiresAt\":\"2026-02-01T00:00:00.000Z\",\"grantId\":\"grant_1\",\"grantee\":\"gate_1\",\"grantor\":\"operator_1\",\"issuedAt\":\"2026-01-01T00:00:00.000Z\",\"parentDigest\":\"sha256:0000000000000000000000000000000000000000000000000000000000000000\",\"scope\":[\"definition_1\"],\"tenant\":\"tenant_1\",\"v\":\"reelier.delegation-grant/v1\"}",
     "digest": "sha256:002d5d928df48bb484114c2f65f2eeb6bfe853373689a66c86bebb12b3844855",
+    "signature": {
+      "alg": "ed25519",
+      "sig": "JqFl8Vuc8QOizflqaI6F74m94MlVLKlaGWhMgLzAgFpz4b95C6CeVGht2/Zw56F1OI16DI9Y9JKkajui6K9mDg=="
+    },
     "value": {
       "v": "reelier.delegation-grant/v1",
       "tenant": "tenant_1",
@@ -28,6 +36,10 @@
   "source-bundle": {
     "canonical": "{\"claims\":{\"authored\":[],\"grounded\":[],\"unresolved\":[]},\"freshUntil\":\"2026-01-01T00:01:00.000Z\",\"observedAt\":\"2026-01-01T00:00:00.000Z\",\"projection\":{},\"provenance\":{\"endpointId\":\"read_1\",\"resolverId\":\"resolver_1\"},\"rawDigest\":\"sha256:0000000000000000000000000000000000000000000000000000000000000000\",\"sourceIdentity\":\"source_1\",\"tenant\":\"tenant_1\",\"triggerIdentity\":\"trigger_1\",\"v\":\"reelier.source-bundle/v1\"}",
     "digest": "sha256:d0a253ff5cf8d4b8858e1f2541f18a265e4d3ccc70fe56affbe51ea298f5d11b",
+    "signature": {
+      "alg": "ed25519",
+      "sig": "Rpm5Zsv2KRmnAKQrNgpeXttoCS8w4g0Pa1O4OHOzjEIEtMkIwU5TlJWl/PSL9P+RBQwYvXSIvIt0H0nVARU3BA=="
+    },
     "value": {
       "v": "reelier.source-bundle/v1",
       "tenant": "tenant_1",
@@ -51,6 +63,10 @@
   "outcome-contract": {
     "canonical": "{\"alias\":\"definition_1\",\"contractId\":\"contract_1\",\"definitionDigest\":\"sha256:0000000000000000000000000000000000000000000000000000000000000000\",\"packDigest\":\"sha256:0000000000000000000000000000000000000000000000000000000000000000\",\"tenant\":\"tenant_1\",\"v\":\"reelier.outcome-contract/v1\",\"validFrom\":\"2026-01-01T00:00:00.000Z\",\"validUntil\":\"2026-02-01T00:00:00.000Z\"}",
     "digest": "sha256:e30b1c73fa4b5c9b9348867a02f9ce018357103b45bdce36325e59872bfc5041",
+    "signature": {
+      "alg": "ed25519",
+      "sig": "fdVpTW38hX42GzFJVTiu0Fej9osNo5s2uTapjVaRpuSUbvH74T4rSp/BTqwuisNW8/YAsSkhb7v/HrWNZNhQBQ=="
+    },
     "value": {
       "v": "reelier.outcome-contract/v1",
       "tenant": "tenant_1",
@@ -65,6 +81,10 @@
   "outcome-request": {
     "canonical": "{\"choices\":{},\"requestId\":\"request_1\",\"sourceRefs\":{\"appointment\":\"ref_1\"},\"v\":\"reelier.outcome-request/v1\"}",
     "digest": "sha256:b0627231c94f6e288b46bae793b7c64e90429f7e3fc27bc3e870ec23ee0b4245",
+    "signature": {
+      "alg": "ed25519",
+      "sig": "N/9rgtMvD7Q3H+/fJCpXzI5d5aZVh8zEbiFnZ+lEfHKzd45CWRA4+EViv1JLxMNLhXBpGrYnZT61TuctjBS1BQ=="
+    },
     "value": {
       "v": "reelier.outcome-request/v1",
       "requestId": "request_1",
@@ -77,6 +97,10 @@
   "transport-effect": {
     "canonical": "{\"bodyBase64\":\"e30=\",\"endpointId\":\"connector_1\",\"headers\":{\"Content-Type\":\"application/json\"},\"idempotency\":\"native\",\"method\":\"POST\",\"path\":\"/v1/messages\",\"preconditions\":[],\"query\":[],\"reconciliation\":{\"recipeId\":\"message-readback\"},\"riskClass\":\"message\",\"v\":\"reelier.transport-effect/v1\"}",
     "digest": "sha256:9016ab99a7ca6434d82cdab0d5afe9acbc32f9ea0b8b926b9161cce1caf3d5ae",
+    "signature": {
+      "alg": "ed25519",
+      "sig": "52SfDGXf75NFFJFr9t5caCfXCb6ViU1Lg/DB0rnGApMkrFip/IZHyF5gv7oljhP7JubFmFGNkaFZUSJfz3agAg=="
+    },
     "value": {
       "v": "reelier.transport-effect/v1",
       "endpointId": "connector_1",
@@ -98,6 +122,10 @@
   "compiled-capability": {
     "canonical": "{\"capabilityId\":\"capability_1\",\"effectDigest\":\"sha256:0000000000000000000000000000000000000000000000000000000000000000\",\"expiresAt\":\"2026-01-01T00:01:00.000Z\",\"issuedAt\":\"2026-01-01T00:00:00.000Z\",\"outcomeKey\":\"sha256:0000000000000000000000000000000000000000000000000000000000000000\",\"requestKey\":\"sha256:0000000000000000000000000000000000000000000000000000000000000000\",\"v\":\"reelier.compiled-capability/v1\"}",
     "digest": "sha256:df74358185c67e9b3a887a1b901d4f91dd3340e67f04c8e11de0072e512a03ac",
+    "signature": {
+      "alg": "ed25519",
+      "sig": "ZHjdXbSqs87pJRUZ7/zC25WU7CI1q4h/d+dypn7wkyIbZ+wlkPuuaN1OCjF/MB4z5ECkHr61p97Ho8aalGQsAg=="
+    },
     "value": {
       "v": "reelier.compiled-capability/v1",
       "capabilityId": "capability_1",
@@ -111,6 +139,10 @@
   "gate-event": {
     "canonical": "{\"at\":\"2026-01-01T00:00:00.000Z\",\"eventId\":\"event_1\",\"reasonCode\":\"accepted\",\"v\":\"reelier.gate-event/v1\",\"verdict\":\"accepted\"}",
     "digest": "sha256:274d01036b2c1d5392edd82e68dd86c2e5533aeaf2a78de74a3a2f9e5928a1ee",
+    "signature": {
+      "alg": "ed25519",
+      "sig": "VvgmX7UtTjL59MdEKYWtJYomX2DIhAiATwZGVJsftgO6qNW8DRBYqRiOI9ByTRyoGREIVKAksgtJnxm361QOCQ=="
+    },
     "value": {
       "v": "reelier.gate-event/v1",
       "eventId": "event_1",
@@ -122,6 +154,10 @@
   "authority-receipt": {
     "canonical": "{\"claims\":{\"authorization\":\"verified\",\"completeness\":\"unchecked\",\"dispatch\":\"verified\",\"providerAcknowledgment\":\"unchecked\",\"reconciliation\":\"absent\",\"sourceCompleteness\":\"verified\",\"topology\":\"unchecked\"},\"gateEventDigest\":\"sha256:0000000000000000000000000000000000000000000000000000000000000000\",\"receiptId\":\"receipt_1\",\"v\":\"reelier.authority-receipt/v1\"}",
     "digest": "sha256:381e8326f01653521a517c594aeef77ca4f12c6bebda3a50499905f1d6fc6751",
+    "signature": {
+      "alg": "ed25519",
+      "sig": "M+02A+5cMrI89vip8lWjIqtlV98DylTRH7ZW/eELptSe/vYMWJn34u9GJumZO6yNx4gvSv9asVxZ4Q13OyocAw=="
+    },
     "value": {
       "v": "reelier.authority-receipt/v1",
       "receiptId": "receipt_1",
@@ -140,6 +176,10 @@
   "pack-manifest": {
     "canonical": "{\"definitions\":[\"definition_1\"],\"packDigest\":\"sha256:0000000000000000000000000000000000000000000000000000000000000000\",\"packId\":\"first_party\",\"v\":\"reelier.outcome-pack-manifest/v1\"}",
     "digest": "sha256:cc3dbb1ef3538ba2dbbee7c2fcc659bad5a757e1ec07a579cf955b2e7602f4fc",
+    "signature": {
+      "alg": "ed25519",
+      "sig": "AOSZASikcu2Da6YIuqUN13ENnY9iArSKx/jm+ZuCCLOCekOMCExUrXLcZNdz/SBQKZpp3sSbBtIFibasV88/Dg=="
+    },
     "value": {
       "v": "reelier.outcome-pack-manifest/v1",
       "packId": "first_party",
