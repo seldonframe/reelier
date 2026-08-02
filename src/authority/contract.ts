@@ -2,7 +2,8 @@ import type { AuthoritySignature, OutcomeContract } from "./types.js";
 import type { TrustRoots } from "./trust.js";
 import { verifyTrustedAuthority } from "./trust.js";
 import type { ValidatedDelegationChain } from "./delegation.js";
-import { validateContractAgainstDelegation } from "./delegation.js";
+import { assertValidatedDelegationChain, validateContractAgainstDelegation } from "./delegation.js";
+import { authorityDigest } from "./wire.js";
 
 export interface StoredSignedContract {
   readonly contract: unknown;
@@ -17,7 +18,7 @@ export type ContractStateEvent = Readonly<{
   at: string;
 }>;
 
-const validatedContractBrand = Symbol("ValidatedContract");
+declare const validatedContractBrand: unique symbol;
 
 export interface ValidatedContract {
   readonly [validatedContractBrand]: true;
@@ -25,9 +26,15 @@ export interface ValidatedContract {
   readonly digest: string;
   readonly signerId: string;
   readonly signerPrincipalId: string;
+  readonly validationInstant: string;
+  readonly activationSnapshotDigest: string;
 }
 
-export type RegisteredDefinitionDigests = ReadonlyMap<string, Readonly<{ packDigest: string; definitionDigest: string }>>;
+export interface RegisteredDefinitionDigests {
+  readonly get: (alias: string) => Readonly<{ packDigest: string; definitionDigest: string }> | undefined;
+}
+
+const validatedContracts = new WeakSet<object>();
 
 export function validateStoredContract(input: Readonly<{
   stored: StoredSignedContract;
@@ -39,6 +46,7 @@ export function validateStoredContract(input: Readonly<{
   requester: string;
   now: Date;
 }>): ValidatedContract {
+  assertValidatedDelegationChain(input.delegation);
   const verified = verifyTrustedAuthority(input.trustRoots, { tenant: input.tenant, signerId: input.stored.signerId, purpose: "outcome-contract", advertisedDigest: input.stored.digest, value: input.stored.contract, signature: input.stored.signature });
   const contract = verified.value;
   if (contract.tenant !== input.tenant) throw new TypeError("contract tenant mismatch");
@@ -50,12 +58,14 @@ export function validateStoredContract(input: Readonly<{
   if (!registration || registration.packDigest !== contract.packDigest || registration.definitionDigest !== contract.definitionDigest) throw new TypeError("registered definition digest mismatch");
   validateContractAgainstDelegation(contract, input.delegation);
   if (verified.principalId !== input.delegation.leafGrantee) throw new TypeError("contract signer principal lacks leaf delegation authority");
-  assertActive(input.stateEvents, verified.digest, now);
-  return Object.freeze({ [validatedContractBrand]: true as const, contract: deepFreeze(contract), digest: verified.digest, signerId: verified.signerId, signerPrincipalId: verified.principalId });
+  const activationSnapshotDigest = assertActive(input.stateEvents, verified.digest, now);
+  const validated = Object.freeze({ contract: deepFreeze(contract), digest: verified.digest, signerId: verified.signerId, signerPrincipalId: verified.principalId, validationInstant: input.now.toISOString(), activationSnapshotDigest }) as ValidatedContract;
+  validatedContracts.add(validated);
+  return validated;
 }
 
-function assertActive(events: readonly ContractStateEvent[], digest: string, now: number): void {
-  const relevant = events.filter(event => event.contractDigest === digest);
+function assertActive(events: readonly ContractStateEvent[], digest: string, now: number): string {
+  const relevant = events.filter(event => event.contractDigest === digest).map(event => Object.freeze({ kind: event.kind, contractDigest: event.contractDigest, at: event.at }));
   let activatedAt: number | undefined;
   let revokedAt: number | undefined;
   let previous = -Infinity;
@@ -75,10 +85,15 @@ function assertActive(events: readonly ContractStateEvent[], digest: string, now
   }
   if (activatedAt === undefined || activatedAt > now) throw new TypeError("contract is inactive");
   if (revokedAt !== undefined && revokedAt <= now) throw new TypeError("contract is revoked");
+  return authorityDigest({ v: "reelier.contract-state-snapshot/internal-v1", contractDigest: digest, events: relevant });
 }
 
 export function isValidatedContract(value: unknown): value is ValidatedContract {
-  return Boolean(value && typeof value === "object" && (value as Partial<ValidatedContract>)[validatedContractBrand] === true);
+  return Boolean(value && typeof value === "object" && validatedContracts.has(value));
+}
+
+export function assertValidatedContract(value: unknown): asserts value is ValidatedContract {
+  if (!isValidatedContract(value)) throw new TypeError("compile requires a validated contract");
 }
 
 function deepFreeze<T>(value: T): T {

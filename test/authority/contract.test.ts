@@ -33,6 +33,8 @@ test("a stored contract validates immutable authority, activation, audience, reg
   const f = fixture();
   const validated = validate(f);
   assert.equal(isValidatedContract(validated), true);
+  assert.equal(isValidatedContract({ ...validated }), false);
+  assert.equal(isValidatedContract(structuredClone(validated)), false);
   assert.equal(validated.digest, f.digest);
   assert.equal(Object.isFrozen(validated.contract), true);
   assert.notEqual(validated.contract, f.contract);

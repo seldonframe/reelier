@@ -17,6 +17,8 @@ export interface ValidatedDelegationChain {
   readonly leafGrantee: string;
 }
 
+const validatedDelegationChains = new WeakSet<object>();
+
 export function validateDelegationChain(input: Readonly<{ tenant: string; sponsor: string; now: Date; trustRoots: TrustRoots; grants: readonly StoredSignedGrant[] }>): ValidatedDelegationChain {
   if (input.grants.length === 0) throw new TypeError("delegation chain requires at least one leaf grant");
   const grants: DelegationGrant[] = [];
@@ -51,7 +53,13 @@ export function validateDelegationChain(input: Readonly<{ tenant: string; sponso
     digests.push(verified.digest);
   }
   const leaf = grants[grants.length - 1];
-  return Object.freeze({ grants: Object.freeze(grants), digests: Object.freeze(digests), leaf, leafDigest: digests[digests.length - 1], leafGrantee: leaf.grantee });
+  const chain = Object.freeze({ grants: Object.freeze(grants), digests: Object.freeze(digests), leaf, leafDigest: digests[digests.length - 1], leafGrantee: leaf.grantee });
+  validatedDelegationChains.add(chain);
+  return chain;
+}
+
+export function assertValidatedDelegationChain(value: unknown): asserts value is ValidatedDelegationChain {
+  if (!value || typeof value !== "object" || !validatedDelegationChains.has(value)) throw new TypeError("validated delegation chain required");
 }
 
 function assertAttenuated(parent: DelegationConstraints, child: DelegationConstraints): void {

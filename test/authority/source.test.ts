@@ -19,6 +19,16 @@ test("registered source planning accepts only tenant-scoped opaque handles and r
   assert.throws(() => planSourceReads(badRegistry, { tenant: "tenant_1", resolverId: "bad", definitionDigest, sourceRefs: { item: "opaque_1" }, allowedReadEndpointIds: ["read_1"] }), /unknown|unauthorized.*endpoint/i);
 });
 
+test("source registry is an opaque immutable snapshot of resolver definitions", () => {
+  const resolver = { tenant: "tenant_1", resolverId: "mutable", definitionDigest, projectionSchemaId: "projection/v1", readEndpointIds: ["read_1"], plan: (refs: Readonly<Record<string, string>>) => [{ endpointId: "read_1", opaqueHandle: refs.item }] };
+  const local = createSourceRegistry([resolver]);
+  assert.deepEqual(Object.keys(local), []);
+  assert.equal("resolvers" in local, false);
+  resolver.readEndpointIds.push("attacker");
+  resolver.plan = () => [{ endpointId: "attacker", opaqueHandle: "changed" }];
+  assert.deepEqual(planSourceReads(local, { tenant: "tenant_1", resolverId: "mutable", definitionDigest, sourceRefs: { item: "opaque_1" }, allowedReadEndpointIds: ["read_1"] }), [{ endpointId: "read_1", opaqueHandle: "opaque_1" }]);
+});
+
 test("source validation binds raw bytes, provenance, freshness, schemas, projection, and grounded own paths", () => {
   const validated = validateSourceBundle(registry, { bundle, rawResponse: raw, authority, now: new Date("2026-01-15T00:00:30.000Z") });
   assert.equal(isValidatedSourceBundle(validated), true);
@@ -40,7 +50,14 @@ test("source validation binds raw bytes, provenance, freshness, schemas, project
     ["missing required", { ...bundle, claims: { grounded: [bundle.claims.grounded[1]], authored: [], unresolved: [] } }],
   ];
   for (const [label, candidate] of rejects) assert.throws(() => validateSourceBundle(registry, { bundle: candidate, rawResponse: raw, authority, now: new Date("2026-01-15T00:00:30.000Z") }), /raw digest|stale|observed|tenant|resolver|endpoint|definition|schema|unauthorized|grounded|required/i, label);
+  assert.throws(() => validateSourceBundle(registry, { bundle, rawResponse: raw, authority, now: new Date(bundle.freshUntil) }), /stale/i, "freshUntil is exclusive");
   assert.throws(() => validateSourceBundle(registry, { bundle: { ...bundle, claims: { grounded: [{ claimId: "escaped", projectionPointer: "/a~0b/missing" }], authored: [], unresolved: [] } }, rawResponse: raw, authority, now: new Date("2026-01-15T00:00:30.000Z") }), /own path|required/i);
   assert.throws(() => validateSourceBundle(registry, { bundle: { ...bundle, claims: { grounded: bundle.claims.grounded, authored: [{ claimId: "copy", projectionPointer: "/message" }], unresolved: [] } }, rawResponse: raw, authority, now: new Date("2026-01-15T00:00:30.000Z") }), /more than one class/i);
   assert.throws(() => validateSourceBundle(registry, { bundle: { ...bundle, claims: { grounded: bundle.claims.grounded, authored: [{ claimId: "message", projectionPointer: "/authored" }], unresolved: [] } }, rawResponse: raw, authority: { ...authority, authorizedProjectionPointers: [...authority.authorizedProjectionPointers, "/authored"] }, now: new Date("2026-01-15T00:00:30.000Z") }), /claim id.*unique/i);
+});
+
+test("validated source brands refuse copied lookalikes", () => {
+  const validated = validateSourceBundle(registry, { bundle, rawResponse: raw, authority, now: new Date("2026-01-15T00:00:30.000Z") });
+  assert.equal(isValidatedSourceBundle({ ...validated }), false);
+  assert.equal(isValidatedSourceBundle(structuredClone(validated)), false);
 });

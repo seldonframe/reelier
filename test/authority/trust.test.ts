@@ -40,3 +40,17 @@ test("trust roots reject duplicate tenant-qualified signer IDs", () => {
   const entry = { tenant: "tenant_1", signerId: "key_1", principalId: "operator_1", publicKey: key, purposes: ["delegation-grant"] as const };
   assert.throws(() => createTrustRoots([entry, entry]), /duplicate.*signer/i);
 });
+
+test("trust roots are opaque snapshots, not mutable Map wrappers", () => {
+  const trusted = generateKeyPairSync("ed25519");
+  const attacker = generateKeyPairSync("ed25519");
+  const entry = { tenant: "tenant_1", signerId: "key_1", principalId: "operator_1", publicKey: trusted.publicKey, purposes: ["delegation-grant"] as const };
+  const roots = createTrustRoots([entry]);
+  assert.deepEqual(Object.keys(roots), []);
+  assert.equal("entries" in roots, false);
+  (entry as { principalId: string }).principalId = "attacker";
+  (entry as { publicKey: typeof attacker.publicKey }).publicKey = attacker.publicKey;
+  const digest = authorityDigest(grant);
+  const verified = verifyTrustedAuthority(roots, { tenant: "tenant_1", signerId: "key_1", purpose: "delegation-grant", advertisedDigest: digest, value: grant, signature: signAuthorityDigest(trusted.privateKey, "delegation-grant", digest) });
+  assert.equal(verified.principalId, "operator_1");
+});

@@ -11,9 +11,8 @@ export interface TrustRootEntry {
   readonly purposes: readonly AuthorityKind[];
 }
 
-export interface TrustRoots {
-  readonly entries: ReadonlyMap<string, TrustRootEntry>;
-}
+declare const trustRootsBrand: unique symbol;
+export interface TrustRoots { readonly [trustRootsBrand]: true }
 
 export interface VerifiedAuthority<K extends AuthorityKind> {
   readonly value: AuthorityWireByKind[K];
@@ -23,6 +22,7 @@ export interface VerifiedAuthority<K extends AuthorityKind> {
 }
 
 const keyFor = (tenant: string, signerId: string) => `${tenant}\0${signerId}`;
+const trustRootStates = new WeakMap<object, ReadonlyMap<string, TrustRootEntry>>();
 
 export function createTrustRoots(entries: readonly TrustRootEntry[]): TrustRoots {
   const indexed = new Map<string, TrustRootEntry>();
@@ -31,16 +31,20 @@ export function createTrustRoots(entries: readonly TrustRootEntry[]): TrustRoots
     if (indexed.has(key)) throw new TypeError("duplicate tenant-qualified trusted signer");
     indexed.set(key, Object.freeze({ ...entry, purposes: Object.freeze([...entry.purposes]) }));
   }
-  return Object.freeze({ entries: indexed });
+  const roots = Object.freeze(Object.create(null)) as TrustRoots;
+  trustRootStates.set(roots, indexed);
+  return roots;
 }
 
 export function verifyTrustedAuthority<K extends AuthorityKind>(
   roots: TrustRoots,
   input: Readonly<{ tenant: string; signerId: string; purpose: K; advertisedDigest: string; value: unknown; signature: AuthoritySignature }>,
 ): VerifiedAuthority<K> {
-  const trusted = roots.entries.get(keyFor(input.tenant, input.signerId));
+  const entries = trustRootStates.get(roots);
+  if (!entries) throw new TypeError("unrecognized trust roots");
+  const trusted = entries.get(keyFor(input.tenant, input.signerId));
   if (!trusted) {
-    const signerExistsElsewhere = [...roots.entries.values()].some(entry => entry.signerId === input.signerId);
+    const signerExistsElsewhere = [...entries.values()].some(entry => entry.signerId === input.signerId);
     throw new TypeError(signerExistsElsewhere ? "untrusted signer for tenant" : "untrusted signer");
   }
   if (!trusted.purposes.includes(input.purpose)) throw new TypeError("trusted signer does not allow authority purpose");

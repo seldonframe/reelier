@@ -1,13 +1,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash, generateKeyPairSync } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { authorityCanonicalBytes, authorityDigest } from "../../src/authority/wire.js";
 import { signAuthorityDigest } from "../../src/authority/crypto.js";
 import { createTrustRoots } from "../../src/authority/trust.js";
 import { validateDelegationChain } from "../../src/authority/delegation.js";
 import { validateStoredContract } from "../../src/authority/contract.js";
 import { createSourceRegistry, validateSourceBundle } from "../../src/authority/source.js";
-import { createStaticPackRegistry, registeredDefinitionDigests, type StaticPackDefinition } from "../../src/authority/pack.js";
+import * as publicAuthority from "../../src/authority/index.js";
+import { assertStaticFirstPartySourcesConform, createStaticPackRegistry, registeredDefinitionDigests, type StaticPackDefinition } from "../../src/authority/pack.js";
 import { compileOutcome, deriveSemanticOutcomeKey } from "../../src/authority/compile.js";
 
 const packDigest = "sha256:" + "a".repeat(64);
@@ -66,17 +68,37 @@ test("static pack registry refuses alias and definition-digest collisions", () =
   assert.throws(() => createStaticPackRegistry([definition(), definition({ alias: "definition_2" })]), /digest collision/i);
 });
 
+test("static pack registry is opaque, immutable, and absent from the public authority export", () => {
+  const original = definition();
+  const packs = createStaticPackRegistry([original]);
+  assert.deepEqual(Object.keys(packs), []);
+  assert.equal("byAlias" in packs, false);
+  assert.equal("createStaticPackRegistry" in publicAuthority, false);
+  const f = fixture(original);
+  (original.writeEndpointIds as string[]).push("attacker");
+  (original as { compile: StaticPackDefinition["compile"] }).compile = () => { throw new Error("swapped callback"); };
+  assert.doesNotThrow(() => compileOutcome(f.packs, { contract: f.validatedContract, source: f.validatedSource, choices: {}, now }));
+});
+
 test("compilation is byte-identical, canonical, policy-bound, choice-bounded, and frozen", () => {
   const f = fixture();
   const originalDateNow = Date.now;
   const originalRandom = Math.random;
+  const originalEnv = process.env;
+  const originalFetch = globalThis.fetch;
   Date.now = () => { throw new Error("ambient clock used"); };
   Math.random = () => { throw new Error("ambient randomness used"); };
+  Object.defineProperty(process, "env", { configurable: true, enumerable: true, writable: true, value: new Proxy(originalEnv, { get() { throw new Error("ambient environment used"); } }) });
+  globalThis.fetch = (() => { throw new Error("ambient network used"); }) as typeof fetch;
   let first: ReturnType<typeof compileOutcome>;
   try { first = compileOutcome(f.packs, { contract: f.validatedContract, source: f.validatedSource, choices: { urgent: true }, now }); }
-  finally { Date.now = originalDateNow; Math.random = originalRandom; }
+  finally {
+    Date.now = originalDateNow; Math.random = originalRandom;
+    Object.defineProperty(process, "env", { configurable: true, enumerable: true, writable: true, value: originalEnv });
+    globalThis.fetch = originalFetch;
+  }
   const second = compileOutcome(f.packs, { contract: f.validatedContract, source: f.validatedSource, choices: { urgent: true }, now });
-  assert.equal(first.effectBytes.equals(second.effectBytes), true);
+  assert.equal(first.effectCanonicalBase64, second.effectCanonicalBase64);
   assert.equal(first.effectDigest, second.effectDigest);
   assert.deepEqual(first.capabilityCommitment, second.capabilityCommitment);
   assert.equal(Buffer.from(first.effect.bodyBase64, "base64").toString("utf8"), '{"message":"Hello world","urgent":true}');
@@ -87,6 +109,20 @@ test("compilation is byte-identical, canonical, policy-bound, choice-bounded, an
   assert.equal(Buffer.from(compileOutcome(f.packs, { contract: f.validatedContract, source: f.validatedSource, choices: {}, now }).effect.bodyBase64, "base64").toString("utf8"), '{"message":"Hello world","urgent":false}');
   const drifted = fixture(definition({ policySchemaId: "policy/v2" }));
   assert.throws(() => compileOutcome(drifted.packs, { contract: drifted.validatedContract, source: drifted.validatedSource, choices: {}, now }), /policy schema drift/i);
+});
+
+test("compiled bytes, nested effect data, and capability commitments cannot diverge after return", () => {
+  const f = fixture();
+  const compiled = compileOutcome(f.packs, { contract: f.validatedContract, source: f.validatedSource, choices: {}, now });
+  const originalBase64 = compiled.effectCanonicalBase64;
+  const copy = Buffer.from(originalBase64, "base64");
+  copy.fill(0);
+  assert.equal(compiled.effectCanonicalBase64, originalBase64);
+  assert.equal(authorityDigest(JSON.parse(Buffer.from(compiled.effectCanonicalBase64, "base64").toString("utf8"))), compiled.effectDigest);
+  assert.throws(() => { (compiled.effect.headers as Record<string, string>)["X-Attacker"] = "yes"; }, /not extensible|read only/i);
+  assert.throws(() => { (compiled.effect.preconditions as unknown[]).push({}); }, /not extensible/i);
+  assert.throws(() => { (compiled.capabilityCommitment as { effectDigest: string }).effectDigest = "sha256:" + "0".repeat(64); }, /read only/i);
+  assert.equal(compiled.capabilityCommitment.effectDigest, compiled.effectDigest);
 });
 
 test("compiler refuses unknown endpoint/risk and every malformed pack-emitted transport boundary", () => {
@@ -115,6 +151,8 @@ test("validated contract and source authority is single-context and cannot be re
   assert.doesNotThrow(() => compileOutcome(f.packs, { contract: f.validatedContract, source: f.validatedSource, choices: {}, now }));
   assert.throws(() => compileOutcome(f.packs, { contract: f.validatedContract, source: f.validatedSource, choices: {}, now: new Date(now.getTime() + 1) }), /validation instant|same context/i);
   assert.throws(() => compileOutcome(f.packs, { contract: f.validatedContract, source: f.validatedSource, choices: {}, now: new Date(now.getTime() - 1) }), /validation instant|same context/i);
+  assert.throws(() => compileOutcome(f.packs, { contract: f.validatedContract, source: f.validatedSource, choices: {}, now: new Date(f.sourceBundle.freshUntil) }), /validation instant|stale/i);
+  assert.throws(() => compileOutcome(f.packs, { contract: f.validatedContract, source: f.validatedSource, choices: {}, now: new Date(f.contract.validUntil) }), /validation instant|expired/i);
 });
 
 test("semantic outcome keys are length-delimited, field-ordered, and use UTF-8 byte lengths", () => {
@@ -128,4 +166,13 @@ test("semantic outcome keys are length-delimited, field-ordered, and use UTF-8 b
     deriveSemanticOutcomeKey({ tenant: "x|y", contractDigest: "z", definitionAlias: "d", sourceIdentity: "e", triggerIdentity: "f" }),
     deriveSemanticOutcomeKey({ tenant: "x", contractDigest: "y|z", definitionAlias: "d", sourceIdentity: "e", triggerIdentity: "f" }),
   );
+});
+
+test("static first-party compiler source conformance refuses ambient I/O, clock, randomness, and code loading", () => {
+  const compilerSource = readFileSync("src/authority/compile.ts", "utf8");
+  assert.doesNotThrow(() => assertStaticFirstPartySourcesConform([{ file: "src/authority/compile.ts", source: compilerSource }]));
+  for (const source of [
+    'import fs from "node:fs";', 'import "node:https";', "process.env.SECRET", "fetch('https://example.test')", "Date.now()", "new Date()", "Math.random()",
+    "randomUUID()", "randomBytes(16)", "import('./plugin.js')", "require('./plugin.js')", "eval('1')", "new Function('return 1')",
+  ]) assert.throws(() => assertStaticFirstPartySourcesConform([{ file: "bad-pack.ts", source }]), /static first-party purity/i, source);
 });

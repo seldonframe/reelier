@@ -16,9 +16,8 @@ export interface RegisteredSourceResolver {
   readonly plan: (sourceRefs: Readonly<Record<string, string>>) => readonly SourceReadPlan[];
 }
 
-export interface SourceRegistry {
-  readonly resolvers: ReadonlyMap<string, RegisteredSourceResolver>;
-}
+declare const sourceRegistryBrand: unique symbol;
+export interface SourceRegistry { readonly [sourceRegistryBrand]: true }
 
 export interface SourceValidationAuthority {
   readonly tenant: string;
@@ -30,16 +29,20 @@ export interface SourceValidationAuthority {
   readonly requiredGroundedPointers: readonly string[];
 }
 
-const validatedSourceBrand = Symbol("ValidatedSourceBundle");
+declare const validatedSourceBrand: unique symbol;
 
 export interface ValidatedSourceBundle {
   readonly [validatedSourceBrand]: true;
   readonly bundle: SourceBundle;
   readonly digest: string;
+  readonly validationInstant: string;
+  readonly sourceSnapshotDigest: string;
 }
 
 const resolverKey = (tenant: string, resolverId: string) => `${tenant}\0${resolverId}`;
 const OPAQUE_HANDLE = /^(?![A-Za-z][A-Za-z0-9+.-]*:)(?!.*[\\/])[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/;
+const sourceRegistryStates = new WeakMap<object, ReadonlyMap<string, RegisteredSourceResolver>>();
+const validatedSourceBundles = new WeakSet<object>();
 
 export function createSourceRegistry(resolvers: readonly RegisteredSourceResolver[]): SourceRegistry {
   const indexed = new Map<string, RegisteredSourceResolver>();
@@ -48,12 +51,16 @@ export function createSourceRegistry(resolvers: readonly RegisteredSourceResolve
     if (indexed.has(key)) throw new TypeError("duplicate tenant-qualified source resolver");
     indexed.set(key, Object.freeze({ ...resolver, readEndpointIds: Object.freeze([...resolver.readEndpointIds]) }));
   }
-  return Object.freeze({ resolvers: indexed });
+  const registry = Object.freeze(Object.create(null)) as SourceRegistry;
+  sourceRegistryStates.set(registry, indexed);
+  return registry;
 }
 
 export function planSourceReads(registry: SourceRegistry, input: Readonly<{ tenant: string; resolverId: string; definitionDigest: string; sourceRefs: Readonly<Record<string, string>>; allowedReadEndpointIds: readonly string[] }>): readonly SourceReadPlan[] {
   for (const handle of Object.values(input.sourceRefs)) if (!OPAQUE_HANDLE.test(handle)) throw new TypeError("source reference must be an opaque handle");
-  const resolver = registry.resolvers.get(resolverKey(input.tenant, input.resolverId));
+  const resolvers = sourceRegistryStates.get(registry);
+  if (!resolvers) throw new TypeError("unrecognized source registry");
+  const resolver = resolvers.get(resolverKey(input.tenant, input.resolverId));
   if (!resolver) throw new TypeError("unknown resolver for tenant");
   if (resolver.definitionDigest !== input.definitionDigest) throw new TypeError("source resolver definition mismatch");
   const registered = new Set(resolver.readEndpointIds);
@@ -74,7 +81,9 @@ export function validateSourceBundle(registry: SourceRegistry, input: Readonly<{
   if (bundle.definitionDigest !== authority.definitionDigest) throw new TypeError("source definition mismatch");
   if (bundle.projectionSchemaId !== authority.projectionSchemaId) throw new TypeError("source projection schema mismatch");
   if (bundle.provenance.resolverId !== authority.resolverId) throw new TypeError("source resolver provenance mismatch");
-  const resolver = registry.resolvers.get(resolverKey(bundle.tenant, bundle.provenance.resolverId));
+  const resolvers = sourceRegistryStates.get(registry);
+  if (!resolvers) throw new TypeError("unrecognized source registry");
+  const resolver = resolvers.get(resolverKey(bundle.tenant, bundle.provenance.resolverId));
   if (!resolver) throw new TypeError("unknown resolver for tenant");
   if (resolver.definitionDigest !== bundle.definitionDigest || resolver.projectionSchemaId !== bundle.projectionSchemaId) throw new TypeError("registered resolver schema or definition mismatch");
   if (!resolver.readEndpointIds.includes(bundle.provenance.endpointId)) throw new TypeError("unknown source provenance endpoint");
@@ -95,11 +104,19 @@ export function validateSourceBundle(registry: SourceRegistry, input: Readonly<{
   for (const pointer of authority.requiredGroundedPointers) {
     if (!grounded.has(pointer) || !hasOwnJsonPointer(bundle.projection, pointer)) throw new TypeError("required source field is not grounded at an own path");
   }
-  return Object.freeze({ [validatedSourceBrand]: true as const, bundle: deepFreeze(bundle), digest: authorityDigest(bundle) });
+  const digest = authorityDigest(bundle);
+  const sourceSnapshotDigest = authorityDigest({ v: "reelier.source-snapshot/internal-v1", bundleDigest: digest, rawDigest: bundle.rawDigest, provenance: bundle.provenance });
+  const validated = Object.freeze({ bundle: deepFreeze(bundle), digest, validationInstant: input.now.toISOString(), sourceSnapshotDigest }) as ValidatedSourceBundle;
+  validatedSourceBundles.add(validated);
+  return validated;
 }
 
 export function isValidatedSourceBundle(value: unknown): value is ValidatedSourceBundle {
-  return Boolean(value && typeof value === "object" && (value as Partial<ValidatedSourceBundle>)[validatedSourceBrand] === true);
+  return Boolean(value && typeof value === "object" && validatedSourceBundles.has(value));
+}
+
+export function assertValidatedSourceBundle(value: unknown): asserts value is ValidatedSourceBundle {
+  if (!isValidatedSourceBundle(value)) throw new TypeError("compile requires a validated source bundle");
 }
 
 function decodePointerSegment(segment: string): string { return segment.replace(/~1/g, "/").replace(/~0/g, "~"); }

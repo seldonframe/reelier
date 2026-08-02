@@ -2,10 +2,11 @@ import { createHash } from "node:crypto";
 import type { TransportEffect } from "./types.js";
 import { authorityCanonicalBytes, authorityDigest, parseAuthorityWire } from "./wire.js";
 import type { ValidatedContract } from "./contract.js";
-import { isValidatedContract } from "./contract.js";
+import { assertValidatedContract } from "./contract.js";
 import type { ValidatedSourceBundle } from "./source.js";
-import { isValidatedSourceBundle } from "./source.js";
+import { assertValidatedSourceBundle } from "./source.js";
 import type { StaticPackRegistry } from "./pack.js";
+import { lookupStaticPackDefinition } from "./pack.js";
 
 export interface SemanticOutcomeFields {
   readonly tenant: string;
@@ -17,7 +18,7 @@ export interface SemanticOutcomeFields {
 
 export interface CompiledOutcome {
   readonly effect: TransportEffect;
-  readonly effectBytes: Buffer;
+  readonly effectCanonicalBase64: string;
   readonly effectDigest: string;
   readonly outcomeKey: string;
   readonly capabilityCommitment: Readonly<{
@@ -32,17 +33,28 @@ export interface CompiledOutcome {
     connectorId: string;
     accountId: string;
     policyDigest: string;
+    validationInstant: string;
+    activationSnapshotDigest: string;
+    sourceSnapshotDigest: string;
     effectDigest: string;
     outcomeKey: string;
   }>;
 }
 
 export function compileOutcome(registry: StaticPackRegistry, input: Readonly<{ contract: ValidatedContract; source: ValidatedSourceBundle; choices: unknown; now: Date }>): CompiledOutcome {
-  if (!isValidatedContract(input.contract)) throw new TypeError("compile requires a validated contract");
-  if (!isValidatedSourceBundle(input.source)) throw new TypeError("compile requires a validated source bundle");
+  assertValidatedContract(input.contract);
+  assertValidatedSourceBundle(input.source);
+  const validationInstant = input.now.toISOString();
+  if (input.contract.validationInstant !== validationInstant || input.source.validationInstant !== validationInstant) throw new TypeError("compile requires the same validation instant and context");
   const contract = input.contract.contract;
   const source = input.source.bundle;
-  const definition = registry.byAlias.get(contract.alias);
+  const now = input.now.getTime();
+  if (now < Date.parse(contract.validFrom)) throw new TypeError("contract is not yet valid at compilation instant");
+  if (now >= Date.parse(contract.validUntil)) throw new TypeError("contract is expired at compilation instant");
+  if (Date.parse(source.observedAt) > now || now >= Date.parse(source.freshUntil)) throw new TypeError("source is stale or not observed at compilation instant");
+  const expectedSourceSnapshot = authorityDigest({ v: "reelier.source-snapshot/internal-v1", bundleDigest: input.source.digest, rawDigest: source.rawDigest, provenance: source.provenance });
+  if (input.source.sourceSnapshotDigest !== expectedSourceSnapshot) throw new TypeError("source snapshot context mismatch");
+  const definition = lookupStaticPackDefinition(registry, contract.alias);
   if (!definition || definition.definitionDigest !== contract.definitionDigest || definition.packDigest !== contract.packDigest) throw new TypeError("unknown or drifted static definition");
   if (definition.resolverId !== contract.sourceAuthority.resolverId || definition.projectionSchemaId !== contract.sourceAuthority.projectionSchemaId) throw new TypeError("static definition source authority mismatch");
   if (contract.sourceAuthority.allowedReadEndpointIds.some(endpoint => !definition.readEndpointIds.includes(endpoint))) throw new TypeError("contract names unknown definition read endpoint");
@@ -61,11 +73,11 @@ export function compileOutcome(registry: StaticPackRegistry, input: Readonly<{ c
   if (!definition.writeEndpointIds.includes(effect.endpointId)) throw new TypeError("pack emitted unknown write endpoint");
   if (!definition.riskClasses.includes(effect.riskClass) || !contract.riskClasses.includes(effect.riskClass)) throw new TypeError("pack emitted unknown or unauthorized risk class");
   if (Buffer.from(effect.bodyBase64, "base64").length > contract.limits.maxBodyBytes) throw new TypeError("pack effect body exceeds contract limit");
-  const effectBytes = authorityCanonicalBytes(effect);
+  const effectCanonicalBase64 = authorityCanonicalBytes(effect).toString("base64");
   const effectDigest = authorityDigest(effect);
   const outcomeKey = deriveSemanticOutcomeKey({ tenant: contract.tenant, contractDigest: input.contract.digest, definitionAlias: contract.alias, sourceIdentity: source.sourceIdentity, triggerIdentity: source.triggerIdentity });
-  const capabilityCommitment = Object.freeze({ tenant: contract.tenant, contractDigest: input.contract.digest, definitionAlias: contract.alias, packDigest: contract.packDigest, definitionDigest: contract.definitionDigest, sourceBundleDigest: input.source.digest, sourceIdentity: source.sourceIdentity, triggerIdentity: source.triggerIdentity, connectorId: contract.connectorId, accountId: contract.accountId, policyDigest: contract.policyCommitment.digest, effectDigest, outcomeKey });
-  return Object.freeze({ effect, effectBytes, effectDigest, outcomeKey, capabilityCommitment });
+  const capabilityCommitment = deepFreeze({ tenant: contract.tenant, contractDigest: input.contract.digest, definitionAlias: contract.alias, packDigest: contract.packDigest, definitionDigest: contract.definitionDigest, sourceBundleDigest: input.source.digest, sourceIdentity: source.sourceIdentity, triggerIdentity: source.triggerIdentity, connectorId: contract.connectorId, accountId: contract.accountId, policyDigest: contract.policyCommitment.digest, validationInstant, activationSnapshotDigest: input.contract.activationSnapshotDigest, sourceSnapshotDigest: input.source.sourceSnapshotDigest, effectDigest, outcomeKey });
+  return Object.freeze({ effect, effectCanonicalBase64, effectDigest, outcomeKey, capabilityCommitment });
 }
 
 function validateChoiceBoundary(value: unknown): Readonly<Record<string, string | number | boolean | null>> {
