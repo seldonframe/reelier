@@ -59,8 +59,8 @@ function fixture(def = definition(), contractFreshness = 60, materializedFreshne
   const raw = Buffer.from('{"message":"world"}', "utf8");
   const sourceRegistry = createSourceRegistry([{ tenant: "tenant_1", resolverId: "resolver_1", definitionDigest, projectionSchemaId: "projection/v1", readEndpointIds: ["read_1"], maxFreshnessSeconds: 60, plan: refs => [{ endpointId: "read_1", opaqueHandle: refs.item }], project: () => ({ sourceIdentity: "source_1", triggerIdentity: "trigger_1", claims: { grounded: [{ claimId: "message", projectionPointer: "/message" }], authored: [], unresolved: [] }, projection: { message: "world" } }) }]);
   const sourceRefs = { item: "opaque_1" }; const plans = planSourceReads(sourceRegistry, { tenant: "tenant_1", resolverId: "resolver_1", definitionDigest, sourceRefs, allowedReadEndpointIds: ["read_1"] });
-  const validatedSource = materializeSourceBundle(sourceRegistry, { tenant: "tenant_1", definitionDigest, resolverId: "resolver_1", projectionSchemaId: "projection/v1", sourceRefs, allowedReadEndpointIds: ["read_1"], authorizedProjectionPointers: ["/message"], requiredGroundedPointers: ["/message"], maxFreshnessSeconds: materializedFreshness, observedAt: now, plans, observations: [{ planDigest: plans[0].planDigest, rawBytes: raw }] });
-  return { packs, validatedContract, validatedSource, contract, sourceBundle: validatedSource.bundle, sourceRegistry, raw };
+  const validatedSource = materializeSourceBundle(sourceRegistry, { tenant: "tenant_1", definitionDigest, resolverId: "resolver_1", projectionSchemaId: "projection/v1", sourceRefs, allowedReadEndpointIds: ["read_1"], authorizedProjectionPointers: ["/message"], requiredGroundedPointers: ["/message"], maxFreshnessSeconds: materializedFreshness, observedAt: now, validationNow: now, plans, observations: [{ planDigest: plans[0].planDigest, rawBytes: raw }] });
+  return { packs, validatedContract, validatedSource, contract, sourceBundle: validatedSource.bundle, sourceRegistry, sourceRefs, plans, raw };
 }
 
 test("static pack registry refuses alias and definition-digest collisions", () => {
@@ -157,6 +157,8 @@ test("validated contract and source authority is single-context and cannot be re
   assert.throws(() => compileOutcome(f.packs, { contract: f.validatedContract, source: f.validatedSource, choices: {}, now: new Date(f.sourceBundle.freshUntil) }), /validation instant|stale/i);
   assert.throws(() => compileOutcome(f.packs, { contract: f.validatedContract, source: f.validatedSource, choices: {}, now: new Date(f.contract.validUntil) }), /validation instant|expired/i);
 });
+
+test("compiler accepts an earlier conservative observation when validation is branded at the current decision instant",()=>{const f=fixture();const earlier=new Date(now.getTime()-30_000);const source=materializeSourceBundle(f.sourceRegistry,{tenant:"tenant_1",definitionDigest,resolverId:"resolver_1",projectionSchemaId:"projection/v1",sourceRefs:f.sourceRefs,allowedReadEndpointIds:["read_1"],authorizedProjectionPointers:["/message"],requiredGroundedPointers:["/message"],maxFreshnessSeconds:60,observedAt:earlier,validationNow:now,plans:f.plans,observations:[{planDigest:f.plans[0].planDigest,rawBytes:f.raw}]});assert.equal(source.bundle.observedAt,earlier.toISOString());assert.equal(source.validationInstant,now.toISOString());assert.doesNotThrow(()=>compileOutcome(f.packs,{contract:f.validatedContract,source,choices:{},now}));});
 
 test("semantic outcome keys are length-delimited, field-ordered, and use UTF-8 byte lengths", () => {
   const key = deriveSemanticOutcomeKey({ tenant: "ténant", contractDigest: "sha256:" + "0".repeat(64), definitionAlias: "définition", sourceIdentity: "source", triggerIdentity: "trigger" });

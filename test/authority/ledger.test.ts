@@ -863,3 +863,24 @@ test("ingress filename, bytes, digest linkage, and pre-v3 transactions fail clos
 test("bindIngress refuses evaluation eligibility when any existing ingress record is corrupt",async()=>{
   await withRoot(async root=>{const first=authenticateOutcomeRequest({tenant:"tenant_1",requester:"requester_1",definitionAlias:"definition_1",request:{v:"reelier.outcome-request/v1",requestId:"request_1",sourceRefs:{source:"ref_1"},choices:{}}});const second=authenticateOutcomeRequest({tenant:"tenant_1",requester:"requester_1",definitionAlias:"definition_1",request:{v:"reelier.outcome-request/v1",requestId:"request_2",sourceRefs:{source:"ref_2"},choices:{}}});const ledger=new RawFsAuthorityLedger(root,{now:()=>t0});assert.equal((await ledger.bindIngress(first)).ok,true);await writeFile(path.join(root,"ingress",`${authenticatedOutcomeRequestState(first).requestKey.slice(7)}.json`),"{");assert.deepEqual(await ledger.bindIngress(second),{ok:false,reason:"corruption"});});
 });
+
+test("reservation linkage lookup returns only the verified ingress/capability/context edges needed by gate decision verification",async()=>{
+  await withRoot(async root=>{
+    const ledger=new FsAuthorityLedger(root,{now:()=>t0});
+    const reserved=await ledger.reserve(intent());
+    assert.equal(reserved.ok,true);if(!reserved.ok)return;
+    const linkage=await ledger.lookupReservationLinkage(reserved.reservation.reservationId);
+    assert.deepEqual(linkage,{
+      reservationId:reserved.reservation.reservationId,
+      ingressClaimDigest:reserved.reservation.intent.ingressClaimDigest,
+      capabilityId:reserved.reservation.intent.capabilityId,
+      capabilityDigest:reserved.reservation.intent.capabilityDigest,
+      authorityStateDigest:reserved.reservation.intent.authorityStateDigest,
+      state:"reserved",
+      updatedAt:new Date(t0).toISOString(),
+    });
+    assert.equal(Object.isFrozen(linkage),true);
+    assert.equal("capabilityBase64" in linkage,false);
+    assert.equal("canonicalRequestBase64" in linkage,false);
+  });
+});

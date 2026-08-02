@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 
@@ -33,5 +33,7 @@ test("public production export parses DecisionContext and its portable evidence 
   for (const internal of ["authenticateOutcomeRequest", "authenticatedOutcomeRequestState", "createConnectorRegistry", "connectorRegistrationDigest", "createAuthorityStatePort", "digestAuthorityState", "trustRootSetDigest", "definitionRegistrationDigest", "sourceResolverRegistrationDigest", "authoritySignatureDigest", "ingressFaultPoints", "clockFaultPoints"]) assert.equal(internal in authority, false, internal);
   assert.equal("validateSourceBundle" in authority, false, "candidate SourceBundle constructors stay private");
   for (const internal of ["createAuthorityGate", "createReservedDispatchHandle", "unwrapReservedDispatchHandle", "createFileGateDecisionSink", "parseGateDecisionRecord", "GateDecisionSink", "GateDecisionSigner", "ReservedDispatchHandle"]) assert.equal(internal in authority, false, internal);
+  const declarations=readFileSync(path.join(process.cwd(),"dist","authority","index.d.ts"),"utf8");
+  for(const forbidden of ["AuthorityGate","GateResult","GateDecisionSink","GateDecisionSigner","ReservedDispatchHandle","unwrapReservedDispatchHandle"])assert.doesNotMatch(declarations,new RegExp(`\\b${forbidden}\\b`),`${forbidden} must stay out of packaged type exports`);
   for (const kind of ["outcome-contract", "delegation-grant", "source-bundle", "decision-context", "gate-event", "authority-receipt"]) assert.ok(existsSync(path.join(process.cwd(), "dist", "authority", "schemas", `${kind}.schema.json`)));
 });

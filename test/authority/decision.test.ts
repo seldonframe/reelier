@@ -71,7 +71,7 @@ test("file sink atomically indexes event and primary ingress, returns copies, an
     const record = primary();
     assert.deepEqual(await sink.append(record), { ok: true, status: "appended", recordDigest: authorityDigest(record) });
     assert.deepEqual(await sink.append(record), { ok: true, status: "idempotent", recordDigest: authorityDigest(record) });
-    assert.equal((await sink.lookupByEvent("event_1")).ok, true);
+    const byEvent=await sink.lookupByEvent("event_1");assert.equal(byEvent.ok,true);if(byEvent.ok&&byEvent.status==="found"){assert.notEqual(byEvent.record,record);assert.equal(Object.isFrozen(byEvent.record),true);assert.throws(()=>{(byEvent.record as {signerId:string}).signerId="mutated";},/read only|Cannot assign/i);}
     assert.equal((await sink.lookupPrimaryByIngress(sha("4"))).ok, true);
     assert.deepEqual(await sink.append(primary({ signerId: "other" })), { ok: false, reason: "event-id-conflict" });
     assert.deepEqual(await sink.append(primary({ gateEvent: { ...event, eventId: "event_2" }, gateEventDigest: authorityDigest({ ...event, eventId: "event_2" }) })), { ok: false, reason: "primary-ingress-conflict" });
@@ -87,5 +87,26 @@ test("accepted reservation and non-primary conflict indexes have exact distinct 
 
 test("concurrent appends and every crash boundary expose a complete transaction or no transaction",async()=>{
   const root=await mkdtemp(path.join(tmpdir(),"reelier-decision-atomic-"));try{const sink=createFileGateDecisionSink(root);const results=await Promise.all(Array.from({length:100},()=>sink.append(primary())));assert.equal(results.filter((result:{ok:boolean;status?:string})=>result.ok&&result.status==="appended").length,1);assert.equal(results.filter((result:{ok:boolean;status?:string})=>result.ok&&result.status==="idempotent").length,99);}finally{await rm(root,{recursive:true,force:true});}
-  for(const point of gateDecisionFaultPoints){const directory=await mkdtemp(path.join(tmpdir(),"reelier-decision-crash-"));try{let fired=false;const sink=createFileGateDecisionSink(directory,{faultInjector(observed:string){if(!fired&&observed===point){fired=true;throw new Error(`fault:${point}`);}}});await sink.append(primary());assert.equal(fired,true,point);const recovered=await createFileGateDecisionSink(directory).lookupByEvent("event_1");assert.ok((recovered.ok&&recovered.status==="found")||(recovered.ok&&recovered.status==="absent")||(!recovered.ok&&recovered.reason==="corruption"),point);}finally{await rm(directory,{recursive:true,force:true});}}
+  const expectedFaultPoints=["before-write","after-write","before-file-sync","after-file-sync","before-rename","after-rename","before-directory-sync","after-directory-sync"] as const;
+  assert.deepEqual(gateDecisionFaultPoints,expectedFaultPoints);
+  for(const point of expectedFaultPoints){
+    const directory=await mkdtemp(path.join(tmpdir(),"reelier-decision-crash-"));
+    try{
+      let fired=false;
+      const sink=createFileGateDecisionSink(directory,{faultInjector(observed:string){if(!fired&&observed===point){fired=true;throw new Error(`fault:${point}`);}}});
+      await sink.append(primary());
+      assert.equal(fired,true,point);
+      const recovered=createFileGateDecisionSink(directory);
+      const byEvent=await recovered.lookupByEvent("event_1");
+      const byPrimary=await recovered.lookupPrimaryByIngress(sha("4"));
+      assert.equal(byEvent.ok,true,`${point}: event index`);
+      assert.equal(byPrimary.ok,true,`${point}: primary index`);
+      if(byEvent.ok&&byPrimary.ok){
+        assert.equal(byEvent.status,byPrimary.status,`${point}: indexes are atomic`);
+        assert.ok(byEvent.status==="found"||byEvent.status==="absent",point);
+      }
+    }finally{await rm(directory,{recursive:true,force:true});}
+  }
 });
+
+test("every malformed intrinsic role, signature, digest, event, and reservation combination is corruption",()=>{const conflictEvent={...event,reasonCode:"request-id-conflict"};for(const candidate of [primary({v:"other" as never}),primary({role:"conflict"}),primary({reservationId:"reservation_1"}),primary({signature:{alg:"ed25519",sig:"bad"}}),primary({signerId:""}),primary({ingressClaimDigest:sha("0")}),primary({decisionContextDigest:sha("9")}),primary({gateEventDigest:sha("9")}),primary({gateEvent:{...event,verdict:"accepted",reasonCode:"accepted"}}),primary({gateEvent:conflictEvent,gateEventDigest:authorityDigest(conflictEvent)})])assert.throws(()=>parseGateDecisionRecord(candidate),/invalid gate decision record/i);});
