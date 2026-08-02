@@ -126,7 +126,10 @@ file-syncs it, rereads and verifies the exact canonical bytes, syncs the staging
 and verifies again, atomically renames the whole staging directory to `lock`, rereads and verifies the
 published owner, syncs the ledger root, and rereads and verifies once more before any callback. A zero
 or out-of-range `bytesWritten`, a changed object/type/link count, or any byte mismatch fails closed and
-preserves the untrusted artifact; no callback runs. The
+preserves the untrusted artifact; no callback runs. The closed
+`before-ledger-operation-callback` fault point occurs exactly once at the operation-callback entry
+boundary, immediately before any callback-specific prepare, read, or mutation. It occurs zero times
+for every publication, revalidation, acquisition-snapshot, confinement, or recovery refusal. The
 shared `lock` path is never publication staging and is therefore never ownerless. The exact durability
 fault topology is closed: after stage creation through stage-directory sync, `lock` is absent and
 exactly one publication stage exists; that stage is respectively an empty directory, contains a
@@ -152,7 +155,9 @@ creator-only cleanup or dead-owner cleanup. Creator cleanup may remove only its 
 name/host/PID/nonce/type/single-link directory and owner identities and exact expected empty, zero,
 strict-prefix, or complete bytes; an atomic same-name directory or owner replacement is preserved even
 when its bytes are identical. A changed inode/file identity, increased link count, or different bytes
-refuses. It never removes another live stage.
+refuses. Replacing a regular owner with a directory or reparse point, or replacing a real stage
+directory with a regular file or reparse point, is likewise preserved and refuses without traversing
+or mutating the replacement target. It never removes another live stage.
 Acquisition is bounded. A live same-host owner is never evicted because time elapsed; a
 foreign, corrupt, or otherwise unverifiable owner refuses. An abandoned lock is reclaimed only after
 same-host process liveness proves that its recorded PID is dead and the owner bytes remain identical.
@@ -224,7 +229,11 @@ stage that disappears between enumeration and validation, invalidates the whole 
 including every name and artifact generation previously observed; the bounded scan re-enumerates and
 reclassifies the complete root and never interprets or mutates from the partial view. A same-name
 replacement or a blocker introduced after the invalidated enumeration belongs only to the next
-generation and cannot be missed by treating local `ENOENT` as a skipped entry. Transient Windows `EPERM`, `EACCES`,
+generation and cannot be missed by treating local `ENOENT` as a skipped entry. A replacement complete
+live active lock therefore returns busy without beginning the contender's publication. If one
+enumerated stage vanishes while another proved-dead candidate exists and a new live stage enters the
+root, neither the dead candidate nor the live replacement is mutated and the result is busy; the
+contender's publication does not begin. Transient Windows `EPERM`, `EACCES`,
 and `EBUSY` at either boundary retry against the same monotonic acquisition deadline. Persistent
 failure refuses as corruption without mutating any artifact. The default acquisition timeout remains
 30,000 milliseconds; tests may select a smaller valid timeout without changing that default.
