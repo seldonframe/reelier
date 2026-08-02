@@ -156,7 +156,9 @@ The gate is a closed, injected decision boundary with no network driver or crede
 binds ingress before loading authority, observes durable `planNow`, commits and advances the complete
 authority-state snapshot, plans and performs bounded source reads, observes durable `decisionNow`,
 materializes source evidence, then revalidates and compiles under the current-state lease. It obtains
-one Event ID immediately before reservation. A successful reservation under that lease is the write-
+the selected connector and checks the exact compiled endpoint and risk against that connector's
+closed allowlists. Capability construction, both limit-key derivations, and one Event ID immediately
+before reservation all remain inside the lease. A successful reservation under that lease is the write-
 authorization linearization point; signing and durable decision append occur afterward. No provider
 write or lifecycle transition to `dispatched` occurs at this boundary.
 
@@ -176,6 +178,14 @@ status lookup; reservation collision is an internal-integrity failure even when 
 record is otherwise valid. Corruption, absence, I/O failure, and unknown append outcome remain closed
 and never produce a dispatch handle. An exact retry reads only the persisted primary decision and
 returns redacted current status; it never re-evaluates, resigns, or reconstructs a handle.
+
+Cross-process decision append uses a purpose-specific lock owner record containing the exact lock
+wire version, local host, PID, and random nonce. A live same-host owner is busy; a foreign-host,
+malformed, changed, or unverifiable owner remains unavailable. Reclaim is permitted only after
+same-host process death is positively established, followed by a byte-identical owner reread before
+removal. Release likewise removes only the caller's byte-identical owner. Malformed JSON, invalid
+records, and duplicate durable indexes are explicitly classified as sink corruption; environmental
+filesystem and lock failures are unavailable. These classifications never depend on exception text.
 
 ## Closed reason and presence protocol
 
