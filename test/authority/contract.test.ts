@@ -5,7 +5,7 @@ import { signAuthorityDigest } from "../../src/authority/crypto.js";
 import { authorityCanonicalBytes, authorityDigest } from "../../src/authority/wire.js";
 import { createTrustRoots } from "../../src/authority/trust.js";
 import { validateDelegationChain } from "../../src/authority/delegation.js";
-import { validateStoredContract, isValidatedContract, type ContractStateEvent } from "../../src/authority/contract.js";
+import { validateStoredContract, isValidatedContract, verifyStoredContract, validateVerifiedContractEligibility, type ContractStateEvent } from "../../src/authority/contract.js";
 
 function fixture() {
   const operator = generateKeyPairSync("ed25519");
@@ -71,4 +71,12 @@ test("contract validation refuses forged, copied, or structurally mutated delega
   assert.throws(() => validateStoredContract({ ...input, delegation: structuredClone(f.chain) as never }), /validated delegation/i);
   assert.throws(() => { (f.chain as { leafGrantee: string }).leafGrantee = "attacker"; }, /read only|Cannot assign/i);
   assert.doesNotThrow(() => validateStoredContract({ ...input, delegation: f.chain }));
+});
+
+test("trusted contract digest is staged before mutable eligibility checks", () => {
+  const f = fixture();
+  const verified = verifyStoredContract({ stored: f.stored, trustRoots: f.roots, tenant: "tenant_1" });
+  assert.equal(verified.digest, f.digest);
+  assert.throws(() => validateVerifiedContractEligibility({ verified, definitionAlias: "definition_1", delegation: f.chain, registeredDefinitions: f.registry, stateEvents: [{ kind: "activated", contractDigest: f.digest, at: "2026-01-03T00:00:00.000Z" }, { kind: "revoked", contractDigest: f.digest, at: "2026-01-10T00:00:00.000Z" }], requester: "requester_1", now: new Date("2026-01-15T00:00:00.000Z") }), /revoked/i);
+  assert.throws(() => validateVerifiedContractEligibility({ verified: { ...verified } as never, definitionAlias: "definition_1", delegation: f.chain, registeredDefinitions: f.registry, stateEvents: [], requester: "requester_1", now: new Date("2026-01-15T00:00:00.000Z") }), /verified stored contract/i);
 });

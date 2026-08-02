@@ -172,6 +172,15 @@ test("cross-process collisions use ingress, semantic, capability, then limit pre
   });
 });
 
+test("the global ingress key treats a different authenticated definition alias as conflict", async () => {
+  await withRoot(async root => {
+    const ledger = new FsAuthorityLedger(root, { now: () => t0 });
+    assert.equal((await ledger.reserve(intent({ definitionAlias: "definition_1" }))).ok, true);
+    const conflict = await ledger.reserve(intent({ definitionAlias: "definition_2", capabilityId: "capability_2", outcomeKey: digest("8") }));
+    assert.deepEqual(conflict, { ok: false, reason: "idempotency-conflict" });
+  });
+});
+
 test("a caller cannot widen an already committed fixed-window maximum", async () => {
   await withRoot(async root => {
     const ledger = new FsAuthorityLedger(root, { now: () => t0 });

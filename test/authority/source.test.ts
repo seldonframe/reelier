@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { authorityDigest } from "../../src/authority/wire.js";
-import { createSourceRegistry, planSourceReads, validateSourceBundle, isValidatedSourceBundle } from "../../src/authority/source.js";
+import { createSourceRegistry, planSourceReads, validateSourceBundle, isValidatedSourceBundle, materializeSourceBundle } from "../../src/authority/source.js";
 
 const definitionDigest = "sha256:" + "b".repeat(64);
 const authority = { tenant: "tenant_1", definitionDigest, resolverId: "resolver_1", projectionSchemaId: "projection/v1", allowedReadEndpointIds: ["read_1"], authorizedProjectionPointers: ["/a~0b/c~1d", "/message"], requiredGroundedPointers: ["/a~0b/c~1d"] };
@@ -60,4 +60,24 @@ test("validated source brands refuse copied lookalikes", () => {
   const validated = validateSourceBundle(registry, { bundle, rawResponse: raw, authority, now: new Date("2026-01-15T00:00:30.000Z") });
   assert.equal(isValidatedSourceBundle({ ...validated }), false);
   assert.equal(isValidatedSourceBundle(structuredClone(validated)), false);
+});
+
+test("kernel materializes deterministic plural source evidence from arbitrarily ordered raw observations", () => {
+  const reads = [Buffer.from('{"appointment":"a1"}'), Buffer.from('{"contact":"c1"}')];
+  const local = createSourceRegistry([{
+    tenant: "tenant_1", resolverId: "multi", definitionDigest, projectionSchemaId: "projection/v1",
+    readEndpointIds: ["appointment.read", "contact.read"], maxFreshnessSeconds: 120,
+    plan: refs => [{ endpointId: "appointment.read", opaqueHandle: refs.appointment }, { endpointId: "contact.read", opaqueHandle: refs.contact }],
+    project: ({ observations }) => ({ sourceIdentity: "appointment_a1", triggerIdentity: "trigger_t1", projection: { appointment: "a1", contact: "c1" }, claims: { grounded: observations.map((_, index) => ({ claimId: `claim_${index}`, projectionPointer: index ? "/contact" : "/appointment" })), authored: [], unresolved: [] } }),
+  }]);
+  const plans = planSourceReads(local, { tenant: "tenant_1", resolverId: "multi", definitionDigest, sourceRefs: { appointment: "a1", contact: "c1" }, allowedReadEndpointIds: ["appointment.read", "contact.read"] });
+  assert.equal(plans.length, 2);
+  assert.deepEqual(plans.map(plan => plan.index), [0, 1]);
+  const first = materializeSourceBundle(local, { tenant: "tenant_1", resolverId: "multi", definitionDigest, projectionSchemaId: "projection/v1", sourceRefs: { appointment: "a1", contact: "c1" }, allowedReadEndpointIds: ["appointment.read", "contact.read"], authorizedProjectionPointers: ["/appointment", "/contact"], requiredGroundedPointers: ["/appointment", "/contact"], maxFreshnessSeconds: 60, observedAt: new Date("2026-01-15T00:00:00.000Z"), plans, observations: [{ planDigest: plans[1].planDigest, rawBytes: reads[1] }, { planDigest: plans[0].planDigest, rawBytes: reads[0] }] });
+  reads[0].fill(0);
+  const secondPlans = planSourceReads(local, { tenant: "tenant_1", resolverId: "multi", definitionDigest, sourceRefs: { appointment: "a1", contact: "c1" }, allowedReadEndpointIds: ["appointment.read", "contact.read"] });
+  const second = materializeSourceBundle(local, { tenant: "tenant_1", resolverId: "multi", definitionDigest, projectionSchemaId: "projection/v1", sourceRefs: { appointment: "a1", contact: "c1" }, allowedReadEndpointIds: ["appointment.read", "contact.read"], authorizedProjectionPointers: ["/appointment", "/contact"], requiredGroundedPointers: ["/appointment", "/contact"], maxFreshnessSeconds: 60, observedAt: new Date("2026-01-15T00:00:00.000Z"), plans: secondPlans, observations: [{ planDigest: secondPlans[0].planDigest, rawBytes: Buffer.from('{"appointment":"a1"}') }, { planDigest: secondPlans[1].planDigest, rawBytes: Buffer.from('{"contact":"c1"}') }] });
+  assert.equal(first.sourceSnapshotDigest, second.sourceSnapshotDigest);
+  assert.equal(first.bundle.freshUntil, "2026-01-15T00:01:00.000Z");
+  assert.deepEqual(first.bundle.provenance.observations.map(item => item.index), [0, 1]);
 });
