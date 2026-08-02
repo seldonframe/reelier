@@ -419,24 +419,26 @@ export class FsAuthorityLedger implements AuthorityLedger {
     const owner: LockOwner = { v: 1, host: hostname(), pid: process.pid, nonce: randomBytes(32).toString("hex") };
     const stageName=this.publicationStageName(owner),stagePath=this.absolute(stageName),ownerPath=path.join(stagePath,"owner.json"),ownerBytes=canonicalBytes(owner);
     let stageCreated=false,published=false,expectedStage:PublicationStage|null=null,election:PublicationElection|null=null;
+    let retryDelayMs=5;
+    const backoff=async()=>{await delay(retryDelayMs);retryDelayMs=Math.min(50,retryDelayMs*2);};
     while (true) {
       try {
         const active=await this.inspectActiveLock(deadline);
         if(active==="retry"){
           if(monotonicNow()>=deadline)return {ok:false,reason:"corruption"};
-          await delay(5);continue;
+          await backoff();continue;
         }
         if(active!=="absent"){
           if(active!=="wait")return active;
           if(monotonicNow()>=deadline)return {ok:false,reason:"busy"};
-          await delay(5);continue;
+          await backoff();continue;
         }
         if(stageCreated&&monotonicNow()>=deadline)return {ok:false,reason:"busy"};
         if(!stageCreated){
           const existingStages=await this.settlePublicationStages(deadline,false,null);
           if(existingStages.length>0&&!admitContender){
             if(monotonicNow()>=deadline)return {ok:false,reason:"busy"};
-            await delay(5);continue;
+            await backoff();continue;
           }
           try{await mkdir(stagePath);stageCreated=true;expectedStage=await this.validatePublicationStage(stageName);this.fault("after-lock-publication-stage-create");}
           catch(error){if(hasCode(error,"EEXIST")){continue;}throw error;}
@@ -449,26 +451,27 @@ export class FsAuthorityLedger implements AuthorityLedger {
           }finally{if(handle)await handle.close();}
           await this.syncDirectory(stagePath);this.fault("after-lock-publication-stage-sync");this.fault("after-lock-directory-sync");
           expectedStage=await this.assertPublicationStageUnchanged(expectedStage);
+          retryDelayMs=5;
         }
         if(election!==null){
           const predecessorState=await this.pollPublicationPredecessor(election.predecessor);
           if(predecessorState==="live"){
             if(monotonicNow()>=deadline)return {ok:false,reason:"busy"};
-            await delay(5);continue;
+            await backoff();continue;
           }
-          election=null;
+          election=null;retryDelayMs=5;
         }
         const generation=await this.settlePublicationStages(deadline,false,expectedStage);
         const ownIndex=generation.findIndex(stage=>stage.name===stageName);
         if(ownIndex<0)throw new LedgerCorruption("creator publication stage disappeared");
-        if(ownIndex>0){election={predecessor:generation[ownIndex-1]};continue;}
+        if(ownIndex>0){election={predecessor:generation[ownIndex-1]};retryDelayMs=5;continue;}
         const finalNames=await this.publicationStageNames();
         if(!sameStrings(generation.map(stage=>stage.name),finalNames)){election=null;continue;}
         if(expectedStage===null)throw new LedgerCorruption("creator publication snapshot absent");
         const finalOwnStage=await this.validatePublicationStage(stageName);
         if(!samePublicationStage(expectedStage,finalOwnStage))throw new LedgerCorruption("creator publication stage changed before rename");
         try{await rename(stagePath,this.absolute("lock"));published=true;stageCreated=false;}
-        catch(error){if(hasCode(error,"EEXIST")||hasCode(error,"ENOTEMPTY")||isTransientLockError(error)){this.fault("after-lock-publication-rename-collision");election=null;if(monotonicNow()>=deadline){await this.removeOwnedPublicationStage(stageName,expectedStage,deadline);return {ok:false,reason:"busy"};}await delay(5);continue;}throw error;}
+        catch(error){if(hasCode(error,"EEXIST")||hasCode(error,"ENOTEMPTY")||isTransientLockError(error)){this.fault("after-lock-publication-rename-collision");election=null;if(monotonicNow()>=deadline){await this.removeOwnedPublicationStage(stageName,expectedStage,deadline);return {ok:false,reason:"busy"};}await backoff();continue;}throw error;}
         if(expectedStage===null||expectedStage.ownerIdentity===undefined||expectedStage.ownerBytes===undefined)throw new LedgerCorruption("published owner snapshot absent");
         const publishedSnapshot:OwnedOwnerSnapshot={directoryIdentity:expectedStage.directoryIdentity,ownerIdentity:expectedStage.ownerIdentity,ownerBytes:expectedStage.ownerBytes};
         this.fault("after-lock-publication-rename");
