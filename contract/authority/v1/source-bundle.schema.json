@@ -1,1 +1,24 @@
-{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"reelier.authority/source-bundle/v1","type":"object","additionalProperties":false,"required":["v","tenant","sourceIdentity","triggerIdentity","observedAt","rawDigest","freshUntil","provenance","claims","projection"],"properties":{"v":{"const":"reelier.source-bundle/v1"},"tenant":{"type":"string","pattern":"^[A-Za-z0-9._~-]{1,128}$"},"sourceIdentity":{"type":"string","pattern":"^[A-Za-z0-9._~-]{1,256}$"},"triggerIdentity":{"type":"string","pattern":"^[A-Za-z0-9._~-]{1,256}$"},"observedAt":{"type":"string","format":"date-time"},"rawDigest":{"type":"string","pattern":"^sha256:[0-9a-f]{64}$"},"freshUntil":{"type":"string","format":"date-time"},"provenance":{"type":"object","additionalProperties":false,"required":["resolverId","endpointId"],"properties":{"resolverId":{"type":"string","pattern":"^[A-Za-z0-9._~-]{1,128}$"},"endpointId":{"type":"string","pattern":"^[A-Za-z0-9._~-]{1,128}$"}}},"claims":{"type":"object","additionalProperties":false,"required":["grounded","authored","unresolved"],"properties":{"grounded":{"type":"array","items":{"type":"string","maxLength":128}},"authored":{"type":"array","items":{"type":"string","maxLength":128}},"unresolved":{"type":"array","items":{"type":"string","maxLength":128}}}},"projection":{"type":"object","additionalProperties":true}}}
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "reelier.authority/source-bundle/v1",
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[A-Za-z0-9._~-]{1,256}$" },
+    "schemaId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._~:/-]{0,255}$" },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "claim": { "type": "object", "additionalProperties": false, "required": ["claimId", "projectionPointer"], "properties": { "claimId": { "$ref": "#/$defs/id" }, "projectionPointer": { "type": "string", "maxLength": 512, "pattern": "^(?:/(?:[^~/]|~[01])*)+$" } } }
+  },
+  "type": "object", "additionalProperties": false,
+  "required": ["v", "tenant", "definitionDigest", "projectionSchemaId", "sourceIdentity", "triggerIdentity", "observedAt", "rawDigest", "freshUntil", "provenance", "claims", "projection"],
+  "properties": {
+    "v": { "const": "reelier.source-bundle/v1" }, "tenant": { "$ref": "#/$defs/id" }, "definitionDigest": { "$ref": "#/$defs/digest" },
+    "projectionSchemaId": { "$ref": "#/$defs/schemaId" }, "sourceIdentity": { "$ref": "#/$defs/id" }, "triggerIdentity": { "$ref": "#/$defs/id" },
+    "observedAt": { "type": "string", "format": "date-time" }, "rawDigest": { "$ref": "#/$defs/digest" }, "freshUntil": { "type": "string", "format": "date-time" },
+    "provenance": { "type": "object", "additionalProperties": false, "required": ["resolverId", "endpointId"], "properties": { "resolverId": { "$ref": "#/$defs/id" }, "endpointId": { "$ref": "#/$defs/id" } } },
+    "claims": { "type": "object", "additionalProperties": false, "required": ["grounded", "authored", "unresolved"], "properties": {
+      "grounded": { "type": "array", "maxItems": 256, "uniqueItems": true, "items": { "$ref": "#/$defs/claim" } },
+      "authored": { "type": "array", "maxItems": 256, "uniqueItems": true, "items": { "$ref": "#/$defs/claim" } },
+      "unresolved": { "type": "array", "maxItems": 256, "uniqueItems": true, "items": { "$ref": "#/$defs/claim" } }
+    } },
+    "projection": { "type": "object", "additionalProperties": true }
+  }
+}

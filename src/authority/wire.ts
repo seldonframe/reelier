@@ -55,6 +55,33 @@ export function parseAuthorityWire<K extends AuthorityKind>(kind: K, value: unkn
       throw new TypeError("invalid outcome-request: forbidden choice property name");
     }
   }
+  if (kind === "outcome-contract") {
+    const commitment = (parsed as AuthorityWireByKind["outcome-contract"]).policyCommitment;
+    const bytes = Buffer.from(commitment.jcsBase64, "base64");
+    if (bytes.toString("base64") !== commitment.jcsBase64) throw new TypeError("invalid outcome-contract: policy commitment base64 is not canonical");
+    let policy: unknown;
+    try { policy = JSON.parse(bytes.toString("utf8")); }
+    catch { throw new TypeError("invalid outcome-contract: policy commitment is not valid JSON"); }
+    if (authorityCanonicalBytes(policy).compare(bytes) !== 0) throw new TypeError("invalid outcome-contract: policy commitment bytes are not RFC 8785/JCS canonical");
+    const digest = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+    if (digest !== commitment.digest) throw new TypeError("invalid outcome-contract: policy commitment digest mismatch");
+  }
+  if (kind === "source-bundle") {
+    const source = parsed as AuthorityWireByKind["source-bundle"];
+    const claimIds = new Set<string>();
+    const pointers = new Set<string>();
+    for (const [claimClass, claims] of Object.entries(source.claims)) {
+      for (const claim of claims) {
+        if (claimIds.has(claim.claimId)) throw new TypeError("invalid source-bundle: claim id must be globally unique");
+        claimIds.add(claim.claimId);
+        if (pointers.has(claim.projectionPointer)) throw new TypeError("invalid source-bundle: projection pointer appears in more than one class");
+        pointers.add(claim.projectionPointer);
+        if (claimClass === "grounded" && !hasOwnJsonPointer(source.projection, claim.projectionPointer)) {
+          throw new TypeError("invalid source-bundle: grounded projection pointer does not resolve to an own path");
+        }
+      }
+    }
+  }
   if (kind === "transport-effect") {
     const effect = parsed as AuthorityWireByKind["transport-effect"];
     if (Object.keys(effect.headers).some((key) => ["authorization", "cookie", "host"].includes(key.toLowerCase()))) throw new TypeError("invalid transport-effect: forbidden header property name");
@@ -81,6 +108,16 @@ export function parseAuthorityWire<K extends AuthorityKind>(kind: K, value: unkn
     }
   }
   return parsed;
+}
+
+function hasOwnJsonPointer(root: Record<string, unknown>, pointer: string): boolean {
+  let current: unknown = root;
+  for (const encoded of pointer.slice(1).split("/")) {
+    const segment = encoded.replace(/~1/g, "/").replace(/~0/g, "~");
+    if ((typeof current !== "object" || current === null) || !Object.prototype.hasOwnProperty.call(current, segment)) return false;
+    current = (current as Record<string, unknown>)[segment];
+  }
+  return true;
 }
 
 /** Refuses JSON whose original bytes are not its RFC 8785/JCS representation. */

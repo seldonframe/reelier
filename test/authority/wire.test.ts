@@ -95,10 +95,10 @@ test("OutcomeContract binds the complete signed standing authority and validates
     assert.throws(() => parseAuthorityWire("outcome-contract", missing), /required property/i, field);
   }
   assert.throws(() => parseAuthorityWire("outcome-contract", { ...contract, audiences: [] }), /fewer than 1/i);
-  assert.throws(() => parseAuthorityWire("outcome-contract", { ...contract, audiences: ["requester_1", "requester_1"] }), /unique items/i);
+  assert.throws(() => parseAuthorityWire("outcome-contract", { ...contract, audiences: ["requester_1", "requester_1"] }), /duplicate items/i);
   assert.throws(() => parseAuthorityWire("outcome-contract", { ...contract, sourceAuthority: { ...contract.sourceAuthority, authorizedProjectionPointers: ["not/a/pointer"] } }), /pattern/i);
   assert.throws(() => parseAuthorityWire("outcome-contract", { ...contract, limits: { ...limits, maxBodyBytes: 0 } }), /must be >= 1/i);
-  assert.throws(() => parseAuthorityWire("outcome-contract", { ...contract, policyCommitment: { ...contract.policyCommitment, jcsBase64: contract.policyCommitment.jcsBase64.replace(/=$/, "") } }), /base64/i);
+  assert.throws(() => parseAuthorityWire("outcome-contract", { ...contract, policyCommitment: { ...contract.policyCommitment, jcsBase64: "e30" } }), /pattern|base64/i);
   const nonJson = Buffer.from("not json", "utf8").toString("base64");
   assert.throws(() => parseAuthorityWire("outcome-contract", { ...contract, policyCommitment: { ...contract.policyCommitment, jcsBase64: nonJson } }), /policy commitment.*JSON/i);
   const nonJcs = Buffer.from('{"template":"Appointment {{time}}", "channel":"sms"}', "utf8").toString("base64");
@@ -111,7 +111,7 @@ test("DelegationGrant has explicit root or child parent and closed attenuable co
   assert.deepEqual(parseAuthorityWire("delegation-grant", { ...rootGrant, grantId: "grant_child", parentDigest: zeroDigest }), { ...rootGrant, grantId: "grant_child", parentDigest: zeroDigest });
   assert.throws(() => parseAuthorityWire("delegation-grant", { ...rootGrant, parentDigest: "" }), /must match a schema in anyOf/i);
   assert.throws(() => parseAuthorityWire("delegation-grant", { ...rootGrant, constraints: { ...constraints, definitionAliases: [] } }), /fewer than 1/i);
-  assert.throws(() => parseAuthorityWire("delegation-grant", { ...rootGrant, constraints: { ...constraints, audiences: ["requester_1", "requester_1"] } }), /unique items/i);
+  assert.throws(() => parseAuthorityWire("delegation-grant", { ...rootGrant, constraints: { ...constraints, audiences: ["requester_1", "requester_1"] } }), /duplicate items/i);
   assert.throws(() => parseAuthorityWire("delegation-grant", { ...rootGrant, constraints: { ...constraints, wildcard: true } }), /additional properties/i);
 });
 

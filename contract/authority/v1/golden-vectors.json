@@ -13,36 +13,63 @@
     }
   },
   "delegation-grant": {
-    "canonical": "{\"expiresAt\":\"2026-02-01T00:00:00.000Z\",\"grantId\":\"grant_1\",\"grantee\":\"gate_1\",\"grantor\":\"operator_1\",\"issuedAt\":\"2026-01-01T00:00:00.000Z\",\"parentDigest\":\"sha256:0000000000000000000000000000000000000000000000000000000000000000\",\"scope\":[\"definition_1\"],\"tenant\":\"tenant_1\",\"v\":\"reelier.delegation-grant/v1\"}",
-    "digest": "sha256:002d5d928df48bb484114c2f65f2eeb6bfe853373689a66c86bebb12b3844855",
+    "canonical": "{\"constraints\":{\"audiences\":[\"requester_1\"],\"connectorAccounts\":[{\"accountId\":\"location_1\",\"connectorId\":\"highlevel\"}],\"definitionAliases\":[\"definition_1\"],\"limits\":{\"maxBodyBytes\":4096,\"maxEffectsPerSourceTrigger\":1,\"maxEffectsPerWindow\":10,\"windowSeconds\":3600},\"projectionPointers\":[\"/appointment/startTime\",\"/contact/phone\"],\"riskClasses\":[\"message\"]},\"expiresAt\":\"2026-02-01T00:00:00.000Z\",\"grantId\":\"grant_1\",\"grantee\":\"gate_1\",\"grantor\":\"operator_1\",\"issuedAt\":\"2026-01-01T00:00:00.000Z\",\"parentDigest\":null,\"sponsor\":\"sponsor_1\",\"tenant\":\"tenant_1\",\"v\":\"reelier.delegation-grant/v1\"}",
+    "digest": "sha256:0c76d6ea15e3c438a1b63b208f317fb7952499ac1c1476b26986267cec5073b1",
     "signature": {
       "alg": "ed25519",
-      "sig": "JqFl8Vuc8QOizflqaI6F74m94MlVLKlaGWhMgLzAgFpz4b95C6CeVGht2/Zw56F1OI16DI9Y9JKkajui6K9mDg=="
+      "sig": "JIN0ST3QyybJQvF/qtdXKv25Ct21l/UIxoefUtGyfwaFIxOk0/EpeYgiU4oxstq9mKaZ1jeQOyATtZxP1VEkAA=="
     },
     "value": {
       "v": "reelier.delegation-grant/v1",
       "tenant": "tenant_1",
       "grantId": "grant_1",
-      "parentDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "parentDigest": null,
+      "sponsor": "sponsor_1",
       "grantor": "operator_1",
       "grantee": "gate_1",
       "issuedAt": "2026-01-01T00:00:00.000Z",
       "expiresAt": "2026-02-01T00:00:00.000Z",
-      "scope": [
-        "definition_1"
-      ]
+      "constraints": {
+        "definitionAliases": [
+          "definition_1"
+        ],
+        "audiences": [
+          "requester_1"
+        ],
+        "connectorAccounts": [
+          {
+            "connectorId": "highlevel",
+            "accountId": "location_1"
+          }
+        ],
+        "projectionPointers": [
+          "/appointment/startTime",
+          "/contact/phone"
+        ],
+        "riskClasses": [
+          "message"
+        ],
+        "limits": {
+          "maxEffectsPerWindow": 10,
+          "windowSeconds": 3600,
+          "maxEffectsPerSourceTrigger": 1,
+          "maxBodyBytes": 4096
+        }
+      }
     }
   },
   "source-bundle": {
-    "canonical": "{\"claims\":{\"authored\":[],\"grounded\":[],\"unresolved\":[]},\"freshUntil\":\"2026-01-01T00:01:00.000Z\",\"observedAt\":\"2026-01-01T00:00:00.000Z\",\"projection\":{},\"provenance\":{\"endpointId\":\"read_1\",\"resolverId\":\"resolver_1\"},\"rawDigest\":\"sha256:0000000000000000000000000000000000000000000000000000000000000000\",\"sourceIdentity\":\"source_1\",\"tenant\":\"tenant_1\",\"triggerIdentity\":\"trigger_1\",\"v\":\"reelier.source-bundle/v1\"}",
-    "digest": "sha256:d0a253ff5cf8d4b8858e1f2541f18a265e4d3ccc70fe56affbe51ea298f5d11b",
+    "canonical": "{\"claims\":{\"authored\":[],\"grounded\":[{\"claimId\":\"appointment_time\",\"projectionPointer\":\"/appointment/startTime\"}],\"unresolved\":[]},\"definitionDigest\":\"sha256:0000000000000000000000000000000000000000000000000000000000000000\",\"freshUntil\":\"2026-01-01T00:01:00.000Z\",\"observedAt\":\"2026-01-01T00:00:00.000Z\",\"projection\":{\"appointment\":{\"startTime\":\"2026-01-02T12:00:00.000Z\"}},\"projectionSchemaId\":\"highlevel.appointment-reminder/v1\",\"provenance\":{\"endpointId\":\"read_1\",\"resolverId\":\"resolver_1\"},\"rawDigest\":\"sha256:0000000000000000000000000000000000000000000000000000000000000000\",\"sourceIdentity\":\"source_1\",\"tenant\":\"tenant_1\",\"triggerIdentity\":\"trigger_1\",\"v\":\"reelier.source-bundle/v1\"}",
+    "digest": "sha256:aa378aec675aa93b5f7085fedbf33bbe8c9282692017093f530841d993e208f4",
     "signature": {
       "alg": "ed25519",
-      "sig": "Rpm5Zsv2KRmnAKQrNgpeXttoCS8w4g0Pa1O4OHOzjEIEtMkIwU5TlJWl/PSL9P+RBQwYvXSIvIt0H0nVARU3BA=="
+      "sig": "tpIj5JSSd0BtW0ss0v3+LMdtH4/stDQujc34vcnviAWaBZX7OHId2en2eMPmZSQOp/EAuKjNXybGby4nvbb5Bw=="
     },
     "value": {
       "v": "reelier.source-bundle/v1",
       "tenant": "tenant_1",
+      "definitionDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "projectionSchemaId": "highlevel.appointment-reminder/v1",
       "sourceIdentity": "source_1",
       "triggerIdentity": "trigger_1",
       "observedAt": "2026-01-01T00:00:00.000Z",
@@ -53,19 +80,28 @@
         "endpointId": "read_1"
       },
       "claims": {
-        "grounded": [],
+        "grounded": [
+          {
+            "claimId": "appointment_time",
+            "projectionPointer": "/appointment/startTime"
+          }
+        ],
         "authored": [],
         "unresolved": []
       },
-      "projection": {}
+      "projection": {
+        "appointment": {
+          "startTime": "2026-01-02T12:00:00.000Z"
+        }
+      }
     }
   },
   "outcome-contract": {
-    "canonical": "{\"alias\":\"definition_1\",\"contractId\":\"contract_1\",\"definitionDigest\":\"sha256:0000000000000000000000000000000000000000000000000000000000000000\",\"packDigest\":\"sha256:0000000000000000000000000000000000000000000000000000000000000000\",\"tenant\":\"tenant_1\",\"v\":\"reelier.outcome-contract/v1\",\"validFrom\":\"2026-01-01T00:00:00.000Z\",\"validUntil\":\"2026-02-01T00:00:00.000Z\"}",
-    "digest": "sha256:e30b1c73fa4b5c9b9348867a02f9ce018357103b45bdce36325e59872bfc5041",
+    "canonical": "{\"accountId\":\"location_1\",\"alias\":\"definition_1\",\"audiences\":[\"requester_1\"],\"connectorId\":\"highlevel\",\"contractId\":\"contract_1\",\"definitionDigest\":\"sha256:0000000000000000000000000000000000000000000000000000000000000000\",\"delegationGrantDigest\":\"sha256:0000000000000000000000000000000000000000000000000000000000000000\",\"limits\":{\"maxBodyBytes\":4096,\"maxEffectsPerSourceTrigger\":1,\"maxEffectsPerWindow\":10,\"windowSeconds\":3600},\"packDigest\":\"sha256:0000000000000000000000000000000000000000000000000000000000000000\",\"policyCommitment\":{\"digest\":\"sha256:171988244f4f16f849f195b47c31f24eede86fee7f0498731d891ecc529c2855\",\"jcsBase64\":\"eyJjaGFubmVsIjoic21zIiwidGVtcGxhdGUiOiJBcHBvaW50bWVudCB7e3RpbWV9fSJ9\",\"schemaId\":\"highlevel.sms-reminder-policy/v1\"},\"riskClasses\":[\"message\"],\"sourceAuthority\":{\"allowedReadEndpointIds\":[\"appointments.get\",\"contacts.get\"],\"authorizedProjectionPointers\":[\"/appointment/startTime\",\"/contact/phone\"],\"projectionSchemaId\":\"highlevel.appointment-reminder/v1\",\"resolverId\":\"highlevel_appointment\"},\"sponsor\":\"sponsor_1\",\"tenant\":\"tenant_1\",\"v\":\"reelier.outcome-contract/v1\",\"validFrom\":\"2026-01-01T00:00:00.000Z\",\"validUntil\":\"2026-02-01T00:00:00.000Z\"}",
+    "digest": "sha256:b89d3d802bf29866963af3a2404b3090fad792a6ec6cc9a4fea642f022c7bbde",
     "signature": {
       "alg": "ed25519",
-      "sig": "fdVpTW38hX42GzFJVTiu0Fej9osNo5s2uTapjVaRpuSUbvH74T4rSp/BTqwuisNW8/YAsSkhb7v/HrWNZNhQBQ=="
+      "sig": "mx9eUf10pt5NeKqEfsKmfBm2TavaA/6+JIkb+C09rcq8k9qkBaheGnW41AUXE8oNjumSDyU7fwwZZd8dbrjvAw=="
     },
     "value": {
       "v": "reelier.outcome-contract/v1",
@@ -75,7 +111,40 @@
       "validFrom": "2026-01-01T00:00:00.000Z",
       "validUntil": "2026-02-01T00:00:00.000Z",
       "packDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
-      "definitionDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+      "definitionDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "sponsor": "sponsor_1",
+      "audiences": [
+        "requester_1"
+      ],
+      "delegationGrantDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "connectorId": "highlevel",
+      "accountId": "location_1",
+      "sourceAuthority": {
+        "resolverId": "highlevel_appointment",
+        "projectionSchemaId": "highlevel.appointment-reminder/v1",
+        "allowedReadEndpointIds": [
+          "appointments.get",
+          "contacts.get"
+        ],
+        "authorizedProjectionPointers": [
+          "/appointment/startTime",
+          "/contact/phone"
+        ]
+      },
+      "riskClasses": [
+        "message"
+      ],
+      "limits": {
+        "maxEffectsPerWindow": 10,
+        "windowSeconds": 3600,
+        "maxEffectsPerSourceTrigger": 1,
+        "maxBodyBytes": 4096
+      },
+      "policyCommitment": {
+        "schemaId": "highlevel.sms-reminder-policy/v1",
+        "jcsBase64": "eyJjaGFubmVsIjoic21zIiwidGVtcGxhdGUiOiJBcHBvaW50bWVudCB7e3RpbWV9fSJ9",
+        "digest": "sha256:171988244f4f16f849f195b47c31f24eede86fee7f0498731d891ecc529c2855"
+      }
     }
   },
   "outcome-request": {

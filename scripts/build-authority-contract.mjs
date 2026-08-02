@@ -4,14 +4,22 @@ import { cp, mkdir, readFile, writeFile } from "node:fs/promises";
 
 const digest = "sha256:" + "0".repeat(64);
 const at = "2026-01-01T00:00:00.000Z";
+const limits = { maxEffectsPerWindow: 10, windowSeconds: 3600, maxEffectsPerSourceTrigger: 1, maxBodyBytes: 4096 };
+const policyJcs = canonicalize({ channel: "sms", template: "Appointment {{time}}" });
+const policyDigest = "sha256:" + createHash("sha256").update(policyJcs, "utf8").digest("hex");
+const constraints = {
+  definitionAliases: ["definition_1"], audiences: ["requester_1"],
+  connectorAccounts: [{ connectorId: "highlevel", accountId: "location_1" }],
+  projectionPointers: ["/appointment/startTime", "/contact/phone"], riskClasses: ["message"], limits,
+};
 const vectorPrivateKey = createPrivateKey(`-----BEGIN PRIVATE KEY-----
 MC4CAQAwBQYDK2VwBCIEIO2e0HCVJ9AnRKWoiI+A2JXFNQeKOiEQDB7P8clr8OyJ
 -----END PRIVATE KEY-----`);
 const vectors = {
   principal: { v: "reelier.principal/v1", id: "operator_1", kind: "operator" },
-  "delegation-grant": { v: "reelier.delegation-grant/v1", tenant: "tenant_1", grantId: "grant_1", parentDigest: digest, grantor: "operator_1", grantee: "gate_1", issuedAt: at, expiresAt: "2026-02-01T00:00:00.000Z", scope: ["definition_1"] },
-  "source-bundle": { v: "reelier.source-bundle/v1", tenant: "tenant_1", sourceIdentity: "source_1", triggerIdentity: "trigger_1", observedAt: at, rawDigest: digest, freshUntil: "2026-01-01T00:01:00.000Z", provenance: { resolverId: "resolver_1", endpointId: "read_1" }, claims: { grounded: [], authored: [], unresolved: [] }, projection: {} },
-  "outcome-contract": { v: "reelier.outcome-contract/v1", tenant: "tenant_1", alias: "definition_1", contractId: "contract_1", validFrom: at, validUntil: "2026-02-01T00:00:00.000Z", packDigest: digest, definitionDigest: digest },
+  "delegation-grant": { v: "reelier.delegation-grant/v1", tenant: "tenant_1", grantId: "grant_1", parentDigest: null, sponsor: "sponsor_1", grantor: "operator_1", grantee: "gate_1", issuedAt: at, expiresAt: "2026-02-01T00:00:00.000Z", constraints },
+  "source-bundle": { v: "reelier.source-bundle/v1", tenant: "tenant_1", definitionDigest: digest, projectionSchemaId: "highlevel.appointment-reminder/v1", sourceIdentity: "source_1", triggerIdentity: "trigger_1", observedAt: at, rawDigest: digest, freshUntil: "2026-01-01T00:01:00.000Z", provenance: { resolverId: "resolver_1", endpointId: "read_1" }, claims: { grounded: [{ claimId: "appointment_time", projectionPointer: "/appointment/startTime" }], authored: [], unresolved: [] }, projection: { appointment: { startTime: "2026-01-02T12:00:00.000Z" } } },
+  "outcome-contract": { v: "reelier.outcome-contract/v1", tenant: "tenant_1", alias: "definition_1", contractId: "contract_1", validFrom: at, validUntil: "2026-02-01T00:00:00.000Z", packDigest: digest, definitionDigest: digest, sponsor: "sponsor_1", audiences: ["requester_1"], delegationGrantDigest: digest, connectorId: "highlevel", accountId: "location_1", sourceAuthority: { resolverId: "highlevel_appointment", projectionSchemaId: "highlevel.appointment-reminder/v1", allowedReadEndpointIds: ["appointments.get", "contacts.get"], authorizedProjectionPointers: ["/appointment/startTime", "/contact/phone"] }, riskClasses: ["message"], limits, policyCommitment: { schemaId: "highlevel.sms-reminder-policy/v1", jcsBase64: Buffer.from(policyJcs, "utf8").toString("base64"), digest: policyDigest } },
   "outcome-request": { v: "reelier.outcome-request/v1", requestId: "request_1", sourceRefs: { appointment: "ref_1" }, choices: {} },
   "transport-effect": { v: "reelier.transport-effect/v1", endpointId: "connector_1", method: "POST", path: "/v1/messages", query: "account=tenant_1&mode=send", headers: { "Content-Type": "application/json" }, bodyBase64: "e30=", riskClass: "message", idempotency: "native", preconditions: [], reconciliation: { recipeId: "message-readback" } },
   "compiled-capability": { v: "reelier.compiled-capability/v1", capabilityId: "capability_1", requestKey: digest, outcomeKey: digest, effectDigest: digest, issuedAt: at, expiresAt: "2026-01-01T00:01:00.000Z" },
