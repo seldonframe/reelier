@@ -528,6 +528,8 @@ test("each DecisionContext snapshot dependency edge refuses independently and st
     ...refusedDecisionContext,
     contractDigest: "sha256:" + "3".repeat(64),
     outcomeKey: "sha256:" + "5".repeat(64),
+    effectDigest: "sha256:" + "6".repeat(64),
+    snapshots: { sourceBundleDigest: "sha256:" + "7".repeat(64), authorityStateDigest: "sha256:" + "8".repeat(64) },
   }));
 });
 

@@ -137,6 +137,9 @@ function assertIntrinsicDecisionContext(context: DecisionContext): void {
   if ((context.capabilityId === null) !== (context.capabilityDigest === null)) {
     throw new TypeError("invalid decision-context: capability id and digest must have paired nullability");
   }
+  if ((context.outcomeKey === null) !== (context.effectDigest === null)) {
+    throw new TypeError("invalid decision-context: artifact dependency requires outcome and effect paired nullability");
+  }
   if (context.outcomeKey !== null && context.contractDigest === null) {
     throw new TypeError("invalid decision-context: artifact dependency requires contract before outcome");
   }
