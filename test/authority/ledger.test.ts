@@ -772,8 +772,8 @@ test("ledger lock acquisition remains bounded when the ambient wall clock rolls 
 
 test("volatile decisions-subtree audit retries never consult the ambient wall clock",async()=>{
   await withRoot(async root=>{
-    await mkdir(path.join(root,"decisions"));const original=Date.now;let calls=0;Date.now=()=>{if(++calls>1)throw new Error("ambient wall clock consulted by decisions audit");return 1_000;};
-    try{const result=await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20}).recover();assert.equal(result.ok,true);}
+    await mkdir(path.join(root,"decisions"));const original=Date.now;let semanticClockCalls=0;Date.now=()=>{throw new Error("ambient wall clock consulted by retry deadline");};
+    try{const result=await new RawFsAuthorityLedger(root,{now:()=>{semanticClockCalls++;return t0;},lockTimeoutMs:20}).recover();assert.equal(result.ok,true);assert.equal(semanticClockCalls,0,"recovery/audit has no legitimate semantic-time read");}
     finally{Date.now=original;}
   });
 });

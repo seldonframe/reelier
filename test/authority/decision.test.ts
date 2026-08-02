@@ -113,13 +113,17 @@ test("decision roots reject symlink traversal at construction",async t=>{
   try{assert.throws(()=>createFileGateDecisionSink(link),/root|symlink|reparse/i);}finally{await rm(outer,{recursive:true,force:true});}
 });
 
-test("an absent decision root is refused synchronously before a later parent junction can redirect it",async t=>{
+test("an absent decision root is refused synchronously with zero filesystem creation",async()=>{
+  const outer=await mkdtemp(path.join(tmpdir(),"reelier-decision-absent-root-")),parent=path.join(outer,"missing"),root=path.join(parent,"decisions");
+  try{assert.throws(()=>createFileGateDecisionSink(root),/root|exist|directory/i);assert.equal(existsSync(parent),false,"construction must perform zero filesystem creation");}
+  finally{await rm(outer,{recursive:true,force:true});}
+});
+
+test("a later parent junction cannot redirect an already-refused absent decision root",async t=>{
   const outer=await mkdtemp(path.join(tmpdir(),"reelier-decision-late-root-")),outside=await mkdtemp(path.join(tmpdir(),"reelier-decision-late-outside-")),parent=path.join(outer,"late-link"),root=path.join(parent,"decisions");
   try{
-    let refused=false;try{createFileGateDecisionSink(root);}catch(error){refused=/root|exist|directory/i.test(String(error));}
-    assert.equal(existsSync(parent),false,"construction must perform zero filesystem creation");
+    assert.throws(()=>createFileGateDecisionSink(root),/root|exist|directory/i);
     try{await symlink(outside,parent,process.platform==="win32"?"junction":"dir");}catch(error){if((error as {code?:string}).code==="EPERM"){t.skip("symlink creation unavailable on this host");return;}throw error;}
-    assert.equal(refused,true,"the absent sink root must already have been refused synchronously");
     assert.equal(existsSync(path.join(outside,"decisions")),false,"the later junction target remains untouched");
   }finally{await rm(outer,{recursive:true,force:true});await rm(outside,{recursive:true,force:true});}
 });
