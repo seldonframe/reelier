@@ -183,6 +183,9 @@ publication-stage removal attempt. Each transient attempt restarts with complete
 enumeration before that whole order repeats. A
 transient failure never retries `rm` directly: it restarts those validations against the same
 monotonic deadline. A same-name replacement installed before or during any attempt is preserved.
+After an exact removal, the pending ledger-root sync completes before the exact
+`after-publication-stage-cleanup-root-sync` hook; only after that boundary may the next complete
+generation close, and callback entry remains unreachable until that post-sync closure succeeds.
 Acquisition is bounded. A live same-host owner is never evicted because time elapsed; a
 foreign, corrupt, or otherwise unverifiable owner refuses. An abandoned lock is reclaimed only after
 same-host process liveness proves that its recorded PID is dead and the owner bytes remain identical.
