@@ -39,7 +39,7 @@ function definition(overrides: Partial<StaticPackDefinition> = {}): StaticPackDe
   };
 }
 
-function fixture(def = definition()) {
+function fixture(def = definition(), contractFreshness = 60, materializedFreshness = contractFreshness) {
   const operator = generateKeyPairSync("ed25519");
   const gate = generateKeyPairSync("ed25519");
   const limits = { maxEffectsPerWindow: 10, windowSeconds: 3600, maxEffectsPerSourceTrigger: 1, maxBodyBytes: 4096 };
@@ -52,14 +52,14 @@ function fixture(def = definition()) {
   ]);
   const delegation = validateDelegationChain({ tenant: "tenant_1", sponsor: "sponsor_1", now, trustRoots, grants: [{ grant, digest: grantDigest, signerId: "operator_key", signature: signAuthorityDigest(operator.privateKey, "delegation-grant", grantDigest) }] });
   const policyBytes = authorityCanonicalBytes({ template: "Hello {{message}}" });
-  const contract = { v: "reelier.outcome-contract/v1" as const, tenant: "tenant_1", alias: "definition_1", contractId: "contract_1", validFrom: "2026-01-02T00:00:00.000Z", validUntil: "2026-01-31T00:00:00.000Z", packDigest, definitionDigest, sponsor: "sponsor_1", audiences: ["requester_1"], delegationGrantDigest: grantDigest, connectorId: "connector_1", accountId: "account_1", sourceAuthority: { resolverId: "resolver_1", projectionSchemaId: "projection/v1", allowedReadEndpointIds: ["read_1"], authorizedProjectionPointers: ["/message"], maxFreshnessSeconds: 60 }, riskClasses: ["message"], limits, policyCommitment: { schemaId: "policy/v1", jcsBase64: policyBytes.toString("base64"), digest: "sha256:" + createHash("sha256").update(policyBytes).digest("hex") } };
+  const contract = { v: "reelier.outcome-contract/v1" as const, tenant: "tenant_1", alias: "definition_1", contractId: "contract_1", validFrom: "2026-01-02T00:00:00.000Z", validUntil: "2026-01-31T00:00:00.000Z", packDigest, definitionDigest, sponsor: "sponsor_1", audiences: ["requester_1"], delegationGrantDigest: grantDigest, connectorId: "connector_1", accountId: "account_1", sourceAuthority: { resolverId: "resolver_1", projectionSchemaId: "projection/v1", allowedReadEndpointIds: ["read_1"], authorizedProjectionPointers: ["/message"], maxFreshnessSeconds: contractFreshness }, riskClasses: ["message"], limits, policyCommitment: { schemaId: "policy/v1", jcsBase64: policyBytes.toString("base64"), digest: "sha256:" + createHash("sha256").update(policyBytes).digest("hex") } };
   const contractDigest = authorityDigest(contract);
   const packs = createStaticPackRegistry([def]);
   const validatedContract = validateStoredContract({ stored: { contract, digest: contractDigest, signerId: "gate_key", signature: signAuthorityDigest(gate.privateKey, "outcome-contract", contractDigest) }, trustRoots, delegation, registeredDefinitions: registeredDefinitionDigests(packs), stateEvents: [{ kind: "activated", contractDigest, at: "2026-01-03T00:00:00.000Z" }], tenant: "tenant_1", requester: "requester_1", now });
   const raw = Buffer.from('{"message":"world"}', "utf8");
   const sourceRegistry = createSourceRegistry([{ tenant: "tenant_1", resolverId: "resolver_1", definitionDigest, projectionSchemaId: "projection/v1", readEndpointIds: ["read_1"], maxFreshnessSeconds: 60, plan: refs => [{ endpointId: "read_1", opaqueHandle: refs.item }], project: () => ({ sourceIdentity: "source_1", triggerIdentity: "trigger_1", claims: { grounded: [{ claimId: "message", projectionPointer: "/message" }], authored: [], unresolved: [] }, projection: { message: "world" } }) }]);
   const sourceRefs = { item: "opaque_1" }; const plans = planSourceReads(sourceRegistry, { tenant: "tenant_1", resolverId: "resolver_1", definitionDigest, sourceRefs, allowedReadEndpointIds: ["read_1"] });
-  const validatedSource = materializeSourceBundle(sourceRegistry, { tenant: "tenant_1", definitionDigest, resolverId: "resolver_1", projectionSchemaId: "projection/v1", sourceRefs, allowedReadEndpointIds: ["read_1"], authorizedProjectionPointers: ["/message"], requiredGroundedPointers: ["/message"], maxFreshnessSeconds: 60, observedAt: now, plans, observations: [{ planDigest: plans[0].planDigest, rawBytes: raw }] });
+  const validatedSource = materializeSourceBundle(sourceRegistry, { tenant: "tenant_1", definitionDigest, resolverId: "resolver_1", projectionSchemaId: "projection/v1", sourceRefs, allowedReadEndpointIds: ["read_1"], authorizedProjectionPointers: ["/message"], requiredGroundedPointers: ["/message"], maxFreshnessSeconds: materializedFreshness, observedAt: now, plans, observations: [{ planDigest: plans[0].planDigest, rawBytes: raw }] });
   return { packs, validatedContract, validatedSource, contract, sourceBundle: validatedSource.bundle, sourceRegistry, raw };
 }
 
@@ -142,6 +142,11 @@ test("compiler refuses unknown endpoint/risk and every malformed pack-emitted tr
 test("compiler recomposes source authority against the selected contract", () => {
   const f = fixture();
   assert.throws(() => compileOutcome(f.packs, { contract: f.validatedContract, source: { ...f.validatedSource } as never, choices: {}, now }), /validated source bundle/i);
+});
+
+test("compiler refuses a branded source whose freshness exceeds the selected signed contract", () => {
+  const f = fixture(definition({ maxFreshnessSeconds: 60 }), 30, 60);
+  assert.throws(() => compileOutcome(f.packs, { contract: f.validatedContract, source: f.validatedSource, choices: {}, now }), /freshness exceeds.*contract/i);
 });
 
 test("validated contract and source authority is single-context and cannot be reused at another instant", () => {
