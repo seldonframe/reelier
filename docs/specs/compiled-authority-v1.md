@@ -123,7 +123,12 @@ where `host-digest` is SHA-256 over the UTF-8 bytes of the exact canonical owner
 The publisher creates that real directory exclusively, creates a real regular single-link
 `owner.json` exclusively, writes its complete canonical owner, file-syncs it, syncs the staging
 directory, atomically renames the whole staging directory to `lock`, and syncs the ledger root. The
-shared `lock` path is never publication staging and is therefore never ownerless. A live same-host
+shared `lock` path is never publication staging and is therefore never ownerless. The exact durability
+fault topology is closed: after stage creation through stage-directory sync, `lock` is absent and
+exactly one publication stage exists; that stage is respectively an empty directory, contains a
+zero-byte `owner.json`, contains a nonempty non-JSON partial owner, or contains the complete canonical
+owner after owner-file sync and stage-directory sync. After whole-directory rename and after root sync,
+`lock` contains the complete canonical owner and no publication stage remains. A live same-host
 publisher's byte-identical empty, zero-byte-owner, partial-owner, or complete-owner stage is busy and
 preserved. After its named same-host PID is proved dead, each of those exact states is recoverable by a
 successor, but only the creator may publish its own stage: a successor never renames another owner's
