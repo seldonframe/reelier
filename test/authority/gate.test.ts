@@ -197,9 +197,9 @@ test("simultaneous trusted-candidate failures use union precedence instead of me
   for(const [overrides,want] of cases){const f=await fixture(overrides);try{const result=await f.gate.decide(f.request);assert.equal(result.kind,"refused");if(result.kind==="refused")assert.equal(result.status.reasonCode,want);}finally{await f.cleanup();}}
 });
 
-test("compiled endpoint and risk must each be authorized by the selected connector, not merely overlap at planning",async()=>{
+test("compiled endpoint and risk refusals bind the rejected effect under distinct post-compile reason codes",async()=>{
   const shared={pack:{writeEndpointIds:["write_1","write_2"],riskClasses:["message","elevated"]},contract:{riskClasses:["message","elevated"]},grant:{constraints:{...grantConstraints(),riskClasses:["message","elevated"]}}};
-  for(const [specific,want] of [[{effect:{endpointId:"write_2"}},"endpoint-not-allowed"],[{effect:{riskClass:"elevated"}},"risk-not-allowed"]] as const){
+  for(const [specific,want] of [[{effect:{endpointId:"write_2"}},"effect-endpoint-not-allowed"],[{effect:{riskClass:"elevated"}},"effect-risk-not-allowed"]] as const){
     const f=await fixture({...shared,...specific});
     try{
       const result=await f.gate.decide(f.request);
@@ -209,9 +209,14 @@ test("compiled endpoint and risk must each be authorized by the selected connect
       assert.equal(f.trace.includes("reserve"),false);
       const record=await primaryRecord(f);
       assert.equal(record.gateEvent.reasonCode,want);
-      assert.equal(record.decisionContext.outcomeKey,null);
-      assert.equal(record.decisionContext.effectDigest,null);
+      assert.equal(record.gateEvent.at,decisionAt);
+      assert.notEqual(record.decisionContext.contractDigest,null);
+      assert.notEqual(record.decisionContext.snapshots.authorityStateDigest,null);
+      assert.notEqual(record.decisionContext.snapshots.sourceBundleDigest,null);
+      assert.notEqual(record.decisionContext.outcomeKey,null);
+      assert.notEqual(record.decisionContext.effectDigest,null);
       assert.equal(record.decisionContext.capabilityId,null);
+      assert.equal(record.decisionContext.capabilityDigest,null);
     }finally{await f.cleanup();}
   }
 });

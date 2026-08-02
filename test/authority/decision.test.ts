@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { writeFileSync } from "node:fs";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { existsSync, writeFileSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
@@ -59,7 +59,7 @@ test("the closed reason protocol has the exact approved order and no free-form e
     "contract-not-yet-valid", "contract-expired", "delegation-invalid", "pack-mismatch", "definition-mismatch",
     "resolver-mismatch", "connector-mismatch", "account-mismatch", "endpoint-not-allowed", "risk-not-allowed",
     "source-read-refused", "source-observation-invalid", "source-projection-invalid", "source-ungrounded", "source-stale",
-    "choices-invalid", "compile-refused", "effect-refused", "reservation-idempotency-conflict", "semantic-duplicate",
+    "choices-invalid", "compile-refused", "effect-refused", "effect-endpoint-not-allowed", "effect-risk-not-allowed", "reservation-idempotency-conflict", "semantic-duplicate",
     "capability-integrity", "capability-already-reserved", "limit-exceeded", "not-yet-valid", "expired", "clock-rollback",
     "integrity-failure", "busy", "lock-owner-unverifiable", "corruption",
   ]);
@@ -95,6 +95,62 @@ test("file sink atomically indexes event and primary ingress, returns copies, an
     await writeFile(path.join(root, "gate-decisions.json"), stored.replace("contract-not-found", "contract-expired"));
     assert.deepEqual(await createFileGateDecisionSink(root).lookupByEvent("event_1"), { ok: false, reason: "corruption" });
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("a relative decision root is fixed at construction and never follows a later cwd",async()=>{
+  const originalCwd=process.cwd(),outer=await mkdtemp(path.join(tmpdir(),"reelier-decision-relative-root-")),other=await mkdtemp(path.join(tmpdir(),"reelier-decision-other-cwd-"));
+  try{
+    process.chdir(outer);await mkdir("fixed-root");const fixed=path.join(outer,"fixed-root"),sink=createFileGateDecisionSink("fixed-root");process.chdir(other);
+    assert.deepEqual(await sink.append(primary()),{ok:true,status:"appended",recordDigest:authorityDigest(primary())});
+    assert.equal(existsSync(path.join(fixed,"gate-decisions.json")),true);
+    assert.equal(existsSync(path.join(other,"fixed-root")),false);
+  }finally{process.chdir(originalCwd);await rm(outer,{recursive:true,force:true});await rm(other,{recursive:true,force:true});}
+});
+
+test("decision roots reject symlink traversal at construction",async t=>{
+  const outer=await mkdtemp(path.join(tmpdir(),"reelier-decision-root-symlink-")),real=path.join(outer,"real"),link=path.join(outer,"link");await mkdir(real);
+  try{await symlink(real,link,process.platform==="win32"?"junction":"dir");}catch(error){if((error as {code?:string}).code==="EPERM"){t.skip("symlink creation unavailable on this host");await rm(outer,{recursive:true,force:true});return;}throw error;}
+  try{assert.throws(()=>createFileGateDecisionSink(link),/root|symlink|reparse/i);}finally{await rm(outer,{recursive:true,force:true});}
+});
+
+test("decision roots reject substitution without writing through the replacement",async t=>{
+  const outer=await mkdtemp(path.join(tmpdir(),"reelier-decision-root-substitution-")),real=path.join(outer,"real"),outside=path.join(outer,"outside"),moved=path.join(outer,"moved");await mkdir(real);await mkdir(outside);const sink=createFileGateDecisionSink(real);await rename(real,moved);
+  try{await symlink(outside,real,process.platform==="win32"?"junction":"dir");}catch(error){if((error as {code?:string}).code==="EPERM"){t.skip("symlink creation unavailable on this host");await rm(outer,{recursive:true,force:true});return;}throw error;}
+  try{
+    assert.deepEqual(await sink.append(primary()),{ok:false,reason:"unavailable"});
+    assert.equal(existsSync(path.join(outside,"gate-decisions.json")),false);
+  }finally{await rm(outer,{recursive:true,force:true});}
+});
+
+test("decision lock owner publication is file-synced, lock-directory-synced, then root-synced",async()=>{
+  const root=await mkdtemp(path.join(tmpdir(),"reelier-decision-owner-publication-")),observed:string[]=[];
+  try{
+    const sink=createFileGateDecisionSink(root,{lockFaultInjector:(point:string)=>{observed.push(point);}} as never);
+    assert.equal((await sink.append(primary())).ok,true);
+    assert.deepEqual(observed.slice(0,5),["before-owner-publish","after-owner-write","after-owner-file-sync","after-lock-directory-sync","after-root-directory-sync"]);
+  }finally{await rm(root,{recursive:true,force:true});}
+});
+
+test("every interrupted owner-publication boundary cleans its self-created lock without an ownerless remainder",async()=>{
+  const points=["before-owner-publish","after-owner-write","after-owner-file-sync","after-lock-directory-sync","after-root-directory-sync"] as const;
+  for(const point of points){const root=await mkdtemp(path.join(tmpdir(),"reelier-decision-owner-publication-fault-"));try{let fired=false;const sink=createFileGateDecisionSink(root,{lockFaultInjector:(observed:string)=>{if(!fired&&observed===point){fired=true;throw new Error(`fault:${point}`);}}} as never);assert.deepEqual(await sink.append(primary()),{ok:false,reason:"unavailable"},point);assert.equal(fired,true,point);assert.equal(existsSync(path.join(root,".gate-decisions.lock")),false,point);}finally{await rm(root,{recursive:true,force:true});}}
+});
+
+test("decision lock timeout is a closed positive bounded integer",async()=>{
+  const root=await mkdtemp(path.join(tmpdir(),"reelier-decision-timeout-"));
+  try{
+    for(const value of [1,60_000,undefined])assert.doesNotThrow(()=>createFileGateDecisionSink(root,value===undefined?{}:{lockTimeoutMs:value}),String(value));
+    for(const value of [0,-1,Number.NaN,Number.POSITIVE_INFINITY,1.5,60_001])assert.throws(()=>createFileGateDecisionSink(root,{lockTimeoutMs:value}),/lock timeout/i,String(value));
+  }finally{await rm(root,{recursive:true,force:true});}
+});
+
+test("wall-clock rollback cannot extend a bounded unavailable decision-lock acquisition",{timeout:10_000},async()=>{
+  const root=await mkdtemp(path.join(tmpdir(),"reelier-decision-monotonic-timeout-"));
+  try{
+    const moduleUrl=pathToFileURL(path.resolve("dist-test/src/authority/decision.js")).href,run=promisify(execFile);
+    const script='const {mkdir,writeFile}=await import("node:fs/promises");const {hostname}=await import("node:os");const path=(await import("node:path")).default;const {createFileGateDecisionSink}=await import(process.argv[1]);const root=process.argv[2],lock=path.join(root,".gate-decisions.lock");await mkdir(lock);await writeFile(path.join(lock,"owner.json"),JSON.stringify({host:hostname(),nonce:"d".repeat(64),pid:process.pid,v:"reelier.gate-decision-lock/internal-v1"}));let wall=1000;Date.now=()=>--wall;const result=await createFileGateDecisionSink(root,{lockTimeoutMs:1}).append(JSON.parse(process.argv[3]));process.stdout.write(JSON.stringify(result));';
+    const output=await run(process.execPath,["--input-type=module","-e",script,moduleUrl,root,JSON.stringify(primary())],{timeout:2_000});assert.deepEqual(JSON.parse(output.stdout),{ok:false,reason:"unavailable"});
+  }finally{await rm(root,{recursive:true,force:true});}
 });
 
 test("append classifies malformed stores and duplicate indexes as corruption, never environmental unavailability",async()=>{
