@@ -23,8 +23,11 @@ test("frozen vectors carry deterministic Ed25519 signatures", () => {
   const publicKey = createPublicKey(`-----BEGIN PUBLIC KEY-----
 MCowBQYDK2VwAyEAa5QRvL1tMishctZLJ/isDZfQF25TUiR0Af0u70V2J6Q=
 -----END PUBLIC KEY-----`);
-  const vectors = JSON.parse(readFileSync(path.join(process.cwd(), "contract/authority/v1/golden-vectors.json"), "utf8")) as Record<string, { digest: string; signature: { alg: "ed25519"; sig: string } }>;
+  const vectors = JSON.parse(readFileSync(path.join(process.cwd(), "contract/authority/v1/golden-vectors.json"), "utf8")) as Record<string, { digest: string; signature: { alg: "ed25519"; sig: string }; variants?: { preCompileRefusal: { digest: string; signature: { alg: "ed25519"; sig: string } } } }>;
   for (const [purpose, vector] of Object.entries(vectors)) assert.equal(verifyAuthoritySignature(publicKey, purpose as never, vector.digest, vector.signature), true, purpose);
+  const refusal = vectors["decision-context"].variants?.preCompileRefusal;
+  assert.ok(refusal);
+  assert.equal(verifyAuthoritySignature(publicKey, "decision-context", refusal.digest, refusal.signature), true);
 });
 
 test("standing-authority signatures bind sponsor, audience, target, projection, limits, and policy bytes", () => {

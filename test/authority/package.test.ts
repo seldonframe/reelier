@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 
-test("public production export parses all amended standing-authority objects against packaged schemas", async () => {
+test("public production export parses DecisionContext and its portable evidence against packaged schemas", async () => {
   execFileSync(process.execPath, ["./dist/authority/wire.js"], { cwd: process.cwd() });
   const authority = await import("reelier/authority");
   const request = { v: "reelier.outcome-request/v1", requestId: "request_1", sourceRefs: { appointment: "ref_1" }, choices: {} };
@@ -15,8 +15,16 @@ test("public production export parses all amended standing-authority objects aga
   const contract = { v: "reelier.outcome-contract/v1", tenant: "tenant_1", alias: "definition_1", contractId: "contract_1", validFrom: "2026-01-01T00:00:00.000Z", validUntil: "2026-02-01T00:00:00.000Z", packDigest: digest, definitionDigest: digest, sponsor: "sponsor_1", audiences: ["requester_1"], delegationGrantDigest: digest, connectorId: "connector_1", accountId: "account_1", sourceAuthority: { resolverId: "resolver_1", projectionSchemaId: "projection/v1", allowedReadEndpointIds: ["read_1"], authorizedProjectionPointers: ["/x"] }, riskClasses: ["message"], limits, policyCommitment: { schemaId: "policy/v1", jcsBase64: policy.toString("base64"), digest: "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a" } };
   const grant = { v: "reelier.delegation-grant/v1", tenant: "tenant_1", grantId: "grant_1", parentDigest: null, sponsor: "sponsor_1", grantor: "operator_1", grantee: "gate_1", issuedAt: "2026-01-01T00:00:00.000Z", expiresAt: "2026-02-01T00:00:00.000Z", constraints: { definitionAliases: ["definition_1"], audiences: ["requester_1"], connectorAccounts: [{ connectorId: "connector_1", accountId: "account_1" }], projectionPointers: ["/x"], riskClasses: ["message"], limits } };
   const source = { v: "reelier.source-bundle/v1", tenant: "tenant_1", definitionDigest: digest, projectionSchemaId: "projection/v1", sourceIdentity: "source_1", triggerIdentity: "trigger_1", observedAt: "2026-01-01T00:00:00.000Z", rawDigest: digest, freshUntil: "2026-01-01T00:01:00.000Z", provenance: { resolverId: "resolver_1", endpointId: "read_1" }, claims: { grounded: [{ claimId: "x", projectionPointer: "/x" }], authored: [], unresolved: [] }, projection: { x: 1 } };
+  const context = { v: "reelier.decision-context/v1", tenant: "tenant_1", requester: "requester_1", requestId: "request_1", requestDigest: "sha256:" + "1".repeat(64), requestKey: "sha256:" + "2".repeat(64), contractDigest: "sha256:" + "3".repeat(64), capabilityId: "capability_1", capabilityDigest: "sha256:" + "4".repeat(64), outcomeKey: "sha256:" + "5".repeat(64), effectDigest: "sha256:" + "6".repeat(64), snapshots: { sourceBundleDigest: "sha256:" + "7".repeat(64), authorityStateDigest: "sha256:" + "8".repeat(64) } };
+  const decisionContextDigest = authority.authorityDigest(context);
+  const gate = { v: "reelier.gate-event/v1", eventId: "event_1", at: "2026-01-01T00:00:00.000Z", verdict: "accepted", reasonCode: "accepted", decisionContextDigest };
+  const receipt = { v: "reelier.authority-receipt/v1", receiptId: "receipt_1", gateEventDigest: authority.authorityDigest(gate), decisionContextDigest, decisionContext: context, claims: { authorization: "verified", sourceCompleteness: "verified", dispatch: "verified", providerAcknowledgment: "unchecked", reconciliation: "absent", topology: "unchecked", completeness: "unchecked" } };
   assert.deepEqual(authority.parseAuthorityWire("outcome-contract", contract), contract);
   assert.deepEqual(authority.parseAuthorityWire("delegation-grant", grant), grant);
   assert.deepEqual(authority.parseAuthorityWire("source-bundle", source), source);
-  for (const kind of ["outcome-contract", "delegation-grant", "source-bundle"]) assert.ok(existsSync(path.join(process.cwd(), "dist", "authority", "schemas", `${kind}.schema.json`)));
+  assert.deepEqual(authority.parseAuthorityWire("decision-context", context), context);
+  assert.deepEqual(authority.parseAuthorityWire("gate-event", gate), gate);
+  assert.deepEqual(authority.parseAuthorityWire("authority-receipt", receipt), receipt);
+  assert.deepEqual(authority.parsePortableAuthorityEvidence(gate, receipt), { gateEvent: gate, receipt });
+  for (const kind of ["outcome-contract", "delegation-grant", "source-bundle", "decision-context", "gate-event", "authority-receipt"]) assert.ok(existsSync(path.join(process.cwd(), "dist", "authority", "schemas", `${kind}.schema.json`)));
 });
