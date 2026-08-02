@@ -10,6 +10,7 @@ export type LedgerState =
   | "reconciled";
 
 export interface LimitSlotIntent {
+  readonly kind: "contract-window" | "source-trigger";
   readonly key: string;
   readonly maximum: number;
 }
@@ -17,13 +18,21 @@ export interface LimitSlotIntent {
 export interface ReservationIntent {
   readonly tenant: string;
   readonly requester: string;
+  readonly definitionAlias: string;
   readonly requestId: string;
+  readonly requestDigest: string;
   readonly canonicalRequestDigest: string;
   readonly canonicalRequestBytes: Uint8Array;
   readonly requestKey: string;
   readonly capabilityId: string;
   readonly capabilityDigest: string;
   readonly capabilityBytes: Uint8Array;
+  readonly contractDigest: string;
+  readonly sourceBundleDigest: string;
+  readonly sourceSnapshotDigest: string;
+  readonly authorityStateDigest: string;
+  readonly limits: Readonly<{ maxEffectsPerWindow:number;windowSeconds:number;maxEffectsPerSourceTrigger:number;maxBodyBytes:number }>;
+  readonly limitsDigest: string;
   readonly outcomeKey: string;
   readonly effectDigest: string;
   readonly issuedAt: string;

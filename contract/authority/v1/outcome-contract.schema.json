@@ -4,7 +4,7 @@
   "$defs": {
     "id": { "type": "string", "pattern": "^[A-Za-z0-9._~-]{1,128}$" },
     "schemaId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._~:/-]{0,255}$" },
-    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "digest": { "type": "string", "pattern": "^sha256:(?!0{64}$)[0-9a-f]{64}$" },
     "pointer": { "type": "string", "maxLength": 512, "pattern": "^(?:/(?:[^~/]|~[01])*)+$" },
     "limits": {
       "type": "object", "additionalProperties": false,
@@ -28,11 +28,12 @@
     "delegationGrantDigest": { "$ref": "#/$defs/digest" }, "connectorId": { "$ref": "#/$defs/id" }, "accountId": { "$ref": "#/$defs/id" },
     "sourceAuthority": {
       "type": "object", "additionalProperties": false,
-      "required": ["resolverId", "projectionSchemaId", "allowedReadEndpointIds", "authorizedProjectionPointers"],
+      "required": ["resolverId", "projectionSchemaId", "allowedReadEndpointIds", "authorizedProjectionPointers", "maxFreshnessSeconds"],
       "properties": {
         "resolverId": { "$ref": "#/$defs/id" }, "projectionSchemaId": { "$ref": "#/$defs/schemaId" },
         "allowedReadEndpointIds": { "type": "array", "minItems": 1, "maxItems": 64, "uniqueItems": true, "items": { "$ref": "#/$defs/id" } },
-        "authorizedProjectionPointers": { "type": "array", "minItems": 1, "maxItems": 256, "uniqueItems": true, "items": { "$ref": "#/$defs/pointer" } }
+        "authorizedProjectionPointers": { "type": "array", "minItems": 1, "maxItems": 256, "uniqueItems": true, "items": { "$ref": "#/$defs/pointer" } },
+        "maxFreshnessSeconds": { "type": "integer", "minimum": 1, "maximum": 300 }
       }
     },
     "riskClasses": { "type": "array", "minItems": 1, "maxItems": 32, "uniqueItems": true, "items": { "$ref": "#/$defs/id" } },

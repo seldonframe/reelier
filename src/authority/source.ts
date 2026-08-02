@@ -1,149 +1,84 @@
 import { createHash } from "node:crypto";
-import type { SourceBundle } from "./types.js";
+import type { SourceBundle, SourceClaim, SourceObservationEvidence } from "./types.js";
 import { authorityDigest, parseAuthorityWire } from "./wire.js";
 
-export interface SourceReadPlan {
-  readonly endpointId: string;
-  readonly opaqueHandle: string;
-}
-
+export interface UnboundSourceRead { readonly endpointId:string; readonly opaqueHandle:string }
+export interface PlannedSourceRead extends UnboundSourceRead { readonly index:number; readonly planDigest:string }
+export type SourceReadPlan = PlannedSourceRead;
+export interface RawSourceObservation { readonly planDigest:string; readonly rawBytes:Uint8Array }
+export interface ResolverSourceObservation extends SourceObservationEvidence { readonly bodyBase64:string }
+export interface SourceProjection { readonly sourceIdentity:string;readonly triggerIdentity:string;readonly projection:Record<string,unknown>;readonly claims:{grounded:readonly SourceClaim[];authored:readonly SourceClaim[];unresolved:readonly SourceClaim[]} }
 export interface RegisteredSourceResolver {
-  readonly tenant: string;
-  readonly resolverId: string;
-  readonly definitionDigest: string;
-  readonly projectionSchemaId: string;
-  readonly readEndpointIds: readonly string[];
-  readonly plan: (sourceRefs: Readonly<Record<string, string>>) => readonly SourceReadPlan[];
+  readonly tenant:string;readonly resolverId:string;readonly definitionDigest:string;readonly projectionSchemaId:string;
+  readonly readEndpointIds:readonly string[];readonly maxFreshnessSeconds:number;
+  readonly plan:(sourceRefs:Readonly<Record<string,string>>)=>readonly UnboundSourceRead[];
+  readonly project:(input:Readonly<{plans:readonly PlannedSourceRead[];observations:readonly ResolverSourceObservation[];observedAt:string}>)=>SourceProjection;
 }
+declare const sourceRegistryBrand:unique symbol;
+export interface SourceRegistry { readonly [sourceRegistryBrand]:true }
+export interface SourceValidationAuthority { readonly tenant:string;readonly definitionDigest:string;readonly resolverId:string;readonly projectionSchemaId:string;readonly allowedReadEndpointIds:readonly string[];readonly authorizedProjectionPointers:readonly string[];readonly requiredGroundedPointers:readonly string[];readonly maxFreshnessSeconds:number }
+declare const validatedSourceBrand:unique symbol;
+export interface ValidatedSourceBundle { readonly [validatedSourceBrand]:true;readonly bundle:SourceBundle;readonly digest:string;readonly validationInstant:string;readonly sourceSnapshotDigest:string }
 
-declare const sourceRegistryBrand: unique symbol;
-export interface SourceRegistry { readonly [sourceRegistryBrand]: true }
+const resolverKey=(tenant:string,resolverId:string)=>`${tenant}\0${resolverId}`;
+const OPAQUE=/^(?![A-Za-z][A-Za-z0-9+.-]*:)(?!.*[\\/])[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/;
+const registryStates=new WeakMap<object,ReadonlyMap<string,RegisteredSourceResolver>>();
+const validated=new WeakSet<object>();
 
-export interface SourceValidationAuthority {
-  readonly tenant: string;
-  readonly definitionDigest: string;
-  readonly resolverId: string;
-  readonly projectionSchemaId: string;
-  readonly allowedReadEndpointIds: readonly string[];
-  readonly authorizedProjectionPointers: readonly string[];
-  readonly requiredGroundedPointers: readonly string[];
-}
-
-declare const validatedSourceBrand: unique symbol;
-
-export interface ValidatedSourceBundle {
-  readonly [validatedSourceBrand]: true;
-  readonly bundle: SourceBundle;
-  readonly digest: string;
-  readonly validationInstant: string;
-  readonly sourceSnapshotDigest: string;
-}
-
-const resolverKey = (tenant: string, resolverId: string) => `${tenant}\0${resolverId}`;
-const OPAQUE_HANDLE = /^(?![A-Za-z][A-Za-z0-9+.-]*:)(?!.*[\\/])[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/;
-const sourceRegistryStates = new WeakMap<object, ReadonlyMap<string, RegisteredSourceResolver>>();
-const validatedSourceBundles = new WeakSet<object>();
-
-export function createSourceRegistry(resolvers: readonly RegisteredSourceResolver[]): SourceRegistry {
-  const indexed = new Map<string, RegisteredSourceResolver>();
-  for (const resolver of resolvers) {
-    const key = resolverKey(resolver.tenant, resolver.resolverId);
-    if (indexed.has(key)) throw new TypeError("duplicate tenant-qualified source resolver");
-    indexed.set(key, Object.freeze({ ...resolver, readEndpointIds: Object.freeze([...resolver.readEndpointIds]) }));
+export function createSourceRegistry(resolvers:readonly RegisteredSourceResolver[]):SourceRegistry {
+  const indexed=new Map<string,RegisteredSourceResolver>();
+  for(const item of resolvers){
+    if(!Number.isSafeInteger(item.maxFreshnessSeconds)||item.maxFreshnessSeconds<1||item.maxFreshnessSeconds>300) throw new TypeError("invalid resolver max freshness");
+    const key=resolverKey(item.tenant,item.resolverId);if(indexed.has(key)) throw new TypeError("duplicate tenant-qualified source resolver");
+    indexed.set(key,Object.freeze({...item,readEndpointIds:Object.freeze([...item.readEndpointIds])}));
   }
-  const registry = Object.freeze(Object.create(null)) as SourceRegistry;
-  sourceRegistryStates.set(registry, indexed);
-  return registry;
+  const registry=Object.freeze(Object.create(null)) as SourceRegistry;registryStates.set(registry,indexed);return registry;
 }
 
-export function planSourceReads(registry: SourceRegistry, input: Readonly<{ tenant: string; resolverId: string; definitionDigest: string; sourceRefs: Readonly<Record<string, string>>; allowedReadEndpointIds: readonly string[] }>): readonly SourceReadPlan[] {
-  for (const handle of Object.values(input.sourceRefs)) if (!OPAQUE_HANDLE.test(handle)) throw new TypeError("source reference must be an opaque handle");
-  const resolvers = sourceRegistryStates.get(registry);
-  if (!resolvers) throw new TypeError("unrecognized source registry");
-  const resolver = resolvers.get(resolverKey(input.tenant, input.resolverId));
-  if (!resolver) throw new TypeError("unknown resolver for tenant");
-  if (resolver.definitionDigest !== input.definitionDigest) throw new TypeError("source resolver definition mismatch");
-  const registered = new Set(resolver.readEndpointIds);
-  const authorized = new Set(input.allowedReadEndpointIds);
-  const plans = resolver.plan(Object.freeze({ ...input.sourceRefs })).map(plan => Object.freeze({ ...plan }));
-  for (const plan of plans) {
-    if (!registered.has(plan.endpointId)) throw new TypeError("unknown source read endpoint");
-    if (!authorized.has(plan.endpointId)) throw new TypeError("unauthorized source read endpoint");
-    if (!OPAQUE_HANDLE.test(plan.opaqueHandle)) throw new TypeError("source plan must retain an opaque handle");
-  }
-  return Object.freeze(plans);
+export function planSourceReads(registry:SourceRegistry,input:Readonly<{tenant:string;resolverId:string;definitionDigest:string;sourceRefs:Readonly<Record<string,string>>;allowedReadEndpointIds:readonly string[]}>):readonly PlannedSourceRead[]{
+  for(const handle of Object.values(input.sourceRefs)) if(!OPAQUE.test(handle)) throw new TypeError("source reference must be an opaque handle");
+  const resolver=requireResolver(registry,input.tenant,input.resolverId,input.definitionDigest);
+  const registered=new Set(resolver.readEndpointIds),authorized=new Set(input.allowedReadEndpointIds);
+  const sourceRefs=deepFreeze({...input.sourceRefs});
+  const sourceRefsDigest=authorityDigest({v:"reelier.source-refs/internal-v1",sourceRefs});
+  const unbound=resolver.plan(sourceRefs);
+  if(!Array.isArray(unbound)||unbound.length<1||unbound.length>64) throw new TypeError("source read plan must be nonempty and bounded");
+  const plans=unbound.map((read,index)=>{
+    if(!registered.has(read.endpointId)) throw new TypeError("unknown source read endpoint");if(!authorized.has(read.endpointId)) throw new TypeError("unauthorized source read endpoint");if(!OPAQUE.test(read.opaqueHandle)) throw new TypeError("source plan must retain an opaque handle");
+    const planDigest=authorityDigest({v:"reelier.source-read-plan/internal-v1",tenant:input.tenant,resolverId:input.resolverId,definitionDigest:input.definitionDigest,sourceRefsDigest,index,endpointId:read.endpointId,opaqueHandle:read.opaqueHandle});
+    return Object.freeze({index,planDigest,endpointId:read.endpointId,opaqueHandle:read.opaqueHandle});
+  });
+  if(new Set(plans.map(p=>p.planDigest)).size!==plans.length) throw new TypeError("duplicate source read plan");return Object.freeze(plans);
 }
 
-export function validateSourceBundle(registry: SourceRegistry, input: Readonly<{ bundle: unknown; rawResponse: Uint8Array; authority: SourceValidationAuthority; now: Date }>): ValidatedSourceBundle {
-  const bundle = parseAuthorityWire("source-bundle", input.bundle);
-  const authority = input.authority;
-  if (bundle.tenant !== authority.tenant) throw new TypeError("source bundle tenant mismatch");
-  if (bundle.definitionDigest !== authority.definitionDigest) throw new TypeError("source definition mismatch");
-  if (bundle.projectionSchemaId !== authority.projectionSchemaId) throw new TypeError("source projection schema mismatch");
-  if (bundle.provenance.resolverId !== authority.resolverId) throw new TypeError("source resolver provenance mismatch");
-  const resolvers = sourceRegistryStates.get(registry);
-  if (!resolvers) throw new TypeError("unrecognized source registry");
-  const resolver = resolvers.get(resolverKey(bundle.tenant, bundle.provenance.resolverId));
-  if (!resolver) throw new TypeError("unknown resolver for tenant");
-  if (resolver.definitionDigest !== bundle.definitionDigest || resolver.projectionSchemaId !== bundle.projectionSchemaId) throw new TypeError("registered resolver schema or definition mismatch");
-  if (!resolver.readEndpointIds.includes(bundle.provenance.endpointId)) throw new TypeError("unknown source provenance endpoint");
-  if (!authority.allowedReadEndpointIds.includes(bundle.provenance.endpointId)) throw new TypeError("unauthorized source provenance endpoint");
-  const rawDigest = `sha256:${createHash("sha256").update(input.rawResponse).digest("hex")}`;
-  if (bundle.rawDigest !== rawDigest) throw new TypeError("source raw digest mismatch");
-  const now = input.now.getTime();
-  const observed = Date.parse(bundle.observedAt);
-  const freshUntil = Date.parse(bundle.freshUntil);
-  if (observed > now || freshUntil < observed) throw new TypeError("source observed time is invalid");
-  if (now >= freshUntil) throw new TypeError("source bundle is stale");
-  const authorized = new Set(authority.authorizedProjectionPointers);
-  const grounded = new Set(bundle.claims.grounded.map(claim => claim.projectionPointer));
-  for (const claims of [bundle.claims.grounded, bundle.claims.authored, bundle.claims.unresolved]) for (const claim of claims) {
-    if (!authorized.has(claim.projectionPointer)) throw new TypeError("source projection contains unauthorized pointer");
-  }
-  for (const pointer of projectionLeafPointers(bundle.projection)) if (!authorized.has(pointer)) throw new TypeError("source projection contains unauthorized extra field");
-  for (const pointer of authority.requiredGroundedPointers) {
-    if (!grounded.has(pointer) || !hasOwnJsonPointer(bundle.projection, pointer)) throw new TypeError("required source field is not grounded at an own path");
-  }
-  const digest = authorityDigest(bundle);
-  const sourceSnapshotDigest = authorityDigest({ v: "reelier.source-snapshot/internal-v1", bundleDigest: digest, rawDigest: bundle.rawDigest, provenance: bundle.provenance });
-  const validated = Object.freeze({ bundle: deepFreeze(bundle), digest, validationInstant: input.now.toISOString(), sourceSnapshotDigest }) as ValidatedSourceBundle;
-  validatedSourceBundles.add(validated);
-  return validated;
+export function materializeSourceBundle(registry:SourceRegistry,input:Readonly<SourceValidationAuthority&{sourceRefs:Readonly<Record<string,string>>;observedAt:Date;plans:readonly PlannedSourceRead[];observations:readonly RawSourceObservation[]}>):ValidatedSourceBundle{
+  const resolver=requireResolver(registry,input.tenant,input.resolverId,input.definitionDigest);
+  if(input.projectionSchemaId!==resolver.projectionSchemaId) throw new TypeError("source projection schema mismatch");
+  if(!Number.isSafeInteger(input.maxFreshnessSeconds)||input.maxFreshnessSeconds<1||input.maxFreshnessSeconds>resolver.maxFreshnessSeconds) throw new TypeError("contract freshness exceeds resolver maximum");
+  const planned=planSourceReads(registry,input);
+  if(authorityDigest(planned)!==authorityDigest(input.plans)) throw new TypeError("source plans do not match registered plan");
+  const byDigest=new Map<string,Uint8Array>();
+  for(const observation of input.observations){if(byDigest.has(observation.planDigest)) throw new TypeError("duplicate source observation");if(!planned.some(p=>p.planDigest===observation.planDigest)) throw new TypeError("unknown or extra source observation");byDigest.set(observation.planDigest,Uint8Array.from(observation.rawBytes));}
+  if(byDigest.size!==planned.length) throw new TypeError("missing source observation");
+  const resolverObservations=Object.freeze(planned.map(plan=>{const raw=byDigest.get(plan.planDigest)!;return Object.freeze({index:plan.index,planDigest:plan.planDigest,endpointId:plan.endpointId,rawDigest:sha(raw),bodyBase64:Buffer.from(raw).toString("base64")});}));
+  const observedAt=input.observedAt.toISOString();if(!Number.isFinite(input.observedAt.getTime())) throw new TypeError("invalid observed time");
+  const projected=resolver.project(Object.freeze({plans:planned,observations:resolverObservations,observedAt}));
+  const claims=canonicalClaims(projected.claims,projected.projection,input.authorizedProjectionPointers,input.requiredGroundedPointers);
+  const sourceRefs=deepFreeze({...input.sourceRefs});const sourceRefsDigest=authorityDigest({v:"reelier.source-refs/internal-v1",sourceRefs});
+  const evidence=resolverObservations.map(({index,planDigest,endpointId,rawDigest})=>({index,planDigest,endpointId,rawDigest}));
+  const readSetDigest=authorityDigest({v:"reelier.source-read-set/internal-v1",sourceRefsDigest,observations:evidence});
+  const freshness=Math.min(input.maxFreshnessSeconds,resolver.maxFreshnessSeconds);const until=input.observedAt.getTime()+freshness*1000;if(!Number.isSafeInteger(until)) throw new TypeError("source freshness overflow");
+  const bundle=deepFreeze(parseAuthorityWire("source-bundle",{v:"reelier.source-bundle/v1",tenant:input.tenant,definitionDigest:input.definitionDigest,projectionSchemaId:input.projectionSchemaId,sourceRefsDigest,readSetDigest,sourceIdentity:projected.sourceIdentity,triggerIdentity:projected.triggerIdentity,observedAt,freshUntil:new Date(until).toISOString(),provenance:{resolverId:input.resolverId,observations:evidence},claims,projection:projected.projection}));
+  const digest=authorityDigest(bundle);const sourceSnapshotDigest=authorityDigest({v:"reelier.source-snapshot/internal-v1",bundleDigest:digest,sourceRefsDigest,readSetDigest,resolverId:input.resolverId,observations:evidence});
+  const result=Object.freeze({bundle,digest,validationInstant:observedAt,sourceSnapshotDigest}) as ValidatedSourceBundle;validated.add(result);return result;
 }
 
-export function isValidatedSourceBundle(value: unknown): value is ValidatedSourceBundle {
-  return Boolean(value && typeof value === "object" && validatedSourceBundles.has(value));
-}
-
-export function assertValidatedSourceBundle(value: unknown): asserts value is ValidatedSourceBundle {
-  if (!isValidatedSourceBundle(value)) throw new TypeError("compile requires a validated source bundle");
-}
-
-function decodePointerSegment(segment: string): string { return segment.replace(/~1/g, "/").replace(/~0/g, "~"); }
-function encodePointerSegment(segment: string): string { return segment.replace(/~/g, "~0").replace(/\//g, "~1"); }
-
-function hasOwnJsonPointer(root: Record<string, unknown>, pointer: string): boolean {
-  let current: unknown = root;
-  for (const encoded of pointer.slice(1).split("/")) {
-    const segment = decodePointerSegment(encoded);
-    if (typeof current !== "object" || current === null || !Object.prototype.hasOwnProperty.call(current, segment)) return false;
-    current = (current as Record<string, unknown>)[segment];
-  }
-  return true;
-}
-
-function projectionLeafPointers(value: unknown, prefix = ""): string[] {
-  if (value !== null && typeof value === "object" && !Array.isArray(value)) {
-    const entries = Object.entries(value as Record<string, unknown>);
-    if (entries.length > 0) return entries.flatMap(([key, child]) => projectionLeafPointers(child, `${prefix}/${encodePointerSegment(key)}`));
-  }
-  return [prefix];
-}
-
-function deepFreeze<T>(value: T): T {
-  if (value && typeof value === "object" && !Object.isFrozen(value)) {
-    for (const child of Object.values(value as Record<string, unknown>)) deepFreeze(child);
-    Object.freeze(value);
-  }
-  return value;
-}
+/** Legacy candidate validation is deliberately disabled: kernel materialization is required. */
+export function validateSourceBundle():never { throw new TypeError("candidate source bundles are unsupported; use materializeSourceBundle"); }
+export function isValidatedSourceBundle(value:unknown):value is ValidatedSourceBundle{return Boolean(value&&typeof value==="object"&&validated.has(value));}
+export function assertValidatedSourceBundle(value:unknown):asserts value is ValidatedSourceBundle{if(!isValidatedSourceBundle(value)) throw new TypeError("compile requires a validated source bundle");}
+function requireResolver(registry:SourceRegistry,tenant:string,resolverId:string,definitionDigest:string):RegisteredSourceResolver{const states=registryStates.get(registry);if(!states) throw new TypeError("unrecognized source registry");const resolver=states.get(resolverKey(tenant,resolverId));if(!resolver) throw new TypeError("unknown resolver for tenant");if(resolver.definitionDigest!==definitionDigest) throw new TypeError("source resolver definition mismatch");return resolver;}
+function canonicalClaims(claims:SourceProjection["claims"],projection:Record<string,unknown>,authorizedPointers:readonly string[],required:readonly string[]){const all=[...claims.grounded,...claims.authored,...claims.unresolved];if(new Set(all.map(c=>c.claimId)).size!==all.length||new Set(all.map(c=>c.projectionPointer)).size!==all.length) throw new TypeError("source claims must have unique ownership");const leaves=projectionLeafPointers(projection).sort();const pointers=all.map(c=>c.projectionPointer).sort();if(leaves.join("\0")!==pointers.join("\0")) throw new TypeError("source claims must cover every projection leaf exactly once");const allowed=new Set(authorizedPointers);if(pointers.some(p=>!allowed.has(p))) throw new TypeError("source projection contains unauthorized pointer");const grounded=new Set(claims.grounded.map(c=>c.projectionPointer));if(required.some(p=>!grounded.has(p)||!leaves.includes(p))) throw new TypeError("required source field is not grounded leaf");const sort=(items:readonly SourceClaim[])=>Object.freeze(items.map(x=>Object.freeze({...x})).sort((a,b)=>a.projectionPointer.localeCompare(b.projectionPointer)||a.claimId.localeCompare(b.claimId)));return Object.freeze({grounded:sort(claims.grounded),authored:sort(claims.authored),unresolved:sort(claims.unresolved)});}
+function projectionLeafPointers(value:unknown,prefix=""):string[]{if(value!==null&&typeof value==="object"&&!Array.isArray(value)){const entries=Object.entries(value as Record<string,unknown>);if(entries.length)return entries.flatMap(([k,v])=>projectionLeafPointers(v,`${prefix}/${k.replace(/~/g,"~0").replace(/\//g,"~1")}`));}return[prefix];}
+function sha(bytes:Uint8Array){return`sha256:${createHash("sha256").update(bytes).digest("hex")}`;}
+function deepFreeze<T>(value:T):T{if(value&&typeof value==="object"&&!Object.isFrozen(value)){for(const child of Object.values(value as Record<string,unknown>))deepFreeze(child);Object.freeze(value);}return value;}

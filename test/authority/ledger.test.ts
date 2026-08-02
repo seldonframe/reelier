@@ -6,7 +6,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { authorityCanonicalBytes } from "../../src/authority/wire.js";
+import { authorityCanonicalBytes, authorityDigest } from "../../src/authority/wire.js";
 import {
   CAPABILITY_LIFETIME_MS,
   type LedgerState,
@@ -34,33 +34,39 @@ void kernelTimedTransition;
 void callerTimedTransition;
 
 function intent(overrides: Partial<ReservationIntent> = {}): ReservationIntent {
+  const limits = overrides.limits ?? { maxEffectsPerWindow: 2, windowSeconds: 3600, maxEffectsPerSourceTrigger: 1, maxBodyBytes: 4096 };
   const scalar = {
     tenant: "tenant_1",
     requester: "requester_1",
+    definitionAlias: "definition_1",
     requestId: "request_1",
     requestKey: digest("7"),
+    contractDigest: digest("a"), sourceBundleDigest: digest("b"), sourceSnapshotDigest: digest("c"), authorityStateDigest: digest("d"), limits,
+    limitsDigest: "",
     capabilityId: "capability_1",
     outcomeKey: digest("3"),
     effectDigest: digest("4"),
     issuedAt: new Date(t0).toISOString(),
     expiresAt: new Date(t0 + CAPABILITY_LIFETIME_MS).toISOString(),
     limitSlots: [
-      { key: digest("5"), maximum: 2 },
-      { key: digest("6"), maximum: 1 },
+      { kind: "contract-window" as const, key: digest("5"), maximum: limits.maxEffectsPerWindow },
+      { kind: "source-trigger" as const, key: digest("6"), maximum: limits.maxEffectsPerSourceTrigger },
     ],
     ...overrides,
   };
   const canonicalRequestBytes = overrides.canonicalRequestBytes === undefined
     ? requestWireBytes(scalar.requestId)
     : Buffer.from(overrides.canonicalRequestBytes);
+  const requestDigest = `sha256:${createHash("sha256").update(canonicalRequestBytes).digest("hex")}`;
+  scalar.limitsDigest = authorityDigest({ v: "reelier.capability-limits/internal-v1", contractDigest: scalar.contractDigest, limits: scalar.limits });
   const capabilityBytes = overrides.capabilityBytes === undefined
-    ? capabilityWireBytes(scalar)
+    ? capabilityWireBytes({ ...scalar, requestDigest } as Parameters<typeof capabilityWireBytes>[0])
     : Buffer.from(overrides.capabilityBytes);
   return {
     ...scalar,
     canonicalRequestBytes,
     capabilityBytes,
-    canonicalRequestDigest: `sha256:${createHash("sha256").update(canonicalRequestBytes).digest("hex")}`,
+    requestDigest, canonicalRequestDigest: requestDigest,
     capabilityDigest: `sha256:${createHash("sha256").update(capabilityBytes).digest("hex")}`,
   };
 }
@@ -69,8 +75,8 @@ function requestWireBytes(requestId: string, sourceRef = "ref_1"): Buffer {
   return authorityCanonicalBytes({ v: "reelier.outcome-request/v1", requestId, sourceRefs: { source: sourceRef }, choices: {} });
 }
 
-function capabilityWireBytes(value: Pick<ReservationIntent, "capabilityId" | "requestKey" | "outcomeKey" | "effectDigest" | "issuedAt" | "expiresAt">): Buffer {
-  return authorityCanonicalBytes({ v: "reelier.compiled-capability/v1", capabilityId: value.capabilityId, requestKey: value.requestKey, outcomeKey: value.outcomeKey, effectDigest: value.effectDigest, issuedAt: value.issuedAt, expiresAt: value.expiresAt });
+function capabilityWireBytes(value: Omit<ReservationIntent, "canonicalRequestBytes" | "capabilityBytes" | "canonicalRequestDigest" | "limitSlots">): Buffer {
+  return authorityCanonicalBytes({ v: "reelier.compiled-capability/v1", tenant:value.tenant,requester:value.requester,definitionAlias:value.definitionAlias,requestDigest:value.requestDigest,requestKey:value.requestKey,contractDigest:value.contractDigest,sourceBundleDigest:value.sourceBundleDigest,sourceSnapshotDigest:value.sourceSnapshotDigest,authorityStateDigest:value.authorityStateDigest,limits:value.limits,limitsDigest:value.limitsDigest,capabilityId:value.capabilityId,outcomeKey:value.outcomeKey,effectDigest:value.effectDigest,issuedAt:value.issuedAt,expiresAt:value.expiresAt });
 }
 
 async function tempRoot(): Promise<string> {
@@ -165,7 +171,8 @@ test("cross-process collisions use ingress, semantic, capability, then limit pre
     const limited = await Promise.all(["4", "5"].map((suffix, index) => spawnReserve(root, intent({
       requestId: `request_${suffix}`,
       outcomeKey: digest(index ? "8" : "7"), capabilityId: `capability_${suffix}`,
-      limitSlots: [{ key: digest("f"), maximum: 1 }],
+      limits: { maxEffectsPerWindow: 1, windowSeconds: 3600, maxEffectsPerSourceTrigger: 1, maxBodyBytes: 4096 },
+      limitSlots: [{ kind: "contract-window", key: digest("f"), maximum: 1 }, { kind: "source-trigger", key: digest("e"), maximum: 1 }],
     })))) as Array<{ ok: boolean; reason?: string }>;
     assert.equal(limited.filter(result => result.ok).length, 1);
     assert.deepEqual(limited.find(result => !result.ok)?.reason, "limit-exceeded");
@@ -176,7 +183,10 @@ test("the global ingress key treats a different authenticated definition alias a
   await withRoot(async root => {
     const ledger = new FsAuthorityLedger(root, { now: () => t0 });
     assert.equal((await ledger.reserve(intent({ definitionAlias: "definition_1" }))).ok, true);
-    const conflict = await ledger.reserve(intent({ definitionAlias: "definition_2", capabilityId: "capability_2", outcomeKey: digest("8") }));
+    const recovered = new FsAuthorityLedger(root, { now: () => t0 });
+    const retry = await recovered.reserve(intent({ definitionAlias: "definition_1" }));
+    assert.equal(retry.ok && retry.status, "existing");
+    const conflict = await recovered.reserve(intent({ definitionAlias: "definition_2", capabilityId: "capability_2", outcomeKey: digest("8") }));
     assert.deepEqual(conflict, { ok: false, reason: "idempotency-conflict" });
   });
 });
@@ -185,11 +195,12 @@ test("a caller cannot widen an already committed fixed-window maximum", async ()
   await withRoot(async root => {
     const ledger = new FsAuthorityLedger(root, { now: () => t0 });
     const shared = digest("f");
-    assert.equal((await ledger.reserve(intent({ limitSlots: [{ key: shared, maximum: 1 }] }))).ok, true);
+    assert.equal((await ledger.reserve(intent({ limits: { maxEffectsPerWindow: 1, windowSeconds: 3600, maxEffectsPerSourceTrigger: 1, maxBodyBytes: 4096 }, limitSlots: [{ kind: "contract-window", key: shared, maximum: 1 }, { kind: "source-trigger", key: digest("6"), maximum: 1 }] }))).ok, true);
     const widened = await ledger.reserve(intent({
       requestId: "request_widen",
       outcomeKey: digest("e"), capabilityId: "capability_widen",
-      limitSlots: [{ key: shared, maximum: 100 }],
+      limits: { maxEffectsPerWindow: 100, windowSeconds: 3600, maxEffectsPerSourceTrigger: 1, maxBodyBytes: 4096 },
+      limitSlots: [{ kind: "contract-window", key: shared, maximum: 100 }, { kind: "source-trigger", key: digest("7"), maximum: 1 }],
     }));
     assert.deepEqual(widened, { ok: false, reason: "limit-exceeded" });
   });
@@ -215,6 +226,31 @@ test("recovery binds every committed limit assignment one-to-one to its signed i
       return { ...event, reservation: { ...reservation, limitAssignments: mutate(reservation.limitAssignments.map(value => ({ ...value }))) } };
     });
     assert.deepEqual(await new FsAuthorityLedger(root, { now: () => t0 }).recover(), { ok: false, reason: "corruption" }, name);
+  });
+});
+
+test("recovery refuses every new sealed scalar and canonical capability disagreement", async () => {
+  const scalarMutations = ["definitionAlias", "contractDigest", "sourceBundleDigest", "sourceSnapshotDigest", "authorityStateDigest", "limitsDigest"] as const;
+  for (const field of scalarMutations) await withRoot(async root => {
+    assert.equal((await new FsAuthorityLedger(root, { now: () => t0 }).reserve(intent())).ok, true);
+    await rewriteJournal(root, event => {
+      if (event.type !== "reserve") return event;
+      const reservation = event.reservation as ReservationSnapshot;
+      const stored = { ...reservation.intent, [field]: field === "definitionAlias" ? "different_definition" : digest("9") };
+      return { ...event, reservation: { ...reservation, intent: stored } };
+    });
+    assert.deepEqual(await new FsAuthorityLedger(root, { now: () => t0 }).recover(), { ok: false, reason: "corruption" }, field);
+  });
+  await withRoot(async root => {
+    assert.equal((await new FsAuthorityLedger(root, { now: () => t0 }).reserve(intent())).ok, true);
+    await rewriteJournal(root, event => {
+      if (event.type !== "reserve") return event;
+      const reservation = event.reservation as ReservationSnapshot;
+      const capability = JSON.parse(Buffer.from(reservation.intent.capabilityBase64, "base64").toString("utf8"));
+      capability.sourceSnapshotDigest = digest("9");
+      return { ...event, reservation: { ...reservation, intent: { ...reservation.intent, capabilityBase64: authorityCanonicalBytes(capability).toString("base64") } } };
+    });
+    assert.deepEqual(await new FsAuthorityLedger(root, { now: () => t0 }).recover(), { ok: false, reason: "corruption" });
   });
 });
 
@@ -337,6 +373,9 @@ test("replay refuses target-specific result digest violations after canonical jo
     { target: "ambiguous", resultDigest: digest("a") },
     { target: "acknowledged", resultDigest: undefined },
     { target: "definitive-failure", resultDigest: undefined },
+    { target: "acknowledged", resultDigest: digest("0") },
+    { target: "reconciled", resultDigest: undefined },
+    { target: "reconciled", resultDigest: digest("0") },
   ] as const;
   for (const value of cases) await withRoot(async root => {
     const ledger = new FsAuthorityLedger(root, { now: () => t0 });
@@ -344,7 +383,10 @@ test("replay refuses target-specific result digest violations after canonical jo
     assert.equal(created.ok, true);
     if (!created.ok) return;
     assert.equal((await ledger.transition(created.reservation.reservationId, "reserved", { to: "dispatched" })).ok, true);
-    if (value.target !== "dispatched") {
+    if (value.target === "reconciled") {
+      assert.equal((await ledger.transition(created.reservation.reservationId, "dispatched", { to: "acknowledged", resultDigest: digest("a") })).ok, true);
+      assert.equal((await ledger.transition(created.reservation.reservationId, "acknowledged", { to: "reconciled", resultDigest: digest("b") })).ok, true);
+    } else if (value.target !== "dispatched") {
       const validEvent: TransitionEvent = value.target === "ambiguous"
         ? { to: "ambiguous" }
         : { to: value.target, resultDigest: digest("a") };
@@ -418,9 +460,17 @@ test("identical ingress bytes with a different transaction digest reuse the comm
 
 test("reservation scalar identities must equal the closed canonical request and capability preimages", async () => {
   const mutations: Array<[string, (value: ReservationIntent) => ReservationIntent]> = [
+    ["definitionAlias", value => ({ ...value, definitionAlias: "detached_definition" })],
+    ["requestDigest", value => ({ ...value, requestDigest: digest("8") })],
     ["requestId", value => ({ ...value, requestId: "detached_request" })],
     ["requestKey", value => ({ ...value, requestKey: digest("8") })],
     ["capabilityId", value => ({ ...value, capabilityId: "detached_capability" })],
+    ["contractDigest", value => ({ ...value, contractDigest: digest("8") })],
+    ["sourceBundleDigest", value => ({ ...value, sourceBundleDigest: digest("8") })],
+    ["sourceSnapshotDigest", value => ({ ...value, sourceSnapshotDigest: digest("8") })],
+    ["authorityStateDigest", value => ({ ...value, authorityStateDigest: digest("8") })],
+    ["limits", value => ({ ...value, limits: { ...value.limits!, maxBodyBytes: value.limits!.maxBodyBytes + 1 } })],
+    ["limitsDigest", value => ({ ...value, limitsDigest: digest("8") })],
     ["outcomeKey", value => ({ ...value, outcomeKey: digest("8") })],
     ["effectDigest", value => ({ ...value, effectDigest: digest("8") })],
     ["issuedAt", value => ({ ...value, issuedAt: new Date(t0 + 1).toISOString(), expiresAt: new Date(t0 + CAPABILITY_LIFETIME_MS + 1).toISOString() })],
@@ -428,6 +478,13 @@ test("reservation scalar identities must equal the closed canonical request and 
   ];
   for (const [field, mutate] of mutations) await withRoot(async root => {
     assert.deepEqual(await new FsAuthorityLedger(root, { now: () => t0 }).reserve(mutate(intent())), { ok: false, reason: "integrity-failure" }, field);
+  });
+  for (const [label, limitSlots] of [
+    ["missing source-trigger", [{ kind: "contract-window", key: digest("5"), maximum: 2 }]],
+    ["wrong order", [{ kind: "source-trigger", key: digest("6"), maximum: 1 }, { kind: "contract-window", key: digest("5"), maximum: 2 }]],
+    ["widened maximum", [{ kind: "contract-window", key: digest("5"), maximum: 3 }, { kind: "source-trigger", key: digest("6"), maximum: 1 }]],
+  ] as const) await withRoot(async root => {
+    assert.deepEqual(await new FsAuthorityLedger(root, { now: () => t0 }).reserve(intent({ limitSlots })), { ok: false, reason: "integrity-failure" }, label);
   });
   await withRoot(async root => {
     const noncanonicalRequest = Buffer.from(JSON.stringify({ requestId: "request_1", v: "reelier.outcome-request/v1", sourceRefs: { source: "ref_1" }, choices: {} }));
@@ -510,7 +567,7 @@ test("caller-owned bytes and returned snapshots are detached and immutable", asy
     const capabilityBytes = capabilityWireBytes(intent());
     const requestBase64 = requestBytes.toString("base64");
     const capabilityBase64 = capabilityBytes.toString("base64");
-    const slots = [{ key: digest("5"), maximum: 2 }];
+    const slots = [{ kind: "contract-window" as const, key: digest("5"), maximum: 2 }, { kind: "source-trigger" as const, key: digest("6"), maximum: 1 }];
     const ledger = new FsAuthorityLedger(root, { now: () => t0 });
     const created = await ledger.reserve(intent({ canonicalRequestBytes: requestBytes, capabilityBytes, limitSlots: slots }));
     assert.equal(created.ok, true);
@@ -641,6 +698,16 @@ test("clean-root recovery is empty and topology makes directory-sync honesty exp
       assert.deepEqual(recovered.reservations, []);
       assert.equal(recovered.topology.directorySync, process.platform === "win32" ? "best-effort" : "verified");
     }
+  });
+});
+
+test("pre-release v1 transaction records fail closed without inferred migration", async () => {
+  await withRoot(async root => {
+    assert.equal((await new FsAuthorityLedger(root, { now: () => t0 }).recover()).ok, true);
+    const bytes = authorityCanonicalBytes({ v: "reelier.authority-ledger-transaction/v1", intent: {} });
+    const name = createHash("sha256").update(bytes).digest("hex");
+    await writeFile(path.join(root, "transactions", name), bytes);
+    assert.deepEqual(await new FsAuthorityLedger(root, { now: () => t0 }).recover(), { ok: false, reason: "corruption" });
   });
 });
 

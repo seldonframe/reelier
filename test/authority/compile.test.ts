@@ -7,7 +7,7 @@ import { signAuthorityDigest } from "../../src/authority/crypto.js";
 import { createTrustRoots } from "../../src/authority/trust.js";
 import { validateDelegationChain } from "../../src/authority/delegation.js";
 import { validateStoredContract } from "../../src/authority/contract.js";
-import { createSourceRegistry, validateSourceBundle } from "../../src/authority/source.js";
+import { createSourceRegistry, materializeSourceBundle, planSourceReads } from "../../src/authority/source.js";
 import * as publicAuthority from "../../src/authority/index.js";
 import { assertStaticFirstPartySourcesConform, createStaticPackRegistry, registeredDefinitionDigests, type StaticPackDefinition } from "../../src/authority/pack.js";
 import { compileOutcome, deriveSemanticOutcomeKey } from "../../src/authority/compile.js";
@@ -18,7 +18,7 @@ const now = new Date("2026-01-15T00:00:30.000Z");
 
 function definition(overrides: Partial<StaticPackDefinition> = {}): StaticPackDefinition {
   return {
-    alias: "definition_1", packDigest, definitionDigest, resolverId: "resolver_1", projectionSchemaId: "projection/v1",
+    alias: "definition_1", packDigest, definitionDigest, resolverId: "resolver_1", projectionSchemaId: "projection/v1", maxFreshnessSeconds: 60,
     readEndpointIds: ["read_1"], writeEndpointIds: ["write_1"], riskClasses: ["message"], policySchemaId: "policy/v1",
     requiredGroundedPointers: ["/message"],
     validateChoices(value) {
@@ -52,15 +52,15 @@ function fixture(def = definition()) {
   ]);
   const delegation = validateDelegationChain({ tenant: "tenant_1", sponsor: "sponsor_1", now, trustRoots, grants: [{ grant, digest: grantDigest, signerId: "operator_key", signature: signAuthorityDigest(operator.privateKey, "delegation-grant", grantDigest) }] });
   const policyBytes = authorityCanonicalBytes({ template: "Hello {{message}}" });
-  const contract = { v: "reelier.outcome-contract/v1" as const, tenant: "tenant_1", alias: "definition_1", contractId: "contract_1", validFrom: "2026-01-02T00:00:00.000Z", validUntil: "2026-01-31T00:00:00.000Z", packDigest, definitionDigest, sponsor: "sponsor_1", audiences: ["requester_1"], delegationGrantDigest: grantDigest, connectorId: "connector_1", accountId: "account_1", sourceAuthority: { resolverId: "resolver_1", projectionSchemaId: "projection/v1", allowedReadEndpointIds: ["read_1"], authorizedProjectionPointers: ["/message"] }, riskClasses: ["message"], limits, policyCommitment: { schemaId: "policy/v1", jcsBase64: policyBytes.toString("base64"), digest: "sha256:" + createHash("sha256").update(policyBytes).digest("hex") } };
+  const contract = { v: "reelier.outcome-contract/v1" as const, tenant: "tenant_1", alias: "definition_1", contractId: "contract_1", validFrom: "2026-01-02T00:00:00.000Z", validUntil: "2026-01-31T00:00:00.000Z", packDigest, definitionDigest, sponsor: "sponsor_1", audiences: ["requester_1"], delegationGrantDigest: grantDigest, connectorId: "connector_1", accountId: "account_1", sourceAuthority: { resolverId: "resolver_1", projectionSchemaId: "projection/v1", allowedReadEndpointIds: ["read_1"], authorizedProjectionPointers: ["/message"], maxFreshnessSeconds: 60 }, riskClasses: ["message"], limits, policyCommitment: { schemaId: "policy/v1", jcsBase64: policyBytes.toString("base64"), digest: "sha256:" + createHash("sha256").update(policyBytes).digest("hex") } };
   const contractDigest = authorityDigest(contract);
   const packs = createStaticPackRegistry([def]);
   const validatedContract = validateStoredContract({ stored: { contract, digest: contractDigest, signerId: "gate_key", signature: signAuthorityDigest(gate.privateKey, "outcome-contract", contractDigest) }, trustRoots, delegation, registeredDefinitions: registeredDefinitionDigests(packs), stateEvents: [{ kind: "activated", contractDigest, at: "2026-01-03T00:00:00.000Z" }], tenant: "tenant_1", requester: "requester_1", now });
   const raw = Buffer.from('{"message":"world"}', "utf8");
-  const sourceRegistry = createSourceRegistry([{ tenant: "tenant_1", resolverId: "resolver_1", definitionDigest, projectionSchemaId: "projection/v1", readEndpointIds: ["read_1"], plan: refs => [{ endpointId: "read_1", opaqueHandle: refs.item }] }]);
-  const sourceBundle = { v: "reelier.source-bundle/v1" as const, tenant: "tenant_1", definitionDigest, projectionSchemaId: "projection/v1", sourceIdentity: "source_1", triggerIdentity: "trigger_1", observedAt: "2026-01-15T00:00:00.000Z", rawDigest: "sha256:" + createHash("sha256").update(raw).digest("hex"), freshUntil: "2026-01-15T00:01:00.000Z", provenance: { resolverId: "resolver_1", endpointId: "read_1" }, claims: { grounded: [{ claimId: "message", projectionPointer: "/message" }], authored: [], unresolved: [] }, projection: { message: "world" } };
-  const validatedSource = validateSourceBundle(sourceRegistry, { bundle: sourceBundle, rawResponse: raw, authority: { tenant: "tenant_1", definitionDigest, resolverId: "resolver_1", projectionSchemaId: "projection/v1", allowedReadEndpointIds: ["read_1"], authorizedProjectionPointers: ["/message"], requiredGroundedPointers: ["/message"] }, now });
-  return { packs, validatedContract, validatedSource, contract, sourceBundle, sourceRegistry, raw };
+  const sourceRegistry = createSourceRegistry([{ tenant: "tenant_1", resolverId: "resolver_1", definitionDigest, projectionSchemaId: "projection/v1", readEndpointIds: ["read_1"], maxFreshnessSeconds: 60, plan: refs => [{ endpointId: "read_1", opaqueHandle: refs.item }], project: () => ({ sourceIdentity: "source_1", triggerIdentity: "trigger_1", claims: { grounded: [{ claimId: "message", projectionPointer: "/message" }], authored: [], unresolved: [] }, projection: { message: "world" } }) }]);
+  const sourceRefs = { item: "opaque_1" }; const plans = planSourceReads(sourceRegistry, { tenant: "tenant_1", resolverId: "resolver_1", definitionDigest, sourceRefs, allowedReadEndpointIds: ["read_1"] });
+  const validatedSource = materializeSourceBundle(sourceRegistry, { tenant: "tenant_1", definitionDigest, resolverId: "resolver_1", projectionSchemaId: "projection/v1", sourceRefs, allowedReadEndpointIds: ["read_1"], authorizedProjectionPointers: ["/message"], requiredGroundedPointers: ["/message"], maxFreshnessSeconds: 60, observedAt: now, plans, observations: [{ planDigest: plans[0].planDigest, rawBytes: raw }] });
+  return { packs, validatedContract, validatedSource, contract, sourceBundle: validatedSource.bundle, sourceRegistry, raw };
 }
 
 test("static pack registry refuses alias and definition-digest collisions", () => {
@@ -141,9 +141,7 @@ test("compiler refuses unknown endpoint/risk and every malformed pack-emitted tr
 
 test("compiler recomposes source authority against the selected contract", () => {
   const f = fixture();
-  const broader = { ...f.sourceBundle, claims: { ...f.sourceBundle.claims, grounded: [...f.sourceBundle.claims.grounded, { claimId: "extra", projectionPointer: "/extra" }] }, projection: { ...f.sourceBundle.projection, extra: true } };
-  const source = validateSourceBundle(f.sourceRegistry, { bundle: broader, rawResponse: f.raw, authority: { tenant: "tenant_1", definitionDigest, resolverId: "resolver_1", projectionSchemaId: "projection/v1", allowedReadEndpointIds: ["read_1"], authorizedProjectionPointers: ["/message", "/extra"], requiredGroundedPointers: ["/message"] }, now });
-  assert.throws(() => compileOutcome(f.packs, { contract: f.validatedContract, source, choices: {}, now }), /projection exceeds contract authority/i);
+  assert.throws(() => compileOutcome(f.packs, { contract: f.validatedContract, source: { ...f.validatedSource } as never, choices: {}, now }), /validated source bundle/i);
 });
 
 test("validated contract and source authority is single-context and cannot be reused at another instant", () => {
@@ -194,4 +192,7 @@ test("static first-party compiler source conformance refuses ambient I/O, clock,
     "process.env.SECRET", "fetch('https://example.test')", "Date.now()", "new Date()", "Math.random()", "createRequire(import.meta.url)",
     "randomUUID()", "randomBytes(16)", "import('./plugin.js')", "require('./plugin.js')", "eval('1')", "new Function('return 1')",
   ]) assert.throws(() => assertStaticFirstPartySourcesConform([{ file: "bad-pack.ts", source }]), /static first-party purity/i, source);
+  for (const callback of ["plan", "project"]) {
+    assert.throws(() => assertStaticFirstPartySourcesConform([{ file: `bad-resolver-${callback}.ts`, source: `export const ${callback} = () => fetch('https://provider.test')` }]), /ambient network fetch/i, callback);
+  }
 });

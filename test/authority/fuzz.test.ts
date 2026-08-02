@@ -5,7 +5,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import { authorityCanonicalBytes } from "../../src/authority/wire.js";
+import { authorityCanonicalBytes, authorityDigest } from "../../src/authority/wire.js";
 import { CAPABILITY_LIFETIME_MS, type ReservationIntent } from "../../src/authority/ledger.js";
 import { FsAuthorityLedger } from "../../src/authority/host/fs-ledger.js";
 
@@ -28,13 +28,21 @@ test("fixed-seed bounded ledger state-machine fuzz never creates two committed r
           const issuedAt = new Date(at).toISOString();
           const expiresAt = new Date(at + CAPABILITY_LIFETIME_MS).toISOString();
           const requestBytes = authorityCanonicalBytes({ v: "reelier.outcome-request/v1", requestId, sourceRefs: { source: `ref_${operation.request}` }, choices: {} });
-          const capabilityBytes = authorityCanonicalBytes({ v: "reelier.compiled-capability/v1", capabilityId, requestKey, outcomeKey, effectDigest, issuedAt, expiresAt });
+          const requestDigest = `sha256:${createHash("sha256").update(requestBytes).digest("hex")}`;
+          const contractDigest = hex(500);
+          const sourceBundleDigest = hex(501);
+          const sourceSnapshotDigest = hex(502);
+          const authorityStateDigest = hex(503);
+          const limits = { maxEffectsPerWindow: 30, windowSeconds: 3600, maxEffectsPerSourceTrigger: 1, maxBodyBytes: 4096 };
+          const limitsDigest = authorityDigest({ v: "reelier.capability-limits/internal-v1", contractDigest, limits });
+          const capabilityBytes = authorityCanonicalBytes({ v: "reelier.compiled-capability/v1", tenant: "tenant", requester: "requester", definitionAlias: "definition", requestDigest, requestKey, contractDigest, sourceBundleDigest, sourceSnapshotDigest, authorityStateDigest, limits, limitsDigest, capabilityId, outcomeKey, effectDigest, issuedAt, expiresAt });
           const candidate: ReservationIntent = {
-            tenant: "tenant", requester: "requester", requestId, requestKey,
-            canonicalRequestDigest: `sha256:${createHash("sha256").update(requestBytes).digest("hex")}`, canonicalRequestBytes: requestBytes,
+            tenant: "tenant", requester: "requester", definitionAlias: "definition", requestId, requestDigest, requestKey,
+            canonicalRequestDigest: requestDigest, canonicalRequestBytes: requestBytes,
             capabilityId, capabilityDigest: `sha256:${createHash("sha256").update(capabilityBytes).digest("hex")}`, capabilityBytes,
+            contractDigest, sourceBundleDigest, sourceSnapshotDigest, authorityStateDigest, limits, limitsDigest,
             outcomeKey, effectDigest, issuedAt, expiresAt,
-            limitSlots: [{ key: hex(400), maximum: 30 }],
+            limitSlots: [{ kind: "contract-window", key: hex(400), maximum: 30 }, { kind: "source-trigger", key: hex(401 + operation.request), maximum: 1 }],
           };
           await ledger.reserve(candidate);
         }

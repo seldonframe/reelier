@@ -35,7 +35,10 @@ export interface CompiledOutcome {
     policyDigest: string;
     validationInstant: string;
     activationSnapshotDigest: string;
+    authorityStateDigest: string;
     sourceSnapshotDigest: string;
+    limits: Readonly<{ maxEffectsPerWindow:number;windowSeconds:number;maxEffectsPerSourceTrigger:number;maxBodyBytes:number }>;
+    limitsDigest: string;
     effectDigest: string;
     outcomeKey: string;
   }>;
@@ -52,14 +55,14 @@ export function compileOutcome(registry: StaticPackRegistry, input: Readonly<{ c
   if (now < Date.parse(contract.validFrom)) throw new TypeError("contract is not yet valid at compilation instant");
   if (now >= Date.parse(contract.validUntil)) throw new TypeError("contract is expired at compilation instant");
   if (Date.parse(source.observedAt) > now || now >= Date.parse(source.freshUntil)) throw new TypeError("source is stale or not observed at compilation instant");
-  const expectedSourceSnapshot = authorityDigest({ v: "reelier.source-snapshot/internal-v1", bundleDigest: input.source.digest, rawDigest: source.rawDigest, provenance: source.provenance });
+  const expectedSourceSnapshot = authorityDigest({ v: "reelier.source-snapshot/internal-v1", bundleDigest: input.source.digest, sourceRefsDigest: source.sourceRefsDigest, readSetDigest: source.readSetDigest, resolverId: source.provenance.resolverId, observations: source.provenance.observations });
   if (input.source.sourceSnapshotDigest !== expectedSourceSnapshot) throw new TypeError("source snapshot context mismatch");
   const definition = lookupStaticPackDefinition(registry, contract.alias);
   if (!definition || definition.definitionDigest !== contract.definitionDigest || definition.packDigest !== contract.packDigest) throw new TypeError("unknown or drifted static definition");
   if (definition.resolverId !== contract.sourceAuthority.resolverId || definition.projectionSchemaId !== contract.sourceAuthority.projectionSchemaId) throw new TypeError("static definition source authority mismatch");
   if (contract.sourceAuthority.allowedReadEndpointIds.some(endpoint => !definition.readEndpointIds.includes(endpoint))) throw new TypeError("contract names unknown definition read endpoint");
   if (source.tenant !== contract.tenant || source.definitionDigest !== contract.definitionDigest || source.projectionSchemaId !== contract.sourceAuthority.projectionSchemaId || source.provenance.resolverId !== definition.resolverId) throw new TypeError("validated source does not fit contract definition");
-  if (!definition.readEndpointIds.includes(source.provenance.endpointId) || !contract.sourceAuthority.allowedReadEndpointIds.includes(source.provenance.endpointId)) throw new TypeError("validated source uses unknown or unauthorized read endpoint");
+  if (source.provenance.observations.some(observation => !definition.readEndpointIds.includes(observation.endpointId) || !contract.sourceAuthority.allowedReadEndpointIds.includes(observation.endpointId))) throw new TypeError("validated source uses unknown or unauthorized read endpoint");
   const authorizedPointers = new Set(contract.sourceAuthority.authorizedProjectionPointers);
   for (const claims of [source.claims.grounded, source.claims.authored, source.claims.unresolved]) for (const claim of claims) if (!authorizedPointers.has(claim.projectionPointer)) throw new TypeError("validated source projection exceeds contract authority");
   for (const pointer of projectionLeafPointers(source.projection)) if (!authorizedPointers.has(pointer)) throw new TypeError("validated source projection exceeds contract authority");
@@ -76,7 +79,8 @@ export function compileOutcome(registry: StaticPackRegistry, input: Readonly<{ c
   const effectCanonicalBase64 = authorityCanonicalBytes(effect).toString("base64");
   const effectDigest = authorityDigest(effect);
   const outcomeKey = deriveSemanticOutcomeKey({ tenant: contract.tenant, contractDigest: input.contract.digest, definitionAlias: contract.alias, sourceIdentity: source.sourceIdentity, triggerIdentity: source.triggerIdentity });
-  const capabilityCommitment = deepFreeze({ tenant: contract.tenant, contractDigest: input.contract.digest, definitionAlias: contract.alias, packDigest: contract.packDigest, definitionDigest: contract.definitionDigest, sourceBundleDigest: input.source.digest, sourceIdentity: source.sourceIdentity, triggerIdentity: source.triggerIdentity, connectorId: contract.connectorId, accountId: contract.accountId, policyDigest: contract.policyCommitment.digest, validationInstant, activationSnapshotDigest: input.contract.activationSnapshotDigest, sourceSnapshotDigest: input.source.sourceSnapshotDigest, effectDigest, outcomeKey });
+  const limitsDigest = authorityDigest({ v: "reelier.capability-limits/internal-v1", contractDigest: input.contract.digest, limits: contract.limits });
+  const capabilityCommitment = deepFreeze({ tenant: contract.tenant, contractDigest: input.contract.digest, definitionAlias: contract.alias, packDigest: contract.packDigest, definitionDigest: contract.definitionDigest, sourceBundleDigest: input.source.digest, sourceIdentity: source.sourceIdentity, triggerIdentity: source.triggerIdentity, connectorId: contract.connectorId, accountId: contract.accountId, policyDigest: contract.policyCommitment.digest, validationInstant, activationSnapshotDigest: input.contract.activationSnapshotDigest, authorityStateDigest: input.contract.activationSnapshotDigest, sourceSnapshotDigest: input.source.sourceSnapshotDigest, limits: contract.limits, limitsDigest, effectDigest, outcomeKey });
   return Object.freeze({ effect, effectCanonicalBase64, effectDigest, outcomeKey, capabilityCommitment });
 }
 

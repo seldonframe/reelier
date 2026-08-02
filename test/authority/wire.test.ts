@@ -17,6 +17,7 @@ import type { AuthorityKind } from "../../src/authority/types.js";
 import { evaluateVerifyClaims } from "../../src/verify.js";
 
 const zeroDigest = "sha256:" + "0".repeat(64);
+const validDigest = "sha256:" + "9".repeat(64);
 const policyBytes = Buffer.from('{"channel":"sms","template":"Appointment {{time}}"}', "utf8");
 const limits = { maxEffectsPerWindow: 10, windowSeconds: 3600, maxEffectsPerSourceTrigger: 1, maxBodyBytes: 4096 };
 const constraints = {
@@ -26,10 +27,10 @@ const constraints = {
 };
 const contract = {
   v: "reelier.outcome-contract/v1", tenant: "tenant_1", alias: "definition_1", contractId: "contract_1",
-  validFrom: "2026-01-01T00:00:00.000Z", validUntil: "2026-02-01T00:00:00.000Z", packDigest: zeroDigest,
-  definitionDigest: zeroDigest, sponsor: "sponsor_1", audiences: ["requester_1"], delegationGrantDigest: zeroDigest,
+  validFrom: "2026-01-01T00:00:00.000Z", validUntil: "2026-02-01T00:00:00.000Z", packDigest: validDigest,
+  definitionDigest: validDigest, sponsor: "sponsor_1", audiences: ["requester_1"], delegationGrantDigest: validDigest,
   connectorId: "highlevel", accountId: "location_1",
-  sourceAuthority: { resolverId: "highlevel_appointment", projectionSchemaId: "highlevel.appointment-reminder/v1", allowedReadEndpointIds: ["appointments.get", "contacts.get"], authorizedProjectionPointers: ["/appointment/startTime", "/contact/phone"] },
+  sourceAuthority: { resolverId: "highlevel_appointment", projectionSchemaId: "highlevel.appointment-reminder/v1", allowedReadEndpointIds: ["appointments.get", "contacts.get"], authorizedProjectionPointers: ["/appointment/startTime", "/contact/phone"], maxFreshnessSeconds: 60 },
   riskClasses: ["message"], limits,
   policyCommitment: { schemaId: "highlevel.sms-reminder-policy/v1", jcsBase64: policyBytes.toString("base64"), digest: "sha256:" + createHash("sha256").update(policyBytes).digest("hex") },
 };
@@ -38,13 +39,25 @@ const rootGrant = {
   sponsor: "sponsor_1", grantor: "operator_1", grantee: "gate_1", issuedAt: "2026-01-01T00:00:00.000Z",
   expiresAt: "2026-02-01T00:00:00.000Z", constraints,
 };
+const sourceRefsDigest = authorityDigest({ v: "reelier.source-refs/internal-v1", sourceRefs: { appointment: "ref_1" } });
+const sourceObservations = [{ index: 0, planDigest: "sha256:" + "a".repeat(64), endpointId: "read_1", rawDigest: "sha256:" + "b".repeat(64) }];
 const sourceBundle = {
-  v: "reelier.source-bundle/v1", tenant: "tenant_1", definitionDigest: zeroDigest,
+  v: "reelier.source-bundle/v1", tenant: "tenant_1", definitionDigest: validDigest,
   projectionSchemaId: "highlevel.appointment-reminder/v1", sourceIdentity: "source_1", triggerIdentity: "trigger_1",
-  observedAt: "2026-01-01T00:00:00.000Z", rawDigest: zeroDigest, freshUntil: "2026-01-01T00:01:00.000Z",
-  provenance: { resolverId: "resolver_1", endpointId: "read_1" },
+  sourceRefsDigest, readSetDigest: authorityDigest({ v: "reelier.source-read-set/internal-v1", sourceRefsDigest, observations: sourceObservations }),
+  observedAt: "2026-01-01T00:00:00.000Z", freshUntil: "2026-01-01T00:01:00.000Z",
+  provenance: { resolverId: "resolver_1", observations: sourceObservations },
   claims: { grounded: [{ claimId: "appointment_time", projectionPointer: "/appointment/startTime" }], authored: [], unresolved: [] },
   projection: { appointment: { startTime: "2026-01-02T12:00:00.000Z" } },
+};
+const capabilityContractDigest = "sha256:" + "3".repeat(64);
+const compiledCapability = {
+  v: "reelier.compiled-capability/v1", tenant: "tenant_1", requester: "requester_1", definitionAlias: "definition_1",
+  requestDigest: "sha256:" + "1".repeat(64), requestKey: "sha256:" + "2".repeat(64), contractDigest: capabilityContractDigest,
+  sourceBundleDigest: "sha256:" + "4".repeat(64), sourceSnapshotDigest: "sha256:" + "5".repeat(64), authorityStateDigest: "sha256:" + "6".repeat(64),
+  limits, limitsDigest: authorityDigest({ v: "reelier.capability-limits/internal-v1", contractDigest: capabilityContractDigest, limits }),
+  capabilityId: "capability_1", outcomeKey: "sha256:" + "7".repeat(64), effectDigest: "sha256:" + "8".repeat(64),
+  issuedAt: "2026-01-01T00:00:00.000Z", expiresAt: "2026-01-01T00:01:00.000Z",
 };
 
 function without<T extends Record<string, unknown>>(value: T, key: keyof T): Omit<T, keyof T> {
@@ -64,6 +77,7 @@ const acceptedDecisionContext = {
   v: "reelier.decision-context/v1",
   tenant: "tenant_1",
   requester: "requester_1",
+  definitionAlias: "definition_1",
   requestId: "request_1",
   requestDigest: "sha256:" + "1".repeat(64),
   requestKey: "sha256:" + "2".repeat(64),
@@ -278,6 +292,31 @@ test("SourceBundle claim entries bind disjoint canonical projection paths", () =
   assert.throws(() => parseAuthorityWire("source-bundle", { ...sourceBundle, claims: { ...sourceBundle.claims, grounded: [{ claimId: "missing", projectionPointer: "/appointment/missing" }] } }), /projection pointer.*own path/i);
 });
 
+test("CompiledCapability closes and digest-binds every sealed authority input", () => {
+  assert.deepEqual(parseAuthorityWire("compiled-capability", compiledCapability), compiledCapability);
+  for (const field of Object.keys(compiledCapability) as (keyof typeof compiledCapability)[]) {
+    assert.throws(() => parseAuthorityWire("compiled-capability", without(compiledCapability, field)), /required property/i, field);
+  }
+  for (const field of ["requestDigest", "requestKey", "contractDigest", "sourceBundleDigest", "sourceSnapshotDigest", "authorityStateDigest", "limitsDigest", "outcomeKey", "effectDigest"] as const) {
+    assert.throws(() => parseAuthorityWire("compiled-capability", { ...compiledCapability, [field]: zeroDigest }), /pattern|limits commitment/i, field);
+  }
+  assert.throws(() => parseAuthorityWire("compiled-capability", { ...compiledCapability, limits: { ...limits, maxBodyBytes: limits.maxBodyBytes + 1 } }), /limits (?:commitment|digest)/i);
+  assert.throws(() => parseAuthorityWire("compiled-capability", { ...compiledCapability, extra: true }), /additional properties/i);
+});
+
+test("SourceBundle seals ordered plural read evidence and exact digest preimages", () => {
+  for (const field of ["sourceRefsDigest", "readSetDigest"] as const) {
+    assert.throws(() => parseAuthorityWire("source-bundle", { ...sourceBundle, [field]: zeroDigest }), /pattern|read-set/i, field);
+  }
+  const two = [sourceObservations[0], { index: 1, planDigest: "sha256:" + "c".repeat(64), endpointId: "read_2", rawDigest: "sha256:" + "d".repeat(64) }];
+  const validTwo = { ...sourceBundle, provenance: { ...sourceBundle.provenance, observations: two }, readSetDigest: authorityDigest({ v: "reelier.source-read-set/internal-v1", sourceRefsDigest, observations: two }) };
+  assert.doesNotThrow(() => parseAuthorityWire("source-bundle", validTwo));
+  for (const observations of [[two[1], two[0]], [two[0], two[0]], [{ ...two[0], index: 1 }, two[1]]]) {
+    assert.throws(() => parseAuthorityWire("source-bundle", { ...validTwo, provenance: { ...validTwo.provenance, observations } }), /ordered|unique|duplicate|read-set/i);
+  }
+  assert.throws(() => parseAuthorityWire("source-bundle", { ...validTwo, readSetDigest: validDigest }), /read[- ]set/i);
+});
+
 test("amended wire required fields and nested objects are closed", () => {
   const requiredCases: [AuthorityKind, Record<string, unknown>, string[]][] = [
     ["outcome-contract", contract, ["sponsor", "audiences", "delegationGrantDigest", "connectorId", "accountId", "sourceAuthority", "riskClasses", "limits", "policyCommitment"]],
@@ -353,9 +392,10 @@ test("standing authority enforces lower and upper bounds table", () => {
   assert.throws(() => parseAuthorityWire("source-bundle", { ...sourceBundle, projectionSchemaId: "" }), /pattern/i);
   assert.throws(() => parseAuthorityWire("source-bundle", { ...sourceBundle, projectionSchemaId: schema256 + "x" }), /pattern/i);
   const claim256 = "x".repeat(256);
-  assert.doesNotThrow(() => parseAuthorityWire("source-bundle", { ...sourceBundle, claims: { grounded: [], authored: [{ claimId: claim256, projectionPointer: "/copy" }], unresolved: [] } }));
-  assert.throws(() => parseAuthorityWire("source-bundle", { ...sourceBundle, claims: { grounded: [], authored: [{ claimId: "", projectionPointer: "/copy" }], unresolved: [] } }), /pattern/i);
-  assert.throws(() => parseAuthorityWire("source-bundle", { ...sourceBundle, claims: { grounded: [], authored: [{ claimId: claim256 + "x", projectionPointer: "/copy" }], unresolved: [] } }), /pattern/i);
+  const copyProjection = { copy: true };
+  assert.doesNotThrow(() => parseAuthorityWire("source-bundle", { ...sourceBundle, claims: { grounded: [], authored: [{ claimId: claim256, projectionPointer: "/copy" }], unresolved: [] }, projection: copyProjection }));
+  assert.throws(() => parseAuthorityWire("source-bundle", { ...sourceBundle, claims: { grounded: [], authored: [{ claimId: "", projectionPointer: "/copy" }], unresolved: [] }, projection: copyProjection }), /pattern/i);
+  assert.throws(() => parseAuthorityWire("source-bundle", { ...sourceBundle, claims: { grounded: [], authored: [{ claimId: claim256 + "x", projectionPointer: "/copy" }], unresolved: [] }, projection: copyProjection }), /pattern/i);
   const pointer512 = "/" + "x".repeat(511);
   assert.doesNotThrow(() => parseAuthorityWire("outcome-contract", { ...contract, sourceAuthority: { ...contract.sourceAuthority, authorizedProjectionPointers: [pointer512] } }));
   assert.throws(() => parseAuthorityWire("outcome-contract", { ...contract, sourceAuthority: { ...contract.sourceAuthority, authorizedProjectionPointers: [""] } }), /pattern/i);
@@ -410,8 +450,9 @@ test("all comparable authority arrays are nonempty, bounded, and unique", () => 
   assert.doesNotThrow(() => parseAuthorityWire("delegation-grant", { ...rootGrant, constraints: { ...constraints, connectorAccounts: Array.from({ length: 64 }, (_, i) => ({ connectorId: "c", accountId: `a_${i}` })) } }));
   assert.throws(() => parseAuthorityWire("delegation-grant", { ...rootGrant, constraints: { ...constraints, connectorAccounts: Array.from({ length: 65 }, (_, i) => ({ connectorId: "c", accountId: `a_${i}` })) } }), /more than 64/i);
   assert.throws(() => parseAuthorityWire("delegation-grant", { ...rootGrant, constraints: { ...constraints, connectorAccounts: [constraints.connectorAccounts[0], { ...constraints.connectorAccounts[0] }] } }), /duplicate items/i);
-  assert.doesNotThrow(() => parseAuthorityWire("source-bundle", { ...sourceBundle, claims: { grounded: [], authored: Array.from({ length: 256 }, (_, i) => ({ claimId: `c_${i}`, projectionPointer: `/p_${i}` })), unresolved: [] } }));
-  assert.throws(() => parseAuthorityWire("source-bundle", { ...sourceBundle, claims: { grounded: [], authored: Array.from({ length: 257 }, (_, i) => ({ claimId: `c_${i}`, projectionPointer: `/p_${i}` })), unresolved: [] } }), /more than 256/i);
+  const projection256 = Object.fromEntries(Array.from({ length: 256 }, (_, i) => [`p_${i}`, true]));
+  assert.doesNotThrow(() => parseAuthorityWire("source-bundle", { ...sourceBundle, claims: { grounded: [], authored: Array.from({ length: 256 }, (_, i) => ({ claimId: `c_${i}`, projectionPointer: `/p_${i}` })), unresolved: [] }, projection: projection256 }));
+  assert.throws(() => parseAuthorityWire("source-bundle", { ...sourceBundle, claims: { grounded: [], authored: Array.from({ length: 257 }, (_, i) => ({ claimId: `c_${i}`, projectionPointer: `/p_${i}` })), unresolved: [] }, projection: { ...projection256, p_256: true } }), /more than 256/i);
 });
 
 test("JSON Pointer escapes resolve own paths and malformed, missing, or inherited paths refuse", () => {
@@ -437,7 +478,7 @@ test("claim IDs and pointers are disjoint across every source class pair", () =>
   }
   assert.throws(() => parseAuthorityWire("source-bundle", { ...sourceBundle, claims: { grounded: [], authored: [{ claimId: "same", projectionPointer: "/one" }, { claimId: "same", projectionPointer: "/two" }], unresolved: [] } }), /claim id.*unique/i);
   assert.throws(() => parseAuthorityWire("source-bundle", { ...sourceBundle, claims: { grounded: [], authored: [{ claimId: "one", projectionPointer: "/same" }, { claimId: "two", projectionPointer: "/same" }], unresolved: [] } }), /projection pointer.*more than one class/i);
-  assert.doesNotThrow(() => parseAuthorityWire("source-bundle", { ...sourceBundle, claims: { grounded: [], authored: [{ claimId: "authored", projectionPointer: "/authored" }], unresolved: [{ claimId: "unresolved", projectionPointer: "/unresolved" }] } }));
+  assert.doesNotThrow(() => parseAuthorityWire("source-bundle", { ...sourceBundle, claims: { grounded: [], authored: [{ claimId: "authored", projectionPointer: "/authored" }], unresolved: [{ claimId: "unresolved", projectionPointer: "/unresolved" }] }, projection: { authored: true, unresolved: true } }));
 });
 
 test("v1 delegation uses an identical fixed window and only maxima may decrease", () => {

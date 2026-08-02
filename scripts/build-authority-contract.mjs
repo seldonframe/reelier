@@ -2,7 +2,7 @@ import canonicalize from "canonicalize";
 import { createHash, createPrivateKey, sign } from "node:crypto";
 import { cp, mkdir, readFile, writeFile } from "node:fs/promises";
 
-const digest = "sha256:" + "0".repeat(64);
+const digest = "sha256:" + "9".repeat(64);
 const at = "2026-01-01T00:00:00.000Z";
 const limits = { maxEffectsPerWindow: 10, windowSeconds: 3600, maxEffectsPerSourceTrigger: 1, maxBodyBytes: 4096 };
 const policyJcs = canonicalize({ channel: "sms", template: "Appointment {{time}}" });
@@ -16,7 +16,7 @@ const vectorPrivateKey = createPrivateKey(`-----BEGIN PRIVATE KEY-----
 MC4CAQAwBQYDK2VwBCIEIO2e0HCVJ9AnRKWoiI+A2JXFNQeKOiEQDB7P8clr8OyJ
 -----END PRIVATE KEY-----`);
 const acceptedDecisionContext = {
-  v: "reelier.decision-context/v1", tenant: "tenant_1", requester: "requester_1", requestId: "request_1",
+  v: "reelier.decision-context/v1", tenant: "tenant_1", requester: "requester_1", definitionAlias: "definition_1", requestId: "request_1",
   requestDigest: "sha256:" + "1".repeat(64), requestKey: "sha256:" + "2".repeat(64), contractDigest: "sha256:" + "3".repeat(64),
   capabilityId: "capability_1", capabilityDigest: "sha256:" + "4".repeat(64), outcomeKey: "sha256:" + "5".repeat(64), effectDigest: "sha256:" + "6".repeat(64),
   snapshots: { sourceBundleDigest: "sha256:" + "7".repeat(64), authorityStateDigest: "sha256:" + "8".repeat(64) },
@@ -28,14 +28,18 @@ const refusedDecisionContext = {
 const decisionContextDigest = "sha256:" + createHash("sha256").update(canonicalize(acceptedDecisionContext), "utf8").digest("hex");
 const gateEvent = { v: "reelier.gate-event/v1", eventId: "event_1", at, verdict: "accepted", reasonCode: "accepted", decisionContextDigest };
 const gateEventDigest = "sha256:" + createHash("sha256").update(canonicalize(gateEvent), "utf8").digest("hex");
+const vectorSourceRefsDigest = "sha256:" + createHash("sha256").update(canonicalize({ v: "reelier.source-refs/internal-v1", sourceRefs: { appointment: "ref_1" } }), "utf8").digest("hex");
+const vectorObservations = [{ index: 0, planDigest: "sha256:" + "a".repeat(64), endpointId: "appointments.get", rawDigest: "sha256:" + "b".repeat(64) }];
+const vectorReadSetDigest = "sha256:" + createHash("sha256").update(canonicalize({ v: "reelier.source-read-set/internal-v1", sourceRefsDigest: vectorSourceRefsDigest, observations: vectorObservations }), "utf8").digest("hex");
+const vectorLimitsDigest = "sha256:" + createHash("sha256").update(canonicalize({ v: "reelier.capability-limits/internal-v1", contractDigest: digest, limits }), "utf8").digest("hex");
 const vectors = {
   principal: { v: "reelier.principal/v1", id: "operator_1", kind: "operator" },
   "delegation-grant": { v: "reelier.delegation-grant/v1", tenant: "tenant_1", grantId: "grant_1", parentDigest: null, sponsor: "sponsor_1", grantor: "operator_1", grantee: "gate_1", issuedAt: at, expiresAt: "2026-02-01T00:00:00.000Z", constraints },
-  "source-bundle": { v: "reelier.source-bundle/v1", tenant: "tenant_1", definitionDigest: digest, projectionSchemaId: "highlevel.appointment-reminder/v1", sourceIdentity: "source_1", triggerIdentity: "trigger_1", observedAt: at, rawDigest: digest, freshUntil: "2026-01-01T00:01:00.000Z", provenance: { resolverId: "resolver_1", endpointId: "read_1" }, claims: { grounded: [{ claimId: "appointment_time", projectionPointer: "/appointment/startTime" }], authored: [], unresolved: [] }, projection: { appointment: { startTime: "2026-01-02T12:00:00.000Z" } } },
-  "outcome-contract": { v: "reelier.outcome-contract/v1", tenant: "tenant_1", alias: "definition_1", contractId: "contract_1", validFrom: at, validUntil: "2026-02-01T00:00:00.000Z", packDigest: digest, definitionDigest: digest, sponsor: "sponsor_1", audiences: ["requester_1"], delegationGrantDigest: digest, connectorId: "highlevel", accountId: "location_1", sourceAuthority: { resolverId: "highlevel_appointment", projectionSchemaId: "highlevel.appointment-reminder/v1", allowedReadEndpointIds: ["appointments.get", "contacts.get"], authorizedProjectionPointers: ["/appointment/startTime", "/contact/phone"] }, riskClasses: ["message"], limits, policyCommitment: { schemaId: "highlevel.sms-reminder-policy/v1", jcsBase64: Buffer.from(policyJcs, "utf8").toString("base64"), digest: policyDigest } },
+  "source-bundle": { v: "reelier.source-bundle/v1", tenant: "tenant_1", definitionDigest: digest, projectionSchemaId: "highlevel.appointment-reminder/v1", sourceRefsDigest: vectorSourceRefsDigest, readSetDigest: vectorReadSetDigest, sourceIdentity: "source_1", triggerIdentity: "trigger_1", observedAt: at, freshUntil: "2026-01-01T00:01:00.000Z", provenance: { resolverId: "resolver_1", observations: vectorObservations }, claims: { grounded: [{ claimId: "appointment_time", projectionPointer: "/appointment/startTime" }], authored: [], unresolved: [] }, projection: { appointment: { startTime: "2026-01-02T12:00:00.000Z" } } },
+  "outcome-contract": { v: "reelier.outcome-contract/v1", tenant: "tenant_1", alias: "definition_1", contractId: "contract_1", validFrom: at, validUntil: "2026-02-01T00:00:00.000Z", packDigest: digest, definitionDigest: digest, sponsor: "sponsor_1", audiences: ["requester_1"], delegationGrantDigest: digest, connectorId: "highlevel", accountId: "location_1", sourceAuthority: { resolverId: "highlevel_appointment", projectionSchemaId: "highlevel.appointment-reminder/v1", allowedReadEndpointIds: ["appointments.get", "contacts.get"], authorizedProjectionPointers: ["/appointment/startTime", "/contact/phone"], maxFreshnessSeconds: 60 }, riskClasses: ["message"], limits, policyCommitment: { schemaId: "highlevel.sms-reminder-policy/v1", jcsBase64: Buffer.from(policyJcs, "utf8").toString("base64"), digest: policyDigest } },
   "outcome-request": { v: "reelier.outcome-request/v1", requestId: "request_1", sourceRefs: { appointment: "ref_1" }, choices: {} },
   "transport-effect": { v: "reelier.transport-effect/v1", endpointId: "connector_1", method: "POST", path: "/v1/messages", query: "account=tenant_1&mode=send", headers: { "Content-Type": "application/json" }, bodyBase64: "e30=", riskClass: "message", idempotency: "native", preconditions: [], reconciliation: { recipeId: "message-readback" } },
-  "compiled-capability": { v: "reelier.compiled-capability/v1", capabilityId: "capability_1", requestKey: digest, outcomeKey: digest, effectDigest: digest, issuedAt: at, expiresAt: "2026-01-01T00:01:00.000Z" },
+  "compiled-capability": { v: "reelier.compiled-capability/v1", tenant: "tenant_1", requester: "requester_1", definitionAlias: "definition_1", requestDigest: digest, requestKey: digest, contractDigest: digest, sourceBundleDigest: digest, sourceSnapshotDigest: digest, authorityStateDigest: digest, limits, limitsDigest: vectorLimitsDigest, capabilityId: "capability_1", outcomeKey: digest, effectDigest: digest, issuedAt: at, expiresAt: "2026-01-01T00:01:00.000Z" },
   "decision-context": acceptedDecisionContext,
   "gate-event": gateEvent,
   "authority-receipt": { v: "reelier.authority-receipt/v1", receiptId: "receipt_1", gateEventDigest, decisionContextDigest, decisionContext: acceptedDecisionContext, claims: { authorization: "verified", sourceCompleteness: "verified", dispatch: "verified", providerAcknowledgment: "unchecked", reconciliation: "absent", topology: "unchecked", completeness: "unchecked" } },

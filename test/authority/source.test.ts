@@ -2,82 +2,28 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { authorityDigest } from "../../src/authority/wire.js";
-import { createSourceRegistry, planSourceReads, validateSourceBundle, isValidatedSourceBundle, materializeSourceBundle } from "../../src/authority/source.js";
+import { createSourceRegistry, planSourceReads, materializeSourceBundle, isValidatedSourceBundle, type RegisteredSourceResolver } from "../../src/authority/source.js";
 
 const definitionDigest = "sha256:" + "b".repeat(64);
-const authority = { tenant: "tenant_1", definitionDigest, resolverId: "resolver_1", projectionSchemaId: "projection/v1", allowedReadEndpointIds: ["read_1"], authorizedProjectionPointers: ["/a~0b/c~1d", "/message"], requiredGroundedPointers: ["/a~0b/c~1d"] };
-const registry = createSourceRegistry([{ tenant: "tenant_1", resolverId: "resolver_1", definitionDigest, projectionSchemaId: "projection/v1", readEndpointIds: ["read_1"], plan: (refs) => [{ endpointId: "read_1", opaqueHandle: refs.item }] }]);
-const raw = Buffer.from('{"provider":"response"}', "utf8");
-const bundle = { v: "reelier.source-bundle/v1" as const, tenant: "tenant_1", definitionDigest, projectionSchemaId: "projection/v1", sourceIdentity: "source_1", triggerIdentity: "trigger_1", observedAt: "2026-01-15T00:00:00.000Z", rawDigest: "sha256:" + createHash("sha256").update(raw).digest("hex"), freshUntil: "2026-01-15T00:01:00.000Z", provenance: { resolverId: "resolver_1", endpointId: "read_1" }, claims: { grounded: [{ claimId: "escaped", projectionPointer: "/a~0b/c~1d" }, { claimId: "message", projectionPointer: "/message" }], authored: [], unresolved: [] }, projection: { "a~b": { "c/d": true }, message: "hello" } };
+const observedAt = new Date("2026-01-15T00:00:00.000Z");
+const refs = { appointment: "appointment_1", contact: "contact_1" };
+function resolver(overrides:Partial<RegisteredSourceResolver>={}):RegisteredSourceResolver{return {
+  tenant:"tenant_1",resolverId:"resolver_1",definitionDigest,projectionSchemaId:"projection/v1",readEndpointIds:["appointment.read","contact.read"],maxFreshnessSeconds:120,
+  plan:value=>[{endpointId:"appointment.read",opaqueHandle:value.appointment},{endpointId:"contact.read",opaqueHandle:value.contact}],
+  project:()=>({sourceIdentity:"appointment_1",triggerIdentity:"trigger_1",projection:{appointment:{id:"appointment_1"},contact:{id:"contact_1"}},claims:{grounded:[{claimId:"a",projectionPointer:"/appointment/id"},{claimId:"c",projectionPointer:"/contact/id"}],authored:[],unresolved:[]}}),...overrides};}
+function input(local= createSourceRegistry([resolver()])){const plans=planSourceReads(local,{tenant:"tenant_1",resolverId:"resolver_1",definitionDigest,sourceRefs:refs,allowedReadEndpointIds:["appointment.read","contact.read"]});const raws=[Buffer.from("appointment"),Buffer.from("contact")];return {local,plans,raws,args:{tenant:"tenant_1",resolverId:"resolver_1",definitionDigest,projectionSchemaId:"projection/v1",sourceRefs:refs,allowedReadEndpointIds:["appointment.read","contact.read"],authorizedProjectionPointers:["/appointment/id","/contact/id"],requiredGroundedPointers:["/appointment/id","/contact/id"],maxFreshnessSeconds:60,observedAt,plans,observations:[{planDigest:plans[1].planDigest,rawBytes:raws[1]},{planDigest:plans[0].planDigest,rawBytes:raws[0]}]}};}
 
-test("registered source planning accepts only tenant-scoped opaque handles and registered read endpoints", () => {
-  assert.deepEqual(planSourceReads(registry, { tenant: "tenant_1", resolverId: "resolver_1", definitionDigest, sourceRefs: { item: "opaque_1" }, allowedReadEndpointIds: ["read_1"] }), [{ endpointId: "read_1", opaqueHandle: "opaque_1" }]);
-  for (const item of ["https://example.test/x", "C:\\secret", "../secret", "/absolute"]) assert.throws(() => planSourceReads(registry, { tenant: "tenant_1", resolverId: "resolver_1", definitionDigest, sourceRefs: { item }, allowedReadEndpointIds: ["read_1"] }), /opaque handle/i, item);
-  assert.throws(() => planSourceReads(registry, { tenant: "tenant_2", resolverId: "resolver_1", definitionDigest, sourceRefs: { item: "opaque_1" }, allowedReadEndpointIds: ["read_1"] }), /tenant|unknown resolver/i);
-  assert.throws(() => planSourceReads(registry, { tenant: "tenant_1", resolverId: "unknown", definitionDigest, sourceRefs: { item: "opaque_1" }, allowedReadEndpointIds: ["read_1"] }), /unknown resolver/i);
-  const badRegistry = createSourceRegistry([{ tenant: "tenant_1", resolverId: "bad", definitionDigest, projectionSchemaId: "projection/v1", readEndpointIds: ["read_1"], plan: () => [{ endpointId: "read_2", opaqueHandle: "opaque_1" }] }]);
-  assert.throws(() => planSourceReads(badRegistry, { tenant: "tenant_1", resolverId: "bad", definitionDigest, sourceRefs: { item: "opaque_1" }, allowedReadEndpointIds: ["read_1"] }), /unknown|unauthorized.*endpoint/i);
-});
+test("kernel plans indexed digest-bound reads and canonicalizes arbitrary host observation order",()=>{const f=input();assert.deepEqual(f.plans.map(p=>p.index),[0,1]);const first=materializeSourceBundle(f.local,f.args);const second=materializeSourceBundle(f.local,{...f.args,observations:[...f.args.observations].reverse()});assert.equal(isValidatedSourceBundle(first),true);assert.equal(first.digest,second.digest);assert.equal(first.sourceSnapshotDigest,second.sourceSnapshotDigest);assert.equal(first.bundle.freshUntil,"2026-01-15T00:01:00.000Z");assert.deepEqual(first.bundle.provenance.observations.map(x=>x.index),[0,1]);assert.equal(first.bundle.sourceRefsDigest,authorityDigest({v:"reelier.source-refs/internal-v1",sourceRefs:refs}));});
 
-test("source registry is an opaque immutable snapshot of resolver definitions", () => {
-  const resolver = { tenant: "tenant_1", resolverId: "mutable", definitionDigest, projectionSchemaId: "projection/v1", readEndpointIds: ["read_1"], plan: (refs: Readonly<Record<string, string>>) => [{ endpointId: "read_1", opaqueHandle: refs.item }] };
-  const local = createSourceRegistry([resolver]);
-  assert.deepEqual(Object.keys(local), []);
-  assert.equal("resolvers" in local, false);
-  resolver.readEndpointIds.push("attacker");
-  resolver.plan = () => [{ endpointId: "attacker", opaqueHandle: "changed" }];
-  assert.deepEqual(planSourceReads(local, { tenant: "tenant_1", resolverId: "mutable", definitionDigest, sourceRefs: { item: "opaque_1" }, allowedReadEndpointIds: ["read_1"] }), [{ endpointId: "read_1", opaqueHandle: "opaque_1" }]);
-});
+test("resolver project receives only copied immutable evidence and owns deterministic semantic identities",()=>{let seen:unknown;const local=createSourceRegistry([resolver({project:value=>{seen=value;assert.equal(Object.isFrozen(value),true);assert.equal(Object.isFrozen(value.plans),true);assert.equal(Object.isFrozen(value.observations),true);assert.equal("rawBytes" in value.observations[0],false);assert.equal(value.observations[0].bodyBase64,Buffer.from("appointment").toString("base64"));assert.throws(()=>{(value.observations as unknown as unknown[]).push({});},/read only|extensible/i);return {sourceIdentity:"derived_source",triggerIdentity:"derived_trigger",projection:{appointment:{id:"appointment_1"},contact:{id:"contact_1"}},claims:{grounded:[{claimId:"z",projectionPointer:"/contact/id"},{claimId:"a",projectionPointer:"/appointment/id"}],authored:[],unresolved:[]}};}})]);const f=input(local);const result=materializeSourceBundle(local,f.args);assert.ok(seen);assert.equal(result.bundle.sourceIdentity,"derived_source");assert.equal(result.bundle.triggerIdentity,"derived_trigger");assert.deepEqual(result.bundle.claims.grounded.map(c=>c.projectionPointer),["/appointment/id","/contact/id"]);});
 
-test("source validation binds raw bytes, provenance, freshness, schemas, projection, and grounded own paths", () => {
-  const validated = validateSourceBundle(registry, { bundle, rawResponse: raw, authority, now: new Date("2026-01-15T00:00:30.000Z") });
-  assert.equal(isValidatedSourceBundle(validated), true);
-  assert.equal(validated.digest, authorityDigest(bundle));
-  assert.equal(Object.isFrozen(validated.bundle), true);
+test("kernel refuses missing extra duplicate unknown observations and copies raw bytes before resolver access",()=>{const f=input();const original=Buffer.from(f.raws[0]);const result=materializeSourceBundle(f.local,f.args);f.raws[0].fill(0);assert.equal(result.bundle.provenance.observations[0].rawDigest,`sha256:${createHash("sha256").update(original).digest("hex")}`);for(const observations of [[f.args.observations[0]],[...f.args.observations,f.args.observations[0]],[...f.args.observations,{planDigest:"sha256:"+"f".repeat(64),rawBytes:Buffer.from("x")}]] as const)assert.throws(()=>materializeSourceBundle(f.local,{...f.args,observations}),/missing|duplicate|unknown|extra/i);});
 
-  const rejects: [string, unknown][] = [
-    ["raw", { ...bundle, rawDigest: "sha256:" + "0".repeat(64) }],
-    ["stale", { ...bundle, freshUntil: "2026-01-14T00:00:00.000Z" }],
-    ["observed", { ...bundle, observedAt: "2026-01-16T00:00:00.000Z" }],
-    ["tenant", { ...bundle, tenant: "tenant_2" }],
-    ["resolver", { ...bundle, provenance: { ...bundle.provenance, resolverId: "unknown" } }],
-    ["endpoint", { ...bundle, provenance: { ...bundle.provenance, endpointId: "read_2" } }],
-    ["definition", { ...bundle, definitionDigest: "sha256:" + "c".repeat(64) }],
-    ["schema", { ...bundle, projectionSchemaId: "projection/v2" }],
-    ["extra", { ...bundle, claims: { ...bundle.claims, grounded: [...bundle.claims.grounded, { claimId: "extra", projectionPointer: "/extra" }] }, projection: { ...bundle.projection, extra: true } }],
-    ["authored", { ...bundle, claims: { grounded: [bundle.claims.grounded[1]], authored: [bundle.claims.grounded[0]], unresolved: [] } }],
-    ["unresolved", { ...bundle, claims: { grounded: [bundle.claims.grounded[1]], authored: [], unresolved: [bundle.claims.grounded[0]] } }],
-    ["missing required", { ...bundle, claims: { grounded: [bundle.claims.grounded[1]], authored: [], unresolved: [] } }],
-  ];
-  for (const [label, candidate] of rejects) assert.throws(() => validateSourceBundle(registry, { bundle: candidate, rawResponse: raw, authority, now: new Date("2026-01-15T00:00:30.000Z") }), /raw digest|stale|observed|tenant|resolver|endpoint|definition|schema|unauthorized|grounded|required/i, label);
-  assert.throws(() => validateSourceBundle(registry, { bundle, rawResponse: raw, authority, now: new Date(bundle.freshUntil) }), /stale/i, "freshUntil is exclusive");
-  assert.throws(() => validateSourceBundle(registry, { bundle: { ...bundle, claims: { grounded: [{ claimId: "escaped", projectionPointer: "/a~0b/missing" }], authored: [], unresolved: [] } }, rawResponse: raw, authority, now: new Date("2026-01-15T00:00:30.000Z") }), /own path|required/i);
-  assert.throws(() => validateSourceBundle(registry, { bundle: { ...bundle, claims: { grounded: bundle.claims.grounded, authored: [{ claimId: "copy", projectionPointer: "/message" }], unresolved: [] } }, rawResponse: raw, authority, now: new Date("2026-01-15T00:00:30.000Z") }), /more than one class/i);
-  assert.throws(() => validateSourceBundle(registry, { bundle: { ...bundle, claims: { grounded: bundle.claims.grounded, authored: [{ claimId: "message", projectionPointer: "/authored" }], unresolved: [] } }, rawResponse: raw, authority: { ...authority, authorizedProjectionPointers: [...authority.authorizedProjectionPointers, "/authored"] }, now: new Date("2026-01-15T00:00:30.000Z") }), /claim id.*unique/i);
-});
+test("resolver cannot fabricate claim ownership or leave projection leaves unclassified",()=>{for(const projection of [
+  {sourceIdentity:"s",triggerIdentity:"t",projection:{outer:{leaf:1}},claims:{grounded:[{claimId:"x",projectionPointer:"/outer"}],authored:[],unresolved:[]}},
+  {sourceIdentity:"s",triggerIdentity:"t",projection:{one:1,two:2},claims:{grounded:[{claimId:"x",projectionPointer:"/one"}],authored:[{claimId:"y",projectionPointer:"/one"}],unresolved:[]}},
+]){const local=createSourceRegistry([resolver({project:()=>projection})]);const f=input(local);assert.throws(()=>materializeSourceBundle(local,{...f.args,requiredGroundedPointers:[]}),/cover|unique|ownership/i);}});
 
-test("validated source brands refuse copied lookalikes", () => {
-  const validated = validateSourceBundle(registry, { bundle, rawResponse: raw, authority, now: new Date("2026-01-15T00:00:30.000Z") });
-  assert.equal(isValidatedSourceBundle({ ...validated }), false);
-  assert.equal(isValidatedSourceBundle(structuredClone(validated)), false);
-});
+test("freshness is kernel-owned, integral, bounded, and capped by resolver registration",()=>{for(const value of [0,121,1.5,301]){const f=input();assert.throws(()=>materializeSourceBundle(f.local,{...f.args,maxFreshnessSeconds:value}),/freshness/i);}assert.throws(()=>createSourceRegistry([resolver({maxFreshnessSeconds:0})]),/freshness/i);});
 
-test("kernel materializes deterministic plural source evidence from arbitrarily ordered raw observations", () => {
-  const reads = [Buffer.from('{"appointment":"a1"}'), Buffer.from('{"contact":"c1"}')];
-  const local = createSourceRegistry([{
-    tenant: "tenant_1", resolverId: "multi", definitionDigest, projectionSchemaId: "projection/v1",
-    readEndpointIds: ["appointment.read", "contact.read"], maxFreshnessSeconds: 120,
-    plan: refs => [{ endpointId: "appointment.read", opaqueHandle: refs.appointment }, { endpointId: "contact.read", opaqueHandle: refs.contact }],
-    project: ({ observations }) => ({ sourceIdentity: "appointment_a1", triggerIdentity: "trigger_t1", projection: { appointment: "a1", contact: "c1" }, claims: { grounded: observations.map((_, index) => ({ claimId: `claim_${index}`, projectionPointer: index ? "/contact" : "/appointment" })), authored: [], unresolved: [] } }),
-  }]);
-  const plans = planSourceReads(local, { tenant: "tenant_1", resolverId: "multi", definitionDigest, sourceRefs: { appointment: "a1", contact: "c1" }, allowedReadEndpointIds: ["appointment.read", "contact.read"] });
-  assert.equal(plans.length, 2);
-  assert.deepEqual(plans.map(plan => plan.index), [0, 1]);
-  const first = materializeSourceBundle(local, { tenant: "tenant_1", resolverId: "multi", definitionDigest, projectionSchemaId: "projection/v1", sourceRefs: { appointment: "a1", contact: "c1" }, allowedReadEndpointIds: ["appointment.read", "contact.read"], authorizedProjectionPointers: ["/appointment", "/contact"], requiredGroundedPointers: ["/appointment", "/contact"], maxFreshnessSeconds: 60, observedAt: new Date("2026-01-15T00:00:00.000Z"), plans, observations: [{ planDigest: plans[1].planDigest, rawBytes: reads[1] }, { planDigest: plans[0].planDigest, rawBytes: reads[0] }] });
-  reads[0].fill(0);
-  const secondPlans = planSourceReads(local, { tenant: "tenant_1", resolverId: "multi", definitionDigest, sourceRefs: { appointment: "a1", contact: "c1" }, allowedReadEndpointIds: ["appointment.read", "contact.read"] });
-  const second = materializeSourceBundle(local, { tenant: "tenant_1", resolverId: "multi", definitionDigest, projectionSchemaId: "projection/v1", sourceRefs: { appointment: "a1", contact: "c1" }, allowedReadEndpointIds: ["appointment.read", "contact.read"], authorizedProjectionPointers: ["/appointment", "/contact"], requiredGroundedPointers: ["/appointment", "/contact"], maxFreshnessSeconds: 60, observedAt: new Date("2026-01-15T00:00:00.000Z"), plans: secondPlans, observations: [{ planDigest: secondPlans[0].planDigest, rawBytes: Buffer.from('{"appointment":"a1"}') }, { planDigest: secondPlans[1].planDigest, rawBytes: Buffer.from('{"contact":"c1"}') }] });
-  assert.equal(first.sourceSnapshotDigest, second.sourceSnapshotDigest);
-  assert.equal(first.bundle.freshUntil, "2026-01-15T00:01:00.000Z");
-  assert.deepEqual(first.bundle.provenance.observations.map(item => item.index), [0, 1]);
-});
+test("planning rejects URL/path handles, tenant drift, endpoint drift, and mutable resolver replacement",()=>{const item=resolver();const local=createSourceRegistry([item]);for(const value of ["https://evil.test","../secret","C:\\secret"])assert.throws(()=>planSourceReads(local,{tenant:"tenant_1",resolverId:"resolver_1",definitionDigest,sourceRefs:{...refs,appointment:value},allowedReadEndpointIds:item.readEndpointIds}),/opaque/i);(item as {plan:RegisteredSourceResolver["plan"]}).plan=()=>[{endpointId:"evil",opaqueHandle:"x"}];assert.equal(planSourceReads(local,{tenant:"tenant_1",resolverId:"resolver_1",definitionDigest,sourceRefs:refs,allowedReadEndpointIds:item.readEndpointIds})[0].endpointId,"appointment.read");});

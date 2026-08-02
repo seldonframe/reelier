@@ -14,11 +14,13 @@ Delegation grants are signed explicit roots (`parentDigest: null`) or children (
 
 Requests contain only a caller-stable request ID, opaque source references, and bounded definition choices: never tenant, connector, account, endpoint, recipient, body, URL, provider arguments, or credentials.
 
-Source bundles bind the definition digest and projection schema ID in addition to tenant-scoped provenance, observation/freshness, source and trigger identity, raw digest, and the projection. Grounded, authored, and unresolved claims are separate bounded arrays of closed `{ claimId, projectionPointer }` entries. Claim IDs and pointers are globally unique across the three classes. Grounded pointers must resolve through own properties in the supplied projection. Task 2 additionally checks the bundle's definition/schema against the signed contract, projection authorization, freshness, and content schema.
+Source bundles are constructed by the kernel from a registered deterministic resolver; mutable hosts never submit candidate bundle semantics. A resolver plans bounded opaque reads, the kernel assigns ordered indexes and digests, and arbitrary-order host observations are copied and normalized before the resolver receives immutable Base64 evidence. The plural wire bundle commits nonzero `sourceRefsDigest`, `readSetDigest`, and ordered `{index, planDigest, endpointId, rawDigest}` provenance. It binds resolver-derived source/trigger identities and a projection whose every leaf has exactly one grounded, authored, or unresolved claim; interior paths, missing leaves, duplicate ownership, and unauthorized pointers refuse. Claim arrays are sorted by pointer then ID. Kernel time supplies `observedAt`; `freshUntil` uses the contract freshness capped by the registered resolver maximum, both bounded to 1..300 seconds. The compiler recomputes the source snapshot and checks every read endpoint against both static and contract allowlists.
 
 Ingress idempotency is `(tenant, requester, requestId)` over canonical request bytes; semantic deduplication independently derives an outcome key from tenant, contract digest, definition alias, source identity, and trigger identity.
 
-Every gate decision is bound to an independently versioned, closed `DecisionContext` preimage. It always names the authenticated `tenant`, authenticated `requester`, caller-stable `requestId`, canonical request digest, and ingress request key. It also carries explicit nullable contract, capability, outcome, effect, source-bundle snapshot, and authority-state snapshot commitments. Every property is required: `null` means the artifact did not exist at the decision point, while omission, empty-string sentinels, and all-zero digest sentinels are invalid. Capability ID and capability digest have paired nullability, and downstream artifacts cannot exist without their required upstream commitments. An accepted dispatch context requires every nullable commitment to be non-null. Refusal handling may report only neutral artifact presence (`absent` or `unchecked`) at this wire layer; Task 3 alone derives verdict-dependent evidence claims.
+Every gate decision is bound to an independently versioned, closed `DecisionContext` preimage. It always names the authenticated `tenant`, authenticated `requester`, authenticated `definitionAlias`, caller-stable `requestId`, canonical request digest, and ingress request key. It also carries explicit nullable contract, capability, outcome, effect, source-bundle snapshot, and authority-state snapshot commitments. Every property is required: `null` means the artifact did not exist at the decision point, while omission, empty-string sentinels, and all-zero digest sentinels are invalid. Capability ID and capability digest have paired nullability, and downstream artifacts cannot exist without their required upstream commitments. An accepted dispatch context requires every nullable commitment to be non-null. Refusal handling may report only neutral artifact presence (`absent` or `unchecked`) at this wire layer; the gate runtime is not built in this prerequisite slice.
+
+`CompiledCapability` closes the exact authenticated tenant/requester/definition alias, request digest/key, contract and source commitments, authority-state digest, four quantitative limits and their commitment, capability/outcome/effect identities, and issue/expiry times. `limitsDigest` is exactly `authorityDigest({v:"reelier.capability-limits/internal-v1", contractDigest, limits})`; every capability digest is nonzero SHA-256. Contract handling has two branded phases: signature, purpose, wire, tenant, and trust verification may stage a trusted digest; alias, delegation, registered resolver freshness, audience, validity, and activation/revocation eligibility must then pass before compilation.
 
 The DecisionContext digest is the ordinary authority digest, exactly SHA-256 over the RFC 8785/JCS UTF-8 bytes of the full context. This adds no signature domain. `GateEvent.decisionContextDigest` commits the gate verdict to that exact subject. A portable `AuthorityReceipt` contains both the full DecisionContext preimage and its digest, plus `gateEventDigest`; strict receipt parsing recomputes the embedded context digest. Portable bundle validation additionally requires the receipt and GateEvent to name the same context digest and requires `gateEventDigest` to equal the digest of that exact GateEvent. Detached signatures remain outside all wire objects, so a context, GateEvent, or receipt from another decision cannot be substituted without breaking a digest edge or signature.
 
@@ -34,10 +36,12 @@ capability ID and canonical capability bytes/digest, the effect digest, and ever
 fixed-window limit slot. Collision precedence is ingress-identical reuse, ingress byte conflict,
 semantic duplicate, capability integrity conflict, then limit exhaustion. A claim file by itself is
 never authority: a reservation becomes visible only through its exact verified journal commit.
-The stored `requestKey` and capability ID, outcome key, effect digest, issue time, and expiry time must
-equal the values inside the strictly parsed closed canonical `CompiledCapability`; detached scalar
-identities are refused before any claim is acquired. Each committed limit assignment has exactly one
-matching signed intent slot in canonical key order, carries that slot's exact signed maximum, and has
+The stored authenticated alias, request digest/key, contract, source bundle/snapshot, authority-state,
+limits, limits digest, capability ID, outcome key, effect digest, issue time, and expiry time must equal
+the values inside the strictly parsed closed canonical `CompiledCapability`; detached scalar identities
+are refused before any claim is acquired. There are exactly two signed intent slots, in order:
+`contract-window` and `source-trigger`. Their maxima equal the sealed per-window and per-trigger maxima.
+Each committed limit assignment has exactly one matching signed intent slot in canonical key order, carries that slot's exact signed maximum, and has
 an index in `[0, maximum)`. Capacity across independently committed intents is evaluated against the
 minimum signed maximum without rewriting any reservation's own assignment.
 
@@ -50,6 +54,9 @@ strings never become path components; derived filenames are lowercase SHA-256 he
 junctions/reparse paths, root escape, malformed/truncated or noncanonical JSON, filename/content digest
 mismatch, unknown records, illegal transitions, and journal gaps refuse recovery rather than being
 guessed through.
+
+The pre-release transaction/intent record is `reelier.authority-ledger-transaction/v2`. V1 records lack
+sealed authority fields and fail closed as corruption; recovery never migrates them by inference.
 
 Cross-process mutation is serialized by atomic lock-directory creation and an exclusive-created,
 cryptographically random owner record. Acquisition is bounded. A live same-host owner is never evicted

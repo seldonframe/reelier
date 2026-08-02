@@ -16,6 +16,7 @@ export interface StaticPackDefinition {
   readonly definitionDigest: string;
   readonly resolverId: string;
   readonly projectionSchemaId: string;
+  readonly maxFreshnessSeconds: number;
   readonly readEndpointIds: readonly string[];
   readonly writeEndpointIds: readonly string[];
   readonly riskClasses: readonly string[];
@@ -40,6 +41,7 @@ export function createStaticPackRegistry(definitions: readonly StaticPackDefinit
   const byAlias = new Map<string, StaticPackDefinition>();
   const byDefinitionDigest = new Map<string, StaticPackDefinition>();
   for (const definition of definitions) {
+    if (!Number.isSafeInteger(definition.maxFreshnessSeconds) || definition.maxFreshnessSeconds < 1 || definition.maxFreshnessSeconds > 300) throw new TypeError("static pack resolver freshness must be an integer from 1 to 300");
     if (byAlias.has(definition.alias)) throw new TypeError("static pack alias collision");
     if (byDefinitionDigest.has(definition.definitionDigest)) throw new TypeError("static pack definition digest collision");
     const frozen = freezeDefinition(definition);
@@ -53,7 +55,7 @@ export function createStaticPackRegistry(definitions: readonly StaticPackDefinit
 
 export function registeredDefinitionDigests(registry: StaticPackRegistry): RegisteredDefinitionDigests {
   const state = requireRegistryState(registry);
-  const definitions = new Map([...state.byAlias].map(([alias, definition]) => [alias, Object.freeze({ packDigest: definition.packDigest, definitionDigest: definition.definitionDigest })]));
+  const definitions = new Map([...state.byAlias].map(([alias, definition]) => [alias, Object.freeze({ packDigest: definition.packDigest, definitionDigest: definition.definitionDigest, maxFreshnessSeconds: definition.maxFreshnessSeconds })]));
   return Object.freeze({ get: (alias: string) => definitions.get(alias) });
 }
 

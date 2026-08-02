@@ -33,7 +33,7 @@ import type {
 } from "../ledger.js";
 import { CAPABILITY_LIFETIME_MS } from "../ledger.js";
 import type { CompiledCapability, OutcomeRequest } from "../types.js";
-import { parseCanonicalAuthorityJson } from "../wire.js";
+import { authorityDigest, parseCanonicalAuthorityJson } from "../wire.js";
 
 type OperationContext = "reservation" | "dispatch" | "result";
 
@@ -70,7 +70,7 @@ export interface FsAuthorityLedgerOptions {
 }
 
 interface TransactionRecord {
-  readonly v: "reelier.authority-ledger-transaction/v1";
+  readonly v: "reelier.authority-ledger-transaction/v2";
   readonly intent: StoredReservationIntent;
 }
 
@@ -174,7 +174,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
       if (clockReason) return frozen({ ok: false, reason: clockReason });
       view = await this.persistClock(view, now, "reservation");
 
-      const transaction: TransactionRecord = frozen({ v: "reelier.authority-ledger-transaction/v1", intent: normalized });
+      const transaction: TransactionRecord = frozen({ v: "reelier.authority-ledger-transaction/v2", intent: normalized });
       const transactionDigest = rawDigest(canonicalBytes(transaction));
       const transactionHex = transactionDigest.slice(7);
       await this.writeImmutable(path.join("transactions", transactionHex), transaction, "reservation");
@@ -425,7 +425,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
     const reservations = [...view.reservations.values()];
     const ingress = reservations.find(value => value.intent.tenant === intent.tenant && value.intent.requester === intent.requester && value.intent.requestId === intent.requestId);
     if (ingress) {
-      if (ingress.intent.canonicalRequestBase64 === intent.canonicalRequestBase64 && ingress.intent.canonicalRequestDigest === intent.canonicalRequestDigest) {
+      if (ingress.intent.definitionAlias === intent.definitionAlias && ingress.intent.canonicalRequestBase64 === intent.canonicalRequestBase64 && ingress.intent.canonicalRequestDigest === intent.canonicalRequestDigest) {
         await this.resolveExisting(transactionDigest, ingress.reservationId);
         return frozen({ ok: true, status: "existing", dispatchEligible: false, reservation: detachReservation(ingress) });
       }
@@ -528,7 +528,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
     const value = parseCanonical(bytes) as TransactionRecord;
     if (!value || typeof value !== "object") throw new LedgerCorruption("invalid transaction");
     assertExactKeys(value, ["intent", "v"]);
-    if (value.v !== "reelier.authority-ledger-transaction/v1") throw new LedgerCorruption("invalid transaction version");
+    if (value.v !== "reelier.authority-ledger-transaction/v2") throw new LedgerCorruption("invalid transaction version");
     const normalized = normalizeStoredIntent(value.intent);
     if (!canonicalBytes(normalized).equals(canonicalBytes(value.intent))) throw new LedgerCorruption("transaction intent is not closed");
     return value;
@@ -677,32 +677,42 @@ export class FsAuthorityLedger implements AuthorityLedger {
 
 function normalizeIntent(input: ReservationIntent): StoredReservationIntent {
   if (!input || typeof input !== "object") throw new TypeError("reservation intent required");
-  for (const id of [input.tenant, input.requester, input.requestId, input.capabilityId]) if (!ID.test(id)) throw new TypeError("invalid reservation identity");
-  for (const digest of [input.canonicalRequestDigest, input.requestKey, input.capabilityDigest, input.outcomeKey, input.effectDigest]) if (!SHA.test(digest)) throw new TypeError("invalid reservation digest");
+  for (const id of [input.tenant, input.requester, input.definitionAlias, input.requestId, input.capabilityId]) if (typeof id !== "string" || !ID.test(id)) throw new TypeError("invalid reservation identity");
+  for (const digest of [input.requestDigest, input.canonicalRequestDigest, input.requestKey, input.capabilityDigest, input.contractDigest, input.sourceBundleDigest, input.sourceSnapshotDigest, input.authorityStateDigest, input.limitsDigest, input.outcomeKey, input.effectDigest]) if (typeof digest !== "string" || !SHA.test(digest) || digest === ZERO_SHA) throw new TypeError("invalid reservation digest");
+  if (!input.limits) throw new TypeError("sealed limits required");
+  const sealed = input as ReservationIntent & Required<Pick<ReservationIntent, "definitionAlias" | "requestDigest" | "contractDigest" | "sourceBundleDigest" | "sourceSnapshotDigest" | "authorityStateDigest" | "limits" | "limitsDigest">>;
   const request = Buffer.from(input.canonicalRequestBytes);
   const capability = Buffer.from(input.capabilityBytes);
   if (request.length === 0 || capability.length === 0) throw new TypeError("canonical bytes must be nonempty");
-  if (rawDigest(request) !== input.canonicalRequestDigest || rawDigest(capability) !== input.capabilityDigest) throw new TypeError("canonical byte digest mismatch");
+  if (rawDigest(request) !== input.canonicalRequestDigest || sealed.requestDigest !== input.canonicalRequestDigest || rawDigest(capability) !== input.capabilityDigest) throw new TypeError("canonical byte digest mismatch");
   const requestWire = parseCanonicalAuthorityJson("outcome-request", request.toString("utf8")) as OutcomeRequest;
   const capabilityWire = parseCanonicalAuthorityJson("compiled-capability", capability.toString("utf8")) as CompiledCapability;
   if (requestWire.requestId !== input.requestId) throw new TypeError("request identity does not match canonical request bytes");
   if (
-    capabilityWire.capabilityId !== input.capabilityId || capabilityWire.requestKey !== input.requestKey ||
+    capabilityWire.tenant !== input.tenant || capabilityWire.requester !== input.requester || capabilityWire.definitionAlias !== sealed.definitionAlias ||
+    capabilityWire.requestDigest !== sealed.requestDigest || capabilityWire.capabilityId !== input.capabilityId || capabilityWire.requestKey !== input.requestKey ||
+    capabilityWire.contractDigest !== sealed.contractDigest || capabilityWire.sourceBundleDigest !== sealed.sourceBundleDigest ||
+    capabilityWire.sourceSnapshotDigest !== sealed.sourceSnapshotDigest || capabilityWire.authorityStateDigest !== sealed.authorityStateDigest ||
+    authorityDigest(capabilityWire.limits) !== authorityDigest(sealed.limits) || capabilityWire.limitsDigest !== sealed.limitsDigest ||
     capabilityWire.outcomeKey !== input.outcomeKey || capabilityWire.effectDigest !== input.effectDigest ||
     capabilityWire.issuedAt !== input.issuedAt || capabilityWire.expiresAt !== input.expiresAt
   ) throw new TypeError("capability identity does not match canonical capability bytes");
   const issued = parseIso(input.issuedAt);
   const expires = parseIso(input.expiresAt);
   if (expires - issued !== CAPABILITY_LIFETIME_MS) throw new TypeError("capability lifetime must be exactly 60000ms");
+  const expectedLimitsDigest = authorityDigest({ v: "reelier.capability-limits/internal-v1", contractDigest: sealed.contractDigest, limits: sealed.limits });
+  if (sealed.limitsDigest !== expectedLimitsDigest || capabilityWire.limitsDigest !== expectedLimitsDigest) throw new TypeError("capability limits commitment mismatch");
   const slots = input.limitSlots.map(slot => {
     if (!SHA.test(slot.key) || !Number.isSafeInteger(slot.maximum) || slot.maximum < 1 || slot.maximum > 1_000_000) throw new TypeError("invalid limit slot");
-    return frozen({ key: slot.key, maximum: slot.maximum });
-  }).sort((a, b) => a.key.localeCompare(b.key));
-  if (slots.length === 0 || new Set(slots.map(slot => slot.key)).size !== slots.length) throw new TypeError("limit slots must be nonempty and unique");
+    return frozen({ kind: slot.kind, key: slot.key, maximum: slot.maximum });
+  });
+  if (slots.length !== 2 || slots[0].kind !== "contract-window" || slots[1].kind !== "source-trigger" || slots[0].maximum !== sealed.limits.maxEffectsPerWindow || slots[1].maximum !== sealed.limits.maxEffectsPerSourceTrigger || new Set(slots.map(slot => slot.key)).size !== slots.length) throw new TypeError("limit slots must exactly match sealed limits");
   return frozen({
-    tenant: input.tenant, requester: input.requester, requestId: input.requestId,
+    tenant: input.tenant, requester: input.requester, definitionAlias: sealed.definitionAlias, requestId: input.requestId, requestDigest: sealed.requestDigest,
     canonicalRequestDigest: input.canonicalRequestDigest, canonicalRequestBase64: request.toString("base64"), requestKey: input.requestKey,
     capabilityId: input.capabilityId, capabilityDigest: input.capabilityDigest, capabilityBase64: capability.toString("base64"),
+    contractDigest: sealed.contractDigest, sourceBundleDigest: sealed.sourceBundleDigest, sourceSnapshotDigest: sealed.sourceSnapshotDigest,
+    authorityStateDigest: sealed.authorityStateDigest, limits: frozen({ ...sealed.limits }), limitsDigest: sealed.limitsDigest,
     outcomeKey: input.outcomeKey, effectDigest: input.effectDigest, issuedAt: input.issuedAt, expiresAt: input.expiresAt,
     limitSlots: Object.freeze(slots),
   });
@@ -710,9 +720,9 @@ function normalizeIntent(input: ReservationIntent): StoredReservationIntent {
 
 function normalizeStoredIntent(input: StoredReservationIntent): StoredReservationIntent {
   if (!input || typeof input !== "object" || typeof input.canonicalRequestBase64 !== "string" || typeof input.capabilityBase64 !== "string") throw new LedgerCorruption("malformed stored intent");
-  assertExactKeys(input, ["capabilityBase64", "capabilityDigest", "capabilityId", "canonicalRequestBase64", "canonicalRequestDigest", "effectDigest", "expiresAt", "issuedAt", "limitSlots", "outcomeKey", "requestId", "requestKey", "requester", "tenant"]);
+  assertExactKeys(input, ["authorityStateDigest", "capabilityBase64", "capabilityDigest", "capabilityId", "canonicalRequestBase64", "canonicalRequestDigest", "contractDigest", "definitionAlias", "effectDigest", "expiresAt", "issuedAt", "limitSlots", "limits", "limitsDigest", "outcomeKey", "requestDigest", "requestId", "requestKey", "requester", "sourceBundleDigest", "sourceSnapshotDigest", "tenant"]);
   if (!Array.isArray(input.limitSlots)) throw new LedgerCorruption("malformed stored limit slots");
-  for (const slot of input.limitSlots) assertExactKeys(slot, ["key", "maximum"]);
+  for (const slot of input.limitSlots) assertExactKeys(slot, ["key", "kind", "maximum"]);
   const request = Buffer.from(input.canonicalRequestBase64, "base64");
   const capability = Buffer.from(input.capabilityBase64, "base64");
   if (request.toString("base64") !== input.canonicalRequestBase64 || capability.toString("base64") !== input.capabilityBase64) throw new LedgerCorruption("noncanonical stored base64");

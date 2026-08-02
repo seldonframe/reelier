@@ -68,6 +68,12 @@ export function parseAuthorityWire<K extends AuthorityKind>(kind: K, value: unkn
   }
   if (kind === "source-bundle") {
     const source = parsed as AuthorityWireByKind["source-bundle"];
+    const observations = source.provenance.observations;
+    if (observations.some((item, index) => item.index !== index) || new Set(observations.map(item => item.planDigest)).size !== observations.length) {
+      throw new TypeError("invalid source-bundle: provenance observations must be uniquely indexed in order");
+    }
+    const expectedReadSet = authorityDigest({ v: "reelier.source-read-set/internal-v1", sourceRefsDigest: source.sourceRefsDigest, observations });
+    if (expectedReadSet !== source.readSetDigest) throw new TypeError("invalid source-bundle: read set digest mismatch");
     const claimIds = new Set<string>();
     const pointers = new Set<string>();
     for (const [claimClass, claims] of Object.entries(source.claims)) {
@@ -81,6 +87,13 @@ export function parseAuthorityWire<K extends AuthorityKind>(kind: K, value: unkn
         }
       }
     }
+    const leaves = projectionLeafPointers(source.projection).sort();
+    if ([...pointers].sort().join("\0") !== leaves.join("\0")) throw new TypeError("invalid source-bundle: claims must cover projection leaves exactly");
+  }
+  if (kind === "compiled-capability") {
+    const capability = parsed as AuthorityWireByKind["compiled-capability"];
+    const expected = authorityDigest({ v: "reelier.capability-limits/internal-v1", contractDigest: capability.contractDigest, limits: capability.limits });
+    if (expected !== capability.limitsDigest) throw new TypeError("invalid compiled-capability: limits digest mismatch");
   }
   if (kind === "decision-context") {
     assertIntrinsicDecisionContext(parsed as AuthorityWireByKind["decision-context"]);
@@ -186,6 +199,14 @@ function hasOwnJsonPointer(root: Record<string, unknown>, pointer: string): bool
     current = (current as Record<string, unknown>)[segment];
   }
   return true;
+}
+
+function projectionLeafPointers(value: unknown, prefix = ""): string[] {
+  if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+    const entries = Object.entries(value as Record<string, unknown>);
+    if (entries.length > 0) return entries.flatMap(([key, child]) => projectionLeafPointers(child, `${prefix}/${key.replace(/~/g, "~0").replace(/\//g, "~1")}`));
+  }
+  return [prefix];
 }
 
 /** Refuses JSON whose original bytes are not its RFC 8785/JCS representation. */
