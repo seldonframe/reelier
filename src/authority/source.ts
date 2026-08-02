@@ -30,9 +30,15 @@ export function createSourceRegistry(resolvers:readonly RegisteredSourceResolver
   for(const item of resolvers){
     if(!Number.isSafeInteger(item.maxFreshnessSeconds)||item.maxFreshnessSeconds<1||item.maxFreshnessSeconds>300) throw new TypeError("invalid resolver max freshness");
     const key=resolverKey(item.tenant,item.resolverId);if(indexed.has(key)) throw new TypeError("duplicate tenant-qualified source resolver");
-    indexed.set(key,Object.freeze({...item,readEndpointIds:Object.freeze([...item.readEndpointIds])}));
+    if(!Array.isArray(item.readEndpointIds)||item.readEndpointIds.length===0||item.readEndpointIds.some(value=>typeof value!=="string"||value.length===0)||new Set(item.readEndpointIds).size!==item.readEndpointIds.length)throw new TypeError("resolver read endpoints must be nonempty and unique");
+    indexed.set(key,Object.freeze({...item,readEndpointIds:Object.freeze([...item.readEndpointIds].sort(compareText))}));
   }
   const registry=Object.freeze(Object.create(null)) as SourceRegistry;registryStates.set(registry,indexed);return registry;
+}
+
+export function sourceResolverRegistrationDigest(registry:SourceRegistry,tenant:string,resolverId:string):string {
+  const states=registryStates.get(registry as object);if(!states)throw new TypeError("unrecognized source registry");const resolver=states.get(resolverKey(tenant,resolverId));if(!resolver)throw new TypeError("missing source resolver registration");
+  return authorityDigest({v:"reelier.source-resolver-registration/internal-v1",tenant,resolverId,definitionDigest:resolver.definitionDigest,projectionSchemaId:resolver.projectionSchemaId,readEndpointIds:resolver.readEndpointIds,maxFreshnessSeconds:resolver.maxFreshnessSeconds});
 }
 
 export function planSourceReads(registry:SourceRegistry,input:Readonly<{tenant:string;resolverId:string;definitionDigest:string;sourceRefs:Readonly<Record<string,string>>;allowedReadEndpointIds:readonly string[]}>):readonly PlannedSourceRead[]{

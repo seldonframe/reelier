@@ -4,6 +4,13 @@ export * from "./crypto.js";
 export * from "./ledger.js";
 export * from "./host/fs-ledger.js";
 export {
+  digestOutcomeRequest,
+  deriveAuthorityRequestKey,
+  deriveContractWindowLimitKey,
+  deriveProviderSourceTriggerLimitKey,
+} from "./keys.js";
+export { deriveSemanticOutcomeKey } from "./compile.js";
+export {
   verifyStoredContract,
   validateVerifiedContractEligibility,
   validateStoredContract,

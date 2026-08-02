@@ -38,7 +38,7 @@ test("trust, definition, resolver, and signature commitments bind sorted closed 
     { tenant: "tenant_1", signerId: "signer_z", principalId: "operator_z", publicKey: second.publicKey, purposes: ["outcome-contract", "delegation-grant"] },
     { tenant: "tenant_1", signerId: "signer_a", principalId: "operator_a", publicKey: first.publicKey, purposes: ["delegation-grant"] },
   ]);
-  assert.match(trustRootSetDigest(roots, "tenant_1"), /^sha256:[1-9a-f][0-9a-f]{63}$/);
+  assert.match(trustRootSetDigest(roots, "tenant_1"), /^sha256:(?!0{64}$)[0-9a-f]{64}$/);
   assert.notEqual(trustRootSetDigest(roots, "tenant_1"), trustRootSetDigest(createTrustRoots([
     { tenant: "tenant_1", signerId: "signer_a", principalId: "changed", publicKey: first.publicKey, purposes: ["delegation-grant"] },
   ]), "tenant_1"));
@@ -49,16 +49,16 @@ test("trust, definition, resolver, and signature commitments bind sorted closed 
     validateChoices: (value: unknown) => value, parsePolicy: (value: unknown) => value, compile: () => ({}),
   } satisfies StaticPackDefinition;
   const packs = createStaticPackRegistry([definition]);
-  assert.match(definitionRegistrationDigest(packs, "definition_1"), /^sha256:[1-9a-f][0-9a-f]{63}$/);
+  assert.match(definitionRegistrationDigest(packs, "definition_1"), /^sha256:(?!0{64}$)[0-9a-f]{64}$/);
 
   const resolver = {
     tenant: "tenant_1", resolverId: "resolver_1", definitionDigest: sha("2"), projectionSchemaId: "projection/v1", readEndpointIds: ["read_z", "read_a"], maxFreshnessSeconds: 60,
     plan: () => [{ endpointId: "read_a", opaqueHandle: "ref_1" }], project: () => ({ sourceIdentity: "source", triggerIdentity: "trigger", projection: { a: 1 }, claims: { grounded: [{ claimId: "a", projectionPointer: "/a" }], authored: [], unresolved: [] } }),
   } satisfies RegisteredSourceResolver;
   const sources = createSourceRegistry([resolver]);
-  assert.match(sourceResolverRegistrationDigest(sources, "tenant_1", "resolver_1"), /^sha256:[1-9a-f][0-9a-f]{63}$/);
+  assert.match(sourceResolverRegistrationDigest(sources, "tenant_1", "resolver_1"), /^sha256:(?!0{64}$)[0-9a-f]{64}$/);
   assert.throws(() => sourceResolverRegistrationDigest(sources, "tenant_2", "resolver_1"), /missing|unknown/i);
 
-  assert.match(authoritySignatureDigest({ alg: "ed25519", sig: Buffer.alloc(64, 7).toString("base64") }), /^sha256:[1-9a-f][0-9a-f]{63}$/);
+  assert.match(authoritySignatureDigest({ alg: "ed25519", sig: Buffer.alloc(64, 7).toString("base64") }), /^sha256:(?!0{64}$)[0-9a-f]{64}$/);
   assert.throws(() => authoritySignatureDigest({ alg: "ed25519", sig: "AA==" }), /64|signature/i);
 });

@@ -1,4 +1,4 @@
-import type { KeyObject } from "node:crypto";
+import { createHash, type KeyObject } from "node:crypto";
 import type { AuthorityKind, AuthoritySignature, AuthorityWireByKind } from "./types.js";
 import { verifyAuthoritySignature } from "./crypto.js";
 import { authorityDigest, parseAuthorityWire } from "./wire.js";
@@ -27,13 +27,35 @@ const trustRootStates = new WeakMap<object, ReadonlyMap<string, TrustRootEntry>>
 export function createTrustRoots(entries: readonly TrustRootEntry[]): TrustRoots {
   const indexed = new Map<string, TrustRootEntry>();
   for (const entry of entries) {
+    if (entry.publicKey.type !== "public" || entry.publicKey.asymmetricKeyType !== "ed25519") throw new TypeError("trusted authority key must be an Ed25519 public key");
+    if (!Array.isArray(entry.purposes) || entry.purposes.length === 0 || new Set(entry.purposes).size !== entry.purposes.length) throw new TypeError("trusted authority purposes must be nonempty and unique");
     const key = keyFor(entry.tenant, entry.signerId);
     if (indexed.has(key)) throw new TypeError("duplicate tenant-qualified trusted signer");
-    indexed.set(key, Object.freeze({ ...entry, purposes: Object.freeze([...entry.purposes]) }));
+    indexed.set(key, Object.freeze({ ...entry, purposes: Object.freeze([...entry.purposes].sort(compareText)) }));
   }
   const roots = Object.freeze(Object.create(null)) as TrustRoots;
   trustRootStates.set(roots, indexed);
   return roots;
+}
+
+export function authoritySignatureDigest(signature: AuthoritySignature): string {
+  if (!signature || typeof signature !== "object" || Object.keys(signature).length !== 2 || signature.alg !== "ed25519" || typeof signature.sig !== "string") throw new TypeError("authority signature must be a closed Ed25519 signature");
+  const bytes=Buffer.from(signature.sig,"base64");
+  if(bytes.length!==64||bytes.toString("base64")!==signature.sig)throw new TypeError("authority signature must contain exactly 64 canonical Base64 bytes");
+  return authorityDigest({v:"reelier.authority-signature/internal-v1",alg:"ed25519",sig:signature.sig});
+}
+
+export function trustRootSetDigest(roots:TrustRoots,tenant:string):string {
+  const states=trustRootStates.get(roots as object);if(!states)throw new TypeError("unrecognized trust roots");
+  const selected=[...states.values()].filter(entry=>entry.tenant===tenant).sort((a,b)=>compareText(a.signerId,b.signerId));
+  if(selected.length===0)throw new TypeError("tenant trust-root set must contain at least one entry");
+  const entries=selected.map(entry=>{
+    const der=entry.publicKey.export({type:"spki",format:"der"});
+    const spkiDigest=`sha256:${createHash("sha256").update(der).digest("hex")}`;
+    const entryDigest=authorityDigest({v:"reelier.trust-root-entry/internal-v1",tenant,signerId:entry.signerId,principalId:entry.principalId,purposes:entry.purposes,spkiDigest});
+    return {signerId:entry.signerId,entryDigest};
+  });
+  return authorityDigest({v:"reelier.trust-root-set/internal-v1",tenant,entries});
 }
 
 export function verifyTrustedAuthority<K extends AuthorityKind>(
@@ -62,3 +84,4 @@ function deepFreeze<T>(value: T): T {
   }
   return value;
 }
+function compareText(left:string,right:string):number{return left<right?-1:left>right?1:0;}

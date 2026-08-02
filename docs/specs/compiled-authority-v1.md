@@ -12,11 +12,55 @@ The four v1 quantitative limits are `maxEffectsPerWindow`, `windowSeconds`, `max
 
 Delegation grants are signed explicit roots (`parentDigest: null`) or children (`parentDigest: sha256:…`). Every grant binds the sponsor, grantor, grantee, tenant, validity, and closed constraints for definition aliases, audiences, connector/account pairs, projection pointers, risk classes, and the same quantitative limits. Arrays are nonempty, bounded, and unique; there is no wildcard or implicit-all form. Task 2 validates chains and rejects descendant widening; host-local trust roots and activation/revocation history are not wire inputs.
 
-Requests contain only a caller-stable request ID, opaque source references, and bounded definition choices: never tenant, connector, account, endpoint, recipient, body, URL, provider arguments, or credentials.
+Requests contain only a caller-stable request ID, opaque source references, and bounded definition choices: never tenant, connector, account, endpoint, recipient, body, URL, provider arguments, or credentials. The gate-local authenticated-request constructor strictly parses and detaches that wire value, seals authenticated tenant/requester and route/tool definition alias outside it, retains exact canonical bytes, and derives both the request digest and the global request key. The request key hashes domain `reelier-authority-request-key/v1\0` followed by four-byte big-endian-length-prefixed UTF-8 field-name/value pairs for `tenant`, `requester`, and `requestId`, in that order. Definition alias is deliberately excluded from the global tuple but remains separately sealed; the durable ingress owner treats an alias mismatch as conflict.
 
 Source bundles are constructed by the kernel from a registered deterministic resolver; mutable hosts never submit candidate bundle semantics. A resolver plans bounded opaque reads, the kernel assigns ordered indexes and digests, and arbitrary-order host observations are copied and normalized before the resolver receives immutable Base64 evidence. The plural wire bundle commits nonzero `sourceRefsDigest`, `readSetDigest`, and ordered `{index, planDigest, endpointId, rawDigest}` provenance. It binds resolver-derived source/trigger identities and a projection whose every leaf has exactly one grounded, authored, or unresolved claim; interior paths, missing leaves, duplicate ownership, and unauthorized pointers refuse. Claim arrays are sorted by pointer then ID. Kernel time supplies `observedAt`; `freshUntil` uses the contract freshness capped by the registered resolver maximum, both bounded to 1..300 seconds. The compiler recomputes the source snapshot and checks every read endpoint against both static and contract allowlists.
 
 Ingress idempotency is `(tenant, requester, requestId)` over canonical request bytes; semantic deduplication independently derives an outcome key from tenant, contract digest, definition alias, source identity, and trigger identity.
+
+## Gate-local commitments and authority state
+
+Connector registrations are opaque runtime-branded, non-secret gate-local values keyed by tenant,
+connector, and account. Their closed canonical commitment binds provider account identity, sorted unique
+read/write endpoint allowlists, sorted risk classes, and a nonzero operator-configuration digest. Read
+and write endpoint classes may not overlap. Registrations contain no callback, URL, credential, or
+provider transport function, and returned snapshots are detached.
+
+The local commitment set also binds every tenant trust root by signer/principal/purpose and raw
+SHA-256 SPKI digest, the selected static pack definition excluding its functions, and each selected
+source resolver excluding its functions. Arrays use locale-independent UTF-16 code-unit order.
+Detached Ed25519 signatures have their own closed `reelier.authority-signature/internal-v1`
+commitment and must decode from canonical Base64 to exactly 64 bytes.
+
+The exact authority-state commitment is
+`reelier.gate-authority-state/internal-v1`. It binds tenant, authenticated definition alias, a
+positive persistent safe-integer version, every strict stored contract candidate, the full ordered
+delegation envelopes and activation/revocation events, the tenant trust-root set, selected definition,
+all required resolver and connector registration digests, and a nonzero operator-installed local gate
+policy digest. Candidate records use `reelier.authority-state-candidate/internal-v1`; their canonical
+contract/delegation Base64, parsed value digests, advertised digests, signer IDs, signature digests,
+and ordered events are all committed. Candidates sort by record digest. Advertised/value mismatch or
+an untrusted but strictly shaped signature remains commit-able for later rejection; malformed or
+noncanonical wire bytes/signatures, duplicate candidate commitments, missing registrations, broken
+indexes, or nonchronological events produce no state digest.
+
+The runtime-branded `AuthorityStatePort` is an internal wrapper around one trusted local backend. It
+loads the complete tenant/alias candidate set, replaces backend tokens with unforgeable local tokens,
+advances a backend-owned persistent `(version,digest)` high-water, holds a short current-state read
+lease around a callback, and copies raw source observations. Its closed results distinguish changed,
+rollback, refused, corruption, and unavailable states. The wrapper proves token/detachment integrity,
+not backend fsync conformance; this slice supplies no production authority-state backend or provider
+read implementation. Contract selection, gate decisions, dispatch handles, provider writes,
+credentials, and receipts remain unbuilt.
+
+Fixed contract-window limit keys hash the exact tenant, contract digest, UTC window-start epoch
+milliseconds, and duration milliseconds under
+`reelier-authority-contract-window-limit-key/v1\0`, using the same four-byte length-prefix encoding.
+The window containing signed capability `issuedAt` is half-open and starts at
+`floor(epochMs / durationMs) * durationMs`. Provider-source-trigger keys hash tenant, connector,
+provider account identity, resolver, source identity, and trigger identity under
+`reelier-authority-provider-source-trigger-limit-key/v1\0`; they deliberately contain neither
+contract nor definition and are not time-windowed.
 
 Every gate decision is bound to an independently versioned, closed `DecisionContext` preimage. It always names the authenticated `tenant`, authenticated `requester`, authenticated `definitionAlias`, caller-stable `requestId`, canonical request digest, and ingress request key. It also carries explicit nullable contract, capability, outcome, effect, source-bundle snapshot, and authority-state snapshot commitments. Every property is required: `null` means the artifact did not exist at the decision point, while omission, empty-string sentinels, and all-zero digest sentinels are invalid. Capability ID and capability digest have paired nullability, and downstream artifacts cannot exist without their required upstream commitments. An accepted dispatch context requires every nullable commitment to be non-null. Refusal handling may report only neutral artifact presence (`absent` or `unchecked`) at this wire layer; the gate runtime is not built in this prerequisite slice.
 
@@ -30,8 +74,17 @@ N-1 readers must reject `reelier.authority-receipt/v1` or render its authority c
 
 ## Durable authority ledger
 
-The Path C ledger atomically binds the ingress tuple `(tenant, requester, requestId)` to the exact
-closed canonical `OutcomeRequest` bytes and digest, while independently claiming `(tenant, outcomeKey)`, the
+Before authority loading or source work, `bindIngress` exclusively creates an immutable closed
+`reelier.authority-ingress-claim/internal-v1` record named by the global request-key hex. It independently
+re-parses the branded request's canonical bytes and recomputes its wire, digest, tuple key, and alias.
+Only the creator receives `claimed` and evaluation eligibility. Exact retries receive
+`exact-existing`; any byte, digest, tuple, or alias mismatch receives `conflict` plus only the existing
+owner's verified claim digest. A redacted lookup exposes request ID/key, alias, claim digest, and bound
+status, never canonical bytes or reservation/capability internals. Binding alone creates no decision,
+capability, transaction, journal, dispatch, or receipt artifact.
+
+The Path C ledger then atomically binds the ingress tuple `(tenant, requester, requestId)` to the exact
+verified ingress claim and closed canonical `OutcomeRequest` bytes/digest, while independently claiming `(tenant, outcomeKey)`, the
 capability ID and canonical capability bytes/digest, the effect digest, and every deterministic
 fixed-window limit slot. Collision precedence is ingress-identical reuse, ingress byte conflict,
 semantic duplicate, capability integrity conflict, then limit exhaustion. A claim file by itself is
@@ -55,8 +108,10 @@ junctions/reparse paths, root escape, malformed/truncated or noncanonical JSON, 
 mismatch, unknown records, illegal transitions, and journal gaps refuse recovery rather than being
 guessed through.
 
-The pre-release transaction/intent record is `reelier.authority-ledger-transaction/v2`. V1 records lack
-sealed authority fields and fail closed as corruption; recovery never migrates them by inference.
+The pre-release transaction/intent record is `reelier.authority-ledger-transaction/v3`. It requires
+the exact verified ingress-claim digest in addition to all v2 authority fields. V1 and v2 records,
+missing/tampered ingress records, and broken reservation-to-ingress linkage fail closed as corruption;
+recovery never migrates them by inference.
 
 Cross-process mutation is serialized by atomic lock-directory creation and an exclusive-created,
 cryptographically random owner record. Acquisition is bounded. A live same-host owner is never evicted
@@ -74,6 +129,12 @@ allowed and rollback refuses. Replay requires each lifecycle timestamp to equal 
 durable high-water instant and never precede the reservation's prior lifecycle timestamp. Recovery
 under clock rollback conservatively marks durable dispatched work ambiguous at the existing high-water
 instant; it never backdates the journal or creates new dispatch eligibility.
+
+The same locked and fsynced journal high-water is exposed internally through argument-free
+`observeClock()`. The kernel clock is read under the lock. A first or greater safe nonnegative instant
+is durably appended and returns `advanced`; equality writes nothing and returns the exact durable
+instant as `equal`; rollback refuses without mutation. Throwing, non-finite, or invalid clock output is
+`clock-unavailable`, and lock or replay failures retain their closed reasons.
 
 `dispatched` and `ambiguous` transitions carry no result digest. `acknowledged`, `definitive-failure`,
 and `reconciled` require a nonzero SHA-256 result digest. Invalid presence or absence refuses before any

@@ -1,5 +1,6 @@
 import type { OutcomeContract, SourceBundle, TransportEffect } from "./types.js";
 import type { RegisteredDefinitionDigests } from "./contract.js";
+import { authorityDigest } from "./wire.js";
 
 export interface StaticPackCompileInput {
   readonly contract: OutcomeContract;
@@ -53,6 +54,12 @@ export function createStaticPackRegistry(definitions: readonly StaticPackDefinit
   return registry;
 }
 
+export function definitionRegistrationDigest(registry:StaticPackRegistry,alias:string):string {
+  const definition=requireRegistryState(registry).byAlias.get(alias);if(!definition)throw new TypeError("missing static definition registration");
+  const {validateChoices:_validateChoices,parsePolicy:_parsePolicy,compile:_compile,...closed}=definition;
+  return authorityDigest({v:"reelier.definition-registration/internal-v1",...closed});
+}
+
 export function registeredDefinitionDigests(registry: StaticPackRegistry): RegisteredDefinitionDigests {
   const state = requireRegistryState(registry);
   const definitions = new Map([...state.byAlias].map(([alias, definition]) => [alias, Object.freeze({ packDigest: definition.packDigest, definitionDigest: definition.definitionDigest, maxFreshnessSeconds: definition.maxFreshnessSeconds })]));
@@ -70,14 +77,18 @@ function requireRegistryState(registry: StaticPackRegistry): StaticPackRegistryS
 }
 
 function freezeDefinition(definition: StaticPackDefinition): StaticPackDefinition {
+  const readEndpointIds=canonicalList("definition read endpoint",definition.readEndpointIds);
+  const writeEndpointIds=canonicalList("definition write endpoint",definition.writeEndpointIds);
+  const riskClasses=canonicalList("definition risk class",definition.riskClasses);
+  const requiredGroundedPointers=canonicalList("definition grounded pointer",definition.requiredGroundedPointers);
   return Object.freeze({
     ...definition,
-    readEndpointIds: Object.freeze([...definition.readEndpointIds]),
-    writeEndpointIds: Object.freeze([...definition.writeEndpointIds]),
-    riskClasses: Object.freeze([...definition.riskClasses]),
-    requiredGroundedPointers: Object.freeze([...definition.requiredGroundedPointers]),
+    readEndpointIds,writeEndpointIds,riskClasses,requiredGroundedPointers,
   });
 }
+
+function canonicalList(label:string,items:readonly string[]):readonly string[]{if(!Array.isArray(items)||items.some(item=>typeof item!=="string"||item.length===0)||new Set(items).size!==items.length)throw new TypeError(`${label} list must contain unique strings`);return Object.freeze([...items].sort(compareText));}
+function compareText(left:string,right:string):number{return left<right?-1:left>right?1:0;}
 
 const FORBIDDEN_SOURCE_PATTERNS: readonly [RegExp, string][] = [
   [/\bprocess\.env\b/, "ambient environment"],

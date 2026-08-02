@@ -49,7 +49,7 @@ test("request digest and global key reject alias/body confusion and delimiter co
     deriveAuthorityRequestKey({ tenant: "a", requester: "bc", requestId: "d" }),
     deriveAuthorityRequestKey({ tenant: "ab", requester: "c", requestId: "d" }),
   );
-  assert.throws(() => authenticateOutcomeRequest({ tenant: "tenant_1", requester: "requester_1", definitionAlias: "definition_1", request: { ...request, choices: { connector: "evil" } } }), /forbidden/i);
+  assert.throws(() => authenticateOutcomeRequest({ tenant: "tenant_1", requester: "requester_1", definitionAlias: "definition_1", request: { ...request, choices: { connector: "evil" } } }), /invalid outcome-request/i);
 });
 
 test("contract-window and provider-trigger limit keys bind exact closed preimages", () => {

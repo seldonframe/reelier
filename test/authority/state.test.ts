@@ -6,16 +6,18 @@ import { createStaticPackRegistry, type StaticPackDefinition } from "../../src/a
 import { createSourceRegistry, type RegisteredSourceResolver } from "../../src/authority/source.js";
 import { createConnectorRegistry } from "../../src/authority/connector.js";
 import { generateKeyPairSync } from "node:crypto";
+import { authorityCanonicalBytes, authorityDigest } from "../../src/authority/wire.js";
 
 const sha=(c:string)=>`sha256:${c.repeat(64)}`;
 const definition:StaticPackDefinition={alias:"definition_1",packDigest:sha("1"),definitionDigest:sha("2"),resolverId:"resolver_1",projectionSchemaId:"projection/v1",maxFreshnessSeconds:60,readEndpointIds:["read_1"],writeEndpointIds:["write_1"],riskClasses:["message"],policySchemaId:"policy/v1",requiredGroundedPointers:["/x"],validateChoices:x=>x,parsePolicy:x=>x,compile:()=>({})};
 const resolver:RegisteredSourceResolver={tenant:"tenant_1",resolverId:"resolver_1",definitionDigest:sha("2"),projectionSchemaId:"projection/v1",readEndpointIds:["read_1"],maxFreshnessSeconds:60,plan:()=>[{endpointId:"read_1",opaqueHandle:"ref_1"}],project:()=>({sourceIdentity:"source",triggerIdentity:"trigger",projection:{x:1},claims:{grounded:[{claimId:"x",projectionPointer:"/x"}],authored:[],unresolved:[]}})};
 
 function commitments(){const key=generateKeyPairSync("ed25519");return {trustRoots:createTrustRoots([{tenant:"tenant_1",signerId:"signer_1",principalId:"operator_1",publicKey:key.publicKey,purposes:["outcome-contract","delegation-grant"]}]),packs:createStaticPackRegistry([definition]),sources:createSourceRegistry([resolver]),connectors:createConnectorRegistry([{tenant:"tenant_1",connectorId:"connector_1",accountId:"account_1",providerAccountIdentity:"provider-account-1",allowedReadEndpointIds:["read_1"],allowedWriteEndpointIds:["write_1"],riskClasses:["message"],operatorConfigurationDigest:sha("3")}]),localGatePolicyDigest:sha("4")};}
+function candidate(){const limits={maxEffectsPerWindow:2,windowSeconds:3600,maxEffectsPerSourceTrigger:1,maxBodyBytes:4096};const policy=Buffer.from("{}");const contract={v:"reelier.outcome-contract/v1",tenant:"tenant_1",alias:"definition_1",contractId:"contract_1",validFrom:"2026-01-01T00:00:00.000Z",validUntil:"2027-01-01T00:00:00.000Z",packDigest:sha("1"),definitionDigest:sha("2"),sponsor:"sponsor_1",audiences:["requester_1"],delegationGrantDigest:sha("8"),connectorId:"connector_1",accountId:"account_1",sourceAuthority:{resolverId:"resolver_1",projectionSchemaId:"projection/v1",allowedReadEndpointIds:["read_1"],authorizedProjectionPointers:["/x"],maxFreshnessSeconds:60},riskClasses:["message"],limits,policyCommitment:{schemaId:"policy/v1",jcsBase64:policy.toString("base64"),digest:authorityDigest({})}};const bytes=authorityCanonicalBytes(contract);return {contractEnvelope:{canonicalBase64:bytes.toString("base64"),advertisedDigest:authorityDigest(contract),signerId:"signer_1",signature:{alg:"ed25519" as const,sig:Buffer.alloc(64,1).toString("base64")}},delegationEnvelopes:[],stateEvents:[]};}
 
 test("zero-candidate authority state commits the selected local registrations exactly",()=>{
   const result=digestAuthorityState({snapshot:{tenant:"tenant_1",definitionAlias:"definition_1",stateVersion:1,candidates:[]},...commitments()});
-  assert.match(result.digest,/^sha256:[1-9a-f][0-9a-f]{63}$/);
+  assert.match(result.digest,/^sha256:(?!0{64}$)[0-9a-f]{64}$/);
   assert.equal(result.preimage.v,"reelier.gate-authority-state/internal-v1");
   assert.deepEqual(result.preimage.candidates,[]);
   assert.deepEqual(result.preimage.sourceResolverRegistrationDigests,[]);
@@ -23,6 +25,19 @@ test("zero-candidate authority state commits the selected local registrations ex
   assert.equal(Object.isFrozen(result.preimage),true);
   assert.throws(()=>digestAuthorityState({snapshot:{tenant:"tenant_1",definitionAlias:"missing",stateVersion:1,candidates:[]},...commitments()}),/definition/i);
   assert.throws(()=>digestAuthorityState({snapshot:{tenant:"tenant_1",definitionAlias:"definition_1",stateVersion:0,candidates:[]},...commitments()}),/version/i);
+});
+
+test("strict and untrusted candidates remain committed while malformed or duplicate records refuse",()=>{
+  const local=commitments();const one=digestAuthorityState({snapshot:{tenant:"tenant_1",definitionAlias:"definition_1",stateVersion:2,candidates:[candidate()]},...local});
+  assert.equal((one.preimage.candidates as unknown[]).length,1);
+  assert.equal((one.preimage.sourceResolverRegistrationDigests as unknown[]).length,1);
+  assert.equal((one.preimage.connectorRegistrationDigests as unknown[]).length,1);
+  const changed=candidate();changed.contractEnvelope.signature.sig=Buffer.alloc(64,2).toString("base64");
+  assert.notEqual(digestAuthorityState({snapshot:{tenant:"tenant_1",definitionAlias:"definition_1",stateVersion:2,candidates:[changed]},...local}).digest,one.digest);
+  assert.throws(()=>digestAuthorityState({snapshot:{tenant:"tenant_1",definitionAlias:"definition_1",stateVersion:2,candidates:[candidate(),candidate()]},...local}),/duplicate/i);
+  const malformed=candidate();malformed.contractEnvelope.canonicalBase64=Buffer.from('{"v":"reelier.outcome-contract/v1", "tenant":"tenant_1"}').toString("base64");
+  assert.throws(()=>digestAuthorityState({snapshot:{tenant:"tenant_1",definitionAlias:"definition_1",stateVersion:2,candidates:[malformed]},...local}),/canonical|invalid/i);
+  assert.throws(()=>digestAuthorityState({snapshot:{tenant:"tenant_1",definitionAlias:"definition_1",stateVersion:2,candidates:[{...candidate(),extra:true} as never]},...local}),/candidate shape/i);
 });
 
 test("authority state port replaces mutable backend tokens and buffers with opaque detached values",async()=>{
@@ -42,4 +57,6 @@ test("authority state port replaces mutable backend tokens and buffers with opaq
   const reads=await port.executeSourceReads([{index:0,planDigest:sha("5"),endpointId:"read_1",opaqueHandle:"ref_1"}]);assert.equal(reads.ok,true);if(reads.ok){assert.deepEqual([...reads.observations[0].rawBytes],[1,2,3]);assert.equal(Object.isFrozen(reads.observations),true);}
   assert.deepEqual(await port.advanceVersion({} as never,{tenant:"tenant_1",definitionAlias:"definition_1",stateVersion:1,authorityStateDigest:sha("6")}),{ok:false,reason:"corruption"});
   assert.deepEqual(await port.withCurrent({} as never,async()=>"bad"),{ok:false,reason:"corruption"});
+  const malformedPort=createAuthorityStatePort({...backend,async loadCompleteContractSet(){return {ok:false,reason:"invented"} as never;}});
+  assert.deepEqual(await malformedPort.loadCompleteContractSet("tenant_1","definition_1"),{ok:false,reason:"corruption"});
 });

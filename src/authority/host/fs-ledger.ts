@@ -18,7 +18,10 @@ import { hostname } from "node:os";
 import path from "node:path";
 import type {
   AuthorityLedger,
+  BindIngressResult,
   LedgerState,
+  ObserveClockResult,
+  RedactedIngressBinding,
   RecoverResult,
   ReservationHistory,
   ReservationHistoryEntry,
@@ -34,8 +37,10 @@ import type {
 import { CAPABILITY_LIFETIME_MS } from "../ledger.js";
 import type { CompiledCapability, OutcomeRequest } from "../types.js";
 import { authorityDigest, parseCanonicalAuthorityJson } from "../wire.js";
+import type { AuthenticatedOutcomeRequest } from "../keys.js";
+import { authenticatedOutcomeRequestState, deriveAuthorityRequestKey, digestOutcomeRequest } from "../keys.js";
 
-type OperationContext = "reservation" | "dispatch" | "result";
+type OperationContext = "reservation" | "dispatch" | "result" | "ingress" | "clock";
 
 export const reservationFaultPoints = Object.freeze([
   "after-lock-acquire",
@@ -60,7 +65,18 @@ export const resultFaultPoints = Object.freeze([
   "result-before-directory-sync", "result-after-directory-sync",
   "result-before-journal-transition", "result-after-journal-transition",
 ] as const);
-export const ledgerFaultPoints = Object.freeze([...reservationFaultPoints, ...dispatchFaultPoints, ...resultFaultPoints]);
+export const ingressFaultPoints = Object.freeze([
+  "ingress-before-create", "ingress-after-create", "ingress-before-write", "ingress-after-write",
+  "ingress-before-file-sync", "ingress-after-file-sync", "ingress-before-close", "ingress-after-close",
+  "ingress-before-directory-sync", "ingress-after-directory-sync",
+] as const);
+export const clockFaultPoints = Object.freeze([
+  "clock-before-clock-high-water-write", "clock-after-clock-high-water-write",
+  "clock-before-create", "clock-after-create", "clock-before-write", "clock-after-write",
+  "clock-before-file-sync", "clock-after-file-sync", "clock-before-close", "clock-after-close",
+  "clock-before-directory-sync", "clock-after-directory-sync",
+] as const);
+export const ledgerFaultPoints = Object.freeze([...reservationFaultPoints, ...dispatchFaultPoints, ...resultFaultPoints, ...ingressFaultPoints, ...clockFaultPoints]);
 export type LedgerFaultPoint = (typeof ledgerFaultPoints)[number];
 
 export interface FsAuthorityLedgerOptions {
@@ -70,8 +86,13 @@ export interface FsAuthorityLedgerOptions {
 }
 
 interface TransactionRecord {
-  readonly v: "reelier.authority-ledger-transaction/v2";
+  readonly v: "reelier.authority-ledger-transaction/v3";
   readonly intent: StoredReservationIntent;
+}
+
+interface IngressRecord {
+  readonly v:"reelier.authority-ingress-claim/internal-v1";readonly tenant:string;readonly requester:string;readonly requestId:string;
+  readonly definitionAlias:string;readonly requestDigest:string;readonly requestKey:string;readonly canonicalRequestBase64:string;
 }
 
 interface ClaimDescriptor {
@@ -164,17 +185,47 @@ export class FsAuthorityLedger implements AuthorityLedger {
     this.options = { now: options.now ?? Date.now, faultInjector: options.faultInjector, lockTimeoutMs: options.lockTimeoutMs ?? 30_000 };
   }
 
+  async observeClock(): Promise<ObserveClockResult> {
+    return this.withLock("clock", async reclaimed => {
+      const view=await this.prepare(reclaimed,false,"clock");
+      let now:number,observedAt:string;try{now=this.options.now();if(!Number.isSafeInteger(now)||now<0)throw new TypeError("invalid clock");observedAt=new Date(now).toISOString();}catch{return frozen({ok:false as const,reason:"clock-unavailable" as const});}
+      if(view.highWaterMark!==null){const high=parseIso(view.highWaterMark);if(now<high)return frozen({ok:false as const,reason:"clock-rollback" as const});if(now===high)return frozen({ok:true as const,status:"equal" as const,observedAt:view.highWaterMark});}
+      await this.persistClock(view,now,"clock");
+      return frozen({ok:true as const,status:"advanced" as const,observedAt});
+    }) as Promise<ObserveClockResult>;
+  }
+
+  async bindIngress(request:AuthenticatedOutcomeRequest):Promise<BindIngressResult>{
+    let attempted:IngressRecord;try{attempted=normalizeAuthenticatedIngress(request);}catch{return frozen({ok:false as const,reason:"integrity-failure" as const});}
+    return this.withLock("ingress",async()=>{
+      await this.ensureLayout();await this.assertNoLinks();
+      const relative=path.join("ingress",attempted.requestKey.slice(7));
+      let existing:IngressRecord|undefined;try{existing=await this.readIngress(attempted.requestKey);}catch(error){if(!hasCode(error,"ENOENT"))throw error;}
+      if(existing){const ingressClaimDigest=authorityDigest(existing);if(canonicalBytes(existing).equals(canonicalBytes(attempted)))return frozen({ok:true as const,status:"exact-existing" as const,evaluationEligible:false as const,ingressClaimDigest});return frozen({ok:false as const,reason:"conflict" as const,evaluationEligible:false as const,ingressClaimDigest});}
+      await this.writeImmutable(relative,attempted,"ingress");
+      const verified=await this.readIngress(attempted.requestKey);
+      return frozen({ok:true as const,status:"claimed" as const,evaluationEligible:true as const,ingressClaimDigest:authorityDigest(verified)});
+    }) as Promise<BindIngressResult>;
+  }
+
+  async lookupIngress(requestKey:string):Promise<RedactedIngressBinding|undefined>{
+    if(!SHA.test(requestKey)||requestKey===ZERO_SHA)return undefined;
+    const result=await this.withLock("ingress",async()=>{await this.ensureLayout();await this.assertNoLinks();let record:IngressRecord;try{record=await this.readIngress(requestKey);}catch(error){if(hasCode(error,"ENOENT"))return undefined;throw error;}return frozen({requestId:record.requestId,requestKey:record.requestKey,definitionAlias:record.definitionAlias,ingressClaimDigest:authorityDigest(record),bindingStatus:"bound" as const});});
+    if(isLockFailure(result))throw new AuthorityLedgerReadError(result.reason);return result as RedactedIngressBinding|undefined;
+  }
+
   async reserve(input: ReservationIntent): Promise<ReserveResult> {
     let normalized: StoredReservationIntent;
     try { normalized = normalizeIntent(input); } catch { return frozen({ ok: false, reason: "integrity-failure" }); }
     return this.withLock("reservation", async reclaimed => {
       let view = await this.prepare(reclaimed, false, "reservation");
+      try{await this.verifyIngressIntent(normalized);}catch{return frozen({ok:false as const,reason:"integrity-failure" as const});}
       const now = this.options.now();
       const clockReason = clockValidity(normalized, now, view.highWaterMark);
       if (clockReason) return frozen({ ok: false, reason: clockReason });
       view = await this.persistClock(view, now, "reservation");
 
-      const transaction: TransactionRecord = frozen({ v: "reelier.authority-ledger-transaction/v2", intent: normalized });
+      const transaction: TransactionRecord = frozen({ v: "reelier.authority-ledger-transaction/v3", intent: normalized });
       const transactionDigest = rawDigest(canonicalBytes(transaction));
       const transactionHex = transactionDigest.slice(7);
       await this.writeImmutable(path.join("transactions", transactionHex), transaction, "reservation");
@@ -355,6 +406,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
   private async prepare(reclaimed: boolean, makeDispatchedAmbiguous: boolean, context: OperationContext): Promise<LedgerView> {
     await this.ensureLayout();
     await this.assertNoLinks();
+    await this.verifyIngressDirectory();
     let view = await this.loadView();
     view = await this.recoverTransactions(view, context);
     if (reclaimed || makeDispatchedAmbiguous) {
@@ -369,12 +421,14 @@ export class FsAuthorityLedger implements AuthorityLedger {
     return view;
   }
 
+  private async verifyIngressDirectory():Promise<void>{const names=await readdir(this.absolute("ingress"));if(names.some(name=>!FILE_HEX.test(name)))throw new LedgerCorruption("invalid ingress filename");for(const name of names)await this.readIngress(`sha256:${name}`);}
+
   private async ensureLayout(): Promise<void> {
-    for (const directory of ["transactions", "claims", "journal", "tombstones"]) await mkdir(this.absolute(directory), { recursive: true });
+    for (const directory of ["transactions", "claims", "journal", "tombstones", "ingress"]) await mkdir(this.absolute(directory), { recursive: true });
   }
 
   private async assertNoLinks(): Promise<void> {
-    const allowedRoot = new Set(["transactions", "claims", "journal", "tombstones", "lock"]);
+    const allowedRoot = new Set(["transactions", "claims", "journal", "tombstones", "ingress", "lock"]);
     const walk = async (directory: string, root = false): Promise<void> => {
       for (const entry of await readdir(directory, { withFileTypes: true })) {
         if (entry.isSymbolicLink()) throw new LedgerCorruption("symlink or reparse point below ledger root");
@@ -409,9 +463,11 @@ export class FsAuthorityLedger implements AuthorityLedger {
     for (const reservation of view.reservations.values()) {
       const transaction = transactions.get(reservation.reservationId);
       if (!transaction || !canonicalBytes(transaction.intent).equals(canonicalBytes(reservation.intent))) throw new LedgerCorruption("committed transaction intent missing or mismatched");
+      await this.verifyIngressIntent(reservation.intent);
     }
     for (const name of names.sort()) {
       const transactionDigest = `sha256:${name}`;
+      await this.verifyIngressIntent(transactions.get(transactionDigest)!.intent);
       if (view.committedTransactions.has(transactionDigest) || await this.readTombstone(name)) continue;
       await this.commitTransaction(transactionDigest, transactions.get(transactionDigest)!, view, context);
       view = await this.loadView();
@@ -528,10 +584,23 @@ export class FsAuthorityLedger implements AuthorityLedger {
     const value = parseCanonical(bytes) as TransactionRecord;
     if (!value || typeof value !== "object") throw new LedgerCorruption("invalid transaction");
     assertExactKeys(value, ["intent", "v"]);
-    if (value.v !== "reelier.authority-ledger-transaction/v2") throw new LedgerCorruption("invalid transaction version");
+    if (value.v !== "reelier.authority-ledger-transaction/v3") throw new LedgerCorruption("invalid transaction version");
     const normalized = normalizeStoredIntent(value.intent);
     if (!canonicalBytes(normalized).equals(canonicalBytes(value.intent))) throw new LedgerCorruption("transaction intent is not closed");
     return value;
+  }
+
+  private async readIngress(requestKey:string):Promise<IngressRecord>{
+    if(!SHA.test(requestKey)||requestKey===ZERO_SHA)throw new LedgerCorruption("invalid ingress request key");
+    const name=requestKey.slice(7);const bytes=await readFile(this.absolute(path.join("ingress",name)));const value=parseCanonical(bytes) as IngressRecord;
+    assertExactKeys(value,["canonicalRequestBase64","definitionAlias","requestDigest","requestId","requestKey","requester","tenant","v"]);
+    if(value.v!=="reelier.authority-ingress-claim/internal-v1"||value.requestKey!==requestKey)throw new LedgerCorruption("ingress filename or key mismatch");
+    normalizeIngressRecord(value);return value;
+  }
+
+  private async verifyIngressIntent(intent:StoredReservationIntent):Promise<void>{
+    let ingress:IngressRecord;try{ingress=await this.readIngress(intent.requestKey);}catch(error){if(hasCode(error,"ENOENT"))throw new LedgerCorruption("reservation ingress claim missing");throw error;}
+    if(authorityDigest(ingress)!==intent.ingressClaimDigest||ingress.tenant!==intent.tenant||ingress.requester!==intent.requester||ingress.requestId!==intent.requestId||ingress.definitionAlias!==intent.definitionAlias||ingress.requestDigest!==intent.requestDigest||ingress.canonicalRequestBase64!==intent.canonicalRequestBase64)throw new LedgerCorruption("reservation ingress linkage mismatch");
   }
 
   private async verifyClaims(view: LedgerView, transactions: Set<string>): Promise<void> {
@@ -675,10 +744,22 @@ export class FsAuthorityLedger implements AuthorityLedger {
   private fault(point: LedgerFaultPoint): void { this.options.faultInjector?.(point); }
 }
 
+function normalizeAuthenticatedIngress(request:AuthenticatedOutcomeRequest):IngressRecord{
+  const state=authenticatedOutcomeRequestState(request);const bytes=Buffer.from(state.canonicalRequestBase64,"base64");if(bytes.toString("base64")!==state.canonicalRequestBase64)throw new TypeError("authenticated request base64 is not canonical");
+  const wire=parseCanonicalAuthorityJson("outcome-request",bytes.toString("utf8"));const requestDigest=digestOutcomeRequest(wire);const requestKey=deriveAuthorityRequestKey({tenant:state.tenant,requester:state.requester,requestId:wire.requestId});
+  if(authorityDigest(state.request)!==requestDigest||state.requestDigest!==requestDigest||state.requestKey!==requestKey||wire.requestId!==state.request.requestId)throw new TypeError("authenticated request state mismatch");
+  return normalizeIngressRecord({v:"reelier.authority-ingress-claim/internal-v1",tenant:state.tenant,requester:state.requester,requestId:wire.requestId,definitionAlias:state.definitionAlias,requestDigest,requestKey,canonicalRequestBase64:state.canonicalRequestBase64});
+}
+function normalizeIngressRecord(value:IngressRecord):IngressRecord{
+  if(!value||typeof value!=="object")throw new LedgerCorruption("invalid ingress record");for(const id of [value.tenant,value.requester,value.requestId,value.definitionAlias])if(typeof id!=="string"||!ID.test(id))throw new LedgerCorruption("invalid ingress identity");
+  if(!SHA.test(value.requestDigest)||value.requestDigest===ZERO_SHA||!SHA.test(value.requestKey)||value.requestKey===ZERO_SHA||typeof value.canonicalRequestBase64!=="string")throw new LedgerCorruption("invalid ingress digest");const bytes=Buffer.from(value.canonicalRequestBase64,"base64");if(bytes.length===0||bytes.toString("base64")!==value.canonicalRequestBase64)throw new LedgerCorruption("invalid ingress canonical bytes");
+  let wire:OutcomeRequest;try{wire=parseCanonicalAuthorityJson("outcome-request",bytes.toString("utf8"));}catch{throw new LedgerCorruption("invalid ingress canonical request");}if(wire.requestId!==value.requestId||digestOutcomeRequest(wire)!==value.requestDigest||deriveAuthorityRequestKey({tenant:value.tenant,requester:value.requester,requestId:value.requestId})!==value.requestKey)throw new LedgerCorruption("invalid ingress tuple linkage");return frozen({...value});
+}
+
 function normalizeIntent(input: ReservationIntent): StoredReservationIntent {
   if (!input || typeof input !== "object") throw new TypeError("reservation intent required");
   for (const id of [input.tenant, input.requester, input.definitionAlias, input.requestId, input.capabilityId]) if (typeof id !== "string" || !ID.test(id)) throw new TypeError("invalid reservation identity");
-  for (const digest of [input.requestDigest, input.canonicalRequestDigest, input.requestKey, input.capabilityDigest, input.contractDigest, input.sourceBundleDigest, input.sourceSnapshotDigest, input.authorityStateDigest, input.limitsDigest, input.outcomeKey, input.effectDigest]) if (typeof digest !== "string" || !SHA.test(digest) || digest === ZERO_SHA) throw new TypeError("invalid reservation digest");
+  for (const digest of [input.requestDigest, input.canonicalRequestDigest, input.requestKey, input.ingressClaimDigest, input.capabilityDigest, input.contractDigest, input.sourceBundleDigest, input.sourceSnapshotDigest, input.authorityStateDigest, input.limitsDigest, input.outcomeKey, input.effectDigest]) if (typeof digest !== "string" || !SHA.test(digest) || digest === ZERO_SHA) throw new TypeError("invalid reservation digest");
   if (!input.limits) throw new TypeError("sealed limits required");
   const sealed = input as ReservationIntent & Required<Pick<ReservationIntent, "definitionAlias" | "requestDigest" | "contractDigest" | "sourceBundleDigest" | "sourceSnapshotDigest" | "authorityStateDigest" | "limits" | "limitsDigest">>;
   const request = Buffer.from(input.canonicalRequestBytes);
@@ -688,6 +769,7 @@ function normalizeIntent(input: ReservationIntent): StoredReservationIntent {
   const requestWire = parseCanonicalAuthorityJson("outcome-request", request.toString("utf8")) as OutcomeRequest;
   const capabilityWire = parseCanonicalAuthorityJson("compiled-capability", capability.toString("utf8")) as CompiledCapability;
   if (requestWire.requestId !== input.requestId) throw new TypeError("request identity does not match canonical request bytes");
+  if(digestOutcomeRequest(requestWire)!==input.requestDigest||deriveAuthorityRequestKey({tenant:input.tenant,requester:input.requester,requestId:input.requestId})!==input.requestKey)throw new TypeError("request digest or key mismatch");
   if (
     capabilityWire.tenant !== input.tenant || capabilityWire.requester !== input.requester || capabilityWire.definitionAlias !== sealed.definitionAlias ||
     capabilityWire.requestDigest !== sealed.requestDigest || capabilityWire.capabilityId !== input.capabilityId || capabilityWire.requestKey !== input.requestKey ||
@@ -709,7 +791,7 @@ function normalizeIntent(input: ReservationIntent): StoredReservationIntent {
   if (slots.length !== 2 || slots[0].kind !== "contract-window" || slots[1].kind !== "source-trigger" || slots[0].maximum !== sealed.limits.maxEffectsPerWindow || slots[1].maximum !== sealed.limits.maxEffectsPerSourceTrigger || new Set(slots.map(slot => slot.key)).size !== slots.length) throw new TypeError("limit slots must exactly match sealed limits");
   return frozen({
     tenant: input.tenant, requester: input.requester, definitionAlias: sealed.definitionAlias, requestId: input.requestId, requestDigest: sealed.requestDigest,
-    canonicalRequestDigest: input.canonicalRequestDigest, canonicalRequestBase64: request.toString("base64"), requestKey: input.requestKey,
+    canonicalRequestDigest: input.canonicalRequestDigest, canonicalRequestBase64: request.toString("base64"), requestKey: input.requestKey,ingressClaimDigest:input.ingressClaimDigest,
     capabilityId: input.capabilityId, capabilityDigest: input.capabilityDigest, capabilityBase64: capability.toString("base64"),
     contractDigest: sealed.contractDigest, sourceBundleDigest: sealed.sourceBundleDigest, sourceSnapshotDigest: sealed.sourceSnapshotDigest,
     authorityStateDigest: sealed.authorityStateDigest, limits: frozen({ ...sealed.limits }), limitsDigest: sealed.limitsDigest,
@@ -720,7 +802,7 @@ function normalizeIntent(input: ReservationIntent): StoredReservationIntent {
 
 function normalizeStoredIntent(input: StoredReservationIntent): StoredReservationIntent {
   if (!input || typeof input !== "object" || typeof input.canonicalRequestBase64 !== "string" || typeof input.capabilityBase64 !== "string") throw new LedgerCorruption("malformed stored intent");
-  assertExactKeys(input, ["authorityStateDigest", "capabilityBase64", "capabilityDigest", "capabilityId", "canonicalRequestBase64", "canonicalRequestDigest", "contractDigest", "definitionAlias", "effectDigest", "expiresAt", "issuedAt", "limitSlots", "limits", "limitsDigest", "outcomeKey", "requestDigest", "requestId", "requestKey", "requester", "sourceBundleDigest", "sourceSnapshotDigest", "tenant"]);
+  assertExactKeys(input, ["authorityStateDigest", "capabilityBase64", "capabilityDigest", "capabilityId", "canonicalRequestBase64", "canonicalRequestDigest", "contractDigest", "definitionAlias", "effectDigest", "expiresAt", "ingressClaimDigest", "issuedAt", "limitSlots", "limits", "limitsDigest", "outcomeKey", "requestDigest", "requestId", "requestKey", "requester", "sourceBundleDigest", "sourceSnapshotDigest", "tenant"]);
   if (!Array.isArray(input.limitSlots)) throw new LedgerCorruption("malformed stored limit slots");
   for (const slot of input.limitSlots) assertExactKeys(slot, ["key", "kind", "maximum"]);
   const request = Buffer.from(input.canonicalRequestBase64, "base64");

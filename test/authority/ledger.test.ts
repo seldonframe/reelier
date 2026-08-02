@@ -16,7 +16,7 @@ import {
   type TransitionEvent,
 } from "../../src/authority/ledger.js";
 import {
-  FsAuthorityLedger,
+  FsAuthorityLedger as RawFsAuthorityLedger,
   dispatchFaultPoints,
   ledgerFaultPoints,
   reservationFaultPoints,
@@ -24,6 +24,18 @@ import {
   ingressFaultPoints,
   clockFaultPoints,
 } from "../../src/authority/host/fs-ledger.js";
+
+class FsAuthorityLedger extends RawFsAuthorityLedger {
+  override async reserve(candidate: ReservationIntent) {
+    try {
+      const wire=JSON.parse(Buffer.from(candidate.canonicalRequestBytes).toString("utf8"));
+      const authenticated=authenticateOutcomeRequest({tenant:candidate.tenant,requester:candidate.requester,definitionAlias:candidate.definitionAlias,request:wire});
+      const binding=await this.bindIngress(authenticated);
+      if("ingressClaimDigest" in binding)return super.reserve({...candidate,ingressClaimDigest:binding.ingressClaimDigest});
+    } catch { /* malformed inputs remain direct integrity tests */ }
+    return super.reserve(candidate);
+  }
+}
 
 const t0 = Date.parse("2026-08-02T12:00:00.000Z");
 const digest = (character: string) => `sha256:${character.repeat(64)}`;
@@ -43,7 +55,8 @@ function intent(overrides: Partial<ReservationIntent> = {}): ReservationIntent {
     requester: "requester_1",
     definitionAlias: "definition_1",
     requestId: "request_1",
-    requestKey: digest("7"),
+    requestKey: deriveRequestKey(overrides),
+    ingressClaimDigest: digest("9"),
     contractDigest: digest("a"), sourceBundleDigest: digest("b"), sourceSnapshotDigest: digest("c"), authorityStateDigest: digest("d"), limits,
     limitsDigest: "",
     capabilityId: "capability_1",
@@ -74,6 +87,8 @@ function intent(overrides: Partial<ReservationIntent> = {}): ReservationIntent {
   };
 }
 
+function deriveRequestKey(overrides:Partial<ReservationIntent>):string{return authenticatedOutcomeRequestState(authenticateOutcomeRequest({tenant:overrides.tenant??"tenant_1",requester:overrides.requester??"requester_1",definitionAlias:overrides.definitionAlias??"definition_1",request:{v:"reelier.outcome-request/v1",requestId:overrides.requestId??"request_1",sourceRefs:{source:"ref_1"},choices:{}}})).requestKey;}
+
 function requestWireBytes(requestId: string, sourceRef = "ref_1"): Buffer {
   return authorityCanonicalBytes({ v: "reelier.outcome-request/v1", requestId, sourceRefs: { source: sourceRef }, choices: {} });
 }
@@ -100,10 +115,14 @@ async function spawnReserve(root: string, candidate: ReservationIntent): Promise
   })).toString("base64");
   const source = `
     import { FsAuthorityLedger } from ${JSON.stringify(moduleUrl)};
+    import { authenticateOutcomeRequest } from ${JSON.stringify(new URL("../../src/authority/keys.js", pathToFileURL(path.join(process.cwd(), "dist-test/test/authority/ledger.test.js"))).href)};
     const value = JSON.parse(Buffer.from(process.argv[1], "base64").toString("utf8"));
     value.canonicalRequestBytes = Buffer.from(value.canonicalRequestBytes, "base64");
     value.capabilityBytes = Buffer.from(value.capabilityBytes, "base64");
-    const result = await new FsAuthorityLedger(process.argv[2], { now: () => ${t0} }).reserve(value);
+    const ledger = new FsAuthorityLedger(process.argv[2], { now: () => ${t0} });
+    const authenticated=authenticateOutcomeRequest({tenant:value.tenant,requester:value.requester,definitionAlias:value.definitionAlias,request:JSON.parse(Buffer.from(value.canonicalRequestBytes).toString("utf8"))});
+    const binding=await ledger.bindIngress(authenticated);if(!binding.ok){process.stdout.write(JSON.stringify(binding));process.exit(0);}value.ingressClaimDigest=binding.ingressClaimDigest;
+    const result = await ledger.reserve(value);
     process.stdout.write(JSON.stringify(result));
   `;
   return new Promise((resolve, reject) => {
@@ -157,7 +176,7 @@ test("cross-process collisions use ingress, semantic, capability, then limit pre
       outcomeKey: digest("8"),
       capabilityId: "capability_2",
     })) as { ok: boolean; reason: string };
-    assert.deepEqual({ ok: requestConflict.ok, reason: requestConflict.reason }, { ok: false, reason: "idempotency-conflict" });
+    assert.deepEqual({ ok: requestConflict.ok, reason: requestConflict.reason }, { ok: false, reason: "conflict" });
 
     const semantic = await spawnReserve(root, intent({
       requestId: "request_2",
@@ -189,8 +208,9 @@ test("the global ingress key treats a different authenticated definition alias a
     const recovered = new FsAuthorityLedger(root, { now: () => t0 });
     const retry = await recovered.reserve(intent({ definitionAlias: "definition_1" }));
     assert.equal(retry.ok && retry.status, "existing");
-    const conflict = await recovered.reserve(intent({ definitionAlias: "definition_2", capabilityId: "capability_2", outcomeKey: digest("8") }));
-    assert.deepEqual(conflict, { ok: false, reason: "idempotency-conflict" });
+    const conflictRequest=authenticateOutcomeRequest({tenant:"tenant_1",requester:"requester_1",definitionAlias:"definition_2",request:{v:"reelier.outcome-request/v1",requestId:"request_1",sourceRefs:{source:"ref_1"},choices:{}}});
+    const conflict = await recovered.bindIngress(conflictRequest);
+    assert.equal(conflict.ok,false);if(!conflict.ok)assert.equal(conflict.reason,"conflict");
   });
 });
 
@@ -586,7 +606,7 @@ test("caller-owned bytes and returned snapshots are detached and immutable", asy
 });
 
 test("faults at every durable reservation and transition point recover to prior state or safe committed state", { timeout: 120_000 }, async () => {
-  const classified = [...reservationFaultPoints, ...dispatchFaultPoints, ...resultFaultPoints];
+  const classified = [...reservationFaultPoints, ...dispatchFaultPoints, ...resultFaultPoints, ...ingressFaultPoints, ...clockFaultPoints];
   assert.equal(new Set(classified).size, classified.length, "each fault point belongs to exactly one operation");
   assert.deepEqual([...classified].sort(), [...ledgerFaultPoints].sort(), "new fault points require an explicit operation classification");
 
@@ -779,8 +799,8 @@ test("bindIngress atomically elects one exact owner and aliases or bytes cannot 
     const results = await Promise.all(Array.from({ length: 100 }, () => ledger.bindIngress(exact)));
     assert.equal(results.filter(result => result.ok && result.status === "claimed").length, 1);
     assert.equal(results.filter(result => result.ok && result.status === "exact-existing").length, 99);
-    const ownerDigest = results[0].ingressClaimDigest;
-    assert.ok(results.every(result => result.ingressClaimDigest === ownerDigest));
+    const owner = results.find(result => result.ok && result.status === "claimed");assert.ok(owner?.ok);if(!owner?.ok)return;const ownerDigest=owner.ingressClaimDigest;
+    assert.ok(results.every(result => "ingressClaimDigest" in result && result.ingressClaimDigest === ownerDigest));
     const aliasConflict = authenticateOutcomeRequest({ tenant: "tenant_1", requester: "requester_1", definitionAlias: "definition_2", request: { v: "reelier.outcome-request/v1", requestId: "request_1", sourceRefs: { source: "ref_1" }, choices: {} } });
     const bodyConflict = authenticateOutcomeRequest({ tenant: "tenant_1", requester: "requester_1", definitionAlias: "definition_1", request: { v: "reelier.outcome-request/v1", requestId: "request_1", sourceRefs: { source: "other" }, choices: {} } });
     assert.deepEqual(await ledger.bindIngress(aliasConflict), { ok: false, reason: "conflict", evaluationEligible: false, ingressClaimDigest: ownerDigest });
@@ -799,9 +819,10 @@ test("observeClock durably advances, is idempotent at equality, and refuses roll
     assert.deepEqual(await ledger.observeClock(), { ok: true, status: "equal", observedAt: new Date(t0).toISOString() });
     now--;
     assert.deepEqual(await ledger.observeClock(), { ok: false, reason: "clock-rollback" });
-    assert.equal((await new FsAuthorityLedger(root, { now: () => t0 }).observeClock()).status, "equal");
+    const restarted=await new FsAuthorityLedger(root,{now:()=>t0}).observeClock();assert.equal(restarted.ok,true);if(restarted.ok)assert.equal(restarted.status,"equal");
   });
   await withRoot(async root => assert.deepEqual(await new FsAuthorityLedger(root, { now: () => Number.NaN }).observeClock(), { ok: false, reason: "clock-unavailable" }));
+  await withRoot(async root => assert.deepEqual(await new FsAuthorityLedger(root, { now: () => Number.MAX_SAFE_INTEGER }).observeClock(), { ok: false, reason: "clock-unavailable" }));
   await withRoot(async root => assert.deepEqual(await new FsAuthorityLedger(root, { now: () => { throw new Error("clock"); } }).observeClock(), { ok: false, reason: "clock-unavailable" }));
 });
 
@@ -810,7 +831,7 @@ test("reserve requires the exact live ingress claim before writing any transacti
     const authenticated = authenticateOutcomeRequest({ tenant: "tenant_1", requester: "requester_1", definitionAlias: "definition_1", request: { v: "reelier.outcome-request/v1", requestId: "request_1", sourceRefs: { source: "ref_1" }, choices: {} } });
     const state = authenticatedOutcomeRequestState(authenticated);
     const candidate = intent({ requestKey: state.requestKey, requestDigest: state.requestDigest, canonicalRequestBytes: Buffer.from(state.canonicalRequestBase64, "base64") });
-    assert.deepEqual(await new FsAuthorityLedger(root, { now: () => t0 }).reserve({ ...candidate, ingressClaimDigest: digest("9") }), { ok: false, reason: "integrity-failure" });
+    assert.deepEqual(await new RawFsAuthorityLedger(root, { now: () => t0 }).reserve({ ...candidate, ingressClaimDigest: digest("9") }), { ok: false, reason: "integrity-failure" });
     assert.deepEqual(await readdir(path.join(root, "transactions")).catch(() => []), []);
     const bound = await new FsAuthorityLedger(root, { now: () => t0 }).bindIngress(authenticated);
     assert.equal(bound.ok, true); if (!bound.ok) return;
@@ -824,4 +845,16 @@ test("new ingress and clock fault-point sets are complete and disjoint", () => {
   const all=[...reservationFaultPoints,...dispatchFaultPoints,...resultFaultPoints,...ingressFaultPoints,...clockFaultPoints];
   assert.equal(new Set(all).size,all.length);
   assert.deepEqual([...all].sort(),[...ledgerFaultPoints].sort());
+});
+
+test("every ingress and standalone-clock crash boundary recovers only prior, committed, or corruption",{timeout:120_000},async()=>{
+  const authenticated=authenticateOutcomeRequest({tenant:"tenant_1",requester:"requester_1",definitionAlias:"definition_1",request:{v:"reelier.outcome-request/v1",requestId:"request_1",sourceRefs:{source:"ref_1"},choices:{}}});
+  for(const point of ingressFaultPoints)await withRoot(async root=>{let fired=false;const crashing=new RawFsAuthorityLedger(root,{now:()=>t0,faultInjector(observed){if(!fired&&observed===point){fired=true;throw new Error(`fault:${point}`);}}});try{await crashing.bindIngress(authenticated);}catch(error){assert.match(String(error),/fault:/);}assert.equal(fired,true,point);const recovered=await new RawFsAuthorityLedger(root,{now:()=>t0}).recover();if(!recovered.ok)assert.equal(recovered.reason,"corruption");else{const lookup=await new RawFsAuthorityLedger(root,{now:()=>t0}).lookupIngress(authenticatedOutcomeRequestState(authenticated).requestKey);assert.ok(lookup===undefined||lookup.bindingStatus==="bound");}});
+  for(const point of clockFaultPoints)await withRoot(async root=>{assert.equal((await new RawFsAuthorityLedger(root,{now:()=>t0}).observeClock()).ok,true);let fired=false;const crashing=new RawFsAuthorityLedger(root,{now:()=>t0+1,faultInjector(observed){if(!fired&&observed===point){fired=true;throw new Error(`fault:${point}`);}}});try{await crashing.observeClock();}catch(error){assert.match(String(error),/fault:/);}assert.equal(fired,true,point);const recovered=await new RawFsAuthorityLedger(root,{now:()=>t0+1}).recover();if(!recovered.ok)assert.equal(recovered.reason,"corruption");else assert.ok([new Date(t0).toISOString(),new Date(t0+1).toISOString()].includes(recovered.highWaterMark!));});
+});
+
+test("ingress filename, bytes, digest linkage, and pre-v3 transactions fail closed on recovery",async()=>{
+  await withRoot(async root=>{const authenticated=authenticateOutcomeRequest({tenant:"tenant_1",requester:"requester_1",definitionAlias:"definition_1",request:{v:"reelier.outcome-request/v1",requestId:"request_1",sourceRefs:{source:"ref_1"},choices:{}}});const state=authenticatedOutcomeRequestState(authenticated);assert.equal((await new RawFsAuthorityLedger(root,{now:()=>t0}).bindIngress(authenticated)).ok,true);await writeFile(path.join(root,"ingress",state.requestKey.slice(7)),"{");assert.deepEqual(await new RawFsAuthorityLedger(root,{now:()=>t0}).recover(),{ok:false,reason:"corruption"});});
+  await withRoot(async root=>{const ledger=new FsAuthorityLedger(root,{now:()=>t0});const created=await ledger.reserve(intent());assert.equal(created.ok,true);const ingress=await readdir(path.join(root,"ingress"));await unlink(path.join(root,"ingress",ingress[0]));assert.deepEqual(await new RawFsAuthorityLedger(root,{now:()=>t0}).recover(),{ok:false,reason:"corruption"});});
+  for(const version of ["v1","v2"])await withRoot(async root=>{assert.equal((await new RawFsAuthorityLedger(root,{now:()=>t0}).recover()).ok,true);const bytes=authorityCanonicalBytes({v:`reelier.authority-ledger-transaction/${version}`,intent:{}});const name=createHash("sha256").update(bytes).digest("hex");await writeFile(path.join(root,"transactions",name),bytes);assert.deepEqual(await new RawFsAuthorityLedger(root,{now:()=>t0}).recover(),{ok:false,reason:"corruption"});});
 });

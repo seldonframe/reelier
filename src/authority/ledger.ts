@@ -24,6 +24,7 @@ export interface ReservationIntent {
   readonly canonicalRequestDigest: string;
   readonly canonicalRequestBytes: Uint8Array;
   readonly requestKey: string;
+  readonly ingressClaimDigest: string;
   readonly capabilityId: string;
   readonly capabilityDigest: string;
   readonly capabilityBytes: Uint8Array;
@@ -115,7 +116,20 @@ export type RecoverResult =
   | Readonly<{ ok: true; reservations: readonly ReservationSnapshot[]; highWaterMark: string | null; topology: LedgerTopology }>
   | Readonly<{ ok: false; reason: "busy" | "lock-owner-unverifiable" | "corruption" }>;
 
+export type ObserveClockResult =
+  | Readonly<{ ok:true;status:"advanced"|"equal";observedAt:string }>
+  | Readonly<{ ok:false;reason:"clock-rollback"|"clock-unavailable"|"busy"|"lock-owner-unverifiable"|"corruption" }>;
+export type BindIngressResult =
+  | Readonly<{ok:true;status:"claimed";evaluationEligible:true;ingressClaimDigest:string}>
+  | Readonly<{ok:true;status:"exact-existing";evaluationEligible:false;ingressClaimDigest:string}>
+  | Readonly<{ok:false;reason:"conflict";evaluationEligible:false;ingressClaimDigest:string}>
+  | Readonly<{ok:false;reason:"integrity-failure"|"busy"|"lock-owner-unverifiable"|"corruption"}>;
+export interface RedactedIngressBinding {readonly requestId:string;readonly requestKey:string;readonly definitionAlias:string;readonly ingressClaimDigest:string;readonly bindingStatus:"bound"}
+
 export interface AuthorityLedger {
+  observeClock(): Promise<ObserveClockResult>;
+  bindIngress(request: import("./keys.js").AuthenticatedOutcomeRequest): Promise<BindIngressResult>;
+  lookupIngress(requestKey:string):Promise<RedactedIngressBinding|undefined>;
   reserve(intent: ReservationIntent): Promise<ReserveResult>;
   transition(reservationId: string, expectedState: LedgerState, event: TransitionEvent): Promise<TransitionResult>;
   recover(): Promise<RecoverResult>;
