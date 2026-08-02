@@ -522,6 +522,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
         if(state.rootSyncPending){await this.syncDirectory(this.root);state.rootSyncPending=false;}
         const result=await this.servicePublicationGeneration(state,activeOwner,ownedStage);
         if(result!=="retry")return result;
+        if(state.rootSyncPending)continue;
       }catch(error){
         if(!this.shouldRetrySnapshot(error,deadline))throw error;
       }
