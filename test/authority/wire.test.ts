@@ -464,6 +464,37 @@ test("GateEvent requires the exact non-sentinel DecisionContext digest", () => {
   assert.throws(() => parseAuthorityWire("gate-event", { ...gateEvent, decisionContextDigest: zeroDigest }), /pattern/i);
 });
 
+test("standalone and receipt-embedded DecisionContext schemas stay structurally equivalent", () => {
+  const standalone = JSON.parse(readFileSync(path.join(process.cwd(), "contract/authority/v1/decision-context.schema.json"), "utf8"));
+  const receipt = JSON.parse(readFileSync(path.join(process.cwd(), "contract/authority/v1/authority-receipt.schema.json"), "utf8"));
+  const { $schema: _schema, $id: _id, ...standaloneBody } = standalone;
+  assert.deepEqual(receipt.properties.decisionContext, standaloneBody);
+});
+
+test("each DecisionContext snapshot dependency edge refuses independently and staged refusals remain valid", () => {
+  for (const field of ["sourceBundleDigest", "authorityStateDigest"] as const) {
+    assert.throws(() => parseAuthorityWire("decision-context", {
+      ...acceptedDecisionContext,
+      snapshots: { ...acceptedDecisionContext.snapshots, [field]: null },
+    }), /artifact dependency/i, field);
+  }
+  assert.doesNotThrow(() => parseAuthorityWire("decision-context", {
+    ...refusedDecisionContext,
+    contractDigest: "sha256:" + "3".repeat(64),
+  }));
+  assert.doesNotThrow(() => parseAuthorityWire("decision-context", {
+    ...refusedDecisionContext,
+    contractDigest: "sha256:" + "3".repeat(64),
+    outcomeKey: "sha256:" + "5".repeat(64),
+  }));
+});
+
+test("AuthorityReceipt refuses empty and all-zero GateEvent digest sentinels", () => {
+  for (const gateEventDigest of ["", zeroDigest]) {
+    assert.throws(() => parseAuthorityWire("authority-receipt", { ...authorityReceipt, gateEventDigest }), /pattern/i);
+  }
+});
+
 test("legacy verifier refuses an authority receipt instead of awarding a legacy pass", () => {
   const result = evaluateVerifyClaims({ record: { v: "reelier.authority-receipt/v1" } as never });
   assert.equal(result.exitCode, 1);
