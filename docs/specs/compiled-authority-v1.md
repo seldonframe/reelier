@@ -147,10 +147,19 @@ event after recovery. `journalHead` is null only for `released`/`publication-abo
 that exact canonical closed ack record, without its `sha256:` prefix. Marker name, owner digest,
 disposition, and non-null journal head must all match current verified state.
 
-The ack is exclusive-created, written, file-synced, closed, and followed by a root-directory sync before
-marker removal. A crash leaving a partial ack is corruption and never authorizes cleanup. An interrupted
-partial/empty marker is removable only with its exact canonical, digest-named valid ack; otherwise it is
-corruption. Cleanup then removes the marker, syncs the root, removes the ack, and syncs the root again.
+The final ack is never written in place. Its exact staging name is
+`.authority-ledger-lock-cleanup-stage-<owner-pid>-<owner-nonce>-<64-lower-hex-ack-digest>.tmp`, with PID
+and nonce copied from the validated marker owner and digest copied from the final ack name. The sole
+active owner exclusive-creates the stage, writes the complete canonical ack, file-syncs, closes, then
+atomically renames it on the same filesystem to the final `.ack` name and syncs the root. An empty,
+partial, or complete stage is recoverable only when its exact name binds one complete validated marker
+and the independently recomputed current ack digest. That exact stage may be removed and rebuilt under
+the active lock; malformed, mismatched, orphaned, linked/reparsed, or duplicate stages fail closed. The
+atomic rename means a final ack is always complete.
+
+An interrupted partial/empty marker is removable only with its exact canonical, digest-named valid ack;
+otherwise it is corruption. Cleanup then removes the marker, syncs the root, removes the ack, and syncs
+the root again.
 A valid orphan ack whose exact marker is absent represents the post-marker-sync/pre-ack-removal crash
 window and is removed after validation; malformed, owner-digest-less, marker-mismatched, or otherwise
 invalid orphan acks fail closed. Thus every acknowledged interruption is recoverable without inferring
