@@ -116,15 +116,22 @@ recovery never migrates them by inference.
 
 Cross-process mutation is serialized by an atomically published lock directory and an
 exclusive-created, cryptographically random owner record. Owner publication uses the exact unique
-staging directory `.authority-ledger-lock-publication-<positive-safe-pid>-<64-lower-hex-nonce>.tmp`.
+staging directory
+`.authority-ledger-lock-publication-<64-lower-hex-host-digest>-<positive-safe-pid>-<64-lower-hex-nonce>.tmp`,
+where `host-digest` is SHA-256 over the UTF-8 bytes of the exact canonical owner hostname, without a
+`sha256:` prefix. The name therefore carries same-host provenance before any owner bytes exist.
 The publisher creates that real directory exclusively, creates a real regular single-link
 `owner.json` exclusively, writes its complete canonical owner, file-syncs it, syncs the staging
 directory, atomically renames the whole staging directory to `lock`, and syncs the ledger root. The
-shared `lock` path is never publication staging and is therefore never ownerless. An exact empty,
-partial, or complete publication stage is recoverable only when its PID and nonce bind its canonical
-owner where present; an exact complete stage may finish publication when `lock` is absent. Malformed,
-mismatched, linked/reparsed, hard-linked, duplicate, or extra-content publication stages fail closed
-without target mutation. Acquisition is bounded. A live same-host owner is never evicted because time elapsed; a
+shared `lock` path is never publication staging and is therefore never ownerless. A live same-host
+publisher's byte-identical empty, zero-byte-owner, partial-owner, or complete-owner stage is busy and
+preserved. After its named same-host PID is proved dead, each of those exact states is recoverable by a
+successor, but only the creator may publish its own stage: a successor never renames another owner's
+stage to `lock`. Foreign-host or unverifiable stage provenance, malformed or mismatched owner bytes,
+links/reparse points, hard-linked owner files, and extra contents fail closed without target mutation.
+Multiple stages with distinct valid host/PID identities may coexist as real contenders and are
+independently validated; two stages for the same host and PID but different nonces are ambiguous and
+fail closed. Acquisition is bounded. A live same-host owner is never evicted because time elapsed; a
 foreign, corrupt, or otherwise unverifiable owner refuses. An abandoned lock is reclaimed only after
 same-host process liveness proves that its recorded PID is dead and the owner bytes remain identical.
 Reclaim and release atomically rename the whole lock directory to an exact PID-and-nonce-bound
@@ -149,7 +156,9 @@ marker name, canonical owner, owner digest, disposition, and post-recovery journ
 are `{ disposition, journalHead, markerName, owner, ownerDigest, v }`; `v` is the literal
 `reelier.authority-ledger-lock-cleanup-ack/v1`, `owner` is the exact closed canonical marker owner,
 `ownerDigest` is the authority digest of that owner, and the owner's PID and nonce must match the exact
-marker name even when the marker is absent. `journalHead` is the nonzero authority digest of the latest canonical journal
+marker name even when the marker is absent. For this local filesystem ledger, `owner.host` must equal
+the current canonical host; foreign or unverifiable owner hosts fail closed. `journalHead` is the
+nonzero authority digest of the latest canonical journal
 event after recovery. `journalHead` is null only for `released`/`publication-aborted`, or for
 `recovery-pending` when the recovered journal is empty. The filename digest is the authority digest of
 that exact canonical closed ack record, without its `sha256:` prefix. Marker name, owner digest,
@@ -165,12 +174,17 @@ and the independently recomputed current ack digest. That exact stage may be rem
 the active lock; malformed, mismatched, orphaned, linked/reparsed, or duplicate stages fail closed. The
 atomic rename means a final ack is always complete.
 
-Before reading, interpreting, creating, renaming, or removing any retirement, publication-stage, cleanup-stage,
-cleanup-ack, journal, transaction, claim, or ingress artifact, the active owner performs a complete
-non-mutating confinement/type/link-count audit of every fixed ledger subtree and root artifact. A
-nested reparse point, link, hard link, path substitution, malformed artifact, or unexpected entry
-fails closed before housekeeping changes any bytes. Only after that audit may artifact service run;
-the existing complete audit is then repeated before the callback reads or mutates durable state.
+Before publication, acquisition performs only the narrow non-following metadata checks required to
+validate the active lock and publication stages, including their names, types, link counts, and owner
+files where present. Immediately after atomic publication and before reading or mutating any other
+ledger content, the sole active owner performs a recursive non-following metadata/type/link-count
+confinement audit of every fixed ledger subtree and root artifact. A nested reparse point, link, hard
+link, path substitution, malformed artifact, or unexpected entry fails closed before retirement,
+publication-stage, cleanup-stage, cleanup-ack, journal, transaction, claim, or ingress service changes
+any bytes. Only after that confinement audit may it parse and service artifacts; the complete audit is
+then repeated before the callback reads or mutates durable state. The absence of pre-audit content
+reads is additionally a code-review invariant; filesystem mutation tests prove ordering but cannot
+prove that a read did not occur.
 
 An interrupted partial/empty marker is removable only with its exact canonical, digest-named valid ack;
 otherwise it is corruption. Cleanup then removes the marker, syncs the root, removes the ack, and syncs
