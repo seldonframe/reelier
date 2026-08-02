@@ -115,8 +115,8 @@ description: d
   assert.ok(rendered.includes('"at":"2026-07-30T00:00:00.000Z","fields":{"body.etag"'));
   assert.equal(serializeSkill(parseSkill(rendered)), rendered);
   // Hash coverage: dropping or editing fields is an approval mismatch.
-  const withFields = computeApprovalHash({ actionTool: step.actionTool, actionArgs: step.actionArgs, attest: step.attest, expect: step.expect });
-  const without = computeApprovalHash({
+  const withFields = computeApprovalHash({ emit: undefined, actionTool: step.actionTool, actionArgs: step.actionArgs, attest: step.attest, expect: step.expect });
+  const without = computeApprovalHash({ emit: undefined,
     actionTool: step.actionTool,
     actionArgs: step.actionArgs,
     attest: step.attest,
@@ -129,7 +129,7 @@ test("grammar: fieldless expect hashes byte-identically to 0.25.0 (P1 identity p
   const expect = { at: "2026-07-30T06:58:12.331Z", keyId: "3c9a01d2e4f5b6a7", pre: `hmac-sha256:${"9f".repeat(32)}` };
   const attest = { tool: "get_page", args: { slug: "demo" }, projection: ["compiled_truth"] };
   // Pinned against the 0.25.0 formula: digestSha256({args, attest, expect:{at,keyId,pre}, tool}).
-  const h = computeApprovalHash({ actionTool: "put_page", actionArgs: { slug: "demo" }, attest, expect });
+  const h = computeApprovalHash({ emit: undefined, actionTool: "put_page", actionArgs: { slug: "demo" }, attest, expect });
   assert.equal(
     h,
     digestSha256({
@@ -235,7 +235,7 @@ description: d
 - expect: {"at":"2026-07-30T00:00:00.000Z","keyId":"${keyId}","pre":"${pre}"}
 `;
     const step = parseSkill(`${base}- approve: sha256:${"0".repeat(64)}\n`).steps[0];
-    const hash = computeApprovalHash({ actionTool: step.actionTool, actionArgs: step.actionArgs, attest: step.attest, expect: step.expect });
+    const hash = computeApprovalHash({ emit: undefined, actionTool: step.actionTool, actionArgs: step.actionArgs, attest: step.attest, expect: step.expect });
     const skill = parseSkill(`${base}- approve: ${hash}\n`);
     const tools = gbrainTools(() => ({ compiled_truth: "# MOVED" }));
     const record = await runSkill(skill, { tools, expectKeystorePath: keystorePath, cwd: dir });
@@ -432,7 +432,7 @@ description: d
 - expect: ${JSON.stringify({ at: "2026-07-30T00:00:00.000Z", keyId, pre, fields })}
 `;
     const step = parseSkill(`${base}- approve: sha256:${"0".repeat(64)}\n`).steps[0];
-    const hash = computeApprovalHash({ actionTool: step.actionTool, actionArgs: step.actionArgs, attest: step.attest, expect: step.expect });
+    const hash = computeApprovalHash({ emit: undefined, actionTool: step.actionTool, actionArgs: step.actionArgs, attest: step.attest, expect: step.expect });
     const skill = parseSkill(`${base}- approve: ${hash}\n`);
     const tools = gbrainTools(() => ({ compiled_truth: "# MOVED" }));
     const record = await runSkill(skill, { tools, expectKeystorePath: keystorePath, cwd: dir });

@@ -18,7 +18,7 @@
 // the same drift never has to escalate twice.
 
 import { mkdir, appendFile } from "node:fs/promises";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { createInterface } from "node:readline";
 import path from "node:path";
@@ -35,6 +35,8 @@ import type { LlmClient } from "./llm.js";
 import { resolveL1, resolveL2 } from "./escalate.js";
 import { applyWritebackSafely } from "./writeback.js";
 import { computeApprovalHash, computeIdempotencyKey } from "./approval.js";
+import { artifactDigest, partitionArtifact, projectArtifact } from "./artifact.js";
+import { parseDuration } from "./duration.js";
 import { digestSha256 } from "./canonical-json.js";
 import type { PolicyClaim } from "./policy.js";
 import {
@@ -70,6 +72,8 @@ export interface StepWhy {
 export interface StepWrite {
   /** computeIdempotencyKey(tool, tool.server ?? null, filledArgs) — per-run identity of this exact write. */
   idempotencyKey: string;
+  /** Opaque identity of this individual dispatch, including repeated identical calls. */
+  dispatchId?: string;
   /** true = executed via a matching Step.approve hash; false = executed via the legacy --allow-writes/--yes flags. */
   approved: boolean;
   /**
@@ -176,7 +180,65 @@ export interface StepAttest {
   post?: AttestState;
   delta?: { changed: number; fields?: string[] };
   confidence: "exact" | "partial" | "pending" | "absent";
+  /**
+   * Deferred probe (§8): the absolute instant, resolved against DISPATCH,
+   * by which the provider record was expected to appear. Present iff
+   * `confidence` is `"pending"`. A consumer MUST NOT read a pending
+   * attestation as a pass (never-list #1) — it is a state, not a result.
+   */
+  deferredUntil?: string;
   reason?: string;
+}
+
+/**
+ * Pre-dispatch artifact attestation (docs/specs/artifact-attestation-v1.md
+ * §6) — the commitment to what LEFT, for the class of write with no
+ * post-state a probe could read back.
+ *
+ * Present iff the step declared `emit:` AND the call actually dispatched. A
+ * refused, skipped or mocked step never carries one: a commitment on a call
+ * that never went out would assert an emission that did not happen.
+ */
+export interface StepEmitRecord {
+  /**
+   * UNSALTED `sha256` over the type-tagged projection of the FILLED action
+   * args (§5.1). Deliberately recomputable by a third party holding the
+   * artifact — that is its purpose, as the join key of an
+   * emission-to-authorization pair. It adds no new exposure CLASS only
+   * because `idempotencyKey` in the `write` block beside it already hashes
+   * ALL the filled args, which is strictly more revealing. That argument does
+   * not generalize; it holds because that field is already there.
+   */
+  artifactDigest: string;
+  /** The DECLARED coverage list, verbatim and in declared order (RFC 9421 §2.3's ordered covered-components idea). */
+  projection: string[];
+  /** The declared entries the filled args actually carried. `resolved` and `unresolved` always partition `projection` exactly. */
+  resolved: string[];
+  /**
+   * Declared entries the filled args did not carry, or carried non-scalar —
+   * names only. Omitted when empty, NEVER `[]`. This is what keeps a
+   * server-side-rendered payload, a reference-valued field, or a two-call
+   * draft/send composition visible instead of publishing a digest that
+   * quietly covers less than the step declares (§3.1, §5.3).
+   */
+  unresolved?: string[];
+  /**
+   * WHICH approval authorized this emission — absent exactly when
+   * `write.approved` is `false`, because a flag dispatch has no
+   * authorization to point at. Duplicated from `write.approvalHash` so the
+   * emission claim is readable without joining across blocks.
+   */
+  approvalHash?: string;
+  /** When the commitment was computed — after the args were filled, before the call was dispatched. */
+  at: string;
+}
+
+/** Immutable join from a deferred-resolution record back to the dispatch it answers. */
+export interface StepResolutionOf {
+  approvalHash: string;
+  artifactDigest: string;
+  deferredUntil: string;
+  dispatchId: string;
 }
 
 export interface StepRecord {
@@ -221,6 +283,10 @@ export interface StepRecord {
   why?: StepWhy;
   /** Present iff this step's tool actually dispatched a write-effect call — see StepWrite. */
   write?: StepWrite;
+  /** Pre-dispatch artifact attestation — what LEFT, for writes with no probe-able post-state. See StepEmitRecord. */
+  emit?: StepEmitRecord;
+  /** Present only on a deferred-resolution record; carries both normative cross-record join keys. */
+  resolutionOf?: StepResolutionOf;
   /** State attestation (consequence-layer §1) — present iff a write-effect step actually dispatched. Hashes over a field projection, never raw values. absent/pending are never a pass. */
   attest?: StepAttest;
   /** The execute-time state check (state-conditioned approval) — present iff the step carried `expect:` and the runner reached the check. See StepStateCheck. */
@@ -248,6 +314,12 @@ export interface RunRecord {
   startedAt: string;
   finishedAt: string;
   passed: boolean;
+  /**
+   * Set only on the second record emitted by `reelier resolve`. Such a record
+   * observes no action and MUST NOT be presented as a passing or failing run;
+   * its per-step attestation confidence is the result.
+   */
+  deferredResolution?: true;
   /**
    * sha256 (64 lowercase hex chars) of the exact skill-file bytes that
    * produced this run — stamped at RUN time by the caller (cmdRun/
@@ -315,6 +387,11 @@ export interface RunRecord {
     llmInputTokens: number;
     llmOutputTokens: number;
   };
+}
+
+/** Ordinary execution records only; deferred follow-ups are evidence about earlier runs. */
+export function executionRecords(records: readonly RunRecord[]): RunRecord[] {
+  return records.filter((record) => record.deferredResolution !== true);
 }
 
 export interface RunOptions {
@@ -404,6 +481,27 @@ export interface RunOptions {
 export const STATE_GATE_REFUSAL_MISMATCH =
   "Refusing to dispatch write step: pre-state commitment mismatch — the world this approval was granted against has changed. " +
   "Re-approve with 'reelier approve --probe'. (--allow-writes/--yes do not override a state-gate refusal.)";
+
+/**
+ * Coverage-gate refusal (artifact-attestation-v1 §7). Names the declared
+ * fields that did not resolve — names only, never values, and capped exactly
+ * as every other field list in this package is, so a wide projection cannot
+ * turn a refusal into a wall of text.
+ *
+ * It claims ONLY that the declared coverage did not resolve. It does not
+ * claim the write would have been wrong, and the wording must never imply it.
+ */
+export function emitGateRefusal(unresolved: string[]): string {
+  const shown = unresolved
+    .slice(0, ABSENT_FIELDS_MAX)
+    .map((f) => (f.length > ABSENT_FIELD_NAME_MAX ? `${f.slice(0, ABSENT_FIELD_NAME_MAX)}…` : f));
+  const more = unresolved.length > shown.length ? ` (+${unresolved.length - shown.length} more)` : "";
+  return (
+    `Refusing to dispatch write step: declared artifact coverage did not resolve — ${shown.join(", ")}${more}. ` +
+    "The emission commitment would cover less than this step declares. Check the filled action args, or narrow 'emit:' to what the tool actually carries. " +
+    "(--allow-writes/--yes do not override a state-gate refusal.)"
+  );
+}
 
 export function stateGateRefusalUnevaluated(reason: string): string {
   return (
@@ -590,13 +688,15 @@ function buildStepWrite(
   toolName: string,
   tool: Tool,
   filledArgs: unknown,
-  obs: Observation,
-  approvalHash: string | undefined
+  obs: Observation | undefined,
+  approvalHash: string | undefined,
+  dispatchId?: string
 ): StepWrite {
   const idempotencyKey = computeIdempotencyKey(toolName, tool.server ?? null, filledArgs);
-  const resource = extractResource(obs);
+  const resource = obs === undefined ? undefined : extractResource(obs);
   return {
     idempotencyKey,
+    ...(dispatchId !== undefined ? { dispatchId } : {}),
     approved: approvalHash !== undefined,
     ...(approvalHash !== undefined ? { approvalHash } : {}),
     ...(resource ? { resource } : {}),
@@ -905,6 +1005,7 @@ async function executeStep(
   write?: StepWrite;
   attest?: StepAttest;
   stateCheck?: StepStateCheck;
+  emit?: StepEmitRecord;
   mocked?: true;
 }> {
   const started = Date.now();
@@ -975,6 +1076,24 @@ async function executeStep(
     );
     return { outcome: "failed", ms: Date.now() - started, failures, binds: localBinds };
   }
+  if (step.emit !== undefined && !isWrite) {
+    failures.push(
+      `Refusing to execute emit-bearing step with non-write effect '${effectiveEffect}' — an artifact claim on an unrecorded dispatch would be false. (Unrepresentable via parseSkill; fix the step's effect.)`
+    );
+    return { outcome: "failed", ms: Date.now() - started, failures, binds: localBinds };
+  }
+  if (isWrite && step.attest?.defer !== undefined && step.emit === undefined) {
+    failures.push(
+      "Refusing deferred attestation without emit — a later resolution must be able to join the provider observation to the artifact that left."
+    );
+    return { outcome: "failed", ms: Date.now() - started, failures, binds: localBinds };
+  }
+  if (isWrite && step.attest?.defer !== undefined && step.approve === undefined) {
+    failures.push(
+      "Refusing deferred attestation without a matching approve hash — a later resolution must be able to name both its authorization and emitted artifact."
+    );
+    return { outcome: "failed", ms: Date.now() - started, failures, binds: localBinds };
+  }
 
   if (isWrite) {
     if (step.approve !== undefined) {
@@ -984,7 +1103,7 @@ async function executeStep(
       // matches, this executes with NO flag needed at all. If it doesn't —
       // the step drifted since it was approved — this fails closed and NO
       // flag (--allow-writes, --yes) can override that refusal.
-      const expected = computeApprovalHash({ actionTool: step.actionTool, actionArgs: step.actionArgs, attest: step.attest, expect: step.expect });
+      const expected = computeApprovalHash({ actionTool: step.actionTool, actionArgs: step.actionArgs, attest: step.attest, expect: step.expect, emit: step.emit });
       if (step.approve !== expected) {
         failures.push(
           `Approval mismatch on write step — the step's tool/args/attest changed since it was approved. ` +
@@ -1027,6 +1146,31 @@ async function executeStep(
   } catch (err) {
     failures.push(`Template fill failed: ${(err as Error).message}`);
     return { outcome: "failed", ms: Date.now() - started, failures, binds: localBinds };
+  }
+
+  // Artifact attestation (artifact-attestation-v1 §3, Normative): computed
+  // HERE — after the fill and before dispatch — and nowhere earlier. The
+  // approval-hash gate above runs against the args TEMPLATE and returns before
+  // any fill, so a commitment attached there would have no rendered artifact
+  // to hash. This is the same window `probeArgs` and the state gate already
+  // occupy: a third resident of an existing room, not a new floor.
+  let emitCommitment: StepEmitRecord | undefined;
+  let emitUnresolved: string[] = [];
+  if (isWrite && step.emit !== undefined) {
+    const parts = partitionArtifact(filledArgs, step.emit.projection);
+    emitUnresolved = parts.unresolved;
+    emitCommitment = {
+      artifactDigest: artifactDigest(step.actionTool, projectArtifact(filledArgs, step.emit.projection)),
+      projection: step.emit.projection,
+      resolved: parts.resolved,
+      ...(parts.unresolved.length > 0 ? { unresolved: parts.unresolved } : {}),
+      // Minted from the SAME value `write.approved`/`write.approvalHash` are:
+      // reaching here with `step.approve` set means the recomputed hash
+      // matched (a mismatch returned long before), so the two can never
+      // disagree about which approval authorized this emission.
+      ...(step.approve !== undefined ? { approvalHash: step.approve } : {}),
+      at: new Date().toISOString(),
+    };
   }
 
   // A declared probe dispatches ONLY when this write executed via a matching
@@ -1146,7 +1290,16 @@ async function executeStep(
   const expiredReason = isWrite && step.expect !== undefined ? approvalExpiredReason(step.expect.expiresAt, now) : undefined;
 
   if (isWrite && step.attest && probeApproved) {
-    if (expiredReason !== undefined) {
+    if (step.attest?.defer !== undefined) {
+      // Deferred probe (§8): no PRE side, deliberately. The attest salt is
+      // per-run and never recorded, so a `pre` captured here could never be
+      // compared against a `post` captured by a later process — it would be
+      // evidence that can never be used, and a reader could mistake its
+      // presence for a delta this design explicitly does not claim. Nothing is
+      // dispatched: for a send the provider record does not exist yet, so
+      // probing now would only prove that.
+      preProbe = undefined;
+    } else if (expiredReason !== undefined) {
       // Synthesized, never dispatched — the same discipline the probeArgs
       // gate uses. The attest degrades honestly through the existing
       // probe-failure path: no fabricated observation, no `observedAt`.
@@ -1328,10 +1481,38 @@ async function executeStep(
     };
   }
 
+  // Coverage gate (artifact-attestation-v1 §7). RFC 9421 §7.2.1's
+  // "Insufficient Coverage", enforced: a commitment that silently covers less
+  // than the step declares protects nothing, and a verifier trusting the
+  // declaration would be trusting a claim nobody checked. The comparison is
+  // membership over declared field NAMES — never content inspection — which
+  // is what keeps this inside the gate charter's clause (b).
+  //
+  // Same shape as the state gate directly above, and for the same reasons:
+  // an explicit per-repo opt-in (never a per-invocation flag), refusal BEFORE
+  // dispatch, and no flag consulted — ctx.allowWrites/ctx.allowDestructive
+  // cannot talk a policy file out of its decision. In recorder mode this
+  // never fires: the finding is stamped into the record and the write
+  // proceeds (fail open at the recorder, fail closed at the gate).
+  if (stateGate === "refuse" && emitUnresolved.length > 0) {
+    failures.push(emitGateRefusal(emitUnresolved));
+    // No `emit` block on this path, deliberately: the call never went out, so
+    // there is no emission to commit to. The diagnosis travels in `failures`.
+    return {
+      outcome: "failed",
+      ms: Date.now() - started,
+      failures,
+      binds: localBinds,
+      ...(stateCheck !== undefined ? { stateCheck } : {}),
+    };
+  }
+
   // dispatchedAt is stamped only for checked (expect-bearing) writes — an
   // expect-less skill's record stays byte-identical (I-2). Captured at the
   // instant the dispatch is issued, closing the measured window (§8.2).
-  const dispatchedAt = isWrite && step.expect !== undefined ? new Date().toISOString() : undefined;
+  const dispatchStartedMs = Date.now();
+  const dispatchId = isWrite && step.attest?.defer !== undefined ? randomUUID() : undefined;
+  const dispatchedAt = isWrite && step.expect !== undefined ? new Date(dispatchStartedMs).toISOString() : undefined;
 
   let obs: Observation;
   try {
@@ -1345,7 +1526,16 @@ async function executeStep(
     // one-sided attest, confidence "partial", reason "dispatch-failed" —
     // never silently drop the only state evidence for the incident.
     let throwAttest: StepAttest | undefined;
-    if (isWrite && step.attest && probeApproved && preProbe !== undefined && preProbe.ok && Object.keys(preProbe.projected).length > 0) {
+    if (isWrite && step.attest?.defer !== undefined && probeApproved) {
+      const deferMs = parseDuration(step.attest.defer);
+      throwAttest = {
+        method: "declared-probe",
+        selector: step.attest.tool,
+        confidence: "pending",
+        deferredUntil: new Date(dispatchStartedMs + (deferMs ?? 0)).toISOString(),
+        reason: `deferred: dispatch response was lost; awaiting the provider record (${step.attest.defer}); resolve with 'reelier resolve'`,
+      };
+    } else if (isWrite && step.attest && probeApproved && preProbe !== undefined && preProbe.ok && Object.keys(preProbe.projected).length > 0) {
       throwAttest = {
         method: "declared-probe",
         selector: step.attest.tool,
@@ -1354,6 +1544,12 @@ async function executeStep(
         reason: "dispatch-failed",
       };
     }
+    const throwWrite = isWrite
+      ? {
+          ...buildStepWrite(step.actionTool, tool, filledArgs, undefined, step.approve, dispatchId),
+          ...(dispatchedAt !== undefined ? { dispatchedAt } : {}),
+        }
+      : undefined;
     // §8.6: the state check completed BEFORE dispatch — a dispatch throw
     // never un-computes it.
     return {
@@ -1361,8 +1557,10 @@ async function executeStep(
       ms: Date.now() - started,
       failures,
       binds: localBinds,
+      ...(throwWrite !== undefined ? { write: throwWrite } : {}),
       ...(throwAttest !== undefined ? { attest: throwAttest } : {}),
       ...(stateCheck !== undefined ? { stateCheck } : {}),
+      ...(emitCommitment !== undefined ? { emit: emitCommitment } : {}),
     };
   }
 
@@ -1370,12 +1568,31 @@ async function executeStep(
   // stamped here, BEFORE assert evaluation, because the side effect already
   // happened regardless of whether the step's assertions later hold.
   const write = isWrite
-    ? { ...buildStepWrite(step.actionTool, tool, filledArgs, obs, step.approve), ...(dispatchedAt !== undefined ? { dispatchedAt } : {}) }
+    ? { ...buildStepWrite(step.actionTool, tool, filledArgs, obs, step.approve, dispatchId), ...(dispatchedAt !== undefined ? { dispatchedAt } : {}) }
     : undefined;
 
   let attest: StepAttest | undefined;
   if (isWrite) {
-    if (step.attest && probeApproved) {
+    if (step.attest?.defer !== undefined && probeApproved) {
+      // Deferred probe (§8): bind the expectation now, resolve it when the
+      // provider's record appears. `method` stays "declared-probe" — the probe
+      // IS declared, it simply has not run — so the closed enum is unchanged
+      // and no wire migration is needed. `pending` was reserved for exactly
+      // this and becomes reachable for the first time here.
+      //
+      // never-list #1: this must never render as a pass anywhere. It is a
+      // state, not a result.
+      const deferMs = parseDuration(step.attest.defer);
+      attest = {
+        method: "declared-probe",
+        selector: step.attest.tool,
+        confidence: "pending",
+        // Resolved against DISPATCH — which is why the file carries a duration
+        // and the record carries the instant.
+        deferredUntil: new Date(dispatchStartedMs + (deferMs ?? 0)).toISOString(),
+        reason: `deferred: awaiting the provider record (${step.attest.defer}); resolve with 'reelier resolve'`,
+      };
+    } else if (step.attest && probeApproved) {
       // W3-S4 / I-18: "neither the pre-probe nor the post-probe is
       // dispatched". The post-probe would carry the same unapproved filled
       // args out of the same hole, so the ban covers it identically —
@@ -1443,13 +1660,13 @@ async function executeStep(
 
   const ms = Date.now() - started;
   if (failures.length > 0) {
-    return { outcome: "failed", ms, failures, observation: obs, binds: localBinds, write, attest, stateCheck };
+    return { outcome: "failed", ms, failures, observation: obs, binds: localBinds, write, attest, stateCheck, emit: emitCommitment };
   }
   if (step.asserts.length === 0) {
     // Honest-success rule: zero assertions never counts as "passed".
-    return { outcome: "unchecked", ms, failures, observation: obs, binds: localBinds, write, attest, stateCheck };
+    return { outcome: "unchecked", ms, failures, observation: obs, binds: localBinds, write, attest, stateCheck, emit: emitCommitment };
   }
-  return { outcome: "passed", ms, failures, observation: obs, binds: localBinds, write, attest, stateCheck };
+  return { outcome: "passed", ms, failures, observation: obs, binds: localBinds, write, attest, stateCheck, emit: emitCommitment };
 }
 
 /** Re-evaluate a patched assert/bind set against a fixed observation. Never re-executes anything. */
@@ -1664,7 +1881,7 @@ async function attemptEscalation(
     // it computes the legacy hash and makes an approved+attested step
     // permanently un-healable at L2 with a fabricated mismatch reason
     // (final-review S1/S4). ApprovalHashInput makes omission a compile error.
-    const l2ExpectedHash = computeApprovalHash({ actionTool: step.actionTool, actionArgs: l2ArgsTemplate, attest: step.attest, expect: step.expect });
+    const l2ExpectedHash = computeApprovalHash({ actionTool: step.actionTool, actionArgs: l2ArgsTemplate, attest: step.attest, expect: step.expect, emit: step.emit });
     if (l2ExpectedHash !== step.approve) {
       failures = [...failures, l2ApprovalMismatchMessage(step)];
       return { outcome: "failed", level: 0, failures, llm: usage, escalationAttempted };
@@ -1816,6 +2033,12 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
     let why: StepWhy | undefined;
     let write = exec.write;
     let attest = exec.attest;
+    // An L2 re-dispatch sends a DIFFERENT artifact, and the escalation path
+    // computes no commitment of its own — so the main-path commitment is
+    // dropped rather than carried, because a commitment naming the first
+    // artifact beside a receipt for the second would be exactly the overclaim
+    // this feature exists to prevent. Absent is an honest state; stale is not.
+    let emitRecord = exec.emit;
     // Extends the write receipt's discipline to EVERY executed step (spec
     // §3) — a read step's Observation can carry cross-checkable refs too.
     // `exec.observation` is set on every REAL (or mocked-synthetic) dispatch
@@ -1870,6 +2093,9 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
       // L2 re-dispatch with the IDENTICAL key (args unchanged) is honestly
       // flagged as a duplicate of that earlier attempt — even when "earlier"
       // means this very step, which really did write twice.
+      // L2 re-dispatched: whatever left the second time is not what the
+      // main-path commitment covers. Dropped, never carried forward.
+      if (escalated.write) emitRecord = undefined;
       if (escalated.write && !exec.mocked) {
         const firstSeenAt = writeKeySeen.get(escalated.write.idempotencyKey);
         write = firstSeenAt !== undefined ? { ...escalated.write, duplicateOf: firstSeenAt } : escalated.write;
@@ -1915,6 +2141,7 @@ export async function runSkill(skill: Skill, options: RunOptions = {}): Promise<
       ...(escalationAttempted !== undefined ? { escalationAttempted } : {}),
       ...(why ? { why } : {}),
       ...(write ? { write } : {}),
+      ...(emitRecord ? { emit: emitRecord } : {}),
       ...(attest ? { attest } : {}),
       // The main-path check, never post-hoc (I-3): L2 is ineligible for
       // expect-bearing steps (B1), so escalation can never produce a

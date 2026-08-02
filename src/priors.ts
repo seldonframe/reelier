@@ -21,7 +21,7 @@
 // are four runs (`gap` and `silence`, computed over the intervals BETWEEN
 // runs, need five).
 import { deriveFootprint, type RunFootprint } from "./footprint.js";
-import type { RunRecord } from "./runner.js";
+import { executionRecords, type RunRecord } from "./runner.js";
 
 /**
  * Prior runs required before ANY baseline is computed.
@@ -323,7 +323,8 @@ export function computeRunShape(records: readonly RunRecord[], options: RunShape
   // `reelier push` already refuses to push one. It is neither a baseline
   // sample nor a subject: including it would poison the outcome counts with
   // failures nobody observed.
-  const usable = records.filter((r) => !Array.isArray(r.mockFailures) || r.mockFailures.length === 0);
+  const executions = executionRecords(records);
+  const usable = executions.filter((r) => !Array.isArray(r.mockFailures) || r.mockFailures.length === 0);
   if (usable.length === 0) return { kind: "no-runs" };
 
   const latest = usable[usable.length - 1];
@@ -332,7 +333,7 @@ export function computeRunShape(records: readonly RunRecord[], options: RunShape
   // report describes is NOT the last run that happened. See SubjectPosition —
   // the fact travels with the report because "this run" is a claim only the
   // caller can make, and only when this is true.
-  const subjectIsNewestRecord = latest === records[records.length - 1];
+  const subjectIsNewestRecord = latest === executions[executions.length - 1];
   const priors = usable.slice(0, -1).slice(-MAX_BASELINE_RUNS);
   if (priors.length < MIN_PRIOR_RUNS) {
     return {

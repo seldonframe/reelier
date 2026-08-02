@@ -47,7 +47,7 @@ ${asserts.map((a) => `- assert: ${a}`).join("\n")}
 - expect: {"at":"${expect.at}","keyId":"${expect.keyId}","pre":"${expect.pre}"}
 `;
   const step = parseSkill(`${base}- approve: sha256:${"0".repeat(64)}\n`).steps[0];
-  const hash = computeApprovalHash({ actionTool: step.actionTool, actionArgs: step.actionArgs, attest: step.attest, expect: step.expect });
+  const hash = computeApprovalHash({ emit: undefined, actionTool: step.actionTool, actionArgs: step.actionArgs, attest: step.attest, expect: step.expect });
   const source = `${base}- approve: ${hash}\n`;
   return { source, keystorePath, keyId };
 }
@@ -200,7 +200,7 @@ description: approved write, no binding
 - attest: {"tool":"get_page","args":{"slug":"demo"},"projection":["compiled_truth"]}
 `;
   const step = parseSkill(`${plain}- approve: sha256:${"0".repeat(64)}\n`).steps[0];
-  const hash = computeApprovalHash({ actionTool: step.actionTool, actionArgs: step.actionArgs, attest: step.attest, expect: step.expect });
+  const hash = computeApprovalHash({ emit: undefined, actionTool: step.actionTool, actionArgs: step.actionArgs, attest: step.attest, expect: step.expect });
   const { tools } = gbrainTools(() => APPROVED_BODY);
   await withTempDir(async (dir) => {
     const record = await runSkill(parseSkill(`${plain}- approve: ${hash}\n`), { tools, cwd: dir });
@@ -384,7 +384,8 @@ test("§8.6: a dispatch that throws AFTER the check keeps the computed stateChec
     const record = await runSkill(parseSkill(source), { tools, expectKeystorePath: keystorePath, cwd: dir });
     const step = record.steps[0];
     assert.equal(step.outcome, "failed");
-    assert.equal(step.write, undefined, "no write receipt — no observation came back");
+    assert.equal(step.write?.approved, true, "dispatch happened even though no response observation came back");
+    assert.ok(step.write?.idempotencyKey, "the filled call identity is knowable before dispatch");
     assert.equal(step.stateCheck!.outcome, "mismatch", "the pre-dispatch check survives the throw");
     assert.equal(step.attest!.confidence, "partial");
     assert.equal(step.attest!.reason, "dispatch-failed");

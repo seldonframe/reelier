@@ -38,13 +38,13 @@ written for.
 
 **Path A is also where the fail-open gap lives.** See §7.
 
-## 3. OSS command surface (26 commands, v0.30.0)
+## 3. OSS command surface (27 commands, unreleased v0.31.0 worktree)
 
 - **Record/observe:** `mcp` (the recorder/live proxy — takes `--wrap`), `trace`, `scan`,
   `from-session`, `compile` (trace → skill; never generates steps from instruction text)
 - **Install:** `init`, `install`, `uninstall` (MCP config rewrite + reversible backup)
-- **Run:** `run`, `bench`, `baseline`, `diff`, `ci` (scaffolds a replay workflow; default schedule
-  `cron: "23 7 * * *"` — daily)
+- **Run:** `run`, `bench`, `baseline`, `diff`, `ci`, `resolve` (polls deferred provider records and
+  appends neutral resolution records; it never amends the original run)
 - **Bind/gate:** `manifest` (stamp tool schemas from live servers; preflight fails closed on drift),
   `approve` (incl. `--probe` state ceremony and `--expires`), `policy` (`policy check` is strict and
   exits 1; the wrap runtime is not)
@@ -60,6 +60,8 @@ written for.
 - assert:  status == 200 / body contains "…"
 - effect:  read | idempotent-write | destructive
 - attest:  {"tool":"<probe>","args":{…},"projection":["field"]}
+- emit:  {"projection":["args.to","args.body"]}  # pre-dispatch artifact commitment for writes with no post-state
+- attest.defer: "24h"  # approved deferred probe; requires emit and resolves through `reelier resolve`
 ```
 
 Plus `{{var}}`/`bind` templating from prior responses, `expect:` field-level MACs, projection
@@ -102,9 +104,11 @@ Ops note: **no auto-migrate wiring** — migrations are applied by hand after me
 
 ## 7. Known limits — state these, do not paper over them
 
-1. **Probe-less writes degrade.** `attest` needs a read-back tool. There is no "get the email you
-   just sent." Sends, settled refunds, and anything a human already read have no post-state to hash.
-   Email is currently the *weakest* substrate, not the strongest.
+1. **Probe-less writes have a bounded path, not delivery proof.** `attest` needs a read-back tool;
+   for sends, settled refunds, and anything a human already read, `emit:` commits the artifact that
+   left but cannot prove delivery, reading, or semantic correctness. A deferred `attest` can later
+   observe a provider record, but its resolution proves post-state at resolution time, never a delta
+   across the write. Ordinary probe-less writes remain un-attested.
 2. **Only MCP-shaped traffic is visible.** A direct HTTP call inside the operator's own service is
    invisible to the wrap. Whether Reelier helps a given stack is an empirical question about that
    stack.

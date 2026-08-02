@@ -199,6 +199,17 @@ test("no records at all -> no-runs, never a baseline", () => {
   assert.equal(computeRunShape([]).kind, "no-runs");
 });
 
+test("deferred-resolution records never become a run-shape sample or subject", () => {
+  const executions = dailyRuns(4);
+  const resolution = { ...record({ outcomes: ["unchecked"], startedAt: dayStamp(4) }), passed: false, deferredResolution: true as const };
+  const report = computeRunShape([...executions, resolution]);
+  assert.equal(report.kind, "baseline");
+  if (report.kind === "baseline") {
+    assert.equal(report.latestStartedAt, executions[3].startedAt);
+    assert.equal(report.subjectIsNewestRecord, true);
+  }
+});
+
 test("fewer than MIN_PRIOR_RUNS priors -> insufficient-history reporting the real counts", () => {
   assert.equal(MIN_PRIOR_RUNS, 3);
   for (const priors of [0, 1, 2]) {

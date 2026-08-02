@@ -61,14 +61,14 @@ export function mintExpectKey(): { key: Buffer; keyId: string } {
  * A missing key must surface as `unevaluated` at the call site — reaching
  * this function with a bad key is a programmer error, refused loudly.
  */
-function assertUsableKey(key: Uint8Array): void {
+export function assertUsableKey(key: Uint8Array, who = "expectMac"): void {
   if (key.length !== EXPECT_KEY_BYTES) {
     throw new Error(
-      `expectMac: key must be exactly ${EXPECT_KEY_BYTES} bytes, got ${key.length} — never compute a commitment under a truncated or empty key (I-6)`
+      `${who}: key must be exactly ${EXPECT_KEY_BYTES} bytes, got ${key.length} — never compute a commitment under a truncated or empty key (I-6)`
     );
   }
   if (key.every((b) => b === 0)) {
-    throw new Error("expectMac: refusing an all-zero (placeholder) key — never compute a commitment under a default key (I-6)");
+    throw new Error(`${who}: refusing an all-zero (placeholder) key — never compute a commitment under a default key (I-6)`);
   }
 }
 
@@ -363,9 +363,9 @@ export function expectFieldMac(key: Uint8Array, probeTool: string, fieldName: st
  * pre-existing message is byte-identical; src/provenance.ts passes its own label
  * rather than carrying a second copy of the walk (argument-provenance-v1 §7.4).
  */
-export function assertNoProtoKeyDeep(value: unknown, at = "(root)", who = "probeArgsMac"): void {
-  if (Array.isArray(value)) {
-    value.forEach((v, i) => assertNoProtoKeyDeep(v, `${at}[${i}]`, who));
+ export function assertNoProtoKeyDeep(value: unknown, at = "(root)", who = "probeArgsMac"): void {
+   if (Array.isArray(value)) {
+     value.forEach((v, i) => assertNoProtoKeyDeep(v, `${at}[${i}]`, who));
     return;
   }
   if (value !== null && typeof value === "object") {

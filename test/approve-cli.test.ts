@@ -99,8 +99,8 @@ test("cmdApprove --all: stamps a valid approve: hash for every write step, atomi
 
     const written = await readFile(skillPath, "utf8");
     const skill = parseSkill(written);
-    assert.equal(skill.steps[0].approve, computeApprovalHash({ ...skill.steps[0], attest: skill.steps[0].attest, expect: skill.steps[0].expect }));
-    assert.equal(skill.steps[1].approve, computeApprovalHash({ ...skill.steps[1], attest: skill.steps[1].attest, expect: skill.steps[1].expect }));
+    assert.equal(skill.steps[0].approve, computeApprovalHash({ emit: undefined, ...skill.steps[0], attest: skill.steps[0].attest, expect: skill.steps[0].expect }));
+    assert.equal(skill.steps[1].approve, computeApprovalHash({ emit: undefined, ...skill.steps[1], attest: skill.steps[1].attest, expect: skill.steps[1].expect }));
     assert.match(written, /## Changelog/);
     assert.match(written, /approved 2 write step\(s\) \(reelier approve\)/);
   });
@@ -155,7 +155,7 @@ test("cmdApprove --all: reports 'approved (STALE — tool/args/attest changed)' 
 
     const written = await readFile(skillPath, "utf8");
     const skill = parseSkill(written);
-    assert.equal(skill.steps[0].approve, computeApprovalHash({ ...skill.steps[0], attest: skill.steps[0].attest, expect: skill.steps[0].expect }));
+    assert.equal(skill.steps[0].approve, computeApprovalHash({ emit: undefined, ...skill.steps[0], attest: skill.steps[0].attest, expect: skill.steps[0].expect }));
   });
 });
 

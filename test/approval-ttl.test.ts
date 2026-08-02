@@ -168,27 +168,27 @@ const EXPECT_BARE = { at: EXPECT_AT, keyId: KEY_ID, pre: MAC_A };
 
 test("TTL hash coverage: a skill with NO expect at all hashes byte-identically", () => {
   assert.equal(
-    computeApprovalHash({ ...HASH_BASE, attest: undefined, expect: undefined }),
+    computeApprovalHash({ emit: undefined, ...HASH_BASE, attest: undefined, expect: undefined }),
     "sha256:380a406c04f06e6a2a4a3fa15a571459623d30e009f3e350802a4989e7ae83b7",
   );
   assert.equal(
-    computeApprovalHash({ ...HASH_BASE, expect: undefined }),
+    computeApprovalHash({ emit: undefined, ...HASH_BASE, expect: undefined }),
     "sha256:90e4fe48c0395762f04362e4a852d903dcfad25f58cdb26976400cef7e4be34b",
   );
 });
 
 test("TTL hash coverage: a binding with expect: but NO expiresAt hashes byte-identically", () => {
-  assert.equal(computeApprovalHash({ ...HASH_BASE, expect: EXPECT_BARE }), "sha256:d9a268d91e885f3c857f577b763e42280cd8a7087a6ec54b4af0323634f8cd43");
+  assert.equal(computeApprovalHash({ emit: undefined, ...HASH_BASE, expect: EXPECT_BARE }), "sha256:d9a268d91e885f3c857f577b763e42280cd8a7087a6ec54b4af0323634f8cd43");
   assert.equal(
-    computeApprovalHash({ ...HASH_BASE, expect: { ...EXPECT_BARE, fields: { "body.compiled_truth": MAC_B } } }),
+    computeApprovalHash({ emit: undefined, ...HASH_BASE, expect: { ...EXPECT_BARE, fields: { "body.compiled_truth": MAC_B } } }),
     "sha256:94bfc0642ba701105be0c47fada3ce02788b7c314edff53592b37269d40ed7ac",
   );
 });
 
 test("TTL hash coverage: adding expiresAt MOVES the hash, and changing it moves it again", () => {
-  const bare = computeApprovalHash({ ...HASH_BASE, expect: EXPECT_BARE });
-  const a = computeApprovalHash({ ...HASH_BASE, expect: { ...EXPECT_BARE, expiresAt: "2026-08-02T00:00:00.000Z" } });
-  const b = computeApprovalHash({ ...HASH_BASE, expect: { ...EXPECT_BARE, expiresAt: "2027-08-02T00:00:00.000Z" } });
+  const bare = computeApprovalHash({ emit: undefined, ...HASH_BASE, expect: EXPECT_BARE });
+  const a = computeApprovalHash({ emit: undefined, ...HASH_BASE, expect: { ...EXPECT_BARE, expiresAt: "2026-08-02T00:00:00.000Z" } });
+  const b = computeApprovalHash({ emit: undefined, ...HASH_BASE, expect: { ...EXPECT_BARE, expiresAt: "2027-08-02T00:00:00.000Z" } });
   assert.notEqual(a, bare, "a TTL is under the yes, like everything else in expect:");
   assert.notEqual(b, a, "extending the TTL is a different approval");
 });
@@ -324,7 +324,7 @@ description: d
 - expect: ${JSON.stringify(expect)}
 `;
   const probeStep = parseSkill(`${base}- approve: sha256:${"0".repeat(64)}\n`).steps[0];
-  const hash = computeApprovalHash({
+  const hash = computeApprovalHash({ emit: undefined,
     actionTool: probeStep.actionTool,
     actionArgs: probeStep.actionArgs,
     attest: probeStep.attest,

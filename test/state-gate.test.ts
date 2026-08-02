@@ -205,7 +205,7 @@ description: d
 - expect: ${JSON.stringify({ at: "2026-07-30T00:00:00.000Z", keyId, pre, fields })}
 `;
   const probe = parseSkill(`${base}- approve: sha256:${"0".repeat(64)}\n`).steps[0];
-  const hash = computeApprovalHash({ actionTool: probe.actionTool, actionArgs: probe.actionArgs, attest: probe.attest, expect: probe.expect });
+  const hash = computeApprovalHash({ emit: undefined, actionTool: probe.actionTool, actionArgs: probe.actionArgs, attest: probe.attest, expect: probe.expect });
   const tail = opts.extraStep
     ? `
 ### Step 2 — second write
@@ -440,7 +440,7 @@ description: d
 - expect: ${JSON.stringify({ at: "2026-07-30T00:00:00.000Z", keyId, pre })}
 `;
   const probe = parseSkill(`${base}- approve: sha256:${"0".repeat(64)}\n`).steps[0];
-  const hash = computeApprovalHash({ actionTool: probe.actionTool, actionArgs: probe.actionArgs, attest: probe.attest, expect: probe.expect });
+  const hash = computeApprovalHash({ emit: undefined, actionTool: probe.actionTool, actionArgs: probe.actionArgs, attest: probe.attest, expect: probe.expect });
   const skillPath = path.join(dir, "gated.skill.md");
   await writeFile(skillPath, `${base}- approve: ${hash}\n`, "utf8");
   return skillPath;

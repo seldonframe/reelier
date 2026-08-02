@@ -80,14 +80,14 @@ test("rejects a duplicate 'exposure' bullet, like every other single-cardinality
   );
 });
 
-test("an unknown step key still throws, and the message now lists nine", () => {
+test("an unknown step key still throws, and the message now lists ten", () => {
   assert.throws(
     () => parseSkill(skillWith("- frobnicate: x\n")),
     (err: unknown) => {
       assert.ok(err instanceof SkillParseError);
       assert.match(
         err.message,
-        /Unrecognized step field, expected one of intent\/action\/assert\/bind\/effect\/exposure\/approve\/attest\/expect/
+        /Unrecognized step field, expected one of intent\/action\/assert\/bind\/effect\/exposure\/emit\/approve\/attest\/expect/
       );
       return true;
     }

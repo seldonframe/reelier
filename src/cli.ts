@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Hand-rolled argv parsing (no commander). Two subcommands: run, bench.
 
-import { readFile, writeFile, access, readdir, realpath, stat } from "node:fs/promises";
+import { readFile, writeFile, appendFile, access, readdir, realpath, stat } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
@@ -9,8 +9,9 @@ import os from "node:os";
 import { pathToFileURL } from "node:url";
 import { createInterface } from "node:readline/promises";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { parseSkill, SkillParseError, type Step } from "./skill.js";
-import { runSkill, dryRunSkill, readRunRecords, runProbe, fillTemplate, DEFAULT_PROBE_TIMEOUT_MS, type RunRecord } from "./runner.js";
+import { parseSkill, SkillParseError, type Skill, type Step } from "./skill.js";
+import { runSkill, dryRunSkill, readRunRecords, executionRecords, runProbe, fillTemplate, DEFAULT_PROBE_TIMEOUT_MS, type RunRecord, type StepAttest } from "./runner.js";
+import { buildResolutionRecord, resolveDeferred, selectUnresolved, type PendingAttestation } from "./defer.js";
 import {
   mintExpectKey,
   expectMac,
@@ -34,7 +35,7 @@ import { getSkill, getMineSkill, type GetOutcome, type GetMineOutcome } from "./
 import { DEFAULT_CLOUD_URL, readCliConfig, writeCliConfig, clearCliCredentials } from "./cloud-config.js";
 import { startLogin, pollForToken, openBrowser } from "./login.js";
 import type { spawn } from "node:child_process";
-import { builtinTools, type Tool } from "./tools.js";
+import { builtinTools, type Tool, type ToolContext } from "./tools.js";
 import { connectDownstream, type DownstreamConnection } from "./mcp-client.js";
 import { buildMcpTools } from "./mcp-tool.js";
 import { buildProxyServer, Recorder } from "./recorder.js";
@@ -471,8 +472,10 @@ export async function cmdRun(
       policy: stateGate.policy,
       ...(args.fails.length > 0 ? { mockFailures } : {}),
       onStep: (rec) => {
-        const icon =
-          rec.outcome === "passed" || rec.outcome === "unchecked" ? "✓" : rec.outcome === "skipped" ? "○" : "✗";
+        const unresolvedAttest = rec.attest?.confidence === "pending" || rec.attest?.confidence === "absent";
+        const icon = unresolvedAttest
+          ? "◇"
+          : rec.outcome === "passed" || rec.outcome === "unchecked" ? "✓" : rec.outcome === "skipped" ? "○" : "✗";
         const tag = rec.outcome === "unchecked" ? " (unchecked: no assertions)" : "";
         const levelTag = rec.level > 0 ? ` [healed L${rec.level}]` : "";
         // Shown only for `external-visible` (SPEC §3.7): internal is the
@@ -516,7 +519,7 @@ export async function cmdRun(
     // prints FAILED *and* a finding tag: two honest facts, not one signal
     // leaking into the other.
     console.log(
-      `${record.passed ? "PASSED" : "FAILED"}: ${okCount}/${record.totals.steps} steps ok${uncheckedTag}, ${
+      `${runDisplayVerdict(record)}: ${okCount}/${record.totals.steps} steps ok${uncheckedTag}, ${
         record.totals.failed
       } failed, ${fmtDuration(record.totals.ms)} total${findingsSummaryTag(record.steps)}`
     );
@@ -565,7 +568,17 @@ export interface BenchSummary {
   failureCounts: Map<string, number>;
 }
 
+/** CLI verdict vocabulary: unresolved attestation is a state, never a pass. */
+export function runDisplayVerdict(record: RunRecord): "PASSED" | "FAILED" | "ATTESTATION PENDING" | "ATTESTATION ABSENT" {
+  if (!record.passed) return "FAILED";
+  const confidences = record.steps.map((step) => step.attest?.confidence);
+  if (confidences.includes("pending")) return "ATTESTATION PENDING";
+  if (confidences.includes("absent")) return "ATTESTATION ABSENT";
+  return "PASSED";
+}
+
 export function computeBenchSummary(records: RunRecord[]): BenchSummary {
+  records = executionRecords(records);
   const first = records[0];
   const latest = records[records.length - 1];
   const passCount = records.filter((r) => r.passed).length;
@@ -657,6 +670,7 @@ async function cmdBench(args: ParsedArgs): Promise<number> {
     return 1;
   }
 
+  records = executionRecords(records);
   if (records.length === 0) {
     console.error(`Run record file ${recordPath} is empty`);
     return 1;
@@ -1340,6 +1354,189 @@ async function cmdCompile(args: ParsedArgs): Promise<number> {
   }
 
   return 0;
+}
+
+
+/**
+ * `reelier resolve <skill.md> --wrap "…"` — resolve deferred attestations
+ * (docs/specs/artifact-attestation-v1.md §8).
+ *
+ * A deferred probe (`attest.defer`) records `confidence: "pending"` at dispatch
+ * because the provider's record — a message-id row, an event API entry, a
+ * bounce/delivery webhook landing — does not exist yet. This walks the ledger,
+ * probes for the ones that may exist by now, and appends the answer.
+ *
+ * It is a POLLING command an operator or CI runs, never a listener: the CLI has
+ * no inbound HTTP surface and no daemon, and pretending otherwise would be a
+ * capability claim the package cannot honour.
+ *
+ * Two rules do the real work:
+ *
+ *  1. **A resolution is a SECOND record, never an amendment.** Run records
+ *     carry no id, the ledger has one append-only writer, and the cloud exposes
+ *     only POST over hash-chained rows. The original stays byte-identical.
+ *  2. **Nothing is written for an attestation that did not move.** A probe that
+ *     has not resolved and whose deadline has not passed appends NOTHING —
+ *     otherwise the ledger grows a record per invocation and the next scan
+ *     starts reading this command's own output.
+ */
+export async function cmdResolve(
+  args: ParsedArgs,
+  connect: (spec: string) => Promise<DownstreamConnection> = connectDownstream,
+  deps: { cwd?: string; now?: number; env?: NodeJS.ProcessEnv; homedir?: string } = {}
+): Promise<number> {
+  const skillPath = args.positional[0];
+  if (!skillPath) {
+    console.error('Usage: reelier resolve <skill.md> --wrap "<command>" [--wrap ...] [--var name=value ...]');
+    return 1;
+  }
+  let skill: Skill;
+  try {
+    skill = parseSkill(await readFile(skillPath, "utf8"));
+  } catch (err) {
+    console.error(`Could not read ${skillPath}: ${(err as Error).message}`);
+    return 1;
+  }
+
+  const cwd = deps.cwd ?? process.cwd();
+  const recordPath = runRecordPathFor(cwd, skill.name);
+  let records: RunRecord[];
+  try {
+    records = await readRunRecords(recordPath);
+  } catch (err) {
+    console.error(`Could not read the run ledger at ${recordPath}: ${(err as Error).message}`);
+    return 1;
+  }
+
+  const unresolved = selectUnresolved(records);
+  if (unresolved.length === 0) {
+    console.log(`${skill.name}: no deferred attestations awaiting resolution.`);
+    return 0;
+  }
+
+  // --wrap is required for the same reason `reelier manifest` requires it: a
+  // probe has to reach a live server, and there is nothing honest to do
+  // without one. Checked AFTER the ledger scan so "nothing to resolve" never
+  // reports as a usage error.
+  if (args.wraps.length === 0) {
+    console.error(
+      `${skill.name}: ${unresolved.length} deferred attestation(s) awaiting resolution, but no --wrap was given.
+` +
+        'A probe needs a live server to reach. Usage: reelier resolve <skill.md> --wrap "<command>"'
+    );
+    return 1;
+  }
+
+  const downstreams: DownstreamConnection[] = [];
+  try {
+    for (const spec of args.wraps) downstreams.push(await connect(spec));
+    if (skill.manifest) {
+      const { ok, drifts } = preflightManifest(skill.manifest, downstreams);
+      if (!ok) {
+        console.error("MANIFEST DRIFT — refusing deferred resolution probe (fail closed):");
+        for (const drift of drifts) {
+          const liveTag = drift.live !== undefined ? ` live ${drift.live}` : "";
+          console.error(`  ✗ ${drift.name} — recorded ${drift.recorded}${liveTag} (${drift.note})`);
+        }
+        return 1;
+      }
+    }
+    const tools = buildWrappedToolRegistry(downstreams);
+    if (tools === undefined) {
+      console.error("No downstream tools available.");
+      return 1;
+    }
+    // Probes are read-effect by construction (runProbe enforces it), so no
+    // write permission is granted here and none is needed.
+    const ctx: ToolContext = { allowDestructive: false };
+    const now = deps.now ?? Date.now();
+    const startedAt = now;
+    const resolutions: { pending: PendingAttestation; attest: StepAttest }[] = [];
+    let integrityFailures = 0;
+    let expectStore: Awaited<ReturnType<typeof readKeystore>> | undefined;
+    let expectStoreLoaded = false;
+
+    for (const pending of unresolved) {
+      const step = skill.steps.find((st: Step) => st.n === pending.step);
+      const decl = step?.attest;
+      if (step === undefined || decl === undefined) {
+        // The skill no longer declares a probe for that step. Skipped rather
+        // than guessed: the ledger names a tool, but the args and projection
+        // that made the observation meaningful are gone.
+        console.log(`  step ${pending.step}: skipped — the skill no longer declares an attest for it`);
+        integrityFailures += 1;
+        continue;
+      }
+
+      const currentApproval = computeApprovalHash({
+        actionTool: step.actionTool,
+        actionArgs: step.actionArgs,
+        attest: step.attest,
+        expect: step.expect,
+        emit: step.emit,
+      });
+      if (step.approve !== pending.approvalHash || currentApproval !== pending.approvalHash) {
+        console.error(
+          `  step ${pending.step}: refused — the current skill no longer matches the approval recorded at dispatch; no probe ran and no resolution can be claimed`
+        );
+        integrityFailures += 1;
+        continue;
+      }
+
+      const parameterized = collectPlaceholders(decl.args).length > 0;
+      if (parameterized) {
+        if (step.expect?.probeArgs === undefined) {
+          console.error(
+            `  step ${pending.step}: refused — parameterized deferred probe args have no expect.probeArgs commitment; no probe ran`
+          );
+          integrityFailures += 1;
+          continue;
+        }
+        let filledProbeArgs: unknown;
+        try {
+          filledProbeArgs = fillTemplate(decl.args, args.vars, now);
+          if (!expectStoreLoaded) {
+            expectStoreLoaded = true;
+            const keystorePath = resolveKeystorePath(deps.env ?? process.env, deps.homedir ?? os.homedir());
+            expectStore = await readKeystore(keystorePath);
+          }
+          const key = expectStore === undefined ? undefined : loadExpectKey(expectStore, step.expect.keyId);
+          if (key === undefined || probeArgsMac(key, decl.tool, filledProbeArgs) !== step.expect.probeArgs) {
+            throw new Error("filled probe args do not match the approved commitment");
+          }
+        } catch (err) {
+          console.error(`  step ${pending.step}: refused — ${(err as Error).message}; no probe ran`);
+          integrityFailures += 1;
+          continue;
+        }
+      }
+      const probe = await runProbe(decl, tools, args.vars, ctx, now, DEFAULT_PROBE_TIMEOUT_MS);
+      const attest = resolveDeferred(
+        pending,
+        probe.ok ? { ok: true, projected: probe.projected } : { ok: false, reason: probe.reason },
+        now
+      );
+      // Rule 2: only an attestation that actually moved earns a record.
+      if (attest.confidence === "pending") {
+        console.log(`  step ${pending.step}: still pending (due ${pending.deferredUntil}) — nothing written`);
+        continue;
+      }
+      console.log(`  step ${pending.step}: ${attest.confidence} (was due ${pending.deferredUntil})`);
+      resolutions.push({ pending, attest });
+    }
+
+    const record = buildResolutionRecord(skill.name, resolutions, startedAt, deps.now ?? Date.now());
+    if (record === undefined) {
+      console.log(`${skill.name}: nothing resolved this pass.`);
+      return integrityFailures > 0 ? 1 : 0;
+    }
+    await appendFile(recordPath, `${JSON.stringify(record)}
+`, "utf8");
+    console.log(`${skill.name}: appended ${resolutions.length} resolution(s) to ${recordPath}`);
+    return integrityFailures > 0 ? 1 : 0;
+  } finally {
+    for (const d of downstreams) await d.close().catch(() => {});
+  }
 }
 
 /**
@@ -2067,7 +2264,7 @@ export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Prom
       // literal binding stays byte-identical to 0.26.0.
       ...(probeArgs !== undefined ? { probeArgs: probeArgsMac(key, step.attest!.tool, probeArgs.filled) } : {}),
     };
-    step.approve = computeApprovalHash({ actionTool: step.actionTool, actionArgs: step.actionArgs, attest: step.attest, expect: step.expect });
+    step.approve = computeApprovalHash({ actionTool: step.actionTool, actionArgs: step.actionArgs, attest: step.attest, expect: step.expect, emit: step.emit });
   };
 
   /**
@@ -2148,14 +2345,14 @@ export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Prom
       const dropping = dropExpect && step.expect !== undefined;
       const effectiveExpect = dropping ? undefined : step.expect;
 
-      const expected = computeApprovalHash({ actionTool: step.actionTool, actionArgs: step.actionArgs, attest: step.attest, expect: effectiveExpect });
+      const expected = computeApprovalHash({ actionTool: step.actionTool, actionArgs: step.actionArgs, attest: step.attest, expect: effectiveExpect, emit: step.emit });
       const isCurrent = !dropping && step.approve !== undefined && step.approve === expected;
       // Under --drop-expect the hash moves because WE removed expect from the
       // input — labeling an untouched step STALE would be false (review
       // finding): distinguish "current, binding being dropped" from real drift.
       const originalCurrent =
         step.approve !== undefined &&
-        step.approve === computeApprovalHash({ actionTool: step.actionTool, actionArgs: step.actionArgs, attest: step.attest, expect: step.expect });
+        step.approve === computeApprovalHash({ actionTool: step.actionTool, actionArgs: step.actionArgs, attest: step.attest, expect: step.expect, emit: step.emit });
       const state =
         step.approve === undefined
           ? "unapproved"
@@ -2615,7 +2812,7 @@ export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Prom
         }
         // Explicit, named downgrade: today's shape-only approval semantics.
         if (step.expect !== undefined) delete step.expect;
-        step.approve = computeApprovalHash({ actionTool: step.actionTool, actionArgs: step.actionArgs, attest: step.attest, expect: undefined });
+        step.approve = computeApprovalHash({ actionTool: step.actionTool, actionArgs: step.actionArgs, attest: step.attest, expect: undefined, emit: step.emit });
         approvedCount++;
         continue;
       }
@@ -2659,7 +2856,7 @@ export async function cmdApprove(args: ParsedArgs, deps: ApproveDeps = {}): Prom
           continue;
         }
         if (step.expect !== undefined) delete step.expect;
-        step.approve = computeApprovalHash({ actionTool: step.actionTool, actionArgs: step.actionArgs, attest: step.attest, expect: undefined });
+        step.approve = computeApprovalHash({ actionTool: step.actionTool, actionArgs: step.actionArgs, attest: step.attest, expect: undefined, emit: step.emit });
         approvedCount++;
         continue;
       }
@@ -4025,6 +4222,7 @@ const USAGE =
   "  whoami — reelier whoami: print the identity the stored key resolves to, or that you're not logged in.\n" +
   "  ci     — reelier ci [--force] [--path <dir>]: writes .github/workflows/reelier-replay.yml — drift-CI + PR receipts in one command.\n" +
   "  manifest — reelier manifest <skill.md> --wrap \"<command>\": stamp/refresh the skill's tool-schema manifest from live servers.\n" +
+  "  resolve — reelier resolve <skill.md> --wrap \"<command>\": resolve deferred attestations (attest.defer) by probing for the provider record. Appends the answer as a NEW record; never amends the original, and writes nothing for one still legitimately waiting.\n" +
   "  approve — reelier approve <skill.md> [--all]: hash-bind approval onto each write/destructive step (the final replay boundary).\n" +
   "  mcp    — RECORDER: fronts your own --wrap'd MCP server(s) to capture their calls into a trace.\n" +
   "           Enforces .reelier/policy.yml (or ~/.reelier/policy.yml) — deny/dry-run rules; pass --allow-writes\n" +
@@ -4085,6 +4283,8 @@ async function main(): Promise<number> {
       return cmdCompile(args);
     case "manifest":
       return cmdManifest(args);
+    case "resolve":
+      return cmdResolve(args);
     case "approve":
       return cmdApprove(args);
     case "push":

@@ -297,8 +297,8 @@ test("runner: executes a destructive step when allowDestructive is true", async 
 const WRITE_ACTION_ARGS = { url: "https://example.com/write" };
 const DESTRUCTIVE_ACTION_ARGS = { url: "https://example.com/delete" };
 
-const WRITE_APPROVE_HASH = computeApprovalHash({ actionTool: "mock.tool", actionArgs: WRITE_ACTION_ARGS, attest: undefined, expect: undefined });
-const DESTRUCTIVE_APPROVE_HASH = computeApprovalHash({ actionTool: "mock.tool", actionArgs: DESTRUCTIVE_ACTION_ARGS, attest: undefined, expect: undefined });
+const WRITE_APPROVE_HASH = computeApprovalHash({ emit: undefined, actionTool: "mock.tool", actionArgs: WRITE_ACTION_ARGS, attest: undefined, expect: undefined });
+const DESTRUCTIVE_APPROVE_HASH = computeApprovalHash({ emit: undefined, actionTool: "mock.tool", actionArgs: DESTRUCTIVE_ACTION_ARGS, attest: undefined, expect: undefined });
 const WRONG_HASH = `sha256:${"0".repeat(64)}`;
 
 function skillWithApprove(effect: "idempotent-write" | "destructive", approveLine?: string): string {
@@ -651,7 +651,7 @@ test("write receipt: an L2-healed write step carries a fresh write block (from t
 // ---------------------------------------------------------------------------
 
 const L2_APPROVE_ARGS = { url: "https://example.com/contacts" };
-const L2_APPROVE_HASH = computeApprovalHash({ actionTool: "mock.tool", actionArgs: L2_APPROVE_ARGS, attest: undefined, expect: undefined });
+const L2_APPROVE_HASH = computeApprovalHash({ emit: undefined, actionTool: "mock.tool", actionArgs: L2_APPROVE_ARGS, attest: undefined, expect: undefined });
 
 function skillApprovedWriteForL2(): string {
   return `---

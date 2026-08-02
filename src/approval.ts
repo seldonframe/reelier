@@ -7,7 +7,24 @@
 // that refusal.
 
 import { digestSha256 } from "./canonical-json.js";
-import type { Step, StepAttestDecl, StepExpect } from "./skill.js";
+import type { Step, StepAttestDecl, StepEmit, StepExpect } from "./skill.js";
+
+/**
+ * `emit` joins the hash ONLY when present, exactly as `attest`, `expect`,
+ * `fields`, `probeArgs` and `expiresAt` do — a step without an artifact
+ * declaration hashes byte-identically to 0.29.0 (pinned against a literal
+ * captured digest, not a restated formula).
+ *
+ * Binding it is the countermeasure to RFC 9421 §7.2.1's "Insufficient
+ * Coverage" (artifact-attestation-v1 §11.1): a coverage list that a verifier
+ * trusts, but that anyone can quietly narrow after approval, protects
+ * nothing. With the list inside the hash, narrowing it — or deleting `emit:`
+ * to un-cover a send entirely — is an approval mismatch at the boundary no
+ * flag overrides.
+ */
+function emitHashInput(emit: StepEmit | undefined): { emit: { projection: string[] } } | Record<string, never> {
+  return emit !== undefined ? { emit: { projection: emit.projection } } : {};
+}
 
 /**
  * The exact inputs the approval hash binds. `attest` and `expect` are
@@ -21,6 +38,7 @@ import type { Step, StepAttestDecl, StepExpect } from "./skill.js";
 export type ApprovalHashInput = Pick<Step, "actionTool" | "actionArgs"> & {
   attest: StepAttestDecl | undefined;
   expect: StepExpect | undefined;
+  emit: StepEmit | undefined;
 };
 
 /**
@@ -55,7 +73,15 @@ export function computeApprovalHash(step: ApprovalHashInput): string {
     }
     return digestSha256({
       args: step.actionArgs,
-      attest: { args: step.attest.args, projection: step.attest.projection ?? null, tool: step.attest.tool },
+      attest: {
+        args: step.attest.args,
+        // §8: joins the hash ONLY when present, so a sync probe hashes
+        // byte-identically to 0.29.0. A deadline nobody approved is not a
+        // deadline — binding it makes hand-editing one an approval mismatch.
+        ...(step.attest.defer !== undefined ? { defer: step.attest.defer } : {}),
+        projection: step.attest.projection ?? null,
+        tool: step.attest.tool,
+      },
       // P1.5: `fields` joins the hash ONLY when present — fieldless
       // bindings keep the exact 0.25.0 hash input (identity pinned by test).
       expect: {
@@ -79,15 +105,25 @@ export function computeApprovalHash(step: ApprovalHashInput): string {
         // mismatch refused by the existing final-boundary path.
         ...(step.expect.probeArgs !== undefined ? { probeArgs: step.expect.probeArgs } : {}),
       },
+      ...emitHashInput(step.emit),
       tool: step.actionTool,
     });
   }
   if (step.attest === undefined) {
-    return digestSha256({ args: step.actionArgs, tool: step.actionTool });
+    return digestSha256({ args: step.actionArgs, ...emitHashInput(step.emit), tool: step.actionTool });
   }
   return digestSha256({
     args: step.actionArgs,
-    attest: { args: step.attest.args, projection: step.attest.projection ?? null, tool: step.attest.tool },
+    attest: {
+        args: step.attest.args,
+        // §8: joins the hash ONLY when present, so a sync probe hashes
+        // byte-identically to 0.29.0. A deadline nobody approved is not a
+        // deadline — binding it makes hand-editing one an approval mismatch.
+        ...(step.attest.defer !== undefined ? { defer: step.attest.defer } : {}),
+        projection: step.attest.projection ?? null,
+        tool: step.attest.tool,
+      },
+    ...emitHashInput(step.emit),
     tool: step.actionTool,
   });
 }

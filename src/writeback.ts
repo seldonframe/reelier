@@ -83,8 +83,17 @@ export function renderStepBlock(step: Step): string[] {
   // Only when the author stated it: absent means `internal` (SPEC §3.7), and
   // emitting it would rewrite every existing skill file on the first heal.
   if (step.exposure !== undefined) lines.push(`- exposure: ${step.exposure}`);
+  // Emitted BEFORE the attest/approve/expect trio and directly after
+  // `exposure`: both describe the outgoing effect (what leaves, and who
+  // outside may see it), while the trio describes the read-back binding.
+  // Declared projection ORDER is preserved verbatim rather than sorted — the
+  // list is an ordered coverage declaration (RFC 9421 §2.3), and sorting it
+  // would silently rewrite what an approval binds.
+  if (step.emit !== undefined) {
+    lines.push(`- emit: ${JSON.stringify({ projection: step.emit.projection })}`);
+  }
   if (step.attest !== undefined) {
-    lines.push(`- attest: ${JSON.stringify({ tool: step.attest.tool, args: step.attest.args, ...(step.attest.projection ? { projection: step.attest.projection } : {}) })}`);
+    lines.push(`- attest: ${JSON.stringify({ tool: step.attest.tool, args: step.attest.args, ...(step.attest.projection ? { projection: step.attest.projection } : {}), ...(step.attest.defer !== undefined ? { defer: step.attest.defer } : {}) })}`);
   }
   if (step.approve !== undefined) lines.push(`- approve: ${step.approve}`);
   if (step.expect !== undefined) {
