@@ -5,10 +5,13 @@ import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import {
+  assertAcceptedDecisionContext,
   authorityCanonicalBytes,
   authorityDigest,
+  decisionContextPresence,
   parseCanonicalAuthorityJson,
   parseAuthorityWire,
+  parsePortableAuthorityEvidence,
 } from "../../src/authority/wire.js";
 import type { AuthorityKind } from "../../src/authority/types.js";
 import { evaluateVerifyClaims } from "../../src/verify.js";
@@ -74,9 +77,124 @@ const acceptedDecisionContext = {
     authorityStateDigest: "sha256:" + "8".repeat(64),
   },
 };
+const refusedDecisionContext = {
+  ...acceptedDecisionContext,
+  contractDigest: null,
+  capabilityId: null,
+  capabilityDigest: null,
+  outcomeKey: null,
+  effectDigest: null,
+  snapshots: { sourceBundleDigest: null, authorityStateDigest: null },
+};
+const decisionContextDigest = authorityDigest(acceptedDecisionContext);
+const gateEvent = {
+  v: "reelier.gate-event/v1",
+  eventId: "event_1",
+  at: "2026-01-01T00:00:00.000Z",
+  verdict: "accepted",
+  reasonCode: "accepted",
+  decisionContextDigest,
+};
+const receiptClaims = {
+  authorization: "verified",
+  sourceCompleteness: "verified",
+  dispatch: "verified",
+  providerAcknowledgment: "unchecked",
+  reconciliation: "absent",
+  topology: "unchecked",
+  completeness: "unchecked",
+};
+const authorityReceipt = {
+  v: "reelier.authority-receipt/v1",
+  receiptId: "receipt_1",
+  gateEventDigest: authorityDigest(gateEvent),
+  decisionContextDigest,
+  decisionContext: acceptedDecisionContext,
+  claims: receiptClaims,
+};
 
 test("DecisionContext parses as an independently versioned closed wire object", () => {
   assert.deepEqual(parseAuthorityWire("decision-context", acceptedDecisionContext), acceptedDecisionContext);
+  assert.deepEqual(parseAuthorityWire("decision-context", refusedDecisionContext), refusedDecisionContext);
+  assert.throws(() => parseAuthorityWire("decision-context", { ...acceptedDecisionContext, extra: true }), /additional properties/i);
+  for (const field of ["contractDigest", "capabilityId", "capabilityDigest", "outcomeKey", "effectDigest"] as const) {
+    assert.throws(() => parseAuthorityWire("decision-context", without(acceptedDecisionContext, field)), /required property/i, field);
+  }
+  for (const field of ["sourceBundleDigest", "authorityStateDigest"] as const) {
+    assert.throws(() => parseAuthorityWire("decision-context", { ...acceptedDecisionContext, snapshots: without(acceptedDecisionContext.snapshots, field) }), /required property/i, field);
+  }
+  for (const field of ["tenant", "requester", "requestId", "capabilityId"] as const) {
+    assert.throws(() => parseAuthorityWire("decision-context", { ...acceptedDecisionContext, [field]: "" }), /pattern/i, field);
+  }
+  for (const field of ["requestDigest", "requestKey", "contractDigest", "capabilityDigest", "outcomeKey", "effectDigest"] as const) {
+    assert.throws(() => parseAuthorityWire("decision-context", { ...acceptedDecisionContext, [field]: zeroDigest }), /pattern/i, field);
+  }
+  for (const field of ["sourceBundleDigest", "authorityStateDigest"] as const) {
+    assert.throws(() => parseAuthorityWire("decision-context", { ...acceptedDecisionContext, snapshots: { ...acceptedDecisionContext.snapshots, [field]: zeroDigest } }), /pattern/i, field);
+  }
+});
+
+test("DecisionContext enforces intrinsic capability pairing and downstream artifact ordering", () => {
+  assert.throws(() => parseAuthorityWire("decision-context", { ...acceptedDecisionContext, capabilityId: null }), /capability.*paired/i);
+  assert.throws(() => parseAuthorityWire("decision-context", { ...acceptedDecisionContext, capabilityDigest: null }), /capability.*paired/i);
+  assert.throws(() => parseAuthorityWire("decision-context", { ...acceptedDecisionContext, contractDigest: null }), /artifact dependency/i);
+  assert.throws(() => parseAuthorityWire("decision-context", { ...acceptedDecisionContext, outcomeKey: null }), /artifact dependency/i);
+  assert.throws(() => parseAuthorityWire("decision-context", { ...acceptedDecisionContext, effectDigest: null }), /artifact dependency/i);
+  assert.doesNotThrow(() => parseAuthorityWire("decision-context", { ...acceptedDecisionContext, capabilityId: null, capabilityDigest: null }));
+});
+
+test("accepted contexts require all nullable artifacts while refusal presence stays claim-neutral", () => {
+  assert.deepEqual(assertAcceptedDecisionContext(acceptedDecisionContext), acceptedDecisionContext);
+  assert.throws(() => assertAcceptedDecisionContext(refusedDecisionContext), /accepted decision context.*non-null/i);
+  assert.deepEqual(decisionContextPresence(refusedDecisionContext), {
+    contract: "absent",
+    capability: "absent",
+    outcome: "absent",
+    effect: "absent",
+    sourceBundleSnapshot: "absent",
+    authorityStateSnapshot: "absent",
+  });
+  assert.deepEqual(decisionContextPresence(acceptedDecisionContext), {
+    contract: "unchecked",
+    capability: "unchecked",
+    outcome: "unchecked",
+    effect: "unchecked",
+    sourceBundleSnapshot: "unchecked",
+    authorityStateSnapshot: "unchecked",
+  });
+});
+
+test("every DecisionContext field is digest-bound and breaks an unchanged receipt", () => {
+  const mutations: [string, typeof acceptedDecisionContext][] = [
+    ["v", { ...acceptedDecisionContext, v: "reelier.decision-context/v2" }],
+    ["tenant", { ...acceptedDecisionContext, tenant: "tenant_2" }],
+    ["requester", { ...acceptedDecisionContext, requester: "requester_2" }],
+    ["requestId", { ...acceptedDecisionContext, requestId: "request_2" }],
+    ["requestDigest", { ...acceptedDecisionContext, requestDigest: "sha256:" + "9".repeat(64) }],
+    ["requestKey", { ...acceptedDecisionContext, requestKey: "sha256:" + "a".repeat(64) }],
+    ["contractDigest", { ...acceptedDecisionContext, contractDigest: "sha256:" + "b".repeat(64) }],
+    ["capabilityId", { ...acceptedDecisionContext, capabilityId: "capability_2" }],
+    ["capabilityDigest", { ...acceptedDecisionContext, capabilityDigest: "sha256:" + "c".repeat(64) }],
+    ["outcomeKey", { ...acceptedDecisionContext, outcomeKey: "sha256:" + "d".repeat(64) }],
+    ["effectDigest", { ...acceptedDecisionContext, effectDigest: "sha256:" + "e".repeat(64) }],
+    ["snapshots.sourceBundleDigest", { ...acceptedDecisionContext, snapshots: { ...acceptedDecisionContext.snapshots, sourceBundleDigest: "sha256:" + "f".repeat(64) } }],
+    ["snapshots.authorityStateDigest", { ...acceptedDecisionContext, snapshots: { ...acceptedDecisionContext.snapshots, authorityStateDigest: "sha256:" + "9".repeat(64) } }],
+  ];
+  for (const [field, mutated] of mutations) {
+    assert.notEqual(authorityDigest(mutated), decisionContextDigest, field);
+    assert.throws(() => parseAuthorityWire("authority-receipt", { ...authorityReceipt, decisionContext: mutated }), /decision context digest mismatch/i, field);
+  }
+});
+
+test("portable authority evidence refuses context, GateEvent, and receipt swaps", () => {
+  assert.deepEqual(parsePortableAuthorityEvidence(gateEvent, authorityReceipt), { gateEvent, receipt: authorityReceipt });
+  const otherContext = { ...acceptedDecisionContext, requestId: "request_2" };
+  const otherContextDigest = authorityDigest(otherContext);
+  const otherGate = { ...gateEvent, eventId: "event_2", decisionContextDigest: otherContextDigest };
+  const otherReceipt = { ...authorityReceipt, receiptId: "receipt_2", gateEventDigest: authorityDigest(otherGate), decisionContextDigest: otherContextDigest, decisionContext: otherContext };
+  assert.throws(() => parsePortableAuthorityEvidence(gateEvent, otherReceipt), /decision context.*GateEvent/i);
+  assert.throws(() => parsePortableAuthorityEvidence(otherGate, authorityReceipt), /decision context.*GateEvent|GateEvent digest/i);
+  assert.throws(() => parsePortableAuthorityEvidence(gateEvent, { ...authorityReceipt, gateEventDigest: authorityDigest(otherGate) }), /GateEvent digest/i);
 });
 
 test("OutcomeRequest parses only the closed v1 request boundary", () => {
@@ -332,9 +450,18 @@ test("v1 delegation uses an identical fixed window and only maxima may decrease"
 });
 
 test("AuthorityReceipt fixed evidence claims are closed", () => {
-  const claims = { authorization: "verified", sourceCompleteness: "verified", dispatch: "verified", providerAcknowledgment: "unchecked", reconciliation: "absent", topology: "unchecked", completeness: "unchecked" };
-  assert.deepEqual(parseAuthorityWire("authority-receipt", { v: "reelier.authority-receipt/v1", receiptId: "receipt_1", gateEventDigest: "sha256:" + "0".repeat(64), claims }), { v: "reelier.authority-receipt/v1", receiptId: "receipt_1", gateEventDigest: "sha256:" + "0".repeat(64), claims });
-  assert.throws(() => parseAuthorityWire("authority-receipt", { v: "reelier.authority-receipt/v1", receiptId: "receipt_1", gateEventDigest: "sha256:" + "0".repeat(64), claims: { ...claims, safe: "verified" } }), /additional properties/i);
+  assert.deepEqual(parseAuthorityWire("authority-receipt", authorityReceipt), authorityReceipt);
+  assert.throws(() => parseAuthorityWire("authority-receipt", { ...authorityReceipt, claims: { ...receiptClaims, safe: "verified" } }), /additional properties/i);
+  for (const field of ["decisionContextDigest", "decisionContext", "gateEventDigest"] as const) {
+    assert.throws(() => parseAuthorityWire("authority-receipt", without(authorityReceipt, field)), /required property/i, field);
+  }
+  assert.throws(() => parseAuthorityWire("authority-receipt", { ...authorityReceipt, decisionContextDigest: zeroDigest }), /pattern|digest mismatch/i);
+});
+
+test("GateEvent requires the exact non-sentinel DecisionContext digest", () => {
+  assert.deepEqual(parseAuthorityWire("gate-event", gateEvent), gateEvent);
+  assert.throws(() => parseAuthorityWire("gate-event", without(gateEvent, "decisionContextDigest")), /required property/i);
+  assert.throws(() => parseAuthorityWire("gate-event", { ...gateEvent, decisionContextDigest: zeroDigest }), /pattern/i);
 });
 
 test("legacy verifier refuses an authority receipt instead of awarding a legacy pass", () => {
@@ -351,13 +478,18 @@ test("authority canonical bytes are JCS and digests are sha256-prefixed", () => 
 test("every frozen wire kind has a valid, deterministic golden vector", () => {
   const vectors = JSON.parse(readFileSync(path.join(process.cwd(), "contract/authority/v1/golden-vectors.json"), "utf8")) as Record<
     AuthorityKind,
-    { canonical: string; digest: string; value: unknown; compiledRequest?: { target: string; bodyUtf8: string } }
+    { canonical: string; digest: string; value: unknown; compiledRequest?: { target: string; bodyUtf8: string }; variants?: { preCompileRefusal: { canonical: string; digest: string; value: unknown } } }
   >;
-  for (const [kind, vector] of Object.entries(vectors) as [AuthorityKind, { canonical: string; digest: string; value: unknown; compiledRequest?: { target: string; bodyUtf8: string } }][]) {
+  for (const [kind, vector] of Object.entries(vectors) as [AuthorityKind, { canonical: string; digest: string; value: unknown; compiledRequest?: { target: string; bodyUtf8: string }; variants?: { preCompileRefusal: { canonical: string; digest: string; value: unknown } } }][]) {
     assert.deepEqual(parseAuthorityWire(kind, vector.value), vector.value, kind);
     assert.equal(authorityCanonicalBytes(vector.value).toString("utf8"), vector.canonical, kind);
     assert.equal(authorityDigest(vector.value), vector.digest, kind);
   }
+  const refusal = vectors["decision-context"].variants?.preCompileRefusal;
+  assert.ok(refusal);
+  assert.deepEqual(parseAuthorityWire("decision-context", refusal.value), refusal.value);
+  assert.equal(authorityCanonicalBytes(refusal.value).toString("utf8"), refusal.canonical);
+  assert.equal(authorityDigest(refusal.value), refusal.digest);
   assert.deepEqual(vectors["transport-effect"].compiledRequest, { target: "/v1/messages?account=tenant_1&mode=send", bodyUtf8: "{}" });
   assert.throws(() => parseCanonicalAuthorityJson("outcome-request", JSON.stringify(request)), /not RFC 8785\/JCS canonical/);
 });
