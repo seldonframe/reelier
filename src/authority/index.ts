@@ -2,7 +2,16 @@ export * from "./types.js";
 export * from "./wire.js";
 export * from "./crypto.js";
 export * from "./ledger.js";
-export * from "./host/fs-ledger.js";
+export {
+  AuthorityLedgerReadError,
+  FsAuthorityLedger,
+  reservationFaultPoints,
+  dispatchFaultPoints,
+  resultFaultPoints,
+  ledgerFaultPoints,
+  type LedgerFaultPoint,
+  type FsAuthorityLedgerOptions,
+} from "./host/fs-ledger.js";
 export {
   digestOutcomeRequest,
   deriveAuthorityRequestKey,

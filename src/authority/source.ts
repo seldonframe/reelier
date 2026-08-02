@@ -24,10 +24,14 @@ const resolverKey=(tenant:string,resolverId:string)=>`${tenant}\0${resolverId}`;
 const OPAQUE=/^(?![A-Za-z][A-Za-z0-9+.-]*:)(?!.*[\\/])[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/;
 const registryStates=new WeakMap<object,ReadonlyMap<string,RegisteredSourceResolver>>();
 const validated=new WeakSet<object>();
+const RESOLVER_FIELDS=new Set(["tenant","resolverId","definitionDigest","projectionSchemaId","readEndpointIds","maxFreshnessSeconds","plan","project"]);
+const SHA=/^sha256:[0-9a-f]{64}$/;const ZERO_SHA=`sha256:${"0".repeat(64)}`;
 
 export function createSourceRegistry(resolvers:readonly RegisteredSourceResolver[]):SourceRegistry {
   const indexed=new Map<string,RegisteredSourceResolver>();
   for(const item of resolvers){
+    if(!item||typeof item!=="object"||Object.keys(item).length!==RESOLVER_FIELDS.size||Object.keys(item).some(field=>!RESOLVER_FIELDS.has(field)))throw new TypeError("source resolver must be a closed registration");
+    if(!SHA.test(item.definitionDigest)||item.definitionDigest===ZERO_SHA)throw new TypeError("source resolver definition digest must be non-zero lowercase sha256");
     if(!Number.isSafeInteger(item.maxFreshnessSeconds)||item.maxFreshnessSeconds<1||item.maxFreshnessSeconds>300) throw new TypeError("invalid resolver max freshness");
     const key=resolverKey(item.tenant,item.resolverId);if(indexed.has(key)) throw new TypeError("duplicate tenant-qualified source resolver");
     if(!Array.isArray(item.readEndpointIds)||item.readEndpointIds.length===0||item.readEndpointIds.some(value=>typeof value!=="string"||value.length===0)||new Set(item.readEndpointIds).size!==item.readEndpointIds.length)throw new TypeError("resolver read endpoints must be nonempty and unique");

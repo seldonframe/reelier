@@ -199,6 +199,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
     let attempted:IngressRecord;try{attempted=normalizeAuthenticatedIngress(request);}catch{return frozen({ok:false as const,reason:"integrity-failure" as const});}
     return this.withLock("ingress",async()=>{
       await this.ensureLayout();await this.assertNoLinks();
+      await this.verifyIngressDirectory();
       const relative=path.join("ingress",attempted.requestKey.slice(7));
       let existing:IngressRecord|undefined;try{existing=await this.readIngress(attempted.requestKey);}catch(error){if(!hasCode(error,"ENOENT"))throw error;}
       if(existing){const ingressClaimDigest=authorityDigest(existing);if(canonicalBytes(existing).equals(canonicalBytes(attempted)))return frozen({ok:true as const,status:"exact-existing" as const,evaluationEligible:false as const,ingressClaimDigest});return frozen({ok:false as const,reason:"conflict" as const,evaluationEligible:false as const,ingressClaimDigest});}

@@ -37,11 +37,15 @@ interface StaticPackRegistryState {
 }
 
 const staticPackRegistryStates = new WeakMap<object, StaticPackRegistryState>();
+const DEFINITION_FIELDS=new Set(["alias","packDigest","definitionDigest","resolverId","projectionSchemaId","maxFreshnessSeconds","readEndpointIds","writeEndpointIds","riskClasses","policySchemaId","requiredGroundedPointers","validateChoices","parsePolicy","compile"]);
+const SHA=/^sha256:[0-9a-f]{64}$/;const ZERO_SHA=`sha256:${"0".repeat(64)}`;
 
 export function createStaticPackRegistry(definitions: readonly StaticPackDefinition[]): StaticPackRegistry {
   const byAlias = new Map<string, StaticPackDefinition>();
   const byDefinitionDigest = new Map<string, StaticPackDefinition>();
   for (const definition of definitions) {
+    if(!definition||typeof definition!=="object"||Object.keys(definition).length!==DEFINITION_FIELDS.size||Object.keys(definition).some(field=>!DEFINITION_FIELDS.has(field)))throw new TypeError("static pack definition must be a closed registration");
+    if(!SHA.test(definition.packDigest)||definition.packDigest===ZERO_SHA||!SHA.test(definition.definitionDigest)||definition.definitionDigest===ZERO_SHA)throw new TypeError("static pack digests must be non-zero lowercase sha256");
     if (!Number.isSafeInteger(definition.maxFreshnessSeconds) || definition.maxFreshnessSeconds < 1 || definition.maxFreshnessSeconds > 300) throw new TypeError("static pack resolver freshness must be an integer from 1 to 300");
     if (byAlias.has(definition.alias)) throw new TypeError("static pack alias collision");
     if (byDefinitionDigest.has(definition.definitionDigest)) throw new TypeError("static pack definition digest collision");
@@ -56,8 +60,7 @@ export function createStaticPackRegistry(definitions: readonly StaticPackDefinit
 
 export function definitionRegistrationDigest(registry:StaticPackRegistry,alias:string):string {
   const definition=requireRegistryState(registry).byAlias.get(alias);if(!definition)throw new TypeError("missing static definition registration");
-  const {validateChoices:_validateChoices,parsePolicy:_parsePolicy,compile:_compile,...closed}=definition;
-  return authorityDigest({v:"reelier.definition-registration/internal-v1",...closed});
+  return authorityDigest({v:"reelier.definition-registration/internal-v1",alias:definition.alias,packDigest:definition.packDigest,definitionDigest:definition.definitionDigest,resolverId:definition.resolverId,projectionSchemaId:definition.projectionSchemaId,readEndpointIds:definition.readEndpointIds,writeEndpointIds:definition.writeEndpointIds,riskClasses:definition.riskClasses,policySchemaId:definition.policySchemaId,requiredGroundedPointers:definition.requiredGroundedPointers,maxFreshnessSeconds:definition.maxFreshnessSeconds});
 }
 
 export function registeredDefinitionDigests(registry: StaticPackRegistry): RegisteredDefinitionDigests {
