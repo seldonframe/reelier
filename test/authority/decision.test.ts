@@ -1,12 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { writeFileSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
-import { authorityDigest } from "../../src/authority/wire.js";
+import { authorityCanonicalBytes, authorityDigest } from "../../src/authority/wire.js";
 import {
   createFileGateDecisionSink,
   gateDecisionFaultPoints,
@@ -94,6 +95,43 @@ test("file sink atomically indexes event and primary ingress, returns copies, an
     await writeFile(path.join(root, "gate-decisions.json"), stored.replace("contract-not-found", "contract-expired"));
     assert.deepEqual(await createFileGateDecisionSink(root).lookupByEvent("event_1"), { ok: false, reason: "corruption" });
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("append classifies malformed stores and duplicate indexes as corruption, never environmental unavailability",async()=>{
+  const cases:readonly [string,Buffer][]=[
+    ["malformed-json",Buffer.from("{")],
+    ["invalid-record",authorityCanonicalBytes({v:"reelier.gate-decision-store/internal-v1",records:[{}]})],
+    ["duplicate-event",authorityCanonicalBytes({v:"reelier.gate-decision-store/internal-v1",records:[primary(),primary({signerId:"other_signer"})]})],
+    ["duplicate-primary",authorityCanonicalBytes({v:"reelier.gate-decision-store/internal-v1",records:[primary(),primary({gateEvent:{...event,eventId:"event_2"},gateEventDigest:authorityDigest({...event,eventId:"event_2"})})]})],
+    ["duplicate-reservation",authorityCanonicalBytes({v:"reelier.gate-decision-store/internal-v1",records:[accepted("event_a",sha("4")),accepted("event_b",sha("5"))]})],
+  ];
+  for(const [label,bytes] of cases){
+    const root=await mkdtemp(path.join(tmpdir(),`reelier-decision-corrupt-${label}-`));
+    try{await writeFile(path.join(root,"gate-decisions.json"),bytes);assert.deepEqual(await createFileGateDecisionSink(root).append(primary({gateEvent:{...event,eventId:"event_new"},gateEventDigest:authorityDigest({...event,eventId:"event_new"})})),{ok:false,reason:"corruption"},label);}finally{await rm(root,{recursive:true,force:true});}
+  }
+});
+
+test("a crashed decision-lock owner is reclaimed only after same-host death is proved",{timeout:30_000},async()=>{
+  const root=await mkdtemp(path.join(tmpdir(),"reelier-decision-dead-lock-")),run=promisify(execFile);
+  try{
+    const script='const {mkdir,writeFile}=await import("node:fs/promises");const {hostname}=await import("node:os");const path=(await import("node:path")).default;const lock=path.join(process.argv[1],".gate-decisions.lock");await mkdir(lock);await writeFile(path.join(lock,"owner.json"),JSON.stringify({host:hostname(),nonce:"a".repeat(64),pid:process.pid,v:"reelier.gate-decision-lock/internal-v1"}));';
+    await run(process.execPath,["--input-type=module","-e",script,root]);
+    assert.deepEqual(await createFileGateDecisionSink(root,{lockTimeoutMs:2_000}).append(primary()),{ok:true,status:"appended",recordDigest:authorityDigest(primary())});
+  }finally{await rm(root,{recursive:true,force:true});}
+});
+
+test("decision-lock reclaim refuses owner mutation and every unverifiable or live owner",async()=>{
+  const ownerPath=(root:string)=>path.join(root,".gate-decisions.lock","owner.json"),owner=(overrides:Record<string,unknown>={})=>authorityCanonicalBytes({host:hostname(),nonce:"b".repeat(64),pid:2_147_483_647,v:"reelier.gate-decision-lock/internal-v1",...overrides});
+  for(const [label,bytes] of [["malformed",Buffer.from("{")],["foreign",owner({host:"another-host"})],["live",owner({pid:process.pid})]] as const){const root=await mkdtemp(path.join(tmpdir(),`reelier-decision-lock-${label}-`));try{await writeFile(ownerPath(root),bytes,{flag:"wx"}).catch(async()=>{await (await import("node:fs/promises")).mkdir(path.dirname(ownerPath(root)),{recursive:true});await writeFile(ownerPath(root),bytes);});assert.deepEqual(await createFileGateDecisionSink(root,{lockTimeoutMs:20}).append(primary()),{ok:false,reason:"unavailable"},label);assert.deepEqual(await readFile(ownerPath(root)),bytes,label);}finally{await rm(root,{recursive:true,force:true});}}
+  const root=await mkdtemp(path.join(tmpdir(),"reelier-decision-lock-mutation-"));
+  try{
+    await (await import("node:fs/promises")).mkdir(path.dirname(ownerPath(root)),{recursive:true});await writeFile(ownerPath(root),owner());
+    const replacement=owner({nonce:"c".repeat(64),pid:process.pid});let injected=false;
+    const sink=createFileGateDecisionSink(root,{lockTimeoutMs:20,lockFaultInjector:(point:string)=>{if(point==="after-owner-read"&&!injected){injected=true;writeFileSync(ownerPath(root),replacement);}}} as never);
+    assert.deepEqual(await sink.append(primary()),{ok:false,reason:"unavailable"});
+    assert.equal(injected,true);
+    assert.deepEqual(await readFile(ownerPath(root)),replacement);
+  }finally{await rm(root,{recursive:true,force:true});}
 });
 
 test("accepted reservation and non-primary conflict indexes have exact distinct occupancy",async()=>{
