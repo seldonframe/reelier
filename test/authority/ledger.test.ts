@@ -231,6 +231,31 @@ test("transition timestamps are stamped from the single durable kernel observati
   });
 });
 
+test("reservation time is stamped from the single durable kernel observation", async () => {
+  await withRoot(async root => {
+    let reads = 0;
+    const ledger = new FsAuthorityLedger(root, { now: () => t0 + reads++ });
+    const created = await ledger.reserve(intent());
+    assert.equal(created.ok, true);
+    if (!created.ok) return;
+    assert.equal(reads, 1);
+    assert.equal(created.reservation.updatedAt, new Date(t0).toISOString());
+    assert.equal((await ledger.getHighWaterMark()).observedAt, created.reservation.updatedAt);
+  });
+});
+
+test("recovery refuses a recomputed reservation timestamp that differs from durable high-water time", async () => {
+  await withRoot(async root => {
+    assert.equal((await new FsAuthorityLedger(root, { now: () => t0 }).reserve(intent())).ok, true);
+    await rewriteJournal(root, event => {
+      if (event.type !== "reserve") return event;
+      const reservation = event.reservation as ReservationSnapshot;
+      return { ...event, reservation: { ...reservation, updatedAt: new Date(t0 + 1).toISOString() } };
+    });
+    assert.deepEqual(await new FsAuthorityLedger(root, { now: () => t0 }).recover(), { ok: false, reason: "corruption" });
+  });
+});
+
 test("recovery refuses recomputed transition timestamps that differ from durable high-water time", async () => {
   for (const offset of [-1, 1]) await withRoot(async root => {
     const ledger = new FsAuthorityLedger(root, { now: () => t0 });
