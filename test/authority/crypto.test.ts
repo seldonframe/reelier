@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createPublicKey, generateKeyPairSync } from "node:crypto";
+import { createHash, createPublicKey, generateKeyPairSync } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { signAuthorityDigest, verifyAuthoritySignature } from "../../src/authority/crypto.js";
@@ -33,7 +33,13 @@ MCowBQYDK2VwAyEAa5QRvL1tMishctZLJ/isDZfQF25TUiR0Af0u70V2J6Q=
 -----END PUBLIC KEY-----`);
   const vectors = JSON.parse(readFileSync(path.join(process.cwd(), "contract/authority/v1/golden-vectors.json"), "utf8")) as Record<string, { digest: string; signature: { alg: "ed25519"; sig: string }; value: Record<string, unknown> }>;
   const vector = vectors["outcome-contract"];
-  for (const [field, value] of [["sponsor", "sponsor_2"], ["audiences", ["requester_2"]], ["accountId", "location_2"], ["sourceAuthority", { ...(vector.value.sourceAuthority as object), authorizedProjectionPointers: ["/other"] }], ["limits", { ...(vector.value.limits as object), maxBodyBytes: 1 }], ["policyCommitment", { ...(vector.value.policyCommitment as object), schemaId: "other/v1" }]] as const) {
+  const amendedPolicyBytes = Buffer.from('{"channel":"sms","template":"Appointment moved to {{time}}"}', "utf8");
+  const amendedPolicyCommitment = {
+    ...(vector.value.policyCommitment as object),
+    jcsBase64: amendedPolicyBytes.toString("base64"),
+    digest: "sha256:" + createHash("sha256").update(amendedPolicyBytes).digest("hex"),
+  };
+  for (const [field, value] of [["sponsor", "sponsor_2"], ["audiences", ["requester_2"]], ["accountId", "location_2"], ["sourceAuthority", { ...(vector.value.sourceAuthority as object), authorizedProjectionPointers: ["/other"] }], ["limits", { ...(vector.value.limits as object), maxBodyBytes: 1 }], ["policyCommitment", amendedPolicyCommitment]] as const) {
     const tamperedDigest = authorityDigest({ ...vector.value, [field]: value });
     assert.notEqual(tamperedDigest, vector.digest, field);
     assert.equal(verifyAuthoritySignature(publicKey, "outcome-contract", tamperedDigest, vector.signature), false, field);
