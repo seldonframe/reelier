@@ -57,6 +57,28 @@ const request = {
   choices: {},
 };
 
+const acceptedDecisionContext = {
+  v: "reelier.decision-context/v1",
+  tenant: "tenant_1",
+  requester: "requester_1",
+  requestId: "request_1",
+  requestDigest: "sha256:" + "1".repeat(64),
+  requestKey: "sha256:" + "2".repeat(64),
+  contractDigest: "sha256:" + "3".repeat(64),
+  capabilityId: "capability_1",
+  capabilityDigest: "sha256:" + "4".repeat(64),
+  outcomeKey: "sha256:" + "5".repeat(64),
+  effectDigest: "sha256:" + "6".repeat(64),
+  snapshots: {
+    sourceBundleDigest: "sha256:" + "7".repeat(64),
+    authorityStateDigest: "sha256:" + "8".repeat(64),
+  },
+};
+
+test("DecisionContext parses as an independently versioned closed wire object", () => {
+  assert.deepEqual(parseAuthorityWire("decision-context", acceptedDecisionContext), acceptedDecisionContext);
+});
+
 test("OutcomeRequest parses only the closed v1 request boundary", () => {
   const parsed = parseAuthorityWire("outcome-request", request);
   assert.deepEqual(parsed, request);
