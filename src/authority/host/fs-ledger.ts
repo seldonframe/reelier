@@ -548,20 +548,11 @@ export class FsAuthorityLedger implements AuthorityLedger {
     this.fault("before-publication-stage-root-reenumeration");
     const closedNames=await this.publicationStageNames();
     if(!sameStrings(names,closedNames))return this.publicationMembershipChanged(activeOwner,names,closedNames);
-    const confirmed:PublicationStage[]=[];
-    for(const stage of stages){
-      const current=await this.validatePublicationStage(stage.name);
-      if(!samePublicationStage(stage,current)){
-        if(ownedStage?.name===stage.name||activeOwner&&!isPublicationStageProgress(stage,current))throw new LedgerCorruption("publication stage changed while closing generation");
-        return "retry";
-      }
-      confirmed.push(current);
-    }
-    if(confirmed.length>0)this.fault("after-lock-publication-generation-closed");
+    if(stages.length>0)this.fault("after-lock-publication-generation-closed");
     const finalNames=await this.publicationStageNames();
     if(!sameStrings(closedNames,finalNames))return this.publicationMembershipChanged(activeOwner,closedNames,finalNames);
     const finalStages:PublicationStage[]=[];
-    for(const stage of confirmed){
+    for(const stage of stages){
       const current=await this.validatePublicationStage(stage.name);
       if(!samePublicationStage(stage,current)){
         if(ownedStage?.name===stage.name||activeOwner&&!isPublicationStageProgress(stage,current))throw new LedgerCorruption("publication stage changed after generation closure");
