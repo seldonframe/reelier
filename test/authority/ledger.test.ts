@@ -11,6 +11,7 @@ import {
   CAPABILITY_LIFETIME_MS,
   type LedgerState,
   type ReservationIntent,
+  type ReservationSnapshot,
 } from "../../src/authority/ledger.js";
 import {
   FsAuthorityLedger,
@@ -98,6 +99,22 @@ async function spawnReserve(root: string, candidate: ReservationIntent): Promise
   });
 }
 
+async function rewriteJournal(root: string, mutate: (event: Record<string, unknown>) => Record<string, unknown>): Promise<void> {
+  const journal = path.join(root, "journal");
+  const names = (await readdir(journal)).sort();
+  const events = await Promise.all(names.map(async name => JSON.parse(await readFile(path.join(journal, name), "utf8")) as Record<string, unknown>));
+  for (const name of names) await unlink(path.join(journal, name));
+  let previousDigest: string | null = null;
+  for (const original of events) {
+    const event = mutate({ ...original, previousDigest });
+    const bytes = authorityCanonicalBytes(event);
+    const eventDigest = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+    const name = `${String(event.sequence).padStart(16, "0")}-${eventDigest.slice(7)}`;
+    await writeFile(path.join(journal, name), bytes);
+    previousDigest = eventDigest;
+  }
+}
+
 test("100 real processes converge on one committed reservation and one dispatch eligibility", { timeout: 120_000 }, async () => {
   await withRoot(async root => {
     const results = await Promise.all(Array.from({ length: 100 }, () => spawnReserve(root, intent())));
@@ -157,6 +174,175 @@ test("a caller cannot widen an already committed fixed-window maximum", async ()
       limitSlots: [{ key: shared, maximum: 100 }],
     }));
     assert.deepEqual(widened, { ok: false, reason: "limit-exceeded" });
+  });
+});
+
+test("recovery binds every committed limit assignment one-to-one to its signed intent slot", async () => {
+  const mutations: Array<[string, (assignments: Array<{ key: string; index: number; maximum: number }>) => Array<{ key: string; index: number; maximum: number }>]> = [
+    ["different key", assignments => [{ ...assignments[0], key: digest("9") }, assignments[1]]],
+    ["larger maximum", assignments => [{ ...assignments[0], maximum: assignments[0].maximum + 1 }, assignments[1]]],
+    ["smaller maximum", assignments => [{ ...assignments[0], maximum: assignments[0].maximum - 1, index: 0 }, assignments[1]]],
+    ["duplicate and missing key", assignments => [assignments[0], { ...assignments[1], key: assignments[0].key, maximum: assignments[0].maximum }]],
+    ["missing assignment", assignments => assignments.slice(0, 1)],
+    ["extra assignment", assignments => [...assignments, { key: digest("9"), index: 0, maximum: 1 }]],
+    ["negative index", assignments => [{ ...assignments[0], index: -1 }, assignments[1]]],
+    ["index equal to maximum", assignments => [{ ...assignments[0], index: assignments[0].maximum }, assignments[1]]],
+    ["noncanonical assignment order", assignments => [...assignments].reverse()],
+  ];
+  for (const [name, mutate] of mutations) await withRoot(async root => {
+    assert.equal((await new FsAuthorityLedger(root, { now: () => t0 }).reserve(intent())).ok, true);
+    await rewriteJournal(root, event => {
+      if (event.type !== "reserve") return event;
+      const reservation = event.reservation as ReservationSnapshot;
+      return { ...event, reservation: { ...reservation, limitAssignments: mutate(reservation.limitAssignments.map(value => ({ ...value }))) } };
+    });
+    assert.deepEqual(await new FsAuthorityLedger(root, { now: () => t0 }).recover(), { ok: false, reason: "corruption" }, name);
+  });
+});
+
+test("transition timestamps are stamped from the single durable kernel observation", async () => {
+  await withRoot(async root => {
+    let now = t0;
+    let transitionClockReads = 0;
+    const ledger = new FsAuthorityLedger(root, { now: () => {
+      if (now === t0) return now;
+      transitionClockReads++;
+      return now;
+    } });
+    const created = await ledger.reserve(intent());
+    assert.equal(created.ok, true);
+    if (!created.ok) return;
+    now = t0 + 10;
+    const transitioned = await ledger.transition(created.reservation.reservationId, "reserved", { to: "dispatched", at: new Date(t0 + 50_000).toISOString() });
+    assert.equal(transitioned.ok, true);
+    if (!transitioned.ok) return;
+    assert.equal(transitionClockReads, 1);
+    assert.equal(transitioned.reservation.updatedAt, new Date(t0 + 10).toISOString());
+    assert.equal((await ledger.getHighWaterMark()).observedAt, transitioned.reservation.updatedAt);
+  });
+});
+
+test("recovery refuses recomputed transition timestamps that differ from durable high-water time", async () => {
+  for (const offset of [-1, 1]) await withRoot(async root => {
+    const ledger = new FsAuthorityLedger(root, { now: () => t0 });
+    const created = await ledger.reserve(intent());
+    assert.equal(created.ok, true);
+    if (!created.ok) return;
+    assert.equal((await ledger.transition(created.reservation.reservationId, "reserved", { to: "dispatched", at: new Date(t0).toISOString() })).ok, true);
+    await rewriteJournal(root, event => event.type === "transition" ? { ...event, at: new Date(t0 + offset).toISOString() } : event);
+    assert.deepEqual(await new FsAuthorityLedger(root, { now: () => t0 }).recover(), { ok: false, reason: "corruption" }, String(offset));
+  });
+});
+
+test("clock rollback recovery makes dispatched work ambiguous at the durable high-water instant", async () => {
+  await withRoot(async root => {
+    let now = t0;
+    const ledger = new FsAuthorityLedger(root, { now: () => now });
+    const created = await ledger.reserve(intent());
+    assert.equal(created.ok, true);
+    if (!created.ok) return;
+    now = t0 + 10;
+    assert.equal((await ledger.transition(created.reservation.reservationId, "reserved", { to: "dispatched", at: new Date(now).toISOString() })).ok, true);
+    const recovered = await new FsAuthorityLedger(root, { now: () => t0 - 1 }).recover();
+    assert.equal(recovered.ok, true);
+    if (!recovered.ok) return;
+    assert.equal(recovered.reservations[0].state, "ambiguous");
+    assert.equal(recovered.reservations[0].updatedAt, new Date(t0 + 10).toISOString());
+    assert.equal(recovered.highWaterMark, new Date(t0 + 10).toISOString());
+  });
+});
+
+test("result digest presence is enforced by target state before journal mutation", async () => {
+  const cases = [
+    { target: "dispatched", digest: digest("a"), valid: false },
+    { target: "ambiguous", digest: digest("a"), valid: false },
+    { target: "acknowledged", digest: undefined, valid: false },
+    { target: "acknowledged", digest: digest("0"), valid: false },
+    { target: "definitive-failure", digest: undefined, valid: false },
+    { target: "definitive-failure", digest: digest("0"), valid: false },
+    { target: "reconciled", digest: undefined, valid: false },
+    { target: "reconciled", digest: digest("0"), valid: false },
+  ] as const;
+  for (const value of cases) await withRoot(async root => {
+    const ledger = new FsAuthorityLedger(root, { now: () => t0 });
+    const created = await ledger.reserve(intent());
+    assert.equal(created.ok, true);
+    if (!created.ok) return;
+    let expected: LedgerState = "reserved";
+    if (value.target !== "dispatched") {
+      assert.equal((await ledger.transition(created.reservation.reservationId, "reserved", { to: "dispatched", at: new Date(t0).toISOString() })).ok, true);
+      expected = "dispatched";
+      if (value.target === "reconciled") {
+        assert.equal((await ledger.transition(created.reservation.reservationId, "dispatched", { to: "acknowledged", at: new Date(t0).toISOString(), resultDigest: digest("a") })).ok, true);
+        expected = "acknowledged";
+      }
+    }
+    const before = await readdir(path.join(root, "journal"));
+    const result = await ledger.transition(created.reservation.reservationId, expected, {
+      to: value.target,
+      at: new Date(t0).toISOString(),
+      ...(value.digest === undefined ? {} : { resultDigest: value.digest }),
+    });
+    assert.deepEqual(result, { ok: false, reason: "corruption" }, value.target);
+    assert.deepEqual(await readdir(path.join(root, "journal")), before, `${value.target} mutated the journal`);
+  });
+});
+
+test("replay refuses target-specific result digest violations after canonical journal rewriting", async () => {
+  const cases = [
+    { target: "dispatched", resultDigest: digest("a") },
+    { target: "ambiguous", resultDigest: digest("a") },
+    { target: "acknowledged", resultDigest: undefined },
+    { target: "definitive-failure", resultDigest: undefined },
+  ] as const;
+  for (const value of cases) await withRoot(async root => {
+    const ledger = new FsAuthorityLedger(root, { now: () => t0 });
+    const created = await ledger.reserve(intent());
+    assert.equal(created.ok, true);
+    if (!created.ok) return;
+    assert.equal((await ledger.transition(created.reservation.reservationId, "reserved", { to: "dispatched", at: new Date(t0).toISOString() })).ok, true);
+    if (value.target !== "dispatched") {
+      assert.equal((await ledger.transition(created.reservation.reservationId, "dispatched", { to: value.target, at: new Date(t0).toISOString(), ...(value.target === "ambiguous" ? {} : { resultDigest: digest("a") }) })).ok, true);
+    }
+    await rewriteJournal(root, event => event.type === "transition" && event.to === value.target
+      ? { ...event, ...(value.resultDigest === undefined ? { resultDigest: undefined } : { resultDigest: value.resultDigest }) }
+      : event);
+    assert.deepEqual(await new FsAuthorityLedger(root, { now: () => t0 }).recover(), { ok: false, reason: "corruption" }, value.target);
+  });
+});
+
+test("verified reservation history preserves distinct acknowledgement and reconciliation evidence immutably", async () => {
+  await withRoot(async root => {
+    let now = t0;
+    const ledger = new FsAuthorityLedger(root, { now: () => now });
+    const created = await ledger.reserve(intent());
+    assert.equal(created.ok, true);
+    if (!created.ok) return;
+    const id = created.reservation.reservationId;
+    now += 1;
+    assert.equal((await ledger.transition(id, "reserved", { to: "dispatched", at: new Date(now).toISOString() })).ok, true);
+    now += 1;
+    assert.equal((await ledger.transition(id, "dispatched", { to: "acknowledged", at: new Date(now).toISOString(), resultDigest: digest("a") })).ok, true);
+    now += 1;
+    assert.equal((await ledger.transition(id, "acknowledged", { to: "reconciled", at: new Date(now).toISOString(), resultDigest: digest("b") })).ok, true);
+    const historyLedger = ledger as unknown as { getReservationHistory(reservationId: string): Promise<{
+      reservation: ReservationSnapshot;
+      entries: ReadonlyArray<{ sequence: number; from: LedgerState; to: LedgerState; at: string; eventDigest: string; resultDigest?: string }>;
+    } | undefined> };
+    const history = await historyLedger.getReservationHistory(id);
+    assert.ok(history);
+    assert.deepEqual(history.entries.map(entry => ({ from: entry.from, to: entry.to, at: entry.at, resultDigest: entry.resultDigest })), [
+      { from: "issued", to: "reserved", at: new Date(t0).toISOString(), resultDigest: undefined },
+      { from: "reserved", to: "dispatched", at: new Date(t0 + 1).toISOString(), resultDigest: undefined },
+      { from: "dispatched", to: "acknowledged", at: new Date(t0 + 2).toISOString(), resultDigest: digest("a") },
+      { from: "acknowledged", to: "reconciled", at: new Date(t0 + 3).toISOString(), resultDigest: digest("b") },
+    ]);
+    assert.equal(history.entries.every(entry => /^sha256:[0-9a-f]{64}$/.test(entry.eventDigest)), true);
+    assert.equal(Object.isFrozen(history), true);
+    assert.equal(Object.isFrozen(history.entries), true);
+    assert.equal(Object.isFrozen(history.entries[0]), true);
+    assert.throws(() => { (history.entries[0] as { at: string }).at = "changed"; }, TypeError);
+    assert.deepEqual(await historyLedger.getReservationHistory(id), history);
   });
 });
 
