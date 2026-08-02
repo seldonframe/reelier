@@ -147,9 +147,25 @@ test("amended wire required fields and nested objects are closed", () => {
   for (const [kind, value, fields] of requiredCases) for (const field of fields) {
     assert.throws(() => parseAuthorityWire(kind, without(value, field)), /required property/i, `${kind}.${field}`);
   }
+  for (const field of Object.keys(contract.sourceAuthority)) assert.throws(
+    () => parseAuthorityWire("outcome-contract", { ...contract, sourceAuthority: without(contract.sourceAuthority, field as keyof typeof contract.sourceAuthority) }),
+    /required property/i, `sourceAuthority.${field}`,
+  );
+  for (const field of Object.keys(contract.policyCommitment)) assert.throws(
+    () => parseAuthorityWire("outcome-contract", { ...contract, policyCommitment: without(contract.policyCommitment, field as keyof typeof contract.policyCommitment) }),
+    /required property/i, `policyCommitment.${field}`,
+  );
+  for (const field of Object.keys(limits)) assert.throws(
+    () => parseAuthorityWire("outcome-contract", { ...contract, limits: without(limits, field as keyof typeof limits) }),
+    /required property/i, `limits.${field}`,
+  );
   for (const field of Object.keys(constraints)) assert.throws(
     () => parseAuthorityWire("delegation-grant", { ...rootGrant, constraints: without(constraints, field as keyof typeof constraints) }),
     /required property/i, `constraints.${field}`,
+  );
+  for (const field of Object.keys(constraints.connectorAccounts[0])) assert.throws(
+    () => parseAuthorityWire("delegation-grant", { ...rootGrant, constraints: { ...constraints, connectorAccounts: [without(constraints.connectorAccounts[0], field as keyof typeof constraints.connectorAccounts[0])] } }),
+    /required property/i, `connectorAccount.${field}`,
   );
   for (const claimClass of ["grounded", "authored", "unresolved"] as const) assert.throws(
     () => parseAuthorityWire("source-bundle", { ...sourceBundle, claims: without(sourceBundle.claims, claimClass) }),
@@ -174,21 +190,31 @@ test("amended wire required fields and nested objects are closed", () => {
 
 test("standing authority enforces lower and upper bounds table", () => {
   const integerBounds = { maxEffectsPerWindow: 1000000, windowSeconds: 31536000, maxEffectsPerSourceTrigger: 1000000, maxBodyBytes: 10485760 };
-  for (const [field, upper] of Object.entries(integerBounds)) for (const invalid of [0, upper + 1]) {
-    assert.throws(() => parseAuthorityWire("outcome-contract", { ...contract, limits: { ...limits, [field]: invalid } }), /must be [<>=]/i, `contract ${field}=${invalid}`);
-    assert.throws(() => parseAuthorityWire("delegation-grant", { ...rootGrant, constraints: { ...constraints, limits: { ...limits, [field]: invalid } } }), /must be [<>=]/i, `grant ${field}=${invalid}`);
+  for (const [field, upper] of Object.entries(integerBounds)) {
+    for (const valid of [1, upper]) {
+      assert.doesNotThrow(() => parseAuthorityWire("outcome-contract", { ...contract, limits: { ...limits, [field]: valid } }), `contract ${field}=${valid}`);
+      assert.doesNotThrow(() => parseAuthorityWire("delegation-grant", { ...rootGrant, constraints: { ...constraints, limits: { ...limits, [field]: valid } } }), `grant ${field}=${valid}`);
+    }
+    for (const invalid of [0, upper + 1]) {
+      assert.throws(() => parseAuthorityWire("outcome-contract", { ...contract, limits: { ...limits, [field]: invalid } }), /must be [<>=]/i, `contract ${field}=${invalid}`);
+      assert.throws(() => parseAuthorityWire("delegation-grant", { ...rootGrant, constraints: { ...constraints, limits: { ...limits, [field]: invalid } } }), /must be [<>=]/i, `grant ${field}=${invalid}`);
+    }
   }
   const id128 = "x".repeat(128);
   assert.doesNotThrow(() => parseAuthorityWire("outcome-contract", { ...contract, sponsor: id128 }));
+  assert.throws(() => parseAuthorityWire("outcome-contract", { ...contract, sponsor: "" }), /pattern/i);
   assert.throws(() => parseAuthorityWire("outcome-contract", { ...contract, sponsor: id128 + "x" }), /pattern/i);
   const schema256 = "x".repeat(256);
   assert.doesNotThrow(() => parseAuthorityWire("source-bundle", { ...sourceBundle, projectionSchemaId: schema256 }));
+  assert.throws(() => parseAuthorityWire("source-bundle", { ...sourceBundle, projectionSchemaId: "" }), /pattern/i);
   assert.throws(() => parseAuthorityWire("source-bundle", { ...sourceBundle, projectionSchemaId: schema256 + "x" }), /pattern/i);
   const claim256 = "x".repeat(256);
   assert.doesNotThrow(() => parseAuthorityWire("source-bundle", { ...sourceBundle, claims: { grounded: [], authored: [{ claimId: claim256, projectionPointer: "/copy" }], unresolved: [] } }));
+  assert.throws(() => parseAuthorityWire("source-bundle", { ...sourceBundle, claims: { grounded: [], authored: [{ claimId: "", projectionPointer: "/copy" }], unresolved: [] } }), /pattern/i);
   assert.throws(() => parseAuthorityWire("source-bundle", { ...sourceBundle, claims: { grounded: [], authored: [{ claimId: claim256 + "x", projectionPointer: "/copy" }], unresolved: [] } }), /pattern/i);
   const pointer512 = "/" + "x".repeat(511);
   assert.doesNotThrow(() => parseAuthorityWire("outcome-contract", { ...contract, sourceAuthority: { ...contract.sourceAuthority, authorizedProjectionPointers: [pointer512] } }));
+  assert.throws(() => parseAuthorityWire("outcome-contract", { ...contract, sourceAuthority: { ...contract.sourceAuthority, authorizedProjectionPointers: [""] } }), /pattern/i);
   assert.throws(() => parseAuthorityWire("outcome-contract", { ...contract, sourceAuthority: { ...contract.sourceAuthority, authorizedProjectionPointers: [pointer512 + "x"] } }), /more than 512 characters/i);
 });
 
@@ -202,6 +228,7 @@ test("all comparable authority arrays are nonempty, bounded, and unique", () => 
   ] as const;
   for (const [label, max, make] of contractArrays) {
     assert.throws(() => parseAuthorityWire("outcome-contract", make([])), /fewer than 1/i, `${label} empty`);
+    assert.doesNotThrow(() => parseAuthorityWire("outcome-contract", make(repeated(max))), `${label} exact max`);
     assert.throws(() => parseAuthorityWire("outcome-contract", make(repeated(max + 1))), new RegExp(`more than ${max}`), `${label} max`);
     assert.throws(() => parseAuthorityWire("outcome-contract", make(["same", "same"])), /duplicate items/i, `${label} unique`);
   }
@@ -211,12 +238,15 @@ test("all comparable authority arrays are nonempty, bounded, and unique", () => 
   ] as const;
   for (const [field, max, map] of grantArrays) {
     assert.throws(() => parseAuthorityWire("delegation-grant", { ...rootGrant, constraints: { ...constraints, [field]: map([]) } }), /fewer than 1/i, `${field} empty`);
+    assert.doesNotThrow(() => parseAuthorityWire("delegation-grant", { ...rootGrant, constraints: { ...constraints, [field]: map(repeated(max)) } }), `${field} exact max`);
     assert.throws(() => parseAuthorityWire("delegation-grant", { ...rootGrant, constraints: { ...constraints, [field]: map(repeated(max + 1)) } }), new RegExp(`more than ${max}`), `${field} max`);
     assert.throws(() => parseAuthorityWire("delegation-grant", { ...rootGrant, constraints: { ...constraints, [field]: map(["same", "same"]) } }), /duplicate items/i, `${field} unique`);
   }
   assert.throws(() => parseAuthorityWire("delegation-grant", { ...rootGrant, constraints: { ...constraints, connectorAccounts: [] } }), /fewer than 1/i);
+  assert.doesNotThrow(() => parseAuthorityWire("delegation-grant", { ...rootGrant, constraints: { ...constraints, connectorAccounts: Array.from({ length: 64 }, (_, i) => ({ connectorId: "c", accountId: `a_${i}` })) } }));
   assert.throws(() => parseAuthorityWire("delegation-grant", { ...rootGrant, constraints: { ...constraints, connectorAccounts: Array.from({ length: 65 }, (_, i) => ({ connectorId: "c", accountId: `a_${i}` })) } }), /more than 64/i);
   assert.throws(() => parseAuthorityWire("delegation-grant", { ...rootGrant, constraints: { ...constraints, connectorAccounts: [constraints.connectorAccounts[0], { ...constraints.connectorAccounts[0] }] } }), /duplicate items/i);
+  assert.doesNotThrow(() => parseAuthorityWire("source-bundle", { ...sourceBundle, claims: { grounded: [], authored: Array.from({ length: 256 }, (_, i) => ({ claimId: `c_${i}`, projectionPointer: `/p_${i}` })), unresolved: [] } }));
   assert.throws(() => parseAuthorityWire("source-bundle", { ...sourceBundle, claims: { grounded: [], authored: Array.from({ length: 257 }, (_, i) => ({ claimId: `c_${i}`, projectionPointer: `/p_${i}` })), unresolved: [] } }), /more than 256/i);
 });
 
@@ -243,6 +273,7 @@ test("claim IDs and pointers are disjoint across every source class pair", () =>
   }
   assert.throws(() => parseAuthorityWire("source-bundle", { ...sourceBundle, claims: { grounded: [], authored: [{ claimId: "same", projectionPointer: "/one" }, { claimId: "same", projectionPointer: "/two" }], unresolved: [] } }), /claim id.*unique/i);
   assert.throws(() => parseAuthorityWire("source-bundle", { ...sourceBundle, claims: { grounded: [], authored: [{ claimId: "one", projectionPointer: "/same" }, { claimId: "two", projectionPointer: "/same" }], unresolved: [] } }), /projection pointer.*more than one class/i);
+  assert.doesNotThrow(() => parseAuthorityWire("source-bundle", { ...sourceBundle, claims: { grounded: [], authored: [{ claimId: "authored", projectionPointer: "/authored" }], unresolved: [{ claimId: "unresolved", projectionPointer: "/unresolved" }] } }));
 });
 
 test("v1 delegation uses an identical fixed window and only maxima may decrease", () => {
