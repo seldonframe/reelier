@@ -175,6 +175,9 @@ entry. The exact `after-lock-publication-generation-closed` hook exposes a close
 the elected branch, and `before-lock-publication-predecessor-validation` exposes each optimized
 non-head predecessor poll. This deterministic predecessor election bounds redundant peer scans; it
 does not claim starvation-free FIFO ordering.
+Stable non-head predecessor polling and valid live active-lock waiting use the same deterministic
+monotonic delay sequence: 5ms, 10ms, 20ms, 40ms, then 50ms for every remaining poll. Progress or
+re-election resets the sequence to 5ms; no PID-derived jitter is used and no deadline is widened.
 The exact closed per-attempt order is `before-publication-stage-final-validation`, then
 `before-publication-stage-final-liveness`, then `before-publication-stage-remove-attempt`. The final
 validation revalidates the exact directory and owner identity/type/link count/name/bytes; final
