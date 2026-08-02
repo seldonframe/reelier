@@ -1,0 +1,1 @@
+{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"reelier.authority/principal/v1","type":"object","additionalProperties":false,"required":["v","id","kind"],"properties":{"v":{"const":"reelier.principal/v1"},"id":{"type":"string","pattern":"^[A-Za-z0-9._~-]{1,128}$"},"kind":{"enum":["operator","requester","sponsor","gate","provider"]}}}

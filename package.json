@@ -23,6 +23,7 @@
     "./mcp-tool": "./dist/mcp-tool.js",
     "./tools": "./dist/tools.js",
     "./serve": "./dist/serve.js",
+    "./authority": "./dist/authority/index.js",
     "./contract/*": "./contract/*",
     "./package.json": "./package.json"
   },
@@ -66,6 +67,8 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "build:authority-contract": "node scripts/build-authority-contract.mjs",
+    "check:authority-contract": "node scripts/build-authority-contract.mjs --check",
     "test": "tsc -p tsconfig.test.json && node --test --test-concurrency=1 \"dist-test/test/**/*.test.js\"",
     "test:coverage": "c8 npm test",
     "test:fuzz": "tsc -p tsconfig.test.json && node scripts/run-fuzz.mjs",
@@ -87,6 +90,9 @@
     "typescript": "^5.5.4"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0"
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "ajv": "8.20.0",
+    "ajv-formats": "3.0.1",
+    "canonicalize": "3.0.0"
   }
 }
