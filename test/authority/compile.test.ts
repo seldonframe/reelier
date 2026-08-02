@@ -178,10 +178,17 @@ test("static first-party compiler source conformance refuses ambient I/O, clock,
   for (const specifier of ["undici", "axios", "ws", "@scope/network-client"]) {
     assert.throws(() => assertStaticFirstPartySourcesConform([{ file: "bad-pack.ts", source: `export { client } from ${JSON.stringify(specifier)};` }]), /static first-party purity.*runtime module specifier/i, specifier);
   }
+  assert.doesNotThrow(() => assertStaticFirstPartySourcesConform([{ file: "src/authority/compile.ts", source: 'import { authorityDigest } from "./wire.js";' }]));
+  for (const specifier of ["./not-reviewed.js", "../outside.js", "../../../node_modules/axios/index.js", "./node_modules/ws/index.js", "https://example.test/plugin.js", "file:///tmp/plugin.js"]) {
+    assert.throws(() => assertStaticFirstPartySourcesConform([{ file: "src/authority/compile.ts", source: `import { value } from ${JSON.stringify(specifier)};` }]), /static first-party purity.*runtime module specifier/i, specifier);
+  }
+  for (const source of ['import type { Schema } from "external-types";', 'export type { Schema } from "external-types";']) {
+    assert.doesNotThrow(() => assertStaticFirstPartySourcesConform([{ file: "allowed-pack.ts", source }]));
+  }
   for (const source of [
-    'import { pure } from "./pure.js";', 'export { pure } from "../shared/pure.js";',
-    'import type { Schema } from "external-types";', 'export type { Schema } from "external-types";',
-  ]) assert.doesNotThrow(() => assertStaticFirstPartySourcesConform([{ file: "allowed-pack.ts", source }]));
+    'process.getBuiltinModule("fs")', 'process.binding("fs")', 'process._linkedBinding("fs")', 'process.dlopen(module, "addon.node")', "process.mainModule.require('fs')",
+    'module.createRequire(import.meta.url)', 'Module.createRequire(import.meta.url)', 'globalThis.process.getBuiltinModule("fs")', 'global.process["binding"]("fs")',
+  ]) assert.throws(() => assertStaticFirstPartySourcesConform([{ file: "bad-pack.ts", source }]), /static first-party purity.*module loader/i, source);
   for (const source of [
     "process.env.SECRET", "fetch('https://example.test')", "Date.now()", "new Date()", "Math.random()", "createRequire(import.meta.url)",
     "randomUUID()", "randomBytes(16)", "import('./plugin.js')", "require('./plugin.js')", "eval('1')", "new Function('return 1')",
