@@ -95,18 +95,18 @@
     }
   },
   "transport-effect": {
-    "canonical": "{\"bodyBase64\":\"e30=\",\"endpointId\":\"connector_1\",\"headers\":{\"Content-Type\":\"application/json\"},\"idempotency\":\"native\",\"method\":\"POST\",\"path\":\"/v1/messages\",\"preconditions\":[],\"query\":[],\"reconciliation\":{\"recipeId\":\"message-readback\"},\"riskClass\":\"message\",\"v\":\"reelier.transport-effect/v1\"}",
-    "digest": "sha256:9016ab99a7ca6434d82cdab0d5afe9acbc32f9ea0b8b926b9161cce1caf3d5ae",
+    "canonical": "{\"bodyBase64\":\"e30=\",\"endpointId\":\"connector_1\",\"headers\":{\"Content-Type\":\"application/json\"},\"idempotency\":\"native\",\"method\":\"POST\",\"path\":\"/v1/messages\",\"preconditions\":[],\"query\":\"account=tenant_1&mode=send\",\"reconciliation\":{\"recipeId\":\"message-readback\"},\"riskClass\":\"message\",\"v\":\"reelier.transport-effect/v1\"}",
+    "digest": "sha256:12b647a5503c40338d70f65d4a9b04e023430d238360d1f94c2f6f7aae8a7c9c",
     "signature": {
       "alg": "ed25519",
-      "sig": "52SfDGXf75NFFJFr9t5caCfXCb6ViU1Lg/DB0rnGApMkrFip/IZHyF5gv7oljhP7JubFmFGNkaFZUSJfz3agAg=="
+      "sig": "vk7zb2kL/75ci65lDA5/f8ppwIUBaNwpKpgLbX5fH1gAToZARtoDnPAnAKWImh9XphIlPL5Qqk05dtNHER4zBQ=="
     },
     "value": {
       "v": "reelier.transport-effect/v1",
       "endpointId": "connector_1",
       "method": "POST",
       "path": "/v1/messages",
-      "query": [],
+      "query": "account=tenant_1&mode=send",
       "headers": {
         "Content-Type": "application/json"
       },
@@ -117,6 +117,10 @@
       "reconciliation": {
         "recipeId": "message-readback"
       }
+    },
+    "compiledRequest": {
+      "target": "/v1/messages?account=tenant_1&mode=send",
+      "bodyUtf8": "{}"
     }
   },
   "compiled-capability": {

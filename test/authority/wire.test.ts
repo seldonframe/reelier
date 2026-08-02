@@ -28,7 +28,7 @@ test("OutcomeRequest parses only the closed v1 request boundary", () => {
     () => parseAuthorityWire("outcome-request", { ...request, sourceRefs: { appointment: "https://example.test/write" } }),
     /pattern/i,
   );
-  for (const key of ["tenant", "body", "url", "credentials", "providerArgs"]) {
+  for (const key of ["tenant", "providerAccount", "account", "connector", "pack", "endpoint", "recipient", "template", "body", "url", "providerArgs", "credentials", "TENANT"]) {
     assert.throws(() => parseAuthorityWire("outcome-request", { ...request, choices: { [key]: "x" } }), /property name/i, key);
   }
   assert.throws(() => parseAuthorityWire("outcome-request", { ...request, choices: { x: { nested: "no" } } }), /must be/i);
@@ -37,14 +37,15 @@ test("OutcomeRequest parses only the closed v1 request boundary", () => {
 
 test("TransportEffect seals headers, query, base64 bytes, preconditions, and reconciliation", () => {
   const effect = {
-    v: "reelier.transport-effect/v1", endpointId: "connector_1", method: "POST", path: "/v1/messages", query: [],
+    v: "reelier.transport-effect/v1", endpointId: "connector_1", method: "POST", path: "/v1/messages", query: "account=tenant_1&mode=send",
     headers: { "Content-Type": "application/json" }, bodyBase64: "e30=", riskClass: "message", idempotency: "native",
     preconditions: [], reconciliation: { recipeId: "message-readback" },
   };
   assert.deepEqual(parseAuthorityWire("transport-effect", effect), effect);
   for (const header of ["AUTHORIZATION", "cOOKIE", "HOST"]) assert.throws(() => parseAuthorityWire("transport-effect", { ...effect, headers: { [header]: "x" } }), /property name/i);
   assert.throws(() => parseAuthorityWire("transport-effect", { ...effect, bodyBase64: "e3=" }), /pattern/i);
-  assert.throws(() => parseAuthorityWire("transport-effect", { ...effect, query: [{ key: "z", value: "y" }, { key: "a", value: "y" }] }), /canonically ordered/i);
+  assert.throws(() => parseAuthorityWire("transport-effect", { ...effect, query: "mode=send&account=tenant_1" }), /canonically encoded/i);
+  assert.throws(() => parseAuthorityWire("transport-effect", { ...effect, query: "x=%af" }), /pattern/i);
 });
 
 test("SourceBundle provenance and AuthorityReceipt fixed evidence claims are closed", () => {
@@ -69,12 +70,13 @@ test("authority canonical bytes are JCS and digests are sha256-prefixed", () => 
 test("every frozen wire kind has a valid, deterministic golden vector", () => {
   const vectors = JSON.parse(readFileSync(path.join(process.cwd(), "contract/authority/v1/golden-vectors.json"), "utf8")) as Record<
     AuthorityKind,
-    { canonical: string; digest: string; value: unknown }
+    { canonical: string; digest: string; value: unknown; compiledRequest?: { target: string; bodyUtf8: string } }
   >;
-  for (const [kind, vector] of Object.entries(vectors) as [AuthorityKind, { canonical: string; digest: string; value: unknown }][]) {
+  for (const [kind, vector] of Object.entries(vectors) as [AuthorityKind, { canonical: string; digest: string; value: unknown; compiledRequest?: { target: string; bodyUtf8: string } }][]) {
     assert.deepEqual(parseAuthorityWire(kind, vector.value), vector.value, kind);
     assert.equal(authorityCanonicalBytes(vector.value).toString("utf8"), vector.canonical, kind);
     assert.equal(authorityDigest(vector.value), vector.digest, kind);
   }
+  assert.deepEqual(vectors["transport-effect"].compiledRequest, { target: "/v1/messages?account=tenant_1&mode=send", bodyUtf8: "{}" });
   assert.throws(() => parseCanonicalAuthorityJson("outcome-request", JSON.stringify(request)), /not RFC 8785\/JCS canonical/);
 });

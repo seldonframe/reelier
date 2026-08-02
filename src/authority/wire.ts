@@ -51,7 +51,7 @@ export function parseAuthorityWire<K extends AuthorityKind>(kind: K, value: unkn
   const parsed = JSON.parse(authorityCanonicalBytes(value).toString("utf8")) as AuthorityWireByKind[K];
   if (kind === "outcome-request") {
     const choices = (parsed as AuthorityWireByKind["outcome-request"]).choices;
-    if (Object.keys(choices).some((key) => ["tenant", "body", "url", "credentials", "providerargs"].includes(key.toLowerCase()))) {
+    if (Object.keys(choices).some((key) => ["tenant", "provideraccount", "account", "connector", "pack", "endpoint", "recipient", "template", "body", "url", "providerargs", "credentials"].includes(key.toLowerCase()))) {
       throw new TypeError("invalid outcome-request: forbidden choice property name");
     }
   }
@@ -59,7 +59,7 @@ export function parseAuthorityWire<K extends AuthorityKind>(kind: K, value: unkn
     const effect = parsed as AuthorityWireByKind["transport-effect"];
     if (Object.keys(effect.headers).some((key) => ["authorization", "cookie", "host"].includes(key.toLowerCase()))) throw new TypeError("invalid transport-effect: forbidden header property name");
     if (Buffer.from(effect.bodyBase64, "base64").toString("base64") !== effect.bodyBase64) throw new TypeError("invalid transport-effect: noncanonical base64");
-    if (effect.query.some((entry, index) => index > 0 && `${effect.query[index - 1].key}\u0000${effect.query[index - 1].value}` >= `${entry.key}\u0000${entry.value}`)) throw new TypeError("invalid transport-effect: query is not canonically ordered");
+    if (effect.query !== effect.query.split("&").sort().join("&")) throw new TypeError("invalid transport-effect: query is not canonically encoded");
   }
   return parsed;
 }
