@@ -82,7 +82,7 @@ export const ledgerLockFaultPoints = Object.freeze([
   "after-lock-publication-owner-partial-write", "after-lock-publication-owner-sync",
   "after-lock-publication-stage-sync", "after-lock-publication-rename", "after-lock-publication-root-sync",
   "after-active-lock-metadata", "before-active-lock-content-read",
-  "after-publication-stage-enumeration", "before-publication-stage-validation",
+  "after-mutating-admission-enumeration", "after-publication-stage-enumeration", "before-publication-stage-validation",
   "after-lock-publication-rename-collision", "before-publication-stage-root-reenumeration",
   "before-publication-stage-final-validation", "before-publication-stage-final-liveness",
   "before-publication-stage-remove-attempt", "after-publication-stage-cleanup-root-sync",
@@ -195,6 +195,8 @@ type PublicationRetry = "retry" | "integrity-replacement";
 interface PublicationElection {
   readonly predecessor:PublicationStage;
 }
+type MutatingAdmissionMemo = Readonly<{kind:"unseeded"}> | Readonly<{kind:"saturated";names:readonly string[]}> | Readonly<{kind:"disabled"}>;
+type MutatingAdmissionObservation = Readonly<{kind:"saturated";names:readonly string[]}> | Readonly<{kind:"fallback"}>;
 interface OwnedOwnerSnapshot {
   readonly directoryIdentity:FileIdentity;
   readonly ownerIdentity:FileIdentity;
@@ -437,6 +439,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
     const owner: LockOwner = { v: 1, host: hostname(), pid: process.pid, nonce: randomBytes(32).toString("hex") };
     const ownerBytes=canonicalBytes(owner);let stageName="",stagePath="",ownerPath="";
     let stageCreated=false,published=false,expectedStage:PublicationStage|null=null,election:PublicationElection|null=null,waitedOnActiveLock=false,fullReelectionPending=false;
+    let mutatingAdmissionMemo:MutatingAdmissionMemo=admitContender?{kind:"unseeded"}:{kind:"disabled"};
     let retryDelayMs=5;
     const backoff=async()=>{const remaining=deadline-monotonicNow();if(remaining<=0)return;await delay(Math.min(retryDelayMs,remaining));retryDelayMs=Math.min(50,retryDelayMs*2);};
     while (true) {
@@ -455,9 +458,14 @@ export class FsAuthorityLedger implements AuthorityLedger {
         if(waitedOnActiveLock){waitedOnActiveLock=false;if(!fullReelectionPending)retryDelayMs=5;}
         if(stageCreated&&monotonicNow()>=deadline)return {ok:false,reason:"busy"};
         if(!stageCreated){
-          if(admitContender&&await this.mutatingAdmissionSaturated()){
-            if(monotonicNow()>=deadline)return {ok:false,reason:"busy"};
-            await backoff();continue;
+          if(admitContender&&mutatingAdmissionMemo.kind!=="disabled"){
+            const observation=await this.observeMutatingAdmissionSaturation(mutatingAdmissionMemo);
+            if(observation.kind==="saturated"){
+              mutatingAdmissionMemo={kind:"saturated",names:observation.names};
+              if(monotonicNow()>=deadline)return {ok:false,reason:"busy"};
+              await backoff();continue;
+            }
+            mutatingAdmissionMemo={kind:"disabled"};
           }
           const existingStages=await this.settlePublicationStages(deadline,false,null,admitContender);
           if(existingStages.length>0&&!admitContender){
@@ -472,6 +480,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
             const ticket=raw>maxVisible?raw:maxVisible+1n;
             stageName=this.publicationStageName(owner,ticket);stagePath=this.absolute(stageName);ownerPath=path.join(stagePath,"owner.json");
           }
+          mutatingAdmissionMemo={kind:"disabled"};
           try{await mkdir(stagePath);stageCreated=true;expectedStage=await this.validatePublicationStage(stageName);this.fault("after-lock-publication-stage-create");}
           catch(error){if(hasCode(error,"EEXIST")){continue;}throw error;}
           let handle:FileHandle|undefined;
@@ -527,23 +536,26 @@ export class FsAuthorityLedger implements AuthorityLedger {
   private publicationStageName(owner:LockOwner,ticket:bigint):string{return `.authority-ledger-lock-publication-${this.hostDigest(owner.host)}-${ticket.toString(16).padStart(16,"0")}-${owner.pid}-${owner.nonce}.tmp`;}
   private hostDigest(host:string):string{return createHash("sha256").update(host,"utf8").digest("hex");}
 
-  private async mutatingAdmissionSaturated():Promise<boolean>{
+  private async observeMutatingAdmissionSaturation(memo:Exclude<MutatingAdmissionMemo,Readonly<{kind:"disabled"}>>):Promise<MutatingAdmissionObservation>{
     let names:string[];
-    try{names=(await readdir(this.root)).filter(name=>name.startsWith(".authority-ledger-lock-publication-"));}
-    catch(error){if(hasCode(error,"ENOENT")||isSnapshotSharingError(error))return false;throw error;}
-    if(names.length<MAX_ADMITTED_MUTATING_PUBLICATION_STAGES)return false;
-    const localHostDigest=this.hostDigest(hostname()),identities=new Set<string>();
+    try{names=(await readdir(this.root)).filter(name=>name.startsWith(".authority-ledger-lock-publication-")).sort();}
+    catch(error){if(hasCode(error,"ENOENT")||isSnapshotSharingError(error))return {kind:"fallback"};throw error;}
+    this.fault("after-mutating-admission-enumeration");
+    if(memo.kind==="saturated")return sameStrings(memo.names,names)?{kind:"saturated",names:memo.names}:{kind:"fallback"};
+    if(names.length<MAX_ADMITTED_MUTATING_PUBLICATION_STAGES)return {kind:"fallback"};
+    const localHostDigest=this.hostDigest(hostname()),identities=new Set<string>(),pids:number[]=[];
     for(const name of names){
       const match=PUBLICATION_STAGE.exec(name);
-      if(!match)return false;
+      if(!match)return {kind:"fallback"};
       const ticket=BigInt(`0x${match[2]}`),pid=Number(match[3]);
-      if(ticket===0n||!Number.isSafeInteger(pid)||pid<=0||match[1]!==localHostDigest)return false;
+      if(ticket===0n||!Number.isSafeInteger(pid)||pid<=0||match[1]!==localHostDigest)return {kind:"fallback"};
       const identity=`${match[1]}:${match[3]}`;
-      if(identities.has(identity))return false;
+      if(identities.has(identity))return {kind:"fallback"};
       identities.add(identity);
-      if(processLiveness(pid)!=="alive")return false;
+      pids.push(pid);
     }
-    return true;
+    const liveness=pids.map(pid=>processLiveness(pid));
+    return liveness.every(value=>value==="alive")?{kind:"saturated",names:Object.freeze([...names])}:{kind:"fallback"};
   }
 
   private async inspectActiveLock(deadline:number):Promise<"absent"|"retry"|"wait"|Extract<LockResult,{ok:false}>>{
