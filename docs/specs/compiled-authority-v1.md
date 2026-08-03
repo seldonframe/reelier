@@ -341,20 +341,33 @@ infer cleanup authority from absence; or service a semantic `recovery-pending` l
 fault after any housekeeping transition and before preparation therefore leaves callback count zero
 and every semantic subtree and clock byte-identical.
 
+In this section, `the exact creator's frozen creation snapshot` (shortened below to `the exact
+creator snapshot`) is a private, in-memory, nonserializable authority value produced only by the
+successful exclusive-creation path for that exact artifact in the current acquisition attempt. It
+binds the artifact's exact name and canonical owner bytes; the directory and owner-file type, link,
+and filesystem identities; and the creation and durability observations available when that creation
+boundary completes. The value exists only for that one acquisition and its own failure-cleanup path.
+It cannot be reconstructed after restart, shared with another ledger instance even in the same PID,
+inferred from a PID, name, bytes, or liveness result, or supplied by disk or agent input. Any bound
+replacement or mismatch invalidates the value and returns the artifact to normal closed
+classification. Under the local-v1 topology this is an exact evidence binding, not a claim of a
+native persistent handle or stronger no-follow guarantee.
+
 Positive housekeeping authority is purpose-specific and closed:
 
-- `prep-retired` requires either the exact creator's frozen creation snapshot or a final same-host
+- `prep-retired` requires either the exact creator snapshot for that preparation or a final same-host
   dead-PID result for the exact name/owner/identity snapshot.
-- `slot-retired.abandoned` requires the exact creator snapshot, or final same-host dead-PID proof plus
-  a stable complete graph containing no matching publication stage, active lock, or withdrawal
-  marker. A live fixed slot without an ack remains `busy` unchanged.
+- `slot-retired.abandoned` requires the exact creator snapshot for that fixed slot, or final same-host
+  dead-PID proof plus a stable complete graph containing no matching publication stage, active lock,
+  or withdrawal marker. A live fixed slot without an ack remains `busy` unchanged.
 - `slot-retired.withdrawn` requires the exact fixed-slot marker and exact same-owner withdrawal
   marker; liveness grants nothing.
 - `slot-retired.published` requires the exact same-owner active lock or the exact same-owner
   `released`, `recovery-pending`, or `publication-aborted` successor.
 - Creator-withdrawal cleanup requires a durable `slot-retired` cleanup ack whose name and digest are
   committed in the withdrawal ack and which binds the exact withdrawal marker.
-- A lone legacy withdrawal requires the exact creator snapshot or final same-host dead-owner proof;
+- A lone legacy withdrawal requires the exact creator snapshot for that withdrawal artifact or final
+  same-host dead-owner proof;
   it is retired only and is never promoted.
 - A cleanup stage or ack requires its exact record digest, filename, filesystem identities, lifecycle
   predecessor, and still-valid purpose proof.
