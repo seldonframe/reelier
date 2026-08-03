@@ -602,7 +602,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
     if(await this.captureAuthorizedPublicationDisappearances(state))return "retry";
     const names=await this.publicationStageNames();
     this.fault("after-publication-stage-enumeration");
-    for(const name of state.removalDisappearances.keys())if(names.includes(name))throw new LedgerCorruption("publication stage reappeared before cleanup generation closure");
+    this.assertNoTombstonedPublicationNames(state,names);
     const stages:PublicationStage[]=[];
     const identities=new Set<string>();
     for(const name of names){
@@ -616,17 +616,12 @@ export class FsAuthorityLedger implements AuthorityLedger {
     if(initialLiveness.some(value=>value==="unverifiable"))throw new LedgerCorruption("unverifiable publication stage owner");
     this.fault("before-publication-stage-root-reenumeration");
     const closedNames=await this.publicationStageNames();
+    this.assertNoTombstonedPublicationNames(state,closedNames);
     if(!sameStrings(names,closedNames)){state.generationInvalidated=true;return this.publicationMembershipChanged(activeOwner,names,closedNames);}
     if(stages.length>0)this.fault("after-lock-publication-generation-closed");
     const finalNames=await this.publicationStageNames();
+    this.assertNoTombstonedPublicationNames(state,finalNames);
     if(!sameStrings(closedNames,finalNames)){state.generationInvalidated=true;return this.publicationMembershipChanged(activeOwner,closedNames,finalNames);}
-    for(const [name,phase] of state.removalDisappearances){
-      if(finalNames.includes(name))throw new LedgerCorruption("publication stage reappeared before cleanup generation closure");
-      if(phase==="synced"){
-        state.removalDisappearances.delete(name);
-        state.removalAuthorizations.delete(name);
-      }
-    }
     const finalStages:PublicationStage[]=[];
     for(let index=0;index<stages.length;index++){
       const stage=stages[index];
@@ -643,12 +638,15 @@ export class FsAuthorityLedger implements AuthorityLedger {
     const finalLiveness=finalStages.map(stage=>processLiveness(stage.pid));
     if(finalLiveness.some(value=>value==="unverifiable"))throw new LedgerCorruption("unverifiable publication stage owner");
     const deadStages=finalStages.filter((_,index)=>finalLiveness[index]==="dead");
-    if(!requireDeadCleanup&&state.generationInvalidated&&deadStages.length>0&&deadStages.length<finalStages.length)return finalStages;
+    if(!requireDeadCleanup&&state.generationInvalidated&&deadStages.length>0&&deadStages.length<finalStages.length)return this.completePublicationGeneration(state,finalStages);
     const removedNames:string[]=[];
     for(const deadStage of deadStages){
       const expectedNames=finalStages.filter(stage=>!removedNames.includes(stage.name)).map(stage=>stage.name);
       this.fault("before-publication-stage-root-reenumeration");
-      if(!sameStrings(expectedNames,await this.publicationStageNames()))return "retry";
+      const removalNames=await this.publicationStageNames();
+      this.assertNoTombstonedPublicationNames(state,removalNames);
+      if(!sameStrings(expectedNames,removalNames))return "retry";
+      if(state.removalDisappearances.has(deadStage.name))throw new LedgerCorruption("disappeared publication stage cannot reuse cleanup authority");
       const removal=await this.removeDeadPublicationStage(deadStage,state.removalAuthorizations);
       if(removal==="removed"){
         state.removalDisappearances.set(deadStage.name,"sync-pending");
@@ -656,11 +654,24 @@ export class FsAuthorityLedger implements AuthorityLedger {
         removedNames.push(deadStage.name);
         continue;
       }
-      if(removal==="live")return finalStages;
+      if(removal==="live")return this.completePublicationGeneration(state,finalStages);
       return removal;
     }
     if(removedNames.length>0)return "retry";
-    return finalStages;
+    return this.completePublicationGeneration(state,finalStages);
+  }
+
+  private assertNoTombstonedPublicationNames(state:PublicationSettlementState,names:readonly string[]):void{
+    for(const name of state.removalDisappearances.keys())if(names.includes(name))throw new LedgerCorruption("publication stage reappeared before cleanup generation closure");
+  }
+
+  private completePublicationGeneration(state:PublicationSettlementState,stages:PublicationStage[]):PublicationStage[]|PublicationRetry{
+    if(state.rootSyncPending||[...state.removalDisappearances.values()].some(phase=>phase==="sync-pending"))return "retry";
+    for(const [name,phase] of state.removalDisappearances)if(phase==="synced"){
+      state.removalDisappearances.delete(name);
+      state.removalAuthorizations.delete(name);
+    }
+    return stages;
   }
 
   private publicationMembershipChanged(_activeOwner:boolean,_previous:readonly string[],_current:readonly string[]):"retry"{return "retry";}
