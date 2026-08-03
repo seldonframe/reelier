@@ -593,6 +593,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
   }
 
   private async servicePublicationGeneration(state:PublicationSettlementState,activeOwner:boolean,ownedStage:PublicationStage|null,requireDeadCleanup:boolean):Promise<PublicationStage[]|PublicationRetry>{
+    if(await this.captureAuthorizedPublicationDisappearances(state))return "retry";
     const names=await this.publicationStageNames();
     this.fault("after-publication-stage-enumeration");
     const stages:PublicationStage[]=[];
@@ -613,10 +614,13 @@ export class FsAuthorityLedger implements AuthorityLedger {
     const finalNames=await this.publicationStageNames();
     if(!sameStrings(closedNames,finalNames)){state.generationInvalidated=true;return this.publicationMembershipChanged(activeOwner,closedNames,finalNames);}
     const finalStages:PublicationStage[]=[];
-    for(const stage of stages){
+    for(let index=0;index<stages.length;index++){
+      const stage=stages[index];
       const current=await this.validatePublicationStage(stage.name);
       if(!samePublicationStage(stage,current)){
-        if(ownedStage?.name===stage.name||activeOwner&&!isPublicationStageProgress(stage,current))throw new LedgerCorruption("publication stage changed after generation closure");
+        if(ownedStage?.name===stage.name)throw new LedgerCorruption("publication stage changed after generation closure");
+        if(initialLiveness[index]==="dead"&&isAuthorizedPublicationRemovalProgress(stage,current)){state.generationInvalidated=true;return "retry";}
+        if(activeOwner&&!isPublicationStageProgress(stage,current))throw new LedgerCorruption("publication stage changed after generation closure");
         state.generationInvalidated=true;
         return isPublicationStageProgress(stage,current)?"retry":"integrity-replacement";
       }
@@ -647,6 +651,20 @@ export class FsAuthorityLedger implements AuthorityLedger {
 
   private publicationMembershipChanged(_activeOwner:boolean,_previous:readonly string[],_current:readonly string[]):"retry"{return "retry";}
 
+  private async captureAuthorizedPublicationDisappearances(state:PublicationSettlementState):Promise<boolean>{
+    let disappeared=false;
+    for(const [name,authorized] of state.removalAuthorizations){
+      try{await lstat(authorized.directory,{bigint:true});}
+      catch(error){
+        if(!hasCode(error,"ENOENT"))throw error;
+        state.removalAuthorizations.delete(name);
+        state.rootSyncPending=true;
+        disappeared=true;
+      }
+    }
+    return disappeared;
+  }
+
   private async pollPublicationPredecessor(expected:PublicationStage):Promise<"live"|"reselect">{
     this.fault("before-lock-publication-predecessor-validation");
     let current:PublicationStage;
@@ -659,7 +677,10 @@ export class FsAuthorityLedger implements AuthorityLedger {
     this.fault("before-publication-stage-final-validation");
     const current=await this.validatePublicationStage(stage.name);
     const authorized=removalAuthorizations.get(stage.name);
-    if(authorized!==undefined&&!samePublicationStage(authorized,current))throw new LedgerCorruption("publication stage replaced during cleanup retry");
+    if(authorized!==undefined&&!samePublicationStage(authorized,current)){
+      if(isAuthorizedPublicationRemovalProgress(authorized,current))return "retry";
+      throw new LedgerCorruption("publication stage replaced during cleanup retry");
+    }
     if(!samePublicationStage(stage,current))return isPublicationStageProgress(stage,current)?"retry":"integrity-replacement";
     removalAuthorizations.set(stage.name,current);
     this.fault("before-publication-stage-final-liveness");
@@ -1397,6 +1418,7 @@ function fileIdentity(stat:Readonly<{dev:bigint;ino:bigint;mode:bigint;nlink:big
 export function __testSamePublicationFileIdentity(left:Readonly<{dev:bigint;ino:bigint;mode:bigint;nlink:bigint}>,right:Readonly<{dev:bigint;ino:bigint;mode:bigint;nlink:bigint}>):boolean{return left.dev===right.dev&&left.ino===right.ino&&left.mode===right.mode&&left.nlink===right.nlink;}
 function sameFileIdentity(left:FileIdentity,right:FileIdentity):boolean{return __testSamePublicationFileIdentity(left,right);}
 function samePublicationStage(left:PublicationStage,right:PublicationStage):boolean{return left.name===right.name&&left.state===right.state&&sameFileIdentity(left.directoryIdentity,right.directoryIdentity)&&(left.ownerIdentity===undefined?right.ownerIdentity===undefined:right.ownerIdentity!==undefined&&sameFileIdentity(left.ownerIdentity,right.ownerIdentity))&&(left.ownerBytes===undefined?right.ownerBytes===undefined:right.ownerBytes!==undefined&&left.ownerBytes.equals(right.ownerBytes));}
+function isAuthorizedPublicationRemovalProgress(left:PublicationStage,right:PublicationStage):boolean{return left.name===right.name&&left.state==="complete"&&left.ownerIdentity!==undefined&&left.ownerBytes!==undefined&&right.state==="empty"&&right.ownerIdentity===undefined&&right.ownerBytes===undefined&&sameFileIdentity(left.directoryIdentity,right.directoryIdentity);}
 function isPublicationStageProgress(left:PublicationStage,right:PublicationStage):boolean{
   if(left.name!==right.name||!sameFileIdentity(left.directoryIdentity,right.directoryIdentity))return false;
   if(left.ownerIdentity===undefined)return right.ownerIdentity===undefined||right.ownerBytes!==undefined;
