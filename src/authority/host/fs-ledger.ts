@@ -185,6 +185,7 @@ interface PublicationSettlementState {
   rootSyncPending:boolean;
   generationInvalidated:boolean;
 }
+type PublicationRetry = "retry" | "integrity-replacement";
 interface PublicationElection {
   readonly predecessor:PublicationStage;
 }
@@ -533,21 +534,23 @@ export class FsAuthorityLedger implements AuthorityLedger {
   private async settlePublicationStages(deadline:number,activeOwner:boolean,ownedStage:PublicationStage|null=null):Promise<PublicationStage[]>{
     const phase=activeOwner?"housekeeping" as const:"acquisition" as const,state:PublicationSettlementState={removalAuthorizations:new Map<string,PublicationStage>(),rootSyncPending:false,generationInvalidated:false};
     for(;;){
+      let retry:PublicationRetry="retry";
       try{
         if(state.rootSyncPending){await this.syncDirectory(this.root);state.rootSyncPending=false;this.fault("after-publication-stage-cleanup-root-sync");}
         const result=await this.servicePublicationGeneration(state,activeOwner,ownedStage);
-        if(result!=="retry")return result;
+        if(Array.isArray(result))return result;
+        retry=result;
         if(state.rootSyncPending)continue;
       }catch(error){
         if(!this.shouldRetrySnapshot(error,deadline,phase))throw error;
         state.generationInvalidated=true;
       }
-      if(monotonicNow()>=deadline)throw new CoordinationExhausted(phase,"snapshot-churn");
+      if(monotonicNow()>=deadline){if(retry==="integrity-replacement")throw new LedgerCorruption("publication stage replacement did not stabilize");throw new CoordinationExhausted(phase,"snapshot-churn");}
       await delay(5);
     }
   }
 
-  private async servicePublicationGeneration(state:PublicationSettlementState,activeOwner:boolean,ownedStage:PublicationStage|null):Promise<PublicationStage[]|"retry">{
+  private async servicePublicationGeneration(state:PublicationSettlementState,activeOwner:boolean,ownedStage:PublicationStage|null):Promise<PublicationStage[]|PublicationRetry>{
     const names=await this.publicationStageNames();
     this.fault("after-publication-stage-enumeration");
     const stages:PublicationStage[]=[];
@@ -573,7 +576,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
       if(!samePublicationStage(stage,current)){
         if(ownedStage?.name===stage.name||activeOwner&&!isPublicationStageProgress(stage,current))throw new LedgerCorruption("publication stage changed after generation closure");
         state.generationInvalidated=true;
-        return "retry";
+        return isPublicationStageProgress(stage,current)?"retry":"integrity-replacement";
       }
       finalStages.push(current);
     }
@@ -594,7 +597,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
         continue;
       }
       if(removal==="live")return finalStages;
-      return "retry";
+      return removal;
     }
     if(removedNames.length>0)return "retry";
     return finalStages;
@@ -610,12 +613,12 @@ export class FsAuthorityLedger implements AuthorityLedger {
     return processLiveness(current.pid)==="alive"?"live":"reselect";
   }
 
-  private async removeDeadPublicationStage(stage:PublicationStage,removalAuthorizations:Map<string,PublicationStage>):Promise<"removed"|"live"|"retry">{
+  private async removeDeadPublicationStage(stage:PublicationStage,removalAuthorizations:Map<string,PublicationStage>):Promise<"removed"|"live"|PublicationRetry>{
     this.fault("before-publication-stage-final-validation");
     const current=await this.validatePublicationStage(stage.name);
     const authorized=removalAuthorizations.get(stage.name);
     if(authorized!==undefined&&!samePublicationStage(authorized,current))throw new LedgerCorruption("publication stage replaced during cleanup retry");
-    if(!samePublicationStage(stage,current))return "retry";
+    if(!samePublicationStage(stage,current))return isPublicationStageProgress(stage,current)?"retry":"integrity-replacement";
     removalAuthorizations.set(stage.name,current);
     this.fault("before-publication-stage-final-liveness");
     const liveness=processLiveness(stage.pid);
