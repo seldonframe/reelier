@@ -328,18 +328,28 @@ The `slot-retired` variant has exact keys
 `{ disposition, kind, markerName, owner, ownerBytesDigest, ownerBytesLength, ownerDigest,
 ownerIdentity, originalName, purpose, recoveryAuthority, slotIdentity, terminalArtifactDigest,
 terminalArtifactName, v }`; `kind` is `admission-slot-retired`, `originalName` is
-`.authority-ledger-admission-0`, `recoveryAuthority` is `active-owner-after-terminal-proof`, and the
-terminal name/digest bind the exact byte-identical `lock`, creator-withdrawal marker, or abandoned-slot
-marker required by `published`, `withdrawn`, or `abandoned`.
+`.authority-ledger-admission-0`, and `disposition` strictly discriminates three closed records with
+the same key set. For `abandoned`, `recoveryAuthority` is `dead-owner-or-exact-creator` and the
+terminal name/digest bind the exact durable abandoned slot-retirement marker snapshot itself, a
+positive fact never reconstructed from absence. For `withdrawn`, `recoveryAuthority` is
+`exact-withdrawal-marker` and the terminal name/digest bind the exact same-owner withdrawal marker.
+For `published`, `recoveryAuthority` is `active-owner-or-exact-lock-successor` and the terminal
+name/digest bind the exact same-owner active `lock` or exact `released`, `recovery-pending`, or
+`publication-aborted` successor. No universal active-owner authority literal is valid across
+dispositions.
 
 For every union record, `ownerDigest` is the digest of the exact canonical owner,
 `ownerBytesDigest` is the digest of the raw owner-file bytes, `ownerBytesLength` is their canonical
 nonnegative decimal length string, and the final filename is
 `.authority-ledger-coordination-cleanup-<64-lower-hex-record-digest>.ack`. The exclusive staging file
-is `.authority-ledger-coordination-cleanup-stage-<purpose>-<host64>-<positive-safe-pid>-<nonce64>-<64-lower-hex-record-digest>.tmp`.
-The exact lifecycle is exclusive stage create, canonical write-all, file sync, stage-directory sync,
-atomic rename to the final ack, root sync, exact marker removal, root sync, exact ack removal, root
-sync. Every cleanup step exact-revalidates its stage/ack identity, bytes, name digest, predecessor,
+is the regular root file
+`.authority-ledger-coordination-cleanup-stage-<purpose-code>-<64-lower-hex-record-digest>.tmp`, where
+`purpose-code` is exactly `p` for `prep-retired`, `s` for `slot-retired`, or `w` for
+`creator-withdrawal`. Every generated authority-ledger component is at most 255 UTF-8 bytes even
+with the longest closed fields and a five-or-more-digit PID. The exact lifecycle is exclusive regular
+stage-file create, canonical write-all, file sync, atomic rename to the final ack, root sync, exact
+marker removal, root sync, exact ack removal, root sync; there is no stage-directory sync. Every
+cleanup step exact-revalidates its stage/ack identity, bytes, name digest, predecessor,
 and still-present purpose proof. Marker-only, marker-plus-matching-ack, and a valid
 purpose-authorized orphan ack are recoverable windows; absence alone never grants authority.
 A prep orphan ack is valid only after its exact original name is absent. A slot orphan ack is valid
@@ -365,11 +375,15 @@ The creator-withdrawal chain is exact and monotonic:
 7. The withdrawal ack is removed and root-synced, yielding admission-ready empty coordination.
 
 The exact crash matrix recognizes the positive-evidence residues after steps 1 through 6 and the
-root-synced admission-ready empty result after step 7; cleanup stages for steps 2 and 4 are recognized
-only with the same exact bound records and predecessors. Each state progresses only its next exact
-transition and then restarts full classification. In particular, `slot absent + withdrawal present +
-no ack` grants nothing and is preserved corruption; any replacement or cross-owner/cross-digest
-variant is also preserved corruption. An entirely empty coordination state reconstructs only a new
+root-synced admission-ready empty result after step 7. The selected positive residues are exact
+`slot + withdrawal`, `slot + withdrawal + slot-stage`, `slot + withdrawal + slot-ack`,
+`withdrawal + slot-ack`, `withdrawal + slot-ack + withdrawal-stage`,
+`withdrawal + slot-ack + withdrawal-ack`, `withdrawal + withdrawal-ack`, and orphan
+`withdrawal-ack`; both cleanup stages are regular files containing the exact canonical bound record
+and are recognized only with their exact durable predecessors. Each state progresses only its next
+exact transition and then restarts full classification. In particular, `slot absent + withdrawal
+present + no ack` grants nothing and is preserved corruption; any replacement or
+cross-owner/cross-digest variant is also preserved corruption. An entirely empty coordination state reconstructs only a new
 canonical owner for a new admission attempt; it never retroactively authenticates missing cleanup
 evidence.
 
