@@ -1343,6 +1343,25 @@ test("a correct concurrent dead-stage remover makes non-authorizing cleanup prog
     assert.equal(emptied,true);assert.deepEqual(observed!.result,{ok:false,reason:"busy"});assert.deepEqual(observed!.delays,[5]);assert.equal(observed!.elapsedMs,5);assert.equal(removeAttempts,1);assert.deepEqual({callbackEntries,creatorPublicationHooks},{callbackEntries:0,creatorPublicationHooks:0});assert.deepEqual(exactIdentity(lstatSync(stage,{bigint:true})),directoryIdentity);assert.deepEqual(await readdir(stage),[]);
   }));
 
+  await t.test("retained cleanup authorization syncs the root before accepting exact disappearance",()=>withRoot(async root=>{
+    const owner={host:hostname(),nonce:"b".repeat(64),pid:45005,v:1 as const,ticket:"0000000000000105"},bytes=publicationOwnerBytes(owner),stage=await writePublicationStage(root,owner,bytes),ownerPath=path.join(stage,"owner.json"),directoryIdentity=exactIdentity(lstatSync(stage,{bigint:true})),ownerIdentity=exactIdentity(lstatSync(ownerPath,{bigint:true})),originalKill=process.kill,order:string[]=[];
+    let generations=0,removeAttempts=0,rootSyncs=0,callbackEntries=0,disappeared=false;
+    Object.defineProperty(process,"kill",{configurable:true,value:(pid:number)=>pid===owner.pid?(()=>{throw Object.assign(new Error("dead"),{code:"ESRCH"});})():originalKill.call(process,pid,0)});
+    let observed;
+    try{
+      observed=await withRecordedDelays(()=>new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20,faultInjector:(point:string)=>{
+        if(point==="after-publication-stage-enumeration"&&++generations===2){assert.deepEqual(exactIdentity(lstatSync(stage,{bigint:true})),directoryIdentity);assert.deepEqual(exactIdentity(lstatSync(ownerPath,{bigint:true})),ownerIdentity);assert.deepEqual(readFileSync(ownerPath),bytes);rmSync(stage,{recursive:true});disappeared=true;order.push("peer-absent");}
+        if(point==="before-publication-stage-remove-attempt"&&++removeAttempts===1)throw Object.assign(new Error("EBUSY"),{code:"EBUSY"});
+        if(point==="after-publication-stage-cleanup-root-sync"){rootSyncs++;order.push("cleanup-root-sync");}
+        if(disappeared&&point==="after-lock-publication-generation-closed")order.push("closed-generation");
+        if(disappeared&&(publicationCrashPoints as readonly string[]).includes(point))order.push(`creator:${point}`);
+        if(point==="before-ledger-operation-callback"){callbackEntries++;if(disappeared)order.push("callback");}
+      }} as never).observeClock());
+    }finally{Object.defineProperty(process,"kill",{configurable:true,value:originalKill});}
+    assert.equal(disappeared,true);assert.deepEqual(observed!.result,{ok:true,status:"advanced",observedAt:new Date(t0).toISOString()});assert.equal(removeAttempts,1);assert.equal(callbackEntries,1);assert.equal(existsSync(stage),false);const coordinationArtifacts=(await readdir(root)).filter(name=>name.startsWith(".authority-ledger-lock-"));assert.equal(coordinationArtifacts.filter(name=>name.startsWith(".authority-ledger-lock-publication-")).length,0);assert.deepEqual(coordinationArtifacts.filter(name=>!name.endsWith(".released")),[],"peer disappearance creates no extra coordination artifact");
+    assert.equal(rootSyncs,1,"authorized complete-to-absent cleanup is accepted only after one ledger-root sync");assert.equal(order[0],"peer-absent");assert.equal(order[1],"cleanup-root-sync",`root sync precedes renewed generation, creator publication, and callback: ${order.join(",")}`);
+  }));
+
   await t.test("an active owner retries a dead peer that becomes empty after generation closure",()=>withRoot(async root=>{
     const owner={host:hostname(),nonce:"8".repeat(64),pid:45002,v:1 as const,ticket:"0000000000000102"},bytes=publicationOwnerBytes(owner),stage=path.join(root,publicationStageName(owner)),ownerPath=path.join(stage,"owner.json"),originalKill=process.kill;
     let injected=false,emptied=false,postProgressValidationFaults=0,callbackEntries=0,directoryIdentity:ReturnType<typeof exactIdentity>|undefined;
