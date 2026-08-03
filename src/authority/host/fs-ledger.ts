@@ -418,9 +418,9 @@ export class FsAuthorityLedger implements AuthorityLedger {
     const deadline = monotonicNow() + this.options.lockTimeoutMs;
     const owner: LockOwner = { v: 1, host: hostname(), pid: process.pid, nonce: randomBytes(32).toString("hex") };
     const stageName=this.publicationStageName(owner),stagePath=this.absolute(stageName),ownerPath=path.join(stagePath,"owner.json"),ownerBytes=canonicalBytes(owner);
-    let stageCreated=false,published=false,expectedStage:PublicationStage|null=null,election:PublicationElection|null=null;
+    let stageCreated=false,published=false,expectedStage:PublicationStage|null=null,election:PublicationElection|null=null,waitedOnActiveLock=false;
     let retryDelayMs=5;
-    const backoff=async()=>{await delay(retryDelayMs);retryDelayMs=Math.min(50,retryDelayMs*2);};
+    const backoff=async()=>{const remaining=deadline-monotonicNow();if(remaining<=0)return;await delay(Math.min(retryDelayMs,remaining));retryDelayMs=Math.min(50,retryDelayMs*2);};
     while (true) {
       try {
         const active=await this.inspectActiveLock(deadline);
@@ -430,9 +430,11 @@ export class FsAuthorityLedger implements AuthorityLedger {
         }
         if(active!=="absent"){
           if(active!=="wait")return active;
+          waitedOnActiveLock=true;
           if(monotonicNow()>=deadline)return {ok:false,reason:"busy"};
           await backoff();continue;
         }
+        if(waitedOnActiveLock){waitedOnActiveLock=false;retryDelayMs=5;}
         if(stageCreated&&monotonicNow()>=deadline)return {ok:false,reason:"busy"};
         if(!stageCreated){
           const existingStages=await this.settlePublicationStages(deadline,false,null);
@@ -466,7 +468,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
         if(ownIndex<0)throw new LedgerCorruption("creator publication stage disappeared");
         if(ownIndex>0){election={predecessor:generation[ownIndex-1]};retryDelayMs=5;continue;}
         const finalNames=await this.publicationStageNames();
-        if(!sameStrings(generation.map(stage=>stage.name),finalNames)){election=null;continue;}
+        if(!sameStrings(generation.map(stage=>stage.name),finalNames)){election=null;retryDelayMs=5;continue;}
         if(expectedStage===null)throw new LedgerCorruption("creator publication snapshot absent");
         const finalOwnStage=await this.validatePublicationStage(stageName);
         if(!samePublicationStage(expectedStage,finalOwnStage))throw new LedgerCorruption("creator publication stage changed before rename");
