@@ -86,6 +86,8 @@ export const ledgerLockFaultPoints = Object.freeze([
   "after-lock-publication-rename-collision", "before-publication-stage-root-reenumeration",
   "before-publication-stage-final-validation", "before-publication-stage-final-liveness",
   "before-publication-stage-remove-attempt", "after-publication-stage-cleanup-root-sync",
+  "after-lock-publication-provisional-predecessor-selection", "before-lock-publication-provisional-root-reenumeration",
+  "before-lock-publication-provisional-predecessor-liveness", "before-staged-publication-settlement",
   "after-lock-publication-generation-closed", "before-lock-publication-predecessor-validation",
   "before-ledger-operation-callback",
   "after-owner-file-sync", "after-lock-directory-sync", "before-lock-retire", "after-lock-retire",
@@ -195,6 +197,9 @@ type PublicationRetry = "retry" | "integrity-replacement";
 interface PublicationElection {
   readonly predecessor:PublicationStage;
 }
+interface ProvisionalPublicationName { readonly name:string;readonly ticket:bigint;readonly pid:number;readonly pidText:string }
+interface ProvisionalPublicationWait { readonly names:readonly string[];readonly predecessor:PublicationStage }
+type ProvisionalPublicationObservation = Readonly<{kind:"wait";state:ProvisionalPublicationWait}> | Readonly<{kind:"fallback"}>;
 type MutatingAdmissionMemo = Readonly<{kind:"unseeded"}> | Readonly<{kind:"saturated";names:readonly string[]}> | Readonly<{kind:"disabled"}>;
 type MutatingAdmissionObservation = Readonly<{kind:"saturated";names:readonly string[]}> | Readonly<{kind:"fallback"}>;
 interface OwnedOwnerSnapshot {
@@ -438,7 +443,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
     const deadline = monotonicNow() + this.options.lockTimeoutMs;
     const owner: LockOwner = { v: 1, host: hostname(), pid: process.pid, nonce: randomBytes(32).toString("hex") };
     const ownerBytes=canonicalBytes(owner);let stageName="",stagePath="",ownerPath="";
-    let stageCreated=false,published=false,expectedStage:PublicationStage|null=null,election:PublicationElection|null=null,waitedOnActiveLock=false,fullReelectionPending=false;
+    let stageCreated=false,published=false,expectedStage:PublicationStage|null=null,election:PublicationElection|null=null,provisionalWait:ProvisionalPublicationWait|null=null,stagedSettlementStarted=false,waitedOnActiveLock=false,fullReelectionPending=false;
     let mutatingAdmissionMemo:MutatingAdmissionMemo=admitContender?{kind:"unseeded"}:{kind:"disabled"};
     let retryDelayMs=5;
     const backoff=async()=>{const remaining=deadline-monotonicNow();if(remaining<=0)return;await delay(Math.min(retryDelayMs,remaining));retryDelayMs=Math.min(50,retryDelayMs*2);};
@@ -502,10 +507,23 @@ export class FsAuthorityLedger implements AuthorityLedger {
           }
           election=null;retryDelayMs=5;
         }
-        const generation=await this.settlePublicationStages(deadline,false,expectedStage);
+        if(!stagedSettlementStarted){
+          if(expectedStage===null)throw new LedgerCorruption("creator publication snapshot absent");
+          const provisional=await this.inspectProvisionalPublicationWait(expectedStage,provisionalWait);
+          if(provisional.kind==="wait"){
+            provisionalWait=provisional.state;
+            if(monotonicNow()>=deadline)return {ok:false,reason:"busy"};
+            await backoff();continue;
+          }
+          provisionalWait=null;
+          this.fault("before-staged-publication-settlement");
+          stagedSettlementStarted=true;
+        }
+        const generation=[...(await this.settlePublicationStages(deadline,false,expectedStage))].sort(comparePublicationOrder);
         if(fullReelectionPending){fullReelectionPending=false;retryDelayMs=5;}
         const ownIndex=generation.findIndex(stage=>stage.name===stageName);
         if(ownIndex<0)throw new LedgerCorruption("creator publication stage disappeared");
+        if(expectedStage===null||!samePublicationStage(expectedStage,generation[ownIndex]))throw new LedgerCorruption("creator publication stage changed after full settlement");
         if(ownIndex>0){election={predecessor:generation[ownIndex-1]};retryDelayMs=5;continue;}
         const finalNames=await this.publicationStageNames();
         if(!sameStrings(generation.map(stage=>stage.name),finalNames)){election=null;fullReelectionPending=true;continue;}
@@ -535,6 +553,51 @@ export class FsAuthorityLedger implements AuthorityLedger {
 
   private publicationStageName(owner:LockOwner,ticket:bigint):string{return `.authority-ledger-lock-publication-${this.hostDigest(owner.host)}-${ticket.toString(16).padStart(16,"0")}-${owner.pid}-${owner.nonce}.tmp`;}
   private hostDigest(host:string):string{return createHash("sha256").update(host,"utf8").digest("hex");}
+
+  private async inspectProvisionalPublicationWait(expectedOwn:PublicationStage,previous:ProvisionalPublicationWait|null):Promise<ProvisionalPublicationObservation>{
+    let names:string[];
+    try{names=await this.rawPublicationStageNames();}
+    catch(error){if(hasCode(error,"ENOENT")||isSnapshotSharingError(error))return {kind:"fallback"};throw error;}
+    const ordered=this.parseProvisionalPublicationNames(names,expectedOwn.name);
+    if(ordered===null||(previous!==null&&!sameStrings(previous.names,names)))return {kind:"fallback"};
+    const ownIndex=ordered.findIndex(item=>item.name===expectedOwn.name);
+    if(ownIndex<=0)return {kind:"fallback"};
+    const selected=ordered[ownIndex-1];
+    let selectedDirectoryIdentity:FileIdentity;
+    try{const info=await lstat(this.absolute(selected.name),{bigint:true});if(info.isSymbolicLink()||!info.isDirectory())return {kind:"fallback"};selectedDirectoryIdentity=fileIdentity(info);}
+    catch(error){if(hasCode(error,"ENOENT")||isSnapshotSharingError(error))return {kind:"fallback"};throw error;}
+    this.fault("after-lock-publication-provisional-predecessor-selection");
+    let own:PublicationStage,predecessor:PublicationStage;
+    try{
+      own=await this.validatePublicationStage(expectedOwn.name);
+      predecessor=await this.validatePublicationStage(selected.name);
+    }catch(error){if(error instanceof LedgerCorruption||hasCode(error,"ENOENT")||isSnapshotSharingError(error))return {kind:"fallback"};throw error;}
+    if(!samePublicationStage(expectedOwn,own)||!sameFileIdentity(selectedDirectoryIdentity,predecessor.directoryIdentity)||previous!==null&&!samePublicationStage(previous.predecessor,predecessor))return {kind:"fallback"};
+    this.fault("before-lock-publication-provisional-root-reenumeration");
+    let closedNames:string[];
+    try{closedNames=await this.rawPublicationStageNames();}
+    catch(error){if(hasCode(error,"ENOENT")||isSnapshotSharingError(error))return {kind:"fallback"};throw error;}
+    if(this.parseProvisionalPublicationNames(closedNames,expectedOwn.name)===null||!sameStrings(names,closedNames))return {kind:"fallback"};
+    this.fault("before-lock-publication-provisional-predecessor-liveness");
+    if(processLiveness(predecessor.pid)!=="alive")return {kind:"fallback"};
+    return {kind:"wait",state:{names:Object.freeze([...names]),predecessor}};
+  }
+
+  private parseProvisionalPublicationNames(names:readonly string[],ownName:string):ProvisionalPublicationName[]|null{
+    const localHostDigest=this.hostDigest(hostname()),identities=new Set<string>(),parsed:ProvisionalPublicationName[]=[];
+    for(const name of names){
+      const match=PUBLICATION_STAGE.exec(name);
+      if(!match)return null;
+      const ticket=BigInt(`0x${match[2]}`),pid=Number(match[3]),pidText=match[3];
+      if(ticket===0n||!Number.isSafeInteger(pid)||pid<=0||match[1]!==localHostDigest)return null;
+      const identity=`${match[1]}:${pidText}`;
+      if(identities.has(identity))return null;
+      identities.add(identity);
+      parsed.push({name,ticket,pid,pidText});
+    }
+    if(!parsed.some(item=>item.name===ownName))return null;
+    return parsed.sort(compareProvisionalPublicationOrder);
+  }
 
   private async observeMutatingAdmissionSaturation(memo:Exclude<MutatingAdmissionMemo,Readonly<{kind:"disabled"}>>):Promise<MutatingAdmissionObservation>{
     let names:string[];
@@ -738,11 +801,11 @@ export class FsAuthorityLedger implements AuthorityLedger {
     if(expected===null)return;
     for(;;){
       try{
-        const names=await this.publicationStageNames();
+        const names=await this.rawPublicationStageNames();
         this.fault("after-publication-stage-enumeration");
         if(!names.includes(name))return;
         this.fault("before-publication-stage-root-reenumeration");
-        if(!sameStrings(names,await this.publicationStageNames()))continue;
+        if(!sameStrings(names,await this.rawPublicationStageNames()))continue;
         this.fault("before-publication-stage-final-validation");
         const current=await this.validatePublicationStage(name);
         if(!samePublicationStage(expected,current))return;
@@ -760,10 +823,12 @@ export class FsAuthorityLedger implements AuthorityLedger {
   }
 
   private async publicationStageNames():Promise<string[]>{
-    const names=(await readdir(this.root)).filter(name=>name.startsWith(".authority-ledger-lock-publication-")).sort();
+    const names=await this.rawPublicationStageNames();
     for(const name of names)if(!PUBLICATION_STAGE.test(name))throw new LedgerCorruption("invalid publication stage name");
     return names;
   }
+
+  private async rawPublicationStageNames():Promise<string[]>{return (await readdir(this.root)).filter(name=>name.startsWith(".authority-ledger-lock-publication-")).sort();}
 
   private shouldRetrySnapshot(error:unknown,deadline:number,phase:"acquisition"|"housekeeping"):boolean{
     if(!hasCode(error,"ENOENT")&&!isSnapshotSharingError(error))return false;
@@ -1460,6 +1525,9 @@ function fileIdentity(stat:Readonly<{dev:bigint;ino:bigint;mode:bigint;nlink:big
 export function __testSamePublicationFileIdentity(left:Readonly<{dev:bigint;ino:bigint;mode:bigint;nlink:bigint}>,right:Readonly<{dev:bigint;ino:bigint;mode:bigint;nlink:bigint}>):boolean{return left.dev===right.dev&&left.ino===right.ino&&left.mode===right.mode&&left.nlink===right.nlink;}
 function sameFileIdentity(left:FileIdentity,right:FileIdentity):boolean{return __testSamePublicationFileIdentity(left,right);}
 function samePublicationStage(left:PublicationStage,right:PublicationStage):boolean{return left.name===right.name&&left.state===right.state&&sameFileIdentity(left.directoryIdentity,right.directoryIdentity)&&(left.ownerIdentity===undefined?right.ownerIdentity===undefined:right.ownerIdentity!==undefined&&sameFileIdentity(left.ownerIdentity,right.ownerIdentity))&&(left.ownerBytes===undefined?right.ownerBytes===undefined:right.ownerBytes!==undefined&&left.ownerBytes.equals(right.ownerBytes));}
+function comparePublicationOrder(left:PublicationStage,right:PublicationStage):number{return comparePublicationTuple(left.ticket,String(left.pid),right.ticket,String(right.pid));}
+function compareProvisionalPublicationOrder(left:ProvisionalPublicationName,right:ProvisionalPublicationName):number{return comparePublicationTuple(left.ticket,left.pidText,right.ticket,right.pidText);}
+function comparePublicationTuple(leftTicket:bigint,leftPidText:string,rightTicket:bigint,rightPidText:string):number{return leftTicket<rightTicket?-1:leftTicket>rightTicket?1:leftPidText<rightPidText?-1:leftPidText>rightPidText?1:0;}
 function isAuthorizedPublicationRemovalProgress(left:PublicationStage,right:PublicationStage):boolean{return left.name===right.name&&left.state==="complete"&&left.ownerIdentity!==undefined&&left.ownerBytes!==undefined&&right.state==="empty"&&right.ownerIdentity===undefined&&right.ownerBytes===undefined&&sameFileIdentity(left.directoryIdentity,right.directoryIdentity);}
 function isPublicationStageProgress(left:PublicationStage,right:PublicationStage):boolean{
   if(left.name!==right.name||!sameFileIdentity(left.directoryIdentity,right.directoryIdentity))return false;
