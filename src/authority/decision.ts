@@ -79,8 +79,11 @@ function inspectDecisionRoot(root:string):DecisionRootIdentity|null{
   }
   let stat;try{stat=lstatSync(root);}catch(error){if(hasCode(error,"ENOENT"))return null;throw error;}
   if(!stat.isDirectory()||stat.isSymbolicLink())throw new TypeError("decision root must be a real directory");
-  const real=realpathSync.native(root),left=process.platform==="win32"?real.toLowerCase():real,right=process.platform==="win32"?root.toLowerCase():root;
-  if(left!==right)throw new TypeError("decision root cannot traverse a symlink or reparse point");
+  const real=realpathSync.native(root);
+  if(process.platform==="win32"){
+    const realStat=lstatSync(real);
+    if(realStat.dev!==stat.dev||realStat.ino!==stat.ino)throw new TypeError("decision root cannot traverse a symlink or reparse point");
+  }else if(real!==root)throw new TypeError("decision root cannot traverse a symlink or reparse point");
   return{dev:stat.dev,ino:stat.ino};
 }
 function parseDecisionLockOwner(bytes:Buffer):DecisionLockOwner{const parsed=JSON.parse(bytes.toString("utf8")) as Record<string,unknown>;assertKeys(parsed,["host","nonce","pid","v"]);if(parsed.v!=="reelier.gate-decision-lock/internal-v1"||typeof parsed.host!=="string"||parsed.host.length===0||typeof parsed.pid!=="number"||!Number.isSafeInteger(parsed.pid)||parsed.pid<=0||typeof parsed.nonce!=="string"||!/^[0-9a-f]{64}$/.test(parsed.nonce)||!authorityCanonicalBytes(parsed).equals(bytes))throw new TypeError("invalid decision lock owner");return parsed as unknown as DecisionLockOwner;}
