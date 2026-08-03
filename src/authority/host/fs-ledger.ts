@@ -453,7 +453,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
         if(waitedOnActiveLock){waitedOnActiveLock=false;if(!fullReelectionPending)retryDelayMs=5;}
         if(stageCreated&&monotonicNow()>=deadline)return {ok:false,reason:"busy"};
         if(!stageCreated){
-          const existingStages=await this.settlePublicationStages(deadline,false,null);
+          const existingStages=await this.settlePublicationStages(deadline,false,null,admitContender);
           if(existingStages.length>0&&!admitContender){
             if(monotonicNow()>=deadline)return {ok:false,reason:"busy"};
             await backoff();continue;
@@ -549,13 +549,13 @@ export class FsAuthorityLedger implements AuthorityLedger {
     return {name,directory,directoryIdentity,hostDigest:match[1],ticket,pid,nonce:match[4],state:"complete",ownerIdentity,ownerBytes,owner:expectedOwner};
   }
 
-  private async settlePublicationStages(deadline:number,activeOwner:boolean,ownedStage:PublicationStage|null=null):Promise<PublicationStage[]>{
+  private async settlePublicationStages(deadline:number,activeOwner:boolean,ownedStage:PublicationStage|null=null,requireDeadCleanup=false):Promise<PublicationStage[]>{
     const phase=activeOwner?"housekeeping" as const:"acquisition" as const,state:PublicationSettlementState={removalAuthorizations:new Map<string,PublicationStage>(),rootSyncPending:false,generationInvalidated:false};
     for(;;){
       let retry:PublicationRetry="retry";
       try{
         if(state.rootSyncPending){await this.syncDirectory(this.root);state.rootSyncPending=false;this.fault("after-publication-stage-cleanup-root-sync");}
-        const result=await this.servicePublicationGeneration(state,activeOwner,ownedStage);
+        const result=await this.servicePublicationGeneration(state,activeOwner,ownedStage,requireDeadCleanup);
         if(Array.isArray(result))return result;
         retry=result;
         if(state.rootSyncPending)continue;
@@ -568,7 +568,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
     }
   }
 
-  private async servicePublicationGeneration(state:PublicationSettlementState,activeOwner:boolean,ownedStage:PublicationStage|null):Promise<PublicationStage[]|PublicationRetry>{
+  private async servicePublicationGeneration(state:PublicationSettlementState,activeOwner:boolean,ownedStage:PublicationStage|null,requireDeadCleanup:boolean):Promise<PublicationStage[]|PublicationRetry>{
     const names=await this.publicationStageNames();
     this.fault("after-publication-stage-enumeration");
     const stages:PublicationStage[]=[];
@@ -601,7 +601,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
     const finalLiveness=finalStages.map(stage=>processLiveness(stage.pid));
     if(finalLiveness.some(value=>value==="unverifiable"))throw new LedgerCorruption("unverifiable publication stage owner");
     const deadStages=finalStages.filter((_,index)=>finalLiveness[index]==="dead");
-    if(state.generationInvalidated&&deadStages.length>0&&deadStages.length<finalStages.length)return finalStages;
+    if(!requireDeadCleanup&&state.generationInvalidated&&deadStages.length>0&&deadStages.length<finalStages.length)return finalStages;
     const removedNames:string[]=[];
     for(const deadStage of deadStages){
       const expectedNames=finalStages.filter(stage=>!removedNames.includes(stage.name)).map(stage=>stage.name);
