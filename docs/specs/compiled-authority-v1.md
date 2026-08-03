@@ -185,6 +185,9 @@ contender that observes a validated live active lock and later observes that loc
 next waiting delay to 5ms even before a full-generation re-election is otherwise required. With a
 100ms acquisition budget and no other monotonic-clock advance, the exact requested sequence is
 5ms, 10ms, 20ms, 40ms, 25ms: five positive waits totaling exactly 100ms.
+Final-name invalidation only marks re-election pending: a valid active lock interposed before the
+replacement closed generation retains the current delay, and reset occurs only after that
+replacement generation completes.
 The exact closed per-attempt order is `before-publication-stage-final-validation`, then
 `before-publication-stage-final-liveness`, then `before-publication-stage-remove-attempt`. The final
 validation revalidates the exact directory and owner identity/type/link count/name/bytes; final
