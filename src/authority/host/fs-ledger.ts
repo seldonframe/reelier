@@ -211,6 +211,9 @@ const LEGAL = new Set(["reserved>dispatched", "dispatched>acknowledged", "dispat
 const TOMBSTONE_REASONS = new Set<ReserveReason>(["idempotency-conflict", "semantic-duplicate", "capability-integrity", "capability-already-reserved", "limit-exceeded"]);
 
 class LedgerCorruption extends Error {}
+class CoordinationExhausted extends Error {
+  constructor(readonly phase:"acquisition"|"housekeeping",readonly cause:"snapshot-churn"|"transient-sharing") { super(`${phase}:${cause}`); }
+}
 class RetiredLockTransient extends Error {}
 
 export class AuthorityLedgerReadError extends Error {
@@ -408,6 +411,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
         this.fault("before-ledger-operation-callback");
         return await operation(false);
       } catch (error) {
+        if(error instanceof CoordinationExhausted)return frozen({ok:false,reason:"busy"});
         if (error instanceof LedgerCorruption) return frozen({ ok: false, reason: "corruption" });
         throw error;
       } finally {
@@ -427,7 +431,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
       try {
         const active=await this.inspectActiveLock(deadline);
         if(active==="retry"){
-          if(monotonicNow()>=deadline)return {ok:false,reason:"corruption"};
+          if(monotonicNow()>=deadline)throw new CoordinationExhausted("acquisition","snapshot-churn");
           await backoff();continue;
         }
         if(active!=="absent"){
@@ -486,6 +490,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
         this.assertPublishedSnapshotUnchanged(publishedSnapshot,await this.validatePublishedOwner(owner));
         return { ok: true, owner, reclaimed:false };
       } catch (error) {
+        if(error instanceof CoordinationExhausted)return {ok:false,reason:"busy"};
         if(error instanceof LedgerCorruption){if(stageCreated&&expectedStage?.state==="complete")await this.removeOwnedPublicationStage(stageName,expectedStage,deadline);return {ok:false,reason:"corruption"};}
         if(stageCreated)try{await this.removeOwnedPublicationStage(stageName,expectedStage,deadline);}catch{}
         if(published)try{await this.retireOwnedLock(owner,"publication-aborted",deadline,false);}catch{}
@@ -499,7 +504,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
 
   private async inspectActiveLock(deadline:number):Promise<"absent"|"retry"|"wait"|Extract<LockResult,{ok:false}>>{
     const directory=this.absolute("lock");let directoryStat;
-    try{directoryStat=await lstat(directory,{bigint:true});}catch(error){if(hasCode(error,"ENOENT"))return "absent";if(isSnapshotSharingError(error)){if(monotonicNow()<deadline)return "retry";throw new LedgerCorruption("active lock snapshot unavailable");}throw error;}
+    try{directoryStat=await lstat(directory,{bigint:true});}catch(error){if(hasCode(error,"ENOENT"))return "absent";if(isSnapshotSharingError(error)){if(monotonicNow()<deadline)return "retry";throw new CoordinationExhausted("acquisition","transient-sharing");}throw error;}
     try{
       if(directoryStat.isSymbolicLink()||!directoryStat.isDirectory())throw new LedgerCorruption("invalid active lock directory");
       const initialDirectoryIdentity=fileIdentity(directoryStat);this.fault("after-active-lock-metadata");this.fault("before-active-lock-content-read");
@@ -509,7 +514,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
       const finalDirectory=await lstat(directory,{bigint:true}),finalOwner=await lstat(target,{bigint:true});if(!sameFileIdentity(initialDirectoryIdentity,fileIdentity(finalDirectory))||!sameFileIdentity(fileIdentity(info),fileIdentity(finalOwner)))return "retry";
       if(existing.host!==hostname())return {ok:false,reason:"lock-owner-unverifiable"};const liveness=processLiveness(existing.pid);if(liveness==="unverifiable")return {ok:false,reason:"lock-owner-unverifiable"};if(liveness==="alive")return "wait";
       if(!await this.retireOwnedLock(existing,"recovery-pending",deadline,false))return "wait";return "absent";
-    }catch(error){if(hasCode(error,"ENOENT"))return "retry";if(isSnapshotSharingError(error)){if(monotonicNow()<deadline)return "retry";throw new LedgerCorruption("active lock snapshot unavailable");}throw error;}
+    }catch(error){if(hasCode(error,"ENOENT"))return "retry";if(isSnapshotSharingError(error)){if(monotonicNow()<deadline)return "retry";throw new CoordinationExhausted("acquisition","transient-sharing");}throw error;}
   }
 
   private async validatePublicationStage(name:string):Promise<PublicationStage>{
@@ -526,7 +531,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
   }
 
   private async settlePublicationStages(deadline:number,activeOwner:boolean,ownedStage:PublicationStage|null=null):Promise<PublicationStage[]>{
-    const state:PublicationSettlementState={removalAuthorizations:new Map<string,PublicationStage>(),rootSyncPending:false,generationInvalidated:false};
+    const phase=activeOwner?"housekeeping" as const:"acquisition" as const,state:PublicationSettlementState={removalAuthorizations:new Map<string,PublicationStage>(),rootSyncPending:false,generationInvalidated:false};
     for(;;){
       try{
         if(state.rootSyncPending){await this.syncDirectory(this.root);state.rootSyncPending=false;this.fault("after-publication-stage-cleanup-root-sync");}
@@ -534,10 +539,10 @@ export class FsAuthorityLedger implements AuthorityLedger {
         if(result!=="retry")return result;
         if(state.rootSyncPending)continue;
       }catch(error){
-        if(!this.shouldRetrySnapshot(error,deadline))throw error;
+        if(!this.shouldRetrySnapshot(error,deadline,phase))throw error;
         state.generationInvalidated=true;
       }
-      if(monotonicNow()>=deadline)throw new LedgerCorruption("publication snapshot deadline exhausted");
+      if(monotonicNow()>=deadline)throw new CoordinationExhausted(phase,"snapshot-churn");
       await delay(5);
     }
   }
@@ -652,10 +657,10 @@ export class FsAuthorityLedger implements AuthorityLedger {
     return names;
   }
 
-  private shouldRetrySnapshot(error:unknown,deadline:number):boolean{
+  private shouldRetrySnapshot(error:unknown,deadline:number,phase:"acquisition"|"housekeeping"):boolean{
     if(!hasCode(error,"ENOENT")&&!isSnapshotSharingError(error))return false;
     if(monotonicNow()<deadline)return true;
-    throw new LedgerCorruption("publication snapshot unavailable");
+    throw new CoordinationExhausted(phase,hasCode(error,"ENOENT")?"snapshot-churn":"transient-sharing");
   }
 
   private async writeAll(handle:FileHandle,bytes:Buffer,position:number):Promise<void>{
