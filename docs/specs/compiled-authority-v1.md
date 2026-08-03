@@ -229,6 +229,48 @@ to `busy`; a lone exact dead external stage may be atomically withdrawn but is n
 than one publication stage in a stable generation is invalid K=1 topology and is preserved corruption,
 even when every stage is individually canonical and has distinct provenance.
 
+The ledger-lock fault surface is the following exact, disjoint K=1 taxonomy; no election,
+provisional-owner, or predecessor hook is part of the protocol:
+
+- Admission preparation/fixed slot: `after-admission-prep-create`,
+  `after-admission-prep-owner-create`, `after-admission-prep-owner-partial-write`,
+  `after-admission-prep-owner-sync`, `after-admission-prep-sync`,
+  `before-admission-slot-rename`, `after-admission-slot-rename`,
+  `after-admission-slot-root-sync`, `after-admission-slot-final-validation`.
+- Closed classification and pre-admission housekeeping: `after-admission-prep-enumeration`,
+  `after-admission-slot-enumeration`, `after-pre-admission-housekeeping-initial-enumeration`,
+  `after-pre-admission-housekeeping-generation-closed`,
+  `before-pre-admission-housekeeping-final-validation`,
+  `before-pre-admission-housekeeping-transition`, `after-pre-admission-housekeeping-root-sync`,
+  `after-pre-admission-housekeeping-marker-remove`,
+  `after-pre-admission-housekeeping-marker-root-sync`.
+- Slot retirement: `before-admission-slot-retire-rename`,
+  `after-admission-slot-retire-rename`, `after-admission-slot-retire-root-sync`,
+  `after-admission-slot-retire-cleanup-root-sync`.
+- Creator withdrawal: `before-creator-withdrawal-seal`, `after-creator-withdrawal-seal`,
+  `before-creator-withdrawal-rename`, `after-creator-withdrawal-rename`,
+  `after-creator-withdrawal-root-sync`, `after-creator-withdrawal-cleanup-root-sync`.
+- Coordination cleanup: `after-coordination-cleanup-marker-enumeration`,
+  `after-coordination-cleanup-stage-create`, `after-coordination-cleanup-stage-partial-write`,
+  `after-coordination-cleanup-stage-file-sync`, `after-coordination-cleanup-ack-rename`,
+  `after-coordination-cleanup-ack-root-sync`, `after-coordination-cleanup-marker-remove`,
+  `after-coordination-cleanup-marker-root-sync`, `after-coordination-cleanup-ack-remove`,
+  `after-coordination-cleanup-final-root-sync`.
+- Publication and collision: `after-lock-publication-stage-create`,
+  `after-lock-publication-owner-create`, `after-lock-publication-owner-partial-write`,
+  `after-lock-publication-owner-sync`, `after-lock-publication-stage-sync`,
+  `after-lock-publication-rename`, `after-lock-publication-root-sync`,
+  `before-lock-publication-rename`, `after-active-lock-metadata`,
+  `before-active-lock-content-read`, `after-publication-stage-enumeration`,
+  `before-publication-stage-validation`, `after-lock-publication-rename-collision`.
+- Pre-callback generation closure: `after-pre-callback-coordination-generation-closed`.
+- Callback: `before-ledger-operation-callback`.
+- Lock durability: `after-owner-file-sync`, `after-lock-directory-sync`, `before-lock-retire`,
+  `after-lock-retire`.
+
+The exported fault list is the ordered concatenation of those groups. Duplicate membership, a
+missing boundary, or a legacy election hook is a contract failure.
+
 One monotonic acquisition deadline covers full classification, pre-admission housekeeping,
 preparation/fixed-slot polling, stale recovery, and every restart. Progress resets only the
 deterministic backoff sequence and never the deadline. Terminal creator withdrawal receives one fresh
