@@ -442,7 +442,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
   private async acquireLock(admitContender:boolean): Promise<LockResult> {
     const deadline = monotonicNow() + this.options.lockTimeoutMs;
     const owner: LockOwner = { v: 1, host: hostname(), pid: process.pid, nonce: randomBytes(32).toString("hex") };
-    const ownerBytes=canonicalBytes(owner);let stageName="",stagePath="",ownerPath="";
+    const ownerBytes=canonicalBytes(owner);let stageName="",stagePath="",ownerPath="",stageTicket:bigint|null=null;
     let stageCreated=false,published=false,expectedStage:PublicationStage|null=null,election:PublicationElection|null=null,provisionalWait:ProvisionalPublicationWait|null=null,stagedSettlementStarted=false,waitedOnActiveLock=false,fullReelectionPending=false,provisionalFallbackResetPending=false;
     let mutatingAdmissionMemo:MutatingAdmissionMemo=admitContender?{kind:"unseeded"}:{kind:"disabled"};
     let retryDelayMs=5;
@@ -484,10 +484,18 @@ export class FsAuthorityLedger implements AuthorityLedger {
             let raw:unknown;try{raw=this.admissionClock();}catch{return {ok:false,reason:"corruption"};}
             if(typeof raw!=="bigint"||raw<0n||raw>MAX_PUBLICATION_TICKET)return {ok:false,reason:"corruption"};
             const ticket=raw>maxVisible?raw:maxVisible+1n;
-            stageName=this.publicationStageName(owner,ticket);stagePath=this.absolute(stageName);ownerPath=path.join(stagePath,"owner.json");
+            stageTicket=ticket;stageName=this.publicationStageName(owner,ticket);stagePath=this.absolute(stageName);ownerPath=path.join(stagePath,"owner.json");
           }
           mutatingAdmissionMemo={kind:"disabled"};
-          try{await mkdir(stagePath);stageCreated=true;expectedStage=await this.validatePublicationStage(stageName);this.fault("after-lock-publication-stage-create");}
+          try{
+            await mkdir(stagePath);
+            if(stageTicket===null)throw new LedgerCorruption("creator publication ticket absent");
+            const directoryStat=await lstat(stagePath,{bigint:true});
+            if(directoryStat.isSymbolicLink()||!directoryStat.isDirectory()||(await readdir(stagePath,{withFileTypes:true})).length!==0)throw new LedgerCorruption("invalid new creator publication stage");
+            expectedStage={name:stageName,directory:stagePath,directoryIdentity:fileIdentity(directoryStat),hostDigest:this.hostDigest(owner.host),ticket:stageTicket,pid:owner.pid,nonce:owner.nonce,state:"empty"};stageCreated=true;
+            const validatedStage=await this.validatePublicationStage(stageName);if(!samePublicationStage(expectedStage,validatedStage))throw new LedgerCorruption("creator publication stage changed after creation");
+            this.fault("after-lock-publication-stage-create");
+          }
           catch(error){if(hasCode(error,"EEXIST")){continue;}throw error;}
           let handle:FileHandle|undefined;
           try{
@@ -823,7 +831,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
         try{current=await this.validatePublicationStage(name);}
         catch(error){if(hasCode(error,"ENOENT")){syncPending=true;continue;}throw error;}
         const exact=samePublicationStage(expected,current);
-        const authorizedProgress=removalAttempted&&isAuthorizedPublicationRemovalProgress(expected,current);
+        const authorizedProgress=removalAttempted&&isAuthorizedCreatorPublicationRemovalProgress(expected,current);
         if(!exact&&!authorizedProgress)return result.ok||result.reason!=="corruption"?{ok:false,reason:"corruption"}:result;
         removalAttempted=true;
         this.fault("before-publication-stage-remove-attempt");
@@ -1544,6 +1552,7 @@ function comparePublicationOrder(left:PublicationStage,right:PublicationStage):n
 function compareProvisionalPublicationOrder(left:ProvisionalPublicationName,right:ProvisionalPublicationName):number{return comparePublicationTuple(left.ticket,left.pidText,right.ticket,right.pidText);}
 function comparePublicationTuple(leftTicket:bigint,leftPidText:string,rightTicket:bigint,rightPidText:string):number{return leftTicket<rightTicket?-1:leftTicket>rightTicket?1:leftPidText<rightPidText?-1:leftPidText>rightPidText?1:0;}
 function isAuthorizedPublicationRemovalProgress(left:PublicationStage,right:PublicationStage):boolean{return left.name===right.name&&left.state==="complete"&&left.ownerIdentity!==undefined&&left.ownerBytes!==undefined&&right.state==="empty"&&right.ownerIdentity===undefined&&right.ownerBytes===undefined&&sameFileIdentity(left.directoryIdentity,right.directoryIdentity);}
+function isAuthorizedCreatorPublicationRemovalProgress(left:PublicationStage,right:PublicationStage):boolean{return left.name===right.name&&(left.state==="zero"||left.state==="partial"||left.state==="complete")&&left.ownerIdentity!==undefined&&left.ownerBytes!==undefined&&right.state==="empty"&&right.ownerIdentity===undefined&&right.ownerBytes===undefined&&sameFileIdentity(left.directoryIdentity,right.directoryIdentity);}
 function isPublicationStageProgress(left:PublicationStage,right:PublicationStage):boolean{
   if(left.name!==right.name||!sameFileIdentity(left.directoryIdentity,right.directoryIdentity))return false;
   if(left.ownerIdentity===undefined)return right.ownerIdentity===undefined||right.ownerBytes!==undefined;
