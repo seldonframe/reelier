@@ -399,7 +399,12 @@ is the regular root file
 with the longest closed fields and a five-or-more-digit PID. The exact lifecycle is exclusive regular
 stage-file create, canonical write-all, file sync, atomic rename to the final ack, root sync, exact
 marker removal, root sync, exact ack removal, root sync; there is no stage-directory sync. Every
-cleanup step exact-revalidates its stage/ack identity, bytes, name digest, predecessor,
+exclusive cleanup stage is recoverable at zero bytes, any exact nonempty proper prefix of the
+reconstructed canonical ack, or the complete canonical bytes; continuation preserves the same file
+identity and appends only the remaining suffix. Any non-prefix or replacement is corruption. The
+deterministic injected partial-write boundary may use exactly the first byte, but recovery accepts
+longer real prefixes too. Every cleanup step exact-revalidates its stage/ack identity, bytes, name
+digest, predecessor,
 and still-present purpose proof. Marker-only, marker-plus-matching-ack, and a valid
 purpose-authorized orphan ack are recoverable windows; absence alone never grants authority.
 A prep orphan ack is valid only after its exact original name is absent. A slot orphan ack is valid
@@ -443,8 +448,11 @@ invalidates the entire snapshot and restarts classification under the same acqui
 preparation, publication stage, semantic clock read, or callback may occur from the invalidated
 generation. Once an exact source name has been retired and its root sync completes, that name is
 tombstoned for the current housekeeping generation. Reappearance at the initial, closed, final, or
-post-marker-removal snapshot is corruption, preserves the replacement and every typed retirement/ack
-artifact, and cannot admit. This applies equally to creator and housekeeper rename-collision retries:
+post-marker-removal snapshot is corruption, preserves the replacement and every still-present typed
+retirement/ack proof artifact, and cannot admit. Before marker removal the marker and ack survive;
+after marker removal the marker remains absent and the surviving typed ack is preserved. Cleanup
+never recreates removed history, and absence alone never grants authority. This applies equally to
+creator and housekeeper rename-collision retries:
 the same synced stage is retained, its directory and owner identities and bytes are revalidated before
 every retry, and any replacement is preserved rather than published or deleted. Pre-callback
 generation closure occurs only after every required coordination sync and final exact revalidation.
