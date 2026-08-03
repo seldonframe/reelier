@@ -48,6 +48,9 @@ class FsAuthorityLedger extends RawFsAuthorityLedger {
 
 const t0 = Date.parse("2026-08-02T12:00:00.000Z");
 const digest = (character: string) => `sha256:${character.repeat(64)}`;
+type ExactFsIdentity=Readonly<{dev:bigint;ino:bigint;mode:bigint;nlink:bigint}>;
+function exactFsIdentity(target:string):ExactFsIdentity{const value=lstatSync(target,{bigint:true});return {dev:value.dev,ino:value.ino,mode:value.mode,nlink:value.nlink};}
+function exactPublicationIdentity(stage:string):Readonly<{directory:ExactFsIdentity;owner:ExactFsIdentity}>{return {directory:exactFsIdentity(stage),owner:exactFsIdentity(path.join(stage,"owner.json"))};}
 const kernelTimedTransition: TransitionEvent = { to: "dispatched" };
 const callerTimedTransition: TransitionEvent = {
   to: "dispatched",
@@ -75,19 +78,19 @@ test("terminal provisional busy withdraws the exact creator so a same-PID retry 
   assert.equal(existsSync(ownStage),false);assert.deepEqual(predecessorBytes,authorityCanonicalBytes(predecessor));assert.deepEqual({publicationRenames,callbackEntries},{publicationRenames:1,callbackEntries:1});
 }));
 
-test("terminal creator withdrawal ignores unrelated membership and preserves every peer",()=>withRoot(async root=>{
+test("generic loop-head terminal withdrawal ignores unrelated membership and preserves every peer",()=>withRoot(async root=>{
   const predecessor={host:hostname(),nonce:"7".repeat(64),pid:1,v:1 as const},predecessorStage=path.join(root,publicationStageName(predecessor)),predecessorBytes=authorityCanonicalBytes(predecessor),malformed=path.join(root,".authority-ledger-lock-publication-withdrawal-churn"),originalKill=process.kill;
-  let ownStage="",withdrawalValidations=0,cohortClosuresDuringWithdrawal=0,callbackEntries=0;
+  let ownStage="",withdrawalValidations=0,cohortClosuresDuringWithdrawal=0,callbackEntries=0,elapsed=0,membershipInstalled=false,predecessorIdentity:ReturnType<typeof exactPublicationIdentity>|undefined;
   Object.defineProperty(process,"kill",{configurable:true,value:(pid:number)=>pid===predecessor.pid?true:originalKill.call(process,pid,0)});
-  let result;
-  try{result=await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20,faultInjector:(point:string)=>{
+  let observed;
+  try{observed=await withRecordedDelays(()=>new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20,faultInjector:(point:string)=>{
     if(point==="after-lock-publication-stage-sync"&&ownStage===""){const ownName=readdirSync(root).find(name=>name.startsWith(".authority-ledger-lock-publication-"));assert.ok(ownName);ownStage=path.join(root,ownName);mkdirSync(predecessorStage);writeFileSync(path.join(predecessorStage,"owner.json"),predecessorBytes);}
-    if(point==="before-creator-stage-withdrawal-validation"){withdrawalValidations++;if(!existsSync(malformed))mkdirSync(malformed);}
-    if(withdrawalValidations>0&&point==="before-publication-stage-root-reenumeration")cohortClosuresDuringWithdrawal++;
+    if(point==="before-creator-stage-withdrawal-validation")withdrawalValidations++;
+    if(membershipInstalled&&point==="before-publication-stage-root-reenumeration")cohortClosuresDuringWithdrawal++;
     if(point==="before-ledger-operation-callback")callbackEntries++;
-  }} as never).observeClock();}finally{Object.defineProperty(process,"kill",{configurable:true,value:originalKill});}
-  assert.deepEqual(result,{ok:false,reason:"busy"});assert.equal(withdrawalValidations,1);assert.equal(cohortClosuresDuringWithdrawal,0,"exact creator withdrawal never closes or waits on unrelated membership");assert.equal(callbackEntries,0);
-  assert.equal(existsSync(ownStage),false);assert.equal(existsSync(predecessorStage),true);assert.deepEqual(readFileSync(path.join(predecessorStage,"owner.json")),predecessorBytes);assert.equal(existsSync(malformed),true);
+  }} as never).observeClock(),requested=>{elapsed+=requested;if(elapsed===20){assert.equal(membershipInstalled,false);membershipInstalled=true;predecessorIdentity=exactPublicationIdentity(predecessorStage);mkdirSync(malformed);}});}finally{Object.defineProperty(process,"kill",{configurable:true,value:originalKill});}
+  assert.deepEqual(observed!.result,{ok:false,reason:"busy"});assert.deepEqual(observed!.delays,[5,10,5]);assert.equal(membershipInstalled,true,"unrelated membership exists before terminal withdrawal entry");assert.equal(withdrawalValidations,1);assert.equal(cohortClosuresDuringWithdrawal,0,"exact creator withdrawal never closes or waits on unrelated membership");assert.equal(callbackEntries,0);
+  assert.equal(existsSync(ownStage),false);assert.equal(existsSync(predecessorStage),true);assert.deepEqual(exactPublicationIdentity(predecessorStage),predecessorIdentity);assert.deepEqual(readFileSync(path.join(predecessorStage,"owner.json")),predecessorBytes);assert.equal(existsSync(malformed),true);
 }));
 
 test("an exact local current-PID stage is a busy backstop before duplicate creation",()=>withRoot(async root=>{
@@ -95,6 +98,116 @@ test("an exact local current-PID stage is a busy backstop before duplicate creat
   let stageCreates=0,publicationRenames=0,callbackEntries=0;
   const result=await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20,faultInjector:(point:string)=>{if(point==="after-lock-publication-stage-create")stageCreates++;if(point==="after-lock-publication-rename")publicationRenames++;if(point==="before-ledger-operation-callback")callbackEntries++;}} as never).observeClock();
   assert.deepEqual(result,{ok:false,reason:"busy"});assert.deepEqual({stageCreates,publicationRenames,callbackEntries},{stageCreates:0,publicationRenames:0,callbackEntries:0});assert.deepEqual(await readdir(root),[path.basename(stage)]);assert.deepEqual(readFileSync(path.join(stage,"owner.json")),bytes);
+}));
+
+test("terminal creator withdrawal preserves byte-identical directory and owner replacements as corruption",async t=>{
+  for(const target of ["directory","owner"] as const)await t.test(target,()=>withRoot(async root=>{
+    const external=await tempRoot(),predecessor={host:hostname(),nonce:(target==="directory"?"9":"a").repeat(64),pid:1,v:1 as const},predecessorBytes=authorityCanonicalBytes(predecessor),predecessorStage=path.join(root,publicationStageName(predecessor)),originalKill=process.kill;
+    let ownStage="",ownBytes=Buffer.alloc(0),originalOwnIdentity:ReturnType<typeof exactPublicationIdentity>|undefined,replacementIdentity:ReturnType<typeof exactPublicationIdentity>|undefined,predecessorIdentity:ReturnType<typeof exactPublicationIdentity>|undefined,prepared="",replacementInstalled=false,elapsed=0,withdrawalValidations=0,publicationRenames=0,callbackEntries=0;
+    Object.defineProperty(process,"kill",{configurable:true,value:(pid:number)=>pid===predecessor.pid?true:originalKill.call(process,pid,0)});
+    let observed;
+    try{
+      observed=await withRecordedDelays(()=>new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20,faultInjector:(point:string)=>{
+        if(point==="after-lock-publication-stage-sync"&&ownStage===""){
+          const ownName=readdirSync(root).find(name=>name.startsWith(".authority-ledger-lock-publication-"));assert.ok(ownName);ownStage=path.join(root,ownName);ownBytes=readFileSync(path.join(ownStage,"owner.json"));originalOwnIdentity=exactPublicationIdentity(ownStage);
+          mkdirSync(predecessorStage);writeFileSync(path.join(predecessorStage,"owner.json"),predecessorBytes);predecessorIdentity=exactPublicationIdentity(predecessorStage);
+          prepared=path.join(external,target==="directory"?"prepared-stage":"prepared-owner");if(target==="directory"){mkdirSync(prepared);writeFileSync(path.join(prepared,"owner.json"),ownBytes);}else writeFileSync(prepared,ownBytes);
+        }
+        if(point==="before-creator-stage-withdrawal-validation")withdrawalValidations++;
+        if(point==="after-lock-publication-rename")publicationRenames++;
+        if(point==="before-ledger-operation-callback")callbackEntries++;
+      }} as never).observeClock(),requested=>{
+        elapsed+=requested;if(elapsed!==20)return;assert.equal(replacementInstalled,false);replacementInstalled=true;
+        if(target==="directory"){renameSync(ownStage,path.join(external,"displaced-stage"));renameSync(prepared,ownStage);}
+        else{const ownerPath=path.join(ownStage,"owner.json");renameSync(ownerPath,path.join(external,"displaced-owner"));renameSync(prepared,ownerPath);}
+        replacementIdentity=exactPublicationIdentity(ownStage);
+      });
+    }finally{Object.defineProperty(process,"kill",{configurable:true,value:originalKill});}
+    try{
+      assert.equal(replacementInstalled,true,"same-byte replacement exists before terminal withdrawal entry");assert.deepEqual(observed!.delays,[5,10,5]);assert.deepEqual(observed!.result,{ok:false,reason:"corruption"});assert.equal(withdrawalValidations,1);assert.deepEqual({publicationRenames,callbackEntries},{publicationRenames:0,callbackEntries:0});
+      assert.equal(existsSync(ownStage),true,"suspicious replacement is preserved");assert.deepEqual(exactPublicationIdentity(ownStage),replacementIdentity);if(target==="directory")assert.notDeepEqual(replacementIdentity!.directory,originalOwnIdentity!.directory);else{assert.deepEqual(replacementIdentity!.directory,originalOwnIdentity!.directory);assert.notDeepEqual(replacementIdentity!.owner,originalOwnIdentity!.owner);}assert.deepEqual(readFileSync(path.join(ownStage,"owner.json")),ownBytes);
+      assert.deepEqual(exactPublicationIdentity(predecessorStage),predecessorIdentity);assert.deepEqual(readFileSync(path.join(predecessorStage,"owner.json")),predecessorBytes);
+    }finally{await rm(external,{recursive:true,force:true});}
+  }));
+});
+
+test("terminal creator withdrawal gets a fresh cleanup budget after acquisition expiry",()=>withRoot(async root=>{
+  const predecessor={host:hostname(),nonce:"b".repeat(64),pid:1,v:1 as const},predecessorBytes=authorityCanonicalBytes(predecessor),predecessorStage=path.join(root,publicationStageName(predecessor)),originalKill=process.kill;
+  let ownStage="",predecessorIdentity:ReturnType<typeof exactPublicationIdentity>|undefined,withdrawalActive=false,withdrawalValidations=0,removeAttempts=0,callbackEntries=0;
+  Object.defineProperty(process,"kill",{configurable:true,value:(pid:number)=>pid===predecessor.pid?true:originalKill.call(process,pid,0)});
+  let observed;
+  try{observed=await withRecordedDelays(()=>new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20,faultInjector:(point:string)=>{
+    if(point==="after-lock-publication-stage-sync"&&ownStage===""){const ownName=readdirSync(root).find(name=>name.startsWith(".authority-ledger-lock-publication-"));assert.ok(ownName);ownStage=path.join(root,ownName);mkdirSync(predecessorStage);writeFileSync(path.join(predecessorStage,"owner.json"),predecessorBytes);predecessorIdentity=exactPublicationIdentity(predecessorStage);}
+    if(point==="before-creator-stage-withdrawal-validation"){withdrawalActive=true;withdrawalValidations++;}
+    if(withdrawalActive&&point==="before-publication-stage-remove-attempt"&&++removeAttempts===1)throw Object.assign(new Error("EBUSY"),{code:"EBUSY"});
+    if(point==="before-ledger-operation-callback")callbackEntries++;
+  }} as never).observeClock());}finally{Object.defineProperty(process,"kill",{configurable:true,value:originalKill});}
+  assert.deepEqual(observed!.result,{ok:false,reason:"busy"});assert.deepEqual(observed!.delays,[5,10,5,5],"cleanup receives time after the exhausted acquisition budget");assert.equal(observed!.elapsedMs,25);assert.equal(withdrawalValidations,2,"a transient failure revalidates the frozen creator before retry");assert.equal(removeAttempts,2);assert.equal(callbackEntries,0);
+  assert.equal(existsSync(ownStage),false);assert.deepEqual(exactPublicationIdentity(predecessorStage),predecessorIdentity);assert.deepEqual(readFileSync(path.join(predecessorStage,"owner.json")),predecessorBytes);
+}));
+
+test("same-PID busy backstop never masks malformed, duplicate, foreign, or unverifiable membership",async t=>{
+  const run=async(name:string,setup:(root:string)=>Promise<void|(()=>void)>)=>t.test(name,()=>withRoot(async root=>{
+    const restore=await setup(root),before=await snapshotRootArtifacts(root);let stageCreates=0,publicationRenames=0,callbackEntries=0,removeAttempts=0;
+    try{
+      const result=await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20,faultInjector:(point:string)=>{if(point==="after-lock-publication-stage-create")stageCreates++;if(point==="after-lock-publication-rename")publicationRenames++;if(point==="before-ledger-operation-callback")callbackEntries++;if(point==="before-publication-stage-remove-attempt")removeAttempts++;}} as never).observeClock();
+      assert.deepEqual(result,{ok:false,reason:"corruption"});assert.deepEqual({stageCreates,publicationRenames,callbackEntries,removeAttempts},{stageCreates:0,publicationRenames:0,callbackEntries:0,removeAttempts:0});assert.deepEqual(await snapshotRootArtifacts(root),before);
+    }finally{restore?.();}
+  }));
+  await run("malformed current-PID stage",async root=>{const owner={host:hostname(),nonce:"c".repeat(64),pid:process.pid,v:1 as const,ticket:"0000000000000001"};await writePublicationStage(root,owner,Buffer.from("malformed-current-pid-owner"));});
+  await run("two exact current-PID stages",async root=>{const first={host:hostname(),nonce:"d".repeat(64),pid:process.pid,v:1 as const,ticket:"0000000000000001"},second={...first,nonce:"e".repeat(64),ticket:"0000000000000002"};await writePublicationStage(root,first,publicationOwnerBytes(first));await writePublicationStage(root,second,publicationOwnerBytes(second));});
+  await run("exact current-PID stage plus malformed membership",async root=>{const exact={host:hostname(),nonce:"1".repeat(64),pid:process.pid,v:1 as const,ticket:"0000000000000001"};await writePublicationStage(root,exact,publicationOwnerBytes(exact));await mkdir(path.join(root,".authority-ledger-lock-publication-malformed-peer"));});
+  await run("exact current-PID stage plus foreign membership",async root=>{const exact={host:hostname(),nonce:"2".repeat(64),pid:process.pid,v:1 as const,ticket:"0000000000000001"},foreign={host:"foreign-authority-host",nonce:"3".repeat(64),pid:1,v:1 as const,ticket:"0000000000000002"};await writePublicationStage(root,exact,publicationOwnerBytes(exact));await writePublicationStage(root,foreign,publicationOwnerBytes(foreign));});
+  await run("exact current-PID stage plus unverifiable membership",async root=>{const exact={host:hostname(),nonce:"4".repeat(64),pid:process.pid,v:1 as const,ticket:"0000000000000001"},unverifiablePid=process.pid+100_000,peer={host:hostname(),nonce:"5".repeat(64),pid:unverifiablePid,v:1 as const,ticket:"0000000000000002"},originalKill=process.kill;await writePublicationStage(root,exact,publicationOwnerBytes(exact));await writePublicationStage(root,peer,publicationOwnerBytes(peer));Object.defineProperty(process,"kill",{configurable:true,value:(pid:number)=>pid===unverifiablePid?(()=>{throw Object.assign(new Error("EPERM"),{code:"EPERM"});})():originalKill.call(process,pid,0)});return ()=>Object.defineProperty(process,"kill",{configurable:true,value:originalKill});});
+});
+
+test("interposed active-lock timeout uses the terminal creator withdrawal funnel",()=>withRoot(async root=>{
+  const activeOwner={host:hostname(),nonce:"6".repeat(64),pid:1,v:1 as const},activeBytes=authorityCanonicalBytes(activeOwner),lock=path.join(root,"lock"),originalKill=process.kill;
+  let ownStage="",lockIdentity:ReturnType<typeof exactPublicationIdentity>|undefined,withdrawalValidations=0,collisions=0,activeInspections=0,publicationRenames=0,callbackEntries=0;
+  Object.defineProperty(process,"kill",{configurable:true,value:(pid:number)=>pid===activeOwner.pid?true:originalKill.call(process,pid,0)});
+  let observed;
+  try{observed=await withRecordedDelays(()=>new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20,faultInjector:(point:string)=>{
+    if(point==="after-lock-publication-stage-sync"&&ownStage===""){const ownName=readdirSync(root).find(name=>name.startsWith(".authority-ledger-lock-publication-"));assert.ok(ownName);ownStage=path.join(root,ownName);mkdirSync(lock);writeFileSync(path.join(lock,"owner.json"),activeBytes);lockIdentity=exactPublicationIdentity(lock);}
+    if(point==="after-lock-publication-rename-collision")collisions++;
+    if(point==="after-active-lock-metadata")activeInspections++;
+    if(point==="before-creator-stage-withdrawal-validation")withdrawalValidations++;
+    if(point==="after-lock-publication-rename")publicationRenames++;
+    if(point==="before-ledger-operation-callback")callbackEntries++;
+  }} as never).observeClock());}finally{Object.defineProperty(process,"kill",{configurable:true,value:originalKill});}
+  assert.deepEqual(observed!.result,{ok:false,reason:"busy"});assert.deepEqual(observed!.delays,[5,10,5]);assert.ok(collisions>=1,"the fixture interposes the active lock only after creator publication");assert.ok(activeInspections>=1);assert.equal(withdrawalValidations,1);assert.deepEqual({publicationRenames,callbackEntries},{publicationRenames:0,callbackEntries:0});
+  assert.equal(existsSync(ownStage),false);assert.deepEqual(exactPublicationIdentity(lock),lockIdentity);assert.deepEqual(readFileSync(path.join(lock,"owner.json")),activeBytes);
+}));
+
+test("post-full predecessor timeout uses the terminal creator withdrawal funnel",()=>withRoot(async root=>{
+  const timeoutMs=200,predecessor={host:hostname(),nonce:"7".repeat(64),pid:1,v:1 as const,ticket:"0000000000000001"},predecessorBytes=publicationOwnerBytes(predecessor),predecessorStage=path.join(root,publicationStageName(predecessor)),originalKill=process.kill;
+  let ownStage="",predecessorIdentity:ReturnType<typeof exactPublicationIdentity>|undefined,introduced=false,generationClosures=0,predecessorPolls=0,withdrawalValidations=0,publicationRenames=0,callbackEntries=0;
+  Object.defineProperty(process,"kill",{configurable:true,value:(pid:number)=>pid===predecessor.pid?true:originalKill.call(process,pid,0)});
+  let observed;
+  try{observed=await underBackwardWallClock(()=>new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:timeoutMs,faultInjector:(point:string)=>{
+    if(point==="after-lock-publication-stage-sync"&&ownStage===""){const ownName=readdirSync(root).find(name=>name.startsWith(".authority-ledger-lock-publication-"));assert.ok(ownName);ownStage=path.join(root,ownName);}
+    if(point==="after-lock-publication-generation-closed"){generationClosures++;if(!introduced){introduced=true;mkdirSync(predecessorStage);writeFileSync(path.join(predecessorStage,"owner.json"),predecessorBytes);predecessorIdentity=exactPublicationIdentity(predecessorStage);}}
+    if(point==="before-lock-publication-predecessor-validation"&&++predecessorPolls===1){const until=process.hrtime.bigint()+BigInt(timeoutMs+20)*1_000_000n;while(process.hrtime.bigint()<until){/* force the exact post-full terminal check past its monotonic deadline */}}
+    if(point==="before-creator-stage-withdrawal-validation")withdrawalValidations++;
+    if(point==="after-lock-publication-rename")publicationRenames++;
+    if(point==="before-ledger-operation-callback")callbackEntries++;
+  }} as never).observeClock());}finally{Object.defineProperty(process,"kill",{configurable:true,value:originalKill});}
+  assert.deepEqual(observed!.result,{ok:false,reason:"busy"});assert.equal(introduced,true);assert.ok(generationClosures>=2,"membership insertion forces a fully classified post-full election");assert.equal(predecessorPolls,1,"timeout is observed at the post-full predecessor terminal check");assert.equal(withdrawalValidations,1);assert.deepEqual({publicationRenames,callbackEntries},{publicationRenames:0,callbackEntries:0});assert.ok(observed!.elapsedMs<5_000);
+  assert.equal(existsSync(ownStage),false);assert.deepEqual(exactPublicationIdentity(predecessorStage),predecessorIdentity);assert.deepEqual(readFileSync(path.join(predecessorStage,"owner.json")),predecessorBytes);
+}));
+
+test("CoordinationExhausted after stage creation uses the terminal creator withdrawal funnel",()=>withRoot(async root=>{
+  const originalKill=process.kill,livePids=new Set<number>();let ownStage="",peerStage="",peerBytes:Buffer=Buffer.alloc(0),peerPresentAtTerminal:boolean|null=null,peerIdentityAtTerminal:ReturnType<typeof exactPublicationIdentity>|undefined,membershipMutations=0,withdrawalActive=false,withdrawalValidations=0,publicationRenames=0,callbackEntries=0;
+  Object.defineProperty(process,"kill",{configurable:true,value:(pid:number)=>livePids.has(pid)?true:originalKill.call(process,pid,0)});
+  let observed;
+  try{observed=await withRecordedDelays(()=>new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20,faultInjector:(point:string)=>{
+    if(point==="after-lock-publication-stage-sync"&&ownStage===""){const ownName=readdirSync(root).find(name=>name.startsWith(".authority-ledger-lock-publication-"));assert.ok(ownName);ownStage=path.join(root,ownName);const peer=publicationPeersRelativeTo(ownName,"higher",1)[0];peerStage=path.join(root,publicationStageName(peer));peerBytes=authorityCanonicalBytes(peer);livePids.add(peer.pid);}
+    if(point==="before-creator-stage-withdrawal-validation"){withdrawalActive=true;withdrawalValidations++;peerPresentAtTerminal=existsSync(peerStage);if(peerPresentAtTerminal)peerIdentityAtTerminal=exactPublicationIdentity(peerStage);}
+    if(!withdrawalActive&&ownStage!==""&&point==="before-publication-stage-root-reenumeration"){membershipMutations++;if(existsSync(peerStage))rmSync(peerStage,{recursive:true});else{mkdirSync(peerStage);writeFileSync(path.join(peerStage,"owner.json"),peerBytes);}}
+    if(point==="after-lock-publication-rename")publicationRenames++;
+    if(point==="before-ledger-operation-callback")callbackEntries++;
+  }} as never).observeClock());}finally{Object.defineProperty(process,"kill",{configurable:true,value:originalKill});}
+  assert.deepEqual(observed!.result,{ok:false,reason:"busy"});assert.deepEqual(observed!.delays,[5,5,5,5]);assert.ok(membershipMutations>=5,"whole-generation churn reaches CoordinationExhausted");assert.equal(withdrawalValidations,1);assert.notEqual(peerPresentAtTerminal,null);assert.deepEqual({publicationRenames,callbackEntries},{publicationRenames:0,callbackEntries:0});assert.equal(existsSync(ownStage),false);
+  assert.equal(existsSync(peerStage),peerPresentAtTerminal);if(peerPresentAtTerminal){assert.deepEqual(exactPublicationIdentity(peerStage),peerIdentityAtTerminal);assert.deepEqual(readFileSync(path.join(peerStage,"owner.json")),peerBytes);}
 }));
 
 function intent(overrides: Partial<ReservationIntent> = {}): ReservationIntent {
