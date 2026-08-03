@@ -69,13 +69,13 @@ test("terminal provisional busy withdraws the exact creator so a same-PID retry 
     if(point==="before-ledger-operation-callback")callbackEntries++;
   }} as never);
   Object.defineProperty(process,"kill",{configurable:true,value:(pid:number)=>livePids.has(pid)?true:originalKill.call(process,pid,0)});
-  let first,second,afterFirst:string[]=[];
-  try{first=await ledger.observeClock();afterFirst=(await readdir(root)).filter(name=>name.startsWith(".authority-ledger-lock-publication-")).sort();rmSync(predecessorStage,{recursive:true});livePids.clear();second=await ledger.observeClock();}
+  let first,second,afterFirst:string[]=[],predecessorIdentityAfterFirst:ReturnType<typeof exactPublicationIdentity>|undefined,predecessorBytesAfterFirst=Buffer.alloc(0);
+  try{first=await ledger.observeClock();afterFirst=(await readdir(root)).filter(name=>name.startsWith(".authority-ledger-lock-publication-")).sort();predecessorIdentityAfterFirst=exactPublicationIdentity(predecessorStage);predecessorBytesAfterFirst=readFileSync(path.join(predecessorStage,"owner.json"));rmSync(predecessorStage,{recursive:true});livePids.clear();second=await ledger.observeClock();}
   finally{Object.defineProperty(process,"kill",{configurable:true,value:originalKill});}
   assert.deepEqual(first,{ok:false,reason:"busy"});
   assert.deepEqual(second,{ok:true,status:"advanced",observedAt:new Date(t0).toISOString()},"a terminal busy result cannot poison the next acquisition from the same long-running PID");
   assert.deepEqual(afterFirst,[path.basename(predecessorStage)],"terminal busy withdraws only the exact creator stage");
-  assert.equal(existsSync(ownStage),false);assert.deepEqual(predecessorBytes,authorityCanonicalBytes(predecessor));assert.deepEqual({publicationRenames,callbackEntries},{publicationRenames:1,callbackEntries:1});
+  assert.equal(existsSync(ownStage),false);assert.ok(predecessorIdentityAfterFirst);assert.deepEqual(predecessorBytesAfterFirst,predecessorBytes,"terminal withdrawal preserves the peer bytes until the fixture removes it");assert.deepEqual({publicationRenames,callbackEntries},{publicationRenames:1,callbackEntries:1});
 }));
 
 test("generic loop-head terminal withdrawal ignores unrelated membership and preserves every peer",()=>withRoot(async root=>{
@@ -95,9 +95,9 @@ test("generic loop-head terminal withdrawal ignores unrelated membership and pre
 
 test("an exact local current-PID stage is a busy backstop before duplicate creation",()=>withRoot(async root=>{
   const owner={host:hostname(),nonce:"8".repeat(64),pid:process.pid,v:1 as const},bytes=authorityCanonicalBytes(owner),stage=path.join(root,publicationStageName(owner));mkdirSync(stage);writeFileSync(path.join(stage,"owner.json"),bytes);
-  let stageCreates=0,publicationRenames=0,callbackEntries=0;
-  const result=await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20,faultInjector:(point:string)=>{if(point==="after-lock-publication-stage-create")stageCreates++;if(point==="after-lock-publication-rename")publicationRenames++;if(point==="before-ledger-operation-callback")callbackEntries++;}} as never).observeClock();
-  assert.deepEqual(result,{ok:false,reason:"busy"});assert.deepEqual({stageCreates,publicationRenames,callbackEntries},{stageCreates:0,publicationRenames:0,callbackEntries:0});assert.deepEqual(await readdir(root),[path.basename(stage)]);assert.deepEqual(readFileSync(path.join(stage,"owner.json")),bytes);
+  const closureOrder:string[]=[];let stageCreates=0,publicationRenames=0,callbackEntries=0;
+  const result=await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20,faultInjector:(point:string)=>{if(point==="after-publication-stage-enumeration")closureOrder.push("enumerated");if(point==="before-publication-stage-validation")closureOrder.push("validated");if(point==="before-publication-stage-root-reenumeration")closureOrder.push("root-reenumerated");if(point==="after-lock-publication-generation-closed")closureOrder.push("generation-closed");if(point==="after-lock-publication-stage-create")stageCreates++;if(point==="after-lock-publication-rename")publicationRenames++;if(point==="before-ledger-operation-callback")callbackEntries++;}} as never).observeClock();
+  assert.deepEqual(result,{ok:false,reason:"busy"});assert.deepEqual(closureOrder,["enumerated","validated","root-reenumerated","generation-closed","validated"],"busy backstop follows one fully classified and closed generation");assert.deepEqual({stageCreates,publicationRenames,callbackEntries},{stageCreates:0,publicationRenames:0,callbackEntries:0});assert.deepEqual(await readdir(root),[path.basename(stage)]);assert.deepEqual(readFileSync(path.join(stage,"owner.json")),bytes);
 }));
 
 test("terminal creator withdrawal preserves byte-identical directory and owner replacements as corruption",async t=>{
@@ -146,6 +146,22 @@ test("terminal creator withdrawal gets a fresh cleanup budget after acquisition 
   assert.equal(existsSync(ownStage),false);assert.deepEqual(exactPublicationIdentity(predecessorStage),predecessorIdentity);assert.deepEqual(readFileSync(path.join(predecessorStage,"owner.json")),predecessorBytes);
 }));
 
+test("terminal creator withdrawal sharing exhaustion is bounded by one fresh monotonic cleanup budget",{timeout:2_000},()=>withRoot(async root=>{
+  const timeoutMs=20,predecessor={host:hostname(),nonce:"f".repeat(64),pid:1,v:1 as const},predecessorBytes=authorityCanonicalBytes(predecessor),predecessorStage=path.join(root,publicationStageName(predecessor)),originalKill=process.kill;
+  let ownStage="",ownIdentity:ReturnType<typeof exactPublicationIdentity>|undefined,ownBytes=Buffer.alloc(0),predecessorIdentity:ReturnType<typeof exactPublicationIdentity>|undefined,withdrawalActive=false,withdrawalValidations=0,removeAttempts=0,cleanupRootSyncs=0,callbackEntries=0;
+  Object.defineProperty(process,"kill",{configurable:true,value:(pid:number)=>pid===predecessor.pid?true:originalKill.call(process,pid,0)});
+  let bounded;
+  try{bounded=await underBackwardWallClock(()=>withRecordedDelays(async()=>{try{const value=await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:timeoutMs,faultInjector:(point:string)=>{
+    if(point==="after-lock-publication-stage-sync"&&ownStage===""){const ownName=readdirSync(root).find(name=>name.startsWith(".authority-ledger-lock-publication-"));assert.ok(ownName);ownStage=path.join(root,ownName);ownIdentity=exactPublicationIdentity(ownStage);ownBytes=readFileSync(path.join(ownStage,"owner.json"));mkdirSync(predecessorStage);writeFileSync(path.join(predecessorStage,"owner.json"),predecessorBytes);predecessorIdentity=exactPublicationIdentity(predecessorStage);}
+    if(point==="before-creator-stage-withdrawal-validation"){withdrawalActive=true;withdrawalValidations++;}
+    if(withdrawalActive&&point==="before-publication-stage-remove-attempt"){removeAttempts++;if(removeAttempts>20)throw new Error("unbounded creator withdrawal");throw Object.assign(new Error("EBUSY"),{code:"EBUSY"});}
+    if(point==="after-publication-stage-cleanup-root-sync")cleanupRootSyncs++;
+    if(point==="before-ledger-operation-callback")callbackEntries++;
+  }} as never).observeClock();return {threw:false,value,error:undefined};}catch(error){return {threw:true,value:undefined,error};}}));}finally{Object.defineProperty(process,"kill",{configurable:true,value:originalKill});}
+  const observed=bounded!.result;assert.equal(observed.result.threw,false);assert.deepEqual(observed.result.value,{ok:false,reason:"busy"});assert.deepEqual(observed.delays.slice(0,3),[5,10,5]);assert.equal(observed.delays.slice(3).reduce((sum,value)=>sum+value,0),timeoutMs,"cleanup sleeps consume exactly one fresh budget");assert.equal(observed.elapsedMs,timeoutMs*2);assert.ok(removeAttempts>=2&&removeAttempts<=20);assert.equal(withdrawalValidations,removeAttempts,"every retry revalidates the exact creator");assert.deepEqual({cleanupRootSyncs,callbackEntries},{cleanupRootSyncs:0,callbackEntries:0});assert.ok(bounded!.elapsedMs<1_000);assert.ok(observed.physicalElapsedMs<1_000);
+  assert.equal(existsSync(ownStage),true,"bounded sharing exhaustion preserves the exact unchanged creator");assert.deepEqual(exactPublicationIdentity(ownStage),ownIdentity);assert.deepEqual(readFileSync(path.join(ownStage,"owner.json")),ownBytes);assert.deepEqual(exactPublicationIdentity(predecessorStage),predecessorIdentity);assert.deepEqual(readFileSync(path.join(predecessorStage,"owner.json")),predecessorBytes);
+}));
+
 test("same-PID busy backstop never masks malformed, duplicate, foreign, or unverifiable membership",async t=>{
   const run=async(name:string,setup:(root:string)=>Promise<void|(()=>void)>)=>t.test(name,()=>withRoot(async root=>{
     const restore=await setup(root),before=await snapshotRootArtifacts(root);let stageCreates=0,publicationRenames=0,callbackEntries=0,removeAttempts=0;
@@ -159,6 +175,11 @@ test("same-PID busy backstop never masks malformed, duplicate, foreign, or unver
   await run("exact current-PID stage plus malformed membership",async root=>{const exact={host:hostname(),nonce:"1".repeat(64),pid:process.pid,v:1 as const,ticket:"0000000000000001"};await writePublicationStage(root,exact,publicationOwnerBytes(exact));await mkdir(path.join(root,".authority-ledger-lock-publication-malformed-peer"));});
   await run("exact current-PID stage plus foreign membership",async root=>{const exact={host:hostname(),nonce:"2".repeat(64),pid:process.pid,v:1 as const,ticket:"0000000000000001"},foreign={host:"foreign-authority-host",nonce:"3".repeat(64),pid:1,v:1 as const,ticket:"0000000000000002"};await writePublicationStage(root,exact,publicationOwnerBytes(exact));await writePublicationStage(root,foreign,publicationOwnerBytes(foreign));});
   await run("exact current-PID stage plus unverifiable membership",async root=>{const exact={host:hostname(),nonce:"4".repeat(64),pid:process.pid,v:1 as const,ticket:"0000000000000001"},unverifiablePid=process.pid+100_000,peer={host:hostname(),nonce:"5".repeat(64),pid:unverifiablePid,v:1 as const,ticket:"0000000000000002"},originalKill=process.kill;await writePublicationStage(root,exact,publicationOwnerBytes(exact));await writePublicationStage(root,peer,publicationOwnerBytes(peer));Object.defineProperty(process,"kill",{configurable:true,value:(pid:number)=>pid===unverifiablePid?(()=>{throw Object.assign(new Error("EPERM"),{code:"EPERM"});})():originalKill.call(process,pid,0)});return ()=>Object.defineProperty(process,"kill",{configurable:true,value:originalKill});});
+  await t.test("corrupt membership introduced while closing the current-PID generation",()=>withRoot(async root=>{
+    const exact={host:hostname(),nonce:"6".repeat(64),pid:process.pid,v:1 as const,ticket:"0000000000000001"},exactStage=await writePublicationStage(root,exact,publicationOwnerBytes(exact)),exactIdentity=exactPublicationIdentity(exactStage),malformed=path.join(root,".authority-ledger-lock-publication-closure-corruption");let injected=false,stageCreates=0,publicationRenames=0,callbackEntries=0;
+    const result=await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20,faultInjector:(point:string)=>{if(point==="before-publication-stage-root-reenumeration"&&!injected){injected=true;mkdirSync(malformed);}if(point==="after-lock-publication-stage-create")stageCreates++;if(point==="after-lock-publication-rename")publicationRenames++;if(point==="before-ledger-operation-callback")callbackEntries++;}} as never).observeClock();
+    assert.equal(injected,true,"the backstop cannot return before closing root-name membership");assert.deepEqual(result,{ok:false,reason:"corruption"});assert.deepEqual({stageCreates,publicationRenames,callbackEntries},{stageCreates:0,publicationRenames:0,callbackEntries:0});assert.deepEqual(exactPublicationIdentity(exactStage),exactIdentity);assert.deepEqual(readFileSync(path.join(exactStage,"owner.json")),publicationOwnerBytes(exact));assert.equal(existsSync(malformed),true);
+  }));
 });
 
 test("interposed active-lock timeout uses the terminal creator withdrawal funnel",()=>withRoot(async root=>{
@@ -1181,8 +1202,49 @@ test("ledger operation callback entry is an exact once-only boundary",()=>withRo
 test("publication write-all handles short writes and refuses zero progress",async t=>{
   const scratch=await tempRoot(),probe=await open(path.join(scratch,"probe"),"w"),prototype=Object.getPrototypeOf(probe) as {write:(buffer:Uint8Array,offset:number,length:number,position:number)=>Promise<{bytesWritten:number,buffer:Uint8Array}>};await probe.close();await rm(scratch,{recursive:true,force:true});const original=prototype.write;
   await t.test("short writes",()=>withRoot(async root=>{let semanticNowCalls=0;prototype.write=async function(buffer,offset,length,position){return original.call(this,buffer,offset,Math.min(length,2),position);};try{const result=await new RawFsAuthorityLedger(root,{now:()=>{semanticNowCalls++;return t0;},faultInjector:(point:string)=>{if(point==="after-lock-publication-root-sync")prototype.write=original;}} as never).observeClock();assert.equal(result.ok,true);assert.equal(semanticNowCalls,1);assert.equal((await readdir(root)).some(name=>name==="lock"||name.startsWith(".authority-ledger-lock-publication-")),false);}finally{prototype.write=original;}}));
-  for(const [name,reported] of [["zero-progress",0],["negative-progress",-1],["oversized-progress",Number.MAX_SAFE_INTEGER]] as const)await t.test(name,()=>withRoot(async root=>{let semanticNowCalls=0;prototype.write=async function(buffer){return {bytesWritten:reported,buffer};};try{const result=await new RawFsAuthorityLedger(root,{now:()=>{semanticNowCalls++;return t0;},lockTimeoutMs:20}).observeClock();assert.deepEqual(result,{ok:false,reason:"corruption"});assert.equal(semanticNowCalls,0);const stages=(await readdir(root)).filter(stage=>stage.startsWith(".authority-ledger-lock-publication-"));assert.equal(stages.length,1);assert.equal((await readFile(path.join(root,stages[0],"owner.json"))).length,0);}finally{prototype.write=original;}}));
+  for(const [name,reported] of [["zero-progress",0],["negative-progress",-1],["oversized-progress",Number.MAX_SAFE_INTEGER]] as const)await t.test(name,()=>withRoot(async root=>{let semanticNowCalls=0,withdrawalValidations=0,removeAttempts=0,cleanupRootSyncs=0;prototype.write=async function(buffer){return {bytesWritten:reported,buffer};};try{const result=await new RawFsAuthorityLedger(root,{now:()=>{semanticNowCalls++;return t0;},lockTimeoutMs:20,faultInjector:(point:string)=>{if(point==="before-creator-stage-withdrawal-validation")withdrawalValidations++;if(point==="before-publication-stage-remove-attempt")removeAttempts++;if(point==="after-publication-stage-cleanup-root-sync")cleanupRootSyncs++;}} as never).observeClock();assert.deepEqual(result,{ok:false,reason:"corruption"});assert.equal(semanticNowCalls,0);assert.deepEqual({withdrawalValidations,removeAttempts,cleanupRootSyncs},{withdrawalValidations:1,removeAttempts:1,cleanupRootSyncs:1});const stages=(await readdir(root)).filter(stage=>stage.startsWith(".authority-ledger-lock-publication-"));assert.deepEqual(stages,[],"the exact zero-byte creator state is withdrawn before terminal corruption returns");}finally{prototype.write=original;}}));
 });
+
+test("terminal creator withdrawal removes every exact frozen construction state and preserves the thrown error",async t=>{
+  const states=[["empty","after-lock-publication-stage-create"],["zero","after-lock-publication-owner-create"],["partial","after-lock-publication-owner-partial-write"],["complete","after-lock-publication-owner-sync"]] as const;
+  for(const [state,terminalPoint] of states)await t.test(state,()=>withRoot(async root=>{
+    const terminalError=new Error(`terminal:${state}`);let stagePath="",withdrawalValidations=0,removeAttempts=0,cleanupRootSyncs=0,callbackEntries=0;
+    const observed=await withRecordedDelays(async()=>{try{await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20,faultInjector:(point:string)=>{
+      if(point==="before-creator-stage-withdrawal-validation")withdrawalValidations++;
+      if(point==="before-publication-stage-remove-attempt")removeAttempts++;
+      if(point==="after-publication-stage-cleanup-root-sync")cleanupRootSyncs++;
+      if(point==="before-ledger-operation-callback")callbackEntries++;
+      if(point!==terminalPoint)return;const stage=readdirSync(root).find(name=>name.startsWith(".authority-ledger-lock-publication-"));assert.ok(stage);stagePath=path.join(root,stage);const entries=readdirSync(stagePath);
+      if(state==="empty")assert.deepEqual(entries,[]);else{assert.deepEqual(entries,["owner.json"]);const bytes=readFileSync(path.join(stagePath,"owner.json"));if(state==="zero")assert.equal(bytes.length,0);if(state==="partial"){assert.ok(bytes.length>0);assert.throws(()=>JSON.parse(bytes.toString("utf8")));}if(state==="complete"){const owner=JSON.parse(bytes.toString("utf8"));assert.deepEqual(bytes,authorityCanonicalBytes(owner));}}
+      throw terminalError;
+    }} as never).recover();return {threw:false,error:undefined};}catch(error){return {threw:true,error};}});
+    assert.equal(observed.result.threw,true);assert.equal(observed.result.error,terminalError,"terminal cleanup preserves the original thrown object");assert.deepEqual(observed.delays,[]);assert.deepEqual({withdrawalValidations,removeAttempts,cleanupRootSyncs,callbackEntries},{withdrawalValidations:1,removeAttempts:1,cleanupRootSyncs:1,callbackEntries:0});assert.ok(stagePath);assert.equal(existsSync(stagePath),false);
+  }));
+});
+
+test("terminal creator withdrawal syncs the root when its exact stage is already absent",()=>withRoot(async root=>{
+  const terminalError=new Error("terminal:creator-already-absent");let stagePath="",withdrawalValidations=0,removeAttempts=0,cleanupRootSyncs=0,callbackEntries=0;
+  const result=await (async()=>{try{await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20,faultInjector:(point:string)=>{
+    if(point==="before-creator-stage-withdrawal-validation")withdrawalValidations++;
+    if(point==="before-publication-stage-remove-attempt")removeAttempts++;
+    if(point==="after-publication-stage-cleanup-root-sync")cleanupRootSyncs++;
+    if(point==="before-ledger-operation-callback")callbackEntries++;
+    if(point==="after-lock-publication-stage-sync"&&stagePath===""){const stage=readdirSync(root).find(name=>name.startsWith(".authority-ledger-lock-publication-"));assert.ok(stage);stagePath=path.join(root,stage);rmSync(stagePath,{recursive:true});throw terminalError;}
+  }} as never).recover();return {threw:false,error:undefined};}catch(error){return {threw:true,error};}})();
+  assert.equal(result.threw,true);assert.equal(result.error,terminalError);assert.deepEqual({withdrawalValidations,removeAttempts,cleanupRootSyncs,callbackEntries},{withdrawalValidations:1,removeAttempts:0,cleanupRootSyncs:1,callbackEntries:0});assert.ok(stagePath);assert.equal(existsSync(stagePath),false);
+}));
+
+test("terminal creator withdrawal completes authorized same-directory removal progress",()=>withRoot(async root=>{
+  const terminalError=new Error("terminal:creator-removal-progress");let stagePath="",ownerPath="",directoryIdentity:ExactFsIdentity|undefined,withdrawalActive=false,withdrawalValidations=0,removeAttempts=0,cleanupRootSyncs=0,callbackEntries=0;
+  const observed=await withRecordedDelays(async()=>{try{await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20,faultInjector:(point:string)=>{
+    if(point==="before-creator-stage-withdrawal-validation"){withdrawalActive=true;withdrawalValidations++;}
+    if(withdrawalActive&&point==="before-publication-stage-remove-attempt"){removeAttempts++;if(removeAttempts===1){assert.deepEqual(exactFsIdentity(stagePath),directoryIdentity);rmSync(ownerPath);assert.deepEqual(readdirSync(stagePath),[]);throw Object.assign(new Error("EBUSY"),{code:"EBUSY"});}}
+    if(point==="after-publication-stage-cleanup-root-sync")cleanupRootSyncs++;
+    if(point==="before-ledger-operation-callback")callbackEntries++;
+    if(point==="after-lock-publication-stage-sync"&&stagePath===""){const stage=readdirSync(root).find(name=>name.startsWith(".authority-ledger-lock-publication-"));assert.ok(stage);stagePath=path.join(root,stage);ownerPath=path.join(stagePath,"owner.json");directoryIdentity=exactFsIdentity(stagePath);throw terminalError;}
+  }} as never).recover();return {threw:false,error:undefined};}catch(error){return {threw:true,error};}});
+  assert.equal(observed.result.threw,true);assert.equal(observed.result.error,terminalError);assert.deepEqual(observed.delays,[5]);assert.deepEqual({withdrawalValidations,removeAttempts,cleanupRootSyncs,callbackEntries},{withdrawalValidations:2,removeAttempts:2,cleanupRootSyncs:1,callbackEntries:0});assert.ok(stagePath);assert.equal(existsSync(stagePath),false);
+}));
 
 test("creator cleanup preserves replacements at every publication state",async t=>{
   for(const point of ["after-lock-publication-stage-create","after-lock-publication-owner-create","after-lock-publication-owner-partial-write","after-lock-publication-owner-sync","after-lock-publication-stage-sync"] as const)await t.test(point,()=>withRoot(async root=>{const replacement=authorityCanonicalBytes({replacement:true}),ledger=new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20,faultInjector:(observed:string)=>{if(observed!==point)return;const stage=readdirSync(root).find(name=>name.startsWith(".authority-ledger-lock-publication-"));assert.ok(stage);writeFileSync(path.join(root,stage,"owner.json"),replacement);throw new Error(`fault:${point}`);}} as never);await assert.rejects(()=>ledger.recover(),new RegExp(`fault:${point}`));const stage=(await readdir(root)).find(name=>name.startsWith(".authority-ledger-lock-publication-"));assert.ok(stage);assert.deepEqual(await readFile(path.join(root,stage,"owner.json")),replacement);assert.deepEqual(await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20}).recover(),{ok:false,reason:"corruption"});assert.deepEqual(await readFile(path.join(root,stage,"owner.json")),replacement);}));
