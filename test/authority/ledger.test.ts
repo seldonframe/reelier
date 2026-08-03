@@ -1627,6 +1627,68 @@ test("settlement cleanup state forbids a fresh provisional epoch",()=>withRoot(a
   assert.equal(existsSync(ownStage),false);assert.equal(existsSync(peerStages[1]),false);for(const index of [0,2,3]){assert.deepEqual(readFileSync(path.join(peerStages[index],"owner.json")),peerBytes[index]);}
 }));
 
+test("dead liveness observed before settlement churn cannot yield a fresh epoch",()=>withRoot(async root=>{
+  const predecessor={host:hostname(),nonce:"b".repeat(64),pid:process.pid+125,v:1 as const,ticket:"0000000000000003"},dead={host:hostname(),nonce:"c".repeat(64),pid:process.pid+126,v:1 as const,ticket:"0000000000000001"},newDistant={host:hostname(),nonce:"d".repeat(64),pid:process.pid+127,v:1 as const,ticket:"0000000000000002"},higher={host:hostname(),nonce:"e".repeat(64),pid:process.pid+128,v:1 as const,ticket:"0000000000000005"},peers=[predecessor,dead,newDistant,higher] as const;
+  assert.ok(peers.every(peer=>Number.isSafeInteger(peer.pid)&&peer.pid>0));
+  const peerStages=peers.map(peer=>path.join(root,publicationStageName(peer))),peerBytes=peers.map(peer=>publicationOwnerBytes(peer)),livePids=new Set([predecessor.pid,newDistant.pid,higher.pid]),originalKill=process.kill;
+  let ownStage="",provisionalSelections=0,provisionalCloses=0,stagedBoundaries=0,settlementChurn=false,generationClosures=0,publicationRenames=0,callbackEntries=0;
+  const installPeer=(index:number)=>{mkdirSync(peerStages[index]);writeFileSync(path.join(peerStages[index],"owner.json"),peerBytes[index]);};
+  Object.defineProperty(process,"kill",{configurable:true,value:(pid:number)=>{if(pid===dead.pid)throw Object.assign(new Error("dead"),{code:"ESRCH"});return livePids.has(pid)?true:originalKill.call(process,pid,0);}});
+  let observed;
+  try{observed=await withRecordedDelays(()=>rawLedgerWithAdmissionClock(root,()=>4n,{now:()=>t0,lockTimeoutMs:40,faultInjector:(point:string)=>{
+    if(point==="after-lock-publication-stage-sync"&&ownStage===""){const ownName=readdirSync(root).find(name=>name.startsWith(".authority-ledger-lock-publication-"));assert.ok(ownName);ownStage=path.join(root,ownName);installPeer(0);installPeer(1);}
+    if(point==="after-lock-publication-provisional-predecessor-selection")provisionalSelections++;
+    if(point==="before-lock-publication-provisional-root-reenumeration"){provisionalCloses++;if(provisionalCloses===2)installPeer(3);}
+    if(point==="before-staged-publication-settlement")stagedBoundaries++;
+    if(point==="before-publication-stage-root-reenumeration"&&stagedBoundaries===1&&!settlementChurn){settlementChurn=true;installPeer(2);}
+    if(point==="after-lock-publication-generation-closed")generationClosures++;
+    if(point==="after-lock-publication-rename")publicationRenames++;
+    if(point==="before-ledger-operation-callback")callbackEntries++;
+  }}).observeClock());}finally{Object.defineProperty(process,"kill",{configurable:true,value:originalKill});}
+  assert.equal(settlementChurn,true);assert.deepEqual(observed!.result,{ok:false,reason:"busy"});assert.deepEqual({provisionalSelections,stagedBoundaries,publicationRenames,callbackEntries},{provisionalSelections:2,stagedBoundaries:1,publicationRenames:0,callbackEntries:0});assert.ok(generationClosures>=1);
+  assert.equal(existsSync(ownStage),false);assert.equal(existsSync(peerStages[1]),false,"the dead stage is settled before any denial-only epoch can reopen");for(const index of [0,2,3])assert.deepEqual(readFileSync(path.join(peerStages[index],"owner.json")),peerBytes[index]);
+}));
+
+test("a stable full generation permanently closes provisional epochs for the acquisition",()=>withRoot(async root=>{
+  const predecessor={host:hostname(),nonce:"f".repeat(64),pid:process.pid+141,v:1 as const,ticket:"0000000000000003"},newDistant={host:hostname(),nonce:"1".repeat(64),pid:process.pid+142,v:1 as const,ticket:"0000000000000002"},higher={host:hostname(),nonce:"2".repeat(64),pid:process.pid+143,v:1 as const,ticket:"0000000000000005"},predecessorBytes=publicationOwnerBytes(predecessor),newDistantBytes=publicationOwnerBytes(newDistant),higherBytes=publicationOwnerBytes(higher),predecessorStage=path.join(root,publicationStageName(predecessor)),newDistantStage=path.join(root,publicationStageName(newDistant)),higherStage=path.join(root,publicationStageName(higher)),livePids=new Set([predecessor.pid,newDistant.pid,higher.pid]),originalKill=process.kill;
+  let ownStage="",provisionalSelections=0,postFullProvisionalSelections=0,stagedBoundaries=0,generationClosures=0,predecessorInvalidated=false,postFullChurn=false,publicationRenames=0,callbackEntries=0;
+  Object.defineProperty(process,"kill",{configurable:true,value:(pid:number)=>livePids.has(pid)?true:originalKill.call(process,pid,0)});
+  let observed;
+  try{observed=await withRecordedDelays(()=>rawLedgerWithAdmissionClock(root,()=>4n,{now:()=>t0,lockTimeoutMs:30,faultInjector:(point:string)=>{
+    if(point==="after-lock-publication-stage-sync"&&ownStage===""){const ownName=readdirSync(root).find(name=>name.startsWith(".authority-ledger-lock-publication-"));assert.ok(ownName);ownStage=path.join(root,ownName);mkdirSync(predecessorStage);writeFileSync(path.join(predecessorStage,"owner.json"),predecessorBytes);}
+    if(point==="after-lock-publication-provisional-predecessor-selection"){provisionalSelections++;if(generationClosures>0)postFullProvisionalSelections++;}
+    if(point==="before-lock-publication-provisional-root-reenumeration"&&stagedBoundaries===0){mkdirSync(higherStage);writeFileSync(path.join(higherStage,"owner.json"),higherBytes);}
+    if(point==="before-staged-publication-settlement")stagedBoundaries++;
+    if(point==="after-lock-publication-generation-closed")generationClosures++;
+    if(point==="before-lock-publication-predecessor-validation"&&generationClosures>0&&!predecessorInvalidated){predecessorInvalidated=true;rmSync(predecessorStage,{recursive:true});livePids.delete(predecessor.pid);}
+    if(point==="before-publication-stage-root-reenumeration"&&predecessorInvalidated&&!postFullChurn){postFullChurn=true;mkdirSync(newDistantStage);writeFileSync(path.join(newDistantStage,"owner.json"),newDistantBytes);}
+    if(point==="after-lock-publication-rename")publicationRenames++;
+    if(point==="before-ledger-operation-callback")callbackEntries++;
+  }}).observeClock());}finally{Object.defineProperty(process,"kill",{configurable:true,value:originalKill});}
+  assert.equal(predecessorInvalidated,true);assert.equal(postFullChurn,true);assert.deepEqual(observed!.result,{ok:false,reason:"busy"});assert.deepEqual({provisionalSelections,postFullProvisionalSelections,stagedBoundaries,publicationRenames,callbackEntries},{provisionalSelections:1,postFullProvisionalSelections:0,stagedBoundaries:1,publicationRenames:0,callbackEntries:0});assert.ok(generationClosures>=2);
+  assert.equal(existsSync(ownStage),false);assert.equal(existsSync(predecessorStage),false);assert.deepEqual(readFileSync(path.join(newDistantStage,"owner.json")),newDistantBytes);assert.deepEqual(readFileSync(path.join(higherStage,"owner.json")),higherBytes);
+}));
+
+test("a predecessor replaced at the settlement churn boundary cannot establish a fresh wait",()=>withRoot(async root=>{const external=await tempRoot();try{
+  const predecessor={host:hostname(),nonce:"3".repeat(64),pid:process.pid+151,v:1 as const,ticket:"0000000000000003"},distant={host:hostname(),nonce:"4".repeat(64),pid:process.pid+152,v:1 as const,ticket:"0000000000000001"},higher={host:hostname(),nonce:"5".repeat(64),pid:process.pid+153,v:1 as const,ticket:"0000000000000005"},predecessorBytes=publicationOwnerBytes(predecessor),distantBytes=publicationOwnerBytes(distant),higherBytes=publicationOwnerBytes(higher),predecessorStage=path.join(root,publicationStageName(predecessor)),distantStage=path.join(root,publicationStageName(distant)),higherStage=path.join(root,publicationStageName(higher)),livePids=new Set([predecessor.pid,distant.pid,higher.pid]),originalKill=process.kill;
+  let ownStage="",provisionalSelections=0,provisionalCloses=0,stagedBoundaries=0,settlementChurn=false,generationClosures=0,freshProbeOpen=false,freshWaitDelays=0,originalPredecessorIno=0n,replacementPredecessorIno=0n,publicationRenames=0,callbackEntries=0;
+  const prepared=path.join(external,"prepared-predecessor");mkdirSync(prepared);writeFileSync(path.join(prepared,"owner.json"),predecessorBytes);
+  Object.defineProperty(process,"kill",{configurable:true,value:(pid:number)=>livePids.has(pid)?true:originalKill.call(process,pid,0)});
+  let observed;
+  try{observed=await withRecordedDelays(()=>rawLedgerWithAdmissionClock(root,()=>4n,{now:()=>t0,lockTimeoutMs:30,faultInjector:(point:string)=>{
+    if(point==="after-lock-publication-stage-sync"&&ownStage===""){const ownName=readdirSync(root).find(name=>name.startsWith(".authority-ledger-lock-publication-"));assert.ok(ownName);ownStage=path.join(root,ownName);mkdirSync(predecessorStage);writeFileSync(path.join(predecessorStage,"owner.json"),predecessorBytes);}
+    if(point==="after-lock-publication-provisional-predecessor-selection"){provisionalSelections++;if(settlementChurn)freshProbeOpen=true;}
+    if(point==="before-lock-publication-provisional-root-reenumeration"){provisionalCloses++;if(provisionalCloses===2){mkdirSync(higherStage);writeFileSync(path.join(higherStage,"owner.json"),higherBytes);}}
+    if(point==="before-staged-publication-settlement"){stagedBoundaries++;if(stagedBoundaries>1)freshProbeOpen=false;}
+    if(point==="before-publication-stage-root-reenumeration"&&stagedBoundaries===1&&!settlementChurn){settlementChurn=true;originalPredecessorIno=lstatSync(predecessorStage,{bigint:true}).ino;renameSync(predecessorStage,path.join(external,"original-predecessor"));renameSync(prepared,predecessorStage);replacementPredecessorIno=lstatSync(predecessorStage,{bigint:true}).ino;assert.notEqual(replacementPredecessorIno,originalPredecessorIno);mkdirSync(distantStage);writeFileSync(path.join(distantStage,"owner.json"),distantBytes);}
+    if(point==="after-lock-publication-generation-closed"){generationClosures++;freshProbeOpen=false;}
+    if(point==="after-lock-publication-rename")publicationRenames++;
+    if(point==="before-ledger-operation-callback")callbackEntries++;
+  }}).observeClock(),()=>{if(freshProbeOpen)freshWaitDelays++;});}finally{Object.defineProperty(process,"kill",{configurable:true,value:originalKill});}
+  assert.equal(settlementChurn,true);assert.notEqual(replacementPredecessorIno,originalPredecessorIno);assert.deepEqual(observed!.result,{ok:false,reason:"busy"});assert.equal(freshWaitDelays,0,"the replacement must reach full settlement before any fresh provisional delay");assert.ok(generationClosures>=1);assert.deepEqual({publicationRenames,callbackEntries},{publicationRenames:0,callbackEntries:0});
+  assert.equal(existsSync(ownStage),false);assert.equal(lstatSync(predecessorStage,{bigint:true}).ino,replacementPredecessorIno);assert.deepEqual(readFileSync(path.join(predecessorStage,"owner.json")),predecessorBytes);assert.deepEqual(readFileSync(path.join(distantStage,"owner.json")),distantBytes);assert.deepEqual(readFileSync(path.join(higherStage,"owner.json")),higherBytes);
+}finally{await rm(external,{recursive:true,force:true});}}));
+
 test("invalid fresh provisional cohorts return to full settlement before any provisional wait",async t=>{
   const cases=["raw-head","malformed","own-replaced","predecessor-replaced","predecessor-dead","predecessor-unverifiable"] as const;
   for(const kind of cases)await t.test(kind,()=>withRoot(async root=>{const external=await tempRoot();try{
