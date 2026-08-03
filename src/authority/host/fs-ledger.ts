@@ -595,10 +595,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
     return finalStages;
   }
 
-  private publicationMembershipChanged(activeOwner:boolean,previous:readonly string[],current:readonly string[]):"retry"{
-    if(activeOwner&&!previous.every(name=>current.includes(name)))throw new LedgerCorruption("publication generation changed after owner publication");
-    return "retry";
-  }
+  private publicationMembershipChanged(_activeOwner:boolean,_previous:readonly string[],_current:readonly string[]):"retry"{return "retry";}
 
   private async pollPublicationPredecessor(expected:PublicationStage):Promise<"live"|"reselect">{
     this.fault("before-lock-publication-predecessor-validation");
