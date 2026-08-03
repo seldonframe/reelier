@@ -249,10 +249,20 @@ export class FsAuthorityLedger implements AuthorityLedger {
   constructor(root: string, options: FsAuthorityLedgerOptions = {}) {
     const resolved = path.resolve(root);
     let rootStat;
-    try { rootStat = lstatSync(resolved); } catch { throw new TypeError("authority ledger root must be an existing directory"); }
+    try { rootStat = lstatSync(resolved,{bigint:true}); } catch { throw new TypeError("authority ledger root must be an existing directory"); }
     if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) throw new TypeError("authority ledger root must be a real directory");
+    for(let current=path.dirname(resolved);;current=path.dirname(current)){
+      let ancestorStat;
+      try{ancestorStat=lstatSync(current);}catch{throw new TypeError("authority ledger root may not traverse a symlink or reparse point");}
+      if(ancestorStat.isSymbolicLink())throw new TypeError("authority ledger root may not traverse a symlink or reparse point");
+      if(path.dirname(current)===current)break;
+    }
     const real = realpathSync.native(resolved);
-    if (normalizePath(real) !== normalizePath(resolved)) throw new TypeError("authority ledger root may not traverse a symlink or reparse point");
+    if(process.platform==="win32"){
+      let realStat;
+      try{realStat=lstatSync(real,{bigint:true});}catch{throw new TypeError("authority ledger root may not traverse a symlink or reparse point");}
+      if(realStat.dev!==rootStat.dev||realStat.ino!==rootStat.ino)throw new TypeError("authority ledger root may not traverse a symlink or reparse point");
+    }else if(real!==resolved)throw new TypeError("authority ledger root may not traverse a symlink or reparse point");
     this.root = real;
     const internalOptions=options as InternalFsAuthorityLedgerOptions;
     this.options = { now: options.now ?? Date.now, faultInjector: options.faultInjector, lockTimeoutMs: options.lockTimeoutMs ?? 30_000 };
@@ -1579,7 +1589,6 @@ function frozen<T>(value: T): T {
   }
   return value;
 }
-function normalizePath(value: string): string { return process.platform === "win32" ? value.toLowerCase() : value; }
 function hasCode(error: unknown, code: string): boolean { return Boolean(error && typeof error === "object" && "code" in error && (error as { code?: string }).code === code); }
 function fileIdentity(stat:Readonly<{dev:bigint;ino:bigint;mode:bigint;nlink:bigint}>):FileIdentity{return {dev:stat.dev,ino:stat.ino,mode:stat.mode,nlink:stat.nlink};}
 export function __testSamePublicationFileIdentity(left:Readonly<{dev:bigint;ino:bigint;mode:bigint;nlink:bigint}>,right:Readonly<{dev:bigint;ino:bigint;mode:bigint;nlink:bigint}>):boolean{return left.dev===right.dev&&left.ino===right.ino&&left.mode===right.mode&&left.nlink===right.nlink;}
