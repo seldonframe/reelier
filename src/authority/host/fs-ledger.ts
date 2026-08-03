@@ -443,7 +443,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
     const deadline = monotonicNow() + this.options.lockTimeoutMs;
     const owner: LockOwner = { v: 1, host: hostname(), pid: process.pid, nonce: randomBytes(32).toString("hex") };
     const ownerBytes=canonicalBytes(owner);let stageName="",stagePath="",ownerPath="";
-    let stageCreated=false,published=false,expectedStage:PublicationStage|null=null,election:PublicationElection|null=null,provisionalWait:ProvisionalPublicationWait|null=null,stagedSettlementStarted=false,waitedOnActiveLock=false,fullReelectionPending=false;
+    let stageCreated=false,published=false,expectedStage:PublicationStage|null=null,election:PublicationElection|null=null,provisionalWait:ProvisionalPublicationWait|null=null,stagedSettlementStarted=false,waitedOnActiveLock=false,fullReelectionPending=false,provisionalFallbackResetPending=false;
     let mutatingAdmissionMemo:MutatingAdmissionMemo=admitContender?{kind:"unseeded"}:{kind:"disabled"};
     let retryDelayMs=5;
     const backoff=async()=>{const remaining=deadline-monotonicNow();if(remaining<=0)return;await delay(Math.min(retryDelayMs,remaining));retryDelayMs=Math.min(50,retryDelayMs*2);};
@@ -509,17 +509,20 @@ export class FsAuthorityLedger implements AuthorityLedger {
         }
         if(!stagedSettlementStarted){
           if(expectedStage===null)throw new LedgerCorruption("creator publication snapshot absent");
+          const hadProvisionalWait=provisionalWait!==null;
           const provisional=await this.inspectProvisionalPublicationWait(expectedStage,provisionalWait);
           if(provisional.kind==="wait"){
             provisionalWait=provisional.state;
             if(monotonicNow()>=deadline)return {ok:false,reason:"busy"};
             await backoff();continue;
           }
+          if(hadProvisionalWait)provisionalFallbackResetPending=true;
           provisionalWait=null;
           this.fault("before-staged-publication-settlement");
           stagedSettlementStarted=true;
         }
         const generation=[...(await this.settlePublicationStages(deadline,false,expectedStage))].sort(comparePublicationOrder);
+        if(provisionalFallbackResetPending){provisionalFallbackResetPending=false;retryDelayMs=5;}
         if(fullReelectionPending){fullReelectionPending=false;retryDelayMs=5;}
         const ownIndex=generation.findIndex(stage=>stage.name===stageName);
         if(ownIndex<0)throw new LedgerCorruption("creator publication stage disappeared");
