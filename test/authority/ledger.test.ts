@@ -57,6 +57,46 @@ const callerTimedTransition: TransitionEvent = {
 void kernelTimedTransition;
 void callerTimedTransition;
 
+test("terminal provisional busy withdraws the exact creator so a same-PID retry can progress",()=>withRoot(async root=>{
+  const predecessor={host:hostname(),nonce:"6".repeat(64),pid:1,v:1 as const},predecessorBytes=authorityCanonicalBytes(predecessor),predecessorStage=path.join(root,publicationStageName(predecessor)),originalKill=process.kill,livePids=new Set<number>([predecessor.pid]);
+  let injected=false,ownStage="",ownBytes=Buffer.alloc(0),publicationRenames=0,callbackEntries=0;
+  const ledger=new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20,faultInjector:(point:string)=>{
+    if(point==="after-lock-publication-stage-sync"&&!injected){injected=true;const ownName=readdirSync(root).find(name=>name.startsWith(".authority-ledger-lock-publication-"));assert.ok(ownName);ownStage=path.join(root,ownName);ownBytes=readFileSync(path.join(ownStage,"owner.json"));const ownOwner=JSON.parse(ownBytes.toString("utf8")) as {pid:number};assert.equal(ownOwner.pid,process.pid);mkdirSync(predecessorStage);writeFileSync(path.join(predecessorStage,"owner.json"),predecessorBytes);}
+    if(point==="after-lock-publication-rename")publicationRenames++;
+    if(point==="before-ledger-operation-callback")callbackEntries++;
+  }} as never);
+  Object.defineProperty(process,"kill",{configurable:true,value:(pid:number)=>livePids.has(pid)?true:originalKill.call(process,pid,0)});
+  let first,second,afterFirst:string[]=[];
+  try{first=await ledger.observeClock();afterFirst=(await readdir(root)).filter(name=>name.startsWith(".authority-ledger-lock-publication-")).sort();rmSync(predecessorStage,{recursive:true});livePids.clear();second=await ledger.observeClock();}
+  finally{Object.defineProperty(process,"kill",{configurable:true,value:originalKill});}
+  assert.deepEqual(first,{ok:false,reason:"busy"});
+  assert.deepEqual(second,{ok:true,status:"advanced",observedAt:new Date(t0).toISOString()},"a terminal busy result cannot poison the next acquisition from the same long-running PID");
+  assert.deepEqual(afterFirst,[path.basename(predecessorStage)],"terminal busy withdraws only the exact creator stage");
+  assert.equal(existsSync(ownStage),false);assert.deepEqual(predecessorBytes,authorityCanonicalBytes(predecessor));assert.deepEqual({publicationRenames,callbackEntries},{publicationRenames:1,callbackEntries:1});
+}));
+
+test("terminal creator withdrawal ignores unrelated membership and preserves every peer",()=>withRoot(async root=>{
+  const predecessor={host:hostname(),nonce:"7".repeat(64),pid:1,v:1 as const},predecessorStage=path.join(root,publicationStageName(predecessor)),predecessorBytes=authorityCanonicalBytes(predecessor),malformed=path.join(root,".authority-ledger-lock-publication-withdrawal-churn"),originalKill=process.kill;
+  let ownStage="",withdrawalValidations=0,cohortClosuresDuringWithdrawal=0,callbackEntries=0;
+  Object.defineProperty(process,"kill",{configurable:true,value:(pid:number)=>pid===predecessor.pid?true:originalKill.call(process,pid,0)});
+  let result;
+  try{result=await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20,faultInjector:(point:string)=>{
+    if(point==="after-lock-publication-stage-sync"&&ownStage===""){const ownName=readdirSync(root).find(name=>name.startsWith(".authority-ledger-lock-publication-"));assert.ok(ownName);ownStage=path.join(root,ownName);mkdirSync(predecessorStage);writeFileSync(path.join(predecessorStage,"owner.json"),predecessorBytes);}
+    if(point==="before-creator-stage-withdrawal-validation"){withdrawalValidations++;if(!existsSync(malformed))mkdirSync(malformed);}
+    if(withdrawalValidations>0&&point==="before-publication-stage-root-reenumeration")cohortClosuresDuringWithdrawal++;
+    if(point==="before-ledger-operation-callback")callbackEntries++;
+  }} as never).observeClock();}finally{Object.defineProperty(process,"kill",{configurable:true,value:originalKill});}
+  assert.deepEqual(result,{ok:false,reason:"busy"});assert.equal(withdrawalValidations,1);assert.equal(cohortClosuresDuringWithdrawal,0,"exact creator withdrawal never closes or waits on unrelated membership");assert.equal(callbackEntries,0);
+  assert.equal(existsSync(ownStage),false);assert.equal(existsSync(predecessorStage),true);assert.deepEqual(readFileSync(path.join(predecessorStage,"owner.json")),predecessorBytes);assert.equal(existsSync(malformed),true);
+}));
+
+test("an exact local current-PID stage is a busy backstop before duplicate creation",()=>withRoot(async root=>{
+  const owner={host:hostname(),nonce:"8".repeat(64),pid:process.pid,v:1 as const},bytes=authorityCanonicalBytes(owner),stage=path.join(root,publicationStageName(owner));mkdirSync(stage);writeFileSync(path.join(stage,"owner.json"),bytes);
+  let stageCreates=0,publicationRenames=0,callbackEntries=0;
+  const result=await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20,faultInjector:(point:string)=>{if(point==="after-lock-publication-stage-create")stageCreates++;if(point==="after-lock-publication-rename")publicationRenames++;if(point==="before-ledger-operation-callback")callbackEntries++;}} as never).observeClock();
+  assert.deepEqual(result,{ok:false,reason:"busy"});assert.deepEqual({stageCreates,publicationRenames,callbackEntries},{stageCreates:0,publicationRenames:0,callbackEntries:0});assert.deepEqual(await readdir(root),[path.basename(stage)]);assert.deepEqual(readFileSync(path.join(stage,"owner.json")),bytes);
+}));
+
 function intent(overrides: Partial<ReservationIntent> = {}): ReservationIntent {
   const limits = overrides.limits ?? { maxEffectsPerWindow: 2, windowSeconds: 3600, maxEffectsPerSourceTrigger: 1, maxBodyBytes: 4096 };
   const scalar = {
