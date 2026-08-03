@@ -194,7 +194,7 @@ interface PublicationSettlementState {
   generationInvalidated:boolean;
 }
 type PublicationRetry = "retry" | "integrity-replacement";
-type PublicationCanonicalMembershipChurn = Readonly<{kind:"canonical-membership-churn"}>;
+type PublicationCanonicalMembershipChurn = Readonly<{kind:"canonical-membership-churn";predecessor:PublicationStage|null}>;
 interface PublicationElection {
   readonly predecessor:PublicationStage;
 }
@@ -444,7 +444,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
     const deadline = monotonicNow() + this.options.lockTimeoutMs;
     const owner: LockOwner = { v: 1, host: hostname(), pid: process.pid, nonce: randomBytes(32).toString("hex") };
     const ownerBytes=canonicalBytes(owner);let stageName="",stagePath="",ownerPath="",stageTicket:bigint|null=null;
-    let stageCreated=false,published=false,expectedStage:PublicationStage|null=null,election:PublicationElection|null=null,provisionalWait:ProvisionalPublicationWait|null=null,stagedSettlementStarted=false,waitedOnActiveLock=false,fullReelectionPending=false,provisionalFallbackResetPending=false;
+    let stageCreated=false,published=false,expectedStage:PublicationStage|null=null,election:PublicationElection|null=null,provisionalWait:ProvisionalPublicationWait|null=null,stagedSettlementStarted=false,provisionalEpochsAllowed=true,waitedOnActiveLock=false,fullReelectionPending=false,provisionalFallbackResetPending=false;
     let mutatingAdmissionMemo:MutatingAdmissionMemo=admitContender?{kind:"unseeded"}:{kind:"disabled"};
     let retryDelayMs=5;
     const backoff=async()=>{const remaining=deadline-monotonicNow();if(remaining<=0)return;await delay(Math.min(retryDelayMs,remaining));retryDelayMs=Math.min(50,retryDelayMs*2);};
@@ -531,10 +531,12 @@ export class FsAuthorityLedger implements AuthorityLedger {
           this.fault("before-staged-publication-settlement");
           stagedSettlementStarted=true;
         }
-        const settlement=await this.settlePublicationStages(deadline,false,expectedStage,false,true);
+        const settlement=provisionalEpochsAllowed
+          ?await this.settlePublicationStages(deadline,false,expectedStage,false,true)
+          :await this.settlePublicationStages(deadline,false,expectedStage);
         if(!Array.isArray(settlement)){
           if(expectedStage===null)throw new LedgerCorruption("creator publication snapshot absent");
-          const fresh=await this.inspectProvisionalPublicationWait(expectedStage,null);
+          const fresh=await this.inspectProvisionalPublicationWait(expectedStage,null,settlement.predecessor);
           if(fresh.kind==="wait"){
             provisionalWait=fresh.state;
             stagedSettlementStarted=false;
@@ -545,6 +547,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
           if(fresh.selected)this.fault("before-staged-publication-settlement");
           continue;
         }
+        provisionalEpochsAllowed=false;
         const generation=[...settlement].sort(comparePublicationOrder);
         if(provisionalFallbackResetPending){provisionalFallbackResetPending=false;retryDelayMs=5;}
         if(fullReelectionPending){fullReelectionPending=false;retryDelayMs=5;}
@@ -586,7 +589,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
   private publicationStageName(owner:LockOwner,ticket:bigint):string{return `.authority-ledger-lock-publication-${this.hostDigest(owner.host)}-${ticket.toString(16).padStart(16,"0")}-${owner.pid}-${owner.nonce}.tmp`;}
   private hostDigest(host:string):string{return createHash("sha256").update(host,"utf8").digest("hex");}
 
-  private async inspectProvisionalPublicationWait(expectedOwn:PublicationStage,previous:ProvisionalPublicationWait|null):Promise<ProvisionalPublicationObservation>{
+  private async inspectProvisionalPublicationWait(expectedOwn:PublicationStage,previous:ProvisionalPublicationWait|null,expectedPredecessor:PublicationStage|null=null):Promise<ProvisionalPublicationObservation>{
     let names:string[];
     try{names=await this.rawPublicationStageNames();}
     catch(error){if(hasCode(error,"ENOENT")||isSnapshotSharingError(error))return {kind:"fallback",selected:false};throw error;}
@@ -604,7 +607,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
       own=await this.validatePublicationStage(expectedOwn.name);
       predecessor=await this.validatePublicationStage(selected.name);
     }catch(error){if(error instanceof LedgerCorruption||hasCode(error,"ENOENT")||isSnapshotSharingError(error))return {kind:"fallback",selected:true};throw error;}
-    if(!samePublicationStage(expectedOwn,own)||!sameFileIdentity(selectedDirectoryIdentity,predecessor.directoryIdentity)||previous!==null&&!samePublicationStage(previous.predecessor,predecessor))return {kind:"fallback",selected:true};
+    if(!samePublicationStage(expectedOwn,own)||!sameFileIdentity(selectedDirectoryIdentity,predecessor.directoryIdentity)||previous!==null&&!samePublicationStage(previous.predecessor,predecessor)||expectedPredecessor!==null&&!samePublicationStage(expectedPredecessor,predecessor))return {kind:"fallback",selected:true};
     this.fault("before-lock-publication-provisional-root-reenumeration");
     let closedNames:string[];
     try{closedNames=await this.rawPublicationStageNames();}
@@ -727,11 +730,11 @@ export class FsAuthorityLedger implements AuthorityLedger {
     this.fault("before-publication-stage-root-reenumeration");
     const closedNames=await this.publicationStageNames();
     this.assertNoTombstonedPublicationNames(state,closedNames);
-    if(!sameStrings(names,closedNames))return this.publicationMembershipChanged(state,activeOwner,ownedStage,yieldCanonicalMembershipChurn,names,closedNames);
+    if(!sameStrings(names,closedNames))return this.publicationMembershipChanged(state,activeOwner,ownedStage,yieldCanonicalMembershipChurn,stages,initialLiveness,names,closedNames);
     if(stages.length>0)this.fault("after-lock-publication-generation-closed");
     const finalNames=await this.publicationStageNames();
     this.assertNoTombstonedPublicationNames(state,finalNames);
-    if(!sameStrings(closedNames,finalNames))return this.publicationMembershipChanged(state,activeOwner,ownedStage,yieldCanonicalMembershipChurn,closedNames,finalNames);
+    if(!sameStrings(closedNames,finalNames))return this.publicationMembershipChanged(state,activeOwner,ownedStage,yieldCanonicalMembershipChurn,stages,initialLiveness,closedNames,finalNames);
     const finalStages:PublicationStage[]=[];
     for(let index=0;index<stages.length;index++){
       const stage=stages[index];
@@ -748,7 +751,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
     const finalLiveness=finalStages.map(stage=>processLiveness(stage.pid));
     if(finalLiveness.some(value=>value==="unverifiable"))throw new LedgerCorruption("unverifiable publication stage owner");
     const deadStages=finalStages.filter((_,index)=>finalLiveness[index]==="dead");
-    if(!requireDeadCleanup&&state.generationInvalidated&&deadStages.length>0&&deadStages.length<finalStages.length)return this.completePublicationGeneration(state,finalStages);
+    if(!requireDeadCleanup&&!yieldCanonicalMembershipChurn&&state.generationInvalidated&&deadStages.length>0&&deadStages.length<finalStages.length)return this.completePublicationGeneration(state,finalStages);
     const removedNames:string[]=[];
     for(const deadStage of deadStages){
       const expectedNames=finalStages.filter(stage=>!removedNames.includes(stage.name)).map(stage=>stage.name);
@@ -784,9 +787,14 @@ export class FsAuthorityLedger implements AuthorityLedger {
     return stages;
   }
 
-  private publicationMembershipChanged(state:PublicationSettlementState,activeOwner:boolean,ownedStage:PublicationStage|null,yieldCanonicalMembershipChurn:boolean,_previous:readonly string[],current:readonly string[]):"retry"|PublicationCanonicalMembershipChurn{
+  private publicationMembershipChanged(state:PublicationSettlementState,activeOwner:boolean,ownedStage:PublicationStage|null,yieldCanonicalMembershipChurn:boolean,previousStages:readonly PublicationStage[],initialLiveness:readonly ("alive"|"dead"|"unverifiable")[],_previous:readonly string[],current:readonly string[]):"retry"|PublicationCanonicalMembershipChurn{
     const pristine=!state.generationInvalidated&&!state.rootSyncPending&&state.removalAuthorizations.size===0&&state.removalDisappearances.size===0;
-    if(yieldCanonicalMembershipChurn&&!activeOwner&&ownedStage!==null&&pristine&&this.parseProvisionalPublicationNames(current,ownedStage.name)!==null)return {kind:"canonical-membership-churn"};
+    const ordered=ownedStage===null?null:this.parseProvisionalPublicationNames(current,ownedStage.name);
+    if(yieldCanonicalMembershipChurn&&!activeOwner&&ownedStage!==null&&pristine&&initialLiveness.every(value=>value==="alive")&&ordered!==null){
+      const ownIndex=ordered.findIndex(item=>item.name===ownedStage.name);
+      const predecessor=ownIndex>0?previousStages.find(stage=>stage.name===ordered[ownIndex-1].name)??null:null;
+      return {kind:"canonical-membership-churn",predecessor};
+    }
     state.generationInvalidated=true;
     return "retry";
   }
