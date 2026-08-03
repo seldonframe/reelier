@@ -187,6 +187,7 @@ interface PublicationStage {
 }
 interface PublicationSettlementState {
   readonly removalAuthorizations:Map<string,PublicationStage>;
+  readonly removalDisappearances:Map<string,"sync-pending"|"synced">;
   rootSyncPending:boolean;
   generationInvalidated:boolean;
 }
@@ -574,11 +575,16 @@ export class FsAuthorityLedger implements AuthorityLedger {
   }
 
   private async settlePublicationStages(deadline:number,activeOwner:boolean,ownedStage:PublicationStage|null=null,requireDeadCleanup=false):Promise<PublicationStage[]>{
-    const phase=activeOwner?"housekeeping" as const:"acquisition" as const,state:PublicationSettlementState={removalAuthorizations:new Map<string,PublicationStage>(),rootSyncPending:false,generationInvalidated:false};
+    const phase=activeOwner?"housekeeping" as const:"acquisition" as const,state:PublicationSettlementState={removalAuthorizations:new Map<string,PublicationStage>(),removalDisappearances:new Map<string,"sync-pending"|"synced">(),rootSyncPending:false,generationInvalidated:false};
     for(;;){
       let retry:PublicationRetry="retry";
       try{
-        if(state.rootSyncPending){await this.syncDirectory(this.root);state.rootSyncPending=false;this.fault("after-publication-stage-cleanup-root-sync");}
+        if(state.rootSyncPending){
+          await this.syncDirectory(this.root);
+          state.rootSyncPending=false;
+          for(const [name,phase] of state.removalDisappearances)if(phase==="sync-pending")state.removalDisappearances.set(name,"synced");
+          this.fault("after-publication-stage-cleanup-root-sync");
+        }
         const result=await this.servicePublicationGeneration(state,activeOwner,ownedStage,requireDeadCleanup);
         if(Array.isArray(result))return result;
         retry=result;
@@ -596,6 +602,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
     if(await this.captureAuthorizedPublicationDisappearances(state))return "retry";
     const names=await this.publicationStageNames();
     this.fault("after-publication-stage-enumeration");
+    for(const name of state.removalDisappearances.keys())if(names.includes(name))throw new LedgerCorruption("publication stage reappeared before cleanup generation closure");
     const stages:PublicationStage[]=[];
     const identities=new Set<string>();
     for(const name of names){
@@ -613,6 +620,13 @@ export class FsAuthorityLedger implements AuthorityLedger {
     if(stages.length>0)this.fault("after-lock-publication-generation-closed");
     const finalNames=await this.publicationStageNames();
     if(!sameStrings(closedNames,finalNames)){state.generationInvalidated=true;return this.publicationMembershipChanged(activeOwner,closedNames,finalNames);}
+    for(const [name,phase] of state.removalDisappearances){
+      if(finalNames.includes(name))throw new LedgerCorruption("publication stage reappeared before cleanup generation closure");
+      if(phase==="synced"){
+        state.removalDisappearances.delete(name);
+        state.removalAuthorizations.delete(name);
+      }
+    }
     const finalStages:PublicationStage[]=[];
     for(let index=0;index<stages.length;index++){
       const stage=stages[index];
@@ -637,7 +651,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
       if(!sameStrings(expectedNames,await this.publicationStageNames()))return "retry";
       const removal=await this.removeDeadPublicationStage(deadStage,state.removalAuthorizations);
       if(removal==="removed"){
-        state.removalAuthorizations.delete(deadStage.name);
+        state.removalDisappearances.set(deadStage.name,"sync-pending");
         state.rootSyncPending=true;
         removedNames.push(deadStage.name);
         continue;
@@ -654,12 +668,17 @@ export class FsAuthorityLedger implements AuthorityLedger {
   private async captureAuthorizedPublicationDisappearances(state:PublicationSettlementState):Promise<boolean>{
     let disappeared=false;
     for(const [name,authorized] of state.removalAuthorizations){
-      try{await lstat(authorized.directory,{bigint:true});}
+      if(state.removalDisappearances.has(name))continue;
+      try{
+        await lstat(authorized.directory,{bigint:true});
+      }
       catch(error){
         if(!hasCode(error,"ENOENT"))throw error;
-        state.removalAuthorizations.delete(name);
-        state.rootSyncPending=true;
-        disappeared=true;
+        if(!state.removalDisappearances.has(name)){
+          state.removalDisappearances.set(name,"sync-pending");
+          state.rootSyncPending=true;
+          disappeared=true;
+        }
       }
     }
     return disappeared;
