@@ -6,6 +6,8 @@ WORKDIR /app
 COPY package.json package-lock.json tsconfig.json ./
 RUN npm ci
 COPY src ./src
+COPY scripts/build-authority-contract.mjs ./scripts/build-authority-contract.mjs
+COPY contract/authority/v1 ./contract/authority/v1
 RUN npm run build
 
 # --- runtime stage: prod deps + compiled dist only (small image) ---
