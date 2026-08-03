@@ -129,8 +129,15 @@ export interface FsAuthorityLedgerOptions {
   readonly lockTimeoutMs?: number;
 }
 export const __testAdmissionClockOption: unique symbol = Symbol();
+export const __testPrepHousekeeperRuntimeOption: unique symbol = Symbol();
+interface PrepHousekeeperRuntime {
+  readonly monotonicNow: () => number;
+  readonly delay: (milliseconds: number) => Promise<void>;
+  readonly observeBoundary?: (point: string) => void;
+}
 type InternalFsAuthorityLedgerOptions = FsAuthorityLedgerOptions & {
   readonly [__testAdmissionClockOption]?: () => unknown;
+  readonly [__testPrepHousekeeperRuntimeOption]?: PrepHousekeeperRuntime;
 };
 
 interface TransactionRecord {
@@ -281,6 +288,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
   readonly root: string;
   readonly options: Required<Pick<FsAuthorityLedgerOptions, "now" | "lockTimeoutMs">> & Pick<FsAuthorityLedgerOptions, "faultInjector">;
   private readonly admissionClock:()=>unknown;
+  private readonly prepHousekeeperRuntime:PrepHousekeeperRuntime;
   private lockTail:Promise<void>=Promise.resolve();
 
   constructor(root: string, options: FsAuthorityLedgerOptions = {}) {
@@ -304,6 +312,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
     const internalOptions=options as InternalFsAuthorityLedgerOptions;
     this.options = { now: options.now ?? Date.now, faultInjector: options.faultInjector, lockTimeoutMs: options.lockTimeoutMs ?? 30_000 };
     this.admissionClock=internalOptions[__testAdmissionClockOption]??(()=>process.hrtime.bigint());
+    this.prepHousekeeperRuntime=internalOptions[__testPrepHousekeeperRuntimeOption]??{monotonicNow,delay};
   }
 
   async observeClock(): Promise<ObserveClockResult> {
