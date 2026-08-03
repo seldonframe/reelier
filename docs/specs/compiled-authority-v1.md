@@ -256,20 +256,28 @@ provisional-owner, or predecessor hook is part of the protocol:
   `after-coordination-cleanup-ack-root-sync`, `after-coordination-cleanup-marker-remove`,
   `after-coordination-cleanup-marker-root-sync`, `after-coordination-cleanup-ack-remove`,
   `after-coordination-cleanup-final-root-sync`.
-- Publication and collision: `after-lock-publication-stage-create`,
+  `after-coordination-cleanup-stage-partial-write` follows a deterministic, nonempty strict-prefix
+  write of the canonical acknowledgment bytes before write-all continues; reaching it never depends
+  on the operating system returning a short write. `after-coordination-cleanup-stage-file-sync`
+  follows the complete canonical write and successful file sync.
+- Publication-stage construction: `after-lock-publication-stage-create`,
   `after-lock-publication-owner-create`, `after-lock-publication-owner-partial-write`,
   `after-lock-publication-owner-sync`, `after-lock-publication-stage-sync`,
-  `after-lock-publication-rename`, `after-lock-publication-root-sync`,
-  `before-lock-publication-rename`, `after-active-lock-metadata`,
-  `before-active-lock-content-read`, `after-publication-stage-enumeration`,
-  `before-publication-stage-validation`, `after-lock-publication-rename-collision`.
+  in that order.
+- Publication rename attempt: `before-lock-publication-rename`, followed on the success branch by
+  `after-lock-publication-rename` then `after-lock-publication-root-sync`, or on the mutually
+  exclusive collision branch by `after-lock-publication-rename-collision`.
+- Active-lock validation: `after-active-lock-metadata`, `before-active-lock-content-read`.
+- Publication-stage classification: `after-publication-stage-enumeration`,
+  `before-publication-stage-validation`.
 - Pre-callback generation closure: `after-pre-callback-coordination-generation-closed`.
 - Callback: `before-ledger-operation-callback`.
 - Lock durability: `after-owner-file-sync`, `after-lock-directory-sync`, `before-lock-retire`,
   `after-lock-retire`.
 
-The exported fault list is the ordered concatenation of those groups. Duplicate membership, a
-missing boundary, or a legacy election hook is a contract failure.
+The exported fault list is the stable registry/ABI-order concatenation of those groups, not a linear
+execution trace across mutually exclusive branches. Duplicate membership, a missing boundary, or a
+legacy election hook is a contract failure.
 
 One monotonic acquisition deadline covers full classification, pre-admission housekeeping,
 preparation/fixed-slot polling, stale recovery, and every restart. Progress resets only the
