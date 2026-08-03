@@ -1593,7 +1593,21 @@ function hasCode(error: unknown, code: string): boolean { return Boolean(error &
 function fileIdentity(stat:Readonly<{dev:bigint;ino:bigint;mode:bigint;nlink:bigint}>):FileIdentity{return {dev:stat.dev,ino:stat.ino,mode:stat.mode,nlink:stat.nlink};}
 export function __testSamePublicationFileIdentity(left:Readonly<{dev:bigint;ino:bigint;mode:bigint;nlink:bigint}>,right:Readonly<{dev:bigint;ino:bigint;mode:bigint;nlink:bigint}>):boolean{return left.dev===right.dev&&left.ino===right.ino&&left.mode===right.mode&&left.nlink===right.nlink;}
 function sameFileIdentity(left:FileIdentity,right:FileIdentity):boolean{return __testSamePublicationFileIdentity(left,right);}
-function samePublicationStage(left:PublicationStage,right:PublicationStage):boolean{return left.name===right.name&&left.state===right.state&&sameFileIdentity(left.directoryIdentity,right.directoryIdentity)&&(left.ownerIdentity===undefined?right.ownerIdentity===undefined:right.ownerIdentity!==undefined&&sameFileIdentity(left.ownerIdentity,right.ownerIdentity))&&(left.ownerBytes===undefined?right.ownerBytes===undefined:right.ownerBytes!==undefined&&left.ownerBytes.equals(right.ownerBytes));}
+export function __testSamePublicationStageSnapshot(
+  left:Readonly<{name:string;state:string;directoryIdentity:FileIdentity;ownerIdentity?:FileIdentity;ownerBytes?:Buffer}>,
+  right:Readonly<{name:string;state:string;directoryIdentity:FileIdentity;ownerIdentity?:FileIdentity;ownerBytes?:Buffer}>,
+):boolean{
+  return left.name===right.name
+    &&left.state===right.state
+    &&sameFileIdentity(left.directoryIdentity,right.directoryIdentity)
+    &&(left.ownerIdentity===undefined
+      ?right.ownerIdentity===undefined
+      :right.ownerIdentity!==undefined&&sameFileIdentity(left.ownerIdentity,right.ownerIdentity))
+    &&(left.ownerBytes===undefined
+      ?right.ownerBytes===undefined
+      :right.ownerBytes!==undefined&&left.ownerBytes.equals(right.ownerBytes));
+}
+function samePublicationStage(left:PublicationStage,right:PublicationStage):boolean{return __testSamePublicationStageSnapshot(left,right);}
 function comparePublicationOrder(left:PublicationStage,right:PublicationStage):number{return comparePublicationTuple(left.ticket,String(left.pid),right.ticket,String(right.pid));}
 function compareProvisionalPublicationOrder(left:ProvisionalPublicationName,right:ProvisionalPublicationName):number{return comparePublicationTuple(left.ticket,left.pidText,right.ticket,right.pidText);}
 function comparePublicationTuple(leftTicket:bigint,leftPidText:string,rightTicket:bigint,rightPidText:string):number{return leftTicket<rightTicket?-1:leftTicket>rightTicket?1:leftPidText<rightPidText?-1:leftPidText>rightPidText?1:0;}
