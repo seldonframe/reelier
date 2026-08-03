@@ -156,6 +156,10 @@ async function rewriteJournal(root: string, mutate: (event: Record<string, unkno
   }
 }
 
+async function readJournalEvents(root:string):Promise<Record<string,unknown>[]>{const journal=path.join(root,"journal"),names=(await readdir(journal)).sort();return Promise.all(names.map(async name=>JSON.parse(await readFile(path.join(journal,name),"utf8")) as Record<string,unknown>));}
+
+async function snapshotDurableSubtrees(root:string,subtrees:readonly string[]):Promise<ReadonlyArray<Readonly<{name:string;bytes:string}>>>{const snapshot:Array<Readonly<{name:string;bytes:string}>>=[];const walk=async(directory:string,relative:string):Promise<void>=>{for(const entry of (await readdir(directory,{withFileTypes:true})).sort((left,right)=>left.name.localeCompare(right.name))){const child=path.join(directory,entry.name),name=path.posix.join(relative,entry.name);if(entry.isDirectory())await walk(child,name);else{assert.equal(entry.isFile(),true,`durable snapshot contains only regular files: ${name}`);snapshot.push({name,bytes:(await readFile(child)).toString("base64")});}}};for(const subtree of [...subtrees].sort())await walk(path.join(root,subtree),subtree);return snapshot;}
+
 test("100 real processes converge on one committed reservation and one dispatch eligibility", { timeout: 120_000 }, async () => {
   await withRoot(async root => {
     const results = await Promise.all(Array.from({ length: 100 }, () => spawnReserve(root, intent())));
@@ -546,6 +550,53 @@ test("lifetime boundaries and monotonic wall-clock high-water are exact", async 
   });
 });
 
+test("equal-time reservations reuse one durable high-water instant",async()=>{
+  await withRoot(async root=>{
+    const first=await new FsAuthorityLedger(root,{now:()=>t0}).reserve(intent());
+    assert.equal(first.ok,true);if(!first.ok)return;
+    const highWaterFaults:string[]=[];
+    const secondIntent=intent({requestId:"request_2",capabilityId:"capability_2",outcomeKey:digest("8"),effectDigest:digest("9"),sourceBundleDigest:digest("e"),sourceSnapshotDigest:digest("f"),limitSlots:[{kind:"contract-window",key:digest("5"),maximum:2},{kind:"source-trigger",key:digest("2"),maximum:1}]});
+    const second=await new FsAuthorityLedger(root,{now:()=>t0,faultInjector:point=>{if(point==="reservation-before-clock-high-water-write"||point==="reservation-after-clock-high-water-write")highWaterFaults.push(point);}}).reserve(secondIntent);
+    assert.equal(second.ok,true);if(!second.ok)return;
+    const events=await readJournalEvents(root);
+    assert.deepEqual(events.map(event=>event.type),["clock","reserve","reserve"]);
+    assert.equal(events.filter(event=>event.type==="clock").length,1);
+    assert.equal(first.reservation.updatedAt,new Date(t0).toISOString());
+    assert.equal(second.reservation.updatedAt,new Date(t0).toISOString());
+    assert.equal((await new FsAuthorityLedger(root,{now:()=>t0}).getHighWaterMark()).observedAt,new Date(t0).toISOString());
+    assert.deepEqual(highWaterFaults,[],"equal durable time fires no reservation high-water write hooks");
+  });
+});
+
+test("same-time exact committed retry returns before every durable reservation write",async()=>{
+  await withRoot(async root=>{
+    const candidate=intent(),first=await new FsAuthorityLedger(root,{now:()=>t0}).reserve(candidate);
+    assert.equal(first.ok,true);if(!first.ok)return;
+    const subtrees=["journal","transactions","claims","tombstones"] as const,before=await snapshotDurableSubtrees(root,subtrees),faults:string[]=[];
+    const retry=await new FsAuthorityLedger(root,{now:()=>t0,faultInjector:point=>{if((reservationFaultPoints as readonly string[]).includes(point))faults.push(point);}}).reserve(candidate);
+    assert.deepEqual(retry,{ok:true,status:"existing",dispatchEligible:false,reservation:first.reservation});
+    assert.deepEqual(faults,["after-lock-acquire"],"exact committed retry reaches no clock, transaction, claim, or commit write boundary");
+    assert.deepEqual(await snapshotDurableSubtrees(root,subtrees),before,"exact committed retry leaves every durable reservation subtree byte-identical");
+  });
+});
+
+test("later-time exact committed retry advances only durable high-water",async()=>{
+  await withRoot(async root=>{
+    const candidate=intent(),first=await new FsAuthorityLedger(root,{now:()=>t0}).reserve(candidate);
+    assert.equal(first.ok,true);if(!first.ok)return;
+    const immutableSubtrees=["transactions","claims","tombstones"] as const,before=await snapshotDurableSubtrees(root,immutableSubtrees),eventsBefore=await readJournalEvents(root),faults:string[]=[];
+    const retry=await new FsAuthorityLedger(root,{now:()=>t0+1,faultInjector:point=>{if((reservationFaultPoints as readonly string[]).includes(point))faults.push(point);}}).reserve(candidate);
+    assert.deepEqual(retry,{ok:true,status:"existing",dispatchEligible:false,reservation:first.reservation});
+    assert.equal((await new FsAuthorityLedger(root,{now:()=>t0+1}).getHighWaterMark()).observedAt,new Date(t0+1).toISOString());
+    const eventsAfter=await readJournalEvents(root);
+    assert.deepEqual(eventsAfter.map(event=>event.type),[...eventsBefore.map(event=>event.type),"clock"],"later exact retry appends exactly one clock event");
+    assert.deepEqual(await snapshotDurableSubtrees(root,immutableSubtrees),before,"later exact retry does not touch transaction, claim, or tombstone bytes");
+    assert.deepEqual(faults.filter(point=>point.includes("clock-high-water-write")),["reservation-before-clock-high-water-write","reservation-after-clock-high-water-write"]);
+    assert.equal(faults.filter(point=>point==="reservation-before-create").length,1,"only the due clock event reaches immutable create");
+    assert.equal(faults.some(point=>point.includes("claim-acquisition")||point.includes("commit-marker")),false);
+  });
+});
+
 test("transition is durable compare-and-transition over the exact legal graph", async () => {
   await withRoot(async root => {
     let now = t0;
@@ -636,29 +687,31 @@ test("faults at every durable reservation and transition point recover to prior 
     assert.equal(created.ok, true);
     if (!created.ok) return;
     let fired = false;
-    const crashing = new FsAuthorityLedger(root, { now: () => t0, faultInjector: (observed: string) => {
+    const crashing = new FsAuthorityLedger(root, { now: () => t0 + 1, faultInjector: (observed: string) => {
       if (!fired && observed === point) { fired = true; throw new Error(`fault:${point}`); }
     } });
     try { await crashing.transition(created.reservation.reservationId, "reserved", { to: "dispatched" }); } catch (error) { assert.match(String(error), /fault:/); }
     assert.equal(fired, true, point);
-    const recovered = await new FsAuthorityLedger(root, { now: () => t0 }).recover();
+    const recovered = await new FsAuthorityLedger(root, { now: () => t0 + 1 }).recover();
     if (recovered.ok) assert.ok(["reserved", "ambiguous"].includes(recovered.reservations[0].state));
     else assert.equal(recovered.reason, "corruption");
   });
 
   for (const point of resultFaultPoints) await withRoot(async root => {
-    const setup = new FsAuthorityLedger(root, { now: () => t0 });
+    let setupNow=t0;
+    const setup = new FsAuthorityLedger(root, { now: () => setupNow });
     const created = await setup.reserve(intent());
     assert.equal(created.ok, true);
     if (!created.ok) return;
+    setupNow=t0+1;
     await setup.transition(created.reservation.reservationId, "reserved", { to: "dispatched" });
     let fired = false;
-    const crashing = new FsAuthorityLedger(root, { now: () => t0, faultInjector: (observed: string) => {
+    const crashing = new FsAuthorityLedger(root, { now: () => t0 + 2, faultInjector: (observed: string) => {
       if (!fired && observed === point) { fired = true; throw new Error(`fault:${point}`); }
     } });
     try { await crashing.transition(created.reservation.reservationId, "dispatched", { to: "acknowledged", resultDigest: digest("a") }); } catch (error) { assert.match(String(error), /fault:/); }
     assert.equal(fired, true, point);
-    const recovered = await new FsAuthorityLedger(root, { now: () => t0 }).recover();
+    const recovered = await new FsAuthorityLedger(root, { now: () => t0 + 2 }).recover();
     if (recovered.ok) assert.ok(["ambiguous", "acknowledged"].includes(recovered.reservations[0].state));
     else assert.equal(recovered.reason, "corruption");
   });

@@ -295,12 +295,20 @@ The only lifecycle is `issued -> reserved -> dispatched -> acknowledged | defini
 ambiguous`, with `acknowledged | ambiguous -> reconciled`. Transitions are durable compare-and-transition
 operations. Callers choose only the target state and, where required, the result digest; lifecycle time
 is kernel-owned. Capability lifetime is exactly 60,000 milliseconds; reservation and dispatch require
-`issuedAt <= now < expiresAt`. Before either authorization, the ledger commits a wall-clock high-water
-observation, then stamps the reservation or transition from that exact same observation. Equality is
-allowed and rollback refuses. Replay requires each lifecycle timestamp to equal the latest preceding
+`issuedAt <= now < expiresAt`. After validity and rollback checks, the ledger appends a wall-clock
+high-water observation only when the durable mark is absent or `now` is greater. Equality reuses the
+current durable view and instant without firing high-water write hooks; reservation and transition
+timestamps still equal the latest preceding durable high-water. Rollback refuses. Replay requires each lifecycle timestamp to equal the latest preceding
 durable high-water instant and never precede the reservation's prior lifecycle timestamp. Recovery
 under clock rollback conservatively marks durable dispatched work ambiguous at the existing high-water
 instant; it never backdates the journal or creates new dispatch eligibility.
+
+After prepare, ingress verification, clock validity, durable clock handling, and transaction digest
+computation, an exact committed transaction whose stored canonical intent equals the normalized input
+returns its existing reservation with `dispatchEligible: false` before transaction create/EEXIST,
+tombstone read, view reload, claim acquisition, or commit work. A later-time exact retry advances the
+high-water first. This fast path never skips prepare or audits, rollback, expiry, or not-yet-valid
+checks.
 
 The same locked and fsynced journal high-water is exposed internally through argument-free
 `observeClock()`. The kernel clock is read under the lock. A first or greater safe nonnegative instant
