@@ -146,8 +146,14 @@ type PrepHousekeepingRoute=
   |Readonly<{kind:"no-authority"}>
   |Readonly<{kind:"dead-prep";token:PrepCreatorAttemptToken;retirementAuthority:PrepRetirementAuthority}>
   |Readonly<{kind:"retired-prep";cleanupAuthority:PrepRetiredCleanupAuthority}>;
+type PrepAuthorityDescriptor=
+  |Readonly<{kind:"dead-prep";targetName:string;pid:number}>
+  |Readonly<{kind:"prep-retired-cleanup";targetName:string;lifecycleName:string|null;orphan:boolean}>;
+interface PrepAuthorityBinding {readonly snapshot:HybridRootSnapshot;readonly descriptor:PrepAuthorityDescriptor}
 const prepAttemptRuntimeIdentity=Object.freeze({kind:"prep-housekeeper-runtime"});
 const prepAttemptRuntimeBindings=new WeakMap<object,typeof prepAttemptRuntimeIdentity>();
+const prepRetirementAuthorityBindings=new WeakMap<object,PrepAuthorityBinding>();
+const prepRetiredCleanupAuthorityBindings=new WeakMap<object,PrepAuthorityBinding>();
 type InternalFsAuthorityLedgerOptions = FsAuthorityLedgerOptions & {
   readonly [__testAdmissionClockOption]?: () => unknown;
   readonly [__testPrepHousekeeperRuntimeOption]?: PrepHousekeeperRuntime;
@@ -774,16 +780,55 @@ export class FsAuthorityLedger implements AuthorityLedger {
     const epochRelation=this.compareHybridRootSnapshots(initial,finalClosedSnapshot);
     if(epochRelation==="corruption")return "corruption";
     if(epochRelation!=="unchanged")return "retry";
-    this.observeStablePrepHousekeepingRoute(deriveStablePrepHousekeepingRoute(finalClosedSnapshot,decision,prepAttemptToken));
+    await this.observeStablePrepHousekeepingRoute(deriveStablePrepHousekeepingRoute(finalClosedSnapshot,decision,prepAttemptToken));
     return decision;
   }
 
-  private observeStablePrepHousekeepingRoute(route:PrepHousekeepingRoute):void{
+  private async observeStablePrepHousekeepingRoute(route:PrepHousekeepingRoute):Promise<void>{
     if(route.kind==="no-authority"){this.prepHousekeeperRuntime.observeBoundary?.("prep-only-no-authority");return;}
     if(route.kind==="dead-prep"){
       this.prepHousekeeperRuntime.observeBoundary?.("prep-only-creator-token-carried");
       this.prepHousekeeperRuntime.observeBoundary?.("prep-only-prep-retirement-authority-dead-owner");
+      await this.refusePrepHousekeepingTransition(route.retirementAuthority);
+      return;
     }
+    if(route.kind==="retired-prep"){
+      this.prepHousekeeperRuntime.observeBoundary?.("prep-only-prep-retired-cleanup-authority");
+      await this.refusePrepHousekeepingTransition(route.cleanupAuthority);
+    }
+  }
+
+  private async refusePrepHousekeepingTransition(authority:PrepRetirementAuthority|PrepRetiredCleanupAuthority):Promise<void>{
+    const retirement=prepRetirementAuthorityBindings.get(authority),cleanup=prepRetiredCleanupAuthorityBindings.get(authority),binding=retirement??cleanup;
+    prepRetirementAuthorityBindings.delete(authority);prepRetiredCleanupAuthorityBindings.delete(authority);
+    if(binding===undefined)return;
+    const first=await this.revalidatePrepHousekeepingAuthority(binding);
+    this.prepHousekeeperRuntime.observeBoundary?.("prep-only-before-transition");
+    const second=await this.revalidatePrepHousekeepingAuthority(binding);
+    this.prepHousekeeperRuntime.observeBoundary?.("prep-only-transition-refused");
+    if(first==="corruption"||second==="corruption")throw new LedgerCorruption("prep housekeeping authority changed before transition");
+  }
+
+  private async revalidatePrepHousekeepingAuthority(binding:PrepAuthorityBinding):Promise<"exact"|"busy"|"corruption">{
+    let names:string[],snapshot:HybridRootSnapshot,closedNames:string[],closedSnapshot:HybridRootSnapshot;
+    try{
+      names=(await readdir(this.root)).sort();snapshot=await this.readHybridRootSnapshot(names);
+      closedNames=(await readdir(this.root)).sort();if(!sameStrings(names,closedNames))return "busy";
+      closedSnapshot=await this.readHybridRootSnapshot(closedNames);
+      const finalNames=(await readdir(this.root)).sort();if(!sameStrings(closedNames,finalNames))return "busy";
+    }catch(error){if(hasCode(error,"ENOENT")||isSnapshotSharingError(error))return "busy";if(error instanceof LedgerCorruption)return "corruption";throw error;}
+    const closureRelation=this.compareHybridRootSnapshots(snapshot,closedSnapshot);
+    if(closureRelation==="corruption")return "corruption";
+    if(closureRelation!=="unchanged")return "busy";
+    let decision:HybridGuardDecision;try{decision=this.classifyClosedHybridGraph(closedSnapshot);}catch(error){if(error instanceof LedgerCorruption)return "corruption";throw error;}
+    if(decision==="corruption")return "corruption";
+    const relation=this.compareHybridRootSnapshots(binding.snapshot,closedSnapshot);
+    if(relation==="corruption")return "corruption";
+    if(relation!=="unchanged"||decision!=="busy")return "busy";
+    const descriptor=describeStablePrepAuthority(closedSnapshot,decision);
+    if(descriptor===null||!samePrepAuthorityDescriptor(binding.descriptor,descriptor))return "busy";
+    if(descriptor.kind==="dead-prep"&&processLiveness(descriptor.pid)!=="dead")return "busy";
+    return "exact";
   }
 
   private async readHybridRootSnapshot(names:readonly string[]):Promise<HybridRootSnapshot>{
@@ -1976,13 +2021,46 @@ function mintUnboundPrepCreatorAttemptToken():PrepCreatorAttemptToken{
 function deriveStablePrepHousekeepingRoute(snapshot:HybridRootSnapshot,decision:HybridGuardDecision,token:PrepCreatorAttemptToken):PrepHousekeepingRoute{
   if(decision!=="busy")return {kind:"silent"};
   const parsed=snapshot.names.map(parseK1Name).filter((value):value is ParsedK1Name=>value!==null);
-  const prep=parsed.find((value):value is Extract<ParsedK1Name,{kind:"admission-prep"}>=>value.kind==="admission-prep");
-  if(prep!==undefined){
-    if(prep.hostDigest!==coordinationHostDigest(hostname())||processLiveness(prep.pid)!=="dead")return {kind:"silent"};
+  const descriptor=describeStablePrepAuthority(snapshot,decision);
+  if(descriptor?.kind==="dead-prep"){
+    if(processLiveness(descriptor.pid)!=="dead")return {kind:"silent"};
     if(prepAttemptRuntimeBindings.get(token)!==prepAttemptRuntimeIdentity)return {kind:"silent"};
-    return {kind:"dead-prep",token,retirementAuthority:Object.freeze({}) as PrepRetirementAuthority};
+    const retirementAuthority=Object.freeze({}) as PrepRetirementAuthority;
+    prepRetirementAuthorityBindings.set(retirementAuthority,{snapshot,descriptor});
+    return {kind:"dead-prep",token,retirementAuthority};
+  }
+  if(descriptor?.kind==="prep-retired-cleanup"){
+    const cleanupAuthority=Object.freeze({}) as PrepRetiredCleanupAuthority;
+    prepRetiredCleanupAuthorityBindings.set(cleanupAuthority,{snapshot,descriptor});
+    return {kind:"retired-prep",cleanupAuthority};
   }
   return parsed.some(value=>value.kind==="admission-slot"||value.kind==="creator-withdrawal")?{kind:"no-authority"}:{kind:"silent"};
+}
+function describeStablePrepAuthority(snapshot:HybridRootSnapshot,decision:HybridGuardDecision):PrepAuthorityDescriptor|null{
+  if(decision!=="busy")return null;
+  const parsed=snapshot.names.map(parseK1Name).filter((value):value is ParsedK1Name=>value!==null),localDigest=coordinationHostDigest(hostname());
+  const prep=parsed.find((value):value is Extract<ParsedK1Name,{kind:"admission-prep"}>=>value.kind==="admission-prep");
+  if(prep!==undefined&&prep.hostDigest===localDigest)return {kind:"dead-prep",targetName:prep.name,pid:prep.pid};
+  const marker=parsed.find((value):value is Extract<ParsedK1Name,{kind:"admission-prep-retired"}>=>value.kind==="admission-prep-retired");
+  if(marker!==undefined){
+    const lifecycle=parsed.find(value=>value.kind==="coordination-stage"&&value.purpose==="prep-retired"||value.kind==="coordination-ack"&&prepCleanupAck(snapshot,value)?.purpose==="prep-retired");
+    return {kind:"prep-retired-cleanup",targetName:marker.name,lifecycleName:lifecycle?.name??null,orphan:false};
+  }
+  for(const value of parsed){
+    if(value.kind!=="coordination-ack")continue;
+    const ack=prepCleanupAck(snapshot,value);if(ack?.purpose!=="prep-retired")continue;
+    const markerName=String(ack.markerName),originalName=String(ack.originalName);
+    if(snapshot.names.includes(markerName)||snapshot.names.includes(originalName))continue;
+    return {kind:"prep-retired-cleanup",targetName:markerName,lifecycleName:value.name,orphan:true};
+  }
+  return null;
+}
+function prepCleanupAck(snapshot:HybridRootSnapshot,parsed:Extract<ParsedK1Name,{kind:"coordination-ack"}>):CoordinationAck|null{
+  const entry=snapshot.entries.find(value=>value.name===parsed.name);if(entry?.kind!=="file"||entry.bytes===undefined)return null;
+  try{return parseCoordinationAckBytes(entry.bytes);}catch{return null;}
+}
+function samePrepAuthorityDescriptor(left:PrepAuthorityDescriptor,right:PrepAuthorityDescriptor):boolean{
+  return left.kind===right.kind&&left.targetName===right.targetName&&(left.kind==="dead-prep"&&right.kind==="dead-prep"?left.pid===right.pid:left.kind==="prep-retired-cleanup"&&right.kind==="prep-retired-cleanup"&&left.lifecycleName===right.lifecycleName&&left.orphan===right.orphan);
 }
 function processLiveness(pid: number): "alive" | "dead" | "unverifiable" {
   try { process.kill(pid, 0); return "alive"; }
