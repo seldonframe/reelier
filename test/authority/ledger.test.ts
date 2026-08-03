@@ -1689,6 +1689,41 @@ test("a predecessor replaced at the settlement churn boundary cannot establish a
   assert.equal(existsSync(ownStage),false);assert.equal(lstatSync(predecessorStage,{bigint:true}).ino,replacementPredecessorIno);assert.deepEqual(readFileSync(path.join(predecessorStage,"owner.json")),predecessorBytes);assert.deepEqual(readFileSync(path.join(distantStage,"owner.json")),distantBytes);assert.deepEqual(readFileSync(path.join(higherStage,"owner.json")),higherBytes);
 }finally{await rm(external,{recursive:true,force:true});}}));
 
+test("only safe churn from an established provisional wait can open fresh-epoch eligibility",async t=>{
+  const cases=["raw-head","malformed","predecessor-replaced","predecessor-dead"] as const;
+  for(const kind of cases)await t.test(kind,()=>withRoot(async root=>{const external=await tempRoot();try{
+    const predecessor={host:hostname(),nonce:"6".repeat(64),pid:process.pid+161,v:1 as const,ticket:"0000000000000003"},higher={host:hostname(),nonce:"7".repeat(64),pid:process.pid+162,v:1 as const,ticket:"0000000000000005"},predecessorBytes=publicationOwnerBytes(predecessor),higherBytes=publicationOwnerBytes(higher),predecessorStage=path.join(root,publicationStageName(predecessor)),higherStage=path.join(root,publicationStageName(higher)),malformedStage=path.join(root,".authority-ledger-lock-publication-malformed"),livePids=new Set([predecessor.pid,higher.pid]),originalKill=process.kill;
+    assert.ok([...livePids].every(pid=>Number.isSafeInteger(pid)&&pid>0));
+    let ownStage="",provisionalSelections=0,postFallbackSelections=0,stagedBoundaries=0,generationClosures=0,settlementChurn=false,invalidated=false,predecessorAlive=true,replacementPredecessorIno=0n,publicationRenames=0,callbackEntries=0;
+    const replacePredecessor=()=>{const prepared=path.join(external,"replacement-predecessor");mkdirSync(prepared);writeFileSync(path.join(prepared,"owner.json"),predecessorBytes);renameSync(predecessorStage,path.join(external,"original-predecessor"));renameSync(prepared,predecessorStage);replacementPredecessorIno=lstatSync(predecessorStage,{bigint:true}).ino;invalidated=true;};
+    Object.defineProperty(process,"kill",{configurable:true,value:(pid:number)=>{if(pid===predecessor.pid){if(!predecessorAlive)throw Object.assign(new Error("dead"),{code:"ESRCH"});return true;}return livePids.has(pid)?true:originalKill.call(process,pid,0);}});
+    let observed;
+    try{observed=await withRecordedDelays(()=>rawLedgerWithAdmissionClock(root,()=>4n,{now:()=>t0,lockTimeoutMs:30,faultInjector:(point:string)=>{
+      if(point==="after-lock-publication-stage-sync"&&ownStage===""){
+        const ownName=readdirSync(root).find(name=>name.startsWith(".authority-ledger-lock-publication-"));assert.ok(ownName);ownStage=path.join(root,ownName);
+        if(kind==="raw-head"){mkdirSync(higherStage);writeFileSync(path.join(higherStage,"owner.json"),higherBytes);}else{mkdirSync(predecessorStage);writeFileSync(path.join(predecessorStage,"owner.json"),predecessorBytes);if(kind==="malformed")mkdirSync(malformedStage);}
+      }
+      if(point==="after-lock-publication-provisional-predecessor-selection"){
+        provisionalSelections++;if(stagedBoundaries>0)postFallbackSelections++;
+        if(kind==="predecessor-replaced"&&!invalidated)replacePredecessor();
+      }
+      if(point==="before-lock-publication-provisional-predecessor-liveness"&&kind==="predecessor-dead"&&!invalidated){invalidated=true;predecessorAlive=false;}
+      if(point==="before-staged-publication-settlement"){
+        stagedBoundaries++;
+        if(stagedBoundaries===1&&kind==="malformed"){invalidated=true;rmSync(malformedStage,{recursive:true});}
+        if(stagedBoundaries===1&&kind==="predecessor-dead")predecessorAlive=true;
+      }
+      if(point==="before-publication-stage-root-reenumeration"&&stagedBoundaries===1&&!settlementChurn){settlementChurn=true;if(kind==="raw-head"){mkdirSync(predecessorStage);writeFileSync(path.join(predecessorStage,"owner.json"),predecessorBytes);}else{mkdirSync(higherStage);writeFileSync(path.join(higherStage,"owner.json"),higherBytes);}}
+      if(point==="after-lock-publication-generation-closed")generationClosures++;
+      if(point==="after-lock-publication-rename")publicationRenames++;
+      if(point==="before-ledger-operation-callback")callbackEntries++;
+    }}).observeClock());}finally{Object.defineProperty(process,"kill",{configurable:true,value:originalKill});}
+    if(kind==="raw-head")assert.equal(provisionalSelections,0,"the initial raw head never establishes a provisional wait");else if(kind==="malformed")assert.equal(provisionalSelections,0,"malformed membership fails before predecessor selection");else assert.equal(invalidated,true,`${kind} reaches the intended adverse provisional branch`);
+    assert.equal(settlementChurn,true);assert.deepEqual(observed!.result,{ok:false,reason:"busy"});assert.deepEqual({postFallbackSelections,stagedBoundaries,publicationRenames,callbackEntries},{postFallbackSelections:0,stagedBoundaries:1,publicationRenames:0,callbackEntries:0});assert.ok(generationClosures>=1,"the changed cohort is fully settled instead of reopening provisional mode");
+    assert.equal(existsSync(ownStage),false);assert.deepEqual(readFileSync(path.join(predecessorStage,"owner.json")),predecessorBytes);assert.deepEqual(readFileSync(path.join(higherStage,"owner.json")),higherBytes);if(kind==="predecessor-replaced")assert.equal(lstatSync(predecessorStage,{bigint:true}).ino,replacementPredecessorIno);assert.equal(existsSync(malformedStage),false);
+  }finally{await rm(external,{recursive:true,force:true});}}));
+});
+
 test("invalid fresh provisional cohorts return to full settlement before any provisional wait",async t=>{
   const cases=["raw-head","malformed","own-replaced","predecessor-replaced","predecessor-dead","predecessor-unverifiable"] as const;
   for(const kind of cases)await t.test(kind,()=>withRoot(async root=>{const external=await tempRoot();try{
