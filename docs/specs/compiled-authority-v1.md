@@ -188,6 +188,12 @@ next waiting delay to 5ms even before a full-generation re-election is otherwise
 Final-name invalidation only marks re-election pending: a valid active lock interposed before the
 replacement closed generation retains the current delay, and reset occurs only after that
 replacement generation completes.
+A publication-stage name disappearance or change while the active owner closes the pre-callback
+generation invalidates that coordination snapshot and causes bounded full-root re-enumeration against
+the same housekeeping deadline; no callback runs from the invalidated generation. A stable subsequent
+canonical generation may proceed. Same-name identity, type, or byte replacement, malformed, foreign,
+or unverifiable subsequent artifacts, and deadline exhaustion still fail closed. Withdrawal adds no
+authenticated artifact, queue, or handoff.
 The exact closed per-attempt order is `before-publication-stage-final-validation`, then
 `before-publication-stage-final-liveness`, then `before-publication-stage-remove-attempt`. The final
 validation revalidates the exact directory and owner identity/type/link count/name/bytes; final
