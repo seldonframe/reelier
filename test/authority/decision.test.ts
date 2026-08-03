@@ -107,6 +107,25 @@ test("a relative decision root is fixed at construction and never follows a late
   }finally{process.chdir(originalCwd);await rm(outer,{recursive:true,force:true});await rm(other,{recursive:true,force:true});}
 });
 
+test("an existing Windows decision root is accepted through its distinct DOS 8.3 alias",{skip:process.platform!=="win32"},async t=>{
+  const root=await mkdtemp(path.join(tmpdir(),"reelier-decision-short-alias-"));
+  try{
+    let shortRoot:string;
+    try{
+      const {stdout}=await promisify(execFile)("cmd.exe",["/d","/c",`for %I in ("${root}") do @echo %~sI`],{windowsVerbatimArguments:true});
+      shortRoot=stdout.trim();
+    }catch(error){t.skip(`DOS 8.3 path lookup unavailable: ${(error as Error).message}`);return;}
+    if(!shortRoot||shortRoot.toLowerCase()===root.toLowerCase()){
+      const shortName=`RLR${process.pid.toString(16).slice(-5)}`.toUpperCase();
+      try{await promisify(execFile)("fsutil.exe",["file","setshortname",root,shortName]);}
+      catch{t.skip("this Windows filesystem exposes no distinct DOS 8.3 alias");return;}
+      shortRoot=path.join(path.dirname(root),shortName);
+    }
+    if(!existsSync(shortRoot)){t.skip("this Windows filesystem exposes no resolvable distinct DOS 8.3 alias");return;}
+    assert.doesNotThrow(()=>createFileGateDecisionSink(shortRoot));
+  }finally{await rm(root,{recursive:true,force:true});}
+});
+
 test("decision roots reject symlink traversal at construction",async t=>{
   const outer=await mkdtemp(path.join(tmpdir(),"reelier-decision-root-symlink-")),real=path.join(outer,"real"),link=path.join(outer,"link");await mkdir(real);
   try{await symlink(real,link,process.platform==="win32"?"junction":"dir");}catch(error){if((error as {code?:string}).code==="EPERM"){t.skip("symlink creation unavailable on this host");await rm(outer,{recursive:true,force:true});return;}throw error;}
