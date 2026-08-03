@@ -191,9 +191,14 @@ replacement generation completes.
 A publication-stage name disappearance or change while the active owner closes the pre-callback
 generation invalidates that coordination snapshot and causes bounded full-root re-enumeration against
 the same housekeeping deadline; no callback runs from the invalidated generation. A stable subsequent
-canonical generation may proceed. Same-name identity, type, or byte replacement, malformed, foreign,
-or unverifiable subsequent artifacts, and deadline exhaustion still fail closed. Withdrawal adds no
-authenticated artifact, queue, or handoff.
+canonical generation may proceed. Exhaustion of already-classified valid coordination churn or
+transient filesystem sharing is `busy`, authorizes zero semantic callback/provider effect or
+authority-ledger mutation, and does not create a new public reason. Post-publication housekeeping may
+perform only normal coordination-lock release/retirement cleanup; that cleanup is not an authorized
+provider or ledger effect. Same-name identity, type, or byte replacement after a closed snapshot,
+malformed topology, foreign provenance, and unverifiable liveness remain `corruption` (or the explicit
+`lock-owner-unverifiable` result where applicable), never `busy`. Withdrawal adds no authenticated
+artifact, queue, or handoff.
 The exact closed per-attempt order is `before-publication-stage-final-validation`, then
 `before-publication-stage-final-liveness`, then `before-publication-stage-remove-attempt`. The final
 validation revalidates the exact directory and owner identity/type/link count/name/bytes; final
@@ -281,12 +286,17 @@ live active lock therefore returns busy without beginning the contender's public
 enumerated stage vanishes while another proved-dead candidate exists and a new live stage enters the
 root, neither the dead candidate nor the live replacement is mutated and the result is busy; the
 contender's publication does not begin. Transient Windows `EPERM`, `EACCES`,
-and `EBUSY` at either boundary retry against the same monotonic acquisition deadline. Persistent
-failure refuses as corruption without mutating any artifact. The default acquisition timeout remains
-30,000 milliseconds; tests may select a smaller valid timeout without changing that default.
+and `EBUSY` at either boundary retry against the same monotonic acquisition deadline. Exhaustion of
+those already-classified transient sharing retries, or of valid snapshot/generation churn, returns
+`busy` without mutating any authority-ledger artifact or entering the semantic callback. Malformed
+topology and closed-snapshot same-name identity/type/byte replacement still refuse as corruption. This
+taxonomy does not widen the deadline, alter Paths A/B, or relax fail-closed behavior. The default
+acquisition timeout remains 30,000 milliseconds; tests may select a smaller valid timeout without
+changing that default.
 The exact `before-publication-stage-root-reenumeration` fault point precedes the generation-closing
 root enumeration. Transient sharing failures at every enumeration, validation, final pre-delete
-validation, and removal boundary restart the whole bounded generation; none escapes as a raw error.
+validation, and removal boundary restart the whole bounded generation; none escapes as a raw error;
+their deadline exhaustion is `busy`, not corruption.
 After publishing its own owner, the active holder applies the same protocol until it has one fully
 classified stable generation. A retry result is never discarded: malformed replacement generations
 refuse before retirement housekeeping or the operation-callback entry, preserving every artifact.
