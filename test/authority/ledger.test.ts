@@ -60,6 +60,36 @@ const callerTimedTransition: TransitionEvent = {
 void kernelTimedTransition;
 void callerTimedTransition;
 
+test("ledger root accepts an existing Windows directory through its distinct DOS 8.3 alias",{skip:process.platform!=="win32"},async t=>{
+  const root=await tempRoot();
+  try{
+    let shortRoot:string;
+    try{
+      const {stdout}=await promisify(execFile)("cmd.exe",["/d","/c",`for %I in ("${root}") do @echo %~sI`],{windowsVerbatimArguments:true});
+      shortRoot=stdout.trim();
+    }catch(error){t.skip(`DOS 8.3 path lookup unavailable: ${(error as Error).message}`);return;}
+    if(!shortRoot||shortRoot.toLowerCase()===root.toLowerCase()){
+      const shortName=`RLR${process.pid.toString(16).slice(-5)}`.toUpperCase();
+      try{await promisify(execFile)("fsutil.exe",["file","setshortname",root,shortName]);}
+      catch{t.skip("this Windows filesystem exposes no distinct DOS 8.3 alias");return;}
+      shortRoot=path.join(path.dirname(root),shortName);
+    }
+    if(!existsSync(shortRoot)){t.skip("this Windows filesystem exposes no resolvable distinct DOS 8.3 alias");return;}
+    let ledger:RawFsAuthorityLedger|undefined;
+    assert.doesNotThrow(()=>{ledger=new RawFsAuthorityLedger(shortRoot,{now:()=>t0,lockTimeoutMs:200});});
+    assert.deepEqual(await ledger!.observeClock(),{ok:true,status:"advanced",observedAt:new Date(t0).toISOString()});
+  }finally{await rm(root,{recursive:true,force:true});}
+});
+
+test("ledger root rejects symlink or junction traversal in an ancestor at construction",async t=>{
+  const outer=await tempRoot(),real=path.join(outer,"real"),nested=path.join(real,"nested"),link=path.join(outer,"link");await mkdir(nested,{recursive:true});
+  try{
+    try{await symlink(real,link,process.platform==="win32"?"junction":"dir");}
+    catch(error){if((error as {code?:string}).code==="EPERM"){t.skip("symlink creation unavailable on this host");return;}throw error;}
+    assert.throws(()=>new RawFsAuthorityLedger(path.join(link,"nested"),{now:()=>t0}),/root|symlink|reparse/i);
+  }finally{await rm(outer,{recursive:true,force:true});}
+});
+
 test("terminal provisional busy withdraws the exact creator so a same-PID retry can progress",()=>withRoot(async root=>{
   const predecessor={host:hostname(),nonce:"6".repeat(64),pid:1,v:1 as const},predecessorBytes=authorityCanonicalBytes(predecessor),predecessorStage=path.join(root,publicationStageName(predecessor)),originalKill=process.kill,livePids=new Set<number>([predecessor.pid]);
   let injected=false,ownStage="",ownBytes=Buffer.alloc(0),publicationRenames=0,callbackEntries=0;
