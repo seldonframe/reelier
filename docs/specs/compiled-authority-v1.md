@@ -121,7 +121,8 @@ staging directory
 where `host-digest` is SHA-256 over the UTF-8 bytes of the exact canonical owner hostname, without a
 `sha256:` prefix. The name therefore carries same-host provenance and ephemeral admission metadata
 before any owner bytes exist.
-The publisher creates that real directory exclusively, creates a real regular single-link
+Only the owner authenticated by the fixed admission slot may create that real directory. It creates
+the directory exclusively, creates a real regular single-link
 `owner.json` exclusively, writes its complete canonical owner with a progress-checked write-all loop,
 file-syncs it, rereads and verifies the exact canonical bytes, syncs the staging directory, rereads
 and verifies again, atomically renames the whole staging directory to `lock`, rereads and verifies the
@@ -133,83 +134,121 @@ boundary, immediately before any callback-specific prepare, read, or mutation. I
 for every publication, revalidation, acquisition-snapshot, confinement, or recovery refusal. The
 shared `lock` path is never publication staging and is therefore never ownerless. The exact durability
 fault topology is closed: after stage creation through stage-directory sync, `lock` is absent and
-exactly one publication stage exists; that stage is respectively an empty directory, contains a
+at most one protocol-admitted publication stage exists; that stage is respectively an empty directory, contains a
 zero-byte `owner.json`, contains a nonempty strict-prefix partial owner, or contains the complete canonical
 owner after owner-file sync and stage-directory sync. After whole-directory rename and after root sync,
 `lock` contains the complete canonical owner and no publication stage remains. A live same-host
 publisher's byte-identical empty, zero-byte-owner, partial-owner, or complete-owner stage is busy and
-preserved. After its named same-host PID is proved dead, each of those exact states is recoverable by a
-successor, but only the creator may publish its own stage: a successor never renames another owner's
-stage to `lock`. `empty` means no owner file; `zero` means an exact zero-byte owner file; `partial`
+preserved. After its named same-host PID is proved dead, each exact state is recoverable only through
+the typed atomic withdrawal protocol below; a successor never renames another owner's stage to `lock`.
+`empty` means no owner file; `zero` means an exact zero-byte owner file; `partial`
 means only a nonempty proper byte prefix of the uniquely reconstructed canonical
 `{ host, nonce, pid, v: 1 }` owner committed by the stage name. `complete` means only those exact full
 canonical bytes. Arbitrary non-JSON bytes, valid JSON of another shape or value, suffixes, trailing or
 extra bytes, and all non-prefix truncations are corruption and remain byte-identical. Foreign-host or unverifiable stage provenance, malformed or mismatched owner bytes,
 links/reparse points, hard-linked owner files, and extra contents fail closed without target mutation.
-Multiple stages with distinct valid host/PID identities may coexist as real contenders and are
-independently validated; two stages for the same host and PID but different nonces are ambiguous and
-fail closed. Every publication artifact name, type, link count, byte state, binding, and owner liveness
+Legacy or manually injected stages with distinct valid host/PID identities are external membership
+and are independently classified for compatibility; their presence never proves admission and never
+widens K=1. A stable generation with more than one publication stage is invalid K=1 topology and is
+preserved corruption. Two stages for the same host and PID but different nonces are ambiguous and fail
+closed. Every publication artifact name, type, link count, byte state, binding, and owner liveness
 is classified before any candidate is mutated. A corrupt, transiently unreadable, or unverifiable
-artifact prevents deletion of every otherwise recoverable stage. Mutation candidates are revalidated
-byte-for-byte and by the frozen non-following filesystem object identity immediately before
-creator-only cleanup or dead-owner cleanup. Creator cleanup may remove only its exact
+artifact prevents retirement of every otherwise recoverable stage. Mutation candidates are
+revalidated byte-for-byte and by frozen non-following filesystem identity immediately before
+creator-only or dead-owner atomic retirement. Retirement may rename only the exact
 name/host/PID/nonce/type/single-link directory and owner identities and exact expected empty, zero,
 strict-prefix, or complete bytes; an atomic same-name directory or owner replacement is preserved even
 when its bytes are identical. A changed inode/file identity, increased link count, or different bytes
 refuses. Replacing a regular owner with a directory or reparse point, or replacing a real stage
 directory with a regular file or reparse point, is likewise preserved and refuses without traversing
-or mutating the replacement target. It never removes another live stage.
+or mutating the replacement target. It never retires another live stage.
 Filesystem identity is read with non-following `lstat({ bigint: true })`; device, inode/file ID, mode,
 and link count remain exact bigint values throughout comparison and are never rounded through a
 JavaScript `number`. Two distinct adjacent identities above `Number.MAX_SAFE_INTEGER` remain distinct.
 
-The following closed rules replace the legacy recursive-withdrawal, no-durable-handoff, and
-two-publication saturation text below; those legacy mechanisms are prohibited. Mutating admission
-uses one fixed `.authority-ledger-admission-0/owner.json` slot. A contender first exclusively creates
-`.authority-ledger-admission-prep-<host64>-<positive-pid>-<nonce64>.tmp/owner.json`, writes a complete
-nonempty canonical owner, file-syncs it, directory-syncs it, and exact-revalidates bytes, type, links,
-and non-following identity before atomically renaming the preparation directory to the fixed slot.
-An existing destination is fully validated and never overwritten. Complete existing root membership
-is classified before slot denial, so the slot never masks corruption. Exactly the authenticated slot
-owner may publish, and it holds the slot through stage-to-`lock` plus root sync or through exact
-creator withdrawal plus root sync. Slot retirement is atomic and owner-bound. At most one admitted
-publication stage exists.
+Mutating admission has capacity K=1 and uses the one literal fixed slot
+`.authority-ledger-admission-0/owner.json`. One exact canonical owner `{ host, nonce, pid, v: 1 }` is
+created once and remains byte-identical across preparation, fixed slot, publication stage, active
+`lock`, creator withdrawal, slot retirement, and every coordination cleanup record for that
+acquisition; publication never mints a second nonce or owner.
 
-Complete creator withdrawal atomically renames the exact stage to the existing
-`.authority-ledger-lock-<positive-pid>-<nonce64>.publication-aborted` disposition. Empty, zero, and
-partial stages atomically rename to the distinct typed
-`.authority-ledger-creator-withdrawal-<host64>-<ticket16>-<positive-pid>-<nonce64>.<empty|zero|partial>`
-marker. The publication name changes only from present to absent. Cleanup authority is authenticated
-and purpose-bound to the exact creator, name, state, bytes, type, link count, and non-following
-identity. Replacement, type, link, identity, byte, or marker mismatch is corruption and is preserved.
-No broad prefix grants cleanup authority.
+The contender exclusively creates the real single-link preparation directory
+`.authority-ledger-admission-prep-<host64>-<positive-safe-pid>-<nonce64>.tmp`, captures its
+non-following identity, exclusively creates its real regular single-link `owner.json`, captures that
+identity, writes the canonical owner with a progress-checked write-all loop, file-syncs, rereads and
+exactly validates bytes and identity, syncs the preparation directory, revalidates both objects, then
+atomically renames that exact directory to `.authority-ledger-admission-0`, syncs the ledger root, and
+performs final exact validation. An existing destination is completely classified and never
+overwritten. Preparation has the exact monotonic states `empty -> zero -> strict-prefix -> complete ->
+synced`: empty has no owner, zero has an exact zero-byte owner, strict-prefix is a nonempty proper
+prefix of the uniquely reconstructed canonical owner, complete has all canonical bytes before the
+required file/directory sync barriers, and synced is the same exact complete bytes and identities
+after both barriers. Only synced may become the fixed slot; the fixed slot is always complete.
 
-Every terminal return or throw after creator-stage creation and before successful publication must pass through one bounded exact-creator withdrawal funnel. The creator captures the newly created empty directory's non-following identity before any fault-visible post-`mkdir` validation; a missing later snapshot cannot bypass the funnel. At terminal entry, withdrawal receives a fresh monotonic cleanup deadline equal to `monotonicNow() + lockTimeoutMs`; it never reuses or widens the exhausted acquisition deadline. Withdrawal never depends on unrelated publication membership and may remove only the literal creator path after its non-following directory and owner identities, types, link counts, bytes, and frozen construction state remain exact. Missing is already withdrawn; tracked same-directory recursive-removal progress from an exact zero, partial, or complete owner state to the exact empty state may finish; absence is followed by a ledger-root sync. Retryable sharing errors may consume only the fresh cleanup budget. If they persist through that deadline, the exact unchanged creator artifact and original terminal result or error are preserved; a later acquisition's same-PID backstop prevents duplicate publication. A replacement, reparse point, hardlink, wrong type, or identity mismatch is preserved and refines a non-corruption terminal result to corruption. Successful exact withdrawal never changes the refusal result and never mutates a peer. Before creating a new stage, only a fully classified generation whose complete root-name set was closed may apply the local-host/current-PID denial-only busy backstop, and only when it contains exactly one exact complete such stage. Malformed, foreign, duplicate-provenance, unverifiable, or otherwise corrupt membership takes precedence and returns corruption; the backstop never masks it and never creates a duplicate stage.
-Every publication stage has the exact name `.authority-ledger-lock-publication-<host64>-<ticket16hex>-<positive-pid>-<nonce64>.tmp`, where every hex field is lowercase. `ticket16hex` is an unsigned 64-bit integer in the inclusive range `0000000000000001` through `ffffffffffffffff`; zero, nonhex or uppercase text, any width other than 16, and an overflow spelling are corruption. After an exact successfully classified stable generation, let `maxVisible` be its maximum ticket (or zero when empty). If `maxVisible` is `ffffffffffffffff`, acquisition returns `busy` without sampling the admission clock. Otherwise it samples raw `admissionClock()` and requires a bigint in `0n..0xffffffffffffffffn`; non-bigint, negative, or greater values are corruption. The immutable ticket is `max(raw, maxVisible + 1)`, so raw zero is valid and allocates ticket one in an empty generation. The default admission clock is the local `process.hrtime.bigint()` monotonic domain. The ticket is stage metadata only: canonical owner bytes remain exactly `{ host, nonce, pid, v: 1 }`; the ticket is neither serialized nor bound into those bytes. A stage with any valid ticket and exact host/PID/nonce owner binding is valid; duplicate stages remain ambiguous by host+PID even if ticket and nonce differ.
+An unpromoted or dead exact preparation atomically retires to
+`.authority-ledger-admission-prep-retired-<host64>-<positive-safe-pid>-<nonce64>.<empty|zero|partial|complete>`
+without changing its frozen contents, then root-syncs. A live exact preparation is classified but is
+non-authorizing and bounded-waits before returning `busy` unchanged. A dead exact preparation may be
+retired only after full-root classification and exact final revalidation. Foreign, unverifiable,
+malformed, replaced, linked/reparsed, duplicate-provenance, duplicate-preparation, or broad-prefix
+preparations are preserved corruption. The retired `.complete` spelling retains byte-complete
+preparation contents whether interruption occurred immediately before or after the prep sync barrier;
+the name alone never asserts that the barrier completed.
 
-Contention uses no additional durable handoff, queue, persisted counter, phase priority, or process-local cohort. The filename's syntactic lexicographic fields are ticket, decimal PID text, then nonce. Valid election uses ticket first and, for the only valid equal-ticket case of distinct PIDs, canonical decimal PID text. Two stages with the same host and PID are ambiguous corruption before election regardless of their tickets or nonces, so nonce is never an election tie-break. After the caller's own stage is fully synced and exact, a structurally separate pre-full provisional state may make denial-only predecessor polls; it is never a `PublicationElection`. Its eligible raw parser requires the own name and only canonical local names with unique host/PID provenance, parses the ticket as bigint, and orders by ticket then canonical decimal PID text—never nonce. A raw head exits provisional mode and enters full settlement. For an eligible non-head, every round is exactly: strict raw parse/order; exact own validation; exact immediate-predecessor validation; `before-lock-publication-provisional-root-reenumeration`; strict raw reparse with exact-name equality; `before-lock-publication-provisional-predecessor-liveness`; positive predecessor liveness; acquisition backoff. `after-lock-publication-provisional-predecessor-selection` fires only after an eligible non-head is selected. Missing or replaced objects, a dead or unverifiable predecessor, a membership or provenance change, malformed input, and every validation failure end the current provisional epoch and invoke staged full settlement in the same iteration; none may re-enter provisional mode directly. `before-staged-publication-settlement` fires after provisional state is cleared and immediately before that required settlement. Only when that settlement observes an exact root-name membership change before any cleanup authorization, disappearance, root sync, mutation, object error, liveness error, or sharing error may it return a typed denial-only churn result. The changed raw cohort must again be canonical, local, unique by host/PID, contain the exact frozen creator as a non-head, and have an exact live immediate predecessor before a fresh provisional epoch starts with no prior cohort state. A raw head, malformed or foreign name, duplicate provenance, changed creator or predecessor identity, dead or unverifiable immediate predecessor, or pending cleanup state remains in full settlement. Repeated fresh epochs preserve the original monotonic deadline, accumulated backoff, and pending post-fallback reset; they authorize no cleanup, election, rename, mutation, or callback. A successfully classified closed generation ends provisional epochs for that acquisition, creates the post-full election or head decision, and only then applies the one-shot fallback backoff reset. Only full settlement may create `PublicationElection`, promote, clean up, mutate, or enter a callback; distant content corruption may be deferred only while provisional denial remains a proven busy result. After full settlement reaches terminal refusal or error, the creator may withdraw only its own exact fully synced stage with its frozen name, canonical bytes, and non-following filesystem identity; corrupt or offending peer artifacts remain untouched, and withdrawal never changes the refusal result. After one fully classified generation has had its root-name set closed and every live stage revalidated by exact name, canonical bytes, and frozen non-following filesystem identity, only the eligible head may exact-revalidate its own stage and attempt the atomic stage-to-`lock` rename. Equal-ticket overlap between distinct PIDs is resolved by decimal PID text and makes no causal FIFO promise. A causally later entrant that observes an earlier ticket must receive a larger ticket, so admission tickets prevent a later lower-sorting PID from overtaking a visible earlier stage; they improve causal admission ordering but do not promise starvation freedom under continuous churn. A post-full non-head contender may optimize subsequent bounded waiting polls by inspecting only the active lock and its exact predecessor from that closed generation, with monotonic backoff. Predecessor disappearance, replacement, death, or unverifiable liveness, and any root-name generation change, invalidate the optimization and require a new complete closed-generation enumeration, classification, and election before promotion. Corrupt, ambiguous, foreign, or unverifiable artifacts continue to fail closed. Tickets are ephemeral: they are not persisted beyond the stage and are never changed after stage creation; a crash or restart allocates a new ticket from its then-visible generation.
+Full-root classification and corruption precedence occur before admission denial. A live exact fixed
+slot bounded-waits under the acquisition deadline and then returns `busy` unchanged. A dead exact slot
+is recoverable only after full classification and final exact revalidation. The exact slot owner alone
+may create one publication stage. The slot remains exact through either publication-stage-to-`lock`
+rename plus lock-root sync or creator-withdrawal-marker rename plus root sync. It then atomically
+renames to `.authority-ledger-admission-retired-<host64>-<positive-safe-pid>-<nonce64>.<published|withdrawn|abandoned>`
+and root-syncs. `published` requires the byte-identical active `lock`; `withdrawn` requires the exact
+creator-withdrawal terminal marker; `abandoned` is dead-slot recovery before stage creation. Callback
+eligibility begins only after both active-lock root sync and matching `published` slot-retirement root
+sync. If a successful publication cannot retire its exact slot within its fresh slot-retirement
+deadline, the owner atomically retires the active lock to its `publication-aborted` marker, root-syncs,
+and runs zero callback.
 
-Only at the unstaged mutating pre-admission boundary, observing at least two syntactically canonical publication-stage names may produce a non-authorizing saturated wait without reading or validating stage content. The first qualifying sorted exact cohort in one `acquireLock` invocation must bind the local host digest, contain unique host/PID publisher identities, and positively probe every named PID alive; it establishes one acquisition-local liveness memo for exactly those names. Every later saturated poll still raw-enumerates the full publication-name set and emits `after-mutating-admission-enumeration`. Exact name-set equality may reuse the memoized liveness. Stale cached liveness can only continue denying admission until the unchanged monotonic deadline; it grants no authority. Any exact membership change permanently destroys that invocation's memo and enters the complete settlement/classification protocol in the same iteration; the changed cohort cannot seed a replacement memo. The memo is destroyed on every return and before any contender-stage creation, so a later acquisition on the same ledger instance probes every PID again. Repeated equal observations wait with the existing monotonic backoff only until the unchanged bounded acquisition budget is consumed; they neither widen that budget nor consult the wall clock. The observation does not close a generation and authorizes no stage creation, cleanup, election, lock publication, ledger mutation, or operation callback. A smaller cohort, or any dead, unverifiable, ambiguous, malformed, or foreign publisher name, falls through to the complete settlement/classification protocol. Every actual admission and every cleanup, election, publication, mutation, or callback remains reachable only from that complete protocol; the saturated observation cannot strand abandoned stages or grant authority.
+Complete creator withdrawal atomically renames the exact stage to
+`.authority-ledger-lock-<positive-safe-pid>-<nonce64>.publication-aborted` and root-syncs. Empty, zero,
+and strict-prefix stages atomically rename without content change to
+`.authority-ledger-creator-withdrawal-<host64>-<ticket16>-<positive-safe-pid>-<nonce64>.<empty|zero|partial>`
+and root-sync. There is no observable complete-to-empty transition. The exact creator may finish its
+own withdrawal; a successor may do so only after the owner is proved dead or an exact durable terminal
+artifact proves authority. Withdrawal cleanup uses one fresh deadline and preserves the creator's
+original thrown object by identity even if cleanup cannot finish; unresolved corrupt residue is
+reported by the next acquisition. A withdrawal marker cannot be cleaned before its matching slot has
+durably retired as `withdrawn`. Replacement, type, link, identity, byte, or marker mismatch is
+preserved corruption. No broad prefix grants cleanup authority.
+
+Every publication stage has the exact name `.authority-ledger-lock-publication-<host64>-<ticket16hex>-<positive-safe-pid>-<nonce64>.tmp`, where every hex field is lowercase. `ticket16hex` is an unsigned 64-bit integer in `0000000000000001..ffffffffffffffff`; zero, nonhex or uppercase text, any other width, and overflow are corruption. The ticket is immutable syntax and ephemeral metadata only: it grants no priority, election, FIFO, capacity, or cleanup authority and is never serialized into canonical owner bytes. The stage host/PID/nonce and bytes must equal the fixed-slot owner exactly.
+
+There is no publication-stage election or predecessor protocol. A clean root with no preparation,
+fixed slot, active lock, publication stage, retirement marker, cleanup stage, or cleanup ack may begin
+one admission attempt. A lone live external pre-slot publication stage is preserved and bounded-waits
+to `busy`; a lone exact dead external stage may be atomically withdrawn but is never promoted. More
+than one publication stage in a stable generation is invalid K=1 topology and is preserved corruption,
+even when every stage is individually canonical and has distinct provenance.
+
+One monotonic acquisition deadline covers full classification, preparation/fixed-slot polling, stale
+recovery, and reclassification. Progress resets only the deterministic backoff sequence and never the
+deadline. Terminal creator withdrawal receives one fresh cleanup deadline. Successful publication
+receives one separate fresh slot-retirement deadline. No wait, retry, or progress event widens any of
+those budgets.
+
+The precedence is closed and exact: fully enumerate and classify the root; any structural,
+provenance, graph, replacement, identity, link, type, or byte problem returns `corruption` with zero
+mutation; retryable uncertainty bounded-waits and then returns `busy`; dead exact residue may only
+retire or clean up, root-sync, and force complete reclassification; live exact preparation or slot
+bounded-waits and then returns `busy` unchanged; only a clean root admits. Every coordination grammar
+above is literal and closed. Any lookalike or broader prefix is corruption, not ignored membership.
 
 This local-ledger protocol requires all writers to share one host, filesystem, PID/liveness namespace, and monotonic-clock domain. POSIX `CLOCK_MONOTONIC` and Windows QPC provide the intended substrate; Linux time-namespace offsets are outside the hard-enforcement topology. The bounded acquisition and housekeeping deadlines are unchanged. Tickets do not defend against a malicious same-user filesystem writer.
-After publication, the active owner closes and exact-revalidates the live generation before callback
-entry. The exact `after-lock-publication-generation-closed` hook exposes a closed generation before
-the elected branch, and `before-lock-publication-predecessor-validation` exposes each optimized
-non-head predecessor poll. This deterministic predecessor election bounds redundant peer scans; it
-does not claim starvation-free FIFO ordering.
-Stable non-head predecessor polling and valid live active-lock waiting use the same deterministic
-monotonic delay sequence: 5ms, 10ms, 20ms, 40ms, then 50ms for every remaining poll. Progress or
-completed full-generation re-election resets the sequence to 5ms; no PID-derived jitter is used and
-no deadline is widened. Every requested sleep is the smaller of the next sequence value and the
-strictly positive monotonic acquisition time remaining. No sleep starts at or after the deadline,
-and the sum of requested sleeps never exceeds the configured acquisition timeout. A retained
-contender that observes a validated live active lock and later observes that lock absent resets the
-next waiting delay to 5ms even before a full-generation re-election is otherwise required. With a
-100ms acquisition budget and no other monotonic-clock advance, the exact requested sequence is
-5ms, 10ms, 20ms, 40ms, 25ms: five positive waits totaling exactly 100ms.
-Final-name invalidation only marks re-election pending: a valid active lock interposed before the
-replacement closed generation retains the current delay, and reset occurs only after that
-replacement generation completes.
+After publication, the active owner closes and exact-revalidates the complete coordination generation,
+durably retires the matching slot as `published`, and performs one complete cleanup pass before
+callback entry. Valid live preparation, slot, active-lock, and transient-sharing waits use the same
+deterministic monotonic delay sequence: 5ms, 10ms, 20ms, 40ms, then 50ms. Proven progress resets the
+next delay to 5ms but never replaces or widens the applicable deadline. Every sleep is bounded by the
+strictly positive monotonic time remaining.
 A publication-stage name disappearance or change while the active owner closes the pre-callback
 generation invalidates that coordination snapshot and causes bounded full-root re-enumeration against
 the same housekeeping deadline; no callback runs from the invalidated generation. A stable subsequent
@@ -219,36 +258,49 @@ authority-ledger mutation, and does not create a new public reason. Post-publica
 perform only normal coordination-lock release/retirement cleanup; that cleanup is not an authorized
 provider or ledger effect. Same-name identity, type, or byte replacement after a closed snapshot,
 malformed topology, foreign provenance, and unverifiable liveness remain `corruption` (or the explicit
-`lock-owner-unverifiable` result where applicable), never `busy`. Withdrawal adds no authenticated
-artifact, queue, or handoff.
-The exact closed per-attempt order is `before-publication-stage-final-validation`, then
-`before-publication-stage-final-liveness`, then `before-publication-stage-remove-attempt`. The final
-validation revalidates the exact directory and owner identity/type/link count/name/bytes; final
-liveness re-probes the owner; and the remove-attempt hook occurs immediately before the destructive
-publication-stage removal attempt. Each transient attempt restarts with complete root-generation
-enumeration before that whole order repeats. A
-transient failure never retries `rm` directly: it restarts those validations against the same
-monotonic deadline. A same-name replacement installed before or during any attempt is preserved.
-Recursive dead-stage cleanup is non-atomic. After exact final validation and dead-liveness
-authorization, another correct remover may advance the same frozen directory identity through the
-exact sequence `complete -> empty/no owner -> absent`. That sequence is non-authorizing removal
-progress: disappearance is accepted only after a ledger-root sync, while the same-directory empty
-intermediate causes bounded retry or `busy`, never integrity corruption. During closed-generation
-revalidation, the exact same-directory `complete -> empty` transition is likewise only retryable
-when that generation's initial liveness observation for the stage was `dead`. This exception does
-not broaden construction progress. The prior removal authorization remains an identity tombstone
-through the cleanup-root sync barrier and the next fully closed publication-name generation. Any
-same-name reappearance before that closure is identity-replacement corruption and is preserved;
-only a fully validated and liveness-closed generation that is about to return stably, with no
-pending removal or root sync, may forget an authorization whose name stayed absent. Every raw name
-snapshot—initial names, closure names, final names, and per-removal root re-enumeration—rejects an
-observed tombstoned name as identity-replacement corruption rather than membership retry. Multiple
-genuinely absent authorized stages may batch one root sync. A creator-owned stage, a live or unverifiable owner, a directory
-identity/type/link replacement, an owner identity/type/link replacement (including canonical-same
-bytes), new or malformed owner bytes, and malformed content remain corruption and are preserved.
-After an exact removal, the pending ledger-root sync completes before the exact
-`after-publication-stage-cleanup-root-sync` hook; only after that boundary may the next complete
-generation close, and callback entry remains unreachable until that post-sync closure succeeds.
+`lock-owner-unverifiable` result where applicable), never `busy`. Withdrawal and admission retirement
+always leave authenticated durable markers and purpose-bound cleanup evidence.
+Every frozen filesystem identity in coordination evidence is the closed object
+`{ dev, ino, mode, nlink }`, with each value the canonical unsigned decimal string encoding of the
+lossless bigint returned by non-following `lstat`; signs, leading zeroes except literal `0`, numeric
+JSON values, missing keys, and extra keys are corruption. The coordination cleanup ack is the strict
+closed discriminated union `reelier.authority-ledger-coordination-cleanup-ack/v1`; `purpose` is exactly
+`prep-retired`, `slot-retired`, or `creator-withdrawal` and participates in the record digest. There is
+no optional-field superset.
+
+The `prep-retired` and `creator-withdrawal` variants have exact keys
+`{ directoryIdentity, kind, markerName, originalName, owner, ownerBytesDigest, ownerBytesLength,
+ownerDigest, ownerIdentity, purpose, recoveryAuthority, state, v }`. `kind` is respectively
+`admission-prep-retired` or `creator-withdrawal`; `state` is the marker's exact closed state;
+`recoveryAuthority` is respectively `dead-owner-or-exact-creator` or
+`dead-owner-or-exact-creator-after-slot-withdrawn`. `owner` and `ownerIdentity` are null only for
+`empty`; otherwise owner is the complete name-committed canonical owner while `ownerBytesDigest` and
+`ownerBytesLength` bind the raw zero, prefix, or complete bytes.
+
+The `slot-retired` variant has exact keys
+`{ disposition, kind, markerName, owner, ownerBytesDigest, ownerBytesLength, ownerDigest,
+ownerIdentity, originalName, purpose, recoveryAuthority, slotIdentity, terminalArtifactDigest,
+terminalArtifactName, v }`; `kind` is `admission-slot-retired`, `originalName` is
+`.authority-ledger-admission-0`, `recoveryAuthority` is `active-owner-after-terminal-proof`, and the
+terminal name/digest bind the exact byte-identical `lock`, creator-withdrawal marker, or abandoned-slot
+marker required by `published`, `withdrawn`, or `abandoned`.
+
+For every union record, `ownerDigest` is the digest of the exact canonical owner,
+`ownerBytesDigest` is the digest of the raw owner-file bytes, `ownerBytesLength` is their canonical
+nonnegative decimal length string, and the final filename is
+`.authority-ledger-coordination-cleanup-<64-lower-hex-record-digest>.ack`. The exclusive staging file
+is `.authority-ledger-coordination-cleanup-stage-<purpose>-<host64>-<positive-safe-pid>-<nonce64>-<64-lower-hex-record-digest>.tmp`.
+The exact lifecycle is exclusive stage create, canonical write-all, file sync, stage-directory sync,
+atomic rename to the final ack, root sync, exact marker removal, root sync, exact ack removal, root
+sync. Marker-only, marker-plus-matching-ack, and a valid purpose-authorized orphan ack are recoverable
+windows; absence alone never grants authority.
+A prep orphan ack is valid only after its exact original name is absent. A slot orphan ack is valid
+only while its exact terminal proof still validates. A withdrawal orphan ack is valid only after the
+matching `withdrawn` slot-retirement marker has already completed its durable cleanup. Invalid,
+mismatched, or purpose-inapplicable orphan acks, markers, stages, identities, bytes, or terminal proofs
+are preserved corruption. The active owner performs this cleanup pass exactly once after all required
+sync barriers and before callback; withdrawal markers are never cleaned before their matching slot
+retirement.
 Acquisition is bounded. A live same-host owner is never evicted because time elapsed; a
 foreign, corrupt, or otherwise unverifiable owner refuses. An abandoned lock is reclaimed only after
 same-host process liveness proves that its recorded PID is dead and the owner bytes remain identical.
@@ -334,18 +386,17 @@ topology and closed-snapshot same-name identity/type/byte replacement still refu
 taxonomy does not widen the deadline, alter Paths A/B, or relax fail-closed behavior. The default
 acquisition timeout remains 30,000 milliseconds; tests may select a smaller valid timeout without
 changing that default.
-The exact `before-publication-stage-root-reenumeration` fault point precedes the generation-closing
-root enumeration. Transient sharing failures at every enumeration, validation, final pre-delete
-validation, and removal boundary restart the whole bounded generation; none escapes as a raw error;
-their deadline exhaustion is `busy`, not corruption.
+The generation-closing root enumeration precedes every atomic retirement authorization. Transient
+sharing failures at enumeration, validation, final pre-rename validation, and rename boundaries
+restart full classification under the same deadline; exhaustion is `busy`, not corruption.
 After publishing its own owner, the active holder applies the same protocol until it has one fully
 classified stable generation. A retry result is never discarded: malformed replacement generations
 refuse before retirement housekeeping or the operation-callback entry, preserving every artifact.
-Immediately before every dead-stage removal attempt, liveness is probed again. PID reuse to a live
-process preserves the stage and yields busy/retry; an unverifiable final probe preserves it and refuses.
+Immediately before every dead-artifact retirement attempt, liveness is probed again. PID reuse to a
+live process preserves the artifact and yields busy/retry; an unverifiable final probe preserves it.
 On rename-to-`lock` collision the creator retains its exact fully synced stage object and retries the
-atomic rename of that same identity. It does not recreate or resync the stage and removes it only on a
-terminal timeout/refusal/error after exact revalidation. The exact
+atomic rename of that same identity. It does not recreate or resync the stage and atomically withdraws
+it only on terminal timeout/refusal/error after exact revalidation. The exact
 `after-lock-publication-rename-collision` hook exposes that retained-object boundary.
 
 The only lifecycle is `issued -> reserved -> dispatched -> acknowledged | definitive-failure |
