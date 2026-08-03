@@ -1350,7 +1350,7 @@ test("a correct concurrent dead-stage remover makes non-authorizing cleanup prog
     let observed;
     try{
       observed=await withRecordedDelays(()=>new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20,faultInjector:(point:string)=>{
-        if(point==="after-publication-stage-enumeration"&&++generations===2){assert.deepEqual(exactIdentity(lstatSync(stage,{bigint:true})),directoryIdentity);assert.deepEqual(exactIdentity(lstatSync(ownerPath,{bigint:true})),ownerIdentity);assert.deepEqual(readFileSync(ownerPath),bytes);rmSync(stage,{recursive:true});disappeared=true;order.push("peer-absent");}
+        if(point==="after-publication-stage-enumeration"){if(disappeared)order.push("next-generation");if(++generations===2){assert.equal(disappeared,false,"the removal enumeration is not a subsequent generation");assert.deepEqual(exactIdentity(lstatSync(stage,{bigint:true})),directoryIdentity);assert.deepEqual(exactIdentity(lstatSync(ownerPath,{bigint:true})),ownerIdentity);assert.deepEqual(readFileSync(ownerPath),bytes);rmSync(stage,{recursive:true});disappeared=true;order.push("peer-absent");}}
         if(point==="before-publication-stage-remove-attempt"&&++removeAttempts===1)throw Object.assign(new Error("EBUSY"),{code:"EBUSY"});
         if(point==="after-publication-stage-cleanup-root-sync"){rootSyncs++;order.push("cleanup-root-sync");}
         if(disappeared&&point==="after-lock-publication-generation-closed")order.push("closed-generation");
@@ -1359,7 +1359,7 @@ test("a correct concurrent dead-stage remover makes non-authorizing cleanup prog
       }} as never).observeClock());
     }finally{Object.defineProperty(process,"kill",{configurable:true,value:originalKill});}
     assert.equal(disappeared,true);assert.deepEqual(observed!.result,{ok:true,status:"advanced",observedAt:new Date(t0).toISOString()});assert.equal(removeAttempts,1);assert.equal(callbackEntries,1);assert.equal(existsSync(stage),false);const coordinationArtifacts=(await readdir(root)).filter(name=>name.startsWith(".authority-ledger-lock-"));assert.equal(coordinationArtifacts.filter(name=>name.startsWith(".authority-ledger-lock-publication-")).length,0);assert.deepEqual(coordinationArtifacts.filter(name=>!name.endsWith(".released")),[],"peer disappearance creates no extra coordination artifact");
-    assert.equal(rootSyncs,1,"authorized complete-to-absent cleanup is accepted only after one ledger-root sync");assert.equal(order[0],"peer-absent");assert.equal(order[1],"cleanup-root-sync",`root sync precedes renewed generation, creator publication, and callback: ${order.join(",")}`);
+    assert.equal(rootSyncs,1,"authorized complete-to-absent cleanup is accepted only after one ledger-root sync");assert.deepEqual(order.slice(0,3),["peer-absent","cleanup-root-sync","next-generation"],`root sync precedes every renewed enumeration, generation closure, creator publication, and callback: ${order.join(",")}`);
   }));
 
   await t.test("an active owner retries a dead peer that becomes empty after generation closure",()=>withRoot(async root=>{
