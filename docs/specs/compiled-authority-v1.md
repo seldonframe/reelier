@@ -177,7 +177,12 @@ non-head predecessor poll. This deterministic predecessor election bounds redund
 does not claim starvation-free FIFO ordering.
 Stable non-head predecessor polling and valid live active-lock waiting use the same deterministic
 monotonic delay sequence: 5ms, 10ms, 20ms, 40ms, then 50ms for every remaining poll. Progress or
-re-election resets the sequence to 5ms; no PID-derived jitter is used and no deadline is widened.
+completed full-generation re-election resets the sequence to 5ms; no PID-derived jitter is used and
+no deadline is widened. Every requested sleep is the smaller of the next sequence value and the
+strictly positive monotonic acquisition time remaining. No sleep starts at or after the deadline,
+and the sum of requested sleeps never exceeds the configured acquisition timeout. A retained
+contender that observes a validated live active lock and later observes that lock absent resets the
+next waiting delay to 5ms even before a full-generation re-election is otherwise required.
 The exact closed per-attempt order is `before-publication-stage-final-validation`, then
 `before-publication-stage-final-liveness`, then `before-publication-stage-remove-attempt`. The final
 validation revalidates the exact directory and owner identity/type/link count/name/bytes; final
