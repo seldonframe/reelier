@@ -391,9 +391,12 @@ slot, and lock object is exact-revalidated at owner-file sync, stage-directory s
 stage-to-`lock` rename, active-lock root sync, and preparation-to-slot rename. The fixed slot remains
 present and byte-identical until a valid publication or withdrawal successor is durable.
 Every frozen filesystem identity in coordination evidence is the closed object
-`{ dev, ino, mode, nlink }`, with each value the canonical unsigned decimal string encoding of the
-lossless bigint returned by non-following `lstat`; signs, leading zeroes except literal `0`, numeric
-JSON values, missing keys, and extra keys are corruption. The coordination cleanup ack is the strict
+`{ dev, ino, mode, nlink }`, with each value the canonical decimal string encoding of the lossless
+bigint returned by non-following `lstat`. `dev` and `ino` use the canonical signed decimal grammar
+and range defined above; `mode` and `nlink` use the canonical unsigned decimal grammar and range.
+A leading `+`, `-0`, a leading zero or other noncanonical spelling, an out-of-range value, a negative
+`mode` or `nlink`, a numeric JSON value, a missing key, or an extra key is corruption. The coordination
+cleanup ack is the strict
 closed discriminated union `reelier.authority-ledger-coordination-cleanup-ack/v1`; `purpose` is exactly
 `prep-retired`, `slot-retired`, or `creator-withdrawal` and participates in the record digest. There is
 no optional-field superset.
