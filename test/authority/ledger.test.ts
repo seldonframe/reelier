@@ -1157,6 +1157,79 @@ test("an elected head publishes while higher live peers remain unchanged",()=>wi
 
 test("a safely closed live generation admits one unique mutating contender stage",()=>withRoot(async root=>{const predecessor={host:hostname(),nonce:"8".repeat(64),pid:1,v:1 as const},predecessorBytes=authorityCanonicalBytes(predecessor),predecessorStage=await writePublicationStage(root,predecessor,predecessorBytes),authenticated=authenticateOutcomeRequest({tenant:"tenant_1",requester:"requester_1",definitionAlias:"definition_1",request:{v:"reelier.outcome-request/v1",requestId:"request_1",sourceRefs:{source:"ref_1"},choices:{}}}),originalKill=process.kill;let ownStage="",ownBytes=Buffer.alloc(0),publicationRenames=0,callbackEntries=0;const order:string[]=[];Object.defineProperty(process,"kill",{configurable:true,value:(pid:number)=>pid===predecessor.pid?true:originalKill.call(process,pid,0)});let observed;try{observed=await underBackwardWallClock(()=>new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:30,faultInjector:(point:string)=>{if(point==="after-lock-publication-generation-closed")order.push("closed");if(point==="after-lock-publication-stage-create"){order.push("create");const ownName=readdirSync(root).find(name=>name.startsWith(".authority-ledger-lock-publication-")&&name!==path.basename(predecessorStage));assert.ok(ownName);ownStage=path.join(root,ownName);}if(point==="after-lock-publication-stage-sync"){order.push("sync");assert.ok(ownStage);ownBytes=readFileSync(path.join(ownStage,"owner.json"));}if(point==="after-lock-publication-rename")publicationRenames++;if(point==="before-ledger-operation-callback")callbackEntries++;}} as never).bindIngress(authenticated));}finally{Object.defineProperty(process,"kill",{configurable:true,value:originalKill});}assert.deepEqual(observed!.result,{ok:false,reason:"busy"});assert.ok(observed!.elapsedMs<5_000);assert.equal(order.filter(value=>value==="create").length,1);assert.equal(order.filter(value=>value==="sync").length,1);assert.ok(order.indexOf("closed")>=0&&order.indexOf("closed")<order.indexOf("create")&&order.indexOf("create")<order.indexOf("sync"),order.join(","));assert.ok(ownBytes.length>0);const ownOwner=JSON.parse(ownBytes.toString("utf8"));assert.deepEqual(Object.keys(ownOwner).sort(),["host","nonce","pid","v"]);assert.deepEqual(ownBytes,authorityCanonicalBytes(ownOwner));const match=/^\.authority-ledger-lock-publication-([0-9a-f]{64})-([0-9a-f]{16})-([1-9][0-9]*)-([0-9a-f]{64})\.tmp$/.exec(path.basename(ownStage));assert.ok(match);const ticket=BigInt(`0x${match[2]}`);assert.ok(ticket>=1n&&ticket<=0xffffffffffffffffn);assert.equal(match[1],publicationHostDigest(ownOwner.host));assert.equal(Number(match[3]),ownOwner.pid);assert.equal(match[4],ownOwner.nonce);assert.equal(publicationRenames,0);assert.equal(callbackEntries,0);assert.ok(path.basename(predecessorStage)<path.basename(ownStage));assert.deepEqual((await readdir(root)).sort(),[path.basename(predecessorStage),path.basename(ownStage)].sort());assert.deepEqual(readFileSync(path.join(predecessorStage,"owner.json")),predecessorBytes);assert.deepEqual(readFileSync(path.join(ownStage,"owner.json")),ownBytes);}));
 
+test("two live publisher names saturate mutating admission without authorizing settlement",()=>withRoot(async root=>{
+  const peers=[
+    {host:hostname(),nonce:"a".repeat(64),pid:61001,v:1 as const,ticket:"0000000000000001"},
+    {host:hostname(),nonce:"b".repeat(64),pid:61002,v:1 as const,ticket:"0000000000000002"},
+  ] as const;
+  const stages=await Promise.all(peers.map(async owner=>{
+    const bytes=publicationOwnerBytes(owner),stage=await writePublicationStage(root,owner,bytes),ownerPath=path.join(stage,"owner.json"),identity=(value:Readonly<{dev:bigint;ino:bigint;mode:bigint;nlink:bigint}>)=>({dev:value.dev,ino:value.ino,mode:value.mode,nlink:value.nlink});
+    return {bytes,stage,stageIdentity:identity(lstatSync(stage,{bigint:true})),ownerIdentity:identity(lstatSync(ownerPath,{bigint:true}))};
+  }));
+  const before=await snapshotRootArtifacts(root),authenticated=authenticateOutcomeRequest({tenant:"tenant_1",requester:"requester_1",definitionAlias:"definition_1",request:{v:"reelier.outcome-request/v1",requestId:"request_1",sourceRefs:{source:"ref_1"},choices:{}}}),originalKill=process.kill;
+  let stageValidations=0,generationClosures=0,creatorPublicationHooks=0,callbackEntries=0;
+  Object.defineProperty(process,"kill",{configurable:true,value:(pid:number)=>peers.some(peer=>peer.pid===pid)?true:originalKill.call(process,pid,0)});
+  let observed;
+  try{
+    observed=await withRecordedDelays(()=>new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20,faultInjector:(point:string)=>{
+      if(point==="before-publication-stage-validation")stageValidations++;
+      if(point==="after-lock-publication-generation-closed")generationClosures++;
+      if((publicationCrashPoints as readonly string[]).includes(point))creatorPublicationHooks++;
+      if(point==="before-ledger-operation-callback")callbackEntries++;
+    }} as never).bindIngress(authenticated));
+  }finally{Object.defineProperty(process,"kill",{configurable:true,value:originalKill});}
+  assert.deepEqual(observed!.result,{ok:false,reason:"busy"});
+  assert.equal(observed!.elapsedMs,20,"saturated observation consumes only the bounded monotonic admission budget");
+  assert.deepEqual(
+    {stageValidations,generationClosures,creatorPublicationHooks,callbackEntries},
+    {stageValidations:0,generationClosures:0,creatorPublicationHooks:0,callbackEntries:0},
+    "saturated name observation validates no content, closes no generation, creates no contender, and grants no callback authority",
+  );
+  assert.deepEqual(await snapshotRootArtifacts(root),before,"saturated observation creates no coordination artifact");
+  for(const item of stages){
+    const identity=(value:Readonly<{dev:bigint;ino:bigint;mode:bigint;nlink:bigint}>)=>({dev:value.dev,ino:value.ino,mode:value.mode,nlink:value.nlink}),ownerPath=path.join(item.stage,"owner.json");
+    assert.deepEqual(identity(lstatSync(item.stage,{bigint:true})),item.stageIdentity);
+    assert.deepEqual(identity(lstatSync(ownerPath,{bigint:true})),item.ownerIdentity);
+    assert.deepEqual(readFileSync(ownerPath),item.bytes);
+  }
+}));
+
+test("two dead ticketed publishers require full settlement before normal publication",()=>withRoot(async root=>{
+  const peers=[
+    {host:hostname(),nonce:"c".repeat(64),pid:62001,v:1 as const,ticket:"0000000000000001"},
+    {host:hostname(),nonce:"d".repeat(64),pid:62002,v:1 as const,ticket:"0000000000000002"},
+  ] as const;
+  const stages=await Promise.all(peers.map(owner=>writePublicationStage(root,owner,publicationOwnerBytes(owner)))),originalKill=process.kill,order:string[]=[];
+  let stageValidations=0,finalValidations=0,finalLiveness=0,removeAttempts=0,rootSyncs=0,creatorStageCreates=0,publicationRenames=0,callbackEntries=0;
+  Object.defineProperty(process,"kill",{configurable:true,value:(pid:number)=>{if(peers.some(peer=>peer.pid===pid))throw Object.assign(new Error("dead publisher"),{code:"ESRCH"});return originalKill.call(process,pid,0);}});
+  let result;
+  try{
+    result=await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:100,faultInjector:(point:string)=>{
+      if(point==="before-publication-stage-validation"){stageValidations++;order.push("validation");}
+      if(point==="before-publication-stage-final-validation"){finalValidations++;order.push("final-validation");}
+      if(point==="before-publication-stage-final-liveness"){finalLiveness++;order.push("final-liveness");}
+      if(point==="before-publication-stage-remove-attempt"){removeAttempts++;order.push("remove");}
+      if(point==="after-publication-stage-cleanup-root-sync"){rootSyncs++;order.push("root-sync");}
+      if(point==="after-lock-publication-stage-create"){creatorStageCreates++;order.push("create");}
+      if(point==="after-lock-publication-rename"){publicationRenames++;order.push("publish");}
+      if(point==="before-ledger-operation-callback"){callbackEntries++;order.push("callback");}
+    }} as never).observeClock();
+  }finally{Object.defineProperty(process,"kill",{configurable:true,value:originalKill});}
+  assert.deepEqual(result,{ok:true,status:"advanced",observedAt:new Date(t0).toISOString()});
+  assert.ok(stageValidations>=2,"dead saturation falls through to complete content classification");
+  assert.equal(finalValidations,2);
+  assert.equal(finalLiveness,2);
+  assert.equal(removeAttempts,2);
+  assert.equal(rootSyncs,1,"the complete classifier batches one ledger-root sync after both exact removals");
+  assert.equal(creatorStageCreates,1);
+  assert.equal(publicationRenames,1);
+  assert.equal(callbackEntries,1);
+  assert.deepEqual(order.filter(value=>value==="final-validation"||value==="final-liveness"||value==="remove"||value==="root-sync"),["final-validation","final-liveness","remove","final-validation","final-liveness","remove","root-sync"]);
+  assert.ok(order.lastIndexOf("root-sync")<order.indexOf("create")&&order.indexOf("create")<order.indexOf("publish")&&order.indexOf("publish")<order.indexOf("callback"),order.join(","));
+  for(const stage of stages)assert.equal(existsSync(stage),false,"proved-dead stage is removed by the full classifier");
+  assert.deepEqual((await readdir(root)).filter(name=>name.startsWith(".authority-ledger-lock-publication-")),[]);
+}));
+
 test("an active owner removes exact dead stages and syncs before closing live peers",()=>withRoot(async root=>{const deadOwner={host:hostname(),nonce:"9".repeat(64),pid:await exitedChildPid(),v:1 as const},liveOwner={host:hostname(),nonce:"a".repeat(64),pid:1,v:1 as const},deadBytes=authorityCanonicalBytes(deadOwner),liveBytes=authorityCanonicalBytes(liveOwner),deadStage=path.join(root,publicationStageName(deadOwner)),liveStage=path.join(root,publicationStageName(liveOwner)),originalKill=process.kill;const order:string[]=[];let injected=false,removeAttempts=0,rootSyncs=0,callbackEntries=0;Object.defineProperty(process,"kill",{configurable:true,value:(pid:number)=>{if(pid===deadOwner.pid)throw Object.assign(new Error("dead"),{code:"ESRCH"});if(pid===liveOwner.pid)return true;return originalKill.call(process,pid,0);}});let result;try{result=await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:100,faultInjector:(point:string)=>{if(point==="after-lock-publication-root-sync"&&!injected){injected=true;mkdirSync(deadStage);writeFileSync(path.join(deadStage,"owner.json"),deadBytes);mkdirSync(liveStage);writeFileSync(path.join(liveStage,"owner.json"),liveBytes);}if(injected&&point==="after-lock-publication-generation-closed")order.push("closed");if(point==="before-publication-stage-remove-attempt"){removeAttempts++;order.push("remove");}if(point==="after-publication-stage-cleanup-root-sync"){rootSyncs++;order.push("root-sync");}if(point==="before-ledger-operation-callback"){callbackEntries++;order.push("callback");}}} as never).observeClock();}finally{Object.defineProperty(process,"kill",{configurable:true,value:originalKill});}assert.deepEqual(result,{ok:true,status:"advanced",observedAt:new Date(t0).toISOString()});assert.equal(injected,true);assert.equal(removeAttempts,1);assert.equal(rootSyncs,1);assert.equal(callbackEntries,1);assert.deepEqual(order,["closed","remove","root-sync","closed","callback"]);assert.deepEqual((await readdir(root)).filter(name=>name.startsWith(".authority-ledger-lock-publication-")),[path.basename(liveStage)]);assert.equal(existsSync(deadStage),false);assert.deepEqual(readFileSync(path.join(liveStage,"owner.json")),liveBytes);}));
 
 test("all late publication snapshot boundaries use one bounded retry protocol",{timeout:5_000},async t=>{
