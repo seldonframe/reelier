@@ -135,6 +135,19 @@ interface PrepHousekeeperRuntime {
   readonly delay: (milliseconds: number) => Promise<void>;
   readonly observeBoundary?: (point: string) => void;
 }
+declare const prepAttemptTokenBrand: unique symbol;
+declare const prepRetirementAuthorityBrand: unique symbol;
+declare const prepRetiredCleanupAuthorityBrand: unique symbol;
+type PrepCreatorAttemptToken=Readonly<{readonly [prepAttemptTokenBrand]:never}>;
+type PrepRetirementAuthority=Readonly<{readonly [prepRetirementAuthorityBrand]:never}>;
+type PrepRetiredCleanupAuthority=Readonly<{readonly [prepRetiredCleanupAuthorityBrand]:never}>;
+type PrepHousekeepingRoute=
+  |Readonly<{kind:"silent"}>
+  |Readonly<{kind:"no-authority"}>
+  |Readonly<{kind:"dead-prep";token:PrepCreatorAttemptToken;retirementAuthority:PrepRetirementAuthority}>
+  |Readonly<{kind:"retired-prep";cleanupAuthority:PrepRetiredCleanupAuthority}>;
+const prepAttemptRuntimeIdentity=Object.freeze({kind:"prep-housekeeper-runtime"});
+const prepAttemptRuntimeBindings=new WeakMap<object,typeof prepAttemptRuntimeIdentity>();
 type InternalFsAuthorityLedgerOptions = FsAuthorityLedgerOptions & {
   readonly [__testAdmissionClockOption]?: () => unknown;
   readonly [__testPrepHousekeeperRuntimeOption]?: PrepHousekeeperRuntime;
@@ -498,7 +511,9 @@ export class FsAuthorityLedger implements AuthorityLedger {
   }
 
   private async acquireLock(admitContender:boolean): Promise<LockResult> {
+    const monotonicNow=this.prepHousekeeperRuntime.monotonicNow,delay=this.prepHousekeeperRuntime.delay;
     const deadline = monotonicNow() + this.options.lockTimeoutMs;
+    const prepAttemptToken=mintUnboundPrepCreatorAttemptToken();
     const owner: LockOwner = { v: 1, host: hostname(), pid: process.pid, nonce: randomBytes(32).toString("hex") };
     const ownerBytes=canonicalBytes(owner);let stageName="",stagePath="",ownerPath="",stageTicket:bigint|null=null;
     let stageCreated=false,published=false,expectedStage:PublicationStage|null=null,election:PublicationElection|null=null,provisionalWait:ProvisionalPublicationWait|null=null,stagedSettlementStarted=false,provisionalEpochEligibility:ProvisionalEpochEligibility="unearned",waitedOnActiveLock=false,fullReelectionPending=false,provisionalFallbackResetPending=false;
@@ -507,7 +522,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
     const backoff=async()=>{const remaining=deadline-monotonicNow();if(remaining<=0)return;await delay(Math.min(retryDelayMs,remaining));retryDelayMs=Math.min(50,retryDelayMs*2);};
     const attempt=async():Promise<LockResult>=>{while (true) {
       try {
-        const hybridGuard=await this.classifyHybridCoordinationEpoch();
+        const hybridGuard=await this.classifyHybridCoordinationEpoch(prepAttemptToken);
         if(hybridGuard==="retry"){
           if(monotonicNow()>=deadline)return {ok:false,reason:"busy"};
           await backoff();continue;
@@ -725,7 +740,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
     return liveness.every(value=>value==="alive")?{kind:"saturated",names:Object.freeze([...names])}:{kind:"fallback"};
   }
 
-  private async classifyHybridCoordinationEpoch():Promise<HybridGuardDecision>{
+  private async classifyHybridCoordinationEpoch(prepAttemptToken:PrepCreatorAttemptToken):Promise<HybridGuardDecision>{
     let names:string[];
     try{names=(await readdir(this.root)).sort();}catch(error){if(hasCode(error,"ENOENT")||isSnapshotSharingError(error))return "retry";throw error;}
     if(!names.some(isK1ReservedName))return "continue-legacy";
@@ -759,7 +774,16 @@ export class FsAuthorityLedger implements AuthorityLedger {
     const epochRelation=this.compareHybridRootSnapshots(initial,finalClosedSnapshot);
     if(epochRelation==="corruption")return "corruption";
     if(epochRelation!=="unchanged")return "retry";
+    this.observeStablePrepHousekeepingRoute(deriveStablePrepHousekeepingRoute(finalClosedSnapshot,decision,prepAttemptToken));
     return decision;
+  }
+
+  private observeStablePrepHousekeepingRoute(route:PrepHousekeepingRoute):void{
+    if(route.kind==="no-authority"){this.prepHousekeeperRuntime.observeBoundary?.("prep-only-no-authority");return;}
+    if(route.kind==="dead-prep"){
+      this.prepHousekeeperRuntime.observeBoundary?.("prep-only-creator-token-carried");
+      this.prepHousekeeperRuntime.observeBoundary?.("prep-only-prep-retirement-authority-dead-owner");
+    }
   }
 
   private async readHybridRootSnapshot(names:readonly string[]):Promise<HybridRootSnapshot>{
@@ -1944,6 +1968,22 @@ function assertLockOwner(value: LockOwner): void {
   if (!value || value.v !== 1 || typeof value.host !== "string" || value.host.length === 0 || !Number.isSafeInteger(value.pid) || value.pid <= 0 || !/^[0-9a-f]{64}$/.test(value.nonce) || Object.keys(value).sort().join(",") !== "host,nonce,pid,v") throw new LedgerCorruption("invalid lock owner");
 }
 function assertCleanupAck(value:CleanupAck):void{if(!value||value.v!=="reelier.authority-ledger-lock-cleanup-ack/v1"||!(["released","recovery-pending","publication-aborted"] as unknown[]).includes(value.disposition)||typeof value.markerName!=="string"||!SHA.test(value.ownerDigest)||value.ownerDigest===ZERO_SHA||(value.journalHead!==null&&(!SHA.test(value.journalHead)||value.journalHead===ZERO_SHA))||Object.keys(value).sort().join(",")!=="disposition,journalHead,markerName,owner,ownerDigest,v")throw new LedgerCorruption("invalid cleanup acknowledgment");assertLockOwner(value.owner);}
+function mintUnboundPrepCreatorAttemptToken():PrepCreatorAttemptToken{
+  const token=Object.freeze({}) as PrepCreatorAttemptToken;
+  prepAttemptRuntimeBindings.set(token,prepAttemptRuntimeIdentity);
+  return token;
+}
+function deriveStablePrepHousekeepingRoute(snapshot:HybridRootSnapshot,decision:HybridGuardDecision,token:PrepCreatorAttemptToken):PrepHousekeepingRoute{
+  if(decision!=="busy")return {kind:"silent"};
+  const parsed=snapshot.names.map(parseK1Name).filter((value):value is ParsedK1Name=>value!==null);
+  const prep=parsed.find((value):value is Extract<ParsedK1Name,{kind:"admission-prep"}>=>value.kind==="admission-prep");
+  if(prep!==undefined){
+    if(prep.hostDigest!==coordinationHostDigest(hostname())||processLiveness(prep.pid)!=="dead")return {kind:"silent"};
+    if(prepAttemptRuntimeBindings.get(token)!==prepAttemptRuntimeIdentity)return {kind:"silent"};
+    return {kind:"dead-prep",token,retirementAuthority:Object.freeze({}) as PrepRetirementAuthority};
+  }
+  return parsed.some(value=>value.kind==="admission-slot"||value.kind==="creator-withdrawal")?{kind:"no-authority"}:{kind:"silent"};
+}
 function processLiveness(pid: number): "alive" | "dead" | "unverifiable" {
   try { process.kill(pid, 0); return "alive"; }
   catch (error) {
