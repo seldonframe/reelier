@@ -206,6 +206,16 @@ publication-stage removal attempt. Each transient attempt restarts with complete
 enumeration before that whole order repeats. A
 transient failure never retries `rm` directly: it restarts those validations against the same
 monotonic deadline. A same-name replacement installed before or during any attempt is preserved.
+Recursive dead-stage cleanup is non-atomic. After exact final validation and dead-liveness
+authorization, another correct remover may advance the same frozen directory identity through the
+exact sequence `complete -> empty/no owner -> absent`. That sequence is non-authorizing removal
+progress: disappearance is accepted only after a ledger-root sync, while the same-directory empty
+intermediate causes bounded retry or `busy`, never integrity corruption. During closed-generation
+revalidation, the exact same-directory `complete -> empty` transition is likewise only retryable
+when that generation's initial liveness observation for the stage was `dead`. This exception does
+not broaden construction progress. A creator-owned stage, a live or unverifiable owner, a directory
+identity/type/link replacement, an owner identity/type/link replacement (including canonical-same
+bytes), new or malformed owner bytes, and malformed content remain corruption and are preserved.
 After an exact removal, the pending ledger-root sync completes before the exact
 `after-publication-stage-cleanup-root-sync` hook; only after that boundary may the next complete
 generation close, and callback entry remains unreachable until that post-sync closure succeeds.
