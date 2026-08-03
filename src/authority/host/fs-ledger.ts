@@ -211,6 +211,7 @@ const INGRESS_FILE = /^([0-9a-f]{64})\.json$/;
 const RETIRED_LOCK = /^\.authority-ledger-lock-([1-9][0-9]*)-([0-9a-f]{64})\.(released|recovery-pending|publication-aborted)$/;
 const PUBLICATION_STAGE = /^\.authority-ledger-lock-publication-([0-9a-f]{64})-([0-9a-f]{16})-([1-9][0-9]*)-([0-9a-f]{64})\.tmp$/;
 const MAX_PUBLICATION_TICKET = 0xffffffffffffffffn;
+const MAX_ADMITTED_MUTATING_PUBLICATION_STAGES = 2;
 const CLEANUP_ACK = /^\.authority-ledger-lock-cleanup-([0-9a-f]{64})\.ack$/;
 const CLEANUP_STAGE = /^\.authority-ledger-lock-cleanup-stage-([1-9][0-9]*)-([0-9a-f]{64})-([0-9a-f]{64})\.tmp$/;
 const JOURNAL_FILE = /^(\d{16})-([0-9a-f]{64})$/;
@@ -453,6 +454,10 @@ export class FsAuthorityLedger implements AuthorityLedger {
         if(waitedOnActiveLock){waitedOnActiveLock=false;if(!fullReelectionPending)retryDelayMs=5;}
         if(stageCreated&&monotonicNow()>=deadline)return {ok:false,reason:"busy"};
         if(!stageCreated){
+          if(admitContender&&await this.mutatingAdmissionSaturated()){
+            if(monotonicNow()>=deadline)return {ok:false,reason:"busy"};
+            await backoff();continue;
+          }
           const existingStages=await this.settlePublicationStages(deadline,false,null,admitContender);
           if(existingStages.length>0&&!admitContender){
             if(monotonicNow()>=deadline)return {ok:false,reason:"busy"};
@@ -520,6 +525,25 @@ export class FsAuthorityLedger implements AuthorityLedger {
 
   private publicationStageName(owner:LockOwner,ticket:bigint):string{return `.authority-ledger-lock-publication-${this.hostDigest(owner.host)}-${ticket.toString(16).padStart(16,"0")}-${owner.pid}-${owner.nonce}.tmp`;}
   private hostDigest(host:string):string{return createHash("sha256").update(host,"utf8").digest("hex");}
+
+  private async mutatingAdmissionSaturated():Promise<boolean>{
+    let names:string[];
+    try{names=(await readdir(this.root)).filter(name=>name.startsWith(".authority-ledger-lock-publication-"));}
+    catch(error){if(hasCode(error,"ENOENT")||isSnapshotSharingError(error))return false;throw error;}
+    if(names.length<MAX_ADMITTED_MUTATING_PUBLICATION_STAGES)return false;
+    const localHostDigest=this.hostDigest(hostname()),identities=new Set<string>();
+    for(const name of names){
+      const match=PUBLICATION_STAGE.exec(name);
+      if(!match)return false;
+      const ticket=BigInt(`0x${match[2]}`),pid=Number(match[3]);
+      if(ticket===0n||!Number.isSafeInteger(pid)||pid<=0||match[1]!==localHostDigest)return false;
+      const identity=`${match[1]}:${match[3]}`;
+      if(identities.has(identity))return false;
+      identities.add(identity);
+      if(processLiveness(pid)!=="alive")return false;
+    }
+    return true;
+  }
 
   private async inspectActiveLock(deadline:number):Promise<"absent"|"retry"|"wait"|Extract<LockResult,{ok:false}>>{
     const directory=this.absolute("lock");let directoryStat;
