@@ -1574,6 +1574,95 @@ test("canonical membership churn during required settlement opens a fresh denial
   assert.equal(existsSync(path.join(root,"lock")),false);
 }));
 
+test("a prior settlement snapshot error forbids a fresh provisional epoch",()=>withRoot(async root=>{
+  const predecessor={host:hostname(),nonce:"1".repeat(64),pid:process.pid+111,v:1 as const,ticket:"0000000000000003"},distant={host:hostname(),nonce:"2".repeat(64),pid:process.pid+112,v:1 as const,ticket:"0000000000000001"},higher={host:hostname(),nonce:"3".repeat(64),pid:process.pid+113,v:1 as const,ticket:"0000000000000005"},peers=[predecessor,distant,higher] as const;
+  assert.ok(peers.every(peer=>Number.isSafeInteger(peer.pid)&&peer.pid>0));
+  const peerStages=peers.map(peer=>path.join(root,publicationStageName(peer))),peerBytes=peers.map(peer=>publicationOwnerBytes(peer)),peerIdentities=new Map<string,Readonly<{dev:bigint;ino:bigint;mode:bigint;nlink:bigint}>>(),livePids=new Set(peers.map(peer=>peer.pid)),originalKill=process.kill,identity=(target:string)=>{const value=lstatSync(target,{bigint:true});return {dev:value.dev,ino:value.ino,mode:value.mode,nlink:value.nlink};},events:string[]=[];
+  let ownStage="",provisionalSelections=0,provisionalCloses=0,stagedBoundaries=0,settlementEnumerations=0,fullClosures=0,removeAttempts=0,publicationRenames=0,callbackEntries=0,sharingInjected=false,settlementChurn=false;
+  const installPeer=(index:number)=>{mkdirSync(peerStages[index]);writeFileSync(path.join(peerStages[index],"owner.json"),peerBytes[index]);peerIdentities.set(peerStages[index],identity(peerStages[index]));};
+  Object.defineProperty(process,"kill",{configurable:true,value:(pid:number)=>livePids.has(pid)?true:originalKill.call(process,pid,0)});
+  let observed;
+  try{observed=await withRecordedDelays(()=>rawLedgerWithAdmissionClock(root,()=>4n,{now:()=>t0,lockTimeoutMs:40,faultInjector:(point:string)=>{
+    if(point==="after-lock-publication-stage-sync"&&ownStage===""){const ownName=readdirSync(root).find(name=>name.startsWith(".authority-ledger-lock-publication-"));assert.ok(ownName);ownStage=path.join(root,ownName);installPeer(0);}
+    if(point==="after-lock-publication-provisional-predecessor-selection")provisionalSelections++;
+    if(point==="before-lock-publication-provisional-root-reenumeration"){provisionalCloses++;if(provisionalCloses===2){installPeer(2);events.push("epoch-churn");}}
+    if(point==="before-staged-publication-settlement"){stagedBoundaries++;events.push("staged");}
+    if(point==="after-publication-stage-enumeration"&&stagedBoundaries>0){settlementEnumerations++;events.push("enumerate");}
+    if(point==="before-publication-stage-validation"&&stagedBoundaries>0&&!sharingInjected){sharingInjected=true;events.push("object-error");throw Object.assign(new Error("settlement-sharing"),{code:"EBUSY"});}
+    if(point==="before-publication-stage-root-reenumeration"&&sharingInjected&&!settlementChurn){settlementChurn=true;installPeer(1);events.push("settlement-churn");}
+    if(point==="after-lock-publication-generation-closed")fullClosures++;
+    if(point==="before-publication-stage-remove-attempt")removeAttempts++;
+    if(point==="after-lock-publication-rename")publicationRenames++;
+    if(point==="before-ledger-operation-callback")callbackEntries++;
+  }}).observeClock(),requested=>events.push(`delay:${requested}`));}finally{Object.defineProperty(process,"kill",{configurable:true,value:originalKill});}
+  assert.equal(sharingInjected,true);assert.equal(settlementChurn,true);assert.deepEqual(observed!.result,{ok:false,reason:"busy"});assert.equal(observed!.elapsedMs,40);
+  assert.deepEqual({provisionalSelections,stagedBoundaries,removeAttempts,publicationRenames,callbackEntries},{provisionalSelections:2,stagedBoundaries:1,removeAttempts:1,publicationRenames:0,callbackEntries:0});assert.ok(settlementEnumerations>=3);assert.ok(fullClosures>=1);
+  assert.ok(events.indexOf("staged")<events.indexOf("object-error")&&events.indexOf("object-error")<events.indexOf("settlement-churn"),events.join(","));
+  assert.equal(existsSync(ownStage),false);for(let index=0;index<peerStages.length;index++){assert.deepEqual(readFileSync(path.join(peerStages[index],"owner.json")),peerBytes[index]);assert.deepEqual(identity(peerStages[index]),peerIdentities.get(peerStages[index]));}
+}));
+
+test("settlement cleanup state forbids a fresh provisional epoch",()=>withRoot(async root=>{
+  const predecessor={host:hostname(),nonce:"4".repeat(64),pid:process.pid+121,v:1 as const,ticket:"0000000000000003"},dead={host:hostname(),nonce:"5".repeat(64),pid:process.pid+122,v:1 as const,ticket:"0000000000000001"},newDistant={host:hostname(),nonce:"6".repeat(64),pid:process.pid+123,v:1 as const,ticket:"0000000000000002"},higher={host:hostname(),nonce:"7".repeat(64),pid:process.pid+124,v:1 as const,ticket:"0000000000000005"},peers=[predecessor,dead,newDistant,higher] as const;
+  assert.ok(peers.every(peer=>Number.isSafeInteger(peer.pid)&&peer.pid>0));
+  const peerStages=peers.map(peer=>path.join(root,publicationStageName(peer))),peerBytes=peers.map(peer=>publicationOwnerBytes(peer)),livePids=new Set([predecessor.pid,newDistant.pid,higher.pid]),originalKill=process.kill,events:string[]=[];
+  let ownStage="",provisionalSelections=0,provisionalCloses=0,stagedBoundaries=0,fullClosures=0,deadRemoveAttempts=0,creatorRemoveAttempts=0,cleanupRootSyncs=0,publicationRenames=0,callbackEntries=0,cleanupSynced=false,settlementChurn=false;
+  const installPeer=(index:number)=>{mkdirSync(peerStages[index]);writeFileSync(path.join(peerStages[index],"owner.json"),peerBytes[index]);};
+  Object.defineProperty(process,"kill",{configurable:true,value:(pid:number)=>{if(pid===dead.pid)throw Object.assign(new Error("dead"),{code:"ESRCH"});return livePids.has(pid)?true:originalKill.call(process,pid,0);}});
+  let observed;
+  try{observed=await withRecordedDelays(()=>rawLedgerWithAdmissionClock(root,()=>4n,{now:()=>t0,lockTimeoutMs:40,faultInjector:(point:string)=>{
+    if(point==="after-lock-publication-stage-sync"&&ownStage===""){const ownName=readdirSync(root).find(name=>name.startsWith(".authority-ledger-lock-publication-"));assert.ok(ownName);ownStage=path.join(root,ownName);installPeer(0);installPeer(1);}
+    if(point==="after-lock-publication-provisional-predecessor-selection")provisionalSelections++;
+    if(point==="before-lock-publication-provisional-root-reenumeration"){provisionalCloses++;if(provisionalCloses===2){installPeer(3);events.push("epoch-churn");}}
+    if(point==="before-staged-publication-settlement"){stagedBoundaries++;events.push("staged");}
+    if(point==="after-lock-publication-generation-closed"){fullClosures++;events.push("full-close");}
+    if(point==="before-publication-stage-remove-attempt"){if(existsSync(peerStages[1])){deadRemoveAttempts++;events.push("dead-remove");}else creatorRemoveAttempts++;}
+    if(point==="after-publication-stage-cleanup-root-sync"&&!existsSync(peerStages[1])&&existsSync(ownStage)&&!cleanupSynced){cleanupSynced=true;cleanupRootSyncs++;events.push("cleanup-root-sync");}
+    if(point==="before-publication-stage-root-reenumeration"&&cleanupSynced&&!settlementChurn){settlementChurn=true;installPeer(2);events.push("settlement-churn");}
+    if(point==="after-lock-publication-rename")publicationRenames++;
+    if(point==="before-ledger-operation-callback")callbackEntries++;
+  }}).observeClock());}finally{Object.defineProperty(process,"kill",{configurable:true,value:originalKill});}
+  assert.equal(cleanupSynced,true);assert.equal(settlementChurn,true);assert.deepEqual(observed!.result,{ok:false,reason:"busy"});assert.equal(observed!.elapsedMs,40);
+  assert.deepEqual({provisionalSelections,stagedBoundaries,deadRemoveAttempts,creatorRemoveAttempts,cleanupRootSyncs,publicationRenames,callbackEntries},{provisionalSelections:2,stagedBoundaries:1,deadRemoveAttempts:1,creatorRemoveAttempts:1,cleanupRootSyncs:1,publicationRenames:0,callbackEntries:0});assert.ok(fullClosures>=2);
+  assert.ok(events.indexOf("staged")<events.indexOf("dead-remove")&&events.indexOf("dead-remove")<events.indexOf("cleanup-root-sync")&&events.indexOf("cleanup-root-sync")<events.indexOf("settlement-churn")&&events.lastIndexOf("full-close")>events.indexOf("settlement-churn"),events.join(","));
+  assert.equal(existsSync(ownStage),false);assert.equal(existsSync(peerStages[1]),false);for(const index of [0,2,3]){assert.deepEqual(readFileSync(path.join(peerStages[index],"owner.json")),peerBytes[index]);}
+}));
+
+test("invalid fresh provisional cohorts return to full settlement before any provisional wait",async t=>{
+  const cases=["raw-head","malformed","own-replaced","predecessor-replaced","predecessor-dead","predecessor-unverifiable"] as const;
+  for(const kind of cases)await t.test(kind,()=>withRoot(async root=>{const external=await tempRoot();try{
+    const predecessor={host:hostname(),nonce:"8".repeat(64),pid:process.pid+131,v:1 as const,ticket:"0000000000000003"},distant={host:hostname(),nonce:"9".repeat(64),pid:process.pid+132,v:1 as const,ticket:"0000000000000001"},higher={host:hostname(),nonce:"a".repeat(64),pid:process.pid+133,v:1 as const,ticket:"0000000000000005"},predecessorBytes=publicationOwnerBytes(predecessor),distantBytes=publicationOwnerBytes(distant),higherBytes=publicationOwnerBytes(higher),predecessorStage=path.join(root,publicationStageName(predecessor)),distantStage=path.join(root,publicationStageName(distant)),higherStage=path.join(root,publicationStageName(higher)),malformedStage=path.join(root,".authority-ledger-lock-publication-malformed"),livePids=new Set([predecessor.pid,distant.pid,higher.pid]),originalKill=process.kill;
+    assert.ok([...livePids].every(pid=>Number.isSafeInteger(pid)&&pid>0));
+    let ownStage="",ownBytes=Buffer.alloc(0),provisionalSelections=0,provisionalCloses=0,freshLiveness=0,stagedBoundaries=0,freshWaitDelays=0,publicationRenames=0,callbackEntries=0,firstEpochChurn=false,settlementChurn=false,invalidated=false,predecessorState:"alive"|"dead"|"unverifiable"="alive";
+    const replace=(target:string,bytes:Buffer,label:string)=>{const prepared=path.join(external,label);mkdirSync(prepared);writeFileSync(path.join(prepared,"owner.json"),bytes);renameSync(target,path.join(external,`${label}-old`));renameSync(prepared,target);};
+    Object.defineProperty(process,"kill",{configurable:true,value:(pid:number)=>{if(pid===predecessor.pid){if(predecessorState==="dead")throw Object.assign(new Error("dead"),{code:"ESRCH"});if(predecessorState==="unverifiable")throw Object.assign(new Error("unverifiable"),{code:"EPERM"});return true;}return livePids.has(pid)?true:originalKill.call(process,pid,0);}});
+    let observed;
+    try{observed=await withRecordedDelays(()=>rawLedgerWithAdmissionClock(root,()=>4n,{now:()=>t0,lockTimeoutMs:30,faultInjector:(point:string)=>{
+      if(point==="after-lock-publication-stage-sync"&&ownStage===""){const ownName=readdirSync(root).find(name=>name.startsWith(".authority-ledger-lock-publication-"));assert.ok(ownName);ownStage=path.join(root,ownName);ownBytes=readFileSync(path.join(ownStage,"owner.json"));mkdirSync(predecessorStage);writeFileSync(path.join(predecessorStage,"owner.json"),predecessorBytes);}
+      if(point==="after-lock-publication-provisional-predecessor-selection"){
+        provisionalSelections++;
+        if(stagedBoundaries===1&&provisionalSelections>2&&!invalidated){
+          if(kind==="malformed")mkdirSync(malformedStage);else if(kind==="own-replaced")replace(ownStage,ownBytes,"own-replacement");else if(kind==="predecessor-replaced")replace(predecessorStage,predecessorBytes,"predecessor-replacement");
+          if(kind==="malformed"||kind==="own-replaced"||kind==="predecessor-replaced")invalidated=true;
+        }
+      }
+      if(point==="before-lock-publication-provisional-root-reenumeration"){provisionalCloses++;if(provisionalCloses===2&&!firstEpochChurn){firstEpochChurn=true;mkdirSync(higherStage);writeFileSync(path.join(higherStage,"owner.json"),higherBytes);}}
+      if(point==="before-lock-publication-provisional-predecessor-liveness"&&stagedBoundaries===1&&provisionalSelections>2){freshLiveness++;if(!invalidated&&(kind==="predecessor-dead"||kind==="predecessor-unverifiable")){invalidated=true;predecessorState=kind==="predecessor-dead"?"dead":"unverifiable";}}
+      if(point==="before-staged-publication-settlement")stagedBoundaries++;
+      if(point==="before-publication-stage-root-reenumeration"&&firstEpochChurn&&!settlementChurn){settlementChurn=true;if(kind==="raw-head")rmSync(predecessorStage,{recursive:true});else{mkdirSync(distantStage);writeFileSync(path.join(distantStage,"owner.json"),distantBytes);}}
+      if(point==="after-lock-publication-rename")publicationRenames++;
+      if(point==="before-ledger-operation-callback")callbackEntries++;
+    }}).observeClock(),()=>{if(provisionalSelections>2&&freshLiveness>0&&stagedBoundaries===1)freshWaitDelays++;});}finally{Object.defineProperty(process,"kill",{configurable:true,value:originalKill});}
+    assert.equal(firstEpochChurn,true);assert.equal(settlementChurn,true);
+    if(kind==="raw-head"){
+      assert.deepEqual(observed!.result,{ok:true,status:"advanced",observedAt:new Date(t0).toISOString()});assert.deepEqual({postStagedSelections:provisionalSelections-2,stagedBoundaries,publicationRenames,callbackEntries},{postStagedSelections:0,stagedBoundaries:1,publicationRenames:1,callbackEntries:1});assert.equal(invalidated,false);assert.equal(existsSync(predecessorStage),false);assert.deepEqual(readFileSync(path.join(higherStage,"owner.json")),higherBytes);
+    }else{
+      const expected=kind==="malformed"||kind==="own-replaced"||kind==="predecessor-unverifiable"?{ok:false as const,reason:"corruption" as const}:{ok:false as const,reason:"busy" as const};
+      assert.equal(invalidated,true,`${kind} invalidates the fresh cohort after the typed churn boundary`);assert.deepEqual(observed!.result,expected);assert.deepEqual({postStagedSelections:provisionalSelections-2,stagedBoundaries,freshWaitDelays,publicationRenames,callbackEntries},{postStagedSelections:1,stagedBoundaries:2,freshWaitDelays:0,publicationRenames:0,callbackEntries:0});
+      if(kind==="malformed")assert.equal(existsSync(malformedStage),true);if(kind==="own-replaced"){assert.equal(existsSync(ownStage),true);assert.deepEqual(readFileSync(path.join(ownStage,"owner.json")),ownBytes);}else assert.equal(existsSync(ownStage),false);if(kind==="predecessor-dead")assert.equal(existsSync(predecessorStage),false);else{assert.equal(existsSync(predecessorStage),true);assert.deepEqual(readFileSync(path.join(predecessorStage,"owner.json")),predecessorBytes);}assert.deepEqual(readFileSync(path.join(distantStage,"owner.json")),distantBytes);assert.deepEqual(readFileSync(path.join(higherStage,"owner.json")),higherBytes);
+    }
+  }finally{await rm(external,{recursive:true,force:true});}}));
+});
+
 test("malformed membership added during provisional close is corruption, never busy",()=>withRoot(async root=>{
   const predecessor={host:hostname(),nonce:"b".repeat(64),pid:41,v:1 as const,ticket:"0000000000000002"},predecessorBytes=publicationOwnerBytes(predecessor),predecessorStage=path.join(root,publicationStageName(predecessor)),malformed=path.join(root,".authority-ledger-lock-publication-malformed"),originalKill=process.kill,identity=(target:string)=>{const value=lstatSync(target,{bigint:true});return {dev:value.dev,ino:value.ino};};let ownStage="",added=false,malformedIdentity:Readonly<{dev:bigint;ino:bigint}>|undefined,predecessorIdentity:Readonly<{dev:bigint;ino:bigint}>|undefined,stagedBoundaries=0,removeAttempts=0,publicationRenames=0,callbackEntries=0;Object.defineProperty(process,"kill",{configurable:true,value:(pid:number)=>pid===predecessor.pid?true:originalKill.call(process,pid,0)});let result;try{result=await rawLedgerWithAdmissionClock(root,()=>3n,{now:()=>t0,lockTimeoutMs:20,faultInjector:(point:string)=>{if(point==="after-lock-publication-stage-sync"&&ownStage===""){const ownName=readdirSync(root).find(name=>name.startsWith(".authority-ledger-lock-publication-"));assert.ok(ownName);ownStage=path.join(root,ownName);mkdirSync(predecessorStage);writeFileSync(path.join(predecessorStage,"owner.json"),predecessorBytes);predecessorIdentity=identity(predecessorStage);}if(point==="before-lock-publication-provisional-root-reenumeration"&&!added){added=true;mkdirSync(malformed);malformedIdentity=identity(malformed);}if(point==="before-staged-publication-settlement"){stagedBoundaries++;assert.equal(removeAttempts,0);}if(point==="before-publication-stage-remove-attempt")removeAttempts++;if(point==="after-lock-publication-rename")publicationRenames++;if(point==="before-ledger-operation-callback")callbackEntries++;}}).observeClock();}finally{Object.defineProperty(process,"kill",{configurable:true,value:originalKill});}
   assert.equal(added,true);assert.equal(stagedBoundaries,1);assert.deepEqual(result,{ok:false,reason:"corruption"});assert.equal(removeAttempts,1);assert.equal(existsSync(ownStage),false);assert.equal(existsSync(malformed),true);assert.deepEqual(identity(malformed),malformedIdentity);assert.equal(existsSync(predecessorStage),true);assert.deepEqual(readFileSync(path.join(predecessorStage,"owner.json")),predecessorBytes);assert.deepEqual(identity(predecessorStage),predecessorIdentity);assert.deepEqual({publicationRenames,callbackEntries},{publicationRenames:0,callbackEntries:0});
