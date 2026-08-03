@@ -285,6 +285,8 @@ export class FsAuthorityLedger implements AuthorityLedger {
       const transaction: TransactionRecord = frozen({ v: "reelier.authority-ledger-transaction/v4", intent: normalized });
       const transactionDigest = rawDigest(canonicalBytes(transaction));
       const transactionHex = transactionDigest.slice(7);
+      const committed=view.reservations.get(transactionDigest);
+      if(committed){if(!canonicalBytes(committed.intent).equals(canonicalBytes(normalized)))throw new LedgerCorruption("committed transaction intent mismatch");return frozen({ok:true,status:"existing",dispatchEligible:false,reservation:detachReservation(committed)});}
       await this.writeImmutable(path.join("transactions", transactionHex), transaction, "reservation");
       const tombstone = await this.readTombstone(transactionHex);
       view = await this.loadView();
@@ -843,6 +845,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
   }
 
   private async persistClock(view: LedgerView, now: number, context: OperationContext): Promise<LedgerView> {
+    if(view.highWaterMark!==null){const high=parseIso(view.highWaterMark);if(now<high)throw new LedgerCorruption("clock high-water rollback");if(now===high)return view;}
     this.fault(`${context}-before-clock-high-water-write` as LedgerFaultPoint);
     await this.appendEvent(view, { type: "clock", observedAt: new Date(now).toISOString() }, context);
     this.fault(`${context}-after-clock-high-water-write` as LedgerFaultPoint);
@@ -858,6 +861,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
     if (tombstones.some(name => !FILE_HEX.test(name) || !transactions.has(`sha256:${name}`))) throw new LedgerCorruption("invalid or ownerless tombstone");
     for (const name of tombstones) {
       const resolution = await this.readTombstone(name);
+      if(view.committedTransactions.has(`sha256:${name}`))throw new LedgerCorruption("committed transaction has tombstone");
       if (resolution?.kind === "existing" && !view.reservations.has(resolution.reservationId)) throw new LedgerCorruption("duplicate resolution points to missing reservation");
     }
     for (const reservation of view.reservations.values()) {
