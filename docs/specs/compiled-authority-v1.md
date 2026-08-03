@@ -216,8 +216,11 @@ when that generation's initial liveness observation for the stage was `dead`. Th
 not broaden construction progress. The prior removal authorization remains an identity tombstone
 through the cleanup-root sync barrier and the next fully closed publication-name generation. Any
 same-name reappearance before that closure is identity-replacement corruption and is preserved;
-only a stable post-sync closed generation that proves the name absent may forget the authorization.
-Multiple genuinely absent authorized stages may batch one root sync. A creator-owned stage, a live or unverifiable owner, a directory
+only a fully validated and liveness-closed generation that is about to return stably, with no
+pending removal or root sync, may forget an authorization whose name stayed absent. Every raw name
+snapshot—initial names, closure names, final names, and per-removal root re-enumeration—rejects an
+observed tombstoned name as identity-replacement corruption rather than membership retry. Multiple
+genuinely absent authorized stages may batch one root sync. A creator-owned stage, a live or unverifiable owner, a directory
 identity/type/link replacement, an owner identity/type/link replacement (including canonical-same
 bytes), new or malformed owner bytes, and malformed content remain corruption and are preserved.
 After an exact removal, the pending ledger-root sync completes before the exact
