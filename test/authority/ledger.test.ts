@@ -1222,6 +1222,32 @@ test("terminal creator withdrawal removes every exact frozen construction state 
   }));
 });
 
+test("a terminal fault at the first post-mkdir validation withdraws the snapshotted empty creator",()=>withRoot(async root=>{
+  const terminalError=new Error("terminal:first-post-mkdir-validation");let validationFaults=0,stagePath="",withdrawalValidations=0,removeAttempts=0,cleanupRootSyncs=0,callbackEntries=0;
+  const result=await (async()=>{try{await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20,faultInjector:(point:string)=>{
+    if(point==="before-creator-stage-withdrawal-validation")withdrawalValidations++;
+    if(point==="before-publication-stage-remove-attempt")removeAttempts++;
+    if(point==="after-publication-stage-cleanup-root-sync")cleanupRootSyncs++;
+    if(point==="before-ledger-operation-callback")callbackEntries++;
+    if(point==="before-publication-stage-validation"&&++validationFaults===1){const stage=readdirSync(root).find(name=>name.startsWith(".authority-ledger-lock-publication-"));assert.ok(stage);stagePath=path.join(root,stage);assert.deepEqual(readdirSync(stagePath),[]);throw terminalError;}
+  }} as never).recover();return {threw:false,error:undefined};}catch(error){return {threw:true,error};}})();
+  assert.equal(result.threw,true);assert.equal(result.error,terminalError);assert.equal(validationFaults,2,"terminal cleanup performs a fresh exact validation after the failed post-mkdir validation");assert.deepEqual({withdrawalValidations,removeAttempts,cleanupRootSyncs,callbackEntries},{withdrawalValidations:1,removeAttempts:1,cleanupRootSyncs:1,callbackEntries:0});assert.ok(stagePath);assert.equal(existsSync(stagePath),false);
+}));
+
+test("the first post-mkdir snapshot preserves a byte-identical directory replacement",()=>withRoot(async root=>{
+  const external=await tempRoot(),terminalError=new Error("terminal:first-post-mkdir-replacement"),prepared=path.join(external,"prepared-empty-stage");mkdirSync(prepared);let validationFaults=0,stagePath="",originalIdentity:ExactFsIdentity|undefined,replacementIdentity:ExactFsIdentity|undefined,withdrawalValidations=0,removeAttempts=0,cleanupRootSyncs=0,callbackEntries=0;
+  try{
+    const result=await (async()=>{try{await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20,faultInjector:(point:string)=>{
+      if(point==="before-creator-stage-withdrawal-validation")withdrawalValidations++;
+      if(point==="before-publication-stage-remove-attempt")removeAttempts++;
+      if(point==="after-publication-stage-cleanup-root-sync")cleanupRootSyncs++;
+      if(point==="before-ledger-operation-callback")callbackEntries++;
+      if(point==="before-publication-stage-validation"&&++validationFaults===1){const stage=readdirSync(root).find(name=>name.startsWith(".authority-ledger-lock-publication-"));assert.ok(stage);stagePath=path.join(root,stage);originalIdentity=exactFsIdentity(stagePath);renameSync(stagePath,path.join(external,"displaced-original-stage"));renameSync(prepared,stagePath);replacementIdentity=exactFsIdentity(stagePath);assert.notDeepEqual(replacementIdentity,originalIdentity);throw terminalError;}
+    }} as never).recover();return {threw:false,error:undefined};}catch(error){return {threw:true,error};}})();
+    assert.equal(result.threw,true);assert.equal(result.error,terminalError);assert.equal(validationFaults,2);assert.deepEqual({withdrawalValidations,removeAttempts,cleanupRootSyncs,callbackEntries},{withdrawalValidations:1,removeAttempts:0,cleanupRootSyncs:0,callbackEntries:0});assert.ok(stagePath);assert.equal(existsSync(stagePath),true,"the replacement is never removed under the creator's frozen authority");assert.deepEqual(exactFsIdentity(stagePath),replacementIdentity);assert.deepEqual(readdirSync(stagePath),[]);
+  }finally{await rm(external,{recursive:true,force:true});}
+}));
+
 test("terminal creator withdrawal syncs the root when its exact stage is already absent",()=>withRoot(async root=>{
   const terminalError=new Error("terminal:creator-already-absent");let stagePath="",withdrawalValidations=0,removeAttempts=0,cleanupRootSyncs=0,callbackEntries=0;
   const result=await (async()=>{try{await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20,faultInjector:(point:string)=>{
@@ -1234,17 +1260,19 @@ test("terminal creator withdrawal syncs the root when its exact stage is already
   assert.equal(result.threw,true);assert.equal(result.error,terminalError);assert.deepEqual({withdrawalValidations,removeAttempts,cleanupRootSyncs,callbackEntries},{withdrawalValidations:1,removeAttempts:0,cleanupRootSyncs:1,callbackEntries:0});assert.ok(stagePath);assert.equal(existsSync(stagePath),false);
 }));
 
-test("terminal creator withdrawal completes authorized same-directory removal progress",()=>withRoot(async root=>{
-  const terminalError=new Error("terminal:creator-removal-progress");let stagePath="",ownerPath="",directoryIdentity:ExactFsIdentity|undefined,withdrawalActive=false,withdrawalValidations=0,removeAttempts=0,cleanupRootSyncs=0,callbackEntries=0;
-  const observed=await withRecordedDelays(async()=>{try{await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20,faultInjector:(point:string)=>{
-    if(point==="before-creator-stage-withdrawal-validation"){withdrawalActive=true;withdrawalValidations++;}
-    if(withdrawalActive&&point==="before-publication-stage-remove-attempt"){removeAttempts++;if(removeAttempts===1){assert.deepEqual(exactFsIdentity(stagePath),directoryIdentity);rmSync(ownerPath);assert.deepEqual(readdirSync(stagePath),[]);throw Object.assign(new Error("EBUSY"),{code:"EBUSY"});}}
-    if(point==="after-publication-stage-cleanup-root-sync")cleanupRootSyncs++;
-    if(point==="before-ledger-operation-callback")callbackEntries++;
-    if(point==="after-lock-publication-stage-sync"&&stagePath===""){const stage=readdirSync(root).find(name=>name.startsWith(".authority-ledger-lock-publication-"));assert.ok(stage);stagePath=path.join(root,stage);ownerPath=path.join(stagePath,"owner.json");directoryIdentity=exactFsIdentity(stagePath);throw terminalError;}
-  }} as never).recover();return {threw:false,error:undefined};}catch(error){return {threw:true,error};}});
-  assert.equal(observed.result.threw,true);assert.equal(observed.result.error,terminalError);assert.deepEqual(observed.delays,[5]);assert.deepEqual({withdrawalValidations,removeAttempts,cleanupRootSyncs,callbackEntries},{withdrawalValidations:2,removeAttempts:2,cleanupRootSyncs:1,callbackEntries:0});assert.ok(stagePath);assert.equal(existsSync(stagePath),false);
-}));
+test("terminal creator withdrawal completes authorized same-directory removal progress from every owner state",async t=>{
+  for(const [state,terminalPoint] of [["zero","after-lock-publication-owner-create"],["partial","after-lock-publication-owner-partial-write"],["complete","after-lock-publication-stage-sync"]] as const)await t.test(state,()=>withRoot(async root=>{
+    const terminalError=new Error(`terminal:creator-removal-progress:${state}`);let stagePath="",ownerPath="",directoryIdentity:ExactFsIdentity|undefined,withdrawalActive=false,withdrawalValidations=0,removeAttempts=0,cleanupRootSyncs=0,callbackEntries=0;
+    const observed=await withRecordedDelays(async()=>{try{await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20,faultInjector:(point:string)=>{
+      if(point==="before-creator-stage-withdrawal-validation"){withdrawalActive=true;withdrawalValidations++;}
+      if(withdrawalActive&&point==="before-publication-stage-remove-attempt"){removeAttempts++;if(removeAttempts===1){assert.deepEqual(exactFsIdentity(stagePath),directoryIdentity);rmSync(ownerPath);assert.deepEqual(readdirSync(stagePath),[]);throw Object.assign(new Error("EBUSY"),{code:"EBUSY"});}}
+      if(point==="after-publication-stage-cleanup-root-sync")cleanupRootSyncs++;
+      if(point==="before-ledger-operation-callback")callbackEntries++;
+      if(point===terminalPoint&&stagePath===""){const stage=readdirSync(root).find(name=>name.startsWith(".authority-ledger-lock-publication-"));assert.ok(stage);stagePath=path.join(root,stage);ownerPath=path.join(stagePath,"owner.json");directoryIdentity=exactFsIdentity(stagePath);const bytes=readFileSync(ownerPath);if(state==="zero")assert.equal(bytes.length,0);if(state==="partial"){assert.ok(bytes.length>0);assert.throws(()=>JSON.parse(bytes.toString("utf8")));}if(state==="complete"){const owner=JSON.parse(bytes.toString("utf8"));assert.deepEqual(bytes,authorityCanonicalBytes(owner));}throw terminalError;}
+    }} as never).recover();return {threw:false,error:undefined};}catch(error){return {threw:true,error};}});
+    assert.equal(observed.result.threw,true);assert.equal(observed.result.error,terminalError);assert.deepEqual(observed.delays,[5]);assert.deepEqual({withdrawalValidations,removeAttempts,cleanupRootSyncs,callbackEntries},{withdrawalValidations:2,removeAttempts:2,cleanupRootSyncs:1,callbackEntries:0});assert.ok(stagePath);assert.equal(existsSync(stagePath),false);
+  }));
+});
 
 test("creator cleanup preserves replacements at every publication state",async t=>{
   for(const point of ["after-lock-publication-stage-create","after-lock-publication-owner-create","after-lock-publication-owner-partial-write","after-lock-publication-owner-sync","after-lock-publication-stage-sync"] as const)await t.test(point,()=>withRoot(async root=>{const replacement=authorityCanonicalBytes({replacement:true}),ledger=new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20,faultInjector:(observed:string)=>{if(observed!==point)return;const stage=readdirSync(root).find(name=>name.startsWith(".authority-ledger-lock-publication-"));assert.ok(stage);writeFileSync(path.join(root,stage,"owner.json"),replacement);throw new Error(`fault:${point}`);}} as never);await assert.rejects(()=>ledger.recover(),new RegExp(`fault:${point}`));const stage=(await readdir(root)).find(name=>name.startsWith(".authority-ledger-lock-publication-"));assert.ok(stage);assert.deepEqual(await readFile(path.join(root,stage,"owner.json")),replacement);assert.deepEqual(await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20}).recover(),{ok:false,reason:"corruption"});assert.deepEqual(await readFile(path.join(root,stage,"owner.json")),replacement);}));
