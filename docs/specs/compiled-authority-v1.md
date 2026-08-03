@@ -213,7 +213,11 @@ progress: disappearance is accepted only after a ledger-root sync, while the sam
 intermediate causes bounded retry or `busy`, never integrity corruption. During closed-generation
 revalidation, the exact same-directory `complete -> empty` transition is likewise only retryable
 when that generation's initial liveness observation for the stage was `dead`. This exception does
-not broaden construction progress. A creator-owned stage, a live or unverifiable owner, a directory
+not broaden construction progress. The prior removal authorization remains an identity tombstone
+through the cleanup-root sync barrier and the next fully closed publication-name generation. Any
+same-name reappearance before that closure is identity-replacement corruption and is preserved;
+only a stable post-sync closed generation that proves the name absent may forget the authorization.
+Multiple genuinely absent authorized stages may batch one root sync. A creator-owned stage, a live or unverifiable owner, a directory
 identity/type/link replacement, an owner identity/type/link replacement (including canonical-same
 bytes), new or malformed owner bytes, and malformed content remain corruption and are preserved.
 After an exact removal, the pending ledger-root sync completes before the exact
