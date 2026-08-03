@@ -85,7 +85,7 @@ export const ledgerLockFaultPoints = Object.freeze([
   "after-mutating-admission-enumeration", "after-publication-stage-enumeration", "before-publication-stage-validation",
   "after-lock-publication-rename-collision", "before-publication-stage-root-reenumeration",
   "before-publication-stage-final-validation", "before-publication-stage-final-liveness",
-  "before-publication-stage-remove-attempt", "after-publication-stage-cleanup-root-sync",
+  "before-publication-stage-remove-attempt", "before-creator-stage-withdrawal-validation", "after-publication-stage-cleanup-root-sync",
   "after-lock-publication-provisional-predecessor-selection", "before-lock-publication-provisional-root-reenumeration",
   "before-lock-publication-provisional-predecessor-liveness", "before-staged-publication-settlement",
   "after-lock-publication-generation-closed", "before-lock-publication-predecessor-validation",
@@ -447,7 +447,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
     let mutatingAdmissionMemo:MutatingAdmissionMemo=admitContender?{kind:"unseeded"}:{kind:"disabled"};
     let retryDelayMs=5;
     const backoff=async()=>{const remaining=deadline-monotonicNow();if(remaining<=0)return;await delay(Math.min(retryDelayMs,remaining));retryDelayMs=Math.min(50,retryDelayMs*2);};
-    while (true) {
+    const attempt=async():Promise<LockResult>=>{while (true) {
       try {
         const active=await this.inspectActiveLock(deadline);
         if(active==="retry"){
@@ -477,6 +477,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
             if(monotonicNow()>=deadline)return {ok:false,reason:"busy"};
             await backoff();continue;
           }
+          if(existingStages.filter(stage=>stage.pid===process.pid&&stage.state==="complete").length===1)return {ok:false,reason:"busy"};
           if(stageName===""){
             const maxVisible=existingStages.reduce((maximum,stage)=>stage.ticket>maximum?stage.ticket:maximum,0n);
             if(maxVisible===MAX_PUBLICATION_TICKET)return {ok:false,reason:"busy"};
@@ -534,7 +535,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
         const finalOwnStage=await this.validatePublicationStage(stageName);
         if(!samePublicationStage(expectedStage,finalOwnStage))throw new LedgerCorruption("creator publication stage changed before rename");
         try{await rename(stagePath,this.absolute("lock"));published=true;stageCreated=false;}
-        catch(error){if(hasCode(error,"EEXIST")||hasCode(error,"ENOTEMPTY")||isTransientLockError(error)){this.fault("after-lock-publication-rename-collision");election=null;if(monotonicNow()>=deadline){await this.removeOwnedPublicationStage(stageName,expectedStage,deadline);return {ok:false,reason:"busy"};}await backoff();continue;}throw error;}
+        catch(error){if(hasCode(error,"EEXIST")||hasCode(error,"ENOTEMPTY")||isTransientLockError(error)){this.fault("after-lock-publication-rename-collision");election=null;if(monotonicNow()>=deadline)return {ok:false,reason:"busy"};await backoff();continue;}throw error;}
         if(expectedStage===null||expectedStage.ownerIdentity===undefined||expectedStage.ownerBytes===undefined)throw new LedgerCorruption("published owner snapshot absent");
         const publishedSnapshot:OwnedOwnerSnapshot={directoryIdentity:expectedStage.directoryIdentity,ownerIdentity:expectedStage.ownerIdentity,ownerBytes:expectedStage.ownerBytes};
         this.fault("after-lock-publication-rename");
@@ -545,12 +546,17 @@ export class FsAuthorityLedger implements AuthorityLedger {
         return { ok: true, owner, reclaimed:false };
       } catch (error) {
         if(error instanceof CoordinationExhausted)return {ok:false,reason:"busy"};
-        if(error instanceof LedgerCorruption){if(stageCreated&&expectedStage?.state==="complete")await this.removeOwnedPublicationStage(stageName,expectedStage,deadline);return {ok:false,reason:"corruption"};}
-        if(stageCreated&&hasCode(error,"ENOENT")){try{await this.removeOwnedPublicationStage(stageName,expectedStage,deadline);}catch{}return {ok:false,reason:"corruption"};}
-        if(stageCreated)try{await this.removeOwnedPublicationStage(stageName,expectedStage,deadline);}catch{}
-        if(published)try{await this.retireOwnedLock(owner,"publication-aborted",deadline,false);}catch{}
+        if(error instanceof LedgerCorruption||stageCreated&&hasCode(error,"ENOENT"))return {ok:false,reason:"corruption"};
         throw error;
       }
+    }};
+    try{
+      const result=await attempt();
+      return stageCreated?await this.finishCreatorPublicationStage(stageName,expectedStage,result):result;
+    }catch(error){
+      if(stageCreated)await this.finishCreatorPublicationStage(stageName,expectedStage,{ok:false,reason:"corruption"});
+      if(published)try{await this.retireOwnedLock(owner,"publication-aborted",deadline,false);}catch{}
+      throw error;
     }
   }
 
@@ -800,27 +806,33 @@ export class FsAuthorityLedger implements AuthorityLedger {
     return "removed";
   }
 
-  private async removeOwnedPublicationStage(name:string,expected:PublicationStage|null,deadline:number):Promise<void>{
-    if(expected===null)return;
+  private async finishCreatorPublicationStage(name:string,expected:PublicationStage|null,result:LockResult):Promise<LockResult>{
+    if(expected===null)return result;
+    const cleanupDeadline=monotonicNow()+this.options.lockTimeoutMs;
+    let retryDelayMs=5,removalAttempted=false,syncPending=false;
+    const cleanupBackoff=async()=>{const remaining=cleanupDeadline-monotonicNow();if(remaining<=0)return;await delay(Math.min(retryDelayMs,remaining));retryDelayMs=Math.min(50,retryDelayMs*2);};
     for(;;){
       try{
-        const names=await this.rawPublicationStageNames();
-        this.fault("after-publication-stage-enumeration");
-        if(!names.includes(name))return;
-        this.fault("before-publication-stage-root-reenumeration");
-        if(!sameStrings(names,await this.rawPublicationStageNames()))continue;
-        this.fault("before-publication-stage-final-validation");
-        const current=await this.validatePublicationStage(name);
-        if(!samePublicationStage(expected,current))return;
+        if(syncPending){
+          await this.syncDirectory(this.root);
+          this.fault("after-publication-stage-cleanup-root-sync");
+          return result;
+        }
+        this.fault("before-creator-stage-withdrawal-validation");
+        let current:PublicationStage;
+        try{current=await this.validatePublicationStage(name);}
+        catch(error){if(hasCode(error,"ENOENT")){syncPending=true;continue;}throw error;}
+        const exact=samePublicationStage(expected,current);
+        const authorizedProgress=removalAttempted&&isAuthorizedPublicationRemovalProgress(expected,current);
+        if(!exact&&!authorizedProgress)return result.ok||result.reason!=="corruption"?{ok:false,reason:"corruption"}:result;
+        removalAttempted=true;
         this.fault("before-publication-stage-remove-attempt");
-        await rm(current.directory,{recursive:true});
-        await this.syncDirectory(this.root);
-        return;
+        try{await rm(current.directory,{recursive:true});syncPending=true;continue;}
+        catch(error){if(hasCode(error,"ENOENT")){syncPending=true;continue;}throw error;}
       }catch(error){
-        if(hasCode(error,"ENOENT"))return;
-        if(!isSnapshotSharingError(error))return;
-        if(monotonicNow()>=deadline)return;
-        await delay(5);
+        if(!isSnapshotSharingError(error))return result.ok||result.reason!=="corruption"?{ok:false,reason:"corruption"}:result;
+        if(monotonicNow()>=cleanupDeadline)return result;
+        await cleanupBackoff();
       }
     }
   }
