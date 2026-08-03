@@ -229,23 +229,63 @@ to `busy`; a lone exact dead external stage may be atomically withdrawn but is n
 than one publication stage in a stable generation is invalid K=1 topology and is preserved corruption,
 even when every stage is individually canonical and has distinct provenance.
 
-One monotonic acquisition deadline covers full classification, preparation/fixed-slot polling, stale
-recovery, and reclassification. Progress resets only the deterministic backoff sequence and never the
-deadline. Terminal creator withdrawal receives one fresh cleanup deadline. Successful publication
-receives one separate fresh slot-retirement deadline. No wait, retry, or progress event widens any of
-those budgets.
+One monotonic acquisition deadline covers full classification, pre-admission housekeeping,
+preparation/fixed-slot polling, stale recovery, and every restart. Progress resets only the
+deterministic backoff sequence and never the deadline. Terminal creator withdrawal receives one fresh
+cleanup deadline only for the exact creator's own failure path. Successful publication receives one
+separate fresh slot-retirement deadline. No wait, retry, progress, housekeeper transition, or root
+sync widens any budget.
+
+Before creating a preparation, the contender runs a strictly non-authorizing pre-admission
+housekeeper under the original acquisition deadline. Each iteration closes and exactly classifies one
+complete coordination generation. Corruption preserves every artifact and returns `corruption`.
+Retryable uncertainty bounded-waits and restarts full classification. From one stable generation the
+contender derives at most one purpose-specific housekeeping authority, exact-revalidates every bound
+name, byte, identity, lifecycle, predecessor, and terminal proof, performs exactly one coordination
+transition plus its required ledger-root sync, and restarts full classification. Only an
+admission-ready generation may begin preparation.
+
+The pre-admission housekeeper may only retire the exact dead preparation, publication stage, or fixed
+slot authorized below; progress one exact cleanup stage to its bound ack; remove one exact marker or
+ack; and sync the ledger root after that transition. It may never create an admission preparation,
+fixed slot, publication stage, active lock, or semantic cleanup artifact as housekeeping; touch the
+journal, transactions, claims, ingress, decisions, or semantic clock; enter the operation callback;
+infer cleanup authority from absence; or service a semantic `recovery-pending` lock retirement. A
+fault after any housekeeping transition and before preparation therefore leaves callback count zero
+and every semantic subtree and clock byte-identical.
+
+Positive housekeeping authority is purpose-specific and closed:
+
+- `prep-retired` requires either the exact creator's frozen creation snapshot or a final same-host
+  dead-PID result for the exact name/owner/identity snapshot.
+- `slot-retired.abandoned` requires the exact creator snapshot, or final same-host dead-PID proof plus
+  a stable complete graph containing no matching publication stage, active lock, or withdrawal
+  marker. A live fixed slot without an ack remains `busy` unchanged.
+- `slot-retired.withdrawn` requires the exact fixed-slot marker and exact same-owner withdrawal
+  marker; liveness grants nothing.
+- `slot-retired.published` requires the exact same-owner active lock or the exact same-owner
+  `released`, `recovery-pending`, or `publication-aborted` successor.
+- Creator-withdrawal cleanup requires a durable `slot-retired` cleanup ack whose name and digest are
+  committed in the withdrawal ack and which binds the exact withdrawal marker.
+- A lone legacy withdrawal requires the exact creator snapshot or final same-host dead-owner proof;
+  it is retired only and is never promoted.
+- A cleanup stage or ack requires its exact record digest, filename, filesystem identities, lifecycle
+  predecessor, and still-valid purpose proof.
 
 The precedence is closed and exact: fully enumerate and classify the root; any structural,
 provenance, graph, replacement, identity, link, type, or byte problem returns `corruption` with zero
-mutation; retryable uncertainty bounded-waits and then returns `busy`; dead exact residue may only
-retire or clean up, root-sync, and force complete reclassification; live exact preparation or slot
-bounded-waits and then returns `busy` unchanged; only a clean root admits. Every coordination grammar
-above is literal and closed. Any lookalike or broader prefix is corruption, not ignored membership.
+mutation; retryable uncertainty bounded-waits and restarts; one proved housekeeping transition may
+occur and forces full reclassification; live exact preparation or slot bounded-waits and then returns
+`busy` unchanged. Admission-ready means no active lock, fixed slot, preparation, publication stage, or
+unresolved/inconsistent cleanup graph remains. Valid non-authorizing residue is drained first. Normal
+lock retirement may coexist only for the next active owner and does not grant pre-admission semantic
+recovery authority. Every coordination grammar above is literal and closed. Any lookalike or broader
+prefix is corruption, not ignored membership.
 
 This local-ledger protocol requires all writers to share one host, filesystem, PID/liveness namespace, and monotonic-clock domain. POSIX `CLOCK_MONOTONIC` and Windows QPC provide the intended substrate; Linux time-namespace offsets are outside the hard-enforcement topology. The bounded acquisition and housekeeping deadlines are unchanged. Tickets do not defend against a malicious same-user filesystem writer.
-After publication, the active owner closes and exact-revalidates the complete coordination generation,
-durably retires the matching slot as `published`, and performs one complete cleanup pass before
-callback entry. Valid live preparation, slot, active-lock, and transient-sharing waits use the same
+After publication, the active owner—not the pre-admission housekeeper—closes and exact-revalidates the
+complete coordination generation, durably retires the matching slot as `published`, and performs one
+complete active-owner cleanup pass before callback entry. Valid live preparation, slot, active-lock, and transient-sharing waits use the same
 deterministic monotonic delay sequence: 5ms, 10ms, 20ms, 40ms, then 50ms. Proven progress resets the
 next delay to 5ms but never replaces or widens the applicable deadline. Every sleep is bounded by the
 strictly positive monotonic time remaining.
@@ -259,7 +299,10 @@ perform only normal coordination-lock release/retirement cleanup; that cleanup i
 provider or ledger effect. Same-name identity, type, or byte replacement after a closed snapshot,
 malformed topology, foreign provenance, and unverifiable liveness remain `corruption` (or the explicit
 `lock-owner-unverifiable` result where applicable), never `busy`. Withdrawal and admission retirement
-always leave authenticated durable markers and purpose-bound cleanup evidence.
+always leave authenticated durable markers and purpose-bound cleanup evidence. Every owner, stage,
+slot, and lock object is exact-revalidated at owner-file sync, stage-directory sync,
+stage-to-`lock` rename, active-lock root sync, and preparation-to-slot rename. The fixed slot remains
+present and byte-identical until a valid publication or withdrawal successor is durable.
 Every frozen filesystem identity in coordination evidence is the closed object
 `{ dev, ino, mode, nlink }`, with each value the canonical unsigned decimal string encoding of the
 lossless bigint returned by non-following `lstat`; signs, leading zeroes except literal `0`, numeric
@@ -268,14 +311,18 @@ closed discriminated union `reelier.authority-ledger-coordination-cleanup-ack/v1
 `prep-retired`, `slot-retired`, or `creator-withdrawal` and participates in the record digest. There is
 no optional-field superset.
 
-The `prep-retired` and `creator-withdrawal` variants have exact keys
+The `prep-retired` variant has exact keys
 `{ directoryIdentity, kind, markerName, originalName, owner, ownerBytesDigest, ownerBytesLength,
-ownerDigest, ownerIdentity, purpose, recoveryAuthority, state, v }`. `kind` is respectively
-`admission-prep-retired` or `creator-withdrawal`; `state` is the marker's exact closed state;
-`recoveryAuthority` is respectively `dead-owner-or-exact-creator` or
-`dead-owner-or-exact-creator-after-slot-withdrawn`. `owner` and `ownerIdentity` are null only for
-`empty`; otherwise owner is the complete name-committed canonical owner while `ownerBytesDigest` and
-`ownerBytesLength` bind the raw zero, prefix, or complete bytes.
+ownerDigest, ownerIdentity, purpose, recoveryAuthority, state, v }`. The `creator-withdrawal` variant
+has those keys plus mandatory `slotRetirementAckDigest` and `slotRetirementAckName`. `kind` is
+respectively `admission-prep-retired` or `creator-withdrawal`; `state` is the marker's exact closed
+state; `recoveryAuthority` is respectively `dead-owner-or-exact-creator` or
+`exact-slot-retirement-ack`. The canonical owner is reconstructed exactly from the closed name even
+for `empty`; only `ownerIdentity` is null for `empty`. `ownerBytesDigest` and `ownerBytesLength` bind
+the raw absent/zero, prefix, or complete bytes, while `slotRetirementAckName` and
+`slotRetirementAckDigest` bind the exact durable `slot-retired.withdrawn` ack that names and digests
+this withdrawal marker. Missing, replaced, mismatched, or merely inferred slot evidence grants no
+withdrawal cleanup authority.
 
 The `slot-retired` variant has exact keys
 `{ disposition, kind, markerName, owner, ownerBytesDigest, ownerBytesLength, ownerDigest,
@@ -292,15 +339,52 @@ nonnegative decimal length string, and the final filename is
 is `.authority-ledger-coordination-cleanup-stage-<purpose>-<host64>-<positive-safe-pid>-<nonce64>-<64-lower-hex-record-digest>.tmp`.
 The exact lifecycle is exclusive stage create, canonical write-all, file sync, stage-directory sync,
 atomic rename to the final ack, root sync, exact marker removal, root sync, exact ack removal, root
-sync. Marker-only, marker-plus-matching-ack, and a valid purpose-authorized orphan ack are recoverable
-windows; absence alone never grants authority.
+sync. Every cleanup step exact-revalidates its stage/ack identity, bytes, name digest, predecessor,
+and still-present purpose proof. Marker-only, marker-plus-matching-ack, and a valid
+purpose-authorized orphan ack are recoverable windows; absence alone never grants authority.
 A prep orphan ack is valid only after its exact original name is absent. A slot orphan ack is valid
 only while its exact terminal proof still validates. A withdrawal orphan ack is valid only after the
 matching `withdrawn` slot-retirement marker has already completed its durable cleanup. Invalid,
 mismatched, or purpose-inapplicable orphan acks, markers, stages, identities, bytes, or terminal proofs
-are preserved corruption. The active owner performs this cleanup pass exactly once after all required
-sync barriers and before callback; withdrawal markers are never cleaned before their matching slot
-retirement.
+are preserved corruption. The active owner performs its cleanup pass exactly once after all required
+sync barriers and before callback; the pre-admission housekeeper performs at most one transition per
+closed generation and never enters callback. Withdrawal markers are never cleaned before their
+matching slot retirement.
+
+The creator-withdrawal chain is exact and monotonic:
+
+1. The exact `.withdrawn` slot marker and exact same-owner withdrawal marker coexist.
+2. The `slot-retired.withdrawn` cleanup ack is created and synced while both markers remain; it
+   binds the withdrawal marker's exact name and digest.
+3. The retired slot marker is removed and root-synced while the slot ack remains.
+4. The creator-withdrawal ack is created and synced while the withdrawal marker and bound slot ack
+   remain; it commits `slotRetirementAckName` and `slotRetirementAckDigest`.
+5. The slot ack is removed and root-synced while the withdrawal marker and withdrawal ack preserve
+   the complete proof chain.
+6. The withdrawal marker is removed and root-synced while its exact orphan withdrawal ack remains.
+7. The withdrawal ack is removed and root-synced, yielding admission-ready empty coordination.
+
+The exact crash matrix recognizes the positive-evidence residues after steps 1 through 6 and the
+root-synced admission-ready empty result after step 7; cleanup stages for steps 2 and 4 are recognized
+only with the same exact bound records and predecessors. Each state progresses only its next exact
+transition and then restarts full classification. In particular, `slot absent + withdrawal present +
+no ack` grants nothing and is preserved corruption; any replacement or cross-owner/cross-digest
+variant is also preserved corruption. An entirely empty coordination state reconstructs only a new
+canonical owner for a new admission attempt; it never retroactively authenticates missing cleanup
+evidence.
+
+Every raw root snapshot is whole-generation state. Active-lock replacement or sustained membership
+churn, an external publication stage changing dead-to-live, or atomic fixed-slot/stage replacement
+invalidates the entire snapshot and restarts classification under the same acquisition deadline; no
+preparation, publication stage, semantic clock read, or callback may occur from the invalidated
+generation. Once an exact source name has been retired and its root sync completes, that name is
+tombstoned for the current housekeeping generation. Reappearance at the initial, closed, final, or
+post-marker-removal snapshot is corruption, preserves the replacement and every typed retirement/ack
+artifact, and cannot admit. This applies equally to creator and housekeeper rename-collision retries:
+the same synced stage is retained, its directory and owner identities and bytes are revalidated before
+every retry, and any replacement is preserved rather than published or deleted. Pre-callback
+generation closure occurs only after every required coordination sync and final exact revalidation.
+
 Acquisition is bounded. A live same-host owner is never evicted because time elapsed; a
 foreign, corrupt, or otherwise unverifiable owner refuses. An abandoned lock is reclaimed only after
 same-host process liveness proves that its recorded PID is dead and the owner bytes remain identical.
@@ -364,8 +448,9 @@ the root again.
 A valid orphan ack whose exact marker is absent represents the post-marker-sync/pre-ack-removal crash
 window and is removed after validation; malformed, owner-digest-less, marker-mismatched, or otherwise
 invalid orphan acks fail closed. Thus every acknowledged interruption is recoverable without inferring
-state. A fresh monotonic housekeeping deadline begins only after owner publication succeeds; it does
-not reuse a nearly expired acquisition deadline. Lock acquisition, retirement cleanup, and transient
+state. A fresh monotonic active-owner housekeeping deadline begins only after owner publication
+succeeds; it does not reuse a nearly expired acquisition deadline and does not apply to the
+pre-admission housekeeper. Lock acquisition, retirement cleanup, and transient
 Windows `decisions/`-subtree audit retries use monotonic deadlines. They never consult the
 provider/authority semantic `now`, which remains reserved for durable high-water, validity, and
 lifecycle decisions.
