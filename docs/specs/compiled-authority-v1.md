@@ -163,6 +163,27 @@ Filesystem identity is read with non-following `lstat({ bigint: true })`; device
 and link count remain exact bigint values throughout comparison and are never rounded through a
 JavaScript `number`. Two distinct adjacent identities above `Number.MAX_SAFE_INTEGER` remain distinct.
 
+The following closed rules replace the legacy recursive-withdrawal, no-durable-handoff, and
+two-publication saturation text below; those legacy mechanisms are prohibited. Mutating admission
+uses one fixed `.authority-ledger-admission-0/owner.json` slot. A contender first exclusively creates
+`.authority-ledger-admission-prep-<host64>-<positive-pid>-<nonce64>.tmp/owner.json`, writes a complete
+nonempty canonical owner, file-syncs it, directory-syncs it, and exact-revalidates bytes, type, links,
+and non-following identity before atomically renaming the preparation directory to the fixed slot.
+An existing destination is fully validated and never overwritten. Complete existing root membership
+is classified before slot denial, so the slot never masks corruption. Exactly the authenticated slot
+owner may publish, and it holds the slot through stage-to-`lock` plus root sync or through exact
+creator withdrawal plus root sync. Slot retirement is atomic and owner-bound. At most one admitted
+publication stage exists.
+
+Complete creator withdrawal atomically renames the exact stage to the existing
+`.authority-ledger-lock-<positive-pid>-<nonce64>.publication-aborted` disposition. Empty, zero, and
+partial stages atomically rename to the distinct typed
+`.authority-ledger-creator-withdrawal-<host64>-<ticket16>-<positive-pid>-<nonce64>.<empty|zero|partial>`
+marker. The publication name changes only from present to absent. Cleanup authority is authenticated
+and purpose-bound to the exact creator, name, state, bytes, type, link count, and non-following
+identity. Replacement, type, link, identity, byte, or marker mismatch is corruption and is preserved.
+No broad prefix grants cleanup authority.
+
 Every terminal return or throw after creator-stage creation and before successful publication must pass through one bounded exact-creator withdrawal funnel. The creator captures the newly created empty directory's non-following identity before any fault-visible post-`mkdir` validation; a missing later snapshot cannot bypass the funnel. At terminal entry, withdrawal receives a fresh monotonic cleanup deadline equal to `monotonicNow() + lockTimeoutMs`; it never reuses or widens the exhausted acquisition deadline. Withdrawal never depends on unrelated publication membership and may remove only the literal creator path after its non-following directory and owner identities, types, link counts, bytes, and frozen construction state remain exact. Missing is already withdrawn; tracked same-directory recursive-removal progress from an exact zero, partial, or complete owner state to the exact empty state may finish; absence is followed by a ledger-root sync. Retryable sharing errors may consume only the fresh cleanup budget. If they persist through that deadline, the exact unchanged creator artifact and original terminal result or error are preserved; a later acquisition's same-PID backstop prevents duplicate publication. A replacement, reparse point, hardlink, wrong type, or identity mismatch is preserved and refines a non-corruption terminal result to corruption. Successful exact withdrawal never changes the refusal result and never mutates a peer. Before creating a new stage, only a fully classified generation whose complete root-name set was closed may apply the local-host/current-PID denial-only busy backstop, and only when it contains exactly one exact complete such stage. Malformed, foreign, duplicate-provenance, unverifiable, or otherwise corrupt membership takes precedence and returns corruption; the backstop never masks it and never creates a duplicate stage.
 Every publication stage has the exact name `.authority-ledger-lock-publication-<host64>-<ticket16hex>-<positive-pid>-<nonce64>.tmp`, where every hex field is lowercase. `ticket16hex` is an unsigned 64-bit integer in the inclusive range `0000000000000001` through `ffffffffffffffff`; zero, nonhex or uppercase text, any width other than 16, and an overflow spelling are corruption. After an exact successfully classified stable generation, let `maxVisible` be its maximum ticket (or zero when empty). If `maxVisible` is `ffffffffffffffff`, acquisition returns `busy` without sampling the admission clock. Otherwise it samples raw `admissionClock()` and requires a bigint in `0n..0xffffffffffffffffn`; non-bigint, negative, or greater values are corruption. The immutable ticket is `max(raw, maxVisible + 1)`, so raw zero is valid and allocates ticket one in an empty generation. The default admission clock is the local `process.hrtime.bigint()` monotonic domain. The ticket is stage metadata only: canonical owner bytes remain exactly `{ host, nonce, pid, v: 1 }`; the ticket is neither serialized nor bound into those bytes. A stage with any valid ticket and exact host/PID/nonce owner binding is valid; duplicate stages remain ambiguous by host+PID even if ticket and nonce differ.
 
@@ -272,8 +293,10 @@ the active lock; malformed, mismatched, orphaned, linked/reparsed, or duplicate 
 atomic rename means a final ack is always complete.
 
 Before publication, acquisition performs only the narrow non-following metadata checks required to
-validate the active lock and publication stages, including their names, types, link counts, and owner
-files where present. Immediately after atomic publication and before reading or mutating any other
+validate the active lock, the exact admission preparation/fixed-slot grammar, publication stages,
+and typed creator-withdrawal markers, including their names, types, link counts, owner files,
+purpose bindings, and exact identities. These literal forms are the closed confinement grammar; no
+broad admission, withdrawal, publication, or retirement prefix is accepted. Immediately after atomic publication and before reading or mutating any other
 ledger content, the sole active owner performs a recursive non-following metadata/type/link-count
 confinement audit of every fixed ledger subtree and root artifact. A nested reparse point, link, hard
 link, path substitution, malformed artifact, or unexpected entry fails closed before retirement,

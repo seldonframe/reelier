@@ -1091,6 +1091,56 @@ function publicationTicket(owner:PublicationFixtureOwner):string{const ticket=ow
 function publicationStageName(owner:PublicationFixtureOwner):string{return `.authority-ledger-lock-publication-${publicationHostDigest(owner.host)}-${publicationTicket(owner)}-${owner.pid}-${owner.nonce}.tmp`;}
 function publicationOwnerBytes(owner:Readonly<{host:string;nonce:string;pid:number;v:1}>):Buffer{return authorityCanonicalBytes({host:owner.host,nonce:owner.nonce,pid:owner.pid,v:owner.v});}
 
+async function writeAdmissionSlot(root:string,owner:Readonly<{host:string;nonce:string;pid:number;v:1}>):Promise<string>{const slot=path.join(root,".authority-ledger-admission-0");await mkdir(slot);await writeFile(path.join(slot,"owner.json"),publicationOwnerBytes(owner));return slot;}
+
+test("one fixed admission slot bounds all paused publishers to one publication stage",{timeout:15_000},()=>withRoot(async root=>{
+  const control=await tempRoot(),moduleUrl=pathToFileURL(path.resolve("dist-test/src/authority/host/fs-ledger.js")).href,source=`
+    import {existsSync,writeFileSync} from "node:fs";
+    import path from "node:path";
+    import {FsAuthorityLedger} from ${JSON.stringify(moduleUrl)};
+    const root=process.argv[1],control=process.argv[2],index=process.argv[3],wait=new Int32Array(new SharedArrayBuffer(4)),status=path.join(control,"status-"+index+".json");
+    process.stdout.write("READY\\n");while(!existsSync(path.join(control,"go")))Atomics.wait(wait,0,0,5);
+    let callbacks=0;const result=await new FsAuthorityLedger(root,{now:()=>${t0},lockTimeoutMs:500,faultInjector(point){if(point==="after-lock-publication-stage-sync"){writeFileSync(status,JSON.stringify({status:"staged",callbacks}));while(!existsSync(path.join(control,"release")))Atomics.wait(wait,0,0,5);}if(point==="before-ledger-operation-callback")callbacks++;}}).observeClock();
+    writeFileSync(status,JSON.stringify({status:result.ok?result.status:result.reason,callbacks}));
+  `;
+  const children=Array.from({length:8},(_,index)=>spawn(process.execPath,["--input-type=module","-e",source,root,control,String(index)],{stdio:["ignore","pipe","ignore"]})),closed=children.map(child=>new Promise<void>((resolve,reject)=>{child.once("error",reject);child.once("close",()=>resolve());}));
+  try{
+    await Promise.all(children.map(child=>new Promise<void>((resolve,reject)=>{let output="";child.stdout!.setEncoding("utf8");child.stdout!.on("data",chunk=>{output+=chunk;if(output.includes("READY\n"))resolve();});child.once("error",reject);child.once("close",code=>{if(!output.includes("READY\n"))reject(new Error(`publisher exited before barrier: ${code}`));});})));
+    await writeFile(path.join(control,"go"),"");const deadline=Date.now()+8_000;let statusNames:string[]=[];while(Date.now()<deadline){statusNames=(await readdir(control)).filter(name=>name.startsWith("status-"));if(statusNames.length===8)break;await new Promise(resolve=>setTimeout(resolve,10));}assert.equal(statusNames.length,8,"every publisher is staged or terminal before the snapshot");
+    const statuses=await Promise.all(statusNames.map(async name=>JSON.parse(await readFile(path.join(control,name),"utf8")) as {status:string;callbacks:number}));assert.equal(statuses.filter(value=>value.status==="staged").length,1);assert.equal(statuses.filter(value=>value.status==="busy").length,7);assert.equal(statuses.every(value=>value.callbacks===0),true);
+    const names=await readdir(root);assert.deepEqual(names.filter(name=>name.startsWith(".authority-ledger-admission-")),[".authority-ledger-admission-0"]);assert.equal(names.filter(name=>name.startsWith(".authority-ledger-lock-publication-")).length,1);
+  }finally{await writeFile(path.join(control,"release"),"").catch(()=>{});await Promise.all(children.map(async(child,index)=>{await Promise.race([closed[index],new Promise(resolve=>setTimeout(resolve,1_000))]);if(child.exitCode===null)child.kill();}));await rm(control,{recursive:true,force:true});}
+}));
+
+test("two ledger instances in one PID wait through admission and converge",()=>withRoot(async root=>{
+  let secondPromise:Promise<unknown>|undefined,staged=false,firstCallbacks=0,secondCallbacks=0;
+  const first=new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:40,faultInjector:(point:string)=>{
+    if(point==="after-lock-publication-stage-sync"&&!secondPromise){staged=true;secondPromise=new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:500,faultInjector:(observed:string)=>{if(observed==="before-ledger-operation-callback")secondCallbacks++;}} as never).observeClock();}
+    if(staged&&point==="before-publication-stage-root-reenumeration")throw Object.assign(new Error("sharing"),{code:"EBUSY"});
+    if(point==="before-ledger-operation-callback")firstCallbacks++;
+  }} as never);
+  const firstResult=await first.observeClock();assert.ok(secondPromise,"the second instance starts while the first owns admission");const secondResult=await secondPromise!;
+  assert.deepEqual(firstResult,{ok:false,reason:"busy"});assert.deepEqual(secondResult,{ok:true,status:"advanced",observedAt:new Date(t0).toISOString()});assert.deepEqual({firstCallbacks,secondCallbacks},{firstCallbacks:0,secondCallbacks:1});
+  const artifacts=(await readdir(root)).filter(name=>name.startsWith(".authority-ledger-admission-")||name.startsWith(".authority-ledger-lock-publication-"));assert.deepEqual(artifacts,[]);
+}));
+
+test("a concrete valid live fixed admission slot denies publication only after complete classification",async t=>{
+  await t.test("valid slot alone is busy and unchanged",()=>withRoot(async root=>{const owner={host:hostname(),nonce:"1".repeat(64),pid:process.pid,v:1 as const};await writeAdmissionSlot(root,owner);const before=await snapshotRootArtifacts(root);let publicationHooks=0,publicationRenames=0,callbackEntries=0;const result=await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20,faultInjector:(point:string)=>{if((publicationCrashPoints as readonly string[]).includes(point))publicationHooks++;if(point==="after-lock-publication-rename")publicationRenames++;if(point==="before-ledger-operation-callback")callbackEntries++;}} as never).observeClock();assert.deepEqual(result,{ok:false,reason:"busy"});assert.deepEqual({publicationHooks,publicationRenames,callbackEntries},{publicationHooks:0,publicationRenames:0,callbackEntries:0});assert.deepEqual(await snapshotRootArtifacts(root),before);}));
+  await t.test("valid slot never masks malformed publication membership",()=>withRoot(async root=>{const owner={host:hostname(),nonce:"2".repeat(64),pid:process.pid,v:1 as const};await writeAdmissionSlot(root,owner);const malformed=path.join(root,".authority-ledger-lock-publication-malformed.tmp");await mkdir(malformed);await writeFile(path.join(malformed,"owner.json"),"malformed");const before=await snapshotRootArtifacts(root);let publicationHooks=0,callbackEntries=0;const result=await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20,faultInjector:(point:string)=>{if((publicationCrashPoints as readonly string[]).includes(point))publicationHooks++;if(point==="before-ledger-operation-callback")callbackEntries++;}} as never).observeClock();assert.deepEqual(result,{ok:false,reason:"corruption"});assert.deepEqual({publicationHooks,callbackEntries},{publicationHooks:0,callbackEntries:0});assert.deepEqual(await snapshotRootArtifacts(root),before);}));
+});
+
+test("complete creator withdrawal reaches publication-aborted before cleanup",()=>withRoot(async root=>{
+  const terminalError={kind:"stable-terminal-error"};let ownStage="",ownerBytes=Buffer.alloc(0),owner:{host:string;nonce:string;pid:number;v:1}|undefined,withdrawalActive=false,originalAbsent=false,markerPresent=false,markerBytes=Buffer.alloc(0),callbackEntries=0,thrown:unknown;
+  const ledger=new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20,faultInjector:(point:string)=>{if(point==="after-lock-publication-stage-sync"){const name=readdirSync(root).find(value=>value.startsWith(".authority-ledger-lock-publication-"));assert.ok(name);ownStage=path.join(root,name);ownerBytes=readFileSync(path.join(ownStage,"owner.json"));owner=JSON.parse(ownerBytes.toString("utf8"));throw terminalError;}if(point==="before-creator-stage-withdrawal-validation")withdrawalActive=true;if(withdrawalActive&&point==="after-publication-stage-cleanup-root-sync"&&owner){const marker=path.join(root,`.authority-ledger-lock-${owner.pid}-${owner.nonce}.publication-aborted`);originalAbsent=!existsSync(ownStage);markerPresent=existsSync(marker);if(markerPresent)markerBytes=readFileSync(path.join(marker,"owner.json"));}if(point==="before-ledger-operation-callback")callbackEntries++;}} as never);
+  try{await ledger.observeClock();}catch(error){thrown=error;}
+  assert.equal(thrown,terminalError);assert.equal(withdrawalActive,true);assert.equal(originalAbsent,true);assert.equal(markerPresent,true);assert.deepEqual(markerBytes,ownerBytes);assert.equal(callbackEntries,0);
+}));
+
+test("active owner treats atomic complete withdrawal as membership change, never corruption",()=>withRoot(async root=>{
+  const child=spawn(process.execPath,["-e","setInterval(()=>{},1000)"],{stdio:"ignore"});assert.ok(child.pid);const owner={host:hostname(),nonce:"3".repeat(64),pid:child.pid,v:1 as const,ticket:"0000000000000001"},bytes=publicationOwnerBytes(owner),stage=path.join(root,publicationStageName(owner)),marker=path.join(root,`.authority-ledger-lock-${owner.pid}-${owner.nonce}.publication-aborted`);let installed=false,renamed=false,callbackEntries=0;
+  try{const result=await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:200,faultInjector:(point:string)=>{if(point==="after-lock-publication-root-sync"&&!installed){installed=true;mkdirSync(stage);writeFileSync(path.join(stage,"owner.json"),bytes);}if(point==="after-lock-publication-generation-closed"&&installed&&!renamed){renamed=true;renameSync(stage,marker);}if(point==="before-ledger-operation-callback")callbackEntries++;}} as never).observeClock();assert.deepEqual(result,{ok:true,status:"advanced",observedAt:new Date(t0).toISOString()});assert.equal(installed,true);assert.equal(renamed,true);assert.equal(callbackEntries,1);assert.equal(existsSync(stage),false);assert.equal(existsSync(marker),false,"the active owner services the authenticated publication-aborted marker");}finally{child.kill();}
+}));
+
 const publicationCrashPoints=["after-lock-publication-stage-create","after-lock-publication-owner-create","after-lock-publication-owner-partial-write","after-lock-publication-owner-sync","after-lock-publication-stage-sync","after-lock-publication-rename","after-lock-publication-root-sync"] as const;
 const publicationSnapshotFaultPoints=["after-active-lock-metadata","before-active-lock-content-read","after-mutating-admission-enumeration","after-publication-stage-enumeration","before-publication-stage-validation"] as const;
 const publicationCleanupFaultPoints=["after-lock-publication-rename-collision","before-publication-stage-root-reenumeration","before-publication-stage-final-validation","before-publication-stage-final-liveness","before-publication-stage-remove-attempt","before-creator-stage-withdrawal-validation","after-publication-stage-cleanup-root-sync"] as const;
