@@ -232,7 +232,7 @@ type HybridEntryKind="directory"|"file"|"symlink"|"other";
 interface HybridChildSnapshot { readonly name:string;readonly kind:HybridEntryKind;readonly identity:FileIdentity;readonly bytes?:Buffer }
 interface HybridEntrySnapshot { readonly name:string;readonly kind:HybridEntryKind;readonly identity:FileIdentity;readonly bytes?:Buffer;readonly children?:readonly HybridChildSnapshot[] }
 interface HybridRootSnapshot { readonly names:readonly string[];readonly entries:readonly HybridEntrySnapshot[] }
-type HybridGuardDecision="continue-legacy"|"busy"|"corruption"|"retry";
+type HybridGuardDecision="continue-legacy"|"busy"|"corruption"|"retry"|"progress"|"reclassify";
 type HybridSnapshotRelation="unchanged"|"monotonic-progress"|"membership-churn"|"corruption";
 interface HybridOwnedArtifact { readonly parsed:ParsedK1Name;readonly entry:HybridEntrySnapshot;readonly owner:CoordinationOwner;readonly ownerBytes:Buffer;readonly ownerIdentity:FileIdentity;readonly state:PartialOwnerState }
 interface HybridAckArtifact { readonly parsed:Extract<ParsedK1Name,{kind:"coordination-ack"|"coordination-stage"}>;readonly entry:HybridEntrySnapshot;readonly ack:CoordinationAck|null }
@@ -444,7 +444,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
         if (error instanceof LedgerCorruption) return frozen({ ok: false as const, reason: "corruption" as const });
         throw error;
       }
-    },false);
+    },{admitContender:false,permitPrepHousekeepingWrite:true});
   }
 
   async getReservation(reservationId: string): Promise<ReservationSnapshot | undefined> {
@@ -490,10 +490,10 @@ export class FsAuthorityLedger implements AuthorityLedger {
     return result as Readonly<{ observedAt: string | null }>;
   }
 
-  private async withLock<T>(context: OperationContext, operation: (reclaimed: boolean) => Promise<T>,admitContender=true): Promise<T | Readonly<{ ok: false; reason: "busy" | "lock-owner-unverifiable" | "corruption" }>> {
+  private async withLock<T>(context: OperationContext, operation: (reclaimed: boolean) => Promise<T>,coordination:Readonly<{admitContender?:boolean;permitPrepHousekeepingWrite?:boolean}>={}): Promise<T | Readonly<{ ok: false; reason: "busy" | "lock-owner-unverifiable" | "corruption" }>> {
     const preceding=this.lockTail;let release!:()=>void;this.lockTail=new Promise<void>(resolve=>{release=resolve;});await preceding;
     try {
-      const lock = await this.acquireLock(admitContender);
+      const lock = await this.acquireLock({admitContender:coordination.admitContender??true,permitPrepHousekeepingWrite:coordination.permitPrepHousekeepingWrite??false});
       if (!lock.ok) return frozen({ ok: false, reason: lock.reason });
       try {
         await this.assertNoLinks();
@@ -516,7 +516,8 @@ export class FsAuthorityLedger implements AuthorityLedger {
     } finally { release(); }
   }
 
-  private async acquireLock(admitContender:boolean): Promise<LockResult> {
+  private async acquireLock(coordination:Readonly<{admitContender:boolean;permitPrepHousekeepingWrite:boolean}>): Promise<LockResult> {
+    const {admitContender}=coordination;let prepHousekeepingWritePermitted=coordination.permitPrepHousekeepingWrite;
     const monotonicNow=this.prepHousekeeperRuntime.monotonicNow,delay=this.prepHousekeeperRuntime.delay;
     const deadline = monotonicNow() + this.options.lockTimeoutMs;
     const prepAttemptToken=mintUnboundPrepCreatorAttemptToken();
@@ -528,11 +529,12 @@ export class FsAuthorityLedger implements AuthorityLedger {
     const backoff=async()=>{const remaining=deadline-monotonicNow();if(remaining<=0)return;await delay(Math.min(retryDelayMs,remaining));retryDelayMs=Math.min(50,retryDelayMs*2);};
     const attempt=async():Promise<LockResult>=>{while (true) {
       try {
-        const hybridGuard=await this.classifyHybridCoordinationEpoch(prepAttemptToken);
+        const hybridGuard=await this.classifyHybridCoordinationEpoch(prepAttemptToken,prepHousekeepingWritePermitted);
         if(hybridGuard==="retry"){
           if(monotonicNow()>=deadline)return {ok:false,reason:"busy"};
           await backoff();continue;
         }
+        if(hybridGuard==="progress"||hybridGuard==="reclassify"){retryDelayMs=5;if(monotonicNow()>=deadline)prepHousekeepingWritePermitted=false;continue;}
         if(hybridGuard==="busy")return {ok:false,reason:"busy"};
         if(hybridGuard==="corruption")return {ok:false,reason:"corruption"};
         const active=await this.inspectActiveLock(deadline);
@@ -746,7 +748,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
     return liveness.every(value=>value==="alive")?{kind:"saturated",names:Object.freeze([...names])}:{kind:"fallback"};
   }
 
-  private async classifyHybridCoordinationEpoch(prepAttemptToken:PrepCreatorAttemptToken):Promise<HybridGuardDecision>{
+  private async classifyHybridCoordinationEpoch(prepAttemptToken:PrepCreatorAttemptToken,permitPrepHousekeepingWrite:boolean):Promise<HybridGuardDecision>{
     let names:string[];
     try{names=(await readdir(this.root)).sort();}catch(error){if(hasCode(error,"ENOENT")||isSnapshotSharingError(error))return "retry";throw error;}
     if(!names.some(isK1ReservedName))return "continue-legacy";
@@ -780,33 +782,85 @@ export class FsAuthorityLedger implements AuthorityLedger {
     const epochRelation=this.compareHybridRootSnapshots(initial,finalClosedSnapshot);
     if(epochRelation==="corruption")return "corruption";
     if(epochRelation!=="unchanged")return "retry";
-    await this.observeStablePrepHousekeepingRoute(deriveStablePrepHousekeepingRoute(finalClosedSnapshot,decision,prepAttemptToken));
-    return decision;
+    const transition=await this.observeStablePrepHousekeepingRoute(deriveStablePrepHousekeepingRoute(finalClosedSnapshot,decision,prepAttemptToken),permitPrepHousekeepingWrite);
+    return transition==="progress"||transition==="reclassify"?transition:decision;
   }
 
-  private async observeStablePrepHousekeepingRoute(route:PrepHousekeepingRoute):Promise<void>{
-    if(route.kind==="no-authority"){this.prepHousekeeperRuntime.observeBoundary?.("prep-only-no-authority");return;}
+  private async observeStablePrepHousekeepingRoute(route:PrepHousekeepingRoute,permitWrite:boolean):Promise<"busy"|"progress"|"reclassify">{
+    if(route.kind==="no-authority"){this.prepHousekeeperRuntime.observeBoundary?.("prep-only-no-authority");return "busy";}
     if(route.kind==="dead-prep"){
       this.prepHousekeeperRuntime.observeBoundary?.("prep-only-creator-token-carried");
       this.prepHousekeeperRuntime.observeBoundary?.("prep-only-prep-retirement-authority-dead-owner");
-      await this.refusePrepHousekeepingTransition(route.retirementAuthority);
-      return;
+      return this.transitionPrepHousekeeping(route.retirementAuthority,permitWrite);
     }
     if(route.kind==="retired-prep"){
       this.prepHousekeeperRuntime.observeBoundary?.("prep-only-prep-retired-cleanup-authority");
-      await this.refusePrepHousekeepingTransition(route.cleanupAuthority);
+      return this.transitionPrepHousekeeping(route.cleanupAuthority,permitWrite);
     }
+    return "busy";
   }
 
-  private async refusePrepHousekeepingTransition(authority:PrepRetirementAuthority|PrepRetiredCleanupAuthority):Promise<void>{
+  private async transitionPrepHousekeeping(authority:PrepRetirementAuthority|PrepRetiredCleanupAuthority,permitWrite:boolean):Promise<"busy"|"progress"|"reclassify">{
     const retirement=prepRetirementAuthorityBindings.get(authority),cleanup=prepRetiredCleanupAuthorityBindings.get(authority),binding=retirement??cleanup;
     prepRetirementAuthorityBindings.delete(authority);prepRetiredCleanupAuthorityBindings.delete(authority);
-    if(binding===undefined)return;
+    if(binding===undefined)return "busy";
     const first=await this.revalidatePrepHousekeepingAuthority(binding);
     this.prepHousekeeperRuntime.observeBoundary?.("prep-only-before-transition");
     const second=await this.revalidatePrepHousekeepingAuthority(binding);
-    this.prepHousekeeperRuntime.observeBoundary?.("prep-only-transition-refused");
-    if(first==="corruption"||second==="corruption")throw new LedgerCorruption("prep housekeeping authority changed before transition");
+    if(first==="corruption"||second==="corruption"){this.prepHousekeeperRuntime.observeBoundary?.("prep-only-transition-refused");throw new LedgerCorruption("prep housekeeping authority changed before transition");}
+    if(first!=="exact"||second!=="exact"){this.prepHousekeeperRuntime.observeBoundary?.("prep-only-transition-refused");return "busy";}
+    if(!permitWrite){this.prepHousekeeperRuntime.observeBoundary?.("prep-only-transition-refused");return "busy";}
+    this.prepHousekeeperRuntime.observeBoundary?.("prep-only-after-final-revalidation");
+    const result=binding.descriptor.kind==="dead-prep"?await this.retireBoundPrep(binding):await this.advanceBoundPrepCleanup(binding);
+    if(result==="busy")this.prepHousekeeperRuntime.observeBoundary?.("prep-only-transition-refused");
+    return result;
+  }
+
+  private boundPrepArtifact(binding:PrepAuthorityBinding,retired:boolean):HybridOwnedArtifact{
+    const entry=binding.snapshot.entries.find(value=>value.name===binding.descriptor.targetName),parsed=parseK1Name(binding.descriptor.targetName);
+    if(entry===undefined||parsed===null)throw new LedgerCorruption("prep housekeeping binding lost its exact target");
+    if(retired&&parsed.kind!=="admission-prep-retired"||!retired&&parsed.kind!=="admission-prep")throw new LedgerCorruption("prep housekeeping binding target kind changed");
+    if(parsed.kind!=="admission-prep"&&parsed.kind!=="admission-prep-retired")throw new LedgerCorruption("invalid prep housekeeping target");
+    const owner:CoordinationOwner={host:hostname(),nonce:parsed.nonce,pid:parsed.pid,v:1};
+    return this.classifyHybridNamedOwnerDirectory(parsed,entry,owner,parsed.kind==="admission-prep-retired"?parsed.state:null);
+  }
+
+  private async retireBoundPrep(binding:PrepAuthorityBinding):Promise<"progress"|"reclassify">{
+    const artifact=this.boundPrepArtifact(binding,false),parsed=artifact.parsed;if(parsed.kind!=="admission-prep")throw new LedgerCorruption("invalid prep retirement binding");
+    const destinationName=`.authority-ledger-admission-prep-retired-${parsed.hostDigest}-${parsed.pid}-${parsed.nonce}.${artifact.state}`,source=this.absolute(parsed.name),destination=this.absolute(destinationName);
+    try{await lstat(destination);return "reclassify";}catch(error){if(isSnapshotSharingError(error))return "reclassify";if(!hasCode(error,"ENOENT"))throw error;}
+    try{await rename(source,destination);}catch(error){if(hasCode(error,"EEXIST")||hasCode(error,"ENOTEMPTY")||hasCode(error,"ENOENT")||isSnapshotSharingError(error))return "reclassify";throw error;}
+    const moved=await lstat(destination,{bigint:true});if(!sameFileIdentity(artifact.entry.identity,fileIdentity(moved)))throw new LedgerCorruption("prep retirement changed directory identity");
+    await this.syncDirectory(this.root);
+    this.prepHousekeeperRuntime.observeBoundary?.("prep-only-prep-retirement-root-synced");
+    return "progress";
+  }
+
+  private boundPrepCleanup(binding:PrepAuthorityBinding):Readonly<{ack:CoordinationAck;bytes:Buffer;stageName:string;artifact:HybridOwnedArtifact}>{
+    const artifact=this.boundPrepArtifact(binding,true),parsed=artifact.parsed;if(parsed.kind!=="admission-prep-retired")throw new LedgerCorruption("invalid prep cleanup binding");
+    const ack:CoordinationAck={directoryIdentity:encodeCoordinationIdentityWire(artifact.entry.identity),kind:"admission-prep-retired",markerName:parsed.name,originalName:`.authority-ledger-admission-prep-${parsed.hostDigest}-${parsed.pid}-${parsed.nonce}.tmp`,owner:artifact.owner,ownerBytesDigest:coordinationRawDigest(artifact.ownerBytes),ownerBytesLength:String(artifact.ownerBytes.length),ownerDigest:coordinationCanonicalDigest(artifact.owner),ownerIdentity:parsed.state==="empty"?null:encodeCoordinationIdentityWire(artifact.ownerIdentity),purpose:"prep-retired",recoveryAuthority:"dead-owner-or-exact-creator",state:parsed.state,v:COORDINATION_ACK_VERSION};
+    const bytes=coordinationCanonicalBytes(ack),stageName=`.authority-ledger-coordination-cleanup-stage-p-${coordinationRawDigest(bytes).slice(7)}.tmp`;
+    return {ack,bytes,stageName,artifact};
+  }
+
+  private async advanceBoundPrepCleanup(binding:PrepAuthorityBinding):Promise<"busy"|"progress"|"reclassify">{
+    if(binding.descriptor.kind!=="prep-retired-cleanup"||binding.descriptor.orphan)return "busy";
+    const cleanup=this.boundPrepCleanup(binding),lifecycle=binding.descriptor.lifecycleName;
+    const stagePath=this.absolute(cleanup.stageName);
+    if(lifecycle===null){let handle:FileHandle|undefined;try{handle=await open(stagePath,"wx",0o600);const created=await handle.stat({bigint:true});if(!created.isFile()||created.isSymbolicLink()||created.nlink!==1n)throw new LedgerCorruption("invalid new prep cleanup stage");}catch(error){if(hasCode(error,"EEXIST")||isSnapshotSharingError(error))return "reclassify";throw error;}finally{if(handle)await handle.close();}this.prepHousekeeperRuntime.observeBoundary?.("prep-only-cleanup-stage-zero");return "progress";}
+    if(lifecycle!==cleanup.stageName)return "busy";
+    const entry=binding.snapshot.entries.find(value=>value.name===lifecycle),parsed=parseK1Name(lifecycle);if(entry?.kind!=="file"||entry.bytes===undefined||parsed?.kind!=="coordination-stage"||parsed.purpose!=="prep-retired"||entry.identity.nlink!==1n)return "busy";
+    const current=entry.bytes;if(current.length>=cleanup.bytes.length||!cleanup.bytes.subarray(0,current.length).equals(current))return "busy";
+    let handle:FileHandle|undefined;
+    try{
+      handle=await open(stagePath,"r+");const opened=fileIdentity(await handle.stat({bigint:true})),named=fileIdentity(await lstat(stagePath,{bigint:true}));if(!sameFileIdentity(entry.identity,opened)||!sameFileIdentity(opened,named)||opened.nlink!==1n)throw new LedgerCorruption("prep cleanup stage identity changed before append");
+      const observed=await handle.readFile();if(!observed.equals(current))throw new LedgerCorruption("prep cleanup stage bytes changed before append");
+      if(current.length===0){await this.writeAll(handle,cleanup.bytes.subarray(0,1),0);}
+      else{await this.writeAll(handle,cleanup.bytes.subarray(current.length),current.length);await handle.sync();}
+      const finalIdentity=fileIdentity(await handle.stat({bigint:true})),finalNamed=fileIdentity(await lstat(stagePath,{bigint:true}));if(!sameFileIdentity(entry.identity,finalIdentity)||!sameFileIdentity(finalIdentity,finalNamed))throw new LedgerCorruption("prep cleanup stage identity changed during append");
+    }catch(error){if(error instanceof LedgerCorruption)throw error;if(hasCode(error,"ENOENT")||isSnapshotSharingError(error))throw new LedgerCorruption("prep cleanup stage changed during append");throw error;}finally{if(handle)await handle.close();}
+    this.prepHousekeeperRuntime.observeBoundary?.(current.length===0?"prep-only-cleanup-stage-prefix":"prep-only-cleanup-stage-complete");
+    return "progress";
   }
 
   private async revalidatePrepHousekeepingAuthority(binding:PrepAuthorityBinding):Promise<"exact"|"busy"|"corruption">{
