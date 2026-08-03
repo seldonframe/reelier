@@ -963,7 +963,21 @@ async function exitedConcurrentChildPids():Promise<readonly [number,number]>{
 test("publication-stage multiplicity permits distinct dead publishers but rejects one PID with two nonces",async t=>{
   const writeComplete=async(root:string,owner:Readonly<{host:string;nonce:string;pid:number;v:1;ticket?:string}>)=>{const stage=path.join(root,publicationStageName(owner));await mkdir(stage);await writeFile(path.join(stage,"owner.json"),authorityCanonicalBytes({host:owner.host,nonce:owner.nonce,pid:owner.pid,v:owner.v}));return stage;};
   await t.test("distinct concurrent PIDs",()=>withRoot(async root=>{const [firstPid,secondPid]=await exitedConcurrentChildPids(),first={host:hostname(),nonce:"4".repeat(64),pid:firstPid,v:1 as const},second={host:hostname(),nonce:"5".repeat(64),pid:secondPid,v:1 as const},stages=[await writeComplete(root,first),await writeComplete(root,second)];assert.equal((await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:200}).recover()).ok,true);for(const stage of stages)assert.equal(existsSync(stage),false);}));
-  await t.test("one PID with two nonces",()=>withRoot(async root=>{const pid=await exitedChildPid(),first={host:hostname(),nonce:"6".repeat(64),pid,v:1 as const,ticket:"0000000000000001"},second={...first,nonce:"7".repeat(64),ticket:"0000000000000002"},stages=[await writeComplete(root,first),await writeComplete(root,second)];assert.deepEqual(await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:200}).recover(),{ok:false,reason:"corruption"});for(const stage of stages)assert.equal(existsSync(stage),true);}));
+  await t.test("one PID with two nonces",()=>withRoot(async root=>{
+    const pid=await exitedChildPid(),first={host:hostname(),nonce:"6".repeat(64),pid,v:1 as const,ticket:"0000000000000001"},second={...first,nonce:"7".repeat(64),ticket:"0000000000000002"},stages=[await writeComplete(root,first),await writeComplete(root,second)],before=await snapshotRootArtifacts(root);
+    let stageValidations=0,creatorPublicationHooks=0,removeAttempts=0,callbackEntries=0;
+    const result=await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:200,faultInjector:(point:string)=>{
+      if(point==="before-publication-stage-validation")stageValidations++;
+      if((publicationCrashPoints as readonly string[]).includes(point))creatorPublicationHooks++;
+      if(point==="before-publication-stage-remove-attempt")removeAttempts++;
+      if(point==="before-ledger-operation-callback")callbackEntries++;
+    }} as never).recover();
+    assert.deepEqual(result,{ok:false,reason:"corruption"});
+    assert.equal(stageValidations,2,"ambiguous saturated names fall through to complete content classification");
+    assert.deepEqual({creatorPublicationHooks,removeAttempts,callbackEntries},{creatorPublicationHooks:0,removeAttempts:0,callbackEntries:0});
+    assert.deepEqual(await snapshotRootArtifacts(root),before);
+    for(const stage of stages)assert.equal(existsSync(stage),true);
+  }));
 });
 
 test("publication owner recovery accepts only empty, zero, strict canonical prefixes, and exact complete bytes",async t=>{
@@ -974,7 +988,23 @@ test("publication owner recovery accepts only empty, zero, strict canonical pref
 });
 
 test("publication recovery classifies every stage before deleting any dead candidate",async t=>{
-  for(const [name,deadPid,unverifiablePid] of [["dead-before-unverifiable",11111,22222],["unverifiable-before-dead",22222,11111]] as const)await t.test(name,()=>withRoot(async root=>{const dead={host:hostname(),nonce:"d".repeat(64),pid:deadPid,v:1 as const},unverifiable={host:hostname(),nonce:"e".repeat(64),pid:unverifiablePid,v:1 as const},deadBytes=authorityCanonicalBytes(dead),unverifiableBytes=authorityCanonicalBytes(unverifiable),deadStage=await writePublicationStage(root,dead,deadBytes),unverifiableStage=await writePublicationStage(root,unverifiable,unverifiableBytes),originalKill=process.kill,killCalls:number[]=[];Object.defineProperty(process,"kill",{configurable:true,value:(pid:number)=>{killCalls.push(pid);throw Object.assign(new Error(pid===dead.pid?"dead":"unverifiable"),{code:pid===dead.pid?"ESRCH":"EPERM"});}});try{assert.deepEqual(await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20}).recover(),{ok:false,reason:"corruption"});}finally{Object.defineProperty(process,"kill",{configurable:true,value:originalKill});}assert.deepEqual(killCalls,deadPid<unverifiablePid?[dead.pid,unverifiable.pid]:[unverifiable.pid,dead.pid],"all stages are classified in stable filename order before mutation");assert.equal(existsSync(deadStage),true);assert.equal(existsSync(unverifiableStage),true);assert.deepEqual(await readFile(path.join(deadStage,"owner.json")),deadBytes);assert.deepEqual(await readFile(path.join(unverifiableStage,"owner.json")),unverifiableBytes);}));
+  for(const [name,deadPid,unverifiablePid] of [["dead-before-unverifiable",11111,22222],["unverifiable-before-dead",22222,11111]] as const)await t.test(name,()=>withRoot(async root=>{
+    const dead={host:hostname(),nonce:"d".repeat(64),pid:deadPid,v:1 as const},unverifiable={host:hostname(),nonce:"e".repeat(64),pid:unverifiablePid,v:1 as const},deadBytes=authorityCanonicalBytes(dead),unverifiableBytes=authorityCanonicalBytes(unverifiable),deadStage=await writePublicationStage(root,dead,deadBytes),unverifiableStage=await writePublicationStage(root,unverifiable,unverifiableBytes),before=await snapshotRootArtifacts(root),originalKill=process.kill,killCalls:number[]=[];
+    let stageValidations=0,creatorPublicationHooks=0,removeAttempts=0,callbackEntries=0,result;
+    Object.defineProperty(process,"kill",{configurable:true,value:(pid:number)=>{killCalls.push(pid);throw Object.assign(new Error(pid===dead.pid?"dead":"unverifiable"),{code:pid===dead.pid?"ESRCH":"EPERM"});}});
+    try{result=await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20,faultInjector:(point:string)=>{
+      if(point==="before-publication-stage-validation")stageValidations++;
+      if((publicationCrashPoints as readonly string[]).includes(point))creatorPublicationHooks++;
+      if(point==="before-publication-stage-remove-attempt")removeAttempts++;
+      if(point==="before-ledger-operation-callback")callbackEntries++;
+    }} as never).recover();}finally{Object.defineProperty(process,"kill",{configurable:true,value:originalKill});}
+    assert.deepEqual(result,{ok:false,reason:"corruption"});
+    assert.equal(stageValidations,2,"unverifiable saturation falls through to complete content classification");
+    assert.deepEqual(killCalls,deadPid<unverifiablePid?[dead.pid,unverifiable.pid]:[unverifiable.pid,dead.pid],"all stages are classified in stable filename order before mutation");
+    assert.deepEqual({creatorPublicationHooks,removeAttempts,callbackEntries},{creatorPublicationHooks:0,removeAttempts:0,callbackEntries:0});
+    assert.deepEqual(await snapshotRootArtifacts(root),before);
+    assert.equal(existsSync(deadStage),true);assert.equal(existsSync(unverifiableStage),true);assert.deepEqual(await readFile(path.join(deadStage,"owner.json")),deadBytes);assert.deepEqual(await readFile(path.join(unverifiableStage,"owner.json")),unverifiableBytes);
+  }));
 });
 
 test("publication stages reject malformed topology and owner bindings without target mutation",async t=>{
@@ -1186,6 +1216,38 @@ test("two live publisher names saturate mutating admission without authorizing s
     "saturated name observation validates no content, closes no generation, creates no contender, and grants no callback authority",
   );
   assert.deepEqual(await snapshotRootArtifacts(root),before,"saturated observation creates no coordination artifact");
+  for(const item of stages){
+    const identity=(value:Readonly<{dev:bigint;ino:bigint;mode:bigint;nlink:bigint}>)=>({dev:value.dev,ino:value.ino,mode:value.mode,nlink:value.nlink}),ownerPath=path.join(item.stage,"owner.json");
+    assert.deepEqual(identity(lstatSync(item.stage,{bigint:true})),item.stageIdentity);
+    assert.deepEqual(identity(lstatSync(ownerPath,{bigint:true})),item.ownerIdentity);
+    assert.deepEqual(readFileSync(ownerPath),item.bytes);
+  }
+}));
+
+test("a foreign publisher in a saturated cohort requires complete classification",()=>withRoot(async root=>{
+  const peers=[
+    {host:hostname(),nonce:"e".repeat(64),pid:63001,v:1 as const,ticket:"0000000000000001"},
+    {host:"foreign.invalid",nonce:"f".repeat(64),pid:63002,v:1 as const,ticket:"0000000000000002"},
+  ] as const;
+  const stages=await Promise.all(peers.map(async owner=>{
+    const bytes=publicationOwnerBytes(owner),stage=await writePublicationStage(root,owner,bytes),ownerPath=path.join(stage,"owner.json"),identity=(value:Readonly<{dev:bigint;ino:bigint;mode:bigint;nlink:bigint}>)=>({dev:value.dev,ino:value.ino,mode:value.mode,nlink:value.nlink});
+    return {bytes,stage,stageIdentity:identity(lstatSync(stage,{bigint:true})),ownerIdentity:identity(lstatSync(ownerPath,{bigint:true}))};
+  }));
+  const before=await snapshotRootArtifacts(root),authenticated=authenticateOutcomeRequest({tenant:"tenant_1",requester:"requester_1",definitionAlias:"definition_1",request:{v:"reelier.outcome-request/v1",requestId:"request_1",sourceRefs:{source:"ref_1"},choices:{}}}),originalKill=process.kill;
+  let stageValidations=0,creatorPublicationHooks=0,removeAttempts=0,callbackEntries=0,result;
+  Object.defineProperty(process,"kill",{configurable:true,value:(pid:number)=>peers.some(peer=>peer.pid===pid)?true:originalKill.call(process,pid,0)});
+  try{
+    result=await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20,faultInjector:(point:string)=>{
+      if(point==="before-publication-stage-validation")stageValidations++;
+      if((publicationCrashPoints as readonly string[]).includes(point))creatorPublicationHooks++;
+      if(point==="before-publication-stage-remove-attempt")removeAttempts++;
+      if(point==="before-ledger-operation-callback")callbackEntries++;
+    }} as never).bindIngress(authenticated);
+  }finally{Object.defineProperty(process,"kill",{configurable:true,value:originalKill});}
+  assert.deepEqual(result,{ok:false,reason:"corruption"});
+  assert.ok(stageValidations>=1,"foreign saturated names fall through to complete content classification");
+  assert.deepEqual({creatorPublicationHooks,removeAttempts,callbackEntries},{creatorPublicationHooks:0,removeAttempts:0,callbackEntries:0});
+  assert.deepEqual(await snapshotRootArtifacts(root),before,"foreign classification creates no artifact or mutation");
   for(const item of stages){
     const identity=(value:Readonly<{dev:bigint;ino:bigint;mode:bigint;nlink:bigint}>)=>({dev:value.dev,ino:value.ino,mode:value.mode,nlink:value.nlink}),ownerPath=path.join(item.stage,"owner.json");
     assert.deepEqual(identity(lstatSync(item.stage,{bigint:true})),item.stageIdentity);
