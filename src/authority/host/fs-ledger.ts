@@ -200,7 +200,8 @@ interface PublicationElection {
 }
 interface ProvisionalPublicationName { readonly name:string;readonly ticket:bigint;readonly pid:number;readonly pidText:string }
 interface ProvisionalPublicationWait { readonly names:readonly string[];readonly predecessor:PublicationStage }
-type ProvisionalPublicationObservation = Readonly<{kind:"wait";state:ProvisionalPublicationWait}> | Readonly<{kind:"fallback";selected:boolean}>;
+type ProvisionalPublicationObservation = Readonly<{kind:"wait";state:ProvisionalPublicationWait}> | Readonly<{kind:"fallback";selected:boolean;safeCanonicalMembershipChurn:boolean}>;
+type ProvisionalEpochEligibility = "unearned" | "earned" | "revoked";
 type MutatingAdmissionMemo = Readonly<{kind:"unseeded"}> | Readonly<{kind:"saturated";names:readonly string[]}> | Readonly<{kind:"disabled"}>;
 type MutatingAdmissionObservation = Readonly<{kind:"saturated";names:readonly string[]}> | Readonly<{kind:"fallback"}>;
 interface OwnedOwnerSnapshot {
@@ -444,7 +445,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
     const deadline = monotonicNow() + this.options.lockTimeoutMs;
     const owner: LockOwner = { v: 1, host: hostname(), pid: process.pid, nonce: randomBytes(32).toString("hex") };
     const ownerBytes=canonicalBytes(owner);let stageName="",stagePath="",ownerPath="",stageTicket:bigint|null=null;
-    let stageCreated=false,published=false,expectedStage:PublicationStage|null=null,election:PublicationElection|null=null,provisionalWait:ProvisionalPublicationWait|null=null,stagedSettlementStarted=false,provisionalEpochsAllowed=true,waitedOnActiveLock=false,fullReelectionPending=false,provisionalFallbackResetPending=false;
+    let stageCreated=false,published=false,expectedStage:PublicationStage|null=null,election:PublicationElection|null=null,provisionalWait:ProvisionalPublicationWait|null=null,stagedSettlementStarted=false,provisionalEpochEligibility:ProvisionalEpochEligibility="unearned",waitedOnActiveLock=false,fullReelectionPending=false,provisionalFallbackResetPending=false;
     let mutatingAdmissionMemo:MutatingAdmissionMemo=admitContender?{kind:"unseeded"}:{kind:"disabled"};
     let retryDelayMs=5;
     const backoff=async()=>{const remaining=deadline-monotonicNow();if(remaining<=0)return;await delay(Math.min(retryDelayMs,remaining));retryDelayMs=Math.min(50,retryDelayMs*2);};
@@ -526,12 +527,14 @@ export class FsAuthorityLedger implements AuthorityLedger {
             if(monotonicNow()>=deadline)return {ok:false,reason:"busy"};
             await backoff();continue;
           }
+          if(hadProvisionalWait&&provisional.safeCanonicalMembershipChurn&&provisionalEpochEligibility!=="revoked")provisionalEpochEligibility="earned";
+          else provisionalEpochEligibility="revoked";
           if(hadProvisionalWait)provisionalFallbackResetPending=true;
           provisionalWait=null;
           this.fault("before-staged-publication-settlement");
           stagedSettlementStarted=true;
         }
-        const settlement=provisionalEpochsAllowed
+        const settlement=provisionalEpochEligibility==="earned"
           ?await this.settlePublicationStages(deadline,false,expectedStage,false,true)
           :await this.settlePublicationStages(deadline,false,expectedStage);
         if(!Array.isArray(settlement)){
@@ -544,10 +547,11 @@ export class FsAuthorityLedger implements AuthorityLedger {
             await backoff();
             continue;
           }
+          provisionalEpochEligibility="revoked";
           if(fresh.selected)this.fault("before-staged-publication-settlement");
           continue;
         }
-        provisionalEpochsAllowed=false;
+        provisionalEpochEligibility="revoked";
         const generation=[...settlement].sort(comparePublicationOrder);
         if(provisionalFallbackResetPending){provisionalFallbackResetPending=false;retryDelayMs=5;}
         if(fullReelectionPending){fullReelectionPending=false;retryDelayMs=5;}
@@ -592,29 +596,31 @@ export class FsAuthorityLedger implements AuthorityLedger {
   private async inspectProvisionalPublicationWait(expectedOwn:PublicationStage,previous:ProvisionalPublicationWait|null,expectedPredecessor:PublicationStage|null=null):Promise<ProvisionalPublicationObservation>{
     let names:string[];
     try{names=await this.rawPublicationStageNames();}
-    catch(error){if(hasCode(error,"ENOENT")||isSnapshotSharingError(error))return {kind:"fallback",selected:false};throw error;}
+    catch(error){if(hasCode(error,"ENOENT")||isSnapshotSharingError(error))return {kind:"fallback",selected:false,safeCanonicalMembershipChurn:false};throw error;}
     const ordered=this.parseProvisionalPublicationNames(names,expectedOwn.name);
-    if(ordered===null||(previous!==null&&!sameStrings(previous.names,names)))return {kind:"fallback",selected:false};
+    if(ordered===null||(previous!==null&&!sameStrings(previous.names,names)))return {kind:"fallback",selected:false,safeCanonicalMembershipChurn:false};
     const ownIndex=ordered.findIndex(item=>item.name===expectedOwn.name);
-    if(ownIndex<=0)return {kind:"fallback",selected:false};
+    if(ownIndex<=0)return {kind:"fallback",selected:false,safeCanonicalMembershipChurn:false};
     const selected=ordered[ownIndex-1];
     let selectedDirectoryIdentity:FileIdentity;
-    try{const info=await lstat(this.absolute(selected.name),{bigint:true});if(info.isSymbolicLink()||!info.isDirectory())return {kind:"fallback",selected:false};selectedDirectoryIdentity=fileIdentity(info);}
-    catch(error){if(hasCode(error,"ENOENT")||isSnapshotSharingError(error))return {kind:"fallback",selected:false};throw error;}
+    try{const info=await lstat(this.absolute(selected.name),{bigint:true});if(info.isSymbolicLink()||!info.isDirectory())return {kind:"fallback",selected:false,safeCanonicalMembershipChurn:false};selectedDirectoryIdentity=fileIdentity(info);}
+    catch(error){if(hasCode(error,"ENOENT")||isSnapshotSharingError(error))return {kind:"fallback",selected:false,safeCanonicalMembershipChurn:false};throw error;}
     this.fault("after-lock-publication-provisional-predecessor-selection");
     let own:PublicationStage,predecessor:PublicationStage;
     try{
       own=await this.validatePublicationStage(expectedOwn.name);
       predecessor=await this.validatePublicationStage(selected.name);
-    }catch(error){if(error instanceof LedgerCorruption||hasCode(error,"ENOENT")||isSnapshotSharingError(error))return {kind:"fallback",selected:true};throw error;}
-    if(!samePublicationStage(expectedOwn,own)||!sameFileIdentity(selectedDirectoryIdentity,predecessor.directoryIdentity)||previous!==null&&!samePublicationStage(previous.predecessor,predecessor)||expectedPredecessor!==null&&!samePublicationStage(expectedPredecessor,predecessor))return {kind:"fallback",selected:true};
+    }catch(error){if(error instanceof LedgerCorruption||hasCode(error,"ENOENT")||isSnapshotSharingError(error))return {kind:"fallback",selected:true,safeCanonicalMembershipChurn:false};throw error;}
+    if(!samePublicationStage(expectedOwn,own)||!sameFileIdentity(selectedDirectoryIdentity,predecessor.directoryIdentity)||previous!==null&&!samePublicationStage(previous.predecessor,predecessor)||expectedPredecessor!==null&&!samePublicationStage(expectedPredecessor,predecessor))return {kind:"fallback",selected:true,safeCanonicalMembershipChurn:false};
     this.fault("before-lock-publication-provisional-root-reenumeration");
     let closedNames:string[];
     try{closedNames=await this.rawPublicationStageNames();}
-    catch(error){if(hasCode(error,"ENOENT")||isSnapshotSharingError(error))return {kind:"fallback",selected:true};throw error;}
-    if(this.parseProvisionalPublicationNames(closedNames,expectedOwn.name)===null||!sameStrings(names,closedNames))return {kind:"fallback",selected:true};
+    catch(error){if(hasCode(error,"ENOENT")||isSnapshotSharingError(error))return {kind:"fallback",selected:true,safeCanonicalMembershipChurn:false};throw error;}
+    const closedOrdered=this.parseProvisionalPublicationNames(closedNames,expectedOwn.name);
+    if(closedOrdered===null)return {kind:"fallback",selected:true,safeCanonicalMembershipChurn:false};
+    if(!sameStrings(names,closedNames))return {kind:"fallback",selected:true,safeCanonicalMembershipChurn:previous!==null};
     this.fault("before-lock-publication-provisional-predecessor-liveness");
-    if(processLiveness(predecessor.pid)!=="alive")return {kind:"fallback",selected:true};
+    if(processLiveness(predecessor.pid)!=="alive")return {kind:"fallback",selected:true,safeCanonicalMembershipChurn:false};
     return {kind:"wait",state:{names:Object.freeze([...names]),predecessor}};
   }
 
