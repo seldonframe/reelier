@@ -180,6 +180,11 @@ only those artifacts continues through the exact current legacy compatibility ha
 active, the complete root generation is classified before any legacy active-lock retirement,
 publication-stage settlement/removal/publication, semantic clock read, or operation callback. An
 exact valid or recoverable-but-unsupported K1 residue returns bounded `busy` byte-identically.
+Valid in-flight residue includes an exact fixed slot plus its same-owner publication stage in any of
+the `empty`, `zero`, strict-prefix `partial`, or `complete` construction states. It also includes an
+exact same-owner `withdrawn` slot-retirement marker and purpose-bound cleanup record whose terminal
+artifact is the byte-identical `publication-aborted` marker; the epoch guard preserves that crash
+graph rather than treating every K1-plus-`publication-aborted` generation as impossible.
 Impossible topology, malformed or broad-prefix membership, cross-owner binding, digest mismatch, or
 duplicate authority returns `corruption` byte-identically. Snapshot churn retries only within the
 acquisition deadline and then returns `busy`; a same-name replacement after a closed generation is
