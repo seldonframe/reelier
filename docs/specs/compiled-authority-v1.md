@@ -149,8 +149,10 @@ extra bytes, and all non-prefix truncations are corruption and remain byte-ident
 links/reparse points, hard-linked owner files, and extra contents fail closed without target mutation.
 Legacy or manually injected stages with distinct valid host/PID identities are external membership
 and are independently classified for compatibility; their presence never proves admission and never
-widens K=1. A stable generation with more than one publication stage is invalid K=1 topology and is
-preserved corruption. Two stages for the same host and PID but different nonces are ambiguous and fail
+widens K=1. In a K1-active generation, a stable generation with more than one publication stage is
+invalid K1 topology and is preserved corruption. A legacy-only generation remains on the exact
+compatibility classifier until that legacy residue is drained; its existing multi-stage refusal does
+not establish K1 admission. Two stages for the same host and PID but different nonces are ambiguous and fail
 closed. Every publication artifact name, type, link count, byte state, binding, and owner liveness
 is classified before any candidate is mutated. A corrupt, transiently unreadable, or unverifiable
 artifact prevents retirement of every otherwise recoverable stage. Mutation candidates are
@@ -165,6 +167,25 @@ or mutating the replacement target. It never retires another live stage.
 Filesystem identity is read with non-following `lstat({ bigint: true })`; device, inode/file ID, mode,
 and link count remain exact bigint values throughout comparison and are never rounded through a
 JavaScript `number`. Two distinct adjacent identities above `Number.MAX_SAFE_INTEGER` remain distinct.
+
+The K1 epoch guard activates when a closed root generation contains any exact artifact or any
+reserved-family lookalike in the admission-preparation, fixed-slot, preparation-retirement,
+slot-retirement, creator-withdrawal, coordination-cleanup-ack, or coordination-cleanup-stage
+families. Concretely, the reserved activation stems are `.authority-ledger-admission-`,
+`.authority-ledger-creator-withdrawal-`, and `.authority-ledger-coordination-cleanup-`; an exact
+component or any broader name under one of those stems activates the guard. A publication stage,
+active `lock`, legacy retired-lock marker (including
+`publication-aborted`), or legacy lock-cleanup file does not activate K1 by itself; a root containing
+only those artifacts continues through the exact current legacy compatibility handling. Once K1 is
+active, the complete root generation is classified before any legacy active-lock retirement,
+publication-stage settlement/removal/publication, semantic clock read, or operation callback. An
+exact valid or recoverable-but-unsupported K1 residue returns bounded `busy` byte-identically.
+Impossible topology, malformed or broad-prefix membership, cross-owner binding, digest mismatch, or
+duplicate authority returns `corruption` byte-identically. Snapshot churn retries only within the
+acquisition deadline and then returns `busy`; a same-name replacement after a closed generation is
+`corruption`. Classification creates no K1 artifact and grants no cleanup, publication, retirement,
+semantic-time, or callback authority. Mixed old/new binaries writing the same ledger concurrently are
+an unsupported deployment topology; compatibility mode is not a permissive mixed-writer claim.
 
 Mutating admission has capacity K=1 and uses the one literal fixed slot
 `.authority-ledger-admission-0/owner.json`. One exact canonical owner `{ host, nonce, pid, v: 1 }` is
@@ -226,8 +247,9 @@ There is no publication-stage election or predecessor protocol. A clean root wit
 fixed slot, active lock, publication stage, retirement marker, cleanup stage, or cleanup ack may begin
 one admission attempt. A lone live external pre-slot publication stage is preserved and bounded-waits
 to `busy`; a lone exact dead external stage may be atomically withdrawn but is never promoted. More
-than one publication stage in a stable generation is invalid K=1 topology and is preserved corruption,
-even when every stage is individually canonical and has distinct provenance.
+than one publication stage in a stable K1-active generation is invalid K1 topology and is preserved
+corruption, even when every stage is individually canonical and has distinct provenance. Legacy-only
+publication residue remains on its exact compatibility behavior until drained.
 
 The ledger-lock fault surface is the following exact, disjoint K=1 taxonomy; no election,
 provisional-owner, or predecessor hook is part of the protocol:
