@@ -160,6 +160,8 @@ async function readJournalEvents(root:string):Promise<Record<string,unknown>[]>{
 
 async function snapshotDurableSubtrees(root:string,subtrees:readonly string[]):Promise<ReadonlyArray<Readonly<{name:string;bytes:string}>>>{const snapshot:Array<Readonly<{name:string;bytes:string}>>=[];const walk=async(directory:string,relative:string):Promise<void>=>{for(const entry of (await readdir(directory,{withFileTypes:true})).sort((left,right)=>left.name.localeCompare(right.name))){const child=path.join(directory,entry.name),name=path.posix.join(relative,entry.name);if(entry.isDirectory())await walk(child,name);else{assert.equal(entry.isFile(),true,`durable snapshot contains only regular files: ${name}`);snapshot.push({name,bytes:(await readFile(child)).toString("base64")});}}};for(const subtree of [...subtrees].sort())await walk(path.join(root,subtree),subtree);return snapshot;}
 
+async function commitRawBoundIntent(root:string):Promise<Readonly<{candidate:ReservationIntent;reservation:ReservationSnapshot}>>{const candidate=intent(),ledger=new RawFsAuthorityLedger(root,{now:()=>t0}),request=JSON.parse(Buffer.from(candidate.canonicalRequestBytes).toString("utf8")),authenticated=authenticateOutcomeRequest({tenant:candidate.tenant,requester:candidate.requester,definitionAlias:candidate.definitionAlias,request}),binding=await ledger.bindIngress(authenticated);assert.equal(binding.ok,true);if(!binding.ok)throw new Error("fixture ingress bind refused");const boundCandidate:ReservationIntent={...candidate,ingressClaimDigest:binding.ingressClaimDigest},created=await ledger.reserve(boundCandidate);assert.equal(created.ok,true);if(!created.ok)throw new Error("fixture reservation refused");return {candidate:boundCandidate,reservation:created.reservation};}
+
 test("100 real processes converge on one committed reservation and one dispatch eligibility", { timeout: 120_000 }, async () => {
   await withRoot(async root => {
     const results = await Promise.all(Array.from({ length: 100 }, () => spawnReserve(root, intent())));
@@ -558,6 +560,9 @@ test("equal-time reservations reuse one durable high-water instant",async()=>{
     const secondIntent=intent({requestId:"request_2",capabilityId:"capability_2",outcomeKey:digest("8"),effectDigest:digest("9"),sourceBundleDigest:digest("e"),sourceSnapshotDigest:digest("f"),limitSlots:[{kind:"contract-window",key:digest("5"),maximum:2},{kind:"source-trigger",key:digest("2"),maximum:1}]});
     const second=await new FsAuthorityLedger(root,{now:()=>t0,faultInjector:point=>{if(point==="reservation-before-clock-high-water-write"||point==="reservation-after-clock-high-water-write")highWaterFaults.push(point);}}).reserve(secondIntent);
     assert.equal(second.ok,true);if(!second.ok)return;
+    assert.equal(first.status,"reserved");assert.equal(first.dispatchEligible,true);
+    assert.equal(second.status,"reserved");assert.equal(second.dispatchEligible,true);
+    assert.notEqual(first.reservation.reservationId,second.reservation.reservationId,"distinct valid intents commit distinct reservations");
     const events=await readJournalEvents(root);
     assert.deepEqual(events.map(event=>event.type),["clock","reserve","reserve"]);
     assert.equal(events.filter(event=>event.type==="clock").length,1);
@@ -595,6 +600,23 @@ test("later-time exact committed retry advances only durable high-water",async()
     assert.equal(faults.filter(point=>point==="reservation-before-create").length,1,"only the due clock event reaches immutable create");
     assert.equal(faults.some(point=>point.includes("claim-acquisition")||point.includes("commit-marker")),false);
   });
+});
+
+test("exact committed retry preserves prepare and validity refusal precedence",async t=>{
+  const durableSubtrees=["ingress","journal","transactions","claims","tombstones"] as const;
+  const assertClosedRetry=async(root:string,candidate:ReservationIntent,now:number,expected:Readonly<{ok:false;reason:string}>):Promise<void>=>{const before=await snapshotDurableSubtrees(root,durableSubtrees),result=await new RawFsAuthorityLedger(root,{now:()=>now}).reserve(candidate);assert.deepEqual(result,expected);assert.deepEqual(await snapshotDurableSubtrees(root,durableSubtrees),before,"refused exact retry performs no further durable mutation");};
+
+  await t.test("expiry at the exact exclusive boundary",()=>withRoot(async root=>{const {candidate}=await commitRawBoundIntent(root);await assertClosedRetry(root,candidate,Date.parse(candidate.expiresAt),{ok:false,reason:"expired"});}));
+
+  await t.test("rollback after a durable high-water advance",()=>withRoot(async root=>{const {candidate}=await commitRawBoundIntent(root),advanced=await new RawFsAuthorityLedger(root,{now:()=>t0+1}).observeClock();assert.deepEqual(advanced,{ok:true,status:"advanced",observedAt:new Date(t0+1).toISOString()});await assertClosedRetry(root,candidate,t0,{ok:false,reason:"clock-rollback"});}));
+
+  for(const mutation of ["missing","tampered"] as const)await t.test(`${mutation} bound ingress`,()=>withRoot(async root=>{const {candidate}=await commitRawBoundIntent(root),ingressPath=path.join(root,"ingress",`${candidate.requestKey.slice(7)}.json`);if(mutation==="missing")await unlink(ingressPath);else{const stored=JSON.parse(await readFile(ingressPath,"utf8"));await writeFile(ingressPath,authorityCanonicalBytes({...stored,definitionAlias:"tampered_definition"}));}await assertClosedRetry(root,candidate,t0,{ok:false,reason:"corruption"});}));
+
+  await t.test("corrupt committed claim",()=>withRoot(async root=>{const {candidate}=await commitRawBoundIntent(root),claims=path.join(root,"claims"),claim=(await readdir(claims)).sort()[0];await writeFile(path.join(claims,claim),"{");await assertClosedRetry(root,candidate,t0,{ok:false,reason:"corruption"});}));
+
+  await t.test("corrupt committed journal",()=>withRoot(async root=>{const {candidate}=await commitRawBoundIntent(root),journal=path.join(root,"journal"),event=(await readdir(journal)).sort().at(-1)!;await writeFile(path.join(journal,event),"{");await assertClosedRetry(root,candidate,t0,{ok:false,reason:"corruption"});}));
+
+  await t.test("committed transaction cannot coexist with a valid tombstone",()=>withRoot(async root=>{const {candidate,reservation}=await commitRawBoundIntent(root),transactionDigest=reservation.reservationId;await writeFile(path.join(root,"tombstones",transactionDigest.slice(7)),authorityCanonicalBytes({v:"reelier.authority-ledger-tombstone/v1",transactionDigest,reason:"semantic-duplicate"}));await assertClosedRetry(root,candidate,t0,{ok:false,reason:"corruption"});}));
 });
 
 test("transition is durable compare-and-transition over the exact legal graph", async () => {

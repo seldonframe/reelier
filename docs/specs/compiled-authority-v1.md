@@ -308,7 +308,9 @@ computation, an exact committed transaction whose stored canonical intent equals
 returns its existing reservation with `dispatchEligible: false` before transaction create/EEXIST,
 tombstone read, view reload, claim acquisition, or commit work. A later-time exact retry advances the
 high-water first. This fast path never skips prepare or audits, rollback, expiry, or not-yet-valid
-checks.
+checks. Prepare rejects any tombstone whose transaction is already journal-committed; committed and
+tombstoned coexistence is corruption. That invariant makes the post-prepare exact-commit shortcut
+safe before a later tombstone read.
 
 The same locked and fsynced journal high-water is exposed internally through argument-free
 `observeClock()`. The kernel clock is read under the lock. A first or greater safe nonnegative instant
