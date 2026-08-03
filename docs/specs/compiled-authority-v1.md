@@ -167,6 +167,16 @@ or mutating the replacement target. It never retires another live stage.
 Filesystem identity is read with non-following `lstat({ bigint: true })`; device, inode/file ID, mode,
 and link count remain exact bigint values throughout comparison and are never rounded through a
 JavaScript `number`. Two distinct adjacent identities above `Number.MAX_SAFE_INTEGER` remain distinct.
+Coordination identity wire values preserve Node's raw bigint spelling and are never normalized with
+`BigInt.asUintN`, modulo, absolute value, or `Number`. `dev` and `ino` use canonical signed decimal
+`0|-?[1-9][0-9]*` in `[-2^63, 2^64-1]`; `mode` and `nlink` use canonical unsigned decimal
+`0|[1-9][0-9]*` in `[0, 2^64-1]`. Every component is at most 20 characters before `BigInt` parsing;
+`+`, `-0`, leading zeroes, whitespace, JSON numbers, overflow, and missing or extra keys refuse.
+Exact artifact validation separately requires the observed mode and `nlink === 1n`. Stored canonical
+strings compare directly to `rawBigInt.toString(10)`; signed and unsigned spellings of the same bit
+pattern are never equivalent. This identity is local evidence, not a portable normalized identifier.
+The K1 classifier and every coordination-cleanup validator use this one encoding, parser, and exact
+matcher rather than reimplementing identity conversion.
 
 The K1 epoch guard activates when a closed root generation contains any exact artifact or any
 reserved-family lookalike in the admission-preparation, fixed-slot, preparation-retirement,
