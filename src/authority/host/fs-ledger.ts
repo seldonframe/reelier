@@ -98,6 +98,10 @@ export interface FsAuthorityLedgerOptions {
   readonly faultInjector?: (point: LedgerFaultPoint) => void;
   readonly lockTimeoutMs?: number;
 }
+export const __testAdmissionClockOption: unique symbol = Symbol();
+type InternalFsAuthorityLedgerOptions = FsAuthorityLedgerOptions & {
+  readonly [__testAdmissionClockOption]?: () => unknown;
+};
 
 interface TransactionRecord {
   readonly v: "reelier.authority-ledger-transaction/v4";
@@ -173,6 +177,7 @@ interface PublicationStage {
   readonly directory:string;
   readonly directoryIdentity:FileIdentity;
   readonly hostDigest:string;
+  readonly ticket:bigint;
   readonly pid:number;
   readonly nonce:string;
   readonly state:"empty"|"zero"|"partial"|"complete";
@@ -204,7 +209,8 @@ const ID = /^[A-Za-z0-9._~-]{1,128}$/;
 const FILE_HEX = /^[0-9a-f]{64}$/;
 const INGRESS_FILE = /^([0-9a-f]{64})\.json$/;
 const RETIRED_LOCK = /^\.authority-ledger-lock-([1-9][0-9]*)-([0-9a-f]{64})\.(released|recovery-pending|publication-aborted)$/;
-const PUBLICATION_STAGE = /^\.authority-ledger-lock-publication-([0-9a-f]{64})-([1-9][0-9]*)-([0-9a-f]{64})\.tmp$/;
+const PUBLICATION_STAGE = /^\.authority-ledger-lock-publication-([0-9a-f]{64})-([0-9a-f]{16})-([1-9][0-9]*)-([0-9a-f]{64})\.tmp$/;
+const MAX_PUBLICATION_TICKET = 0xffffffffffffffffn;
 const CLEANUP_ACK = /^\.authority-ledger-lock-cleanup-([0-9a-f]{64})\.ack$/;
 const CLEANUP_STAGE = /^\.authority-ledger-lock-cleanup-stage-([1-9][0-9]*)-([0-9a-f]{64})-([0-9a-f]{64})\.tmp$/;
 const JOURNAL_FILE = /^(\d{16})-([0-9a-f]{64})$/;
@@ -226,6 +232,7 @@ export class AuthorityLedgerReadError extends Error {
 export class FsAuthorityLedger implements AuthorityLedger {
   readonly root: string;
   readonly options: Required<Pick<FsAuthorityLedgerOptions, "now" | "lockTimeoutMs">> & Pick<FsAuthorityLedgerOptions, "faultInjector">;
+  private readonly admissionClock:()=>unknown;
   private lockTail:Promise<void>=Promise.resolve();
 
   constructor(root: string, options: FsAuthorityLedgerOptions = {}) {
@@ -236,7 +243,9 @@ export class FsAuthorityLedger implements AuthorityLedger {
     const real = realpathSync.native(resolved);
     if (normalizePath(real) !== normalizePath(resolved)) throw new TypeError("authority ledger root may not traverse a symlink or reparse point");
     this.root = real;
+    const internalOptions=options as InternalFsAuthorityLedgerOptions;
     this.options = { now: options.now ?? Date.now, faultInjector: options.faultInjector, lockTimeoutMs: options.lockTimeoutMs ?? 30_000 };
+    this.admissionClock=internalOptions[__testAdmissionClockOption]??(()=>process.hrtime.bigint());
   }
 
   async observeClock(): Promise<ObserveClockResult> {
@@ -424,7 +433,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
   private async acquireLock(admitContender:boolean): Promise<LockResult> {
     const deadline = monotonicNow() + this.options.lockTimeoutMs;
     const owner: LockOwner = { v: 1, host: hostname(), pid: process.pid, nonce: randomBytes(32).toString("hex") };
-    const stageName=this.publicationStageName(owner),stagePath=this.absolute(stageName),ownerPath=path.join(stagePath,"owner.json"),ownerBytes=canonicalBytes(owner);
+    const ownerBytes=canonicalBytes(owner);let stageName="",stagePath="",ownerPath="";
     let stageCreated=false,published=false,expectedStage:PublicationStage|null=null,election:PublicationElection|null=null,waitedOnActiveLock=false,fullReelectionPending=false;
     let retryDelayMs=5;
     const backoff=async()=>{const remaining=deadline-monotonicNow();if(remaining<=0)return;await delay(Math.min(retryDelayMs,remaining));retryDelayMs=Math.min(50,retryDelayMs*2);};
@@ -448,6 +457,14 @@ export class FsAuthorityLedger implements AuthorityLedger {
           if(existingStages.length>0&&!admitContender){
             if(monotonicNow()>=deadline)return {ok:false,reason:"busy"};
             await backoff();continue;
+          }
+          if(stageName===""){
+            const maxVisible=existingStages.reduce((maximum,stage)=>stage.ticket>maximum?stage.ticket:maximum,0n);
+            if(maxVisible===MAX_PUBLICATION_TICKET)return {ok:false,reason:"busy"};
+            let raw:unknown;try{raw=this.admissionClock();}catch{return {ok:false,reason:"corruption"};}
+            if(typeof raw!=="bigint"||raw<0n||raw>MAX_PUBLICATION_TICKET)return {ok:false,reason:"corruption"};
+            const ticket=raw>maxVisible?raw:maxVisible+1n;
+            stageName=this.publicationStageName(owner,ticket);stagePath=this.absolute(stageName);ownerPath=path.join(stagePath,"owner.json");
           }
           try{await mkdir(stagePath);stageCreated=true;expectedStage=await this.validatePublicationStage(stageName);this.fault("after-lock-publication-stage-create");}
           catch(error){if(hasCode(error,"EEXIST")){continue;}throw error;}
@@ -493,6 +510,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
       } catch (error) {
         if(error instanceof CoordinationExhausted)return {ok:false,reason:"busy"};
         if(error instanceof LedgerCorruption){if(stageCreated&&expectedStage?.state==="complete")await this.removeOwnedPublicationStage(stageName,expectedStage,deadline);return {ok:false,reason:"corruption"};}
+        if(stageCreated&&hasCode(error,"ENOENT")){try{await this.removeOwnedPublicationStage(stageName,expectedStage,deadline);}catch{}return {ok:false,reason:"corruption"};}
         if(stageCreated)try{await this.removeOwnedPublicationStage(stageName,expectedStage,deadline);}catch{}
         if(published)try{await this.retireOwnedLock(owner,"publication-aborted",deadline,false);}catch{}
         throw error;
@@ -500,7 +518,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
     }
   }
 
-  private publicationStageName(owner:LockOwner):string{return `.authority-ledger-lock-publication-${this.hostDigest(owner.host)}-${owner.pid}-${owner.nonce}.tmp`;}
+  private publicationStageName(owner:LockOwner,ticket:bigint):string{return `.authority-ledger-lock-publication-${this.hostDigest(owner.host)}-${ticket.toString(16).padStart(16,"0")}-${owner.pid}-${owner.nonce}.tmp`;}
   private hostDigest(host:string):string{return createHash("sha256").update(host,"utf8").digest("hex");}
 
   private async inspectActiveLock(deadline:number):Promise<"absent"|"retry"|"wait"|Extract<LockResult,{ok:false}>>{
@@ -520,15 +538,15 @@ export class FsAuthorityLedger implements AuthorityLedger {
 
   private async validatePublicationStage(name:string):Promise<PublicationStage>{
     this.fault("before-publication-stage-validation");
-    const match=PUBLICATION_STAGE.exec(name);if(!match)throw new LedgerCorruption("invalid publication stage name");const pid=Number(match[2]);if(!Number.isSafeInteger(pid)||pid<=0||match[1]!==this.hostDigest(hostname()))throw new LedgerCorruption("invalid publication stage provenance");
+    const match=PUBLICATION_STAGE.exec(name);if(!match)throw new LedgerCorruption("invalid publication stage name");const ticket=BigInt(`0x${match[2]}`),pid=Number(match[3]);if(ticket===0n||!Number.isSafeInteger(pid)||pid<=0||match[1]!==this.hostDigest(hostname()))throw new LedgerCorruption("invalid publication stage provenance");
     const directory=this.absolute(name),directoryStat=await lstat(directory,{bigint:true});if(directoryStat.isSymbolicLink()||!directoryStat.isDirectory())throw new LedgerCorruption("invalid publication stage directory");const entries=await readdir(directory,{withFileTypes:true});
     const directoryIdentity=fileIdentity(directoryStat);
-    if(entries.length===0)return {name,directory,directoryIdentity,hostDigest:match[1],pid,nonce:match[3],state:"empty"};if(entries.length!==1||entries[0].name!=="owner.json"||entries[0].isSymbolicLink()||!entries[0].isFile())throw new LedgerCorruption("invalid publication stage contents");
-    const ownerPath=path.join(directory,"owner.json"),ownerStat=await lstat(ownerPath,{bigint:true});if(ownerStat.isSymbolicLink()||!ownerStat.isFile()||ownerStat.nlink!==1n)throw new LedgerCorruption("invalid publication stage owner object");const ownerBytes=await readFile(ownerPath),ownerIdentity=fileIdentity(ownerStat);if(ownerBytes.length===0)return {name,directory,directoryIdentity,hostDigest:match[1],pid,nonce:match[3],state:"zero",ownerIdentity,ownerBytes};
-    const expectedOwner:LockOwner={host:hostname(),nonce:match[3],pid,v:1},expectedBytes=canonicalBytes(expectedOwner);
-    if(ownerBytes.length<expectedBytes.length&&expectedBytes.subarray(0,ownerBytes.length).equals(ownerBytes))return {name,directory,directoryIdentity,hostDigest:match[1],pid,nonce:match[3],state:"partial",ownerIdentity,ownerBytes};
+    if(entries.length===0)return {name,directory,directoryIdentity,hostDigest:match[1],ticket,pid,nonce:match[4],state:"empty"};if(entries.length!==1||entries[0].name!=="owner.json"||entries[0].isSymbolicLink()||!entries[0].isFile())throw new LedgerCorruption("invalid publication stage contents");
+    const ownerPath=path.join(directory,"owner.json"),ownerStat=await lstat(ownerPath,{bigint:true});if(ownerStat.isSymbolicLink()||!ownerStat.isFile()||ownerStat.nlink!==1n)throw new LedgerCorruption("invalid publication stage owner object");const ownerBytes=await readFile(ownerPath),ownerIdentity=fileIdentity(ownerStat);if(ownerBytes.length===0)return {name,directory,directoryIdentity,hostDigest:match[1],ticket,pid,nonce:match[4],state:"zero",ownerIdentity,ownerBytes};
+    const expectedOwner:LockOwner={host:hostname(),nonce:match[4],pid,v:1},expectedBytes=canonicalBytes(expectedOwner);
+    if(ownerBytes.length<expectedBytes.length&&expectedBytes.subarray(0,ownerBytes.length).equals(ownerBytes))return {name,directory,directoryIdentity,hostDigest:match[1],ticket,pid,nonce:match[4],state:"partial",ownerIdentity,ownerBytes};
     if(!ownerBytes.equals(expectedBytes))throw new LedgerCorruption("invalid publication owner bytes");
-    return {name,directory,directoryIdentity,hostDigest:match[1],pid,nonce:match[3],state:"complete",ownerIdentity,ownerBytes,owner:expectedOwner};
+    return {name,directory,directoryIdentity,hostDigest:match[1],ticket,pid,nonce:match[4],state:"complete",ownerIdentity,ownerBytes,owner:expectedOwner};
   }
 
   private async settlePublicationStages(deadline:number,activeOwner:boolean,ownedStage:PublicationStage|null=null):Promise<PublicationStage[]>{
