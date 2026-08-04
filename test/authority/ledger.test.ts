@@ -58,7 +58,7 @@ void kernelTimedTransition;
 void callerTimedTransition;
 
 test("ledger root accepts an existing Windows directory through its distinct DOS 8.3 alias",{skip:process.platform!=="win32"},async t=>{
-  const root=await tempRoot();
+  const root=await bindableTempRoot();
   try{
     let shortRoot:string;
     try{
@@ -142,17 +142,20 @@ async function tempRoot(): Promise<string> {
   return mkdtemp(path.join(tmpdir(), "reelier-authority-ledger-"));
 }
 
-async function withRoot(run: (root: string) => Promise<void>): Promise<void> {
+async function bindableTempRoot(): Promise<string> {
   for (let attempt = 0; attempt < 64; attempt++) {
     const root = await tempRoot();
-    try { const probe = await bindFenceEndpoint(await derivedFenceBinding(root)); await closeServer(probe); } catch (error) {
+    try { const probe = await bindFenceEndpoint(await derivedFenceBinding(root)); await closeServer(probe); return root; } catch (error) {
       await rm(root, { recursive: true, force: true });
       const code = (error as NodeJS.ErrnoException).code; if (code === "EADDRINUSE" || code === "EACCES") continue; throw error;
     }
-    try { await run(root); } finally { await rm(root, { recursive: true, force: true }); }
-    return;
   }
   throw new Error("could not allocate a bindable deterministically derived ledger root endpoint");
+}
+
+async function withRoot(run: (root: string) => Promise<void>): Promise<void> {
+  const root = await bindableTempRoot();
+  try { await run(root); } finally { await rm(root, { recursive: true, force: true }); }
 }
 
 async function spawnReserve(root: string, candidate: ReservationIntent): Promise<unknown> {
