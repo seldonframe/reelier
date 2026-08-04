@@ -256,15 +256,60 @@ reported by the next acquisition. A withdrawal marker cannot be cleaned before i
 durably retired as `withdrawn`. Replacement, type, link, identity, byte, or marker mismatch is
 preserved corruption. No broad prefix grants cleanup authority.
 
-Every publication stage has the exact name `.authority-ledger-lock-publication-<host64>-<ticket16hex>-<positive-safe-pid>-<nonce64>.tmp`, where every hex field is lowercase. `ticket16hex` is an unsigned 64-bit integer in `0000000000000001..ffffffffffffffff`; zero, nonhex or uppercase text, any other width, and overflow are corruption. The ticket is immutable syntax and ephemeral metadata only: it grants no priority, election, FIFO, capacity, or cleanup authority and is never serialized into canonical owner bytes. The stage host/PID/nonce and bytes must equal the fixed-slot owner exactly.
+Every publication stage has the exact name `.authority-ledger-lock-publication-<host64>-<ticket16hex>-<positive-safe-pid>-<nonce64>.tmp`, where every hex field is lowercase. `ticket16hex` is an unsigned 64-bit integer in `0000000000000001..ffffffffffffffff`; zero, nonhex or uppercase text, any other width, and overflow are corruption. Ticket admission is fixed-width and monotonic over two values sharing one clock: a drawn ticket per operation and a minted `ticket16hex` per created stage. Every ledger-lock operation draws exactly one admission reading at fence arrival, before any wait and before any filesystem observation: a pure reading of the shared host monotonic admission-clock domain. A reading that is not an unsigned 64-bit integer is corruption; a reading at or below the in-process floor — the largest ticket previously drawn or minted in the same process, zero when none — is lifted to one more than that floor, never corruption; an in-process floor of `ffffffffffffffff` makes drawing impossible and returns bounded `busy` unchanged. The lifted reading is the operation's drawn ticket. Whichever contender creates a publication stage mints `ticket16hex` at stage creation as the greater of its drawn ticket and one more than the visible maximum — the largest ticket present in the publication-stage and creator-withdrawal names of the closed generation snapshot its admission attempt observed, external and legacy membership included, reusing that snapshot with no further stage observation. A visible maximum of `ffffffffffffffff` makes minting impossible and returns bounded `busy` unchanged. For a publication contender the drawn ticket grants exactly one authority: a same-process K1 operation-fence admission queue position; a housekeeping episode's drawn ticket lifts the in-process floor and grants nothing. Neither value grants capacity beyond K=1, cross-process priority, cross-process election or FIFO, cleanup, promotion, or stage-retirement authority, deadline widening, or corruption-precedence bypass; neither value is ever serialized into canonical owner bytes. The stage host/PID/nonce and bytes must equal the fixed-slot owner exactly.
 
-There is no publication-stage election or predecessor protocol. A clean root with no preparation,
-fixed slot, active lock, publication stage, retirement marker, cleanup stage, or cleanup ack may begin
-one admission attempt. A lone live external pre-slot publication stage is preserved and bounded-waits
-to `busy`; a lone exact dead external stage may be atomically withdrawn but is never promoted. More
-than one publication stage in a stable K1-active generation is invalid K1 topology and is preserved
-corruption, even when every stage is individually canonical and has distinct provenance. Legacy-only
-publication residue remains on its exact compatibility behavior until drained.
+No ledger-lock operation reaches a fault-point-bearing filesystem hook without holding the local K1
+operation fence, held from before its first such hook through its target root sync; fence
+acquisition itself captures the frozen root identity before endpoint bind and revalidates it after.
+The fence is one same-process held-set entry plus one exclusively bound loopback endpoint at
+`127.0.0.1` on port
+`20000 + ((u32be of the first four bytes of SHA-256 over <canonical-resolved-root> NUL <root-dev> NUL
+<root-ino>) mod 30000)`, where `<canonical-resolved-root>` is the natively realpath-resolved root —
+on Windows with separators normalized to forward slashes and case folded to lowercase, elsewhere
+verbatim — bound with no port scan, no reuse, and no fallback; inbound connections are severed at
+accept so a local dialer cannot wedge the awaited close. Fence phases are private runtime boundaries
+and never exported ledger fault points. Cross-process contention is resolved only by the exclusive
+endpoint: contenders of every class retry binding under the one original acquisition deadline, and
+the endpoint grants no ordering. An endpoint that cannot be bound by that original deadline yields a
+refusal-only classification — the sole fence-less filesystem access, read-only and fault-silent by
+construction, writing nothing: corruption keeps precedence over contention, and a refusal-pass `busy`
+means not proven corrupt, never proven healthy.
+
+Same-process fence contention distinguishes exactly two closed contender classes, declared at
+invocation. A publication contender — an operation seeking the active lock and a semantic operation
+callback, without pre-admission housekeeping write permission — is entitled by its class to wait:
+concurrently waiting same-process publication contenders are admitted in strictly increasing
+drawn-ticket order, and one admitted with strictly positive remaining time begins its own full
+admission attempt under
+the same one original acquisition deadline; deadline exhaustion while waiting returns `busy` with
+zero filesystem observation. A housekeeping-episode contender — an operation invoked with
+pre-admission housekeeping write permission for the strictly non-authorizing pre-admission
+housekeeper — holds no queue position: it refuses `busy` after at most one bounded delay, never
+awaiting release, with zero filesystem observation, zero fence acquisition, and zero fence-boundary
+observation. A same-process holder already owns the only local K1 authority a housekeeping episode
+could seek; whatever the holder's outcome, the episode's transition is at worst deferred, and the
+next fresh acquisition re-derives it from the then-current generation.
+
+Ticket monotonicity is scoped exactly. A minted stage ticket strictly exceeds every ticket visible in
+the closed generation its attempt observed, and drawn and minted tickets strictly increase within one
+process. Same-host cross-process order holds only as far as the shared monotonic-clock domain
+provides it and resets with that domain when no ticket-bearing residue is visible. Fence admission
+order among concurrently waiting same-process publication contenders follows drawn-ticket order; the
+drawn tickets are not durably witnessed, and a stage name proves only strict dominance over the
+generation its attempt observed — never inter-stage admission order, not a global total order, not
+wall-clock time, and nothing across hosts.
+
+There is no publication-stage election or predecessor protocol: admission order is decided at the
+fence before any stage exists, never between stages, and no contender derives admission order,
+election, predecessor, or promotion authority from another contender's stage — stages are observed
+only to classify, refuse bounded `busy`, or preserve corruption. A clean root with no preparation,
+fixed slot, active lock, publication stage, retirement marker, cleanup stage, or cleanup ack may
+begin one admission attempt. A lone live external pre-slot publication stage is preserved and
+bounded-waits to `busy`; a lone exact dead external stage may be atomically withdrawn but is never
+promoted. More than one publication stage in a stable K1-active generation is invalid K1 topology and
+is preserved corruption, even when every stage is individually canonical and has distinct provenance;
+ticket admission never widens this. Legacy-only publication residue remains on its exact
+compatibility behavior until drained.
 
 The ledger-lock fault surface is the following exact, disjoint K=1 taxonomy; no election,
 provisional-owner, or predecessor hook is part of the protocol:
@@ -316,11 +361,11 @@ The exported fault list is the stable registry/ABI-order concatenation of those 
 execution trace across mutually exclusive branches. Duplicate membership, a missing boundary, or a
 legacy election hook is a contract failure.
 
-One monotonic acquisition deadline covers full classification, pre-admission housekeeping,
-preparation/fixed-slot polling, stale recovery, and every restart. Progress resets only the
-deterministic backoff sequence and never the deadline. Terminal creator withdrawal receives one fresh
-cleanup deadline only for the exact creator's own failure path. Successful publication receives one
-separate fresh slot-retirement deadline. No wait, retry, progress, housekeeper transition, or root
+One monotonic acquisition deadline covers fence endpoint binding, same-process fence waiting, full
+classification, pre-admission housekeeping, preparation/fixed-slot polling, stale recovery, and every
+restart. Progress resets only the deterministic backoff sequence and never the deadline. Terminal
+creator withdrawal receives one fresh cleanup deadline only for the exact creator's own failure path.
+Successful publication receives one separate fresh slot-retirement deadline. No wait, retry, progress, housekeeper transition, or root
 sync widens any budget.
 
 Before creating a preparation, the contender runs a strictly non-authorizing pre-admission
