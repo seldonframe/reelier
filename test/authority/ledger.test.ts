@@ -28,6 +28,7 @@ import {
   resultFaultPoints,
   ingressFaultPoints,
   clockFaultPoints,
+  __testAdmissionClockOption,
   __testPrepHousekeeperRuntimeOption,
 } from "../../src/authority/host/fs-ledger.js";
 import * as hostAuthorityModule from "../../src/authority/host/fs-ledger.js";
@@ -1491,6 +1492,111 @@ test("k1-operation-fence-only inbound connections are severed and cannot wedge f
       assert.equal(client!.destroyed,true);
     }finally{client?.destroy();await pending?.catch(()=>{});}
   });
+});
+
+async function withHeldPublicationFence(root:string,binding:K1OperationFenceBinding,contend:(release:()=>void)=>Promise<void>,options:Readonly<Record<string,unknown>>={}):Promise<Readonly<{ok:boolean}>>{
+  let release!:()=>void,entered!:()=>void;const held=new Promise<void>(resolve=>{release=resolve;}),ready=new Promise<void>(resolve=>{entered=resolve;});
+  let monotonic=0;const yielding={monotonicNow:()=>monotonic,delay:async(ms:number)=>{monotonic+=Math.max(ms,1);await new Promise<void>(resolve=>{setTimeout(resolve,1);});}};
+  const operation=new RawFsAuthorityLedger(root,{[k1OperationFenceOption()]:fenceRuntime(binding,async point=>{if(point==="k1-operation-fence-only-root-revalidated"){entered();await held;}},yielding),now:()=>t0,lockTimeoutMs:20_000,...options} as never).observeClock();
+  let settled:unknown,holderFailure:unknown;
+  try{await Promise.race([ready,operation.then(()=>{throw new Error("the fence holder completed before it held the fence");})]);await contend(release);}
+  finally{release();settled=await operation.catch((error:unknown)=>{holderFailure=error;return undefined;});}
+  if(holderFailure!==undefined)throw holderFailure;
+  return settled as Readonly<{ok:boolean}>;
+}
+
+test("k1-operation-fence-only same-process publication contenders converge in drawn-ticket order",{timeout:30_000},async()=>withFenceRoot(async(root,binding)=>{
+  binding=await derivedFenceBinding(root);const callbacks:string[]=[],pending:Array<Promise<unknown>>=[];
+  const waiter=(label:string)=>{const operation=new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20_000,faultInjector:(point:string)=>{if(point==="before-ledger-operation-callback")callbacks.push(label);}} as never).observeClock();pending.push(operation);return operation;};
+  try{
+    let waiters:ReadonlyArray<Readonly<{ok:boolean}>>=[];
+    const holder=await withHeldPublicationFence(root,binding,async release=>{
+      const queued:Array<Promise<unknown>>=[];
+      for(const label of ["first","second","third"]){queued.push(waiter(label));await new Promise<void>(resolve=>{setTimeout(resolve,50);});}
+      assert.deepEqual(callbacks,[],"a held fence admits no same-process contender to a callback");
+      release();
+      waiters=await Promise.all(queued) as ReadonlyArray<Readonly<{ok:boolean}>>;
+    },{faultInjector:(point:string)=>{if(point==="before-ledger-operation-callback")callbacks.push("holder");}});
+    assert.deepEqual([holder.ok,...waiters.map(result=>result.ok)],[true,true,true,true],"every waiting publication contender converges");
+    assert.deepEqual(callbacks,["holder","first","second","third"],"waiters are admitted in drawn-ticket order, which within one process is fence-arrival order; a held fence starves no publication contender");
+    assert.deepEqual((await readdir(root)).filter(name=>name.startsWith(".authority-ledger-admission-")||name.startsWith(".authority-ledger-lock-publication-")),[]);
+    assert.equal(hasLegacyWriterArtifact(root),false);
+  }finally{await Promise.allSettled(pending);}
+}));
+
+test("k1-operation-fence-only a housekeeping episode refuses one-shot while a publication contender waits",{timeout:30_000},async()=>withFenceRoot(async(root,binding)=>{
+  const option=k1OperationFenceOption();binding=await derivedFenceBinding(root);const pending:Array<Promise<unknown>>=[];
+  try{
+    let waiting:Readonly<{ok:boolean}>={ok:false};
+    const holder=await withHeldPublicationFence(root,binding,async release=>{
+      const before=await snapshotRootArtifacts(root),episodeEvents:string[]=[];let episodeHooks=0,episodeDelays=0;
+      const episode=await new RawFsAuthorityLedger(root,{[option]:fenceRuntime(binding,point=>{episodeEvents.push(point);},{delay:async()=>{episodeDelays++;}}),now:()=>t0,lockTimeoutMs:20,faultInjector:()=>{episodeHooks++;}} as never).recover();
+      assert.deepEqual(episode,{ok:false,reason:"busy"});
+      assert.deepEqual({episodeHooks,boundedDelay:episodeDelays<=1},{episodeHooks:0,boundedDelay:true},"a housekeeping episode refuses after at most one bounded delay and never awaits release");
+      assert.deepEqual(episodeEvents,[],"a housekeeping episode acquires no fence and observes no fence boundary");
+      assert.deepEqual(await snapshotRootArtifacts(root),before);
+      const contender=new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20_000} as never).observeClock();pending.push(contender);
+      await new Promise<void>(resolve=>{setTimeout(resolve,50);});
+      release();
+      waiting=await contender;
+    });
+    assert.deepEqual([holder.ok,waiting.ok],[true,true],"a publication contender still converges behind the same held fence");
+  }finally{await Promise.allSettled(pending);}
+}));
+
+test("k1-operation-fence-only a waiting publication contender exhausts one original deadline without observing the filesystem",{timeout:30_000},async()=>withFenceRoot(async(root,binding)=>{
+  const option=k1OperationFenceOption();binding=await derivedFenceBinding(root);
+  const holder=await withHeldPublicationFence(root,binding,async()=>{
+    const before=await snapshotRootArtifacts(root),events:string[]=[];let monotonic=0,hooks=0,delays=0,semanticNow=0;
+    const waiter=await new RawFsAuthorityLedger(root,{[option]:fenceRuntime(binding,point=>{events.push(point);},{monotonicNow:()=>monotonic,delay:async(ms:number)=>{delays++;monotonic+=Math.max(ms,1);await new Promise<void>(resolve=>{setTimeout(resolve,1);});}}),now:()=>{semanticNow++;return t0;},lockTimeoutMs:40,faultInjector:()=>{hooks++;}} as never).observeClock();
+    assert.deepEqual(waiter,{ok:false,reason:"busy"});
+    assert.equal(monotonic>=40,true,"a waiting publication contender consumes its one original acquisition deadline rather than refusing one-shot");
+    assert.equal(monotonic<=45,true,"and never widens that deadline");
+    assert.equal(delays>=1,true);
+    assert.deepEqual({hooks,semanticNow},{hooks:0,semanticNow:0},"zero fault-bearing work and zero semantic clock reads");
+    assert.equal(events.some(point=>point.includes("root-captured")||point.includes("endpoint-bound")),false,"a deadline-exhausted waiter never acquires the fence, so it never observes the filesystem");
+    assert.deepEqual(await snapshotRootArtifacts(root),before);
+  });
+  assert.equal(holder.ok,true);
+}));
+
+test("k1-operation-fence-only draws exactly one lifted admission ticket before any filesystem observation",async t=>{
+  const option=k1OperationFenceOption();
+  await t.test("a zero reading is lifted and the operation converges",()=>withFenceRoot(async(root,binding)=>{
+    binding=await derivedFenceBinding(root);const order:string[]=[];let draws=0;
+    const result=await new RawFsAuthorityLedger(root,{[__testAdmissionClockOption]:()=>{draws++;order.push("draw");return 0n;},[option]:fenceRuntime(binding,point=>{order.push(point);}),now:()=>t0,lockTimeoutMs:2_000} as never).observeClock();
+    assert.deepEqual(result,{ok:true,status:"advanced",observedAt:new Date(t0).toISOString()},"a zero reading is lifted, never corruption");
+    assert.equal(draws,1);
+    assert.equal(order[0],"draw","the admission reading precedes every fence phase");
+    assert.equal(order.indexOf("k1-operation-fence-only-root-captured")>0,true);
+  }));
+  await t.test("an operation that mints no stage still draws exactly once",()=>withFenceRoot(async(root,binding)=>{
+    binding=await derivedFenceBinding(root);const squatter=await bindFenceEndpoint(binding),order:string[]=[];let draws=0,monotonic=0;
+    try{
+      const result=await new RawFsAuthorityLedger(root,{[__testAdmissionClockOption]:()=>{draws++;order.push("draw");return 0n;},[option]:fenceRuntime(binding,point=>{order.push(point);},{monotonicNow:()=>monotonic,delay:async()=>{monotonic=1_000;}}),now:()=>t0,lockTimeoutMs:20} as never).observeClock();
+      assert.deepEqual(result,{ok:false,reason:"busy"});
+    }finally{await closeServer(squatter);}
+    assert.deepEqual({draws,first:order[0]},{draws:1,first:"draw"},"every ledger-lock operation draws at fence arrival");
+  }));
+  await t.test("minted stage tickets strictly increase within one process under a constant clock",async()=>{
+    const minted:string[]=[],mint=async(target:string)=>{
+      const result=await new RawFsAuthorityLedger(target,{[__testAdmissionClockOption]:()=>7n,now:()=>t0,lockTimeoutMs:2_000,faultInjector:(point:string)=>{if(point==="after-lock-publication-stage-create"){const name=readdirSync(target).find(value=>value.startsWith(".authority-ledger-lock-publication-"));assert.ok(name,"the creator publication stage is visible at its creation boundary");minted.push(name);}}} as never).observeClock();
+      assert.equal(result.ok,true);
+    };
+    await withFenceRoot(async first=>{await mint(first);await withFenceRoot(async second=>{await mint(second);});});
+    assert.equal(minted.length,2);
+    const tickets=minted.map(name=>{const parsed=/^\.authority-ledger-lock-publication-[0-9a-f]{64}-([0-9a-f]{16})-[1-9][0-9]*-[0-9a-f]{64}\.tmp$/.exec(name);assert.ok(parsed,`minted stage name is canonical: ${name}`);return BigInt(`0x${parsed[1]}`);});
+    assert.equal(tickets.every(ticket=>ticket>=1n),true,"a constant zero-floor reading is lifted into the closed ticket range");
+    assert.equal(tickets[1]>tickets[0],true,"the in-process floor lifts a repeated reading, so minted tickets never repeat in one process");
+  });
+  await t.test("a non-uint64 reading is corruption before the fence observes the root",()=>withFenceRoot(async(root,binding)=>{
+    binding=await derivedFenceBinding(root);const before=await snapshotRootArtifacts(root),order:string[]=[];let draws=0,hooks=0;
+    const result=await new RawFsAuthorityLedger(root,{[__testAdmissionClockOption]:()=>{draws++;order.push("draw");return 1;},[option]:fenceRuntime(binding,point=>{order.push(point);}),now:()=>t0,lockTimeoutMs:20,faultInjector:()=>{hooks++;}} as never).observeClock();
+    assert.deepEqual(result,{ok:false,reason:"corruption"});
+    assert.deepEqual({draws,hooks},{draws:1,hooks:0});
+    assert.deepEqual(order,["draw"],"a corrupt reading refuses before any fence phase or filesystem observation");
+    assert.deepEqual(await snapshotRootArtifacts(root),before);
+  }));
 });
 
 test("legacy-only authority residue retains exact compatibility behavior",async t=>{
