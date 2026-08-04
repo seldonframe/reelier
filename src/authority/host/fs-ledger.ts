@@ -621,7 +621,10 @@ export class FsAuthorityLedger implements AuthorityLedger {
   }
 
   private async acquireLock(coordination:Readonly<{admitContender:boolean;permitPrepHousekeepingWrite:boolean;budgetMs:number;drawnTicket:bigint}>): Promise<LockResult> {
-    const {admitContender}=coordination;let prepHousekeepingWritePermitted=coordination.permitPrepHousekeepingWrite;
+    // Two independent conditions, deliberately not one boolean. `callerMayWrite` is caller identity
+    // and never changes; `budgetLive` is the acquisition-deadline kill-switch. Collapsing them means
+    // any future widening of the permission silently disables the deadline bound as well.
+    const {admitContender}=coordination,callerMayWrite=coordination.permitPrepHousekeepingWrite;let budgetLive=true;
     const monotonicNow=this.prepHousekeeperRuntime.monotonicNow,delay=this.prepHousekeeperRuntime.delay;
     const deadline = monotonicNow() + coordination.budgetMs;
     const prepAttemptToken=mintUnboundPrepCreatorAttemptToken();
@@ -637,13 +640,13 @@ export class FsAuthorityLedger implements AuthorityLedger {
         if(!firstK1FilesystemHookObserved){firstK1FilesystemHookObserved=true;await this.observeActiveK1OperationFenceBoundary("k1-operation-fence-only-first-filesystem-hook");}
         const preClassificationNames=await readdir(this.root),k1Names=preClassificationNames.filter(isK1ReservedName);
         if(k1Names.length===1&&k1Names[0]===ADMISSION_SLOT_NAME&&preClassificationNames.some(name=>RETIRED_LOCK.test(name)))await this.serviceRetirementArtifacts(monotonicNow()+this.options.lockTimeoutMs);
-        const hybridGuard=await this.classifyHybridCoordinationEpoch(prepAttemptToken,prepHousekeepingWritePermitted,!k1Progressed);
+        const hybridGuard=await this.classifyHybridCoordinationEpoch(prepAttemptToken,callerMayWrite&&budgetLive,!k1Progressed);
         if(hybridGuard==="retry"){
           if(monotonicNow()>=deadline)return {ok:false,reason:"busy"};
           await backoff();continue;
         }
-        if(hybridGuard==="progress"){k1Progressed=true;retryDelayMs=5;if(monotonicNow()>=deadline)prepHousekeepingWritePermitted=false;continue;}
-        if(hybridGuard==="reclassify"){retryDelayMs=5;if(monotonicNow()>=deadline)prepHousekeepingWritePermitted=false;continue;}
+        if(hybridGuard==="progress"){k1Progressed=true;retryDelayMs=5;if(monotonicNow()>=deadline)budgetLive=false;continue;}
+        if(hybridGuard==="reclassify"){retryDelayMs=5;if(monotonicNow()>=deadline)budgetLive=false;continue;}
         if(hybridGuard==="refuse"){monotonicNow();return {ok:false,reason:"busy"};}
         if(hybridGuard==="busy")return {ok:false,reason:"busy"};
         if(hybridGuard==="corruption")return {ok:false,reason:"corruption"};

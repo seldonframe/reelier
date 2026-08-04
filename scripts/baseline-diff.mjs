@@ -61,10 +61,17 @@ function parse(output) {
   return { pass, fail, failing: [...failing].sort() };
 }
 
+// Calibrated, not assumed, and deliberately coarse. This machine carries a persistent ambient load
+// from unrelated resident applications - measured 34% idle, 53% while merely inspecting it - which
+// overlaps the 40-59% seen during subagent contention. CPU percentage therefore cannot cleanly
+// separate "my own parallel work" from "the user's editor", so the threshold only catches genuine
+// saturation. The load-sensitive tests remain the real signal: a crashed child is an environment
+// fault, so re-run it in isolation before believing any regression. Override per machine.
+const threshold = Number(process.env.REELIER_BASELINE_MAX_BUSY ?? 0.7);
 const busy = busyFraction();
-const loaded = busy > 0.35;
+const loaded = busy > threshold;
 if (loaded && !force) {
-  console.error(`refusing to measure: cpu ${(busy * 100).toFixed(0)}% busy over the sample window.`);
+  console.error(`refusing to measure: cpu ${(busy * 100).toFixed(0)}% busy over the sample window (limit ${(threshold * 100).toFixed(0)}%).`);
   console.error("a loaded machine crashes child processes in the heavier tests and fabricates regressions.");
   console.error("wait for the machine to settle, or pass --force to record the result as untrusted.");
   process.exit(2);
