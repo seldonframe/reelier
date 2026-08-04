@@ -1,6 +1,6 @@
 # Reelier — numbers worth knowing
 
-**Pinned to `codex/universal-compiled-authority` @ `6206a7b`, measured 2026-08-04 on Windows 11.**
+**Pinned to `codex/universal-compiled-authority` @ `7ed8553`, measured 2026-08-04 on Windows 11.**
 
 _Every number here is quoted somewhere: in a commit message, a PR body, a plan, or an estimate. Two
 were quoted wrongly in a single session — "15 missing fault points" (really 34) and "402 pass"
@@ -19,10 +19,10 @@ not re-verified here — treat as a hypothesis).
 | Quantity | Value | Status |
 |---|---|---|
 | Fault points declared in the spec taxonomy | **57** | measured |
-| Entries in exported `ledgerLockFaultPoints` | **37** | measured |
-| Entries in public `ledgerFaultPoints` | **104** | measured |
-| Fault-point literals emitted anywhere in `src/` | **50** | measured |
-| Declared in spec, not emitted (the backlog) | **33** | measured |
+| Entries in exported `ledgerLockFaultPoints` | **46** | measured |
+| Entries in public `ledgerFaultPoints` | **113** | measured |
+| Fault-point literals emitted anywhere in `src/` | **57** | measured |
+| Declared in spec, not emitted (the backlog) | **26** | measured |
 | Exported but **not** in the spec taxonomy (to delete) | **13** | measured |
 
 ```bash
@@ -30,7 +30,7 @@ npm run lint:fault-pins
 ```
 
 The 13 extras are election/provisional/predecessor hooks the spec explicitly forbids. Removing them
-plus adding the 33 is **additive at runtime but source-breaking at the type level** — a consumer
+plus adding the remaining 26 is **additive at runtime but source-breaking at the type level** — a consumer
 narrowing on `LedgerFaultPoint` gets TS2322 under `--strict`. That is why the ABI freeze must come
 after this work, not before.
 
@@ -38,10 +38,10 @@ after this work, not before.
 
 | Quantity | Value | Status |
 |---|---|---|
-| Ledger suite | **417 pass / 89 fail** | measured |
-| Distinct failing test names in that suite | **84** | measured |
-| Full `npm test` | **2,064 pass / 89 fail** | measured |
-| Failures outside `ledger.test.ts` | **0** | measured |
+| Ledger suite | **427 pass / 79 fail** | measured |
+| Distinct failing test names in that suite | **74** | measured |
+| Full `npm test` | **2,073 pass / 80 fail** | measured |
+| Failures outside `ledger.test.ts` | 1 per run, differing each run, each passing in isolation | measured |
 | Ledger suite wall clock | ~80–90 s | measured |
 | Full `npm test` wall clock | ~5 min | measured |
 | Full Stryker mutation run | ~11.5 h at committed concurrency | inherited |
@@ -64,11 +64,20 @@ criterion.
 |---|---|---|
 | Quiet | 3 of 3 passes | measured |
 | Three subagents running | ~1 of 3 passes | measured |
+| Machine ambient CPU floor (unrelated resident apps) | ~34%, reaching 53% | measured |
+
+The full suite is also noisy on this machine: two consecutive runs of the same code each produced
+**one different** additional failure — the fixed-seed ledger fuzz in one (14.9 s in a passing run,
+143 s in the failing one, 14.2 s alone), the decision-boundary ambient-dependency check in the other
+— and **both passed in isolation**. A single full-suite run cannot clear an invariant here; re-run
+the named test alone before believing it.
 
 It fails as `Error: child <pid>: 3221226505` — Windows `STATUS_STACK_BUFFER_OVERRUN`, a crashed
 child, never an assertion. **A crashed child is an environment signal, not a defect.** Re-run the
 test in isolation before attributing it to any change, and never run the suite alongside subagents.
-`scripts/baseline-diff.mjs` refuses to measure above 35% CPU busy for exactly this reason.
+`scripts/baseline-diff.mjs` refuses to measure above 70% CPU busy (`REELIER_BASELINE_MAX_BUSY`). That
+limit is deliberately coarse: the ambient floor above overlaps the range seen under self-inflicted
+contention, so CPU alone cannot separate them and the isolation re-run remains the real check.
 
 ## 4. K1 operation fence
 

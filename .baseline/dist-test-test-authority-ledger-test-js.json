@@ -1,7 +1,7 @@
 {
   "target": "dist-test/test/authority/ledger.test.js",
-  "pass": 417,
-  "fail": 89,
+  "pass": 427,
+  "fail": 79,
   "failing": [
     "active owner treats atomic complete withdrawal as membership change, never corruption",
     "after-admission-prep-create",
@@ -14,15 +14,11 @@
     "after-admission-slot-retire-rename",
     "after-admission-slot-retire-root-sync",
     "after-admission-slot-root-sync",
-    "after-coordination-cleanup-ack-remove",
     "after-coordination-cleanup-ack-rename",
     "after-coordination-cleanup-ack-root-sync",
-    "after-coordination-cleanup-final-root-sync",
     "after-coordination-cleanup-marker-remove",
     "after-coordination-cleanup-marker-root-sync",
     "after-coordination-cleanup-stage-create",
-    "after-coordination-cleanup-stage-file-sync",
-    "after-coordination-cleanup-stage-partial-write",
     "after-creator-withdrawal-rename",
     "after-creator-withdrawal-root-sync",
     "after-creator-withdrawal-seal",
@@ -37,7 +33,6 @@
     "atomic admission creator withdrawal atomically seals empty zero partial and complete stages",
     "atomic admission creator withdrawal exposes sealing and rename crash boundaries",
     "atomic admission keeps one owner and its fixed slot through publication durability",
-    "atomic admission prep-retired ack windows converge only with creator or dead-owner authority",
     "atomic admission preparation hard exits leave only exact recoverable topology",
     "atomic admission preparation states are non-authorizing and dead states retire",
     "atomic admission publication retirement failure aborts the active lock before callback",
@@ -53,8 +48,6 @@
     "byte-mutation",
     "complete",
     "complete creator withdrawal reaches publication-aborted before cleanup",
-    "coordination cleanup ack-removal hooks are live and leave only a valid next state",
-    "coordination cleanup stage write hooks are live and recover their exact crash windows",
     "dead exact slot",
     "dead-complete",
     "dead-empty",
@@ -89,5 +82,5 @@
     "zero"
   ],
   "trusted": true,
-  "recorded": "2026-08-04 quiet-machine run at 6206a7b"
+  "recorded": null
 }
