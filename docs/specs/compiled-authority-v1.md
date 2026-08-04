@@ -389,8 +389,22 @@ granting it to every contender converts three pending tests but breaks eight com
 pin byte-identical preservation for lock-seeking operations — among them `prep-only housekeeper
 routes stable authority without mutation` and the K1 cleanup-residue families — taking the ledger
 suite from 410/91 to 388/113. The narrow rule is therefore the one with evidence behind it, and the
-generic wording above is the outlier. Resolve deliberately before relying on either reading; do not
-widen the permission expecting a net gain.
+generic wording above is the outlier.
+
+Further evidence 2026-08-04, and it cuts the other way. The coordination-cleanup lifecycle is fully
+implemented and drains end to end — measured on a dead-owner `prep-retired` marker, `recover` walks
+stage-create, partial-write, file-sync, ack root sync, marker root sync and final root sync in one
+call and leaves no residue. The same fixture under `observeClock` derives the cleanup authority and
+then performs **zero** transitions. Every committed crash-window test for that group drives
+`observeClock`, so all nine of the group's specified fault points are unreachable by any test while
+the narrow rule holds, and the group cannot be emitted or verified.
+
+So the suite contains committed tests on both sides: some require a lock-seeking operation to drain
+residue, others require it not to mutate. Note what the earlier measurement does and does not show —
+it refutes a one-line flip of the permission default, not the generic reading itself; a correctly
+bounded widening might satisfy both sets. This is a semantics decision, not an implementation
+detail. Until it is made, treat the nine coordination-cleanup points, and any other group whose
+tests drive a lock-seeking operation, as blocked on it rather than as emission work.
 
 The pre-admission housekeeper may only retire the exact dead preparation, publication stage, or fixed
 slot authorized below; progress one exact cleanup stage to its bound ack; remove one exact marker or
