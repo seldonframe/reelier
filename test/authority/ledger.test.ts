@@ -8,7 +8,7 @@ import { pathToFileURL } from "node:url";
 import { execFile,spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash } from "node:crypto";
-import { createServer } from "node:net";
+import { connect, createServer } from "node:net";
 import { authorityCanonicalBytes, authorityDigest } from "../../src/authority/wire.js";
 import { authenticateOutcomeRequest, authenticatedOutcomeRequestState } from "../../src/authority/keys.js";
 import * as authorityModule from "../../src/authority/index.js";
@@ -143,8 +143,16 @@ async function tempRoot(): Promise<string> {
 }
 
 async function withRoot(run: (root: string) => Promise<void>): Promise<void> {
-  const root = await tempRoot();
-  try { await run(root); } finally { await rm(root, { recursive: true, force: true }); }
+  for (let attempt = 0; attempt < 64; attempt++) {
+    const root = await tempRoot();
+    try { const probe = await bindFenceEndpoint(await derivedFenceBinding(root)); await closeServer(probe); } catch (error) {
+      await rm(root, { recursive: true, force: true });
+      const code = (error as NodeJS.ErrnoException).code; if (code === "EADDRINUSE" || code === "EACCES") continue; throw error;
+    }
+    try { await run(root); } finally { await rm(root, { recursive: true, force: true }); }
+    return;
+  }
+  throw new Error("could not allocate a bindable deterministically derived ledger root endpoint");
 }
 
 async function spawnReserve(root: string, candidate: ReservationIntent): Promise<unknown> {
@@ -1400,7 +1408,7 @@ function normalizedFenceRealpath(value:string):string{const normalized=path.norm
 async function derivedFenceBinding(root:string):Promise<K1OperationFenceBinding>{const canonicalRoot=normalizedFenceRealpath(await realpath(root)),identity=exactFsIdentity(root),material=Buffer.from(`${canonicalRoot}\0${identity.dev}\0${identity.ino}`,"utf8"),digest=createHash("sha256").update(material).digest(),materialDigest=`sha256:${digest.toString("hex")}`,port=20_000+digest.readUInt32BE(0)%30_000;return Object.freeze({canonicalRoot,rootIdentity:Object.freeze({dev:String(identity.dev),ino:String(identity.ino),mode:String(identity.mode)}),materialDigest,endpoint:Object.freeze({host:"127.0.0.1" as const,port})});}
 async function bindFenceEndpoint(binding:K1OperationFenceBinding){const server=createServer();await new Promise<void>((resolve,reject)=>{server.once("error",reject);server.listen({host:"127.0.0.1",port:binding.endpoint.port,exclusive:true,reusePort:false},resolve);});return server;}
 async function closeServer(server:ReturnType<typeof createServer>):Promise<void>{await new Promise<void>((resolve,reject)=>server.close(error=>error?reject(error):resolve()));}
-async function withFenceRoot<T>(operation:(root:string,binding:K1OperationFenceBinding)=>Promise<T>):Promise<T>{for(let attempt=0;attempt<64;attempt++){const root=await tempRoot(),binding=await derivedFenceBinding(root);try{const probe=await bindFenceEndpoint(binding);await closeServer(probe);try{return await operation(root,binding);}finally{await rm(root,{recursive:true,force:true});}}catch(error){await rm(root,{recursive:true,force:true});if((error as NodeJS.ErrnoException).code!=="EADDRINUSE")throw error;}}throw new Error("could not allocate a preflight-free deterministically derived fence endpoint");}
+async function withFenceRoot<T>(operation:(root:string,binding:K1OperationFenceBinding)=>Promise<T>):Promise<T>{for(let attempt=0;attempt<64;attempt++){const root=await tempRoot(),binding=await derivedFenceBinding(root);try{const probe=await bindFenceEndpoint(binding);await closeServer(probe);try{return await operation(root,binding);}finally{await rm(root,{recursive:true,force:true});}}catch(error){await rm(root,{recursive:true,force:true});const code=(error as NodeJS.ErrnoException).code;if(code!=="EADDRINUSE"&&code!=="EACCES")throw error;}}throw new Error("could not allocate a preflight-free deterministically derived fence endpoint");}
 function hasLegacyWriterFinalByContent(root:string):boolean{return readdirSync(root).some(name=>{if(!/^\.authority-ledger-coordination-cleanup-[0-9a-f]{64}\.ack$/.test(name))return false;try{return JSON.parse(readFileSync(path.join(root,name),"utf8")).purpose==="k1-writer-released";}catch{return false;}});}
 function hasLegacyWriterArtifact(root:string):boolean{return readdirSync(root).some(name=>name===".authority-ledger-k1-writer"||name.startsWith(".authority-ledger-k1-writer-")||name.startsWith(".authority-ledger-coordination-cleanup-stage-k-"))||hasLegacyWriterFinalByContent(root);}
 async function waitForPath(target:string,label:string):Promise<void>{for(let attempt=0;attempt<400&&!existsSync(target);attempt++)await new Promise<void>(resolve=>setTimeout(resolve,5));assert.equal(existsSync(target),true,label);}
@@ -1452,6 +1460,34 @@ test("k1-operation-fence-only topology declaration is closed host-private and pu
   const declarations:readonly unknown[]=[{filesystem:"shared-fs",networkNamespace:"same-network-namespace",identity:"isolated"},{filesystem:"network-fs",networkNamespace:"same-network-namespace",identity:"isolated"},{filesystem:"local-fs",networkNamespace:"shared-network-namespace",identity:"isolated"},{filesystem:"local-fs",networkNamespace:"unknown",identity:"isolated"},undefined,null,{},"local-fs",{...supportedK1OperationFenceTopology,extra:true}];for(const [index,topology] of declarations.entries()){const sentinel=path.join(tmpdir(),`.reelier-inaccessible-nonexistent-${process.pid}-${Date.now()}-${index}`);await rm(sentinel,{recursive:true,force:true});const events:string[]=[],runtime:Record<string,unknown>={expectedBinding:{canonicalRoot:sentinel,rootIdentity:{dev:"0",ino:"0",mode:"0"},endpoint:{host:"127.0.0.1",port:20_000}},monotonicNow:()=>0,delay:async()=>{},observeK1OperationFenceBoundary:(point:string)=>events.push(point)};if(topology!==undefined)runtime.topology=topology;let hooks=0;const result=await new RawFsAuthorityLedger(sentinel,{[option]:runtime,now:()=>t0,lockTimeoutMs:20,faultInjector:()=>{hooks++;}} as never).recover();assert.equal(result.ok,false,String(index));assert.equal(events.some(point=>point.includes("root-captured")||point.includes("filesystem")||point.includes("endpoint-bound")),false,String(index));assert.equal(hooks,0,String(index));assert.equal(existsSync(sentinel),false,String(index));}
   await withFenceRoot(async(root,binding)=>{const topology=supportedK1OperationFenceTopology,alternatePort=binding.endpoint.port===49_999?20_000:binding.endpoint.port+1,invalid:ReadonlyArray<Readonly<{label:string;runtime:Record<string,unknown>}>>=[{label:"absent expectedBinding",runtime:{topology}},{label:"legacy endpoint-only",runtime:{topology,endpoint:binding.endpoint}},{label:"partial binding",runtime:{topology,expectedBinding:{canonicalRoot:binding.canonicalRoot}}},{label:"extra binding key",runtime:{topology,expectedBinding:{...binding,extra:true}}},{label:"wrong host",runtime:{topology,expectedBinding:{...binding,endpoint:{...binding.endpoint,host:"0.0.0.0"}}}},{label:"port below range",runtime:{topology,expectedBinding:{...binding,endpoint:{...binding.endpoint,port:19_999}}}},{label:"port above range",runtime:{topology,expectedBinding:{...binding,endpoint:{...binding.endpoint,port:50_000}}}},{label:"port inconsistent with digest",runtime:{topology,expectedBinding:{...binding,endpoint:{...binding.endpoint,port:alternatePort}}}},{label:"wrong canonical root",runtime:{topology,expectedBinding:{...binding,canonicalRoot:`${binding.canonicalRoot}#wrong`}}},{label:"wrong root dev",runtime:{topology,expectedBinding:{...binding,rootIdentity:{...binding.rootIdentity,dev:String(BigInt(binding.rootIdentity.dev)+1n)}}}},{label:"wrong root ino",runtime:{topology,expectedBinding:{...binding,rootIdentity:{...binding.rootIdentity,ino:String(BigInt(binding.rootIdentity.ino)+1n)}}}},{label:"wrong digest material",runtime:{topology,expectedBinding:{...binding,materialDigest:`sha256:${binding.materialDigest.slice(7).startsWith("0")?"1":"0"}${binding.materialDigest.slice(8)}`}}}];for(const {label,runtime} of invalid){const events:string[]=[],before=await snapshotRootArtifacts(root);let delays=0,hooks=0;runtime.monotonicNow=()=>0;runtime.delay=async()=>{delays++;};runtime.observeK1OperationFenceBoundary=(point:string)=>events.push(point);const result=await new RawFsAuthorityLedger(root,{[option]:runtime,now:()=>t0,lockTimeoutMs:20,faultInjector:()=>{hooks++;}} as never).recover();assert.equal(result.ok,false,label);assert.equal(events.some(point=>point.includes("root-captured")||point.includes("endpoint-bound")||point.includes("filesystem")),false,label);assert.deepEqual({delays,hooks},{delays:0,hooks:0},label);assert.deepEqual(await snapshotRootArtifacts(root),before,label);}});
   await withFenceRoot(async(root,binding)=>{let accepted=0,bound=0;const result=await new RawFsAuthorityLedger(root,{[option]:fenceRuntime(binding,point=>{if(point==="k1-operation-fence-only-topology-accepted")accepted++;if(point==="k1-operation-fence-only-endpoint-bound")bound++;}),now:()=>t0,lockTimeoutMs:200} as never).recover();assert.equal(result.ok,true);assert.deepEqual({accepted,bound},{accepted:1,bound:1});assert.equal(hasLegacyWriterArtifact(root),false);});
+});
+
+test("k1-operation-fence-only externally held endpoint keeps refusal-only corruption precedence",async()=>{
+  await withRoot(async root=>{
+    const owner={host:hostname(),nonce:"e".repeat(64),pid:process.pid,v:1 as const},withdrawal=await writeCreatorWithdrawal(root,owner,"partial"),binding=await derivedFenceBinding(root),squatter=await bindFenceEndpoint(binding),before=await snapshotRootArtifacts(root);let semanticNow=0,callbacks=0,prepCreates=0;
+    try{const result=await new RawFsAuthorityLedger(root,{now:()=>{semanticNow++;return t0;},lockTimeoutMs:20,faultInjector:(point:string)=>{if(point==="after-admission-prep-create")prepCreates++;if(point==="before-ledger-operation-callback")callbacks++;}} as never).observeClock();assert.deepEqual(result,{ok:false,reason:"corruption"});}finally{await closeServer(squatter);}
+    assert.deepEqual(await snapshotRootArtifacts(root),before);assert.deepEqual({semanticNow,callbacks,prepCreates},{semanticNow:0,callbacks:0,prepCreates:0});assert.equal(existsSync(withdrawal),true);
+  });
+  await withRoot(async root=>{
+    const binding=await derivedFenceBinding(root),squatter=await bindFenceEndpoint(binding);let semanticNow=0,callbacks=0,publicationCreates=0,k1Initial=0;
+    try{const result=await new RawFsAuthorityLedger(root,{now:()=>{semanticNow++;return t0;},lockTimeoutMs:20,faultInjector:(point:string)=>{if(point==="after-pre-admission-housekeeping-initial-enumeration")k1Initial++;if(point==="after-lock-publication-stage-create")publicationCreates++;if(point==="before-ledger-operation-callback")callbacks++;}} as never).observeClock();assert.deepEqual(result,{ok:false,reason:"busy"});}finally{await closeServer(squatter);}
+    assert.deepEqual(await snapshotRootArtifacts(root),[]);assert.deepEqual({semanticNow,callbacks,publicationCreates,k1Initial},{semanticNow:0,callbacks:0,publicationCreates:0,k1Initial:0});
+  });
+});
+
+test("k1-operation-fence-only inbound connections are severed and cannot wedge fence close",async()=>{
+  const option=k1OperationFenceOption(),failAfter=(milliseconds:number,message:string)=>new Promise<never>((_,reject)=>{setTimeout(()=>reject(new Error(message)),milliseconds).unref();});
+  await withFenceRoot(async(root,binding)=>{
+    const events:string[]=[];let client:ReturnType<typeof connect>|undefined,clientClosed:Promise<void>|undefined,pending:Promise<unknown>|undefined;
+    try{
+      pending=new RawFsAuthorityLedger(root,{[option]:fenceRuntime(binding,async point=>{events.push(point);if(point==="k1-operation-fence-only-endpoint-bound"){await new Promise<void>((resolve,reject)=>{client=connect({host:"127.0.0.1",port:binding.endpoint.port},resolve);client.once("error",reject);});client!.on("error",()=>{});clientClosed=new Promise<void>(resolve=>client!.once("close",resolve));}}),now:()=>t0,lockTimeoutMs:200} as never).recover();
+      const result=await Promise.race([pending,failAfter(2_000,"a held inbound connection wedged the fence close")]);
+      assert.equal((result as Readonly<{ok:boolean}>).ok,true);
+      assert.equal(events.at(-1),"k1-operation-fence-only-closed");
+      await Promise.race([clientClosed!,failAfter(2_000,"the fence accepted and retained an inbound connection")]);
+      assert.equal(client!.destroyed,true);
+    }finally{client?.destroy();await pending?.catch(()=>{});}
+  });
 });
 
 test("legacy-only authority residue retains exact compatibility behavior",async t=>{
