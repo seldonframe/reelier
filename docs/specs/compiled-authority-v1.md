@@ -276,15 +276,20 @@ construction, writing nothing: corruption keeps precedence over contention, and 
 means not proven corrupt, never proven healthy.
 
 Same-process fence contention distinguishes exactly two closed contender classes, declared at
-invocation. A publication contender — an operation seeking the active lock and a semantic operation
-callback, without pre-admission housekeeping write permission — is entitled by its class to wait:
+invocation by whether the operation seeks the active lock and a semantic operation callback. That
+classification governs fence queueing only, and is stated independently of pre-admission housekeeping
+write permission so that the queueing rule does not silently depend on who may drain residue. Which
+contenders hold that write permission is a separate, currently narrower question — see the open
+discrepancy recorded below. A publication contender — an operation seeking the active lock and a
+semantic operation callback — is entitled by its class to wait:
 concurrently waiting same-process publication contenders are admitted in strictly increasing
 drawn-ticket order, and one admitted with strictly positive remaining time begins its own full
 admission attempt under
 the same one original acquisition deadline; deadline exhaustion while waiting returns `busy` with
-zero filesystem observation. A housekeeping-episode contender — an operation invoked with
-pre-admission housekeeping write permission for the strictly non-authorizing pre-admission
-housekeeper — holds no queue position: it refuses `busy` after at most one bounded delay, never
+zero filesystem observation. A housekeeping-episode contender — an operation seeking neither the
+active lock nor a callback, which therefore returns once the strictly non-authorizing pre-admission
+housekeeper has made its one transition — holds no queue position: it refuses `busy` after at most
+one bounded delay, never
 awaiting release, with zero filesystem observation, zero fence acquisition, and zero fence-boundary
 observation. A same-process holder already owns the only local K1 authority a housekeeping episode
 could seek; whatever the holder's outcome, the episode's transition is at worst deferred, and the
@@ -376,6 +381,16 @@ contender derives at most one purpose-specific housekeeping authority, exact-rev
 name, byte, identity, lifecycle, predecessor, and terminal proof, performs exactly one coordination
 transition plus its required ledger-root sync, and restarts full classification. Only an
 admission-ready generation may begin preparation.
+
+**Open discrepancy — who may perform a housekeeping transition.** The paragraph above says "the
+contender" generically, but the implementation grants pre-admission housekeeping write authority only
+to an operation that seeks no active lock and no callback (today, `recover`). Measured 2026-08-04:
+granting it to every contender converts three pending tests but breaks eight committed groups that
+pin byte-identical preservation for lock-seeking operations — among them `prep-only housekeeper
+routes stable authority without mutation` and the K1 cleanup-residue families — taking the ledger
+suite from 410/91 to 388/113. The narrow rule is therefore the one with evidence behind it, and the
+generic wording above is the outlier. Resolve deliberately before relying on either reading; do not
+widen the permission expecting a net gain.
 
 The pre-admission housekeeper may only retire the exact dead preparation, publication stage, or fixed
 slot authorized below; progress one exact cleanup stage to its bound ack; remove one exact marker or

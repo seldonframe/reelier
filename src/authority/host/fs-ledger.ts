@@ -557,7 +557,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
         } finally {
           await this.releaseLock(lock.owner);
         }
-      },coordination.permitPrepHousekeepingWrite??false);
+      },!(coordination.admitContender??true));
     } finally { release(); }
   }
 
@@ -647,7 +647,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
         if(hybridGuard==="refuse"){monotonicNow();return {ok:false,reason:"busy"};}
         if(hybridGuard==="busy")return {ok:false,reason:"busy"};
         if(hybridGuard==="corruption")return {ok:false,reason:"corruption"};
-        if(k1Progressed&&coordination.permitPrepHousekeepingWrite)return {ok:true,k1WriterOnly:true};
+        if(k1Progressed&&!admitContender)return {ok:true,k1WriterOnly:true};
         const active=await this.inspectActiveLock(deadline);
         if(active==="retry"){
           if(monotonicNow()>=deadline)throw new CoordinationExhausted("acquisition","snapshot-churn");
