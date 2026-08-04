@@ -172,7 +172,7 @@ type PrepAuthorityDescriptor=
 interface PrepAuthorityBinding {readonly snapshot:HybridRootSnapshot;readonly descriptor:PrepAuthorityDescriptor}
 type PrepTransitionResult="busy"|"progress"|"reclassify"|"refuse";
 interface K1OperationFenceCapability {readonly attemptBoundTransition:()=>Promise<"progress"|"refused">}
-interface K1OperationFenceGeneration {readonly execute:()=>Promise<LockResult>;status:"fresh"|"acting"|"completed"|"closed";lockResult?:LockResult;outcome?:"progress"|"refused";protectedTransitionCompleted?:boolean}
+interface K1OperationFenceGeneration {readonly execute:(budgetMs:number,drawnTicket:bigint)=>Promise<LockResult>;readonly budgetMs:number;readonly drawnTicket:bigint;status:"fresh"|"acting"|"completed"|"closed";lockResult?:LockResult;outcome?:"progress"|"refused";protectedTransitionCompleted?:boolean}
 const prepAttemptRuntimeIdentity=Object.freeze({kind:"prep-housekeeper-runtime"});
 const prepAttemptRuntimeBindings=new WeakMap<object,typeof prepAttemptRuntimeIdentity>();
 const prepRetirementAuthorityBindings=new WeakMap<object,PrepAuthorityBinding>();
@@ -181,6 +181,9 @@ const slotRetirementAuthorityBindings=new WeakMap<object,PrepAuthorityBinding>()
 const slotRetiredCleanupAuthorityBindings=new WeakMap<object,PrepAuthorityBinding>();
 const k1OperationFenceBindings=new WeakMap<object,K1OperationFenceGeneration>();
 const activeK1OperationFences=new Set<string>();
+interface K1OperationFenceWaiter {readonly ticket:bigint;admitted:boolean}
+const k1OperationFenceWaiters=new Map<string,K1OperationFenceWaiter[]>();
+let k1AdmissionTicketFloor=0n;
 type InternalFsAuthorityLedgerOptions = FsAuthorityLedgerOptions & {
   readonly [__testAdmissionClockOption]?: () => unknown;
   readonly [__testPrepHousekeeperRuntimeOption]?: PrepHousekeeperRuntime;
@@ -533,7 +536,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
   private async withLock<T>(context: OperationContext, operation: (reclaimed: boolean) => Promise<T>,coordination:Readonly<{admitContender?:boolean;permitPrepHousekeepingWrite?:boolean}>={}): Promise<T | Readonly<{ ok: false; reason: "busy" | "lock-owner-unverifiable" | "corruption" }>> {
     const preceding=this.lockTail;let release!:()=>void;this.lockTail=new Promise<void>(resolve=>{release=resolve;});await preceding;
     try {
-      return await this.withK1OperationFence(async()=>this.acquireLock({admitContender:coordination.admitContender??true,permitPrepHousekeepingWrite:coordination.permitPrepHousekeepingWrite??false}),async lock=>{
+      return await this.withK1OperationFence(async(budgetMs:number,drawnTicket:bigint)=>this.acquireLock({admitContender:coordination.admitContender??true,permitPrepHousekeepingWrite:coordination.permitPrepHousekeepingWrite??false,budgetMs,drawnTicket}),async lock=>{
         if (!lock.ok) return frozen({ ok: false as const, reason: lock.reason });
         if("k1WriterOnly" in lock)try{return await operation(false);}catch(error){if(error instanceof LedgerCorruption)return frozen({ok:false as const,reason:"corruption" as const});throw error;}
         try {
@@ -554,41 +557,50 @@ export class FsAuthorityLedger implements AuthorityLedger {
         } finally {
           await this.releaseLock(lock.owner);
         }
-      });
+      },coordination.permitPrepHousekeepingWrite??false);
     } finally { release(); }
   }
 
-  private async withK1OperationFence<T>(execute:()=>Promise<LockResult>,use:(result:LockResult)=>Promise<T>):Promise<T|Readonly<{ok:false;reason:"busy"|"corruption"}>>{
+  private async withK1OperationFence<T>(execute:(budgetMs:number,drawnTicket:bigint)=>Promise<LockResult>,use:(result:LockResult)=>Promise<T>,housekeepingEpisode:boolean):Promise<T|Readonly<{ok:false;reason:"busy"|"corruption"}>>{
     const runtime=this.k1OperationFenceRuntime,binding=this.k1OperationFenceBinding;if(!this.k1OperationFenceConfigurationValid||runtime===null||binding===null)return frozen({ok:false,reason:"busy"});
-    const key=binding.materialDigest;if(activeK1OperationFences.has(key)){const deadline=runtime.monotonicNow()+this.options.lockTimeoutMs,remaining=deadline-runtime.monotonicNow();if(remaining>0)await runtime.delay(Math.min(5,remaining));runtime.monotonicNow();return frozen({ok:false,reason:"busy"});}activeK1OperationFences.add(key);
+    const drawn=drawK1AdmissionTicket(this.admissionClock);if(!drawn.ok)return frozen({ok:false,reason:drawn.reason});
+    const key=binding.materialDigest,deadline=runtime.monotonicNow()+this.options.lockTimeoutMs;
+    if(activeK1OperationFences.has(key)){
+      if(housekeepingEpisode){const remaining=deadline-runtime.monotonicNow();if(remaining>0)await runtime.delay(Math.min(5,remaining));runtime.monotonicNow();return frozen({ok:false,reason:"busy"});}
+      if(!await awaitK1OperationFenceAdmission(key,drawn.ticket,runtime,deadline))return frozen({ok:false,reason:"busy"});
+    }else activeK1OperationFences.add(key);
     let server:Server|null=null,capability:K1OperationFenceCapability|undefined;
     try{
-      await runtime.observeK1OperationFenceBoundary?.("k1-operation-fence-only-topology-accepted");
-      await runtime.observeK1OperationFenceBoundary?.("k1-operation-fence-only-root-captured");
-      const deadline=runtime.monotonicNow()+this.options.lockTimeoutMs;let retryDelayMs=5;
-      while(server===null){
-        if(runtime.monotonicNow()>deadline)return await this.refuseOnlyK1FenceClassification();
-        const candidate=createServer(socket=>socket.destroy());
-        try{await new Promise<void>((resolve,reject)=>{candidate.once("error",reject);candidate.listen({host:"127.0.0.1",port:binding.endpoint.port,exclusive:true,reusePort:false},resolve);});server=candidate;}
-        catch(error){if(!hasCode(error,"EADDRINUSE")&&!hasCode(error,"EACCES"))throw error;if(runtime.monotonicNow()>=deadline)return await this.refuseOnlyK1FenceClassification();await runtime.delay(Math.min(retryDelayMs,deadline-runtime.monotonicNow()));retryDelayMs=Math.min(50,retryDelayMs*2);}
+      try{
+        if(deadline-runtime.monotonicNow()<=0)return frozen({ok:false,reason:"busy"});
+        await runtime.observeK1OperationFenceBoundary?.("k1-operation-fence-only-topology-accepted");
+        await runtime.observeK1OperationFenceBoundary?.("k1-operation-fence-only-root-captured");
+        let retryDelayMs=5;
+        while(server===null){
+          if(runtime.monotonicNow()>deadline)return await this.refuseOnlyK1FenceClassification();
+          const candidate=createServer(socket=>socket.destroy());
+          try{await new Promise<void>((resolve,reject)=>{candidate.once("error",reject);candidate.listen({host:"127.0.0.1",port:binding.endpoint.port,exclusive:true,reusePort:false},resolve);});server=candidate;}
+          catch(error){if(!hasCode(error,"EADDRINUSE")&&!hasCode(error,"EACCES"))throw error;if(runtime.monotonicNow()>=deadline)return await this.refuseOnlyK1FenceClassification();await runtime.delay(Math.min(retryDelayMs,deadline-runtime.monotonicNow()));retryDelayMs=Math.min(50,retryDelayMs*2);}
+        }
+        await runtime.observeK1OperationFenceBoundary?.("k1-operation-fence-only-endpoint-bound");
+        if(!await this.revalidateK1OperationFenceRoot(binding))return frozen({ok:false,reason:"busy"});
+        await runtime.observeK1OperationFenceBoundary?.("k1-operation-fence-only-root-revalidated");
+        const budgetMs=deadline-runtime.monotonicNow();if(budgetMs<=0)return frozen({ok:false,reason:"busy"});
+        let fresh!:K1OperationFenceCapability;fresh=Object.freeze({attemptBoundTransition:()=>this.attemptK1OperationFenceTransition(fresh)});capability=fresh;k1OperationFenceBindings.set(fresh,{execute,budgetMs,drawnTicket:drawn.ticket,status:"fresh"});
+        await runtime.observeK1OperationFenceBoundary?.("k1-operation-fence-only-acquired",fresh);
+        const generation=k1OperationFenceBindings.get(fresh)!;if(generation.status==="fresh")await fresh.attemptBoundTransition();
+        if(generation.lockResult===undefined)return frozen({ok:false,reason:"busy"});
+        return await use(generation.lockResult);
+      }finally{
+        if(capability!==undefined){const generation=k1OperationFenceBindings.get(capability);if(generation!==undefined)generation.status="closed";}
+        if(server!==null){await closeK1OperationFenceServer(server);await runtime.observeK1OperationFenceBoundary?.("k1-operation-fence-only-closed",capability);}
       }
-      await runtime.observeK1OperationFenceBoundary?.("k1-operation-fence-only-endpoint-bound");
-      if(!await this.revalidateK1OperationFenceRoot(binding))return frozen({ok:false,reason:"busy"});
-      await runtime.observeK1OperationFenceBoundary?.("k1-operation-fence-only-root-revalidated");
-      let fresh!:K1OperationFenceCapability;fresh=Object.freeze({attemptBoundTransition:()=>this.attemptK1OperationFenceTransition(fresh)});capability=fresh;k1OperationFenceBindings.set(fresh,{execute,status:"fresh"});
-      await runtime.observeK1OperationFenceBoundary?.("k1-operation-fence-only-acquired",fresh);
-      const generation=k1OperationFenceBindings.get(fresh)!;if(generation.status==="fresh")await fresh.attemptBoundTransition();
-      if(generation.lockResult===undefined)return frozen({ok:false,reason:"busy"});
-      return await use(generation.lockResult);
-    }finally{
-      if(capability!==undefined){const generation=k1OperationFenceBindings.get(capability);if(generation!==undefined)generation.status="closed";}
-      activeK1OperationFences.delete(key);if(server!==null){await closeK1OperationFenceServer(server);await runtime.observeK1OperationFenceBoundary?.("k1-operation-fence-only-closed",capability);}
-    }
+    }finally{releaseK1OperationFence(key);}
   }
 
   private async attemptK1OperationFenceTransition(capability:K1OperationFenceCapability):Promise<"progress"|"refused">{
     const generation=k1OperationFenceBindings.get(capability);if(generation===undefined||generation.status!=="fresh")return "refused";generation.status="acting";this.activeK1OperationCapability=capability;
-    try{const result=await generation.execute();generation.lockResult=result;generation.outcome=result.ok&&"k1WriterOnly" in result?"progress":"refused";generation.status="completed";return generation.outcome;}catch(error){generation.status="completed";throw error;}finally{this.activeK1OperationCapability=null;}
+    try{const result=await generation.execute(generation.budgetMs,generation.drawnTicket);generation.lockResult=result;generation.outcome=result.ok&&"k1WriterOnly" in result?"progress":"refused";generation.status="completed";return generation.outcome;}catch(error){generation.status="completed";throw error;}finally{this.activeK1OperationCapability=null;}
   }
 
   private async revalidateK1OperationFenceRoot(binding:K1OperationFenceBinding):Promise<boolean>{
@@ -608,10 +620,10 @@ export class FsAuthorityLedger implements AuthorityLedger {
     }finally{this.refusalOnlyK1ClassificationActive=false;}
   }
 
-  private async acquireLock(coordination:Readonly<{admitContender:boolean;permitPrepHousekeepingWrite:boolean}>): Promise<LockResult> {
+  private async acquireLock(coordination:Readonly<{admitContender:boolean;permitPrepHousekeepingWrite:boolean;budgetMs:number;drawnTicket:bigint}>): Promise<LockResult> {
     const {admitContender}=coordination;let prepHousekeepingWritePermitted=coordination.permitPrepHousekeepingWrite;
     const monotonicNow=this.prepHousekeeperRuntime.monotonicNow,delay=this.prepHousekeeperRuntime.delay;
-    const deadline = monotonicNow() + this.options.lockTimeoutMs;
+    const deadline = monotonicNow() + coordination.budgetMs;
     const prepAttemptToken=mintUnboundPrepCreatorAttemptToken();
     const owner: LockOwner = { v: 1, host: hostname(), pid: process.pid, nonce: randomBytes(32).toString("hex") };
     const ownerBytes=canonicalBytes(owner);let stageName="",stagePath="",ownerPath="",stageTicket:bigint|null=null;
@@ -666,11 +678,10 @@ export class FsAuthorityLedger implements AuthorityLedger {
           }
           if(existingStages.filter(stage=>stage.pid===process.pid&&stage.state==="complete").length===1)return {ok:false,reason:"busy"};
           if(stageName===""){
-            const maxVisible=existingStages.reduce((maximum,stage)=>stage.ticket>maximum?stage.ticket:maximum,0n);
+            const maxVisible=maxVisibleAdmissionTicket(existingStages,preClassificationNames);
             if(maxVisible===MAX_PUBLICATION_TICKET)return {ok:false,reason:"busy"};
-            let raw:unknown;try{raw=this.admissionClock();}catch{return {ok:false,reason:"corruption"};}
-            if(typeof raw!=="bigint"||raw<0n||raw>MAX_PUBLICATION_TICKET)return {ok:false,reason:"corruption"};
-            const ticket=raw>maxVisible?raw:maxVisible+1n;
+            const ticket=coordination.drawnTicket>maxVisible?coordination.drawnTicket:maxVisible+1n;
+            if(ticket>k1AdmissionTicketFloor)k1AdmissionTicketFloor=ticket;
             stageTicket=ticket;stageName=this.publicationStageName(owner,ticket);stagePath=this.absolute(stageName);ownerPath=path.join(stagePath,"owner.json");
           }
           mutatingAdmissionMemo={kind:"disabled"};
@@ -2410,6 +2421,51 @@ function isExactObject(value:unknown,keys:readonly string[],optional:readonly st
 function normalizedK1OperationFenceRoot(value:string):string{const normalized=path.normalize(value);return process.platform==="win32"?normalized.replaceAll("\\","/").toLowerCase():normalized;}
 function deriveK1OperationFenceBinding(root:string,identity:FileIdentity):K1OperationFenceBinding{const canonicalRoot=normalizedK1OperationFenceRoot(root),material=Buffer.from(`${canonicalRoot}\0${identity.dev}\0${identity.ino}`,"utf8"),digest=createHash("sha256").update(material).digest(),materialDigest=`sha256:${digest.toString("hex")}`,port=20_000+digest.readUInt32BE(0)%30_000;return frozen({canonicalRoot,rootIdentity:{dev:String(identity.dev),ino:String(identity.ino),mode:String(identity.mode)},materialDigest,endpoint:{host:"127.0.0.1",port}});}
 function sameK1OperationFenceBinding(left:K1OperationFenceBinding,right:K1OperationFenceBinding):boolean{return left.canonicalRoot===right.canonicalRoot&&left.materialDigest===right.materialDigest&&left.endpoint.host===right.endpoint.host&&left.endpoint.port===right.endpoint.port&&left.rootIdentity.dev===right.rootIdentity.dev&&left.rootIdentity.ino===right.rootIdentity.ino&&left.rootIdentity.mode===right.rootIdentity.mode;}
+function drawK1AdmissionTicket(admissionClock:()=>unknown):Readonly<{ok:true;ticket:bigint}>|Readonly<{ok:false;reason:"busy"|"corruption"}>{
+  let raw:unknown;try{raw=admissionClock();}catch{return frozen({ok:false,reason:"corruption"});}
+  if(typeof raw!=="bigint"||raw<0n||raw>MAX_PUBLICATION_TICKET)return frozen({ok:false,reason:"corruption"});
+  if(k1AdmissionTicketFloor>=MAX_PUBLICATION_TICKET)return frozen({ok:false,reason:"busy"});
+  const ticket=raw>k1AdmissionTicketFloor?raw:k1AdmissionTicketFloor+1n;
+  k1AdmissionTicketFloor=ticket;
+  return frozen({ok:true,ticket});
+}
+function maxVisibleAdmissionTicket(stages:readonly PublicationStage[],names:readonly string[]):bigint{
+  let maximum=0n;
+  for(const stage of stages)if(stage.ticket>maximum)maximum=stage.ticket;
+  for(const name of names){const parsed=parseK1Name(name);if(parsed?.kind==="creator-withdrawal"&&parsed.ticket>maximum)maximum=parsed.ticket;}
+  return maximum;
+}
+function releaseK1OperationFence(key:string):void{
+  const queue=k1OperationFenceWaiters.get(key);
+  if(queue===undefined||queue.length===0){activeK1OperationFences.delete(key);return;}
+  let next=0;for(let index=1;index<queue.length;index++)if(queue[index].ticket<queue[next].ticket)next=index;
+  const [admitted]=queue.splice(next,1);
+  if(queue.length===0)k1OperationFenceWaiters.delete(key);
+  admitted.admitted=true;
+}
+function removeK1OperationFenceWaiter(key:string,waiter:K1OperationFenceWaiter):void{
+  const queue=k1OperationFenceWaiters.get(key);if(queue===undefined)return;
+  const index=queue.indexOf(waiter);if(index>=0)queue.splice(index,1);
+  if(queue.length===0)k1OperationFenceWaiters.delete(key);
+}
+async function awaitK1OperationFenceAdmission(key:string,ticket:bigint,runtime:K1OperationFenceRuntime,deadline:number):Promise<boolean>{
+  const waiter:K1OperationFenceWaiter={ticket,admitted:false},queue=k1OperationFenceWaiters.get(key);
+  if(queue===undefined)k1OperationFenceWaiters.set(key,[waiter]);else queue.push(waiter);
+  let entered=false;
+  try{
+    for(;;){
+      if(waiter.admitted){entered=true;return true;}
+      const remaining=deadline-runtime.monotonicNow();
+      if(remaining<=0)return false;
+      await runtime.delay(Math.min(5,remaining));
+    }
+  }finally{
+    // A waiter that never enters the fence must leave no trace: still queued it would be a corpse
+    // that release hands ownership to, wedging the root with no live owner; already designated it
+    // owns the fence it is abandoning and must pass it on.
+    if(!entered){removeK1OperationFenceWaiter(key,waiter);if(waiter.admitted)releaseK1OperationFence(key);}
+  }
+}
 function defaultK1OperationFenceRuntime(binding:K1OperationFenceBinding):K1OperationFenceRuntime{return {topology:{filesystem:"local-fs",networkNamespace:"same-network-namespace",identity:"isolated"},expectedBinding:binding,monotonicNow,delay};}
 async function closeK1OperationFenceServer(server:Server):Promise<void>{await new Promise<void>((resolve,reject)=>server.close(error=>error&&!hasCode(error,"ERR_SERVER_NOT_RUNNING")?reject(error):resolve()));}
 function processLiveness(pid: number): "alive" | "dead" | "unverifiable" {
