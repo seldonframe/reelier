@@ -17,6 +17,7 @@ import {
   unlink,
 } from "node:fs/promises";
 import { hostname } from "node:os";
+import { createServer, type Server } from "node:net";
 import path from "node:path";
 import type {
   AuthorityLedger,
@@ -131,11 +132,20 @@ export interface FsAuthorityLedgerOptions {
 }
 export const __testAdmissionClockOption: unique symbol = Symbol();
 export const __testPrepHousekeeperRuntimeOption: unique symbol = Symbol();
+export const __testK1OperationFenceRuntimeOption: unique symbol = Symbol();
 interface PrepHousekeeperRuntime {
   readonly monotonicNow: () => number;
   readonly delay: (milliseconds: number) => Promise<void>;
   readonly observeBoundary?: (point: string) => void;
-  readonly observeK1WriterBoundary?: (point:string,lease?:K1WriterLease) => Promise<void>;
+}
+interface K1OperationFenceBinding {readonly canonicalRoot:string;readonly rootIdentity:Readonly<{dev:string;ino:string;mode:string}>;readonly materialDigest:string;readonly endpoint:Readonly<{host:"127.0.0.1";port:number}>}
+interface K1OperationFenceRuntime {
+  readonly topology:Readonly<{filesystem:string;networkNamespace:string;identity:string}>;
+  readonly expectedBinding:K1OperationFenceBinding;
+  readonly monotonicNow:()=>number;
+  readonly delay:(milliseconds:number)=>Promise<void>;
+  readonly observeK1OperationFenceBoundary?:(point:string,capability?:K1OperationFenceCapability)=>void|Promise<void>;
+  readonly probeProcessLiveness?:(pid:number)=>"alive"|"dead"|"unverifiable";
 }
 declare const prepAttemptTokenBrand: unique symbol;
 declare const prepRetirementAuthorityBrand: unique symbol;
@@ -161,27 +171,20 @@ type PrepAuthorityDescriptor=
   |Readonly<{kind:"slot-retired-cleanup";targetName:string;lifecycleName:string|null;orphan:boolean;pid:number}>;
 interface PrepAuthorityBinding {readonly snapshot:HybridRootSnapshot;readonly descriptor:PrepAuthorityDescriptor}
 type PrepTransitionResult="busy"|"progress"|"reclassify"|"refuse";
-interface K1WriterLease {readonly attemptBoundTransition:()=>Promise<"progress"|"refused">}
-interface K1WriterGeneration {
-  readonly binding:PrepAuthorityBinding;
-  readonly directoryIdentity:FileIdentity;
-  readonly ownerIdentity:FileIdentity;
-  readonly ownerBytes:Buffer;
-  readonly releasedName:string;
-  readonly transition:()=>Promise<PrepTransitionResult>;
-  status:"held"|"acting"|"completed"|"released"|"refused";
-  result?:PrepTransitionResult;
-}
+interface K1OperationFenceCapability {readonly attemptBoundTransition:()=>Promise<"progress"|"refused">}
+interface K1OperationFenceGeneration {readonly execute:()=>Promise<LockResult>;status:"fresh"|"acting"|"completed"|"closed";lockResult?:LockResult;outcome?:"progress"|"refused";protectedTransitionCompleted?:boolean}
 const prepAttemptRuntimeIdentity=Object.freeze({kind:"prep-housekeeper-runtime"});
 const prepAttemptRuntimeBindings=new WeakMap<object,typeof prepAttemptRuntimeIdentity>();
 const prepRetirementAuthorityBindings=new WeakMap<object,PrepAuthorityBinding>();
 const prepRetiredCleanupAuthorityBindings=new WeakMap<object,PrepAuthorityBinding>();
 const slotRetirementAuthorityBindings=new WeakMap<object,PrepAuthorityBinding>();
 const slotRetiredCleanupAuthorityBindings=new WeakMap<object,PrepAuthorityBinding>();
-const k1WriterLeaseBindings=new WeakMap<object,K1WriterGeneration>();
+const k1OperationFenceBindings=new WeakMap<object,K1OperationFenceGeneration>();
+const activeK1OperationFences=new Set<string>();
 type InternalFsAuthorityLedgerOptions = FsAuthorityLedgerOptions & {
   readonly [__testAdmissionClockOption]?: () => unknown;
   readonly [__testPrepHousekeeperRuntimeOption]?: PrepHousekeeperRuntime;
+  readonly [__testK1OperationFenceRuntimeOption]?: unknown;
 };
 
 interface TransactionRecord {
@@ -335,10 +338,20 @@ export class FsAuthorityLedger implements AuthorityLedger {
   readonly options: Required<Pick<FsAuthorityLedgerOptions, "now" | "lockTimeoutMs">> & Pick<FsAuthorityLedgerOptions, "faultInjector">;
   private readonly admissionClock:()=>unknown;
   private readonly prepHousekeeperRuntime:PrepHousekeeperRuntime;
+  private readonly k1OperationFenceRuntime:K1OperationFenceRuntime|null;
+  private readonly k1OperationFenceBinding:K1OperationFenceBinding|null;
+  private readonly k1OperationFenceConfigurationValid:boolean;
+  private activeK1OperationCapability:K1OperationFenceCapability|null=null;
+  private refusalOnlyK1ClassificationActive=false;
   private lockTail:Promise<void>=Promise.resolve();
 
   constructor(root: string, options: FsAuthorityLedgerOptions = {}) {
     const resolved = path.resolve(root);
+    const internalOptions=options as InternalFsAuthorityLedgerOptions,injected=Object.prototype.hasOwnProperty.call(internalOptions,__testK1OperationFenceRuntimeOption),injectedRuntime=injected?parseK1OperationFenceRuntime(internalOptions[__testK1OperationFenceRuntimeOption]):undefined;
+    this.options = { now: options.now ?? Date.now, faultInjector: options.faultInjector, lockTimeoutMs: options.lockTimeoutMs ?? 30_000 };
+    this.admissionClock=internalOptions[__testAdmissionClockOption]??(()=>process.hrtime.bigint());
+    this.prepHousekeeperRuntime=internalOptions[__testPrepHousekeeperRuntimeOption]??(injectedRuntime===undefined||injectedRuntime===null?{monotonicNow,delay}:{monotonicNow:injectedRuntime.monotonicNow,delay:injectedRuntime.delay});
+    if(injected&&injectedRuntime===null){this.root=resolved;this.k1OperationFenceRuntime=null;this.k1OperationFenceBinding=null;this.k1OperationFenceConfigurationValid=false;return;}
     let rootStat;
     try { rootStat = lstatSync(resolved,{bigint:true}); } catch { throw new TypeError("authority ledger root must be an existing directory"); }
     if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) throw new TypeError("authority ledger root must be a real directory");
@@ -355,10 +368,10 @@ export class FsAuthorityLedger implements AuthorityLedger {
       if(realStat.dev!==rootStat.dev||realStat.ino!==rootStat.ino)throw new TypeError("authority ledger root may not traverse a symlink or reparse point");
     }else if(real!==resolved)throw new TypeError("authority ledger root may not traverse a symlink or reparse point");
     this.root = real;
-    const internalOptions=options as InternalFsAuthorityLedgerOptions;
-    this.options = { now: options.now ?? Date.now, faultInjector: options.faultInjector, lockTimeoutMs: options.lockTimeoutMs ?? 30_000 };
-    this.admissionClock=internalOptions[__testAdmissionClockOption]??(()=>process.hrtime.bigint());
-    this.prepHousekeeperRuntime=internalOptions[__testPrepHousekeeperRuntimeOption]??{monotonicNow,delay};
+    const binding=deriveK1OperationFenceBinding(real,fileIdentity(rootStat));
+    this.k1OperationFenceRuntime=injectedRuntime??defaultK1OperationFenceRuntime(binding);
+    this.k1OperationFenceBinding=binding;
+    this.k1OperationFenceConfigurationValid=!injected||sameK1OperationFenceBinding(injectedRuntime!.expectedBinding,binding);
   }
 
   async observeClock(): Promise<ObserveClockResult> {
@@ -520,28 +533,79 @@ export class FsAuthorityLedger implements AuthorityLedger {
   private async withLock<T>(context: OperationContext, operation: (reclaimed: boolean) => Promise<T>,coordination:Readonly<{admitContender?:boolean;permitPrepHousekeepingWrite?:boolean}>={}): Promise<T | Readonly<{ ok: false; reason: "busy" | "lock-owner-unverifiable" | "corruption" }>> {
     const preceding=this.lockTail;let release!:()=>void;this.lockTail=new Promise<void>(resolve=>{release=resolve;});await preceding;
     try {
-      const lock = await this.acquireLock({admitContender:coordination.admitContender??true,permitPrepHousekeepingWrite:coordination.permitPrepHousekeepingWrite??false});
-      if (!lock.ok) return frozen({ ok: false, reason: lock.reason });
-      if("k1WriterOnly" in lock)try{return await operation(false);}catch(error){if(error instanceof LedgerCorruption)return frozen({ok:false,reason:"corruption"});throw error;}
-      try {
-        await this.assertNoLinks();
-        await this.ensureLayout();
-        const housekeepingDeadline=monotonicNow()+this.options.lockTimeoutMs;
-        await this.settlePublicationStages(housekeepingDeadline,true);
-        const pending=await this.serviceRetirementArtifacts(housekeepingDeadline);
-        if(pending.length>0){const recovered=await this.prepare(true,false,context);const journalHead=recovered.eventDigests.at(-1)??null;for(const marker of pending)await this.acknowledgeAndCleanup(marker,journalHead,housekeepingDeadline);}
-        await this.assertNoLinks();
-        if (context === "reservation") this.fault("after-lock-acquire");
-        this.fault("before-ledger-operation-callback");
-        return await operation(false);
-      } catch (error) {
-        if(error instanceof CoordinationExhausted)return frozen({ok:false,reason:"busy"});
-        if (error instanceof LedgerCorruption) return frozen({ ok: false, reason: "corruption" });
-        throw error;
-      } finally {
-        await this.releaseLock(lock.owner);
-      }
+      return await this.withK1OperationFence(async()=>this.acquireLock({admitContender:coordination.admitContender??true,permitPrepHousekeepingWrite:coordination.permitPrepHousekeepingWrite??false}),async lock=>{
+        if (!lock.ok) return frozen({ ok: false as const, reason: lock.reason });
+        if("k1WriterOnly" in lock)try{return await operation(false);}catch(error){if(error instanceof LedgerCorruption)return frozen({ok:false as const,reason:"corruption" as const});throw error;}
+        try {
+          await this.assertNoLinks();
+          await this.ensureLayout();
+          const housekeepingDeadline=monotonicNow()+this.options.lockTimeoutMs;
+          await this.settlePublicationStages(housekeepingDeadline,true);
+          const pending=await this.serviceRetirementArtifacts(housekeepingDeadline);
+          if(pending.length>0){const recovered=await this.prepare(true,false,context);const journalHead=recovered.eventDigests.at(-1)??null;for(const marker of pending)await this.acknowledgeAndCleanup(marker,journalHead,housekeepingDeadline);}
+          await this.assertNoLinks();
+          if (context === "reservation") this.fault("after-lock-acquire");
+          this.fault("before-ledger-operation-callback");
+          return await operation(false);
+        } catch (error) {
+          if(error instanceof CoordinationExhausted)return frozen({ok:false as const,reason:"busy" as const});
+          if (error instanceof LedgerCorruption) return frozen({ ok: false as const, reason: "corruption" as const });
+          throw error;
+        } finally {
+          await this.releaseLock(lock.owner);
+        }
+      });
     } finally { release(); }
+  }
+
+  private async withK1OperationFence<T>(execute:()=>Promise<LockResult>,use:(result:LockResult)=>Promise<T>):Promise<T|Readonly<{ok:false;reason:"busy"|"corruption"}>>{
+    const runtime=this.k1OperationFenceRuntime,binding=this.k1OperationFenceBinding;if(!this.k1OperationFenceConfigurationValid||runtime===null||binding===null)return frozen({ok:false,reason:"busy"});
+    const key=binding.materialDigest;if(activeK1OperationFences.has(key)){const deadline=runtime.monotonicNow()+this.options.lockTimeoutMs,remaining=deadline-runtime.monotonicNow();if(remaining>0)await runtime.delay(Math.min(5,remaining));runtime.monotonicNow();return frozen({ok:false,reason:"busy"});}activeK1OperationFences.add(key);
+    let server:Server|null=null,capability:K1OperationFenceCapability|undefined;
+    try{
+      await runtime.observeK1OperationFenceBoundary?.("k1-operation-fence-only-topology-accepted");
+      await runtime.observeK1OperationFenceBoundary?.("k1-operation-fence-only-root-captured");
+      const deadline=runtime.monotonicNow()+this.options.lockTimeoutMs;let retryDelayMs=5;
+      while(server===null){
+        if(runtime.monotonicNow()>deadline)return await this.refuseOnlyK1FenceClassification();
+        const candidate=createServer(socket=>socket.destroy());
+        try{await new Promise<void>((resolve,reject)=>{candidate.once("error",reject);candidate.listen({host:"127.0.0.1",port:binding.endpoint.port,exclusive:true,reusePort:false},resolve);});server=candidate;}
+        catch(error){if(!hasCode(error,"EADDRINUSE")&&!hasCode(error,"EACCES"))throw error;if(runtime.monotonicNow()>=deadline)return await this.refuseOnlyK1FenceClassification();await runtime.delay(Math.min(retryDelayMs,deadline-runtime.monotonicNow()));retryDelayMs=Math.min(50,retryDelayMs*2);}
+      }
+      await runtime.observeK1OperationFenceBoundary?.("k1-operation-fence-only-endpoint-bound");
+      if(!await this.revalidateK1OperationFenceRoot(binding))return frozen({ok:false,reason:"busy"});
+      await runtime.observeK1OperationFenceBoundary?.("k1-operation-fence-only-root-revalidated");
+      let fresh!:K1OperationFenceCapability;fresh=Object.freeze({attemptBoundTransition:()=>this.attemptK1OperationFenceTransition(fresh)});capability=fresh;k1OperationFenceBindings.set(fresh,{execute,status:"fresh"});
+      await runtime.observeK1OperationFenceBoundary?.("k1-operation-fence-only-acquired",fresh);
+      const generation=k1OperationFenceBindings.get(fresh)!;if(generation.status==="fresh")await fresh.attemptBoundTransition();
+      if(generation.lockResult===undefined)return frozen({ok:false,reason:"busy"});
+      return await use(generation.lockResult);
+    }finally{
+      if(capability!==undefined){const generation=k1OperationFenceBindings.get(capability);if(generation!==undefined)generation.status="closed";}
+      activeK1OperationFences.delete(key);if(server!==null){await closeK1OperationFenceServer(server);await runtime.observeK1OperationFenceBoundary?.("k1-operation-fence-only-closed",capability);}
+    }
+  }
+
+  private async attemptK1OperationFenceTransition(capability:K1OperationFenceCapability):Promise<"progress"|"refused">{
+    const generation=k1OperationFenceBindings.get(capability);if(generation===undefined||generation.status!=="fresh")return "refused";generation.status="acting";this.activeK1OperationCapability=capability;
+    try{const result=await generation.execute();generation.lockResult=result;generation.outcome=result.ok&&"k1WriterOnly" in result?"progress":"refused";generation.status="completed";return generation.outcome;}catch(error){generation.status="completed";throw error;}finally{this.activeK1OperationCapability=null;}
+  }
+
+  private async revalidateK1OperationFenceRoot(binding:K1OperationFenceBinding):Promise<boolean>{
+    try{const info=await lstat(this.root,{bigint:true});return info.isDirectory()&&!info.isSymbolicLink()&&String(info.dev)===binding.rootIdentity.dev&&String(info.ino)===binding.rootIdentity.ino&&String(info.mode)===binding.rootIdentity.mode;}catch{return false;}
+  }
+
+  private async refuseOnlyK1FenceClassification():Promise<Readonly<{ok:false;reason:"busy"|"corruption"}>>{
+    this.refusalOnlyK1ClassificationActive=true;
+    try{
+      if(await this.hasK1WriterResidue())return frozen({ok:false,reason:"busy"});
+      const guard=await this.classifyHybridCoordinationEpoch(mintUnboundPrepCreatorAttemptToken(),false,false);
+      return frozen({ok:false,reason:guard==="corruption"?"corruption":"busy"});
+    }catch(error){
+      if(error instanceof LedgerCorruption)return frozen({ok:false,reason:"corruption"});
+      if(error instanceof CoordinationExhausted)return frozen({ok:false,reason:"busy"});
+      throw error;
+    }finally{this.refusalOnlyK1ClassificationActive=false;}
   }
 
   private async acquireLock(coordination:Readonly<{admitContender:boolean;permitPrepHousekeepingWrite:boolean}>): Promise<LockResult> {
@@ -553,21 +617,25 @@ export class FsAuthorityLedger implements AuthorityLedger {
     const ownerBytes=canonicalBytes(owner);let stageName="",stagePath="",ownerPath="",stageTicket:bigint|null=null;
     let stageCreated=false,published=false,expectedStage:PublicationStage|null=null,election:PublicationElection|null=null,provisionalWait:ProvisionalPublicationWait|null=null,stagedSettlementStarted=false,provisionalEpochEligibility:ProvisionalEpochEligibility="unearned",waitedOnActiveLock=false,fullReelectionPending=false,provisionalFallbackResetPending=false;
     let mutatingAdmissionMemo:MutatingAdmissionMemo=admitContender?{kind:"unseeded"}:{kind:"disabled"};
-    let retryDelayMs=5,k1WriterProgressed=false;
+    let retryDelayMs=5,firstK1FilesystemHookObserved=false,k1Progressed=false;
     const backoff=async()=>{const remaining=deadline-monotonicNow();if(remaining<=0)return;await delay(Math.min(retryDelayMs,remaining));retryDelayMs=Math.min(50,retryDelayMs*2);};
     const attempt=async():Promise<LockResult>=>{while (true) {
       try {
         if(await this.hasK1WriterResidue())return {ok:false,reason:"busy"};
-        const hybridGuard=await this.classifyHybridCoordinationEpoch(prepAttemptToken,prepHousekeepingWritePermitted);
+        if(!firstK1FilesystemHookObserved){firstK1FilesystemHookObserved=true;await this.observeActiveK1OperationFenceBoundary("k1-operation-fence-only-first-filesystem-hook");}
+        const preClassificationNames=await readdir(this.root),k1Names=preClassificationNames.filter(isK1ReservedName);
+        if(k1Names.length===1&&k1Names[0]===ADMISSION_SLOT_NAME&&preClassificationNames.some(name=>RETIRED_LOCK.test(name)))await this.serviceRetirementArtifacts(monotonicNow()+this.options.lockTimeoutMs);
+        const hybridGuard=await this.classifyHybridCoordinationEpoch(prepAttemptToken,prepHousekeepingWritePermitted,!k1Progressed);
         if(hybridGuard==="retry"){
           if(monotonicNow()>=deadline)return {ok:false,reason:"busy"};
           await backoff();continue;
         }
-        if(hybridGuard==="progress"||hybridGuard==="reclassify"){if(hybridGuard==="progress")k1WriterProgressed=true;retryDelayMs=5;if(monotonicNow()>=deadline)prepHousekeepingWritePermitted=false;continue;}
+        if(hybridGuard==="progress"){k1Progressed=true;retryDelayMs=5;if(monotonicNow()>=deadline)prepHousekeepingWritePermitted=false;continue;}
+        if(hybridGuard==="reclassify"){retryDelayMs=5;if(monotonicNow()>=deadline)prepHousekeepingWritePermitted=false;continue;}
         if(hybridGuard==="refuse"){monotonicNow();return {ok:false,reason:"busy"};}
         if(hybridGuard==="busy")return {ok:false,reason:"busy"};
         if(hybridGuard==="corruption")return {ok:false,reason:"corruption"};
-        if(k1WriterProgressed&&coordination.permitPrepHousekeepingWrite)return {ok:true,k1WriterOnly:true};
+        if(k1Progressed&&coordination.permitPrepHousekeepingWrite)return {ok:true,k1WriterOnly:true};
         const active=await this.inspectActiveLock(deadline);
         if(active==="retry"){
           if(monotonicNow()>=deadline)throw new CoordinationExhausted("acquisition","snapshot-churn");
@@ -779,11 +847,11 @@ export class FsAuthorityLedger implements AuthorityLedger {
     return liveness.every(value=>value==="alive")?{kind:"saturated",names:Object.freeze([...names])}:{kind:"fallback"};
   }
 
-  private async classifyHybridCoordinationEpoch(prepAttemptToken:PrepCreatorAttemptToken,permitPrepHousekeepingWrite:boolean):Promise<HybridGuardDecision>{
+  private async classifyHybridCoordinationEpoch(prepAttemptToken:PrepCreatorAttemptToken,permitPrepHousekeepingWrite:boolean,emitInitialFault=true):Promise<HybridGuardDecision>{
     let names:string[];
     try{names=(await readdir(this.root)).sort();}catch(error){if(hasCode(error,"ENOENT")||isSnapshotSharingError(error))return "retry";throw error;}
     if(!names.some(isK1ReservedName))return "continue-legacy";
-    this.fault("after-pre-admission-housekeeping-initial-enumeration");
+    if(emitInitialFault)this.fault("after-pre-admission-housekeeping-initial-enumeration");
     let initial:HybridRootSnapshot;
     try{initial=await this.readHybridRootSnapshot(names);}catch(error){if(hasCode(error,"ENOENT")||isSnapshotSharingError(error))return "retry";if(error instanceof LedgerCorruption)return "corruption";throw error;}
     this.fault("after-coordination-cleanup-marker-enumeration");
@@ -851,42 +919,22 @@ export class FsAuthorityLedger implements AuthorityLedger {
     if(first!=="exact"||second!=="exact"){this.prepHousekeeperRuntime.observeBoundary?.(`${prefix}-transition-refused`);return "busy";}
     if(!permitWrite){this.prepHousekeeperRuntime.observeBoundary?.(`${prefix}-transition-refused`);return "busy";}
     if(binding.descriptor.kind==="dead-slot"&&processLiveness(binding.descriptor.pid)!=="dead"){this.prepHousekeeperRuntime.observeBoundary?.("slot-only-transition-refused");return "busy";}
-    const transition=async():Promise<PrepTransitionResult>=>binding.descriptor.kind==="dead-prep"?this.retireBoundPrep(binding):binding.descriptor.kind==="prep-retired-cleanup"?this.advanceBoundPrepCleanup(binding):binding.descriptor.kind==="dead-slot"?this.retireBoundSlot(binding):this.advanceBoundSlotCleanup(binding),lease=await this.acquireK1Writer(binding,transition);
-    if(lease===null){this.prepHousekeeperRuntime.observeBoundary?.(`${prefix}-transition-refused`);return "busy";}
-    try{
-      if(binding.descriptor.kind==="dead-slot")await this.prepHousekeeperRuntime.observeK1WriterBoundary?.("k1-writer-only-acquired",lease);
-      const generation=k1WriterLeaseBindings.get(lease);if(generation===undefined)return "refuse";
-      if(generation.result===undefined)await lease.attemptBoundTransition();
-      const result=generation.result??"refuse";if(result==="busy")this.prepHousekeeperRuntime.observeBoundary?.(`${prefix}-transition-refused`);return result;
-    }finally{await this.releaseK1Writer(lease);}
+    const capability=this.activeK1OperationCapability,generation=capability===null?undefined:k1OperationFenceBindings.get(capability);if(capability===null||generation?.status!=="acting"){this.prepHousekeeperRuntime.observeBoundary?.(`${prefix}-transition-refused`);return "refuse";}
+    if(await this.hasK1WriterResidue()){this.prepHousekeeperRuntime.observeBoundary?.(`${prefix}-transition-refused`);return "refuse";}
+    const authorityState=await this.revalidatePrepHousekeepingAuthority(binding);if(authorityState!=="exact"){this.prepHousekeeperRuntime.observeBoundary?.(`${prefix}-transition-refused`);return authorityState==="corruption"?"refuse":"reclassify";}
+    if(!generation.protectedTransitionCompleted)await this.observeActiveK1OperationFenceBoundary("k1-operation-fence-only-target-final-revalidated");
+    this.prepHousekeeperRuntime.observeBoundary?.(`${prefix}-after-final-revalidation`);
+    if(!generation.protectedTransitionCompleted)await this.observeActiveK1OperationFenceBoundary("k1-operation-fence-only-target-mutation");
+    const result:PrepTransitionResult=binding.descriptor.kind==="dead-prep"?await this.retireBoundPrep(binding):binding.descriptor.kind==="prep-retired-cleanup"?await this.advanceBoundPrepCleanup(binding):binding.descriptor.kind==="dead-slot"?await this.retireBoundSlot(binding):await this.advanceBoundSlotCleanup(binding);
+    if(result==="progress"&&!generation.protectedTransitionCompleted){await this.observeActiveK1OperationFenceBoundary("k1-operation-fence-only-target-root-synced");generation.protectedTransitionCompleted=true;}
+    else if(result==="busy")this.prepHousekeeperRuntime.observeBoundary?.(`${prefix}-transition-refused`);
+    return result;
   }
+
+  private async observeActiveK1OperationFenceBoundary(point:string):Promise<void>{const capability=this.activeK1OperationCapability;if(capability===null)throw new LedgerCorruption("K1 operation fence capability absent");await this.k1OperationFenceRuntime?.observeK1OperationFenceBoundary?.(point,capability);}
 
   private async hasK1WriterResidue():Promise<boolean>{
-    try{return (await readdir(this.root)).some(name=>name===K1_WRITER_NAME||name.startsWith(K1_WRITER_PREFIX));}catch(error){if(hasCode(error,"ENOENT")||isSnapshotSharingError(error))return true;throw error;}
-  }
-
-  private async acquireK1Writer(binding:PrepAuthorityBinding,transition:()=>Promise<PrepTransitionResult>):Promise<K1WriterLease|null>{
-    if(await this.hasK1WriterResidue())return null;const owner:CoordinationOwner={host:hostname(),nonce:randomBytes(32).toString("hex"),pid:process.pid,v:1},ownerBytes=coordinationCanonicalBytes(owner),attemptName=`${K1_WRITER_PREFIX}attempt-${owner.pid}-${owner.nonce}.tmp`,attempt=this.absolute(attemptName),held=this.absolute(K1_WRITER_NAME),ownerPath=path.join(attempt,"owner.json");let ownerHandle:FileHandle|undefined,attemptIdentity:FileIdentity|undefined,ownerIdentity:FileIdentity|undefined;
-    try{await mkdir(attempt,{mode:0o700});ownerHandle=await open(ownerPath,"wx",0o600);await this.writeAll(ownerHandle,ownerBytes,0);await ownerHandle.sync();ownerIdentity=fileIdentity(await ownerHandle.stat({bigint:true}));await ownerHandle.close();ownerHandle=undefined;await this.syncDirectory(attempt);attemptIdentity=fileIdentity(await lstat(attempt,{bigint:true}));await this.syncDirectory(this.root);try{await rename(attempt,held);}catch(error){if(hasCode(error,"EEXIST")||hasCode(error,"ENOTEMPTY")||hasCode(error,"ENOENT")||isSnapshotSharingError(error)){await this.removeExactK1WriterDirectory(attempt,attemptIdentity,ownerIdentity,ownerBytes);return null;}throw error;}const heldIdentity=fileIdentity(await lstat(held,{bigint:true})),heldOwner=await this.readExactPrepCleanupFile(path.join(held,"owner.json"),"held K1 writer owner");if(!sameFileIdentity(attemptIdentity,heldIdentity)||!sameFileIdentity(ownerIdentity,heldOwner.identity)||!ownerBytes.equals(heldOwner.bytes))throw new LedgerCorruption("K1 writer CAS changed generation");await this.syncDirectory(this.root);
-      let lease!:K1WriterLease;lease=Object.freeze({attemptBoundTransition:()=>this.attemptK1WriterTransition(lease)});k1WriterLeaseBindings.set(lease,{binding,directoryIdentity:heldIdentity,ownerIdentity:heldOwner.identity,ownerBytes,releasedName:`${K1_WRITER_PREFIX}released-${owner.pid}-${owner.nonce}`,transition,status:"held"});return lease;
-    }catch(error){if(ownerHandle)await ownerHandle.close().catch(()=>{});if(attemptIdentity!==undefined&&ownerIdentity!==undefined)await this.removeExactK1WriterDirectory(attempt,attemptIdentity,ownerIdentity,ownerBytes);if(hasCode(error,"EEXIST")||hasCode(error,"ENOENT")||isSnapshotSharingError(error))return null;throw error;}
-  }
-
-  private async attemptK1WriterTransition(lease:K1WriterLease):Promise<"progress"|"refused">{
-    const generation=k1WriterLeaseBindings.get(lease);if(generation===undefined||generation.status!=="held")return "refused";if(!await this.revalidateK1Writer(generation)){generation.status="refused";generation.result="refuse";return "refused";}generation.status="acting";const slotRetirement=generation.binding.descriptor.kind==="dead-slot";
-    try{if(slotRetirement)await this.prepHousekeeperRuntime.observeK1WriterBoundary?.("k1-writer-only-authority-read",lease);const authority=await this.revalidatePrepHousekeepingAuthority(generation.binding);if(authority!=="exact"){generation.result="refuse";generation.status="completed";return "refused";}if(slotRetirement)await this.prepHousekeeperRuntime.observeK1WriterBoundary?.("k1-writer-only-target-final-revalidated",lease);if(!await this.revalidateK1Writer(generation)){generation.result="refuse";generation.status="refused";return "refused";}const prefix=generation.binding.descriptor.kind==="dead-slot"||generation.binding.descriptor.kind==="slot-retired-cleanup"?"slot-only":"prep-only";this.prepHousekeeperRuntime.observeBoundary?.(`${prefix}-after-final-revalidation`);const result=await generation.transition();generation.result=result;generation.status="completed";if(result==="progress"&&slotRetirement)await this.prepHousekeeperRuntime.observeK1WriterBoundary?.("k1-writer-only-target-root-synced",lease);return result==="progress"?"progress":"refused";}catch(error){generation.status="completed";throw error;}
-  }
-
-  private async revalidateK1Writer(generation:K1WriterGeneration):Promise<boolean>{
-    const held=this.absolute(K1_WRITER_NAME);try{const directory=await lstat(held,{bigint:true});if(!directory.isDirectory()||directory.isSymbolicLink()||!sameFileIdentity(generation.directoryIdentity,fileIdentity(directory)))return false;const names=await readdir(held);if(names.length!==1||names[0]!=="owner.json")return false;const owner=await this.readExactPrepCleanupFile(path.join(held,"owner.json"),"held K1 writer owner");return sameFileIdentity(generation.ownerIdentity,owner.identity)&&generation.ownerBytes.equals(owner.bytes);}catch(error){if(hasCode(error,"ENOENT")||isSnapshotSharingError(error)||error instanceof LedgerCorruption)return false;throw error;}
-  }
-
-  private async releaseK1Writer(lease:K1WriterLease):Promise<void>{
-    const generation=k1WriterLeaseBindings.get(lease);if(generation===undefined||generation.status==="released")return;if(!await this.revalidateK1Writer(generation)){generation.status="refused";return;}if(generation.binding.descriptor.kind==="dead-slot")await this.prepHousekeeperRuntime.observeK1WriterBoundary?.("k1-writer-only-release-begin",lease);if(!await this.revalidateK1Writer(generation)){generation.status="refused";return;}const held=this.absolute(K1_WRITER_NAME),released=this.absolute(generation.releasedName);try{await rename(held,released);}catch(error){if(hasCode(error,"EEXIST")||hasCode(error,"ENOTEMPTY")||hasCode(error,"ENOENT")||isSnapshotSharingError(error)){generation.status="refused";return;}throw error;}const moved=fileIdentity(await lstat(released,{bigint:true})),owner=await this.readExactPrepCleanupFile(path.join(released,"owner.json"),"released K1 writer owner");if(!sameFileIdentity(generation.directoryIdentity,moved)||!sameFileIdentity(generation.ownerIdentity,owner.identity)||!generation.ownerBytes.equals(owner.bytes)){generation.status="refused";throw new LedgerCorruption("released K1 writer generation changed");}await this.syncDirectory(this.root);await unlink(path.join(released,"owner.json"));await rmdir(released);await this.syncDirectory(this.root);generation.status="released";
-  }
-
-  private async removeExactK1WriterDirectory(directory:string,directoryIdentity:FileIdentity,ownerIdentity:FileIdentity,ownerBytes:Buffer):Promise<void>{
-    try{const actualDirectory=await lstat(directory,{bigint:true});if(!sameFileIdentity(directoryIdentity,fileIdentity(actualDirectory)))return;const names=await readdir(directory);if(names.length!==1||names[0]!=="owner.json")return;const owner=await this.readExactPrepCleanupFile(path.join(directory,"owner.json"),"K1 writer attempt owner");if(!sameFileIdentity(ownerIdentity,owner.identity)||!ownerBytes.equals(owner.bytes))return;await unlink(path.join(directory,"owner.json"));await rmdir(directory);await this.syncDirectory(this.root);}catch(error){if(hasCode(error,"ENOENT")||isSnapshotSharingError(error)||error instanceof LedgerCorruption)return;throw error;}
+    try{for(const name of await readdir(this.root)){const parsed=parseK1Name(name);if(name===K1_WRITER_NAME||name.startsWith(K1_WRITER_PREFIX)||parsed?.kind==="coordination-stage"&&parsed.purpose==="k1-writer-released")return true;if(parsed?.kind==="coordination-ack")try{const entry=await this.readExactPrepCleanupFile(this.absolute(name),"legacy writer acknowledgment");if(parseCoordinationAckBytes(entry.bytes).purpose==="k1-writer-released")return true;}catch{/* non-writer invalidity remains owned by the closed graph */}}return false;}catch(error){if(hasCode(error,"ENOENT")||isSnapshotSharingError(error))return true;throw error;}
   }
 
   private boundPrepArtifact(binding:PrepAuthorityBinding,retired:boolean):HybridOwnedArtifact{
@@ -1054,10 +1102,10 @@ export class FsAuthorityLedger implements AuthorityLedger {
   private async revalidatePrepHousekeepingAuthority(binding:PrepAuthorityBinding):Promise<"exact"|"busy"|"corruption">{
     let names:string[],snapshot:HybridRootSnapshot,closedNames:string[],closedSnapshot:HybridRootSnapshot;
     try{
-      names=(await readdir(this.root)).filter(name=>name!==K1_WRITER_NAME&&!name.startsWith(K1_WRITER_PREFIX)).sort();snapshot=await this.readHybridRootSnapshot(names);
-      closedNames=(await readdir(this.root)).filter(name=>name!==K1_WRITER_NAME&&!name.startsWith(K1_WRITER_PREFIX)).sort();if(!sameStrings(names,closedNames))return "busy";
+      names=(await readdir(this.root)).sort();snapshot=await this.readHybridRootSnapshot(names);
+      closedNames=(await readdir(this.root)).sort();if(!sameStrings(names,closedNames))return "busy";
       closedSnapshot=await this.readHybridRootSnapshot(closedNames);
-      const finalNames=(await readdir(this.root)).filter(name=>name!==K1_WRITER_NAME&&!name.startsWith(K1_WRITER_PREFIX)).sort();if(!sameStrings(closedNames,finalNames))return "busy";
+      const finalNames=(await readdir(this.root)).sort();if(!sameStrings(closedNames,finalNames))return "busy";
     }catch(error){if(hasCode(error,"ENOENT")||isSnapshotSharingError(error))return "busy";if(error instanceof LedgerCorruption)return "corruption";throw error;}
     const closureRelation=this.compareHybridRootSnapshots(snapshot,closedSnapshot);
     if(closureRelation==="corruption")return "corruption";
@@ -1157,6 +1205,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
       if(parsed.kind==="admission-slot"){
         const owner=this.classifyHybridCompleteOwnerDirectory(entry,null,localHost),child=hybridOwnerChild(entry)!;owned.push({parsed,entry,owner,ownerBytes:child.bytes!,ownerIdentity:child.identity,state:"complete"});continue;
       }
+      if(parsed.kind==="k1-writer-held"||parsed.kind==="k1-writer-attempt"||parsed.kind==="k1-writer-released")throw new LedgerCorruption("writer residue reached hybrid graph");
       const namedOwner:CoordinationOwner={host:localHost,nonce:parsed.nonce,pid:parsed.pid,v:1};if(parsed.hostDigest!==localDigest)throw new LedgerCorruption("foreign K1 artifact provenance");
       const declared=parsed.kind==="admission-prep"?null:parsed.kind==="admission-prep-retired"||parsed.kind==="creator-withdrawal"?parsed.state:"complete";
       const partial=parsed.kind==="admission-prep-retired"?this.classifyHybridAuthenticatedPartialPrepMarker(parsed,entry,snapshot):parsed.kind==="admission-slot-retired"&&parsed.disposition==="abandoned"?this.classifyHybridAuthenticatedPartialSlotMarker(parsed,entry,snapshot):null;
@@ -2105,7 +2154,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
     return resolved;
   }
 
-  private fault(point: LedgerFaultPoint): void { this.options.faultInjector?.(point); }
+  private fault(point: LedgerFaultPoint): void { if (this.refusalOnlyK1ClassificationActive) return; this.options.faultInjector?.(point); }
 }
 
 function normalizeAuthenticatedIngress(request:AuthenticatedOutcomeRequest):IngressRecord{
@@ -2347,6 +2396,22 @@ function prepCleanupAck(snapshot:HybridRootSnapshot,parsed:Extract<ParsedK1Name,
 function samePrepAuthorityDescriptor(left:PrepAuthorityDescriptor,right:PrepAuthorityDescriptor):boolean{
   return left.kind===right.kind&&left.targetName===right.targetName&&(left.kind==="dead-prep"&&right.kind==="dead-prep"||left.kind==="dead-slot"&&right.kind==="dead-slot"?left.pid===right.pid:left.kind==="prep-retired-cleanup"&&right.kind==="prep-retired-cleanup"?left.lifecycleName===right.lifecycleName&&left.orphan===right.orphan:left.kind==="slot-retired-cleanup"&&right.kind==="slot-retired-cleanup"&&left.lifecycleName===right.lifecycleName&&left.orphan===right.orphan&&left.pid===right.pid);
 }
+function parseK1OperationFenceRuntime(value:unknown):K1OperationFenceRuntime|null{
+  if(!isExactObject(value,["delay","expectedBinding","monotonicNow","observeK1OperationFenceBoundary","probeProcessLiveness","topology"],["observeK1OperationFenceBoundary","probeProcessLiveness"]))return null;
+  const runtime=value as Record<string,unknown>,topology=runtime.topology,binding=runtime.expectedBinding;
+  if(!isExactObject(topology,["filesystem","identity","networkNamespace"])||(topology as Record<string,unknown>).filesystem!=="local-fs"||(topology as Record<string,unknown>).networkNamespace!=="same-network-namespace"||(topology as Record<string,unknown>).identity!=="isolated")return null;
+  if(!isExactObject(binding,["canonicalRoot","endpoint","materialDigest","rootIdentity"]))return null;const rawBinding=binding as Record<string,unknown>,rootIdentity=rawBinding.rootIdentity,endpoint=rawBinding.endpoint;
+  if(typeof rawBinding.canonicalRoot!=="string"||!/^sha256:[0-9a-f]{64}$/.test(String(rawBinding.materialDigest))||!isExactObject(rootIdentity,["dev","ino","mode"])||!isExactObject(endpoint,["host","port"]))return null;
+  const identity=rootIdentity as Record<string,unknown>,rawEndpoint=endpoint as Record<string,unknown>,integer=/^(?:0|-[1-9][0-9]*|[1-9][0-9]*)$/;
+  if(![identity.dev,identity.ino,identity.mode].every(part=>typeof part==="string"&&integer.test(part))||rawEndpoint.host!=="127.0.0.1"||!Number.isSafeInteger(rawEndpoint.port)||Number(rawEndpoint.port)<20_000||Number(rawEndpoint.port)>49_999||typeof runtime.monotonicNow!=="function"||typeof runtime.delay!=="function"||runtime.observeK1OperationFenceBoundary!==undefined&&typeof runtime.observeK1OperationFenceBoundary!=="function"||runtime.probeProcessLiveness!==undefined&&typeof runtime.probeProcessLiveness!=="function")return null;
+  return runtime as unknown as K1OperationFenceRuntime;
+}
+function isExactObject(value:unknown,keys:readonly string[],optional:readonly string[]=[]):value is Record<string,unknown>{if(value===null||typeof value!=="object"||Array.isArray(value))return false;const actual=Object.keys(value).sort(),required=keys.filter(key=>!optional.includes(key));return required.every(key=>actual.includes(key))&&actual.every(key=>keys.includes(key));}
+function normalizedK1OperationFenceRoot(value:string):string{const normalized=path.normalize(value);return process.platform==="win32"?normalized.replaceAll("\\","/").toLowerCase():normalized;}
+function deriveK1OperationFenceBinding(root:string,identity:FileIdentity):K1OperationFenceBinding{const canonicalRoot=normalizedK1OperationFenceRoot(root),material=Buffer.from(`${canonicalRoot}\0${identity.dev}\0${identity.ino}`,"utf8"),digest=createHash("sha256").update(material).digest(),materialDigest=`sha256:${digest.toString("hex")}`,port=20_000+digest.readUInt32BE(0)%30_000;return frozen({canonicalRoot,rootIdentity:{dev:String(identity.dev),ino:String(identity.ino),mode:String(identity.mode)},materialDigest,endpoint:{host:"127.0.0.1",port}});}
+function sameK1OperationFenceBinding(left:K1OperationFenceBinding,right:K1OperationFenceBinding):boolean{return left.canonicalRoot===right.canonicalRoot&&left.materialDigest===right.materialDigest&&left.endpoint.host===right.endpoint.host&&left.endpoint.port===right.endpoint.port&&left.rootIdentity.dev===right.rootIdentity.dev&&left.rootIdentity.ino===right.rootIdentity.ino&&left.rootIdentity.mode===right.rootIdentity.mode;}
+function defaultK1OperationFenceRuntime(binding:K1OperationFenceBinding):K1OperationFenceRuntime{return {topology:{filesystem:"local-fs",networkNamespace:"same-network-namespace",identity:"isolated"},expectedBinding:binding,monotonicNow,delay};}
+async function closeK1OperationFenceServer(server:Server):Promise<void>{await new Promise<void>((resolve,reject)=>server.close(error=>error&&!hasCode(error,"ERR_SERVER_NOT_RUNNING")?reject(error):resolve()));}
 function processLiveness(pid: number): "alive" | "dead" | "unverifiable" {
   try { process.kill(pid, 0); return "alive"; }
   catch (error) {

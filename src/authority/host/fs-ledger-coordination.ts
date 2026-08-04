@@ -13,7 +13,9 @@ const PREP_RETIRED=new RegExp(`^\\.authority-ledger-admission-prep-retired-${HOS
 const SLOT_RETIRED=new RegExp(`^\\.authority-ledger-admission-retired-${HOST}-${PID}-${NONCE}\\.(published|withdrawn|abandoned)$`);
 const WITHDRAWAL=new RegExp(`^\\.authority-ledger-creator-withdrawal-${HOST}-${TICKET}-${PID}-${NONCE}\\.(empty|zero|partial)$`);
 const COORDINATION_ACK=new RegExp(`^\\.authority-ledger-coordination-cleanup-(${HEX64})\\.ack$`);
-const COORDINATION_STAGE=new RegExp(`^\\.authority-ledger-coordination-cleanup-stage-(p|s|w)-(${HEX64})\\.tmp$`);
+const COORDINATION_STAGE=new RegExp(`^\\.authority-ledger-coordination-cleanup-stage-(p|s|w|k)-(${HEX64})\\.tmp$`);
+const K1_WRITER_ATTEMPT=new RegExp(`^\\.authority-ledger-k1-writer-attempt-${PID}-${NONCE}\\.tmp$`);
+const K1_WRITER_RELEASED=new RegExp(`^\\.authority-ledger-k1-writer-released-${PID}-${NONCE}$`);
 const PUBLICATION=new RegExp(`^\\.authority-ledger-lock-publication-${HOST}-${TICKET}-${PID}-${NONCE}\\.tmp$`);
 const OWNER_NONCE=new RegExp(`^${HEX64}$`),DIGEST=new RegExp(`^sha256:${HEX64}$`),UNSIGNED=/^(?:0|[1-9][0-9]*)$/,SIGNED=/^(?:0|-[1-9][0-9]*|[1-9][0-9]*)$/;
 const MIN_SIGNED=-(1n<<63n),MAX_UNSIGNED=(1n<<64n)-1n;
@@ -25,11 +27,14 @@ export type ParsedK1Name=
   |Readonly<{kind:"admission-prep-retired";name:string;hostDigest:string;pid:number;nonce:string;state:PartialOwnerState}>
   |Readonly<{kind:"admission-slot-retired";name:string;hostDigest:string;pid:number;nonce:string;disposition:"published"|"withdrawn"|"abandoned"}>
   |Readonly<{kind:"creator-withdrawal";name:string;hostDigest:string;ticket:bigint;pid:number;nonce:string;state:Exclude<PartialOwnerState,"complete">}>
+  |Readonly<{kind:"k1-writer-held";name:string}>
+  |Readonly<{kind:"k1-writer-attempt";name:string;pid:number;nonce:string}>
+  |Readonly<{kind:"k1-writer-released";name:string;pid:number;nonce:string}>
   |Readonly<{kind:"coordination-ack";name:string;digest:string}>
-  |Readonly<{kind:"coordination-stage";name:string;purpose:"prep-retired"|"slot-retired"|"creator-withdrawal";digest:string}>;
+  |Readonly<{kind:"coordination-stage";name:string;purpose:"prep-retired"|"slot-retired"|"creator-withdrawal"|"k1-writer-released";digest:string}>;
 export interface ParsedPublicationName { readonly name:string;readonly hostDigest:string;readonly ticket:bigint;readonly pid:number;readonly nonce:string }
 
-export type CoordinationAck=Readonly<Record<string,unknown>> & Readonly<{v:typeof COORDINATION_ACK_VERSION;purpose:"prep-retired"|"slot-retired"|"creator-withdrawal";owner:CoordinationOwner}>;
+export type CoordinationAck=Readonly<Record<string,unknown>> & Readonly<{v:typeof COORDINATION_ACK_VERSION;purpose:"prep-retired"|"slot-retired"|"creator-withdrawal"|"k1-writer-released";owner:CoordinationOwner}>;
 
 export function coordinationHostDigest(host:string):string{return createHash("sha256").update(host,"utf8").digest("hex");}
 export function coordinationRawDigest(bytes:Uint8Array):string{return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;}
@@ -56,14 +61,17 @@ function parseIdentityPart(value:unknown,signed:boolean):bigint{
   const parsed=BigInt(value);if(parsed>MAX_UNSIGNED||signed&&parsed<MIN_SIGNED)throw new TypeError("coordination identity outside range");return parsed;
 }
 
-export function isK1ReservedName(name:string):boolean{return name===ADMISSION_SLOT_NAME||name.startsWith(".authority-ledger-admission-")||name.startsWith(".authority-ledger-creator-withdrawal-")||name.startsWith(".authority-ledger-coordination-cleanup-");}
+export function isK1ReservedName(name:string):boolean{return name===ADMISSION_SLOT_NAME||name.startsWith(".authority-ledger-admission-")||name.startsWith(".authority-ledger-creator-withdrawal-")||name.startsWith(".authority-ledger-coordination-cleanup-")||name===".authority-ledger-k1-writer"||name.startsWith(".authority-ledger-k1-writer-");}
 export function parseK1Name(name:string):ParsedK1Name|null{
   if(name===ADMISSION_SLOT_NAME)return {kind:"admission-slot",name};
+  if(name===".authority-ledger-k1-writer")return {kind:"k1-writer-held",name};
+  let writer=K1_WRITER_ATTEMPT.exec(name);if(writer){const pid=parsePid(writer[1]);if(pid!==null)return {kind:"k1-writer-attempt",name,pid,nonce:writer[2]};return null;}
+  writer=K1_WRITER_RELEASED.exec(name);if(writer){const pid=parsePid(writer[1]);if(pid!==null)return {kind:"k1-writer-released",name,pid,nonce:writer[2]};return null;}
   let match=PREP_RETIRED.exec(name);if(match){const pid=parsePid(match[2]);if(pid!==null)return {kind:"admission-prep-retired",name,hostDigest:match[1],pid,nonce:match[3],state:match[4] as PartialOwnerState};return null;}
   match=PREP.exec(name);if(match){const pid=parsePid(match[2]);if(pid!==null)return {kind:"admission-prep",name,hostDigest:match[1],pid,nonce:match[3]};return null;}
   match=SLOT_RETIRED.exec(name);if(match){const pid=parsePid(match[2]);if(pid!==null)return {kind:"admission-slot-retired",name,hostDigest:match[1],pid,nonce:match[3],disposition:match[4] as "published"|"withdrawn"|"abandoned"};return null;}
   match=WITHDRAWAL.exec(name);if(match){const ticket=parseTicket(match[2]),pid=parsePid(match[3]);if(ticket!==null&&pid!==null)return {kind:"creator-withdrawal",name,hostDigest:match[1],ticket,pid,nonce:match[4],state:match[5] as Exclude<PartialOwnerState,"complete">};return null;}
-  match=COORDINATION_STAGE.exec(name);if(match)return {kind:"coordination-stage",name,purpose:match[1]==="p"?"prep-retired":match[1]==="s"?"slot-retired":"creator-withdrawal",digest:match[2]};
+  match=COORDINATION_STAGE.exec(name);if(match)return {kind:"coordination-stage",name,purpose:match[1]==="p"?"prep-retired":match[1]==="s"?"slot-retired":match[1]==="w"?"creator-withdrawal":"k1-writer-released",digest:match[2]};
   match=COORDINATION_ACK.exec(name);return match?{kind:"coordination-ack",name,digest:match[1]}:null;
 }
 export function parsePublicationName(name:string):ParsedPublicationName|null{const match=PUBLICATION.exec(name);if(!match)return null;const ticket=parseTicket(match[2]),pid=parsePid(match[3]);return ticket===null||pid===null?null:{name,hostDigest:match[1],ticket,pid,nonce:match[4]};}
@@ -91,6 +99,10 @@ function assertCoordinationAck(value:Record<string,unknown>):void{
     requireKeys(value,["directoryIdentity","kind","markerName","originalName","owner","ownerBytesDigest","ownerBytesLength","ownerDigest","ownerIdentity","purpose","recoveryAuthority","slotRetirementAckDigest","slotRetirementAckName","state","v"]);
     parseCoordinationIdentityWire(value.directoryIdentity);
     if(value.kind!=="creator-withdrawal"||value.recoveryAuthority!=="exact-slot-retirement-ack"||!(["empty","zero","partial"] as unknown[]).includes(value.state)||!DIGEST.test(String(value.slotRetirementAckDigest))||typeof value.slotRetirementAckName!=="string")throw new TypeError("invalid creator-withdrawal ack");
+  }else if(value.purpose==="k1-writer-released"){
+    requireKeys(value,["disposition","kind","markerName","originalName","owner","ownerBytesDigest","ownerBytesLength","ownerDigest","ownerIdentity","purpose","recoveryAuthority","v","writerIdentity"]);
+    parseCoordinationIdentityWire(value.writerIdentity);
+    if(value.disposition!=="released"||value.kind!=="k1-writer-retired"||value.originalName!==".authority-ledger-k1-writer"||value.recoveryAuthority!=="exact-writer-lease-or-dead-owner")throw new TypeError("invalid k1-writer-released ack");
   }else throw new TypeError("invalid coordination ack purpose");
   if(typeof value.markerName!=="string"||typeof value.originalName!=="string"||(value.state==="empty")!==(value.ownerIdentity===null))throw new TypeError("invalid coordination ack binding");
 }
