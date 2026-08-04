@@ -70,6 +70,7 @@
     "build:authority-contract": "node scripts/build-authority-contract.mjs",
     "check:authority-contract": "node scripts/build-authority-contract.mjs --check",
     "lint:fault-pins": "node scripts/lint-fault-pins.mjs",
+    "baseline": "node scripts/baseline-diff.mjs",
     "test": "tsc -p tsconfig.test.json && node --test --test-concurrency=1 \"dist-test/test/**/*.test.js\"",
     "test:coverage": "c8 npm test",
     "test:fuzz": "tsc -p tsconfig.test.json && node scripts/run-fuzz.mjs",
