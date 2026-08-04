@@ -474,6 +474,18 @@ closed discriminated union `reelier.authority-ledger-coordination-cleanup-ack/v1
 `prep-retired`, `slot-retired`, or `creator-withdrawal` and participates in the record digest. There is
 no optional-field superset.
 
+**Open discrepancy — a fourth accepted purpose.** Measured 2026-08-04 at `6190ebc`: the parser
+`assertCoordinationAck` (`src/authority/host/fs-ledger-coordination.ts`) accepts a fourth purpose,
+`k1-writer-released`, with its own required key set and `recoveryAuthority`
+`exact-writer-lease-or-dead-owner`. The string appears nowhere in this specification. The reading
+that fits the rest of the system is that it is deliberate legacy support — the fence slice refuses
+legacy writer residue everywhere, and refusing it requires being able to parse it, so the union has
+to admit the shape in order to reject the artifact. That reading is not recorded anywhere, and this
+paragraph as written forbids it. Resolve deliberately: either the union is closed at three purposes
+and legacy residue must be recognised without parsing as an ack, or the union is closed at four and
+this paragraph must say so. Do not narrow the parser on the strength of this paragraph alone —
+legacy residue detection depends on it.
+
 The `prep-retired` variant has exact keys
 `{ directoryIdentity, kind, markerName, originalName, owner, ownerBytesDigest, ownerBytesLength,
 ownerDigest, ownerIdentity, purpose, recoveryAuthority, state, v }`. The `creator-withdrawal` variant
