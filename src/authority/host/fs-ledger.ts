@@ -110,7 +110,7 @@ export const ledgerLockFaultPoints = Object.freeze([
   "after-coordination-cleanup-marker-enumeration",
   "after-lock-publication-stage-create", "after-lock-publication-owner-create",
   "after-lock-publication-owner-partial-write", "after-lock-publication-owner-sync",
-  "after-lock-publication-stage-sync", "after-lock-publication-rename", "after-lock-publication-root-sync",
+  "after-lock-publication-stage-sync", "before-lock-publication-rename", "after-lock-publication-rename", "after-lock-publication-root-sync",
   "after-active-lock-metadata", "before-active-lock-content-read",
   "after-mutating-admission-enumeration", "after-publication-stage-enumeration", "before-publication-stage-validation",
   "after-lock-publication-rename-collision", "before-publication-stage-root-reenumeration",
@@ -760,7 +760,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
         if(expectedStage===null)throw new LedgerCorruption("creator publication snapshot absent");
         const finalOwnStage=await this.validatePublicationStage(stageName);
         if(!samePublicationStage(expectedStage,finalOwnStage))throw new LedgerCorruption("creator publication stage changed before rename");
-        try{await rename(stagePath,this.absolute("lock"));published=true;stageCreated=false;}
+        try{this.fault("before-lock-publication-rename");await rename(stagePath,this.absolute("lock"));published=true;stageCreated=false;}
         catch(error){if(hasCode(error,"EEXIST")||hasCode(error,"ENOTEMPTY")||isTransientLockError(error)){this.fault("after-lock-publication-rename-collision");election=null;if(monotonicNow()>=deadline)return {ok:false,reason:"busy"};await backoff();continue;}throw error;}
         if(expectedStage===null||expectedStage.ownerIdentity===undefined||expectedStage.ownerBytes===undefined)throw new LedgerCorruption("published owner snapshot absent");
         const publishedSnapshot:OwnedOwnerSnapshot={directoryIdentity:expectedStage.directoryIdentity,ownerIdentity:expectedStage.ownerIdentity,ownerBytes:expectedStage.ownerBytes};

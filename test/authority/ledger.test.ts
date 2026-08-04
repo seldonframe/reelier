@@ -1599,6 +1599,44 @@ test("k1-operation-fence-only draws exactly one lifted admission ticket before a
   }));
 });
 
+test("ledger-lock publication rename attempt declares and emits its before boundary",async t=>{
+  const points=ledgerLockFaultPoints as readonly string[];
+  await t.test("the before boundary sits immediately before its success successor",()=>{
+    assert.equal(points.includes("before-lock-publication-rename"),true,"the spec's publication rename attempt group opens with this boundary");
+    assert.equal(points.indexOf("after-lock-publication-rename"),points.indexOf("before-lock-publication-rename")+1,"it sits immediately before its success successor");
+  });
+  await t.test("the success branch emits before, then after, then root sync, each exactly once",()=>withRoot(async root=>{
+    const order:string[]=[];
+    const result=await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:200,faultInjector:(point:string)=>{if(point==="before-lock-publication-rename"||point==="after-lock-publication-rename"||point==="after-lock-publication-root-sync"||point==="after-lock-publication-rename-collision")order.push(point);}} as never).observeClock();
+    assert.deepEqual(result,{ok:true,status:"advanced",observedAt:new Date(t0).toISOString()});
+    assert.deepEqual(order,["before-lock-publication-rename","after-lock-publication-rename","after-lock-publication-root-sync"]);
+  }));
+  await t.test("the collision branch emits before, then the collision successor, and never the success successor",()=>withRoot(async root=>{
+    const squatter={host:hostname(),nonce:"a".repeat(64),pid:process.pid,v:1 as const},order:string[]=[];let planted=false;
+    const result=await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20,faultInjector:(point:string)=>{
+      if(point==="after-lock-publication-stage-sync"&&!planted){planted=true;mkdirSync(path.join(root,"lock"));writeFileSync(path.join(root,"lock","owner.json"),publicationOwnerBytes(squatter));}
+      if(point==="before-lock-publication-rename"||point==="after-lock-publication-rename"||point==="after-lock-publication-rename-collision")order.push(point);
+    }} as never).observeClock();
+    assert.equal(planted,true,"the fixture occupies the published name before the rename attempt");
+    assert.deepEqual(result,{ok:false,reason:"busy"});
+    assert.equal(order[0],"before-lock-publication-rename","the before boundary precedes the rename on the collision branch too");
+    assert.equal(order.filter(point=>point==="before-lock-publication-rename").length,order.filter(point=>point==="after-lock-publication-rename-collision").length,"every rename attempt pairs its before boundary with the collision successor");
+    assert.equal(order.includes("after-lock-publication-rename"),false,"the success successor is mutually exclusive with the collision branch");
+  }));
+  // Placement discriminator. The boundary must sit INSIDE the rename's failure envelope: a transient
+  // injected there has to be absorbed by the rename catch and become a collision. Emitted one line
+  // earlier the same throw escapes acquireLock entirely, which is the defect this subtest owns.
+  await t.test("a transient injected at the before boundary is absorbed by the rename attempt",()=>withRoot(async root=>{
+    let collisions=0;
+    const result=await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20,faultInjector:(point:string)=>{
+      if(point==="after-lock-publication-rename-collision")collisions++;
+      if(point==="before-lock-publication-rename")throw Object.assign(new Error("sharing"),{code:"EBUSY"});
+    }} as never).observeClock();
+    assert.deepEqual(result,{ok:false,reason:"busy"},"the transient becomes a bounded collision rather than propagating out of acquisition");
+    assert.equal(collisions>=1,true,"the injected transient is observed as a rename collision");
+  }));
+});
+
 test("legacy-only authority residue retains exact compatibility behavior",async t=>{
   await t.test("clean root publishes retires and enters the callback",()=>withRoot(async root=>{const before=await snapshotRootArtifacts(root);let k1Initial=0,semanticNow=0,callbacks=0,published=0,retired=0;const result=await new RawFsAuthorityLedger(root,{now:()=>{semanticNow++;return t0;},lockTimeoutMs:200,faultInjector:(point:string)=>{if(point==="after-pre-admission-housekeeping-initial-enumeration")k1Initial++;if(point==="after-lock-publication-root-sync")published++;if(point==="after-lock-retire")retired++;if(point==="before-ledger-operation-callback")callbacks++;}} as never).observeClock(),after=await snapshotRootArtifacts(root);assert.deepEqual(before,[]);assert.deepEqual(result,{ok:true,status:"advanced",observedAt:new Date(t0).toISOString()});assert.deepEqual({k1Initial,semanticNow,callbacks,published,retired},{k1Initial:0,semanticNow:1,callbacks:1,published:1,retired:1});assert.equal(after.length>0,true,"legacy clean admission leaves only semantic ledger state");assert.equal(after.some(entry=>/^\.authority-ledger-(?:admission|creator-withdrawal|coordination-cleanup|lock-publication)/.test(entry.name)||entry.name==="lock"),false);}));
   await t.test("one live publication stage remains busy and byte-identical",()=>withRoot(async root=>{const owner={host:hostname(),nonce:"9".repeat(64),pid:49403,v:1 as const,ticket:"0000000000000001"};await writePublicationStage(root,owner,publicationOwnerBytes(owner));const before=await snapshotRootArtifacts(root),originalKill=process.kill;let k1Initial=0,semanticNow=0,callbacks=0,enumerations=0;Object.defineProperty(process,"kill",{configurable:true,value:(pid:number)=>pid===owner.pid?true:originalKill.call(process,pid,0)});let result;try{result=await new RawFsAuthorityLedger(root,{now:()=>{semanticNow++;return t0;},lockTimeoutMs:20,faultInjector:(point:string)=>{if(point==="after-pre-admission-housekeeping-initial-enumeration")k1Initial++;if(point==="after-publication-stage-enumeration")enumerations++;if(point==="before-ledger-operation-callback")callbacks++;}} as never).observeClock();}finally{Object.defineProperty(process,"kill",{configurable:true,value:originalKill});}assert.deepEqual(result,{ok:false,reason:"busy"});assert.deepEqual(await snapshotRootArtifacts(root),before);assert.deepEqual({k1Initial,semanticNow,callbacks},{k1Initial:0,semanticNow:0,callbacks:0});assert.equal(enumerations>0,true,"legacy publication classifier remains active");}));
