@@ -1,7 +1,6 @@
 # Reelier — numbers worth knowing
 
-**Pinned to `codex/universal-compiled-authority` @ the foreign-dead-slot drainage commit
-(after `d869a64`), measured 2026-08-05 on Windows 11.**
+**Pinned to `codex/universal-compiled-authority` @ `8009212`, measured 2026-08-05 on Windows 11.**
 
 _Every number here is quoted somewhere: in a commit message, a PR body, a plan, or an estimate. Two
 were quoted wrongly in a single session — "15 missing fault points" (really 34) and "402 pass"
@@ -48,7 +47,7 @@ after this work, not before.
 
 | Quantity | Value | Status |
 |---|---|---|
-| Ledger suite | **497 pass / 80 fail** (recorded gate baseline 484/81; the flake rows below are the ±) | measured |
+| Ledger suite | **498 pass / 80 fail** (also the recorded gate baseline; the flake rows below are the ±) | measured |
 | Distinct failing test names in that suite | **79** | measured — the recorded baseline is the authority |
 | Full `npm test` | **2,142 pass / 82 fail / 1 skipped** | measured; every failing name in the recorded ledger baseline or the rotating flake below |
 | Failures outside `ledger.test.ts` | **0** on an idle machine; 1 per run under load, differing each run, each passing in isolation | measured |

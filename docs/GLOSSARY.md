@@ -1,6 +1,6 @@
 # Reelier — words that have to mean one thing
 
-**Pinned to `codex/universal-compiled-authority` @ the foreign-dead-slot drainage commit (2026-08-05).**
+**Pinned to `codex/universal-compiled-authority` @ `8009212` (2026-08-05).**
 
 _Entry criterion: a term is here only because misusing it caused a concrete, traceable error. This is
 not a dictionary of the domain — it is the list of words that have already cost time. Each entry says
