@@ -30,10 +30,18 @@ function walk(dir, out = []) {
 const srcFiles = walk(path.join(root, "src"));
 const testFiles = walk(path.join(root, "test"));
 
-// Emitted: the literal actually reaches an injector. Matches `this.fault("x")` and bare `fault("x")`.
+// Emitted: the literal actually reaches an injector. Every string literal in the call's argument
+// list counts, because a fault is legitimately emitted through a ternary -
+// `fault(cond ? "a" : "b")` - and an earlier version of this check matched only a literal in first
+// position. That blind spot reported two genuinely emitted points as unemittable, and the wrong
+// number propagated into the pinned numbers doc, a commit message and a handoff before a fact-check
+// caught it. Matching the whole argument text is the fix.
 const emitted = new Set();
 for (const file of srcFiles) {
-  for (const [, point] of readFileSync(file, "utf8").matchAll(/\bfault\(\s*"([^"]+)"/g)) emitted.add(point);
+  const text = readFileSync(file, "utf8");
+  for (const [, args] of text.matchAll(/\bfault\(([^)]*)\)/g)) {
+    for (const [, point] of args.matchAll(/"([^"]+)"/g)) emitted.add(point);
+  }
 }
 
 // Declared: appears as a fault-point-shaped literal anywhere in src — i.e. some registry claims it.

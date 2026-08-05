@@ -1,6 +1,6 @@
 # Reelier — numbers worth knowing
 
-**Pinned to `codex/universal-compiled-authority` @ `7ed8553`, measured 2026-08-04 on Windows 11.**
+**Pinned to `codex/universal-compiled-authority` @ `53e30f0`, measured 2026-08-04 on Windows 11.**
 
 _Every number here is quoted somewhere: in a commit message, a PR body, a plan, or an estimate. Two
 were quoted wrongly in a single session — "15 missing fault points" (really 34) and "402 pass"
@@ -21,8 +21,8 @@ not re-verified here — treat as a hypothesis).
 | Fault points declared in the spec taxonomy | **57** | measured |
 | Entries in exported `ledgerLockFaultPoints` | **46** | measured |
 | Entries in public `ledgerFaultPoints` | **113** | measured |
-| Fault-point literals emitted anywhere in `src/` | **57** | measured |
-| Declared in spec, not emitted (the backlog) | **26** | measured |
+| Fault-point literals emitted anywhere in `src/` | **59** | measured |
+| Declared in spec, not emitted (the backlog) | **24** | measured |
 | Exported but **not** in the spec taxonomy (to delete) | **13** | measured |
 
 ```bash
@@ -30,7 +30,7 @@ npm run lint:fault-pins
 ```
 
 The 13 extras are election/provisional/predecessor hooks the spec explicitly forbids. Removing them
-plus adding the remaining 26 is **additive at runtime but source-breaking at the type level** — a consumer
+plus adding the remaining 24 is **additive at runtime but source-breaking at the type level** — a consumer
 narrowing on `LedgerFaultPoint` gets TS2322 under `--strict`. That is why the ABI freeze must come
 after this work, not before.
 
@@ -40,8 +40,8 @@ after this work, not before.
 |---|---|---|
 | Ledger suite | **427 pass / 79 fail** | measured |
 | Distinct failing test names in that suite | **74** | measured |
-| Full `npm test` | **2,073 pass / 80 fail** | measured |
-| Failures outside `ledger.test.ts` | 1 per run, differing each run, each passing in isolation | measured |
+| Full `npm test` | **2,074 pass / 79 fail / 1 skipped** | measured |
+| Failures outside `ledger.test.ts` | **0** on an idle machine; 1 per run under load, differing each run, each passing in isolation | measured |
 | Ledger suite wall clock | ~80–90 s | measured |
 | Full `npm test` wall clock | ~5 min | measured |
 | Full Stryker mutation run | ~11.5 h at committed concurrency | inherited |
