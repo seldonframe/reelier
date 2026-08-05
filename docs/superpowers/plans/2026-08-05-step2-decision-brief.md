@@ -134,3 +134,26 @@ reelier-cloud#54, which merges only after the OSS ABI is frozen and PR #85 is me
 the three grant sentences into the Batch B prompt, and Batch B becomes executable without a
 single mid-session escalation. If you pick differently, the Batch B prompt needs its stop-rules
 adjusted to match.
+
+---
+
+## Postscript 2026-08-05 (Batch B) — a fourth decision surfaced, and the seal awaits sign-off
+
+Batch B ran with grants D1(a) and D3(a) (D2 deferred), measured the withdrawal chain, and stopped
+at its designed checkpoint with two items on the owner's desk:
+
+- **D4 — the withdrawal family's warm-tolerance pin conflict.** The chain's crash residues are
+  permanently `corruption` on every used root (the sixth fresh-root-blindness instance), and
+  unlike the warm-prep case, three committed pins REQUIRE that corruption — extending the
+  released-only tolerance flips `ledger.test.ts:1141`(retired), `:1157`(retired), and `:1159`,
+  verified by a compiled-build A/B. Without the grant, D1(a)'s own chain completes only on
+  never-used directories. Options, evidence, and the ready-to-paste grant sentence:
+  `2026-08-05-withdrawal-chain-measured.md` §4. Recommended: (a), the Batch A warm-prep decision
+  applied to the fourth family in a row.
+- **The seal proposal** is recorded in the spec beside the (now PROPOSED) "Under-defined — the
+  seal" note, each clause forced by a committed pin or a measurement. Per the D1(a) grant
+  sentence, the six creator-withdrawal points stay unemitted until you sign it.
+
+Batch B's remaining tasks (the chain build, the six emissions, the D3(a) freeze commit, the S4
+re-spec, the flip, the contention gates) resume in one session once the seal is signed and D4 is
+decided — carry both into the next prompt the way this brief's grants were carried.

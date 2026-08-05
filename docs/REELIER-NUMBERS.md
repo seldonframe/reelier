@@ -1,7 +1,7 @@
 # Reelier — numbers worth knowing
 
-**Pinned to `codex/universal-compiled-authority` @ Batch A (warm-prep fix), measured 2026-08-05 on
-Windows 11.** Update the pin hash to the Batch A commit when quoting.
+**Pinned to `codex/universal-compiled-authority` @ `214801b` (Batch B checkpoint), measured
+2026-08-05 on Windows 11.**
 
 _Every number here is quoted somewhere: in a commit message, a PR body, a plan, or an estimate. Two
 were quoted wrongly in a single session — "15 missing fault points" (really 34) and "402 pass"
@@ -50,7 +50,8 @@ must come after this work, not before (D3: one break, after the withdrawal point
 
 | Quantity | Value | Status |
 |---|---|---|
-| Ledger suite | **516 pass / 75 fail** after Batch A's warm-prep fix (+13, the warm pin family) and housekeeping-point emissions (+4 committed greens; the 100-process flake was PASSING in the re-saved baseline, so under load it can surface as "newly failing" — re-run it in isolation per §3 before believing that) | measured |
+| Ledger suite | **518 pass / 75 fail** (recorded baseline, reproduced at `214801b` in Batch B; the 100-process flake was PASSING in the re-saved baseline, so under load it can surface as "newly failing" — re-run it in isolation per §3 before believing that) | measured |
+| Post-warm-prep-fix ledger suite as previously recorded here | 516 pass / 75 fail — written mid-Batch-A and stale by 2 against the Batch A baseline `--save`; kept as the third instance of a number in this file diverging from its own command | superseded 2026-08-05 |
 | Pre-Batch-A ledger suite (the prior recorded gate) | 498 pass / 80 fail | superseded 2026-08-05 |
 | Full `npm test` | **2,157 pass / 80 fail / 1 skipped** at the warm-prep fix (pre-fix same-day: 2,145/80/1); failing-set delta across those two runs was exactly the two documented rotating flakes | measured |
 | Failures outside `ledger.test.ts` | **0** on an idle machine; 1 per run under load, differing each run, each passing in isolation | measured |

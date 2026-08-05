@@ -678,16 +678,51 @@ bounded `busy`, while the chain below reads as an obligation to finish. **Resolv
 satisfying either pin breaks the other, so this is not a defect to fix.** It decides whether
 `after-creator-withdrawal-cleanup-root-sync` is reachable at all.
 
-**Under-defined — the seal.** The fault taxonomy declares `before-creator-withdrawal-seal` and
-`after-creator-withdrawal-seal`, but no paragraph says what the seal step *does* between them.
-Likewise nothing states which step of the chain below `after-creator-withdrawal-cleanup-root-sync`
-names. An implementer must invent contract to proceed; record the decision here first.
+**Under-defined — the seal; PROPOSED from measurement 2026-08-05 (Batch B), awaiting owner
+sign-off — the six creator-withdrawal points stay unemitted until it is signed.** Each clause
+below is forced by a committed pin or a measurement; the derivation is
+`docs/superpowers/plans/2026-08-05-withdrawal-chain-measured.md`.
 
-**Not self-contained.** Chain steps 1 to 3 require the fixed slot to retire as `withdrawn`, which
-needs the `before/after-admission-slot-retire-*` points — themselves unemitted, and their family is
-blocked on the separate slot-route decision recorded above. `ledger.test.ts:1746` pins one
-slot-retirement point and one creator-withdrawal point in a single ordered assertion, so the six
-creator-withdrawal points are not a self-contained slice.
+1. The seal is the durability-and-revalidation step between fence-held validation and the stage
+   rename. After `before-creator-withdrawal-seal` the creator exact-revalidates its frozen stage
+   snapshot, then makes the stage's exact current content durable — owner-object file sync when
+   one exists, then stage-directory sync — and fires `after-creator-withdrawal-seal`. The seal
+   mutates no root-visible name and never removes or truncates content: a hard exit anywhere
+   between the seal points leaves exactly the one stage and no marker, and a complete stage is
+   never observable content-less. Sealing exists so the atomic rename publishes an
+   already-durable authenticated marker even when the creator crashed before the construction
+   path's own sync boundaries ran.
+2. The rename between `before/after-creator-withdrawal-rename` is one atomic whole-directory
+   rename of the sealed stage to its terminal: a `complete` stage to the same-owner
+   `.authority-ledger-lock-<pid>-<nonce>.publication-aborted` marker; an `empty`, `zero`, or
+   `partial` stage to the same-owner
+   `.authority-ledger-creator-withdrawal-<hostdigest>-<ticket>-<pid>-<nonce>.<state>` marker.
+   `after-creator-withdrawal-root-sync` follows the ledger-root sync that makes the marker name
+   durable; the original stage name is absent there.
+3. `after-creator-withdrawal-cleanup-root-sync` names the root sync after step 6 of the chain
+   below — the withdrawal terminal's marker removal — mirroring the slot family's
+   `after-admission-slot-retire-cleanup-root-sync`, ordered after it and before the callback.
+4. Under a K1-active generation the withdrawal terminal is created FIRST and the fixed slot then
+   retires `withdrawn` on its authority (the `slot-retired.withdrawn` rule above), so the crash
+   matrix below gains one in-flight residue: `bare fixed slot + same-owner withdrawal terminal`,
+   whose only next transition is the withdrawn slot retirement. Measured 2026-08-05: the
+   sub-complete form of that residue classifies `corruption` today and becomes recognized with
+   the chain; the complete form (slot + same-owner `publication-aborted`) already classifies and
+   drains through the granted dead-owner routes.
+5. Who acts, per the D1(a) grant: entering withdrawal is the creator's own failure path only,
+   under its one fresh cleanup deadline. Chain crash residue is progressed only by the creator's
+   own process or by a dead-owner housekeeping route mirroring the published-slot drainage; live
+   cross-process residue stays bounded `busy`, byte-identical.
+6. A lone dead COMPLETE external stage withdraws by the same atomic rename to that owner's
+   `publication-aborted` marker instead of being removed. Sub-complete dead external stages keep
+   the current authorized removal; no pin constrains them (measured 2026-08-05).
+
+**Not self-contained — updated 2026-08-05.** Chain steps 1 to 3 require the fixed slot to retire
+as `withdrawn` through the `before/after-admission-slot-retire-*` points. Those are now emitted
+(the slot-route decision above is resolved; the fault-pin linter's only unemitted points are
+these six), but `ledger.test.ts:1746` still pins one slot-retirement point and one
+creator-withdrawal point in a single ordered assertion, so the six creator-withdrawal points land
+with the chain, not as an isolated emission slice.
 
 The creator-withdrawal chain is exact and monotonic:
 
@@ -714,6 +749,20 @@ present + no ack` grants nothing and is preserved corruption; any replacement or
 cross-owner/cross-digest variant is also preserved corruption. An entirely empty coordination state reconstructs only a new
 canonical owner for a new admission attempt; it never retroactively authenticates missing cleanup
 evidence.
+
+**Open discrepancy — the withdrawal family's warm-tolerance pin conflict (D4).** Measured
+2026-08-05 (Batch B) at `214801b`: every crash residue in the matrix above classifies bounded
+`busy` on a fresh root and permanent `corruption` from both entry points on any root carrying the
+steady-state unrelated `released` marker every used root keeps — the sixth fresh-root-blindness
+instance. Unlike the preparation family's warm limit (resolved above), the corruption here is
+required by three committed pins (`ledger.test.ts:1141` retired case, `:1157` retired case,
+`:1159`), each the byte-adjacent twin of a busy-pinned fresh shape — extending the released-only
+tolerance to the four withdrawal-family classification sites flips exactly those three (verified
+by a compiled-build A/B; 127 adjacent subtests hold; the boundary — same-owner `released`,
+unrelated `publication-aborted` — stays corruption, measured). Until the owner decides, the chain
+above is satisfiable only on never-used directories. Resolve deliberately: options and the
+recommended grant sentence are in
+`docs/superpowers/plans/2026-08-05-withdrawal-chain-measured.md` §4.
 
 Every raw root snapshot is whole-generation state. Active-lock replacement or sustained membership
 churn, an external publication stage changing dead-to-live, or atomic fixed-slot/stage replacement

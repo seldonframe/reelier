@@ -2787,7 +2787,7 @@ test("published-slot graphs tolerate unrelated inert legacy residue on a used ro
   // pass: an unrelated recovery-pending marker is an unserviced semantic recovery obligation, not
   // inert residue, and a second same-owner successor is genuine ambiguity.
   // Foreign `recovery-pending` is conditioned on the ACTIVE LOCK being the successor. Spec :567
-  // grants retirement-marker coexistence "only for the next active owner", and :747-748 makes that
+  // grants retirement-marker coexistence "only for the next active owner", and :796-797 makes that
   // owner the sole marker scanner servicing every recovery-pending marker before every callback —
   // inspectActiveLock's own dead-lock reclaim mints exactly this shape in the same iteration that
   // publishes, so refusing it would corrupt every acquisition that follows a crash-with-lock. With

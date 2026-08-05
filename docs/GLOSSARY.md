@@ -1,6 +1,6 @@
 # Reelier — words that have to mean one thing
 
-**Pinned to `codex/universal-compiled-authority` @ `8009212` (2026-08-05).**
+**Pinned to `codex/universal-compiled-authority` @ `214801b` (2026-08-05, Batch B checkpoint).**
 
 _Entry criterion: a term is here only because misusing it caused a concrete, traceable error. This is
 not a dictionary of the domain — it is the list of words that have already cost time. Each entry says
@@ -65,6 +65,17 @@ gain no names. Enforced by `npm run baseline`.
 **load artifact** — a test failure caused by machine load rather than by the change. On this machine
 a crashed child (`3221226505`, Windows `STATUS_STACK_BUFFER_OVERRUN`) is always this, never an
 assertion failure.
+
+**fresh-root blindness** — a defect invisible to every test whose fixture starts from an empty
+directory, because real roots always carry steady-state residue (at minimum the previous
+acquisition's `.released` marker). Detect by probing WARM roots — one real acquisition before the
+fixture — from both entry points.
+
+> Cost: six instances so far, each surviving a green suite. The plan docs carry the running
+> count: the narrow-drainage revert was the fourth, the warm preparation-stage crash the fifth,
+> and the withdrawal family's warm corruption the sixth — that last one additionally pinned in by
+> three committed fresh-root pins, which is what created decision D4
+> (`docs/superpowers/plans/2026-08-05-withdrawal-chain-measured.md` §4).
 
 > Cost: a baseline taken alongside three subagents reported 411 pass as 410 and produced a phantom
 > regression. Always re-run the named test in isolation before believing it.

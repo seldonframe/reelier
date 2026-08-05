@@ -1943,7 +1943,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
   //
   // A foreign `recovery-pending` marker is tolerated exactly when the SAME-OWNER ACTIVE LOCK is
   // the successor. Spec :567 grants retirement-marker coexistence "only for the next active
-  // owner", and :747-748 makes that owner the sole marker scanner, servicing every
+  // owner", and :796-797 makes that owner the sole marker scanner, servicing every
   // recovery-pending marker before every callback — so an unserviced foreign marker beside the
   // live lock is the specified mid-acquisition state (inspectActiveLock's own dead-lock reclaim
   // mints one in the same iteration that publishes). With no active lock in the graph there is no
