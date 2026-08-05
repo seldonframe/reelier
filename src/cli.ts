@@ -101,6 +101,7 @@ import {
 import { generateSigningKeypair, loadSigningKey, signRecordDigest, verifyRecordSignature, signingKeyDir } from "./signing.js";
 import { resolveVerifyPayload, evaluateVerifyClaims } from "./verify.js";
 import { writeCiWorkflow, PLACEHOLDER_SKILL_PATH } from "./ci-scaffold.js";
+import { cmdArena } from "./arena-cli.js";
 
 // Exported (alongside cmdPush below) so test/push-cli.test.ts can drive
 // cmdPush's console output directly with a fake ParsedArgs + monkeypatched
@@ -169,6 +170,15 @@ function parseArgv(argv: string[]): ParsedArgs {
       arg === "--out-dir" ||
       arg === "--agent" ||
       arg === "--from-skill" ||
+      arg === "--challenge" ||
+      arg === "--challenge-version" ||
+      arg === "--harness" ||
+      arg === "--command" ||
+      arg === "--adapter-version" ||
+      arg === "--fixture" ||
+      arg === "--evaluator" ||
+      arg === "--timeout" ||
+      arg === "--bundle" ||
       arg === "--since" ||
       arg === "--expires" ||
       arg === "--key" ||
@@ -3955,7 +3965,8 @@ export async function cmdWhoami(fetchImpl: typeof fetch = fetch): Promise<number
 }
 
 const USAGE =
-  "Usage: reelier <run|bench|baseline|cost|prices|mcp|serve|trace|compile|manifest|approve|push|get|verify|diff|ci|policy|init|from-session|scan|install|uninstall|login|logout|whoami> [options]\n" +
+  "Usage: reelier <run|bench|baseline|cost|prices|mcp|serve|trace|compile|manifest|approve|push|get|verify|diff|ci|policy|init|arena|from-session|scan|install|uninstall|login|logout|whoami> [options]\n" +
+  "  arena init â€” create .reelier/arena.json; arena run --challenge <id> --harness <name> --command '<JSON>' -o <bundle.json>; arena submit <bundle.json> uploads only the signed sanitized bundle.\n" +
   "  login  — reelier login: connect this machine to Reelier Cloud via a device-code browser handshake; writes ~/.reelier/config.json.\n" +
   "  logout — reelier logout: clears the locally stored key (revoke it from the dashboard's Settings, not locally).\n" +
   "  whoami — reelier whoami: print the identity the stored key resolves to, or that you're not logged in.\n" +
@@ -4037,6 +4048,8 @@ async function main(): Promise<number> {
       return cmdPolicy(args);
     case "init":
       return cmdInit(args);
+    case "arena":
+      return cmdArena(args);
     case "from-session":
       return cmdFromSession(args);
     case "scan":
