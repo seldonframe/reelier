@@ -1,7 +1,7 @@
 {
   "target": "dist-test/test/authority/ledger.test.js",
-  "pass": 477,
-  "fail": 80,
+  "pass": 484,
+  "fail": 81,
   "failing": [
     "100 real processes converge on one committed reservation and one dispatch eligibility",
     "active owner treats atomic complete withdrawal as membership change, never corruption",
@@ -49,6 +49,7 @@
     "byte-mutation",
     "complete",
     "complete creator withdrawal reaches publication-aborted before cleanup",
+    "cross-process collisions use ingress, semantic, capability, then limit precedence",
     "dead exact slot",
     "dead-complete",
     "dead-empty",
