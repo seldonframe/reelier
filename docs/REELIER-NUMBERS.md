@@ -1,7 +1,7 @@
 # Reelier — numbers worth knowing
 
-**Pinned to `codex/universal-compiled-authority` @ `9252f18` plus the uncommitted
-marker-owner-remove window slice, measured 2026-08-05 on Windows 11.**
+**Pinned to `codex/universal-compiled-authority` @ the foreign-dead-slot drainage commit
+(after `d869a64`), measured 2026-08-05 on Windows 11.**
 
 _Every number here is quoted somewhere: in a commit message, a PR body, a plan, or an estimate. Two
 were quoted wrongly in a single session — "15 missing fault points" (really 34) and "402 pass"
@@ -48,9 +48,9 @@ after this work, not before.
 
 | Quantity | Value | Status |
 |---|---|---|
-| Ledger suite | **486 pass / 79 fail** (recorded gate baseline 477/80; the flake row below is the ±1) | measured |
-| Distinct failing test names in that suite | **77** | measured — the recorded baseline is the authority, and it said 77 when this row said 74 |
-| Full `npm test` | **2,100 pass / 79 fail / 1 skipped** | measured; two earlier runs showed 80, the extra being the load flake in the row below |
+| Ledger suite | **497 pass / 80 fail** (recorded gate baseline 484/81; the flake rows below are the ±) | measured |
+| Distinct failing test names in that suite | **79** | measured — the recorded baseline is the authority |
+| Full `npm test` | **2,142 pass / 82 fail / 1 skipped** | measured; every failing name in the recorded ledger baseline or the rotating flake below |
 | Failures outside `ledger.test.ts` | **0** on an idle machine; 1 per run under load, differing each run, each passing in isolation | measured |
 | Ledger suite wall clock | ~80–90 s | measured |
 | Full `npm test` wall clock | ~5 min | measured |

@@ -105,3 +105,19 @@ The §2 and §3 tables come from two scratch probes: crash a child at a fault po
 entry point against the leftover root; and count boundaries on one clean-root operation with the
 option off and on. Both are ten-minute rebuilds — rebuild them rather than trusting these numbers if
 the pin has moved.
+
+---
+
+## Postscript 2026-08-05 — the blocking route shipped
+
+Foreign-dead-slot drainage landed (see `2026-08-05-narrow-drainage-reverted.md` postscript for the
+commits). The §2 wedge rows now drain: every entry point self-heals the crash-with-lock shapes in
+one acquisition, `recover()` included, and `getHighWaterMark()` reads instead of raising — measured
+by the committed warm-root pin suite "foreign-dead-slot drainage retires and drains the granted
+shapes" and the flipped crash-window matrix.
+
+S4 remains gated on: its own re-spec from these measurements; the contention gates (§4.3); the
+reused-root default-path class (§4.4); and a NEW measured blocker recorded in the spec — a WARM
+preparation-stage crash (prep + steady-state `.released`) is permanent corruption from both entry
+points today. Activation over that defect would ship a root-bricking crash window on every used
+root.

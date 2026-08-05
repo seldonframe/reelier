@@ -85,3 +85,33 @@ The shape of the change was sound and its gates were real:
 6. **Move the docs in the same commit.** The spec still says this route is unperformed and that only
    `recover` holds housekeeping write authority; the comment above the permission gate still says the
    slot family is reserved. All three become false the moment the grant ships.
+
+---
+
+## Postscript 2026-08-05 — rebuilt and shipped
+
+The route shipped on `codex/universal-compiled-authority` in three gated slices, each independently
+RED- and GREEN-reviewed:
+
+1. `9252f18` — same-owner successor counting (item 1 above), landed FIRST as its own slice with
+   live-owner warm pins, plus lock-conditioned tolerance for an unserviced foreign
+   `recovery-pending` beside the live same-owner lock (spec :567/:747-748; the GREEN review
+   measured the original throw refusing the acquisition's own reclaim lineage). Two reachable
+   lineages stay corruption because committed pins :1119/:1134 pin the byte-adjacent no-lock
+   graphs; recorded as a spec discrepancy for the owner beside the successor rule.
+2. `d869a64` — the marker-owner-remove window (item 2): the fault point at all three removal
+   sites, the `published` authenticated-partial rescue, and the first exercise of the
+   owner-restoring unwind repair.
+3. The drainage commit (item and grant) — retire-as-published on the byte-identical same-owner
+   lock, the published cleanup lifecycle for any contender, `recover()` parity, the committed
+   busy-matrix flip in the same commit, and the docs moved with it.
+
+What the measurements settled (item 4): the ACTIVE LOCK is the only fixed-slot successor a real
+crash leaves; `slot+publication-aborted` converges to the bare slot via the pre-classification
+drain and recovers through the abandoned route (measured end to end, so no published route for it);
+`slot+released` has no reachable lineage; `slot+recovery-pending` classifies corruption. The spec
+sentence was narrowed accordingly beside the rule.
+
+NEW measured defect, recorded in the spec and NOT fixed here: a WARM preparation-stage crash
+(prep + steady-state `.released`) is permanent corruption from both entry points — the fifth
+fresh-root-blindness instance. Must be resolved before any activation flip.

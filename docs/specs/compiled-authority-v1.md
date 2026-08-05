@@ -453,29 +453,29 @@ name, byte, identity, lifecycle, predecessor, and terminal proof, performs exact
 transition plus its required ledger-root sync, and restarts full classification. Only an
 admission-ready generation may begin preparation.
 
-**Open discrepancy — who may perform a housekeeping transition.** The paragraph above says "the
-contender" generically, but the implementation grants pre-admission housekeeping write authority only
-to an operation that seeks no active lock and no callback (today, `recover`). Measured 2026-08-04:
-granting it to every contender converts three pending tests but breaks eight committed groups that
-pin byte-identical preservation for lock-seeking operations — among them `prep-only housekeeper
-routes stable authority without mutation` and the K1 cleanup-residue families — taking the ledger
-suite from 410/91 to 388/113. The narrow rule is therefore the one with evidence behind it, and the
-generic wording above is the outlier.
+**Open discrepancy, twice bounded and now settled in the middle — who may perform a housekeeping
+transition.** The paragraph above says "the contender" generically. Measured 2026-08-04: granting
+write authority to every contender breaks eight committed groups that pin byte-identical
+preservation for lock-seeking operations, taking the ledger suite from 410/91 to 388/113 — so the
+wide reading is refuted. The narrow reading (only an operation seeking no active lock and no
+callback, i.e. `recover`) left all nine coordination-cleanup fault points unreachable by any test,
+because every committed crash-window test drives `observeClock`. The shipped bound sits between
+them, with evidence on both sides: `recover` holds the general write authority, and a lock-seeking
+contender may perform exactly two bounded families of transitions, both measured — ADVANCING a dead
+preparation's already-retired cleanup lifecycle, and the owner-granted (2026-08-05) dead-owner
+PUBLISHED-slot drainage recorded beside the `slot-retired.published` rule below: retiring the slot
+as `published` on the authority of its byte-identical same-owner active lock, then draining that
+marker's cleanup lifecycle. Initiating an `abandoned`-family retirement stays reserved to `recover`,
+byte-identical under every lock-seeking contender, as the committed dead-owner slot-orphan pins require.
 
-Further evidence 2026-08-04, and it cuts the other way. The coordination-cleanup lifecycle is fully
-implemented and drains end to end — measured on a dead-owner `prep-retired` marker, `recover` walks
-stage-create, partial-write, file-sync, ack root sync, marker root sync and final root sync in one
-call and leaves no residue. The same fixture under `observeClock` derives the cleanup authority and
-then performs **zero** transitions. Every committed crash-window test for that group drives
-`observeClock`, so all nine of the group's specified fault points are unreachable by any test while
-the narrow rule holds, and the group cannot be emitted or verified.
-
-So the suite contains committed tests on both sides: some require a lock-seeking operation to drain
-residue, others require it not to mutate. Note what the earlier measurement does and does not show —
-it refutes a one-line flip of the permission default, not the generic reading itself; a correctly
-bounded widening might satisfy both sets. This is a semantics decision, not an implementation
-detail. Until it is made, treat the nine coordination-cleanup points, and any other group whose
-tests drive a lock-seeking operation, as blocked on it rather than as emission work.
+A related measured limit, recorded 2026-08-05 rather than fixed: a WARM preparation-stage crash at
+any of the six pre-rename points — the five `after-admission-prep-*` boundaries plus
+`before-admission-slot-rename` — on a root carrying the previous acquisition's steady-state
+`.released` marker is permanent corruption from both `observeClock` and `recover()`: the
+preparation branch tolerates no retired-lock markers, and the pre-classification legacy service
+never fires for preparation names. The three post-rename points leave the fixed slot, whose
+abandoned route `recover()` drains warm. Fresh-root fixtures hid this, as they hid four prior
+residue defects. It gates any clean-root activation flip and is not decided here.
 
 The pre-admission housekeeper may only retire the exact dead preparation, publication stage, or fixed
 slot authorized below; progress one exact cleanup stage to its bound ack; remove one exact marker or
@@ -517,28 +517,28 @@ Positive housekeeping authority is purpose-specific and closed:
 - A cleanup stage or ack requires its exact record digest, filename, filesystem identities, lifecycle
   predecessor, and still-valid purpose proof.
 
-**Open discrepancy — `slot-retired.published` is authorized but unperformed, and that blocks K1
-activation.** Measured 2026-08-05 at `e8693e8`. The clause above grants `slot-retired.published` on
-"the exact same-owner active lock or the exact same-owner `released`, `recovery-pending`, or
-`publication-aborted` successor". After a crashed acquisition that got as far as publication, exactly
-that authority is present on disk — a dead-owner fixed slot (or its `published` marker) alongside the
-same-owner `lock`. No implemented route performs the transition, because performing it means one
-process retiring another process's dead slot, which is the blocked foreign-dead-slot question.
+**Resolved 2026-08-05 — the foreign-dead-slot route is granted, narrowly, and performed.** The owner
+decision: any contender may retire a DEAD-OWNER fixed slot as `published`, but only where the exact
+same-owner active lock or a named successor is present; the wide rule was rejected. The
+implementation performs exactly that. A dead-owner {fixed slot, byte-identical same-owner `lock`}
+generation derives a published-disposition retirement; the resulting marker's cleanup lifecycle —
+stage, acknowledgment, marker removal, acknowledgment removal — is drained by any contender; the
+dead lock then reclaims through the unchanged legacy machinery. One acquisition, measured end to end
+from real crash lineages on used roots; `recover()` performs the same transitions without taking the
+lock. The `abandoned` family — a bare dead slot with no lock or successor — stays reserved to
+`recover()`, byte-identical under every lock-seeking contender, as the committed dead-owner orphan
+pins require.
 
-The cost is not a missing optimisation. Measured: with K1 inactive, a crash at
-`after-lock-publication-root-sync` self-heals — the next acquisition reclaims the dead-owner lock and
-the root is fully usable. With K1 active, the identical crash leaves a root on which every entry
-point returns `busy` forever, `recover()` included, and `getHighWaterMark()` raises
-`AuthorityLedgerReadError` — reads refused, not merely writes. Classification refuses before legacy
-reclaim is consulted, so activation does not fail to add recovery; it removes recovery that works.
-
-A dead-owner slot with **no** lock is already drainable: it satisfies `slot-retired.abandoned`, and
-`recover()` holds the housekeeping write permission, so it drains and the root recovers. The gap is
-exactly the shapes where a `lock` is present, i.e. every crash at or after the publication root sync.
-
-Until the foreign-dead-slot route is decided, K1 admission must not become the default. Recorded
-rather than resolved: whether a later acquisition may perform this transition is the same narrow/wide
-housekeeping-permission question recorded above, applied to the slot family.
+Successor forms, measured 2026-08-05: the ACTIVE LOCK is the only fixed-slot successor a real crash
+leaves. A same-owner `released` cannot coexist with an unretired slot (release follows the cleanup
+pass); a `released` or `publication-aborted` marker beside a BARE slot is drained first as inert
+legacy residue by the pre-classification service, after which the slot retires `abandoned` via
+`recover()` — measured end to end; and a same-owner `recovery-pending` beside a slot has no
+reachable lineage and classifies corruption. The granted published retirement therefore performs on
+the active-lock form only; for an already-retired `published` MARKER, all four successor forms in
+the rule above remain valid terminal evidence. Every entry point — reads included, with
+`getHighWaterMark` the pinned example — now performs these drainage writes on another process's
+dead artifacts first; intended (the wedge being removed). K1 activation is no longer blocked here.
 
 **Open discrepancy — two reachable crash lineages stay `corruption` because committed pins require
 it.** Measured 2026-08-05 on `codex/universal-compiled-authority`, while making the published-successor

@@ -2725,12 +2725,16 @@ test("option-gated cleanup-pass hard exits leave a topology the next acquisition
     // classifiable topology from one that every later operation calls corruption. `busy` here means
     // the next acquisition understood what it found and declined; only the fully drained boundary
     // hands the root back. Nothing may report `corruption`.
-    const reclassified=await new RawFsAuthorityLedger(root,{now:()=>t0+1_000,lockTimeoutMs:200} as never).observeClock();
-    if(boundary.point==="after-coordination-cleanup-ack-remove")assert.deepEqual(reclassified,{ok:true,status:"advanced",observedAt:new Date(t0+1_000).toISOString()},`${boundary.point}: a fully drained retirement hands the root back`);
-    else assert.deepEqual(reclassified,{ok:false,reason:"busy"},`${boundary.point}: the leftover root classifies, and never as corruption`);
-      const again=await new RawFsAuthorityLedger(root,{now:()=>t0+2_000,lockTimeoutMs:200} as never).observeClock();
-    if(boundary.point==="after-coordination-cleanup-ack-remove")assert.deepEqual(again,{ok:true,status:"advanced",observedAt:new Date(t0+2_000).toISOString()},`${boundary.point}: and the root keeps working`);
-    else assert.deepEqual(again,reclassified,`${boundary.point}: and classification is stable`);
+    // The granted foreign-dead-slot drainage (owner decision 2026-08-05): a later contender —
+    // any contender — retires the DEAD owner's slot as `published` on the authority of its exact
+    // same-owner active lock, drains the marker and acknowledgment, reclaims the dead lock
+    // through the legacy machinery, and completes — in ONE acquisition. Before the grant these
+    // rows pinned `busy`; the flip to drained-and-advanced ships in the same commit as the grant.
+    const reclassified=await new RawFsAuthorityLedger(root,{now:()=>t0+1_000,lockTimeoutMs:2_000} as never).observeClock();
+    assert.deepEqual(reclassified,{ok:true,status:"advanced",observedAt:new Date(t0+1_000).toISOString()},`${boundary.point}: the granted drainage hands the root back in one acquisition`);
+    assert.deepEqual(coordinationResidue(await readdir(root)),[],`${boundary.point}: with zero admission-family residue`);
+    const again=await new RawFsAuthorityLedger(root,{now:()=>t0+2_000,lockTimeoutMs:2_000} as never).observeClock();
+    assert.deepEqual(again,{ok:true,status:"advanced",observedAt:new Date(t0+2_000).toISOString()},`${boundary.point}: and the root keeps working`);
   }));
 });
 
@@ -2806,6 +2810,10 @@ test("published-slot graphs tolerate unrelated inert legacy residue on a used ro
   // residue publishes, retires its slot, and then classifies its own root as corruption).
   await t.test("published slot with its live lock tolerates an unrelated marker's resumable legacy cleanup",()=>withRoot(async root=>{const owner={host:hostname(),nonce:"d".repeat(63)+"0",pid:process.pid,v:1 as const},foreign={host:hostname(),nonce:"d".repeat(63)+"1",pid:process.pid,v:1 as const};await writePublishedWithLock(root,owner);const markerName=retirementMarkerName(foreign,"released");await writeOwnerDirectory(root,markerName,foreign);const ack=cleanupAck(foreign,markerName,"released",null);await writeFile(path.join(root,cleanupAckName(ack)),authorityCanonicalBytes(ack));await assertDecisionUnchanged(root,{ok:false,reason:"busy"});}));
   await t.test("published slot with its live lock tolerates an unrelated orphan legacy cleanup ack",()=>withRoot(async root=>{const owner={host:hostname(),nonce:"e".repeat(63)+"0",pid:process.pid,v:1 as const},foreign={host:hostname(),nonce:"e".repeat(63)+"1",pid:process.pid,v:1 as const};await writePublishedWithLock(root,owner);const ack=cleanupAck(foreign,retirementMarkerName(foreign,"released"),"released",null);await writeFile(path.join(root,cleanupAckName(ack)),authorityCanonicalBytes(ack));await assertDecisionUnchanged(root,{ok:false,reason:"busy"});}));
+  // The live twin of the marker-owner-remove window: an EMPTY published marker beside its bound
+  // acknowledgment and the live same-owner lock is a mid-window healthy acquisition — a concurrent
+  // observer waits, mutates nothing, and no drainage may ever touch a live owner's artifacts.
+  await t.test("mid-window empty published marker with its live lock stays busy and untouched",()=>withRoot(async root=>{const owner={host:hostname(),nonce:"e".repeat(63)+"2",pid:process.pid,v:1 as const},graph=await writePublishedWithLock(root,owner),ack=slotCoordinationAck(owner,graph.markerName,graph.marker,"published","lock",publicationOwnerBytes(owner));await writeFile(path.join(root,coordinationAckName(ack)),authorityCanonicalBytes(ack));await unlink(path.join(graph.marker,"owner.json"));await assertDecisionUnchanged(root,{ok:false,reason:"busy"});}));
 });
 
 // The marker-removal window: unlink the owner object, then remove the directory. Before the
@@ -2835,11 +2843,11 @@ test("marker-owner-remove window leaves a classifiable root and an exercisable r
     assert.deepEqual(await readdir(path.join(root,markers[0]!)),[],"as exactly the empty directory the window leaves");
     assert.equal(names.filter(name=>name.startsWith(".authority-ledger-coordination-cleanup-")).length,1,"beside its durable acknowledgment");
     assert.equal(names.includes("lock"),true,"and the dead owner's live-format lock");
-    // Exact verdict, matching the committed boundaries row on this topology. When the granted
-    // foreign-dead-slot drainage ships, this expectation moves to drained-and-advanced in the
-    // same commit as the grant — an exact pin cannot rot into a false pass the way a
-    // not-corruption assertion could.
-    assert.deepEqual(await new RawFsAuthorityLedger(root,{now:()=>t0+2_000,lockTimeoutMs:200} as never).observeClock(),{ok:false,reason:"busy"},"the crash window classifies busy, never as permanent corruption");
+    // The granted foreign-dead-slot drainage: the empty marker classifies through the rescue,
+    // its cleanup lifecycle resumes, and the root heals in one acquisition. Before the grant this
+    // pinned exact `busy`; the flip ships in the same commit as the grant.
+    assert.deepEqual(await new RawFsAuthorityLedger(root,{now:()=>t0+2_000,lockTimeoutMs:2_000} as never).observeClock(),{ok:true,status:"advanced",observedAt:new Date(t0+2_000).toISOString()},"the crash window drains and the root heals");
+    assert.deepEqual(coordinationResidue(await readdir(root)),[],"with zero admission-family residue");
   }));
   await t.test("an in-process failure inside the window restores the owner bytes it removed",()=>withRoot(async root=>{
     await warmup(root);
@@ -2911,6 +2919,134 @@ test("marker-owner-remove window leaves a classifiable root and an exercisable r
       assert.equal(result.ok,true,"the housekeeper drains the authenticated-partial abandoned lineage");
       assert.deepEqual(observed,[],"no owner object was unlinked, so the window point never fires");
       assert.equal((await readdir(root)).some(name=>name.startsWith(".authority-ledger-")),false,"and the lineage drains completely");
+    });
+  });
+});
+
+// The granted foreign-dead-slot drainage route (owner decision 2026-08-05): any contender may
+// retire a DEAD-OWNER fixed slot as `published`, but ONLY where the exact same-owner active lock
+// or a named successor is present. These pins drive the real crash lineages — an option-on child
+// hard-exited at a fault point on a WARM root (the prior acquisition's `.released` marker present,
+// the shape every real root has) — and require the root to self-heal completely. The abandoned
+// family stays recover()-only: the bare-slot guard at the end pins the grant's boundary.
+test("foreign-dead-slot drainage retires and drains the granted shapes",{timeout:60_000},async t=>{
+  const option=k1AdmissionPreparationOption();
+  const warmup=async(root:string)=>{
+    assert.deepEqual(await new RawFsAuthorityLedger(root,{[option]:K1_ADMISSION_PREPARATION_MODE,now:()=>t0,lockTimeoutMs:2_000} as never).observeClock(),{ok:true,status:"advanced",observedAt:new Date(t0).toISOString()},"the warmup acquisition succeeds");
+    assert.equal((await readdir(root)).filter(name=>/\.released$/.test(name)).length,1,"the warm root carries the prior acquisition's released marker");
+  };
+  const crashChild=async(root:string,point:string)=>{
+    const moduleUrl=pathToFileURL(path.resolve("dist-test/src/authority/host/fs-ledger.js")).href;
+    const source=`import*as host from ${JSON.stringify(moduleUrl)};const option=host.__testK1AdmissionPreparationRuntimeOption;if(typeof option!=="symbol")process.exit(80);const ledger=new host.FsAuthorityLedger(process.argv[1],{[option]:${JSON.stringify(K1_ADMISSION_PREPARATION_MODE)},now:()=>${t0+1_000},lockTimeoutMs:200,faultInjector(point){if(point===${JSON.stringify(point)})process.exit(91);}});await ledger.observeClock();process.exit(92);`;
+    const code=await new Promise<number|null>((resolve,reject)=>{const child=spawn(process.execPath,["--input-type=module","-e",source,root],{stdio:["ignore","ignore","ignore"]});child.once("error",reject);child.once("close",resolve);});
+    assert.equal(code,91,`${point} is a real hard-exit boundary`);
+  };
+  // The admission/coordination oracle alone would miss legacy debris the drainage could wrongly
+  // leave or mint (a stray recovery-pending marker, an unremoved cleanup stage, the lock itself),
+  // so the healed state is additionally pinned to exactly one `.released` marker and no `lock`.
+  const legacyResidue=(names:readonly string[])=>names.filter(name=>/^\.authority-ledger-lock-/.test(name)).sort();
+  const assertHealed=async(root:string,label:string)=>{
+    assert.deepEqual(coordinationResidue(await readdir(root)),[],`${label}: zero admission-family residue`);
+    const legacy=legacyResidue(await readdir(root));
+    assert.equal(legacy.length,1,`${label}: exactly one legacy marker remains`);
+    assert.match(legacy[0]!,/\.released$/,`${label}: and it is the released marker of the healing acquisition`);
+    assert.equal(existsSync(path.join(root,"lock")),false,`${label}: no live lock remains`);
+  };
+  // The stage-partial-write row is the ack byte-reconstruction path: the housekeeper must rebuild
+  // the crashed own-act acknowledgment byte-identically and APPEND to the one-byte stage, or the
+  // lifecycle wedges busy instead of resuming.
+  const crashPoints=["after-lock-publication-root-sync","after-admission-slot-retire-root-sync","after-coordination-cleanup-stage-partial-write","after-coordination-cleanup-ack-root-sync","after-coordination-cleanup-marker-remove"] as const;
+  for(const point of crashPoints)await t.test(`recover() drains the ${point} crash and the root self-heals`,()=>withRoot(async root=>{
+    await warmup(root);
+    await crashChild(root,point);
+    const recovered=await new RawFsAuthorityLedger(root,{now:()=>t0+2_000,lockTimeoutMs:2_000} as never).recover();
+    assert.equal(recovered.ok,true,`${point}: recover() succeeds on the crashed root`);
+    assert.deepEqual(coordinationResidue(await readdir(root)),[],`${point}: recover() drained every admission-family artifact`);
+    assert.deepEqual(await new RawFsAuthorityLedger(root,{now:()=>t0+3_000,lockTimeoutMs:2_000} as never).observeClock(),{ok:true,status:"advanced",observedAt:new Date(t0+3_000).toISOString()},`${point}: the next default acquisition completes`);
+    await assertHealed(root,point);
+  }));
+  await t.test("a default lock-seeking contender performs the granted drainage in one acquisition",()=>withRoot(async root=>{
+    await warmup(root);
+    await crashChild(root,"after-admission-slot-retire-root-sync");
+    let callbacks=0;
+    const result=await new RawFsAuthorityLedger(root,{now:()=>t0+2_000,lockTimeoutMs:2_000,faultInjector:(point:string)=>{if(point==="before-ledger-operation-callback"){callbacks++;assert.deepEqual(coordinationResidue(readdirSync(root)),[],"the callback is entered only after the foreign residue is drained");}}} as never).observeClock();
+    assert.deepEqual(result,{ok:true,status:"advanced",observedAt:new Date(t0+2_000).toISOString()},"one default acquisition drains and completes");
+    assert.equal(callbacks,1,"with exactly one callback");
+    await assertHealed(root,"one-acquisition self-heal");
+  }));
+  // The grant makes a READ entry point a writer on another process's dead artifacts. That is
+  // intended — it is the wedge being removed — and this pin records it: before the grant this
+  // exact call raised AuthorityLedgerReadError(busy) forever.
+  await t.test("getHighWaterMark performs the granted drainage before its read",()=>withRoot(async root=>{
+    await warmup(root);
+    await crashChild(root,"after-coordination-cleanup-ack-root-sync");
+    const mark=await new RawFsAuthorityLedger(root,{now:()=>t0+2_000,lockTimeoutMs:2_000} as never).getHighWaterMark();
+    assert.deepEqual(mark,{observedAt:new Date(t0).toISOString()},"the read returns the durable mark the crashed child never advanced");
+    assert.deepEqual(coordinationResidue(await readdir(root)),[],"and the read drained the foreign residue on its way");
+  }));
+  await t.test("two same-process contenders converge on the crashed root with zero residue",()=>withRoot(async root=>{
+    await warmup(root);
+    await crashChild(root,"after-admission-slot-retire-root-sync");
+    // Same instant on purpose: this subtest pins convergence, not fence-admission order. The
+    // first-admitted contender advances the clock; the other observes the equal durable instant.
+    const [first,second]=await Promise.all([
+      new RawFsAuthorityLedger(root,{now:()=>t0+2_000,lockTimeoutMs:5_000} as never).observeClock(),
+      new RawFsAuthorityLedger(root,{now:()=>t0+2_000,lockTimeoutMs:5_000} as never).observeClock(),
+    ]);
+    for(const result of [first,second]){
+      assert.equal((result as Readonly<{ok:boolean}>).ok,true,"both contenders complete");
+      assert.ok(["advanced","equal"].includes((result as Readonly<{status?:string}>).status??""),"each either advances or observes the equal durable instant");
+    }
+    assert.deepEqual(coordinationResidue(await readdir(root)),[],"and the root converges with zero residue");
+  }));
+  // The boundary of the grant: a bare dead-owner slot has NO same-owner lock or successor, so it
+  // is the `abandoned` family — reserved to recover(), byte-identical under any lock-seeking
+  // contender exactly as the committed dead-owner orphan pins require.
+  await t.test("a bare dead slot stays reserved to recover() under the grant",()=>withRoot(async root=>{
+    await warmup(root);
+    await crashChild(root,"after-admission-slot-root-sync");
+    // The first contender legitimately drains the prior `.released` marker (the pre-classification
+    // legacy service is sanctioned mutation); the GRANT boundary is that the bare slot itself is
+    // the `abandoned` family and stays byte-identical under every later lock-seeking contender,
+    // exactly as the committed dead-owner orphan pins require.
+    assert.deepEqual(await new RawFsAuthorityLedger(root,{now:()=>t0+2_000,lockTimeoutMs:200} as never).observeClock(),{ok:false,reason:"busy"},"a lock-seeking contender declines the abandoned family");
+    const before=await snapshotRootArtifacts(root);
+    assert.deepEqual(await new RawFsAuthorityLedger(root,{now:()=>t0+3_000,lockTimeoutMs:200} as never).observeClock(),{ok:false,reason:"busy"},"and keeps declining");
+    assert.deepEqual(await snapshotRootArtifacts(root),before,"byte-identically");
+    const recovered=await new RawFsAuthorityLedger(root,{now:()=>t0+4_000,lockTimeoutMs:2_000} as never).recover();
+    assert.equal(recovered.ok,true,"recover() still drains it");
+    assert.deepEqual(coordinationResidue(await readdir(root)),[],"completely");
+  }));
+  // The abandoned family's MIDDLE states (marker plus its cleanup acknowledgment, dead owner) are
+  // likewise outside the grant: a lock-seeking contender leaves them byte-identical; only
+  // recover() advances them.
+  await t.test("an abandoned marker mid-lifecycle stays reserved to recover() under the grant",async()=>{
+    const owner={host:hostname(),nonce:"a".repeat(63)+"b",pid:await exitedProcessPid(),v:1 as const};
+    await withRoot(async root=>{
+      const markerName=admissionRetiredName(owner,"abandoned"),marker=path.join(root,markerName);
+      await mkdir(marker);await writeFile(path.join(marker,"owner.json"),publicationOwnerBytes(owner));
+      const ack=slotCoordinationAck(owner,markerName,marker,"abandoned");
+      await writeFile(path.join(root,coordinationAckName(ack)),authorityCanonicalBytes(ack));
+      const before=await snapshotRootArtifacts(root);
+      for(const at of [t0+1_000,t0+2_000])assert.deepEqual(await new RawFsAuthorityLedger(root,{now:()=>at,lockTimeoutMs:200} as never).observeClock(),{ok:false,reason:"busy"},"a lock-seeking contender declines the abandoned lifecycle");
+      assert.deepEqual(await snapshotRootArtifacts(root),before,"byte-identically");
+      const recovered=await new RawFsAuthorityLedger(root,{now:()=>t0+3_000,lockTimeoutMs:2_000} as never).recover();
+      assert.equal(recovered.ok,true,"recover() advances it");
+      assert.deepEqual(coordinationResidue(await readdir(root)),[],"to completion");
+    });
+  });
+  // The wedge a wrong retirement disposition would mint, pinned by name: an `.abandoned` marker
+  // beside a live-format lock has an impossible successor and is preserved corruption — so an
+  // implementation that retires a locked slot as abandoned fails here, not just downstream.
+  await t.test("an abandoned marker beside a same-owner lock is preserved corruption",async()=>{
+    const owner={host:hostname(),nonce:"a".repeat(63)+"c",pid:await exitedProcessPid(),v:1 as const};
+    await withRoot(async root=>{
+      const markerName=admissionRetiredName(owner,"abandoned"),marker=path.join(root,markerName);
+      await mkdir(marker);await writeFile(path.join(marker,"owner.json"),publicationOwnerBytes(owner));
+      await mkdir(path.join(root,"lock"));await writeFile(path.join(root,"lock","owner.json"),publicationOwnerBytes(owner));
+      const before=await snapshotRootArtifacts(root);
+      assert.deepEqual(await new RawFsAuthorityLedger(root,{now:()=>t0+1_000,lockTimeoutMs:200} as never).observeClock(),{ok:false,reason:"corruption"},"the impossible successor refuses");
+      assert.deepEqual(await snapshotRootArtifacts(root),before,"and is preserved");
     });
   });
 });

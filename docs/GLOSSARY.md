@@ -1,6 +1,6 @@
 # Reelier — words that have to mean one thing
 
-**Pinned to `codex/universal-compiled-authority` @ `a336fd9`.**
+**Pinned to `codex/universal-compiled-authority` @ the foreign-dead-slot drainage commit (2026-08-05).**
 
 _Entry criterion: a term is here only because misusing it caused a concrete, traceable error. This is
 not a dictionary of the domain — it is the list of words that have already cost time. Each entry says
@@ -82,7 +82,9 @@ assertion failure.
 **narrow rule / wide rule** — whether a lock-seeking operation may perform a pre-admission
 housekeeping transition. Narrow: only lock-free operations may. Wide: any contender may. The shipped
 bound is neither in full — a lock-seeking contender may *advance* a dead preparation's cleanup
-lifecycle, and nothing else.
+lifecycle and perform the granted dead-owner published-slot drainage (exact same-owner lock or
+successor present; owner decision 2026-08-05), and nothing else. The abandoned slot family stays
+lock-free-only.
 
 ## Product
 

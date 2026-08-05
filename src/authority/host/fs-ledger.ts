@@ -194,8 +194,8 @@ type PrepHousekeepingRoute=
 type PrepAuthorityDescriptor=
   |Readonly<{kind:"dead-prep";targetName:string;pid:number}>
   |Readonly<{kind:"prep-retired-cleanup";targetName:string;lifecycleName:string|null;orphan:boolean}>
-  |Readonly<{kind:"dead-slot";targetName:typeof ADMISSION_SLOT_NAME;pid:number}>
-  |Readonly<{kind:"slot-retired-cleanup";targetName:string;lifecycleName:string|null;orphan:boolean;pid:number}>;
+  |Readonly<{kind:"dead-slot";targetName:typeof ADMISSION_SLOT_NAME;pid:number;disposition:"abandoned"|"published"}>
+  |Readonly<{kind:"slot-retired-cleanup";targetName:string;lifecycleName:string|null;orphan:boolean;pid:number;disposition:"abandoned"|"published";successorName:string|null}>;
 interface PrepAuthorityBinding {readonly snapshot:HybridRootSnapshot;readonly descriptor:PrepAuthorityDescriptor}
 // The promoted slot's frozen creation snapshot (spec :486-498): the private, in-memory authority
 // value produced only by this acquisition's own successful exclusive-creation path. It is what makes
@@ -890,10 +890,11 @@ export class FsAuthorityLedger implements AuthorityLedger {
   // retires the matching slot as `published`; spec :310-313 — `published` requires the byte-identical
   // active lock, and callback eligibility begins only after this root sync.
   //
-  // This is the owner's own act on its own slot. It is deliberately NOT the foreign-dead-slot
-  // housekeeping route, which is blocked on an unresolved decision: nothing here classifies, adopts
-  // or retires a slot this acquisition did not create, and the caller only reaches it holding its
-  // own freshly published lock.
+  // This is the owner's own act on its own slot. The foreign-dead-slot route — a LATER contender
+  // retiring a DEAD owner's slot on the authority of its byte-identical same-owner lock — is the
+  // separately granted housekeeping route (owner decision 2026-08-05) performed through the
+  // pre-admission housekeeper; nothing here classifies, adopts or retires a slot this acquisition
+  // did not create, and the caller only reaches it holding its own freshly published lock.
   //
   // Spec :442 gives successful publication one SEPARATE FRESH slot-retirement deadline, so it is
   // drawn here rather than inherited from the acquisition budget. The clock is the module monotonic
@@ -1320,14 +1321,16 @@ export class FsAuthorityLedger implements AuthorityLedger {
     const second=await this.revalidatePrepHousekeepingAuthority(binding);
     if(first==="corruption"||second==="corruption"){this.prepHousekeeperRuntime.observeBoundary?.(`${prefix}-transition-refused`);throw new LedgerCorruption("prep housekeeping authority changed before transition");}
     if(first!=="exact"||second!=="exact"){this.prepHousekeeperRuntime.observeBoundary?.(`${prefix}-transition-refused`);return "busy";}
-    // The spec grants every contender one coordination transition; the implementation historically
-    // granted it only to an operation seeking no lock, which left nine specified fault points
-    // unreachable because their tests drive a lock-seeking operation. The bound that satisfies both
-    // sets, measured: a lock-seeking contender may ADVANCE an already-retired preparation's cleanup
-    // lifecycle when that preparation's owner is proved dead, and nothing else. Initiating a
-    // retirement stays reserved, as does the slot family - committed dead-owner slot-orphan tests
-    // pin a lock-seeking operation to leave those byte-identical.
-    if(!permitWrite&&!(budgetLive&&this.mayAdvanceDeadPrepCleanup(binding))){this.prepHousekeeperRuntime.observeBoundary?.(`${prefix}-transition-refused`);return "busy";}
+    // The spec grants every contender one coordination transition; the implementation grants
+    // pre-admission housekeeping write authority to an operation seeking no lock and no callback
+    // (recover), plus exactly two bounded exceptions a lock-seeking contender may perform, both
+    // measured: ADVANCING a dead preparation's already-retired cleanup lifecycle, and the
+    // owner-granted (2026-08-05) dead-owner PUBLISHED-slot drainage — retiring the slot as
+    // `published` on the authority of its byte-identical same-owner active lock, then draining
+    // that marker's cleanup lifecycle. Initiating an abandoned-family retirement stays reserved
+    // to recover(); committed dead-owner slot-orphan tests pin a lock-seeking operation to leave
+    // those byte-identical.
+    if(!permitWrite&&!(budgetLive&&(this.mayAdvanceDeadPrepCleanup(binding)||this.mayDrainPublishedSlot(binding)))){this.prepHousekeeperRuntime.observeBoundary?.(`${prefix}-transition-refused`);return "busy";}
     if(binding.descriptor.kind==="dead-slot"&&processLiveness(binding.descriptor.pid)!=="dead"){this.prepHousekeeperRuntime.observeBoundary?.("slot-only-transition-refused");return "busy";}
     const capability=this.activeK1OperationCapability,generation=capability===null?undefined:k1OperationFenceBindings.get(capability);if(capability===null||generation?.status!=="acting"){this.prepHousekeeperRuntime.observeBoundary?.(`${prefix}-transition-refused`);return "refuse";}
     if(await this.hasK1WriterResidue()){this.prepHousekeeperRuntime.observeBoundary?.(`${prefix}-transition-refused`);return "refuse";}
@@ -1347,6 +1350,12 @@ export class FsAuthorityLedger implements AuthorityLedger {
     const descriptor=binding.descriptor;if(descriptor.kind!=="prep-retired-cleanup")return false;
     const parsed=parseK1Name(descriptor.targetName);
     return parsed?.kind==="admission-prep-retired"&&processLiveness(parsed.pid)==="dead";
+  }
+
+  private mayDrainPublishedSlot(binding:PrepAuthorityBinding):boolean{
+    const descriptor=binding.descriptor;
+    if(descriptor.kind!=="dead-slot"&&descriptor.kind!=="slot-retired-cleanup")return false;
+    return descriptor.disposition==="published"&&processLiveness(descriptor.pid)==="dead";
   }
 
   private async hasK1WriterResidue():Promise<boolean>{
@@ -1472,21 +1481,44 @@ export class FsAuthorityLedger implements AuthorityLedger {
   private boundSlotArtifact(binding:PrepAuthorityBinding,retired:boolean):HybridOwnedArtifact{
     const entry=binding.snapshot.entries.find(value=>value.name===binding.descriptor.targetName),parsed=parseK1Name(binding.descriptor.targetName);if(entry===undefined||parsed===null)throw new LedgerCorruption("slot housekeeping binding lost its exact target");
     if(!retired){if(parsed.kind!=="admission-slot")throw new LedgerCorruption("slot retirement target kind changed");const owner=this.classifyHybridCompleteOwnerDirectory(entry,null,hostname()),child=hybridOwnerChild(entry)!;return {parsed,entry,owner,ownerBytes:child.bytes!,ownerIdentity:child.identity,state:"complete"};}
-    if(parsed.kind!=="admission-slot-retired"||parsed.disposition!=="abandoned")throw new LedgerCorruption("slot cleanup target kind changed");const partial=this.classifyHybridAuthenticatedPartialSlotMarker(parsed,entry,binding.snapshot);if(partial!==null)return partial;const owner:CoordinationOwner={host:hostname(),nonce:parsed.nonce,pid:parsed.pid,v:1};return this.classifyHybridNamedOwnerDirectory(parsed,entry,owner,"complete");
+    const expectedDisposition=binding.descriptor.kind==="slot-retired-cleanup"?binding.descriptor.disposition:"abandoned";
+    if(parsed.kind!=="admission-slot-retired"||parsed.disposition!==expectedDisposition)throw new LedgerCorruption("slot cleanup target kind changed");const partial=this.classifyHybridAuthenticatedPartialSlotMarker(parsed,entry,binding.snapshot);if(partial!==null)return partial;const owner:CoordinationOwner={host:hostname(),nonce:parsed.nonce,pid:parsed.pid,v:1};return this.classifyHybridNamedOwnerDirectory(parsed,entry,owner,"complete");
   }
 
   private async retireBoundSlot(binding:PrepAuthorityBinding):Promise<"progress"|"reclassify">{
-    const artifact=this.boundSlotArtifact(binding,false),owner=artifact.owner,destinationName=`.authority-ledger-admission-retired-${coordinationHostDigest(owner.host)}-${owner.pid}-${owner.nonce}.abandoned`,source=this.absolute(ADMISSION_SLOT_NAME),destination=this.absolute(destinationName);
+    const disposition=binding.descriptor.kind==="dead-slot"?binding.descriptor.disposition:"abandoned";
+    const artifact=this.boundSlotArtifact(binding,false),owner=artifact.owner,destinationName=`.authority-ledger-admission-retired-${coordinationHostDigest(owner.host)}-${owner.pid}-${owner.nonce}.${disposition}`,source=this.absolute(ADMISSION_SLOT_NAME),destination=this.absolute(destinationName);
     try{await lstat(destination);return "reclassify";}catch(error){if(isSnapshotSharingError(error))return "reclassify";if(!hasCode(error,"ENOENT"))throw error;}
     if(!await this.revalidateBoundSlotArtifact(artifact))return "reclassify";
+    // Spec :311 — `published` requires the byte-identical active lock, re-read immediately before
+    // the rename. Transient absence is generation churn (reclassify); a same-name lock with
+    // different bytes is post-snapshot replacement, preserved corruption (spec :585-587).
+    if(disposition==="published"){
+      let lockBytes:Buffer;
+      try{lockBytes=await readFile(this.absolute(path.join("lock","owner.json")));}catch(error){if(hasCode(error,"ENOENT")||isSnapshotSharingError(error))return "reclassify";throw error;}
+      if(!lockBytes.equals(artifact.ownerBytes))throw new LedgerCorruption("published slot retirement requires the byte-identical active lock");
+    }
     try{await rename(source,destination);}catch(error){if(hasCode(error,"EEXIST")||hasCode(error,"ENOTEMPTY")||hasCode(error,"ENOENT")||isSnapshotSharingError(error))return "reclassify";throw error;}
     const moved=fileIdentity(await lstat(destination,{bigint:true}));if(!sameFileIdentity(artifact.entry.identity,moved))throw new LedgerCorruption("slot retirement changed directory identity");const movedOwner=await this.readExactPrepCleanupFile(path.join(destination,"owner.json"),"retired slot owner");if(!sameFileIdentity(artifact.ownerIdentity,movedOwner.identity)||!artifact.ownerBytes.equals(movedOwner.bytes))throw new LedgerCorruption("slot retirement changed owner evidence");
     await this.syncDirectory(this.root);this.prepHousekeeperRuntime.observeBoundary?.("slot-only-slot-retirement-root-synced");return "progress";
   }
 
   private boundSlotCleanup(binding:PrepAuthorityBinding):Readonly<{ack:CoordinationAck;bytes:Buffer;stageName:string;artifact:HybridOwnedArtifact}>{
-    const artifact=this.boundSlotArtifact(binding,true),parsed=artifact.parsed;if(parsed.kind!=="admission-slot-retired"||parsed.disposition!=="abandoned")throw new LedgerCorruption("invalid abandoned slot cleanup binding");
-    const ack:CoordinationAck={disposition:"abandoned",kind:"admission-slot-retired",markerName:parsed.name,originalName:ADMISSION_SLOT_NAME,owner:artifact.owner,ownerBytesDigest:coordinationRawDigest(artifact.ownerBytes),ownerBytesLength:String(artifact.ownerBytes.length),ownerDigest:coordinationCanonicalDigest(artifact.owner),ownerIdentity:encodeCoordinationIdentityWire(artifact.ownerIdentity),purpose:"slot-retired",recoveryAuthority:"dead-owner-or-exact-creator",slotIdentity:encodeCoordinationIdentityWire(artifact.entry.identity),terminalArtifactDigest:coordinationRawDigest(artifact.ownerBytes),terminalArtifactName:parsed.name,v:COORDINATION_ACK_VERSION},bytes=coordinationCanonicalBytes(ack),stageName=`.authority-ledger-coordination-cleanup-stage-s-${coordinationRawDigest(bytes).slice(7)}.tmp`;
+    const artifact=this.boundSlotArtifact(binding,true),parsed=artifact.parsed;if(parsed.kind!=="admission-slot-retired"||parsed.disposition!=="abandoned"&&parsed.disposition!=="published")throw new LedgerCorruption("invalid slot cleanup binding");
+    // `abandoned` binds its own marker as the terminal; `published` binds the same-owner
+    // successor the descriptor named at derivation time, with bytes re-read from the bound
+    // snapshot — identical inputs reconstruct the exact acknowledgment a crashed own-act pass
+    // left behind, byte for byte, which is what lets a stage or ack resume rather than wedge.
+    let terminalArtifactName:string,terminalBytes:Buffer,recoveryAuthority:string;
+    if(parsed.disposition==="abandoned"){terminalArtifactName=parsed.name;terminalBytes=artifact.ownerBytes;recoveryAuthority="dead-owner-or-exact-creator";}
+    else{
+      const successorName=binding.descriptor.kind==="slot-retired-cleanup"?binding.descriptor.successorName:null;
+      if(successorName===null)throw new LedgerCorruption("published slot cleanup lacks its successor binding");
+      const successorEntry=binding.snapshot.entries.find(value=>value.name===successorName),child=successorEntry===undefined?null:hybridOwnerChild(successorEntry);
+      if(child?.bytes===undefined)throw new LedgerCorruption("published slot cleanup successor has no exact owner bytes");
+      terminalArtifactName=successorName;terminalBytes=child.bytes;recoveryAuthority="active-owner-or-exact-lock-successor";
+    }
+    const ack:CoordinationAck={disposition:parsed.disposition,kind:"admission-slot-retired",markerName:parsed.name,originalName:ADMISSION_SLOT_NAME,owner:artifact.owner,ownerBytesDigest:coordinationRawDigest(artifact.ownerBytes),ownerBytesLength:String(artifact.ownerBytes.length),ownerDigest:coordinationCanonicalDigest(artifact.owner),ownerIdentity:encodeCoordinationIdentityWire(artifact.ownerIdentity),purpose:"slot-retired",recoveryAuthority,slotIdentity:encodeCoordinationIdentityWire(artifact.entry.identity),terminalArtifactDigest:coordinationRawDigest(terminalBytes),terminalArtifactName,v:COORDINATION_ACK_VERSION},bytes=coordinationCanonicalBytes(ack),stageName=`.authority-ledger-coordination-cleanup-stage-s-${coordinationRawDigest(bytes).slice(7)}.tmp`;
     return {ack,bytes,stageName,artifact};
   }
 
@@ -1494,7 +1526,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
     if(binding.descriptor.kind!=="slot-retired-cleanup")return "busy";const lifecycle=binding.descriptor.lifecycleName;
     if(binding.descriptor.orphan){
       if(lifecycle===null)return "busy";const parsed=parseK1Name(lifecycle),entry=binding.snapshot.entries.find(value=>value.name===lifecycle);if(parsed?.kind!=="coordination-ack"||entry?.kind!=="file"||entry.bytes===undefined||entry.identity.nlink!==1n)return "busy";let ack:CoordinationAck;try{ack=parseCoordinationAckBytes(entry.bytes);}catch{throw new LedgerCorruption("invalid orphan slot cleanup acknowledgment");}
-      if(ack.purpose!=="slot-retired"||ack.disposition!=="abandoned"||ack.markerName!==binding.descriptor.targetName||coordinationRawDigest(entry.bytes).slice(7)!==parsed.digest)return "busy";if(await this.prepCleanupNameExists(binding.descriptor.targetName)||await this.prepCleanupNameExists(ADMISSION_SLOT_NAME))return "reclassify";if(!await this.revalidatePrepCleanupFile(lifecycle,entry,entry.bytes))return "reclassify";
+      if(ack.purpose!=="slot-retired"||ack.disposition!==binding.descriptor.disposition||ack.markerName!==binding.descriptor.targetName||coordinationRawDigest(entry.bytes).slice(7)!==parsed.digest)return "busy";if(await this.prepCleanupNameExists(binding.descriptor.targetName)||await this.prepCleanupNameExists(ADMISSION_SLOT_NAME))return "reclassify";if(!await this.revalidatePrepCleanupFile(lifecycle,entry,entry.bytes))return "reclassify";
       try{await unlink(this.absolute(lifecycle));}catch(error){if(hasCode(error,"ENOENT")||hasCode(error,"EEXIST")||hasCode(error,"ENOTEMPTY")||isSnapshotSharingError(error))return "reclassify";throw error;}await this.syncDirectory(this.root);this.prepHousekeeperRuntime.observeBoundary?.("slot-only-cleanup-final-root-synced");return "progress";
     }
     const cleanup=this.boundSlotCleanup(binding),stagePath=this.absolute(cleanup.stageName);if(lifecycle===null){if(await this.prepCleanupNameExists(ADMISSION_SLOT_NAME))return "reclassify";if(!await this.revalidateBoundSlotArtifact(cleanup.artifact))return "refuse";let handle:FileHandle|undefined,createdIdentity:FileIdentity|undefined;try{handle=await open(stagePath,"wx",0o600);const created=await handle.stat({bigint:true});if(!created.isFile()||created.isSymbolicLink()||created.nlink!==1n)throw new LedgerCorruption("invalid new slot cleanup stage");createdIdentity=fileIdentity(created);}catch(error){if(hasCode(error,"EEXIST")||isSnapshotSharingError(error))return "reclassify";throw error;}finally{if(handle)await handle.close();}const originalReturned=await this.prepCleanupNameExists(ADMISSION_SLOT_NAME),markerRemains=await this.revalidateBoundSlotArtifact(cleanup.artifact);if(originalReturned||!markerRemains){if(createdIdentity!==undefined)await this.removeExactCreatedSlotCleanupStage(stagePath,createdIdentity);return originalReturned?"reclassify":"refuse";}this.prepHousekeeperRuntime.observeBoundary?.("slot-only-cleanup-stage-zero");return "progress";}
@@ -1708,8 +1740,9 @@ export class FsAuthorityLedger implements AuthorityLedger {
   // and the closed graph's same-owner successor rule. The rescue authenticates the marker DIRECTORY
   // identity (slotIdentity) and the owner-BYTES commitment; the owner-object identity is
   // unverifiable by construction — the object is already unlinked — and is carried from the
-  // acknowledgment. boundSlotArtifact keeps `published` off the housekeeper mutation path; widening
-  // that gate requires terminal validation there, not just here.
+  // acknowledgment. On the housekeeper mutation path the terminal is validated by reconstruction:
+  // boundSlotCleanup binds it from the descriptor's successor, and advanceBoundSlotCleanup
+  // requires the durable acknowledgment to equal that reconstruction byte for byte.
   private classifyHybridAuthenticatedPartialSlotMarker(parsed:Extract<ParsedK1Name,{kind:"admission-slot-retired"}>,entry:HybridEntrySnapshot,snapshot:HybridRootSnapshot):HybridOwnedArtifact|null{
     if(parsed.disposition!=="abandoned"&&parsed.disposition!=="published"||entry.kind!=="directory"||(entry.children??[]).length!==0)return null;const candidates:CoordinationAck[]=[];
     for(const candidateName of snapshot.names){const candidate=parseK1Name(candidateName);if(candidate?.kind!=="coordination-ack")continue;const candidateEntry=snapshot.entries.find(value=>value.name===candidateName);if(candidateEntry?.kind!=="file"||candidateEntry.bytes===undefined||candidateEntry.identity.nlink!==1n)continue;let ack:CoordinationAck;try{ack=parseCoordinationAckBytes(candidateEntry.bytes);}catch{continue;}if(ack.purpose==="slot-retired"&&ack.disposition===parsed.disposition&&ack.markerName===parsed.name&&coordinationRawDigest(candidateEntry.bytes).slice(7)===candidate.digest)candidates.push(ack);}
@@ -2841,9 +2874,32 @@ function describeStablePrepAuthority(snapshot:HybridRootSnapshot,decision:Hybrid
     const lifecycle=parsed.find(value=>value.kind==="coordination-stage"&&value.purpose==="prep-retired"||value.kind==="coordination-ack"&&prepCleanupAck(snapshot,value)?.purpose==="prep-retired");
     return {kind:"prep-retired-cleanup",targetName:marker.name,lifecycleName:lifecycle?.name??null,orphan:false};
   }
-  const slot=parsed.find((value):value is Extract<ParsedK1Name,{kind:"admission-slot"}>=>value.kind==="admission-slot");if(slot!==undefined&&parsed.length===1&&snapshot.entries.length===1){const child=hybridOwnerChild(snapshot.entries[0]);if(child?.bytes!==undefined)try{const owner=parseCoordinationOwnerBytes(child.bytes);return {kind:"dead-slot",targetName:ADMISSION_SLOT_NAME,pid:owner.pid};}catch{return null;}}
+  const slot=parsed.find((value):value is Extract<ParsedK1Name,{kind:"admission-slot"}>=>value.kind==="admission-slot");
+  if(slot!==undefined&&parsed.length===1){
+    const slotEntry=snapshot.entries.find(value=>value.name===ADMISSION_SLOT_NAME),child=slotEntry===undefined?null:hybridOwnerChild(slotEntry);
+    if(child?.bytes!==undefined)try{
+      const owner=parseCoordinationOwnerBytes(child.bytes);
+      if(snapshot.entries.length===1)return {kind:"dead-slot",targetName:ADMISSION_SLOT_NAME,pid:owner.pid,disposition:"abandoned"};
+      // The granted published form (owner decision 2026-08-05): exactly {slot, byte-identical
+      // same-owner lock}. Inert legacy residue was drained by the pre-classification service, and
+      // any other artifact fails the closed-graph classification before this derivation runs.
+      if(snapshot.entries.length===2){
+        const lock=snapshot.entries.find(value=>value.name==="lock"),lockChild=lock===undefined?null:hybridOwnerChild(lock);
+        if(lock?.kind==="directory"&&lockChild?.bytes!==undefined&&lockChild.bytes.equals(child.bytes))return {kind:"dead-slot",targetName:ADMISSION_SLOT_NAME,pid:owner.pid,disposition:"published"};
+      }
+    }catch{return null;}
+  }
   const slotMarker=parsed.find((value):value is Extract<ParsedK1Name,{kind:"admission-slot-retired"}>=>value.kind==="admission-slot-retired"&&value.disposition==="abandoned");
-  if(slotMarker!==undefined){const lifecycle=parsed.find(value=>value.kind==="coordination-stage"&&value.purpose==="slot-retired"||value.kind==="coordination-ack"&&prepCleanupAck(snapshot,value)?.purpose==="slot-retired");if(parsed.every(value=>value===slotMarker||value===lifecycle)&&snapshot.entries.length===(lifecycle===undefined?1:2))return {kind:"slot-retired-cleanup",targetName:slotMarker.name,lifecycleName:lifecycle?.name??null,orphan:false,pid:slotMarker.pid};}
+  if(slotMarker!==undefined){const lifecycle=parsed.find(value=>value.kind==="coordination-stage"&&value.purpose==="slot-retired"||value.kind==="coordination-ack"&&prepCleanupAck(snapshot,value)?.purpose==="slot-retired");if(parsed.every(value=>value===slotMarker||value===lifecycle)&&snapshot.entries.length===(lifecycle===undefined?1:2))return {kind:"slot-retired-cleanup",targetName:slotMarker.name,lifecycleName:lifecycle?.name??null,orphan:false,pid:slotMarker.pid,disposition:"abandoned",successorName:null};}
+  const publishedMarker=parsed.find((value):value is Extract<ParsedK1Name,{kind:"admission-slot-retired"}>=>value.kind==="admission-slot-retired"&&value.disposition==="published");
+  if(publishedMarker!==undefined){
+    // The closed graph (decision === "busy") has already validated this generation: exactly one
+    // same-owner successor, tolerated inert residue, at most one bound lifecycle artifact. The
+    // descriptor only names the pieces; every mutation revalidates through full reclassification.
+    const lifecycle=parsed.find(value=>value.kind==="coordination-stage"&&value.purpose==="slot-retired"||value.kind==="coordination-ack"&&prepCleanupAck(snapshot,value)?.purpose==="slot-retired");
+    const successorName=publishedSuccessorNameFromSnapshot(snapshot,publishedMarker);
+    if(successorName!==null)return {kind:"slot-retired-cleanup",targetName:publishedMarker.name,lifecycleName:lifecycle?.name??null,orphan:false,pid:publishedMarker.pid,disposition:"published",successorName};
+  }
   for(const value of parsed){
     if(value.kind!=="coordination-ack")continue;
     const ack=prepCleanupAck(snapshot,value);if(ack?.purpose!=="prep-retired")continue;
@@ -2851,7 +2907,21 @@ function describeStablePrepAuthority(snapshot:HybridRootSnapshot,decision:Hybrid
     if(snapshot.names.includes(markerName)||snapshot.names.includes(originalName))continue;
     return {kind:"prep-retired-cleanup",targetName:markerName,lifecycleName:value.name,orphan:true};
   }
-  for(const value of parsed){if(value.kind!=="coordination-ack")continue;const ack=prepCleanupAck(snapshot,value);if(ack?.purpose!=="slot-retired"||ack.disposition!=="abandoned")continue;const markerName=String(ack.markerName),originalName=String(ack.originalName);if(snapshot.names.includes(markerName)||snapshot.names.includes(originalName)||parsed.length!==1||snapshot.entries.length!==1)continue;return {kind:"slot-retired-cleanup",targetName:markerName,lifecycleName:value.name,orphan:true,pid:ack.owner.pid};}
+  for(const value of parsed){
+    if(value.kind!=="coordination-ack")continue;const ack=prepCleanupAck(snapshot,value);if(ack?.purpose!=="slot-retired")continue;
+    const markerName=String(ack.markerName),originalName=String(ack.originalName);
+    if(snapshot.names.includes(markerName)||snapshot.names.includes(originalName))continue;
+    if(ack.disposition==="abandoned"){if(parsed.length!==1||snapshot.entries.length!==1)continue;return {kind:"slot-retired-cleanup",targetName:markerName,lifecycleName:value.name,orphan:true,pid:ack.owner.pid,disposition:"abandoned",successorName:null};}
+    if(ack.disposition==="published"&&parsed.length===1){
+      const successorName=publishedSuccessorNameFromSnapshot(snapshot,{pid:ack.owner.pid,nonce:ack.owner.nonce});
+      if(successorName!==null)return {kind:"slot-retired-cleanup",targetName:markerName,lifecycleName:value.name,orphan:true,pid:ack.owner.pid,disposition:"published",successorName};
+    }
+  }
+  return null;
+}
+function publishedSuccessorNameFromSnapshot(snapshot:HybridRootSnapshot,owner:Readonly<{pid:number;nonce:string}>):string|null{
+  if(snapshot.entries.some(value=>value.name==="lock"))return "lock";
+  for(const name of snapshot.names){const match=RETIRED_LOCK.exec(name);if(match&&Number(match[1])===owner.pid&&match[2]===owner.nonce)return name;}
   return null;
 }
 function prepCleanupAck(snapshot:HybridRootSnapshot,parsed:Extract<ParsedK1Name,{kind:"coordination-ack"}>):CoordinationAck|null{
@@ -2859,7 +2929,11 @@ function prepCleanupAck(snapshot:HybridRootSnapshot,parsed:Extract<ParsedK1Name,
   try{return parseCoordinationAckBytes(entry.bytes);}catch{return null;}
 }
 function samePrepAuthorityDescriptor(left:PrepAuthorityDescriptor,right:PrepAuthorityDescriptor):boolean{
-  return left.kind===right.kind&&left.targetName===right.targetName&&(left.kind==="dead-prep"&&right.kind==="dead-prep"||left.kind==="dead-slot"&&right.kind==="dead-slot"?left.pid===right.pid:left.kind==="prep-retired-cleanup"&&right.kind==="prep-retired-cleanup"?left.lifecycleName===right.lifecycleName&&left.orphan===right.orphan:left.kind==="slot-retired-cleanup"&&right.kind==="slot-retired-cleanup"&&left.lifecycleName===right.lifecycleName&&left.orphan===right.orphan&&left.pid===right.pid);
+  if(left.kind!==right.kind||left.targetName!==right.targetName)return false;
+  if(left.kind==="dead-prep"&&right.kind==="dead-prep")return left.pid===right.pid;
+  if(left.kind==="dead-slot"&&right.kind==="dead-slot")return left.pid===right.pid&&left.disposition===right.disposition;
+  if(left.kind==="prep-retired-cleanup"&&right.kind==="prep-retired-cleanup")return left.lifecycleName===right.lifecycleName&&left.orphan===right.orphan;
+  return left.kind==="slot-retired-cleanup"&&right.kind==="slot-retired-cleanup"&&left.lifecycleName===right.lifecycleName&&left.orphan===right.orphan&&left.pid===right.pid&&left.disposition===right.disposition&&left.successorName===right.successorName;
 }
 function parseK1OperationFenceRuntime(value:unknown):K1OperationFenceRuntime|null{
   if(!isExactObject(value,["delay","expectedBinding","monotonicNow","observeK1OperationFenceBoundary","probeProcessLiveness","topology"],["observeK1OperationFenceBoundary","probeProcessLiveness"]))return null;
