@@ -2214,7 +2214,7 @@ test("reservation linkage lookup returns only the verified ingress/capability/co
 // S1 of the admission-preparation lifecycle (docs/superpowers/plans/2026-08-04-admission-preparation-design.md).
 //
 // Appended at the END of this file ON PURPOSE. The spec cites test line anchors directly -- see
-// docs/specs/compiled-authority-v1.md:594-595 and :609, which cite ledger.test.ts:1022 and :1746
+// docs/specs/compiled-authority-v1.md:607-608 and :622, which cite ledger.test.ts:1022 and :1746
 // inside an UNRESOLVED open-discrepancy note -- so an insertion higher up silently rots an anchor
 // the owner still has to act on.
 //
@@ -2275,7 +2275,7 @@ test("option-gated admission preparation hard exits leave the exact specified du
     assert.equal(existsSync(path.join(root,"lock")),false,`${boundary.point} precedes publication`);
     // Exact name grammar, not a prefix. A preparation carrying a stale host digest or a pid that is
     // not the creating process is not recoverable: prep-retired housekeeping authority is keyed on
-    // exactly those fields (spec :465-466).
+    // exactly those fields (spec :478-479).
     if(boundary.prep===1){const match=LIVE_ADMISSION_PREP.exec(preps[0]!);assert.ok(match,`${boundary.point}: the preparation carries the exact specified grammar, got ${preps[0]}`);assert.equal(match[1],publicationHostDigest(hostname()),`${boundary.point}: exact host digest`);assert.equal(Number(match[2]),childPid,`${boundary.point}: the preparation pid is the creating process`);}
     const target=path.join(root,preps[0]??slots[0]!),ownerPath=path.join(target,"owner.json");
     if(boundary.owner==="absent"){assert.equal(existsSync(ownerPath),false,`${boundary.point} precedes owner creation`);assert.deepEqual(await readdir(target),[],"an empty preparation holds nothing");return;}
@@ -2292,7 +2292,7 @@ test("option-gated admission preparation hard exits leave the exact specified du
 
 // The completion pin. S1 builds preparation -> slot -> slot-owner-bound stage -> lock but has no
 // own-slot retirement (that is S2), so a successful publication cannot retire its exact slot. The
-// spec's terminal for that case (:276-278): retire the active lock to `publication-aborted`,
+// spec's terminal for that case (:289-291): retire the active lock to `publication-aborted`,
 // root-sync, and run ZERO callback.
 //
 // THREE THINGS HERE ARE STAGING DECISIONS, NOT SPEC, and are recorded as such:
@@ -2305,7 +2305,7 @@ test("option-gated admission preparation hard exits leave the exact specified du
 //  (c) The surviving unretired slot contradicts nothing in the spec, but activation-contract item 5
 //      in the design plan requires zero admission-family residue. That item binds a later slice;
 //      the assertion below must be REVISED, not extended, when S2 lands.
-test("option-gated admission preparation promotes one owner and takes the specified degraded terminal",()=>withRoot(async root=>{
+test("option-gated admission preparation promotes one owner through the nine boundaries",()=>withRoot(async root=>{
   const option=k1AdmissionPreparationOption(),slot=path.join(root,".authority-ledger-admission-0");
   const observed:string[]=[];
   let prepOwner=Buffer.alloc(0),slotOwner=Buffer.alloc(0),lockOwner=Buffer.alloc(0),stageOwner=Buffer.alloc(0);
@@ -2328,12 +2328,12 @@ test("option-gated admission preparation promotes one owner and takes the specif
   assert.deepEqual(lockOwner,slotOwner,"prep, slot, publication stage and active lock carry one canonical owner");
   assert.equal(slotAtLockSync,true,"the fixed slot is still present when the active lock root-syncs");
   assert.equal(callbackEntries,0,"a publication that cannot retire its slot runs zero callback");
-  assert.deepEqual(result,{ok:false,reason:"busy"});
   assert.ok(publishedOwner);
-  assert.equal(existsSync(path.join(root,"lock")),false,"the active lock is retired, not left live");
-  assert.equal(existsSync(path.join(root,`.authority-ledger-lock-${publishedOwner!.pid}-${publishedOwner!.nonce}.publication-aborted`)),true,"the degraded terminal is the specified publication-aborted marker");
+  // The operation's TERMINAL is not this pin's subject -- it moved when S2 replaced S1's no-attempt
+  // exit with a real bounded retirement, and it moves again at S3. The two terminal pins below own
+  // it. What this pin owns is the promotion itself, which is stable across all three.
+  assert.equal(result.ok,false,"the terminal is owned by the retirement pins below, not by this one");
   assert.equal(livePrepNames(await readdir(root)).length,0,"the promoted preparation name is gone");
-  assert.equal(existsSync(slot),true,"the unretired slot survives; what that costs is pinned by the next test, not assumed here");
   // The only discriminator for the boundaries the durable-state rows collapse (the two sync barriers
   // and the final read-only validation): each specified point fires exactly once, in spec order.
   assert.deepEqual(observed.filter(point=>(K1_ADMISSION_PREPARATION_POINTS as readonly string[]).includes(point)),[...K1_ADMISSION_PREPARATION_POINTS],"the nine boundaries fire exactly once each, in the specified order");
@@ -2363,28 +2363,36 @@ test("the admission-preparation option leaves default clean-root behaviour untou
 //
 // It also pins a consequence nobody predicted: the very next DEFAULT acquisition drains the
 // `publication-aborted` marker (src/authority/host/fs-ledger.ts services retirement artifacts when
-// the only K1 name is the slot) while leaving the slot itself. Spec :472 makes that same-owner
+// the only K1 name is the slot) while leaving the slot itself. Spec :485 makes that same-owner
 // successor the only authority that can ever retire the slot as `published`, so S1 destroys its own
 // recovery path. S2 must change this; the pin exists so S2 cannot change it silently.
-test("option-gated admission preparation leaves a root that S1 cannot drain",()=>withRoot(async root=>{
+test("option-gated publication leaves an undrained published-slot marker that blocks its own operation",()=>withRoot(async root=>{
+  // Measured, and it is the reason S3 exists. Spec :506-508 requires the active owner to perform one
+  // complete cleanup pass BEFORE callback entry. S2 retires the slot but drains nothing, so the
+  // `published` retirement marker is still in the root when withLock's post-acquisition root guard
+  // runs -- and that guard's allow-list (assertNoLinks) knows the legacy artifact set only, not the
+  // K1 admission family. It refuses, so a publication that retired its own slot correctly still
+  // cannot complete. S3 must drain the marker before the guard sees it; this pin is what will flip.
   const option=k1AdmissionPreparationOption(),slot=path.join(root,".authority-ledger-admission-0");
-  const enabled=()=>new RawFsAuthorityLedger(root,{[option]:K1_ADMISSION_PREPARATION_MODE,now:()=>t0,lockTimeoutMs:200} as never);
-  const byDefault=()=>new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:200} as never);
-  assert.deepEqual(await enabled().observeClock(),{ok:false,reason:"busy"});
-  const afterFirst=(await readdir(root)).sort();
-  assert.equal(existsSync(slot),true);
-  assert.equal(afterFirst.some(name=>name.endsWith(".publication-aborted")),true,"the first acquisition leaves slot + publication-aborted");
-  // The next DEFAULT acquisition drains the marker and keeps the slot.
+  const enabled=()=>new RawFsAuthorityLedger(root,{[option]:K1_ADMISSION_PREPARATION_MODE,now:()=>t0,lockTimeoutMs:2_000} as never);
+  const byDefault=()=>new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:2_000} as never);
+  let callbacks=0;
+  const first=await new RawFsAuthorityLedger(root,{[option]:K1_ADMISSION_PREPARATION_MODE,now:()=>t0,lockTimeoutMs:2_000,faultInjector:(point:string)=>{if(point==="before-ledger-operation-callback")callbacks++;}} as never).observeClock();
+  assert.deepEqual(first,{ok:false,reason:"corruption"},"an undrained published-slot marker is refused by the root guard");
+  assert.equal(callbacks,0,"and the callback is never entered");
+  assert.equal(existsSync(slot),false,"the slot itself did retire");
+  const retired=admissionRetiredNames(await readdir(root));
+  assert.equal(retired.length,1,"exactly one published-slot retirement marker remains");
+  assert.match(retired[0]!,/\.published$/,"and its disposition is `published`");
+  // The residue is stable, and every later acquisition is refused EARLIER and differently: the
+  // classifier now sees a K1 reserved name and returns `busy` before the post-acquisition guard is
+  // ever reached. Two different refusals for one root, and neither drains it.
   assert.deepEqual(await byDefault().observeClock(),{ok:false,reason:"busy"});
-  assert.deepEqual((await readdir(root)).sort(),[".authority-ledger-admission-0"],"the same-owner publication-aborted successor is gone, the slot is not");
-  // And from there the root is wedged for DEFAULT, option-off operations, including reads.
-  assert.deepEqual(await byDefault().observeClock(),{ok:false,reason:"busy"});
   assert.deepEqual(await enabled().observeClock(),{ok:false,reason:"busy"});
-  await assert.rejects(()=>byDefault().getHighWaterMark(),/busy/,"a wedged root refuses reads too");
-  assert.deepEqual((await readdir(root)).sort(),[".authority-ledger-admission-0"],"and nothing further mutates it");
+  assert.deepEqual(admissionRetiredNames(await readdir(root)),retired,"the marker is preserved byte-stable, never half-drained");
 }));
 
-// Spec :269 -- the exact slot owner alone may create one publication stage; spec :345 -- a lone live
+// Spec :282 -- the exact slot owner alone may create one publication stage; spec :358 -- a lone live
 // external pre-slot publication stage is preserved and bounded-waits to `busy`. The guard must not
 // fall through to legacy publication when it cannot prepare, or the option publishes an active lock
 // with no fixed slot behind it and then runs the callback.
@@ -2433,3 +2441,183 @@ test("option-gated admission promotion never overwrites an existing fixed slot",
     assert.equal(livePrepNames(await readdir(root)).length,1,`${shape}: the contender's own preparation is preserved in place, never deleted`);
   }));
 });
+
+// ---------------------------------------------------------------------------------------------
+// S2 — the active owner retiring ITS OWN published slot.
+//
+// Spec :506-508: "After publication, the active owner—not the pre-admission housekeeper—closes and
+// exact-revalidates the complete coordination generation, durably retires the matching slot as
+// `published`, and performs one complete active-owner cleanup pass before callback entry."
+// Spec :285-288: the slot renames to `.authority-ledger-admission-retired-<host64>-<pid>-<nonce64>
+// .published`, `published` REQUIRES the byte-identical active lock, and callback eligibility begins
+// only after both the active-lock root sync AND the matching published slot-retirement root sync.
+//
+// This is an OWN-ACT retirement and deliberately does not touch the blocked foreign-dead-slot
+// housekeeping decision: the committed dead-owner slot-orphan pins seed FOREIGN slots and a
+// lock-seeking contender must still leave those byte-identical. The last pin below is a direct
+// regression guard on exactly that, so the two acts cannot be conflated by a later change.
+//
+// These mirror the committed default-path pins at ledger.test.ts:1670 and :1672, which stay red
+// until the S4 activation flip.
+// ---------------------------------------------------------------------------------------------
+const ADMISSION_SLOT_RETIRE_POINTS=["before-admission-slot-retire-rename","after-admission-slot-retire-rename","after-admission-slot-retire-root-sync"] as const;
+function admissionRetiredNames(names:readonly string[]):string[]{return names.filter(name=>name.startsWith(".authority-ledger-admission-retired-"));}
+
+test("option-gated publication retires its own slot as published before entering the callback",()=>withRoot(async root=>{
+  const option=k1AdmissionPreparationOption(),slot=path.join(root,".authority-ledger-admission-0");
+  const observed:string[]=[];
+  let slotOwner=Buffer.alloc(0),lockOwner=Buffer.alloc(0),retiredOwner=Buffer.alloc(0);
+  let slotAtLockSync=false,slotAtRetireRootSync=true,retirementRootSynced=false,callbackEntries=0,slotIdentity:ExactFsIdentity|undefined,retiredIdentity:ExactFsIdentity|undefined,retiredName="";
+  const result=await new RawFsAuthorityLedger(root,{[option]:K1_ADMISSION_PREPARATION_MODE,now:()=>t0,lockTimeoutMs:2_000,faultInjector:(point:string)=>{
+    observed.push(point);
+    if(point==="after-admission-slot-root-sync"){slotOwner=readFileSync(path.join(slot,"owner.json"));slotIdentity=exactFsIdentity(slot);}
+    if(point==="after-lock-publication-root-sync"){slotAtLockSync=existsSync(slot);lockOwner=readFileSync(path.join(root,"lock","owner.json"));}
+    // Spec :285 — `published` requires the byte-identical active lock, so the lock must still be
+    // exactly this owner's at the moment the retirement rename is attempted.
+    if(point==="before-admission-slot-retire-rename"){assert.equal(existsSync(slot),true,"the slot is still exact when its retirement begins");assert.deepEqual(readFileSync(path.join(root,"lock","owner.json")),slotOwner,"the byte-identical active lock is the authority for `published`");}
+    if(point==="after-admission-slot-retire-rename"){slotAtRetireRootSync=existsSync(slot);retiredName=admissionRetiredNames(readdirSync(root))[0]??"";assert.ok(retiredName,"the slot is renamed to a retirement marker");retiredIdentity=exactFsIdentity(path.join(root,retiredName));retiredOwner=readFileSync(path.join(root,retiredName,"owner.json"));}
+    if(point==="after-admission-slot-retire-root-sync"){retirementRootSynced=true;assert.equal(existsSync(slot),false,"the fixed slot is gone once its retirement is durable");}
+    if(point==="before-ledger-operation-callback"){callbackEntries++;assert.equal(retirementRootSynced,true,"callback eligibility begins only after the published slot-retirement root sync");}
+  }} as never).observeClock();
+  // S2 performs the retirement; it does NOT complete the operation. The undrained `published` marker
+  // is refused by the post-acquisition root guard, so callback eligibility (spec :288) is never
+  // reached. S3's cleanup pass is what turns this into {ok:true,status:"advanced"} with one callback,
+  // which is what the committed default-path pin at :1670 has always required.
+  assert.deepEqual(result,{ok:false,reason:"corruption"},"retirement succeeds; completion waits on the S3 cleanup pass");
+  assert.equal(callbackEntries,0,"callback eligibility is not reached while the marker is undrained");
+  assert.equal(slotAtLockSync,true);
+  assert.equal(slotAtRetireRootSync,false,"the rename removes the slot name");
+  assert.equal(retirementRootSynced,true);
+  assert.deepEqual(lockOwner,slotOwner,"one canonical owner across slot and active lock");
+  assert.deepEqual(retiredOwner,slotOwner,"retirement moves the slot, never rewrites its owner");
+  assert.deepEqual(retiredIdentity,slotIdentity,"retirement is an atomic rename of the slot directory itself");
+  const owner=JSON.parse(slotOwner.toString("utf8")) as AdmissionOwner;
+  assert.equal(retiredName,admissionRetiredName(owner,"published"),"the exact specified retirement grammar and disposition");
+  assert.deepEqual(observed.filter(point=>(ADMISSION_SLOT_RETIRE_POINTS as readonly string[]).includes(point)),[...ADMISSION_SLOT_RETIRE_POINTS],"the three own-act retirement boundaries fire exactly once each, in spec order");
+  assert.equal(existsSync(slot),false);
+}));
+
+// Spec :289-291 — if a successful publication cannot retire its exact slot within its FRESH
+// slot-retirement deadline, the owner retires the active lock to publication-aborted, root-syncs and
+// runs zero callback. S1 reached this terminal by having no mechanism; S2 must reach it by a real
+// bounded attempt that fails. This is the option-gated twin of the committed pin at :1672.
+test("option-gated publication whose own slot retirement fails aborts the lock before callback",()=>withRoot(async root=>{
+  const option=k1AdmissionPreparationOption(),slot=path.join(root,".authority-ledger-admission-0");
+  let retirementAttempts=0,callbackEntries=0,publishedOwner:AdmissionOwner|undefined;
+  const result=await new RawFsAuthorityLedger(root,{[option]:K1_ADMISSION_PREPARATION_MODE,now:()=>t0,lockTimeoutMs:20,faultInjector:(point:string)=>{
+    if(point==="after-lock-publication-root-sync")publishedOwner=JSON.parse(readFileSync(path.join(root,"lock","owner.json"),"utf8")) as AdmissionOwner;
+    if(point==="before-admission-slot-retire-rename"){retirementAttempts++;throw Object.assign(new Error("sharing"),{code:"EBUSY"});}
+    if(point==="before-ledger-operation-callback")callbackEntries++;
+  }} as never).observeClock();
+  assert.ok(retirementAttempts>0,"slot retirement has its own bounded retry path");
+  assert.equal(callbackEntries,0,"a publication that cannot retire its slot runs zero callback");
+  assert.deepEqual(result,{ok:false,reason:"busy"});
+  assert.ok(publishedOwner);
+  assert.equal(existsSync(path.join(root,"lock")),false);
+  assert.equal(existsSync(path.join(root,`.authority-ledger-lock-${publishedOwner!.pid}-${publishedOwner!.nonce}.publication-aborted`)),true,"the degraded terminal is unchanged from S1");
+  assert.equal(existsSync(slot),true,"a slot that could not retire is preserved, not abandoned");
+}));
+
+// The own-act/foreign-act boundary. An earlier version of this guard seeded a foreign slot in the one
+// literal K1 name, which meant the contender never prepared at all -- it would have passed with the
+// own-act path deleted, and passed identically with the option OFF. It measured admission refusal,
+// not the boundary.
+//
+// This version makes the own-act path actually RUN and then requires it to decline: the acquisition
+// creates and promotes its own slot, and only then is that slot swapped for a foreign directory
+// carrying byte-identical owner bytes. Bytes alone must not authorise retirement -- spec :302 makes
+// same-name replacement preserved corruption, and spec :485 makes the `published` marker durable
+// evidence a later housekeeper trusts, so laundering a replaced slot into one is the worst available
+// outcome. The retirement binds to the promotion-time creator snapshot, not to a fresh stat.
+test("option-gated own-act retirement refuses a slot that was replaced under its own name",()=>withRoot(async root=>{
+  const option=k1AdmissionPreparationOption(),slot=path.join(root,".authority-ledger-admission-0");
+  let swapped=false,originalId:ExactFsIdentity|undefined,replacementId:ExactFsIdentity|undefined,retireRenames=0,callbacks=0;
+  const result=await new RawFsAuthorityLedger(root,{[option]:K1_ADMISSION_PREPARATION_MODE,now:()=>t0,lockTimeoutMs:200,faultInjector:(point:string)=>{
+    if(point==="after-lock-publication-root-sync"&&!swapped){
+      swapped=true;originalId=exactFsIdentity(slot);
+      const bytes=readFileSync(path.join(slot,"owner.json")),stash=`${slot}.stash`;
+      renameSync(slot,stash);mkdirSync(slot);writeFileSync(path.join(slot,"owner.json"),bytes);rmSync(stash,{recursive:true,force:true});
+      replacementId=exactFsIdentity(slot);
+    }
+    if(point==="after-admission-slot-retire-rename")retireRenames++;
+    if(point==="before-ledger-operation-callback")callbacks++;
+  }} as never).observeClock();
+  assert.equal(swapped,true,"the fixture replaces the promoted slot with a byte-identical directory");
+  assert.notDeepEqual(replacementId,originalId,"and the replacement really is a different filesystem object");
+  assert.equal(retireRenames,0,"a replaced slot is never minted into a durable `published` retirement marker");
+  assert.equal(callbacks,0);
+  assert.deepEqual(result,{ok:false,reason:"corruption"});
+  assert.deepEqual(admissionRetiredNames(await readdir(root)),[],"no retirement marker exists");
+  assert.equal(existsSync(slot),true,"the replaced slot is preserved, not deleted");
+}));
+
+// Spec :289-291 applies to EVERY way a publication can fail to retire its slot, not just deadline
+// exhaustion. A corruption throw that skips it leaves the freshly published active lock live, which
+// bricks the root for every later operation including reads. An earlier revision of this slice did
+// exactly that, and it was invisible because the assertion that would have caught it had been deleted
+// from a neighbouring pin in the same change. This pin exists so that cannot recur silently.
+test("option-gated publication never leaves its active lock live on any non-ok terminal",async t=>{
+  const option=k1AdmissionPreparationOption();
+  const cases=[
+    {name:"slot owner drifts",point:"after-admission-slot-final-validation",act:(root:string)=>{writeFileSync(path.join(root,".authority-ledger-admission-0","owner.json"),publicationOwnerBytes({host:hostname(),nonce:"a1".repeat(32),pid:process.pid,v:1}));}},
+    {name:"slot gains an extra child",point:"after-lock-publication-root-sync",act:(root:string)=>{writeFileSync(path.join(root,".authority-ledger-admission-0","intruder.json"),"x");}},
+    {name:"slot vanishes",point:"after-lock-publication-root-sync",act:(root:string)=>{rmSync(path.join(root,".authority-ledger-admission-0"),{recursive:true,force:true});}},
+  ] as const;
+  for(const item of cases)await t.test(item.name,()=>withRoot(async root=>{
+    let fired=false,callbacks=0;
+    const result=await new RawFsAuthorityLedger(root,{[option]:K1_ADMISSION_PREPARATION_MODE,now:()=>t0,lockTimeoutMs:200,faultInjector:(point:string)=>{
+      if(point===item.point&&!fired){fired=true;item.act(root);}
+      if(point==="before-ledger-operation-callback")callbacks++;
+    }} as never).observeClock();
+    assert.equal(fired,true,`${item.name}: the fixture fired`);
+    assert.equal(result.ok,false,`${item.name}: does not complete`);
+    assert.equal(callbacks,0,`${item.name}: zero callback`);
+    const names=await readdir(root);
+    assert.equal(names.includes("lock"),false,`${item.name}: the active lock is never left live`);
+    assert.equal(names.some(name=>name.endsWith(".publication-aborted")),true,`${item.name}: the specified degraded terminal artifact is durable`);
+    assert.deepEqual(admissionRetiredNames(names),[],`${item.name}: no published marker is minted`);
+  }));
+});
+
+// Idempotent re-entry. A transient error AFTER the retirement rename has committed must resume, not
+// restart: restarting finds the source gone, burns the whole budget, and reports the degraded
+// terminal for a retirement that actually succeeded -- a durable record carrying BOTH a `published`
+// marker and a `publication-aborted` one, which describes two contradictory histories.
+test("option-gated own-act retirement resumes after a committed rename instead of restarting",()=>withRoot(async root=>{
+  const option=k1AdmissionPreparationOption();
+  let injected=0,rootSyncs=0;
+  await new RawFsAuthorityLedger(root,{[option]:K1_ADMISSION_PREPARATION_MODE,now:()=>t0,lockTimeoutMs:200,faultInjector:(point:string)=>{
+    if(point==="after-admission-slot-retire-rename"&&injected++===0)throw Object.assign(new Error("sharing"),{code:"EBUSY"});
+    if(point==="after-admission-slot-retire-root-sync")rootSyncs++;
+  }} as never).observeClock();
+  assert.equal(injected,1,"the transient fires once, after the rename is durable");
+  assert.equal(rootSyncs,1,"the retry resumes at the root sync rather than restarting from the vanished source");
+  const names=await readdir(root);
+  assert.equal(admissionRetiredNames(names).length,1,"the retirement completed");
+  assert.match(admissionRetiredNames(names)[0]!,/\.published$/);
+  assert.equal(names.some(name=>name.endsWith(".publication-aborted")),false,"and no contradictory publication-aborted marker is written alongside it");
+}));
+
+// Spec :285 -- `published` requires the byte-identical active lock, and the slot must still be the
+// owner's own. The retirement therefore revalidates BOTH before renaming.
+//
+// Only the slot half is exercisable. Measured by patching the build: deleting the active-lock
+// precondition changes no test result, because there is no injectable window that can reach it --
+// tampering with the lock owner before retirement is already caught by assertPublishedSnapshotUnchanged
+// at the publication root sync, and no fault point sits between that check and this one. The
+// precondition stays as defence-in-depth for the untestable window; this pin covers the half that a
+// fixture can actually reach, so the revalidation is not wholly unpinned.
+test("option-gated own-act retirement refuses when its own slot owner drifts",()=>withRoot(async root=>{
+  const option=k1AdmissionPreparationOption(),slot=path.join(root,".authority-ledger-admission-0");
+  let retireRenames=0,callbacks=0,tampered=false;
+  const result=await new RawFsAuthorityLedger(root,{[option]:K1_ADMISSION_PREPARATION_MODE,now:()=>t0,lockTimeoutMs:200,faultInjector:(point:string)=>{
+    if(point==="after-admission-slot-final-validation"&&!tampered){tampered=true;writeFileSync(path.join(slot,"owner.json"),publicationOwnerBytes({host:hostname(),nonce:"e9".repeat(32),pid:process.pid,v:1}));}
+    if(point==="after-admission-slot-retire-rename")retireRenames++;
+    if(point==="before-ledger-operation-callback")callbacks++;
+  }} as never).observeClock();
+  assert.equal(tampered,true,"the fixture drifts the slot owner after its final validation");
+  assert.equal(retireRenames,0,"a slot whose owner is no longer this acquisition's is never retired as published");
+  assert.equal(callbacks,0);
+  assert.deepEqual(result,{ok:false,reason:"corruption"});
+  assert.deepEqual(admissionRetiredNames(await readdir(root)),[],"no retirement marker is minted from a drifted slot");
+}));

@@ -264,6 +264,19 @@ overruled without archaeology.
    Three subsequent default acquisitions then return `busy` and reads refuse. Whether the successor
    is protected while a matching unretired slot is present is unstated.
 
+5. **The prose and a committed pin disagree on whether generation closure precedes the `published`
+   slot retirement.** The active-owner sentence below lists the duties in the order closure ->
+   retire -> cleanup pass. The committed pin at `test/authority/ledger.test.ts:1822` pins the
+   opposite order, expecting `slot-retire-root-sync` BEFORE `generation-closed`. The implementation
+   follows the pin, because the `published` precondition as written requires only the byte-identical
+   active lock, which it checks. Recorded rather than resolved: one of the two has to give, and
+   which one is the owner's call.
+6. **Two fresh post-publication budgets, or one.** "Successful publication receives one separate
+   fresh slot-retirement deadline. No wait, retry, progress, housekeeper transition, or root sync
+   widens any budget" does not say whether the `publication-aborted` fallback spends that same
+   budget or draws its own. The implementation now draws exactly one and shares it, which is the
+   reading that keeps the stated bound meaningful, but the sentence admits the other.
+
 Full-root classification and corruption precedence occur before admission denial. A live exact fixed
 slot bounded-waits under the acquisition deadline and then returns `busy` unchanged. A dead exact slot
 is recoverable only after full classification and final exact revalidation. The exact slot owner alone
