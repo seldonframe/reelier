@@ -1676,7 +1676,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
     for(const ack of acks)if(ack.ack!==null)this.validateHybridAckBinding(ack,byName,owned,retired,acks);
     this.validateHybridLegacyCleanupCoexistence(legacyCleanup,owned,slotRetired,byName,activeOwner,retired,publications.length,acks.length);
     const orphanFinalDecision=this.classifyHybridOrphanFinalGeneration(byName,owned,retired,activeOwner,publications.length,acks);if(orphanFinalDecision!==null)return orphanFinalDecision;
-    if(preps.length){if(parsedK1.length!==1||publications.length||activeOwner!==null||retired.size)throw new LedgerCorruption("impossible preparation graph");return "busy";}
+    if(preps.length){if(parsedK1.length!==1||publications.length||activeOwner!==null||this.blockingRetiredResidue(retired,preps[0].owner))throw new LedgerCorruption("impossible preparation graph");return "busy";}
     if(slots.length){
       if(parsedK1.length!==1||retired.size||acks.length||prepRetired.length||slotRetired.length||withdrawals.length)throw new LedgerCorruption("impossible fixed-slot graph");
       const slot=slots[0];if(publications.length&&activeOwner!==null)throw new LedgerCorruption("slot cannot bind stage and active lock");
@@ -1684,7 +1684,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
       if(activeOwner!==null&&!sameCoordinationOwner(slot.owner,activeOwner))throw new LedgerCorruption("slot active owner mismatch");
       return "busy";
     }
-    if(prepRetired.length){if(slotRetired.length||withdrawals.length||publications.length||activeOwner!==null||retired.size)throw new LedgerCorruption("impossible retired preparation graph");return "busy";}
+    if(prepRetired.length){if(slotRetired.length||withdrawals.length||publications.length||activeOwner!==null||this.blockingRetiredResidue(retired,prepRetired[0].owner))throw new LedgerCorruption("impossible retired preparation graph");return "busy";}
     if(slotRetired.length){
       if(prepRetired.length||publications.length)throw new LedgerCorruption("impossible retired slot graph");
       const marker=slotRetired[0],parsed=marker.parsed as Extract<ParsedK1Name,{kind:"admission-slot-retired"}>;
@@ -1873,7 +1873,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
     if(orphans.length!==1||publicationCount!==0)throw new LedgerCorruption("K1 generation contains multiple or mixed orphan-final lineages");
     const orphan=orphans[0],ack=orphan.ack!;
     if(ack.purpose==="prep-retired"){
-      if(acks.length!==1||owned.length!==0||activeOwner!==null||retired.size!==0)throw new LedgerCorruption("orphan prep-retired final has unrelated generation residue");
+      if(acks.length!==1||owned.length!==0||activeOwner!==null||this.blockingRetiredResidue(retired,ack.owner)!==0)throw new LedgerCorruption("orphan prep-retired final has unrelated generation residue");
       return "busy";
     }
     if(ack.purpose==="creator-withdrawal"){
@@ -1899,6 +1899,22 @@ export class FsAuthorityLedger implements AuthorityLedger {
     const creatorLifecycle=acks.filter(value=>(value.parsed.kind==="coordination-stage"?value.parsed.purpose:value.ack?.purpose)==="creator-withdrawal");
     if(withdrawals.length===0&&acks.length!==1||withdrawals.length===1&&(acks.length<1||acks.length>2||acks.length===2&&creatorLifecycle.length!==1))throw new LedgerCorruption("orphan withdrawn-slot lineage has incoherent cleanup lifecycle");
     return "busy";
+  }
+
+  // The preparation-family twin of the successor tolerance below, measured 2026-08-05: a warm
+  // root's steady-state unrelated `released` marker made every pre-rename preparation crash — and,
+  // once the preparation branch tolerated it, every prep-retired lifecycle state and the orphan
+  // final ack state of the SAME real recovery lineage — permanent corruption from both entry
+  // points. Only the unrelated `released` marker is inert here: it is the one artifact the warm
+  // lineage actually leaves. An unrelated `publication-aborted` has no measured preparation-family
+  // lineage and the committed pin "prep-retired bound ack plus unrelated publication-aborted is
+  // impossible" holds it to corruption; a `recovery-pending` marker is semantic residue with no
+  // next active owner in these lock-less graphs; and a SAME-owner marker beside its own
+  // preparation family has no real lineage — all of those stay corruption.
+  private blockingRetiredResidue(retired:Map<string,Readonly<{owner:CoordinationOwner;entry:HybridEntrySnapshot;disposition:RetirementDisposition}>>,owner:CoordinationOwner):number{
+    let blocking=0;
+    for(const item of retired.values())if(item.disposition!=="released"||sameCoordinationOwner(item.owner,owner))blocking++;
+    return blocking;
   }
 
   // Spec :510 — the successor authority is the exact SAME-OWNER active lock or same-owner

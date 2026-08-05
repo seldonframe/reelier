@@ -1,6 +1,7 @@
 # Reelier — numbers worth knowing
 
-**Pinned to `codex/universal-compiled-authority` @ `8009212`, measured 2026-08-05 on Windows 11.**
+**Pinned to `codex/universal-compiled-authority` @ Batch A (warm-prep fix), measured 2026-08-05 on
+Windows 11.** Update the pin hash to the Batch A commit when quoting.
 
 _Every number here is quoted somewhere: in a commit message, a PR body, a plan, or an estimate. Two
 were quoted wrongly in a single session — "15 missing fault points" (really 34) and "402 pass"
@@ -47,9 +48,9 @@ after this work, not before.
 
 | Quantity | Value | Status |
 |---|---|---|
-| Ledger suite | **498 pass / 80 fail** (also the recorded gate baseline; the flake rows below are the ±) | measured |
-| Distinct failing test names in that suite | **79** | measured — the recorded baseline is the authority |
-| Full `npm test` | **2,142 pass / 82 fail / 1 skipped** | measured; every failing name in the recorded ledger baseline or the rotating flake below |
+| Ledger suite | **512 pass / 79 fail** after the Batch A warm-prep fix (+13: the warm pin family; the 100-process flake was PASSING in the re-saved baseline, so under load it can surface as "newly failing" — re-run it in isolation per §3 before believing that) | measured |
+| Pre-Batch-A ledger suite (the prior recorded gate) | 498 pass / 80 fail | superseded 2026-08-05 |
+| Full `npm test` | **2,157 pass / 80 fail / 1 skipped** at the warm-prep fix (pre-fix same-day: 2,145/80/1); failing-set delta across those two runs was exactly the two documented rotating flakes | measured |
 | Failures outside `ledger.test.ts` | **0** on an idle machine; 1 per run under load, differing each run, each passing in isolation | measured |
 | Ledger suite wall clock | ~80–90 s | measured |
 | Full `npm test` wall clock | ~5 min | measured |

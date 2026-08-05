@@ -468,14 +468,14 @@ as `published` on the authority of its byte-identical same-owner active lock, th
 marker's cleanup lifecycle. Initiating an `abandoned`-family retirement stays reserved to `recover`,
 byte-identical under every lock-seeking contender, as the committed dead-owner slot-orphan pins require.
 
-A related measured limit, recorded 2026-08-05 rather than fixed: a WARM preparation-stage crash at
-any of the six pre-rename points — the five `after-admission-prep-*` boundaries plus
-`before-admission-slot-rename` — on a root carrying the previous acquisition's steady-state
-`.released` marker is permanent corruption from both `observeClock` and `recover()`: the
-preparation branch tolerates no retired-lock markers, and the pre-classification legacy service
-never fires for preparation names. The three post-rename points leave the fixed slot, whose
-abandoned route `recover()` drains warm. Fresh-root fixtures hid this, as they hid four prior
-residue defects. It gates any clean-root activation flip and is not decided here.
+A related measured limit, recorded 2026-08-05 and RESOLVED the same day: a WARM preparation-stage
+crash at any of the six pre-rename points on a root carrying the previous acquisition's
+steady-state `.released` marker was permanent corruption from both `observeClock` and `recover()`.
+The fix is classification tolerance, not service widening (both were built and measured): the
+preparation, retired-preparation, and orphan prep-final branches treat exactly the UNRELATED
+`released` marker as inert legacy residue, while `publication-aborted` (a committed pin holds it),
+`recovery-pending`, and every same-owner marker stay corruption. Both entry points heal all six
+shapes warm, observation mutates nothing beside a live preparation, and this gate is closed.
 
 The pre-admission housekeeper may only retire the exact dead preparation, publication stage, or fixed
 slot authorized below; progress one exact cleanup stage to its bound ack; remove one exact marker or

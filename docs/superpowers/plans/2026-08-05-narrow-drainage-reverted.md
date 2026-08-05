@@ -115,3 +115,7 @@ sentence was narrowed accordingly beside the rule.
 NEW measured defect, recorded in the spec and NOT fixed here: a WARM preparation-stage crash
 (prep + steady-state `.released`) is permanent corruption from both entry points — the fifth
 fresh-root-blindness instance. Must be resolved before any activation flip.
+RESOLVED in Batch A, 2026-08-05 (later): released-only classification tolerance on the
+preparation-family branches, both designs built and measured first — see the spec's warm-prep
+record (grep "A related measured limit") and the Batch A postscript in
+`2026-08-05-s4-activation-measured.md`.

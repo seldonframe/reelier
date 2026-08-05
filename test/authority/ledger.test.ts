@@ -3050,3 +3050,97 @@ test("foreign-dead-slot drainage retires and drains the granted shapes",{timeout
     });
   });
 });
+
+test("warm preparation-stage crashes recover from both entry points and the root self-heals",{timeout:120_000},async t=>{
+  const option=k1AdmissionPreparationOption();
+  const warmup=async(root:string)=>{
+    assert.deepEqual(await new RawFsAuthorityLedger(root,{[option]:K1_ADMISSION_PREPARATION_MODE,now:()=>t0,lockTimeoutMs:2_000} as never).observeClock(),{ok:true,status:"advanced",observedAt:new Date(t0).toISOString()},"the warmup acquisition succeeds");
+    assert.equal((await readdir(root)).filter(name=>/\.released$/.test(name)).length,1,"the warm root carries the prior acquisition's released marker");
+  };
+  const crashChild=async(root:string,point:string)=>{
+    const moduleUrl=pathToFileURL(path.resolve("dist-test/src/authority/host/fs-ledger.js")).href;
+    const source=`import*as host from ${JSON.stringify(moduleUrl)};const option=host.__testK1AdmissionPreparationRuntimeOption;if(typeof option!=="symbol")process.exit(80);const ledger=new host.FsAuthorityLedger(process.argv[1],{[option]:${JSON.stringify(K1_ADMISSION_PREPARATION_MODE)},now:()=>${t0+1_000},lockTimeoutMs:200,faultInjector(point){if(point===${JSON.stringify(point)})process.exit(91);}});await ledger.observeClock();process.exit(92);`;
+    const code=await new Promise<number|null>((resolve,reject)=>{const child=spawn(process.execPath,["--input-type=module","-e",source,root],{stdio:["ignore","ignore","ignore"]});child.once("error",reject);child.once("close",resolve);});
+    assert.equal(code,91,`${point} is a real hard-exit boundary`);
+  };
+  const legacyResidue=(names:readonly string[])=>names.filter(name=>/^\.authority-ledger-lock-/.test(name)).sort();
+  const assertHealed=async(root:string,label:string)=>{
+    assert.deepEqual(coordinationResidue(await readdir(root)),[],`${label}: zero admission-family residue`);
+    const legacy=legacyResidue(await readdir(root));
+    assert.equal(legacy.length,1,`${label}: exactly one legacy marker remains`);
+    assert.match(legacy[0]!,/\.released$/,`${label}: and it is the released marker of the healing acquisition`);
+    assert.equal(existsSync(path.join(root,"lock")),false,`${label}: no live lock remains`);
+  };
+  // The six pre-rename boundaries leave a dead PREPARATION beside the warm root's steady-state
+  // `.released` marker — the shape the spec records (2026-08-05) as permanently corrupt from both
+  // entry points. The healed contract below is the FRESH-root behavior of the same crash, measured
+  // before the fix: a lock-seeking contender refuses `busy` (dead-prep retirement stays recover()'s;
+  // the red default-path pins above are not pre-decided here), recover() drains, and the next
+  // default acquisition completes on a root indistinguishable from steady state.
+  const preRenamePoints=["after-admission-prep-create","after-admission-prep-owner-create","after-admission-prep-owner-partial-write","after-admission-prep-owner-sync","after-admission-prep-sync","before-admission-slot-rename"] as const;
+  // The three post-rename boundaries leave the fixed SLOT instead; those already drain warm via
+  // recover() — pinned here as regression guards so the preparation fix cannot cost the slot path.
+  const postRenamePoints=["after-admission-slot-rename","after-admission-slot-root-sync","after-admission-slot-final-validation"] as const;
+  const pinWarmCrashHeals=(point:string)=>withRoot(async root=>{
+    await warmup(root);
+    await crashChild(root,point);
+    let callbacks=0;
+    const observed=await new RawFsAuthorityLedger(root,{now:()=>t0+2_000,lockTimeoutMs:300,faultInjector:(faultPoint:string)=>{if(faultPoint==="before-ledger-operation-callback")callbacks++;}} as never).observeClock();
+    assert.deepEqual(observed,{ok:false,reason:"busy"},`${point}: a lock-seeking contender refuses busy, never corruption`);
+    assert.equal(callbacks,0,`${point}: and enters no callback`);
+    const recovered=await new RawFsAuthorityLedger(root,{now:()=>t0+3_000,lockTimeoutMs:2_000} as never).recover();
+    assert.equal(recovered.ok,true,`${point}: recover() succeeds on the warm crashed root`);
+    assert.deepEqual(coordinationResidue(await readdir(root)),[],`${point}: recover() drained every admission-family artifact`);
+    assert.deepEqual(await new RawFsAuthorityLedger(root,{now:()=>t0+4_000,lockTimeoutMs:2_000} as never).observeClock(),{ok:true,status:"advanced",observedAt:new Date(t0+4_000).toISOString()},`${point}: the next default acquisition completes`);
+    await assertHealed(root,point);
+  });
+  for(const point of preRenamePoints)await t.test(`warm ${point} crash classifies busy, drains via recover(), and heals`,()=>pinWarmCrashHeals(point));
+  for(const point of postRenamePoints)await t.test(`warm ${point} crash keeps draining via recover() and heals`,()=>pinWarmCrashHeals(point));
+  // The boundary of the tolerance, pinned from day one: an unrelated `recovery-pending` marker is
+  // SEMANTIC residue — the legacy service never drains one, and with no active lock there is no
+  // next active owner to service it (the published-successor rule's exact precedent) — so beside a
+  // dead preparation it stays preserved corruption under both entry points. The preparation is a
+  // real crash child's; only the marker is seeded, because no warmup mints a recovery-pending.
+  await t.test("a dead preparation beside an unrelated recovery-pending marker stays preserved corruption",async()=>{
+    const markerOwner={host:hostname(),nonce:"e".repeat(63)+"d",pid:await exitedProcessPid(),v:1 as const};
+    await withRoot(async root=>{
+      await crashChild(root,"after-admission-prep-sync");
+      const marker=path.join(root,retirementMarkerName(markerOwner,"recovery-pending"));
+      await mkdir(marker);await writeFile(path.join(marker,"owner.json"),publicationOwnerBytes(markerOwner));
+      const before=await snapshotRootArtifacts(root);
+      assert.deepEqual(await new RawFsAuthorityLedger(root,{now:()=>t0+2_000,lockTimeoutMs:200} as never).observeClock(),{ok:false,reason:"corruption"},"a lock-seeking contender preserves the semantic-residue graph");
+      assert.deepEqual(await new RawFsAuthorityLedger(root,{now:()=>t0+3_000,lockTimeoutMs:200} as never).recover(),{ok:false,reason:"corruption"},"recover() refuses it identically");
+      assert.deepEqual(await snapshotRootArtifacts(root),before,"byte-identically");
+    });
+  });
+  // The same-owner edge of the tolerance: a released marker carrying the preparation's OWN owner
+  // tuple has no real lineage (a nonce is minted fresh per acquisition and release follows the
+  // cleanup pass), so it stays preserved corruption — and this pin is what keeps the
+  // sameCoordinationOwner clause in blockingRetiredResidue alive under mutation testing.
+  await t.test("a preparation beside its own same-owner released marker stays preserved corruption",()=>withRoot(async root=>{
+    const owner={host:hostname(),nonce:"c7".repeat(32),pid:process.pid,v:1 as const};
+    await writeAdmissionPrep(root,owner,"complete");
+    await writeLegacyRetiredLock(root,owner,"released");
+    const before=await snapshotRootArtifacts(root);
+    assert.deepEqual(await new RawFsAuthorityLedger(root,{now:()=>t0+2_000,lockTimeoutMs:200} as never).observeClock(),{ok:false,reason:"corruption"},"a lock-seeking contender preserves the impossible same-owner graph");
+    assert.deepEqual(await new RawFsAuthorityLedger(root,{now:()=>t0+3_000,lockTimeoutMs:200} as never).recover(),{ok:false,reason:"corruption"},"recover() refuses it identically");
+    assert.deepEqual(await snapshotRootArtifacts(root),before,"byte-identically");
+  }));
+  // Every warm option-on acquisition passes through {live preparation + prior released marker}
+  // between creating its preparation and its own post-publication legacy drain — so a concurrent
+  // observer meets this graph on every used root. The tolerance classifies it busy; the pin also
+  // holds observation to ZERO mutation, the property that separates the shipped tolerance design
+  // from the rejected pre-classification-drain candidate, which would drain the live creator's
+  // neighboring marker from a read-intent entry point.
+  await t.test("a live in-flight preparation beside the warm released marker is observed busy without mutation",()=>withRoot(async root=>{
+    const prepOwner={host:hostname(),nonce:"a5".repeat(32),pid:process.pid,v:1 as const},markerOwner={host:hostname(),nonce:"b6".repeat(32),pid:process.pid,v:1 as const};
+    await writeAdmissionPrep(root,prepOwner,"complete");
+    await writeLegacyRetiredLock(root,markerOwner,"released");
+    const before=await snapshotRootArtifacts(root);
+    let callbacks=0;
+    assert.deepEqual(await new RawFsAuthorityLedger(root,{now:()=>t0+2_000,lockTimeoutMs:200,faultInjector:(faultPoint:string)=>{if(faultPoint==="before-ledger-operation-callback")callbacks++;}} as never).observeClock(),{ok:false,reason:"busy"},"a lock-seeking contender observes the live mid-flight graph busy");
+    assert.equal(callbacks,0,"and enters no callback");
+    assert.deepEqual(await new RawFsAuthorityLedger(root,{now:()=>t0+3_000,lockTimeoutMs:200} as never).recover(),{ok:false,reason:"busy"},"recover() defers to the live creator identically");
+    assert.deepEqual(await snapshotRootArtifacts(root),before,"and neither entry point mutates one byte");
+  }));
+});

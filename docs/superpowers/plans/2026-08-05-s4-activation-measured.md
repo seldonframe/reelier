@@ -121,3 +121,19 @@ reused-root default-path class (§4.4); and a NEW measured blocker recorded in t
 preparation-stage crash (prep + steady-state `.released`) is permanent corruption from both entry
 points today. Activation over that defect would ship a root-bricking crash window on every used
 root.
+
+## Postscript 2026-08-05 (later) — the warm-prep blocker resolved
+
+Batch A closed the warm-prep defect. Both candidate designs were built and measured: (a)
+classification tolerance (prep, prep-retired, and orphan prep-final branches treat exactly the
+unrelated `released` marker as inert) and (b) pre-classification service widening for sole
+same-host prep names. Both greened the six warm pins and both passed the name-set gate with zero
+committed-name movement (510 passing; the fail column carries only the documented 100-process ±
+flake); (a) shipped — it mirrors the slice-1 successor precedent, keeps
+read-intent observation zero-mutation beside a live in-flight preparation (pinned), and ran ~2×
+faster in the pin family. The first (a) build tolerated `publication-aborted` too and flipped the
+committed pin "prep-retired bound ack plus unrelated publication-aborted is impossible" — measured,
+reverted to `released`-only, pin stands verbatim. Warm pin family appended at the END of the
+ledger suite: six pre-rename heal pins, three post-rename regression guards, the recovery-pending
+corruption boundary, and the live mid-flight zero-mutation pin. S4 remains gated on the re-spec,
+the contention gates, and the reused-root default-path class only.

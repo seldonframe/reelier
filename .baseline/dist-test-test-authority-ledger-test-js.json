@@ -1,9 +1,8 @@
 {
   "target": "dist-test/test/authority/ledger.test.js",
-  "pass": 498,
-  "fail": 80,
+  "pass": 512,
+  "fail": 79,
   "failing": [
-    "100 real processes converge on one committed reservation and one dispatch eligibility",
     "active owner treats atomic complete withdrawal as membership change, never corruption",
     "after-admission-prep-create",
     "after-admission-prep-owner-create",
