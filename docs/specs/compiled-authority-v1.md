@@ -540,6 +540,24 @@ Until the foreign-dead-slot route is decided, K1 admission must not become the d
 rather than resolved: whether a later acquisition may perform this transition is the same narrow/wide
 housekeeping-permission question recorded above, applied to the slot family.
 
+**Open discrepancy — two reachable crash lineages stay `corruption` because committed pins require
+it.** Measured 2026-08-05 on `codex/universal-compiled-authority`, while making the published-successor
+count same-owner-only (unrelated `released`/`publication-aborted` markers are steady-state residue on
+every used root, and an unserviced unrelated `recovery-pending` marker beside the live same-owner lock
+is the specified state — the acquisition's own dead-lock reclaim mints one in the iteration that
+publishes). Two lineages remain refused: (1) `published` marker + same-owner `publication-aborted`
+successor + unrelated `recovery-pending` marker — reachable when the active-owner cleanup pass fails
+after a dead-lock reclaim, so the degraded terminal aborts the lock while the foreign marker is still
+unserviced; (2) `published` marker + live same-owner lock + unrelated `recovery-pending` marker + that
+marker's own durable legacy cleanup ack — reachable when a prior owner crashed inside its
+recovery-pending drain. Both classified corruption before same-owner counting too (candidate count),
+so nothing regressed, but the committed pins at `test/authority/ledger.test.ts:1119` and `:1134` pin
+corruption for the byte-adjacent no-lock graphs whose same-owner successor is `released`, and no rule
+separating them has been decided. A candidate: tolerate the unrelated marker when the same-owner
+successor is the active lock or `publication-aborted`; its premise — that a `released` successor
+cannot coexist with an unretired marker or undrained cleanup evidence — is unproven. Resolve
+deliberately: satisfying the lineages flips the pins.
+
 The precedence is closed and exact: fully enumerate and classify the root; any structural,
 provenance, graph, replacement, identity, link, type, or byte problem returns `corruption` with zero
 mutation; retryable uncertainty bounded-waits and restarts; one proved housekeeping transition may

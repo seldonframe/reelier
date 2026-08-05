@@ -2436,7 +2436,7 @@ test("option-gated admission promotion never overwrites an existing fixed slot",
 // ---------------------------------------------------------------------------------------------
 // S2 — the active owner retiring ITS OWN published slot.
 //
-// Spec :554-556: "After publication, the active owner—not the pre-admission housekeeper—closes and
+// Spec :572-574: "After publication, the active owner—not the pre-admission housekeeper—closes and
 // exact-revalidates the complete coordination generation, durably retires the matching slot as
 // `published`, and performs one complete active-owner cleanup pass before callback entry."
 // Spec :310-313: the slot renames to `.authority-ledger-admission-retired-<host64>-<pid>-<nonce64>
@@ -2614,7 +2614,7 @@ test("option-gated own-act retirement refuses when its own slot owner drifts",()
 }));
 
 // ---------------------------------------------------------------------------------------------
-// S3 -- the active-owner cleanup pass. Spec :554-556: "After publication, the active owner-not the
+// S3 -- the active-owner cleanup pass. Spec :572-574: "After publication, the active owner-not the
 // pre-admission housekeeper-closes and exact-revalidates the complete coordination generation,
 // durably retires the matching slot as `published`, and performs one complete active-owner cleanup
 // pass before callback entry."
@@ -2733,7 +2733,7 @@ test("option-gated cleanup-pass hard exits leave a topology the next acquisition
   }));
 });
 
-// The generation closure is not decoration. Spec :554-556 requires the active owner to close and
+// The generation closure is not decoration. Spec :572-574 requires the active owner to close and
 // EXACT-REVALIDATE the coordination generation before its cleanup pass; without the revalidation the
 // pass would mint an acknowledgment binding an artifact it never re-checked. Measured by patching
 // the build: deleting the revalidation changed no test result until this pin existed.
@@ -2756,3 +2756,53 @@ test("option-gated cleanup pass refuses when its retirement marker drifts before
   assert.equal((await readdir(root)).includes("lock"),false,"the active lock is not left live");
   assert.equal(admissionRetiredNames(await readdir(root)).length,1,"the drifted marker is preserved, not drained");
 }));
+
+// The published-successor classifier counts only SAME-OWNER candidates. Every used root carries the
+// previous acquisition's `.authority-ledger-lock-<pid>-<nonce>.released` marker as steady-state
+// residue (measured: one full option-on acquisition leaves exactly that artifact), so every
+// mid-flight published-slot graph on a real root coexists with unrelated inert legacy residue.
+// Counting that residue as a successor candidate turned a live healthy acquisition into a
+// `corruption` verdict for every concurrent observer -- the defect that reverted the first narrow
+// drainage build. These fixtures use a LIVE owner, so their `busy` verdicts are stable: no drainage
+// route may ever touch a live owner's artifacts.
+test("published-slot graphs tolerate unrelated inert legacy residue on a used root",async t=>{
+  const assertDecisionUnchanged=async(root:string,expected:{ok:false;reason:"busy"|"corruption"})=>{const before=await snapshotRootArtifacts(root);let semanticNow=0,callbacks=0,legacyMutations=0;const result=await new RawFsAuthorityLedger(root,{now:()=>{semanticNow++;return t0;},lockTimeoutMs:20,faultInjector:(point:string)=>{if(point==="before-ledger-operation-callback")callbacks++;if(legacyMutationBoundaries.has(point))legacyMutations++;}} as never).observeClock();assert.deepEqual(result,expected);assert.deepEqual(await snapshotRootArtifacts(root),before);assert.deepEqual({semanticNow,callbacks,legacyMutations},{semanticNow:0,callbacks:0,legacyMutations:0});};
+  const writeOwnerDirectory=async(root:string,name:string,owner:AdmissionOwner)=>{const directory=path.join(root,name);await mkdir(directory);await writeFile(path.join(directory,"owner.json"),publicationOwnerBytes(owner));return directory;};
+  const writePublishedWithLock=async(root:string,owner:AdmissionOwner)=>{const markerName=admissionRetiredName(owner,"published"),marker=await writeOwnerDirectory(root,markerName,owner);await writeOwnerDirectory(root,"lock",owner);return {marker,markerName};};
+  // The unrelated markers in the first two fixtures carry a LIVE pid on purpose: the motivating
+  // residue is the previous acquisition of the SAME process (same pid, different nonce), so a
+  // tolerance implemented only for dead foreign owners would pass a dead-pid fixture while leaving
+  // the actual steady-state shape broken. Later fixtures use a dead foreign pid so both liveness
+  // classes are covered.
+  await t.test("published slot with its live same-owner lock tolerates an unrelated released marker",()=>withRoot(async root=>{const owner={host:hostname(),nonce:"1".repeat(64),pid:process.pid,v:1 as const},foreign={host:hostname(),nonce:"a".repeat(64),pid:process.pid,v:1 as const};await writePublishedWithLock(root,owner);await writeOwnerDirectory(root,retirementMarkerName(foreign,"released"),foreign);await assertDecisionUnchanged(root,{ok:false,reason:"busy"});}));
+  await t.test("published slot with its live same-owner lock tolerates an unrelated publication-aborted marker",()=>withRoot(async root=>{const owner={host:hostname(),nonce:"2".repeat(64),pid:process.pid,v:1 as const},foreign={host:hostname(),nonce:"b".repeat(64),pid:process.pid,v:1 as const};await writePublishedWithLock(root,owner);await writeOwnerDirectory(root,retirementMarkerName(foreign,"publication-aborted"),foreign);await assertDecisionUnchanged(root,{ok:false,reason:"busy"});}));
+  await t.test("mid-cleanup published slot with its bound acknowledgment tolerates an unrelated released marker",async()=>{const foreign={host:hostname(),nonce:"c".repeat(64),pid:await exitedProcessPid(),v:1 as const};await withRoot(async root=>{const owner={host:hostname(),nonce:"3".repeat(64),pid:process.pid,v:1 as const},graph=await writePublishedWithLock(root,owner),ack=slotCoordinationAck(owner,graph.markerName,graph.marker,"published","lock",publicationOwnerBytes(owner));await writeFile(path.join(root,coordinationAckName(ack)),authorityCanonicalBytes(ack));await writeOwnerDirectory(root,retirementMarkerName(foreign,"released"),foreign);await assertDecisionUnchanged(root,{ok:false,reason:"busy"});});});
+  await t.test("orphan published-slot final bound to its live lock tolerates an unrelated released marker",async()=>{const foreign={host:hostname(),nonce:"d".repeat(64),pid:await exitedProcessPid(),v:1 as const};await withRoot(async root=>{const owner={host:hostname(),nonce:"4".repeat(64),pid:process.pid,v:1 as const},graph=await writePublishedWithLock(root,owner),ack=slotCoordinationAck(owner,graph.markerName,graph.marker,"published","lock",publicationOwnerBytes(owner));await writeFile(path.join(root,coordinationAckName(ack)),authorityCanonicalBytes(ack));await rm(graph.marker,{recursive:true});await writeOwnerDirectory(root,retirementMarkerName(foreign,"released"),foreign);await assertDecisionUnchanged(root,{ok:false,reason:"busy"});});});
+  // The boundary of the tolerance, pinned so a filter that ignores EVERY foreign artifact cannot
+  // pass: an unrelated recovery-pending marker is an unserviced semantic recovery obligation, not
+  // inert residue, and a second same-owner successor is genuine ambiguity.
+  // Foreign `recovery-pending` is conditioned on the ACTIVE LOCK being the successor. Spec :567
+  // grants retirement-marker coexistence "only for the next active owner", and :747-748 makes that
+  // owner the sole marker scanner servicing every recovery-pending marker before every callback —
+  // inspectActiveLock's own dead-lock reclaim mints exactly this shape in the same iteration that
+  // publishes, so refusing it would corrupt every acquisition that follows a crash-with-lock. With
+  // no lock in the graph there is no next active owner, and the committed corpus pins corruption.
+  await t.test("published slot with its live same-owner lock tolerates an unserviced foreign recovery-pending marker",async()=>{const foreign={host:hostname(),nonce:"e".repeat(64),pid:await exitedProcessPid(),v:1 as const};await withRoot(async root=>{const owner={host:hostname(),nonce:"5".repeat(64),pid:process.pid,v:1 as const};await writePublishedWithLock(root,owner);await writeOwnerDirectory(root,retirementMarkerName(foreign,"recovery-pending"),foreign);await assertDecisionUnchanged(root,{ok:false,reason:"busy"});});});
+  await t.test("published slot without an active lock does not tolerate an unrelated recovery-pending marker",async()=>{const foreign={host:hostname(),nonce:"e".repeat(64),pid:await exitedProcessPid(),v:1 as const};await withRoot(async root=>{const owner={host:hostname(),nonce:"5".repeat(64),pid:process.pid,v:1 as const},markerName=admissionRetiredName(owner,"published");await writeOwnerDirectory(root,markerName,owner);await writeOwnerDirectory(root,retirementMarkerName(owner,"released"),owner);await writeOwnerDirectory(root,retirementMarkerName(foreign,"recovery-pending"),foreign);await assertDecisionUnchanged(root,{ok:false,reason:"corruption"});});});
+  await t.test("published slot with two same-owner successors stays corruption",()=>withRoot(async root=>{const owner={host:hostname(),nonce:"6".repeat(64),pid:process.pid,v:1 as const};await writePublishedWithLock(root,owner);await writeOwnerDirectory(root,retirementMarkerName(owner,"released"),owner);await assertDecisionUnchanged(root,{ok:false,reason:"corruption"});}));
+  // A live FOREIGN active lock beside a published marker is invalid K1 topology, never tolerated
+  // concurrency: admission is blocked while the marker exists, so no honest path publishes that
+  // lock. Without this pin, an implementation that filters the lock by owner silently degrades
+  // today's corruption verdict to busy.
+  await t.test("published slot with a same-owner successor does not tolerate a foreign active lock",()=>withRoot(async root=>{const owner={host:hostname(),nonce:"7".repeat(64),pid:process.pid,v:1 as const},foreign={host:hostname(),nonce:"8".repeat(64),pid:process.pid,v:1 as const},markerName=admissionRetiredName(owner,"published");await writeOwnerDirectory(root,markerName,owner);await writeOwnerDirectory(root,retirementMarkerName(owner,"released"),owner);await writeOwnerDirectory(root,"lock",foreign);await assertDecisionUnchanged(root,{ok:false,reason:"corruption"});}));
+  // The two remaining call sites of the successor classification: legacy-cleanup coexistence and
+  // the K1 cleanup-stage terminal proof must tolerate the same inert residue.
+  await t.test("published slot with its released successor and legacy cleanup ack tolerates an unrelated released marker",()=>withRoot(async root=>{const owner={host:hostname(),nonce:"9".repeat(64),pid:process.pid,v:1 as const},foreign={host:hostname(),nonce:"f".repeat(64),pid:process.pid,v:1 as const},slotName=admissionRetiredName(owner,"published");await writeOwnerDirectory(root,slotName,owner);const markerName=retirementMarkerName(owner,"released");await writeOwnerDirectory(root,markerName,owner);const ack=cleanupAck(owner,markerName,"released",null);await writeFile(path.join(root,cleanupAckName(ack)),authorityCanonicalBytes(ack));await writeOwnerDirectory(root,retirementMarkerName(foreign,"released"),foreign);await assertDecisionUnchanged(root,{ok:false,reason:"busy"});}));
+  await t.test("published slot with its cleanup stage and live lock tolerates an unrelated released marker",()=>withRoot(async root=>{const owner={host:hostname(),nonce:"0".repeat(64),pid:process.pid,v:1 as const},foreign={host:hostname(),nonce:"c".repeat(64),pid:process.pid,v:1 as const},graph=await writePublishedWithLock(root,owner),ack=slotCoordinationAck(owner,graph.markerName,graph.marker,"published","lock",publicationOwnerBytes(owner)),bytes=authorityCanonicalBytes(ack);await writeFile(path.join(root,coordinationStageName(ack,"slot-retired")),bytes.subarray(0,Math.min(17,bytes.length-1)));await writeOwnerDirectory(root,retirementMarkerName(foreign,"released"),foreign);await assertDecisionUnchanged(root,{ok:false,reason:"busy"});}));
+  // The unrelated marker's own cleanup lifecycle is tolerated with it: ack durable -> marker
+  // removed -> ack removed is the legacy machinery's resumable window, and refusing it just moves
+  // the corruption one artifact later (measured: a real option-on acquisition over exactly this
+  // residue publishes, retires its slot, and then classifies its own root as corruption).
+  await t.test("published slot with its live lock tolerates an unrelated marker's resumable legacy cleanup",()=>withRoot(async root=>{const owner={host:hostname(),nonce:"d".repeat(63)+"0",pid:process.pid,v:1 as const},foreign={host:hostname(),nonce:"d".repeat(63)+"1",pid:process.pid,v:1 as const};await writePublishedWithLock(root,owner);const markerName=retirementMarkerName(foreign,"released");await writeOwnerDirectory(root,markerName,foreign);const ack=cleanupAck(foreign,markerName,"released",null);await writeFile(path.join(root,cleanupAckName(ack)),authorityCanonicalBytes(ack));await assertDecisionUnchanged(root,{ok:false,reason:"busy"});}));
+  await t.test("published slot with its live lock tolerates an unrelated orphan legacy cleanup ack",()=>withRoot(async root=>{const owner={host:hostname(),nonce:"e".repeat(63)+"0",pid:process.pid,v:1 as const},foreign={host:hostname(),nonce:"e".repeat(63)+"1",pid:process.pid,v:1 as const};await writePublishedWithLock(root,owner);const ack=cleanupAck(foreign,retirementMarkerName(foreign,"released"),"released",null);await writeFile(path.join(root,cleanupAckName(ack)),authorityCanonicalBytes(ack));await assertDecisionUnchanged(root,{ok:false,reason:"busy"});}));
+});

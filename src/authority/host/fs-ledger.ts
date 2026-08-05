@@ -885,7 +885,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
   private admissionPrepName(owner:LockOwner):string{return `.authority-ledger-admission-prep-${this.hostDigest(owner.host)}-${owner.pid}-${owner.nonce}.tmp`;}
   private admissionSlotRetiredName(owner:LockOwner,disposition:"published"|"withdrawn"|"abandoned"):string{return `.authority-ledger-admission-retired-${this.hostDigest(owner.host)}-${owner.pid}-${owner.nonce}.${disposition}`;}
 
-  // Spec :554-556 — after publication the ACTIVE OWNER, not the pre-admission housekeeper, durably
+  // Spec :572-574 — after publication the ACTIVE OWNER, not the pre-admission housekeeper, durably
   // retires the matching slot as `published`; spec :310-313 — `published` requires the byte-identical
   // active lock, and callback eligibility begins only after this root sync.
   //
@@ -933,7 +933,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
         if(error instanceof LedgerCorruption)throw error;
         // ENOENT is in isTransientLockError for artifacts this operation may legitimately race for.
         // These are its OWN, created in this acquisition and held under the fence, so their
-        // disappearance is post-snapshot mutation — corruption, never churn (spec :567-569).
+        // disappearance is post-snapshot mutation — corruption, never churn (spec :585-587).
         if(hasCode(error,"ENOENT"))throw new LedgerCorruption("own admission artifact disappeared during slot retirement");
         if(!isTransientLockError(error))throw error;
         const remaining=deadline-monotonicNow();
@@ -944,7 +944,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
     }
   }
 
-  // Spec :554-556 — after publication the active owner closes and exact-revalidates the complete
+  // Spec :572-574 — after publication the active owner closes and exact-revalidates the complete
   // coordination generation and performs ONE COMPLETE cleanup pass before callback entry. That is a
   // different act from the housekeeper's advanceBoundSlotCleanup, which advances one step per
   // reclassification from a derived route: this runs inline, to completion, on the owner's own
@@ -1766,9 +1766,18 @@ export class FsAuthorityLedger implements AuthorityLedger {
 
   private validateHybridLegacyCleanupCoexistence(legacy:readonly HybridLegacyCleanupArtifact[],owned:readonly HybridOwnedArtifact[],slotMarkers:readonly HybridOwnedArtifact[],byName:Map<string,HybridEntrySnapshot>,activeOwner:CoordinationOwner|null,retired:Map<string,Readonly<{owner:CoordinationOwner;entry:HybridEntrySnapshot;disposition:RetirementDisposition}>>,publicationCount:number,coordinationCount:number):void{
     if(legacy.length===0)return;
-    if(legacy.length!==1||slotMarkers.length!==1||owned.length!==1||publicationCount!==0||coordinationCount!==0)throw new LedgerCorruption("legacy cleanup lineage cannot coexist with this K1 generation");
+    // A legacy cleanup artifact belonging to an UNRELATED inert marker is that marker's own
+    // resumable lifecycle (ack durable -> marker removed -> ack removed; the marker may already be
+    // gone). The published-slot graph tolerates the marker as steady-state legacy residue, so it
+    // tolerates the marker's in-flight cleanup for exactly the same reason — the legacy machinery
+    // owns and resumes it. Same-owner artifacts and anything recovery-pending stay under the
+    // strict successor-lineage rule below.
+    const slotOwner=slotMarkers.length===1&&slotMarkers[0].parsed.kind==="admission-slot-retired"&&slotMarkers[0].parsed.disposition==="published"?slotMarkers[0].owner:null;
+    const unexcused=slotOwner===null?legacy:legacy.filter(artifact=>sameCoordinationOwner(artifact.ack.owner,slotOwner)||artifact.ack.disposition==="recovery-pending");
+    if(unexcused.length===0)return;
+    if(unexcused.length!==1||slotMarkers.length!==1||owned.length!==1||publicationCount!==0||coordinationCount!==0)throw new LedgerCorruption("legacy cleanup lineage cannot coexist with this K1 generation");
     const slot=slotMarkers[0],parsed=slot.parsed;if(parsed.kind!=="admission-slot-retired"||parsed.disposition!=="published")throw new LedgerCorruption("legacy cleanup coexistence requires a published slot marker");
-    const successor=this.classifyHybridPublishedSuccessor(slot,byName,activeOwner,retired),retiredSuccessor=retired.get(successor.name),artifact=legacy[0];
+    const successor=this.classifyHybridPublishedSuccessor(slot,byName,activeOwner,retired),retiredSuccessor=retired.get(successor.name),artifact=unexcused[0];
     if(retiredSuccessor===undefined||retiredSuccessor.disposition==="recovery-pending"||artifact.ack.disposition!==retiredSuccessor.disposition||artifact.ack.journalHead!==null||artifact.ack.markerName!==successor.name||!sameCoordinationOwner(artifact.ack.owner,slot.owner))throw new LedgerCorruption("legacy cleanup artifact is not the published slot's exact resolved successor lineage");
   }
 
@@ -1844,11 +1853,35 @@ export class FsAuthorityLedger implements AuthorityLedger {
     return "busy";
   }
 
+  // Spec :510 — the successor authority is the exact SAME-OWNER active lock or same-owner
+  // `released`/`recovery-pending`/`publication-aborted` marker, so only same-owner artifacts are
+  // candidates. Unrelated `released` and `publication-aborted` markers are inert steady-state
+  // residue — every used root carries the previous acquisition's `.released` — and belong to the
+  // legacy machinery, never to this count; counting them turned every mid-flight published-slot
+  // graph on a used root into corruption, which is what reverted the first drainage build.
+  //
+  // A foreign `recovery-pending` marker is tolerated exactly when the SAME-OWNER ACTIVE LOCK is
+  // the successor. Spec :567 grants retirement-marker coexistence "only for the next active
+  // owner", and :747-748 makes that owner the sole marker scanner, servicing every
+  // recovery-pending marker before every callback — so an unserviced foreign marker beside the
+  // live lock is the specified mid-acquisition state (inspectActiveLock's own dead-lock reclaim
+  // mints one in the same iteration that publishes). With no active lock in the graph there is no
+  // next active owner to service it, and the committed corpus pins that graph as corruption.
+  // An active lock held by anyone but the marker owner is invalid K1 topology (admission is
+  // blocked while the marker exists) and stays corruption.
   private classifyHybridPublishedSuccessor(marker:Readonly<{owner:CoordinationOwner}>,byName:Map<string,HybridEntrySnapshot>,activeOwner:CoordinationOwner|null,retired:Map<string,Readonly<{owner:CoordinationOwner;entry:HybridEntrySnapshot;disposition:RetirementDisposition}>>):Readonly<{name:string;entry:HybridEntrySnapshot;bytes:Buffer}>{
     const candidates:Array<Readonly<{name:string;entry:HybridEntrySnapshot;owner:CoordinationOwner}>>=[],active=byName.get("lock");
-    if(active!==undefined){if(activeOwner===null)throw new LedgerCorruption("published slot active successor is unclassified");candidates.push({name:"lock",entry:active,owner:activeOwner});}
-    for(const item of retired.values())candidates.push({name:item.entry.name,entry:item.entry,owner:item.owner});
-    if(candidates.length!==1||!sameCoordinationOwner(candidates[0].owner,marker.owner))throw new LedgerCorruption("published slot requires exactly one same-owner successor");
+    let lockSuccessor=false;
+    if(active!==undefined){
+      if(activeOwner===null)throw new LedgerCorruption("published slot active successor is unclassified");
+      if(!sameCoordinationOwner(activeOwner,marker.owner))throw new LedgerCorruption("published slot cannot coexist with a foreign active lock");
+      candidates.push({name:"lock",entry:active,owner:activeOwner});lockSuccessor=true;
+    }
+    for(const item of retired.values()){
+      if(sameCoordinationOwner(item.owner,marker.owner)){candidates.push({name:item.entry.name,entry:item.entry,owner:item.owner});continue;}
+      if(item.disposition==="recovery-pending"&&!lockSuccessor)throw new LedgerCorruption("published slot without an active lock cannot coexist with an unrelated recovery-pending marker");
+    }
+    if(candidates.length!==1)throw new LedgerCorruption("published slot requires exactly one same-owner successor");
     const child=hybridOwnerChild(candidates[0].entry);if(child?.bytes===undefined)throw new LedgerCorruption("published slot successor has no exact owner bytes");
     return {name:candidates[0].name,entry:candidates[0].entry,bytes:child.bytes};
   }
