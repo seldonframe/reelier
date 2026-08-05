@@ -68,6 +68,27 @@ function runAdapter(command: ArenaAdapterCommand, request: unknown, timeoutMs: n
   });
 }
 
+export function buildArenaRunRequest(
+  challengeId: string,
+  harness: string,
+  conditions: {
+    challengeVersion: string;
+    fixtureDigest: string;
+    armConfigDigest: string;
+    evaluatorVersion: string;
+    rendererVersion: string;
+  },
+) {
+  return {
+    schemaVersion: "arena-run-request.v1",
+    challengeId,
+    harness,
+    conditions,
+    runNonce: randomUUID(),
+    reelier: { mode: "wrap" as const, command: ["reelier", "mcp", "--wrap"] },
+  };
+}
+
 async function arenaRun(args: ArenaCliArgs): Promise<number> {
   const challengeId = args.opts.challenge;
   const harness = args.opts.harness ?? "custom";
@@ -82,12 +103,13 @@ async function arenaRun(args: ArenaCliArgs): Promise<number> {
     evaluatorVersion: args.opts.evaluator ?? "arena-contract-v1",
     rendererVersion: "arena-renderer-v1",
   };
-  const raw = await runAdapter(command, { schemaVersion: "arena-run-request.v1", challengeId, harness, conditions, runNonce: randomUUID(), reelier: { mode: "wrap", command: ["reelier", "mcp", "--wrap"] } }, Number(args.opts.timeout ?? 120_000));
+  const request = buildArenaRunRequest(challengeId, harness, conditions);
+  const raw = await runAdapter(command, request, Number(args.opts.timeout ?? 120_000));
   const result = typeof raw === "object" && raw !== null && "result" in raw ? (raw as { result: unknown }).result : raw;
   const sanitized = sanitizeArenaBundleValue(result) as Record<string, unknown>;
   const key = await loadSigningKey(signingKeyDir(os.homedir()));
   if (!key) throw new Error("No signing key found. Run 'reelier init --signing' before submitting an Arena bundle.");
-  const unsigned = { schemaVersion: "arena-run-bundle.v1", challengeId, conditions, adapter: { harness, version: args.opts["adapter-version"] ?? "local-v1" }, ...sanitized };
+  const unsigned = { schemaVersion: "arena-run-bundle.v1", challengeId, runNonce: request.runNonce, conditions, adapter: { harness, version: args.opts["adapter-version"] ?? "local-v1" }, ...sanitized };
   const digest = createHash("sha256").update(canonicalJson(unsigned)).digest("hex");
   const bundle = { ...unsigned, signature: { algorithm: "ed25519", keyId: key.keyId, value: signRecordDigest(key.privateKey, digest) } };
   const output = JSON.stringify(bundle, null, 2);
