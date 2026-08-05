@@ -3144,3 +3144,78 @@ test("warm preparation-stage crashes recover from both entry points and the root
     assert.deepEqual(await snapshotRootArtifacts(root),before,"and neither entry point mutates one byte");
   }));
 });
+
+// The reused-root discipline, institutionalized for the DEFAULT path. Every residue defect this
+// corpus has shipped (six by now) survived a green suite because fixtures used fresh roots; this
+// family runs one root through repeated default acquisitions interleaved with real hard-exit
+// crashes and recover() calls, asserting the residue and healed-state oracles at every step. The
+// oracles: the default path never mints an admission-family artifact (even mid-crash), a healing
+// acquisition leaves exactly one released marker and no lock, and recover() leaves zero legacy
+// residue. Deterministic — sequential children at fixed points, no races beyond the committed
+// crash-child pattern.
+test("reused roots on the default path stay healed across acquisitions, crashes, and recover()",{timeout:120_000},async t=>{
+  const crashDefaultChild=async(root:string,point:string)=>{
+    const moduleUrl=pathToFileURL(path.resolve("dist-test/src/authority/host/fs-ledger.js")).href;
+    const source=`import{FsAuthorityLedger}from ${JSON.stringify(moduleUrl)};const ledger=new FsAuthorityLedger(process.argv[1],{now:()=>${t0+500},lockTimeoutMs:200,faultInjector(point){if(point===${JSON.stringify(point)})process.exit(91);}});await ledger.observeClock();process.exit(92);`;
+    let stderr="";
+    const code=await new Promise<number|null>((resolve,reject)=>{const child=spawn(process.execPath,["--input-type=module","-e",source,root],{stdio:["ignore","ignore","pipe"]});child.stderr.setEncoding("utf8").on("data",chunk=>{stderr+=chunk;});child.once("error",reject);child.once("close",resolve);});
+    assert.equal(code,91,`${point} is a real hard-exit boundary on the default path: ${stderr}`);
+  };
+  const legacyResidue=(names:readonly string[])=>names.filter(name=>/^\.authority-ledger-lock-/.test(name)).sort();
+  const assertNoAdmissionResidue=async(root:string,label:string)=>{
+    assert.deepEqual(coordinationResidue(await readdir(root)),[],`${label}: the default path minted no admission-family artifact`);
+  };
+  const assertSteady=async(root:string,label:string)=>{
+    await assertNoAdmissionResidue(root,label);
+    const legacy=legacyResidue(await readdir(root));
+    assert.equal(legacy.length,1,`${label}: exactly one legacy marker remains`);
+    assert.match(legacy[0]!,/\.released$/,`${label}: and it is the healing acquisition's released marker`);
+    assert.equal(existsSync(path.join(root,"lock")),false,`${label}: no live lock remains`);
+  };
+  const observeAdvances=async(root:string,at:number,label:string)=>{
+    let callbacks=0;
+    assert.deepEqual(await new RawFsAuthorityLedger(root,{now:()=>at,lockTimeoutMs:2_000,faultInjector:(faultPoint:string)=>{if(faultPoint==="before-ledger-operation-callback")callbacks++;}} as never).observeClock(),{ok:true,status:"advanced",observedAt:new Date(at).toISOString()},`${label}: the acquisition completes`);
+    assert.equal(callbacks,1,`${label}: with exactly one semantic callback`);
+  };
+  await t.test("one root survives the crash-and-heal lifecycle end to end",()=>withRoot(async root=>{
+    await observeAdvances(root,t0+1_000,"fresh-root acquisition");
+    await assertSteady(root,"after the first acquisition");
+    await crashDefaultChild(root,"after-lock-publication-stage-sync");
+    await assertNoAdmissionResidue(root,"after the mid-publication crash");
+    await observeAdvances(root,t0+2_000,"heal over the dead publication stage");
+    await assertSteady(root,"after the dead stage was withdrawn");
+    await crashDefaultChild(root,"after-lock-publication-root-sync");
+    await assertNoAdmissionResidue(root,"after the post-publication crash");
+    assert.equal(existsSync(path.join(root,"lock")),true,"the crash left the dead owner's live-format lock");
+    await observeAdvances(root,t0+3_000,"heal over the dead lock");
+    await assertSteady(root,"after the dead lock was reclaimed");
+    await crashDefaultChild(root,"after-lock-publication-root-sync");
+    const recovered=await new RawFsAuthorityLedger(root,{now:()=>t0+4_000,lockTimeoutMs:2_000} as never).recover();
+    assert.equal(recovered.ok,true,"recover() drains the same crash shape first");
+    await assertNoAdmissionResidue(root,"after recover() on the crashed root");
+    await observeAdvances(root,t0+5_000,"acquisition after recover()");
+    await assertSteady(root,"after the post-recover acquisition");
+    await crashDefaultChild(root,"after-lock-retire");
+    await assertNoAdmissionResidue(root,"after the post-retire crash");
+    await observeAdvances(root,t0+6_000,"heal over the retired residue");
+    await assertSteady(root,"after the post-retire heal");
+    // Measured 2026-08-05, and this test's first two runs each refuted a drafted oracle (zero
+    // markers, then untouched marker): recover() on a HEALED root runs a full lock cycle of its
+    // own — it drains the prior acquisition's released marker through the legacy steady-state
+    // machinery and leaves its OWN released marker behind. The durable shape is invariant
+    // (exactly one released marker, no lock, no admission residue); the marker's identity is the
+    // recover() call's, not the predecessor's. Scoping, so this pin is not read against the
+    // spec's "recover() ... without taking the lock": that sentence is the K1 writer-only route
+    // (housekeeping progress with no contender admission); DEFAULT-path recover() must hold the
+    // legacy lock, because the spec makes the next complete active-lock owner the sole marker
+    // scanner and recover() demonstrably drained the predecessor's marker here.
+    const beforeIdle=legacyResidue(await readdir(root));
+    const drained=await new RawFsAuthorityLedger(root,{now:()=>t0+7_000,lockTimeoutMs:2_000} as never).recover();
+    assert.equal(drained.ok,true,"recover() on a healed root succeeds");
+    await assertNoAdmissionResidue(root,"after recover() on the healed root");
+    await assertSteady(root,"after the idle recover()");
+    assert.notDeepEqual(legacyResidue(await readdir(root)),beforeIdle,"the surviving released marker is recover()'s own, not the predecessor's");
+    await observeAdvances(root,t0+8_000,"the root remains serviceable after the idle recover()");
+    await assertSteady(root,"at the end of the lifecycle");
+  }));
+});
