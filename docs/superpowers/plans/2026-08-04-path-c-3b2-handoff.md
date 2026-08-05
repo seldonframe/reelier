@@ -63,7 +63,11 @@ Sixteen commits since `1d6ebe2` (`git log --oneline 1d6ebe2..HEAD`). The substan
    those tests change, or the family stays red. **A prior revision of this file misnamed these as the
    `admission-slot-rename` promotion points** — those belong to the creation mechanism in §4 and are
    blocked on nothing but the mechanism itself. That error came from the fact-check pass, which is
-   trap 5 applying to the fact-checker too.
+   trap 5 applying to the fact-checker too. **Further refinement (design review, same day): the
+   decision blocks only foreign-dead-slot housekeeping.** The active owner retiring its *own* slot as
+   `published` is an act the spec assigns to the owner, not the housekeeper, and three of the four
+   retire points are reachable through it — see
+   `docs/superpowers/plans/2026-08-04-admission-preparation-design.md` §2.
 2. **Deleting the 13 non-spec registry entries.** Source-breaking for a consumer narrowing on
    `LedgerFaultPoint` (TS2322 under `--strict`), though additive at runtime. Sequence against the ABI
    freeze, which gates `reelier-cloud#54` together with merging PR #85.
