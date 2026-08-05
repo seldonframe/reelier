@@ -2214,7 +2214,7 @@ test("reservation linkage lookup returns only the verified ingress/capability/co
 // S1 of the admission-preparation lifecycle (docs/superpowers/plans/2026-08-04-admission-preparation-design.md).
 //
 // Appended at the END of this file ON PURPOSE. The spec cites test line anchors directly -- see
-// docs/specs/compiled-authority-v1.md:607-608 and :647, which cite ledger.test.ts:1022 and :1746
+// docs/specs/compiled-authority-v1.md:655-656 and :670, which cite ledger.test.ts:1022 and :1746
 // inside an UNRESOLVED open-discrepancy note -- so an insertion higher up silently rots an anchor
 // the owner still has to act on.
 //
@@ -2436,7 +2436,7 @@ test("option-gated admission promotion never overwrites an existing fixed slot",
 // ---------------------------------------------------------------------------------------------
 // S2 — the active owner retiring ITS OWN published slot.
 //
-// Spec :531-533: "After publication, the active owner—not the pre-admission housekeeper—closes and
+// Spec :554-556: "After publication, the active owner—not the pre-admission housekeeper—closes and
 // exact-revalidates the complete coordination generation, durably retires the matching slot as
 // `published`, and performs one complete active-owner cleanup pass before callback entry."
 // Spec :310-313: the slot renames to `.authority-ledger-admission-retired-<host64>-<pid>-<nonce64>
@@ -2614,7 +2614,7 @@ test("option-gated own-act retirement refuses when its own slot owner drifts",()
 }));
 
 // ---------------------------------------------------------------------------------------------
-// S3 -- the active-owner cleanup pass. Spec :531-533: "After publication, the active owner-not the
+// S3 -- the active-owner cleanup pass. Spec :554-556: "After publication, the active owner-not the
 // pre-admission housekeeper-closes and exact-revalidates the complete coordination generation,
 // durably retires the matching slot as `published`, and performs one complete active-owner cleanup
 // pass before callback entry."
@@ -2733,7 +2733,7 @@ test("option-gated cleanup-pass hard exits leave a topology the next acquisition
   }));
 });
 
-// The generation closure is not decoration. Spec :531-533 requires the active owner to close and
+// The generation closure is not decoration. Spec :554-556 requires the active owner to close and
 // EXACT-REVALIDATE the coordination generation before its cleanup pass; without the revalidation the
 // pass would mint an acknowledgment binding an artifact it never re-checked. Measured by patching
 // the build: deleting the revalidation changed no test result until this pin existed.

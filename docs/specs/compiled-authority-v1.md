@@ -517,6 +517,29 @@ Positive housekeeping authority is purpose-specific and closed:
 - A cleanup stage or ack requires its exact record digest, filename, filesystem identities, lifecycle
   predecessor, and still-valid purpose proof.
 
+**Open discrepancy — `slot-retired.published` is authorized but unperformed, and that blocks K1
+activation.** Measured 2026-08-05 at `e8693e8`. The clause above grants `slot-retired.published` on
+"the exact same-owner active lock or the exact same-owner `released`, `recovery-pending`, or
+`publication-aborted` successor". After a crashed acquisition that got as far as publication, exactly
+that authority is present on disk — a dead-owner fixed slot (or its `published` marker) alongside the
+same-owner `lock`. No implemented route performs the transition, because performing it means one
+process retiring another process's dead slot, which is the blocked foreign-dead-slot question.
+
+The cost is not a missing optimisation. Measured: with K1 inactive, a crash at
+`after-lock-publication-root-sync` self-heals — the next acquisition reclaims the dead-owner lock and
+the root is fully usable. With K1 active, the identical crash leaves a root on which every entry
+point returns `busy` forever, `recover()` included, and `getHighWaterMark()` raises
+`AuthorityLedgerReadError` — reads refused, not merely writes. Classification refuses before legacy
+reclaim is consulted, so activation does not fail to add recovery; it removes recovery that works.
+
+A dead-owner slot with **no** lock is already drainable: it satisfies `slot-retired.abandoned`, and
+`recover()` holds the housekeeping write permission, so it drains and the root recovers. The gap is
+exactly the shapes where a `lock` is present, i.e. every crash at or after the publication root sync.
+
+Until the foreign-dead-slot route is decided, K1 admission must not become the default. Recorded
+rather than resolved: whether a later acquisition may perform this transition is the same narrow/wide
+housekeeping-permission question recorded above, applied to the slot family.
+
 The precedence is closed and exact: fully enumerate and classify the root; any structural,
 provenance, graph, replacement, identity, link, type, or byte problem returns `corruption` with zero
 mutation; retryable uncertainty bounded-waits and restarts; one proved housekeeping transition may

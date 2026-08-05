@@ -885,7 +885,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
   private admissionPrepName(owner:LockOwner):string{return `.authority-ledger-admission-prep-${this.hostDigest(owner.host)}-${owner.pid}-${owner.nonce}.tmp`;}
   private admissionSlotRetiredName(owner:LockOwner,disposition:"published"|"withdrawn"|"abandoned"):string{return `.authority-ledger-admission-retired-${this.hostDigest(owner.host)}-${owner.pid}-${owner.nonce}.${disposition}`;}
 
-  // Spec :531-533 — after publication the ACTIVE OWNER, not the pre-admission housekeeper, durably
+  // Spec :554-556 — after publication the ACTIVE OWNER, not the pre-admission housekeeper, durably
   // retires the matching slot as `published`; spec :310-313 — `published` requires the byte-identical
   // active lock, and callback eligibility begins only after this root sync.
   //
@@ -933,7 +933,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
         if(error instanceof LedgerCorruption)throw error;
         // ENOENT is in isTransientLockError for artifacts this operation may legitimately race for.
         // These are its OWN, created in this acquisition and held under the fence, so their
-        // disappearance is post-snapshot mutation — corruption, never churn (spec :544-546).
+        // disappearance is post-snapshot mutation — corruption, never churn (spec :567-569).
         if(hasCode(error,"ENOENT"))throw new LedgerCorruption("own admission artifact disappeared during slot retirement");
         if(!isTransientLockError(error))throw error;
         const remaining=deadline-monotonicNow();
@@ -944,7 +944,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
     }
   }
 
-  // Spec :531-533 — after publication the active owner closes and exact-revalidates the complete
+  // Spec :554-556 — after publication the active owner closes and exact-revalidates the complete
   // coordination generation and performs ONE COMPLETE cleanup pass before callback entry. That is a
   // different act from the housekeeper's advanceBoundSlotCleanup, which advances one step per
   // reclassification from a derived route: this runs inline, to completion, on the owner's own
