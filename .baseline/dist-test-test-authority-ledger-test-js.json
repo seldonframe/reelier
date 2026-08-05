@@ -1,6 +1,6 @@
 {
   "target": "dist-test/test/authority/ledger.test.js",
-  "pass": 464,
+  "pass": 477,
   "fail": 80,
   "failing": [
     "100 real processes converge on one committed reservation and one dispatch eligibility",
