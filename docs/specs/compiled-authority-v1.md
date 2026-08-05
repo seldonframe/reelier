@@ -555,6 +555,28 @@ sync barriers and before callback; the pre-admission housekeeper performs at mos
 closed generation and never enters callback. Withdrawal markers are never cleaned before their
 matching slot retirement.
 
+**Open discrepancy — two committed pins disagree about the settled withdrawal graph.** Measured
+2026-08-04 at `7254fd2`. For a byte-identical root — a `withdrawn` slot-retirement marker, a
+same-owner `publication-aborted` terminal, and one bound `slot-retired`/`withdrawn` acknowledgment,
+the owner PID alive — `test/authority/ledger.test.ts:1022` requires `busy` with the root
+byte-identical and zero mutation, and passes today; `test/authority/ledger.test.ts:1746` requires
+`advanced` with every artifact removed and one callback, and fails today. Both reproduce. This text
+supports both readings: the K1 epoch guard calls that graph valid in-flight residue that returns
+bounded `busy`, while the chain below reads as an obligation to finish. **Resolve deliberately —
+satisfying either pin breaks the other, so this is not a defect to fix.** It decides whether
+`after-creator-withdrawal-cleanup-root-sync` is reachable at all.
+
+**Under-defined — the seal.** The fault taxonomy declares `before-creator-withdrawal-seal` and
+`after-creator-withdrawal-seal`, but no paragraph says what the seal step *does* between them.
+Likewise nothing states which step of the chain below `after-creator-withdrawal-cleanup-root-sync`
+names. An implementer must invent contract to proceed; record the decision here first.
+
+**Not self-contained.** Chain steps 1 to 3 require the fixed slot to retire as `withdrawn`, which
+needs the `before/after-admission-slot-retire-*` points — themselves unemitted, and their family is
+blocked on the separate slot-route decision recorded above. `ledger.test.ts:1746` pins one
+slot-retirement point and one creator-withdrawal point in a single ordered assertion, so the six
+creator-withdrawal points are not a self-contained slice.
+
 The creator-withdrawal chain is exact and monotonic:
 
 1. The exact `.withdrawn` slot marker and exact same-owner withdrawal marker coexist.
