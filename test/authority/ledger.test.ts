@@ -1138,7 +1138,7 @@ test("K1 marker-absent final acknowledgments require one coherent whole-generati
   await t.test("live-owner orphan abandoned-slot final is corruption",()=>withRoot(async root=>{const owner={host:hostname(),nonce:"b".repeat(64),pid:process.pid,v:1 as const},markerName=admissionRetiredName(owner,"abandoned"),marker=await writeOwnerDirectory(root,markerName,owner),ack=slotCoordinationAck(owner,markerName,marker,"abandoned"),ackPath=path.join(root,coordinationAckName(ack));await writeFile(ackPath,authorityCanonicalBytes(ack));await rm(marker,{recursive:true});await assertDecisionUnchanged(root,{ok:false,reason:"corruption"});}));
   await t.test("dead-valid orphan abandoned-slot final plus unrelated successor is corruption",async()=>{const owner={host:hostname(),nonce:"c".repeat(64),pid:await exitedProcessPid(),v:1 as const};await withRoot(async root=>{const markerName=admissionRetiredName(owner,"abandoned"),marker=await writeOwnerDirectory(root,markerName,owner),ack=slotCoordinationAck(owner,markerName,marker,"abandoned"),ackPath=path.join(root,coordinationAckName(ack));await writeFile(ackPath,authorityCanonicalBytes(ack));await rm(marker,{recursive:true});await writeOwnerDirectory(root,retirementMarkerName(owner,"released"),owner);await assertDecisionUnchanged(root,{ok:false,reason:"corruption"});});});
   await t.test("orphan creator-withdrawal final with its completed referenced chain remains busy",()=>withRoot(async root=>{await writeWithdrawalFinalOrphan(root,{host:hostname(),nonce:"d".repeat(64),pid:process.pid,v:1 as const});await assertDecisionUnchanged(root,{ok:false,reason:"busy"});}));
-  for(const residue of ["active","retired","k1"] as const)await t.test(`orphan creator-withdrawal final plus unrelated ${residue} residue is corruption`,()=>withRoot(async root=>{await writeWithdrawalFinalOrphan(root,{host:hostname(),nonce:"e".repeat(64),pid:process.pid,v:1 as const});const unrelated={host:hostname(),nonce:(residue==="active"?"f":residue==="retired"?"0":"1").repeat(64),pid:process.pid,v:1 as const};if(residue==="active")await writeOwnerDirectory(root,"lock",unrelated);else if(residue==="retired")await writeOwnerDirectory(root,retirementMarkerName(unrelated,"released"),unrelated);else await writeAdmissionPrep(root,unrelated,"complete");await assertDecisionUnchanged(root,{ok:false,reason:"corruption"});}));
+  for(const residue of ["active","retired","k1"] as const)await t.test(`orphan creator-withdrawal final plus unrelated ${residue} residue is ${residue==="retired"?"inert-tolerated busy":"corruption"}`,()=>withRoot(async root=>{await writeWithdrawalFinalOrphan(root,{host:hostname(),nonce:"e".repeat(64),pid:process.pid,v:1 as const});const unrelated={host:hostname(),nonce:(residue==="active"?"f":residue==="retired"?"0":"1").repeat(64),pid:process.pid,v:1 as const};if(residue==="active")await writeOwnerDirectory(root,"lock",unrelated);else if(residue==="retired")await writeOwnerDirectory(root,retirementMarkerName(unrelated,"released"),unrelated);else await writeAdmissionPrep(root,unrelated,"complete");await assertDecisionUnchanged(root,{ok:false,reason:residue==="retired"?"busy":"corruption"});}));
   await t.test("two independently valid orphan lineages cannot share one generation",async()=>{const prepOwner={host:hostname(),nonce:"2".repeat(64),pid:process.pid,v:1 as const},slotOwner={host:hostname(),nonce:"3".repeat(64),pid:process.pid,v:1 as const};await withRoot(async root=>{await writePrepOrphan(root,prepOwner);await assertDecisionUnchanged(root,{ok:false,reason:"busy"});});await withRoot(async root=>{await writePublishedOrphan(root,slotOwner);await assertDecisionUnchanged(root,{ok:false,reason:"busy"});});await withRoot(async root=>{await writePrepOrphan(root,prepOwner);await writePublishedOrphan(root,slotOwner);await assertDecisionUnchanged(root,{ok:false,reason:"corruption"});});});
   for(const lifecycle of ["stage","final"] as const)await t.test(`coherent withdrawal plus slot final plus withdrawal ${lifecycle} remains busy`,()=>withRoot(async root=>{const owner={host:hostname(),nonce:(lifecycle==="stage"?"4":"5").repeat(64),pid:process.pid,v:1 as const},withdrawal=await writeCreatorWithdrawal(root,owner,"partial"),withdrawalName=path.basename(withdrawal),slotName=admissionRetiredName(owner,"withdrawn"),slot=await writeOwnerDirectory(root,slotName,owner),slotAck=slotCoordinationAck(owner,slotName,slot,"withdrawn",withdrawalName,ownerStateBytes(owner,"partial")),slotAckPath=path.join(root,coordinationAckName(slotAck));await writeFile(slotAckPath,authorityCanonicalBytes(slotAck));await rm(slot,{recursive:true});const withdrawalAck=incompleteCoordinationAck(owner,"creator-withdrawal",withdrawalName,publicationStageName({...owner,ticket:"0000000000000001"}),"partial",withdrawal,slotAck),target=lifecycle==="stage"?coordinationStageName(withdrawalAck,"creator-withdrawal"):coordinationAckName(withdrawalAck);await writeFile(path.join(root,target),authorityCanonicalBytes(withdrawalAck));await assertDecisionUnchanged(root,{ok:false,reason:"busy"});}));
 });
@@ -1154,9 +1154,9 @@ test("K1 cleanup generations reject legacy debris and non-monotonic creator clos
   await t.test("withdrawal plus slot final plus creator final is busy only after slot marker absence",()=>withRoot(async root=>{const graph=await writeWithdrawalBase(root,{host:hostname(),nonce:"9".repeat(64),pid:process.pid,v:1 as const});await writeFile(graph.slotAckPath,authorityCanonicalBytes(graph.slotAck));await rm(graph.slot,{recursive:true});await writeFile(graph.creatorAckPath,authorityCanonicalBytes(graph.creatorAck));await assertDecisionUnchanged(root,{ok:false,reason:"busy"});}));
   await t.test("creator final while its withdrawn slot marker remains present is corruption",()=>withRoot(async root=>{const graph=await writeWithdrawalBase(root,{host:hostname(),nonce:"a".repeat(64),pid:process.pid,v:1 as const});await writeFile(graph.slotAckPath,authorityCanonicalBytes(graph.slotAck));await writeFile(graph.creatorAckPath,authorityCanonicalBytes(graph.creatorAck));await assertDecisionUnchanged(root,{ok:false,reason:"corruption"});}));
   await t.test("step-five withdrawal plus creator final remains busy",()=>withRoot(async root=>{const graph=await writeWithdrawalBase(root,{host:hostname(),nonce:"b".repeat(64),pid:process.pid,v:1 as const});await writeFile(graph.slotAckPath,authorityCanonicalBytes(graph.slotAck));await rm(graph.slot,{recursive:true});await writeFile(graph.creatorAckPath,authorityCanonicalBytes(graph.creatorAck));await rm(graph.slotAckPath);await assertDecisionUnchanged(root,{ok:false,reason:"busy"});}));
-  for(const residue of ["active","retired","publication-stage"] as const)await t.test(`step-five creator final plus unrelated ${residue} residue is corruption`,()=>withRoot(async root=>{const owner={host:hostname(),nonce:(residue==="active"?"c":residue==="retired"?"d":"e").repeat(64),pid:process.pid,v:1 as const},graph=await writeWithdrawalBase(root,owner);await writeFile(graph.slotAckPath,authorityCanonicalBytes(graph.slotAck));await rm(graph.slot,{recursive:true});await writeFile(graph.creatorAckPath,authorityCanonicalBytes(graph.creatorAck));await rm(graph.slotAckPath);if(residue==="publication-stage")await writePublicationStage(root,{...owner,ticket:"0000000000000001"},publicationOwnerBytes(owner));else{const unrelated={host:hostname(),nonce:(residue==="active"?"f":"0").repeat(64),pid:process.pid,v:1 as const},name=residue==="active"?"lock":retirementMarkerName(unrelated,"released");await writeOwnerDirectory(root,name,unrelated);}await assertDecisionUnchanged(root,{ok:false,reason:"corruption"});}));
+  for(const residue of ["active","retired","publication-stage"] as const)await t.test(`step-five creator final plus unrelated ${residue} residue is ${residue==="retired"?"inert-tolerated busy":"corruption"}`,()=>withRoot(async root=>{const owner={host:hostname(),nonce:(residue==="active"?"c":residue==="retired"?"d":"e").repeat(64),pid:process.pid,v:1 as const},graph=await writeWithdrawalBase(root,owner);await writeFile(graph.slotAckPath,authorityCanonicalBytes(graph.slotAck));await rm(graph.slot,{recursive:true});await writeFile(graph.creatorAckPath,authorityCanonicalBytes(graph.creatorAck));await rm(graph.slotAckPath);if(residue==="publication-stage")await writePublicationStage(root,{...owner,ticket:"0000000000000001"},publicationOwnerBytes(owner));else{const unrelated={host:hostname(),nonce:(residue==="active"?"f":"0").repeat(64),pid:process.pid,v:1 as const},name=residue==="active"?"lock":retirementMarkerName(unrelated,"released");await writeOwnerDirectory(root,name,unrelated);}await assertDecisionUnchanged(root,{ok:false,reason:residue==="retired"?"busy":"corruption"});}));
   await t.test("withdrawn slot plus withdrawal plus slot final remains busy",()=>withRoot(async root=>{const graph=await writeWithdrawalBase(root,{host:hostname(),nonce:"1".repeat(64),pid:process.pid,v:1 as const});await writeFile(graph.slotAckPath,authorityCanonicalBytes(graph.slotAck));await assertDecisionUnchanged(root,{ok:false,reason:"busy"});}));
-  await t.test("withdrawn slot lineage plus unrelated released retirement is corruption",()=>withRoot(async root=>{const graph=await writeWithdrawalBase(root,{host:hostname(),nonce:"2".repeat(64),pid:process.pid,v:1 as const});await writeFile(graph.slotAckPath,authorityCanonicalBytes(graph.slotAck));const unrelated={host:hostname(),nonce:"3".repeat(64),pid:process.pid,v:1 as const};await writeOwnerDirectory(root,retirementMarkerName(unrelated,"released"),unrelated);await assertDecisionUnchanged(root,{ok:false,reason:"corruption"});}));
+  await t.test("withdrawn slot lineage plus unrelated released retirement is inert-tolerated busy",()=>withRoot(async root=>{const graph=await writeWithdrawalBase(root,{host:hostname(),nonce:"2".repeat(64),pid:process.pid,v:1 as const});await writeFile(graph.slotAckPath,authorityCanonicalBytes(graph.slotAck));const unrelated={host:hostname(),nonce:"3".repeat(64),pid:process.pid,v:1 as const};await writeOwnerDirectory(root,retirementMarkerName(unrelated,"released"),unrelated);await assertDecisionUnchanged(root,{ok:false,reason:"busy"});}));
 });
 
 test("K1 final acknowledgments preserve prerequisite order and reconstructible historical commitments",async t=>{
@@ -2787,7 +2787,7 @@ test("published-slot graphs tolerate unrelated inert legacy residue on a used ro
   // pass: an unrelated recovery-pending marker is an unserviced semantic recovery obligation, not
   // inert residue, and a second same-owner successor is genuine ambiguity.
   // Foreign `recovery-pending` is conditioned on the ACTIVE LOCK being the successor. Spec :567
-  // grants retirement-marker coexistence "only for the next active owner", and :796-797 makes that
+  // grants retirement-marker coexistence "only for the next active owner", and :831-832 makes that
   // owner the sole marker scanner servicing every recovery-pending marker before every callback —
   // inspectActiveLock's own dead-lock reclaim mints exactly this shape in the same iteration that
   // publishes, so refusing it would corrupt every acquisition that follows a crash-with-lock. With
@@ -3217,5 +3217,91 @@ test("reused roots on the default path stay healed across acquisitions, crashes,
     assert.notDeepEqual(legacyResidue(await readdir(root)),beforeIdle,"the surviving released marker is recover()'s own, not the predecessor's");
     await observeAdvances(root,t0+8_000,"the root remains serviceable after the idle recover()");
     await assertSteady(root,"at the end of the lifecycle");
+  }));
+});
+
+// Warm parity — measured 2026-08-05 (Batch B probe, the sixth fresh-root-blindness instance):
+// every withdrawal-chain crash residue below classified bounded `busy` on a fresh root and
+// permanent `corruption` from BOTH entry points once the root also carried the steady-state
+// unrelated `.released` marker every used root keeps — so the committed eight-state matrix was
+// satisfiable only on never-used directories. Owner decision D4 (2026-08-05) grants the
+// released-only tolerance and this family as its guard. The parity pins assert PARITY (same
+// result and the same surviving seeded artifacts, warm vs fresh), never absolute outcomes, so
+// they remain valid when the withdrawal chain lands and these residues progress instead of
+// waiting; the two absolute anchors pin fresh live-residue `busy`, which the live-preservation
+// family (:1135-:1170) pins independently. The boundary pins hold the tolerance edge at every
+// tolerance site: only the UNRELATED `released` marker is inert — a SAME-owner `released` has no
+// real lineage (release follows the cleanup pass), and an UNRELATED `publication-aborted` has no
+// measured withdrawal-family lineage.
+test("withdrawal-family crash residue classifies identically on warm and fresh roots",{timeout:120_000},async t=>{
+  const eightStates=["slot-withdrawal","slot-withdrawal-slot-stage","slot-withdrawal-slot-ack","withdrawal-slot-ack","withdrawal-slot-ack-withdrawal-stage","withdrawal-both-acks","withdrawal-withdrawal-ack","orphan-withdrawal-ack"] as const;
+  type SeededRole=readonly [role:string,name:string];
+  const seedEight=async(root:string,owner:AdmissionOwner,state:typeof eightStates[number]):Promise<SeededRole[]>=>{
+    const withdrawalName=creatorWithdrawalName(owner,"partial"),withdrawal=path.join(root,withdrawalName),slotName=admissionRetiredName(owner,"withdrawn"),slot=path.join(root,slotName);
+    await mkdir(withdrawal);await writeFile(path.join(withdrawal,"owner.json"),ownerStateBytes(owner,"partial"));
+    await mkdir(slot);await writeFile(path.join(slot,"owner.json"),publicationOwnerBytes(owner));
+    const slotAck=slotCoordinationAck(owner,slotName,slot,"withdrawn",withdrawalName,ownerStateBytes(owner,"partial")),slotAckName=coordinationAckName(slotAck),slotStageName=coordinationStageName(slotAck,"slot-retired");
+    if(state==="slot-withdrawal-slot-stage")await writeFile(path.join(root,slotStageName),authorityCanonicalBytes(slotAck));
+    if(!["slot-withdrawal","slot-withdrawal-slot-stage"].includes(state))await writeFile(path.join(root,slotAckName),authorityCanonicalBytes(slotAck));
+    if(["withdrawal-slot-ack","withdrawal-slot-ack-withdrawal-stage","withdrawal-both-acks","withdrawal-withdrawal-ack","orphan-withdrawal-ack"].includes(state))await rm(slot,{recursive:true});
+    const withdrawalAck=incompleteCoordinationAck(owner,"creator-withdrawal",withdrawalName,publicationStageName({...owner,ticket:"0000000000000001"}),"partial",withdrawal,slotAck),withdrawalAckName=coordinationAckName(withdrawalAck),withdrawalStageName=coordinationStageName(withdrawalAck,"creator-withdrawal");
+    if(state==="withdrawal-slot-ack-withdrawal-stage")await writeFile(path.join(root,withdrawalStageName),authorityCanonicalBytes(withdrawalAck));
+    if(["withdrawal-both-acks","withdrawal-withdrawal-ack","orphan-withdrawal-ack"].includes(state))await writeFile(path.join(root,withdrawalAckName),authorityCanonicalBytes(withdrawalAck));
+    if(["withdrawal-withdrawal-ack","orphan-withdrawal-ack"].includes(state))await rm(path.join(root,slotAckName),{force:true});
+    if(state==="orphan-withdrawal-ack")await rm(withdrawal,{recursive:true});
+    const roles:SeededRole[]=[],present=new Set(await readdir(root));
+    for(const [role,name] of [["withdrawal",withdrawalName],["slot",slotName],["slot-ack",slotAckName],["slot-stage",slotStageName],["withdrawal-ack",withdrawalAckName],["withdrawal-stage",withdrawalStageName]] as const)if(present.has(name))roles.push([role,name]);
+    return roles;
+  };
+  const seedAbortedTerminal=async(root:string,owner:AdmissionOwner):Promise<SeededRole[]>=>{
+    const terminalName=retirementMarkerName(owner,"publication-aborted"),slotName=admissionRetiredName(owner,"withdrawn"),slot=path.join(root,slotName);
+    await writeLegacyRetiredLock(root,owner,"publication-aborted");
+    await mkdir(slot);await writeFile(path.join(slot,"owner.json"),publicationOwnerBytes(owner));
+    const ack=slotCoordinationAck(owner,slotName,slot,"withdrawn",terminalName,publicationOwnerBytes(owner)),ackName=coordinationAckName(ack);
+    await writeFile(path.join(root,ackName),authorityCanonicalBytes(ack));
+    return [["terminal",terminalName],["slot",slotName],["slot-ack",ackName]];
+  };
+  const classify=async(root:string,entry:"observe"|"recover")=>{const ledger=new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:200});return entry==="recover"?await ledger.recover():await ledger.observeClock();};
+  const surviving=async(root:string,seeded:readonly SeededRole[]):Promise<string[]>=>{const present=new Set(await readdir(root));return seeded.filter(([,name])=>present.has(name)).map(([role])=>role).sort();};
+  const assertParity=(name:string,seed:(root:string,owner:AdmissionOwner)=>Promise<SeededRole[]>,pid:number,entry:"observe"|"recover")=>withRoot(async fresh=>{await withRoot(async warm=>{
+    assert.equal((await new RawFsAuthorityLedger(warm,{now:()=>t0,lockTimeoutMs:2_000}).observeClock()).ok,true,`${name}: the warming acquisition succeeds`);
+    assert.equal((await readdir(warm)).some(entryName=>/^\.authority-ledger-lock-\d+-[0-9a-f]{64}\.released$/.test(entryName)),true,`${name}: the warm root carries its steady-state released marker`);
+    const owner:AdmissionOwner={host:hostname(),nonce:"a".repeat(64),pid,v:1};
+    const seededFresh=await seed(fresh,owner),seededWarm=await seed(warm,owner);
+    assert.deepEqual(seededWarm.map(([role])=>role),seededFresh.map(([role])=>role),`${name}: identical fixture roles`);
+    const freshResult=await classify(fresh,entry),warmResult=await classify(warm,entry);
+    assert.deepEqual(warmResult,freshResult,`${name}: the unrelated released marker is inert to withdrawal-family classification`);
+    assert.deepEqual(await surviving(warm,seededWarm),await surviving(fresh,seededFresh),`${name}: the same seeded artifacts survive warm and fresh`);
+  });});
+  for(const state of eightStates)await t.test(`${state} live observe parity`,()=>assertParity(state,(root,owner)=>seedEight(root,owner,state),process.pid,"observe"));
+  for(const state of ["slot-withdrawal","withdrawal-both-acks"] as const)await t.test(`${state} live recover parity`,()=>assertParity(state,(root,owner)=>seedEight(root,owner,state),process.pid,"recover"));
+  await t.test("slot-withdrawal dead observe parity",async()=>assertParity("slot-withdrawal-dead",(root,owner)=>seedEight(root,owner,"slot-withdrawal"),await exitedProcessPid(),"observe"));
+  await t.test("aborted-terminal live observe parity",()=>assertParity("aborted-terminal",seedAbortedTerminal,process.pid,"observe"));
+  await t.test("aborted-terminal dead observe parity",async()=>assertParity("aborted-terminal-dead",seedAbortedTerminal,await exitedProcessPid(),"observe"));
+  await t.test("aborted-terminal dead recover parity",async()=>assertParity("aborted-terminal-dead",seedAbortedTerminal,await exitedProcessPid(),"recover"));
+  for(const state of ["slot-withdrawal","withdrawal-withdrawal-ack","orphan-withdrawal-ack","withdrawal-both-acks"] as const)await t.test(`${state} fresh live residue stays bounded busy`,()=>withRoot(async root=>{
+    const owner:AdmissionOwner={host:hostname(),nonce:"a".repeat(64),pid:process.pid,v:1};
+    await seedEight(root,owner,state);
+    const before=await snapshotRootArtifacts(root);
+    assert.deepEqual(await classify(root,"observe"),{ok:false,reason:"busy"},state);
+    assert.deepEqual(await snapshotRootArtifacts(root),before,`${state}: preserved byte-identically`);
+  }));
+  await t.test("aborted-terminal fresh live residue stays bounded busy",()=>withRoot(async root=>{
+    const owner:AdmissionOwner={host:hostname(),nonce:"a".repeat(64),pid:process.pid,v:1};
+    await seedAbortedTerminal(root,owner);
+    const before=await snapshotRootArtifacts(root);
+    assert.deepEqual(await classify(root,"observe"),{ok:false,reason:"busy"},"aborted-terminal");
+    assert.deepEqual(await snapshotRootArtifacts(root),before,"aborted-terminal: preserved byte-identically");
+  }));
+  for(const state of ["slot-withdrawal","withdrawal-withdrawal-ack","orphan-withdrawal-ack","withdrawal-both-acks"] as const)for(const [boundary,seedBlocking] of [
+    ["same-owner released",async(root:string,owner:AdmissionOwner)=>{await writeLegacyRetiredLock(root,owner,"released");}],
+    ["unrelated publication-aborted",async(root:string,owner:AdmissionOwner)=>{await writeLegacyRetiredLock(root,{...owner,nonce:"f".repeat(64)},"publication-aborted");}],
+  ] as const)await t.test(`${state} beside ${boundary} stays preserved corruption`,()=>withRoot(async root=>{
+    const owner:AdmissionOwner={host:hostname(),nonce:"a".repeat(64),pid:process.pid,v:1};
+    await seedEight(root,owner,state);
+    await seedBlocking(root,owner);
+    const before=await snapshotRootArtifacts(root);
+    assert.deepEqual(await classify(root,"observe"),{ok:false,reason:"corruption"},`${state} ${boundary}`);
+    assert.deepEqual(await snapshotRootArtifacts(root),before,`${state} ${boundary}: preserved byte-identically`);
   }));
 });

@@ -1709,14 +1709,14 @@ export class FsAuthorityLedger implements AuthorityLedger {
         if(activeOwner!==null)throw new LedgerCorruption("withdrawn slot cannot bind active lock");
         const terminalNames=[...withdrawals.filter(value=>sameCoordinationOwner(value.owner,marker.owner)).map(value=>value.parsed.name),...[...retired.values()].filter(value=>value.disposition==="publication-aborted"&&sameCoordinationOwner(value.owner,marker.owner)).map(value=>value.entry.name)];
         const bound=acks.filter(value=>value.ack?.purpose==="slot-retired"&&value.ack.markerName===parsed.name&&terminalNames.includes(String(value.ack.terminalArtifactName)));
-        if(withdrawals.length+retired.size!==1||terminalNames.length!==1||acks.some(value=>value.ack?.purpose==="slot-retired")&&bound.length===0)throw new LedgerCorruption("withdrawn slot lacks exact terminal binding");
+        if(withdrawals.length+this.blockingRetiredResidue(retired,marker.owner)!==1||terminalNames.length!==1||acks.some(value=>value.ack?.purpose==="slot-retired")&&bound.length===0)throw new LedgerCorruption("withdrawn slot lacks exact terminal binding");
       }else if(parsed.disposition==="published"){
         if(withdrawals.length)throw new LedgerCorruption("published slot cannot bind a withdrawal");
         this.classifyHybridPublishedSuccessor(marker,byName,activeOwner,retired);
       }else if(withdrawals.length||activeOwner!==null||retired.size)throw new LedgerCorruption("abandoned slot has an impossible successor");
       return "busy";
     }
-    if(withdrawals.length){const withdrawalName=withdrawals[0].parsed.name,bound=acks.some(value=>value.parsed.kind==="coordination-ack"&&value.ack?.purpose==="creator-withdrawal"&&value.ack.markerName===withdrawalName),slotAuthority=acks.some(value=>value.parsed.kind==="coordination-ack"&&value.ack?.purpose==="slot-retired"&&value.ack.disposition==="withdrawn"&&value.ack.terminalArtifactName===withdrawalName&&sameCoordinationOwner(value.ack.owner,withdrawals[0].owner));if(preps.length||slots.length||prepRetired.length||slotRetired.length||publications.length||activeOwner!==null||retired.size||!bound&&!slotAuthority)throw new LedgerCorruption("withdrawal lacks a closed final retirement lineage");return "busy";}
+    if(withdrawals.length){const withdrawalName=withdrawals[0].parsed.name,bound=acks.some(value=>value.parsed.kind==="coordination-ack"&&value.ack?.purpose==="creator-withdrawal"&&value.ack.markerName===withdrawalName),slotAuthority=acks.some(value=>value.parsed.kind==="coordination-ack"&&value.ack?.purpose==="slot-retired"&&value.ack.disposition==="withdrawn"&&value.ack.terminalArtifactName===withdrawalName&&sameCoordinationOwner(value.ack.owner,withdrawals[0].owner));if(preps.length||slots.length||prepRetired.length||slotRetired.length||publications.length||activeOwner!==null||this.blockingRetiredResidue(retired,withdrawals[0].owner)||!bound&&!slotAuthority)throw new LedgerCorruption("withdrawal lacks a closed final retirement lineage");return "busy";}
     if(parsedK1.length>0)return "busy";
     return "continue-legacy";
   }
@@ -1894,7 +1894,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
       return "busy";
     }
     if(ack.purpose==="creator-withdrawal"){
-      if(acks.length!==1||owned.length!==0||activeOwner!==null||retired.size!==0)throw new LedgerCorruption("orphan creator-withdrawal final has unrelated generation residue");
+      if(acks.length!==1||owned.length!==0||activeOwner!==null||this.blockingRetiredResidue(retired,ack.owner)!==0)throw new LedgerCorruption("orphan creator-withdrawal final has unrelated generation residue");
       return "busy";
     }
     if(ack.purpose!=="slot-retired")throw new LedgerCorruption("unknown orphan-final lineage");
@@ -1910,7 +1910,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
     }
     if(ack.disposition!=="withdrawn"||activeOwner!==null)throw new LedgerCorruption("invalid orphan slot-final disposition lineage");
     const withdrawals=owned.filter(value=>value.parsed.kind==="creator-withdrawal"),otherOwned=owned.filter(value=>value.parsed.kind!=="creator-withdrawal"),aborted=[...retired.values()].filter(value=>value.disposition==="publication-aborted");
-    if(otherOwned.length||withdrawals.length+retired.size!==1||withdrawals.length+aborted.length!==1)throw new LedgerCorruption("orphan withdrawn-slot final requires one exact terminal lineage");
+    if(otherOwned.length||withdrawals.length+this.blockingRetiredResidue(retired,ack.owner)!==1||withdrawals.length+aborted.length!==1)throw new LedgerCorruption("orphan withdrawn-slot final requires one exact terminal lineage");
     const terminal=withdrawals.length?{name:withdrawals[0].parsed.name,entry:withdrawals[0].entry,owner:withdrawals[0].owner}:{name:aborted[0].entry.name,entry:aborted[0].entry,owner:aborted[0].owner};
     const child=hybridOwnerChild(terminal.entry);if(child?.bytes===undefined||!sameCoordinationOwner(terminal.owner,ack.owner)||ack.terminalArtifactName!==terminal.name||ack.terminalArtifactDigest!==coordinationRawDigest(child.bytes))throw new LedgerCorruption("orphan withdrawn-slot final terminal proof mismatch");
     const creatorLifecycle=acks.filter(value=>(value.parsed.kind==="coordination-stage"?value.parsed.purpose:value.ack?.purpose)==="creator-withdrawal");
@@ -1928,6 +1928,14 @@ export class FsAuthorityLedger implements AuthorityLedger {
   // impossible" holds it to corruption; a `recovery-pending` marker is semantic residue with no
   // next active owner in these lock-less graphs; and a SAME-owner marker beside its own
   // preparation family has no real lineage — all of those stay corruption.
+  //
+  // Owner decision D4 (2026-08-05) extends the same released-only tolerance to the
+  // withdrawal-family branches — the withdrawn-slot terminal binding, the withdrawals branch,
+  // and both orphan finals — because every chain crash residue classified permanent corruption
+  // beside the steady-state unrelated `released` marker every used root carries (the sixth
+  // fresh-root-blindness instance). The warm parity family at the end of the ledger suite is
+  // the guard; the three fresh-root pins that pinned the opposite flipped busy-ward in the
+  // same commit, named there.
   private blockingRetiredResidue(retired:Map<string,Readonly<{owner:CoordinationOwner;entry:HybridEntrySnapshot;disposition:RetirementDisposition}>>,owner:CoordinationOwner):number{
     let blocking=0;
     for(const item of retired.values())if(item.disposition!=="released"||sameCoordinationOwner(item.owner,owner))blocking++;
@@ -1943,7 +1951,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
   //
   // A foreign `recovery-pending` marker is tolerated exactly when the SAME-OWNER ACTIVE LOCK is
   // the successor. Spec :567 grants retirement-marker coexistence "only for the next active
-  // owner", and :796-797 makes that owner the sole marker scanner, servicing every
+  // owner", and :831-832 makes that owner the sole marker scanner, servicing every
   // recovery-pending marker before every callback — so an unserviced foreign marker beside the
   // live lock is the specified mid-acquisition state (inspectActiveLock's own dead-lock reclaim
   // mints one in the same iteration that publishes). With no active lock in the graph there is no

@@ -15,9 +15,9 @@ that the batch stop-rules reserve to the owner._
 1. **The chain is pure mechanism, re-verified.** `src/` has no creation site for any
    creator-withdrawal artifact: nothing renames a stage to a withdrawal or `publication-aborted`
    marker on the creator's failure path (it is removed — `finishCreatorPublicationStage`,
-   `src/authority/host/fs-ledger.ts:2159`), nothing retires a slot as `withdrawn` (the string is
+   `src/authority/host/fs-ledger.ts:2167`), nothing retires a slot as `withdrawn` (the string is
    never passed to `admissionSlotRetiredName` outside classification), and a dead external stage
-   is silently removed, not withdrawn (`removeDeadPublicationStage`, `:2140`).
+   is silently removed, not withdrawn (`removeDeadPublicationStage`, `:2148`).
 2. **Classification already recognizes all eight evidence-bound crash states** — every one returns
    bounded `busy` with zero mutation on a fresh root, from both entry points, live or dead owner.
    **Nothing progresses any of them.** The committed eight-state matrix
@@ -171,3 +171,31 @@ Ten-minute rebuilds, per this repo's probe convention (describe, do not ship):
 - **The pin-conflict A/B:** apply the four-site `blockingRetiredResidue` swap to the compiled
   build only, run `--test-name-pattern` on the two families around `:1141`/`:1157`/`:1159`, then
   rebuild `dist-test` with `npx tsc -p tsconfig.test.json`.
+
+---
+
+## Postscript 2026-08-05 (later) — the seal signed, D4 granted (a) and SHIPPED, D5 surfaced
+
+The owner signed the seal proposal and granted D4(a) in-session. The tolerance shipped as the
+four-site `blockingRetiredResidue` swap with the reviewed warm parity family as the guard — now
+27 subtests after a second independent RED review: 14 parity, 5 fresh-busy anchors (one per
+boundary-pinned state plus the aborted-terminal graph; the review measured that parity alone is
+symmetric and cannot see a per-site regression to corruption — sites B/C shipped invisible until
+the anchors covered all four), and 8 per-site over-tolerance boundary pins (each of the four
+sites is individually discriminated; the unrelated-aborted pins uniquely catch a
+disposition-filter widening, verified by mutation). The three pins flipped busy-ward in the same
+commit, renamed "…is inert-tolerated busy": `:1141` retired case, `:1157` retired case, `:1159`.
+
+**D5 — a second committed contradiction, found while scoping the chain build.** `:1760`'s eight
+subtests (live same-pid owners, expect `advanced` with full drainage) are contradicted
+shape-for-shape by the committed GREEN live-preservation family (`:1135`, `:1140`, `:1143`,
+`:1154`, `:1156`, `:1158`, `:1167`, `:1170` withdrawn case), which pins bounded `busy` for the
+same residues with the same live same-pid owners. The D1 brief named only `:1022` vs `:1746`;
+this is the same conflict class across the whole matrix. Recorded in the spec beside D4 with the
+recommended resolution — re-fixture `:1760` to dead owners exactly as `:1746` (implied by the
+D1(a) grant's own words plus the exact-creator-snapshot rule; zero green pins flip) — versus
+granting same-process progression (flips the nine green preservation pins). The chain build
+proceeds meanwhile with the dead-owner route and the creator's own in-flight failure path;
+`:1760` stays red as fixtured until the owner decides. The seal's clause 5 was amended the same
+day to the grant's verbatim words ("the creator's own acquisition"; the first recording said
+"process", the mistranscription D5 exposed).

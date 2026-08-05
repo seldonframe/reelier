@@ -71,10 +71,12 @@ directory, because real roots always carry steady-state residue (at minimum the 
 acquisition's `.released` marker). Detect by probing WARM roots — one real acquisition before the
 fixture — from both entry points.
 
-> Cost: six instances so far, each surviving a green suite. The plan docs carry the running
+> Cost: seven instances so far, each surviving a green suite. The plan docs carry the running
 > count: the narrow-drainage revert was the fourth, the warm preparation-stage crash the fifth,
-> and the withdrawal family's warm corruption the sixth — that last one additionally pinned in by
-> three committed fresh-root pins, which is what created decision D4
+> the withdrawal family's warm corruption the sixth (pinned in by three committed fresh-root
+> pins — decision D4, granted and resolved 2026-08-05), and the abandoned family's warm
+> corruption the seventh — found by the D4 slice's own GREEN review three lines below the site
+> being fixed, recorded as D6 in the spec, unfixed pending its own grant
 > (`docs/superpowers/plans/2026-08-05-withdrawal-chain-measured.md` §4).
 
 > Cost: a baseline taken alongside three subagents reported 411 pass as 410 and produced a phantom

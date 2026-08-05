@@ -709,10 +709,15 @@ below is forced by a committed pin or a measurement; the derivation is
    sub-complete form of that residue classifies `corruption` today and becomes recognized with
    the chain; the complete form (slot + same-owner `publication-aborted`) already classifies and
    drains through the granted dead-owner routes.
-5. Who acts, per the D1(a) grant: entering withdrawal is the creator's own failure path only,
-   under its one fresh cleanup deadline. Chain crash residue is progressed only by the creator's
-   own process or by a dead-owner housekeeping route mirroring the published-slot drainage; live
-   cross-process residue stays bounded `busy`, byte-identical.
+5. Who acts, per the D1(a) grant verbatim: entering withdrawal is the creator's own failure
+   path only, under its one fresh cleanup deadline. Chain crash residue is progressed only
+   through the creator's own ACQUISITION — the in-flight operation holding the creation
+   snapshot, which its own failure path is — or by a dead-owner housekeeping route mirroring
+   the published-slot drainage; ALL live residue, same-process observers included per the
+   exact-creator-snapshot rule, stays bounded `busy`, byte-identical. (Amended 2026-08-05,
+   same day as the sign-off: the first recording said "the creator's own process", a
+   mistranscription of the grant that the D5 discovery below exposed; D5 carries the one open
+   re-fixture question.)
 6. A lone dead COMPLETE external stage withdraws by the same atomic rename to that owner's
    `publication-aborted` marker instead of being removed. Sub-complete dead external stages keep
    the current authorized removal; no pin constrains them (measured 2026-08-05).
@@ -750,19 +755,49 @@ cross-owner/cross-digest variant is also preserved corruption. An entirely empty
 canonical owner for a new admission attempt; it never retroactively authenticates missing cleanup
 evidence.
 
-**Open discrepancy — the withdrawal family's warm-tolerance pin conflict (D4).** Measured
-2026-08-05 (Batch B) at `214801b`: every crash residue in the matrix above classifies bounded
-`busy` on a fresh root and permanent `corruption` from both entry points on any root carrying the
-steady-state unrelated `released` marker every used root keeps — the sixth fresh-root-blindness
-instance. Unlike the preparation family's warm limit (resolved above), the corruption here is
-required by three committed pins (`ledger.test.ts:1141` retired case, `:1157` retired case,
-`:1159`), each the byte-adjacent twin of a busy-pinned fresh shape — extending the released-only
-tolerance to the four withdrawal-family classification sites flips exactly those three (verified
-by a compiled-build A/B; 127 adjacent subtests hold; the boundary — same-owner `released`,
-unrelated `publication-aborted` — stays corruption, measured). Until the owner decides, the chain
-above is satisfiable only on never-used directories. Resolve deliberately: options and the
-recommended grant sentence are in
+**Resolved 2026-08-05 (Batch B) — the withdrawal family's warm-tolerance pin conflict (D4),
+owner grant (a).** Measured at `214801b`: every crash residue in the matrix above classified
+bounded `busy` on a fresh root and permanent `corruption` from both entry points on any root
+carrying the steady-state unrelated `released` marker every used root keeps — the sixth
+fresh-root-blindness instance, pinned in by three committed fresh-root pins. The owner granted
+the released-only tolerance at the four withdrawal-family classification sites (the withdrawn-slot
+terminal binding, the withdrawals branch, and both orphan finals), and the three pins flipped
+busy-ward in the same commit, named: `ledger.test.ts:1141` retired case, `:1157` retired case,
+`:1159`. The boundary is exactly the preparation family's: only the UNRELATED `released` marker
+is inert; same-owner `released` and unrelated `publication-aborted` stay preserved corruption,
+each held by its own boundary pin at every tolerance site, and the warm parity family at the end
+of the ledger suite is the standing guard (parity oracles plus fresh-busy anchors, so neither a
+re-widening nor a regression to corruption can ship silently). Derivation:
 `docs/superpowers/plans/2026-08-05-withdrawal-chain-measured.md` §4.
+
+**Open discrepancy — the eight-state matrix's live fixtures against the live-preservation family
+(D5).** Found 2026-08-05 (Batch B) while scoping the chain build: the committed eight-state test
+(`ledger.test.ts:1760`, expects `advanced` with full drainage, owner pid LIVE — the test
+process's own) is contradicted shape-for-shape by the committed GREEN live-preservation family
+(`:1135`, `:1140`, `:1143`, `:1154`, `:1156`, `:1158`, `:1167`, `:1170` withdrawn case), which
+pins byte-identical bounded `busy` for the same residues with the same live same-pid owners. The
+D1(a) grant's own words — "the creator-withdrawal chain completes only through the creator's own
+acquisition or a DEAD-OWNER housekeeping route" — read with the exact-creator-snapshot rule (a
+new ledger instance in the same PID is not the creator) support the preservation family and imply
+`:1760` should be re-fixtured to dead owners exactly as `:1746` is; but the grant names only
+`:1746`, so the re-fixture is the owner's call: EITHER (a) re-fixture `:1760`'s eight subtests to
+dead owners, keeping every drainage and ordering assertion, zero green pins flip — the
+recommended, minimal-flip reading — OR (b) grant same-process progression, which flips the nine
+green preservation pins above. Until decided, the chain build proceeds with the dead-owner route
+and the creator's own in-flight failure path only, and `:1760` stays red as fixtured.
+
+**Recorded 2026-08-05 (Batch B GREEN review) — the seventh fresh-root-blindness instance, the
+abandoned family (D6, unfixed).** The `abandoned` slot-retired branch and its orphan-final twin
+still count raw retired residue, so a live- or dead-owner `abandoned` marker beside the
+steady-state unrelated `released` marker classifies permanent `corruption` from both entry
+points on any used root (measured during the D4 slice's review; the same fixtures on a fresh
+root return bounded `busy`). The D4 grant covers the withdrawal family only, so this is
+recorded, not fixed — resolve with its own grant. Two adjacent bounded windows of the same
+class, also recorded: the unrelated `released` marker's own in-flight legacy cleanup ack or
+stage beside a withdrawal-family graph is still corruption (the legacy-coexistence excusal
+requires a published slot marker); and once the chain routinely mints `publication-aborted`
+terminals, the released-only boundary should be revisited deliberately before an unrelated
+aborted marker beside a fresh graph becomes the eighth instance.
 
 Every raw root snapshot is whole-generation state. Active-lock replacement or sustained membership
 churn, an external publication stage changing dead-to-live, or atomic fixed-slot/stage replacement

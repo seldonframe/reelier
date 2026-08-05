@@ -50,11 +50,13 @@ must come after this work, not before (D3: one break, after the withdrawal point
 
 | Quantity | Value | Status |
 |---|---|---|
-| Ledger suite | **518 pass / 75 fail** (recorded baseline, reproduced at `214801b` in Batch B; the 100-process flake was PASSING in the re-saved baseline, so under load it can surface as "newly failing" — re-run it in isolation per §3 before believing that) | measured |
+| Ledger suite | **546 pass / 75 fail** after Batch B slice B1 (D4 tolerance + the 27-subtest warm parity family; the three flipped pins stayed green under their new busy expectations; failing set gained no names). The 100-process flake was PASSING in the re-saved baseline, so under load it can surface as "newly failing" — re-run it in isolation per §3 before believing that | measured |
+| Pre-B1 ledger suite (the Batch A recorded gate) | 518 pass / 75 fail | superseded 2026-08-05 |
 | Post-warm-prep-fix ledger suite as previously recorded here | 516 pass / 75 fail — written mid-Batch-A and stale by 2 against the Batch A baseline `--save`; kept as the third instance of a number in this file diverging from its own command | superseded 2026-08-05 |
 | Pre-Batch-A ledger suite (the prior recorded gate) | 498 pass / 80 fail | superseded 2026-08-05 |
-| Full `npm test` | **2,157 pass / 80 fail / 1 skipped** at the warm-prep fix (pre-fix same-day: 2,145/80/1); failing-set delta across those two runs was exactly the two documented rotating flakes | measured |
-| Failures outside `ledger.test.ts` | **0** on an idle machine; 1 per run under load, differing each run, each passing in isolation | measured |
+| Full `npm test` | **2,190 pass / 78 fail / 1 skipped** after Batch B slice B1; the ledger failing set is name-identical to the recorded 75 and the 3 non-ledger failures are rotating flakes, each re-passing in isolation | measured |
+| Full `npm test` at the warm-prep fix (prior recorded) | 2,157 pass / 80 fail / 1 skipped (pre-fix same-day: 2,145/80/1) | superseded 2026-08-05 |
+| Failures outside `ledger.test.ts` | **0** on an idle machine; 1–3 per run under load, differing each run, each passing in isolation (Batch B added a third observed rotating member: "unknown exceptions and clock failure are closed unavailable, never guessed signed refusals") | measured |
 | Ledger suite wall clock | ~80–90 s | measured |
 | Full `npm test` wall clock | ~5 min | measured |
 | Full Stryker mutation run | ~11.5 h at committed concurrency | inherited |

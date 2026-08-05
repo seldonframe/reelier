@@ -157,3 +157,17 @@ at its designed checkpoint with two items on the owner's desk:
 Batch B's remaining tasks (the chain build, the six emissions, the D3(a) freeze commit, the S4
 re-spec, the flip, the contention gates) resume in one session once the seal is signed and D4 is
 decided — carry both into the next prompt the way this brief's grants were carried.
+
+**Same-day update:** the owner signed the seal and granted D4(a) in-session; the tolerance
+shipped with the warm parity family and the three named pin flips. A fifth decision (**D5**)
+surfaced while scoping the chain build: `:1760`'s eight live fixtures contradict the committed
+GREEN live-preservation family (`:1135`–`:1170`) shape-for-shape — the same conflict class the
+brief recorded as `:1022` vs `:1746`, across the whole matrix. Recommended: the `:1746`-style
+dead-owner re-fixture (implied by D1(a)'s own words plus the exact-creator-snapshot rule; zero
+green pins flip). Recorded in the spec beside D4; the chain build proceeds meanwhile via the
+dead-owner route and the creator's own in-flight path, with `:1760` red as fixtured.
+
+A sixth decision (**D6**) was measured by the D4 slice's own GREEN review: the ABANDONED family
+has the same warm corruption (the seventh fresh-root-blindness instance, live and dead owners,
+both entry points) three lines below the site D4 fixed. Outside the D4 grant, so recorded in the
+spec beside D5 and left unfixed; the fix is the same one-helper tolerance if granted.
