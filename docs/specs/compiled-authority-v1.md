@@ -231,6 +231,39 @@ preparations are preserved corruption. The retired `.complete` spelling retains 
 preparation contents whether interruption occurred immediately before or after the prep sync barrier;
 the name alone never asserts that the barrier completed.
 
+**Open discrepancy — four things the preparation/promotion rules above do not settle.** Found by
+building them (option-gated S1, `codex/universal-compiled-authority`), measured 2026-08-04. Recorded
+here rather than decided; the implementation's current choice is named in each entry so it can be
+overruled without archaeology.
+
+1. **"the real *single-link* preparation directory" is not implementable as written.** A freshly
+   created POSIX directory has `st_nlink == 2` (`.` plus the parent's entry); Windows/NTFS reports
+   `1`. A literal `nlink === 1` check therefore makes the fixed slot uncreatable on Linux and macOS
+   while passing on Windows — measured: the same build returns `advanced` on Windows and
+   `corruption` on `node:22-slim`, with zero of the nine boundaries firing. The implementation now
+   omits the directory link check entirely, matching the publication-stage precedent, and enforces
+   `nlink === 1` only on the regular `owner.json`. Either "single-link" must be defined for
+   directories (no *extra* hard links / no reparse point) or the clause should be scoped to the
+   owner object.
+2. **"An existing destination is completely classified and never overwritten" has no stated
+   outcome, and the platform default violates it.** POSIX `rename(2)` *removes* an existing empty
+   destination directory and succeeds, so "never overwritten" cannot be satisfied by the rename
+   itself — it requires an explicit pre-rename classification. The spec does not say what that
+   classification returns (`corruption`, `busy`, or a zero-mutation refusal). The implementation
+   treats a present destination as `corruption` with the destination preserved byte-identical.
+3. **The degraded terminal (`If a successful publication cannot retire its exact slot…`) does not
+   state the operation's return value,** and does not sanction a *no-attempt* path — which is what a
+   slice that has not yet built slot retirement must take. The implementation returns `busy`, a
+   value taken from the still-red committed pin at `test/authority/ledger.test.ts:1672`, not from
+   this document. Related: `after-lock-retire`/`before-lock-retire` are listed unconditionally under
+   Lock durability, but the implementation suppresses them on this branch.
+4. **A `published` slot's own recovery authority is destroyed by the next acquisition.** Measured on
+   a root left by the degraded terminal: the next acquisition drains the same-owner
+   `publication-aborted` marker while leaving the unretired fixed slot, and
+   `slot-retired.published` names that successor as the only remaining authority to retire the slot.
+   Three subsequent default acquisitions then return `busy` and reads refuse. Whether the successor
+   is protected while a matching unretired slot is present is unstated.
+
 Full-root classification and corruption precedence occur before admission denial. A live exact fixed
 slot bounded-waits under the acquisition deadline and then returns `busy` unchanged. A dead exact slot
 is recoverable only after full classification and final exact revalidation. The exact slot owner alone

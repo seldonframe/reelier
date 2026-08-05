@@ -1,6 +1,7 @@
 # Reelier — numbers worth knowing
 
-**Pinned to `codex/universal-compiled-authority` @ `53e30f0`, measured 2026-08-04 on Windows 11.**
+**Pinned to `codex/universal-compiled-authority` @ `8373ec2` plus the uncommitted S1 admission-preparation
+slice, measured 2026-08-04 on Windows 11.**
 
 _Every number here is quoted somewhere: in a commit message, a PR body, a plan, or an estimate. Two
 were quoted wrongly in a single session — "15 missing fault points" (really 34) and "402 pass"
@@ -19,15 +20,24 @@ not re-verified here — treat as a hypothesis).
 | Quantity | Value | Status |
 |---|---|---|
 | Fault points declared in the spec taxonomy | **57** | measured |
-| Entries in exported `ledgerLockFaultPoints` | **46** | measured |
-| Entries in public `ledgerFaultPoints` | **113** | measured |
-| Fault-point literals emitted anywhere in `src/` | **59** | measured |
-| Declared in spec, not emitted (the backlog) | **24** | measured |
+| Entries in exported `ledgerLockFaultPoints` | **55** | measured |
+| Entries in public `ledgerFaultPoints` | **122** | measured |
+| Fault-point literals emitted anywhere in `src/` | **68** | measured |
+| Declared in spec, not emitted (the backlog) | **15** | measured — **but see the gating caveat below** |
 | Exported but **not** in the spec taxonomy (to delete) | **13** | measured |
 
 ```bash
 npm run lint:fault-pins
 ```
+
+**Gating caveat on the backlog row — read this before quoting 15.** The count fell from 24 to 15
+because the nine admission-preparation points are now emitted in `src/`, which is all
+`lint:fault-pins` measures. It does **not** mean those nine are reachable on a default path: they
+fire only behind a disabled host-private runtime option, and the committed pins that drive them on
+the clean-root default path are still red. `15` therefore means "15 points have no emission
+anywhere", not "42 points are done". The linter has no third state for *emitted but gated*; adding
+one, or reading this row with the caveat attached, is the difference between a real number and the
+exact trap the linter exists to prevent.
 
 The 13 extras are election/provisional/predecessor hooks the spec explicitly forbids. Removing them
 plus adding the remaining 24 is **additive at runtime but source-breaking at the type level** — a consumer
@@ -38,9 +48,9 @@ after this work, not before.
 
 | Quantity | Value | Status |
 |---|---|---|
-| Ledger suite | **427 pass / 79 fail** | measured |
-| Distinct failing test names in that suite | **74** | measured |
-| Full `npm test` | **2,074 pass / 79 fail / 1 skipped** | measured |
+| Ledger suite | **444 pass / 79 fail** | measured |
+| Distinct failing test names in that suite | **77** | measured — the recorded baseline is the authority, and it said 77 when this row said 74 |
+| Full `npm test` | **2,090 pass / 80 fail / 1 skipped** | measured twice; the 80th is the load flake in the row below |
 | Failures outside `ledger.test.ts` | **0** on an idle machine; 1 per run under load, differing each run, each passing in isolation | measured |
 | Ledger suite wall clock | ~80–90 s | measured |
 | Full `npm test` wall clock | ~5 min | measured |

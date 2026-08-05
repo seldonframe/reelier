@@ -2209,3 +2209,227 @@ test("reservation linkage lookup returns only the verified ingress/capability/co
     assert.equal("canonicalRequestBase64" in linkage,false);
   });
 });
+
+// ---------------------------------------------------------------------------------------------
+// S1 of the admission-preparation lifecycle (docs/superpowers/plans/2026-08-04-admission-preparation-design.md).
+//
+// Appended at the END of this file ON PURPOSE. The spec cites test line anchors directly -- see
+// docs/specs/compiled-authority-v1.md:594-595 and :609, which cite ledger.test.ts:1022 and :1746
+// inside an UNRESOLVED open-discrepancy note -- so an insertion higher up silently rots an anchor
+// the owner still has to act on.
+//
+// The committed hard-exit corpus at :1653 drives the DEFAULT clean-root path, which creates no
+// preparation at all, so it stays red until the S4 activation flip. This suite drives the same
+// family through a host-private runtime option, so the mechanism is provable before any default
+// changes. It also carries the ninth boundary (`before-admission-slot-rename`), which has no
+// hard-exit subtest in that corpus.
+//
+// WHAT THE BOUNDARY ROWS DO AND DO NOT DISCRIMINATE -- do not overstate this in a slice's
+// acceptance criteria. The nine rows encode only FIVE distinct durable states, so they pin the
+// owner-state ladder (absent -> zero -> strict-prefix -> complete) and the prep->slot name
+// transition, and nothing else. Sync barriers and read-only revalidation are invisible to a
+// post-mortem listing, which the spec itself concedes at docs/specs/compiled-authority-v1.md:229-231
+// ("the name alone never asserts that the barrier completed"). Emission ORDER is therefore pinned
+// separately, in-process, by the degraded-terminal test below.
+// ---------------------------------------------------------------------------------------------
+function k1AdmissionPreparationOption():symbol{const option=(hostAuthorityModule as Record<string,unknown>).__testK1AdmissionPreparationRuntimeOption;assert.equal(typeof option,"symbol","the host module exposes the private admission-preparation runtime option");return option as symbol;}
+const K1_ADMISSION_PREPARATION_MODE={mode:"prepare-and-promote"} as const;
+const K1_ADMISSION_PREPARATION_POINTS=["after-admission-prep-create","after-admission-prep-owner-create","after-admission-prep-owner-partial-write","after-admission-prep-owner-sync","after-admission-prep-sync","before-admission-slot-rename","after-admission-slot-rename","after-admission-slot-root-sync","after-admission-slot-final-validation"] as const;
+const LIVE_ADMISSION_PREP=/^\.authority-ledger-admission-prep-([0-9a-f]{64})-(\d+)-([0-9a-f]{64})\.tmp$/;
+function livePrepNames(names:readonly string[]):string[]{return names.filter(name=>name.startsWith(".authority-ledger-admission-prep-")&&!name.startsWith(".authority-ledger-admission-prep-retired-"));}
+
+// Subtest labels are prefixed. `baseline-diff` flattens node:test output to a Set of BARE subtest
+// names (scripts/baseline-diff.mjs:60), and all nine points are already failing names from the
+// committed corpus, so an unprefixed label would make a regression here produce zero NEWLY FAILING
+// names -- invisible to exactly the gate that is supposed to catch it.
+test("option-gated admission preparation hard exits leave the exact specified durable state",{timeout:30_000},async t=>{
+  // Spec :218-222 -- preparation has the exact monotonic states empty -> zero -> strict-prefix ->
+  // complete -> synced, and only synced may become the fixed slot.
+  const boundaries=[
+    {point:"after-admission-prep-create",prep:1,slot:0,owner:"absent"},
+    {point:"after-admission-prep-owner-create",prep:1,slot:0,owner:"zero"},
+    {point:"after-admission-prep-owner-partial-write",prep:1,slot:0,owner:"strict-prefix"},
+    {point:"after-admission-prep-owner-sync",prep:1,slot:0,owner:"complete"},
+    {point:"after-admission-prep-sync",prep:1,slot:0,owner:"complete"},
+    {point:"before-admission-slot-rename",prep:1,slot:0,owner:"complete"},
+    {point:"after-admission-slot-rename",prep:0,slot:1,owner:"complete"},
+    {point:"after-admission-slot-root-sync",prep:0,slot:1,owner:"complete"},
+    {point:"after-admission-slot-final-validation",prep:0,slot:1,owner:"complete"},
+  ] as const;
+  assert.deepEqual(boundaries.map(row=>row.point),[...K1_ADMISSION_PREPARATION_POINTS],"all nine specified admission-preparation/fixed-slot boundaries are covered, in spec order");
+  const option=k1AdmissionPreparationOption();assert.equal(typeof option,"symbol");
+  for(const boundary of boundaries)await t.test(`option-gated ${boundary.point}`,()=>withRoot(async root=>{
+    const callback=path.join(root,"callback-entered"),moduleUrl=pathToFileURL(path.resolve("dist-test/src/authority/host/fs-ledger.js")).href;
+    // Exit 80 separates "the option does not exist" from "the boundary never fired"; stderr is
+    // captured so a child-side constructor throw is not silently indistinguishable from either.
+    const source=`import{writeFileSync}from"node:fs";import*as host from ${JSON.stringify(moduleUrl)};const option=host.__testK1AdmissionPreparationRuntimeOption;if(typeof option!=="symbol")process.exit(80);const ledger=new host.FsAuthorityLedger(process.argv[1],{[option]:${JSON.stringify(K1_ADMISSION_PREPARATION_MODE)},now:()=>${t0},lockTimeoutMs:100,faultInjector(point){if(point===${JSON.stringify(boundary.point)})process.exit(91);if(point==="before-ledger-operation-callback")writeFileSync(process.argv[2],"entered");}});await ledger.observeClock();process.exit(92);`;
+    let childPid:number|undefined,stderr="";
+    const code=await new Promise<number|null>((resolve,reject)=>{const child=spawn(process.execPath,["--input-type=module","-e",source,root,callback],{stdio:["ignore","ignore","pipe"]});childPid=child.pid;child.stderr?.on("data",(chunk:unknown)=>{stderr+=String(chunk);});child.once("error",reject);child.once("close",resolve);});
+    assert.ok(Number.isSafeInteger(childPid));
+    assert.equal(code,91,`${boundary.point} must be a real recoverable hard-exit boundary${stderr?`; child stderr: ${stderr.slice(0,600)}`:""}`);
+    assert.equal(existsSync(callback),false,`${boundary.point} cannot reach callback/dispatch`);
+    const names=await readdir(root),preps=livePrepNames(names),slots=names.filter(name=>name===".authority-ledger-admission-0"),stages=names.filter(name=>name.startsWith(".authority-ledger-lock-publication-"));
+    assert.equal(preps.length,boundary.prep,`${boundary.point} leaves exactly ${boundary.prep} preparation(s)`);
+    assert.equal(slots.length,boundary.slot,`${boundary.point} leaves exactly ${boundary.slot} fixed slot(s)`);
+    assert.equal(stages.length,0,`${boundary.point} precedes publication-stage creation`);
+    assert.equal(existsSync(path.join(root,"lock")),false,`${boundary.point} precedes publication`);
+    // Exact name grammar, not a prefix. A preparation carrying a stale host digest or a pid that is
+    // not the creating process is not recoverable: prep-retired housekeeping authority is keyed on
+    // exactly those fields (spec :465-466).
+    if(boundary.prep===1){const match=LIVE_ADMISSION_PREP.exec(preps[0]!);assert.ok(match,`${boundary.point}: the preparation carries the exact specified grammar, got ${preps[0]}`);assert.equal(match[1],publicationHostDigest(hostname()),`${boundary.point}: exact host digest`);assert.equal(Number(match[2]),childPid,`${boundary.point}: the preparation pid is the creating process`);}
+    const target=path.join(root,preps[0]??slots[0]!),ownerPath=path.join(target,"owner.json");
+    if(boundary.owner==="absent"){assert.equal(existsSync(ownerPath),false,`${boundary.point} precedes owner creation`);assert.deepEqual(await readdir(target),[],"an empty preparation holds nothing");return;}
+    assert.equal(existsSync(ownerPath),true,`${boundary.point} follows owner creation`);
+    const bytes=await readFile(ownerPath);
+    if(boundary.owner==="zero")assert.equal(bytes.length,0,`${boundary.point} leaves an exact zero-byte owner`);
+    // Spec :219-220 requires only "a nonempty proper prefix". The exact one-byte width pinned here is
+    // this codebase's shipped convention (src/authority/host/fs-ledger.ts:710 writes
+    // ownerBytes.subarray(0,1) for the publication stage), not a spec requirement.
+    else if(boundary.owner==="strict-prefix"){assert.equal(bytes.length,1,`${boundary.point} leaves a deterministic nonempty strict prefix`);assert.equal(bytes.toString("utf8"),"{","the strict prefix is the leading canonical byte");}
+    else{const parsed=JSON.parse(bytes.toString("utf8")) as AdmissionOwner;assert.equal(parsed.v,1);assert.equal(parsed.host,hostname());assert.match(parsed.nonce,/^[0-9a-f]{64}$/);assert.equal(parsed.pid,childPid,`${boundary.point}: the canonical owner names the creating process`);assert.deepEqual(bytes,publicationOwnerBytes(parsed),`${boundary.point} leaves all canonical owner bytes`);}
+  }));
+});
+
+// The completion pin. S1 builds preparation -> slot -> slot-owner-bound stage -> lock but has no
+// own-slot retirement (that is S2), so a successful publication cannot retire its exact slot. The
+// spec's terminal for that case (:276-278): retire the active lock to `publication-aborted`,
+// root-sync, and run ZERO callback.
+//
+// THREE THINGS HERE ARE STAGING DECISIONS, NOT SPEC, and are recorded as such:
+//  (a) The spec conditions the degraded terminal on failing to retire "within its fresh
+//      slot-retirement deadline". S1 does not attempt retirement at all, so it synthesises the
+//      condition as "no mechanism, therefore degraded exit". The spec does not sanction a
+//      no-attempt path; S2 replaces it with a real attempt.
+//  (b) The spec states the artifacts and the zero callback but never states the operation's RETURN
+//      VALUE. `busy` is taken from the committed pin at :1672, which is itself still red.
+//  (c) The surviving unretired slot contradicts nothing in the spec, but activation-contract item 5
+//      in the design plan requires zero admission-family residue. That item binds a later slice;
+//      the assertion below must be REVISED, not extended, when S2 lands.
+test("option-gated admission preparation promotes one owner and takes the specified degraded terminal",()=>withRoot(async root=>{
+  const option=k1AdmissionPreparationOption(),slot=path.join(root,".authority-ledger-admission-0");
+  const observed:string[]=[];
+  let prepOwner=Buffer.alloc(0),slotOwner=Buffer.alloc(0),lockOwner=Buffer.alloc(0),stageOwner=Buffer.alloc(0);
+  let prepIdentity:ExactFsIdentity|undefined,prepOwnerIdentity:ExactFsIdentity|undefined,slotAtLockSync=false,callbackEntries=0,publishedOwner:AdmissionOwner|undefined;
+  const result=await new RawFsAuthorityLedger(root,{[option]:K1_ADMISSION_PREPARATION_MODE,now:()=>t0,lockTimeoutMs:2_000,faultInjector:(point:string)=>{
+    observed.push(point);
+    if(point==="after-admission-prep-sync"){const prep=livePrepNames(readdirSync(root))[0];assert.ok(prep,"a preparation exists at its own sync barrier");prepOwner=readFileSync(path.join(root,prep,"owner.json"));prepIdentity=exactFsIdentity(path.join(root,prep));prepOwnerIdentity=exactFsIdentity(path.join(root,prep,"owner.json"));}
+    if(point==="after-admission-slot-root-sync"){slotOwner=readFileSync(path.join(slot,"owner.json"));
+      // Promotion is an atomic rename, so the fixed slot IS the preparation: same dev/ino/mode/nlink.
+      // Byte equality alone cannot tell rename from copy-then-delete.
+      assert.deepEqual(exactFsIdentity(slot),prepIdentity,"the fixed slot is the promoted preparation directory itself, not a copy");
+      assert.deepEqual(exactFsIdentity(path.join(slot,"owner.json")),prepOwnerIdentity,"the promoted owner object keeps its filesystem identity");}
+    if(point==="after-lock-publication-stage-sync"){const stage=readdirSync(root).filter(name=>name.startsWith(".authority-ledger-lock-publication-"))[0];assert.ok(stage,"the slot owner created exactly one publication stage");assert.equal(existsSync(slot),true,"the stage is created while the fixed slot is still exact");stageOwner=readFileSync(path.join(root,stage,"owner.json"));}
+    if(point==="after-lock-publication-root-sync"){slotAtLockSync=existsSync(slot);lockOwner=readFileSync(path.join(root,"lock","owner.json"));publishedOwner=JSON.parse(lockOwner.toString("utf8")) as AdmissionOwner;}
+    if(point==="before-ledger-operation-callback")callbackEntries++;
+  }} as never).observeClock();
+  assert.ok(prepOwner.length>0,"the preparation reaches its complete synced state");
+  assert.deepEqual(slotOwner,prepOwner,"the preparation is promoted, never rewritten");
+  assert.deepEqual(stageOwner,slotOwner,"the publication stage is bound to the fixed-slot owner");
+  assert.deepEqual(lockOwner,slotOwner,"prep, slot, publication stage and active lock carry one canonical owner");
+  assert.equal(slotAtLockSync,true,"the fixed slot is still present when the active lock root-syncs");
+  assert.equal(callbackEntries,0,"a publication that cannot retire its slot runs zero callback");
+  assert.deepEqual(result,{ok:false,reason:"busy"});
+  assert.ok(publishedOwner);
+  assert.equal(existsSync(path.join(root,"lock")),false,"the active lock is retired, not left live");
+  assert.equal(existsSync(path.join(root,`.authority-ledger-lock-${publishedOwner!.pid}-${publishedOwner!.nonce}.publication-aborted`)),true,"the degraded terminal is the specified publication-aborted marker");
+  assert.equal(livePrepNames(await readdir(root)).length,0,"the promoted preparation name is gone");
+  assert.equal(existsSync(slot),true,"the unretired slot survives; what that costs is pinned by the next test, not assumed here");
+  // The only discriminator for the boundaries the durable-state rows collapse (the two sync barriers
+  // and the final read-only validation): each specified point fires exactly once, in spec order.
+  assert.deepEqual(observed.filter(point=>(K1_ADMISSION_PREPARATION_POINTS as readonly string[]).includes(point)),[...K1_ADMISSION_PREPARATION_POINTS],"the nine boundaries fire exactly once each, in the specified order");
+}));
+
+// Gate half (a) is a null signal on its own for an option-gated slice: untouched defaults are exactly
+// what a slice that does nothing also produces. This asserts the untouched-ness directly, on both
+// sides -- no new emission appears, and the default path's own shape is unchanged.
+test("the admission-preparation option leaves default clean-root behaviour untouched",()=>withRoot(async root=>{
+  const observed:string[]=[];let published=0,retired=0,callbacks=0;
+  const result=await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:2_000,faultInjector:(point:string)=>{
+    observed.push(point);
+    if(point==="after-lock-publication-root-sync")published++;
+    if(point==="after-lock-retire")retired++;
+    if(point==="before-ledger-operation-callback")callbacks++;
+  }} as never).observeClock();
+  assert.deepEqual(result,{ok:true,status:"advanced",observedAt:new Date(t0).toISOString()});
+  assert.deepEqual(observed.filter(point=>(K1_ADMISSION_PREPARATION_POINTS as readonly string[]).includes(point)),[],"no admission-preparation boundary fires without the option");
+  assert.deepEqual({published,retired,callbacks},{published:1,retired:1,callbacks:1},"the default clean-root shape is unchanged");
+  assert.deepEqual(livePrepNames(await readdir(root)),[],"no preparation is created without the option");
+  assert.equal(existsSync(path.join(root,".authority-ledger-admission-0")),false,"no fixed slot is created without the option");
+}));
+
+// The measured cost of S1's degraded terminal, pinned rather than assumed. The test above asserts the
+// slot survives; this one says what surviving actually means today, because the honest answer is not
+// "the next acquisition classifies it".
+//
+// It also pins a consequence nobody predicted: the very next DEFAULT acquisition drains the
+// `publication-aborted` marker (src/authority/host/fs-ledger.ts services retirement artifacts when
+// the only K1 name is the slot) while leaving the slot itself. Spec :472 makes that same-owner
+// successor the only authority that can ever retire the slot as `published`, so S1 destroys its own
+// recovery path. S2 must change this; the pin exists so S2 cannot change it silently.
+test("option-gated admission preparation leaves a root that S1 cannot drain",()=>withRoot(async root=>{
+  const option=k1AdmissionPreparationOption(),slot=path.join(root,".authority-ledger-admission-0");
+  const enabled=()=>new RawFsAuthorityLedger(root,{[option]:K1_ADMISSION_PREPARATION_MODE,now:()=>t0,lockTimeoutMs:200} as never);
+  const byDefault=()=>new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:200} as never);
+  assert.deepEqual(await enabled().observeClock(),{ok:false,reason:"busy"});
+  const afterFirst=(await readdir(root)).sort();
+  assert.equal(existsSync(slot),true);
+  assert.equal(afterFirst.some(name=>name.endsWith(".publication-aborted")),true,"the first acquisition leaves slot + publication-aborted");
+  // The next DEFAULT acquisition drains the marker and keeps the slot.
+  assert.deepEqual(await byDefault().observeClock(),{ok:false,reason:"busy"});
+  assert.deepEqual((await readdir(root)).sort(),[".authority-ledger-admission-0"],"the same-owner publication-aborted successor is gone, the slot is not");
+  // And from there the root is wedged for DEFAULT, option-off operations, including reads.
+  assert.deepEqual(await byDefault().observeClock(),{ok:false,reason:"busy"});
+  assert.deepEqual(await enabled().observeClock(),{ok:false,reason:"busy"});
+  await assert.rejects(()=>byDefault().getHighWaterMark(),/busy/,"a wedged root refuses reads too");
+  assert.deepEqual((await readdir(root)).sort(),[".authority-ledger-admission-0"],"and nothing further mutates it");
+}));
+
+// Spec :269 -- the exact slot owner alone may create one publication stage; spec :345 -- a lone live
+// external pre-slot publication stage is preserved and bounded-waits to `busy`. The guard must not
+// fall through to legacy publication when it cannot prepare, or the option publishes an active lock
+// with no fixed slot behind it and then runs the callback.
+test("option-gated admission preparation refuses rather than publishing without a fixed slot",()=>withRoot(async root=>{
+  const option=k1AdmissionPreparationOption(),foreign={host:hostname(),nonce:"b7".repeat(32),pid:49771,v:1 as const,ticket:"0000000000000001"};
+  const stage=await writePublicationStage(root,foreign,publicationOwnerBytes(foreign));
+  const before=await snapshotRootArtifacts(root);
+  // The stage owner must read as ALIVE. A dead foreign stage is legitimately withdrawn first, which
+  // leaves an admission-ready root where preparing IS correct -- a different branch entirely.
+  const originalKill=process.kill;
+  Object.defineProperty(process,"kill",{configurable:true,value:(pid:number)=>pid===foreign.pid?true:originalKill.call(process,pid,0)});
+  let prepCreates=0,slotRenames=0,published=0,callbacks=0,result;
+  try{
+    result=await new RawFsAuthorityLedger(root,{[option]:K1_ADMISSION_PREPARATION_MODE,now:()=>t0,lockTimeoutMs:20,faultInjector:(point:string)=>{
+      if(point==="after-admission-prep-create")prepCreates++;
+      if(point==="after-admission-slot-rename")slotRenames++;
+      if(point==="after-lock-publication-root-sync")published++;
+      if(point==="before-ledger-operation-callback")callbacks++;
+    }} as never).observeClock();
+  }finally{Object.defineProperty(process,"kill",{configurable:true,value:originalKill});}
+  assert.deepEqual(result,{ok:false,reason:"busy"});
+  assert.deepEqual({prepCreates,slotRenames,published,callbacks},{prepCreates:0,slotRenames:0,published:0,callbacks:0},"a contended root neither prepares nor publishes under the option");
+  assert.equal(existsSync(path.join(root,".authority-ledger-admission-0")),false,"no fixed slot appears");
+  assert.equal(existsSync(stage),true);
+  assert.deepEqual(await snapshotRootArtifacts(root),before,"the foreign stage is preserved byte-identical");
+}));
+
+// Spec :217 -- "An existing destination is completely classified and never overwritten." POSIX
+// rename(2) REMOVES an empty destination directory and succeeds, so this is the one boundary where
+// the platform will silently do the forbidden thing unless the destination is classified first.
+test("option-gated admission promotion never overwrites an existing fixed slot",async t=>{
+  const option=k1AdmissionPreparationOption();
+  for(const shape of ["empty","occupied"] as const)await t.test(shape,()=>withRoot(async root=>{
+    const slot=path.join(root,".authority-ledger-admission-0"),foreign=Buffer.from(`foreign-${shape}-slot`);
+    let planted=false,renames=0;
+    const result=await new RawFsAuthorityLedger(root,{[option]:K1_ADMISSION_PREPARATION_MODE,now:()=>t0,lockTimeoutMs:20,faultInjector:(point:string)=>{
+      if(point==="before-admission-slot-rename"&&!planted){planted=true;mkdirSync(slot);if(shape==="occupied")writeFileSync(path.join(slot,"owner.json"),foreign);}
+      if(point==="after-admission-slot-rename")renames++;
+    }} as never).observeClock();
+    assert.equal(planted,true,"the fixture occupies the destination before the promotion attempt");
+    assert.equal(renames,0,`${shape}: the promotion does not proceed onto an existing destination`);
+    assert.deepEqual(result,{ok:false,reason:"corruption"},`${shape}: an existing destination is a typed refusal, never a raw errno out of the public API`);
+    assert.equal(existsSync(slot),true,`${shape}: the destination survives`);
+    if(shape==="occupied")assert.deepEqual(readFileSync(path.join(slot,"owner.json")),foreign,"foreign slot bytes are preserved byte-identical");
+    else assert.deepEqual(await readdir(slot),[],"an empty foreign destination is not clobbered by rename");
+    assert.equal(livePrepNames(await readdir(root)).length,1,`${shape}: the contender's own preparation is preserved in place, never deleted`);
+  }));
+});

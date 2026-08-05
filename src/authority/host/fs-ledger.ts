@@ -104,6 +104,14 @@ export const clockFaultPoints = Object.freeze([
   "clock-before-directory-sync", "clock-after-directory-sync",
 ] as const);
 export const ledgerLockFaultPoints = Object.freeze([
+  // Admission preparation/fixed slot. First in ABI order because the spec lists it first
+  // (docs/specs/compiled-authority-v1.md:355-359) and the registry is the group concatenation, not
+  // an execution trace.
+  "after-admission-prep-create", "after-admission-prep-owner-create",
+  "after-admission-prep-owner-partial-write", "after-admission-prep-owner-sync",
+  "after-admission-prep-sync",
+  "before-admission-slot-rename", "after-admission-slot-rename",
+  "after-admission-slot-root-sync", "after-admission-slot-final-validation",
   "after-admission-prep-enumeration", "after-admission-slot-enumeration",
   "after-pre-admission-housekeeping-initial-enumeration", "after-pre-admission-housekeeping-generation-closed",
   "before-pre-admission-housekeeping-final-validation",
@@ -139,6 +147,11 @@ export interface FsAuthorityLedgerOptions {
 export const __testAdmissionClockOption: unique symbol = Symbol();
 export const __testPrepHousekeeperRuntimeOption: unique symbol = Symbol();
 export const __testK1OperationFenceRuntimeOption: unique symbol = Symbol();
+// Staging seam for the K1 admission-preparation lifecycle, same shape as the fence option above.
+// Absent or unrecognised means DISABLED, so every default path is byte-identical to before it
+// existed. It exists so the preparation -> fixed-slot -> slot-owner-bound-stage mechanism can be
+// built and proved before the clean-root activation flip changes behaviour for every operation.
+export const __testK1AdmissionPreparationRuntimeOption: unique symbol = Symbol();
 interface PrepHousekeeperRuntime {
   readonly monotonicNow: () => number;
   readonly delay: (milliseconds: number) => Promise<void>;
@@ -194,6 +207,7 @@ type InternalFsAuthorityLedgerOptions = FsAuthorityLedgerOptions & {
   readonly [__testAdmissionClockOption]?: () => unknown;
   readonly [__testPrepHousekeeperRuntimeOption]?: PrepHousekeeperRuntime;
   readonly [__testK1OperationFenceRuntimeOption]?: unknown;
+  readonly [__testK1AdmissionPreparationRuntimeOption]?: unknown;
 };
 
 interface TransactionRecord {
@@ -350,6 +364,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
   private readonly k1OperationFenceRuntime:K1OperationFenceRuntime|null;
   private readonly k1OperationFenceBinding:K1OperationFenceBinding|null;
   private readonly k1OperationFenceConfigurationValid:boolean;
+  private readonly k1AdmissionPreparationEnabled:boolean;
   private activeK1OperationCapability:K1OperationFenceCapability|null=null;
   private refusalOnlyK1ClassificationActive=false;
   private lockTail:Promise<void>=Promise.resolve();
@@ -359,6 +374,9 @@ export class FsAuthorityLedger implements AuthorityLedger {
     const internalOptions=options as InternalFsAuthorityLedgerOptions,injected=Object.prototype.hasOwnProperty.call(internalOptions,__testK1OperationFenceRuntimeOption),injectedRuntime=injected?parseK1OperationFenceRuntime(internalOptions[__testK1OperationFenceRuntimeOption]):undefined;
     this.options = { now: options.now ?? Date.now, faultInjector: options.faultInjector, lockTimeoutMs: options.lockTimeoutMs ?? 30_000 };
     this.admissionClock=internalOptions[__testAdmissionClockOption]??(()=>process.hrtime.bigint());
+    // Assigned before the invalid-fence early return below, so the field is initialised on every
+    // construction path. Anything but the exact recognised value leaves the default disabled.
+    this.k1AdmissionPreparationEnabled=parseK1AdmissionPreparationRuntime(internalOptions[__testK1AdmissionPreparationRuntimeOption]);
     this.prepHousekeeperRuntime=internalOptions[__testPrepHousekeeperRuntimeOption]??(injectedRuntime===undefined||injectedRuntime===null?{monotonicNow,delay}:{monotonicNow:injectedRuntime.monotonicNow,delay:injectedRuntime.delay});
     if(injected&&injectedRuntime===null){this.root=resolved;this.k1OperationFenceRuntime=null;this.k1OperationFenceBinding=null;this.k1OperationFenceConfigurationValid=false;return;}
     let rootStat;
@@ -636,6 +654,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
     const prepAttemptToken=mintUnboundPrepCreatorAttemptToken();
     const owner: LockOwner = { v: 1, host: hostname(), pid: process.pid, nonce: randomBytes(32).toString("hex") };
     const ownerBytes=canonicalBytes(owner);let stageName="",stagePath="",ownerPath="",stageTicket:bigint|null=null;
+    let admissionSlotCreated=false;
     let stageCreated=false,published=false,expectedStage:PublicationStage|null=null,election:PublicationElection|null=null,provisionalWait:ProvisionalPublicationWait|null=null,stagedSettlementStarted=false,provisionalEpochEligibility:ProvisionalEpochEligibility="unearned",waitedOnActiveLock=false,fullReelectionPending=false,provisionalFallbackResetPending=false;
     let mutatingAdmissionMemo:MutatingAdmissionMemo=admitContender?{kind:"unseeded"}:{kind:"disabled"};
     let retryDelayMs=5,firstK1FilesystemHookObserved=false,k1Progressed=false;
@@ -694,6 +713,23 @@ export class FsAuthorityLedger implements AuthorityLedger {
             stageTicket=ticket;stageName=this.publicationStageName(owner,ticket);stagePath=this.absolute(stageName);ownerPath=path.join(stagePath,"owner.json");
           }
           mutatingAdmissionMemo={kind:"disabled"};
+          // Spec :269 — the exact slot owner alone may create one publication stage. So the
+          // preparation is promoted to the fixed slot BEFORE the stage exists, and the stage that
+          // follows is bound to the same canonical owner this attempt already minted.
+          // Only an admission-ready generation may begin preparation (spec :343-345, :416): the
+          // guard reached here has classified the root as legacy-clean and the active lock absent,
+          // so the remaining condition is that no publication stage is present.
+          if(this.k1AdmissionPreparationEnabled&&!admissionSlotCreated){
+            // Spec :345 — a lone live external pre-slot publication stage is preserved and
+            // bounded-waits to `busy`. Falling through to legacy publication here would publish an
+            // active lock with NO fixed slot behind it and then run the callback, which is exactly
+            // what spec :269 ("The exact slot owner alone may create one publication stage")
+            // forbids. Refuse with zero mutation instead; the residue is preserved for the next
+            // acquisition to classify.
+            if(existingStages.length>0)return {ok:false,reason:"busy"};
+            await this.createAdmissionSlotFromPreparation(owner,ownerBytes);
+            admissionSlotCreated=true;
+          }
           try{
             await mkdir(stagePath);
             if(stageTicket===null)throw new LedgerCorruption("creator publication ticket absent");
@@ -778,6 +814,19 @@ export class FsAuthorityLedger implements AuthorityLedger {
         await this.syncDirectory(this.root);
         this.fault("after-lock-publication-root-sync");
         this.assertPublishedSnapshotUnchanged(publishedSnapshot,await this.validatePublishedOwner(owner));
+        // Spec :276-278 — if a successful publication cannot retire its exact slot within its fresh
+        // slot-retirement deadline, the owner atomically retires the active lock to its
+        // `publication-aborted` marker, root-syncs, and runs zero callback.
+        //
+        // STAGING, NOT SPEC: this slice has no own-slot retirement mechanism at all (that is S2), so
+        // "cannot retire" is synthesised as "does not attempt". The spec does not sanction a
+        // no-attempt path; S2 replaces this with a real bounded attempt and the degraded terminal
+        // then becomes its failure branch. The `busy` return value is likewise not stated by the
+        // spec — it is taken from the committed pin at test/authority/ledger.test.ts:1672.
+        if(admissionSlotCreated){
+          await this.retireOwnedLock(owner,"publication-aborted",monotonicNow()+this.options.lockTimeoutMs,false);
+          return {ok:false,reason:"busy"};
+        }
         return { ok: true, owner, reclaimed:false };
       } catch (error) {
         if(error instanceof CoordinationExhausted)return {ok:false,reason:"busy"};
@@ -797,6 +846,85 @@ export class FsAuthorityLedger implements AuthorityLedger {
 
   private publicationStageName(owner:LockOwner,ticket:bigint):string{return buildPublicationName(owner,ticket);}
   private hostDigest(host:string):string{return coordinationHostDigest(host);}
+
+  private admissionPrepName(owner:LockOwner):string{return `.authority-ledger-admission-prep-${this.hostDigest(owner.host)}-${owner.pid}-${owner.nonce}.tmp`;}
+
+  // Spec :211-222. The contender exclusively creates the real single-link preparation directory,
+  // captures its non-following identity, exclusively creates its real regular single-link
+  // owner.json, captures that identity, writes the canonical owner with a progress-checked
+  // write-all loop, file-syncs, rereads and exactly validates bytes and identity, syncs the
+  // preparation directory, revalidates both objects, then atomically renames that exact directory
+  // to the fixed slot, syncs the ledger root, and performs final exact validation.
+  //
+  // Every failure here throws, and the caller is inside acquireLock's own try/catch, so a partial
+  // preparation is PRESERVED in place rather than deleted. That is deliberate: spec :228-230 makes
+  // a partial preparation recoverable coordination residue, never something to clean up eagerly.
+  private async createAdmissionSlotFromPreparation(owner:LockOwner,ownerBytes:Buffer):Promise<void>{
+    const prepName=this.admissionPrepName(owner),prepPath=this.absolute(prepName),prepOwnerPath=path.join(prepPath,"owner.json");
+    await mkdir(prepPath);
+    const directoryStat=await lstat(prepPath,{bigint:true});
+    // No nlink check on the DIRECTORY: a fresh POSIX directory has st_nlink 2 ("." plus the parent
+    // entry), so `!==1n` here would make the slot uncreatable everywhere except Windows. Matches the
+    // publication-stage precedent above, which checks symlink + isDirectory + empty and nothing else.
+    // Every other nlink!==1n in this file is on a regular file, where 1 is the correct invariant.
+    if(directoryStat.isSymbolicLink()||!directoryStat.isDirectory()||(await readdir(prepPath,{withFileTypes:true})).length!==0)throw new LedgerCorruption("invalid new admission preparation");
+    const directoryIdentity=fileIdentity(directoryStat);
+    this.fault("after-admission-prep-create");
+    let ownerIdentity:FileIdentity,handle:FileHandle|undefined;
+    try{
+      handle=await open(prepOwnerPath,"wx",0o600);
+      const createdStat=await handle.stat({bigint:true});
+      if(!createdStat.isFile()||createdStat.isSymbolicLink()||createdStat.nlink!==1n)throw new LedgerCorruption("invalid new admission preparation owner");
+      ownerIdentity=fileIdentity(createdStat);
+      this.fault("after-admission-prep-owner-create");
+      // A deterministic nonempty strict prefix, matching the publication-stage convention above;
+      // reaching this boundary never depends on the operating system returning a short write.
+      await this.writeAll(handle,ownerBytes.subarray(0,1),0);
+      this.fault("after-admission-prep-owner-partial-write");
+      await this.writeAll(handle,ownerBytes.subarray(1),1);
+      await handle.sync();
+      this.fault("after-admission-prep-owner-sync");
+    }finally{if(handle)await handle.close();}
+    await this.revalidateAdmissionPreparation(prepPath,directoryIdentity,ownerIdentity,ownerBytes);
+    await this.syncDirectory(prepPath);
+    this.fault("after-admission-prep-sync");
+    await this.revalidateAdmissionPreparation(prepPath,directoryIdentity,ownerIdentity,ownerBytes);
+    this.fault("before-admission-slot-rename");
+    // Spec :217 — "An existing destination is completely classified and never overwritten." The
+    // whole-root guard at the top of the attempt ran before the preparation was built, so it is not
+    // a classification OF THE DESTINATION at promotion time. It has to be checked here, because
+    // POSIX rename(2) silently REMOVES an existing empty destination directory and succeeds: without
+    // this, a foreign `.authority-ledger-admission-0` would be destroyed on exactly the platform
+    // where the operation appears to work.
+    const slotPath=this.absolute(ADMISSION_SLOT_NAME);
+    let destinationPresent=true;
+    try{await lstat(slotPath);}catch(error){if(hasCode(error,"ENOENT"))destinationPresent=false;else throw error;}
+    if(destinationPresent)throw new LedgerCorruption("admission slot destination present before promotion");
+    try{await rename(prepPath,slotPath);}
+    catch(error){
+      // A destination that appeared between the check and the rename is preserved, never clobbered.
+      if(hasCode(error,"EEXIST")||hasCode(error,"ENOTEMPTY"))throw new LedgerCorruption("admission slot destination appeared during promotion");
+      if(isTransientLockError(error))throw new CoordinationExhausted("acquisition","transient-sharing");
+      throw error;
+    }
+    this.fault("after-admission-slot-rename");
+    await this.syncDirectory(this.root);
+    this.fault("after-admission-slot-root-sync");
+    // The promotion is a rename, so the fixed slot must still BE the preparation: identical
+    // directory and owner-object identities, identical bytes.
+    await this.revalidateAdmissionPreparation(this.absolute(ADMISSION_SLOT_NAME),directoryIdentity,ownerIdentity,ownerBytes);
+    this.fault("after-admission-slot-final-validation");
+  }
+
+  private async revalidateAdmissionPreparation(directory:string,expectedDirectory:FileIdentity,expectedOwner:FileIdentity,ownerBytes:Buffer):Promise<void>{
+    const directoryStat=await lstat(directory,{bigint:true});
+    if(directoryStat.isSymbolicLink()||!directoryStat.isDirectory()||!sameFileIdentity(fileIdentity(directoryStat),expectedDirectory))throw new LedgerCorruption("admission preparation directory changed");
+    const entries=await readdir(directory,{withFileTypes:true});
+    if(entries.length!==1||entries[0].name!=="owner.json"||entries[0].isSymbolicLink()||!entries[0].isFile())throw new LedgerCorruption("invalid admission preparation contents");
+    const ownerPath=path.join(directory,"owner.json"),ownerStat=await lstat(ownerPath,{bigint:true});
+    if(ownerStat.isSymbolicLink()||!ownerStat.isFile()||!sameFileIdentity(fileIdentity(ownerStat),expectedOwner))throw new LedgerCorruption("admission preparation owner changed");
+    if(!(await readFile(ownerPath)).equals(ownerBytes))throw new LedgerCorruption("admission preparation owner bytes changed");
+  }
 
   private async inspectProvisionalPublicationWait(expectedOwn:PublicationStage,previous:ProvisionalPublicationWait|null,expectedPredecessor:PublicationStage|null=null):Promise<ProvisionalPublicationObservation>{
     let names:string[];
@@ -2444,6 +2572,10 @@ function parseK1OperationFenceRuntime(value:unknown):K1OperationFenceRuntime|nul
   const identity=rootIdentity as Record<string,unknown>,rawEndpoint=endpoint as Record<string,unknown>,integer=/^(?:0|-[1-9][0-9]*|[1-9][0-9]*)$/;
   if(![identity.dev,identity.ino,identity.mode].every(part=>typeof part==="string"&&integer.test(part))||rawEndpoint.host!=="127.0.0.1"||!Number.isSafeInteger(rawEndpoint.port)||Number(rawEndpoint.port)<20_000||Number(rawEndpoint.port)>49_999||typeof runtime.monotonicNow!=="function"||typeof runtime.delay!=="function"||runtime.observeK1OperationFenceBoundary!==undefined&&typeof runtime.observeK1OperationFenceBoundary!=="function"||runtime.probeProcessLiveness!==undefined&&typeof runtime.probeProcessLiveness!=="function")return null;
   return runtime as unknown as K1OperationFenceRuntime;
+}
+function parseK1AdmissionPreparationRuntime(value:unknown):boolean{
+  if(value===undefined)return false;
+  return isExactObject(value,["mode"])&&(value as Record<string,unknown>).mode==="prepare-and-promote";
 }
 function isExactObject(value:unknown,keys:readonly string[],optional:readonly string[]=[]):value is Record<string,unknown>{if(value===null||typeof value!=="object"||Array.isArray(value))return false;const actual=Object.keys(value).sort(),required=keys.filter(key=>!optional.includes(key));return required.every(key=>actual.includes(key))&&actual.every(key=>keys.includes(key));}
 function normalizedK1OperationFenceRoot(value:string):string{const normalized=path.normalize(value);return process.platform==="win32"?normalized.replaceAll("\\","/").toLowerCase():normalized;}
