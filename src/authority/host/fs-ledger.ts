@@ -115,6 +115,8 @@ export const ledgerLockFaultPoints = Object.freeze([
   "after-admission-prep-enumeration", "after-admission-slot-enumeration",
   "after-pre-admission-housekeeping-initial-enumeration", "after-pre-admission-housekeeping-generation-closed",
   "before-pre-admission-housekeeping-final-validation",
+  "before-pre-admission-housekeeping-transition", "after-pre-admission-housekeeping-root-sync",
+  "after-pre-admission-housekeeping-marker-remove", "after-pre-admission-housekeeping-marker-root-sync",
   // Slot retirement. Third group in spec order (after closed classification), which is where the
   // committed group pin puts it. `after-admission-slot-retire-cleanup-root-sync` is the fourth and
   // last member and joins when its cleanup pass is emitted, keeping the group order intact.
@@ -1321,6 +1323,12 @@ export class FsAuthorityLedger implements AuthorityLedger {
     const second=await this.revalidatePrepHousekeepingAuthority(binding);
     if(first==="corruption"||second==="corruption"){this.prepHousekeeperRuntime.observeBoundary?.(`${prefix}-transition-refused`);throw new LedgerCorruption("prep housekeeping authority changed before transition");}
     if(first!=="exact"||second!=="exact"){this.prepHousekeeperRuntime.observeBoundary?.(`${prefix}-transition-refused`);return "busy";}
+    // Spec :402 — the boundary between exact revalidation and the one coordination transition. It
+    // fires for every contender whose derived authority just revalidated exact, INCLUDING one the
+    // permission gate below then refuses: the committed pin drives observeClock at a dead slot and
+    // requires the hook live with the slot preserved, i.e. the boundary marks where a PERMITTED
+    // contender would mutate, never that a mutation follows.
+    this.fault("before-pre-admission-housekeeping-transition");
     // The spec grants every contender one coordination transition; the implementation grants
     // pre-admission housekeeping write authority to an operation seeking no lock and no callback
     // (recover), plus exactly two bounded exceptions a lock-seeking contender may perform, both
@@ -1382,6 +1390,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
     const moved=await lstat(destination,{bigint:true});if(!sameFileIdentity(artifact.entry.identity,fileIdentity(moved)))throw new LedgerCorruption("prep retirement changed directory identity");
     await this.syncDirectory(this.root);
     this.prepHousekeeperRuntime.observeBoundary?.("prep-only-prep-retirement-root-synced");
+    this.fault("after-pre-admission-housekeeping-root-sync");
     return "progress";
   }
 
@@ -1424,9 +1433,11 @@ export class FsAuthorityLedger implements AuthorityLedger {
       }
       try{await rmdir(markerPath);}catch(error){if(hasCode(error,"ENOENT")||hasCode(error,"EEXIST")||hasCode(error,"ENOTEMPTY")||isSnapshotSharingError(error))return "reclassify";throw error;}
       this.fault("after-coordination-cleanup-marker-remove");
+      this.fault("after-pre-admission-housekeeping-marker-remove");
       await this.syncDirectory(this.root);
       this.prepHousekeeperRuntime.observeBoundary?.("prep-only-cleanup-marker-root-synced");
       this.fault("after-coordination-cleanup-marker-root-sync");
+      this.fault("after-pre-admission-housekeeping-marker-root-sync");
       return "progress";
     }
     if(lifecycle!==cleanup.stageName||parsed?.kind!=="coordination-stage"||parsed.purpose!=="prep-retired")return "busy";
@@ -1500,7 +1511,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
     }
     try{await rename(source,destination);}catch(error){if(hasCode(error,"EEXIST")||hasCode(error,"ENOTEMPTY")||hasCode(error,"ENOENT")||isSnapshotSharingError(error))return "reclassify";throw error;}
     const moved=fileIdentity(await lstat(destination,{bigint:true}));if(!sameFileIdentity(artifact.entry.identity,moved))throw new LedgerCorruption("slot retirement changed directory identity");const movedOwner=await this.readExactPrepCleanupFile(path.join(destination,"owner.json"),"retired slot owner");if(!sameFileIdentity(artifact.ownerIdentity,movedOwner.identity)||!artifact.ownerBytes.equals(movedOwner.bytes))throw new LedgerCorruption("slot retirement changed owner evidence");
-    await this.syncDirectory(this.root);this.prepHousekeeperRuntime.observeBoundary?.("slot-only-slot-retirement-root-synced");return "progress";
+    await this.syncDirectory(this.root);this.prepHousekeeperRuntime.observeBoundary?.("slot-only-slot-retirement-root-synced");this.fault("after-pre-admission-housekeeping-root-sync");return "progress";
   }
 
   private boundSlotCleanup(binding:PrepAuthorityBinding):Readonly<{ack:CoordinationAck;bytes:Buffer;stageName:string;artifact:HybridOwnedArtifact}>{
@@ -1533,7 +1544,13 @@ export class FsAuthorityLedger implements AuthorityLedger {
     const entry=binding.snapshot.entries.find(value=>value.name===lifecycle),parsed=parseK1Name(lifecycle);if(entry?.kind!=="file"||entry.bytes===undefined||entry.identity.nlink!==1n)return "busy";
     if(parsed?.kind==="coordination-ack"){
       if(lifecycle!==`.authority-ledger-coordination-cleanup-${coordinationRawDigest(cleanup.bytes).slice(7)}.ack`||!entry.bytes.equals(cleanup.bytes))return "busy";if(await this.prepCleanupNameExists(ADMISSION_SLOT_NAME))return "reclassify";if(!await this.revalidatePrepCleanupMarker(cleanup.artifact)||!await this.revalidatePrepCleanupFile(lifecycle,entry,cleanup.bytes))return "reclassify";const markerPath=this.absolute(cleanup.artifact.parsed.name),children=cleanup.artifact.entry.children??[];
-      if(children.length!==0){try{await unlink(path.join(markerPath,"owner.json"));}catch(error){if(hasCode(error,"ENOENT")||hasCode(error,"EEXIST")||hasCode(error,"ENOTEMPTY")||isSnapshotSharingError(error))return "reclassify";throw error;}this.fault("after-coordination-cleanup-marker-owner-remove");}try{await rmdir(markerPath);}catch(error){if(hasCode(error,"ENOENT")||hasCode(error,"EEXIST")||hasCode(error,"ENOTEMPTY")||isSnapshotSharingError(error))return "reclassify";throw error;}await this.syncDirectory(this.root);this.prepHousekeeperRuntime.observeBoundary?.("slot-only-cleanup-marker-root-synced");return "progress";
+      if(children.length!==0){try{await unlink(path.join(markerPath,"owner.json"));}catch(error){if(hasCode(error,"ENOENT")||hasCode(error,"EEXIST")||hasCode(error,"ENOTEMPTY")||isSnapshotSharingError(error))return "reclassify";throw error;}this.fault("after-coordination-cleanup-marker-owner-remove");}try{await rmdir(markerPath);}catch(error){if(hasCode(error,"ENOENT")||hasCode(error,"EEXIST")||hasCode(error,"ENOTEMPTY")||isSnapshotSharingError(error))return "reclassify";throw error;}
+      // The housekeeping marker-removal boundary pair, mirrored from the prep-retired branch. This
+      // branch predates them and emits `after-coordination-cleanup-marker-owner-remove` but not the
+      // coordination-cleanup marker-remove/-root-sync twins the own-act pass fires — a recorded
+      // asymmetry, not resolved here; only the pre-admission-housekeeping pair is in scope.
+      this.fault("after-pre-admission-housekeeping-marker-remove");
+      await this.syncDirectory(this.root);this.prepHousekeeperRuntime.observeBoundary?.("slot-only-cleanup-marker-root-synced");this.fault("after-pre-admission-housekeeping-marker-root-sync");return "progress";
     }
     if(lifecycle!==cleanup.stageName||parsed?.kind!=="coordination-stage"||parsed.purpose!=="slot-retired")return "busy";const current=entry.bytes;
     if(current.equals(cleanup.bytes)){

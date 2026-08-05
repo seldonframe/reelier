@@ -20,35 +20,37 @@ not re-verified here — treat as a hypothesis).
 | Quantity | Value | Status |
 |---|---|---|
 | Fault points declared in the spec taxonomy | **58** | measured |
-| Entries in exported `ledgerLockFaultPoints` | **61** | measured |
-| Entries in public `ledgerFaultPoints` | **128** | measured |
-| Fault-point literals emitted anywhere in `src/` | **74** | measured |
-| Declared in spec, not emitted (the backlog) | **10** | measured — **but see the gating caveat below** |
+| Entries in exported `ledgerLockFaultPoints` | **65** (61 before Batch A added the four pre-admission-housekeeping points) | measured |
+| Entries in public `ledgerFaultPoints` | **132** (128 before the same addition) | measured |
+| Fault-point literals emitted anywhere in `src/` | **78** | measured |
+| Declared in spec, not emitted (the backlog) | **6** — all six creator-withdrawal points, D1-gated | measured — **but see the gating caveat below** |
 | Exported but **not** in the spec taxonomy (to delete) | **13** | measured |
 
 ```bash
 npm run lint:fault-pins
 ```
 
-**Gating caveat on the backlog row — read this before quoting 15.** The count fell from 24 to 15
-because the fourteen admission-preparation, slot-retirement and cleanup-closure points are now emitted in `src/`, which is all
-`lint:fault-pins` measures. It does **not** mean those nine are reachable on a default path: they
-fire only behind a disabled host-private runtime option, and the committed pins that drive them on
-the clean-root default path are still red. `10` therefore means "10 points have no emission
-anywhere", not "47 points are done". The linter has no third state for *emitted but gated*; adding
-one, or reading this row with the caveat attached, is the difference between a real number and the
-exact trap the linter exists to prevent.
+**Gating caveat on the backlog row — read this before quoting it.** Emission is all
+`lint:fault-pins` measures; it does **not** mean an emitted point is reachable on a default path.
+The admission-preparation family fires only behind a disabled host-private runtime option, and the
+post-transition housekeeping points fire only when a transition was PERMITTED — the committed
+pin "pre-admission housekeeper retires one dead slot before preparation" stays red after Batch A's
+emission because observeClock still holds no abandoned-slot retirement authority (an owner
+decision, not an emission gap; measured 2026-08-05, the fourth "probably just emission" claim this
+project has refuted by running it). The linter has no third state for *emitted but gated*; reading
+this row with the caveat attached is the difference between a real number and the exact trap the
+linter exists to prevent.
 
 The 13 extras are election/provisional/predecessor hooks the spec explicitly forbids. Removing them
-plus adding the remaining 24 is **additive at runtime but source-breaking at the type level** — a consumer
-narrowing on `LedgerFaultPoint` gets TS2322 under `--strict`. That is why the ABI freeze must come
-after this work, not before.
+plus adding the remaining 6 is **additive at runtime but source-breaking at the type level** — a
+consumer narrowing on `LedgerFaultPoint` gets TS2322 under `--strict`. That is why the ABI freeze
+must come after this work, not before (D3: one break, after the withdrawal points land).
 
 ## 2. Test suite
 
 | Quantity | Value | Status |
 |---|---|---|
-| Ledger suite | **512 pass / 79 fail** after the Batch A warm-prep fix (+13: the warm pin family; the 100-process flake was PASSING in the re-saved baseline, so under load it can surface as "newly failing" — re-run it in isolation per §3 before believing that) | measured |
+| Ledger suite | **516 pass / 75 fail** after Batch A's warm-prep fix (+13, the warm pin family) and housekeeping-point emissions (+4 committed greens; the 100-process flake was PASSING in the re-saved baseline, so under load it can surface as "newly failing" — re-run it in isolation per §3 before believing that) | measured |
 | Pre-Batch-A ledger suite (the prior recorded gate) | 498 pass / 80 fail | superseded 2026-08-05 |
 | Full `npm test` | **2,157 pass / 80 fail / 1 skipped** at the warm-prep fix (pre-fix same-day: 2,145/80/1); failing-set delta across those two runs was exactly the two documented rotating flakes | measured |
 | Failures outside `ledger.test.ts` | **0** on an idle machine; 1 per run under load, differing each run, each passing in isolation | measured |
