@@ -55,11 +55,15 @@ Sixteen commits since `1d6ebe2` (`git log --oneline 1d6ebe2..HEAD`). The substan
 
 **Neither is mine to make. Both block real work.**
 
-1. **The slot family** — `before-admission-slot-rename`, `after-admission-slot-rename`,
-   `after-admission-slot-root-sync`, `after-admission-slot-final-validation`. Pinned by tests driving
-   `observeClock`, but the shipped bound keeps slot routes gated, and widening to slot is exactly what
-   the dead-owner slot-orphan tests at `ledger.test.ts:1137` and `:1171` forbid. Either those tests
-   change, or the family stays red.
+1. **The slot-retirement family** — `before-admission-slot-retire-rename`,
+   `after-admission-slot-retire-rename`, `after-admission-slot-retire-root-sync`,
+   `after-admission-slot-retire-cleanup-root-sync`. Pinned by tests driving `observeClock`
+   (`ledger.test.ts:1716`), but the shipped bound keeps slot routes gated, and widening to slot is
+   exactly what the dead-owner slot-orphan tests at `ledger.test.ts:1137` and `:1171` forbid. Either
+   those tests change, or the family stays red. **A prior revision of this file misnamed these as the
+   `admission-slot-rename` promotion points** — those belong to the creation mechanism in §4 and are
+   blocked on nothing but the mechanism itself. That error came from the fact-check pass, which is
+   trap 5 applying to the fact-checker too.
 2. **Deleting the 13 non-spec registry entries.** Source-breaking for a consumer narrowing on
    `LedgerFaultPoint` (TS2322 under `--strict`), though additive at runtime. Sequence against the ABI
    freeze, which gates `reelier-cloud#54` together with merging PR #85.
@@ -92,15 +96,22 @@ Five, counting the one found while checking this document. Each is cheap to dete
 
 ## 4. Next work, in order
 
-Of the 24 unemittable points: 6 creator-withdrawal, 5 admission-preparation, 4 slot (**blocked, see
-§2**), 1 pre-callback, and 8 in the slot-retirement and housekeeping families.
+Of the 24 unemittable points: 9 admission-preparation lifecycle (5 prep creation + 4 slot promotion),
+6 creator-withdrawal (**blocked, see the spec's open-discrepancy notes**), 4 slot-retirement
+(**blocked, see §2**), 4 pre-admission-housekeeping, and 1 pre-callback.
 
-1. **Creator-withdrawal chain** (6) — mechanism; needs a design review.
-2. **Admission-preparation lifecycle** (5) — mechanism, and the largest remaining piece. The creation
-   path does not exist at all; nothing creates a preparation directory or promotes one to the fixed
-   slot. Only classification and recovery exist. **Do not bundle the 4 slot points with it** — they
-   are blocked on §2 even though they sit in the same spec group.
-3. **Pre-callback generation closure** (1) — mechanism, not emission.
+1. **Admission-preparation lifecycle** (9) — mechanism, the largest piece, and the only family with
+   no open decision in front of it. The creation path does not exist at all; nothing creates a
+   preparation directory or promotes one to the fixed slot. Only classification and recovery exist.
+   The 4 slot-*promotion* points belong here — they are the contender's own admission act, not a
+   housekeeping route.
+2. **Creator-withdrawal chain** (6) — mechanism, blocked on three recorded items: two pins that
+   contradict each other for the same root shape, an under-defined seal step, and a dependency on
+   slot retirement.
+3. **Pre-admission-housekeeping points** (4) — sit on existing housekeeping code; the marker-removal
+   pair may have become reachable via the shipped dead-prep exemption. **Verify by running, not by
+   reading** (trap 2).
+4. **Pre-callback generation closure** (1) — mechanism, not emission.
 4. Then K1 activation for normal operations, legacy-election deletion, N40/N100 contention gates, and
    reclassifying whatever still fails as explicit 3C-or-later obligations. That is the agreed
    definition of done for 3B2.
