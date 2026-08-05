@@ -123,6 +123,7 @@ export const ledgerLockFaultPoints = Object.freeze([
   "after-coordination-cleanup-marker-enumeration", "after-coordination-cleanup-stage-create",
   "after-coordination-cleanup-stage-partial-write", "after-coordination-cleanup-stage-file-sync",
   "after-coordination-cleanup-ack-rename", "after-coordination-cleanup-ack-root-sync",
+  "after-coordination-cleanup-marker-owner-remove",
   "after-coordination-cleanup-marker-remove", "after-coordination-cleanup-marker-root-sync",
   "after-coordination-cleanup-ack-remove", "after-coordination-cleanup-final-root-sync",
   "after-lock-publication-stage-create", "after-lock-publication-owner-create",
@@ -1015,8 +1016,12 @@ export class FsAuthorityLedger implements AuthorityLedger {
       this.fault("after-coordination-cleanup-ack-root-sync");
 
       // The acknowledgment is durable, so the marker may go. Its owner object first, then the
-      // directory: a marker directory that still holds children is not removable.
+      // directory: a marker directory that still holds children is not removable. The window
+      // between the two syscalls leaves an empty `published` marker beside the durable
+      // acknowledgment; the fault point makes that state reachable by tests, and the
+      // authenticated-partial rescue classifies it.
       await this.removeOwnActCleanupPath(path.join(markerPath,"owner.json"),false,deadline);
+      this.fault("after-coordination-cleanup-marker-owner-remove");
       await this.removeOwnActCleanupPath(markerPath,true,deadline);
       this.fault("after-coordination-cleanup-marker-remove");
       await this.syncDirectory(this.root);
@@ -1406,6 +1411,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
       const markerPath=this.absolute(cleanup.artifact.parsed.name),children=cleanup.artifact.entry.children??[];
       if(children.length!==0){
         try{await unlink(path.join(markerPath,"owner.json"));}catch(error){if(hasCode(error,"ENOENT")||hasCode(error,"EEXIST")||hasCode(error,"ENOTEMPTY")||isSnapshotSharingError(error))return "reclassify";throw error;}
+        this.fault("after-coordination-cleanup-marker-owner-remove");
       }
       try{await rmdir(markerPath);}catch(error){if(hasCode(error,"ENOENT")||hasCode(error,"EEXIST")||hasCode(error,"ENOTEMPTY")||isSnapshotSharingError(error))return "reclassify";throw error;}
       this.fault("after-coordination-cleanup-marker-remove");
@@ -1495,7 +1501,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
     const entry=binding.snapshot.entries.find(value=>value.name===lifecycle),parsed=parseK1Name(lifecycle);if(entry?.kind!=="file"||entry.bytes===undefined||entry.identity.nlink!==1n)return "busy";
     if(parsed?.kind==="coordination-ack"){
       if(lifecycle!==`.authority-ledger-coordination-cleanup-${coordinationRawDigest(cleanup.bytes).slice(7)}.ack`||!entry.bytes.equals(cleanup.bytes))return "busy";if(await this.prepCleanupNameExists(ADMISSION_SLOT_NAME))return "reclassify";if(!await this.revalidatePrepCleanupMarker(cleanup.artifact)||!await this.revalidatePrepCleanupFile(lifecycle,entry,cleanup.bytes))return "reclassify";const markerPath=this.absolute(cleanup.artifact.parsed.name),children=cleanup.artifact.entry.children??[];
-      if(children.length!==0)try{await unlink(path.join(markerPath,"owner.json"));}catch(error){if(hasCode(error,"ENOENT")||hasCode(error,"EEXIST")||hasCode(error,"ENOTEMPTY")||isSnapshotSharingError(error))return "reclassify";throw error;}try{await rmdir(markerPath);}catch(error){if(hasCode(error,"ENOENT")||hasCode(error,"EEXIST")||hasCode(error,"ENOTEMPTY")||isSnapshotSharingError(error))return "reclassify";throw error;}await this.syncDirectory(this.root);this.prepHousekeeperRuntime.observeBoundary?.("slot-only-cleanup-marker-root-synced");return "progress";
+      if(children.length!==0){try{await unlink(path.join(markerPath,"owner.json"));}catch(error){if(hasCode(error,"ENOENT")||hasCode(error,"EEXIST")||hasCode(error,"ENOTEMPTY")||isSnapshotSharingError(error))return "reclassify";throw error;}this.fault("after-coordination-cleanup-marker-owner-remove");}try{await rmdir(markerPath);}catch(error){if(hasCode(error,"ENOENT")||hasCode(error,"EEXIST")||hasCode(error,"ENOTEMPTY")||isSnapshotSharingError(error))return "reclassify";throw error;}await this.syncDirectory(this.root);this.prepHousekeeperRuntime.observeBoundary?.("slot-only-cleanup-marker-root-synced");return "progress";
     }
     if(lifecycle!==cleanup.stageName||parsed?.kind!=="coordination-stage"||parsed.purpose!=="slot-retired")return "busy";const current=entry.bytes;
     if(current.equals(cleanup.bytes)){
@@ -1625,7 +1631,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
       if(parsed.kind==="k1-writer-held"||parsed.kind==="k1-writer-attempt"||parsed.kind==="k1-writer-released")throw new LedgerCorruption("writer residue reached hybrid graph");
       const namedOwner:CoordinationOwner={host:localHost,nonce:parsed.nonce,pid:parsed.pid,v:1};if(parsed.hostDigest!==localDigest)throw new LedgerCorruption("foreign K1 artifact provenance");
       const declared=parsed.kind==="admission-prep"?null:parsed.kind==="admission-prep-retired"||parsed.kind==="creator-withdrawal"?parsed.state:"complete";
-      const partial=parsed.kind==="admission-prep-retired"?this.classifyHybridAuthenticatedPartialPrepMarker(parsed,entry,snapshot):parsed.kind==="admission-slot-retired"&&parsed.disposition==="abandoned"?this.classifyHybridAuthenticatedPartialSlotMarker(parsed,entry,snapshot):null;
+      const partial=parsed.kind==="admission-prep-retired"?this.classifyHybridAuthenticatedPartialPrepMarker(parsed,entry,snapshot):parsed.kind==="admission-slot-retired"&&(parsed.disposition==="abandoned"||parsed.disposition==="published")?this.classifyHybridAuthenticatedPartialSlotMarker(parsed,entry,snapshot):null;
       owned.push(partial??this.classifyHybridNamedOwnerDirectory(parsed,entry,namedOwner,declared));
     }
     const preps=owned.filter(item=>item.parsed.kind==="admission-prep"),slots=owned.filter(item=>item.parsed.kind==="admission-slot"),prepRetired=owned.filter(item=>item.parsed.kind==="admission-prep-retired"),slotRetired=owned.filter(item=>item.parsed.kind==="admission-slot-retired"),withdrawals=owned.filter(item=>item.parsed.kind==="creator-withdrawal");
@@ -1695,11 +1701,20 @@ export class FsAuthorityLedger implements AuthorityLedger {
     return {parsed,entry,owner,ownerBytes,ownerIdentity,state:parsed.state};
   }
 
+  // The authenticated-partial rescue for retired-slot markers whose owner object is already
+  // unlinked (the two-syscall marker-removal window). `abandoned` binds its own marker as the
+  // terminal; `published` binds its successor as the terminal, so the terminal equality below is
+  // abandoned-only — for `published` the successor binding is validated by validateHybridAckBinding
+  // and the closed graph's same-owner successor rule. The rescue authenticates the marker DIRECTORY
+  // identity (slotIdentity) and the owner-BYTES commitment; the owner-object identity is
+  // unverifiable by construction — the object is already unlinked — and is carried from the
+  // acknowledgment. boundSlotArtifact keeps `published` off the housekeeper mutation path; widening
+  // that gate requires terminal validation there, not just here.
   private classifyHybridAuthenticatedPartialSlotMarker(parsed:Extract<ParsedK1Name,{kind:"admission-slot-retired"}>,entry:HybridEntrySnapshot,snapshot:HybridRootSnapshot):HybridOwnedArtifact|null{
-    if(parsed.disposition!=="abandoned"||entry.kind!=="directory"||(entry.children??[]).length!==0)return null;const candidates:CoordinationAck[]=[];
-    for(const candidateName of snapshot.names){const candidate=parseK1Name(candidateName);if(candidate?.kind!=="coordination-ack")continue;const candidateEntry=snapshot.entries.find(value=>value.name===candidateName);if(candidateEntry?.kind!=="file"||candidateEntry.bytes===undefined||candidateEntry.identity.nlink!==1n)continue;let ack:CoordinationAck;try{ack=parseCoordinationAckBytes(candidateEntry.bytes);}catch{continue;}if(ack.purpose==="slot-retired"&&ack.disposition==="abandoned"&&ack.markerName===parsed.name&&coordinationRawDigest(candidateEntry.bytes).slice(7)===candidate.digest)candidates.push(ack);}
+    if(parsed.disposition!=="abandoned"&&parsed.disposition!=="published"||entry.kind!=="directory"||(entry.children??[]).length!==0)return null;const candidates:CoordinationAck[]=[];
+    for(const candidateName of snapshot.names){const candidate=parseK1Name(candidateName);if(candidate?.kind!=="coordination-ack")continue;const candidateEntry=snapshot.entries.find(value=>value.name===candidateName);if(candidateEntry?.kind!=="file"||candidateEntry.bytes===undefined||candidateEntry.identity.nlink!==1n)continue;let ack:CoordinationAck;try{ack=parseCoordinationAckBytes(candidateEntry.bytes);}catch{continue;}if(ack.purpose==="slot-retired"&&ack.disposition===parsed.disposition&&ack.markerName===parsed.name&&coordinationRawDigest(candidateEntry.bytes).slice(7)===candidate.digest)candidates.push(ack);}
     if(candidates.length!==1)return null;const ack=candidates[0],owner=ack.owner,ownerBytes=coordinationCanonicalBytes(owner),localHost=hostname(),hostDigest=coordinationHostDigest(localHost);
-    if(owner.host!==localHost||parsed.hostDigest!==hostDigest||owner.pid!==parsed.pid||owner.nonce!==parsed.nonce||ack.originalName!==ADMISSION_SLOT_NAME||ack.ownerIdentity===null||!coordinationIdentityMatches(ack.slotIdentity as CoordinationIdentityWire,entry.identity)||ack.ownerBytesDigest!==coordinationRawDigest(ownerBytes)||ack.ownerBytesLength!==String(ownerBytes.length)||ack.terminalArtifactName!==parsed.name||ack.terminalArtifactDigest!==coordinationRawDigest(ownerBytes))throw new LedgerCorruption("partial abandoned-slot acknowledgment binding mismatch");
+    if(owner.host!==localHost||parsed.hostDigest!==hostDigest||owner.pid!==parsed.pid||owner.nonce!==parsed.nonce||ack.originalName!==ADMISSION_SLOT_NAME||ack.ownerIdentity===null||!coordinationIdentityMatches(ack.slotIdentity as CoordinationIdentityWire,entry.identity)||ack.ownerBytesDigest!==coordinationRawDigest(ownerBytes)||ack.ownerBytesLength!==String(ownerBytes.length)||parsed.disposition==="abandoned"&&(ack.terminalArtifactName!==parsed.name||ack.terminalArtifactDigest!==coordinationRawDigest(ownerBytes)))throw new LedgerCorruption("partial retired-slot acknowledgment binding mismatch");
     return {parsed,entry,owner,ownerBytes,ownerIdentity:parseCoordinationIdentityWire(ack.ownerIdentity),state:"complete"};
   }
 
@@ -1718,7 +1733,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
     if(ack.purpose==="prep-retired"||ack.purpose==="creator-withdrawal")this.validateHybridHistoricalOwnerBytes(ack);
     if(marker!==undefined){
       const markerIdentity=(ack.purpose==="slot-retired"?ack.slotIdentity:ack.directoryIdentity) as CoordinationIdentityWire;if(!coordinationIdentityMatches(markerIdentity,marker.identity))throw new LedgerCorruption("coordination marker identity mismatch");
-      const child=hybridOwnerChild(marker),wire=ack.ownerIdentity,partialArtifact=owned.find(item=>item.parsed.name===markerName&&item.entry===marker),authenticatedPrepPartial=ack.purpose==="prep-retired"&&parsedMarker?.kind==="admission-prep-retired"&&parsedMarker.state!=="empty"&&(marker.children??[]).length===0&&partialArtifact!==undefined&&wire!==null&&coordinationIdentityMatches(wire as CoordinationIdentityWire,partialArtifact.ownerIdentity),authenticatedSlotPartial=ack.purpose==="slot-retired"&&ack.disposition==="abandoned"&&parsedMarker?.kind==="admission-slot-retired"&&parsedMarker.disposition==="abandoned"&&(marker.children??[]).length===0&&partialArtifact!==undefined&&wire!==null&&coordinationIdentityMatches(wire as CoordinationIdentityWire,partialArtifact.ownerIdentity),authenticatedPartial=authenticatedPrepPartial||authenticatedSlotPartial;
+      const child=hybridOwnerChild(marker),wire=ack.ownerIdentity,partialArtifact=owned.find(item=>item.parsed.name===markerName&&item.entry===marker),authenticatedPrepPartial=ack.purpose==="prep-retired"&&parsedMarker?.kind==="admission-prep-retired"&&parsedMarker.state!=="empty"&&(marker.children??[]).length===0&&partialArtifact!==undefined&&wire!==null&&coordinationIdentityMatches(wire as CoordinationIdentityWire,partialArtifact.ownerIdentity),authenticatedSlotPartial=ack.purpose==="slot-retired"&&(ack.disposition==="abandoned"||ack.disposition==="published")&&parsedMarker?.kind==="admission-slot-retired"&&parsedMarker.disposition===ack.disposition&&(marker.children??[]).length===0&&partialArtifact!==undefined&&wire!==null&&coordinationIdentityMatches(wire as CoordinationIdentityWire,partialArtifact.ownerIdentity),authenticatedPartial=authenticatedPrepPartial||authenticatedSlotPartial;
       if(wire===null){if(child!==null)throw new LedgerCorruption("coordination empty owner mismatch");}
       else if(child===null){if(!authenticatedPartial)throw new LedgerCorruption("coordination owner identity mismatch");}
       else if(!coordinationIdentityMatches(wire as CoordinationIdentityWire,child.identity))throw new LedgerCorruption("coordination owner identity mismatch");

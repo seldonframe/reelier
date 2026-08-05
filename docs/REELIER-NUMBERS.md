@@ -1,7 +1,7 @@
 # Reelier — numbers worth knowing
 
-**Pinned to `codex/universal-compiled-authority` @ `fc7a8b3` plus the uncommitted S3 active-owner cleanup
-slice, measured 2026-08-04 on Windows 11.**
+**Pinned to `codex/universal-compiled-authority` @ `9252f18` plus the uncommitted
+marker-owner-remove window slice, measured 2026-08-05 on Windows 11.**
 
 _Every number here is quoted somewhere: in a commit message, a PR body, a plan, or an estimate. Two
 were quoted wrongly in a single session — "15 missing fault points" (really 34) and "402 pass"
@@ -19,10 +19,10 @@ not re-verified here — treat as a hypothesis).
 
 | Quantity | Value | Status |
 |---|---|---|
-| Fault points declared in the spec taxonomy | **57** | measured |
-| Entries in exported `ledgerLockFaultPoints` | **60** | measured |
-| Entries in public `ledgerFaultPoints` | **127** | measured |
-| Fault-point literals emitted anywhere in `src/` | **73** | measured |
+| Fault points declared in the spec taxonomy | **58** | measured |
+| Entries in exported `ledgerLockFaultPoints` | **61** | measured |
+| Entries in public `ledgerFaultPoints` | **128** | measured |
+| Fault-point literals emitted anywhere in `src/` | **74** | measured |
 | Declared in spec, not emitted (the backlog) | **10** | measured — **but see the gating caveat below** |
 | Exported but **not** in the spec taxonomy (to delete) | **13** | measured |
 
@@ -48,7 +48,7 @@ after this work, not before.
 
 | Quantity | Value | Status |
 |---|---|---|
-| Ledger suite | **465 pass / 79 fail** | measured |
+| Ledger suite | **486 pass / 79 fail** (recorded gate baseline 477/80; the flake row below is the ±1) | measured |
 | Distinct failing test names in that suite | **77** | measured — the recorded baseline is the authority, and it said 77 when this row said 74 |
 | Full `npm test` | **2,100 pass / 79 fail / 1 skipped** | measured; two earlier runs showed 80, the extra being the load flake in the row below |
 | Failures outside `ledger.test.ts` | **0** on an idle machine; 1 per run under load, differing each run, each passing in isolation | measured |

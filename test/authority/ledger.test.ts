@@ -1004,7 +1004,7 @@ const legacyMutationBoundaries=new Set([
   "after-lock-publication-stage-create","after-lock-publication-owner-create","after-lock-publication-owner-partial-write","after-lock-publication-owner-sync","after-lock-publication-stage-sync","after-owner-file-sync","after-lock-directory-sync","before-staged-publication-settlement",
   "before-lock-retire","after-lock-retire","before-lock-publication-rename","after-lock-publication-rename","after-lock-publication-root-sync",
   "before-publication-stage-remove-attempt","before-creator-stage-withdrawal-validation","after-publication-stage-cleanup-root-sync","before-creator-withdrawal-seal","after-creator-withdrawal-root-sync",
-  "after-admission-slot-retire-rename","after-admission-slot-retire-root-sync","after-coordination-cleanup-marker-remove","after-coordination-cleanup-marker-root-sync",
+  "after-admission-slot-retire-rename","after-admission-slot-retire-root-sync","after-coordination-cleanup-marker-owner-remove","after-coordination-cleanup-marker-remove","after-coordination-cleanup-marker-root-sync",
 ]);
 async function writeLegacyRetiredLock(root:string,owner:AdmissionOwner,disposition:TestRetirementDisposition):Promise<string>{const marker=path.join(root,retirementMarkerName(owner,disposition));await mkdir(marker);await writeFile(path.join(marker,"owner.json"),publicationOwnerBytes(owner));return marker;}
 
@@ -1840,7 +1840,7 @@ const admissionPreparationFaultPoints=["after-admission-prep-create","after-admi
 const closedClassificationHousekeepingFaultPoints=["after-admission-prep-enumeration","after-admission-slot-enumeration","after-pre-admission-housekeeping-initial-enumeration","after-pre-admission-housekeeping-generation-closed","before-pre-admission-housekeeping-final-validation","before-pre-admission-housekeeping-transition","after-pre-admission-housekeeping-root-sync","after-pre-admission-housekeeping-marker-remove","after-pre-admission-housekeeping-marker-root-sync"] as const;
 const admissionSlotRetirementFaultPoints=["before-admission-slot-retire-rename","after-admission-slot-retire-rename","after-admission-slot-retire-root-sync","after-admission-slot-retire-cleanup-root-sync"] as const;
 const creatorWithdrawalFaultPoints=["before-creator-withdrawal-seal","after-creator-withdrawal-seal","before-creator-withdrawal-rename","after-creator-withdrawal-rename","after-creator-withdrawal-root-sync","after-creator-withdrawal-cleanup-root-sync"] as const;
-const coordinationCleanupFaultPoints=["after-coordination-cleanup-marker-enumeration","after-coordination-cleanup-stage-create","after-coordination-cleanup-stage-partial-write","after-coordination-cleanup-stage-file-sync","after-coordination-cleanup-ack-rename","after-coordination-cleanup-ack-root-sync","after-coordination-cleanup-marker-remove","after-coordination-cleanup-marker-root-sync","after-coordination-cleanup-ack-remove","after-coordination-cleanup-final-root-sync"] as const;
+const coordinationCleanupFaultPoints=["after-coordination-cleanup-marker-enumeration","after-coordination-cleanup-stage-create","after-coordination-cleanup-stage-partial-write","after-coordination-cleanup-stage-file-sync","after-coordination-cleanup-ack-rename","after-coordination-cleanup-ack-root-sync","after-coordination-cleanup-marker-owner-remove","after-coordination-cleanup-marker-remove","after-coordination-cleanup-marker-root-sync","after-coordination-cleanup-ack-remove","after-coordination-cleanup-final-root-sync"] as const;
 const publicationRenameAttemptFaultPoints=["before-lock-publication-rename","after-lock-publication-rename","after-lock-publication-root-sync","after-lock-publication-rename-collision"] as const;
 const activeLockValidationFaultPoints=["after-active-lock-metadata","before-active-lock-content-read"] as const;
 const publicationStageClassificationFaultPoints=["after-publication-stage-enumeration","before-publication-stage-validation"] as const;
@@ -2634,7 +2634,7 @@ const OWN_ACT_CLEANUP_ORDER=[
   "after-pre-callback-coordination-generation-closed",
   "after-coordination-cleanup-stage-create","after-coordination-cleanup-stage-partial-write",
   "after-coordination-cleanup-stage-file-sync","after-coordination-cleanup-ack-rename",
-  "after-coordination-cleanup-ack-root-sync","after-coordination-cleanup-marker-remove",
+  "after-coordination-cleanup-ack-root-sync","after-coordination-cleanup-marker-owner-remove","after-coordination-cleanup-marker-remove",
   "after-coordination-cleanup-marker-root-sync","after-admission-slot-retire-cleanup-root-sync",
   "after-coordination-cleanup-ack-remove","after-coordination-cleanup-final-root-sync",
   "before-ledger-operation-callback",
@@ -2691,6 +2691,7 @@ test("option-gated cleanup-pass hard exits leave a topology the next acquisition
     {point:"after-coordination-cleanup-stage-partial-write",marker:1,stage:"strict-prefix"},
     {point:"after-coordination-cleanup-stage-file-sync",marker:1,stage:"complete"},
     {point:"after-coordination-cleanup-ack-rename",marker:1,stage:"complete"},
+    {point:"after-coordination-cleanup-marker-owner-remove",marker:1,stage:"complete"},
     {point:"after-coordination-cleanup-marker-remove",marker:0,stage:"complete"},
     {point:"after-admission-slot-retire-cleanup-root-sync",marker:0,stage:"complete"},
     {point:"after-coordination-cleanup-ack-remove",marker:0,stage:"absent"},
@@ -2805,4 +2806,111 @@ test("published-slot graphs tolerate unrelated inert legacy residue on a used ro
   // residue publishes, retires its slot, and then classifies its own root as corruption).
   await t.test("published slot with its live lock tolerates an unrelated marker's resumable legacy cleanup",()=>withRoot(async root=>{const owner={host:hostname(),nonce:"d".repeat(63)+"0",pid:process.pid,v:1 as const},foreign={host:hostname(),nonce:"d".repeat(63)+"1",pid:process.pid,v:1 as const};await writePublishedWithLock(root,owner);const markerName=retirementMarkerName(foreign,"released");await writeOwnerDirectory(root,markerName,foreign);const ack=cleanupAck(foreign,markerName,"released",null);await writeFile(path.join(root,cleanupAckName(ack)),authorityCanonicalBytes(ack));await assertDecisionUnchanged(root,{ok:false,reason:"busy"});}));
   await t.test("published slot with its live lock tolerates an unrelated orphan legacy cleanup ack",()=>withRoot(async root=>{const owner={host:hostname(),nonce:"e".repeat(63)+"0",pid:process.pid,v:1 as const},foreign={host:hostname(),nonce:"e".repeat(63)+"1",pid:process.pid,v:1 as const};await writePublishedWithLock(root,owner);const ack=cleanupAck(foreign,retirementMarkerName(foreign,"released"),"released",null);await writeFile(path.join(root,cleanupAckName(ack)),authorityCanonicalBytes(ack));await assertDecisionUnchanged(root,{ok:false,reason:"busy"});}));
+});
+
+// The marker-removal window: unlink the owner object, then remove the directory. Before the
+// `after-coordination-cleanup-marker-owner-remove` point existed, no test could reach the state
+// between the two syscalls — a hard exit there leaves an EMPTY `published` marker beside its
+// durable acknowledgment, which classified as permanent corruption (the second defect that
+// reverted the first drainage build), and the unwind path that restores the owner bytes on an
+// in-process failure was correct-by-construction and unverified (spec discrepancy 9, resolved by
+// this point). The crash fixtures run WARM — a prior acquisition's `.released` marker present —
+// so the window is exercised together with the same-owner successor tolerance it coexists with on
+// every real root; the verdicts themselves are the same cold (measured by independent review).
+test("marker-owner-remove window leaves a classifiable root and an exercisable repair",async t=>{
+  const option=k1AdmissionPreparationOption();
+  const warmup=async(root:string)=>{
+    assert.deepEqual(await new RawFsAuthorityLedger(root,{[option]:K1_ADMISSION_PREPARATION_MODE,now:()=>t0,lockTimeoutMs:2_000} as never).observeClock(),{ok:true,status:"advanced",observedAt:new Date(t0).toISOString()},"the warmup acquisition succeeds");
+    assert.equal((await readdir(root)).filter(name=>/\.released$/.test(name)).length,1,"the warm root carries the prior acquisition's released marker");
+  };
+  await t.test("hard exit between owner unlink and marker rmdir classifies, never corrupts",()=>withRoot(async root=>{
+    await warmup(root);
+    const moduleUrl=pathToFileURL(path.resolve("dist-test/src/authority/host/fs-ledger.js")).href;
+    const source=`import*as host from ${JSON.stringify(moduleUrl)};const option=host.__testK1AdmissionPreparationRuntimeOption;if(typeof option!=="symbol")process.exit(80);const ledger=new host.FsAuthorityLedger(process.argv[1],{[option]:${JSON.stringify(K1_ADMISSION_PREPARATION_MODE)},now:()=>${t0+1_000},lockTimeoutMs:200,faultInjector(point){if(point==="after-coordination-cleanup-marker-owner-remove")process.exit(91);}});await ledger.observeClock();process.exit(92);`;
+    const code=await new Promise<number|null>((resolve,reject)=>{const child=spawn(process.execPath,["--input-type=module","-e",source,root],{stdio:["ignore","ignore","ignore"]});child.once("error",reject);child.once("close",resolve);});
+    assert.equal(code,91,"the window is a real hard-exit boundary");
+    const names=await readdir(root),markers=names.filter(name=>name.startsWith(".authority-ledger-admission-retired-"));
+    assert.equal(markers.length,1,"the half-drained marker survives");
+    assert.equal(existsSync(path.join(root,markers[0]!,"owner.json")),false,"its owner object is already unlinked");
+    assert.deepEqual(await readdir(path.join(root,markers[0]!)),[],"as exactly the empty directory the window leaves");
+    assert.equal(names.filter(name=>name.startsWith(".authority-ledger-coordination-cleanup-")).length,1,"beside its durable acknowledgment");
+    assert.equal(names.includes("lock"),true,"and the dead owner's live-format lock");
+    // Exact verdict, matching the committed boundaries row on this topology. When the granted
+    // foreign-dead-slot drainage ships, this expectation moves to drained-and-advanced in the
+    // same commit as the grant — an exact pin cannot rot into a false pass the way a
+    // not-corruption assertion could.
+    assert.deepEqual(await new RawFsAuthorityLedger(root,{now:()=>t0+2_000,lockTimeoutMs:200} as never).observeClock(),{ok:false,reason:"busy"},"the crash window classifies busy, never as permanent corruption");
+  }));
+  await t.test("an in-process failure inside the window restores the owner bytes it removed",()=>withRoot(async root=>{
+    await warmup(root);
+    const boom=new Error("injected marker-owner-remove failure");let fired=0,removedOwnerBytes:Buffer|null=null;
+    await assert.rejects(new RawFsAuthorityLedger(root,{[option]:K1_ADMISSION_PREPARATION_MODE,now:()=>t0+1_000,lockTimeoutMs:2_000,faultInjector:(point:string)=>{
+      if(point==="after-admission-slot-retire-root-sync"){const marker=admissionRetiredNames(readdirSync(root))[0]!;removedOwnerBytes=readFileSync(path.join(root,marker,"owner.json"));}
+      if(point==="after-coordination-cleanup-marker-owner-remove"&&fired++===0)throw boom;
+    }} as never).observeClock(),(error:unknown)=>error===boom,"the injected window failure propagates by identity");
+    assert.ok(removedOwnerBytes!==null,"the fixture captured the marker owner bytes the pass later removed");
+    const names=await readdir(root),markers=names.filter(name=>name.startsWith(".authority-ledger-admission-retired-")&&name.endsWith(".published"));
+    assert.equal(markers.length,1,"the published marker survives the unwind");
+    assert.deepEqual(await readdir(path.join(root,markers[0]!)),["owner.json"],"restored to exactly its owner object");
+    assert.deepEqual(await readFile(path.join(root,markers[0]!,"owner.json")),removedOwnerBytes,"with the exact bytes the pass removed");
+    const aborted=names.filter(name=>/\.publication-aborted$/.test(name));
+    assert.equal(aborted.length,1,"the failure path aborts the freshly published lock");
+    assert.equal(names.filter(name=>name.startsWith(".authority-ledger-coordination-cleanup-")).length,0,"the pass dropped its own stage and acknowledgment");
+    assert.deepEqual(await new RawFsAuthorityLedger(root,{now:()=>t0+2_000,lockTimeoutMs:200} as never).observeClock(),{ok:false,reason:"busy"},"the restored live-owner graph classifies busy");
+  }));
+  // The two housekeeper flavors emit the same point between THEIR unlink and rmdir. Without these,
+  // a build emitting only in the own-act pass is fully green (measured by independent review). The
+  // empty-marker fixture is the guard discriminator: nothing was unlinked, so the point must not
+  // fire — an emission placed outside the children-present guard fires there and fails it.
+  await t.test("the housekeeper marker removal emits the window point exactly once, before marker-remove",()=>withRoot(async root=>{
+    const owner={host:hostname(),nonce:"f".repeat(63)+"2",pid:process.pid,v:1 as const},markerName=admissionPrepRetiredName(owner,"complete"),marker=path.join(root,markerName);
+    await mkdir(marker);await writeFile(path.join(marker,"owner.json"),publicationOwnerBytes(owner));
+    const ack=incompleteCoordinationAck(owner,"prep-retired",markerName,admissionPrepName(owner),"complete",marker);
+    await writeFile(path.join(root,coordinationAckName(ack)),authorityCanonicalBytes(ack));
+    const observed:string[]=[];
+    const result=await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:2_000,faultInjector:(point:string)=>{if(point==="after-coordination-cleanup-marker-owner-remove"||point==="after-coordination-cleanup-marker-remove")observed.push(point);}} as never).recover();
+    assert.equal(result.ok,true,"the housekeeper drains the retired-prep lineage");
+    assert.deepEqual(observed,["after-coordination-cleanup-marker-owner-remove","after-coordination-cleanup-marker-remove"],"owner unlink fires the window point once, before the directory removal point");
+    assert.equal((await readdir(root)).some(name=>name.startsWith(".authority-ledger-")),false,"and the lineage drains completely");
+  }));
+  await t.test("an empty marker unlinks nothing and must not fire the window point",()=>withRoot(async root=>{
+    const owner={host:hostname(),nonce:"f".repeat(63)+"3",pid:process.pid,v:1 as const},markerName=admissionPrepRetiredName(owner,"empty"),marker=path.join(root,markerName);
+    await mkdir(marker);
+    const ack=incompleteCoordinationAck(owner,"prep-retired",markerName,admissionPrepName(owner),"empty",marker);
+    await writeFile(path.join(root,coordinationAckName(ack)),authorityCanonicalBytes(ack));
+    const observed:string[]=[];
+    const result=await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:2_000,faultInjector:(point:string)=>{if(point==="after-coordination-cleanup-marker-owner-remove"||point==="after-coordination-cleanup-marker-remove")observed.push(point);}} as never).recover();
+    assert.equal(result.ok,true,"the housekeeper drains the empty-marker lineage");
+    assert.deepEqual(observed,["after-coordination-cleanup-marker-remove"],"no owner object was unlinked, so the window point never fires");
+    assert.equal((await readdir(root)).some(name=>name.startsWith(".authority-ledger-")),false,"and the lineage drains completely");
+  }));
+  await t.test("the slot housekeeper marker removal emits the window point exactly once",async()=>{
+    const owner={host:hostname(),nonce:"f".repeat(63)+"4",pid:await exitedProcessPid(),v:1 as const};
+    await withRoot(async root=>{
+      const markerName=admissionRetiredName(owner,"abandoned"),marker=path.join(root,markerName);
+      await mkdir(marker);await writeFile(path.join(marker,"owner.json"),publicationOwnerBytes(owner));
+      const ack=slotCoordinationAck(owner,markerName,marker,"abandoned");
+      await writeFile(path.join(root,coordinationAckName(ack)),authorityCanonicalBytes(ack));
+      const observed:string[]=[];
+      const result=await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:2_000,faultInjector:(point:string)=>{if(point==="after-coordination-cleanup-marker-owner-remove")observed.push(point);}} as never).recover();
+      assert.equal(result.ok,true,"the housekeeper drains the dead-owner abandoned lineage");
+      assert.deepEqual(observed,["after-coordination-cleanup-marker-owner-remove"],"the slot flavor fires the window point exactly once");
+      assert.equal((await readdir(root)).some(name=>name.startsWith(".authority-ledger-")),false,"and the lineage drains completely");
+    });
+  });
+  await t.test("an empty slot marker unlinks nothing and must not fire the window point",async()=>{
+    const owner={host:hostname(),nonce:"f".repeat(63)+"5",pid:await exitedProcessPid(),v:1 as const};
+    await withRoot(async root=>{
+      const markerName=admissionRetiredName(owner,"abandoned"),marker=path.join(root,markerName);
+      await mkdir(marker);await writeFile(path.join(marker,"owner.json"),publicationOwnerBytes(owner));
+      const ack=slotCoordinationAck(owner,markerName,marker,"abandoned");
+      await writeFile(path.join(root,coordinationAckName(ack)),authorityCanonicalBytes(ack));
+      await unlink(path.join(marker,"owner.json"));
+      const observed:string[]=[];
+      const result=await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:2_000,faultInjector:(point:string)=>{if(point==="after-coordination-cleanup-marker-owner-remove")observed.push(point);}} as never).recover();
+      assert.equal(result.ok,true,"the housekeeper drains the authenticated-partial abandoned lineage");
+      assert.deepEqual(observed,[],"no owner object was unlinked, so the window point never fires");
+      assert.equal((await readdir(root)).some(name=>name.startsWith(".authority-ledger-")),false,"and the lineage drains completely");
+    });
+  });
 });

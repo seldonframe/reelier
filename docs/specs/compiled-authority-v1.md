@@ -295,12 +295,12 @@ overruled without archaeology.
    proceed; the implementation instead converts the first churn observation into the degraded
    terminal with no retry. Either the closure should reuse the full snapshot primitive and loop, or
    the sentence should be narrowed to what a single-artifact revalidation can honestly claim.
-9. **The half-drained retirement marker has no injectable window.** Marker removal is unavoidably
-   two syscalls — unlink the owner object, then remove the directory — and a failure between them
-   leaves a `published` marker with no owner, which classifies as corruption. The active owner
-   restores the owner bytes it removed when the directory survives empty, but no fault point sits
-   between the two syscalls, so that repair cannot be exercised by a test today. It is
-   correct-by-construction and unverified; a fault point there would make it provable.
+9. **The half-drained retirement marker window — resolved 2026-08-05.** Marker removal is
+   unavoidably two syscalls — unlink the owner object, then remove the directory. The
+   `after-coordination-cleanup-marker-owner-remove` point now sits between them at all three
+   removal sites, the crash shape it exposes — an empty retired-slot marker beside its durable
+   acknowledgment — classifies through the authenticated-partial rescue (now covering `published`
+   as well as `abandoned`), and the active owner's owner-restoring repair is pinned by a test.
 
 Full-root classification and corruption precedence occur before admission denial. A live exact fixed
 slot bounded-waits under the acquisition deadline and then returns `busy` unchanged. A dead exact slot
@@ -411,13 +411,13 @@ provisional-owner, or predecessor hook is part of the protocol:
 - Coordination cleanup: `after-coordination-cleanup-marker-enumeration`,
   `after-coordination-cleanup-stage-create`, `after-coordination-cleanup-stage-partial-write`,
   `after-coordination-cleanup-stage-file-sync`, `after-coordination-cleanup-ack-rename`,
-  `after-coordination-cleanup-ack-root-sync`, `after-coordination-cleanup-marker-remove`,
+  `after-coordination-cleanup-ack-root-sync`, `after-coordination-cleanup-marker-owner-remove`, `after-coordination-cleanup-marker-remove`,
   `after-coordination-cleanup-marker-root-sync`, `after-coordination-cleanup-ack-remove`,
   `after-coordination-cleanup-final-root-sync`.
   `after-coordination-cleanup-stage-partial-write` follows a deterministic, nonempty strict-prefix
   write of the canonical acknowledgment bytes before write-all continues; reaching it never depends
   on the operating system returning a short write. `after-coordination-cleanup-stage-file-sync`
-  follows the complete canonical write and successful file sync.
+  follows the complete canonical write and successful file sync. `after-coordination-cleanup-marker-owner-remove` follows the marker owner object's unlink and precedes its directory removal; at the housekeeper sites a marker whose owner object is already absent unlinks nothing and never reaches it, while the active owner's own cleanup pass reaches it unconditionally after its idempotent owner-removal step.
 - Publication-stage construction: `after-lock-publication-stage-create`,
   `after-lock-publication-owner-create`, `after-lock-publication-owner-partial-write`,
   `after-lock-publication-owner-sync`, `after-lock-publication-stage-sync`,
