@@ -84,9 +84,21 @@ The full suite is also noisy on this machine: two consecutive runs of the same c
 — and **both passed in isolation**. A single full-suite run cannot clear an invariant here; re-run
 the named test alone before believing it.
 
-It fails as `Error: child <pid>: 3221226505` — Windows `STATUS_STACK_BUFFER_OVERRUN`, a crashed
-child, never an assertion. **A crashed child is an environment signal, not a defect.** Re-run the
-test in isolation before attributing it to any change, and never run the suite alongside subagents.
+It fails as `Error: child <code>: <stderr>` with code `3221226505` — Windows `0xC0000409`
+(fast-fail), a crashed child, never an assertion. **Diagnosed 2026-08-05 (Batch A), mechanism
+measured, fix deliberately not applied:** the test spawns all 100 children in one `Promise.all`;
+one child is **58MB RSS** at module load (measured, Node v24.9.0), so the burst wants ~5.8GB of
+transient commit on a 16GB machine whose ambient free memory floats between **3.0 and 4.7GB**
+(both endpoints measured the same day). When suite/subagent load pushes free memory below the
+burst, children die at V8 boot — fast-fail on commit exhaustion, which is why stderr is empty.
+On the diagnosis day the failure would NOT reproduce: isolation 3/3 pass, 6 CPU hogs holding
+1.8GB pass, a concurrent `gate.test.js` run 2/2 pass — consistent with the 4.7GB-free reading.
+The mechanical fix is bounded spawn concurrency (e.g. 25 at a time; all 100 still contend on one
+root, assertions untouched), but it is **unvalidatable while the failure does not reproduce** —
+an A/B today shows pass→pass. Apply it only on a day the failure reproduces, with the A/B run
+under the reproducing load. Until then: **a crashed child is an environment signal, not a
+defect** — re-run in isolation before attributing it to any change, and never run the suite
+alongside subagents.
 `scripts/baseline-diff.mjs` refuses to measure above 70% CPU busy (`REELIER_BASELINE_MAX_BUSY`). That
 limit is deliberately coarse: the ambient floor above overlaps the range seen under self-inflicted
 contention, so CPU alone cannot separate them and the isolation re-run remains the real check.

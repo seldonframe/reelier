@@ -135,5 +135,17 @@ faster in the pin family. The first (a) build tolerated `publication-aborted` to
 committed pin "prep-retired bound ack plus unrelated publication-aborted is impossible" — measured,
 reverted to `released`-only, pin stands verbatim. Warm pin family appended at the END of the
 ledger suite: six pre-rename heal pins, three post-rename regression guards, the recovery-pending
-corruption boundary, and the live mid-flight zero-mutation pin. S4 remains gated on the re-spec,
-the contention gates, and the reused-root default-path class only.
+corruption boundary, and the live mid-flight zero-mutation pin.
+
+Batch A also closed two more of this file's §4 gates. The reused-root default-path class (§4.4)
+is committed — one root through four hard-exit crashes, two recover() calls, and five healing
+acquisitions, every step under residue oracles; two drafted oracles were refuted by its first runs
+and the measured truth is pinned (recover() on a healed root is a full legacy lock cycle that
+replaces the released marker with its own). The 100-process contention gate (§4.3) is DIAGNOSED,
+not fixed: 58MB/child × 100 simultaneous spawns ≈ 5.8GB transient commit vs a 3.0–4.7GB ambient
+free-memory floor; children die at V8 boot (0xC0000409) only when load pushes free memory below
+the burst, and on the diagnosis day the failure did not reproduce under any induced load —
+isolation 3/3, CPU+memory hogs, and a concurrent gate.test.js run all passed. The bounded-spawn
+fix is written down (REELIER-NUMBERS §3) and deliberately unapplied until a reproducing day can
+measure it. S4 remains gated on the re-spec, the N40/N100 contention gates on a reproducing
+machine state, and the D1 owner decision for the withdrawal family.
