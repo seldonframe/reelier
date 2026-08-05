@@ -1,6 +1,6 @@
 # Reelier — numbers worth knowing
 
-**Pinned to `codex/universal-compiled-authority` @ `8373ec2` plus the uncommitted S1 admission-preparation
+**Pinned to `codex/universal-compiled-authority` @ `fc7a8b3` plus the uncommitted S3 active-owner cleanup
 slice, measured 2026-08-04 on Windows 11.**
 
 _Every number here is quoted somewhere: in a commit message, a PR body, a plan, or an estimate. Two
@@ -20,10 +20,10 @@ not re-verified here — treat as a hypothesis).
 | Quantity | Value | Status |
 |---|---|---|
 | Fault points declared in the spec taxonomy | **57** | measured |
-| Entries in exported `ledgerLockFaultPoints` | **58** | measured |
-| Entries in public `ledgerFaultPoints` | **125** | measured |
-| Fault-point literals emitted anywhere in `src/` | **71** | measured |
-| Declared in spec, not emitted (the backlog) | **12** | measured — **but see the gating caveat below** |
+| Entries in exported `ledgerLockFaultPoints` | **60** | measured |
+| Entries in public `ledgerFaultPoints` | **127** | measured |
+| Fault-point literals emitted anywhere in `src/` | **73** | measured |
+| Declared in spec, not emitted (the backlog) | **10** | measured — **but see the gating caveat below** |
 | Exported but **not** in the spec taxonomy (to delete) | **13** | measured |
 
 ```bash
@@ -31,11 +31,11 @@ npm run lint:fault-pins
 ```
 
 **Gating caveat on the backlog row — read this before quoting 15.** The count fell from 24 to 15
-because the twelve admission-preparation and slot-retirement points are now emitted in `src/`, which is all
+because the fourteen admission-preparation, slot-retirement and cleanup-closure points are now emitted in `src/`, which is all
 `lint:fault-pins` measures. It does **not** mean those nine are reachable on a default path: they
 fire only behind a disabled host-private runtime option, and the committed pins that drive them on
-the clean-root default path are still red. `12` therefore means "12 points have no emission
-anywhere", not "45 points are done". The linter has no third state for *emitted but gated*; adding
+the clean-root default path are still red. `10` therefore means "10 points have no emission
+anywhere", not "47 points are done". The linter has no third state for *emitted but gated*; adding
 one, or reading this row with the caveat attached, is the difference between a real number and the
 exact trap the linter exists to prevent.
 
@@ -48,7 +48,7 @@ after this work, not before.
 
 | Quantity | Value | Status |
 |---|---|---|
-| Ledger suite | **453 pass / 79 fail** | measured |
+| Ledger suite | **465 pass / 79 fail** | measured |
 | Distinct failing test names in that suite | **77** | measured — the recorded baseline is the authority, and it said 77 when this row said 74 |
 | Full `npm test` | **2,100 pass / 79 fail / 1 skipped** | measured; two earlier runs showed 80, the extra being the load flake in the row below |
 | Failures outside `ledger.test.ts` | **0** on an idle machine; 1 per run under load, differing each run, each passing in isolation | measured |

@@ -105,7 +105,7 @@ export const clockFaultPoints = Object.freeze([
 ] as const);
 export const ledgerLockFaultPoints = Object.freeze([
   // Admission preparation/fixed slot. First in ABI order because the spec lists it first
-  // (docs/specs/compiled-authority-v1.md:355-359) and the registry is the group concatenation, not
+  // (docs/specs/compiled-authority-v1.md:393-397) and the registry is the group concatenation, not
   // an execution trace.
   "after-admission-prep-create", "after-admission-prep-owner-create",
   "after-admission-prep-owner-partial-write", "after-admission-prep-owner-sync",
@@ -119,7 +119,7 @@ export const ledgerLockFaultPoints = Object.freeze([
   // committed group pin puts it. `after-admission-slot-retire-cleanup-root-sync` is the fourth and
   // last member and joins when its cleanup pass is emitted, keeping the group order intact.
   "before-admission-slot-retire-rename", "after-admission-slot-retire-rename",
-  "after-admission-slot-retire-root-sync",
+  "after-admission-slot-retire-root-sync", "after-admission-slot-retire-cleanup-root-sync",
   "after-coordination-cleanup-marker-enumeration", "after-coordination-cleanup-stage-create",
   "after-coordination-cleanup-stage-partial-write", "after-coordination-cleanup-stage-file-sync",
   "after-coordination-cleanup-ack-rename", "after-coordination-cleanup-ack-root-sync",
@@ -138,6 +138,8 @@ export const ledgerLockFaultPoints = Object.freeze([
   "after-lock-publication-provisional-predecessor-selection", "before-lock-publication-provisional-root-reenumeration",
   "before-lock-publication-provisional-predecessor-liveness", "before-staged-publication-settlement",
   "after-lock-publication-generation-closed", "before-lock-publication-predecessor-validation",
+  // Pre-callback generation closure. Its own group in spec order, immediately before the callback.
+  "after-pre-callback-coordination-generation-closed",
   "before-ledger-operation-callback",
   "after-owner-file-sync", "after-lock-directory-sync", "before-lock-retire", "after-lock-retire",
 ] as const);
@@ -194,7 +196,7 @@ type PrepAuthorityDescriptor=
   |Readonly<{kind:"dead-slot";targetName:typeof ADMISSION_SLOT_NAME;pid:number}>
   |Readonly<{kind:"slot-retired-cleanup";targetName:string;lifecycleName:string|null;orphan:boolean;pid:number}>;
 interface PrepAuthorityBinding {readonly snapshot:HybridRootSnapshot;readonly descriptor:PrepAuthorityDescriptor}
-// The promoted slot's frozen creation snapshot (spec :461-473): the private, in-memory authority
+// The promoted slot's frozen creation snapshot (spec :486-498): the private, in-memory authority
 // value produced only by this acquisition's own successful exclusive-creation path. It is what makes
 // the later own-act retirement an act on the operation's OWN slot rather than on whatever now
 // answers to that name.
@@ -723,17 +725,17 @@ export class FsAuthorityLedger implements AuthorityLedger {
             stageTicket=ticket;stageName=this.publicationStageName(owner,ticket);stagePath=this.absolute(stageName);ownerPath=path.join(stagePath,"owner.json");
           }
           mutatingAdmissionMemo={kind:"disabled"};
-          // Spec :282 — the exact slot owner alone may create one publication stage. So the
+          // Spec :307 — the exact slot owner alone may create one publication stage. So the
           // preparation is promoted to the fixed slot BEFORE the stage exists, and the stage that
           // follows is bound to the same canonical owner this attempt already minted.
-          // Only an admission-ready generation may begin preparation (spec :356-358, :429): the
+          // Only an admission-ready generation may begin preparation (spec :381-383, :454): the
           // guard reached here has classified the root as legacy-clean and the active lock absent,
           // so the remaining condition is that no publication stage is present.
           if(this.k1AdmissionPreparationEnabled&&!admissionSlotCreated){
-            // Spec :358 — a lone live external pre-slot publication stage is preserved and
+            // Spec :383 — a lone live external pre-slot publication stage is preserved and
             // bounded-waits to `busy`. Falling through to legacy publication here would publish an
             // active lock with NO fixed slot behind it and then run the callback, which is exactly
-            // what spec :282 ("The exact slot owner alone may create one publication stage")
+            // what spec :307 ("The exact slot owner alone may create one publication stage")
             // forbids. Refuse with zero mutation instead; the residue is preserved for the next
             // acquisition to classify.
             if(existingStages.length>0)return {ok:false,reason:"busy"};
@@ -824,7 +826,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
         await this.syncDirectory(this.root);
         this.fault("after-lock-publication-root-sync");
         this.assertPublishedSnapshotUnchanged(publishedSnapshot,await this.validatePublishedOwner(owner));
-        // Spec :289-291 — if a successful publication cannot retire its exact slot within its fresh
+        // Spec :314-316 — if a successful publication cannot retire its exact slot within its fresh
         // slot-retirement deadline, the owner atomically retires the active lock to its
         // `publication-aborted` marker, root-syncs, and runs zero callback.
         //
@@ -839,7 +841,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
           try{retired=await this.retireOwnPublishedSlot(owner,ownerBytes,admissionSlotSnapshot,retirementDeadline);}
           catch(error){if(error instanceof LedgerCorruption)corrupt=true;else throw error;}
           if(!retired){
-            // Spec :289-291 covers EVERY way a successful publication can fail to retire its exact
+            // Spec :314-316 covers EVERY way a successful publication can fail to retire its exact
             // slot, not only deadline exhaustion. Letting a corruption throw past this leaves the
             // freshly published active lock live and unreleased, which bricks the root for every
             // later operation including reads.
@@ -847,6 +849,17 @@ export class FsAuthorityLedger implements AuthorityLedger {
             // A degraded terminal that could not write its own terminal artifact is not the
             // specified terminal, and must not be reported as one.
             return {ok:false,reason:corrupt||!aborted?"corruption":"busy"};
+          }
+          // The complete active-owner cleanup pass, inline and before callback entry. It shares the
+          // one fresh slot-retirement budget rather than drawing a third.
+          try{await this.cleanOwnPublishedSlotRetirement(owner,ownerBytes,this.admissionSlotRetiredName(owner,"published"),admissionSlotSnapshot,retirementDeadline);}
+          catch(error){
+            if(!(error instanceof LedgerCorruption)&&!(error instanceof CoordinationExhausted))throw error;
+            // A publication whose cleanup pass cannot finish has not reached callback eligibility,
+            // so it takes the same degraded terminal as a failed retirement rather than entering the
+            // callback over undrained residue.
+            const aborted=await this.abortPublishedLock(owner,retirementDeadline);
+            return {ok:false,reason:error instanceof LedgerCorruption||!aborted?"corruption":"busy"};
           }
         }
         return { ok: true, owner, reclaimed:false };
@@ -872,8 +885,8 @@ export class FsAuthorityLedger implements AuthorityLedger {
   private admissionPrepName(owner:LockOwner):string{return `.authority-ledger-admission-prep-${this.hostDigest(owner.host)}-${owner.pid}-${owner.nonce}.tmp`;}
   private admissionSlotRetiredName(owner:LockOwner,disposition:"published"|"withdrawn"|"abandoned"):string{return `.authority-ledger-admission-retired-${this.hostDigest(owner.host)}-${owner.pid}-${owner.nonce}.${disposition}`;}
 
-  // Spec :506-508 — after publication the ACTIVE OWNER, not the pre-admission housekeeper, durably
-  // retires the matching slot as `published`; spec :285-288 — `published` requires the byte-identical
+  // Spec :531-533 — after publication the ACTIVE OWNER, not the pre-admission housekeeper, durably
+  // retires the matching slot as `published`; spec :310-313 — `published` requires the byte-identical
   // active lock, and callback eligibility begins only after this root sync.
   //
   // This is the owner's own act on its own slot. It is deliberately NOT the foreign-dead-slot
@@ -881,7 +894,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
   // or retires a slot this acquisition did not create, and the caller only reaches it holding its
   // own freshly published lock.
   //
-  // Spec :417 gives successful publication one SEPARATE FRESH slot-retirement deadline, so it is
+  // Spec :442 gives successful publication one SEPARATE FRESH slot-retirement deadline, so it is
   // drawn here rather than inherited from the acquisition budget. The clock is the module monotonic
   // one, matching retireOwnedLock, because acquireLock shadows `monotonicNow` with the injectable
   // housekeeper runtime and mixing the two domains would make the bound meaningless under injection.
@@ -896,12 +909,12 @@ export class FsAuthorityLedger implements AuthorityLedger {
           if(destinationPresent)throw new LedgerCorruption("slot retirement destination present");
           // Exact revalidation against the PROMOTION-TIME creator snapshot, not against a fresh stat
           // taken in this same iteration — that would be circular and would accept a same-name
-          // directory replacement carrying identical owner bytes. Spec :302: replacement, type,
+          // directory replacement carrying identical owner bytes. Spec :327: replacement, type,
           // link, identity, byte, or marker mismatch is preserved corruption. This also rejects a
           // slot that gained an extra child, because the shared revalidation requires exactly
           // `owner.json`.
           await this.revalidateAdmissionPreparation(source,snapshot.directoryIdentity,snapshot.ownerIdentity,ownerBytes);
-          // Spec :285 — `published` requires the byte-identical active lock.
+          // Spec :310 — `published` requires the byte-identical active lock.
           if(!(await readFile(this.absolute(path.join("lock","owner.json")))).equals(ownerBytes))throw new LedgerCorruption("published slot retirement requires the byte-identical active lock");
           this.fault("before-admission-slot-retire-rename");
           await rename(source,destination);
@@ -920,7 +933,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
         if(error instanceof LedgerCorruption)throw error;
         // ENOENT is in isTransientLockError for artifacts this operation may legitimately race for.
         // These are its OWN, created in this acquisition and held under the fence, so their
-        // disappearance is post-snapshot mutation — corruption, never churn (spec :519-521).
+        // disappearance is post-snapshot mutation — corruption, never churn (spec :544-546).
         if(hasCode(error,"ENOENT"))throw new LedgerCorruption("own admission artifact disappeared during slot retirement");
         if(!isTransientLockError(error))throw error;
         const remaining=deadline-monotonicNow();
@@ -931,7 +944,152 @@ export class FsAuthorityLedger implements AuthorityLedger {
     }
   }
 
-  // Spec :419 grants successful publication ONE separate fresh slot-retirement deadline. It is drawn
+  // Spec :531-533 — after publication the active owner closes and exact-revalidates the complete
+  // coordination generation and performs ONE COMPLETE cleanup pass before callback entry. That is a
+  // different act from the housekeeper's advanceBoundSlotCleanup, which advances one step per
+  // reclassification from a derived route: this runs inline, to completion, on the owner's own
+  // retirement marker, and it is what makes the root clean before withLock's post-acquisition guard
+  // and the callback ever see it.
+  //
+  // ORDERING. The spec sentence lists closure before the retirement; the committed pin at
+  // test/authority/ledger.test.ts:1822 pins `slot-retire-root-sync` BEFORE `generation-closed`. The
+  // disagreement is recorded beside the rule in the spec. This follows the pin.
+  private async cleanOwnPublishedSlotRetirement(owner:LockOwner,ownerBytes:Buffer,markerName:string,snapshot:AdmissionSlotCreatorSnapshot,deadline:number):Promise<void>{
+    const markerPath=this.absolute(markerName);
+    // Close the coordination generation: the root must be stable across two enumerations, and the
+    // marker must still be exactly the directory this acquisition retired.
+    const first=(await readdir(this.root)).sort();
+    const second=(await readdir(this.root)).sort();
+    if(!sameStrings(first,second))throw new CoordinationExhausted("housekeeping","snapshot-churn");
+    await this.revalidateAdmissionPreparation(markerPath,snapshot.directoryIdentity,snapshot.ownerIdentity,ownerBytes);
+    this.fault("after-pre-callback-coordination-generation-closed");
+
+    // Spec :510 — `slot-retired.published` authority is the exact same-owner active lock (or one of
+    // its named successors). At this point in the acquisition the lock itself is that artifact.
+    const ack:CoordinationAck={
+      disposition:"published",kind:"admission-slot-retired",markerName,originalName:ADMISSION_SLOT_NAME,
+      owner:{host:owner.host,nonce:owner.nonce,pid:owner.pid,v:1},
+      ownerBytesDigest:coordinationRawDigest(ownerBytes),ownerBytesLength:String(ownerBytes.length),
+      ownerDigest:coordinationCanonicalDigest({host:owner.host,nonce:owner.nonce,pid:owner.pid,v:1}),
+      ownerIdentity:encodeCoordinationIdentityWire(snapshot.ownerIdentity),
+      purpose:"slot-retired",recoveryAuthority:"active-owner-or-exact-lock-successor",
+      slotIdentity:encodeCoordinationIdentityWire(snapshot.directoryIdentity),
+      terminalArtifactDigest:coordinationRawDigest(ownerBytes),terminalArtifactName:"lock",
+      v:COORDINATION_ACK_VERSION,
+    };
+    const bytes=coordinationCanonicalBytes(ack),digest=coordinationRawDigest(bytes).slice(7);
+    const stagePath=this.absolute(`.authority-ledger-coordination-cleanup-stage-s-${digest}.tmp`);
+    const ackPath=this.absolute(`.authority-ledger-coordination-cleanup-${digest}.ack`);
+
+    // The acknowledgment's authority is the LIVE active lock it names as its terminal artifact
+    // (spec :510). Every failure exit from this pass aborts that lock — renaming it to
+    // `publication-aborted` — which destroys the terminal the record points at. Leaving the record
+    // behind then makes the root classify as corruption for every later operation, forever, while
+    // this call still returns the specified `busy`. So the pass owns its own artifacts: on any
+    // failure it removes whatever it created before letting the caller abort the lock. Measured: a
+    // stray file in the marker directory is enough to reach this path with no injected fault at all.
+    try{
+      let handle:FileHandle|undefined;
+      try{
+        try{handle=await open(stagePath,"wx",0o600);}
+        catch(error){
+          if(hasCode(error,"EEXIST"))throw new LedgerCorruption("own-act cleanup stage already present");
+          if(isSnapshotSharingError(error)||isTransientLockError(error))throw new CoordinationExhausted("housekeeping","transient-sharing");
+          throw error;
+        }
+        const created=await handle.stat({bigint:true});
+        if(!created.isFile()||created.isSymbolicLink()||created.nlink!==1n)throw new LedgerCorruption("invalid new own-act cleanup stage");
+        this.fault("after-coordination-cleanup-stage-create");
+        // A deterministic nonempty strict prefix; reaching this boundary never depends on the
+        // operating system returning a short write.
+        await this.writeAll(handle,bytes.subarray(0,1),0);
+        this.fault("after-coordination-cleanup-stage-partial-write");
+        await this.writeAll(handle,bytes.subarray(1),1);
+        await handle.sync();
+        this.fault("after-coordination-cleanup-stage-file-sync");
+      }finally{if(handle)await handle.close();}
+
+      await this.renameOwnActCleanupArtifact(stagePath,ackPath,deadline);
+      this.fault("after-coordination-cleanup-ack-rename");
+      await this.syncDirectory(this.root);
+      this.fault("after-coordination-cleanup-ack-root-sync");
+
+      // The acknowledgment is durable, so the marker may go. Its owner object first, then the
+      // directory: a marker directory that still holds children is not removable.
+      await this.removeOwnActCleanupPath(path.join(markerPath,"owner.json"),false,deadline);
+      await this.removeOwnActCleanupPath(markerPath,true,deadline);
+      this.fault("after-coordination-cleanup-marker-remove");
+      await this.syncDirectory(this.root);
+      this.fault("after-coordination-cleanup-marker-root-sync");
+      // The retirement family's own signal that this slot retirement is fully cleaned and durable.
+      this.fault("after-admission-slot-retire-cleanup-root-sync");
+
+      await this.removeOwnActCleanupPath(ackPath,false,deadline);
+      this.fault("after-coordination-cleanup-ack-remove");
+      await this.syncDirectory(this.root);
+      this.fault("after-coordination-cleanup-final-root-sync");
+    }catch(error){
+      await this.unwindOwnActCleanup(markerPath,ownerBytes,stagePath,ackPath);
+      throw error;
+    }
+  }
+
+  // Best-effort, and deliberately so: this runs while a failure is already propagating and the
+  // caller's original outcome must survive. It has two jobs, both about not leaving a shape that
+  // classifies as corruption forever.
+  //
+  // 1. Drop the acknowledgment and stage. Their authority is the live active lock they name as
+  //    terminal artifact, and every failure exit from this pass aborts that lock.
+  // 2. Restore the marker's owner object if it was removed but the directory survived. Marker
+  //    removal is unavoidably two syscalls — unlink the owner, then rmdir — and a failure between
+  //    them leaves a `published` marker with no owner, which is malformed. The pass owns those exact
+  //    bytes, so it can put them back and leave the marker exactly as the retirement wrote it.
+  private async unwindOwnActCleanup(markerPath:string,ownerBytes:Buffer,stagePath:string,ackPath:string):Promise<void>{
+    for(const target of [stagePath,ackPath])try{await unlink(target);}catch{/* the next acquisition classifies whatever survives */}
+    try{
+      const marker=await lstat(markerPath).catch(()=>null);
+      if(marker!==null&&marker.isDirectory()&&(await readdir(markerPath)).length===0){
+        const handle=await open(path.join(markerPath,"owner.json"),"wx",0o600);
+        try{await this.writeAll(handle,ownerBytes,0);await handle.sync();}finally{await handle.close();}
+      }
+    }catch{/* an unrestorable marker is preserved as-is for classification, never deleted */}
+    try{await this.syncDirectory(this.root);}catch{/* the removals above are the part that matters */}
+  }
+
+  private async renameOwnActCleanupArtifact(source:string,destination:string,deadline:number):Promise<void>{
+    // Spec :216 — an existing destination is completely classified and never overwritten. The
+    // EEXIST branch below cannot carry that on its own: rename over an existing FILE succeeds on
+    // both POSIX and Win32, so without this pre-check a foreign acknowledgment at the destination
+    // would be silently replaced. Same defect class as the fixed-slot promotion, same fix; the
+    // shipped housekeeper lifecycle pre-checks the identical name before its own rename.
+    let destinationPresent=true;
+    try{await lstat(destination);}catch(error){if(hasCode(error,"ENOENT"))destinationPresent=false;else throw error;}
+    if(destinationPresent)throw new LedgerCorruption("own-act cleanup acknowledgment destination present");
+    for(;;){
+      try{await rename(source,destination);return;}
+      catch(error){
+        if(hasCode(error,"EEXIST")||hasCode(error,"ENOTEMPTY"))throw new LedgerCorruption("own-act cleanup acknowledgment destination present");
+        if(hasCode(error,"ENOENT"))throw new LedgerCorruption("own-act cleanup stage disappeared");
+        if(!isTransientLockError(error)||monotonicNow()>=deadline)throw error instanceof LedgerCorruption?error:new CoordinationExhausted("housekeeping","transient-sharing");
+        await delay(5);
+      }
+    }
+  }
+
+  // Removal is idempotent: a retry after a committed unlink must not fail on ENOENT, or a transient
+  // late in the pass would report failure for work that already happened.
+  private async removeOwnActCleanupPath(target:string,directory:boolean,deadline:number):Promise<void>{
+    for(;;){
+      try{if(directory)await rmdir(target);else await unlink(target);return;}
+      catch(error){
+        if(hasCode(error,"ENOENT"))return;
+        if(!isTransientLockError(error)||monotonicNow()>=deadline)throw error instanceof LedgerCorruption?error:new CoordinationExhausted("housekeeping","transient-sharing");
+        await delay(5);
+      }
+    }
+  }
+
+  // Spec :444 grants successful publication ONE separate fresh slot-retirement deadline. It is drawn
   // once here and shared by the retirement and its degraded-terminal fallback, so the post-publication
   // bound stays one budget rather than two. Uses the module monotonic clock, matching retireOwnedLock;
   // acquireLock shadows `monotonicNow` with the injectable housekeeper runtime.

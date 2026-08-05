@@ -277,6 +277,31 @@ overruled without archaeology.
    budget or draws its own. The implementation now draws exactly one and shares it, which is the
    reading that keeps the stated bound meaningful, but the sentence admits the other.
 
+7. **A `published` acknowledgment in the root defeats the dead-owner active-lock reclaim that
+   succeeds without it.** Measured on two crashes leaving the same dead owner holding the same
+   active lock: with only the lock present, the next acquisition reclaims it and the root recovers;
+   with the owner's `slot-retired`/`published` acknowledgment also present, classification reaches
+   the published-successor rule and returns `busy` before legacy reclaim is consulted, and the root
+   stays busy indefinitely. The acknowledgment is minted as a recovery record, so it removing the
+   one recovery that used to work is a contradiction the document should settle. Related to the
+   already-recorded absence of a housekeeping route for foreign K1 residue.
+8. **The pre-callback generation closure is weaker than the words describing it, and does not
+   re-enumerate on churn.** "Closes and exact-revalidates the complete coordination generation" is
+   implemented as a two-enumeration name-set stability check plus exact revalidation of the single
+   retirement marker; no full root snapshot is taken, so an identity, type or byte change to any
+   other artifact — including the active lock the acknowledgment names as its terminal — is not
+   detected. Separately, the paragraph on pre-callback closure requires churn to cause bounded
+   full-root re-enumeration against the same deadline and permits a stable subsequent generation to
+   proceed; the implementation instead converts the first churn observation into the degraded
+   terminal with no retry. Either the closure should reuse the full snapshot primitive and loop, or
+   the sentence should be narrowed to what a single-artifact revalidation can honestly claim.
+9. **The half-drained retirement marker has no injectable window.** Marker removal is unavoidably
+   two syscalls — unlink the owner object, then remove the directory — and a failure between them
+   leaves a `published` marker with no owner, which classifies as corruption. The active owner
+   restores the owner bytes it removed when the directory survives empty, but no fault point sits
+   between the two syscalls, so that repair cannot be exercised by a test today. It is
+   correct-by-construction and unverified; a fault point there would make it provable.
+
 Full-root classification and corruption precedence occur before admission denial. A live exact fixed
 slot bounded-waits under the acquisition deadline and then returns `busy` unchanged. A dead exact slot
 is recoverable only after full classification and final exact revalidation. The exact slot owner alone
