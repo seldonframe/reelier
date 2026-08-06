@@ -122,12 +122,10 @@ export const ledgerLockFaultPoints = Object.freeze([
   // last member and joins when its cleanup pass is emitted, keeping the group order intact.
   "before-admission-slot-retire-rename", "after-admission-slot-retire-rename",
   "after-admission-slot-retire-root-sync", "after-admission-slot-retire-cleanup-root-sync",
-  // Creator withdrawal. Fourth group in spec order. `after-creator-withdrawal-cleanup-root-sync`
-  // is the sixth and last member and joins when the cleanup chain is emitted, keeping the group
-  // order intact — the same staged-membership pattern the slot-retirement group used above.
+  // Creator withdrawal. Fourth group in spec order, complete at six members.
   "before-creator-withdrawal-seal", "after-creator-withdrawal-seal",
   "before-creator-withdrawal-rename", "after-creator-withdrawal-rename",
-  "after-creator-withdrawal-root-sync",
+  "after-creator-withdrawal-root-sync", "after-creator-withdrawal-cleanup-root-sync",
   "after-coordination-cleanup-marker-enumeration", "after-coordination-cleanup-stage-create",
   "after-coordination-cleanup-stage-partial-write", "after-coordination-cleanup-stage-file-sync",
   "after-coordination-cleanup-ack-rename", "after-coordination-cleanup-ack-root-sync",
@@ -188,12 +186,14 @@ declare const prepRetiredCleanupAuthorityBrand: unique symbol;
 declare const slotRetirementAuthorityBrand: unique symbol;
 declare const slotRetiredCleanupAuthorityBrand: unique symbol;
 declare const loneWithdrawalRetirementAuthorityBrand: unique symbol;
+declare const withdrawalCleanupAuthorityBrand: unique symbol;
 type PrepCreatorAttemptToken=Readonly<{readonly [prepAttemptTokenBrand]:never}>;
 type PrepRetirementAuthority=Readonly<{readonly [prepRetirementAuthorityBrand]:never}>;
 type PrepRetiredCleanupAuthority=Readonly<{readonly [prepRetiredCleanupAuthorityBrand]:never}>;
 type SlotRetirementAuthority=Readonly<{readonly [slotRetirementAuthorityBrand]:never}>;
 type SlotRetiredCleanupAuthority=Readonly<{readonly [slotRetiredCleanupAuthorityBrand]:never}>;
 type LoneWithdrawalRetirementAuthority=Readonly<{readonly [loneWithdrawalRetirementAuthorityBrand]:never}>;
+type WithdrawalCleanupAuthority=Readonly<{readonly [withdrawalCleanupAuthorityBrand]:never}>;
 type PrepHousekeepingRoute=
   |Readonly<{kind:"silent"}>
   |Readonly<{kind:"no-authority"}>
@@ -201,13 +201,15 @@ type PrepHousekeepingRoute=
   |Readonly<{kind:"retired-prep";cleanupAuthority:PrepRetiredCleanupAuthority}>
   |Readonly<{kind:"dead-slot";retirementAuthority:SlotRetirementAuthority}>
   |Readonly<{kind:"retired-slot";cleanupAuthority:SlotRetiredCleanupAuthority}>
-  |Readonly<{kind:"lone-withdrawal";retirementAuthority:LoneWithdrawalRetirementAuthority}>;
+  |Readonly<{kind:"lone-withdrawal";retirementAuthority:LoneWithdrawalRetirementAuthority}>
+  |Readonly<{kind:"withdrawal-cleanup";cleanupAuthority:WithdrawalCleanupAuthority}>;
 type PrepAuthorityDescriptor=
   |Readonly<{kind:"dead-prep";targetName:string;pid:number}>
   |Readonly<{kind:"prep-retired-cleanup";targetName:string;lifecycleName:string|null;orphan:boolean}>
   |Readonly<{kind:"dead-slot";targetName:typeof ADMISSION_SLOT_NAME;pid:number;disposition:"abandoned"|"published"}>
-  |Readonly<{kind:"slot-retired-cleanup";targetName:string;lifecycleName:string|null;orphan:boolean;pid:number;disposition:"abandoned"|"published";successorName:string|null}>
-  |Readonly<{kind:"lone-withdrawal";targetName:string;pid:number}>;
+  |Readonly<{kind:"slot-retired-cleanup";targetName:string;lifecycleName:string|null;orphan:boolean;pid:number;disposition:"abandoned"|"published"|"withdrawn";successorName:string|null}>
+  |Readonly<{kind:"lone-withdrawal";targetName:string;pid:number}>
+  |Readonly<{kind:"withdrawal-cleanup";targetName:string;terminalKind:"withdrawal"|"aborted";pid:number;slotAckName:string|null;lifecycleName:string|null}>;
 interface PrepAuthorityBinding {readonly snapshot:HybridRootSnapshot;readonly descriptor:PrepAuthorityDescriptor}
 // The promoted slot's frozen creation snapshot (spec :486-498): the private, in-memory authority
 // value produced only by this acquisition's own successful exclusive-creation path. It is what makes
@@ -224,6 +226,7 @@ const prepRetiredCleanupAuthorityBindings=new WeakMap<object,PrepAuthorityBindin
 const slotRetirementAuthorityBindings=new WeakMap<object,PrepAuthorityBinding>();
 const slotRetiredCleanupAuthorityBindings=new WeakMap<object,PrepAuthorityBinding>();
 const loneWithdrawalRetirementAuthorityBindings=new WeakMap<object,PrepAuthorityBinding>();
+const withdrawalCleanupAuthorityBindings=new WeakMap<object,PrepAuthorityBinding>();
 const k1OperationFenceBindings=new WeakMap<object,K1OperationFenceGeneration>();
 const activeK1OperationFences=new Set<string>();
 interface K1OperationFenceWaiter {readonly ticket:bigint;admitted:boolean}
@@ -1326,14 +1329,18 @@ export class FsAuthorityLedger implements AuthorityLedger {
       this.prepHousekeeperRuntime.observeBoundary?.("withdrawal-only-lone-retirement-authority-dead-owner");
       return this.transitionPrepHousekeeping(route.retirementAuthority,permitWrite,budgetLive);
     }
+    if(route.kind==="withdrawal-cleanup"){
+      this.prepHousekeeperRuntime.observeBoundary?.("withdrawal-only-chain-cleanup-authority-dead-owner");
+      return this.transitionPrepHousekeeping(route.cleanupAuthority,permitWrite,budgetLive);
+    }
     return "busy";
   }
 
-  private async transitionPrepHousekeeping(authority:PrepRetirementAuthority|PrepRetiredCleanupAuthority|SlotRetirementAuthority|SlotRetiredCleanupAuthority|LoneWithdrawalRetirementAuthority,permitWrite:boolean,budgetLive:boolean):Promise<"busy"|"progress"|"reclassify"|"refuse">{
-    const retirement=prepRetirementAuthorityBindings.get(authority),cleanup=prepRetiredCleanupAuthorityBindings.get(authority),slotRetirement=slotRetirementAuthorityBindings.get(authority),slotCleanup=slotRetiredCleanupAuthorityBindings.get(authority),loneWithdrawal=loneWithdrawalRetirementAuthorityBindings.get(authority),binding=retirement??cleanup??slotRetirement??slotCleanup??loneWithdrawal;
-    prepRetirementAuthorityBindings.delete(authority);prepRetiredCleanupAuthorityBindings.delete(authority);slotRetirementAuthorityBindings.delete(authority);slotRetiredCleanupAuthorityBindings.delete(authority);loneWithdrawalRetirementAuthorityBindings.delete(authority);
+  private async transitionPrepHousekeeping(authority:PrepRetirementAuthority|PrepRetiredCleanupAuthority|SlotRetirementAuthority|SlotRetiredCleanupAuthority|LoneWithdrawalRetirementAuthority|WithdrawalCleanupAuthority,permitWrite:boolean,budgetLive:boolean):Promise<"busy"|"progress"|"reclassify"|"refuse">{
+    const retirement=prepRetirementAuthorityBindings.get(authority),cleanup=prepRetiredCleanupAuthorityBindings.get(authority),slotRetirement=slotRetirementAuthorityBindings.get(authority),slotCleanup=slotRetiredCleanupAuthorityBindings.get(authority),loneWithdrawal=loneWithdrawalRetirementAuthorityBindings.get(authority),withdrawalCleanup=withdrawalCleanupAuthorityBindings.get(authority),binding=retirement??cleanup??slotRetirement??slotCleanup??loneWithdrawal??withdrawalCleanup;
+    prepRetirementAuthorityBindings.delete(authority);prepRetiredCleanupAuthorityBindings.delete(authority);slotRetirementAuthorityBindings.delete(authority);slotRetiredCleanupAuthorityBindings.delete(authority);loneWithdrawalRetirementAuthorityBindings.delete(authority);withdrawalCleanupAuthorityBindings.delete(authority);
     if(binding===undefined)return "busy";
-    const slotOnly=binding.descriptor.kind==="dead-slot"||binding.descriptor.kind==="slot-retired-cleanup",prefix=binding.descriptor.kind==="lone-withdrawal"?"withdrawal-only":slotOnly?"slot-only":"prep-only";
+    const slotOnly=binding.descriptor.kind==="dead-slot"||binding.descriptor.kind==="slot-retired-cleanup",prefix=binding.descriptor.kind==="lone-withdrawal"||binding.descriptor.kind==="withdrawal-cleanup"?"withdrawal-only":slotOnly?"slot-only":"prep-only";
     const first=await this.revalidatePrepHousekeepingAuthority(binding);
     this.prepHousekeeperRuntime.observeBoundary?.(`${prefix}-before-transition`);
     const second=await this.revalidatePrepHousekeepingAuthority(binding);
@@ -1358,16 +1365,16 @@ export class FsAuthorityLedger implements AuthorityLedger {
     // recover()-only drain would leave observeClock refusing a root HEAD healed. Initiating an
     // abandoned-family retirement stays reserved to recover(); committed dead-owner slot-orphan
     // tests pin a lock-seeking operation to leave those byte-identical.
-    if(!permitWrite&&!(budgetLive&&(this.mayAdvanceDeadPrepCleanup(binding)||this.mayDrainPublishedSlot(binding)||this.mayRetireLoneWithdrawal(binding)))){this.prepHousekeeperRuntime.observeBoundary?.(`${prefix}-transition-refused`);return "busy";}
+    if(!permitWrite&&!(budgetLive&&(this.mayAdvanceDeadPrepCleanup(binding)||this.mayDrainPublishedSlot(binding)||this.mayProgressWithdrawalChain(binding)))){this.prepHousekeeperRuntime.observeBoundary?.(`${prefix}-transition-refused`);return "busy";}
     if(binding.descriptor.kind==="dead-slot"&&processLiveness(binding.descriptor.pid)!=="dead"){this.prepHousekeeperRuntime.observeBoundary?.("slot-only-transition-refused");return "busy";}
-    if(binding.descriptor.kind==="lone-withdrawal"&&processLiveness(binding.descriptor.pid)!=="dead"){this.prepHousekeeperRuntime.observeBoundary?.("withdrawal-only-transition-refused");return "busy";}
+    if((binding.descriptor.kind==="lone-withdrawal"||binding.descriptor.kind==="withdrawal-cleanup")&&processLiveness(binding.descriptor.pid)!=="dead"){this.prepHousekeeperRuntime.observeBoundary?.("withdrawal-only-transition-refused");return "busy";}
     const capability=this.activeK1OperationCapability,generation=capability===null?undefined:k1OperationFenceBindings.get(capability);if(capability===null||generation?.status!=="acting"){this.prepHousekeeperRuntime.observeBoundary?.(`${prefix}-transition-refused`);return "refuse";}
     if(await this.hasK1WriterResidue()){this.prepHousekeeperRuntime.observeBoundary?.(`${prefix}-transition-refused`);return "refuse";}
     const authorityState=await this.revalidatePrepHousekeepingAuthority(binding);if(authorityState!=="exact"){this.prepHousekeeperRuntime.observeBoundary?.(`${prefix}-transition-refused`);return authorityState==="corruption"?"refuse":"reclassify";}
     if(!generation.protectedTransitionCompleted)await this.observeActiveK1OperationFenceBoundary("k1-operation-fence-only-target-final-revalidated");
     this.prepHousekeeperRuntime.observeBoundary?.(`${prefix}-after-final-revalidation`);
     if(!generation.protectedTransitionCompleted)await this.observeActiveK1OperationFenceBoundary("k1-operation-fence-only-target-mutation");
-    const result:PrepTransitionResult=binding.descriptor.kind==="dead-prep"?await this.retireBoundPrep(binding):binding.descriptor.kind==="prep-retired-cleanup"?await this.advanceBoundPrepCleanup(binding):binding.descriptor.kind==="dead-slot"?await this.retireBoundSlot(binding):binding.descriptor.kind==="lone-withdrawal"?await this.retireBoundLoneWithdrawal(binding):await this.advanceBoundSlotCleanup(binding);
+    const result:PrepTransitionResult=binding.descriptor.kind==="dead-prep"?await this.retireBoundPrep(binding):binding.descriptor.kind==="prep-retired-cleanup"?await this.advanceBoundPrepCleanup(binding):binding.descriptor.kind==="dead-slot"?await this.retireBoundSlot(binding):binding.descriptor.kind==="lone-withdrawal"?await this.retireBoundLoneWithdrawal(binding):binding.descriptor.kind==="withdrawal-cleanup"?await this.advanceBoundWithdrawalCleanup(binding):await this.advanceBoundSlotCleanup(binding);
     if(result==="progress"&&!generation.protectedTransitionCompleted){await this.observeActiveK1OperationFenceBoundary("k1-operation-fence-only-target-root-synced");generation.protectedTransitionCompleted=true;}
     else if(result==="busy")this.prepHousekeeperRuntime.observeBoundary?.(`${prefix}-transition-refused`);
     return result;
@@ -1387,9 +1394,13 @@ export class FsAuthorityLedger implements AuthorityLedger {
     return descriptor.disposition==="published"&&processLiveness(descriptor.pid)==="dead";
   }
 
-  private mayRetireLoneWithdrawal(binding:PrepAuthorityBinding):boolean{
+  // The D1(a) dead-owner creator-withdrawal chain: the lone-marker retirement, the withdrawn
+  // slot's cleanup lifecycle, and the withdrawal terminal's ack lifecycle and final drains — one
+  // granted family, any-contender, dead-PID-gated at every layer.
+  private mayProgressWithdrawalChain(binding:PrepAuthorityBinding):boolean{
     const descriptor=binding.descriptor;
-    return descriptor.kind==="lone-withdrawal"&&processLiveness(descriptor.pid)==="dead";
+    if(descriptor.kind==="lone-withdrawal"||descriptor.kind==="withdrawal-cleanup")return processLiveness(descriptor.pid)==="dead";
+    return descriptor.kind==="slot-retired-cleanup"&&descriptor.disposition==="withdrawn"&&processLiveness(descriptor.pid)==="dead";
   }
 
   private async hasK1WriterResidue():Promise<boolean>{
@@ -1571,19 +1582,20 @@ export class FsAuthorityLedger implements AuthorityLedger {
   }
 
   private boundSlotCleanup(binding:PrepAuthorityBinding):Readonly<{ack:CoordinationAck;bytes:Buffer;stageName:string;artifact:HybridOwnedArtifact}>{
-    const artifact=this.boundSlotArtifact(binding,true),parsed=artifact.parsed;if(parsed.kind!=="admission-slot-retired"||parsed.disposition!=="abandoned"&&parsed.disposition!=="published")throw new LedgerCorruption("invalid slot cleanup binding");
+    const artifact=this.boundSlotArtifact(binding,true),parsed=artifact.parsed;if(parsed.kind!=="admission-slot-retired")throw new LedgerCorruption("invalid slot cleanup binding");
     // `abandoned` binds its own marker as the terminal; `published` binds the same-owner
-    // successor the descriptor named at derivation time, with bytes re-read from the bound
-    // snapshot — identical inputs reconstruct the exact acknowledgment a crashed own-act pass
-    // left behind, byte for byte, which is what lets a stage or ack resume rather than wedge.
+    // successor the descriptor named at derivation time; `withdrawn` (the D1(a) chain) binds the
+    // same-owner withdrawal or publication-aborted terminal the descriptor named — bytes re-read
+    // from the bound snapshot, so identical inputs reconstruct the exact acknowledgment a
+    // crashed pass left behind, byte for byte, which is what lets a stage or ack resume.
     let terminalArtifactName:string,terminalBytes:Buffer,recoveryAuthority:string;
     if(parsed.disposition==="abandoned"){terminalArtifactName=parsed.name;terminalBytes=artifact.ownerBytes;recoveryAuthority="dead-owner-or-exact-creator";}
     else{
       const successorName=binding.descriptor.kind==="slot-retired-cleanup"?binding.descriptor.successorName:null;
-      if(successorName===null)throw new LedgerCorruption("published slot cleanup lacks its successor binding");
+      if(successorName===null)throw new LedgerCorruption("slot cleanup lacks its terminal binding");
       const successorEntry=binding.snapshot.entries.find(value=>value.name===successorName),child=successorEntry===undefined?null:hybridOwnerChild(successorEntry);
-      if(child?.bytes===undefined)throw new LedgerCorruption("published slot cleanup successor has no exact owner bytes");
-      terminalArtifactName=successorName;terminalBytes=child.bytes;recoveryAuthority="active-owner-or-exact-lock-successor";
+      if(child?.bytes===undefined)throw new LedgerCorruption("slot cleanup terminal has no exact owner bytes");
+      terminalArtifactName=successorName;terminalBytes=child.bytes;recoveryAuthority=parsed.disposition==="published"?"active-owner-or-exact-lock-successor":"exact-withdrawal-marker";
     }
     const ack:CoordinationAck={disposition:parsed.disposition,kind:"admission-slot-retired",markerName:parsed.name,originalName:ADMISSION_SLOT_NAME,owner:artifact.owner,ownerBytesDigest:coordinationRawDigest(artifact.ownerBytes),ownerBytesLength:String(artifact.ownerBytes.length),ownerDigest:coordinationCanonicalDigest(artifact.owner),ownerIdentity:encodeCoordinationIdentityWire(artifact.ownerIdentity),purpose:"slot-retired",recoveryAuthority,slotIdentity:encodeCoordinationIdentityWire(artifact.entry.identity),terminalArtifactDigest:coordinationRawDigest(terminalBytes),terminalArtifactName,v:COORDINATION_ACK_VERSION},bytes=coordinationCanonicalBytes(ack),stageName=`.authority-ledger-coordination-cleanup-stage-s-${coordinationRawDigest(bytes).slice(7)}.tmp`;
     return {ack,bytes,stageName,artifact};
@@ -1606,7 +1618,12 @@ export class FsAuthorityLedger implements AuthorityLedger {
       // coordination-cleanup marker-remove/-root-sync twins the own-act pass fires — a recorded
       // asymmetry, not resolved here; only the pre-admission-housekeeping pair is in scope.
       this.fault("after-pre-admission-housekeeping-marker-remove");
-      await this.syncDirectory(this.root);this.prepHousekeeperRuntime.observeBoundary?.("slot-only-cleanup-marker-root-synced");this.fault("after-pre-admission-housekeeping-marker-root-sync");return "progress";
+      await this.syncDirectory(this.root);this.prepHousekeeperRuntime.observeBoundary?.("slot-only-cleanup-marker-root-synced");this.fault("after-pre-admission-housekeeping-marker-root-sync");
+      // The retirement family's terminal cleanup signal, for the withdrawn chain: the ack is
+      // durable and the retired slot marker's removal is root-synced — the same placement the
+      // own-act pass gives it, before the ack itself drains.
+      if(cleanup.ack.disposition==="withdrawn")this.fault("after-admission-slot-retire-cleanup-root-sync");
+      return "progress";
     }
     if(lifecycle!==cleanup.stageName||parsed?.kind!=="coordination-stage"||parsed.purpose!=="slot-retired")return "busy";const current=entry.bytes;
     if(current.equals(cleanup.bytes)){
@@ -1616,6 +1633,179 @@ export class FsAuthorityLedger implements AuthorityLedger {
     if(current.length>=cleanup.bytes.length||!cleanup.bytes.subarray(0,current.length).equals(current))return "busy";let handle:FileHandle|undefined;
     try{handle=await open(stagePath,"r+");const opened=fileIdentity(await handle.stat({bigint:true})),named=fileIdentity(await lstat(stagePath,{bigint:true}));if(!sameFileIdentity(entry.identity,opened)||!sameFileIdentity(opened,named)||opened.nlink!==1n)throw new LedgerCorruption("slot cleanup stage identity changed before append");const observed=await handle.readFile();if(!observed.equals(current)){if(observed.length>current.length&&observed.length<=cleanup.bytes.length&&cleanup.bytes.subarray(0,observed.length).equals(observed))return "reclassify";throw new LedgerCorruption("slot cleanup stage bytes changed before append");}if(current.length===0)await this.writeAll(handle,cleanup.bytes.subarray(0,1),0);else{await this.writeAll(handle,cleanup.bytes.subarray(current.length),current.length);await handle.sync();}const finalIdentity=fileIdentity(await handle.stat({bigint:true})),finalNamed=fileIdentity(await lstat(stagePath,{bigint:true}));if(!sameFileIdentity(entry.identity,finalIdentity)||!sameFileIdentity(finalIdentity,finalNamed))throw new LedgerCorruption("slot cleanup stage identity changed during append");}catch(error){if(error instanceof LedgerCorruption)throw error;if(hasCode(error,"ENOENT")||isSnapshotSharingError(error))return "reclassify";throw error;}finally{if(handle)await handle.close();}
     this.prepHousekeeperRuntime.observeBoundary?.(current.length===0?"slot-only-cleanup-stage-prefix":"slot-only-cleanup-stage-complete");return "progress";
+  }
+
+  // The creator-withdrawal ack lifecycle (chain steps 4-7) and the aborted-terminal final drain,
+  // dead-owner only (the D1(a) route). Reconstruction mirrors validateHybridCleanupStage's
+  // expected record byte for byte, so a crashed creator's own partial stage or durable ack
+  // resumes rather than wedging.
+  private boundWithdrawalCleanup(binding:PrepAuthorityBinding):Readonly<{ack:CoordinationAck;bytes:Buffer;stageName:string;finalName:string;terminal:HybridOwnedArtifact;slotAckName:string}>{
+    const descriptor=binding.descriptor;if(descriptor.kind!=="withdrawal-cleanup"||descriptor.slotAckName===null)throw new LedgerCorruption("invalid withdrawal cleanup binding");
+    const terminalEntry=binding.snapshot.entries.find(value=>value.name===descriptor.targetName),parsedMarker=parseK1Name(descriptor.targetName);
+    if(terminalEntry===undefined||parsedMarker?.kind!=="creator-withdrawal")throw new LedgerCorruption("withdrawal cleanup binding lost its exact terminal");
+    const owner:CoordinationOwner={host:hostname(),nonce:parsedMarker.nonce,pid:parsedMarker.pid,v:1};
+    const terminal=this.classifyHybridNamedOwnerDirectory(parsedMarker,terminalEntry,owner,parsedMarker.state);
+    const slotAckEntry=binding.snapshot.entries.find(value=>value.name===descriptor.slotAckName);
+    if(slotAckEntry?.kind!=="file"||slotAckEntry.bytes===undefined)throw new LedgerCorruption("withdrawal cleanup binding lost its slot acknowledgment");
+    let slotAck:CoordinationAck;try{slotAck=parseCoordinationAckBytes(slotAckEntry.bytes);}catch{throw new LedgerCorruption("invalid bound slot acknowledgment");}
+    if(slotAck.purpose!=="slot-retired"||slotAck.disposition!=="withdrawn")throw new LedgerCorruption("withdrawal cleanup slot acknowledgment purpose mismatch");
+    // Assert locally what the classifier requires of the referenced final slot ack, rather than
+    // borrowing the guarantee from the closed-graph branch: the ack's terminal is THIS marker,
+    // same-owner, byte-digest-exact.
+    if(String(slotAck.terminalArtifactName)!==parsedMarker.name||!sameCoordinationOwner(slotAck.owner,owner)||String(slotAck.terminalArtifactDigest)!==coordinationRawDigest(terminal.ownerBytes))throw new LedgerCorruption("withdrawal cleanup slot acknowledgment binding mismatch");
+    const ack:CoordinationAck={directoryIdentity:encodeCoordinationIdentityWire(terminal.entry.identity),kind:"creator-withdrawal",markerName:parsedMarker.name,originalName:buildPublicationName(owner,parsedMarker.ticket),owner,ownerBytesDigest:coordinationRawDigest(terminal.ownerBytes),ownerBytesLength:String(terminal.ownerBytes.length),ownerDigest:coordinationCanonicalDigest(owner),ownerIdentity:parsedMarker.state==="empty"?null:encodeCoordinationIdentityWire(terminal.ownerIdentity),purpose:"creator-withdrawal",recoveryAuthority:"exact-slot-retirement-ack",slotRetirementAckDigest:coordinationCanonicalDigest(slotAck),slotRetirementAckName:descriptor.slotAckName,state:parsedMarker.state,v:COORDINATION_ACK_VERSION};
+    const bytes=coordinationCanonicalBytes(ack),digest=coordinationRawDigest(bytes).slice(7);
+    return {ack,bytes,stageName:`.authority-ledger-coordination-cleanup-stage-w-${digest}.tmp`,finalName:`.authority-ledger-coordination-cleanup-${digest}.ack`,terminal,slotAckName:descriptor.slotAckName};
+  }
+
+  private async advanceBoundWithdrawalCleanup(binding:PrepAuthorityBinding):Promise<"busy"|"progress"|"reclassify"|"refuse">{
+    const descriptor=binding.descriptor;if(descriptor.kind!=="withdrawal-cleanup")return "busy";
+    const lifecycle=descriptor.lifecycleName;
+    if(descriptor.terminalKind==="aborted"){
+      // The aborted-terminal final drain: the terminal itself belongs to the legacy retirement
+      // namespace and drains through the legacy machinery once the chain's K1 evidence is gone;
+      // the chain's last own act is removing the bound slot acknowledgment, and the withdrawal
+      // family's terminal cleanup signal fires on that removal's root sync (the signed clause-3
+      // placement, amended for this form in the spec).
+      if(descriptor.slotAckName===null||lifecycle!==null)return "busy";
+      const entry=binding.snapshot.entries.find(value=>value.name===descriptor.slotAckName);
+      if(entry?.kind!=="file"||entry.bytes===undefined||entry.identity.nlink!==1n)return "busy";
+      if(await this.prepCleanupNameExists(ADMISSION_SLOT_NAME))return "reclassify";
+      if(!await this.revalidatePrepCleanupFile(descriptor.slotAckName,entry,entry.bytes))return "reclassify";
+      try{await unlink(this.absolute(descriptor.slotAckName));}catch(error){if(hasCode(error,"ENOENT")||hasCode(error,"EEXIST")||hasCode(error,"ENOTEMPTY")||isSnapshotSharingError(error))return "reclassify";throw error;}
+      this.fault("after-coordination-cleanup-ack-remove");
+      await this.syncDirectory(this.root);
+      this.prepHousekeeperRuntime.observeBoundary?.("withdrawal-only-chain-final-root-synced");
+      this.fault("after-coordination-cleanup-final-root-sync");
+      this.fault("after-creator-withdrawal-cleanup-root-sync");
+      return "progress";
+    }
+    const terminalPresent=binding.snapshot.entries.some(value=>value.name===descriptor.targetName);
+    if(!terminalPresent){
+      // State 8: only the orphan creator-withdrawal ack remains — chain step 7.
+      if(lifecycle===null||descriptor.slotAckName!==null)return "busy";
+      const parsed=parseK1Name(lifecycle),entry=binding.snapshot.entries.find(value=>value.name===lifecycle);
+      if(parsed?.kind!=="coordination-ack"||entry?.kind!=="file"||entry.bytes===undefined||entry.identity.nlink!==1n)return "busy";
+      let ack:CoordinationAck;try{ack=parseCoordinationAckBytes(entry.bytes);}catch{throw new LedgerCorruption("invalid orphan withdrawal cleanup acknowledgment");}
+      if(ack.purpose!=="creator-withdrawal"||ack.markerName!==descriptor.targetName||coordinationRawDigest(entry.bytes).slice(7)!==parsed.digest)return "busy";
+      if(await this.prepCleanupNameExists(descriptor.targetName)||await this.prepCleanupNameExists(ADMISSION_SLOT_NAME))return "reclassify";
+      if(!await this.revalidatePrepCleanupFile(lifecycle,entry,entry.bytes))return "reclassify";
+      try{await unlink(this.absolute(lifecycle));}catch(error){if(hasCode(error,"ENOENT")||hasCode(error,"EEXIST")||hasCode(error,"ENOTEMPTY")||isSnapshotSharingError(error))return "reclassify";throw error;}
+      this.fault("after-coordination-cleanup-ack-remove");
+      await this.syncDirectory(this.root);
+      this.prepHousekeeperRuntime.observeBoundary?.("withdrawal-only-chain-ack-drained");
+      this.fault("after-coordination-cleanup-final-root-sync");
+      return "progress";
+    }
+    if(descriptor.slotAckName!==null&&lifecycle===null){
+      // Chain step 4: create the creator-withdrawal cleanup stage while the terminal and the
+      // bound slot acknowledgment both remain.
+      const cleanup=this.boundWithdrawalCleanup(binding),stagePath=this.absolute(cleanup.stageName);
+      if(await this.prepCleanupNameExists(ADMISSION_SLOT_NAME)||await this.prepCleanupNameExists(cleanup.finalName))return "reclassify";
+      let handle:FileHandle|undefined,createdIdentity:FileIdentity|undefined;
+      try{handle=await open(stagePath,"wx",0o600);const created=await handle.stat({bigint:true});if(!created.isFile()||created.isSymbolicLink()||created.nlink!==1n)throw new LedgerCorruption("invalid new withdrawal cleanup stage");createdIdentity=fileIdentity(created);}
+      catch(error){if(hasCode(error,"EEXIST")||isSnapshotSharingError(error))return "reclassify";throw error;}
+      finally{if(handle)await handle.close();}
+      const terminalRemains=binding.snapshot.entries.some(value=>value.name===descriptor.targetName)&&await this.prepCleanupNameExists(descriptor.targetName);
+      const slotAckRemains=await this.prepCleanupNameExists(cleanup.slotAckName);
+      if(!terminalRemains||!slotAckRemains){if(createdIdentity!==undefined)await this.removeExactCreatedSlotCleanupStage(stagePath,createdIdentity);return "reclassify";}
+      this.prepHousekeeperRuntime.observeBoundary?.("withdrawal-only-chain-stage-zero");
+      this.fault("after-coordination-cleanup-stage-create");
+      return "progress";
+    }
+    if(lifecycle===null)return "busy";
+    const entry=binding.snapshot.entries.find(value=>value.name===lifecycle),parsed=parseK1Name(lifecycle);
+    if(entry?.kind!=="file"||entry.bytes===undefined||entry.identity.nlink!==1n)return "busy";
+    if(parsed?.kind==="coordination-ack"){
+      if(descriptor.slotAckName!==null){
+        // Chain step 5: the creator-withdrawal ack is durable; remove the bound slot
+        // acknowledgment while the terminal and withdrawal ack preserve the proof chain.
+        const cleanup=this.boundWithdrawalCleanup(binding);
+        if(lifecycle!==cleanup.finalName||!entry.bytes.equals(cleanup.bytes))return "busy";
+        const slotAckEntry=binding.snapshot.entries.find(value=>value.name===cleanup.slotAckName);
+        if(slotAckEntry?.kind!=="file"||slotAckEntry.bytes===undefined)return "busy";
+        if(await this.prepCleanupNameExists(ADMISSION_SLOT_NAME))return "reclassify";
+        if(!await this.revalidatePrepCleanupFile(cleanup.slotAckName,slotAckEntry,slotAckEntry.bytes)||!await this.revalidatePrepCleanupFile(lifecycle,entry,cleanup.bytes))return "reclassify";
+        try{await unlink(this.absolute(cleanup.slotAckName));}catch(error){if(hasCode(error,"ENOENT")||hasCode(error,"EEXIST")||hasCode(error,"ENOTEMPTY")||isSnapshotSharingError(error))return "reclassify";throw error;}
+        this.fault("after-coordination-cleanup-ack-remove");
+        await this.syncDirectory(this.root);
+        this.prepHousekeeperRuntime.observeBoundary?.("withdrawal-only-chain-slot-ack-drained");
+        this.fault("after-coordination-cleanup-final-root-sync");
+        return "progress";
+      }
+      // Chain step 6: remove the withdrawal terminal while its exact orphan withdrawal ack
+      // remains; the withdrawal family's terminal cleanup signal fires on this removal's root
+      // sync (signed clause 3).
+      const cleanupSolo=(()=>{try{return this.boundWithdrawalCleanupWithoutSlotAck(binding,lifecycle,entry);}catch{return null;}})();
+      if(cleanupSolo===null)return "busy";
+      if(await this.prepCleanupNameExists(ADMISSION_SLOT_NAME))return "reclassify";
+      if(!await this.revalidatePrepCleanupFile(lifecycle,entry,entry.bytes))return "reclassify";
+      // Terminal on-disk identity recheck before the two-syscall removal, mirroring the slot
+      // twin's marker revalidation.
+      try{const terminalStat=await lstat(this.absolute(descriptor.targetName),{bigint:true});if(!sameFileIdentity(cleanupSolo.identity,fileIdentity(terminalStat)))return "reclassify";}
+      catch(error){if(hasCode(error,"ENOENT")||isSnapshotSharingError(error))return "reclassify";throw error;}
+      const markerPath=this.absolute(descriptor.targetName),children=cleanupSolo.children;
+      if(children!==0){
+        try{await unlink(path.join(markerPath,"owner.json"));}catch(error){if(hasCode(error,"ENOENT")||hasCode(error,"EEXIST")||hasCode(error,"ENOTEMPTY")||isSnapshotSharingError(error))return "reclassify";throw error;}
+        this.fault("after-coordination-cleanup-marker-owner-remove");
+      }
+      try{await rmdir(markerPath);}catch(error){if(hasCode(error,"ENOENT")||hasCode(error,"EEXIST")||hasCode(error,"ENOTEMPTY")||isSnapshotSharingError(error))return "reclassify";throw error;}
+      this.fault("after-pre-admission-housekeeping-marker-remove");
+      await this.syncDirectory(this.root);
+      this.prepHousekeeperRuntime.observeBoundary?.("withdrawal-only-chain-terminal-root-synced");
+      this.fault("after-pre-admission-housekeeping-marker-root-sync");
+      this.fault("after-creator-withdrawal-cleanup-root-sync");
+      return "progress";
+    }
+    if(parsed?.kind!=="coordination-stage"||parsed.purpose!=="creator-withdrawal"||descriptor.slotAckName===null)return "busy";
+    // Chain step 4 in flight: the stage fills to the exact canonical bytes, then renames to the
+    // durable acknowledgment — mirroring the slot lifecycle's bounded construction.
+    const cleanup=this.boundWithdrawalCleanup(binding);
+    if(lifecycle!==cleanup.stageName)return "busy";
+    const current=entry.bytes;
+    if(current.equals(cleanup.bytes)){
+      const finalPath=this.absolute(cleanup.finalName);
+      if(await this.prepCleanupNameExists(cleanup.finalName)||await this.prepCleanupNameExists(ADMISSION_SLOT_NAME))return "reclassify";
+      if(!await this.revalidatePrepCleanupFile(lifecycle,entry,cleanup.bytes))return "reclassify";
+      try{await rename(this.absolute(lifecycle),finalPath);}catch(error){if(hasCode(error,"EEXIST")||hasCode(error,"ENOTEMPTY")||hasCode(error,"ENOENT")||isSnapshotSharingError(error))return "reclassify";throw error;}
+      let moved:{identity:FileIdentity;bytes:Buffer};
+      try{moved=await this.readExactPrepCleanupFile(finalPath,"renamed withdrawal cleanup acknowledgment");}catch(error){if(hasCode(error,"ENOENT")||isSnapshotSharingError(error))return "reclassify";throw error;}
+      if(!sameFileIdentity(entry.identity,moved.identity)||!moved.bytes.equals(cleanup.bytes))throw new LedgerCorruption("withdrawal cleanup acknowledgment changed during rename");
+      await this.syncDirectory(this.root);
+      this.prepHousekeeperRuntime.observeBoundary?.("withdrawal-only-chain-ack-root-synced");
+      return "progress";
+    }
+    if(current.length>=cleanup.bytes.length||!cleanup.bytes.subarray(0,current.length).equals(current))return "busy";
+    let handle:FileHandle|undefined;
+    try{
+      handle=await open(this.absolute(lifecycle),"r+");
+      const opened=fileIdentity(await handle.stat({bigint:true})),named=fileIdentity(await lstat(this.absolute(lifecycle),{bigint:true}));
+      if(!sameFileIdentity(entry.identity,opened)||!sameFileIdentity(opened,named)||opened.nlink!==1n)throw new LedgerCorruption("withdrawal cleanup stage identity changed before append");
+      const observed=await handle.readFile();
+      if(!observed.equals(current)){if(observed.length>current.length&&observed.length<=cleanup.bytes.length&&cleanup.bytes.subarray(0,observed.length).equals(observed))return "reclassify";throw new LedgerCorruption("withdrawal cleanup stage bytes changed before append");}
+      if(current.length===0)await this.writeAll(handle,cleanup.bytes.subarray(0,1),0);
+      else{await this.writeAll(handle,cleanup.bytes.subarray(current.length),current.length);await handle.sync();}
+      const finalIdentity=fileIdentity(await handle.stat({bigint:true})),finalNamed=fileIdentity(await lstat(this.absolute(lifecycle),{bigint:true}));
+      if(!sameFileIdentity(entry.identity,finalIdentity)||!sameFileIdentity(finalIdentity,finalNamed))throw new LedgerCorruption("withdrawal cleanup stage identity changed during append");
+    }catch(error){if(error instanceof LedgerCorruption)throw error;if(hasCode(error,"ENOENT")||isSnapshotSharingError(error))return "reclassify";throw error;}
+    finally{if(handle)await handle.close();}
+    this.prepHousekeeperRuntime.observeBoundary?.(current.length===0?"withdrawal-only-chain-stage-prefix":"withdrawal-only-chain-stage-complete");
+    return "progress";
+  }
+
+  // Step-6 validation without the (already removed) slot acknowledgment: the orphan withdrawal
+  // ack must bind the exact terminal by name and raw-byte digest.
+  private boundWithdrawalCleanupWithoutSlotAck(binding:PrepAuthorityBinding,ackName:string,ackEntry:HybridEntrySnapshot):Readonly<{children:number;identity:FileIdentity}>{
+    const descriptor=binding.descriptor;if(descriptor.kind!=="withdrawal-cleanup")throw new LedgerCorruption("invalid withdrawal cleanup binding");
+    const parsedAck=parseK1Name(ackName);if(parsedAck?.kind!=="coordination-ack"||ackEntry.kind!=="file"||ackEntry.bytes===undefined)throw new LedgerCorruption("invalid withdrawal cleanup acknowledgment entry");
+    let ack:CoordinationAck;try{ack=parseCoordinationAckBytes(ackEntry.bytes);}catch{throw new LedgerCorruption("invalid withdrawal cleanup acknowledgment bytes");}
+    if(ack.purpose!=="creator-withdrawal"||ack.markerName!==descriptor.targetName||coordinationRawDigest(ackEntry.bytes).slice(7)!==parsedAck.digest)throw new LedgerCorruption("withdrawal cleanup acknowledgment binding mismatch");
+    const terminalEntry=binding.snapshot.entries.find(value=>value.name===descriptor.targetName),parsedMarker=parseK1Name(descriptor.targetName);
+    if(terminalEntry===undefined||parsedMarker?.kind!=="creator-withdrawal")throw new LedgerCorruption("withdrawal cleanup terminal absent");
+    const owner:CoordinationOwner={host:hostname(),nonce:parsedMarker.nonce,pid:parsedMarker.pid,v:1};
+    const terminal=this.classifyHybridNamedOwnerDirectory(parsedMarker,terminalEntry,owner,parsedMarker.state);
+    if(String(ack.ownerBytesDigest)!==coordinationRawDigest(terminal.ownerBytes))throw new LedgerCorruption("withdrawal cleanup terminal bytes mismatch");
+    return {children:(terminalEntry.children??[]).length,identity:terminalEntry.identity};
   }
 
   private async revalidateBoundSlotArtifact(artifact:HybridOwnedArtifact):Promise<boolean>{
@@ -1645,7 +1835,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
     if(relation!=="unchanged"||decision!=="busy")return "busy";
     const descriptor=describeStablePrepAuthority(closedSnapshot,decision);
     if(descriptor===null||!samePrepAuthorityDescriptor(binding.descriptor,descriptor))return "busy";
-    if((descriptor.kind==="dead-prep"||descriptor.kind==="dead-slot"||descriptor.kind==="slot-retired-cleanup"||descriptor.kind==="lone-withdrawal")&&processLiveness(descriptor.pid)!=="dead")return "busy";
+    if((descriptor.kind==="dead-prep"||descriptor.kind==="dead-slot"||descriptor.kind==="slot-retired-cleanup"||descriptor.kind==="lone-withdrawal"||descriptor.kind==="withdrawal-cleanup")&&processLiveness(descriptor.pid)!=="dead")return "busy";
     return "exact";
   }
 
@@ -2020,8 +2210,8 @@ export class FsAuthorityLedger implements AuthorityLedger {
   // graph on a used root into corruption, which is what reverted the first drainage build.
   //
   // A foreign `recovery-pending` marker is tolerated exactly when the SAME-OWNER ACTIVE LOCK is
-  // the successor. Spec :567 grants retirement-marker coexistence "only for the next active
-  // owner", and :837-838 makes that owner the sole marker scanner, servicing every
+  // the successor. Spec :571 grants retirement-marker coexistence "only for the next active
+  // owner", and :853-854 makes that owner the sole marker scanner, servicing every
   // recovery-pending marker before every callback — so an unserviced foreign marker beside the
   // live lock is the specified mid-acquisition state (inspectActiveLock's own dead-lock reclaim
   // mints one in the same iteration that publishes). With no active lock in the graph there is no
@@ -3053,6 +3243,10 @@ function deriveStablePrepHousekeepingRoute(snapshot:HybridRootSnapshot,decision:
     if(processLiveness(descriptor.pid)!=="dead")return {kind:"no-authority"};
     const retirementAuthority=Object.freeze({}) as LoneWithdrawalRetirementAuthority;loneWithdrawalRetirementAuthorityBindings.set(retirementAuthority,{snapshot,descriptor});return {kind:"lone-withdrawal",retirementAuthority};
   }
+  if(descriptor?.kind==="withdrawal-cleanup"){
+    if(processLiveness(descriptor.pid)!=="dead")return {kind:"no-authority"};
+    const cleanupAuthority=Object.freeze({}) as WithdrawalCleanupAuthority;withdrawalCleanupAuthorityBindings.set(cleanupAuthority,{snapshot,descriptor});return {kind:"withdrawal-cleanup",cleanupAuthority};
+  }
   return parsed.some(value=>value.kind==="admission-slot"||value.kind==="creator-withdrawal")?{kind:"no-authority"}:{kind:"silent"};
 }
 function describeStablePrepAuthority(snapshot:HybridRootSnapshot,decision:HybridGuardDecision):PrepAuthorityDescriptor|null{
@@ -3096,6 +3290,24 @@ function describeStablePrepAuthority(snapshot:HybridRootSnapshot,decision:Hybrid
     });
     if(inert)return {kind:"lone-withdrawal",targetName:loneWithdrawal.name,pid:loneWithdrawal.pid};
   }
+  const withdrawnSlot=parsed.find((value):value is Extract<ParsedK1Name,{kind:"admission-slot-retired"}>=>value.kind==="admission-slot-retired"&&value.disposition==="withdrawn");
+  if(withdrawnSlot!==undefined){
+    // States 1-3 of the creator-withdrawal crash matrix (the D1(a) dead-owner route): the
+    // withdrawn slot's own cleanup lifecycle; its terminal is the same-owner withdrawal marker
+    // or publication-aborted marker. The closed graph (decision "busy") already validated the
+    // exact terminal binding; the descriptor only names the pieces.
+    const lifecycle=parsed.find(value=>value.kind==="coordination-stage"&&value.purpose==="slot-retired"||value.kind==="coordination-ack"&&prepCleanupAck(snapshot,value)?.purpose==="slot-retired");
+    const terminalMarker=parsed.find((value):value is Extract<ParsedK1Name,{kind:"creator-withdrawal"}>=>value.kind==="creator-withdrawal");
+    // Measured limit (2026-08-06): an EMPTY withdrawal terminal has no owner bytes for the
+    // withdrawn slot-ack to bind, and minting the ack over a zero-length digest writes a stage
+    // the classifier then refuses — permanent corruption from the housekeeper's own hand. The
+    // descriptor is withheld instead, preserving the bounded-busy shape; the K1 creator-side
+    // slice resolves the form (spec, beside the crash matrix).
+    if(terminalMarker!==undefined&&terminalMarker.state==="empty")return null;
+    const terminalName=terminalMarker?.name??withdrawnSuccessorNameFromSnapshot(snapshot,withdrawnSlot);
+    if(terminalName!==null)return {kind:"slot-retired-cleanup",targetName:withdrawnSlot.name,lifecycleName:lifecycle?.name??null,orphan:false,pid:withdrawnSlot.pid,disposition:"withdrawn",successorName:terminalName};
+    return null;
+  }
   const slotMarker=parsed.find((value):value is Extract<ParsedK1Name,{kind:"admission-slot-retired"}>=>value.kind==="admission-slot-retired"&&value.disposition==="abandoned");
   if(slotMarker!==undefined){const lifecycle=parsed.find(value=>value.kind==="coordination-stage"&&value.purpose==="slot-retired"||value.kind==="coordination-ack"&&prepCleanupAck(snapshot,value)?.purpose==="slot-retired");if(parsed.every(value=>value===slotMarker||value===lifecycle)&&snapshot.entries.length===(lifecycle===undefined?1:2))return {kind:"slot-retired-cleanup",targetName:slotMarker.name,lifecycleName:lifecycle?.name??null,orphan:false,pid:slotMarker.pid,disposition:"abandoned",successorName:null};}
   const publishedMarker=parsed.find((value):value is Extract<ParsedK1Name,{kind:"admission-slot-retired"}>=>value.kind==="admission-slot-retired"&&value.disposition==="published");
@@ -3124,6 +3336,32 @@ function describeStablePrepAuthority(snapshot:HybridRootSnapshot,decision:Hybrid
       if(successorName!==null)return {kind:"slot-retired-cleanup",targetName:markerName,lifecycleName:value.name,orphan:true,pid:ack.owner.pid,disposition:"published",successorName};
     }
   }
+  // States 4-8 of the creator-withdrawal crash matrix plus the aborted-terminal final drain
+  // (the D1(a) dead-owner route). The withdrawn slot is gone; what remains is the terminal, the
+  // final slot acknowledgment, and/or the creator-withdrawal ack lifecycle.
+  {
+    const wMarker=parsed.find((value):value is Extract<ParsedK1Name,{kind:"creator-withdrawal"}>=>value.kind==="creator-withdrawal");
+    const wLifecycle=parsed.find(value=>value.kind==="coordination-stage"&&value.purpose==="creator-withdrawal"||value.kind==="coordination-ack"&&prepCleanupAck(snapshot,value)?.purpose==="creator-withdrawal");
+    const slotFinal=parsed.find((value):value is Extract<ParsedK1Name,{kind:"coordination-ack"}>=>{if(value.kind!=="coordination-ack")return false;const ack=prepCleanupAck(snapshot,value);return ack?.purpose==="slot-retired"&&ack.disposition==="withdrawn";});
+    if(wMarker!==undefined&&(slotFinal!==undefined||wLifecycle!==undefined))return {kind:"withdrawal-cleanup",targetName:wMarker.name,terminalKind:"withdrawal",pid:wMarker.pid,slotAckName:slotFinal?.name??null,lifecycleName:wLifecycle?.name??null};
+    if(wMarker===undefined&&slotFinal!==undefined){
+      const ack=prepCleanupAck(snapshot,slotFinal)!;
+      const terminalName=String(ack.terminalArtifactName),match=RETIRED_LOCK.exec(terminalName);
+      if(match!==null&&match[3]==="publication-aborted"&&snapshot.names.includes(terminalName))return {kind:"withdrawal-cleanup",targetName:terminalName,terminalKind:"aborted",pid:ack.owner.pid,slotAckName:slotFinal.name,lifecycleName:wLifecycle?.name??null};
+      return null;
+    }
+    if(wMarker===undefined&&wLifecycle!==undefined&&wLifecycle.kind==="coordination-ack"){
+      const ack=prepCleanupAck(snapshot,wLifecycle);
+      if(ack?.purpose==="creator-withdrawal"){
+        const parsedMarker=parseK1Name(String(ack.markerName));
+        if(parsedMarker?.kind==="creator-withdrawal"&&!snapshot.names.includes(parsedMarker.name))return {kind:"withdrawal-cleanup",targetName:parsedMarker.name,terminalKind:"withdrawal",pid:parsedMarker.pid,slotAckName:null,lifecycleName:wLifecycle.name};
+      }
+    }
+  }
+  return null;
+}
+function withdrawnSuccessorNameFromSnapshot(snapshot:HybridRootSnapshot,owner:Readonly<{pid:number;nonce:string}>):string|null{
+  for(const name of snapshot.names){const match=RETIRED_LOCK.exec(name);if(match&&match[3]==="publication-aborted"&&Number(match[1])===owner.pid&&match[2]===owner.nonce)return name;}
   return null;
 }
 function publishedSuccessorNameFromSnapshot(snapshot:HybridRootSnapshot,owner:Readonly<{pid:number;nonce:string}>):string|null{
@@ -3139,6 +3377,7 @@ function samePrepAuthorityDescriptor(left:PrepAuthorityDescriptor,right:PrepAuth
   if(left.kind!==right.kind||left.targetName!==right.targetName)return false;
   if(left.kind==="dead-prep"&&right.kind==="dead-prep")return left.pid===right.pid;
   if(left.kind==="lone-withdrawal"&&right.kind==="lone-withdrawal")return left.pid===right.pid;
+  if(left.kind==="withdrawal-cleanup"&&right.kind==="withdrawal-cleanup")return left.pid===right.pid&&left.terminalKind===right.terminalKind&&left.slotAckName===right.slotAckName&&left.lifecycleName===right.lifecycleName;
   if(left.kind==="dead-slot"&&right.kind==="dead-slot")return left.pid===right.pid&&left.disposition===right.disposition;
   if(left.kind==="prep-retired-cleanup"&&right.kind==="prep-retired-cleanup")return left.lifecycleName===right.lifecycleName&&left.orphan===right.orphan;
   return left.kind==="slot-retired-cleanup"&&right.kind==="slot-retired-cleanup"&&left.lifecycleName===right.lifecycleName&&left.orphan===right.orphan&&left.pid===right.pid&&left.disposition===right.disposition&&left.successorName===right.successorName;

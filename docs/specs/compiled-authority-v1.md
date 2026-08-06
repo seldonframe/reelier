@@ -671,20 +671,21 @@ sync barriers and before callback; the pre-admission housekeeper performs at mos
 closed generation and never enters callback. Withdrawal markers are never cleaned before their
 matching slot retirement.
 
-**Open discrepancy — two committed pins disagree about the settled withdrawal graph.** Measured
-2026-08-04 at `7254fd2`. For a byte-identical root — a `withdrawn` slot-retirement marker, a
-same-owner `publication-aborted` terminal, and one bound `slot-retired`/`withdrawn` acknowledgment,
-the owner PID alive — `test/authority/ledger.test.ts:1022` requires `busy` with the root
-byte-identical and zero mutation, and passes today; `test/authority/ledger.test.ts:1746` requires
-`advanced` with every artifact removed and one callback, and fails today. Both reproduce. This text
-supports both readings: the K1 epoch guard calls that graph valid in-flight residue that returns
-bounded `busy`, while the chain below reads as an obligation to finish. **Resolve deliberately —
-satisfying either pin breaks the other, so this is not a defect to fix.** It decides whether
-`after-creator-withdrawal-cleanup-root-sync` is reachable at all.
+**Resolved 2026-08-05 (D1, owner grant (a)) — the two committed pins that disagreed about the
+settled withdrawal graph.** Measured 2026-08-04 at `7254fd2`: for a byte-identical root — a
+`withdrawn` slot-retirement marker, a same-owner `publication-aborted` terminal, and one bound
+`slot-retired`/`withdrawn` acknowledgment — `test/authority/ledger.test.ts:1022` (owner PID
+alive) required `busy` with zero mutation while `:1746` required `advanced` with every artifact
+removed. The owner decided preservation wins: live coordination residue is never touched by a
+foreign contender, and the chain completes only through the creator's own acquisition or a
+DEAD-owner housekeeping route mirroring the published-slot drainage. `:1022` stands verbatim;
+`:1746` was re-fixtured to a dead owner in the same commit that shipped the chain (Batch B),
+keeping every ordering assertion, and now passes — `after-creator-withdrawal-cleanup-root-sync`
+is reachable, emitted, and pinned on both the marker form and the aborted-terminal form.
 
-**Under-defined — the seal; PROPOSED from measurement 2026-08-05 (Batch B), awaiting owner
-sign-off — the six creator-withdrawal points stay unemitted until it is signed.** Each clause
-below is forced by a committed pin or a measurement; the derivation is
+**The seal — proposed from measurement and SIGNED 2026-08-05 (Batch B); the six
+creator-withdrawal points are emitted under it. This resolves the former "Under-defined — the
+seal" note.** Each clause below is forced by a committed pin or a measurement; the derivation is
 `docs/superpowers/plans/2026-08-05-withdrawal-chain-measured.md`.
 
 1. The seal is the durability-and-revalidation step between fence-held validation and the stage
@@ -706,6 +707,11 @@ below is forced by a committed pin or a measurement; the derivation is
 3. `after-creator-withdrawal-cleanup-root-sync` names the root sync after step 6 of the chain
    below — the withdrawal terminal's marker removal — mirroring the slot family's
    `after-admission-slot-retire-cleanup-root-sync`, ordered after it and before the callback.
+   (Amended at ship time, 2026-08-05: for the publication-aborted-terminal form, whose terminal
+   drains through the legacy machinery once the chain's K1 evidence is gone, the point fires on
+   the bound slot acknowledgment's removal root sync — the chain's last own act; the step-6
+   placement is the withdrawal-marker form's, and a residue recovered from AFTER the boundary
+   does not re-fire it.)
 4. Under a K1-active generation the withdrawal terminal is created FIRST and the fixed slot then
    retires `withdrawn` on its authority (the `slot-retired.withdrawn` rule above), so the crash
    matrix below gains one in-flight residue: `bare fixed slot + same-owner withdrawal terminal`,
@@ -726,12 +732,15 @@ below is forced by a committed pin or a measurement; the derivation is
    `publication-aborted` marker instead of being removed. Sub-complete dead external stages keep
    the current authorized removal; no pin constrains them (measured 2026-08-05).
 
-**Not self-contained — updated 2026-08-05.** Chain steps 1 to 3 require the fixed slot to retire
-as `withdrawn` through the `before/after-admission-slot-retire-*` points. Those are now emitted
-(the slot-route decision above is resolved; the fault-pin linter's only unemitted points are
-these six), but `ledger.test.ts:1746` still pins one slot-retirement point and one
-creator-withdrawal point in a single ordered assertion, so the six creator-withdrawal points land
-with the chain, not as an isolated emission slice.
+**Not self-contained — updated 2026-08-05, and SHIPPED the same day.** Chain steps 1 to 3
+require the fixed slot to retire as `withdrawn` through the `before/after-admission-slot-retire-*`
+points, and `ledger.test.ts:1746` pins one slot-retirement point and one creator-withdrawal
+point in a single ordered assertion — so the six creator-withdrawal points landed with the chain
+(Batch B): the creator's failure-path withdrawal, the lone-withdrawal retirement, the
+withdrawn-slot cleanup lifecycle, and the creator-withdrawal ack lifecycle, all dead-owner-gated
+on the housekeeping side per D1(a), with `:1746` re-fixtured to a dead owner in the same commit
+as granted. The fault-pin backlog is zero; the exported registry carries all 58 specified points
+(plus the 13 forbidden extras the D3(a) freeze deletes).
 
 The creator-withdrawal chain is exact and monotonic:
 
@@ -757,7 +766,14 @@ exact transition and then restarts full classification. In particular, `slot abs
 present + no ack` grants nothing and is preserved corruption while the owner lives; with final
 same-host dead-owner proof it is exactly the lone-withdrawal residue the "lone legacy withdrawal"
 rule above retires (shipped 2026-08-05, Batch B, both entry points, warm and fresh — pinned). Any
-replacement or cross-owner/cross-digest variant is preserved corruption regardless of liveness. An entirely empty coordination state reconstructs only a new
+replacement or cross-owner/cross-digest variant is preserved corruption regardless of liveness.
+Measured limit, recorded 2026-08-06: a withdrawn slot whose terminal is an EMPTY withdrawal
+marker is preserved bounded `busy` from both entry points — the withdrawn slot-ack binds the
+terminal's exact owner bytes and an empty terminal has none, so the dead-owner route withholds
+rather than minting an acknowledgment its own classifier refuses (the first build did exactly
+that, measured: permanent corruption plus a self-authored stage). The K1 creator-side slice
+resolves the form — an empty-terminal acknowledgment shape or a clause-2 narrowing — pinned
+meanwhile ("slot-withdrawal empty-terminal dead stays preserved bounded busy"). An entirely empty coordination state reconstructs only a new
 canonical owner for a new admission attempt; it never retroactively authenticates missing cleanup
 evidence.
 

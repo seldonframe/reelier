@@ -20,10 +20,10 @@ not re-verified here — treat as a hypothesis).
 | Quantity | Value | Status |
 |---|---|---|
 | Fault points declared in the spec taxonomy | **58** | measured |
-| Entries in exported `ledgerLockFaultPoints` | **70** (65 before Batch B slice B2a added five creator-withdrawal points; 61 before Batch A) | measured |
-| Entries in public `ledgerFaultPoints` | **137** (132 / 128 at the same earlier pins) | measured |
-| Fault-point literals emitted anywhere in `src/` | **83** | measured |
-| Declared in spec, not emitted (the backlog) | **1** — `after-creator-withdrawal-cleanup-root-sync`, the chain-cleanup slices' | measured — **but see the gating caveat below** |
+| Entries in exported `ledgerLockFaultPoints` | **71** (70 after B2a, 65 before Batch B, 61 before Batch A) | measured |
+| Entries in public `ledgerFaultPoints` | **138** (137 / 132 / 128 at the same earlier pins) | measured |
+| Fault-point literals emitted anywhere in `src/` | **84** | measured |
+| Declared in spec, not emitted (the backlog) | **0** — closed by Batch B slice B2c (the chain cleanup + the sixth point) | measured — **but see the gating caveat below** |
 | Exported but **not** in the spec taxonomy (to delete) | **13** | measured |
 
 ```bash
@@ -50,7 +50,7 @@ must come after this work, not before (D3: one break, after the withdrawal point
 
 | Quantity | Value | Status |
 |---|---|---|
-| Ledger suite | **566 pass / 61 fail** after Batch B slice B2a (the creator's failure-path withdrawal + the lone-withdrawal dead-owner retirement: 14 committed reds green by name, zero movers elsewhere, plus the 5-pin lone-withdrawal family). The 100-process flake was PASSING in the re-saved baseline, so under load it can surface as "newly failing" — re-run it in isolation per §3 before believing that | measured |
+| Ledger suite | **582 pass / 60 fail** after Batch B slice B2c (the dead-owner chain: `:1746` re-fixtured green by name, the 15-entry chain family, zero movers elsewhere; 566/61 after B2a), stable across three consecutive gate runs. The 100-process flake was PASSING in the re-saved baseline, so under load it can surface as "newly failing" — re-run it in isolation per §3 before believing that | measured |
 | Post-B1 ledger suite (the prior recorded gate) | 546 pass / 75 fail | superseded 2026-08-05 |
 | Pre-B1 ledger suite (the Batch A recorded gate) | 518 pass / 75 fail | superseded 2026-08-05 |
 | Post-warm-prep-fix ledger suite as previously recorded here | 516 pass / 75 fail — written mid-Batch-A and stale by 2 against the Batch A baseline `--save`; kept as the third instance of a number in this file diverging from its own command | superseded 2026-08-05 |

@@ -1743,7 +1743,7 @@ test("atomic admission incomplete-withdrawal evidence rejects mismatch links rep
   await t.test("reparse",async t2=>withRoot(async root=>{const owner={host:hostname(),nonce:"2".repeat(64),pid:process.pid,v:1 as const},target=path.join(root,"transactions","withdrawal-target"),marker=path.join(root,creatorWithdrawalName(owner,"empty")),sentinel=Buffer.from("withdrawal-reparse-sentinel");await mkdir(target,{recursive:true});await writeFile(path.join(target,"sentinel"),sentinel);try{await symlink(target,marker,process.platform==="win32"?"junction":"dir");}catch(error){if((error as {code?:string}).code==="EPERM"){t2.skip("reparse creation unavailable");return;}throw error;}assert.deepEqual(await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20}).observeClock(),{ok:false,reason:"corruption"});assert.deepEqual(await readFile(path.join(target,"sentinel")),sentinel);}));
 });
 
-test("atomic admission active owner cleans coordination once after every sync barrier",()=>withRoot(async root=>{const owner={host:hostname(),nonce:"3".repeat(64),pid:process.pid,v:1 as const},withdrawalName=retirementMarkerName(owner,"publication-aborted"),withdrawal=path.join(root,withdrawalName),slotName=admissionRetiredName(owner,"withdrawn"),slot=path.join(root,slotName);await mkdir(withdrawal);await writeFile(path.join(withdrawal,"owner.json"),publicationOwnerBytes(owner));await mkdir(slot);await writeFile(path.join(slot,"owner.json"),publicationOwnerBytes(owner));const slotAck=slotCoordinationAck(owner,slotName,slot,"withdrawn",withdrawalName,publicationOwnerBytes(owner));await writeFile(path.join(root,coordinationAckName(slotAck)),authorityCanonicalBytes(slotAck));const order:string[]=[];let slotSyncs=0,withdrawalSyncs=0,callbackEntries=0;const result=await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:200,faultInjector:(point:string)=>{if(point==="after-admission-slot-retire-cleanup-root-sync"){slotSyncs++;order.push("slot-sync");}if(point==="after-creator-withdrawal-cleanup-root-sync"){withdrawalSyncs++;order.push("withdrawal-sync");}if(point==="before-ledger-operation-callback"){callbackEntries++;order.push("callback");assert.equal(slotSyncs,1);assert.equal(withdrawalSyncs,1);}}} as never).observeClock();assert.deepEqual(result,{ok:true,status:"advanced",observedAt:new Date(t0).toISOString()});assert.deepEqual({slotSyncs,withdrawalSyncs,callbackEntries},{slotSyncs:1,withdrawalSyncs:1,callbackEntries:1});assert.deepEqual(order,["slot-sync","withdrawal-sync","callback"]);}));
+test("atomic admission active owner cleans coordination once after every sync barrier",async()=>{const deadOwnerPid=await exitedProcessPid();await withRoot(async root=>{const owner={host:hostname(),nonce:"3".repeat(64),pid:deadOwnerPid,v:1 as const},withdrawalName=retirementMarkerName(owner,"publication-aborted"),withdrawal=path.join(root,withdrawalName),slotName=admissionRetiredName(owner,"withdrawn"),slot=path.join(root,slotName);await mkdir(withdrawal);await writeFile(path.join(withdrawal,"owner.json"),publicationOwnerBytes(owner));await mkdir(slot);await writeFile(path.join(slot,"owner.json"),publicationOwnerBytes(owner));const slotAck=slotCoordinationAck(owner,slotName,slot,"withdrawn",withdrawalName,publicationOwnerBytes(owner));await writeFile(path.join(root,coordinationAckName(slotAck)),authorityCanonicalBytes(slotAck));const order:string[]=[];let slotSyncs=0,withdrawalSyncs=0,callbackEntries=0;const result=await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:200,faultInjector:(point:string)=>{if(point==="after-admission-slot-retire-cleanup-root-sync"){slotSyncs++;order.push("slot-sync");}if(point==="after-creator-withdrawal-cleanup-root-sync"){withdrawalSyncs++;order.push("withdrawal-sync");}if(point==="before-ledger-operation-callback"){callbackEntries++;order.push("callback");assert.equal(slotSyncs,1);assert.equal(withdrawalSyncs,1);}}} as never).observeClock();assert.deepEqual(result,{ok:true,status:"advanced",observedAt:new Date(t0).toISOString()});assert.deepEqual({slotSyncs,withdrawalSyncs,callbackEntries},{slotSyncs:1,withdrawalSyncs:1,callbackEntries:1});assert.deepEqual(order,["slot-sync","withdrawal-sync","callback"]);});});
 
 test("pre-admission housekeeper retires one dead slot before preparation and mutates no semantic state",()=>withRoot(async root=>{
   assert.equal((await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:200}).recover()).ok,true);
@@ -2786,8 +2786,8 @@ test("published-slot graphs tolerate unrelated inert legacy residue on a used ro
   // The boundary of the tolerance, pinned so a filter that ignores EVERY foreign artifact cannot
   // pass: an unrelated recovery-pending marker is an unserviced semantic recovery obligation, not
   // inert residue, and a second same-owner successor is genuine ambiguity.
-  // Foreign `recovery-pending` is conditioned on the ACTIVE LOCK being the successor. Spec :567
-  // grants retirement-marker coexistence "only for the next active owner", and :837-838 makes that
+  // Foreign `recovery-pending` is conditioned on the ACTIVE LOCK being the successor. Spec :571
+  // grants retirement-marker coexistence "only for the next active owner", and :853-854 makes that
   // owner the sole marker scanner servicing every recovery-pending marker before every callback —
   // inspectActiveLock's own dead-lock reclaim mints exactly this shape in the same iteration that
   // publishes, so refusing it would corrupt every acquisition that follows a crash-with-lock. With
@@ -3261,7 +3261,21 @@ test("withdrawal-family crash residue classifies identically on warm and fresh r
     await writeFile(path.join(root,ackName),authorityCanonicalBytes(ack));
     return [["terminal",terminalName],["slot",slotName],["slot-ack",ackName]];
   };
-  const classify=async(root:string,entry:"observe"|"recover")=>{const ledger=new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:200});return entry==="recover"?await ledger.recover():await ledger.observeClock();};
+  // Bounded `busy` is retryable by the product's own contract (a transient sharing or fence
+  // refusal is not a settled classification), so classification settles over up to three
+  // attempts; corruption and completion are terminal on first sight. Without this, an in-suite
+  // transient refusal on one root fabricated a parity failure (captured 2026-08-06, 406ms —
+  // quick refuse, not deadline exhaustion).
+  const classify=async(root:string,entry:"observe"|"recover")=>{
+    let result;
+    for(let attempt=0;attempt<3;attempt++){
+      const ledger=new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:200});
+      result=entry==="recover"?await ledger.recover():await ledger.observeClock();
+      if(result.ok||result.reason!=="busy")return result;
+      await new Promise(resolve=>setTimeout(resolve,100));
+    }
+    return result!;
+  };
   const surviving=async(root:string,seeded:readonly SeededRole[]):Promise<string[]>=>{const present=new Set(await readdir(root));return seeded.filter(([,name])=>present.has(name)).map(([role])=>role).sort();};
   const assertParity=(name:string,seed:(root:string,owner:AdmissionOwner)=>Promise<SeededRole[]>,pid:number,entry:"observe"|"recover")=>withRoot(async fresh=>{await withRoot(async warm=>{
     assert.equal((await new RawFsAuthorityLedger(warm,{now:()=>t0,lockTimeoutMs:2_000}).observeClock()).ok,true,`${name}: the warming acquisition succeeds`);
@@ -3270,15 +3284,25 @@ test("withdrawal-family crash residue classifies identically on warm and fresh r
     const seededFresh=await seed(fresh,owner),seededWarm=await seed(warm,owner);
     assert.deepEqual(seededWarm.map(([role])=>role),seededFresh.map(([role])=>role),`${name}: identical fixture roles`);
     const freshResult=await classify(fresh,entry),warmResult=await classify(warm,entry);
-    assert.deepEqual(warmResult,freshResult,`${name}: the unrelated released marker is inert to withdrawal-family classification`);
+    // Parity of CLASSIFICATION, not of the semantic clock: once a dead residue completes (the
+    // chain landing), a fresh root reports `advanced` where a warm root reports `equal` — clock
+    // state, not classification. Compare ok plus the failure reason, which keeps the
+    // corruption-vs-busy discriminator these pins exist for.
+    assert.equal(warmResult.ok,freshResult.ok,`${name}: the unrelated released marker is inert to withdrawal-family classification (fresh=${JSON.stringify(freshResult)} warm=${JSON.stringify(warmResult)})`);
+    if(!freshResult.ok&&!warmResult.ok)assert.equal(warmResult.reason,freshResult.reason,`${name}: warm and fresh refuse for the same reason`);
     assert.deepEqual(await surviving(warm,seededWarm),await surviving(fresh,seededFresh),`${name}: the same seeded artifacts survive warm and fresh`);
   });});
+  // The dead parity subtests classify TWICE per run (fresh root, then warm root); a reaped
+  // child's pid can be recycled by an unrelated process between the two on Windows, flipping one
+  // side and fabricating a parity failure (observed once in-suite, passing isolated and in the
+  // next full run). The corpus's kill-monkeypatch pattern makes the dead proof deterministic.
+  const withDeadPid=async(pid:number,run:()=>Promise<void>)=>{const originalKill=process.kill;Object.defineProperty(process,"kill",{configurable:true,value:(target:number,signal?:number)=>target===pid?(()=>{throw Object.assign(new Error("dead"),{code:"ESRCH"});})():originalKill.call(process,target,signal as never)});try{await run();}finally{Object.defineProperty(process,"kill",{configurable:true,value:originalKill});}};
   for(const state of eightStates)await t.test(`${state} live observe parity`,()=>assertParity(state,(root,owner)=>seedEight(root,owner,state),process.pid,"observe"));
   for(const state of ["slot-withdrawal","withdrawal-both-acks"] as const)await t.test(`${state} live recover parity`,()=>assertParity(state,(root,owner)=>seedEight(root,owner,state),process.pid,"recover"));
-  await t.test("slot-withdrawal dead observe parity",async()=>assertParity("slot-withdrawal-dead",(root,owner)=>seedEight(root,owner,"slot-withdrawal"),await exitedProcessPid(),"observe"));
+  await t.test("slot-withdrawal dead observe parity",()=>withDeadPid(49397,()=>assertParity("slot-withdrawal-dead",(root,owner)=>seedEight(root,owner,"slot-withdrawal"),49397,"observe")));
   await t.test("aborted-terminal live observe parity",()=>assertParity("aborted-terminal",seedAbortedTerminal,process.pid,"observe"));
-  await t.test("aborted-terminal dead observe parity",async()=>assertParity("aborted-terminal-dead",seedAbortedTerminal,await exitedProcessPid(),"observe"));
-  await t.test("aborted-terminal dead recover parity",async()=>assertParity("aborted-terminal-dead",seedAbortedTerminal,await exitedProcessPid(),"recover"));
+  await t.test("aborted-terminal dead observe parity",()=>withDeadPid(49398,()=>assertParity("aborted-terminal-dead",seedAbortedTerminal,49398,"observe")));
+  await t.test("aborted-terminal dead recover parity",()=>withDeadPid(49399,()=>assertParity("aborted-terminal-dead",seedAbortedTerminal,49399,"recover")));
   for(const state of ["slot-withdrawal","withdrawal-withdrawal-ack","orphan-withdrawal-ack","withdrawal-both-acks"] as const)await t.test(`${state} fresh live residue stays bounded busy`,()=>withRoot(async root=>{
     const owner:AdmissionOwner={host:hostname(),nonce:"a".repeat(64),pid:process.pid,v:1};
     await seedEight(root,owner,state);
@@ -3344,4 +3368,94 @@ test("lone creator-withdrawal markers retire only with dead-owner proof, warm an
     assert.deepEqual(await snapshotRootArtifacts(root),before,"preserved byte-identically");
     assert.equal(existsSync(marker),true);
   }));
+});
+
+// The dead-owner creator-withdrawal chain (D1(a), 2026-08-05): every crash-matrix residue of a
+// DEAD creator progresses to completion — the withdrawn slot's cleanup lifecycle, the
+// creator-withdrawal ack lifecycle, and the terminal drains — from both entry points, with the
+// two family signals in the pinned order. Live-owner residue stays preserved (the parity family
+// and the live-preservation family above); the re-fixtured committed pin "atomic admission
+// active owner cleans coordination once after every sync barrier" drives the aborted-terminal
+// form of the same route.
+test("the creator-withdrawal chain completes for dead owners from every crash state",{timeout:120_000},async t=>{
+  const eightStates=["slot-withdrawal","slot-withdrawal-slot-stage","slot-withdrawal-slot-ack","withdrawal-slot-ack","withdrawal-slot-ack-withdrawal-stage","withdrawal-both-acks","withdrawal-withdrawal-ack","orphan-withdrawal-ack"] as const;
+  const seedChainState=async(root:string,owner:AdmissionOwner,state:typeof eightStates[number]):Promise<void>=>{
+    const withdrawalName=creatorWithdrawalName(owner,"partial"),withdrawal=path.join(root,withdrawalName),slotName=admissionRetiredName(owner,"withdrawn"),slot=path.join(root,slotName);
+    await mkdir(withdrawal);await writeFile(path.join(withdrawal,"owner.json"),ownerStateBytes(owner,"partial"));
+    await mkdir(slot);await writeFile(path.join(slot,"owner.json"),publicationOwnerBytes(owner));
+    const slotAck=slotCoordinationAck(owner,slotName,slot,"withdrawn",withdrawalName,ownerStateBytes(owner,"partial")),slotAckPath=path.join(root,coordinationAckName(slotAck));
+    if(state==="slot-withdrawal-slot-stage")await writeFile(path.join(root,coordinationStageName(slotAck,"slot-retired")),authorityCanonicalBytes(slotAck));
+    if(!["slot-withdrawal","slot-withdrawal-slot-stage"].includes(state))await writeFile(slotAckPath,authorityCanonicalBytes(slotAck));
+    if(["withdrawal-slot-ack","withdrawal-slot-ack-withdrawal-stage","withdrawal-both-acks","withdrawal-withdrawal-ack","orphan-withdrawal-ack"].includes(state))await rm(slot,{recursive:true});
+    const withdrawalAck=incompleteCoordinationAck(owner,"creator-withdrawal",withdrawalName,publicationStageName({...owner,ticket:"0000000000000001"}),"partial",withdrawal,slotAck);
+    if(state==="withdrawal-slot-ack-withdrawal-stage")await writeFile(path.join(root,coordinationStageName(withdrawalAck,"creator-withdrawal")),authorityCanonicalBytes(withdrawalAck));
+    if(["withdrawal-both-acks","withdrawal-withdrawal-ack","orphan-withdrawal-ack"].includes(state))await writeFile(path.join(root,coordinationAckName(withdrawalAck)),authorityCanonicalBytes(withdrawalAck));
+    if(["withdrawal-withdrawal-ack","orphan-withdrawal-ack"].includes(state))await rm(slotAckPath,{force:true});
+    if(state==="orphan-withdrawal-ack")await rm(withdrawal,{recursive:true});
+  };
+  const expectedSignals=(state:typeof eightStates[number])=>({slotSyncs:state.startsWith("slot-")?1:0,withdrawalSyncs:state==="orphan-withdrawal-ack"?0:1});
+  // Bounded `busy` is retryable by the product's own contract; completion settles over up to
+  // three attempts. Each chain transition happens exactly once across the whole healing, so the
+  // signal counters stay exact whichever attempt performs which transition.
+  const runChain=async(root:string,entry:"observe"|"recover")=>{
+    let slotSyncs=0,withdrawalSyncs=0,callbacks=0,result;
+    for(let attempt=0;attempt<3;attempt++){
+      const ledger=new RawFsAuthorityLedger(root,{now:()=>t0+1_000,lockTimeoutMs:2_000,faultInjector:(point:string)=>{if(point==="after-admission-slot-retire-cleanup-root-sync")slotSyncs++;if(point==="after-creator-withdrawal-cleanup-root-sync")withdrawalSyncs++;if(point==="before-ledger-operation-callback")callbacks++;}} as never);
+      result=entry==="recover"?await ledger.recover():await ledger.observeClock();
+      if(result.ok||result.reason!=="busy")break;
+      await new Promise(resolve=>setTimeout(resolve,100));
+    }
+    return {result:result!,slotSyncs,withdrawalSyncs,callbacks};
+  };
+  const assertDrained=async(root:string,label:string)=>{
+    const residue=(await readdir(root)).filter(name=>name.startsWith(".authority-ledger-admission-")||name.startsWith(".authority-ledger-creator-withdrawal-")||name.startsWith(".authority-ledger-coordination-cleanup-"));
+    assert.deepEqual(residue,[],`${label}: the chain's evidence is fully drained`);
+  };
+  for(const state of eightStates)await t.test(`${state} dead fresh observe completes`,async()=>{const owner:AdmissionOwner={host:hostname(),nonce:"c".repeat(64),pid:await exitedProcessPid(),v:1};await withRoot(async root=>{
+    await seedChainState(root,owner,state);
+    const {result,slotSyncs,withdrawalSyncs,callbacks}=await runChain(root,"observe");
+    assert.deepEqual(result,{ok:true,status:"advanced",observedAt:new Date(t0+1_000).toISOString()},state);
+    assert.deepEqual({slotSyncs,withdrawalSyncs,callbacks},{...expectedSignals(state),callbacks:1},state);
+    await assertDrained(root,state);
+  });});
+  for(const state of ["slot-withdrawal","withdrawal-both-acks"] as const){
+    await t.test(`${state} dead fresh recover completes`,async()=>{const owner:AdmissionOwner={host:hostname(),nonce:"c".repeat(64),pid:await exitedProcessPid(),v:1};await withRoot(async root=>{
+      await seedChainState(root,owner,state);
+      const {result}=await runChain(root,"recover");
+      assert.equal(result.ok,true,state);
+      await assertDrained(root,state);
+    });});
+    await t.test(`${state} dead warm observe completes`,async()=>{const owner:AdmissionOwner={host:hostname(),nonce:"c".repeat(64),pid:await exitedProcessPid(),v:1};await withRoot(async root=>{
+      assert.equal((await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:2_000}).observeClock()).ok,true,"the warming acquisition succeeds");
+      await seedChainState(root,owner,state);
+      const {result,slotSyncs,withdrawalSyncs}=await runChain(root,"observe");
+      assert.deepEqual(result,{ok:true,status:"advanced",observedAt:new Date(t0+1_000).toISOString()},state);
+      assert.deepEqual({slotSyncs,withdrawalSyncs},expectedSignals(state),state);
+      await assertDrained(root,state);
+    });});
+  }
+  // The terminal's three legal states are not interchangeable: a ZERO terminal (owner.json with
+  // no bytes) completes like partial, but an EMPTY terminal (no owner.json at all) has no exact
+  // owner bytes for the withdrawn slot-ack to bind, so the dead-owner route withholds and the
+  // residue stays preserved bounded busy — the measured limit recorded in the spec beside the
+  // crash matrix, resolved by the K1 creator-side slice.
+  await t.test("slot-withdrawal zero-terminal dead observe completes",async()=>{const owner:AdmissionOwner={host:hostname(),nonce:"c".repeat(64),pid:await exitedProcessPid(),v:1};await withRoot(async root=>{
+    const withdrawal=path.join(root,creatorWithdrawalName(owner,"zero")),slot=path.join(root,admissionRetiredName(owner,"withdrawn"));
+    await mkdir(withdrawal);await writeFile(path.join(withdrawal,"owner.json"),Buffer.alloc(0));
+    await mkdir(slot);await writeFile(path.join(slot,"owner.json"),publicationOwnerBytes(owner));
+    const {result}=await runChain(root,"observe");
+    assert.deepEqual(result,{ok:true,status:"advanced",observedAt:new Date(t0+1_000).toISOString()});
+    await assertDrained(root,"zero-terminal");
+  });});
+  await t.test("slot-withdrawal empty-terminal dead stays preserved bounded busy",async()=>{const owner:AdmissionOwner={host:hostname(),nonce:"c".repeat(64),pid:await exitedProcessPid(),v:1};await withRoot(async root=>{
+    const withdrawal=path.join(root,creatorWithdrawalName(owner,"empty")),slot=path.join(root,admissionRetiredName(owner,"withdrawn"));
+    await mkdir(withdrawal);
+    await mkdir(slot);await writeFile(path.join(slot,"owner.json"),publicationOwnerBytes(owner));
+    const before=await snapshotRootArtifacts(root);
+    for(const entry of ["observe","recover"] as const){
+      const {result}=await runChain(root,entry);
+      assert.deepEqual(result,{ok:false,reason:"busy"},`empty-terminal ${entry}`);
+    }
+    assert.deepEqual(await snapshotRootArtifacts(root),before,"empty-terminal: preserved byte-identically, no self-authored stage");
+  });});
 });

@@ -223,6 +223,42 @@ acceptance criterion, per seal clause 4; (ii) by design, a LIVE long-lived proce
 a lone marker cannot heal its own root until it exits — "restart the process" is the operator
 remedy, stated here because nothing else says it.
 
+**Slice B2c shipped (same day): the dead-owner chain, the sixth point, the re-fixtured `:1746`,
+backlog zero.** The withdrawn-slot cleanup lifecycle (crash-matrix states 1-3) rides the
+extended slot-retired machinery (disposition `withdrawn`, terminal-bound, the slot family's
+cleanup signal fired on the marker-removal root sync); states 4-8 ride a new
+creator-withdrawal-purpose advancer (stage → ack → slot-ack drain → terminal removal firing
+`after-creator-withdrawal-cleanup-root-sync` → orphan-ack drain); the aborted-terminal form
+fires the sixth point on the bound slot-ack's removal root sync (clause 3 amended at ship time —
+its terminal drains through the legacy machinery), and a residue recovered from after the
+boundary does not re-fire it. All dead-PID-gated, any-contender, one transition per closed
+generation with full reclassification between. Measured before pinning: all eight dead states
+complete from both entry points with zero chain residue, and the `:1746` graph yields exactly
+slot-sync → withdrawal-sync → callback. `:1746` re-fixtured to a dead owner line-neutrally in
+the same commit (the D1(a) grant), green by name; the 13-entry chain pin family committed
+(eight fresh-observe states, two recover twins, two warm twins). Registry 71/138, emitted 84,
+backlog 0. One own-pin amendment, named: the B1 parity comparator compared full results, which
+leaks semantic-clock state (`advanced` vs `equal`) once dead residue COMPLETES — caught by the
+gate as four newly-failing parity subtests and amended to classification parity (ok + failure
+reason), which keeps the corruption-vs-busy discriminator the pins exist for.
+
+**B2c review findings, all applied (2026-08-06).** The GREEN review measured a blocking
+regression in the first chain build: the withdrawn slot-ack reconstruction accepted an EMPTY
+withdrawal terminal (no owner bytes) and minted an acknowledgment its own classifier refuses —
+permanent corruption plus a self-authored stage where HEAD stayed bounded busy. Fixed by
+withholding the descriptor for empty terminals (preserved bounded busy, pinned; the measured
+limit is recorded in the spec beside the crash matrix, resolved by the K1 creator-side slice) —
+the review's minimal option, since teaching both validators the empty form is clause-2 work that
+belongs with the creator side. Its terminal-state coverage gap closed with zero-terminal
+(completes) and empty-terminal (preserved) pins; the stale D1 spec block resolved; the step-6
+terminal identity recheck and the local slot-ack binding assertions added. One more flake class
+was then caught by three failing gate runs and captured with full output: an in-suite transient
+refusal (quick, 406ms — not deadline exhaustion) intermittently returned bounded `busy` on one
+side of a dead parity comparison. Bounded `busy` is retryable by the product's own contract, so
+the completion oracles now settle over up to three attempts (corruption and completion stay
+terminal on first sight; each chain transition happens exactly once across the healing, so the
+signal counters stay exact). Gate verified stable across three consecutive runs at 582/60.
+
 **D5 — a second committed contradiction, found while scoping the chain build.** `:1760`'s eight
 subtests (live same-pid owners, expect `advanced` with full drainage) are contradicted
 shape-for-shape by the committed GREEN live-preservation family (`:1135`, `:1140`, `:1143`,
