@@ -1,7 +1,7 @@
 {
   "target": "dist-test/test/authority/ledger.test.js",
-  "pass": 566,
-  "fail": 61,
+  "pass": 582,
+  "fail": 60,
   "failing": [
     "active owner treats atomic complete withdrawal as membership change, never corruption",
     "after-admission-prep-create",
@@ -23,7 +23,6 @@
     "after-lock-publication-rename",
     "after-lock-publication-root-sync",
     "after-lock-publication-stage-sync",
-    "atomic admission active owner cleans coordination once after every sync barrier",
     "atomic admission keeps one owner and its fixed slot through publication durability",
     "atomic admission preparation hard exits leave only exact recoverable topology",
     "atomic admission preparation states are non-authorizing and dead states retire",
