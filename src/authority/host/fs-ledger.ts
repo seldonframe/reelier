@@ -176,11 +176,12 @@ export interface FsAuthorityLedgerOptions {
 export const __testAdmissionClockOption: unique symbol = Symbol();
 export const __testPrepHousekeeperRuntimeOption: unique symbol = Symbol();
 export const __testK1OperationFenceRuntimeOption: unique symbol = Symbol();
-// Staging seam for the K1 admission-preparation lifecycle. Absent means the default; the two exact
-// literals select a mode ({mode:"legacy"} disables, {mode:"prepare-and-promote"} enables); anything
-// else refuses construction with a TypeError — unlike the fence option above, which parses to null.
-// It exists so the preparation -> fixed-slot -> slot-owner-bound-stage mechanism can be
-// built and proved before the clean-root activation flip changes behaviour for every operation.
+// The K1 admission-preparation lifecycle is ACTIVE BY DEFAULT since 2026-08-06 (Batch D, S4): every
+// acquisition runs preparation -> fixed slot -> slot-owner-bound stage. Absent means enabled; the
+// two exact literals still select a mode ({mode:"legacy"} takes the pre-K1 path, kept only until
+// the migrated fixtures re-fixture and it retires; {mode:"prepare-and-promote"} is now a no-op
+// against the default); anything else refuses construction with a TypeError — unlike the fence
+// option above, which parses to null. The seam survives its own flip only to stage that retirement.
 export const __testK1AdmissionPreparationRuntimeOption: unique symbol = Symbol();
 interface PrepHousekeeperRuntime {
   readonly monotonicNow: () => number;
@@ -2472,7 +2473,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
   //
   // A foreign `recovery-pending` marker is tolerated exactly when the SAME-OWNER ACTIVE LOCK is
   // the successor. Spec :571 grants retirement-marker coexistence "only for the next active
-  // owner", and :862-863 makes that owner the sole marker scanner, servicing every
+  // owner", and :906-907 makes that owner the sole marker scanner, servicing every
   // recovery-pending marker before every callback — so an unserviced foreign marker beside the
   // live lock is the specified mid-acquisition state (inspectActiveLock's own dead-lock reclaim
   // mints one in the same iteration that publishes). With no active lock in the graph there is no
@@ -3711,7 +3712,7 @@ function parseK1OperationFenceRuntime(value:unknown):K1OperationFenceRuntime|nul
   return runtime as unknown as K1OperationFenceRuntime;
 }
 function parseK1AdmissionPreparationRuntime(value:unknown):boolean{
-  if(value===undefined)return false;
+  if(value===undefined)return true;
   if(isExactObject(value,["mode"])){
     const mode=(value as Record<string,unknown>).mode;
     if(mode==="prepare-and-promote")return true;

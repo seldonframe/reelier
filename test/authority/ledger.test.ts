@@ -2339,22 +2339,28 @@ test("option-gated admission preparation promotes one owner through the nine bou
   assert.deepEqual(observed.filter(point=>(K1_ADMISSION_PREPARATION_POINTS as readonly string[]).includes(point)),[...K1_ADMISSION_PREPARATION_POINTS],"the nine boundaries fire exactly once each, in the specified order");
 }));
 
-// Gate half (a) is a null signal on its own for an option-gated slice: untouched defaults are exactly
-// what a slice that does nothing also produces. This asserts the untouched-ness directly, on both
-// sides -- no new emission appears, and the default path's own shape is unchanged.
-test("the admission-preparation option leaves default clean-root behaviour untouched",()=>withRoot(async root=>{
-  const observed:string[]=[];let published=0,retired=0,callbacks=0;
-  const result=await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:2_000,faultInjector:(point:string)=>{
-    observed.push(point);
-    if(point==="after-lock-publication-root-sync")published++;
-    if(point==="after-lock-retire")retired++;
-    if(point==="before-ledger-operation-callback")callbacks++;
-  }} as never).observeClock();
-  assert.deepEqual(result,{ok:true,status:"advanced",observedAt:new Date(t0).toISOString()});
-  assert.deepEqual(observed.filter(point=>(K1_ADMISSION_PREPARATION_POINTS as readonly string[]).includes(point)),[],"no admission-preparation boundary fires without the option");
-  assert.deepEqual({published,retired,callbacks},{published:1,retired:1,callbacks:1},"the default clean-root shape is unchanged");
-  assert.deepEqual(livePrepNames(await readdir(root)),[],"no preparation is created without the option");
-  assert.equal(existsSync(path.join(root,".authority-ledger-admission-0")),false,"no fixed slot is created without the option");
+// RE-POINTED 2026-08-06 (Batch D, THE FLIP), per the migration grant. This pin held
+// option-off === default-off, which the flip inverts by definition, so it could not survive
+// verbatim. Its successor is the RETIREMENT invariant: the recognized ON literal is a NO-OP against
+// the flipped default. That is exactly what makes the staged removal of the option safe -- if these
+// two constructions ever diverge, the option is doing something the default is not and cannot be
+// deleted. Non-vacuous in both directions: the K1 boundaries must now fire (the default is active),
+// and the two shapes must agree point-for-point, not merely both succeed.
+test("the recognized admission-preparation ON value is a no-op against the flipped default",()=>withRoot(async root=>{
+  const shapeOf=async(root:string,option:boolean)=>{const observed:string[]=[];let published=0,retired=0,callbacks=0;
+    const result=await new RawFsAuthorityLedger(root,{...(option?{[k1AdmissionPreparationOption()]:K1_ADMISSION_PREPARATION_MODE}:{}),now:()=>t0,lockTimeoutMs:2_000,faultInjector:(point:string)=>{
+      observed.push(point);
+      if(point==="after-lock-publication-root-sync")published++;
+      if(point==="after-lock-retire")retired++;
+      if(point==="before-ledger-operation-callback")callbacks++;
+    }} as never).observeClock();
+    return {result,k1:observed.filter(point=>(K1_ADMISSION_PREPARATION_POINTS as readonly string[]).includes(point)),published,retired,callbacks,preps:livePrepNames(await readdir(root)),slot:existsSync(path.join(root,".authority-ledger-admission-0"))};};
+  const byDefault=await shapeOf(root,false),withOption=await shapeOf(await tempRoot(),true);
+  assert.deepEqual(byDefault.result,{ok:true,status:"advanced",observedAt:new Date(t0).toISOString()});
+  assert.deepEqual(byDefault.k1,[...K1_ADMISSION_PREPARATION_POINTS],"the nine boundaries now fire on the DEFAULT path, in spec order");
+  assert.deepEqual({published:byDefault.published,retired:byDefault.retired,callbacks:byDefault.callbacks},{published:1,retired:1,callbacks:1},"one publication, one retirement, one callback");
+  assert.deepEqual({preps:byDefault.preps,slot:byDefault.slot},{preps:[],slot:false},"and the acquisition drains its own preparation and fixed slot");
+  assert.deepEqual(withOption,byDefault,"the recognized ON literal produces the identical shape -- it is a no-op and can retire");
 }));
 
 // The measured cost of S1's degraded terminal, pinned rather than assumed. The test above asserts the
@@ -2787,7 +2793,7 @@ test("published-slot graphs tolerate unrelated inert legacy residue on a used ro
   // pass: an unrelated recovery-pending marker is an unserviced semantic recovery obligation, not
   // inert residue, and a second same-owner successor is genuine ambiguity.
   // Foreign `recovery-pending` is conditioned on the ACTIVE LOCK being the successor. Spec :571
-  // grants retirement-marker coexistence "only for the next active owner", and :862-863 makes that
+  // grants retirement-marker coexistence "only for the next active owner", and :906-907 makes that
   // owner the sole marker scanner servicing every recovery-pending marker before every callback —
   // inspectActiveLock's own dead-lock reclaim mints exactly this shape in the same iteration that
   // publishes, so refusing it would corrupt every acquisition that follows a crash-with-lock. With
