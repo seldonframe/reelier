@@ -2787,7 +2787,7 @@ test("published-slot graphs tolerate unrelated inert legacy residue on a used ro
   // pass: an unrelated recovery-pending marker is an unserviced semantic recovery obligation, not
   // inert residue, and a second same-owner successor is genuine ambiguity.
   // Foreign `recovery-pending` is conditioned on the ACTIVE LOCK being the successor. Spec :567
-  // grants retirement-marker coexistence "only for the next active owner", and :831-832 makes that
+  // grants retirement-marker coexistence "only for the next active owner", and :837-838 makes that
   // owner the sole marker scanner servicing every recovery-pending marker before every callback —
   // inspectActiveLock's own dead-lock reclaim mints exactly this shape in the same iteration that
   // publishes, so refusing it would corrupt every acquisition that follows a crash-with-lock. With
@@ -3303,5 +3303,45 @@ test("withdrawal-family crash residue classifies identically on warm and fresh r
     const before=await snapshotRootArtifacts(root);
     assert.deepEqual(await classify(root,"observe"),{ok:false,reason:"corruption"},`${state} ${boundary}`);
     assert.deepEqual(await snapshotRootArtifacts(root),before,`${state} ${boundary}: preserved byte-identically`);
+  }));
+});
+
+// The lone-withdrawal dead-owner retirement (spec "a lone legacy withdrawal … final same-host
+// dead-owner proof; it is retired only", granted as a D1(a) dead-owner route, 2026-08-05): a
+// creator whose terminal-error failure path minted a sub-complete withdrawal marker and then
+// died leaves residue any contender retires — pinned warm and fresh, both entry points, on a
+// marker a REAL crashed creator minted — while a live owner's lone marker stays preserved
+// corruption from both entry points (the fresh pin "slot absence plus withdrawal without its
+// bound retirement ack grants no cleanup authority" holds that; the warm twin is pinned here).
+test("lone creator-withdrawal markers retire only with dead-owner proof, warm and fresh",{timeout:60_000},async t=>{
+  const mintDeadLoneMarker=async(root:string):Promise<string>=>{
+    const moduleUrl=pathToFileURL(path.resolve("dist-test/src/authority/host/fs-ledger.js")).href;
+    const source=`import{FsAuthorityLedger}from ${JSON.stringify(moduleUrl)};const terminal={kind:"terminal"};const ledger=new FsAuthorityLedger(process.argv[1],{now:()=>${t0},lockTimeoutMs:200,faultInjector(point){if(point==="after-lock-publication-owner-partial-write")throw terminal;}});try{await ledger.observeClock();}catch(error){process.exit(93);}process.exit(92);`;
+    const code=await new Promise<number|null>((resolve,reject)=>{const child=spawn(process.execPath,["--input-type=module","-e",source,root],{stdio:"ignore"});child.once("error",reject);child.once("close",resolve);});
+    assert.equal(code,93,"the creator's own failure path completes the withdrawal, then the process dies");
+    const marker=(await readdir(root)).find(name=>name.startsWith(".authority-ledger-creator-withdrawal-"));
+    assert.ok(marker,"the dead creator left its withdrawal marker");
+    return marker!;
+  };
+  for(const temp of ["fresh","warm"] as const)for(const entry of ["observe","recover"] as const)await t.test(`dead ${temp} ${entry} retires and heals`,()=>withRoot(async root=>{
+    if(temp==="warm")assert.equal((await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:2_000}).observeClock()).ok,true,"the warming acquisition succeeds");
+    const marker=await mintDeadLoneMarker(root);
+    const ledger=new RawFsAuthorityLedger(root,{now:()=>t0+1_000,lockTimeoutMs:2_000});
+    const result=entry==="recover"?await ledger.recover():await ledger.observeClock();
+    assert.equal(result.ok,true,`${temp} ${entry}: the dead lone marker is retired and the operation proceeds`);
+    assert.equal(existsSync(path.join(root,marker)),false,`${temp} ${entry}: the marker is drained`);
+    assert.equal((await readdir(root)).filter(name=>name.startsWith(".authority-ledger-admission-")||name.startsWith(".authority-ledger-creator-withdrawal-")||name.startsWith(".authority-ledger-coordination-cleanup-")).length,0,`${temp} ${entry}: no admission-family residue survives`);
+  }));
+  await t.test("live warm lone marker stays preserved corruption from both entry points",()=>withRoot(async root=>{
+    assert.equal((await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:2_000}).observeClock()).ok,true,"the warming acquisition succeeds");
+    const owner:AdmissionOwner={host:hostname(),nonce:"b".repeat(64),pid:process.pid,v:1};
+    const marker=await writeCreatorWithdrawal(root,owner,"partial");
+    const before=await snapshotRootArtifacts(root);
+    for(const entry of ["observe","recover"] as const){
+      const ledger=new RawFsAuthorityLedger(root,{now:()=>t0+1_000,lockTimeoutMs:200});
+      assert.deepEqual(entry==="recover"?await ledger.recover():await ledger.observeClock(),{ok:false,reason:"corruption"},entry);
+    }
+    assert.deepEqual(await snapshotRootArtifacts(root),before,"preserved byte-identically");
+    assert.equal(existsSync(marker),true);
   }));
 });

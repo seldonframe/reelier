@@ -20,10 +20,10 @@ not re-verified here — treat as a hypothesis).
 | Quantity | Value | Status |
 |---|---|---|
 | Fault points declared in the spec taxonomy | **58** | measured |
-| Entries in exported `ledgerLockFaultPoints` | **65** (61 before Batch A added the four pre-admission-housekeeping points) | measured |
-| Entries in public `ledgerFaultPoints` | **132** (128 before the same addition) | measured |
-| Fault-point literals emitted anywhere in `src/` | **78** | measured |
-| Declared in spec, not emitted (the backlog) | **6** — all six creator-withdrawal points, D1-gated | measured — **but see the gating caveat below** |
+| Entries in exported `ledgerLockFaultPoints` | **70** (65 before Batch B slice B2a added five creator-withdrawal points; 61 before Batch A) | measured |
+| Entries in public `ledgerFaultPoints` | **137** (132 / 128 at the same earlier pins) | measured |
+| Fault-point literals emitted anywhere in `src/` | **83** | measured |
+| Declared in spec, not emitted (the backlog) | **1** — `after-creator-withdrawal-cleanup-root-sync`, the chain-cleanup slices' | measured — **but see the gating caveat below** |
 | Exported but **not** in the spec taxonomy (to delete) | **13** | measured |
 
 ```bash
@@ -42,7 +42,7 @@ this row with the caveat attached is the difference between a real number and th
 linter exists to prevent.
 
 The 13 extras are election/provisional/predecessor hooks the spec explicitly forbids. Removing them
-plus adding the remaining 6 is **additive at runtime but source-breaking at the type level** — a
+plus adding the remaining 1 is **additive at runtime but source-breaking at the type level** — a
 consumer narrowing on `LedgerFaultPoint` gets TS2322 under `--strict`. That is why the ABI freeze
 must come after this work, not before (D3: one break, after the withdrawal points land).
 
@@ -50,7 +50,8 @@ must come after this work, not before (D3: one break, after the withdrawal point
 
 | Quantity | Value | Status |
 |---|---|---|
-| Ledger suite | **546 pass / 75 fail** after Batch B slice B1 (D4 tolerance + the 27-subtest warm parity family; the three flipped pins stayed green under their new busy expectations; failing set gained no names). The 100-process flake was PASSING in the re-saved baseline, so under load it can surface as "newly failing" — re-run it in isolation per §3 before believing that | measured |
+| Ledger suite | **566 pass / 61 fail** after Batch B slice B2a (the creator's failure-path withdrawal + the lone-withdrawal dead-owner retirement: 14 committed reds green by name, zero movers elsewhere, plus the 5-pin lone-withdrawal family). The 100-process flake was PASSING in the re-saved baseline, so under load it can surface as "newly failing" — re-run it in isolation per §3 before believing that | measured |
+| Post-B1 ledger suite (the prior recorded gate) | 546 pass / 75 fail | superseded 2026-08-05 |
 | Pre-B1 ledger suite (the Batch A recorded gate) | 518 pass / 75 fail | superseded 2026-08-05 |
 | Post-warm-prep-fix ledger suite as previously recorded here | 516 pass / 75 fail — written mid-Batch-A and stale by 2 against the Batch A baseline `--save`; kept as the third instance of a number in this file diverging from its own command | superseded 2026-08-05 |
 | Pre-Batch-A ledger suite (the prior recorded gate) | 498 pass / 80 fail | superseded 2026-08-05 |

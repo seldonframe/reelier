@@ -186,6 +186,43 @@ sites is individually discriminated; the unrelated-aborted pins uniquely catch a
 disposition-filter widening, verified by mutation). The three pins flipped busy-ward in the same
 commit, renamed "…is inert-tolerated busy": `:1141` retired case, `:1157` retired case, `:1159`.
 
+**Slice B2a shipped (same day): the creator's failure-path withdrawal and the dead-external
+withdrawal.** `finishCreatorPublicationStage` withdraws instead of removing — but ONLY on the
+caller's catch path (a thrown terminal propagating out): the first cut withdrew on every failure
+exit and flipped the committed green pin "lone live external stage is busy and preserved",
+because bounded `busy` exits pin byte-identical roots — the withdrawal is the ERROR path's act.
+`removeDeadPublicationStage` withdraws a COMPLETE dead external stage to that owner's
+`publication-aborted` marker (sub-complete dead stages keep authorized removal, per signed
+clause 6). Five of the six points emitted and registered (65→70 / 132→137); backlog 6→1
+(`after-creator-withdrawal-cleanup-root-sync`, the chain slices'). Ledger 546/75 → 560 pass /
+61 fail — 14 committed reds green by name (`:972`, `:1727` parent+4, `:1731` parent+5, `:1676`
+subtest + parent), zero movers elsewhere; `:979` stays red (needs the mid-run
+aborted-marker servicing, a later slice).
+
+**The lone-marker consequence, found blocking by the GREEN review and CLOSED in the same
+slice.** The review measured that a terminal-error exit with a SUB-COMPLETE stage minted a
+marker neither entry point could ever drain — permanent corruption even after the owner died,
+where HEAD self-healed (its before/after table is in the review record). The closure is the
+spec's own consumer, pulled forward from B2c: the **lone-withdrawal dead-owner retirement**
+("a lone legacy withdrawal … final same-host dead-owner proof; it is retired only"), wired as
+a full housekeeping route (descriptor + authority + transition) with the drainage's
+any-contender bound per D1(a), and with the released-only inert tolerance in the descriptor —
+the warm variant wedged when the route demanded a truly lone snapshot, measured before it
+shipped (the warm-first discipline catching its seventh instance-class in the same batch).
+Result: every dead-owner crash row heals from BOTH entry points, warm and fresh (pinned, five
+subtests on markers real crashed creators minted); a LIVE owner's lone marker stays preserved
+corruption from both entry points (committed `:1777` + the new warm twin). A COMPLETE-stage
+terminal exit self-heals via the legacy service (measured in P5). The review's N1 (raw-errno
+escape at the rename on POSIX), N3 (a committed rename reporting the old root-sync point), and
+clause-1 seal-order deviation were fixed in the same pass; N2 (lstat-then-rename is
+never-KNOWINGLY-overwritten) and N4 (the seal needs write access to a foreign dead owner's
+file) are recorded in the code comments. Two carry-forwards from the SHIP verdict: (i) the
+K1-option-ON sub-complete residue (`admission-0` + withdrawal marker, the W1 window) is now the
+ONLY withdrawal residue that does not self-heal — it is the chain slices' (B2b) explicit
+acceptance criterion, per seal clause 4; (ii) by design, a LIVE long-lived process that minted
+a lone marker cannot heal its own root until it exits — "restart the process" is the operator
+remedy, stated here because nothing else says it.
+
 **D5 — a second committed contradiction, found while scoping the chain build.** `:1760`'s eight
 subtests (live same-pid owners, expect `advanced` with full drainage) are contradicted
 shape-for-shape by the committed GREEN live-preservation family (`:1135`, `:1140`, `:1143`,

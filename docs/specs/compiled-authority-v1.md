@@ -461,11 +461,15 @@ wide reading is refuted. The narrow reading (only an operation seeking no active
 callback, i.e. `recover`) left all nine coordination-cleanup fault points unreachable by any test,
 because every committed crash-window test drives `observeClock`. The shipped bound sits between
 them, with evidence on both sides: `recover` holds the general write authority, and a lock-seeking
-contender may perform exactly two bounded families of transitions, both measured — ADVANCING a dead
-preparation's already-retired cleanup lifecycle, and the owner-granted (2026-08-05) dead-owner
+contender may perform exactly three bounded families of transitions, all measured — ADVANCING a dead
+preparation's already-retired cleanup lifecycle; the owner-granted (2026-08-05) dead-owner
 PUBLISHED-slot drainage recorded beside the `slot-retired.published` rule below: retiring the slot
 as `published` on the authority of its byte-identical same-owner active lock, then draining that
-marker's cleanup lifecycle. Initiating an `abandoned`-family retirement stays reserved to `recover`,
+marker's cleanup lifecycle; and the D1(a)-granted (2026-08-05, Batch B) dead-owner LONE-WITHDRAWAL
+retirement — the "lone legacy withdrawal" rule below performed with final same-host dead-owner
+proof, mirroring the drainage's any-contender bound, because the creator's own failure path now
+mints that marker on the default path and a narrower bound would leave observeClock refusing roots
+that healed before the withdrawal existed. Initiating an `abandoned`-family retirement stays reserved to `recover`,
 byte-identical under every lock-seeking contender, as the committed dead-owner slot-orphan pins require.
 
 A related measured limit, recorded 2026-08-05 and RESOLVED the same day: a WARM preparation-stage
@@ -750,8 +754,10 @@ root-synced admission-ready empty result after step 7. The selected positive res
 `withdrawal-ack`; both cleanup stages are regular files containing the exact canonical bound record
 and are recognized only with their exact durable predecessors. Each state progresses only its next
 exact transition and then restarts full classification. In particular, `slot absent + withdrawal
-present + no ack` grants nothing and is preserved corruption; any replacement or
-cross-owner/cross-digest variant is also preserved corruption. An entirely empty coordination state reconstructs only a new
+present + no ack` grants nothing and is preserved corruption while the owner lives; with final
+same-host dead-owner proof it is exactly the lone-withdrawal residue the "lone legacy withdrawal"
+rule above retires (shipped 2026-08-05, Batch B, both entry points, warm and fresh — pinned). Any
+replacement or cross-owner/cross-digest variant is preserved corruption regardless of liveness. An entirely empty coordination state reconstructs only a new
 canonical owner for a new admission attempt; it never retroactively authenticates missing cleanup
 evidence.
 
