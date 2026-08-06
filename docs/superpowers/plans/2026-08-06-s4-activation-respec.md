@@ -151,3 +151,22 @@ before, green after; the RED review measured all four wrong shapes caught: missi
 retained silent fallback, operation-time deferral, wrong error class). Gate: 637/50 → 639/50,
 failing set name-identical, twice; full `npm test` 2,285/51/1 with the one rotating gate member
 re-passing in isolation.
+
+**Phase 1b shipped — seven per-family slices, `0bda077..978bb35`.** The work-list was
+reproduced FIRST on this tree by the compiled-build A/B: 28 newly passing / 30 newly failing,
+matching the Batch C measurement name for name. All 30 migrated line-neutrally (file 3850
+lines at every commit; anchors :1746/:1748/:1760/:1777/:1822 verified holding), gate 639/50
+name-identical after every slice — one interleaved run fabricated a regression under
+back-to-back suite load and two refused at 88–100% CPU, the NUMBERS §3 signature, attributed
+by settled re-runs. Migration bijection (GREEN-review verified against all ~340 construction
+sites): :955 ×2, :1746, the :1852 hardExit child template, the reused-root family's four, the
+lone-withdrawal dead members' three (live subtest untouched), the chain family's
+runChain + warm warming (corruption-preservation members untouched), the dead-W1 completing
+drive. **Acceptance A/B after the last slice: newly failing = exactly the definitional pin**
+(which migrates in the flip's own commit per the grant); **newly passing = 32** — the original
+28 plus the four `:1871`-family sync/rename members whose merged name-status clears once the
+family's child is pinned. The measured 32-name list is the flip's expected-green set.
+Phase-3 riders (GREEN review): `runChain` pins the recover entries and the zero-terminal
+member too; the dead-W1 drive line also constructs its recover leaf; the hardExit family's
+in-process successor `recover()` at `:1894` stays default-mode, making that family a
+cross-mode scenario post-flip — measured green under the A/B, re-fixture deliberately.
