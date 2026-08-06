@@ -144,7 +144,19 @@ export type FromSessionToolResult = FromSessionToolSuccess | FromSessionToolFail
  * overwrite an existing file unless `force` is set (matches the CLI's
  * `from-session --force`).
  */
-export async function runFromSessionTool(input: FromSessionToolInput): Promise<FromSessionToolResult> {
+/**
+ * The serve process's workspace root (`reelier serve --workspace <path>`).
+ * Every workspace-sensitive default that used to fall back to process.cwd()
+ * falls back here first — because plugin hosts launch stdio servers with the
+ * PLUGIN directory as cwd, and evidence written into a plugin directory
+ * instead of the user's project is the exact failure this exists to prevent.
+ * An explicit per-call `cwd`/`out` argument always wins over the workspace.
+ */
+export interface ServeWorkspaceOptions {
+  workspaceRoot?: string;
+}
+
+export async function runFromSessionTool(input: FromSessionToolInput, options?: ServeWorkspaceOptions): Promise<FromSessionToolResult> {
   const source = await readFile(input.transcriptPath, "utf8");
   const traceFileName = path.basename(input.transcriptPath);
   const name = input.name ?? traceFileName.replace(/\.jsonl$/i, "");
@@ -155,7 +167,7 @@ export async function runFromSessionTool(input: FromSessionToolInput): Promise<F
     return { ok: false, reason: result.reason, skipped: result.skipped };
   }
 
-  const outPath = input.out ?? path.join(process.cwd(), `${result.compileResult.name}.skill.md`);
+  const outPath = input.out ?? path.join(options?.workspaceRoot ?? process.cwd(), `${result.compileResult.name}.skill.md`);
   if (!input.force && (await fileExists(outPath))) {
     throw new Error(`Refusing to overwrite existing file ${outPath} — pass force:true to overwrite.`);
   }
@@ -179,7 +191,7 @@ const fromSessionToolInputSchema = {
   properties: {
     transcriptPath: { type: "string", description: "Path to a session transcript (.jsonl) to compile." },
     name: { type: "string", description: "Skill name (also the default output filename stem)." },
-    out: { type: "string", description: "Output path for the compiled SKILL.md (default: <cwd>/<name>.skill.md)." },
+    out: { type: "string", description: "Output path for the compiled SKILL.md (default: <name>.skill.md under the serve --workspace root, else the process cwd)." },
     force: { type: "boolean", description: "Overwrite an existing file at the output path." },
   },
   required: ["transcriptPath"],
@@ -222,14 +234,15 @@ export interface ReplayToolInput {
  */
 export async function runReplayTool(
   input: ReplayToolInput,
-  connect: (spec: string) => Promise<DownstreamConnection> = connectDownstream
+  connect: (spec: string) => Promise<DownstreamConnection> = connectDownstream,
+  options?: ServeWorkspaceOptions
 ): Promise<RunRecord> {
   const source = await readFile(input.skillPath, "utf8");
   const skill = parseSkill(source);
 
   // Resolved BEFORE any downstream is wired, exactly like cmdRun: a
   // malformed policy that DECLARES state_gate refuses the whole replay.
-  const cwd = input.cwd ?? process.cwd();
+  const cwd = input.cwd ?? options?.workspaceRoot ?? process.cwd();
   const stateGate = await resolveStateGateForRun(cwd, os.homedir());
   if (stateGate.mode === "refuse-run") {
     throw new Error(
@@ -300,7 +313,7 @@ const replayToolInputSchema = {
     },
     allowDestructive: { type: "boolean", description: "Allow steps whose effect is 'destructive' to run." },
     allowWrites: { type: "boolean", description: "Allow 'idempotent-write' steps to execute. Default false — replay is READ-ONLY, so re-running never re-fires writes." },
-    cwd: { type: "string", description: "Working directory the run record is written under (default: process cwd)." },
+    cwd: { type: "string", description: "Working directory the run record is written under (default: the serve --workspace root when one was given, else process cwd)." },
     ignoreManifest: {
       type: "boolean",
       description:
@@ -338,10 +351,10 @@ export type PushToolResult =
  * silently treated as a no-op success; any other failure (read error, no run
  * records) is reported as `failed` with the real error message.
  */
-export async function runPushTool(input: PushToolInput): Promise<PushToolResult> {
+export async function runPushTool(input: PushToolInput, options?: ServeWorkspaceOptions): Promise<PushToolResult> {
   try {
     const result = await pushSkill(input.skillPath, {
-      cwd: input.cwd,
+      cwd: input.cwd ?? options?.workspaceRoot,
       all: input.all,
       dryRun: input.dryRun,
       withSkill: input.withSkill,
@@ -363,7 +376,7 @@ const pushToolInputSchema = {
     all: { type: "boolean", description: "Ignore/reset the cursor — reconsider every record from the start." },
     dryRun: { type: "boolean", description: "Report what would push; make no network calls, touch no state." },
     withSkill: { type: "boolean", description: "Upload the skill file even if it was already uploaded before." },
-    cwd: { type: "string", description: "Working directory to resolve .reelier/ state under (default: process cwd)." },
+    cwd: { type: "string", description: "Working directory to resolve .reelier/ state under (default: the serve --workspace root when one was given, else process cwd)." },
   },
   required: ["skillPath"],
 };
@@ -389,8 +402,8 @@ export type DiffToolResult = { ok: true; diff: RunDiff } | { ok: false; reason: 
  * the last two runs in .reelier/runs/<skill>.jsonl. Honest when fewer than two
  * runs exist (never fabricates a "same" out of a single run).
  */
-export async function runDiffTool(input: DiffToolInput): Promise<DiffToolResult> {
-  const cwd = input.cwd ?? process.cwd();
+export async function runDiffTool(input: DiffToolInput, options?: ServeWorkspaceOptions): Promise<DiffToolResult> {
+  const cwd = input.cwd ?? options?.workspaceRoot ?? process.cwd();
   const file = path.join(cwd, ".reelier", "runs", `${input.skill}.jsonl`);
   let records: RunRecord[] = [];
   try {
@@ -418,7 +431,7 @@ const diffToolInputSchema = {
   type: "object" as const,
   properties: {
     skill: { type: "string", description: "Skill name (the .reelier/runs/<skill>.jsonl stem) whose runs to compare." },
-    cwd: { type: "string", description: "Working directory where .reelier/ lives (default: process cwd)." },
+    cwd: { type: "string", description: "Working directory where .reelier/ lives (default: the serve --workspace root when one was given, else process cwd)." },
     baselineIndex: { type: "number", description: "0-based index of the baseline run (default: second-to-last)." },
     candidateIndex: { type: "number", description: "0-based index of the candidate run (default: the last run)." },
   },
@@ -477,7 +490,7 @@ function errorResult(err: unknown): { content: Array<{ type: "text"; text: strin
  * caller wires up a transport (stdio for the real CLI, InMemory for tests),
  * same convention as recorder.ts's buildProxyServer.
  */
-export function buildToolServer(): Server {
+export function buildToolServer(options?: ServeWorkspaceOptions): Server {
   const server = new Server({ name: "reelier-tools", version: "0.0.1" }, { capabilities: { tools: {} } });
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -506,22 +519,22 @@ export function buildToolServer(): Server {
           if (typeof args.transcriptPath !== "string" || !args.transcriptPath) {
             return errorResult(new Error("reelier_from_session requires a string 'transcriptPath' argument."));
           }
-          return textResult(await runFromSessionTool(args as unknown as FromSessionToolInput));
+          return textResult(await runFromSessionTool(args as unknown as FromSessionToolInput, options));
         case "reelier_replay":
           if (typeof args.skillPath !== "string" || !args.skillPath) {
             return errorResult(new Error("reelier_replay requires a string 'skillPath' argument."));
           }
-          return textResult(await runReplayTool(args as unknown as ReplayToolInput));
+          return textResult(await runReplayTool(args as unknown as ReplayToolInput, undefined, options));
         case "reelier_push":
           if (typeof args.skillPath !== "string" || !args.skillPath) {
             return errorResult(new Error("reelier_push requires a string 'skillPath' argument."));
           }
-          return textResult(await runPushTool(args as unknown as PushToolInput));
+          return textResult(await runPushTool(args as unknown as PushToolInput, options));
         case "reelier_diff":
           if (typeof args.skill !== "string" || !args.skill) {
             return errorResult(new Error("reelier_diff requires a string 'skill' argument."));
           }
-          return textResult(await runDiffTool(args as unknown as DiffToolInput));
+          return textResult(await runDiffTool(args as unknown as DiffToolInput, options));
         default:
           return errorResult(new Error(`Unknown tool: ${name}`));
       }

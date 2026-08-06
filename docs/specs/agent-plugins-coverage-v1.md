@@ -101,12 +101,26 @@ paths from `process.cwd()`: compiled-skill output (`src/serve.ts:158`), run reco
 would place compiled skills and `.reelier` records inside the plugin directory instead of the
 user's project — evidence written to the wrong place, the opposite of the product's promise.
 
-Before adding the MCP component, design and pick one:
+**Decision (2026-08-06): option 3, with option 1's explicit arguments as the always-available
+override.** `reelier serve --workspace <path>` is implemented: the path must be absolute and an
+existing directory (fail-fast at startup — a relative workspace re-introduces the exact cwd
+ambiguity the flag removes), every workspace-sensitive default (compiled-skill output, run
+records, `.reelier/` state, the state-gate resolution that must stay coupled to the record
+directory) resolves under it, and an explicit per-call `cwd`/`out` argument still wins.
+
+The remaining blocker for the *portable* package is now the standard's, not ours: Agent Plugins
+v1 defines only `${PLUGIN_ROOT}` and `${PLUGIN_DATA}` — no portable variable names the user's
+workspace, so a portable `mcp.json` cannot express `--workspace <the project>`. Raising that gap
+with the open project is the concrete §5 participation move. A host-specific package may add
+`mcp.json` only where a §4 observation shows that host supplying a workspace path.
+
+The three candidates considered, kept for the record:
 
 1. Require explicit absolute `cwd`/`out` arguments for every workspace-sensitive tool in plugin
-   mode.
-2. Add a reliable client-provided workspace-root mechanism.
+   mode. (Retained as the per-call override — it always wins.)
+2. Add a reliable client-provided workspace-root mechanism. (Does not exist portably in v1.)
 3. Introduce `reelier serve --workspace <path>`, with the host supplying the path at launch.
+   (**Picked.**)
 
 The standard-format and Claude-format packages are generated from shared source — never two
 handwritten copies. Claims discipline regardless of phase: the plugin distributes Reelier's own
