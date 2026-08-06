@@ -3340,7 +3340,7 @@ test("withdrawal-family crash residue classifies identically on warm and fresh r
 test("lone creator-withdrawal markers retire only with dead-owner proof, warm and fresh",{timeout:60_000},async t=>{
   const mintDeadLoneMarker=async(root:string):Promise<string>=>{
     const moduleUrl=pathToFileURL(path.resolve("dist-test/src/authority/host/fs-ledger.js")).href;
-    const source=`import{FsAuthorityLedger}from ${JSON.stringify(moduleUrl)};const terminal={kind:"terminal"};const ledger=new FsAuthorityLedger(process.argv[1],{now:()=>${t0},lockTimeoutMs:200,faultInjector(point){if(point==="after-lock-publication-owner-partial-write")throw terminal;}});try{await ledger.observeClock();}catch(error){process.exit(93);}process.exit(92);`;
+    const source=`import{FsAuthorityLedger,__testK1AdmissionPreparationRuntimeOption}from ${JSON.stringify(moduleUrl)};const terminal={kind:"terminal"};const ledger=new FsAuthorityLedger(process.argv[1],{[__testK1AdmissionPreparationRuntimeOption]:${JSON.stringify(K1_ADMISSION_PREPARATION_LEGACY)},now:()=>${t0},lockTimeoutMs:200,faultInjector(point){if(point==="after-lock-publication-owner-partial-write")throw terminal;}});try{await ledger.observeClock();}catch(error){process.exit(93);}process.exit(92);`;
     const code=await new Promise<number|null>((resolve,reject)=>{const child=spawn(process.execPath,["--input-type=module","-e",source,root],{stdio:"ignore"});child.once("error",reject);child.once("close",resolve);});
     assert.equal(code,93,"the creator's own failure path completes the withdrawal, then the process dies");
     const marker=(await readdir(root)).find(name=>name.startsWith(".authority-ledger-creator-withdrawal-"));
@@ -3348,9 +3348,9 @@ test("lone creator-withdrawal markers retire only with dead-owner proof, warm an
     return marker!;
   };
   for(const temp of ["fresh","warm"] as const)for(const entry of ["observe","recover"] as const)await t.test(`dead ${temp} ${entry} retires and heals`,()=>withRoot(async root=>{
-    if(temp==="warm")assert.equal((await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:2_000}).observeClock()).ok,true,"the warming acquisition succeeds");
+    if(temp==="warm")assert.equal((await new RawFsAuthorityLedger(root,{[k1AdmissionPreparationOption()]:K1_ADMISSION_PREPARATION_LEGACY,now:()=>t0,lockTimeoutMs:2_000} as never).observeClock()).ok,true,"the warming acquisition succeeds");
     const marker=await mintDeadLoneMarker(root);
-    const ledger=new RawFsAuthorityLedger(root,{now:()=>t0+1_000,lockTimeoutMs:2_000});
+    const ledger=new RawFsAuthorityLedger(root,{[k1AdmissionPreparationOption()]:K1_ADMISSION_PREPARATION_LEGACY,now:()=>t0+1_000,lockTimeoutMs:2_000} as never);
     const result=entry==="recover"?await ledger.recover():await ledger.observeClock();
     assert.equal(result.ok,true,`${temp} ${entry}: the dead lone marker is retired and the operation proceeds`);
     assert.equal(existsSync(path.join(root,marker)),false,`${temp} ${entry}: the marker is drained`);
