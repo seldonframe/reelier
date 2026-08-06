@@ -176,9 +176,10 @@ export interface FsAuthorityLedgerOptions {
 export const __testAdmissionClockOption: unique symbol = Symbol();
 export const __testPrepHousekeeperRuntimeOption: unique symbol = Symbol();
 export const __testK1OperationFenceRuntimeOption: unique symbol = Symbol();
-// Staging seam for the K1 admission-preparation lifecycle, same shape as the fence option above.
-// Absent or unrecognised means DISABLED, so every default path is byte-identical to before it
-// existed. It exists so the preparation -> fixed-slot -> slot-owner-bound-stage mechanism can be
+// Staging seam for the K1 admission-preparation lifecycle. Absent means the default; the two exact
+// literals select a mode ({mode:"legacy"} disables, {mode:"prepare-and-promote"} enables); anything
+// else refuses construction with a TypeError — unlike the fence option above, which parses to null.
+// It exists so the preparation -> fixed-slot -> slot-owner-bound-stage mechanism can be
 // built and proved before the clean-root activation flip changes behaviour for every operation.
 export const __testK1AdmissionPreparationRuntimeOption: unique symbol = Symbol();
 interface PrepHousekeeperRuntime {
@@ -421,7 +422,9 @@ export class FsAuthorityLedger implements AuthorityLedger {
     this.options = { now: options.now ?? Date.now, faultInjector: options.faultInjector, lockTimeoutMs: options.lockTimeoutMs ?? 30_000 };
     this.admissionClock=internalOptions[__testAdmissionClockOption]??(()=>process.hrtime.bigint());
     // Assigned before the invalid-fence early return below, so the field is initialised on every
-    // construction path. Anything but the exact recognised value leaves the default disabled.
+    // construction path. Only the two exact literals are recognised ({mode:"legacy"} disables,
+    // {mode:"prepare-and-promote"} enables); anything else refuses construction closed, before any
+    // filesystem access — the Batch D task-1 pin. undefined keeps the default.
     this.k1AdmissionPreparationEnabled=parseK1AdmissionPreparationRuntime(internalOptions[__testK1AdmissionPreparationRuntimeOption]);
     this.prepHousekeeperRuntime=internalOptions[__testPrepHousekeeperRuntimeOption]??(injectedRuntime===undefined||injectedRuntime===null?{monotonicNow,delay}:{monotonicNow:injectedRuntime.monotonicNow,delay:injectedRuntime.delay});
     if(injected&&injectedRuntime===null){this.root=resolved;this.k1OperationFenceRuntime=null;this.k1OperationFenceBinding=null;this.k1OperationFenceConfigurationValid=false;return;}
@@ -3633,7 +3636,12 @@ function parseK1OperationFenceRuntime(value:unknown):K1OperationFenceRuntime|nul
 }
 function parseK1AdmissionPreparationRuntime(value:unknown):boolean{
   if(value===undefined)return false;
-  return isExactObject(value,["mode"])&&(value as Record<string,unknown>).mode==="prepare-and-promote";
+  if(isExactObject(value,["mode"])){
+    const mode=(value as Record<string,unknown>).mode;
+    if(mode==="prepare-and-promote")return true;
+    if(mode==="legacy")return false;
+  }
+  throw new TypeError('admission-preparation runtime option must be undefined, {mode:"legacy"}, or {mode:"prepare-and-promote"}');
 }
 function isExactObject(value:unknown,keys:readonly string[],optional:readonly string[]=[]):value is Record<string,unknown>{if(value===null||typeof value!=="object"||Array.isArray(value))return false;const actual=Object.keys(value).sort(),required=keys.filter(key=>!optional.includes(key));return required.every(key=>actual.includes(key))&&actual.every(key=>keys.includes(key));}
 function normalizedK1OperationFenceRoot(value:string):string{const normalized=path.normalize(value);return process.platform==="win32"?normalized.replaceAll("\\","/").toLowerCase():normalized;}

@@ -134,3 +134,20 @@ for the next batch: (i) add an explicit `{mode:"legacy"}`-style disable value (o
 with new signal counts, the honest-but-larger option), (ii) migrate the ~30 fixtures under a
 named grant, (iii) re-apply the flip — its expected-green set is already proven — then
 (iv) the option-gated fixture migration and symbol deletion as originally staged.
+
+## 7. Batch D execution record (grants received 2026-08-06; appended per phase)
+
+**Phase 1a shipped.** `{mode:"legacy"}` is recognized as the exact disable value
+(`parseK1AdmissionPreparationRuntime`, undefined → false untouched — verified by grep before and
+after). The task-1 unknown-value decision, measured then pinned: every committed constructor
+passes either nothing or the exact ON literal (zero junk-passers — grepped both the in-process
+sites and the child-source templates), so an unrecognized value now throws `TypeError` at
+construction, fail closed, before any filesystem access. Two pins, appended after every committed
+anchor: "the admission-preparation runtime recognizes the exact legacy disable value"
+(green-before/green-after by design — its discrimination, verified by compiled-build patching, is
+against a throw implementation that forgets the legacy arm or swaps the arms) and "an
+unrecognized admission-preparation runtime value refuses construction with a TypeError" (RED
+before, green after; the RED review measured all four wrong shapes caught: missing legacy arm,
+retained silent fallback, operation-time deferral, wrong error class). Gate: 637/50 → 639/50,
+failing set name-identical, twice; full `npm test` 2,285/51/1 with the one rotating gate member
+re-passing in isolation.

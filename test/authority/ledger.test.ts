@@ -3807,3 +3807,44 @@ test("the abandoned family classifies and drains identically on warm and fresh r
     assert.deepEqual(await snapshotRootArtifacts(root),before,"preserved byte-identically");
   });});
 });
+
+// Phase 1a of the flip's staged migration (owner grant 2026-08-06, recorded in the S4 re-spec §§6-7):
+// {mode:"legacy"} is the exact recognized disable value the committed default-mode fixtures migrate
+// to before the default inverts, so their pinned pre-flip semantics survive the flip unchanged. The
+// pin asserts the disable value takes the legacy path directly -- zero admission-preparation
+// boundaries, the pre-K1 clean-root shape -- never "identical to option-absent", because after the
+// flip option-absent means enabled while this value must keep meaning disabled until it retires.
+test("the admission-preparation runtime recognizes the exact legacy disable value",()=>withRoot(async root=>{
+  const option=k1AdmissionPreparationOption();
+  const observed:string[]=[];let published=0,retired=0,callbacks=0;
+  const result=await new RawFsAuthorityLedger(root,{[option]:{mode:"legacy"},now:()=>t0,lockTimeoutMs:2_000,faultInjector:(point:string)=>{
+    observed.push(point);
+    if(point==="after-lock-publication-root-sync")published++;
+    if(point==="after-lock-retire")retired++;
+    if(point==="before-ledger-operation-callback")callbacks++;
+  }} as never).observeClock();
+  assert.deepEqual(result,{ok:true,status:"advanced",observedAt:new Date(t0).toISOString()});
+  assert.deepEqual(observed.filter(point=>(K1_ADMISSION_PREPARATION_POINTS as readonly string[]).includes(point)),[],"no admission-preparation boundary fires under the exact disable value");
+  assert.deepEqual({published,retired,callbacks},{published:1,retired:1,callbacks:1},"the disable value keeps the pre-K1 clean-root shape");
+  assert.deepEqual(livePrepNames(await readdir(root)),[],"no preparation is created under the disable value");
+  assert.equal(existsSync(path.join(root,".authority-ledger-admission-0")),false,"no fixed slot is created under the disable value");
+}));
+
+// The post-flip unknown-value semantics, decided and pinned BEFORE the flip makes them live (the
+// Batch D task-1 pin): an unrecognized admission-preparation runtime value refuses construction
+// with a TypeError -- fail closed, no silent mode selection -- while undefined and the two exact
+// literals keep their meanings. Measured before pinning: every committed constructor passes either
+// nothing or the exact ON literal, so the throw breaks no committed fixture. The pin enforces the
+// refusal AT CONSTRUCTION (assert.throws wraps only the constructor); the implementation places it
+// before any filesystem access, and the injector/byte-identical assertions guard the closed half.
+test("an unrecognized admission-preparation runtime value refuses construction with a TypeError",()=>withRoot(async root=>{
+  const option=k1AdmissionPreparationOption();
+  const junk:readonly unknown[]=[null,{},{mode:"unknown"},{mode:"legacy",extra:true},{mode:"prepare-and-promote",extra:true},{mode:1},{mode:null},"legacy","prepare-and-promote",true,1,[],Symbol("mode")];
+  const before=await snapshotRootArtifacts(root);
+  for(const [index,value] of junk.entries()){
+    let hooks=0;
+    assert.throws(()=>new RawFsAuthorityLedger(root,{[option]:value,now:()=>t0,lockTimeoutMs:2_000,faultInjector:()=>{hooks++;}} as never),TypeError,`junk ${index} refuses construction`);
+    assert.equal(hooks,0,`junk ${index} never reaches the injector`);
+  }
+  assert.deepEqual(await snapshotRootArtifacts(root),before,"refused construction mutates nothing");
+}));
