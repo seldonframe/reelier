@@ -34,7 +34,8 @@ statements about the product. Read this section before answering any capability 
 
 **Path A is the differentiator.** One `install` covers every MCP server in the agent's config. No
 per-agent, per-tool rebuild. Every DIY equivalent operators build is bound to the one system it was
-written for.
+written for. The load-bearing word is *config*: plugin-delivered MCP servers load from plugin-owned
+manifests `install` does not inspect, and are outside the observed boundary (§7.6).
 
 **Path A is also where the fail-open gap lives.** See §7.
 
@@ -129,6 +130,19 @@ Ops note: **no auto-migrate wiring** — migrations are applied by hand after me
 5. **Content correctness is out of scope by charter** (safety-atoms never-ours: live intent, content
    correctness, credential scoping, blast-radius topology, rollback execution). Reelier cannot know a
    minimum price is €X.
+6. **Plugin-delivered MCP calls are outside the observed boundary.** (Added 2026-08-06.) Reelier
+   `install` wraps MCP entries it finds in supported host configuration files. It does not inspect
+   plugin-owned MCP manifests — Claude Code plugins carry their own `.mcp.json` (or inline
+   `plugin.json` config; code.claude.com/docs/en/plugins-reference, read 2026-08-06), and the
+   **Agent Plugins** standard (v1.0.0, agent-plugins.org, announced 2026-08-06; launch clients
+   include Codex, ChatGPT, Cursor, GitHub Copilot, Kiro, VS Code) packages MCP servers in a
+   plugin-owned `mcp.json`. Plugin-delivered calls are therefore outside Reelier's observed
+   boundary unless the plugin itself invokes `reelier mcp --wrap`, or the host exposes the entry
+   through a supported configuration and Reelier subsequently rewrites it. Reelier currently has
+   no native wrapping path for URL-based MCP servers. Receipts attest only calls that traversed
+   Reelier; they do not prove that every host or plugin write was observed (§8's completeness
+   entry). Proposed response: `docs/specs/agent-plugins-coverage-v1.md`. Research:
+   `~/CascadeProjects/research/2026-08-06-agent-plugins-wrap-coverage/`.
 
 ## 8. Designed, NOT built — never describe these as shipped
 
@@ -203,6 +217,7 @@ moves; re-check them by hash rather than by reading. **If a hash moved, the clai
 | Dead-rule detection exists but only reaches stderr | 7.4 | `findUnmatchedToolRules` (`src/policy.ts`) |
 | Malformed-policy gap marker exists in the trace only | 2 | `TraceRecord` (`src/recorder.ts`) |
 | `install` rewrites every MCP server entry, idempotent + backed up | 2 | `planInstall` / `applyInstall` (`src/wrap.ts`) |
+| Plugin-owned MCP manifests are outside every config `install` inspects | 7.6 | `knownMcpConfigPaths` (`src/init.ts`) |
 
 Dependency note: mex is ~690 downloads/week with a single maintainer. Fine as a droppable local tool;
 never make it load-bearing. If it disappears, 10.1 still works.
