@@ -3400,7 +3400,7 @@ test("the creator-withdrawal chain completes for dead owners from every crash st
   const runChain=async(root:string,entry:"observe"|"recover")=>{
     let slotSyncs=0,withdrawalSyncs=0,callbacks=0,result;
     for(let attempt=0;attempt<3;attempt++){
-      const ledger=new RawFsAuthorityLedger(root,{now:()=>t0+1_000,lockTimeoutMs:2_000,faultInjector:(point:string)=>{if(point==="after-admission-slot-retire-cleanup-root-sync")slotSyncs++;if(point==="after-creator-withdrawal-cleanup-root-sync")withdrawalSyncs++;if(point==="before-ledger-operation-callback")callbacks++;}} as never);
+      const ledger=new RawFsAuthorityLedger(root,{[k1AdmissionPreparationOption()]:K1_ADMISSION_PREPARATION_LEGACY,now:()=>t0+1_000,lockTimeoutMs:2_000,faultInjector:(point:string)=>{if(point==="after-admission-slot-retire-cleanup-root-sync")slotSyncs++;if(point==="after-creator-withdrawal-cleanup-root-sync")withdrawalSyncs++;if(point==="before-ledger-operation-callback")callbacks++;}} as never);
       result=entry==="recover"?await ledger.recover():await ledger.observeClock();
       if(result.ok||result.reason!=="busy")break;
       await new Promise(resolve=>setTimeout(resolve,100));
@@ -3426,7 +3426,7 @@ test("the creator-withdrawal chain completes for dead owners from every crash st
       await assertDrained(root,state);
     });});
     await t.test(`${state} dead warm observe completes`,async()=>{const owner:AdmissionOwner={host:hostname(),nonce:"c".repeat(64),pid:await exitedProcessPid(),v:1};await withRoot(async root=>{
-      assert.equal((await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:2_000}).observeClock()).ok,true,"the warming acquisition succeeds");
+      assert.equal((await new RawFsAuthorityLedger(root,{[k1AdmissionPreparationOption()]:K1_ADMISSION_PREPARATION_LEGACY,now:()=>t0,lockTimeoutMs:2_000} as never).observeClock()).ok,true,"the warming acquisition succeeds");
       await seedChainState(root,owner,state);
       const {result,slotSyncs,withdrawalSyncs}=await runChain(root,"observe");
       assert.deepEqual(result,{ok:true,status:"advanced",observedAt:new Date(t0+1_000).toISOString()},state);
