@@ -3628,7 +3628,7 @@ test("option-gated creator terminal failure after slot creation completes its ow
     assert.equal(names.some(name=>name.startsWith(".authority-ledger-creator-withdrawal-")&&name.endsWith(`.${scenario.state}`)),true,"the sub-complete terminal remains");
     let result,slotSyncs=0,withdrawalSyncs=0;const order:string[]=[];
     for(let attempt=0;attempt<3;attempt++){
-      const ledger=new RawFsAuthorityLedger(root,{now:()=>t0+1_000,lockTimeoutMs:2_000,faultInjector:(p:string)=>{if(p==="after-admission-slot-retire-cleanup-root-sync"){slotSyncs++;order.push("slot-sync");}if(p==="after-creator-withdrawal-cleanup-root-sync"){withdrawalSyncs++;order.push("withdrawal-sync");}}} as never);
+      const ledger=new RawFsAuthorityLedger(root,{[k1AdmissionPreparationOption()]:K1_ADMISSION_PREPARATION_LEGACY,now:()=>t0+1_000,lockTimeoutMs:2_000,faultInjector:(p:string)=>{if(p==="after-admission-slot-retire-cleanup-root-sync"){slotSyncs++;order.push("slot-sync");}if(p==="after-creator-withdrawal-cleanup-root-sync"){withdrawalSyncs++;order.push("withdrawal-sync");}}} as never);
       result=scenario.entry==="recover"?await ledger.recover():await ledger.observeClock();
       if(result.ok||result.reason!=="busy")break;
       await new Promise(resolve=>setTimeout(resolve,100));
