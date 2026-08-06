@@ -1760,7 +1760,7 @@ test("pre-admission housekeeper preserves a live abandoned marker without ack as
 test("withdrawn slot and creator-withdrawal cleanup recognizes exactly eight evidence-bound crash states",async t=>{
   const states=["slot-withdrawal","slot-withdrawal-slot-stage","slot-withdrawal-slot-ack","withdrawal-slot-ack","withdrawal-slot-ack-withdrawal-stage","withdrawal-both-acks","withdrawal-withdrawal-ack","orphan-withdrawal-ack"] as const;
   for(const [index,state] of states.entries())await t.test(state,()=>withRoot(async root=>{
-    const owner={host:hostname(),nonce:(index+6).toString(16).repeat(64),pid:process.pid,v:1 as const},withdrawalName=creatorWithdrawalName(owner,"partial"),withdrawal=path.join(root,withdrawalName),slotName=admissionRetiredName(owner,"withdrawn"),slot=path.join(root,slotName);
+    const owner={host:hostname(),nonce:(index+6).toString(16).repeat(64),pid:await exitedProcessPid(),v:1 as const},withdrawalName=creatorWithdrawalName(owner,"partial"),withdrawal=path.join(root,withdrawalName),slotName=admissionRetiredName(owner,"withdrawn"),slot=path.join(root,slotName);
     await mkdir(withdrawal);await writeFile(path.join(withdrawal,"owner.json"),ownerStateBytes(owner,"partial"));await mkdir(slot);await writeFile(path.join(slot,"owner.json"),publicationOwnerBytes(owner));
     const slotAck=slotCoordinationAck(owner,slotName,slot,"withdrawn",withdrawalName,ownerStateBytes(owner,"partial")),slotAckPath=path.join(root,coordinationAckName(slotAck)),slotStage=path.join(root,coordinationStageName(slotAck,"slot-retired"));
     if(state==="slot-withdrawal-slot-stage")await writeFile(slotStage,authorityCanonicalBytes(slotAck));
@@ -1770,7 +1770,7 @@ test("withdrawn slot and creator-withdrawal cleanup recognizes exactly eight evi
     if(state==="withdrawal-slot-ack-withdrawal-stage")await writeFile(withdrawalStage,authorityCanonicalBytes(withdrawalAck));
     if(["withdrawal-both-acks","withdrawal-withdrawal-ack","orphan-withdrawal-ack"].includes(state))await writeFile(withdrawalAckPath,authorityCanonicalBytes(withdrawalAck));
     if(["withdrawal-withdrawal-ack","orphan-withdrawal-ack"].includes(state))await rm(slotAckPath,{force:true});if(state==="orphan-withdrawal-ack")await rm(withdrawal,{recursive:true});
-    let callbacks=0;const result=await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:200,faultInjector:(point:string)=>{if(point==="before-ledger-operation-callback")callbacks++;}} as never).observeClock();assert.deepEqual(result,{ok:true,status:"advanced",observedAt:new Date(t0).toISOString()},state);assert.equal(callbacks,1,state);for(const target of [slot,slotStage,slotAckPath,withdrawal,withdrawalStage,withdrawalAckPath])assert.equal(existsSync(target),false,`${state}:${path.basename(target)}`);
+    let callbacks=0,result;for(let attempt=0;attempt<3;attempt++){result=await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:200,faultInjector:(point:string)=>{if(point==="before-ledger-operation-callback")callbacks++;}} as never).observeClock();if(result.ok||result.reason!=="busy")break;await new Promise(resolve=>setTimeout(resolve,100));}assert.deepEqual(result,{ok:true,status:"advanced",observedAt:new Date(t0).toISOString()},state);assert.equal(callbacks,1,state);for(const target of [slot,slotStage,slotAckPath,withdrawal,withdrawalStage,withdrawalAckPath])assert.equal(existsSync(target),false,`${state}:${path.basename(target)}`);
   }));
 });
 

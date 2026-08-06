@@ -800,21 +800,21 @@ of the ledger suite is the standing guard (parity oracles plus fresh-busy anchor
 re-widening nor a regression to corruption can ship silently). Derivation:
 `docs/superpowers/plans/2026-08-05-withdrawal-chain-measured.md` §4.
 
-**Open discrepancy — the eight-state matrix's live fixtures against the live-preservation family
-(D5).** Found 2026-08-05 (Batch B) while scoping the chain build: the committed eight-state test
-(`ledger.test.ts:1760`, expects `advanced` with full drainage, owner pid LIVE — the test
-process's own) is contradicted shape-for-shape by the committed GREEN live-preservation family
-(`:1135`, `:1140`, `:1143`, `:1154`, `:1156`, `:1158`, `:1167`, `:1170` withdrawn case), which
-pins byte-identical bounded `busy` for the same residues with the same live same-pid owners. The
-D1(a) grant's own words — "the creator-withdrawal chain completes only through the creator's own
-acquisition or a DEAD-OWNER housekeeping route" — read with the exact-creator-snapshot rule (a
-new ledger instance in the same PID is not the creator) support the preservation family and imply
-`:1760` should be re-fixtured to dead owners exactly as `:1746` is; but the grant names only
-`:1746`, so the re-fixture is the owner's call: EITHER (a) re-fixture `:1760`'s eight subtests to
-dead owners, keeping every drainage and ordering assertion, zero green pins flip — the
-recommended, minimal-flip reading — OR (b) grant same-process progression, which flips the nine
-green preservation pins above. Until decided, the chain build proceeds with the dead-owner route
-and the creator's own in-flight failure path only, and `:1760` stays red as fixtured.
+**Resolved 2026-08-06 (Batch C) — the eight-state matrix's live fixtures against the
+live-preservation family (D5, owner grant (a)).** Found 2026-08-05 (Batch B): the committed
+eight-state test (`ledger.test.ts:1760`, expects `advanced` with full drainage, owner pid LIVE)
+was contradicted shape-for-shape by the committed GREEN live-preservation family (`:1135`,
+`:1140`, `:1143`, `:1154`, `:1156`, `:1158`, `:1167`, `:1170` withdrawn case), which pins
+byte-identical bounded `busy` for the same residues with live same-pid owners. The owner granted
+(a): `:1760`'s eight subtests were re-fixtured to dead owners in the same commit that made them
+satisfiable — the same sanctioned transformation `:1746` received under D1(a) — keeping every
+drainage, signal-count, and full-drain assertion; the live-preservation family (`:1135`–`:1170`)
+and `:1022` stand verbatim; zero green pins flipped. All eight states plus the parent went green
+by name against the recorded floor (619/59 → 628/50). One fixture amendment rode the commit,
+named: the drive settles over up to three attempts on retryable bounded `busy` (the B2c
+completion-oracle pattern; corruption and completion stay terminal on first sight, and the
+callback counter stays exact because the callback fires only on the completing acquisition) —
+the single-attempt drive was measured flaking once in eight runs under suite load.
 
 **Recorded 2026-08-05 (Batch B GREEN review) — the seventh fresh-root-blindness instance, the
 abandoned family (D6, unfixed).** The `abandoned` slot-retired branch and its orphan-final twin

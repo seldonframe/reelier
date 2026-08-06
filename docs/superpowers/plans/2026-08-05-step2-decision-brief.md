@@ -182,3 +182,11 @@ registry-completeness pin is GREEN. Remaining before the flip: the K1 creator-si
 continuation (the W1-window acceptance criterion), the S4 re-spec, and the contention gates.
 Open on the owner's desk: D5 (the `:1760` re-fixture), D6, D2, and the housekeeping-permission
 question.
+
+**2026-08-06 update (Batch C) — B2b SHIPPED (the W1 acceptance criterion holds: zero wedged
+cells in the reviewer's 82-cell crash matrix), D5(a) PERFORMED (the eight `:1760` states plus
+parent green by name, 619/59 → 628/50, zero green pins flipped, resolved in the spec beside
+D4).** Still open on the owner's desk: D2, the housekeeping-permission question, the D6
+contingent grant (its A/B is next in this batch), and — new this batch, recorded for
+ratification — the empty-terminal grant's ack-binding-validator widening (spec, beside the
+empty-terminal resolution).
