@@ -1,6 +1,6 @@
 {
   "target": "dist-test/test/authority/ledger.test.js",
-  "pass": 583,
+  "pass": 597,
   "fail": 59,
   "failing": [
     "active owner treats atomic complete withdrawal as membership change, never corruption",
