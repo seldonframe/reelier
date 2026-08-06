@@ -736,6 +736,50 @@ seal" note.** Each clause below is forced by a committed pin or a measurement; t
    `publication-aborted` marker instead of being removed. Sub-complete dead external stages keep
    the current authorized removal; no pin constrains them (measured 2026-08-05).
 
+**Resolved 2026-08-06 (Batch D) — the dead-stage withdrawal route, owner grant.** Clause 6 covers
+an EXTERNAL stage with no slot. The K1 shape it did not cover is the one every hard exit at the
+five stage-construction boundaries actually leaves: `fixed slot + its SAME-OWNER publication
+stage`. Measured on this tree (24-cell probe: the five stage-construction boundaries plus the complete
+form's post-withdrawal landing shape, × warm/fresh × both entry points, zero probe errors): every
+one of the twenty stage cells was permanently bounded `busy` from `observeClock` AND `recover()` —
+the S4 re-spec's class-3 wedge and the flip's one operational regression. The owner
+granted: a DEAD-owner sub-complete or complete stage beside its same-owner fixed slot may be
+withdrawn by any contender through this same typed atomic withdrawal protocol — the seal, then the
+one state-selected terminal rename — producing the W1 window the shipped chain completes.
+Dead-PID-gated at derivation and at dispatch like every sibling route; a LIVE owner's stage stays
+byte-identical from both entry points, held by its own pin; a cross-owner stage beside the slot
+grants nothing and stays preserved corruption, also pinned. Sub-complete dead EXTERNAL stages
+without a slot keep the clause-6 authorized removal above, verbatim and unchanged.
+
+The route adds no fault point (the frozen 58/125 registry is untouched) because it reuses the
+clause-6 seal and rename, which already carry `before/after-creator-withdrawal-seal` and
+`before/after-creator-withdrawal-rename`; it syncs the ledger root itself and fires
+`after-creator-withdrawal-root-sync` there, unlike the clause-6 path where the publication
+settlement loop owns that sync. **It does add a new EMISSION SITE for an existing point, and that
+is a contract change even though the registry did not move:** `before-publication-stage-validation`
+now fires three times from the pre-admission housekeeping path — once for the route's own target
+validation and twice inside the seal — before any `after-publication-stage-enumeration`. On the
+complete form the acquisition then answers `busy` from the legacy drain and never enumerates at
+all. The committed ordering pin ("publication-stage classification hooks are live and refuse
+same-name identity replacement") asserts enumeration-then-validations and stays green only because
+its fixture is a lone external stage with no slot, which cannot reach this route — so it is now
+fixture-local rather than the invariant it reads as, and the emission shape is pinned instead in
+the dead-stage family, where it can fail. **The two terminal shapes land differently, and the pins say so
+rather than averaging them:** a SUB-COMPLETE stage renames to the same-owner creator-withdrawal
+terminal, so the W1 dead-owner route retires the slot `withdrawn` and the chain drains the whole
+graph inside the same acquisition (`observeClock` completes). A COMPLETE stage renames to the
+`.publication-aborted` marker, which the legacy machinery drains, leaving the BARE SLOT — the
+recover-reserved `abandoned` family. So `observeClock` progresses the complete form and still
+answers bounded `busy`; `recover()` heals it. That is the unwedging, stated exactly: the root
+becomes recoverable instead of permanently busy from every entry, and no observeClock abandoned-slot
+retirement authority is granted here (that remains the open housekeeping-permission question). The
+committed green pin `test/authority/ledger.test.ts:1020` ("dead exact slot plus same-owner stage is
+recoverable but unsupported") flipped in the same commit, named: it keeps its result and its
+zero-callback and zero-semantic-clock halves, and its untouched-root, zero-mutation, and
+snapshot-pairing halves become the measured progressed shape — one opened epoch, two closed
+generations (the transition's and the settled pass's), which is this section's
+one-transition-per-closed-generation rule made visible.
+
 **Not self-contained — updated 2026-08-05, and SHIPPED the same day.** Chain steps 1 to 3
 require the fixed slot to retire as `withdrawn` through the `before/after-admission-slot-retire-*`
 points, and `ledger.test.ts:1746` pins one slot-retirement point and one creator-withdrawal

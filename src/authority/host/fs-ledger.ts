@@ -203,6 +203,7 @@ declare const slotRetirementAuthorityBrand: unique symbol;
 declare const slotRetiredCleanupAuthorityBrand: unique symbol;
 declare const loneWithdrawalRetirementAuthorityBrand: unique symbol;
 declare const withdrawalCleanupAuthorityBrand: unique symbol;
+declare const deadStageWithdrawalAuthorityBrand: unique symbol;
 type PrepCreatorAttemptToken=Readonly<{readonly [prepAttemptTokenBrand]:never}>;
 type PrepRetirementAuthority=Readonly<{readonly [prepRetirementAuthorityBrand]:never}>;
 type PrepRetiredCleanupAuthority=Readonly<{readonly [prepRetiredCleanupAuthorityBrand]:never}>;
@@ -210,6 +211,7 @@ type SlotRetirementAuthority=Readonly<{readonly [slotRetirementAuthorityBrand]:n
 type SlotRetiredCleanupAuthority=Readonly<{readonly [slotRetiredCleanupAuthorityBrand]:never}>;
 type LoneWithdrawalRetirementAuthority=Readonly<{readonly [loneWithdrawalRetirementAuthorityBrand]:never}>;
 type WithdrawalCleanupAuthority=Readonly<{readonly [withdrawalCleanupAuthorityBrand]:never}>;
+type DeadStageWithdrawalAuthority=Readonly<{readonly [deadStageWithdrawalAuthorityBrand]:never}>;
 type PrepHousekeepingRoute=
   |Readonly<{kind:"silent"}>
   |Readonly<{kind:"no-authority"}>
@@ -218,6 +220,7 @@ type PrepHousekeepingRoute=
   |Readonly<{kind:"dead-slot";retirementAuthority:SlotRetirementAuthority}>
   |Readonly<{kind:"retired-slot";cleanupAuthority:SlotRetiredCleanupAuthority}>
   |Readonly<{kind:"lone-withdrawal";retirementAuthority:LoneWithdrawalRetirementAuthority}>
+  |Readonly<{kind:"dead-stage-withdrawal";retirementAuthority:DeadStageWithdrawalAuthority}>
   |Readonly<{kind:"withdrawal-cleanup";cleanupAuthority:WithdrawalCleanupAuthority}>;
 type PrepAuthorityDescriptor=
   |Readonly<{kind:"dead-prep";targetName:string;pid:number}>
@@ -225,6 +228,7 @@ type PrepAuthorityDescriptor=
   |Readonly<{kind:"dead-slot";targetName:typeof ADMISSION_SLOT_NAME;pid:number;disposition:"abandoned"|"published"|"withdrawn";terminalName:string|null}>
   |Readonly<{kind:"slot-retired-cleanup";targetName:string;lifecycleName:string|null;orphan:boolean;pid:number;disposition:"abandoned"|"published"|"withdrawn";successorName:string|null}>
   |Readonly<{kind:"lone-withdrawal";targetName:string;pid:number}>
+  |Readonly<{kind:"dead-stage-withdrawal";targetName:string;pid:number;nonce:string}>
   |Readonly<{kind:"withdrawal-cleanup";targetName:string;terminalKind:"withdrawal"|"aborted";pid:number;slotAckName:string|null;lifecycleName:string|null}>;
 interface PrepAuthorityBinding {readonly snapshot:HybridRootSnapshot;readonly descriptor:PrepAuthorityDescriptor}
 // The promoted slot's frozen creation snapshot (spec :486-498): the private, in-memory authority
@@ -243,6 +247,7 @@ const prepRetiredCleanupAuthorityBindings=new WeakMap<object,PrepAuthorityBindin
 const slotRetirementAuthorityBindings=new WeakMap<object,PrepAuthorityBinding>();
 const slotRetiredCleanupAuthorityBindings=new WeakMap<object,PrepAuthorityBinding>();
 const loneWithdrawalRetirementAuthorityBindings=new WeakMap<object,PrepAuthorityBinding>();
+const deadStageWithdrawalAuthorityBindings=new WeakMap<object,PrepAuthorityBinding>();
 const withdrawalCleanupAuthorityBindings=new WeakMap<object,PrepAuthorityBinding>();
 const k1OperationFenceBindings=new WeakMap<object,K1OperationFenceGeneration>();
 const activeK1OperationFences=new Set<string>();
@@ -1468,6 +1473,10 @@ export class FsAuthorityLedger implements AuthorityLedger {
       this.prepHousekeeperRuntime.observeBoundary?.("withdrawal-only-lone-retirement-authority-dead-owner");
       return this.transitionPrepHousekeeping(route.retirementAuthority,permitWrite,budgetLive);
     }
+    if(route.kind==="dead-stage-withdrawal"){
+      this.prepHousekeeperRuntime.observeBoundary?.("withdrawal-only-dead-stage-withdrawal-authority-dead-owner");
+      return this.transitionPrepHousekeeping(route.retirementAuthority,permitWrite,budgetLive);
+    }
     if(route.kind==="withdrawal-cleanup"){
       this.prepHousekeeperRuntime.observeBoundary?.("withdrawal-only-chain-cleanup-authority-dead-owner");
       return this.transitionPrepHousekeeping(route.cleanupAuthority,permitWrite,budgetLive);
@@ -1475,11 +1484,11 @@ export class FsAuthorityLedger implements AuthorityLedger {
     return "busy";
   }
 
-  private async transitionPrepHousekeeping(authority:PrepRetirementAuthority|PrepRetiredCleanupAuthority|SlotRetirementAuthority|SlotRetiredCleanupAuthority|LoneWithdrawalRetirementAuthority|WithdrawalCleanupAuthority,permitWrite:boolean,budgetLive:boolean):Promise<"busy"|"progress"|"reclassify"|"refuse">{
-    const retirement=prepRetirementAuthorityBindings.get(authority),cleanup=prepRetiredCleanupAuthorityBindings.get(authority),slotRetirement=slotRetirementAuthorityBindings.get(authority),slotCleanup=slotRetiredCleanupAuthorityBindings.get(authority),loneWithdrawal=loneWithdrawalRetirementAuthorityBindings.get(authority),withdrawalCleanup=withdrawalCleanupAuthorityBindings.get(authority),binding=retirement??cleanup??slotRetirement??slotCleanup??loneWithdrawal??withdrawalCleanup;
-    prepRetirementAuthorityBindings.delete(authority);prepRetiredCleanupAuthorityBindings.delete(authority);slotRetirementAuthorityBindings.delete(authority);slotRetiredCleanupAuthorityBindings.delete(authority);loneWithdrawalRetirementAuthorityBindings.delete(authority);withdrawalCleanupAuthorityBindings.delete(authority);
+  private async transitionPrepHousekeeping(authority:PrepRetirementAuthority|PrepRetiredCleanupAuthority|SlotRetirementAuthority|SlotRetiredCleanupAuthority|LoneWithdrawalRetirementAuthority|WithdrawalCleanupAuthority|DeadStageWithdrawalAuthority,permitWrite:boolean,budgetLive:boolean):Promise<"busy"|"progress"|"reclassify"|"refuse">{
+    const retirement=prepRetirementAuthorityBindings.get(authority),cleanup=prepRetiredCleanupAuthorityBindings.get(authority),slotRetirement=slotRetirementAuthorityBindings.get(authority),slotCleanup=slotRetiredCleanupAuthorityBindings.get(authority),loneWithdrawal=loneWithdrawalRetirementAuthorityBindings.get(authority),withdrawalCleanup=withdrawalCleanupAuthorityBindings.get(authority),deadStage=deadStageWithdrawalAuthorityBindings.get(authority),binding=retirement??cleanup??slotRetirement??slotCleanup??loneWithdrawal??withdrawalCleanup??deadStage;
+    prepRetirementAuthorityBindings.delete(authority);prepRetiredCleanupAuthorityBindings.delete(authority);slotRetirementAuthorityBindings.delete(authority);slotRetiredCleanupAuthorityBindings.delete(authority);loneWithdrawalRetirementAuthorityBindings.delete(authority);withdrawalCleanupAuthorityBindings.delete(authority);deadStageWithdrawalAuthorityBindings.delete(authority);
     if(binding===undefined)return "busy";
-    const slotOnly=binding.descriptor.kind==="dead-slot"||binding.descriptor.kind==="slot-retired-cleanup",prefix=binding.descriptor.kind==="lone-withdrawal"||binding.descriptor.kind==="withdrawal-cleanup"?"withdrawal-only":slotOnly?"slot-only":"prep-only";
+    const slotOnly=binding.descriptor.kind==="dead-slot"||binding.descriptor.kind==="slot-retired-cleanup",prefix=binding.descriptor.kind==="lone-withdrawal"||binding.descriptor.kind==="withdrawal-cleanup"||binding.descriptor.kind==="dead-stage-withdrawal"?"withdrawal-only":slotOnly?"slot-only":"prep-only";
     const first=await this.revalidatePrepHousekeepingAuthority(binding);
     this.prepHousekeeperRuntime.observeBoundary?.(`${prefix}-before-transition`);
     const second=await this.revalidatePrepHousekeepingAuthority(binding);
@@ -1506,14 +1515,14 @@ export class FsAuthorityLedger implements AuthorityLedger {
     // tests pin a lock-seeking operation to leave those byte-identical.
     if(!permitWrite&&!(budgetLive&&(this.mayAdvanceDeadPrepCleanup(binding)||this.mayDrainPublishedSlot(binding)||this.mayProgressWithdrawalChain(binding)))){this.prepHousekeeperRuntime.observeBoundary?.(`${prefix}-transition-refused`);return "busy";}
     if(binding.descriptor.kind==="dead-slot"&&processLiveness(binding.descriptor.pid)!=="dead"){this.prepHousekeeperRuntime.observeBoundary?.("slot-only-transition-refused");return "busy";}
-    if((binding.descriptor.kind==="lone-withdrawal"||binding.descriptor.kind==="withdrawal-cleanup")&&processLiveness(binding.descriptor.pid)!=="dead"){this.prepHousekeeperRuntime.observeBoundary?.("withdrawal-only-transition-refused");return "busy";}
+    if((binding.descriptor.kind==="lone-withdrawal"||binding.descriptor.kind==="withdrawal-cleanup"||binding.descriptor.kind==="dead-stage-withdrawal")&&processLiveness(binding.descriptor.pid)!=="dead"){this.prepHousekeeperRuntime.observeBoundary?.("withdrawal-only-transition-refused");return "busy";}
     const capability=this.activeK1OperationCapability,generation=capability===null?undefined:k1OperationFenceBindings.get(capability);if(capability===null||generation?.status!=="acting"){this.prepHousekeeperRuntime.observeBoundary?.(`${prefix}-transition-refused`);return "refuse";}
     if(await this.hasK1WriterResidue()){this.prepHousekeeperRuntime.observeBoundary?.(`${prefix}-transition-refused`);return "refuse";}
     const authorityState=await this.revalidatePrepHousekeepingAuthority(binding);if(authorityState!=="exact"){this.prepHousekeeperRuntime.observeBoundary?.(`${prefix}-transition-refused`);return authorityState==="corruption"?"refuse":"reclassify";}
     if(!generation.protectedTransitionCompleted)await this.observeActiveK1OperationFenceBoundary("k1-operation-fence-only-target-final-revalidated");
     this.prepHousekeeperRuntime.observeBoundary?.(`${prefix}-after-final-revalidation`);
     if(!generation.protectedTransitionCompleted)await this.observeActiveK1OperationFenceBoundary("k1-operation-fence-only-target-mutation");
-    const result:PrepTransitionResult=binding.descriptor.kind==="dead-prep"?await this.retireBoundPrep(binding):binding.descriptor.kind==="prep-retired-cleanup"?await this.advanceBoundPrepCleanup(binding):binding.descriptor.kind==="dead-slot"?await this.retireBoundSlot(binding):binding.descriptor.kind==="lone-withdrawal"?await this.retireBoundLoneWithdrawal(binding):binding.descriptor.kind==="withdrawal-cleanup"?await this.advanceBoundWithdrawalCleanup(binding):await this.advanceBoundSlotCleanup(binding);
+    const result:PrepTransitionResult=binding.descriptor.kind==="dead-prep"?await this.retireBoundPrep(binding):binding.descriptor.kind==="prep-retired-cleanup"?await this.advanceBoundPrepCleanup(binding):binding.descriptor.kind==="dead-slot"?await this.retireBoundSlot(binding):binding.descriptor.kind==="lone-withdrawal"?await this.retireBoundLoneWithdrawal(binding):binding.descriptor.kind==="dead-stage-withdrawal"?await this.withdrawBoundDeadStage(binding):binding.descriptor.kind==="withdrawal-cleanup"?await this.advanceBoundWithdrawalCleanup(binding):await this.advanceBoundSlotCleanup(binding);
     if(result==="progress"&&!generation.protectedTransitionCompleted){await this.observeActiveK1OperationFenceBoundary("k1-operation-fence-only-target-root-synced");generation.protectedTransitionCompleted=true;}
     else if(result==="busy")this.prepHousekeeperRuntime.observeBoundary?.(`${prefix}-transition-refused`);
     return result;
@@ -1539,6 +1548,10 @@ export class FsAuthorityLedger implements AuthorityLedger {
   private mayProgressWithdrawalChain(binding:PrepAuthorityBinding):boolean{
     const descriptor=binding.descriptor;
     if(descriptor.kind==="lone-withdrawal"||descriptor.kind==="withdrawal-cleanup")return processLiveness(descriptor.pid)==="dead";
+    // The dead-stage withdrawal (Batch D grant) is chain step 0 of the same D1(a) family: it mints
+    // the W1 window the rest of the chain already completes, so it carries the same
+    // any-contender, dead-PID-gated bound rather than a new permission class.
+    if(descriptor.kind==="dead-stage-withdrawal")return processLiveness(descriptor.pid)==="dead";
     // The W1 window's retirement (Batch C) is chain step 1 of the same D1(a) family.
     if(descriptor.kind==="dead-slot"&&descriptor.disposition==="withdrawn")return processLiveness(descriptor.pid)==="dead";
     return descriptor.kind==="slot-retired-cleanup"&&descriptor.disposition==="withdrawn"&&processLiveness(descriptor.pid)==="dead";
@@ -1701,6 +1714,47 @@ export class FsAuthorityLedger implements AuthorityLedger {
     await this.syncDirectory(this.root);
     this.prepHousekeeperRuntime.observeBoundary?.("withdrawal-only-lone-retirement-root-synced");
     this.fault("after-pre-admission-housekeeping-marker-root-sync");
+    return "progress";
+  }
+
+  // The dead-stage withdrawal (Batch D, owner grant 2026-08-06). The stage is withdrawn through the
+  // SAME typed atomic protocol the clause-6 external route uses — exact revalidation, the seal, one
+  // atomic whole-directory rename to the state-selected terminal — so no new durability shape and
+  // no new fault point enters the contract. The ledger-root sync is performed here, unlike the
+  // clause-6 path where `settlePublicationStages` owns it, because a housekeeping transition syncs
+  // its own root (the spec's "sync the ledger root after that transition" and every sibling above).
+  // Returning "progress" restarts full classification inside the same acquisition: a sub-complete
+  // terminal presents the W1 window (slot + same-owner withdrawal terminal), which the shipped
+  // dead-slot `withdrawn` route and chain drain; a complete terminal presents the aborted marker,
+  // which the legacy machinery drains, leaving the bare slot to the recover-reserved `abandoned`
+  // family — the standing housekeeping-permission bound, deliberately untouched.
+  private async withdrawBoundDeadStage(binding:PrepAuthorityBinding):Promise<"progress"|"reclassify"|"refuse">{
+    const descriptor=binding.descriptor;
+    if(descriptor.kind!=="dead-stage-withdrawal")throw new LedgerCorruption("invalid dead stage withdrawal binding");
+    const stageEntry=binding.snapshot.entries.find(value=>value.name===descriptor.targetName);
+    if(stageEntry===undefined)throw new LedgerCorruption("dead stage withdrawal binding lost its exact target");
+    let current:PublicationStage;
+    try{current=await this.validatePublicationStage(descriptor.targetName);}
+    catch(error){if(hasCode(error,"ENOENT")||isSnapshotSharingError(error))return "reclassify";throw error;}
+    // The bound snapshot is the whole authority: a stage whose identity or owner bytes moved since
+    // the closed generation is post-snapshot churn, never this route's target.
+    if(!sameFileIdentity(stageEntry.identity,current.directoryIdentity)||current.pid!==descriptor.pid||current.nonce!==descriptor.nonce)return "reclassify";
+    const boundOwner=hybridOwnerChild(stageEntry);
+    if((boundOwner?.bytes===undefined)!==(current.ownerBytes===undefined))return "reclassify";
+    if(boundOwner?.bytes!==undefined&&current.ownerBytes!==undefined&&(!boundOwner.bytes.equals(current.ownerBytes)||!sameFileIdentity(boundOwner.identity,current.ownerIdentity!)))return "reclassify";
+    const sealed=await this.sealPublicationStageForWithdrawal(current);
+    if(sealed===null)return "reclassify";
+    // A present destination RECLASSIFIES here, where the clause-6 caller throws corruption for the
+    // identical condition, and the divergence is deliberate: there the settlement loop enumerated
+    // the generation itself in the same pass and has no restart channel, so a collision means the
+    // invariant broke. Here it means a peer contender performed the same granted, dead-PID-gated
+    // withdrawal — restarting classification lets the shipped chain drain the peer's terminal,
+    // whereas throwing would convert benign peer progress into permanent corruption under
+    // contention, re-wedging the exact root this route exists to unwedge.
+    if(await this.renameSealedWithdrawal(sealed)==="destination-present")return "reclassify";
+    await this.syncDirectory(this.root);
+    this.prepHousekeeperRuntime.observeBoundary?.("withdrawal-only-dead-stage-withdrawal-root-synced");
+    this.fault("after-creator-withdrawal-root-sync");
     return "progress";
   }
 
@@ -1997,7 +2051,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
     if(relation!=="unchanged"||decision!=="busy")return "busy";
     const descriptor=describeStablePrepAuthority(closedSnapshot,decision);
     if(descriptor===null||!samePrepAuthorityDescriptor(binding.descriptor,descriptor))return "busy";
-    if((descriptor.kind==="dead-prep"||descriptor.kind==="dead-slot"||descriptor.kind==="slot-retired-cleanup"||descriptor.kind==="lone-withdrawal"||descriptor.kind==="withdrawal-cleanup")&&processLiveness(descriptor.pid)!=="dead")return "busy";
+    if((descriptor.kind==="dead-prep"||descriptor.kind==="dead-slot"||descriptor.kind==="slot-retired-cleanup"||descriptor.kind==="lone-withdrawal"||descriptor.kind==="withdrawal-cleanup"||descriptor.kind==="dead-stage-withdrawal")&&processLiveness(descriptor.pid)!=="dead")return "busy";
     return "exact";
   }
 
@@ -3463,6 +3517,10 @@ function deriveStablePrepHousekeepingRoute(snapshot:HybridRootSnapshot,decision:
     if(processLiveness(descriptor.pid)!=="dead")return {kind:"no-authority"};
     const retirementAuthority=Object.freeze({}) as LoneWithdrawalRetirementAuthority;loneWithdrawalRetirementAuthorityBindings.set(retirementAuthority,{snapshot,descriptor});return {kind:"lone-withdrawal",retirementAuthority};
   }
+  if(descriptor?.kind==="dead-stage-withdrawal"){
+    if(processLiveness(descriptor.pid)!=="dead")return {kind:"no-authority"};
+    const retirementAuthority=Object.freeze({}) as DeadStageWithdrawalAuthority;deadStageWithdrawalAuthorityBindings.set(retirementAuthority,{snapshot,descriptor});return {kind:"dead-stage-withdrawal",retirementAuthority};
+  }
   if(descriptor?.kind==="withdrawal-cleanup"){
     if(processLiveness(descriptor.pid)!=="dead")return {kind:"no-authority"};
     const cleanupAuthority=Object.freeze({}) as WithdrawalCleanupAuthority;withdrawalCleanupAuthorityBindings.set(cleanupAuthority,{snapshot,descriptor});return {kind:"withdrawal-cleanup",cleanupAuthority};
@@ -3492,6 +3550,23 @@ function describeStablePrepAuthority(snapshot:HybridRootSnapshot,decision:Hybrid
         const lock=snapshot.entries.find(value=>value.name==="lock"),lockChild=lock===undefined?null:hybridOwnerChild(lock);
         if(lock?.kind==="directory"&&lockChild?.bytes!==undefined&&lockChild.bytes.equals(child.bytes))return {kind:"dead-slot",targetName:ADMISSION_SLOT_NAME,pid:owner.pid,disposition:"published",terminalName:"lock"};
       }
+    }catch{return null;}
+  }
+  // The dead-stage withdrawal route (Batch D, owner grant 2026-08-06): the fixed slot beside its
+  // SAME-OWNER publication stage — what every hard exit at the five stage-construction boundaries
+  // leaves — withdraws that stage through the typed atomic protocol (seal + state-selected
+  // terminal rename, the clause-6 machinery), which mints the W1 window the shipped chain then
+  // completes. Publication stages do not parse as K1 names, so the closed graph carries exactly
+  // the slot in `parsed` and the stage as the second raw entry; the classifier at the fixed-slot
+  // branch has already refused every cross-owner, multi-stage, and active-lock variant before this
+  // derivation runs, so the descriptor only names the pieces. Dead-PID gates sit at derivation and
+  // dispatch like every sibling; a live owner's stage is never touched.
+  if(slot!==undefined&&parsed.length===1&&snapshot.entries.length===2){
+    const slotEntry=snapshot.entries.find(value=>value.name===ADMISSION_SLOT_NAME),child=slotEntry===undefined?null:hybridOwnerChild(slotEntry);
+    const stageEntry=snapshot.entries.find(value=>value.name!==ADMISSION_SLOT_NAME&&parsePublicationName(value.name)!==null);
+    if(child?.bytes!==undefined&&stageEntry!==undefined&&stageEntry.kind==="directory")try{
+      const owner=parseCoordinationOwnerBytes(child.bytes),stage=parsePublicationName(stageEntry.name);
+      if(stage!==null&&stage.hostDigest===localDigest&&stage.pid===owner.pid&&stage.nonce===owner.nonce)return {kind:"dead-stage-withdrawal",targetName:stageEntry.name,pid:owner.pid,nonce:owner.nonce};
     }catch{return null;}
   }
   // The W1 dead-owner route (Batch C, task 1(iii)): the bare slot beside its same-owner
@@ -3619,6 +3694,7 @@ function samePrepAuthorityDescriptor(left:PrepAuthorityDescriptor,right:PrepAuth
   if(left.kind!==right.kind||left.targetName!==right.targetName)return false;
   if(left.kind==="dead-prep"&&right.kind==="dead-prep")return left.pid===right.pid;
   if(left.kind==="lone-withdrawal"&&right.kind==="lone-withdrawal")return left.pid===right.pid;
+  if(left.kind==="dead-stage-withdrawal"&&right.kind==="dead-stage-withdrawal")return left.pid===right.pid&&left.nonce===right.nonce;
   if(left.kind==="withdrawal-cleanup"&&right.kind==="withdrawal-cleanup")return left.pid===right.pid&&left.terminalKind===right.terminalKind&&left.slotAckName===right.slotAckName&&left.lifecycleName===right.lifecycleName;
   if(left.kind==="dead-slot"&&right.kind==="dead-slot")return left.pid===right.pid&&left.disposition===right.disposition&&left.terminalName===right.terminalName;
   if(left.kind==="prep-retired-cleanup"&&right.kind==="prep-retired-cleanup")return left.lifecycleName===right.lifecycleName&&left.orphan===right.orphan;

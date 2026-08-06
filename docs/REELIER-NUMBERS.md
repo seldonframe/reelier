@@ -54,7 +54,7 @@ shape and cannot see the difference.
 
 | Quantity | Value | Status |
 |---|---|---|
-| Ledger suite | **639 pass / 50 fail** after Batch D phase 1a (+2: the exact-disable-value and unknown-value-construction pins; 637/50 after the D6(a) tolerance, 628/50 after D5(a), 619/59 after B2b, 597/59 after the W1 recognition, 583/59 after the D3(a) freeze). The 100-process flake was PASSING in the re-saved baseline, so under load it can surface as "newly failing" — re-run it in isolation per §3 before believing that; on 2026-08-06 it failed even in isolation (spawn errno -4094 at 1–3.3GB free), the §3 mechanism reproducing | measured |
+| Ledger suite | **652 pass / 50 fail** after Batch D's dead-stage withdrawal route (+13: the 12-subtest route family and its parent; 639/50 after phase 1a, 637/50 after the D6(a) tolerance, 628/50 after D5(a), 619/59 after B2b, 597/59 after the W1 recognition, 583/59 after the D3(a) freeze). The 100-process flake was PASSING in the re-saved baseline, so under load it can surface as "newly failing" — re-run it in isolation per §3 before believing that; on 2026-08-06 it failed even in isolation (spawn errno -4094 at 1–3.3GB free), the §3 mechanism reproducing | measured |
 | Post-B1 ledger suite (the prior recorded gate) | 546 pass / 75 fail | superseded 2026-08-05 |
 | Pre-B1 ledger suite (the Batch A recorded gate) | 518 pass / 75 fail | superseded 2026-08-05 |
 | Post-warm-prep-fix ledger suite as previously recorded here | 516 pass / 75 fail — written mid-Batch-A and stale by 2 against the Batch A baseline `--save`; kept as the third instance of a number in this file diverging from its own command | superseded 2026-08-05 |
@@ -110,6 +110,17 @@ alongside subagents.
 `scripts/baseline-diff.mjs` refuses to measure above 70% CPU busy (`REELIER_BASELINE_MAX_BUSY`). That
 limit is deliberately coarse: the ambient floor above overlaps the range seen under self-inflicted
 contention, so CPU alone cannot separate them and the isolation re-run remains the real check.
+
+**The suite's own child-spawn load grew on 2026-08-06 (Batch D), and the rotation rate grew with
+it.** The dead-stage withdrawal family adds 12 real crash-child spawns to the ledger suite. Five
+consecutive gate runs of the same code measured: one clean (652/50, failing set name-identical),
+two with a single rotating name, and two earlier runs — taken while other agent sessions were
+live — with 8 and 9 rotating names whose sets barely overlapped. **Every rotating name passed in
+isolation**, and the decisive discriminator was an A/B nobody had run before on this project: stash
+the new TESTS, keep the src change, rebuild, and gate. That run produced exactly two newly-failing
+names — the granted pin and its parent — and nothing else, which is what separates "the change
+regressed something" from "the suite got heavier." Run that A/B before attributing a rotating set
+to a source change; a rotating set is not evidence about src until the src-only gate says so.
 
 ## 4. K1 operation fence
 

@@ -55,15 +55,19 @@ review's 82-cell matrix) partitions every option-ON crash residue into exactly t
    W1 window: the marker drains as inert legacy, then the bare slot is the recover-reserved
    `abandoned` family). Default `observeClock` preserves bounded `busy`; `recover()` heals. The
    committed dead-* family and `:1748` pin exactly this bound and STAY RED on the flip.
-3. **Permanently bounded busy from ALL entries — the one activation regression, pinned:**
-   `slot + dead sub-complete publication stage` (hard exits at the five stage-construction
-   boundaries). No granted route touches it; the committed GREEN pin `:1020` ("dead exact slot
-   plus same-owner stage is recoverable but unsupported") REQUIRES the preservation, and
-   unwedging it is the ungranted housekeeping-permission question. **Pre-flip, the same crash
-   self-heals** (lone dead stage, settlement service). Post-flip it is a permanently-busy root
-   until a route is granted. This is the owner-visible bound the flip accepts by proceeding;
-   the spec's crash-topology sentence ("recoverable only through the typed atomic withdrawal
-   protocol") names the shape of the eventual grant.
+3. **~~Permanently bounded busy from ALL entries — the one activation regression~~ — CLOSED
+   2026-08-06 (Batch D, the dead-stage withdrawal grant).** `slot + dead publication stage`
+   (hard exits at the five stage-construction boundaries) was permanently bounded busy from
+   `observeClock` AND `recover()`, warm and fresh — re-measured this batch at 20/20 stage cells
+   (five boundaries × warm/fresh × both entries) before the fix. The granted route now withdraws the dead stage through the typed atomic protocol the
+   spec's crash-topology sentence named ("recoverable only through the typed atomic withdrawal
+   protocol"): sub-complete stages mint the W1 window and the shipped chain drains everything
+   (`observeClock` completes); complete stages mint the `.publication-aborted` terminal, which
+   drains to the bare slot — still bounded busy for a lock-seeking contender, now healed by
+   `recover()`. The committed pin `:1020` flipped in the same commit, named. **What remains
+   ungranted and is NOT closed by this:** `observeClock` still holds no abandoned-slot retirement
+   authority, so the bare slot left by the complete form is recover-reserved — the standing
+   housekeeping-permission question, with the `dead-*` family and `:1748` still red by design.
 4. **Option-independent, fail-closed by the journal's own rule:** a crash between the semantic
    clock file's create and write (`clock-after-create`/`clock-before-write`) leaves a truncated
    journal entry that refuses every later entry as `corruption` — measured IDENTICAL with the

@@ -1017,7 +1017,7 @@ test("hybrid epoch guard classifies K1 before every legacy compatibility mutatio
     {name:"live exact slot plus same-owner empty stage is valid in-flight",expected:{ok:false,reason:"busy"} as const,dead:[] as number[],setup:async(root:string)=>{const owner={host:hostname(),nonce:"d".repeat(64),pid:process.pid,v:1 as const,ticket:"0000000000000001"};await writeAdmissionSlot(root,owner);await writePublicationStage(root,owner,null);}},
     {name:"live exact slot plus same-owner zero stage is valid in-flight",expected:{ok:false,reason:"busy"} as const,dead:[] as number[],setup:async(root:string)=>{const owner={host:hostname(),nonce:"e".repeat(64),pid:process.pid,v:1 as const,ticket:"0000000000000001"};await writeAdmissionSlot(root,owner);await writePublicationStage(root,owner,Buffer.alloc(0));}},
     {name:"live exact slot plus same-owner strict-prefix stage is valid in-flight",expected:{ok:false,reason:"busy"} as const,dead:[] as number[],setup:async(root:string)=>{const owner={host:hostname(),nonce:"f".repeat(64),pid:process.pid,v:1 as const,ticket:"0000000000000001"},bytes=publicationOwnerBytes(owner);await writeAdmissionSlot(root,owner);await writePublicationStage(root,owner,bytes.subarray(0,bytes.length-1));}},
-    {name:"dead exact slot plus same-owner stage is recoverable but unsupported",expected:{ok:false,reason:"busy"} as const,dead:[49401],setup:async(root:string)=>{const owner={host:hostname(),nonce:"3".repeat(64),pid:49401,v:1 as const,ticket:"0000000000000001"};await writeAdmissionSlot(root,owner);await writePublicationStage(root,owner,publicationOwnerBytes(owner));}},
+    {name:"dead exact slot plus same-owner stage is recoverable but unsupported",expected:{ok:false,reason:"busy"} as const,dead:[49401],progressed:true,setup:async(root:string)=>{const owner={host:hostname(),nonce:"3".repeat(64),pid:49401,v:1 as const,ticket:"0000000000000001"};await writeAdmissionSlot(root,owner);await writePublicationStage(root,owner,publicationOwnerBytes(owner));}}, // Flipped busy-to-progressing 2026-08-06 (Batch D, the dead-stage withdrawal grant): the stage no longer survives -- it is withdrawn to its owner's `.publication-aborted` terminal, which the legacy machinery drains, leaving the bare slot (recover-reserved `abandoned`, still bounded busy for a lock-seeking contender, now healable by recover() instead of permanently wedged). The pin keeps its name, its result, and its zero-callback/zero-clock halves; the untouched-root and zero-mutation halves move because a granted transition happened, and the snapshot-pairing half becomes the MEASURED reclassification shape (one opened epoch, two closed generations: the transition's and the settled pass's) -- the spec's one-transition-per-closed-generation rule made visible.
     {name:"live exact slot plus same-owner active lock is post-publish pre-retire",expected:{ok:false,reason:"busy"} as const,dead:[] as number[],setup:async(root:string)=>{const owner={host:hostname(),nonce:"4".repeat(64),pid:process.pid,v:1 as const};await writeAdmissionSlot(root,owner);const lock=path.join(root,"lock");await mkdir(lock);await writeFile(path.join(lock,"owner.json"),publicationOwnerBytes(owner));}},
     {name:"withdrawn slot graph bound to publication-aborted is valid crash residue",expected:{ok:false,reason:"busy"} as const,dead:[] as number[],setup:async(root:string)=>{const owner={host:hostname(),nonce:"0".repeat(64),pid:process.pid,v:1 as const},terminalName=retirementMarkerName(owner,"publication-aborted"),terminal=path.join(root,terminalName),slotName=admissionRetiredName(owner,"withdrawn"),slot=path.join(root,slotName);await mkdir(terminal);await writeFile(path.join(terminal,"owner.json"),publicationOwnerBytes(owner));await mkdir(slot);await writeFile(path.join(slot,"owner.json"),publicationOwnerBytes(owner));const ack=slotCoordinationAck(owner,slotName,slot,"withdrawn",terminalName,publicationOwnerBytes(owner));await writeFile(path.join(root,coordinationAckName(ack)),authorityCanonicalBytes(ack));}},
     {name:"prep-retired bound ack plus unrelated publication-aborted is impossible",expected:{ok:false,reason:"corruption"} as const,dead:[] as number[],setup:async(root:string)=>{const owner={host:hostname(),nonce:"5".repeat(64),pid:process.pid,v:1 as const},markerName=admissionPrepRetiredName(owner,"complete"),marker=path.join(root,markerName);await mkdir(marker);await writeFile(path.join(marker,"owner.json"),publicationOwnerBytes(owner));const ack=incompleteCoordinationAck(owner,"prep-retired",markerName,admissionPrepName(owner),"complete",marker);await writeFile(path.join(root,coordinationAckName(ack)),authorityCanonicalBytes(ack));await writeLegacyRetiredLock(root,{host:hostname(),nonce:"6".repeat(64),pid:process.pid,v:1},"publication-aborted");}},
@@ -1029,8 +1029,8 @@ test("hybrid epoch guard classifies K1 before every legacy compatibility mutatio
     await fixture.setup(root);const before=await snapshotRootArtifacts(root),originalKill=process.kill;let k1Initial=0,k1Closed=0,legacyMutations=0,semanticNow=0,callbacks=0;
     Object.defineProperty(process,"kill",{configurable:true,value:(pid:number)=>fixture.dead.includes(pid)?(()=>{throw Object.assign(new Error("dead"),{code:"ESRCH"});})():originalKill.call(process,pid,0)});
     let result;try{result=await new RawFsAuthorityLedger(root,{now:()=>{semanticNow++;return t0;},lockTimeoutMs:20,faultInjector:(point:string)=>{if(point==="after-pre-admission-housekeeping-initial-enumeration")k1Initial++;if(point==="after-pre-admission-housekeeping-generation-closed")k1Closed++;if(legacyMutationBoundaries.has(point))legacyMutations++;if(point==="before-ledger-operation-callback")callbacks++;}} as never).observeClock();}finally{Object.defineProperty(process,"kill",{configurable:true,value:originalKill});}
-    const after=await snapshotRootArtifacts(root),counters:HybridEpochCounters={k1Initial,k1Closed,legacyMutations,semanticNow,callbacks};
-    assert.deepEqual({result,after,k1Classified:counters.k1Initial>0,k1SnapshotsClose:counters.k1Initial>0&&counters.k1Closed===counters.k1Initial,legacyMutations:counters.legacyMutations,semanticNow:counters.semanticNow,callbacks:counters.callbacks},{result:fixture.expected,after:before,k1Classified:true,k1SnapshotsClose:true,legacyMutations:0,semanticNow:0,callbacks:0},`${fixture.name}: closed K1 classification is byte-identical and precedes every legacy/semantic authority`);
+    const after=await snapshotRootArtifacts(root),counters:HybridEpochCounters={k1Initial,k1Closed,legacyMutations,semanticNow,callbacks},progressed="progressed" in fixture&&fixture.progressed===true,expectedAfter=progressed?before.filter(entry=>!entry.name.startsWith(".authority-ledger-lock-publication-")):before;
+    assert.deepEqual({result,after,k1Classified:counters.k1Initial>0,k1SnapshotsClose:progressed?counters.k1Initial===1&&counters.k1Closed===2:counters.k1Initial>0&&counters.k1Closed===counters.k1Initial,legacyMutations:progressed?counters.legacyMutations>0:counters.legacyMutations===0,semanticNow:counters.semanticNow,callbacks:counters.callbacks},{result:fixture.expected,after:expectedAfter,k1Classified:true,k1SnapshotsClose:true,legacyMutations:true,semanticNow:0,callbacks:0},`${fixture.name}: closed K1 classification ${progressed?"performs exactly the granted withdrawal and leaves the bare slot":"is byte-identical"} and precedes every legacy/semantic authority`);
   }));
 });
 
@@ -3848,3 +3848,113 @@ test("an unrecognized admission-preparation runtime value refuses construction w
   }
   assert.deepEqual(await snapshotRootArtifacts(root),before,"refused construction mutates nothing");
 }));
+
+// The dead-stage withdrawal route (Batch D task 3, owner grant 2026-08-06). Measured first on this
+// tree (24-cell probe, zero errors): a REAL crashed option-ON creator hard-exiting at any of the
+// five stage-construction boundaries leaves {fixed slot + same-owner publication stage} in state
+// empty/zero/partial/complete/complete, and EVERY cell was permanently bounded busy from observe
+// AND recover, warm and fresh — the S4 re-spec's class-3 wedge, the flip's one operational
+// regression. The grant: a DEAD-owner stage beside its SAME-OWNER slot may be withdrawn by any
+// contender through the typed atomic withdrawal protocol (the clause-6 seal + state-selected
+// terminal rename), producing the W1 window the shipped chain completes. Dead-PID-gated at
+// derivation and dispatch like every sibling; live stages stay byte-identical.
+//
+// The two terminal shapes differ, and the pins say so rather than averaging them: a sub-complete
+// stage renames to the same-owner creator-withdrawal terminal, so the W1 route retires the slot
+// `withdrawn` and the chain drains everything (observe completes). A COMPLETE stage renames to the
+// `.publication-aborted` marker — the legacy machinery drains that, leaving the bare slot, which is
+// the recover-reserved `abandoned` family (the standing housekeeping-permission bound). So observe
+// progresses the complete form to a bare slot and still answers busy; recover() heals it. That is
+// the unwedging: the root becomes recoverable instead of permanently busy from every entry.
+test("dead publication stages beside their same-owner slot withdraw through the typed protocol",{timeout:180_000},async t=>{
+  const mintCrashedStage=async(root:string,boundary:string):Promise<void>=>{
+    const moduleUrl=pathToFileURL(path.resolve("dist-test/src/authority/host/fs-ledger.js")).href;
+    const source=`import*as host from ${JSON.stringify(moduleUrl)};const option=host.__testK1AdmissionPreparationRuntimeOption;if(typeof option!=="symbol")process.exit(80);const ledger=new host.FsAuthorityLedger(process.argv[1],{[option]:${JSON.stringify(K1_ADMISSION_PREPARATION_MODE)},now:()=>${t0},lockTimeoutMs:2_000,faultInjector(point){if(point===${JSON.stringify(boundary)})process.exit(91);}});await ledger.observeClock();process.exit(92);`;
+    const code=await new Promise<number|null>((resolve,reject)=>{const child=spawn(process.execPath,["--input-type=module","-e",source,root],{stdio:"ignore"});child.once("error",reject);child.once("close",resolve);});
+    assert.equal(code,91,`${boundary}: the option-ON creator hard-exits at the stage-construction boundary`);
+    const names=await readdir(root);
+    assert.equal(names.includes(".authority-ledger-admission-0"),true,`${boundary}: the fixed slot remains`);
+    assert.equal(names.filter(name=>name.startsWith(".authority-ledger-lock-publication-")).length,1,`${boundary}: exactly its same-owner stage remains`);
+  };
+  const settle=async(root:string,entry:"observe"|"recover")=>{let result;for(let attempt=0;attempt<3;attempt++){const ledger=new RawFsAuthorityLedger(root,{[k1AdmissionPreparationOption()]:K1_ADMISSION_PREPARATION_LEGACY,now:()=>t0+1_000,lockTimeoutMs:2_000} as never);result=entry==="recover"?await ledger.recover():await ledger.observeClock();if(result.ok||result.reason!=="busy")break;await new Promise(resolve=>setTimeout(resolve,100));}return result!;};
+  const k1Residue=async(root:string)=>(await readdir(root)).filter(name=>name.startsWith(".authority-ledger-admission-")||name.startsWith(".authority-ledger-creator-withdrawal-")||name.startsWith(".authority-ledger-coordination-cleanup-")||name.startsWith(".authority-ledger-lock-publication-"));
+  const warmRoot=async(root:string)=>{assert.equal((await new RawFsAuthorityLedger(root,{[k1AdmissionPreparationOption()]:K1_ADMISSION_PREPARATION_LEGACY,now:()=>t0-1_000,lockTimeoutMs:2_000} as never).observeClock()).ok,true,"the warming acquisition succeeds");};
+  // The sub-complete states: the terminal is a creator-withdrawal marker, so the W1 dead route
+  // retires the slot `withdrawn` and the committed chain drains the whole graph in one acquisition.
+  for(const temp of ["fresh","warm"] as const)for(const boundary of [
+    {point:"after-lock-publication-stage-create",state:"empty"},
+    {point:"after-lock-publication-owner-create",state:"zero"},
+    {point:"after-lock-publication-owner-partial-write",state:"partial"},
+  ] as const)await t.test(`dead ${boundary.state} stage beside its slot ${temp} withdraws and the chain drains`,()=>withRoot(async root=>{
+    if(temp==="warm")await warmRoot(root);
+    await mintCrashedStage(root,boundary.point);
+    const result=await settle(root,"observe");
+    assert.deepEqual(result,{ok:true,status:"advanced",observedAt:new Date(t0+1_000).toISOString()},`${boundary.state} ${temp}`);
+    assert.deepEqual(await k1Residue(root),[],`${boundary.state} ${temp}: every K1 artifact drains`);
+  }));
+  // The complete states: the terminal is the legacy `publication-aborted` marker, which the legacy
+  // machinery drains, leaving the bare slot — the recover-reserved `abandoned` family. Observe
+  // therefore progresses and still answers busy; recover() heals. Pinned as two halves so a later
+  // change cannot quietly grant observe the abandoned retirement (the ungranted housekeeping
+  // permission) under cover of this route.
+  for(const temp of ["fresh","warm"] as const)for(const point of ["after-lock-publication-owner-sync","after-lock-publication-stage-sync"] as const)await t.test(`dead complete stage at ${point} ${temp} withdraws to the aborted terminal and recover heals`,()=>withRoot(async root=>{
+    if(temp==="warm")await warmRoot(root);
+    await mintCrashedStage(root,point);
+    const observed=await settle(root,"observe");
+    assert.deepEqual({ok:observed.ok,reason:(observed as {reason?:string}).reason},{ok:false,reason:"busy"},`${point} ${temp}: observe progresses but the bare slot stays recover-reserved`);
+    assert.deepEqual(await k1Residue(root),[".authority-ledger-admission-0"],`${point} ${temp}: the stage is withdrawn, leaving only the slot`);
+    // k1Residue cannot see the legacy terminal namespace, so the drain is asserted by name here.
+    assert.equal((await readdir(root)).some(name=>name.endsWith(".publication-aborted")),false,`${point} ${temp}: and its aborted terminal is drained, not leaked`);
+    assert.equal((await settle(root,"recover")).ok,true,`${point} ${temp}: recover heals the progressed root`);
+    assert.deepEqual(await k1Residue(root),[],`${point} ${temp}: recover drains the bare slot`);
+  }));
+  // The grant's live bound, held by its own pin: a LIVE owner's stage beside its slot is untouched
+  // by either entry point. Without this the route would be one liveness bug away from racing a
+  // mid-flight creator's own publication.
+  await t.test("a live owner's stage beside its slot stays preserved byte-identically",()=>withRoot(async root=>{
+    const owner={host:hostname(),nonce:"c7".repeat(32),pid:process.pid,v:1 as const,ticket:"0000000000000001"};
+    await writeAdmissionSlot(root,owner);
+    await writePublicationStage(root,owner,publicationOwnerBytes(owner));
+    const before=await snapshotRootArtifacts(root);
+    for(const entry of ["observe","recover"] as const){
+      const result=await settle(root,entry);
+      assert.deepEqual({ok:result.ok,reason:(result as {reason?:string}).reason},{ok:false,reason:"busy"},`live ${entry}`);
+      assert.deepEqual(await snapshotRootArtifacts(root),before,`live ${entry}: preserved byte-identically`);
+    }
+  }));
+  // The route emits `before-publication-stage-validation` from the HOUSEKEEPING path — once for
+  // its own target validation and twice inside the seal — and the acquisition then answers from
+  // the legacy drain without ever reaching publication settlement, so
+  // `after-publication-stage-enumeration` does not fire at all. The committed ordering pin
+  // ("publication-stage classification hooks are live and refuse same-name identity replacement")
+  // asserts enumeration-then-validations, and stays green only because its fixture is a lone
+  // external stage with no slot, which cannot reach this route. That makes the pin fixture-local
+  // rather than the invariant it reads as, so the emission shape is pinned HERE, where it can
+  // actually fail (GREEN-review finding, measured).
+  // Measured, not reasoned: a first cut of this pin asserted zero enumerations for a SUB-COMPLETE
+  // mint and was refuted by running it — that acquisition completes, so it goes on to publish and
+  // enumerates normally. The invariant that actually holds for both shapes is the PREFIX: the
+  // route's three validations all precede any enumeration, which is the ordering the committed pin
+  // forbids. The complete form additionally never enumerates, because it answers busy.
+  for(const shape of [{point:"after-lock-publication-owner-partial-write",label:"sub-complete",enumerates:true},{point:"after-lock-publication-stage-sync",label:"complete",enumerates:false}] as const)await t.test(`the ${shape.label} route emits publication-stage validation from the housekeeping path before any enumeration`,()=>withRoot(async root=>{
+    await mintCrashedStage(root,shape.point);
+    const order:string[]=[];
+    await new RawFsAuthorityLedger(root,{[k1AdmissionPreparationOption()]:K1_ADMISSION_PREPARATION_LEGACY,now:()=>t0+1_000,lockTimeoutMs:2_000,faultInjector:(point:string)=>{if(point==="before-publication-stage-validation"||point==="after-publication-stage-enumeration")order.push(point);}} as never).observeClock();
+    assert.deepEqual(order.slice(0,3),["before-publication-stage-validation","before-publication-stage-validation","before-publication-stage-validation"],`${shape.label}: the route's own target check and the seal's two validations come first`);
+    assert.equal(order.includes("after-publication-stage-enumeration"),shape.enumerates,`${shape.label}: publication settlement is reached only when the acquisition completes`);
+  }));
+  // The route's authority is the exact same-owner binding, nothing weaker: a dead slot beside a
+  // dead stage of a DIFFERENT owner is not one interrupted acquisition and stays preserved
+  // corruption, exactly as today.
+  await t.test("a cross-owner dead stage beside the slot grants no withdrawal authority",()=>withRoot(async root=>{
+    const slotOwner={host:hostname(),nonce:"c8".repeat(32),pid:await exitedProcessPid(),v:1 as const},stageOwner={host:hostname(),nonce:"c9".repeat(32),pid:await exitedProcessPid(),v:1 as const,ticket:"0000000000000001"};
+    await writeAdmissionSlot(root,slotOwner);
+    await writePublicationStage(root,stageOwner,publicationOwnerBytes(stageOwner));
+    const before=await snapshotRootArtifacts(root);
+    for(const entry of ["observe","recover"] as const){
+      const result=await settle(root,entry);
+      assert.deepEqual({ok:result.ok,reason:(result as {reason?:string}).reason},{ok:false,reason:"corruption"},`cross-owner ${entry}`);
+      assert.deepEqual(await snapshotRootArtifacts(root),before,`cross-owner ${entry}: preserved byte-identically`);
+    }
+  }));
+});
