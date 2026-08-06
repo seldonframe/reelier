@@ -323,6 +323,24 @@ Findings, by class:
    it (the pre-classification service drains the marker first) — reasoning caught by running,
    again.
 
+**Slices c and d shipped (same day): the creator's own continuation and the W1 dead-owner
+route — B2b complete.** Slice c: the terminal path retires its own slot `withdrawn` on the
+marker's authority and runs the chain inline under the one :443 deadline, both terminal forms,
+thrown identity preserved, 13 option-gated pins; its GREEN review measured the continuation
+byte-exact at all 82 crash cells and found the marker-owner-remove windows wedging as permanent
+corruption (both from the continuation and latently from the committed B2c housekeeper) — fixed
+in-slice by extending the authenticated-partial rescue to `withdrawn` slot markers and
+sub-complete withdrawal terminals (discrepancy 9 widened in place; EMPTY excluded, its
+owner-less form is legal). Slice d: the dead-slot `withdrawn` descriptor (terminal-bound,
+dead-PID-gated at derivation and dispatch, chain step 1 of the D1(a) family), the marker
+identity-checked against the bound snapshot immediately before the rename; four pins on real
+crashed option-ON creators (partial warm/fresh/recover + empty, the empty-terminal form end to
+end through the housekeeping route). **The W1 acceptance criterion now holds: the reviewer's
+82-cell matrix has zero wedged cells — every option-ON crash residue either drains from both
+entry points or is the live-preservation class.** The complete-form window (slot + same-owner
+aborted marker) stays `observeClock`-busy/recover-drains by design — the recover-reserved
+`abandoned` family, the standing housekeeping-permission bound. Ledger 602/59 → 615/59 → 619/59.
+
 **Slice b shipped (same day): the empty-terminal form.** Spec resolution written first per the
 grant, then five widening sites — the descriptor withhold removed, `boundSlotCleanup`, the
 cleanup-stage validator, the durable ack-binding validator (outside the grant's verbatim

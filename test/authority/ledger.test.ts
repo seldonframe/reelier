@@ -2787,7 +2787,7 @@ test("published-slot graphs tolerate unrelated inert legacy residue on a used ro
   // pass: an unrelated recovery-pending marker is an unserviced semantic recovery obligation, not
   // inert residue, and a second same-owner successor is genuine ambiguity.
   // Foreign `recovery-pending` is conditioned on the ACTIVE LOCK being the successor. Spec :571
-  // grants retirement-marker coexistence "only for the next active owner", and :860-861 makes that
+  // grants retirement-marker coexistence "only for the next active owner", and :861-862 makes that
   // owner the sole marker scanner servicing every recovery-pending marker before every callback —
   // inspectActiveLock's own dead-lock reclaim mints exactly this shape in the same iteration that
   // publishes, so refusing it would corrupt every acquisition that follows a crash-with-lock. With
@@ -3606,6 +3606,38 @@ test("option-gated creator terminal failure after slot creation completes its ow
     assert.deepEqual(result,{ok:true,status:"advanced",observedAt:new Date(t0+1_000).toISOString()},window.label);
     assert.deepEqual(await k1Residue(root),[],`${window.label}: the resumed chain drains fully`);
   }));
+  // The W1 dead-owner route (task 1(iii)): a REAL option-ON creator throws its terminal,
+  // withdraws its stage, and hard-exits at the withdrawal's root sync — BEFORE its own
+  // continuation — leaving the W1 window with a dead owner. The housekeeping route retires the
+  // bare slot `withdrawn` on the marker's authority (dead-PID-gated like its siblings) and the
+  // existing chain completes it, from both entry points, warm and fresh, in the pinned signal
+  // order. The empty-state window exercises the empty-terminal form end to end.
+  for(const scenario of [
+    {mint:"after-lock-publication-owner-partial-write",state:"partial",temp:"warm",entry:"observe"},
+    {mint:"after-lock-publication-owner-partial-write",state:"partial",temp:"fresh",entry:"observe"},
+    {mint:"after-lock-publication-owner-partial-write",state:"partial",temp:"fresh",entry:"recover"},
+    {mint:"after-lock-publication-stage-create",state:"empty",temp:"fresh",entry:"observe"},
+  ] as const)await t.test(`option-gated dead W1 window ${scenario.state} ${scenario.temp} ${scenario.entry} completes`,()=>withRoot(async root=>{
+    if(scenario.temp==="warm")assert.equal((await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:2_000}).observeClock()).ok,true,"the warming acquisition succeeds");
+    const moduleUrl=pathToFileURL(path.resolve("dist-test/src/authority/host/fs-ledger.js")).href;
+    const source=`import*as host from ${JSON.stringify(moduleUrl)};const option=host.__testK1AdmissionPreparationRuntimeOption;if(typeof option!=="symbol")process.exit(80);const terminal={kind:"terminal"};let fired=false;const ledger=new host.FsAuthorityLedger(process.argv[1],{[option]:${JSON.stringify(K1_ADMISSION_PREPARATION_MODE)},now:()=>${t0},lockTimeoutMs:2_000,faultInjector(point){if(point===${JSON.stringify(scenario.mint)}&&!fired){fired=true;throw terminal;}if(point==="after-creator-withdrawal-root-sync")process.exit(93);}});try{await ledger.observeClock();}catch(error){process.exit(error===terminal?94:95);}process.exit(92);`;
+    const code=await new Promise<number|null>((resolve,reject)=>{const child=spawn(process.execPath,["--input-type=module","-e",source,root],{stdio:"ignore"});child.once("error",reject);child.once("close",resolve);});
+    assert.equal(code,93,"the creator dies at the withdrawal root sync, before its continuation");
+    const names=await readdir(root);
+    assert.equal(names.includes(".authority-ledger-admission-0"),true,"the bare slot remains");
+    assert.equal(names.some(name=>name.startsWith(".authority-ledger-creator-withdrawal-")&&name.endsWith(`.${scenario.state}`)),true,"the sub-complete terminal remains");
+    let result,slotSyncs=0,withdrawalSyncs=0;const order:string[]=[];
+    for(let attempt=0;attempt<3;attempt++){
+      const ledger=new RawFsAuthorityLedger(root,{now:()=>t0+1_000,lockTimeoutMs:2_000,faultInjector:(p:string)=>{if(p==="after-admission-slot-retire-cleanup-root-sync"){slotSyncs++;order.push("slot-sync");}if(p==="after-creator-withdrawal-cleanup-root-sync"){withdrawalSyncs++;order.push("withdrawal-sync");}}} as never);
+      result=scenario.entry==="recover"?await ledger.recover():await ledger.observeClock();
+      if(result.ok||result.reason!=="busy")break;
+      await new Promise(resolve=>setTimeout(resolve,100));
+    }
+    assert.equal(result!.ok,true,`${scenario.state} ${scenario.temp} ${scenario.entry}: the dead window completes`);
+    assert.deepEqual({slotSyncs,withdrawalSyncs},{slotSyncs:1,withdrawalSyncs:1},"both family signals fire once");
+    assert.deepEqual(order,["slot-sync","withdrawal-sync"],"the pinned signal order holds");
+    assert.deepEqual(await k1Residue(root),[],`${scenario.state} ${scenario.temp} ${scenario.entry}: fully drained`);
+  }));
   // A continuation crash window past the slot retirement is exactly crash-matrix state 1: a
   // REAL option-ON creator throws its terminal, withdraws its stage, retires its slot, and
   // hard-exits before the slot-ack — the next default acquisition completes the dead chain.
@@ -3631,8 +3663,8 @@ test("option-gated creator terminal failure after slot creation completes its ow
 // fresh — the machinery's own hand. This family pins the LIVE half: preserved bounded busy,
 // byte-identical, warm parity with the steady-state unrelated `released` marker inert (the D4
 // boundary), and one over-tolerance boundary pin per adjacent artifact class so a wider
-// recognition cannot ship silently. The dead half is preserved bounded busy until the
-// dead-owner route lands (its own slice, pinned there).
+// recognition cannot ship silently. The dead half completes via the W1 dead-owner route,
+// pinned by the "option-gated dead W1 window" family on real crashed creators.
 test("K1 fixed slot with same-owner sub-complete withdrawal terminal is preserved live in-flight residue",async t=>{
   const states=["empty","zero","partial"] as const;
   const assertPreserved=async(root:string,expected:Readonly<{ok:false;reason:string}>,label:string)=>{

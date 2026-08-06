@@ -718,10 +718,11 @@ seal" note.** Each clause below is forced by a committed pin or a measurement; t
 4. Under a K1-active generation the withdrawal terminal is created FIRST and the fixed slot then
    retires `withdrawn` on its authority (the `slot-retired.withdrawn` rule above), so the crash
    matrix below gains one in-flight residue: `bare fixed slot + same-owner withdrawal terminal`,
-   whose only next transition is the withdrawn slot retirement. Recognized 2026-08-06 (Batch C):
-   the sub-complete form classifies preserved bounded `busy` with the D4 released-only tolerance,
-   pinned live warm and fresh; its transitions land with the chain slices. The complete form
-   drains per the successor-forms paragraph above (inert-legacy service, then `abandoned`).
+   whose only next transition is the withdrawn slot retirement. Shipped 2026-08-06 (Batch C):
+   the sub-complete form classifies preserved bounded `busy` live (D4 released-only tolerance,
+   pinned warm and fresh); a DEAD owner's window retires through the dead-slot `withdrawn` route
+   on the marker's authority and the chain completes it — pinned on real crashed creators. The
+   complete form drains per the successor-forms paragraph (inert-legacy service, `abandoned`).
 5. Who acts, per the D1(a) grant verbatim: entering withdrawal is the creator's own failure
    path only, under its one fresh cleanup deadline. Chain crash residue is progressed only
    through the creator's own ACQUISITION — the in-flight operation holding the creation

@@ -221,7 +221,7 @@ type PrepHousekeepingRoute=
 type PrepAuthorityDescriptor=
   |Readonly<{kind:"dead-prep";targetName:string;pid:number}>
   |Readonly<{kind:"prep-retired-cleanup";targetName:string;lifecycleName:string|null;orphan:boolean}>
-  |Readonly<{kind:"dead-slot";targetName:typeof ADMISSION_SLOT_NAME;pid:number;disposition:"abandoned"|"published"}>
+  |Readonly<{kind:"dead-slot";targetName:typeof ADMISSION_SLOT_NAME;pid:number;disposition:"abandoned"|"published"|"withdrawn";terminalName:string|null}>
   |Readonly<{kind:"slot-retired-cleanup";targetName:string;lifecycleName:string|null;orphan:boolean;pid:number;disposition:"abandoned"|"published"|"withdrawn";successorName:string|null}>
   |Readonly<{kind:"lone-withdrawal";targetName:string;pid:number}>
   |Readonly<{kind:"withdrawal-cleanup";targetName:string;terminalKind:"withdrawal"|"aborted";pid:number;slotAckName:string|null;lifecycleName:string|null}>;
@@ -1536,6 +1536,8 @@ export class FsAuthorityLedger implements AuthorityLedger {
   private mayProgressWithdrawalChain(binding:PrepAuthorityBinding):boolean{
     const descriptor=binding.descriptor;
     if(descriptor.kind==="lone-withdrawal"||descriptor.kind==="withdrawal-cleanup")return processLiveness(descriptor.pid)==="dead";
+    // The W1 window's retirement (Batch C) is chain step 1 of the same D1(a) family.
+    if(descriptor.kind==="dead-slot"&&descriptor.disposition==="withdrawn")return processLiveness(descriptor.pid)==="dead";
     return descriptor.kind==="slot-retired-cleanup"&&descriptor.disposition==="withdrawn"&&processLiveness(descriptor.pid)==="dead";
   }
 
@@ -1711,6 +1713,17 @@ export class FsAuthorityLedger implements AuthorityLedger {
       let lockBytes:Buffer;
       try{lockBytes=await readFile(this.absolute(path.join("lock","owner.json")));}catch(error){if(hasCode(error,"ENOENT")||isSnapshotSharingError(error))return "reclassify";throw error;}
       if(!lockBytes.equals(artifact.ownerBytes))throw new LedgerCorruption("published slot retirement requires the byte-identical active lock");
+    }
+    // Spec :512 — `withdrawn` requires the exact same-owner withdrawal marker, re-checked
+    // immediately before the rename by NAME, TYPE, and frozen IDENTITY against the bound
+    // snapshot (the lone-withdrawal sibling's rule); the marker is the retirement's whole
+    // authority.
+    if(disposition==="withdrawn"){
+      const terminalName=binding.descriptor.kind==="dead-slot"?binding.descriptor.terminalName:null;
+      const terminalEntry=terminalName===null?undefined:binding.snapshot.entries.find(value=>value.name===terminalName);
+      if(terminalName===null||terminalEntry===undefined)throw new LedgerCorruption("withdrawn slot retirement lacks its terminal binding");
+      try{const terminalStat=await lstat(this.absolute(terminalName),{bigint:true});if(terminalStat.isSymbolicLink()||!terminalStat.isDirectory()||!sameFileIdentity(terminalEntry.identity,fileIdentity(terminalStat)))throw new LedgerCorruption("withdrawn slot retirement terminal replaced");}
+      catch(error){if(hasCode(error,"ENOENT")||isSnapshotSharingError(error))return "reclassify";throw error;}
     }
     try{await rename(source,destination);}catch(error){if(hasCode(error,"EEXIST")||hasCode(error,"ENOTEMPTY")||hasCode(error,"ENOENT")||isSnapshotSharingError(error))return "reclassify";throw error;}
     const moved=fileIdentity(await lstat(destination,{bigint:true}));if(!sameFileIdentity(artifact.entry.identity,moved))throw new LedgerCorruption("slot retirement changed directory identity");const movedOwner=await this.readExactPrepCleanupFile(path.join(destination,"owner.json"),"retired slot owner");if(!sameFileIdentity(artifact.ownerIdentity,movedOwner.identity)||!artifact.ownerBytes.equals(movedOwner.bytes))throw new LedgerCorruption("slot retirement changed owner evidence");
@@ -2096,8 +2109,8 @@ export class FsAuthorityLedger implements AuthorityLedger {
       // stage, no lock, and only inert unrelated `released` residue (the D4 boundary — a
       // same-owner `released` or any aborted/recovery-pending marker keeps the refusal below).
       // Its only next transition is the withdrawn slot retirement; classification grants
-      // nothing, and no housekeeping descriptor derives from this shape until the chain slices
-      // land their routes — a dead-owner window is preserved bounded busy meanwhile.
+      // nothing. A LIVE window stays preserved; a dead one derives the W1 dead-owner route
+      // (the dead-slot withdrawn descriptor) and the chain completes it.
       if(withdrawals.length===1&&sameCoordinationOwner(slot.owner,withdrawals[0].owner)&&parsedK1.length===2&&!acks.length&&!prepRetired.length&&!slotRetired.length&&!publications.length&&activeOwner===null&&this.blockingRetiredResidue(retired,slot.owner)===0)return "busy";
       if(parsedK1.length!==1||retired.size||acks.length||prepRetired.length||slotRetired.length||withdrawals.length)throw new LedgerCorruption("impossible fixed-slot graph");
       if(publications.length&&activeOwner!==null)throw new LedgerCorruption("slot cannot bind stage and active lock");
@@ -2401,7 +2414,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
   //
   // A foreign `recovery-pending` marker is tolerated exactly when the SAME-OWNER ACTIVE LOCK is
   // the successor. Spec :571 grants retirement-marker coexistence "only for the next active
-  // owner", and :860-861 makes that owner the sole marker scanner, servicing every
+  // owner", and :861-862 makes that owner the sole marker scanner, servicing every
   // recovery-pending marker before every callback — so an unserviced foreign marker beside the
   // live lock is the specified mid-acquisition state (inspectActiveLock's own dead-lock reclaim
   // mints one in the same iteration that publishes). With no active lock in the graph there is no
@@ -3467,14 +3480,28 @@ function describeStablePrepAuthority(snapshot:HybridRootSnapshot,decision:Hybrid
     const slotEntry=snapshot.entries.find(value=>value.name===ADMISSION_SLOT_NAME),child=slotEntry===undefined?null:hybridOwnerChild(slotEntry);
     if(child?.bytes!==undefined)try{
       const owner=parseCoordinationOwnerBytes(child.bytes);
-      if(snapshot.entries.length===1)return {kind:"dead-slot",targetName:ADMISSION_SLOT_NAME,pid:owner.pid,disposition:"abandoned"};
+      if(snapshot.entries.length===1)return {kind:"dead-slot",targetName:ADMISSION_SLOT_NAME,pid:owner.pid,disposition:"abandoned",terminalName:null};
       // The granted published form (owner decision 2026-08-05): exactly {slot, byte-identical
       // same-owner lock}. Inert legacy residue was drained by the pre-classification service, and
       // any other artifact fails the closed-graph classification before this derivation runs.
       if(snapshot.entries.length===2){
         const lock=snapshot.entries.find(value=>value.name==="lock"),lockChild=lock===undefined?null:hybridOwnerChild(lock);
-        if(lock?.kind==="directory"&&lockChild?.bytes!==undefined&&lockChild.bytes.equals(child.bytes))return {kind:"dead-slot",targetName:ADMISSION_SLOT_NAME,pid:owner.pid,disposition:"published"};
+        if(lock?.kind==="directory"&&lockChild?.bytes!==undefined&&lockChild.bytes.equals(child.bytes))return {kind:"dead-slot",targetName:ADMISSION_SLOT_NAME,pid:owner.pid,disposition:"published",terminalName:"lock"};
       }
+    }catch{return null;}
+  }
+  // The W1 dead-owner route (Batch C, task 1(iii)): the bare slot beside its same-owner
+  // sub-complete withdrawal terminal retires `withdrawn` on the marker's authority (spec
+  // :508-516 — liveness grants nothing; the marker does), after which the existing chain
+  // routes complete the residue. The closed graph (decision "busy", slice a's recognition)
+  // already validated same-owner binding and the D4 tolerance; the descriptor only names the
+  // pieces, and the dead-PID gates sit at derivation and dispatch like every sibling route.
+  if(slot!==undefined&&parsed.length===2){
+    const slotEntry=snapshot.entries.find(value=>value.name===ADMISSION_SLOT_NAME),child=slotEntry===undefined?null:hybridOwnerChild(slotEntry);
+    const terminal=parsed.find((value):value is Extract<ParsedK1Name,{kind:"creator-withdrawal"}>=>value.kind==="creator-withdrawal");
+    if(child?.bytes!==undefined&&terminal!==undefined)try{
+      const owner=parseCoordinationOwnerBytes(child.bytes);
+      if(terminal.pid===owner.pid&&terminal.nonce===owner.nonce)return {kind:"dead-slot",targetName:ADMISSION_SLOT_NAME,pid:owner.pid,disposition:"withdrawn",terminalName:terminal.name};
     }catch{return null;}
   }
   const loneWithdrawal=parsed.find((value):value is Extract<ParsedK1Name,{kind:"creator-withdrawal"}>=>value.kind==="creator-withdrawal");
@@ -3579,7 +3606,7 @@ function samePrepAuthorityDescriptor(left:PrepAuthorityDescriptor,right:PrepAuth
   if(left.kind==="dead-prep"&&right.kind==="dead-prep")return left.pid===right.pid;
   if(left.kind==="lone-withdrawal"&&right.kind==="lone-withdrawal")return left.pid===right.pid;
   if(left.kind==="withdrawal-cleanup"&&right.kind==="withdrawal-cleanup")return left.pid===right.pid&&left.terminalKind===right.terminalKind&&left.slotAckName===right.slotAckName&&left.lifecycleName===right.lifecycleName;
-  if(left.kind==="dead-slot"&&right.kind==="dead-slot")return left.pid===right.pid&&left.disposition===right.disposition;
+  if(left.kind==="dead-slot"&&right.kind==="dead-slot")return left.pid===right.pid&&left.disposition===right.disposition&&left.terminalName===right.terminalName;
   if(left.kind==="prep-retired-cleanup"&&right.kind==="prep-retired-cleanup")return left.lifecycleName===right.lifecycleName&&left.orphan===right.orphan;
   return left.kind==="slot-retired-cleanup"&&right.kind==="slot-retired-cleanup"&&left.lifecycleName===right.lifecycleName&&left.orphan===right.orphan&&left.pid===right.pid&&left.disposition===right.disposition&&left.successorName===right.successorName;
 }
