@@ -816,18 +816,19 @@ completion-oracle pattern; corruption and completion stay terminal on first sigh
 callback counter stays exact because the callback fires only on the completing acquisition) —
 the single-attempt drive was measured flaking once in eight runs under suite load.
 
-**Recorded 2026-08-05 (Batch B GREEN review) — the seventh fresh-root-blindness instance, the
-abandoned family (D6, unfixed).** The `abandoned` slot-retired branch and its orphan-final twin
-still count raw retired residue, so a live- or dead-owner `abandoned` marker beside the
-steady-state unrelated `released` marker classifies permanent `corruption` from both entry
-points on any used root (measured during the D4 slice's review; the same fixtures on a fresh
-root return bounded `busy`). The D4 grant covers the withdrawal family only, so this is
-recorded, not fixed — resolve with its own grant. Two adjacent bounded windows of the same
-class, also recorded: the unrelated `released` marker's own in-flight legacy cleanup ack or
-stage beside a withdrawal-family graph is still corruption (the legacy-coexistence excusal
-requires a published slot marker); and once the chain routinely mints `publication-aborted`
-terminals, the released-only boundary should be revisited deliberately before an unrelated
-aborted marker beside a fresh graph becomes the eighth instance.
+**Resolved 2026-08-06 (Batch C) — the seventh fresh-root-blindness instance, the abandoned
+family (D6, owner grant (a), contingent — the contingency did not trigger).** The `abandoned`
+slot-retired branch, its orphan-final twin, and their two descriptor sites (the raw
+entries-length counts withheld the recover-reserved drain on warm roots — the lone-withdrawal
+precedent's wedge, fixed by its rule: unrelated inert `released` excluded from the count) now
+apply the released-only tolerance with exactly the D4 boundary; same-owner `released`,
+unrelated `publication-aborted`, and `recovery-pending` stay corruption, each held by its own
+warm boundary pin. The four-site compiled-build A/B ran both directions BEFORE the source
+change: zero committed movers (628/50 name-identical), so the grant's contingency passed. The
+family stays recover-reserved — warm observe preserves bounded busy exactly as fresh. Still
+recorded from the Batch B note: the unrelated `released` marker's own in-flight legacy cleanup
+ack beside a withdrawal-family graph stays corruption, and the released-only boundary should
+be revisited deliberately before an unrelated aborted marker becomes the eighth instance.
 
 Every raw root snapshot is whole-generation state. Active-lock replacement or sustained membership
 churn, an external publication stage changing dead-to-live, or atomic fixed-slot/stage replacement

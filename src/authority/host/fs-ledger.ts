@@ -2130,7 +2130,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
       }else if(parsed.disposition==="published"){
         if(withdrawals.length)throw new LedgerCorruption("published slot cannot bind a withdrawal");
         this.classifyHybridPublishedSuccessor(marker,byName,activeOwner,retired);
-      }else if(withdrawals.length||activeOwner!==null||retired.size)throw new LedgerCorruption("abandoned slot has an impossible successor");
+      }else if(withdrawals.length||activeOwner!==null||this.blockingRetiredResidue(retired,marker.owner))throw new LedgerCorruption("abandoned slot has an impossible successor");
       return "busy";
     }
     if(withdrawals.length){
@@ -2366,7 +2366,8 @@ export class FsAuthorityLedger implements AuthorityLedger {
       return "busy";
     }
     if(ack.disposition==="abandoned"){
-      if(acks.length!==1||owned.length!==0||activeOwner!==null||retired.size!==0||processLiveness(ack.owner.pid)!=="dead")throw new LedgerCorruption("orphan abandoned-slot final lacks an isolated dead-owner lineage");
+      // D6 (owner grant (a), Batch C): the released-only tolerance, exactly the D4 boundary.
+      if(acks.length!==1||owned.length!==0||activeOwner!==null||this.blockingRetiredResidue(retired,ack.owner)!==0||processLiveness(ack.owner.pid)!=="dead")throw new LedgerCorruption("orphan abandoned-slot final lacks an isolated dead-owner lineage");
       return "busy";
     }
     if(ack.disposition!=="withdrawn"||activeOwner!==null)throw new LedgerCorruption("invalid orphan slot-final disposition lineage");
@@ -2414,7 +2415,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
   //
   // A foreign `recovery-pending` marker is tolerated exactly when the SAME-OWNER ACTIVE LOCK is
   // the successor. Spec :571 grants retirement-marker coexistence "only for the next active
-  // owner", and :861-862 makes that owner the sole marker scanner, servicing every
+  // owner", and :862-863 makes that owner the sole marker scanner, servicing every
   // recovery-pending marker before every callback — so an unserviced foreign marker beside the
   // live lock is the specified mid-acquisition state (inspectActiveLock's own dead-lock reclaim
   // mints one in the same iteration that publishes). With no active lock in the graph there is no
@@ -3537,7 +3538,10 @@ function describeStablePrepAuthority(snapshot:HybridRootSnapshot,decision:Hybrid
     return null;
   }
   const slotMarker=parsed.find((value):value is Extract<ParsedK1Name,{kind:"admission-slot-retired"}>=>value.kind==="admission-slot-retired"&&value.disposition==="abandoned");
-  if(slotMarker!==undefined){const lifecycle=parsed.find(value=>value.kind==="coordination-stage"&&value.purpose==="slot-retired"||value.kind==="coordination-ack"&&prepCleanupAck(snapshot,value)?.purpose==="slot-retired");if(parsed.every(value=>value===slotMarker||value===lifecycle)&&snapshot.entries.length===(lifecycle===undefined?1:2))return {kind:"slot-retired-cleanup",targetName:slotMarker.name,lifecycleName:lifecycle?.name??null,orphan:false,pid:slotMarker.pid,disposition:"abandoned",successorName:null};}
+  // D6 (owner grant (a), Batch C): the abandoned routes count entries with unrelated inert
+  // `released` markers excluded — the lone-withdrawal precedent's rule — or every used root's
+  // steady-state marker withholds the recover-reserved drain the classification now permits.
+  if(slotMarker!==undefined){const lifecycle=parsed.find(value=>value.kind==="coordination-stage"&&value.purpose==="slot-retired"||value.kind==="coordination-ack"&&prepCleanupAck(snapshot,value)?.purpose==="slot-retired");if(parsed.every(value=>value===slotMarker||value===lifecycle)&&nonInertEntryCount(snapshot,slotMarker)===(lifecycle===undefined?1:2))return {kind:"slot-retired-cleanup",targetName:slotMarker.name,lifecycleName:lifecycle?.name??null,orphan:false,pid:slotMarker.pid,disposition:"abandoned",successorName:null};}
   const publishedMarker=parsed.find((value):value is Extract<ParsedK1Name,{kind:"admission-slot-retired"}>=>value.kind==="admission-slot-retired"&&value.disposition==="published");
   if(publishedMarker!==undefined){
     // The closed graph (decision === "busy") has already validated this generation: exactly one
@@ -3558,7 +3562,7 @@ function describeStablePrepAuthority(snapshot:HybridRootSnapshot,decision:Hybrid
     if(value.kind!=="coordination-ack")continue;const ack=prepCleanupAck(snapshot,value);if(ack?.purpose!=="slot-retired")continue;
     const markerName=String(ack.markerName),originalName=String(ack.originalName);
     if(snapshot.names.includes(markerName)||snapshot.names.includes(originalName))continue;
-    if(ack.disposition==="abandoned"){if(parsed.length!==1||snapshot.entries.length!==1)continue;return {kind:"slot-retired-cleanup",targetName:markerName,lifecycleName:value.name,orphan:true,pid:ack.owner.pid,disposition:"abandoned",successorName:null};}
+    if(ack.disposition==="abandoned"){if(parsed.length!==1||nonInertEntryCount(snapshot,{pid:ack.owner.pid,nonce:ack.owner.nonce})!==1)continue;return {kind:"slot-retired-cleanup",targetName:markerName,lifecycleName:value.name,orphan:true,pid:ack.owner.pid,disposition:"abandoned",successorName:null};}
     if(ack.disposition==="published"&&parsed.length===1){
       const successorName=publishedSuccessorNameFromSnapshot(snapshot,{pid:ack.owner.pid,nonce:ack.owner.nonce});
       if(successorName!==null)return {kind:"slot-retired-cleanup",targetName:markerName,lifecycleName:value.name,orphan:true,pid:ack.owner.pid,disposition:"published",successorName};
@@ -3587,6 +3591,13 @@ function describeStablePrepAuthority(snapshot:HybridRootSnapshot,decision:Hybrid
     }
   }
   return null;
+}
+// D6: entries excluding UNRELATED inert `released` markers — a same-owner `released` counts
+// (it is corruption beside these graphs and the classification refuses before any route runs).
+function nonInertEntryCount(snapshot:HybridRootSnapshot,owner:Readonly<{pid:number;nonce:string}>):number{
+  let count=0;
+  for(const entry of snapshot.entries){const match=RETIRED_LOCK.exec(entry.name);if(match&&match[3]==="released"&&!(Number(match[1])===owner.pid&&match[2]===owner.nonce))continue;count++;}
+  return count;
 }
 function withdrawnSuccessorNameFromSnapshot(snapshot:HybridRootSnapshot,owner:Readonly<{pid:number;nonce:string}>):string|null{
   for(const name of snapshot.names){const match=RETIRED_LOCK.exec(name);if(match&&match[3]==="publication-aborted"&&Number(match[1])===owner.pid&&match[2]===owner.nonce)return name;}

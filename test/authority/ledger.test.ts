@@ -2787,7 +2787,7 @@ test("published-slot graphs tolerate unrelated inert legacy residue on a used ro
   // pass: an unrelated recovery-pending marker is an unserviced semantic recovery obligation, not
   // inert residue, and a second same-owner successor is genuine ambiguity.
   // Foreign `recovery-pending` is conditioned on the ACTIVE LOCK being the successor. Spec :571
-  // grants retirement-marker coexistence "only for the next active owner", and :861-862 makes that
+  // grants retirement-marker coexistence "only for the next active owner", and :862-863 makes that
   // owner the sole marker scanner servicing every recovery-pending marker before every callback —
   // inspectActiveLock's own dead-lock reclaim mints exactly this shape in the same iteration that
   // publishes, so refusing it would corrupt every acquisition that follows a crash-with-lock. With
@@ -3724,4 +3724,86 @@ test("K1 fixed slot with same-owner sub-complete withdrawal terminal is preserve
     await writeFile(path.join(root,coordinationAckName(ack)),authorityCanonicalBytes(ack));
     await assertPreserved(root,{ok:false,reason:"corruption"},"typed-ack");
   }));
+});
+
+// The abandoned family's warm parity (D6, owner grant (a), contingent — the A/B found zero
+// committed movers): the released-only tolerance extends to the abandoned slot-retired branch,
+// its orphan-final twin, and their two descriptor sites, with exactly the D4 boundary —
+// unrelated `released` inert; same-owner `released`, unrelated `publication-aborted`, and
+// `recovery-pending` stay corruption, each held by its own pin. The family stays
+// recover-reserved: observe preserves bounded busy warm exactly as fresh; recover() drains
+// warm exactly as fresh. Measured before pinning (the four-site compiled-build A/B).
+test("the abandoned family classifies and drains identically on warm and fresh roots",{timeout:60_000},async t=>{
+  const seedAbandoned=async(root:string,owner:AdmissionOwner)=>{const marker=path.join(root,admissionRetiredName(owner,"abandoned"));await mkdir(marker);await writeFile(path.join(marker,"owner.json"),publicationOwnerBytes(owner));return marker;};
+  const warmRoot=async(root:string)=>{assert.equal((await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:2_000}).observeClock()).ok,true,"the warming acquisition succeeds");};
+  const settle=async(root:string,entry:"observe"|"recover")=>{let result;for(let attempt=0;attempt<3;attempt++){const ledger=new RawFsAuthorityLedger(root,{now:()=>t0+1_000,lockTimeoutMs:2_000});result=entry==="recover"?await ledger.recover():await ledger.observeClock();if(result.ok||result.reason!=="busy")break;await new Promise(resolve=>setTimeout(resolve,100));}return result!;};
+  await t.test("warm dead marker drains through recover exactly as fresh",async()=>{const owner:AdmissionOwner={host:hostname(),nonce:"a".repeat(64),pid:await exitedProcessPid(),v:1};await withRoot(async root=>{
+    await warmRoot(root);
+    const marker=await seedAbandoned(root,owner);
+    const result=await settle(root,"recover");
+    assert.equal(result.ok,true,"recover drains the warm dead abandoned marker");
+    assert.equal(existsSync(marker),false,"the marker is retired and its lifecycle drained");
+    assert.equal((await readdir(root)).some(name=>name.startsWith(".authority-ledger-admission-")||name.startsWith(".authority-ledger-coordination-cleanup-")),false,"no admission residue survives");
+  });});
+  await t.test("warm dead marker stays preserved bounded busy through observe exactly as fresh",async()=>{const owner:AdmissionOwner={host:hostname(),nonce:"b".repeat(64),pid:await exitedProcessPid(),v:1};await withRoot(async root=>{
+    await warmRoot(root);
+    await seedAbandoned(root,owner);
+    const before=await snapshotRootArtifacts(root);
+    const result=await settle(root,"observe");
+    assert.deepEqual({ok:result.ok,reason:(result as {reason?:string}).reason},{ok:false,reason:"busy"},"observe holds the recover-reserved family");
+    assert.deepEqual(await snapshotRootArtifacts(root),before,"preserved byte-identically");
+  });});
+  await t.test("warm live marker stays preserved bounded busy from both entry points",()=>withRoot(async root=>{
+    await warmRoot(root);
+    const owner:AdmissionOwner={host:hostname(),nonce:"c".repeat(64),pid:process.pid,v:1};
+    await seedAbandoned(root,owner);
+    const before=await snapshotRootArtifacts(root);
+    for(const entry of ["observe","recover"] as const){
+      const result=await settle(root,entry);
+      assert.deepEqual({ok:result.ok,reason:(result as {reason?:string}).reason},{ok:false,reason:"busy"},entry);
+    }
+    assert.deepEqual(await snapshotRootArtifacts(root),before,"preserved byte-identically");
+  }));
+  await t.test("warm orphan abandoned final drains through recover",async()=>{const owner:AdmissionOwner={host:hostname(),nonce:"d".repeat(64),pid:await exitedProcessPid(),v:1};await withRoot(async root=>{
+    await warmRoot(root);
+    const markerName=admissionRetiredName(owner,"abandoned"),marker=path.join(root,markerName);
+    await mkdir(marker);await writeFile(path.join(marker,"owner.json"),publicationOwnerBytes(owner));
+    const ack=slotCoordinationAck(owner,markerName,marker,"abandoned");
+    await writeFile(path.join(root,coordinationAckName(ack)),authorityCanonicalBytes(ack));
+    await rm(marker,{recursive:true});
+    const result=await settle(root,"recover");
+    assert.equal(result.ok,true,"recover drains the warm orphan abandoned final");
+    assert.equal((await readdir(root)).some(name=>name.startsWith(".authority-ledger-coordination-cleanup-")),false,"the orphan ack is drained");
+  });});
+  const boundaries=[
+    {name:"a same-owner released beside the warm marker stays preserved corruption",install:async(root:string,owner:AdmissionOwner)=>{await writeLegacyRetiredLock(root,owner,"released");}},
+    {name:"an unrelated publication-aborted beside the warm marker stays preserved corruption",install:async(root:string,owner:AdmissionOwner)=>{await writeLegacyRetiredLock(root,{...owner,nonce:"e".repeat(64)},"publication-aborted");}},
+    {name:"an unrelated recovery-pending beside the warm marker stays preserved corruption",install:async(root:string,owner:AdmissionOwner)=>{await writeLegacyRetiredLock(root,{...owner,nonce:"f".repeat(64)},"recovery-pending");}},
+  ] as const;
+  for(const boundary of boundaries)await t.test(boundary.name,async()=>{const owner:AdmissionOwner={host:hostname(),nonce:"1".repeat(64),pid:await exitedProcessPid(),v:1};await withRoot(async root=>{
+    await warmRoot(root);
+    await seedAbandoned(root,owner);
+    await boundary.install(root,owner);
+    const before=await snapshotRootArtifacts(root);
+    for(const entry of ["observe","recover"] as const){
+      const result=await settle(root,entry);
+      assert.deepEqual({ok:result.ok,reason:(result as {reason?:string}).reason},{ok:false,reason:"corruption"},`${boundary.name}: ${entry}`);
+    }
+    assert.deepEqual(await snapshotRootArtifacts(root),before,"preserved byte-identically");
+  });});
+  await t.test("an unrelated publication-aborted beside the warm orphan final stays preserved corruption",async()=>{const owner:AdmissionOwner={host:hostname(),nonce:"2".repeat(64),pid:await exitedProcessPid(),v:1};await withRoot(async root=>{
+    await warmRoot(root);
+    const markerName=admissionRetiredName(owner,"abandoned"),marker=path.join(root,markerName);
+    await mkdir(marker);await writeFile(path.join(marker,"owner.json"),publicationOwnerBytes(owner));
+    const ack=slotCoordinationAck(owner,markerName,marker,"abandoned");
+    await writeFile(path.join(root,coordinationAckName(ack)),authorityCanonicalBytes(ack));
+    await rm(marker,{recursive:true});
+    await writeLegacyRetiredLock(root,{...owner,nonce:"3".repeat(64)},"publication-aborted");
+    const before=await snapshotRootArtifacts(root);
+    for(const entry of ["observe","recover"] as const){
+      const result=await settle(root,entry);
+      assert.deepEqual({ok:result.ok,reason:(result as {reason?:string}).reason},{ok:false,reason:"corruption"},entry);
+    }
+    assert.deepEqual(await snapshotRootArtifacts(root),before,"preserved byte-identically");
+  });});
 });

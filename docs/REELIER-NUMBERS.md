@@ -54,7 +54,7 @@ shape and cannot see the difference.
 
 | Quantity | Value | Status |
 |---|---|---|
-| Ledger suite | **628 pass / 50 fail** after the D5(a) re-fixture — the eight `:1760` states plus parent green by name (619/59 after B2b, 602/59 after the empty-terminal slice, 597/59 after the W1 recognition, 583/59 after the D3(a) freeze). The 100-process flake was PASSING in the re-saved baseline, so under load it can surface as "newly failing" — re-run it in isolation per §3 before believing that; on 2026-08-06 it failed even in isolation (spawn errno -4094 at 1–3.3GB free), the §3 mechanism reproducing | measured |
+| Ledger suite | **637 pass / 50 fail** after the D6(a) tolerance (+9: the abandoned warm-parity family; 628/50 after D5(a), 619/59 after B2b, 597/59 after the W1 recognition, 583/59 after the D3(a) freeze). The 100-process flake was PASSING in the re-saved baseline, so under load it can surface as "newly failing" — re-run it in isolation per §3 before believing that; on 2026-08-06 it failed even in isolation (spawn errno -4094 at 1–3.3GB free), the §3 mechanism reproducing | measured |
 | Post-B1 ledger suite (the prior recorded gate) | 546 pass / 75 fail | superseded 2026-08-05 |
 | Pre-B1 ledger suite (the Batch A recorded gate) | 518 pass / 75 fail | superseded 2026-08-05 |
 | Post-warm-prep-fix ledger suite as previously recorded here | 516 pass / 75 fail — written mid-Batch-A and stale by 2 against the Batch A baseline `--save`; kept as the third instance of a number in this file diverging from its own command | superseded 2026-08-05 |

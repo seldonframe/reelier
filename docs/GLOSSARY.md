@@ -76,8 +76,8 @@ fixture — from both entry points.
 > the withdrawal family's warm corruption the sixth (pinned in by three committed fresh-root
 > pins — decision D4, granted and resolved 2026-08-05), and the abandoned family's warm
 > corruption the seventh — found by the D4 slice's own GREEN review three lines below the site
-> being fixed, recorded as D6 in the spec, unfixed pending its own grant
-> (`docs/superpowers/plans/2026-08-05-withdrawal-chain-measured.md` §4).
+> being fixed, recorded as D6, granted contingently and resolved 2026-08-06 (Batch C; the
+> four-site A/B found zero committed movers, so the contingency passed).
 
 > Cost: a baseline taken alongside three subagents reported 411 pass as 410 and produced a phantom
 > regression. Always re-run the named test in isolation before believing it.
