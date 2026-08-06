@@ -272,3 +272,53 @@ proceeds meanwhile with the dead-owner route and the creator's own in-flight fai
 `:1760` stays red as fixtured until the owner decides. The seal's clause 5 was amended the same
 day to the grant's verbatim words ("the creator's own acquisition"; the first recording said
 "process", the mistranscription D5 exposed).
+
+---
+
+## Postscript 2026-08-06 (Batch C) — Task 1(i) measured at every boundary; the W1 window recognized
+
+The B2b(i) sweep: 55 option-ON boundaries (every fault point recorded on a clean option-ON
+success run — public, module-private internal, and clock), each seeded three ways — in-process
+thrown terminal (live owner), child thrown terminal (dead owner, the withdrawal ran), child
+hard-exit (dead owner, raw crash) — on warm roots first, then fresh; every residue driven
+through default `observeClock`, option-ON `observeClock`, and `recover()` on its own root. 990
+trials, zero probe errors. Probe recipe: the committed crash-child pattern
+(`--input-type=module -e`, dist-test module URL, throw-once/exit-once injector), residue names
+normalized, results as JSONL.
+
+Findings, by class:
+
+1. **The W1 wedge, confirmed as the only option-ON corruption from the machinery's own hand.**
+   Thrown terminals at the four boundaries between slot creation and stage completion
+   (`before-publication-stage-validation`, `after-lock-publication-stage-create`,
+   `after-lock-publication-owner-create`, `after-lock-publication-owner-partial-write`) leave
+   `bare slot + same-owner withdrawal marker` in states empty/empty/zero/partial — and EVERY
+   entry returned `corruption`, live or dead, warm or fresh. The empty state is the most common
+   W1 form, so the empty-terminal grant is load-bearing for the main route, not an edge.
+   **Slice a (shipped with this postscript) closes the classification half:** the shape now
+   classifies preserved bounded `busy` with the D4 released-only tolerance, pinned live
+   (3 states × warm/fresh, both entry points, byte-identical) plus seven over-tolerance
+   boundary pins — one per adjacent artifact class, including a validation-clean typed-ack
+   discriminator the RED review demanded (a counting-only recognition passes without it;
+   verified by compiled-build A/B). Ledger 583/59 → 597/59, no name changes, gate stable
+   across three consecutive runs. The transitions (creator continuation, dead route) are the
+   remaining B2b slices.
+2. **`slot + dead sub-complete publication stage` (hard exits at the five stage-construction
+   boundaries) is permanently bounded busy from ALL THREE entries**, warm and fresh — no
+   granted route touches it, and the committed green pin "dead exact slot plus same-owner
+   stage is recoverable but unsupported" (`:1020`) pins exactly that preservation. Pre-flip,
+   the same crash self-heals (lone dead stage, settlement service). This is the
+   housekeeping-permission question's harshest member and an owner-visible bound the S4
+   re-spec must carry — NOT fixed here, because unwedging it flips a committed green pin.
+3. **A hard exit or thrown terminal between the semantic clock file's create and write
+   (`clock-after-create`/`clock-before-write`) leaves a truncated journal entry that refuses
+   every later entry point as `corruption` — and it is OPTION-INDEPENDENT** (A/B measured with
+   option OFF: identical). Fail-closed by the spec's own journal rule; recorded for the S4
+   re-spec's crash table as a pre-existing default-path property, out of B2b scope.
+4. Everything else either heals from both entry points or is the known
+   recover-only/ungranted-permission class (dead preps, bare dead slots, slot + same-owner
+   `publication-aborted`): default `observeClock` bounded busy, `recover()` heals — the
+   spec's successor-forms paragraph, confirmed end to end. The GREEN review initially read
+   `slot + same-owner aborted` as an unrecognized corruption window; the measurement refuted
+   it (the pre-classification service drains the marker first) — reasoning caught by running,
+   again.

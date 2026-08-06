@@ -1956,8 +1956,20 @@ export class FsAuthorityLedger implements AuthorityLedger {
     const orphanFinalDecision=this.classifyHybridOrphanFinalGeneration(byName,owned,retired,activeOwner,publications.length,acks);if(orphanFinalDecision!==null)return orphanFinalDecision;
     if(preps.length){if(parsedK1.length!==1||publications.length||activeOwner!==null||this.blockingRetiredResidue(retired,preps[0].owner))throw new LedgerCorruption("impossible preparation graph");return "busy";}
     if(slots.length){
+      const slot=slots[0];
+      // Seal clause 4's in-flight residue (the W1 window, B2b): between the creator's
+      // terminal-path stage withdrawal and the withdrawn slot retirement, the generation holds
+      // exactly the bare fixed slot plus its same-owner SUB-COMPLETE withdrawal terminal (the
+      // name grammar admits only empty|zero|partial; a complete stage withdraws to the legacy
+      // publication-aborted namespace instead). Recognized exactly: no other K1 artifact, no
+      // stage, no lock, and only inert unrelated `released` residue (the D4 boundary — a
+      // same-owner `released` or any aborted/recovery-pending marker keeps the refusal below).
+      // Its only next transition is the withdrawn slot retirement; classification grants
+      // nothing, and no housekeeping descriptor derives from this shape until the chain slices
+      // land their routes — a dead-owner window is preserved bounded busy meanwhile.
+      if(withdrawals.length===1&&sameCoordinationOwner(slot.owner,withdrawals[0].owner)&&parsedK1.length===2&&!acks.length&&!prepRetired.length&&!slotRetired.length&&!publications.length&&activeOwner===null&&this.blockingRetiredResidue(retired,slot.owner)===0)return "busy";
       if(parsedK1.length!==1||retired.size||acks.length||prepRetired.length||slotRetired.length||withdrawals.length)throw new LedgerCorruption("impossible fixed-slot graph");
-      const slot=slots[0];if(publications.length&&activeOwner!==null)throw new LedgerCorruption("slot cannot bind stage and active lock");
+      if(publications.length&&activeOwner!==null)throw new LedgerCorruption("slot cannot bind stage and active lock");
       if(publications.length&&!sameCoordinationOwner(slot.owner,publications[0].owner))throw new LedgerCorruption("slot publication owner mismatch");
       if(activeOwner!==null&&!sameCoordinationOwner(slot.owner,activeOwner))throw new LedgerCorruption("slot active owner mismatch");
       return "busy";

@@ -3459,3 +3459,74 @@ test("the creator-withdrawal chain completes for dead owners from every crash st
     assert.deepEqual(await snapshotRootArtifacts(root),before,"empty-terminal: preserved byte-identically, no self-authored stage");
   });});
 });
+
+// Seal clause 4's in-flight residue (the W1 window, B2b): between the creator's terminal-path
+// stage withdrawal and the withdrawn slot retirement, the root holds exactly the bare fixed slot
+// plus its same-owner SUB-COMPLETE withdrawal terminal. Measured 2026-08-06 (Batch C, task 1(i)):
+// thrown terminals at the four stage-construction boundaries mint this shape on every option-ON
+// failure, and it classified permanent corruption from both entry points, live or dead, warm or
+// fresh — the machinery's own hand. This family pins the LIVE half: preserved bounded busy,
+// byte-identical, warm parity with the steady-state unrelated `released` marker inert (the D4
+// boundary), and one over-tolerance boundary pin per adjacent artifact class so a wider
+// recognition cannot ship silently. The dead half is preserved bounded busy until the
+// dead-owner route lands (its own slice, pinned there).
+test("K1 fixed slot with same-owner sub-complete withdrawal terminal is preserved live in-flight residue",async t=>{
+  const states=["empty","zero","partial"] as const;
+  const assertPreserved=async(root:string,expected:Readonly<{ok:false;reason:string}>,label:string)=>{
+    const before=await snapshotRootArtifacts(root);
+    let callbacks=0,prepCreates=0;
+    const observed=await new RawFsAuthorityLedger(root,{now:()=>t0+1_000,lockTimeoutMs:20,faultInjector:(point:string)=>{if(point==="before-ledger-operation-callback")callbacks++;if(point==="after-admission-prep-create")prepCreates++;}} as never).observeClock();
+    assert.deepEqual(observed,expected,`${label}: observe`);
+    assert.deepEqual(await snapshotRootArtifacts(root),before,`${label}: observe preserves byte-identically`);
+    const recovered=await new RawFsAuthorityLedger(root,{now:()=>t0+1_000,lockTimeoutMs:20}).recover();
+    assert.deepEqual({ok:recovered.ok,reason:(recovered as {reason?:string}).reason},expected,`${label}: recover`);
+    assert.deepEqual(await snapshotRootArtifacts(root),before,`${label}: recover preserves byte-identically`);
+    assert.deepEqual({callbacks,prepCreates},{callbacks:0,prepCreates:0},label);
+  };
+  for(const temp of ["warm","fresh"] as const)for(const state of states)await t.test(`${state} ${temp} live window is preserved bounded busy from both entry points`,()=>withRoot(async root=>{
+    if(temp==="warm"){
+      assert.equal((await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:2_000}).observeClock()).ok,true,"the warming acquisition succeeds");
+      assert.equal((await readdir(root)).some(name=>name.endsWith(".released")),true,"the steady-state released marker is present");
+    }
+    const owner:AdmissionOwner={host:hostname(),nonce:(state==="empty"?"a":state==="zero"?"b":"d").repeat(64),pid:process.pid,v:1};
+    await writeAdmissionSlot(root,owner);
+    await writeCreatorWithdrawal(root,owner,state);
+    await assertPreserved(root,{ok:false,reason:"busy"},`${state} ${temp}`);
+  }));
+  const boundaryCases=[
+    {name:"same-owner released beside the window stays preserved corruption",install:async(root:string,owner:AdmissionOwner)=>{await writeLegacyRetiredLock(root,owner,"released");}},
+    {name:"unrelated publication-aborted beside the window stays preserved corruption",install:async(root:string,owner:AdmissionOwner)=>{await writeLegacyRetiredLock(root,{...owner,nonce:"2".repeat(64)},"publication-aborted");}},
+    {name:"unrelated recovery-pending beside the window stays preserved corruption",install:async(root:string,owner:AdmissionOwner)=>{await writeLegacyRetiredLock(root,{...owner,nonce:"3".repeat(64)},"recovery-pending");}},
+    {name:"a same-owner publication stage beside the window stays preserved corruption",install:async(root:string,owner:AdmissionOwner)=>{await writePublicationStage(root,{...owner,ticket:"0000000000000002"},publicationOwnerBytes(owner));}},
+    {name:"a same-owner active lock beside the window stays preserved corruption",install:async(root:string,owner:AdmissionOwner)=>{const lock=path.join(root,"lock");await mkdir(lock);await writeFile(path.join(lock,"owner.json"),publicationOwnerBytes(owner));}},
+  ] as const;
+  for(const boundary of boundaryCases)await t.test(boundary.name,()=>withRoot(async root=>{
+    const owner:AdmissionOwner={host:hostname(),nonce:"1".repeat(64),pid:process.pid,v:1};
+    await writeAdmissionSlot(root,owner);
+    await writeCreatorWithdrawal(root,owner,"partial");
+    await boundary.install(root,owner);
+    await assertPreserved(root,{ok:false,reason:"corruption"},boundary.name);
+  }));
+  await t.test("a cross-owner withdrawal marker beside the slot stays preserved corruption",()=>withRoot(async root=>{
+    const slotOwner:AdmissionOwner={host:hostname(),nonce:"5".repeat(64),pid:process.pid,v:1},markerOwner:AdmissionOwner={host:hostname(),nonce:"6".repeat(64),pid:process.pid,v:1};
+    await writeAdmissionSlot(root,slotOwner);
+    await writeCreatorWithdrawal(root,markerOwner,"partial");
+    await assertPreserved(root,{ok:false,reason:"corruption"},"cross-owner");
+  }));
+  // The RED review's discriminator gap: a recognition that merely counted OWNED artifacts would
+  // also admit the window beside a typed coordination record. The ack here is validation-clean —
+  // correctly purpose-bound to the marker with a well-formed (absent) slot-ack reference — so it
+  // reaches the slots branch rather than dying in ack validation, and only the exact
+  // two-artifact-graph condition refuses it. The chain never legitimately holds a
+  // creator-withdrawal ack while the fixed slot is still unretired (the ack is chain step 4; the
+  // slot retires in step 1).
+  await t.test("a validation-clean creator-withdrawal ack beside the window stays preserved corruption",()=>withRoot(async root=>{
+    const owner:AdmissionOwner={host:hostname(),nonce:"7".repeat(64),pid:process.pid,v:1};
+    await writeAdmissionSlot(root,owner);
+    const marker=await writeCreatorWithdrawal(root,owner,"partial"),markerName=path.basename(marker);
+    const referencedSlotAck={purpose:"slot-retired",v:coordinationAckVersion};
+    const ack=incompleteCoordinationAck(owner,"creator-withdrawal",markerName,publicationStageName({...owner,ticket:"0000000000000001"}),"partial",marker,referencedSlotAck);
+    await writeFile(path.join(root,coordinationAckName(ack)),authorityCanonicalBytes(ack));
+    await assertPreserved(root,{ok:false,reason:"corruption"},"typed-ack");
+  }));
+});
