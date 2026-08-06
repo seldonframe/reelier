@@ -32,7 +32,7 @@ Inputs: none — every bound value below was recovered automatically from a prio
 
 ## Open questions
 
-- (none)
+- Step 3: classified read on a noun, not an action verb — confirm this tool does not write. It is NOT gated by --allow-writes.
 
 ## Changelog
 
