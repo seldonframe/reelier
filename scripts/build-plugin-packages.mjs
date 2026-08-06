@@ -115,6 +115,10 @@ async function main() {
   const files = await buildFileMap();
 
   if (check) {
+    // Compare content, not the platform's newline translation: on Windows,
+    // git's autocrlf checks the committed LF files out as CRLF, which is not
+    // drift. Real content changes still fail.
+    const normalize = (text) => text.replace(/\r\n/g, "\n");
     const problems = [];
     for (const [rel, expected] of files) {
       let actual;
@@ -124,7 +128,7 @@ async function main() {
         problems.push(`missing: ${rel}`);
         continue;
       }
-      if (actual !== expected) problems.push(`drifted: ${rel}`);
+      if (normalize(actual) !== normalize(expected)) problems.push(`drifted: ${rel}`);
     }
     const present = await listFiles(outDir);
     for (const rel of present) {
