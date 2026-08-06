@@ -11,8 +11,10 @@ boundary, option OFF and ON minted, fresh and warm, each residue driven through 
 
 ## 1. Verdict
 
-**The seven activation clauses hold, or fail only into recorded, owner-visible bounds. The flip
-may proceed on this evidence.** The predecessor's blocker (clause 5's crash half — option-ON
+**The seven activation clauses hold, or fail only into recorded, owner-visible bounds — and the
+flip was then attempted on this evidence and REVERTED by its stop-rule: see §6.** The clauses
+were necessary but not sufficient; the committed default-mode fixture corpus is the blocker the
+clause table cannot see. The predecessor's blocker (clause 5's crash half — option-ON
 crash residue permanently wedged or corrupt) is CLOSED by B2b for every sub-complete form, and
 the remaining non-draining classes are each pinned, recorded bounds that predate this batch —
 none is new, none is silent, and none regresses a default-path behavior that works today
