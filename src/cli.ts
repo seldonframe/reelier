@@ -185,6 +185,7 @@ function parseArgv(argv: string[]): ParsedArgs {
       arg === "--out-dir" ||
       arg === "--agent" ||
       arg === "--host" ||
+      arg === "--workspace" ||
       arg === "--from-skill" ||
       arg === "--since" ||
       arg === "--select" ||
@@ -1075,8 +1076,30 @@ async function cmdPolicy(args: ParsedArgs): Promise<number> {
  * their calls. `reelier serve` takes no --wrap; it's Reelier fronting
  * itself. See src/serve.ts for the tool list + schemas.
  */
-async function cmdServe(): Promise<number> {
-  const server = buildToolServer();
+export async function cmdServe(args: ParsedArgs): Promise<number> {
+  const workspace = args.opts.workspace;
+  let workspaceRoot: string | undefined;
+  if (workspace !== undefined) {
+    if (!path.isAbsolute(workspace)) {
+      console.error(
+        `--workspace must be an absolute path, got '${workspace}' — a relative workspace re-introduces the ` +
+          `cwd ambiguity the flag exists to remove (a plugin host launches this server with the PLUGIN directory as cwd).`
+      );
+      return 1;
+    }
+    let isDirectory = false;
+    try {
+      isDirectory = (await stat(workspace)).isDirectory();
+    } catch {
+      // fall through — reported below
+    }
+    if (!isDirectory) {
+      console.error(`--workspace '${workspace}' is not an existing directory.`);
+      return 1;
+    }
+    workspaceRoot = workspace;
+  }
+  const server = buildToolServer({ workspaceRoot });
   const transport = new StdioServerTransport();
   await server.connect(transport);
 
@@ -4394,6 +4417,9 @@ const USAGE =
   "           Enforces .reelier/policy.yml (or ~/.reelier/policy.yml) — deny/dry-run rules; pass --allow-writes\n" +
   "           to satisfy a rule's 'unless: \"--allow-writes\"' escape.\n" +
   "  serve  — TOOL-SERVER: exposes Reelier's own commands (scan/from-session/replay/push/diff) as MCP tools.\n" +
+  "           --workspace <abs-path>: workspace-sensitive defaults (compiled skills, .reelier/ state) resolve here\n" +
+  "           instead of the process cwd — REQUIRED when a plugin host launches serve with the plugin dir as cwd.\n" +
+  "           An explicit per-call cwd/out argument always wins over the workspace.\n" +
   "  get    — fetch a public registry skill to ./skills/<skill>.skill.md; never executes it.\n" +
   "           reelier get --mine <name> fetches YOUR OWN private skill (authenticated) instead.\n" +
   "  init --signing — generate (or print the existing) Ed25519 signing key at ~/.reelier/signing/; idempotent.\n" +
@@ -4444,7 +4470,7 @@ async function main(): Promise<number> {
     case "mcp":
       return cmdMcp(args);
     case "serve":
-      return cmdServe();
+      return cmdServe(args);
     case "trace":
       return cmdTrace(args);
     case "compile":
