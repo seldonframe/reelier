@@ -1,10 +1,10 @@
 # Reelier — what it actually does
 
-**Pinned to `origin/main` @ `4ee9ba0` (v0.30.0, published), verified
-2026-08-06.** Every claim below was read
-out of code or a live-verified example on that commit, not from memory. If the pin is stale, treat
-this file as a hypothesis and re-verify (see §10) before telling anyone Reelier can or cannot do
-something.
+**Pinned to `origin/main` @ `fa37954`, verified 2026-08-06.** npm serves **v0.30.0**; `main` carries
+unreleased work on top of it (`coverage`, plugin packages — §3, §7.6), so "on main" and "what users
+have" are different answers and this file says which. Every claim below was read out of code or a
+live-verified example on that commit, not from memory. If the pin is stale, treat this file as a
+hypothesis and re-verify (see §10) before telling anyone Reelier can or cannot do something.
 
 > **What the 2026-08-06 pass found, as a warning about this file's own failure mode.** The previous
 > pin (`62cd841`, 2026-08-01) claimed policy attestation was "fixed on main, NOT yet released" and
@@ -47,15 +47,20 @@ config — lives in the research topic).
 
 **Path A is also where the fail-open gap lives.** See §7.
 
-## 3. OSS command surface (27 commands, v0.30.0)
+## 3. OSS command surface (28 on `main`; 27 in published v0.30.0)
 
-Counted from the dispatch switch at `src/cli.ts:4414`, not from a bare `case "` grep — see §10.1
-for why that distinction matters.
+Counted from the dispatch switch in `src/cli.ts`, not from a bare `case "` grep — see §10.1 for
+why that distinction matters.
+
+**The two numbers are not a typo.** `coverage` merged after 0.30.0 was published, so `main` has 28
+and every npm user has 27. Say which one you mean.
 
 - **Record/observe:** `mcp` (the recorder/live proxy — takes `--wrap`), `trace`, `scan`,
   `from-session`, `compile` (trace → skill; never generates steps from instruction text),
   `discover` (reads Claude Code / Codex CLI / OpenClaw history for replayable MCP-API workflow
-  shapes; explicitly **does not** infer opportunities from shell or file edits)
+  shapes; explicitly **does not** infer opportunities from shell or file edits),
+  `coverage` (**unreleased — on `main` only**; read-only observed-coverage probe, Codex first —
+  reports which MCP entries a host exposes that the wrap would and would not see, §7.6)
 - **Install:** `init`, `install`, `uninstall` (MCP config rewrite + reversible backup)
 - **Run:** `run`, `bench`, `baseline`, `diff`, `ci` (scaffolds a replay workflow; default schedule
   `cron: "23 7 * * *"` — daily)
@@ -200,9 +205,16 @@ Ops note: **no auto-migrate wiring** — migrations are applied by hand after me
    form at all — the wrap speaks stdio only (`src/mcp-client.ts`), and `install` skips `url`
    entries (`src/wrap.ts:119`). A receipt from a plugin-running host therefore can never be read
    as covering plugin-delivered writes — only author-wrapped stdio entries appear in it, and
-   nothing attests that any did (§8's completeness entry). Proposed response — observed-coverage
-   probe, plugin packaging, non-mutating interception: `docs/specs/agent-plugins-coverage-v1.md`
-   (on `main`). Research: `~/CascadeProjects/research/2026-08-06-agent-plugins-wrap-coverage/`.
+   nothing attests that any did (§8's completeness entry). Spec:
+   `docs/specs/agent-plugins-coverage-v1.md` (on `main`). Of the three responses it proposes, two
+   are **built on `main` and unreleased** — the read-only observed-coverage probe (`reelier
+   coverage`, §3; verified no writes in `cmdCoverage` or `src/coverage.ts`) and skill-only plugin
+   packages generated from one source (`plugin/claude/`, `plugin/agent-plugins/`,
+   `scripts/build-plugin-packages.mjs`). Non-mutating interception is still design-only.
+   **None of this changes the boundary above**: the probe *reports* coverage, it does not extend
+   the wrap, and both generated manifests declare no `mcpServers` at all ("Skill-only package — it
+   includes no MCP servers"), so there is nothing in them to wrap.
+   Research: `~/CascadeProjects/research/2026-08-06-agent-plugins-wrap-coverage/`.
 
 ## 8. Designed, NOT built — never describe these as shipped
 
@@ -255,8 +267,9 @@ published. A release-status claim in §7 is a claim about what *users have*, and
 **The command-count check was also wrong and is now fixed.** The old form —
 `git cat-file blob … | grep -cE 'case "'` — returns **43** on `4ee9ba0`, because `cli.ts` switches
 on outcome strings too (`auth-failed`, `tamper`, `pushed`, `written`, `up-to-date`, …). Scoped to
-the dispatch switch it returns **27**, the real number. A check that silently overcounts is worse
-than no check: it reads as verification.
+the dispatch switch it returned **27** there, the real number, and returns **28** on `fa37954`
+(`coverage`, unreleased). A check that silently overcounts is worse than no check: it reads as
+verification.
 
 These stay authoritative. Everything in 10.2/10.3 is a convenience layer over them.
 
