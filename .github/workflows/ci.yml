@@ -17,12 +17,22 @@ on:
   # could never arrive — with no recourse, because every trigger above is
   # event-driven.
   #
-  # `gh workflow run ci.yml --ref <branch>` gives a way out: the matrix is
-  # unchanged, so a dispatched run reports the same two context names against
-  # the branch head. NOT yet confirmed end-to-end that branch protection credits
-  # a dispatched run toward a PR — that could not be tested while Actions was
-  # down. Confirm it on the first healthy day; if it does not count, this still
-  # buys a way to get a real pass/fail signal when webhooks are throttled.
+  # `gh workflow run ci.yml --ref <branch>` gives a real pass/fail signal.
+  #
+  # MEASURED 2026-08-06, and the answer is the limiting one: a dispatched run
+  # does NOT satisfy branch protection. Its check-runs DO attach to the head
+  # SHA (both legs green on `fix/badge-linux-count`), but the PR's
+  # statusCheckRollup stayed 0 and mergeable_state stayed `blocked` with the
+  # branch up to date — GitHub does not associate a workflow_dispatch check
+  # suite with the pull request. So this trigger is a DIAGNOSTIC tool, not a
+  # merge escape hatch. During an outage the only way to land a PR is still an
+  # admin override.
+  #
+  # It earned its place anyway: the first dispatched run after this was added
+  # caught main sitting red on a badge mismatch that the incident had hidden.
+  #
+  # Note: the dispatch reads the workflow file from the TARGET ref, so a branch
+  # cut before this trigger existed returns HTTP 422 and must be rebased first.
   workflow_dispatch:
 
 jobs:
