@@ -133,6 +133,40 @@ const DESTRUCTIVE_VERBS = new Set<string>(EFFECT_VERBS.destructive);
 const IDEMPOTENT_VERBS = new Set<string>(EFFECT_VERBS["idempotent-write"]);
 
 /**
+ * The subset of `EFFECT_VERBS.read` that is a NOUN, not an action.
+ *
+ * These are the tokens that make rung 4's "any read token anywhere" match
+ * unsafe. `list_slow_queries` is a read because `list` is what the tool DOES;
+ * `complete_query_tuning` is a WRITE that merely mentions a query, and it
+ * matched on the object rather than the action. Measured 2026-08-06 against a
+ * live neon server (0 of 23 tools ship any annotation, so rungs 1–2 never
+ * pre-empt this): `complete_query_tuning` applies DDL to a production main
+ * branch and deletes a branch, and classified `{read, unknown: false}` — the
+ * wrong effect with no review flag at all.
+ *
+ * A name whose ONLY read evidence is one of these still classifies `read`
+ * (over-classifying every `*_status` tool as a write would be worse), but it
+ * carries `unknown: true` so it surfaces for review instead of passing
+ * silently. This makes the leak VISIBLE; it does not close the write gate —
+ * `unknown` drives reporting, not gating (`src/session.ts`, `src/compile.ts`).
+ * Closing the gate would mean routing these to rung 6, which over-classifies
+ * genuine reads and is a separate decision.
+ */
+const READ_NOUNS = new Set<string>([
+  "query",
+  "status",
+  "stat",
+  "stats",
+  "count",
+  "preview",
+  "health",
+  "head",
+  "info",
+  "screenshot",
+  "logs",
+]);
+
+/**
  * The three MCP `tools/list` annotation hints relevant to effect
  * classification. Hints, NOT security: they can tighten a classification or
  * refine an unrecognized verb, but replay's write gating (`--allow-writes`)
@@ -210,6 +244,16 @@ export function classifyEffect(tool: string, annotations?: ToolEffectAnnotations
   if (tokens.some((t) => READ_VERBS.has(t))) {
     if (annotations?.readOnlyHint !== true && annotations?.idempotentHint === true) {
       return { effect: "idempotent-write", unknown: false };
+    }
+    // A name whose ONLY read evidence is a NOUN (see READ_NOUNS) matched the
+    // object, not the action — the `<unlisted-verb>_<read-noun>` shape that
+    // let `complete_query_tuning` classify read with no review flag. Keep the
+    // read (default-denying every `*_status` tool would be worse) but flag it,
+    // unless the server itself declared readOnlyHint, which is authoritative
+    // enough that a human need not re-litigate it.
+    const matchedActionVerb = tokens.some((t) => READ_VERBS.has(t) && !READ_NOUNS.has(t));
+    if (!matchedActionVerb && annotations?.readOnlyHint !== true) {
+      return { effect: "read", unknown: true };
     }
     return { effect: "read", unknown: false };
   }

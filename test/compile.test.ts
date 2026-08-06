@@ -332,6 +332,51 @@ test("trust ladder: idempotentHint:true classifies an unknown-verb tool idempote
   assert.deepEqual(classifyEffect("frobnicate", { idempotentHint: true }), { effect: "idempotent-write", unknown: false });
 });
 
+// ---------------------------------------------------------------------------
+// Rung 4's read-NOUN flag. Measured 2026-08-06 against a live neon MCP server:
+// 0 of its 23 tools ship any annotation, so rungs 1-2 never pre-empt the verb
+// list there and a bad rung-4 match is the whole decision.
+// `complete_query_tuning` applies DDL to a production main branch and deletes a
+// branch, and classified {read, unknown: false} — wrong effect, no review flag.
+// ---------------------------------------------------------------------------
+
+test("a read match on a NOUN alone stays read but is flagged for review", () => {
+  // The leak: the action verb (`complete`/`prepare`/`archive`) is in no list,
+  // and only the object (`query`) matched.
+  assert.deepEqual(classifyEffect("complete_query_tuning"), { effect: "read", unknown: true });
+  assert.deepEqual(classifyEffect("prepare_query_tuning"), { effect: "read", unknown: true });
+  assert.deepEqual(classifyEffect("archive_query"), { effect: "read", unknown: true });
+});
+
+test("a real read ACTION verb keeps unknown:false even when a read noun is also present", () => {
+  // These must not regress into review noise: `list`/`get`/`check`/`describe`
+  // are what the tool DOES, so the classification rests on an action.
+  assert.deepEqual(classifyEffect("list_slow_queries"), { effect: "read", unknown: false });
+  assert.deepEqual(classifyEffect("check_status"), { effect: "read", unknown: false });
+  assert.deepEqual(classifyEffect("get_query_info"), { effect: "read", unknown: false });
+  assert.deepEqual(classifyEffect("describe_branch"), { effect: "read", unknown: false });
+});
+
+test("the noun flag never changes the EFFECT — it only makes the read reviewable", () => {
+  // Deliberate limit, and the reason this is not a gate fix: `unknown` drives
+  // reporting, not gating. A flagged read still passes replay's write gate.
+  // Closing that would mean routing these to rung 6, a separate decision.
+  assert.equal(classifyEffect("complete_query_tuning").effect, "read");
+});
+
+test("a server's own readOnlyHint clears the noun flag — it is authoritative enough", () => {
+  assert.deepEqual(classifyEffect("complete_query_tuning", { readOnlyHint: true }), {
+    effect: "read",
+    unknown: false,
+  });
+});
+
+test("the noun flag never overrides a higher rung", () => {
+  // A destructive or idempotent verb anywhere still wins before rung 4 runs.
+  assert.deepEqual(classifyEffect("delete_query"), { effect: "destructive", unknown: false });
+  assert.deepEqual(classifyEffect("purge_query_cache"), { effect: "destructive", unknown: false });
+});
+
 test("trust ladder: readOnlyHint outranks idempotentHint on an unknown-verb tool", () => {
   assert.deepEqual(classifyEffect("frobnicate", { readOnlyHint: true, idempotentHint: true }), {
     effect: "read",
