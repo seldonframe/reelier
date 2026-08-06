@@ -3156,7 +3156,7 @@ test("warm preparation-stage crashes recover from both entry points and the root
 test("reused roots on the default path stay healed across acquisitions, crashes, and recover()",{timeout:120_000},async t=>{
   const crashDefaultChild=async(root:string,point:string)=>{
     const moduleUrl=pathToFileURL(path.resolve("dist-test/src/authority/host/fs-ledger.js")).href;
-    const source=`import{FsAuthorityLedger}from ${JSON.stringify(moduleUrl)};const ledger=new FsAuthorityLedger(process.argv[1],{now:()=>${t0+500},lockTimeoutMs:200,faultInjector(point){if(point===${JSON.stringify(point)})process.exit(91);}});await ledger.observeClock();process.exit(92);`;
+    const source=`import{FsAuthorityLedger,__testK1AdmissionPreparationRuntimeOption}from ${JSON.stringify(moduleUrl)};const ledger=new FsAuthorityLedger(process.argv[1],{[__testK1AdmissionPreparationRuntimeOption]:${JSON.stringify(K1_ADMISSION_PREPARATION_LEGACY)},now:()=>${t0+500},lockTimeoutMs:200,faultInjector(point){if(point===${JSON.stringify(point)})process.exit(91);}});await ledger.observeClock();process.exit(92);`;
     let stderr="";
     const code=await new Promise<number|null>((resolve,reject)=>{const child=spawn(process.execPath,["--input-type=module","-e",source,root],{stdio:["ignore","ignore","pipe"]});child.stderr.setEncoding("utf8").on("data",chunk=>{stderr+=chunk;});child.once("error",reject);child.once("close",resolve);});
     assert.equal(code,91,`${point} is a real hard-exit boundary on the default path: ${stderr}`);
@@ -3174,7 +3174,7 @@ test("reused roots on the default path stay healed across acquisitions, crashes,
   };
   const observeAdvances=async(root:string,at:number,label:string)=>{
     let callbacks=0;
-    assert.deepEqual(await new RawFsAuthorityLedger(root,{now:()=>at,lockTimeoutMs:2_000,faultInjector:(faultPoint:string)=>{if(faultPoint==="before-ledger-operation-callback")callbacks++;}} as never).observeClock(),{ok:true,status:"advanced",observedAt:new Date(at).toISOString()},`${label}: the acquisition completes`);
+    assert.deepEqual(await new RawFsAuthorityLedger(root,{[k1AdmissionPreparationOption()]:K1_ADMISSION_PREPARATION_LEGACY,now:()=>at,lockTimeoutMs:2_000,faultInjector:(faultPoint:string)=>{if(faultPoint==="before-ledger-operation-callback")callbacks++;}} as never).observeClock(),{ok:true,status:"advanced",observedAt:new Date(at).toISOString()},`${label}: the acquisition completes`);
     assert.equal(callbacks,1,`${label}: with exactly one semantic callback`);
   };
   await t.test("one root survives the crash-and-heal lifecycle end to end",()=>withRoot(async root=>{
@@ -3190,7 +3190,7 @@ test("reused roots on the default path stay healed across acquisitions, crashes,
     await observeAdvances(root,t0+3_000,"heal over the dead lock");
     await assertSteady(root,"after the dead lock was reclaimed");
     await crashDefaultChild(root,"after-lock-publication-root-sync");
-    const recovered=await new RawFsAuthorityLedger(root,{now:()=>t0+4_000,lockTimeoutMs:2_000} as never).recover();
+    const recovered=await new RawFsAuthorityLedger(root,{[k1AdmissionPreparationOption()]:K1_ADMISSION_PREPARATION_LEGACY,now:()=>t0+4_000,lockTimeoutMs:2_000} as never).recover();
     assert.equal(recovered.ok,true,"recover() drains the same crash shape first");
     await assertNoAdmissionResidue(root,"after recover() on the crashed root");
     await observeAdvances(root,t0+5_000,"acquisition after recover()");
@@ -3210,7 +3210,7 @@ test("reused roots on the default path stay healed across acquisitions, crashes,
     // legacy lock, because the spec makes the next complete active-lock owner the sole marker
     // scanner and recover() demonstrably drained the predecessor's marker here.
     const beforeIdle=legacyResidue(await readdir(root));
-    const drained=await new RawFsAuthorityLedger(root,{now:()=>t0+7_000,lockTimeoutMs:2_000} as never).recover();
+    const drained=await new RawFsAuthorityLedger(root,{[k1AdmissionPreparationOption()]:K1_ADMISSION_PREPARATION_LEGACY,now:()=>t0+7_000,lockTimeoutMs:2_000} as never).recover();
     assert.equal(drained.ok,true,"recover() on a healed root succeeds");
     await assertNoAdmissionResidue(root,"after recover() on the healed root");
     await assertSteady(root,"after the idle recover()");
