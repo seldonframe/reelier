@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "reelier",
-  "version": "0.30.0",
+  "version": "0.31.0",
   "description": "Reelier's Agent Skill: freeze a repeatable, tool-call-driven job into a deterministic, replayable skill with a receipt per run. Skill-only package — it includes no MCP servers.",
   "homepage": "https://github.com/seldonframe/reelier",
   "repository": "https://github.com/seldonframe/reelier",

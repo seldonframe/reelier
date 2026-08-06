@@ -1,6 +1,6 @@
 {
   "name": "reelier",
-  "version": "0.30.0",
+  "version": "0.31.0",
   "mcpName": "io.github.seldonframe/reelier",
   "description": "Agents make claims, Reelier writes receipts - record an agent workflow once, replay it deterministically at 0 tokens, and get an asserted receipt on every run.",
   "license": "MIT",
