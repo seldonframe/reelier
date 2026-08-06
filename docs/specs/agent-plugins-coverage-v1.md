@@ -117,12 +117,31 @@ tools and guidance; it does not put the Path A seatbelt around any other server'
 
 | Host | plugin loads | `mcp.json` honored | skills visible | tool naming observed |
 |---|---|---|---|---|
-| Codex | unchecked | unchecked | unchecked | unchecked |
+| Codex | observed 2026-08-06 ¹ | unchecked ² | unchecked ³ | unchecked ⁴ |
 | ChatGPT | unchecked | unchecked | unchecked | unchecked |
 | Cursor | unchecked | unchecked | unchecked | unchecked |
 | GitHub Copilot | unchecked | unchecked | unchecked | unchecked |
 | Kiro | unchecked | unchecked | unchecked | unchecked |
 | VS Code | unchecked | unchecked | unchecked | unchecked |
+
+Codex observations — 2026-08-06, `codex-cli 0.147.0-alpha.1.2`, isolated `CODEX_HOME`, local
+marketplace fixtures built from the committed `plugin/` packages:
+
+1. **Both package formats install and enable** (`codex plugin add` → `installed, enabled`; payload
+   cached with `skills/` intact; `[plugins."reelier@…"]` registration written). But "loads" here
+   means *install + enable only*: the Agent Plugins root `plugin.json` was **not parsed** — its
+   `version` was ignored (Codex reported `local` where it read `0.30.0` out of the Claude-format
+   package's `.claude-plugin/plugin.json`) and Codex synthesized its own
+   `.codex-plugin/plugin.json` from *marketplace* metadata, not from the manifest.
+   Manifest-aware loading of the v1.0.0 format: not observed.
+2. Our package ships no `mcp.json` by design (§3), so this cell cannot flip from our own install.
+   Codex caches other plugins' `.mcp.json` (observed via `reelier coverage --host codex`), but a
+   plugin-delivered server being *launched* was not observed either.
+3. Requires an authenticated interactive session — `codex skills` refuses without a TTY. Operator
+   check that would flip it: add the marketplace to a real profile, then run `codex skills` in a
+   terminal and look for `reelier`.
+4. Not applicable to the skill-only package (no MCP tools to be named); flips only after §3's
+   MCP component exists and 2 is observed.
 
 A cell flips only on an observed run, recorded with date and host version. Public claims quote
 observed cells and name the host; "works with Agent Plugins hosts" as a universal is banned until
