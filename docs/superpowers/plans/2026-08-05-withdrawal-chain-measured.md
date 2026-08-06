@@ -322,3 +322,21 @@ Findings, by class:
    `slot + same-owner aborted` as an unrecognized corruption window; the measurement refuted
    it (the pre-classification service drains the marker first) — reasoning caught by running,
    again.
+
+**Slice b shipped (same day): the empty-terminal form.** Spec resolution written first per the
+grant, then five widening sites — the descriptor withhold removed, `boundSlotCleanup`, the
+cleanup-stage validator, the durable ack-binding validator (outside the grant's verbatim
+validator list; recorded in the spec for owner ratification — without it crash-state-5's
+durable slot-ack refused its own form), and the orphan-final classifier — every one scoped
+`withdrawn` + creator-withdrawal terminal + `state==="empty"` + zero children, locally exact
+per the GREEN review's hardening. The named pin "slot-withdrawal empty-terminal dead stays
+preserved bounded busy" flipped to "…dead completes" in the same commit, with a recover twin,
+a both-acks resume pin (fixture-seeded acks must equal the machinery's own reconstruction
+byte-for-byte — the resume gates prove mint ≡ fixture), and three boundary guards the RED
+review demanded: the empty active lock beside a published marker, the CROSS-OWNER empty
+terminal (the empty digest is a universal constant, so the same-owner binding is the form's
+whole authority), and the orphan published final over an empty released successor (under a
+wrong widening that shape drained and self-authored an acquisition — probe-measured). Ledger
+597/59 → 602/59; the only gate noise all evening was the 100-process member dying at spawn
+(errno -4094) under 1–3GB free memory — the §3 environment signature, measured by the
+reviewer to fail before any ledger code runs.

@@ -2787,7 +2787,7 @@ test("published-slot graphs tolerate unrelated inert legacy residue on a used ro
   // pass: an unrelated recovery-pending marker is an unserviced semantic recovery obligation, not
   // inert residue, and a second same-owner successor is genuine ambiguity.
   // Foreign `recovery-pending` is conditioned on the ACTIVE LOCK being the successor. Spec :571
-  // grants retirement-marker coexistence "only for the next active owner", and :853-854 makes that
+  // grants retirement-marker coexistence "only for the next active owner", and :857-858 makes that
   // owner the sole marker scanner servicing every recovery-pending marker before every callback —
   // inspectActiveLock's own dead-lock reclaim mints exactly this shape in the same iteration that
   // publishes, so refusing it would corrupt every acquisition that follows a crash-with-lock. With
@@ -3434,11 +3434,11 @@ test("the creator-withdrawal chain completes for dead owners from every crash st
       await assertDrained(root,state);
     });});
   }
-  // The terminal's three legal states are not interchangeable: a ZERO terminal (owner.json with
-  // no bytes) completes like partial, but an EMPTY terminal (no owner.json at all) has no exact
-  // owner bytes for the withdrawn slot-ack to bind, so the dead-owner route withholds and the
-  // residue stays preserved bounded busy — the measured limit recorded in the spec beside the
-  // crash matrix, resolved by the K1 creator-side slice.
+  // The terminal's three legal states complete alike since the empty-terminal grant (Batch C):
+  // a ZERO terminal (owner.json with no bytes) completes like partial, and an EMPTY terminal
+  // (no owner.json at all) completes through the empty-terminal acknowledgment form — the
+  // withdrawn slot-ack binds the digest of the empty byte string, the creator-withdrawal ack
+  // binds length "0" with null owner identity — recorded in the spec beside the crash matrix.
   await t.test("slot-withdrawal zero-terminal dead observe completes",async()=>{const owner:AdmissionOwner={host:hostname(),nonce:"c".repeat(64),pid:await exitedProcessPid(),v:1};await withRoot(async root=>{
     const withdrawal=path.join(root,creatorWithdrawalName(owner,"zero")),slot=path.join(root,admissionRetiredName(owner,"withdrawn"));
     await mkdir(withdrawal);await writeFile(path.join(withdrawal,"owner.json"),Buffer.alloc(0));
@@ -3447,16 +3447,87 @@ test("the creator-withdrawal chain completes for dead owners from every crash st
     assert.deepEqual(result,{ok:true,status:"advanced",observedAt:new Date(t0+1_000).toISOString()});
     await assertDrained(root,"zero-terminal");
   });});
-  await t.test("slot-withdrawal empty-terminal dead stays preserved bounded busy",async()=>{const owner:AdmissionOwner={host:hostname(),nonce:"c".repeat(64),pid:await exitedProcessPid(),v:1};await withRoot(async root=>{
+  await t.test("slot-withdrawal empty-terminal dead completes",async()=>{const owner:AdmissionOwner={host:hostname(),nonce:"c".repeat(64),pid:await exitedProcessPid(),v:1};await withRoot(async root=>{
     const withdrawal=path.join(root,creatorWithdrawalName(owner,"empty")),slot=path.join(root,admissionRetiredName(owner,"withdrawn"));
     await mkdir(withdrawal);
     await mkdir(slot);await writeFile(path.join(slot,"owner.json"),publicationOwnerBytes(owner));
+    const {result,slotSyncs,withdrawalSyncs}=await runChain(root,"observe");
+    assert.deepEqual(result,{ok:true,status:"advanced",observedAt:new Date(t0+1_000).toISOString()});
+    assert.deepEqual({slotSyncs,withdrawalSyncs},{slotSyncs:1,withdrawalSyncs:1},"empty-terminal signals");
+    await assertDrained(root,"empty-terminal");
+  });});
+  await t.test("slot-withdrawal empty-terminal dead recover completes",async()=>{const owner:AdmissionOwner={host:hostname(),nonce:"c".repeat(64),pid:await exitedProcessPid(),v:1};await withRoot(async root=>{
+    const withdrawal=path.join(root,creatorWithdrawalName(owner,"empty")),slot=path.join(root,admissionRetiredName(owner,"withdrawn"));
+    await mkdir(withdrawal);
+    await mkdir(slot);await writeFile(path.join(slot,"owner.json"),publicationOwnerBytes(owner));
+    const {result}=await runChain(root,"recover");
+    assert.equal(result.ok,true,"empty-terminal recover");
+    await assertDrained(root,"empty-terminal recover");
+  });});
+  // The empty form survives the ack lifecycle too: chain step 5's residue with an EMPTY
+  // terminal — the withdrawal marker (no owner object), the durable withdrawn slot-ack binding
+  // the empty-bytes digest, and the creator-withdrawal ack in the empty form — resumes and
+  // drains rather than wedging on a byte binding the terminal cannot satisfy.
+  await t.test("withdrawal-both-acks empty-terminal dead completes",async()=>{const owner:AdmissionOwner={host:hostname(),nonce:"c".repeat(64),pid:await exitedProcessPid(),v:1};await withRoot(async root=>{
+    const withdrawalName=creatorWithdrawalName(owner,"empty"),withdrawal=path.join(root,withdrawalName),slotName=admissionRetiredName(owner,"withdrawn"),slot=path.join(root,slotName);
+    await mkdir(withdrawal);
+    await mkdir(slot);await writeFile(path.join(slot,"owner.json"),publicationOwnerBytes(owner));
+    const slotAck=slotCoordinationAck(owner,slotName,slot,"withdrawn",withdrawalName,Buffer.alloc(0));
+    await writeFile(path.join(root,coordinationAckName(slotAck)),authorityCanonicalBytes(slotAck));
+    await rm(slot,{recursive:true});
+    const withdrawalAck=incompleteCoordinationAck(owner,"creator-withdrawal",withdrawalName,publicationStageName({...owner,ticket:"0000000000000001"}),"empty",withdrawal,slotAck);
+    await writeFile(path.join(root,coordinationAckName(withdrawalAck)),authorityCanonicalBytes(withdrawalAck));
+    const {result,withdrawalSyncs}=await runChain(root,"observe");
+    assert.deepEqual(result,{ok:true,status:"advanced",observedAt:new Date(t0+1_000).toISOString()});
+    assert.equal(withdrawalSyncs,1,"the terminal-removal signal fires once");
+    await assertDrained(root,"empty-terminal both-acks");
+  });});
+  // The ONLY boundary of the grant: the empty form belongs to withdrawal-family terminals. A
+  // published disposition with a bytes-less successor stays refused — an empty active lock is
+  // malformed before any cleanup validator runs, and this pin holds that refusal in place so a
+  // wider empty acceptance cannot ship silently.
+  await t.test("an empty active lock beside a published slot marker stays preserved corruption",async()=>{const owner:AdmissionOwner={host:hostname(),nonce:"c".repeat(64),pid:await exitedProcessPid(),v:1};await withRoot(async root=>{
+    const marker=path.join(root,admissionRetiredName(owner,"published"));
+    await mkdir(marker);await writeFile(path.join(marker,"owner.json"),publicationOwnerBytes(owner));
+    await mkdir(path.join(root,"lock"));
+    const before=await snapshotRootArtifacts(root);
+    const observed=await new RawFsAuthorityLedger(root,{now:()=>t0+1_000,lockTimeoutMs:200}).observeClock();
+    assert.deepEqual(observed,{ok:false,reason:"corruption"});
+    assert.deepEqual(await snapshotRootArtifacts(root),before,"the empty lock and marker are preserved");
+  });});
+  // The empty form's digest is a universal constant — digest-of-empty proves nothing about
+  // WHICH terminal — so the same-owner checks are the empty terminal's ONLY binding. This pin
+  // holds a cross-owner empty terminal to corruption so a refactor that consolidates the
+  // "redundant" owner checks cannot ship silently (RED-review finding, Batch C).
+  await t.test("a cross-owner empty terminal grants no withdrawn cleanup authority",async()=>{const ownerA:AdmissionOwner={host:hostname(),nonce:"a".repeat(64),pid:await exitedProcessPid(),v:1},ownerB:AdmissionOwner={host:hostname(),nonce:"b".repeat(64),pid:await exitedProcessPid(),v:1};await withRoot(async root=>{
+    const slotName=admissionRetiredName(ownerA,"withdrawn"),slot=path.join(root,slotName),foreignTerminalName=creatorWithdrawalName(ownerB,"empty");
+    await mkdir(slot);await writeFile(path.join(slot,"owner.json"),publicationOwnerBytes(ownerA));
+    await mkdir(path.join(root,foreignTerminalName));
+    const slotAck=slotCoordinationAck(ownerA,slotName,slot,"withdrawn",foreignTerminalName,Buffer.alloc(0));
+    await writeFile(path.join(root,coordinationAckName(slotAck)),authorityCanonicalBytes(slotAck));
     const before=await snapshotRootArtifacts(root);
     for(const entry of ["observe","recover"] as const){
-      const {result}=await runChain(root,entry);
-      assert.deepEqual(result,{ok:false,reason:"busy"},`empty-terminal ${entry}`);
+      const ledger=new RawFsAuthorityLedger(root,{now:()=>t0+1_000,lockTimeoutMs:200});
+      const result=entry==="recover"?await ledger.recover():await ledger.observeClock();
+      assert.deepEqual({ok:result.ok,reason:(result as {reason?:string}).reason},{ok:false,reason:"corruption"},`cross-owner empty ${entry}`);
     }
-    assert.deepEqual(await snapshotRootArtifacts(root),before,"empty-terminal: preserved byte-identically, no self-authored stage");
+    assert.deepEqual(await snapshotRootArtifacts(root),before,"cross-owner empty terminal is preserved byte-identically");
+  });});
+  // The classifier-layer twin of the empty-lock boundary pin: an orphan PUBLISHED final whose
+  // successor is an empty (owner-less) released marker stays corruption — under a widening
+  // that reconstructs owners for empty retired markers, this exact shape drained and the root
+  // gained a self-authored acquisition (RED-review probe, Batch C).
+  await t.test("an orphan published final over an empty released successor stays preserved corruption",async()=>{const owner:AdmissionOwner={host:hostname(),nonce:"d".repeat(64),pid:await exitedProcessPid(),v:1};await withRoot(async root=>{
+    const markerName=admissionRetiredName(owner,"published"),marker=path.join(root,markerName),releasedName=retirementMarkerName(owner,"released");
+    await mkdir(marker);await writeFile(path.join(marker,"owner.json"),publicationOwnerBytes(owner));
+    const ack=slotCoordinationAck(owner,markerName,marker,"published",releasedName,Buffer.alloc(0));
+    await writeFile(path.join(root,coordinationAckName(ack)),authorityCanonicalBytes(ack));
+    await rm(marker,{recursive:true});
+    await mkdir(path.join(root,releasedName));
+    const before=await snapshotRootArtifacts(root);
+    const observed=await new RawFsAuthorityLedger(root,{now:()=>t0+1_000,lockTimeoutMs:200}).observeClock();
+    assert.deepEqual(observed,{ok:false,reason:"corruption"});
+    assert.deepEqual(await snapshotRootArtifacts(root),before,"the orphan final and empty successor are preserved");
   });});
 });
 

@@ -1609,8 +1609,14 @@ export class FsAuthorityLedger implements AuthorityLedger {
       const successorName=binding.descriptor.kind==="slot-retired-cleanup"?binding.descriptor.successorName:null;
       if(successorName===null)throw new LedgerCorruption("slot cleanup lacks its terminal binding");
       const successorEntry=binding.snapshot.entries.find(value=>value.name===successorName),child=successorEntry===undefined?null:hybridOwnerChild(successorEntry);
-      if(child?.bytes===undefined)throw new LedgerCorruption("slot cleanup terminal has no exact owner bytes");
-      terminalArtifactName=successorName;terminalBytes=child.bytes;recoveryAuthority=parsed.disposition==="published"?"active-owner-or-exact-lock-successor":"exact-withdrawal-marker";
+      // The empty-terminal form (Batch C grant): a withdrawn-disposition terminal that is a
+      // creator-withdrawal marker in state `empty` has no owner object by construction, and is
+      // acknowledged with the digest of the empty byte string. Every other bytes-less terminal
+      // keeps the refusal — `published` successors and `abandoned` markers always carry bytes.
+      const parsedSuccessor=parseK1Name(successorName);
+      const emptyWithdrawalTerminal=parsed.disposition==="withdrawn"&&successorEntry!==undefined&&parsedSuccessor?.kind==="creator-withdrawal"&&parsedSuccessor.state==="empty"&&(successorEntry.children??[]).length===0;
+      if(child?.bytes===undefined&&!emptyWithdrawalTerminal)throw new LedgerCorruption("slot cleanup terminal has no exact owner bytes");
+      terminalArtifactName=successorName;terminalBytes=child?.bytes??Buffer.alloc(0);recoveryAuthority=parsed.disposition==="published"?"active-owner-or-exact-lock-successor":"exact-withdrawal-marker";
     }
     const ack:CoordinationAck={disposition:parsed.disposition,kind:"admission-slot-retired",markerName:parsed.name,originalName:ADMISSION_SLOT_NAME,owner:artifact.owner,ownerBytesDigest:coordinationRawDigest(artifact.ownerBytes),ownerBytesLength:String(artifact.ownerBytes.length),ownerDigest:coordinationCanonicalDigest(artifact.owner),ownerIdentity:encodeCoordinationIdentityWire(artifact.ownerIdentity),purpose:"slot-retired",recoveryAuthority,slotIdentity:encodeCoordinationIdentityWire(artifact.entry.identity),terminalArtifactDigest:coordinationRawDigest(terminalBytes),terminalArtifactName,v:COORDINATION_ACK_VERSION},bytes=coordinationCanonicalBytes(ack),stageName=`.authority-ledger-coordination-cleanup-stage-s-${coordinationRawDigest(bytes).slice(7)}.tmp`;
     return {ack,bytes,stageName,artifact};
@@ -2081,7 +2087,11 @@ export class FsAuthorityLedger implements AuthorityLedger {
     }else if(ack.purpose==="slot-retired"){
       const artifact=owned.find(item=>item.parsed.kind==="admission-slot-retired"&&item.parsed.name===ack.markerName);if(artifact!==undefined&&(!sameCoordinationOwner(artifact.owner,owner)||!coordinationIdentityMatches(ack.slotIdentity as CoordinationIdentityWire,artifact.entry.identity)))throw new LedgerCorruption("slot-retired ack binding mismatch");
       const terminalName=String(ack.terminalArtifactName),terminalEntry=byName.get(terminalName),ownedTerminal=owned.find(item=>item.parsed.name===terminalName),retiredTerminal=retired.get(terminalName),activeTerminal=terminalName==="lock"&&terminalEntry!==undefined?this.classifyHybridCompleteOwnerDirectory(terminalEntry,null,hostname()):undefined,terminalOwner=ownedTerminal?.owner??retiredTerminal?.owner??activeTerminal;
-      if(terminalEntry!==undefined){const child=hybridOwnerChild(terminalEntry),partialTerminal=ack.disposition==="abandoned"&&ownedTerminal!==undefined&&(terminalEntry.children??[]).length===0?ownedTerminal.ownerBytes:undefined,terminalBytes=child?.bytes??partialTerminal;if(terminalBytes===undefined||ack.terminalArtifactDigest!==coordinationRawDigest(terminalBytes)||terminalOwner===undefined||!sameCoordinationOwner(terminalOwner,owner))throw new LedgerCorruption("slot-retired terminal mismatch");}
+      // The empty-terminal form (Batch C grant): a withdrawn disposition whose owned terminal
+      // is a creator-withdrawal marker in state `empty` binds the digest of the empty byte
+      // string. The same-owner check below is that form's whole authority — the digest is a
+      // universal constant — and the cross-owner pin holds it.
+      if(terminalEntry!==undefined){const child=hybridOwnerChild(terminalEntry),partialTerminal=ack.disposition==="abandoned"&&ownedTerminal!==undefined&&(terminalEntry.children??[]).length===0?ownedTerminal.ownerBytes:undefined,emptyWithdrawalTerminal=ack.disposition==="withdrawn"&&ownedTerminal?.parsed.kind==="creator-withdrawal"&&ownedTerminal.parsed.state==="empty"&&(terminalEntry.children??[]).length===0?Buffer.alloc(0):undefined,terminalBytes=child?.bytes??partialTerminal??emptyWithdrawalTerminal;if(terminalBytes===undefined||ack.terminalArtifactDigest!==coordinationRawDigest(terminalBytes)||terminalOwner===undefined||!sameCoordinationOwner(terminalOwner,owner))throw new LedgerCorruption("slot-retired terminal mismatch");}
       if(ack.disposition==="abandoned"){
         if(terminalName!==markerName||terminalEntry===undefined&&processLiveness(owner.pid)!=="dead")throw new LedgerCorruption("abandoned slot lacks its terminal authority");
       }else if(ack.disposition==="withdrawn"){
@@ -2156,7 +2166,8 @@ export class FsAuthorityLedger implements AuthorityLedger {
           recoveryAuthority="active-owner-or-exact-lock-successor";
         }
         if(candidates.length!==1)throw new LedgerCorruption("slot-retired cleanup stage lacks its exact terminal proof");
-        terminalName=candidates[0].name;const child=hybridOwnerChild(candidates[0].entry);if(child?.bytes===undefined)throw new LedgerCorruption("slot-retired cleanup terminal has no exact bytes");terminalBytes=child.bytes;
+        // The empty-terminal form (Batch C grant): withdrawal-family terminals only.
+        terminalName=candidates[0].name;const child=hybridOwnerChild(candidates[0].entry),parsedTerminal=parseK1Name(terminalName),emptyWithdrawalTerminal=parsed.disposition==="withdrawn"&&parsedTerminal?.kind==="creator-withdrawal"&&parsedTerminal.state==="empty"&&(candidates[0].entry.children??[]).length===0;if(child?.bytes===undefined&&!emptyWithdrawalTerminal)throw new LedgerCorruption("slot-retired cleanup terminal has no exact bytes");terminalBytes=child?.bytes??Buffer.alloc(0);
       }
       expected={disposition:parsed.disposition,kind:"admission-slot-retired",markerName:parsed.name,originalName:ADMISSION_SLOT_NAME,owner:marker.owner,ownerBytesDigest:coordinationRawDigest(marker.ownerBytes),ownerBytesLength:String(marker.ownerBytes.length),ownerDigest:coordinationCanonicalDigest(marker.owner),ownerIdentity:encodeCoordinationIdentityWire(marker.ownerIdentity),purpose:"slot-retired",recoveryAuthority,slotIdentity:encodeCoordinationIdentityWire(marker.entry.identity),terminalArtifactDigest:coordinationRawDigest(terminalBytes),terminalArtifactName:terminalName,v:COORDINATION_ACK_VERSION};
     }else{
@@ -2199,7 +2210,9 @@ export class FsAuthorityLedger implements AuthorityLedger {
     const withdrawals=owned.filter(value=>value.parsed.kind==="creator-withdrawal"),otherOwned=owned.filter(value=>value.parsed.kind!=="creator-withdrawal"),aborted=[...retired.values()].filter(value=>value.disposition==="publication-aborted");
     if(otherOwned.length||withdrawals.length+this.blockingRetiredResidue(retired,ack.owner)!==1||withdrawals.length+aborted.length!==1)throw new LedgerCorruption("orphan withdrawn-slot final requires one exact terminal lineage");
     const terminal=withdrawals.length?{name:withdrawals[0].parsed.name,entry:withdrawals[0].entry,owner:withdrawals[0].owner}:{name:aborted[0].entry.name,entry:aborted[0].entry,owner:aborted[0].owner};
-    const child=hybridOwnerChild(terminal.entry);if(child?.bytes===undefined||!sameCoordinationOwner(terminal.owner,ack.owner)||ack.terminalArtifactName!==terminal.name||ack.terminalArtifactDigest!==coordinationRawDigest(child.bytes))throw new LedgerCorruption("orphan withdrawn-slot final terminal proof mismatch");
+    // The empty-terminal form (Batch C grant): an empty creator-withdrawal terminal is proved
+    // by the digest of the empty byte string; the same-owner check is its whole authority.
+    const child=hybridOwnerChild(terminal.entry),emptyWithdrawalTerminal=withdrawals.length===1&&withdrawals[0].parsed.kind==="creator-withdrawal"&&withdrawals[0].parsed.state==="empty"&&(terminal.entry.children??[]).length===0?Buffer.alloc(0):undefined,terminalProofBytes=child?.bytes??emptyWithdrawalTerminal;if(terminalProofBytes===undefined||!sameCoordinationOwner(terminal.owner,ack.owner)||ack.terminalArtifactName!==terminal.name||ack.terminalArtifactDigest!==coordinationRawDigest(terminalProofBytes))throw new LedgerCorruption("orphan withdrawn-slot final terminal proof mismatch");
     const creatorLifecycle=acks.filter(value=>(value.parsed.kind==="coordination-stage"?value.parsed.purpose:value.ack?.purpose)==="creator-withdrawal");
     if(withdrawals.length===0&&acks.length!==1||withdrawals.length===1&&(acks.length<1||acks.length>2||acks.length===2&&creatorLifecycle.length!==1))throw new LedgerCorruption("orphan withdrawn-slot lineage has incoherent cleanup lifecycle");
     return "busy";
@@ -2238,7 +2251,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
   //
   // A foreign `recovery-pending` marker is tolerated exactly when the SAME-OWNER ACTIVE LOCK is
   // the successor. Spec :571 grants retirement-marker coexistence "only for the next active
-  // owner", and :853-854 makes that owner the sole marker scanner, servicing every
+  // owner", and :857-858 makes that owner the sole marker scanner, servicing every
   // recovery-pending marker before every callback — so an unserviced foreign marker beside the
   // live lock is the specified mid-acquisition state (inspectActiveLock's own dead-lock reclaim
   // mints one in the same iteration that publishes). With no active lock in the graph there is no
@@ -3327,12 +3340,10 @@ function describeStablePrepAuthority(snapshot:HybridRootSnapshot,decision:Hybrid
     // exact terminal binding; the descriptor only names the pieces.
     const lifecycle=parsed.find(value=>value.kind==="coordination-stage"&&value.purpose==="slot-retired"||value.kind==="coordination-ack"&&prepCleanupAck(snapshot,value)?.purpose==="slot-retired");
     const terminalMarker=parsed.find((value):value is Extract<ParsedK1Name,{kind:"creator-withdrawal"}>=>value.kind==="creator-withdrawal");
-    // Measured limit (2026-08-06): an EMPTY withdrawal terminal has no owner bytes for the
-    // withdrawn slot-ack to bind, and minting the ack over a zero-length digest writes a stage
-    // the classifier then refuses — permanent corruption from the housekeeper's own hand. The
-    // descriptor is withheld instead, preserving the bounded-busy shape; the K1 creator-side
-    // slice resolves the form (spec, beside the crash matrix).
-    if(terminalMarker!==undefined&&terminalMarker.state==="empty")return null;
+    // The empty-terminal form (Batch C grant, spec beside the crash matrix): an EMPTY
+    // withdrawal terminal is acknowledged with the digest of the empty byte string, so the
+    // route no longer withholds. The classifier accepts that form for withdrawal-family
+    // terminals only, and the same-owner binding is the empty form's whole authority.
     const terminalName=terminalMarker?.name??withdrawnSuccessorNameFromSnapshot(snapshot,withdrawnSlot);
     if(terminalName!==null)return {kind:"slot-retired-cleanup",targetName:withdrawnSlot.name,lifecycleName:lifecycle?.name??null,orphan:false,pid:withdrawnSlot.pid,disposition:"withdrawn",successorName:terminalName};
     return null;

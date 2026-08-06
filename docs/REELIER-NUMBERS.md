@@ -54,12 +54,12 @@ shape and cannot see the difference.
 
 | Quantity | Value | Status |
 |---|---|---|
-| Ledger suite | **597 pass / 59 fail** after the Batch C W1-recognition slice (+14: the live W1 pin family; 583/59 after the D3(a) freeze, 582/60 after B2c, 566/61 after B2a). The 100-process flake was PASSING in the re-saved baseline, so under load it can surface as "newly failing" — re-run it in isolation per §3 before believing that | measured |
+| Ledger suite | **602 pass / 59 fail** after the Batch C empty-terminal slice (+5 net; 597/59 after the W1 recognition, 583/59 after the D3(a) freeze, 582/60 after B2c, 566/61 after B2a). The 100-process flake was PASSING in the re-saved baseline, so under load it can surface as "newly failing" — re-run it in isolation per §3 before believing that; on 2026-08-06 it failed even in isolation (spawn errno -4094 at 1–3GB free), the §3 mechanism reproducing | measured |
 | Post-B1 ledger suite (the prior recorded gate) | 546 pass / 75 fail | superseded 2026-08-05 |
 | Pre-B1 ledger suite (the Batch A recorded gate) | 518 pass / 75 fail | superseded 2026-08-05 |
 | Post-warm-prep-fix ledger suite as previously recorded here | 516 pass / 75 fail — written mid-Batch-A and stale by 2 against the Batch A baseline `--save`; kept as the third instance of a number in this file diverging from its own command | superseded 2026-08-05 |
 | Pre-Batch-A ledger suite (the prior recorded gate) | 498 pass / 80 fail | superseded 2026-08-05 |
-| Full `npm test` | **2,244 pass / 59 fail / 1 skipped** after the Batch C W1-recognition slice; the failing set is exactly the ledger's recorded 59, zero non-ledger failures that run (2,228/61/1 after the D3(a) freeze with 2 rotating flakes, 2,212/62/1 after B2a, 2,190/78/1 after B1) | measured |
+| Full `npm test` | **2,246 pass / 62 fail / 1 skipped** after the Batch C empty-terminal slice, measured under 1GB-free memory pressure — the 62 are the ledger's recorded 59 plus the three documented rotating flakes (100-process, fixed-seed fuzz at 93s, decision-boundary at 31s — the load-timeout signature); the W1-recognition slice measured 2,244/59/1 on a quieter machine with zero rotation (2,228/61/1 after the D3(a) freeze, 2,212/62/1 after B2a) | measured |
 | Full `npm test` at the warm-prep fix (prior recorded) | 2,157 pass / 80 fail / 1 skipped (pre-fix same-day: 2,145/80/1) | superseded 2026-08-05 |
 | Failures outside `ledger.test.ts` | **0** on an idle machine; 1–3 per run under load, differing each run, each passing in isolation (Batch B added a third observed rotating member: "unknown exceptions and clock failure are closed unavailable, never guessed signed refusals") | measured |
 | Ledger suite wall clock | ~80–90 s | measured |

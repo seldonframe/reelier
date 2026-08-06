@@ -767,13 +767,17 @@ present + no ack` grants nothing and is preserved corruption while the owner liv
 same-host dead-owner proof it is exactly the lone-withdrawal residue the "lone legacy withdrawal"
 rule above retires (shipped 2026-08-05, Batch B, both entry points, warm and fresh — pinned). Any
 replacement or cross-owner/cross-digest variant is preserved corruption regardless of liveness.
-Measured limit, recorded 2026-08-06: a withdrawn slot whose terminal is an EMPTY withdrawal
-marker is preserved bounded `busy` from both entry points — the withdrawn slot-ack binds the
-terminal's exact owner bytes and an empty terminal has none, so the dead-owner route withholds
-rather than minting an acknowledgment its own classifier refuses (the first build did exactly
-that, measured: permanent corruption plus a self-authored stage). The K1 creator-side slice
-resolves the form — an empty-terminal acknowledgment shape or a clause-2 narrowing — pinned
-meanwhile ("slot-withdrawal empty-terminal dead stays preserved bounded busy"). An entirely empty coordination state reconstructs only a new
+Resolved 2026-08-06 (Batch C, the empty-terminal grant): an EMPTY withdrawal terminal is
+acknowledged by the empty-terminal form — the withdrawn slot-ack binds `terminalArtifactDigest`
+as the digest of the empty byte string, and the creator-withdrawal ack binds `ownerBytesLength`
+`"0"`, the empty-bytes digest, and null owner identity — accepted by the cleanup-stage validator
+and the orphan-final classifier for withdrawal-family terminals ONLY; `published` and
+`abandoned` dispositions still require exact owner bytes. Forced by measurement: empty is the
+most common W1 state (task 1(i)), so the prior withhold wedged the chain's main route.
+Implementation note, recorded for owner ratification: the durable ack-binding validator was
+widened alongside the two named validators — without it the grant-sanctioned durable slot-ack
+(crash-state-5 residue) refused its own form — and the empty digest being a universal constant,
+the SAME-OWNER binding is the empty form's whole authority, held by its own cross-owner pin. An entirely empty coordination state reconstructs only a new
 canonical owner for a new admission attempt; it never retroactively authenticates missing cleanup
 evidence.
 
