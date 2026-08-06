@@ -340,3 +340,26 @@ wrong widening that shape drained and self-authored an acquisition — probe-mea
 597/59 → 602/59; the only gate noise all evening was the 100-process member dying at spawn
 (errno -4094) under 1–3GB free memory — the §3 environment signature, measured by the
 reviewer to fail before any ledger code runs.
+
+**Slice c shipped (same day): the creator's own continuation — and the GREEN review's
+blocking find, the marker-owner-remove wedge, closed in the same slice.** The terminal path
+now continues past the stage withdrawal when the slot was created: retire the own slot
+`withdrawn` on the marker's authority (marker-first per spec :508-516, pinned by an
+observational capture at the retire-rename), then the inline own-act chain under
+finishCreatorPublicationStage's ONE fresh cleanup deadline (spec :443 — verified: no second
+draw), both terminal forms (the aborted form takes the clause-3-amended placement and leaves
+its marker to the legacy machinery). The original thrown object propagates by identity;
+continuation failures are swallowed as resumable chain states. 13 option-gated pins: the four
+W1-minting boundaries warm+fresh with exact signal order slot-sync → withdrawal-sync, the
+complete form, a state-1 crash child, and the two marker-owner-remove window children. The
+GREEN review measured the continuation byte-exact against the B2c reconstruction at EVERY
+coordination point (82 crash cells, warm+fresh, all four terminal forms) — and found the one
+wedge: both two-syscall marker-removal windows classified permanent corruption (the
+authenticated-partial rescue covered `abandoned`/`published` only), reachable from the
+continuation AND the committed dead-owner housekeeper, live since B2c. Fixed by the
+discrepancy-9 template: the rescue now covers `withdrawn` and sub-complete withdrawal
+terminals (each authenticated by its exact bound ack; EMPTY needs no rescue — owner-less is
+its legal form), the ack-binding validator gained the matching arms, and step 6 reconstructs
+an emptied terminal's bytes from the ack. Ledger 602/59 → 615/59 by accounting (614 measured +
+the 100-process member, which now fails even in isolation below ~3.3GB free — the §3 spawn
+refusal); full npm test 2,261/60/1 with one isolated-repassing rotation.

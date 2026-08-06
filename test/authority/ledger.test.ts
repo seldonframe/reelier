@@ -2787,7 +2787,7 @@ test("published-slot graphs tolerate unrelated inert legacy residue on a used ro
   // pass: an unrelated recovery-pending marker is an unserviced semantic recovery obligation, not
   // inert residue, and a second same-owner successor is genuine ambiguity.
   // Foreign `recovery-pending` is conditioned on the ACTIVE LOCK being the successor. Spec :571
-  // grants retirement-marker coexistence "only for the next active owner", and :857-858 makes that
+  // grants retirement-marker coexistence "only for the next active owner", and :860-861 makes that
   // owner the sole marker scanner servicing every recovery-pending marker before every callback —
   // inspectActiveLock's own dead-lock reclaim mints exactly this shape in the same iteration that
   // publishes, so refusing it would corrupt every acquisition that follows a crash-with-lock. With
@@ -3529,6 +3529,98 @@ test("the creator-withdrawal chain completes for dead owners from every crash st
     assert.deepEqual(observed,{ok:false,reason:"corruption"});
     assert.deepEqual(await snapshotRootArtifacts(root),before,"the orphan final and empty successor are preserved");
   });});
+});
+
+// The creator's own continuation (Batch C, task 1(ii)) — option-gated: after the terminal-path
+// stage withdrawal publishes its marker, the same failure path retires its own slot `withdrawn`
+// on the marker's authority (spec :508-516 — the marker is the retirement's authority, which is
+// why the terminal rename precedes it) and runs the cleanup chain inline under the ONE fresh
+// cleanup deadline spec :443 grants the creator's failure path. The original thrown object
+// propagates by identity; the root's K1 evidence is fully drained when the chain finishes; the
+// two family signals fire once each in the pinned slot-then-withdrawal order. The four
+// sub-complete boundaries cover every W1-minting state (empty, empty, zero, partial — the
+// task 1(i) wedge set); the complete form takes the aborted-terminal chain (signed clause 3 as
+// amended: the family signal fires on the bound slot-ack's removal root sync, and the aborted
+// marker itself stays for the legacy machinery).
+test("option-gated creator terminal failure after slot creation completes its own withdrawal chain",{timeout:120_000},async t=>{
+  const drive=async(root:string,point:string)=>{
+    const terminal={kind:"stable-terminal-error"};
+    let fired=false,thrown:unknown,slotSyncs=0,withdrawalSyncs=0,callbacks=0,markerFirst:boolean|null=null;const order:string[]=[];
+    try{
+      await new RawFsAuthorityLedger(root,{[k1AdmissionPreparationOption()]:K1_ADMISSION_PREPARATION_MODE,now:()=>t0+1_000,lockTimeoutMs:2_000,faultInjector:(p:string)=>{
+        if(p===point&&!fired){fired=true;throw terminal;}
+        // Marker-first order (spec :508-516, seal clause 4): at the slot's retire-rename the
+        // withdrawal terminal must ALREADY be durable on disk — it is the retirement's
+        // authority. Observational, so the continuation's failure-swallowing cannot mask it.
+        if(p==="after-admission-slot-retire-rename"&&markerFirst===null)markerFirst=readdirSync(root).some(name=>name.startsWith(".authority-ledger-creator-withdrawal-")||name.endsWith(".publication-aborted"));
+        if(p==="after-admission-slot-retire-cleanup-root-sync"){slotSyncs++;order.push("slot-sync");}
+        if(p==="after-creator-withdrawal-cleanup-root-sync"){withdrawalSyncs++;order.push("withdrawal-sync");}
+        if(p==="before-ledger-operation-callback")callbacks++;
+      }} as never).observeClock();
+    }catch(error){thrown=error;}
+    return {terminal,fired,thrown,slotSyncs,withdrawalSyncs,callbacks,order,markerFirst};
+  };
+  const k1Residue=async(root:string)=>(await readdir(root)).filter(name=>name.startsWith(".authority-ledger-admission-")||name.startsWith(".authority-ledger-creator-withdrawal-")||name.startsWith(".authority-ledger-coordination-cleanup-")||name.startsWith(".authority-ledger-lock-publication-"));
+  const boundaries=[
+    {point:"before-publication-stage-validation",state:"empty"},
+    {point:"after-lock-publication-stage-create",state:"empty"},
+    {point:"after-lock-publication-owner-create",state:"zero"},
+    {point:"after-lock-publication-owner-partial-write",state:"partial"},
+  ] as const;
+  for(const temp of ["warm","fresh"] as const)for(const boundary of boundaries)await t.test(`option-gated ${boundary.state} terminal at ${boundary.point} ${temp} completes the chain in order`,()=>withRoot(async root=>{
+    if(temp==="warm")assert.equal((await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:2_000}).observeClock()).ok,true,"the warming acquisition succeeds");
+    const outcome=await drive(root,boundary.point);
+    assert.equal(outcome.fired,true,`${boundary.point} fired`);
+    assert.equal(outcome.thrown,outcome.terminal,"the creator's original thrown object propagates by identity");
+    assert.deepEqual({slotSyncs:outcome.slotSyncs,withdrawalSyncs:outcome.withdrawalSyncs,callbacks:outcome.callbacks},{slotSyncs:1,withdrawalSyncs:1,callbacks:0},boundary.point);
+    assert.deepEqual(outcome.order,["slot-sync","withdrawal-sync"],boundary.point);
+    assert.equal(outcome.markerFirst,true,`${boundary.point}: the withdrawal terminal is durable before the slot retire-rename`);
+    assert.deepEqual(await k1Residue(root),[],`${boundary.point}: the chain drains every K1 artifact`);
+  }));
+  await t.test("option-gated complete terminal at after-lock-publication-stage-sync completes the aborted-terminal chain",()=>withRoot(async root=>{
+    const outcome=await drive(root,"after-lock-publication-stage-sync");
+    assert.equal(outcome.fired,true);
+    assert.equal(outcome.thrown,outcome.terminal,"identity preserved");
+    assert.deepEqual({slotSyncs:outcome.slotSyncs,withdrawalSyncs:outcome.withdrawalSyncs,callbacks:outcome.callbacks},{slotSyncs:1,withdrawalSyncs:1,callbacks:0});
+    assert.deepEqual(outcome.order,["slot-sync","withdrawal-sync"]);
+    assert.equal(outcome.markerFirst,true,"the aborted terminal is durable before the slot retire-rename");
+    assert.deepEqual(await k1Residue(root),[],"the chain's K1 evidence is fully drained");
+    assert.equal((await readdir(root)).some(name=>name.endsWith(".publication-aborted")),true,"the aborted terminal remains for the legacy machinery");
+    const next=await new RawFsAuthorityLedger(root,{now:()=>t0+2_000,lockTimeoutMs:2_000}).observeClock();
+    assert.deepEqual(next,{ok:true,status:"advanced",observedAt:new Date(t0+2_000).toISOString()},"the next default acquisition services the lone aborted marker and proceeds");
+  }));
+  // The two-syscall marker-removal windows (the GREEN review's blocking find, measured): a
+  // hard exit between a marker's owner unlink and its rmdir leaves an EMPTIED directory beside
+  // its durable acknowledgment. The authenticated-partial rescue must cover the withdrawal
+  // family — an emptied `.withdrawn` slot marker bound by its slot-ack, and an emptied
+  // sub-complete withdrawal terminal bound by its withdrawal ack — or every such crash is
+  // permanent corruption from the machinery's own hand, the exact class the W1 criterion
+  // forbids. The same windows are reachable through the committed dead-owner housekeeper, so
+  // this rescue heals that latent path too.
+  for(const window of [{occurrence:1,label:"the withdrawn slot marker's removal window"},{occurrence:2,label:"the withdrawal terminal's removal window"}] as const)await t.test(`option-gated continuation crash inside ${window.label} resumes and drains`,()=>withRoot(async root=>{
+    const moduleUrl=pathToFileURL(path.resolve("dist-test/src/authority/host/fs-ledger.js")).href;
+    const source=`import*as host from ${JSON.stringify(moduleUrl)};const option=host.__testK1AdmissionPreparationRuntimeOption;if(typeof option!=="symbol")process.exit(80);const terminal={kind:"terminal"};let fired=false,ownerRemoves=0;const ledger=new host.FsAuthorityLedger(process.argv[1],{[option]:${JSON.stringify(K1_ADMISSION_PREPARATION_MODE)},now:()=>${t0},lockTimeoutMs:2_000,faultInjector(point){if(point==="after-lock-publication-owner-partial-write"&&!fired){fired=true;throw terminal;}if(point==="after-coordination-cleanup-marker-owner-remove"&&++ownerRemoves===${window.occurrence})process.exit(93);}});try{await ledger.observeClock();}catch(error){process.exit(error===terminal?94:95);}process.exit(92);`;
+    const code=await new Promise<number|null>((resolve,reject)=>{const child=spawn(process.execPath,["--input-type=module","-e",source,root],{stdio:"ignore"});child.once("error",reject);child.once("close",resolve);});
+    assert.equal(code,93,`the child hard-exits inside ${window.label}`);
+    let result;for(let attempt=0;attempt<3;attempt++){result=await new RawFsAuthorityLedger(root,{now:()=>t0+1_000,lockTimeoutMs:2_000}).observeClock();if(result.ok||result.reason!=="busy")break;await new Promise(resolve=>setTimeout(resolve,100));}
+    assert.deepEqual(result,{ok:true,status:"advanced",observedAt:new Date(t0+1_000).toISOString()},window.label);
+    assert.deepEqual(await k1Residue(root),[],`${window.label}: the resumed chain drains fully`);
+  }));
+  // A continuation crash window past the slot retirement is exactly crash-matrix state 1: a
+  // REAL option-ON creator throws its terminal, withdraws its stage, retires its slot, and
+  // hard-exits before the slot-ack — the next default acquisition completes the dead chain.
+  await t.test("option-gated continuation crash after slot retirement resumes as chain state 1",()=>withRoot(async root=>{
+    const moduleUrl=pathToFileURL(path.resolve("dist-test/src/authority/host/fs-ledger.js")).href;
+    const source=`import*as host from ${JSON.stringify(moduleUrl)};const option=host.__testK1AdmissionPreparationRuntimeOption;if(typeof option!=="symbol")process.exit(80);const terminal={kind:"terminal"};let fired=false;const ledger=new host.FsAuthorityLedger(process.argv[1],{[option]:${JSON.stringify(K1_ADMISSION_PREPARATION_MODE)},now:()=>${t0},lockTimeoutMs:2_000,faultInjector(point){if(point==="after-lock-publication-owner-partial-write"&&!fired){fired=true;throw terminal;}if(point==="after-admission-slot-retire-root-sync")process.exit(93);}});try{await ledger.observeClock();}catch(error){process.exit(error===terminal?94:95);}process.exit(92);`;
+    const code=await new Promise<number|null>((resolve,reject)=>{const child=spawn(process.execPath,["--input-type=module","-e",source,root],{stdio:"ignore"});child.once("error",reject);child.once("close",resolve);});
+    assert.equal(code,93,"the child hard-exits inside the continuation after the slot retirement root sync");
+    const names=await readdir(root);
+    assert.equal(names.some(name=>name.endsWith(".withdrawn")),true,"the withdrawn slot marker is durable");
+    assert.equal(names.some(name=>name.startsWith(".authority-ledger-creator-withdrawal-")),true,"the withdrawal terminal remains");
+    let result;for(let attempt=0;attempt<3;attempt++){result=await new RawFsAuthorityLedger(root,{now:()=>t0+1_000,lockTimeoutMs:2_000}).observeClock();if(result.ok||result.reason!=="busy")break;await new Promise(resolve=>setTimeout(resolve,100));}
+    assert.deepEqual(result,{ok:true,status:"advanced",observedAt:new Date(t0+1_000).toISOString()},"the dead chain completes from state 1");
+    assert.deepEqual(await k1Residue(root),[],"the resumed chain drains fully");
+  }));
 });
 
 // Seal clause 4's in-flight residue (the W1 window, B2b): between the creator's terminal-path

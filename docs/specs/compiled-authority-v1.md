@@ -295,12 +295,15 @@ overruled without archaeology.
    proceed; the implementation instead converts the first churn observation into the degraded
    terminal with no retry. Either the closure should reuse the full snapshot primitive and loop, or
    the sentence should be narrowed to what a single-artifact revalidation can honestly claim.
-9. **The half-drained retirement marker window — resolved 2026-08-05.** Marker removal is
-   unavoidably two syscalls — unlink the owner object, then remove the directory. The
-   `after-coordination-cleanup-marker-owner-remove` point now sits between them at all three
-   removal sites, the crash shape it exposes — an empty retired-slot marker beside its durable
-   acknowledgment — classifies through the authenticated-partial rescue (now covering `published`
-   as well as `abandoned`), and the active owner's owner-restoring repair is pinned by a test.
+9. **The half-drained retirement marker window — resolved 2026-08-05, widened 2026-08-06.**
+   Marker removal is unavoidably two syscalls — unlink the owner object, then remove the
+   directory. The `after-coordination-cleanup-marker-owner-remove` point sits between them at
+   every removal site; the crash shape it exposes — an emptied marker beside its durable
+   acknowledgment — classifies through the authenticated-partial rescue for every retired-slot
+   disposition (`abandoned`, `published`, and — Batch C, after the window measured permanent
+   corruption on both the creator continuation and the dead-owner chain — `withdrawn`) and for
+   sub-complete withdrawal terminals, each authenticated by its exact bound acknowledgment; the
+   active owner's owner-restoring repair on the published pass is pinned by a test.
 
 Full-root classification and corruption precedence occur before admission denial. A live exact fixed
 slot bounded-waits under the acquisition deadline and then returns `busy` unchanged. A dead exact slot

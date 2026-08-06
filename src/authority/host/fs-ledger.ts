@@ -231,6 +231,7 @@ interface PrepAuthorityBinding {readonly snapshot:HybridRootSnapshot;readonly de
 // the later own-act retirement an act on the operation's OWN slot rather than on whatever now
 // answers to that name.
 interface AdmissionSlotCreatorSnapshot {readonly directoryIdentity:FileIdentity;readonly ownerIdentity:FileIdentity}
+type AdmissionSlotContinuation=Readonly<{owner:LockOwner;ownerBytes:Buffer;snapshot:AdmissionSlotCreatorSnapshot}>;
 type PrepTransitionResult="busy"|"progress"|"reclassify"|"refuse";
 interface K1OperationFenceCapability {readonly attemptBoundTransition:()=>Promise<"progress"|"refused">}
 interface K1OperationFenceGeneration {readonly execute:(budgetMs:number,drawnTicket:bigint)=>Promise<LockResult>;readonly budgetMs:number;readonly drawnTicket:bigint;status:"fresh"|"acting"|"completed"|"closed";lockResult?:LockResult;outcome?:"progress"|"refused";protectedTransitionCompleted?:boolean}
@@ -906,7 +907,11 @@ export class FsAuthorityLedger implements AuthorityLedger {
       const result=await attempt();
       return stageCreated?await this.finishCreatorPublicationStage(stageName,expectedStage,result):result;
     }catch(error){
-      if(stageCreated)await this.finishCreatorPublicationStage(stageName,expectedStage,{ok:false,reason:"corruption"},true);
+      // The terminal path: the stage withdraws, and — when this acquisition also created the
+      // fixed slot — the same failure path continues the chain (task 1(ii)). The slot
+      // continuation is passed only here: ordinary result exits keep silent stage removal and
+      // never touch the slot, per the committed preservation pins.
+      if(stageCreated)await this.finishCreatorPublicationStage(stageName,expectedStage,{ok:false,reason:"corruption"},true,admissionSlotCreated&&admissionSlotSnapshot!==null?{owner,ownerBytes,snapshot:admissionSlotSnapshot}:undefined);
       if(published)try{await this.retireOwnedLock(owner,"publication-aborted",deadline,false);}catch{}
       throw error;
     }
@@ -1111,6 +1116,122 @@ export class FsAuthorityLedger implements AuthorityLedger {
         if(!isTransientLockError(error)||monotonicNow()>=deadline)throw error instanceof LedgerCorruption?error:new CoordinationExhausted("housekeeping","transient-sharing");
         await delay(5);
       }
+    }
+  }
+
+  // The stage->ack lifecycle shared by the creator's own cleanup acts: exclusive stage create,
+  // deterministic prefix then write-all, file sync, atomic rename to the final ack, root sync —
+  // firing the coordination-cleanup points in the closed order. Factored for the withdrawal
+  // continuation; the published pass predates it and keeps its inline copy untouched.
+  private async writeOwnActCoordinationAck(bytes:Buffer,stagePath:string,ackPath:string,deadline:number):Promise<void>{
+    let handle:FileHandle|undefined;
+    try{
+      try{handle=await open(stagePath,"wx",0o600);}
+      catch(error){
+        if(hasCode(error,"EEXIST"))throw new LedgerCorruption("own-act cleanup stage already present");
+        if(isSnapshotSharingError(error)||isTransientLockError(error))throw new CoordinationExhausted("housekeeping","transient-sharing");
+        throw error;
+      }
+      const created=await handle.stat({bigint:true});
+      if(!created.isFile()||created.isSymbolicLink()||created.nlink!==1n)throw new LedgerCorruption("invalid new own-act cleanup stage");
+      this.fault("after-coordination-cleanup-stage-create");
+      await this.writeAll(handle,bytes.subarray(0,1),0);
+      this.fault("after-coordination-cleanup-stage-partial-write");
+      await this.writeAll(handle,bytes.subarray(1),1);
+      await handle.sync();
+      this.fault("after-coordination-cleanup-stage-file-sync");
+    }finally{if(handle)await handle.close();}
+    await this.renameOwnActCleanupArtifact(stagePath,ackPath,deadline);
+    this.fault("after-coordination-cleanup-ack-rename");
+    await this.syncDirectory(this.root);
+    this.fault("after-coordination-cleanup-ack-root-sync");
+  }
+
+  // The creator's own continuation (Batch C, task 1(ii)): after the terminal-path stage
+  // withdrawal published its marker, the same failure path retires its own slot `withdrawn` on
+  // the marker's authority and runs the cleanup chain inline, under the SAME fresh cleanup
+  // deadline finishCreatorPublicationStage drew — spec :443 grants the creator's failure path
+  // exactly one. Marker-first order is spec-forced (:508-516): the terminal rename above is
+  // what authorizes this retirement, which is why the continuation runs only after
+  // `after-creator-withdrawal-root-sync`. Every crash window here is a recognized chain state
+  // (the W1 window, then crash-matrix states 1-8, or the aborted-terminal drain), so a failure
+  // leaves resumable residue; the caller swallows it and the creator's original thrown object
+  // propagates by identity.
+  private async continueCreatorWithdrawalChain(continuation:AdmissionSlotContinuation,markerName:string,deadline:number):Promise<void>{
+    const {owner,ownerBytes,snapshot}=continuation,source=this.absolute(ADMISSION_SLOT_NAME),markerPath=this.absolute(markerName);
+    // Exact revalidation against the PROMOTION-TIME creator snapshot — retireOwnPublishedSlot's
+    // rule (spec :327: replacement, type, link, identity, byte, or marker mismatch is preserved
+    // corruption). A slot already gone (the published retirement ran) or replaced aborts the
+    // continuation and leaves classification to the next acquisition.
+    await this.revalidateAdmissionPreparation(source,snapshot.directoryIdentity,snapshot.ownerIdentity,ownerBytes);
+    const markerStat=await lstat(markerPath,{bigint:true});
+    if(markerStat.isSymbolicLink()||!markerStat.isDirectory())throw new LedgerCorruption("creator withdrawal terminal changed before slot retirement");
+    let terminalBytes:Buffer,terminalOwnerIdentity:FileIdentity|null=null;
+    try{
+      terminalBytes=await readFile(path.join(markerPath,"owner.json"));
+      terminalOwnerIdentity=fileIdentity(await lstat(path.join(markerPath,"owner.json"),{bigint:true}));
+    }catch(error){if(!hasCode(error,"ENOENT"))throw error;terminalBytes=Buffer.alloc(0);}
+    const destinationName=this.admissionSlotRetiredName(owner,"withdrawn"),destination=this.absolute(destinationName);
+    let destinationPresent=true;
+    try{await lstat(destination);}catch(error){if(hasCode(error,"ENOENT"))destinationPresent=false;else throw error;}
+    if(destinationPresent)throw new LedgerCorruption("withdrawn slot retirement destination present");
+    this.fault("before-admission-slot-retire-rename");
+    await rename(source,destination);
+    this.fault("after-admission-slot-retire-rename");
+    if(!sameFileIdentity(snapshot.directoryIdentity,fileIdentity(await lstat(destination,{bigint:true}))))throw new LedgerCorruption("withdrawn slot retirement changed directory identity");
+    await this.syncDirectory(this.root);
+    this.fault("after-admission-slot-retire-root-sync");
+    // Chain step 2 — the withdrawn slot-ack, binding the terminal's exact bytes (the
+    // empty-terminal form when the marker has none), then step 3 — the retired slot marker's
+    // removal, the slot family's cleanup signal on its root sync (the :1746 order pin's first
+    // signal).
+    const canonicalOwner:CoordinationOwner={host:owner.host,nonce:owner.nonce,pid:owner.pid,v:1};
+    const slotAck:CoordinationAck={disposition:"withdrawn",kind:"admission-slot-retired",markerName:destinationName,originalName:ADMISSION_SLOT_NAME,owner:canonicalOwner,ownerBytesDigest:coordinationRawDigest(ownerBytes),ownerBytesLength:String(ownerBytes.length),ownerDigest:coordinationCanonicalDigest(canonicalOwner),ownerIdentity:encodeCoordinationIdentityWire(snapshot.ownerIdentity),purpose:"slot-retired",recoveryAuthority:"exact-withdrawal-marker",slotIdentity:encodeCoordinationIdentityWire(snapshot.directoryIdentity),terminalArtifactDigest:coordinationRawDigest(terminalBytes),terminalArtifactName:markerName,v:COORDINATION_ACK_VERSION};
+    const slotAckBytes=coordinationCanonicalBytes(slotAck),slotAckDigest=coordinationRawDigest(slotAckBytes).slice(7),slotAckName=`.authority-ledger-coordination-cleanup-${slotAckDigest}.ack`,slotAckPath=this.absolute(slotAckName);
+    await this.writeOwnActCoordinationAck(slotAckBytes,this.absolute(`.authority-ledger-coordination-cleanup-stage-s-${slotAckDigest}.tmp`),slotAckPath,deadline);
+    await this.removeOwnActCleanupPath(path.join(destination,"owner.json"),false,deadline);
+    this.fault("after-coordination-cleanup-marker-owner-remove");
+    await this.removeOwnActCleanupPath(destination,true,deadline);
+    this.fault("after-coordination-cleanup-marker-remove");
+    await this.syncDirectory(this.root);
+    this.fault("after-coordination-cleanup-marker-root-sync");
+    this.fault("after-admission-slot-retire-cleanup-root-sync");
+    const parsedTerminal=parseK1Name(markerName);
+    if(parsedTerminal?.kind==="creator-withdrawal"){
+      // Steps 4-7, the withdrawal-marker form: the creator-withdrawal ack binds the slot-ack;
+      // the slot-ack, the terminal, then the withdrawal ack drain in the chain order, the
+      // family's terminal cleanup signal on the terminal removal's root sync (signed clause 3).
+      const withdrawalAck:CoordinationAck={directoryIdentity:encodeCoordinationIdentityWire(fileIdentity(markerStat)),kind:"creator-withdrawal",markerName,originalName:buildPublicationName(canonicalOwner,parsedTerminal.ticket),owner:canonicalOwner,ownerBytesDigest:coordinationRawDigest(terminalBytes),ownerBytesLength:String(terminalBytes.length),ownerDigest:coordinationCanonicalDigest(canonicalOwner),ownerIdentity:parsedTerminal.state==="empty"?null:encodeCoordinationIdentityWire(terminalOwnerIdentity!),purpose:"creator-withdrawal",recoveryAuthority:"exact-slot-retirement-ack",slotRetirementAckDigest:coordinationCanonicalDigest(slotAck),slotRetirementAckName:slotAckName,state:parsedTerminal.state,v:COORDINATION_ACK_VERSION};
+      const withdrawalAckBytes=coordinationCanonicalBytes(withdrawalAck),withdrawalAckDigest=coordinationRawDigest(withdrawalAckBytes).slice(7),withdrawalAckPath=this.absolute(`.authority-ledger-coordination-cleanup-${withdrawalAckDigest}.ack`);
+      await this.writeOwnActCoordinationAck(withdrawalAckBytes,this.absolute(`.authority-ledger-coordination-cleanup-stage-w-${withdrawalAckDigest}.tmp`),withdrawalAckPath,deadline);
+      await this.removeOwnActCleanupPath(slotAckPath,false,deadline);
+      this.fault("after-coordination-cleanup-ack-remove");
+      await this.syncDirectory(this.root);
+      this.fault("after-coordination-cleanup-final-root-sync");
+      // Step 6 — the terminal. The own-act pass reaches the owner-remove boundary
+      // unconditionally after its idempotent owner-removal step (spec :420); an empty terminal
+      // simply has nothing to unlink.
+      await this.removeOwnActCleanupPath(path.join(markerPath,"owner.json"),false,deadline);
+      this.fault("after-coordination-cleanup-marker-owner-remove");
+      await this.removeOwnActCleanupPath(markerPath,true,deadline);
+      this.fault("after-coordination-cleanup-marker-remove");
+      await this.syncDirectory(this.root);
+      this.fault("after-coordination-cleanup-marker-root-sync");
+      this.fault("after-creator-withdrawal-cleanup-root-sync");
+      await this.removeOwnActCleanupPath(withdrawalAckPath,false,deadline);
+      this.fault("after-coordination-cleanup-ack-remove");
+      await this.syncDirectory(this.root);
+      this.fault("after-coordination-cleanup-final-root-sync");
+    }else{
+      // The aborted-terminal form (signed clause 3 as amended at ship time): the terminal
+      // drains through the legacy machinery once the chain's K1 evidence is gone; the chain's
+      // last own act is the bound slot acknowledgment's removal, and the family signal fires
+      // on its root sync.
+      await this.removeOwnActCleanupPath(slotAckPath,false,deadline);
+      this.fault("after-coordination-cleanup-ack-remove");
+      await this.syncDirectory(this.root);
+      this.fault("after-coordination-cleanup-final-root-sync");
+      this.fault("after-creator-withdrawal-cleanup-root-sync");
     }
   }
 
@@ -1824,8 +1945,12 @@ export class FsAuthorityLedger implements AuthorityLedger {
     const terminalEntry=binding.snapshot.entries.find(value=>value.name===descriptor.targetName),parsedMarker=parseK1Name(descriptor.targetName);
     if(terminalEntry===undefined||parsedMarker?.kind!=="creator-withdrawal")throw new LedgerCorruption("withdrawal cleanup terminal absent");
     const owner:CoordinationOwner={host:hostname(),nonce:parsedMarker.nonce,pid:parsedMarker.pid,v:1};
-    const terminal=this.classifyHybridNamedOwnerDirectory(parsedMarker,terminalEntry,owner,parsedMarker.state);
-    if(String(ack.ownerBytesDigest)!==coordinationRawDigest(terminal.ownerBytes))throw new LedgerCorruption("withdrawal cleanup terminal bytes mismatch");
+    // The marker-owner-remove window (Batch C): a zero/partial terminal caught between its
+    // owner unlink and rmdir has an empty directory; its bytes are reconstructed from the
+    // acknowledgment — the rescue's authority — rather than read from the unlinked object.
+    const emptiedTerminal=(terminalEntry.children??[]).length===0&&parsedMarker.state!=="empty";
+    const terminalOwnerBytes=emptiedTerminal?this.validateHybridHistoricalOwnerBytes(ack):this.classifyHybridNamedOwnerDirectory(parsedMarker,terminalEntry,owner,parsedMarker.state).ownerBytes;
+    if(String(ack.ownerBytesDigest)!==coordinationRawDigest(terminalOwnerBytes))throw new LedgerCorruption("withdrawal cleanup terminal bytes mismatch");
     return {children:(terminalEntry.children??[]).length,identity:terminalEntry.identity};
   }
 
@@ -1947,7 +2072,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
       if(parsed.kind==="k1-writer-held"||parsed.kind==="k1-writer-attempt"||parsed.kind==="k1-writer-released")throw new LedgerCorruption("writer residue reached hybrid graph");
       const namedOwner:CoordinationOwner={host:localHost,nonce:parsed.nonce,pid:parsed.pid,v:1};if(parsed.hostDigest!==localDigest)throw new LedgerCorruption("foreign K1 artifact provenance");
       const declared=parsed.kind==="admission-prep"?null:parsed.kind==="admission-prep-retired"||parsed.kind==="creator-withdrawal"?parsed.state:"complete";
-      const partial=parsed.kind==="admission-prep-retired"?this.classifyHybridAuthenticatedPartialPrepMarker(parsed,entry,snapshot):parsed.kind==="admission-slot-retired"&&(parsed.disposition==="abandoned"||parsed.disposition==="published")?this.classifyHybridAuthenticatedPartialSlotMarker(parsed,entry,snapshot):null;
+      const partial=parsed.kind==="admission-prep-retired"?this.classifyHybridAuthenticatedPartialPrepMarker(parsed,entry,snapshot):parsed.kind==="admission-slot-retired"?this.classifyHybridAuthenticatedPartialSlotMarker(parsed,entry,snapshot):parsed.kind==="creator-withdrawal"?this.classifyHybridAuthenticatedPartialWithdrawalMarker(parsed,entry,snapshot):null;
       owned.push(partial??this.classifyHybridNamedOwnerDirectory(parsed,entry,namedOwner,declared));
     }
     const preps=owned.filter(item=>item.parsed.kind==="admission-prep"),slots=owned.filter(item=>item.parsed.kind==="admission-slot"),prepRetired=owned.filter(item=>item.parsed.kind==="admission-prep-retired"),slotRetired=owned.filter(item=>item.parsed.kind==="admission-slot-retired"),withdrawals=owned.filter(item=>item.parsed.kind==="creator-withdrawal");
@@ -2047,18 +2172,43 @@ export class FsAuthorityLedger implements AuthorityLedger {
   // unlinked (the two-syscall marker-removal window). `abandoned` binds its own marker as the
   // terminal; `published` binds its successor as the terminal, so the terminal equality below is
   // abandoned-only — for `published` the successor binding is validated by validateHybridAckBinding
-  // and the closed graph's same-owner successor rule. The rescue authenticates the marker DIRECTORY
+  // and the closed graph's same-owner successor rule; `withdrawn` (Batch C) binds its terminal
+  // through the same ack-binding validation. The rescue authenticates the marker DIRECTORY
   // identity (slotIdentity) and the owner-BYTES commitment; the owner-object identity is
   // unverifiable by construction — the object is already unlinked — and is carried from the
   // acknowledgment. On the housekeeper mutation path the terminal is validated by reconstruction:
   // boundSlotCleanup binds it from the descriptor's successor, and advanceBoundSlotCleanup
   // requires the durable acknowledgment to equal that reconstruction byte for byte.
   private classifyHybridAuthenticatedPartialSlotMarker(parsed:Extract<ParsedK1Name,{kind:"admission-slot-retired"}>,entry:HybridEntrySnapshot,snapshot:HybridRootSnapshot):HybridOwnedArtifact|null{
-    if(parsed.disposition!=="abandoned"&&parsed.disposition!=="published"||entry.kind!=="directory"||(entry.children??[]).length!==0)return null;const candidates:CoordinationAck[]=[];
+    // `withdrawn` joined `abandoned` and `published` in Batch C (the marker-owner-remove
+    // window on the creator continuation and the dead-owner chain — measured permanent
+    // corruption without it, from both routes).
+    if(entry.kind!=="directory"||(entry.children??[]).length!==0)return null;const candidates:CoordinationAck[]=[];
     for(const candidateName of snapshot.names){const candidate=parseK1Name(candidateName);if(candidate?.kind!=="coordination-ack")continue;const candidateEntry=snapshot.entries.find(value=>value.name===candidateName);if(candidateEntry?.kind!=="file"||candidateEntry.bytes===undefined||candidateEntry.identity.nlink!==1n)continue;let ack:CoordinationAck;try{ack=parseCoordinationAckBytes(candidateEntry.bytes);}catch{continue;}if(ack.purpose==="slot-retired"&&ack.disposition===parsed.disposition&&ack.markerName===parsed.name&&coordinationRawDigest(candidateEntry.bytes).slice(7)===candidate.digest)candidates.push(ack);}
     if(candidates.length!==1)return null;const ack=candidates[0],owner=ack.owner,ownerBytes=coordinationCanonicalBytes(owner),localHost=hostname(),hostDigest=coordinationHostDigest(localHost);
     if(owner.host!==localHost||parsed.hostDigest!==hostDigest||owner.pid!==parsed.pid||owner.nonce!==parsed.nonce||ack.originalName!==ADMISSION_SLOT_NAME||ack.ownerIdentity===null||!coordinationIdentityMatches(ack.slotIdentity as CoordinationIdentityWire,entry.identity)||ack.ownerBytesDigest!==coordinationRawDigest(ownerBytes)||ack.ownerBytesLength!==String(ownerBytes.length)||parsed.disposition==="abandoned"&&(ack.terminalArtifactName!==parsed.name||ack.terminalArtifactDigest!==coordinationRawDigest(ownerBytes)))throw new LedgerCorruption("partial retired-slot acknowledgment binding mismatch");
     return {parsed,entry,owner,ownerBytes,ownerIdentity:parseCoordinationIdentityWire(ack.ownerIdentity),state:"complete"};
+  }
+
+  // The withdrawal-family twin of the rescues above (Batch C): a sub-complete creator-withdrawal
+  // terminal whose owner object is already unlinked (chain step 6's two-syscall removal window)
+  // is authenticated by its exact bound creator-withdrawal acknowledgment. The EMPTY state needs
+  // no rescue — an owner-less directory IS its legal form; only zero/partial markers can be
+  // caught mid-removal. Owner-object identity is carried from the acknowledgment, exactly as the
+  // prep rescue does, because the object no longer exists to verify.
+  private classifyHybridAuthenticatedPartialWithdrawalMarker(parsed:Extract<ParsedK1Name,{kind:"creator-withdrawal"}>,entry:HybridEntrySnapshot,snapshot:HybridRootSnapshot):HybridOwnedArtifact|null{
+    if(entry.kind!=="directory"||(entry.children??[]).length!==0||parsed.state==="empty")return null;
+    const candidates:CoordinationAck[]=[];
+    for(const candidateName of snapshot.names){
+      const candidate=parseK1Name(candidateName);if(candidate?.kind!=="coordination-ack")continue;const candidateEntry=snapshot.entries.find(value=>value.name===candidateName);if(candidateEntry?.kind!=="file"||candidateEntry.bytes===undefined||candidateEntry.identity.nlink!==1n)continue;
+      let ack:CoordinationAck;try{ack=parseCoordinationAckBytes(candidateEntry.bytes);}catch{continue;}
+      if(ack.purpose==="creator-withdrawal"&&ack.markerName===parsed.name&&coordinationRawDigest(candidateEntry.bytes).slice(7)===candidate.digest)candidates.push(ack);
+    }
+    if(candidates.length!==1)return null;
+    const ack=candidates[0],owner=ack.owner,localHost=hostname(),hostDigest=coordinationHostDigest(localHost);
+    if(owner.host!==localHost||parsed.hostDigest!==hostDigest||owner.pid!==parsed.pid||owner.nonce!==parsed.nonce||ack.state!==parsed.state||ack.originalName!==buildPublicationName({host:owner.host,nonce:owner.nonce,pid:owner.pid,v:1},parsed.ticket)||!coordinationIdentityMatches(ack.directoryIdentity as CoordinationIdentityWire,entry.identity)||ack.ownerIdentity===null)throw new LedgerCorruption("partial withdrawal terminal acknowledgment binding mismatch");
+    const ownerBytes=this.validateHybridHistoricalOwnerBytes(ack),ownerIdentity=parseCoordinationIdentityWire(ack.ownerIdentity);
+    return {parsed,entry,owner,ownerBytes,ownerIdentity,state:parsed.state};
   }
 
   private validateHybridAckBinding(source:HybridAckArtifact,byName:Map<string,HybridEntrySnapshot>,owned:readonly HybridOwnedArtifact[],retired:Map<string,Readonly<{owner:CoordinationOwner;entry:HybridEntrySnapshot;disposition:RetirementDisposition}>>,acks:readonly HybridAckArtifact[]):void{
@@ -2076,7 +2226,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
     if(ack.purpose==="prep-retired"||ack.purpose==="creator-withdrawal")this.validateHybridHistoricalOwnerBytes(ack);
     if(marker!==undefined){
       const markerIdentity=(ack.purpose==="slot-retired"?ack.slotIdentity:ack.directoryIdentity) as CoordinationIdentityWire;if(!coordinationIdentityMatches(markerIdentity,marker.identity))throw new LedgerCorruption("coordination marker identity mismatch");
-      const child=hybridOwnerChild(marker),wire=ack.ownerIdentity,partialArtifact=owned.find(item=>item.parsed.name===markerName&&item.entry===marker),authenticatedPrepPartial=ack.purpose==="prep-retired"&&parsedMarker?.kind==="admission-prep-retired"&&parsedMarker.state!=="empty"&&(marker.children??[]).length===0&&partialArtifact!==undefined&&wire!==null&&coordinationIdentityMatches(wire as CoordinationIdentityWire,partialArtifact.ownerIdentity),authenticatedSlotPartial=ack.purpose==="slot-retired"&&(ack.disposition==="abandoned"||ack.disposition==="published")&&parsedMarker?.kind==="admission-slot-retired"&&parsedMarker.disposition===ack.disposition&&(marker.children??[]).length===0&&partialArtifact!==undefined&&wire!==null&&coordinationIdentityMatches(wire as CoordinationIdentityWire,partialArtifact.ownerIdentity),authenticatedPartial=authenticatedPrepPartial||authenticatedSlotPartial;
+      const child=hybridOwnerChild(marker),wire=ack.ownerIdentity,partialArtifact=owned.find(item=>item.parsed.name===markerName&&item.entry===marker),authenticatedPrepPartial=ack.purpose==="prep-retired"&&parsedMarker?.kind==="admission-prep-retired"&&parsedMarker.state!=="empty"&&(marker.children??[]).length===0&&partialArtifact!==undefined&&wire!==null&&coordinationIdentityMatches(wire as CoordinationIdentityWire,partialArtifact.ownerIdentity),authenticatedSlotPartial=ack.purpose==="slot-retired"&&parsedMarker?.kind==="admission-slot-retired"&&parsedMarker.disposition===ack.disposition&&(marker.children??[]).length===0&&partialArtifact!==undefined&&wire!==null&&coordinationIdentityMatches(wire as CoordinationIdentityWire,partialArtifact.ownerIdentity),authenticatedWithdrawalPartial=ack.purpose==="creator-withdrawal"&&parsedMarker?.kind==="creator-withdrawal"&&parsedMarker.state!=="empty"&&(marker.children??[]).length===0&&partialArtifact!==undefined&&wire!==null&&coordinationIdentityMatches(wire as CoordinationIdentityWire,partialArtifact.ownerIdentity),authenticatedPartial=authenticatedPrepPartial||authenticatedSlotPartial||authenticatedWithdrawalPartial;
       if(wire===null){if(child!==null)throw new LedgerCorruption("coordination empty owner mismatch");}
       else if(child===null){if(!authenticatedPartial)throw new LedgerCorruption("coordination owner identity mismatch");}
       else if(!coordinationIdentityMatches(wire as CoordinationIdentityWire,child.identity))throw new LedgerCorruption("coordination owner identity mismatch");
@@ -2251,7 +2401,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
   //
   // A foreign `recovery-pending` marker is tolerated exactly when the SAME-OWNER ACTIVE LOCK is
   // the successor. Spec :571 grants retirement-marker coexistence "only for the next active
-  // owner", and :857-858 makes that owner the sole marker scanner, servicing every
+  // owner", and :860-861 makes that owner the sole marker scanner, servicing every
   // recovery-pending marker before every callback — so an unserviced foreign marker beside the
   // live lock is the specified mid-acquisition state (inspectActiveLock's own dead-lock reclaim
   // mints one in the same iteration that publishes). With no active lock in the graph there is no
@@ -2533,16 +2683,26 @@ export class FsAuthorityLedger implements AuthorityLedger {
   // ("lone live external stage is busy and preserved" flipped when a first cut withdrew on every
   // exit). An ENOENT on the operation's own stage outside the validation probe is post-snapshot
   // mutation and degrades to corruption, matching every other own-artifact rule in this file.
-  private async finishCreatorPublicationStage(name:string,expected:PublicationStage|null,result:LockResult,terminal=false):Promise<LockResult>{
+  private async finishCreatorPublicationStage(name:string,expected:PublicationStage|null,result:LockResult,terminal=false,continuation?:AdmissionSlotContinuation):Promise<LockResult>{
     if(expected===null)return result;
     const cleanupDeadline=monotonicNow()+this.options.lockTimeoutMs;
-    let retryDelayMs=5,removalAttempted=false,syncPending=false,withdrawalRenamed=false;
+    let retryDelayMs=5,removalAttempted=false,syncPending=false,withdrawalRenamed=false,withdrawalMarkerName="";
     const cleanupBackoff=async()=>{const remaining=cleanupDeadline-monotonicNow();if(remaining<=0)return;await delay(Math.min(retryDelayMs,remaining));retryDelayMs=Math.min(50,retryDelayMs*2);};
     for(;;){
       try{
         if(syncPending){
           await this.syncDirectory(this.root);
-          if(withdrawalRenamed)this.fault("after-creator-withdrawal-root-sync");
+          if(withdrawalRenamed){
+            this.fault("after-creator-withdrawal-root-sync");
+            // The creator's own continuation (task 1(ii)), under this pass's one fresh cleanup
+            // deadline. A failure here leaves a recognized chain state for the next
+            // acquisition; the caller's original outcome — and, on the terminal path, the
+            // original thrown object — must survive it.
+            if(continuation!==undefined&&withdrawalMarkerName!==""){
+              try{await this.continueCreatorWithdrawalChain(continuation,withdrawalMarkerName,cleanupDeadline);}
+              catch{/* resumable crash-matrix residue; reported by the next acquisition */}
+            }
+          }
           else this.fault("after-publication-stage-cleanup-root-sync");
           return result;
         }
@@ -2556,7 +2716,8 @@ export class FsAuthorityLedger implements AuthorityLedger {
         if(terminal){
           const sealed=await this.sealPublicationStageForWithdrawal(current);
           if(sealed===null)return result.ok||result.reason!=="corruption"?{ok:false,reason:"corruption"}:result;
-          if(await this.renameSealedWithdrawal(sealed,()=>{withdrawalRenamed=true;})==="destination-present")return result.ok||result.reason!=="corruption"?{ok:false,reason:"corruption"}:result;
+          const destinationName=this.creatorWithdrawalDestination(sealed);
+          if(await this.renameSealedWithdrawal(sealed,()=>{withdrawalRenamed=true;withdrawalMarkerName=destinationName;})==="destination-present")return result.ok||result.reason!=="corruption"?{ok:false,reason:"corruption"}:result;
           syncPending=true;continue;
         }
         removalAttempted=true;
