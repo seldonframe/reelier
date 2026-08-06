@@ -1,7 +1,7 @@
 {
   "target": "dist-test/test/authority/ledger.test.js",
-  "pass": 582,
-  "fail": 60,
+  "pass": 583,
+  "fail": 59,
   "failing": [
     "active owner treats atomic complete withdrawal as membership change, never corruption",
     "after-admission-prep-create",
@@ -43,7 +43,6 @@
     "marker-only",
     "marker-plus-ack",
     "marker-plus-stage",
-    "new ingress, clock, and ledger-lock fault-point sets are complete and disjoint",
     "one fixed admission slot bounds all paused publishers to one publication stage",
     "orphan-ack",
     "orphan-withdrawal-ack",
