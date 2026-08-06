@@ -1,6 +1,6 @@
 # Reelier — what it actually does
 
-**Pinned to `origin/main` @ `fa37954`, verified 2026-08-06.** npm serves **v0.30.0**; `main` carries
+**Pinned to `origin/main` @ `315b896`, verified 2026-08-06.** npm serves **v0.30.0**; `main` carries
 unreleased work on top of it (`coverage`, plugin packages — §3, §7.6), so "on main" and "what users
 have" are different answers and this file says which. Every claim below was read out of code or a
 live-verified example on that commit, not from memory. If the pin is stale, treat this file as a
@@ -267,7 +267,7 @@ published. A release-status claim in §7 is a claim about what *users have*, and
 **The command-count check was also wrong and is now fixed.** The old form —
 `git cat-file blob … | grep -cE 'case "'` — returns **43** on `4ee9ba0`, because `cli.ts` switches
 on outcome strings too (`auth-failed`, `tamper`, `pushed`, `written`, `up-to-date`, …). Scoped to
-the dispatch switch it returned **27** there, the real number, and returns **28** on `fa37954`
+the dispatch switch it returned **27** there, the real number, and returns **28** on `315b896`
 (`coverage`, unreleased). A check that silently overcounts is worse than no check: it reads as
 verification.
 
