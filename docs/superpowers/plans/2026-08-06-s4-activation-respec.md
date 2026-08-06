@@ -97,3 +97,38 @@ housekeeping-permission reds (`dead-*`, `:1748` — they pin the flip's own boun
 corruption lineages, and the completeness question. Expected green movers, by name, from the
 committed default-path corpus (the S4 plan's hypothesis — verify by running at the flip):
 `:1653`, `:1670`, `:1672`, `:1786`, `:1790`, `:1822`, `:936`.
+
+## 6. THE FLIP WAS ATTEMPTED AND REVERTED — the stop-rule fired, recorded 2026-08-06
+
+The one-line inversion was applied and gated on this tree. **The expected-green hypothesis was
+RIGHT — all seven named movers went green, plus 21 more (28 newly passing).** But the gate also
+produced **30 newly-FAILING names, including committed green pins**, so the flip was reverted
+per the stop-rule ("a flip that moves any committed pin is reverted and recorded, not argued
+with"). The floor restored clean at 637/50. Two failure mechanisms, both then verified by
+measurement against a compiled-build patch:
+
+1. **Signal-doubling.** Default-mode drives that count the two chain signals now ALSO count the
+   acquisition's OWN K1 slot lifecycle: the healing acquisition retires its own published slot
+   and fires `after-admission-slot-retire-cleanup-root-sync` a second time. Measured: `:1746`
+   fails `2 !== 1` at its in-callback `slotSyncs` assertion. The same class takes the B2b
+   dead-chain, dead-W1, and continuation families (their completing entries are default-mode).
+2. **Fixture-premise shift.** Default-mode mint children now run the full K1 path, and B2b's
+   own continuation HEALS the residue the fixture wants to seed: the lone-withdrawal family's
+   mint asserts "the dead creator left its withdrawal marker" and fails — post-flip the child's
+   terminal path completes its own chain and leaves nothing. Other members of the class: the
+   `:1728`/`:1733` sealing families (children now create slots first), "two ledger instances in
+   one PID", the reused-root class, and — definitionally — "the admission-preparation option
+   leaves default clean-root behaviour untouched", which pins option-off === default-off and
+   MUST flip with any activation.
+
+**What the owner must decide.** The flip needs a preparatory fixture-migration slice that the
+batch's staged-retirement sequence placed AFTER it: ~30 committed default-mode fixtures must
+either construct with an explicit option-OFF value (preserving their pinned pre-flip semantics
+— but no OFF value exists: the parser recognizes only absence and the one ON literal, so the
+migration needs an explicit disable form first) or be re-fixtured to the flipped default's
+semantics (signal counts +1, mint recipes changed — committed-pin edits beyond any current
+grant). Either way it is committed-pin movement only the owner can sanction. Proposed order
+for the next batch: (i) add an explicit `{mode:"legacy"}`-style disable value (or re-fixture
+with new signal counts, the honest-but-larger option), (ii) migrate the ~30 fixtures under a
+named grant, (iii) re-apply the flip — its expected-green set is already proven — then
+(iv) the option-gated fixture migration and symbol deletion as originally staged.
