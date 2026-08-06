@@ -1,7 +1,7 @@
 # Reelier — numbers worth knowing
 
-**Pinned to `codex/universal-compiled-authority` @ `214801b` (Batch B checkpoint), measured
-2026-08-05 on Windows 11.**
+**Pinned to `codex/universal-compiled-authority` @ the D3(a) freeze commit, measured 2026-08-06
+on Windows 11.**
 
 _Every number here is quoted somewhere: in a commit message, a PR body, a plan, or an estimate. Two
 were quoted wrongly in a single session — "15 missing fault points" (really 34) and "402 pass"
@@ -20,11 +20,11 @@ not re-verified here — treat as a hypothesis).
 | Quantity | Value | Status |
 |---|---|---|
 | Fault points declared in the spec taxonomy | **58** | measured |
-| Entries in exported `ledgerLockFaultPoints` | **71** (70 after B2a, 65 before Batch B, 61 before Batch A) | measured |
-| Entries in public `ledgerFaultPoints` | **138** (137 / 132 / 128 at the same earlier pins) | measured |
-| Fault-point literals emitted anywhere in `src/` | **84** | measured |
+| Entries in exported `ledgerLockFaultPoints` | **58 — FROZEN** (D3(a): the one ABI break, performed 2026-08-06 after the six withdrawal points landed; 71 before the freeze, 65 before Batch B, 61 before Batch A) | measured |
+| Entries in public `ledgerFaultPoints` | **125** (138 before the freeze) | measured |
+| Fault-point literals emitted anywhere in `src/` | **84** per `lint:fault-pins` = 58 public lock points + 13 internal boundaries (`ledgerInternalBoundaries`, module-private — still emitted, observable through the injector, never part of the ABI) + 5 reservation-family + 8 gate-decision-family (`src/authority/decision.ts`) | measured |
 | Declared in spec, not emitted (the backlog) | **0** — closed by Batch B slice B2c (the chain cleanup + the sixth point) | measured — **but see the gating caveat below** |
-| Exported but **not** in the spec taxonomy (to delete) | **13** | measured |
+| Exported but **not** in the spec taxonomy | **0** — the 13 extras were deleted in the freeze commit; the registry-completeness pin ("…complete and disjoint") is green | measured |
 
 ```bash
 npm run lint:fault-pins
@@ -41,21 +41,25 @@ project has refuted by running it). The linter has no third state for *emitted b
 this row with the caveat attached is the difference between a real number and the exact trap the
 linter exists to prevent.
 
-The 13 extras are election/provisional/predecessor hooks the spec explicitly forbids. Removing them
-plus adding the remaining 1 is **additive at runtime but source-breaking at the type level** — a
-consumer narrowing on `LedgerFaultPoint` gets TS2322 under `--strict`. That is why the ABI freeze
-must come after this work, not before (D3: one break, after the withdrawal points land).
+The freeze was the one sanctioned source break (D3(a)): a consumer narrowing exhaustively on
+`LedgerFaultPoint` (125 names; its ledger-lock subset is the frozen 58) re-narrows once against
+the frozen surface and never again. The injector still receives the 13 internal boundary names
+at runtime — longstanding behavior, now stated at both the `fault()` seam and the public
+`faultInjector` option — so injector callbacks should treat unknown names as internal
+boundaries, not errors. The only guard against a deleted name re-entering the registry is the
+registry-completeness pin's `deepEqual`; `lint:fault-pins` counts declared names by literal
+shape and cannot see the difference.
 
 ## 2. Test suite
 
 | Quantity | Value | Status |
 |---|---|---|
-| Ledger suite | **582 pass / 60 fail** after Batch B slice B2c (the dead-owner chain: `:1746` re-fixtured green by name, the 15-entry chain family, zero movers elsewhere; 566/61 after B2a), stable across three consecutive gate runs. The 100-process flake was PASSING in the re-saved baseline, so under load it can surface as "newly failing" — re-run it in isolation per §3 before believing that | measured |
+| Ledger suite | **583 pass / 59 fail** after the D3(a) freeze (the registry-completeness pin green by name; 582/60 after B2c, 566/61 after B2a). The 100-process flake was PASSING in the re-saved baseline, so under load it can surface as "newly failing" — re-run it in isolation per §3 before believing that | measured |
 | Post-B1 ledger suite (the prior recorded gate) | 546 pass / 75 fail | superseded 2026-08-05 |
 | Pre-B1 ledger suite (the Batch A recorded gate) | 518 pass / 75 fail | superseded 2026-08-05 |
 | Post-warm-prep-fix ledger suite as previously recorded here | 516 pass / 75 fail — written mid-Batch-A and stale by 2 against the Batch A baseline `--save`; kept as the third instance of a number in this file diverging from its own command | superseded 2026-08-05 |
 | Pre-Batch-A ledger suite (the prior recorded gate) | 498 pass / 80 fail | superseded 2026-08-05 |
-| Full `npm test` | **2,190 pass / 78 fail / 1 skipped** after Batch B slice B1; the ledger failing set is name-identical to the recorded 75 and the 3 non-ledger failures are rotating flakes, each re-passing in isolation | measured |
+| Full `npm test` | **2,228 pass / 61 fail / 1 skipped** after the D3(a) freeze; the ledger failing set is name-identical to the recorded 59 and the 2 non-ledger failures are rotating flakes, each re-passing in isolation (2,212/62/1 after B2a, 2,190/78/1 after B1) | measured |
 | Full `npm test` at the warm-prep fix (prior recorded) | 2,157 pass / 80 fail / 1 skipped (pre-fix same-day: 2,145/80/1) | superseded 2026-08-05 |
 | Failures outside `ledger.test.ts` | **0** on an idle machine; 1–3 per run under load, differing each run, each passing in isolation (Batch B added a third observed rotating member: "unknown exceptions and clock failure are closed unavailable, never guessed signed refusals") | measured |
 | Ledger suite wall clock | ~80–90 s | measured |

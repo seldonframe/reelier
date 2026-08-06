@@ -138,23 +138,38 @@ export const ledgerLockFaultPoints = Object.freeze([
   "before-lock-publication-rename", "after-lock-publication-rename", "after-lock-publication-root-sync",
   "after-lock-publication-rename-collision",
   "after-active-lock-metadata", "before-active-lock-content-read",
-  "after-mutating-admission-enumeration", "after-publication-stage-enumeration", "before-publication-stage-validation",
-  "before-publication-stage-root-reenumeration",
-  "before-publication-stage-final-validation", "before-publication-stage-final-liveness",
-  "before-publication-stage-remove-attempt", "before-creator-stage-withdrawal-validation", "after-publication-stage-cleanup-root-sync",
-  "after-lock-publication-provisional-predecessor-selection", "before-lock-publication-provisional-root-reenumeration",
-  "before-lock-publication-provisional-predecessor-liveness", "before-staged-publication-settlement",
-  "after-lock-publication-generation-closed", "before-lock-publication-predecessor-validation",
+  "after-publication-stage-enumeration", "before-publication-stage-validation",
   // Pre-callback generation closure. Its own group in spec order, immediately before the callback.
   "after-pre-callback-coordination-generation-closed",
   "before-ledger-operation-callback",
   "after-owner-file-sync", "after-lock-directory-sync", "before-lock-retire", "after-lock-retire",
 ] as const);
+// The 13 crash-visible boundaries the spec taxonomy deliberately excludes, deleted from the
+// public registry in the D3(a) ABI freeze (owner decision 2026-08-05, performed 2026-08-06).
+// They remain emitted — the committed corpus observes them through the injector, which has
+// always received them at runtime — but they are internal: never part of `ledgerFaultPoints`
+// or `LedgerFaultPoint`, and they never re-enter it. The frozen public surface is exactly the
+// spec taxonomy's 58 ledger-lock points.
+const ledgerInternalBoundaries = Object.freeze([
+  "after-mutating-admission-enumeration",
+  "before-publication-stage-root-reenumeration", "before-publication-stage-final-validation",
+  "before-publication-stage-final-liveness", "before-publication-stage-remove-attempt",
+  "before-creator-stage-withdrawal-validation", "after-publication-stage-cleanup-root-sync",
+  "after-lock-publication-provisional-predecessor-selection",
+  "before-lock-publication-provisional-root-reenumeration",
+  "before-lock-publication-provisional-predecessor-liveness", "before-staged-publication-settlement",
+  "after-lock-publication-generation-closed", "before-lock-publication-predecessor-validation",
+] as const);
+type LedgerInternalBoundary = (typeof ledgerInternalBoundaries)[number];
 export const ledgerFaultPoints = Object.freeze([...reservationFaultPoints, ...dispatchFaultPoints, ...resultFaultPoints, ...ingressFaultPoints, ...clockFaultPoints, ...ledgerLockFaultPoints]);
 export type LedgerFaultPoint = (typeof ledgerFaultPoints)[number];
 
 export interface FsAuthorityLedgerOptions {
   readonly now?: () => number;
+  // The parameter type names the frozen public ABI; at runtime the injector also receives the
+  // 13 module-private internal boundary names (see `ledgerInternalBoundaries`) — longstanding
+  // behavior. Treat unknown names as internal boundaries, never as errors; an exhaustive
+  // narrowing with assertNever will throw on them.
   readonly faultInjector?: (point: LedgerFaultPoint) => void;
   readonly lockTimeoutMs?: number;
 }
@@ -3029,7 +3044,9 @@ export class FsAuthorityLedger implements AuthorityLedger {
     return resolved;
   }
 
-  private fault(point: LedgerFaultPoint): void { if (this.refusalOnlyK1ClassificationActive) return; this.options.faultInjector?.(point); }
+  // The injector observes internal boundaries at runtime as well as the frozen public points —
+  // longstanding behavior; the cast records that its parameter type names only the public ABI.
+  private fault(point: LedgerFaultPoint | LedgerInternalBoundary): void { if (this.refusalOnlyK1ClassificationActive) return; this.options.faultInjector?.(point as LedgerFaultPoint); }
 }
 
 function normalizeAuthenticatedIngress(request:AuthenticatedOutcomeRequest):IngressRecord{

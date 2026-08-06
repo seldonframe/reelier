@@ -171,3 +171,14 @@ A sixth decision (**D6**) was measured by the D4 slice's own GREEN review: the A
 has the same warm corruption (the seventh fresh-root-blindness instance, live and dead owners,
 both entry points) three lines below the site D4 fixed. Outside the D4 grant, so recorded in the
 spec beside D5 and left unfixed; the fix is the same one-helper tolerance if granted.
+
+**2026-08-06 update — D1's chain SHIPPED, D3(a) PERFORMED.** The six creator-withdrawal points
+are emitted (backlog 0), the dead-owner chain completes all eight crash states from both entry
+points warm and fresh, `:1746` is re-fixtured green per the grant, and the ABI froze in one
+commit: `ledgerLockFaultPoints` 71 → **58** (exactly the spec taxonomy; the 13
+election/provisional/predecessor extras moved to a module-private internal-boundaries list, still
+emitted for the corpus, never in the ABI), `ledgerFaultPoints` 138 → **125**, and the
+registry-completeness pin is GREEN. Remaining before the flip: the K1 creator-side chain
+continuation (the W1-window acceptance criterion), the S4 re-spec, and the contention gates.
+Open on the owner's desk: D5 (the `:1760` re-fixture), D6, D2, and the housekeeping-permission
+question.
