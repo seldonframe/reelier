@@ -174,3 +174,28 @@ Phase-3 riders (GREEN review): `runChain` pins the recover entries and the zero-
 member too; the dead-W1 drive line also constructs its recover leaf; the hardExit family's
 in-process successor `recover()` at `:1894` stays default-mode, making that family a
 cross-mode scenario post-flip — measured green under the A/B, re-fixture deliberately.
+
+**Task 3 shipped (`f971054`) — the dead-stage withdrawal route, closing §3's class 3.** See the
+spec's "Resolved 2026-08-06 (Batch D)" block beside clause 6 for the rule; §3 above is rewritten.
+
+**THE FLIP SHIPPED (`bc21407`), AND IT CERTIFIED.** The one-line inversion that Batch C reverted
+was re-applied to a tree where its two blockers were gone, and this time the gate held:
+**654/50 → 688/16, ZERO newly failing names**, and the 32 newly passing were verified IDENTICAL
+name-for-name to the phase-1b prediction by diffing the two recorded lists rather than by reading
+them. Held across four clean gate runs (one interleaved run showed a single rotator that passed in
+isolation); full `npm test` 2,331/20/1 with every non-ledger failure passing in isolation. The
+definitional pin was re-pointed per the grant, named, to the retirement invariant (the recognized
+ON literal is a no-op against the flipped default) — the property that makes deleting the option
+safe. Its sibling needed no re-pointing: it asserts reusability, which the flip preserves.
+
+**Both contention gates passed 3/3 post-flip on a quiet machine** (N100 committed test; N40 probe
+on the flipped DEFAULT path), so this is "flipped and CERTIFIED", not the designed
+"gate-clean, contention-uncertified" split. Numbers and the N40 recipe: `docs/REELIER-NUMBERS.md`
+§3. The 100-process crash did not reproduce at 8.0GB free, so the bounded-spawn fix stayed
+unapplied, in protocol.
+
+**Where the batch stopped: designed split (ii), phase 3 pending.** "Flipped and certified, option
+retirement pending" — the migrated fixtures still construct with `{mode:"legacy"}` and therefore
+still measure the pre-flip contender configuration; re-fixturing them to flipped-default semantics
+and then retiring the disable value, the option-gated constructors, and the option symbol in that
+order is Batch E's opening work, with the three riders above as its known inputs.

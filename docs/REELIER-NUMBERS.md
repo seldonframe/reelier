@@ -54,7 +54,7 @@ shape and cannot see the difference.
 
 | Quantity | Value | Status |
 |---|---|---|
-| Ledger suite | **652 pass / 50 fail** after Batch D's dead-stage withdrawal route (+13: the 12-subtest route family and its parent; 639/50 after phase 1a, 637/50 after the D6(a) tolerance, 628/50 after D5(a), 619/59 after B2b, 597/59 after the W1 recognition, 583/59 after the D3(a) freeze). The 100-process flake was PASSING in the re-saved baseline, so under load it can surface as "newly failing" — re-run it in isolation per §3 before believing that; on 2026-08-06 it failed even in isolation (spawn errno -4094 at 1–3.3GB free), the §3 mechanism reproducing | measured |
+| Ledger suite | **688 pass / 16 fail** after THE FLIP (K1 active by default). The 34-name drop is the flip's measured effect: 32 newly passing, name-for-name identical to the set the phase-1b acceptance A/B predicted, and ZERO newly failing. The 16 that remain are the ungranted housekeeping-permission family — `dead-*`, the slot-retirement crash windows, `:1748` — red by design, not by regression. Prior: 654/50 after the dead-stage route (+15), 639/50 after phase 1a, 637/50 after D6(a), 628/50 after D5(a), 619/59 after B2b, 597/59 after the W1 recognition, 583/59 after the D3(a) freeze. The 100-process flake was PASSING in the re-saved baseline, so under load it can surface as "newly failing" — re-run it in isolation per §3 before believing that; on 2026-08-06 it failed even in isolation (spawn errno -4094 at 1–3.3GB free), the §3 mechanism reproducing | measured |
 | Post-B1 ledger suite (the prior recorded gate) | 546 pass / 75 fail | superseded 2026-08-05 |
 | Pre-B1 ledger suite (the Batch A recorded gate) | 518 pass / 75 fail | superseded 2026-08-05 |
 | Post-warm-prep-fix ledger suite as previously recorded here | 516 pass / 75 fail — written mid-Batch-A and stale by 2 against the Batch A baseline `--save`; kept as the third instance of a number in this file diverging from its own command | superseded 2026-08-05 |
@@ -85,6 +85,28 @@ criterion.
 | Quiet | 3 of 3 passes | measured |
 | Three subagents running | ~1 of 3 passes | measured |
 | Machine ambient CPU floor (unrelated resident apps) | ~34%, reaching 53% | measured |
+
+**The flip's contention gates, run 2026-08-06 post-flip on a quiet machine (18% ambient, 8.0GB
+free) — both 3/3, so the flip is CERTIFIED, not merely gate-clean.**
+
+| Gate | Result | Status |
+|---|---|---|
+| Committed N100 (`100 real processes converge…`) | **3 of 3 pass**, ~21–22 s each | measured |
+| N40 probe, flipped DEFAULT path | **3 of 3 PASS**, ~3.0–3.2 s each: 40/40 advanced, 0 bounded, 0 corruption, 0 crashed, root steady (exactly one `.released`, no lock, no K1 residue) | measured |
+
+The N40 recipe (probe convention — describe, do not ship): spawn 40 `--input-type=module -e`
+children against ONE `mkdtemp` root, each constructing `FsAuthorityLedger` with **no option at
+all** (the flipped default) and `lockTimeoutMs: 20_000`, each printing its `observeClock()` result
+as JSON; the oracle is every child advancing or bounded-refusing with zero crashes and zero
+corruption, plus the steady root shape. **Give every child the SAME `now`.** A first cut staggered
+`now` per child and produced 36 `clock-rollback` refusals — the ledger correctly refusing to move
+the high-water mark backwards. That measures the clock rule, not contention, and it looked exactly
+like a contention failure until the result shapes were dumped.
+
+**The 100-process crash did NOT reproduce on 2026-08-06 post-flip** (8.0GB free, 3/3 pass), so the
+bounded-spawn fix stayed unapplied: the protocol above permits it only on a day the failure
+actually reproduces, with the A/B under that reproducing load. Earlier the same day it DID
+reproduce at 1–3.3GB free. Free memory, not the flip, is the variable.
 
 The full suite is also noisy on this machine: two consecutive runs of the same code each produced
 **one different** additional failure — the fixed-seed ledger fuzz in one (14.9 s in a passing run,
