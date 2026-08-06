@@ -1,7 +1,7 @@
 {
   "target": "dist-test/test/authority/ledger.test.js",
-  "pass": 619,
-  "fail": 59,
+  "pass": 628,
+  "fail": 50,
   "failing": [
     "active owner treats atomic complete withdrawal as membership change, never corruption",
     "after-admission-prep-create",
@@ -45,21 +45,12 @@
     "marker-plus-stage",
     "one fixed admission slot bounds all paused publishers to one publication stage",
     "orphan-ack",
-    "orphan-withdrawal-ack",
     "pre-admission housekeeper retires one dead slot before preparation and mutates no semantic state",
     "pre-callback admission order closes and revalidates the synced generation",
     "rename collision retains one synced creator stage and fixed slot across replacement classes",
     "same-byte-identity-replacement",
-    "slot-withdrawal",
-    "slot-withdrawal-slot-ack",
-    "slot-withdrawal-slot-stage",
     "type-replacement",
-    "whole-snapshot restart denies active-lock churn external dead-to-live change and slot replacement",
-    "withdrawal-both-acks",
-    "withdrawal-slot-ack",
-    "withdrawal-slot-ack-withdrawal-stage",
-    "withdrawal-withdrawal-ack",
-    "withdrawn slot and creator-withdrawal cleanup recognizes exactly eight evidence-bound crash states"
+    "whole-snapshot restart denies active-lock churn external dead-to-live change and slot replacement"
   ],
   "trusted": true,
   "recorded": null
