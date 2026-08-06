@@ -115,6 +115,7 @@ import { generateSigningKeypair, loadSigningKey, signRecordDigest, verifyRecordS
 import { resolveVerifyPayload, evaluateVerifyClaims } from "./verify.js";
 import { writeCiWorkflow, PLACEHOLDER_SKILL_PATH } from "./ci-scaffold.js";
 import { buildDiscoveryBundle, discoverOpportunities, formatDiscoveryPreview, signDiscoveryBundle, type AgentOpportunity, type DiscoverySessionInput } from "./discovery.js";
+import { collectCodexCoverage, renderCoverageReport } from "./coverage.js";
 import { uploadDiscoveryBundle } from "./discovery-client.js";
 
 // Exported (alongside cmdPush below) so test/push-cli.test.ts can drive
@@ -183,6 +184,7 @@ function parseArgv(argv: string[]): ParsedArgs {
       arg === "--dir" ||
       arg === "--out-dir" ||
       arg === "--agent" ||
+      arg === "--host" ||
       arg === "--from-skill" ||
       arg === "--since" ||
       arg === "--select" ||
@@ -3154,6 +3156,21 @@ async function readDiscoverySigningMaterial(homedir: string): Promise<{ privateK
   return { privateKey: loaded.privateKey, keyId: loaded.keyId, publicKeyPem: publicPem };
 }
 
+export async function cmdCoverage(args: ParsedArgs, homedirOverride?: string): Promise<number> {
+  const host = args.opts.host;
+  if (!host) {
+    console.error("Usage: reelier coverage --host <host>. Supported hosts: codex.");
+    return 1;
+  }
+  if (host !== "codex") {
+    console.error(`Unsupported --host '${host}'. Supported hosts: codex.`);
+    return 1;
+  }
+  const report = await collectCodexCoverage(homedirOverride ?? os.homedir());
+  for (const line of renderCoverageReport(report)) console.log(line);
+  return 0;
+}
+
 export async function cmdDiscover(args: ParsedArgs): Promise<number> {
   const explicitDir = args.opts.dir;
   if (explicitDir) console.log(`Discovering opportunities in ${path.basename(path.resolve(explicitDir))}...`);
@@ -4390,7 +4407,9 @@ const USAGE =
   "  from-session — compile a transcript from Claude Code, Codex CLI, or OpenClaw into a skill.\n" +
   "           Format is sniffed from content; override with --agent <claude-code|codex|openclaw|cursor|windsurf>.\n" +
   "           --agent cursor / --agent windsurf report why those aren't supported yet instead of guessing.\n" +
-  "  scan   — discover session transcripts from every known agent (also reports Cursor/Windsurf DB findings).";
+  "  scan   — discover session transcripts from every known agent (also reports Cursor/Windsurf DB findings).\n" +
+  "  coverage — reelier coverage --host codex: read-only observed inventory of a host's MCP servers (config + plugins),\n" +
+  "           wrapped/unwrapped per entry. Observed inventory only; never a completeness claim.";
 
 async function main(): Promise<number> {
   const [, , cmd, ...rest] = process.argv;
@@ -4452,6 +4471,8 @@ async function main(): Promise<number> {
       return cmdInit(args);
     case "discover":
       return cmdDiscover(args);
+    case "coverage":
+      return cmdCoverage(args);
     case "from-session":
       return cmdFromSession(args);
     case "scan":
