@@ -3,7 +3,7 @@
 
 import { readFile, writeFile, appendFile, access, readdir, realpath, stat } from "node:fs/promises";
 import { realpathSync } from "node:fs";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import os from "node:os";
 import { pathToFileURL } from "node:url";
@@ -30,7 +30,7 @@ import {
   removeKeystoreEntries,
   loadExpectKey,
 } from "./expect-mac.js";
-import { pushSkill, PublicSubmissionError, type PushRecordResult } from "./push.js";
+import { pushSkill, resolvePushConfig, PublicSubmissionError, type PushRecordResult } from "./push.js";
 import { getSkill, getMineSkill, type GetOutcome, type GetMineOutcome } from "./get.js";
 import { DEFAULT_CLOUD_URL, readCliConfig, writeCliConfig, clearCliCredentials } from "./cloud-config.js";
 import { startLogin, pollForToken, openBrowser } from "./login.js";
@@ -61,6 +61,7 @@ import {
   planMcpConfigWrite,
   applyMcpConfigWrite,
   findNewestTraceFile,
+  parseMcpConfig,
   runDemoRecording,
   compileDemoTrace,
   formatReceipt,
@@ -113,6 +114,8 @@ import {
 import { generateSigningKeypair, loadSigningKey, signRecordDigest, verifyRecordSignature, signingKeyDir } from "./signing.js";
 import { resolveVerifyPayload, evaluateVerifyClaims } from "./verify.js";
 import { writeCiWorkflow, PLACEHOLDER_SKILL_PATH } from "./ci-scaffold.js";
+import { buildDiscoveryBundle, discoverOpportunities, formatDiscoveryPreview, signDiscoveryBundle, type AgentOpportunity, type DiscoverySessionInput } from "./discovery.js";
+import { uploadDiscoveryBundle } from "./discovery-client.js";
 
 // Exported (alongside cmdPush below) so test/push-cli.test.ts can drive
 // cmdPush's console output directly with a fake ParsedArgs + monkeypatched
@@ -182,6 +185,7 @@ function parseArgv(argv: string[]): ParsedArgs {
       arg === "--agent" ||
       arg === "--from-skill" ||
       arg === "--since" ||
+      arg === "--select" ||
       arg === "--expires" ||
       arg === "--key" ||
       arg === "--path"
@@ -3080,6 +3084,141 @@ function rankByReplayWorthiness(sessions: ScannedSession[]): ScannedSession[] {
   return [...sessions].sort((a, b) => Number(b.readOnly) - Number(a.readOnly));
 }
 
+export function parseDiscoverySelection(raw: string, max: number): number | null {
+  if (!/^\d+$/.test(raw.trim())) return null;
+  const selected = Number(raw.trim());
+  return Number.isInteger(selected) && selected >= 1 && selected <= max ? selected : null;
+}
+
+export function formatDiscoveryOpportunity(index: number, opportunity: AgentOpportunity): string[] {
+  const effects = opportunity.effectCounts;
+  const writes = effects["idempotent-write"] + effects.destructive;
+  const sideEffectLabel = writes > 0 ? ` · ${writes} proposed write${writes === 1 ? "" : "s"}` : "";
+  return [
+    `[${index}] ${opportunity.displayLabel}`,
+    `    Observed ${opportunity.observedCount} time${opportunity.observedCount === 1 ? "" : "s"} · last used ${opportunity.lastUsedAt.slice(0, 10)}`,
+    `    ${effects.read} reads${sideEffectLabel}`,
+    `    Evaluation potential: ${opportunity.evaluationPotential}`,
+    `    Approval boundary: ${opportunity.approvalBoundary}`,
+  ];
+}
+
+async function configuredDiscoveryServers(cwd: string, homedir: string): Promise<string[]> {
+  const names = new Set<string>();
+  for (const config of await detectMcpConfigs(cwd, homedir)) {
+    try {
+      const parsed = parseMcpConfig(await readFile(config.path, "utf8"));
+      for (const name of Object.keys(parsed.mcpServers ?? {})) names.add(name);
+    } catch {
+      // A malformed config is not a reason to lose local discovery; it simply
+      // contributes no configured-server availability signal.
+    }
+  }
+  return [...names].sort();
+}
+
+async function discoveryInputs(homedir: string, explicitDir?: string): Promise<DiscoverySessionInput[]> {
+  const sessions = explicitDir ? await scanTranscripts(explicitDir) : await scanAgentSessions(homedir);
+  const formats = new Map(agentSources(homedir).map((source) => [source.id, source.format]));
+  const inputs: DiscoverySessionInput[] = [];
+  for (const session of sessions) {
+    try {
+      inputs.push({
+        content: await readFile(session.path, "utf8"),
+        path: session.path,
+        project: session.project,
+        sourceId: session.sourceId,
+        sourceLabel: session.sourceLabel,
+        mtimeMs: session.mtimeMs,
+        format: formats.get(session.sourceId),
+      });
+    } catch {
+      // A session disappearing during a scan is skipped; no bundle is built
+      // from a partial transcript.
+    }
+  }
+  return inputs;
+}
+
+async function readDiscoverySigningMaterial(homedir: string): Promise<{ privateKey: NonNullable<Awaited<ReturnType<typeof loadSigningKey>>>["privateKey"]; keyId: string; publicKeyPem: string }> {
+  const dir = signingKeyDir(homedir);
+  let loaded = await loadSigningKey(dir);
+  let publicPath: string | undefined;
+  if (!loaded) {
+    const generated = await generateSigningKeypair(dir);
+    publicPath = generated.publicPath;
+    loaded = await loadSigningKey(dir);
+  }
+  if (!loaded) throw new Error("Could not load the local Ed25519 signing key; run 'reelier init --signing' and try again.");
+  const publicPem = await readFile(publicPath ?? path.join(dir, `${loaded.keyId}.pub.pem`), "utf8");
+  return { privateKey: loaded.privateKey, keyId: loaded.keyId, publicKeyPem: publicPem };
+}
+
+export async function cmdDiscover(args: ParsedArgs): Promise<number> {
+  const explicitDir = args.opts.dir;
+  if (explicitDir) console.log(`Discovering opportunities in ${path.basename(path.resolve(explicitDir))}...`);
+  else console.log("Discovering opportunities from Claude Code, Codex CLI, and OpenClaw history...");
+  const inputs = await discoveryInputs(os.homedir(), explicitDir);
+  const opportunities = discoverOpportunities(inputs, { configuredServers: await configuredDiscoveryServers(process.cwd(), os.homedir()) });
+  console.log("");
+  console.log("Agent opportunities found");
+  console.log("");
+  if (opportunities.length === 0) {
+    console.log("No replayable MCP/API workflow shapes found. Reelier does not infer opportunities from shell or file edits.");
+    return 0;
+  }
+  opportunities.forEach((opportunity, index) => console.log(formatDiscoveryOpportunity(index + 1, opportunity).join("\n")));
+  if (!args.flags.has("upload")) return 0;
+
+  const selectedIndex = args.opts.select ? parseDiscoverySelection(args.opts.select, opportunities.length) : args.flags.has("yes") ? 1 : null;
+  let selected = selectedIndex ? opportunities[selectedIndex - 1] : undefined;
+  if (!selected) {
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    try {
+      const answer = (await rl.question("\nSelect one opportunity to upload (number, or Enter to cancel): ")).trim();
+      const parsed = parseDiscoverySelection(answer, opportunities.length);
+      if (parsed) selected = opportunities[parsed - 1];
+    } finally {
+      rl.close();
+    }
+  }
+  if (!selected) {
+    console.log("No opportunity selected — nothing uploaded.");
+    return 0;
+  }
+
+  const unsigned = buildDiscoveryBundle(selected, { runNonce: `discover-${randomUUID()}` });
+  console.log("");
+  console.log(formatDiscoveryPreview(unsigned));
+  if (!args.flags.has("yes")) {
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    let answer = "";
+    try {
+      answer = (await rl.question("\nUpload this exact bundle to Reelier Cloud? (y/N) ")).trim().toLowerCase();
+    } finally {
+      rl.close();
+    }
+    if (answer !== "y" && answer !== "yes") {
+      console.log("Upload declined — nothing left this computer.");
+      return 0;
+    }
+  }
+
+  try {
+    const config = resolvePushConfig(process.env, await readCliConfig());
+    const signing = await readDiscoverySigningMaterial(os.homedir());
+    const signed = signDiscoveryBundle(unsigned, signing);
+    if (args.opts.out) await writeFile(path.resolve(args.opts.out), `${JSON.stringify(signed, null, 2)}\n`, "utf8");
+    const uploaded = await uploadDiscoveryBundle(signed, config);
+    console.log(`Uploaded sanitized discovery bundle ${uploaded.id}.`);
+    console.log(`Private Arena review: ${uploaded.importUrl}`);
+    return 0;
+  } catch (error) {
+    console.error((error as Error).message);
+    return 1;
+  }
+}
+
 async function cmdScan(args: ParsedArgs): Promise<number> {
   const explicitDir = args.opts.dir;
   const yes = args.flags.has("yes");
@@ -3942,6 +4081,15 @@ export async function cmdInit(args: ParsedArgs): Promise<number> {
   // to replay); any scan failure degrades honestly to the normal init flow —
   // never a crash, never a fabricated candidate.
   try {
+    const discovered = discoverOpportunities(await discoveryInputs(homedir));
+    if (discovered.length > 0) {
+      console.log("Agent opportunities found");
+      for (let i = 0; i < Math.min(3, discovered.length); i++) {
+        console.log(formatDiscoveryOpportunity(i + 1, discovered[i]).join("\n"));
+      }
+      console.log("  To inspect the exact sanitized bundle before sharing: reelier discover --upload");
+      console.log("");
+    }
     const sessions = await scanAgentSessions(homedir);
     const candidates = rankByReplayWorthiness(
       sessions.filter((s) => s.replayableCount > 0 && s.readOnly)
@@ -4216,7 +4364,8 @@ export async function cmdWhoami(fetchImpl: typeof fetch = fetch): Promise<number
 }
 
 const USAGE =
-  "Usage: reelier <run|bench|baseline|cost|prices|mcp|serve|trace|compile|manifest|approve|push|get|verify|diff|ci|policy|init|from-session|scan|install|uninstall|login|logout|whoami> [options]\n" +
+  "Usage: reelier <run|bench|baseline|cost|prices|mcp|serve|trace|compile|manifest|approve|push|get|verify|diff|ci|policy|init|discover|from-session|scan|install|uninstall|login|logout|whoami> [options]\n" +
+  "  discover â€” rank observed workflow opportunities locally; use --upload to preview and explicitly send one sanitized bundle to Arena Cloud.\n" +
   "  login  — reelier login: connect this machine to Reelier Cloud via a device-code browser handshake; writes ~/.reelier/config.json.\n" +
   "  logout — reelier logout: clears the locally stored key (revoke it from the dashboard's Settings, not locally).\n" +
   "  whoami — reelier whoami: print the identity the stored key resolves to, or that you're not logged in.\n" +
@@ -4301,6 +4450,8 @@ async function main(): Promise<number> {
       return cmdPolicy(args);
     case "init":
       return cmdInit(args);
+    case "discover":
+      return cmdDiscover(args);
     case "from-session":
       return cmdFromSession(args);
     case "scan":
