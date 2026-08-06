@@ -51,6 +51,10 @@ const SKIP_DIRS = new Set([
   // positive), and the generated HTML report embeds mutated source verbatim.
   ".stryker-tmp",
   "reports",
+  // Same case as .stryker-tmp under yet another tool: each entry under the
+  // top-level .worktrees/ is a full checkout of this repo. Git-excluded
+  // (`.git/info/exclude`), so CI never sees them.
+  ".worktrees",
 ]);
 
 /**
@@ -153,5 +157,28 @@ test("the matcher catches a reintroduction and allows the qualified form", () =>
   assert.equal(
     findUnqualifiedClaims("an assertion on every step that recorded a clean result; others stay assertion-less").length,
     0,
+  );
+});
+
+// AGENTS.md and CLAUDE.md are ONE capabilities doc served to two harnesses:
+// Codex reads AGENTS.md, Claude Code reads CLAUDE.md. Collapsing one into a
+// pointer is not an option — a harness that does not follow the link gets no
+// capabilities doc at all — so the only safe shape is two real, byte-identical
+// files plus something that fails when they drift.
+//
+// This is not hypothetical. The doc is pinned and carries release-status
+// claims, and an in-review PR edited CLAUDE.md alone. That would have left one
+// agent reading the current release status and the other reading a superseded
+// one, from a document whose entire purpose is to stop exactly that. A
+// guardrail that is present, silent and dead is the failure class this product
+// exists to catch; it should not ship one about itself.
+test("AGENTS.md and CLAUDE.md are byte-identical", () => {
+  const claude = readFileSync(join(ROOT, "CLAUDE.md"));
+  const agents = readFileSync(join(ROOT, "AGENTS.md"));
+  assert.ok(
+    claude.equals(agents),
+    `AGENTS.md and CLAUDE.md have diverged (${claude.length} vs ${agents.length} bytes).\n` +
+      `They are one document served to two agent harnesses: edit both or neither.\n` +
+      `To resync, copy the corrected file over the other.`,
   );
 });
