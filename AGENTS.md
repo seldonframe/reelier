@@ -168,9 +168,19 @@ Ops note: **no auto-migrate wiring** — migrations are applied by hand after me
    The 2026-07 audit closed three *instances* of this shape by adding destructive verbs
    (`src/effect-verbs.ts:110-112` — `clear`/`rotate`/`push`); the **class** is still open, because
    it can only ever be closed verb-by-verb. Read nouns that can carry it: `query`, `status`,
-   `stats`, `info`, `logs`, `preview`, `health`, `screenshot`, `count`, `head`. Not verified:
-   whether the affected servers ship `readOnlyHint`/`destructiveHint`, which would pre-empt the
-   verb list at rungs 1–2. Full method and corpus limits:
+   `stats`, `info`, `logs`, `preview`, `health`, `screenshot`, `count`, `head`.
+   **The one falsifier is now measured, and it is refuted (2026-08-06).** The escape hatch was that
+   the affected servers might ship `readOnlyHint`/`destructiveHint`, which would pre-empt the verb
+   list at rungs 1–2. Probed the live neon server over stdio and read `tools/list`: **0 of 23 tools
+   carry any annotation** — not few, none. Rungs 1–2 never fire there, so the verb list is the only
+   thing deciding, and re-running `classifyEffect` against current `src` (not the `dist` the first
+   pass used) reproduces `complete_query_tuning` → `{read, unknown: false}`. Do not describe this
+   limit as theoretical. **Scope of the claim:** measured on one server; other servers may annotate,
+   and that is worth checking per substrate rather than assuming either way.
+   **What `unknown` does and does not do:** it is consumed in exactly one place (`src/session.ts:303`,
+   destructured at `src/compile.ts:640`) and drives *reporting* — an open question on the compiled
+   skill. Nothing gates on it. So flagging a leaked read makes it **visible, not blocked**; only
+   moving such names to rung-6 default-deny would close the gate. Full method and corpus limits:
    `~/CascadeProjects/research/2026-08-06-effect-classifier-verb-gaps/`.
 4. **Path A still fails open — and that is correct, not a bug.** A malformed `policy.yml` degrades
    to deny-nothing (never-list #5, fail open at the recorder). **Shipped and published in 0.30.0**
