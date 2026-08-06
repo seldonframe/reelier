@@ -954,8 +954,8 @@ test("one fixed admission slot bounds all paused publishers to one publication s
 
 test("two ledger instances in one PID wait through admission and converge",()=>withRoot(async root=>{
   let secondPromise:Promise<unknown>|undefined,staged=false,firstCallbacks=0,secondCallbacks=0;
-  const first=new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:40,faultInjector:(point:string)=>{
-    if(point==="after-lock-publication-stage-sync"&&!secondPromise){staged=true;secondPromise=new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:500,faultInjector:(observed:string)=>{if(observed==="before-ledger-operation-callback")secondCallbacks++;}} as never).observeClock();}
+  const first=new RawFsAuthorityLedger(root,{[k1AdmissionPreparationOption()]:K1_ADMISSION_PREPARATION_LEGACY,now:()=>t0,lockTimeoutMs:40,faultInjector:(point:string)=>{
+    if(point==="after-lock-publication-stage-sync"&&!secondPromise){staged=true;secondPromise=new RawFsAuthorityLedger(root,{[k1AdmissionPreparationOption()]:K1_ADMISSION_PREPARATION_LEGACY,now:()=>t0,lockTimeoutMs:500,faultInjector:(observed:string)=>{if(observed==="before-ledger-operation-callback")secondCallbacks++;}} as never).observeClock();}
     if(staged&&point==="before-lock-publication-rename")throw Object.assign(new Error("sharing"),{code:"EBUSY"});
     if(point==="before-ledger-operation-callback")firstCallbacks++;
   }} as never);
@@ -2233,7 +2233,7 @@ test("reservation linkage lookup returns only the verified ingress/capability/co
 // separately, in-process, by the degraded-terminal test below.
 // ---------------------------------------------------------------------------------------------
 function k1AdmissionPreparationOption():symbol{const option=(hostAuthorityModule as Record<string,unknown>).__testK1AdmissionPreparationRuntimeOption;assert.equal(typeof option,"symbol","the host module exposes the private admission-preparation runtime option");return option as symbol;}
-const K1_ADMISSION_PREPARATION_MODE={mode:"prepare-and-promote"} as const;
+const K1_ADMISSION_PREPARATION_MODE={mode:"prepare-and-promote"} as const;const K1_ADMISSION_PREPARATION_LEGACY={mode:"legacy"} as const;
 const K1_ADMISSION_PREPARATION_POINTS=["after-admission-prep-create","after-admission-prep-owner-create","after-admission-prep-owner-partial-write","after-admission-prep-owner-sync","after-admission-prep-sync","before-admission-slot-rename","after-admission-slot-rename","after-admission-slot-root-sync","after-admission-slot-final-validation"] as const;
 const LIVE_ADMISSION_PREP=/^\.authority-ledger-admission-prep-([0-9a-f]{64})-(\d+)-([0-9a-f]{64})\.tmp$/;
 function livePrepNames(names:readonly string[]):string[]{return names.filter(name=>name.startsWith(".authority-ledger-admission-prep-")&&!name.startsWith(".authority-ledger-admission-prep-retired-"));}
