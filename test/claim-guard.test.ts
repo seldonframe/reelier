@@ -53,6 +53,18 @@ const SKIP_DIRS = new Set([
   "reports",
 ]);
 
+/**
+ * Skips matched on the directory's PATH rather than its bare name, so a
+ * same-named directory elsewhere in the tree is still scanned.
+ *
+ * `.claude/worktrees/<name>/` is the `.stryker-tmp` case under a different tool:
+ * each entry is a full checkout of this repo, so every ALLOWLIST file reappears
+ * under a worktree-relative path, misses the allowlist, and false-positives.
+ * They are git-excluded (`.git/info/exclude`), so CI never sees them and skipping
+ * them loses no coverage the main tree does not already provide.
+ */
+const SKIP_PATH_SUFFIXES = [join(".claude", "worktrees")];
+
 const SCAN_EXT = [".ts", ".tsx", ".js", ".mjs", ".md", ".mdx", ".json", ".svg", ".html", ".txt", ".yml", ".yaml"];
 
 // Files whose JOB is to quote the banned phrase (guardrails, this test, and
@@ -87,6 +99,7 @@ function* walk(dir: string): Generator<string> {
   for (const entry of readdirSync(dir)) {
     if (SKIP_DIRS.has(entry)) continue;
     const full = join(dir, entry);
+    if (SKIP_PATH_SUFFIXES.some((suffix) => full.endsWith(suffix))) continue;
     if (statSync(full).isDirectory()) yield* walk(full);
     else if (SCAN_EXT.some((e) => entry.endsWith(e))) yield full;
   }

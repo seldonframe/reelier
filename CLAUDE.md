@@ -40,8 +40,10 @@ statements about the product. Read this section before answering any capability 
 
 **Path A is the differentiator.** One `install` covers every MCP server in the agent's config. No
 per-agent, per-tool rebuild. Every DIY equivalent operators build is bound to the one system it was
-written for. The load-bearing word is *config*: plugin-delivered MCP servers load from plugin-owned
-manifests `install` does not inspect, and are outside the observed boundary (§7.6).
+written for. The load-bearing word is *config*: on every host specified or observed so far, servers
+an agent acquires through **plugins** load from the plugin's own manifest, not from that config,
+and are not wrapped (§7.6; the falsifier — a host that materializes plugin entries into its main
+config — lives in the research topic).
 
 **Path A is also where the fail-open gap lives.** See §7.
 
@@ -180,19 +182,27 @@ Ops note: **no auto-migrate wiring** — migrations are applied by hand after me
 5. **Content correctness is out of scope by charter** (safety-atoms never-ours: live intent, content
    correctness, credential scoping, blast-radius topology, rollback execution). Reelier cannot know a
    minimum price is €X.
-6. **Plugin-delivered MCP calls are outside the observed boundary.** (Added 2026-08-06.) Reelier
-   `install` wraps MCP entries it finds in supported host configuration files. It does not inspect
-   plugin-owned MCP manifests — Claude Code plugins carry their own `.mcp.json` (or inline
-   `plugin.json` config; code.claude.com/docs/en/plugins-reference, read 2026-08-06), and the
-   **Agent Plugins** standard (v1.0.0, agent-plugins.org, announced 2026-08-06; launch clients
-   include Codex, ChatGPT, Cursor, GitHub Copilot, Kiro, VS Code) packages MCP servers in a
-   plugin-owned `mcp.json`. Plugin-delivered calls are therefore outside Reelier's observed
-   boundary unless the plugin itself invokes `reelier mcp --wrap`, or the host exposes the entry
-   through a supported configuration and Reelier subsequently rewrites it. Reelier currently has
-   no native wrapping path for URL-based MCP servers. Receipts attest only calls that traversed
-   Reelier; they do not prove that every host or plugin write was observed (§8's completeness
-   entry). Proposed response: `docs/specs/agent-plugins-coverage-v1.md`. Research:
-   `~/CascadeProjects/research/2026-08-06-agent-plugins-wrap-coverage/`.
+6. **Plugin-delivered MCP calls are outside the observed boundary** unless the plugin itself
+   invokes `reelier mcp --wrap`, or the host exposes the entry through a supported configuration
+   and Reelier subsequently rewrites it. (Added 2026-08-06.) Both plugin ecosystems load a plugin's MCP servers from the plugin's own
+   manifest, never through the host config files `install` rewrites (`knownMcpConfigPaths`,
+   `src/init.ts` — Claude Code, Cursor, Windsurf): Claude Code plugins carry MCP config in the
+   plugin's own `.mcp.json` (or inline in `plugin.json`), "configured independently of user MCP
+   servers" (code.claude.com/docs/en/plugins-reference, read 2026-08-06); the **Agent Plugins** standard
+   (v1.0.0, agent-plugins.org, announced 2026-08-06 — TSC Amazon/Cursor/Microsoft/OpenAI/Vercel;
+   launch clients Codex, ChatGPT, Cursor, GitHub Copilot, Kiro, VS Code) makes the same shape
+   portable and normative: "Clients that support MCP servers MUST load configuration only from
+   `mcp.json` at the plugin root." Codex is doubly out today — TOML main config `install`
+   deliberately does not write (`src/init.ts:63`) *and* a live plugin/marketplace system (observed
+   on one machine 2026-08-06; hypothesis until reproduced — spec §0.4). The only in-spec wrapped
+   form is author-side and stdio-only: a plugin's own manifest declaring a stdio entry that fronts
+   its server with `reelier mcp --wrap`; remote (`streamable-http`/`sse`) entries have no wrapped
+   form at all — the wrap speaks stdio only (`src/mcp-client.ts`), and `install` skips `url`
+   entries (`src/wrap.ts:119`). A receipt from a plugin-running host therefore can never be read
+   as covering plugin-delivered writes — only author-wrapped stdio entries appear in it, and
+   nothing attests that any did (§8's completeness entry). Proposed response — observed-coverage
+   probe, plugin packaging, non-mutating interception: `docs/specs/agent-plugins-coverage-v1.md`
+   (on `main`). Research: `~/CascadeProjects/research/2026-08-06-agent-plugins-wrap-coverage/`.
 
 ## 8. Designed, NOT built — never describe these as shipped
 
@@ -295,7 +305,7 @@ moves; re-check them by hash rather than by reading. **If a hash moved, the clai
 | Deferred probes grade `partial`, never `exact`; elapsed deadline → `absent` | 7.1 | `src/defer.ts` |
 | `emit:` is a parse error when malformed, never a silent "no emit" | 4 | `src/skill.ts:363-386` |
 | `install` rewrites every MCP server entry, idempotent + backed up | 2 | `planInstall` / `applyInstall` (`src/wrap.ts`) |
-| Plugin-owned MCP manifests are outside every config `install` inspects | 7.6 | `knownMcpConfigPaths` (`src/init.ts`) |
+| Plugin-delivered servers load outside every host config `install` detects | 7.6 | `knownMcpConfigPaths` (`src/init.ts`) |
 
 **Corrected 2026-08-06:** `preflightManifest` was listed at `src/cli.ts`; it is in `src/manifest.ts`
 (`git grep -l "function preflightManifest" origin/main -- src/`). A grounding table pointing at the
