@@ -85,7 +85,10 @@ build and measure alternatives rather than reason about them.
 
 - **Never run the suite alongside subagents.** A loaded machine crashes child processes in the
   100-process test and fabricates regressions. A baseline taken under load reported 411 as 410 and
-  produced a phantom failure. `baseline-diff` refuses above 35% CPU busy.
+  produced a phantom failure. `baseline-diff` refuses above 70% CPU busy
+  (`REELIER_BASELINE_MAX_BUSY ?? 0.7`, `scripts/baseline-diff.mjs:70` — verified 2026-08-07; this
+  line said 35% until then, and the threshold it names is the one that decides whether a measurement
+  is allowed to happen at all).
 - **A crashed child is an environment signal.** `Error: child <pid>: 3221226505` is Windows
   `STATUS_STACK_BUFFER_OVERRUN`, never an assertion. Re-run in isolation before calling it a
   regression.

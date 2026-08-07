@@ -349,6 +349,23 @@ refusal-only classification — the sole fence-less filesystem access, read-only
 construction, writing nothing: corruption keeps precedence over contention, and a refusal-pass `busy`
 means not proven corrupt, never proven healthy.
 
+> **OPEN DISCREPANCY (2026-08-07, measured — spec vs. host reality, unresolved).** This rule models
+> an unbindable endpoint as *contention*: "contenders of every class retry binding under the one
+> original acquisition deadline." A host can make the derived port **permanently** unbindable, which
+> retrying can never resolve. Windows reserves ranges for Hyper-V/WSL/Docker; `listen` on one returns
+> **`EACCES`**, and the fence retries it as transient until the whole budget is gone. Measured on one
+> Windows host: `[PORT] 544 EACCES port=49264`, inside the excluded range 49252–49351; the operation
+> then burned 3 s, 30 s and 90 s budgets identically — budget size is irrelevant because the
+> exclusion is permanent. Intersecting that host's exclusion table with this rule's [20000, 49999]
+> range leaves **501 of 30 000 ports (≈1.67 %) permanently unusable**, so ~1.7 % of roots yield a
+> ledger where every operation stalls for `lockTimeoutMs` and then returns `busy`, with no recovery
+> short of moving the root. Four-state honesty holds — it degrades to `unavailable`, never to a pass
+> — so this is liveness, not correctness. **The implementation is conformant; the gap is in this
+> rule**, which has no state for "this address can never be bound on this host", and whose "no port
+> scan, no reuse, and no fallback" forbids the obvious remedy. Recorded, not resolved: changing it is
+> an owner decision. Full method, seven refuted hypotheses, and the reproduction:
+> `docs/superpowers/plans/2026-08-07-gate-rotator-rootcause.md`.
+
 Same-process fence contention distinguishes exactly two closed contender classes, declared at
 invocation by whether the operation seeks the active lock and a semantic operation callback. That
 classification governs fence queueing only, and is stated independently of pre-admission housekeeping
