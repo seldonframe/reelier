@@ -153,7 +153,8 @@ async function buildClaudeCodeFixture(): Promise<Fixture> {
       },
       projects: {
         [cwd]: { mcpServers: { project_scoped: { command: "node", args: ["scoped.js"] } } },
-        [otherProject]: { mcpServers: { never_read: { command: "node" } } },
+        // A project the operator is NOT in: reported by `coverage`, never rewritten by `install`.
+        [otherProject]: { mcpServers: { other_project_scoped: { command: "node" } } },
       },
     }),
     "utf8",
@@ -383,21 +384,40 @@ test("collectClaudeCodeCoverage never merges a plugin-delivered server with a ho
   }
 });
 
-// D-6: `install` wraps only the top-level mcpServers of ~/.claude.json. The
-// host also loads projects[<cwd>].mcpServers, so it gets its own source.
-test("collectClaudeCodeCoverage reports projects[cwd].mcpServers as its own source and counts the sibling keys it did not read", async () => {
+// D-6: `install` reaches the top-level mcpServers of ~/.claude.json plus the ONE
+// projects[<key>] map matching the directory it runs in (planInstall, src/wrap.ts).
+// The host loads every projects[<key>] map, so every one that carries servers gets
+// its own source — including the projects install will not rewrite from here, which
+// are precisely the ones an operator cannot otherwise see. Depth is in
+// test/project-scoped-servers.test.ts; this is the cross-check against the shared
+// fixture that the other host families use.
+test("collectClaudeCodeCoverage gives every projects[<key>].mcpServers map its own source, cwd or not", async () => {
   const fx = await buildClaudeCodeFixture();
   try {
     const view = await collectClaudeCodeCoverage(fx.cwd, fx.home, {});
-    const scoped = view.sources.find((s) => s.path.includes("#projects/"));
-    assert.ok(scoped, "the projects[cwd] entry must be its own source");
-    assert.ok(scoped.path.endsWith(`#projects/${fx.cwd}`));
-    assert.equal(scoped.servers.length, 1);
-    assert.equal(scoped.servers[0]?.name, "project_scoped");
-    assert.equal(scoped.servers[0]?.origin, scoped.path);
-    assert.match(scoped.detail ?? "", /1 .*project key/);
-    // The sibling project's server must never appear anywhere in the report.
-    assert.ok(!view.sources.flatMap((s) => s.servers).some((s) => s.name === "never_read"));
+    const scoped = view.sources.filter((s) => s.path.includes("#projects/"));
+    assert.equal(scoped.length, 2, "the cwd project AND the other project each get a source");
+
+    const mine = scoped.find((s) => s.path.endsWith(`#projects/${fx.cwd}`));
+    assert.ok(mine, "the projects[cwd] entry must be its own source");
+    assert.equal(mine.servers.length, 1);
+    assert.equal(mine.servers[0]?.name, "project_scoped");
+    assert.equal(mine.servers[0]?.origin, mine.path);
+    assert.match(mine.detail ?? "", /install rewrites this entry/i);
+
+    // The other project's server is REPORTED — install never rewrites it from here,
+    // and a gap the operator cannot see is a gap they cannot act on.
+    const theirs = scoped.find((s) => s !== mine)!;
+    assert.deepEqual(theirs.servers.map((s) => s.name), ["other_project_scoped"]);
+    assert.match(theirs.detail ?? "", /does not rewrite/i);
+
+    // Never merged into the top-level count.
+    const top = view.sources.find((s) => s.path === path.join(fx.home, ".claude.json"));
+    assert.deepEqual(top?.servers.map((s) => s.name), ["neon", "playwright"]);
+    assert.ok(
+      view.notes?.some((n) => /2 project-scoped server\(s\) across 2 of 2 `projects` key\(s\)/.test(n)),
+      "the project-scoped surface carries its own named denominator",
+    );
   } finally {
     await rm(fx.root, { recursive: true, force: true });
   }

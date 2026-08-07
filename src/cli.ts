@@ -3453,17 +3453,34 @@ async function cmdInstall(args: ParsedArgs): Promise<number> {
 
   const plans: { target: KnownMcpConfig; plan: InstallPlan }[] = [];
   for (const target of targets) {
-    const plan = await planInstall(target.path);
+    const plan = await planInstall(target.path, cwd);
     plans.push({ target, plan });
     console.log(`${target.label} — ${target.path}`);
     if (plan.entries.length === 0) {
       console.log("  (no mcpServers entries)");
     }
     for (const e of plan.entries) {
-      if (e.action === "wrap") console.log(`  ${e.name}: will wrap`);
-      else if (e.action === "already-wrapped") console.log(`  ${e.name}: already wrapped — left alone`);
-      else console.log(`  ${e.name}: skipped — ${e.reason}`);
+      // Project-scoped entries (~/.claude.json's `projects` map) are named with their project
+      // so "will wrap" and "reported, NOT wrapped" can never be read as being about the same file.
+      const label = e.projectPath ? `${e.name} (projects/${e.projectPath})` : e.name;
+      if (e.action === "wrap") console.log(`  ${label}: will wrap`);
+      else if (e.action === "already-wrapped") console.log(`  ${label}: already wrapped — left alone`);
+      else if (e.action === "skip-other-project") console.log(`  ${label}: reported, NOT wrapped — ${e.reason}`);
+      else console.log(`  ${label}: skipped — ${e.reason}`);
     }
+    console.log("");
+  }
+
+  // Printed before the "nothing to do" early return below, deliberately: the case where every
+  // wrappable server is already wrapped is exactly the case where an operator would otherwise
+  // read "nothing to do" as "fully covered".
+  const otherProject = plans.flatMap((p) => p.plan.entries).filter((e) => e.action === "skip-other-project");
+  if (otherProject.length > 0) {
+    console.log(
+      `${otherProject.length} project-scoped server(s) belong to other projects and were NOT wrapped. ` +
+        `Install wraps only the project entry matching the directory it runs in — re-run 'reelier install' from ` +
+        `that project's directory. To list every one from anywhere: reelier coverage --host claude-code`
+    );
     console.log("");
   }
 
@@ -4512,9 +4529,12 @@ const USAGE =
   "  coverage — reelier coverage --host <codex|claude-code> [--workspace <dir>]: read-only observed inventory of a host's\n" +
   "           MCP servers (config + plugins), wrapped/unwrapped per entry.\n" +
   "           --host claude-code covers the Claude Code CLI only; Claude Desktop / Cowork plugins are a separate host\n" +
-  "           with a separate registry and are not inspected.\n" +
+  "           with a separate registry and are not inspected. It also lists EVERY project-scoped server under\n" +
+  "           ~/.claude.json's `projects` map, with its own denominator — install rewrites only the one matching cwd.\n" +
   "           Observed inventory only; never a completeness claim.\n" +
   "  install / uninstall — wrap, and revert, every known host MCP config: Claude Code, Cursor, Windsurf.\n" +
+  "           In ~/.claude.json install also wraps projects[<cwd>].mcpServers; other projects' entries are reported,\n" +
+  "           never rewritten — re-run install from that directory, or see 'reelier coverage --host claude-code'.\n" +
   "           install backs up each config before rewriting it; uninstall restores the latest backup per config and\n" +
   "           reports every config it could NOT revert rather than skipping it. Both take --config <path> to target\n" +
   "           one file and --dry-run to see the plan; uninstall exits 1 if any config is left unreverted.";

@@ -18,6 +18,7 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { knownMcpConfigPaths } from "./init.js";
+import { sameProjectDirectory } from "./project-scope.js";
 
 export type CoverageLocation = "parsed" | "unreadable" | "absent";
 export type CoverageRouting = "wrapped" | "unwrapped";
@@ -305,9 +306,10 @@ function serversFromMap(map: Record<string, unknown>, origin: string): CoverageS
  * is correct; host configs do not, where it is not.
  *
  * `projectKey` selects `projects[<key>].mcpServers` instead of the top-level
- * map. The host loads both; `install` (planInstall, src/wrap.ts) rewrites only
- * the top-level one, so the two get separate sources with separate denominators
- * rather than one merged total that would hide install's blind spot.
+ * map. The host loads both; `install` (planInstall, src/wrap.ts) rewrites the
+ * top-level one plus the ONE project key matching the directory it runs in, so
+ * every map gets its own source with its own denominator rather than one merged
+ * total that would hide which entries install actually reaches.
  */
 export function analyzeJsonMcpConfig(raw: string | undefined, configPath: string, projectKey?: string): CoverageSource {
   const sourcePath = projectKey === undefined ? configPath : `${configPath}#projects/${projectKey}`;
@@ -324,27 +326,55 @@ export function analyzeJsonMcpConfig(raw: string | undefined, configPath: string
   }
 
   let container: Record<string, unknown> = parsed;
-  let detail: string | undefined;
   if (projectKey !== undefined) {
     const projects = parsed.projects;
     if (!isPlainObject(projects)) return { path: sourcePath, location: "absent", servers: [] };
-    // Only this workspace's entry is read. The siblings are counted rather than
-    // parsed so "inspected" keeps meaning "actually read".
-    const siblings = Object.keys(projects).filter((key) => key !== projectKey).length;
-    detail = `${siblings} sibling project key(s) in ${configPath} were counted, not inspected — only the entry for this workspace was read.`;
     const entry = projects[projectKey];
-    if (!isPlainObject(entry)) return { path: sourcePath, location: "absent", servers: [], detail };
+    if (!isPlainObject(entry)) return { path: sourcePath, location: "absent", servers: [] };
     container = entry;
   }
 
   const mcpServers = container.mcpServers;
   // No mcpServers key is a config that declares no servers — absence, not an
   // error. Reporting it unreadable would invent a problem.
-  if (mcpServers === undefined) return { path: sourcePath, location: "parsed", servers: [], detail };
+  if (mcpServers === undefined) return { path: sourcePath, location: "parsed", servers: [] };
   if (!isPlainObject(mcpServers)) {
     return { path: sourcePath, location: "unreadable", servers: [], detail: "mcpServers is not an object" };
   }
-  return { path: sourcePath, location: "parsed", servers: serversFromMap(mcpServers, sourcePath), detail };
+  return { path: sourcePath, location: "parsed", servers: serversFromMap(mcpServers, sourcePath) };
+}
+
+/**
+ * Every `projects` key in a `~/.claude.json` that carries an `mcpServers` value worth reporting,
+ * plus the count of all keys — the denominator the project-scoped surface is measured against.
+ *
+ * A key whose `mcpServers` is missing or an empty object is counted and not listed: a project
+ * that configures no MCP server is not a coverage gap. A key whose `mcpServers` is present but
+ * not an object IS listed, because `analyzeJsonMcpConfig` will report it `unreadable` — a hole
+ * in the inventory that reports nothing would look clean.
+ *
+ * Enumeration is separate from analysis so `analyzeJsonMcpConfig` stays the single reader for
+ * every JSON host map. The cost is one extra `JSON.parse` of the file per `coverage` run, which
+ * a read-only diagnostic can afford.
+ */
+export function projectKeysWithServers(raw: string | undefined): { keys: string[]; totalKeys: number } {
+  if (raw === undefined) return { keys: [], totalKeys: 0 };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { keys: [], totalKeys: 0 };
+  }
+  if (!isPlainObject(parsed) || !isPlainObject(parsed.projects)) return { keys: [], totalKeys: 0 };
+  const projects = parsed.projects;
+  const keys = Object.keys(projects).filter((key) => {
+    const entry = projects[key];
+    if (!isPlainObject(entry)) return false;
+    const servers = entry.mcpServers;
+    if (servers === undefined) return false;
+    return !isPlainObject(servers) || Object.keys(servers).length > 0;
+  });
+  return { keys, totalKeys: Object.keys(projects).length };
 }
 
 // ---------------------------------------------------------------------------
@@ -839,6 +869,7 @@ export async function collectClaudeCodeCoverage(
 ): Promise<CoverageView> {
   const inspectedLocations: string[] = [];
   const sources: CoverageSource[] = [];
+  const notes: string[] = [];
 
   // Group A — the configs `install` can reach. Derived from the same list that
   // drives the config WRITER, so the probe and `install` cannot drift apart
@@ -848,14 +879,37 @@ export async function collectClaudeCodeCoverage(
     inspectedLocations.push(config.path);
     const raw = await readFileOrUndefined(config.path);
     sources.push(analyzeJsonMcpConfig(raw, config.path));
-    // D-6: the host also loads projects[<cwd>].mcpServers from ~/.claude.json,
-    // which planInstall (src/wrap.ts) never rewrites. Reporting only what
-    // install touches would match install's blind spot and turn the closing
-    // disclaimer into a fig leaf, so it gets its own source and its own
-    // denominator. Only emitted when the file itself was readable — a second
-    // "absent" line for a file already reported absent is noise, not honesty.
+    // The host also loads projects["<abs path>"].mcpServers from ~/.claude.json.
+    // `install` rewrites exactly ONE of those maps — the key matching the
+    // directory it runs in (planInstall, src/wrap.ts) — so reporting only that
+    // one would reproduce install's own scope and turn the closing disclaimer
+    // into a fig leaf. EVERY project key that carries servers gets its own
+    // source, its own origin and its own denominator, cwd or not; reporting is
+    // correct under any scoping choice, and an operator cannot act on a gap
+    // they cannot see from where they happen to be standing.
+    //
+    // Only emitted when the file itself was readable — a second "absent" line
+    // for a file already reported absent is noise, not honesty.
     if (config.label === "Claude Code (user)" && raw !== undefined) {
-      sources.push(analyzeJsonMcpConfig(raw, config.path, cwd));
+      const { keys, totalKeys } = projectKeysWithServers(raw);
+      let scopedServerCount = 0;
+      for (const key of keys) {
+        const source = analyzeJsonMcpConfig(raw, config.path, key);
+        scopedServerCount += source.servers.length;
+        source.detail = sameProjectDirectory(key, cwd)
+          ? "reelier install rewrites this entry — it is the project key matching the directory install runs in."
+          : "reelier install does not rewrite this entry — it belongs to another project. Re-run 'reelier install' from that directory to wrap it.";
+        sources.push(source);
+      }
+      // The project-scoped surface gets its own named denominator. It is never
+      // added to a top-level total and never divided into one: a merged number
+      // would let entries install does not reach hide inside a count that looks
+      // covered, and a ratio of the two would read as a coverage score.
+      notes.push(
+        `${scopedServerCount} project-scoped server(s) across ${keys.length} of ${totalKeys} \`projects\` key(s) in ` +
+          `${config.path} are listed above under their own \`#projects/<path>\` source, and are never counted in the ` +
+          `top-level total.`,
+      );
     }
   }
 
@@ -1010,6 +1064,7 @@ export async function collectClaudeCodeCoverage(
     pluginRegistry,
     inspectedLocations,
     notes: [
+      ...notes,
       "Plugin-delivered servers load from the plugin's own manifest, not from a config `reelier install` rewrites; listing one here is not a claim that it is covered.",
       "Session plugins loaded with --plugin-dir or --plugin-url are recorded in no file and cannot be inventoried from disk.",
       "Claude Code CLI only. Claude Desktop / Cowork plugins are a separate host with a separate registry and were not inspected.",
@@ -1068,8 +1123,8 @@ function formatPluginLines(plugin: PluginCoverage): string[] {
 
 function formatSourceLines(source: CoverageSource): string[] {
   if (source.location === "absent") {
-    // The detail suffix carries facts an absent section still knows — e.g. how
-    // many sibling project keys existed but were not read.
+    // The detail suffix carries facts an absent section still knows — a caller
+    // sets it on a source it enumerated but could not read through.
     return [`MCP servers: ${source.path} — absent (no configuration found).${source.detail ? ` ${source.detail}` : ""}`];
   }
   if (source.location === "unreadable") {
