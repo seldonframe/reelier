@@ -116,6 +116,7 @@ Once connected, the agent can call:
 | `reelier_from_session` | "Freeze this session's tool calls into a SKILL.md." |
 | `reelier_replay` | "Run this skill and tell me if it still passes." |
 | `reelier_push` | "Sync this skill's run records to your receipt ledger." |
+| `reelier_diff` | "Compare the last two runs of a skill and report drift." |
 
 See the main `README.md`'s "Use Reelier inside your coding agent" section
 and `SPEC.md` §10 for the full tool contract (input schemas, honesty
