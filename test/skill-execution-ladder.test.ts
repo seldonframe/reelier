@@ -31,7 +31,11 @@ test("no shipped skill forbids the CLI fallback", () => {
   for (const { id, body } of shippedSkills()) {
     assert.doesNotMatch(
       body,
-      /don't try to shell out|do not shell out/i,
+      // \s+ rather than literal spaces: the phrasing this guards against was
+      // hard-wrapped in the source as "don't try\nto shell out", so a regex
+      // assuming single spaces did not match the real historical defect at
+      // all. Verified by running this pattern against the pre-fix file.
+      /(?:don't|do\s+not)\s+try\s+to\s+shell\s+out|do\s+not\s+shell\s+out/i,
       `${id} forbids the CLI fallback, which strands a bare plugin install`,
     );
   }
