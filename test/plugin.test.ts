@@ -18,6 +18,6 @@ test("validateReelierPluginV1 accepts the declarative v1 manifest", () => {
 test("validateReelierPluginV1 rejects unknown fields and invalid versions", () => {
   const result = validateReelierPluginV1({ ...manifest, version: "latest", unexpected: true });
   assert.equal(result.ok, false);
-  if (!result.ok) assert.deepEqual(result.errors, ["version must be a valid semver", "unexpected is not allowed"]);
+  if (!result.ok) assert.deepEqual(result.errors, ["unexpected is not allowed", "version must be a valid semver"]);
   assert.throws(() => parseReelierPluginV1("not json"), /invalid JSON/);
 });
