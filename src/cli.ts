@@ -117,7 +117,7 @@ import { generateSigningKeypair, loadSigningKey, signRecordDigest, verifyRecordS
 import { resolveVerifyPayload, evaluateVerifyClaims } from "./verify.js";
 import { writeCiWorkflow, PLACEHOLDER_SKILL_PATH } from "./ci-scaffold.js";
 import { buildDiscoveryBundle, discoverOpportunities, formatDiscoveryPreview, signDiscoveryBundle, type AgentOpportunity, type DiscoverySessionInput } from "./discovery.js";
-import { collectCodexCoverage, renderCoverageReport } from "./coverage.js";
+import { collectClaudeCodeCoverage, collectCodexCoverage, renderCoverageReport, renderCoverageView } from "./coverage.js";
 import { uploadDiscoveryBundle } from "./discovery-client.js";
 
 // Exported (alongside cmdPush below) so test/push-cli.test.ts can drive
@@ -3181,17 +3181,26 @@ async function readDiscoverySigningMaterial(homedir: string): Promise<{ privateK
   return { privateKey: loaded.privateKey, keyId: loaded.keyId, publicKeyPem: publicPem };
 }
 
-export async function cmdCoverage(args: ParsedArgs, homedirOverride?: string): Promise<number> {
+const SUPPORTED_COVERAGE_HOSTS = ["codex", "claude-code"] as const;
+const SUPPORTED_COVERAGE_HOSTS_LINE = `Supported hosts: ${SUPPORTED_COVERAGE_HOSTS.join(", ")}.`;
+
+export async function cmdCoverage(args: ParsedArgs, homedirOverride?: string, cwdOverride?: string): Promise<number> {
   const host = args.opts.host;
   if (!host) {
-    console.error("Usage: reelier coverage --host <host>. Supported hosts: codex.");
+    console.error(`Usage: reelier coverage --host <host>. ${SUPPORTED_COVERAGE_HOSTS_LINE}`);
     return 1;
   }
-  if (host !== "codex") {
-    console.error(`Unsupported --host '${host}'. Supported hosts: codex.`);
+  if (!(SUPPORTED_COVERAGE_HOSTS as readonly string[]).includes(host)) {
+    console.error(`Unsupported --host '${host}'. ${SUPPORTED_COVERAGE_HOSTS_LINE}`);
     return 1;
   }
-  const report = await collectCodexCoverage(homedirOverride ?? os.homedir());
+  const homedir = homedirOverride ?? os.homedir();
+  if (host === "claude-code") {
+    const view = await collectClaudeCodeCoverage(cwdOverride ?? args.opts.workspace ?? process.cwd(), homedir, process.env);
+    for (const line of renderCoverageView(view)) console.log(line);
+    return 0;
+  }
+  const report = await collectCodexCoverage(homedir);
   for (const line of renderCoverageReport(report)) console.log(line);
   return 0;
 }
@@ -4500,8 +4509,11 @@ const USAGE =
   "           Format is sniffed from content; override with --agent <claude-code|codex|openclaw|cursor|windsurf>.\n" +
   "           --agent cursor / --agent windsurf report why those aren't supported yet instead of guessing.\n" +
   "  scan   — discover session transcripts from every known agent (also reports Cursor/Windsurf DB findings).\n" +
-  "  coverage — reelier coverage --host codex: read-only observed inventory of a host's MCP servers (config + plugins),\n" +
-  "           wrapped/unwrapped per entry. Observed inventory only; never a completeness claim.\n" +
+  "  coverage — reelier coverage --host <codex|claude-code> [--workspace <dir>]: read-only observed inventory of a host's\n" +
+  "           MCP servers (config + plugins), wrapped/unwrapped per entry.\n" +
+  "           --host claude-code covers the Claude Code CLI only; Claude Desktop / Cowork plugins are a separate host\n" +
+  "           with a separate registry and are not inspected.\n" +
+  "           Observed inventory only; never a completeness claim.\n" +
   "  install / uninstall — wrap, and revert, every known host MCP config: Claude Code, Cursor, Windsurf.\n" +
   "           install backs up each config before rewriting it; uninstall restores the latest backup per config and\n" +
   "           reports every config it could NOT revert rather than skipping it. Both take --config <path> to target\n" +
