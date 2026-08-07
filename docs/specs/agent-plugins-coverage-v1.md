@@ -131,7 +131,7 @@ tools and guidance; it does not put the Path A seatbelt around any other server'
 
 | Host | plugin loads | `mcp.json` honored | skills visible | tool naming observed |
 |---|---|---|---|---|
-| Codex | observed 2026-08-06 ¹ | unchecked ² | unchecked ³ | unchecked ⁴ |
+| Codex | observed 2026-08-06 ¹ | unchecked ² | **observed 2026-08-06** ³ | unchecked ⁴ |
 | ChatGPT | unchecked | unchecked | unchecked | unchecked |
 | Cursor | unchecked | unchecked | unchecked | unchecked |
 | GitHub Copilot | unchecked | unchecked | unchecked | unchecked |
@@ -151,9 +151,16 @@ marketplace fixtures built from the committed `plugin/` packages:
 2. Our package ships no `mcp.json` by design (§3), so this cell cannot flip from our own install.
    Codex caches other plugins' `.mcp.json` (observed via `reelier coverage --host codex`), but a
    plugin-delivered server being *launched* was not observed either.
-3. Requires an authenticated interactive session — `codex skills` refuses without a TTY. Operator
-   check that would flip it: add the marketplace to a real profile, then run `codex skills` in a
-   terminal and look for `reelier`.
+3. **Both packages' skills reach the model.** `codex debug prompt-input` renders the model-visible
+   prompt as JSON — no TTY, no model call, no tokens spent — and the `### Available skills` block
+   lists the skill from **both** installed packages by its `SKILL.md` path:
+   `…/plugins/cache/reelier-test-ap/reelier/local/skills/reelier/SKILL.md` (Agent Plugins format)
+   and `…/plugins/cache/reelier-test-claude/reelier/0.30.0/skills/reelier/SKILL.md` (Claude
+   format). So the skill-only package does the one thing it exists to do, on this host, in both
+   formats. Scope: the skill is *offered* to the model; whether a model invokes it is a different
+   question this does not answer. (Corrects an earlier note in this file claiming `codex skills`
+   is the check — there is no such subcommand in `codex-cli 0.147.0-alpha.1.2`; the word is taken
+   as a prompt. `codex debug prompt-input` is the real introspection path.)
 4. Not applicable to the skill-only package (no MCP tools to be named); flips only after §3's
    MCP component exists and 2 is observed.
 
