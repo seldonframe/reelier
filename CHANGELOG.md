@@ -30,8 +30,9 @@ not an own record version, and a valid-looking signature or timestamp sibling
 cannot pull a versioned record back into legacy crypto.
 
 Nothing else changed. If you never hand `verify` an authority record, this
-release behaves identically to 0.31.0.
-
+release behaves identically to 0.31.0.
+
+
 One user-visible detail, because it will look odd the first time you see it:
 the declared version is echoed back **quoted, hex-escaped and capped at 120
 characters**, not verbatim. `reelier.authority-receipt/v1` prints as-is, but a
