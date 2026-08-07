@@ -105,10 +105,35 @@ port stays excluded); zero FS errors (`EACCES` on `listen`, not on a file); zero
 isolation (a fresh root redraws the port); the platform split (Windows reserves these ranges, Linux
 does not); and the `Server` handle the earlier probe saw.
 
-`ledger.test.ts` builds roots the same way (`tempRoot` → `mkdtemp(tmpdir(), …)`, `:142`), and its
-rotators pass `lockTimeoutMs` of 20/100/2000 ms, where a *single* retry exhausts the budget. Same
+`ledger.test.ts` builds roots the same way (`tempRoot` → `mkdtemp(tmpdir(), …)`, `:142`), and some of
+its rotators pass `lockTimeoutMs` of 20/100/2000 ms, where a *single* retry exhausts the budget. Same
 mechanism, consistent with the evidence — **but not separately confirmed**, and it should not be
 described as confirmed.
+
+> **CORRECTION (2026-08-07, same day).** That caveat earned its keep: for **two** of the five
+> ubuntu-only names it is now refuted. The independent 3B2 review (F1,
+> `.superpowers/sdd/universal-compiled-authority/task-3b2-fairness-review-1.md`) found, and I
+> reproduced independently, that `ledger.test.ts:1614` "the collision branch emits before…" and its
+> parent `:1602` are **not** this port defect. They fail **in 34 ms**, not by burning a budget —
+> the opposite of this defect's signature.
+>
+> They are a real test/behaviour mismatch: the settled verdict for the planted-`lock` rename
+> collision is `corruption`, and the test asserts `busy`. It passes only when the committed
+> `lockTimeoutMs:20` truncates classification before it reaches that verdict. Measured both ways:
+>
+> | budget | result |
+> |---|---|
+> | 20 ms (committed) | coin flip — my own suite runs gave 686/**18** twice and 688/**16** once |
+> | 2000 ms | `corruption` **3/3**, deterministic |
+>
+> So **HEAD carries 18 ledger failures, not 16**, and the two extras are neither the D2 family nor
+> this port defect but a third, separate item: a test asserting a truncation artifact. It was added
+> by `ee94f31`, after the 3B2 slice. Deciding it needs a spec reading — whether `corruption` is the
+> correct classification for a live foreign squatter at the published name — and it is **not** mine
+> to settle silently.
+>
+> The gate.test.ts rotators are unaffected by this correction: those were confirmed directly by the
+> `[PORT]` EACCES tally, not by inference.
 
 ## Why this stops here
 
