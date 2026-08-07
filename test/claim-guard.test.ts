@@ -6,11 +6,14 @@
 // over". So any copy promising an assertion on EVERY step describes a
 // guarantee the tool was deliberately built not to make.
 //
-// That rule was written down in reelier's docs/strategy/submissions.md on
-// 2026-07-22. Two days later the claim was live on ~40 surfaces across both
-// repos, including every public receipt permalink, llms.txt, the OG/Twitter
-// descriptions and the homepage SVG. A written rule with nothing enforcing
-// it did not hold, which is why this file exists.
+// That rule was written down on 2026-07-22, in a submissions doc that then
+// lived in this repo and has since moved to the private reelier-cloud repo
+// (docs/strategy/from-oss-repo/). Two days after it was written the claim was
+// live on ~40 surfaces across both repos, including every public receipt
+// permalink, llms.txt, the OG/Twitter descriptions and the homepage SVG. A
+// written rule with nothing enforcing it did not hold, which is why this file
+// exists — and why the rule's enforcement lives here rather than in the doc
+// that stated it.
 //
 // The QUALIFIED forms are fine and are deliberately allowed: "an assertion
 // on every step IT CAN CHECK", "...THAT RECORDED A CLEAN RESULT". Those
@@ -76,7 +79,6 @@ const SCAN_EXT = [".ts", ".tsx", ".js", ".mjs", ".md", ".mdx", ".json", ".svg", 
 const ALLOWLIST = new Set(
   [
     "test/claim-guard.test.ts",
-    "docs/strategy/submissions.md",
     "CONTRIBUTING.md",
   ].map((p) => p.split("/").join(sep)),
 );
