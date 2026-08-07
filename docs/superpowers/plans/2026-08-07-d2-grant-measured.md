@@ -89,8 +89,41 @@ The honest options, none of which should be taken silently:
    without disturbing what the seven observe. Nobody has proposed one, and it should not be assumed
    to exist.
 
+## The other 15, diagnosed (owner asked for this before deciding)
+
+Upper bound first. Opening the permission gate **completely** (`if (false && !permitWrite …)`, the
+wide reading) fixes **8 of 18** and takes the suite to **70** failing names. So no permission
+policy — none, at any width — reaches the other 10. That is the whole question settled by one run:
+
+| grant | fixes | total failing |
+|---|---|---|
+| none (control) | — | **18** |
+| narrow (`dead-slot` + `abandoned`) | 1 | 24 |
+| **wide (gate fully open)** | **8** | **70** |
+
+The 18 are **four unrelated groups**, not one family:
+
+| group | n | names | actual cause | reachable by permission? |
+|---|---|---|---|---|
+| **A. dead-owner residue healing** | 8 | `dead-empty`, `dead-zero`, `dead-partial`, `dead-complete`, `dead exact slot`, `pre-admission housekeeper retires one dead slot…`, + parents *"…preparation states are non-authorizing…"* and *"…slot classification gives corruption precedence…"* | `observeClock` meets dead residue it may not clean, so refuses `busy` instead of healing and advancing | **yes** — the only group that is |
+| **B. live-owner residue** | 5 | `marker-only`, `marker-plus-stage`, `marker-plus-ack`, `orphan-ack`, + parent *"…slot retirement and purpose-bound ack crash windows converge"* | `ledger.test.ts:1713` builds residue with `pid: process.pid` — **the owner is this live process**. `:1518` refuses any `dead-slot` transition whose owner is not dead, before permission is consulted | **no** |
+| **C. preservation** | 3 | `before-admission-slot-rename`, `before-lock-publication-rename`, + parent *"…revalidates owner bytes at every publication boundary"* | `"replacement remains at the selected owner path"` — `actual: false`. The injected replacement does not survive. Nothing to do with housekeeping | **no** |
+| **D. truncation artifact** | 2 | `the collision branch emits before…` + parent | asserts `busy`; settled verdict is `corruption` (F1) | **no** |
+
+Group B is the sharp one, and it is decisive against the inherited framing. The sibling test at
+`:1737` — *"atomic admission prep-retired ack windows converge only with creator or dead-owner
+authority"* — sets up the **same** crash windows but mocks the owner **dead**, and it **passes**.
+Same shapes, same code path, opposite liveness, opposite result. Group B is therefore asking whether
+a contender may retire residue owned by a **live** process — itself — which `pid` alone cannot
+distinguish from residue that process is still using. That is a generation/nonce question, not a
+permission question, and no grant will answer it.
+
+**So "the 16 ungranted-housekeeping reds" was wrong in three ways at once:** the count is 18, only 8
+of them are about housekeeping permission at all, and reaching those 8 costs 52 new failures.
+
 ## Not claimed
 
-- That the remaining 15 are unreachable by any grant. They were not diagnosed here; only that
-  **this** grant does not reach them.
 - Any verdict on which pin is correct. That is the escalation, not the finding.
+- That group A's 8 are unreachable by some *narrower* grant than the wide one. Two widths were
+  measured (1 fixed, 8 fixed); the space between them was not searched.
+- Any diagnosis of groups C or D beyond the failing assertion. Their causes are named, not explained.
