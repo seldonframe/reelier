@@ -6,6 +6,34 @@ on:
   pull_request:
     branches: [main]
   merge_group:
+  # Manual trigger, kept for one reason: `test (ubuntu-latest)` and
+  # `test (windows-latest)` are REQUIRED status checks on main, so when no run
+  # is created there is no way to merge and no way to ask for one.
+  #
+  # That is not hypothetical. During the GitHub Actions incident of 2026-08-06
+  # (critical, ~15:22Z onward) webhook triggers were throttled and "many push
+  # and pull request events" created no workflow runs at all. Seven PRs merged
+  # with zero checks reported, and open PRs were stuck BLOCKED on contexts that
+  # could never arrive — with no recourse, because every trigger above is
+  # event-driven.
+  #
+  # `gh workflow run ci.yml --ref <branch>` gives a real pass/fail signal.
+  #
+  # MEASURED 2026-08-06, and the answer is the limiting one: a dispatched run
+  # does NOT satisfy branch protection. Its check-runs DO attach to the head
+  # SHA (both legs green on `fix/badge-linux-count`), but the PR's
+  # statusCheckRollup stayed 0 and mergeable_state stayed `blocked` with the
+  # branch up to date — GitHub does not associate a workflow_dispatch check
+  # suite with the pull request. So this trigger is a DIAGNOSTIC tool, not a
+  # merge escape hatch. During an outage the only way to land a PR is still an
+  # admin override.
+  #
+  # It earned its place anyway: the first dispatched run after this was added
+  # caught main sitting red on a badge mismatch that the incident had hidden.
+  #
+  # Note: the dispatch reads the workflow file from the TARGET ref, so a branch
+  # cut before this trigger existed returns HTTP 422 and must be rebased first.
+  workflow_dispatch:
 
 jobs:
   test:

@@ -1,0 +1,221 @@
+# Agent Plugins coverage v1 — Spec
+
+_Drafted 2026-08-06, against `origin/main` @ `4ee9ba0` (0.30.0, published) and Agent Plugins
+v1.0.0 (agent-plugins.org, read 2026-08-06). **Everything in §2–§5 is proposed, not built** —
+CLAUDE.md §8 discipline applies until a CHANGELOG entry says otherwise. §1's documentation lands
+with the PR that carries this file; nothing else in this spec exists in code._
+
+_research: ~/CascadeProjects/research/2026-08-06-agent-plugins-wrap-coverage/_
+
+**One sentence:** Agent Plugins creates a portable distribution channel for MCP servers and Agent
+Skills; servers delivered through it sit outside Reelier's observed boundary, and the honest
+response is to document that boundary now, observe it per host as inventory (never completeness),
+distribute a skill-only plugin first, and never mutate a vendor-owned plugin directory to chase
+coverage.
+
+---
+
+## 0. The facts this spec stands on
+
+1. **Agent Plugins v1.0.0** (announced 2026-08-06; developed by Amazon/AWS, Cursor, Microsoft,
+   OpenAI, Vercel; launch clients: ChatGPT & Codex, Cursor, GitHub Copilot, Kiro, VS Code —
+   Anthropic absent) defines a plugin as a directory: `plugin.json` + `skills/` + `mcp.json` +
+   namespaced client-extension dirs. Normative, from `spec/1.0.0.md`: *"Clients that support MCP
+   servers MUST load configuration only from `mcp.json` at the plugin root"*; clients *"map this
+   portable format to their native configuration."* How any individual host routes those servers
+   internally is that host's business and is **unobserved** until §4 says otherwise. Hooks,
+   commands, and agents are excluded from v1 — no portable interception point exists.
+2. **Claude Code plugins already use a plugin-owned load path**
+   (code.claude.com/docs/en/plugins-reference, read 2026-08-06): plugin MCP servers live in
+   "`.mcp.json` in plugin root, or inline in plugin.json," "configured independently of user MCP
+   servers."
+3. **What `install` inspects on `4ee9ba0`:** the configs in `knownMcpConfigPaths`
+   (`src/init.ts`) — Claude Code project/user, Cursor project/user, Windsurf user. Deliberately
+   excluded, with reasons in the same comment block: Codex's `~/.codex/config.toml` (TOML;
+   `planInstall` writes JSON) and VS Code's `.vscode/mcp.json` (nests under `servers`). The wrap's
+   only client transport is stdio (`src/mcp-client.ts`); `install` skips `url` entries
+   (`src/wrap.ts:119`).
+4. **Codex observed on one Windows machine, 2026-08-06** (treat as hypothesis until reproduced
+   elsewhere): `[mcp_servers.*]` tables in `config.toml`, plus a live plugin system —
+   `[marketplaces.*]`, `[plugins."<name>@<marketplace>"]` enable flags, payloads under
+   `~/.codex/plugins/` and marketplace cache dirs.
+
+## 1. The boundary, stated — lands with this PR
+
+> Reelier `install` wraps MCP entries it finds in supported host configuration files. It does not
+> inspect plugin-owned MCP manifests. Plugin-delivered calls are therefore outside Reelier's
+> observed boundary unless the plugin itself invokes `reelier mcp --wrap`, or the host exposes the
+> entry through a supported configuration and Reelier subsequently rewrites it. Reelier currently
+> has no native wrapping path for URL-based MCP servers. Receipts attest only calls that traversed
+> Reelier; they do not prove that every host or plugin write was observed.
+
+This wording is the canonical statement. It appears, matching, in: CLAUDE.md §7.6,
+`docs/REFERENCE.md`, `docs/integration-tiers.md` ("What no tier does"), and
+`docs/security/threat-model.md` §3.7 — all in this PR. (`AGENTS.md` is not tracked on `main`; the
+on-disk copy is kept in sync with CLAUDE.md by hand.)
+
+## 2. Observed-coverage probe — `reelier coverage --host codex` (proposed)
+
+Read-only. Writes nothing, edits no configuration, vendor-owned or otherwise. Codex first: it is
+outside `install` entirely (§0.3), so it is the clearest test of whether Reelier can report
+coverage honestly without pretending to enforce it.
+
+**Inspects:** Codex `config.toml` MCP entries; enabled-plugin registrations; discovered plugin
+`mcp.json` / `.mcp.json` files; whether each stdio command demonstrably invokes
+`reelier mcp --wrap`; URL-based servers, reported as **"no native Reelier wrap path."**
+
+**Vocabulary — two independent fields per finding:**
+
+- **Location:** `parsed` | `unreadable` | `absent`
+- **Server routing:** `wrapped` | `unwrapped` (a routing claim only — never enforcement, never
+  "safe"; the seatbelt behind a wrapped entry can still be fail-open, CLAUDE.md §7.4)
+
+Routing is judged by reading the entry, never by assumption: a hand-written Codex entry fronting
+`reelier mcp --wrap` — the printed line `src/init.ts`'s own comment points Codex users at — must
+report `wrapped`.
+
+**Output rules:** every run names the locations actually inspected. Observed totals are permitted
+when the denominator is named ("4 of 5 entries in `~/.codex/config.toml` parsed"); an overall
+coverage percentage is not calculated. Every output ends with:
+
+> Observed inventory only; this is not proof of completeness.
+
+**Required cases:** missing configuration; malformed/unreadable TOML; hand-wrapped stdio entry;
+unwrapped stdio entry; URL-based entry; enabled plugin with MCP servers; disabled plugin; plugin
+registration whose payload cannot be located.
+
+Prior Codex-shaped code: `src/scan.ts:82-83` (sessions dir), `src/session-formats.ts:106+`
+(rollout format), `src/discovery.ts`. Other hosts follow the same shape later; each host's plugin
+topology is empirical (§4).
+
+## 3. Distribution: Reelier as an Agent Plugin — skill-only first (proposed)
+
+**Phase one is a skill-only plugin: `plugin.json` + `skills/` carrying the existing Reelier
+skill. No `mcp.json`, no `reelier serve` — yet.**
+
+The reason is workspace semantics, not caution for its own sake. Agent Plugins clients use the
+plugin root as the default subprocess working directory (client-implementers conformance,
+agent-plugins.org, read 2026-08-06), while several `serve` operations resolve workspace-sensitive
+paths from `process.cwd()`: compiled-skill output (`src/serve.ts:158`), run records
+(`src/serve.ts:232`), `.reelier/` state (`src/serve.ts:393`). Launched from a plugin root, `serve`
+would place compiled skills and `.reelier` records inside the plugin directory instead of the
+user's project — evidence written to the wrong place, the opposite of the product's promise.
+
+**Decision (2026-08-06): option 3, with option 1's explicit arguments as the always-available
+override.** `reelier serve --workspace <path>` is implemented: the path must be absolute and an
+existing directory (fail-fast at startup — a relative workspace re-introduces the exact cwd
+ambiguity the flag removes), every workspace-sensitive default (compiled-skill output, run
+records, `.reelier/` state, the state-gate resolution that must stay coupled to the record
+directory) resolves under it, and an explicit per-call `cwd`/`out` argument still wins.
+
+The remaining blocker for the *portable* package is now the standard's, not ours: Agent Plugins
+v1 defines only `${PLUGIN_ROOT}` and `${PLUGIN_DATA}` — no portable variable names the user's
+workspace, so a portable `mcp.json` cannot express `--workspace <the project>`. Raising that gap
+with the open project is the concrete §5 participation move. A host-specific package may add
+`mcp.json` only where a §4 observation shows that host supplying a workspace path.
+
+The three candidates considered, kept for the record:
+
+1. Require explicit absolute `cwd`/`out` arguments for every workspace-sensitive tool in plugin
+   mode. (Retained as the per-call override — it always wins.)
+2. Add a reliable client-provided workspace-root mechanism. (Does not exist portably in v1.)
+3. Introduce `reelier serve --workspace <path>`, with the host supplying the path at launch.
+   (**Picked.**)
+
+The standard-format and Claude-format packages are generated from shared source — never two
+handwritten copies. Claims discipline regardless of phase: the plugin distributes Reelier's own
+tools and guidance; it does not put the Path A seatbelt around any other server's writes.
+"Install the plugin and your writes are covered" is a forbidden sentence.
+
+## 4. The verification gate — no universal claims
+
+| Host | plugin loads | `mcp.json` honored | skills visible | tool naming observed |
+|---|---|---|---|---|
+| Codex | observed 2026-08-06 ¹ | unchecked ² | **observed 2026-08-06** ³ | unchecked ⁴ |
+| ChatGPT | unchecked | unchecked | unchecked | unchecked |
+| Cursor | unchecked | unchecked | unchecked | unchecked |
+| GitHub Copilot | unchecked | unchecked | unchecked | unchecked |
+| Kiro | unchecked | unchecked | unchecked | unchecked |
+| VS Code | unchecked | unchecked | unchecked | unchecked |
+
+Codex observations — 2026-08-06, `codex-cli 0.147.0-alpha.1.2`, isolated `CODEX_HOME`, local
+marketplace fixtures built from the committed `plugin/` packages:
+
+1. **Both package formats install and enable** (`codex plugin add` → `installed, enabled`; payload
+   cached with `skills/` intact; `[plugins."reelier@…"]` registration written). But "loads" here
+   means *install + enable only*: the Agent Plugins root `plugin.json` was **not parsed** — its
+   `version` was ignored (Codex reported `local` where it read `0.30.0` out of the Claude-format
+   package's `.claude-plugin/plugin.json`) and Codex synthesized its own
+   `.codex-plugin/plugin.json` from *marketplace* metadata, not from the manifest.
+   Manifest-aware loading of the v1.0.0 format: not observed.
+2. Our package ships no `mcp.json` by design (§3), so this cell cannot flip from our own install.
+   Codex caches other plugins' `.mcp.json` (observed via `reelier coverage --host codex`), but a
+   plugin-delivered server being *launched* was not observed either.
+3. **Both packages' skills reach the model.** `codex debug prompt-input` renders the model-visible
+   prompt as JSON — no TTY, no model call, no tokens spent — and the `### Available skills` block
+   lists the skill from **both** installed packages by its `SKILL.md` path:
+   `…/plugins/cache/reelier-test-ap/reelier/local/skills/reelier/SKILL.md` (Agent Plugins format)
+   and `…/plugins/cache/reelier-test-claude/reelier/0.30.0/skills/reelier/SKILL.md` (Claude
+   format). So the skill-only package does the one thing it exists to do, on this host, in both
+   formats. Scope: the skill is *offered* to the model; whether a model invokes it is a different
+   question this does not answer. (Corrects an earlier note in this file claiming `codex skills`
+   is the check — there is no such subcommand in `codex-cli 0.147.0-alpha.1.2`; the word is taken
+   as a prompt. `codex debug prompt-input` is the real introspection path.)
+4. Not applicable to the skill-only package (no MCP tools to be named); flips only after §3's
+   MCP component exists and 2 is observed.
+
+A cell flips only on an observed run, recorded with date and host version. Public claims quote
+observed cells and name the host; "works with Agent Plugins hosts" as a universal is banned until
+observed per host. Local reality at spec time: Codex installed (§0.4), Cursor absent, others
+untested.
+
+## 5. Non-mutating interception (proposed sketch)
+
+Hard rule: **never edit a vendor-owned plugin directory.** Updates clobber silently, and a trust
+product does not tamper with third-party artifacts. Candidates, every one unchecked:
+
+- **Claude Code:** plugin-shipped hooks (client-specific) as observation, not enforcement; or
+  operator-side duplication — a wrapped copy of a plugin's stdio server in operator-owned config
+  with the plugin's copy disabled — always the operator's explicit choice, never applied silently.
+- **Codex:** `~/.codex/config.toml` is operator-owned, not vendor-owned — a comment-round-tripping
+  TOML writer (the missing piece `src/init.ts:63` names) would make `[mcp_servers.*]` wrappable.
+  Plugin payload dirs stay untouchable regardless.
+- **Portable:** does not exist in v1, and the reason is now specific rather than general.
+  **Upstream state, 2026-08-06/07:** `agentplugins/agent-plugins-spec#40` asks for a client-supplied
+  `${WORKSPACE_ROOT}` expansion variable, because v1 expands only `${PLUGIN_ROOT}`/`${PLUGIN_DATA}`,
+  so no conformant manifest can populate `reelier serve --workspace`. Two implementers replied and
+  reframed it better than we opened: v1 never says *whose filesystem* it means, since §3 defines a
+  Client as one actor that "discovers, installs, loads, and executes plugin components" while remote
+  workspaces, split control-plane/runner architectures, and multi-root sessions all break that
+  assumption. The proposal on the table is a `plugin host` term plus one predicate: **expand only
+  when the client has exactly one workspace root on the plugin host's filesystem, otherwise absent.**
+  Two carve-outs turn out to be unnecessary under it — remote transports have no expandable field at
+  all (v1: clients "MUST NOT perform placeholder or environment-variable expansion in `url`, header
+  names, or header values"), and separator convention resolves to the plugin host's native form
+  because that is the only filesystem the value is ever used against.
+  **What each outcome means here.** If the predicate lands, the portable package can carry an
+  `mcp.json` guarded by it. If it is absent or the issue stalls, nothing changes: §3's skill-only
+  package is already the behaviour under absence, and host-specific packaging stays available where
+  a host supplies a path. **Reelier is not blocked either way**, which is worth stating so the
+  argument upstream is not read as lobbying for our own unblocking.
+  Claim nothing about this participation beyond what is observable in the thread.
+- **Author-side:** the §1 escape hatch — a plugin author declaring a stdio entry in their own
+  `mcp.json` that fronts their server with `reelier mcp --wrap`. Stdio-only (`url` entries cannot
+  be fronted, `src/wrap.ts:119`); expressible now, observed on no host yet — a §4 cell.
+
+## 6. Positioning — publish after §4 runs
+
+> **Agent Plugins standardizes distribution; runtime proof of writes remains unsolved.**
+
+Guardrails: never imply plugins are unsafe — the plan is to distribute through them (§3,
+proposed). Never render Reelier's absence on a host as coverage. Calibrate per population as
+always (CLAUDE.md §6).
+
+## 7. Order of work
+
+1. §1 boundary documentation — this PR.
+2. §2 Codex probe — separate branch and PR.
+3. §3 skill-only plugin; `mcp.json` only after the workspace-semantics decision.
+4. §4 matrix runs.
+5. §5 refinement per host.
+6. §6 positioning — after §4, not before.

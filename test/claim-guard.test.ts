@@ -6,11 +6,14 @@
 // over". So any copy promising an assertion on EVERY step describes a
 // guarantee the tool was deliberately built not to make.
 //
-// That rule was written down in reelier's docs/strategy/submissions.md on
-// 2026-07-22. Two days later the claim was live on ~40 surfaces across both
-// repos, including every public receipt permalink, llms.txt, the OG/Twitter
-// descriptions and the homepage SVG. A written rule with nothing enforcing
-// it did not hold, which is why this file exists.
+// That rule was written down on 2026-07-22, in a submissions doc that then
+// lived in this repo and has since moved to the private reelier-cloud repo
+// (docs/strategy/from-oss-repo/). Two days after it was written the claim was
+// live on ~40 surfaces across both repos, including every public receipt
+// permalink, llms.txt, the OG/Twitter descriptions and the homepage SVG. A
+// written rule with nothing enforcing it did not hold, which is why this file
+// exists — and why the rule's enforcement lives here rather than in the doc
+// that stated it.
 //
 // The QUALIFIED forms are fine and are deliberately allowed: "an assertion
 // on every step IT CAN CHECK", "...THAT RECORDED A CLEAN RESULT". Those
@@ -51,7 +54,23 @@ const SKIP_DIRS = new Set([
   // positive), and the generated HTML report embeds mutated source verbatim.
   ".stryker-tmp",
   "reports",
+  // Same case as .stryker-tmp under yet another tool: each entry under the
+  // top-level .worktrees/ is a full checkout of this repo. Git-excluded
+  // (`.git/info/exclude`), so CI never sees them.
+  ".worktrees",
 ]);
+
+/**
+ * Skips matched on the directory's PATH rather than its bare name, so a
+ * same-named directory elsewhere in the tree is still scanned.
+ *
+ * `.claude/worktrees/<name>/` is the `.stryker-tmp` case under a different tool:
+ * each entry is a full checkout of this repo, so every ALLOWLIST file reappears
+ * under a worktree-relative path, misses the allowlist, and false-positives.
+ * They are git-excluded (`.git/info/exclude`), so CI never sees them and skipping
+ * them loses no coverage the main tree does not already provide.
+ */
+const SKIP_PATH_SUFFIXES = [join(".claude", "worktrees")];
 
 const SCAN_EXT = [".ts", ".tsx", ".js", ".mjs", ".md", ".mdx", ".json", ".svg", ".html", ".txt", ".yml", ".yaml"];
 
@@ -60,7 +79,6 @@ const SCAN_EXT = [".ts", ".tsx", ".js", ".mjs", ".md", ".mdx", ".json", ".svg", 
 const ALLOWLIST = new Set(
   [
     "test/claim-guard.test.ts",
-    "docs/strategy/submissions.md",
     "CONTRIBUTING.md",
   ].map((p) => p.split("/").join(sep)),
 );
@@ -87,6 +105,7 @@ function* walk(dir: string): Generator<string> {
   for (const entry of readdirSync(dir)) {
     if (SKIP_DIRS.has(entry)) continue;
     const full = join(dir, entry);
+    if (SKIP_PATH_SUFFIXES.some((suffix) => full.endsWith(suffix))) continue;
     if (statSync(full).isDirectory()) yield* walk(full);
     else if (SCAN_EXT.some((e) => entry.endsWith(e))) yield full;
   }
@@ -140,5 +159,28 @@ test("the matcher catches a reintroduction and allows the qualified form", () =>
   assert.equal(
     findUnqualifiedClaims("an assertion on every step that recorded a clean result; others stay assertion-less").length,
     0,
+  );
+});
+
+// AGENTS.md and CLAUDE.md are ONE capabilities doc served to two harnesses:
+// Codex reads AGENTS.md, Claude Code reads CLAUDE.md. Collapsing one into a
+// pointer is not an option — a harness that does not follow the link gets no
+// capabilities doc at all — so the only safe shape is two real, byte-identical
+// files plus something that fails when they drift.
+//
+// This is not hypothetical. The doc is pinned and carries release-status
+// claims, and an in-review PR edited CLAUDE.md alone. That would have left one
+// agent reading the current release status and the other reading a superseded
+// one, from a document whose entire purpose is to stop exactly that. A
+// guardrail that is present, silent and dead is the failure class this product
+// exists to catch; it should not ship one about itself.
+test("AGENTS.md and CLAUDE.md are byte-identical", () => {
+  const claude = readFileSync(join(ROOT, "CLAUDE.md"));
+  const agents = readFileSync(join(ROOT, "AGENTS.md"));
+  assert.ok(
+    claude.equals(agents),
+    `AGENTS.md and CLAUDE.md have diverged (${claude.length} vs ${agents.length} bytes).\n` +
+      `They are one document served to two agent harnesses: edit both or neither.\n` +
+      `To resync, copy the corrected file over the other.`,
   );
 });

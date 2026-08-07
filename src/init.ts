@@ -59,6 +59,10 @@ export interface KnownMcpConfig {
  * planner (`planInstall`, src/wrap.ts) handles every one of them without a per-host adapter.
  * Adding a host is a line here, not a code path.
  *
+ * The one shape that is NOT just that object: `~/.claude.json` additionally stores per-project
+ * servers at `projects["<abs path>"].mcpServers`. `planInstall` reads those too, and rewrites
+ * only the project entry matching the directory it runs in — see the `projects` block there.
+ *
  * Deliberately NOT listed:
  *  - `~/.codex/config.toml` — TOML, not JSON. `planInstall` parses JSON; wrapping it would need a
  *    TOML writer that round-trips comments, which is a different piece of work. Codex users get

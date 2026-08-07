@@ -499,11 +499,45 @@ export function loadExpectKey(store: ExpectKeystore, keyId: string): Buffer | un
 export interface KeystoreWriteOptions {
   lockRetries?: number;
   lockRetryDelayMs?: number;
+  /**
+   * Injection seams for tests only — production callers omit both (house
+   * default-parameter pattern, as in login.ts's `sleepImpl` and writeback.ts's
+   * `AtomicWriteFsOps`). `sleepImpl` lets a test drive the retry loop by its
+   * own ledger instead of by the wall clock, which is the only way to assert
+   * "the lock freed and the write proceeded" without racing a timer;
+   * `lockCreateImpl` lets a test force the non-EEXIST contention branch
+   * below, which is reachable in production only inside a microsecond-wide
+   * window on win32.
+   */
+  sleepImpl?: (ms: number) => Promise<void>;
+  lockCreateImpl?: (lockPath: string, contents: string) => Promise<void>;
 }
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+function defaultLockCreate(lockPath: string, contents: string): Promise<void> {
+  return writeFile(lockPath, contents, { flag: "wx" });
+}
+
+/**
+ * How many times a lock create may fail with something OTHER than EEXIST
+ * before we stop calling it contention and surface the real errno.
+ *
+ * Taking the lock can fail transiently rather than merely find it taken: on
+ * win32 an unlink puts the file in a delete-pending state, and an O_EXCL
+ * create landing in that window returns EPERM, not EEXIST (measured on
+ * win32, no load: 29 EPERM in 3000 create-vs-unlink races). That is a
+ * concurrent approver RELEASING the lock — precisely the case the retry loop
+ * exists to survive — so it must be retried. The rename path further down
+ * `updateKeystore` already treats EPERM as the Windows artifact it is.
+ *
+ * The budget is small on purpose: an unwritable directory returns the same
+ * code forever, and spending the full lock budget on it would bury a real
+ * permission failure under a "locked" message that names the wrong cause.
+ */
+export const TRANSIENT_LOCK_CREATE_RETRIES = 3;
 
 /**
  * Add (or overwrite) one entry, durable-by-construction (A10): a `.lock`
@@ -558,23 +592,34 @@ async function updateKeystore(
   const lockPath = `${filePath}.lock`;
   const retries = opts.lockRetries ?? 50;
   const retryDelayMs = opts.lockRetryDelayMs ?? 100;
+  const sleepImpl = opts.sleepImpl ?? delay;
+  const lockCreateImpl = opts.lockCreateImpl ?? defaultLockCreate;
 
   await mkdir(path.dirname(filePath), { recursive: true });
 
   let haveLock = false;
+  let transientCreateFailures = 0;
   for (let attempt = 0; ; attempt++) {
     try {
-      await writeFile(lockPath, String(process.pid), { flag: "wx" });
+      await lockCreateImpl(lockPath, String(process.pid));
       haveLock = true;
       break;
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
-      if (attempt >= retries) {
-        throw new Error(
-          `expect keystore at ${filePath} is locked (${lockPath} exists after ${retries} retries) — another approve may be running; remove the stale lock if not`
-        );
+      if ((err as NodeJS.ErrnoException).code === "EEXIST") {
+        if (attempt >= retries) {
+          throw new Error(
+            `expect keystore at ${filePath} is locked (${lockPath} exists after ${retries} retries) — another approve may be running; remove the stale lock if not`
+          );
+        }
+      } else if (attempt >= retries || ++transientCreateFailures > TRANSIENT_LOCK_CREATE_RETRIES) {
+        // Out of budget, or the same non-EEXIST failure keeps coming back:
+        // surface the real errno untouched. Wrapping it in the "locked"
+        // message above would send an operator to delete a lock file that was
+        // never the problem. `attempt >= retries` is checked first so
+        // lockRetries: 0 still means zero sleeping, whatever the errno.
+        throw err;
       }
-      await delay(retryDelayMs);
+      await sleepImpl(retryDelayMs);
     }
   }
 

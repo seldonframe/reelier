@@ -3,7 +3,7 @@
 
 import { readFile, writeFile, appendFile, access, readdir, realpath, stat } from "node:fs/promises";
 import { realpathSync } from "node:fs";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import os from "node:os";
 import { pathToFileURL } from "node:url";
@@ -30,7 +30,7 @@ import {
   removeKeystoreEntries,
   loadExpectKey,
 } from "./expect-mac.js";
-import { pushSkill, PublicSubmissionError, type PushRecordResult } from "./push.js";
+import { pushSkill, resolvePushConfig, PublicSubmissionError, type PushRecordResult } from "./push.js";
 import { getSkill, getMineSkill, type GetOutcome, type GetMineOutcome } from "./get.js";
 import { DEFAULT_CLOUD_URL, readCliConfig, writeCliConfig, clearCliCredentials } from "./cloud-config.js";
 import { startLogin, pollForToken, openBrowser } from "./login.js";
@@ -61,6 +61,7 @@ import {
   planMcpConfigWrite,
   applyMcpConfigWrite,
   findNewestTraceFile,
+  parseMcpConfig,
   runDemoRecording,
   compileDemoTrace,
   formatReceipt,
@@ -83,11 +84,13 @@ import {
 import {
   planInstall,
   applyInstall,
-  findLatestBackup,
-  restoreFromBackup,
+  planUninstall,
+  applyUninstall,
+  agentGuardMessage,
   planWrapOffer,
   type InstallResult,
   type InstallPlan,
+  type UninstallPlanEntry,
 } from "./wrap.js";
 import { buildToolServer, runDiffTool } from "./serve.js";
 import { recordTotals } from "./footprint.js";
@@ -113,6 +116,9 @@ import {
 import { generateSigningKeypair, loadSigningKey, signRecordDigest, verifyRecordSignature, signingKeyDir } from "./signing.js";
 import { resolveVerifyPayload, evaluateVerifyClaims } from "./verify.js";
 import { writeCiWorkflow, PLACEHOLDER_SKILL_PATH } from "./ci-scaffold.js";
+import { buildDiscoveryBundle, discoverOpportunities, formatDiscoveryPreview, signDiscoveryBundle, type AgentOpportunity, type DiscoverySessionInput } from "./discovery.js";
+import { collectClaudeCodeCoverage, collectCodexCoverage, renderCoverageReport, renderCoverageView } from "./coverage.js";
+import { uploadDiscoveryBundle } from "./discovery-client.js";
 
 // Exported (alongside cmdPush below) so test/push-cli.test.ts can drive
 // cmdPush's console output directly with a fake ParsedArgs + monkeypatched
@@ -180,8 +186,11 @@ function parseArgv(argv: string[]): ParsedArgs {
       arg === "--dir" ||
       arg === "--out-dir" ||
       arg === "--agent" ||
+      arg === "--host" ||
+      arg === "--workspace" ||
       arg === "--from-skill" ||
       arg === "--since" ||
+      arg === "--select" ||
       arg === "--expires" ||
       arg === "--key" ||
       arg === "--path"
@@ -1069,8 +1078,30 @@ async function cmdPolicy(args: ParsedArgs): Promise<number> {
  * their calls. `reelier serve` takes no --wrap; it's Reelier fronting
  * itself. See src/serve.ts for the tool list + schemas.
  */
-async function cmdServe(): Promise<number> {
-  const server = buildToolServer();
+export async function cmdServe(args: ParsedArgs): Promise<number> {
+  const workspace = args.opts.workspace;
+  let workspaceRoot: string | undefined;
+  if (workspace !== undefined) {
+    if (!path.isAbsolute(workspace)) {
+      console.error(
+        `--workspace must be an absolute path, got '${workspace}' — a relative workspace re-introduces the ` +
+          `cwd ambiguity the flag exists to remove (a plugin host launches this server with the PLUGIN directory as cwd).`
+      );
+      return 1;
+    }
+    let isDirectory = false;
+    try {
+      isDirectory = (await stat(workspace)).isDirectory();
+    } catch {
+      // fall through — reported below
+    }
+    if (!isDirectory) {
+      console.error(`--workspace '${workspace}' is not an existing directory.`);
+      return 1;
+    }
+    workspaceRoot = workspace;
+  }
+  const server = buildToolServer({ workspaceRoot });
   const transport = new StdioServerTransport();
   await server.connect(transport);
 
@@ -3080,6 +3111,165 @@ function rankByReplayWorthiness(sessions: ScannedSession[]): ScannedSession[] {
   return [...sessions].sort((a, b) => Number(b.readOnly) - Number(a.readOnly));
 }
 
+export function parseDiscoverySelection(raw: string, max: number): number | null {
+  if (!/^\d+$/.test(raw.trim())) return null;
+  const selected = Number(raw.trim());
+  return Number.isInteger(selected) && selected >= 1 && selected <= max ? selected : null;
+}
+
+export function formatDiscoveryOpportunity(index: number, opportunity: AgentOpportunity): string[] {
+  const effects = opportunity.effectCounts;
+  const writes = effects["idempotent-write"] + effects.destructive;
+  const sideEffectLabel = writes > 0 ? ` · ${writes} proposed write${writes === 1 ? "" : "s"}` : "";
+  return [
+    `[${index}] ${opportunity.displayLabel}`,
+    `    Observed ${opportunity.observedCount} time${opportunity.observedCount === 1 ? "" : "s"} · last used ${opportunity.lastUsedAt.slice(0, 10)}`,
+    `    ${effects.read} reads${sideEffectLabel}`,
+    `    Evaluation potential: ${opportunity.evaluationPotential}`,
+    `    Approval boundary: ${opportunity.approvalBoundary}`,
+  ];
+}
+
+async function configuredDiscoveryServers(cwd: string, homedir: string): Promise<string[]> {
+  const names = new Set<string>();
+  for (const config of await detectMcpConfigs(cwd, homedir)) {
+    try {
+      const parsed = parseMcpConfig(await readFile(config.path, "utf8"));
+      for (const name of Object.keys(parsed.mcpServers ?? {})) names.add(name);
+    } catch {
+      // A malformed config is not a reason to lose local discovery; it simply
+      // contributes no configured-server availability signal.
+    }
+  }
+  return [...names].sort();
+}
+
+async function discoveryInputs(homedir: string, explicitDir?: string): Promise<DiscoverySessionInput[]> {
+  const sessions = explicitDir ? await scanTranscripts(explicitDir) : await scanAgentSessions(homedir);
+  const formats = new Map(agentSources(homedir).map((source) => [source.id, source.format]));
+  const inputs: DiscoverySessionInput[] = [];
+  for (const session of sessions) {
+    try {
+      inputs.push({
+        content: await readFile(session.path, "utf8"),
+        path: session.path,
+        project: session.project,
+        sourceId: session.sourceId,
+        sourceLabel: session.sourceLabel,
+        mtimeMs: session.mtimeMs,
+        format: formats.get(session.sourceId),
+      });
+    } catch {
+      // A session disappearing during a scan is skipped; no bundle is built
+      // from a partial transcript.
+    }
+  }
+  return inputs;
+}
+
+async function readDiscoverySigningMaterial(homedir: string): Promise<{ privateKey: NonNullable<Awaited<ReturnType<typeof loadSigningKey>>>["privateKey"]; keyId: string; publicKeyPem: string }> {
+  const dir = signingKeyDir(homedir);
+  let loaded = await loadSigningKey(dir);
+  let publicPath: string | undefined;
+  if (!loaded) {
+    const generated = await generateSigningKeypair(dir);
+    publicPath = generated.publicPath;
+    loaded = await loadSigningKey(dir);
+  }
+  if (!loaded) throw new Error("Could not load the local Ed25519 signing key; run 'reelier init --signing' and try again.");
+  const publicPem = await readFile(publicPath ?? path.join(dir, `${loaded.keyId}.pub.pem`), "utf8");
+  return { privateKey: loaded.privateKey, keyId: loaded.keyId, publicKeyPem: publicPem };
+}
+
+const SUPPORTED_COVERAGE_HOSTS = ["codex", "claude-code"] as const;
+const SUPPORTED_COVERAGE_HOSTS_LINE = `Supported hosts: ${SUPPORTED_COVERAGE_HOSTS.join(", ")}.`;
+
+export async function cmdCoverage(args: ParsedArgs, homedirOverride?: string, cwdOverride?: string): Promise<number> {
+  const host = args.opts.host;
+  if (!host) {
+    console.error(`Usage: reelier coverage --host <host>. ${SUPPORTED_COVERAGE_HOSTS_LINE}`);
+    return 1;
+  }
+  if (!(SUPPORTED_COVERAGE_HOSTS as readonly string[]).includes(host)) {
+    console.error(`Unsupported --host '${host}'. ${SUPPORTED_COVERAGE_HOSTS_LINE}`);
+    return 1;
+  }
+  const homedir = homedirOverride ?? os.homedir();
+  if (host === "claude-code") {
+    const view = await collectClaudeCodeCoverage(cwdOverride ?? args.opts.workspace ?? process.cwd(), homedir, process.env);
+    for (const line of renderCoverageView(view)) console.log(line);
+    return 0;
+  }
+  const report = await collectCodexCoverage(homedir);
+  for (const line of renderCoverageReport(report)) console.log(line);
+  return 0;
+}
+
+export async function cmdDiscover(args: ParsedArgs): Promise<number> {
+  const explicitDir = args.opts.dir;
+  if (explicitDir) console.log(`Discovering opportunities in ${path.basename(path.resolve(explicitDir))}...`);
+  else console.log("Discovering opportunities from Claude Code, Codex CLI, and OpenClaw history...");
+  const inputs = await discoveryInputs(os.homedir(), explicitDir);
+  const opportunities = discoverOpportunities(inputs, { configuredServers: await configuredDiscoveryServers(process.cwd(), os.homedir()) });
+  console.log("");
+  console.log("Agent opportunities found");
+  console.log("");
+  if (opportunities.length === 0) {
+    console.log("No replayable MCP/API workflow shapes found. Reelier does not infer opportunities from shell or file edits.");
+    return 0;
+  }
+  opportunities.forEach((opportunity, index) => console.log(formatDiscoveryOpportunity(index + 1, opportunity).join("\n")));
+  if (!args.flags.has("upload")) return 0;
+
+  const selectedIndex = args.opts.select ? parseDiscoverySelection(args.opts.select, opportunities.length) : args.flags.has("yes") ? 1 : null;
+  let selected = selectedIndex ? opportunities[selectedIndex - 1] : undefined;
+  if (!selected) {
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    try {
+      const answer = (await rl.question("\nSelect one opportunity to upload (number, or Enter to cancel): ")).trim();
+      const parsed = parseDiscoverySelection(answer, opportunities.length);
+      if (parsed) selected = opportunities[parsed - 1];
+    } finally {
+      rl.close();
+    }
+  }
+  if (!selected) {
+    console.log("No opportunity selected — nothing uploaded.");
+    return 0;
+  }
+
+  const unsigned = buildDiscoveryBundle(selected, { runNonce: `discover-${randomUUID()}` });
+  console.log("");
+  console.log(formatDiscoveryPreview(unsigned));
+  if (!args.flags.has("yes")) {
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    let answer = "";
+    try {
+      answer = (await rl.question("\nUpload this exact bundle to Reelier Cloud? (y/N) ")).trim().toLowerCase();
+    } finally {
+      rl.close();
+    }
+    if (answer !== "y" && answer !== "yes") {
+      console.log("Upload declined — nothing left this computer.");
+      return 0;
+    }
+  }
+
+  try {
+    const config = resolvePushConfig(process.env, await readCliConfig());
+    const signing = await readDiscoverySigningMaterial(os.homedir());
+    const signed = signDiscoveryBundle(unsigned, signing);
+    if (args.opts.out) await writeFile(path.resolve(args.opts.out), `${JSON.stringify(signed, null, 2)}\n`, "utf8");
+    const uploaded = await uploadDiscoveryBundle(signed, config);
+    console.log(`Uploaded sanitized discovery bundle ${uploaded.id}.`);
+    console.log(`Private Arena review: ${uploaded.importUrl}`);
+    return 0;
+  } catch (error) {
+    console.error((error as Error).message);
+    return 1;
+  }
+}
+
 async function cmdScan(args: ParsedArgs): Promise<number> {
   const explicitDir = args.opts.dir;
   const yes = args.flags.has("yes");
@@ -3230,7 +3420,7 @@ async function cmdScan(args: ParsedArgs): Promise<number> {
 async function cmdInstall(args: ParsedArgs): Promise<number> {
   const agent = args.opts.agent ?? "auto";
   if (agent !== "auto" && agent !== "claude") {
-    console.error(`Unsupported --agent '' — omit it: install now wraps every known host config it finds (Claude Code, Cursor, Windsurf). Use --config <path> to target one file.`);
+    console.error(agentGuardMessage("install", agent));
     return 1;
   }
 
@@ -3263,17 +3453,34 @@ async function cmdInstall(args: ParsedArgs): Promise<number> {
 
   const plans: { target: KnownMcpConfig; plan: InstallPlan }[] = [];
   for (const target of targets) {
-    const plan = await planInstall(target.path);
+    const plan = await planInstall(target.path, cwd);
     plans.push({ target, plan });
     console.log(`${target.label} — ${target.path}`);
     if (plan.entries.length === 0) {
       console.log("  (no mcpServers entries)");
     }
     for (const e of plan.entries) {
-      if (e.action === "wrap") console.log(`  ${e.name}: will wrap`);
-      else if (e.action === "already-wrapped") console.log(`  ${e.name}: already wrapped — left alone`);
-      else console.log(`  ${e.name}: skipped — ${e.reason}`);
+      // Project-scoped entries (~/.claude.json's `projects` map) are named with their project
+      // so "will wrap" and "reported, NOT wrapped" can never be read as being about the same file.
+      const label = e.projectPath ? `${e.name} (projects/${e.projectPath})` : e.name;
+      if (e.action === "wrap") console.log(`  ${label}: will wrap`);
+      else if (e.action === "already-wrapped") console.log(`  ${label}: already wrapped — left alone`);
+      else if (e.action === "skip-other-project") console.log(`  ${label}: reported, NOT wrapped — ${e.reason}`);
+      else console.log(`  ${label}: skipped — ${e.reason}`);
     }
+    console.log("");
+  }
+
+  // Printed before the "nothing to do" early return below, deliberately: the case where every
+  // wrappable server is already wrapped is exactly the case where an operator would otherwise
+  // read "nothing to do" as "fully covered".
+  const otherProject = plans.flatMap((p) => p.plan.entries).filter((e) => e.action === "skip-other-project");
+  if (otherProject.length > 0) {
+    console.log(
+      `${otherProject.length} project-scoped server(s) belong to other projects and were NOT wrapped. ` +
+        `Install wraps only the project entry matching the directory it runs in — re-run 'reelier install' from ` +
+        `that project's directory. To list every one from anywhere: reelier coverage --host claude-code`
+    );
     console.log("");
   }
 
@@ -3353,27 +3560,91 @@ export function diffLines(before: string, after: string): string[] {
 async function cmdUninstall(args: ParsedArgs): Promise<number> {
   const agent = args.opts.agent ?? "auto";
   if (agent !== "auto" && agent !== "claude") {
-    console.error(`Unsupported --agent '' — omit it: install now wraps every known host config it finds (Claude Code, Cursor, Windsurf). Use --config <path> to target one file.`);
+    console.error(agentGuardMessage("uninstall", agent));
     return 1;
   }
 
   const cwd = process.cwd();
   const homedir = os.homedir();
-  const detection = await detectAgentConfig(cwd, homedir);
-  const configPath = detection.projectConfigExists ? detection.projectConfigPath : detection.userConfigPath;
 
-  const backup = await findLatestBackup(configPath);
-  if (!backup) {
+  // The same host set `install` wraps, walked in the same order. Resolving a single path here (the
+  // old behavior) meant a Cursor or Windsurf user who installed then uninstalled stayed wrapped
+  // while being told the uninstall succeeded — a reverse gear that silently disengaged.
+  const explicit = args.opts.config;
+  const targets: KnownMcpConfig[] = explicit
+    ? [{ label: "explicit --config", path: explicit }]
+    : knownMcpConfigPaths(cwd, homedir);
+
+  const plan = await planUninstall(targets);
+
+  // Nothing restorable anywhere is an error, not a quiet success — same honest exit as before,
+  // widened from one path to every path checked.
+  if (plan.restorable === 0) {
+    const checked = plan.checkedPaths.map((p) => `  ${p}`).join("\n");
+    console.error(`No reelier install backup found to restore. Checked:\n${checked}`);
+    // Every entry gets a line, including ones whose wrap state could not be read: "unknown" is not
+    // "nothing to revert", and a config reelier cannot classify is exactly the one worth naming.
+    for (const e of plan.entries) {
+      console.error(`\n${e.label} — ${e.configPath}: ${describeUnrestorable(e)}`);
+    }
     console.error(
-      `No reelier install backup found for ${configPath}. If you have a backup file from elsewhere, restore it ` +
-        `manually by copying its contents back over ${configPath}.`
+      `\nTo undo a wrap by hand, replace each server's 'npx -y reelier mcp --wrap "<original>"' entry with ` +
+        `<original>. If you have a backup file from elsewhere, copy its contents back over the config.`
     );
     return 1;
   }
 
-  await restoreFromBackup(configPath, backup);
-  console.log(`Restored ${configPath} from ${backup}.`);
-  return 0;
+  if (args.flags.has("dry-run")) {
+    for (const e of plan.entries) {
+      if (e.action === "restore") console.log(`${e.label} — would restore ${e.configPath} from ${e.backupPath}`);
+      else console.log(`${e.label} — ${e.configPath}: ${describeUnrestorable(e)}`);
+    }
+    console.log("");
+    console.log("Nothing written (--dry-run).");
+    return 0;
+  }
+
+  const results = await applyUninstall(plan);
+
+  let restored = 0;
+  let failed = 0;
+  for (const r of results) {
+    switch (r.outcome) {
+      case "restored":
+        restored++;
+        console.log(`${r.label} — restored ${r.configPath} from ${r.backupPath}.`);
+        break;
+      case "restore-failed":
+        failed++;
+        console.error(`${r.label} — FAILED to restore ${r.configPath} from ${r.backupPath}: ${r.error}`);
+        console.error(`  Left untouched. ${describeUnrestorable(r)}`);
+        break;
+      default:
+        // Never a silent skip: a config with no backup is the one case with no CLI route back.
+        console.log(`${r.label} — ${r.configPath}: ${describeUnrestorable(r)}`);
+    }
+  }
+
+  console.log("");
+  console.log(`Restored ${restored} config(s)${failed > 0 ? `, ${failed} failed` : ""}. Backups left in place.`);
+  if (restored > 0) console.log("Restart your agent to drop the wrap.");
+
+  // A partial revert exits non-zero: the operator asked for everything back and did not get it.
+  return failed > 0 ? 1 : 0;
+}
+
+/** One line saying what is still wrapped and why reelier could not revert it — never rendered as a pass. */
+export function describeUnrestorable(e: UninstallPlanEntry): string {
+  if (e.action === "orphan-backup") {
+    return `config is gone but its backup remains (${e.backupPath}) — left alone; copy it back by hand if you want the file returned.`;
+  }
+  if (e.wrapState === "wrapped") {
+    return `STILL WRAPPED (${e.wrappedServerNames.join(", ")}) and no backup exists — reelier cannot revert this one for you.`;
+  }
+  if (e.wrapState === "unknown") {
+    return `no backup, and reelier could not read it to tell whether it is wrapped (${e.wrapStateReason ?? "unreadable"}) — check it by hand.`;
+  }
+  return "no backup, and nothing in it is wrapped — nothing to revert.";
 }
 
 function fmtFieldErrors(fieldErrors: unknown): string {
@@ -3942,6 +4213,15 @@ export async function cmdInit(args: ParsedArgs): Promise<number> {
   // to replay); any scan failure degrades honestly to the normal init flow —
   // never a crash, never a fabricated candidate.
   try {
+    const discovered = discoverOpportunities(await discoveryInputs(homedir));
+    if (discovered.length > 0) {
+      console.log("Agent opportunities found");
+      for (let i = 0; i < Math.min(3, discovered.length); i++) {
+        console.log(formatDiscoveryOpportunity(i + 1, discovered[i]).join("\n"));
+      }
+      console.log("  To inspect the exact sanitized bundle before sharing: reelier discover --upload");
+      console.log("");
+    }
     const sessions = await scanAgentSessions(homedir);
     const candidates = rankByReplayWorthiness(
       sessions.filter((s) => s.replayableCount > 0 && s.readOnly)
@@ -4216,7 +4496,8 @@ export async function cmdWhoami(fetchImpl: typeof fetch = fetch): Promise<number
 }
 
 const USAGE =
-  "Usage: reelier <run|bench|baseline|cost|prices|mcp|serve|trace|compile|manifest|approve|push|get|verify|diff|ci|policy|init|from-session|scan|install|uninstall|login|logout|whoami> [options]\n" +
+  "Usage: reelier <run|bench|baseline|cost|prices|mcp|serve|trace|compile|manifest|approve|push|get|verify|diff|ci|policy|init|discover|from-session|scan|install|uninstall|login|logout|whoami> [options]\n" +
+  "  discover â€” rank observed workflow opportunities locally; use --upload to preview and explicitly send one sanitized bundle to Arena Cloud.\n" +
   "  login  — reelier login: connect this machine to Reelier Cloud via a device-code browser handshake; writes ~/.reelier/config.json.\n" +
   "  logout — reelier logout: clears the locally stored key (revoke it from the dashboard's Settings, not locally).\n" +
   "  whoami — reelier whoami: print the identity the stored key resolves to, or that you're not logged in.\n" +
@@ -4228,6 +4509,9 @@ const USAGE =
   "           Enforces .reelier/policy.yml (or ~/.reelier/policy.yml) — deny/dry-run rules; pass --allow-writes\n" +
   "           to satisfy a rule's 'unless: \"--allow-writes\"' escape.\n" +
   "  serve  — TOOL-SERVER: exposes Reelier's own commands (scan/from-session/replay/push/diff) as MCP tools.\n" +
+  "           --workspace <abs-path>: workspace-sensitive defaults (compiled skills, .reelier/ state) resolve here\n" +
+  "           instead of the process cwd — REQUIRED when a plugin host launches serve with the plugin dir as cwd.\n" +
+  "           An explicit per-call cwd/out argument always wins over the workspace.\n" +
   "  get    — fetch a public registry skill to ./skills/<skill>.skill.md; never executes it.\n" +
   "           reelier get --mine <name> fetches YOUR OWN private skill (authenticated) instead.\n" +
   "  init --signing — generate (or print the existing) Ed25519 signing key at ~/.reelier/signing/; idempotent.\n" +
@@ -4241,7 +4525,19 @@ const USAGE =
   "  from-session — compile a transcript from Claude Code, Codex CLI, or OpenClaw into a skill.\n" +
   "           Format is sniffed from content; override with --agent <claude-code|codex|openclaw|cursor|windsurf>.\n" +
   "           --agent cursor / --agent windsurf report why those aren't supported yet instead of guessing.\n" +
-  "  scan   — discover session transcripts from every known agent (also reports Cursor/Windsurf DB findings).";
+  "  scan   — discover session transcripts from every known agent (also reports Cursor/Windsurf DB findings).\n" +
+  "  coverage — reelier coverage --host <codex|claude-code> [--workspace <dir>]: read-only observed inventory of a host's\n" +
+  "           MCP servers (config + plugins), wrapped/unwrapped per entry.\n" +
+  "           --host claude-code covers the Claude Code CLI only; Claude Desktop / Cowork plugins are a separate host\n" +
+  "           with a separate registry and are not inspected. It also lists EVERY project-scoped server under\n" +
+  "           ~/.claude.json's `projects` map, with its own denominator — install rewrites only the one matching cwd.\n" +
+  "           Observed inventory only; never a completeness claim.\n" +
+  "  install / uninstall — wrap, and revert, every known host MCP config: Claude Code, Cursor, Windsurf.\n" +
+  "           In ~/.claude.json install also wraps projects[<cwd>].mcpServers; other projects' entries are reported,\n" +
+  "           never rewritten — re-run install from that directory, or see 'reelier coverage --host claude-code'.\n" +
+  "           install backs up each config before rewriting it; uninstall restores the latest backup per config and\n" +
+  "           reports every config it could NOT revert rather than skipping it. Both take --config <path> to target\n" +
+  "           one file and --dry-run to see the plan; uninstall exits 1 if any config is left unreverted.";
 
 async function main(): Promise<number> {
   const [, , cmd, ...rest] = process.argv;
@@ -4276,7 +4572,7 @@ async function main(): Promise<number> {
     case "mcp":
       return cmdMcp(args);
     case "serve":
-      return cmdServe();
+      return cmdServe(args);
     case "trace":
       return cmdTrace(args);
     case "compile":
@@ -4301,6 +4597,10 @@ async function main(): Promise<number> {
       return cmdPolicy(args);
     case "init":
       return cmdInit(args);
+    case "discover":
+      return cmdDiscover(args);
+    case "coverage":
+      return cmdCoverage(args);
     case "from-session":
       return cmdFromSession(args);
     case "scan":

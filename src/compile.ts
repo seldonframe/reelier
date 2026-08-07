@@ -639,7 +639,19 @@ export function compile(records: TraceRecord[]): CompileResult {
 
     const { effect, unknown } = classifyEffect(call.tool, metaToolAnnotations?.[call.tool]);
     if (unknown) {
-      addOpenQuestion(stepN, "verb unrecognized — downgraded to destructive until you review.");
+      // Two different unknowns reach here and they need different sentences.
+      // Rung 6 default-denies an unrecognized verb, so "downgraded to
+      // destructive" is true there. Rung 4 can now also flag a name whose only
+      // read evidence was a NOUN (`complete_query_tuning`) — that one stays
+      // classified `read`, so telling the reader it was downgraded to
+      // destructive would be false, and would describe the step as gated when
+      // replay will let it through.
+      addOpenQuestion(
+        stepN,
+        effect === "read"
+          ? "classified read on a noun, not an action verb — confirm this tool does not write. It is NOT gated by --allow-writes."
+          : "verb unrecognized — downgraded to destructive until you review.",
+      );
     }
     effectCounts[effect]++;
     assertCount += asserts.length;

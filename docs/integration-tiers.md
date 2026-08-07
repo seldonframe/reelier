@@ -46,7 +46,9 @@ reelier mcp --wrap "<your mcp server>"
 
 A proxy in front of servers you already run. The agent does not know it is there. Every tool call
 is recorded to a local trace; the deny-list in `.reelier/policy.yml` is enforced at that chokepoint
-rather than in a prompt where it can be argued with.
+rather than in a prompt where it can be argued with. The wrap sees only servers it fronts —
+plugin-delivered MCP servers load from plugin-owned manifests `install` does not inspect (see
+[What no tier does](#what-no-tier-does)).
 
 **What Tier 0 gives you:** a record of what agents did, drift detection on anything repeatable, and
 a receipt anyone can check. **What it does not:** it cannot stop a write. Everything here observes.
@@ -136,6 +138,13 @@ Stated here so it is not inferred from silence:
 
 - **No tier proves a change was correct.** Every tier proves what changed and whether it stayed in
   declared scope. In-scope-and-wrong is a real category and Reelier does not detect it.
+- **No tier observes plugin-delivered MCP calls.** Reelier `install` wraps MCP entries it finds in
+  supported host configuration files. It does not inspect plugin-owned MCP manifests.
+  Plugin-delivered calls are therefore outside Reelier's observed boundary unless the plugin
+  itself invokes `reelier mcp --wrap`, or the host exposes the entry through a supported
+  configuration and Reelier subsequently rewrites it. Reelier currently has no native wrapping
+  path for URL-based MCP servers. Receipts attest only calls that traversed Reelier; they do not
+  prove that every host or plugin write was observed.
 - **No tier inspects prompts** or makes any claim about model behavior.
 - **No tier is a sandbox.** Run agents in whatever isolation your platform provides.
 - **No tier puts a model in the verification or enforcement path.** Record, hash, compare, gate —

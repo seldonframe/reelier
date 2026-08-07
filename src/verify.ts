@@ -24,6 +24,7 @@ import { resolveGetConfig } from "./get.js";
 import { readCliConfig, type CliConfig } from "./cloud-config.js";
 import { imprintMatches } from "./tsa.js";
 import type { RunRecord } from "./runner.js";
+import { classifyRecordVersion, UNSUPPORTED_VERSION_CLAIM, unsupportedVersionLine } from "./record-version-guard.js";
 
 export interface VerifyPayload {
   record: RunRecord;
@@ -144,9 +145,18 @@ export async function resolveVerifyPayload(
 export type ClaimStatus = "verified" | "failed" | "unchecked" | "absent";
 
 export interface ClaimLine {
-  claim: "unaltered-since-push" | "timestamped";
+  claim: "unaltered-since-push" | "timestamped" | typeof UNSUPPORTED_VERSION_CLAIM;
   status: ClaimStatus;
   line: string;
+}
+
+/**
+ * The guard-only N-1 refusal, shared by every entry point below. Returned INSTEAD of any legacy
+ * claim: a record this release cannot read must not be evaluated as a legacy one, and a
+ * valid-looking signature or timestamp sibling must not rescue it into legacy crypto.
+ */
+function unsupportedVersionClaim(declared: string): ClaimLine {
+  return { claim: UNSUPPORTED_VERSION_CLAIM, status: "failed", line: unsupportedVersionLine(declared) };
 }
 
 /**
@@ -170,6 +180,8 @@ export interface ClaimLine {
  *  3. Neither present -> today's "unchecked" line, unchanged.
  */
 export function evaluateUnalteredSincePushClaim(payload: VerifyPayload, publicPem?: string): ClaimLine {
+  const version = classifyRecordVersion(payload.record);
+  if (version.kind === "unsupported-version") return unsupportedVersionClaim(version.declared);
   const sig = payload.signature;
   if (!sig) {
     return {
@@ -248,6 +260,8 @@ function verifySignatureAgainstKey(
  * trustworthy, so it never overclaims past what was actually checked.
  */
 export function evaluateTimestampClaim(payload: VerifyPayload): ClaimLine {
+  const version = classifyRecordVersion(payload.record);
+  if (version.kind === "unsupported-version") return unsupportedVersionClaim(version.declared);
   if (!payload.timestamp) {
     return { claim: "timestamped", status: "absent", line: "timestamped: — none" };
   }
@@ -279,11 +293,11 @@ export interface VerifyResult {
 }
 
 export function evaluateVerifyClaims(payload: VerifyPayload, publicPem?: string): VerifyResult {
-  if ((payload.record as unknown as { v?: unknown }).v === "reelier.authority-receipt/v1") {
-    return {
-      claims: [{ claim: "unaltered-since-push", status: "failed", line: "unsupported authority receipt: upgrade to an authority-aware verifier" }],
-      exitCode: 1,
-    };
+  // The guard runs once, before anything legacy. A refused record yields exactly ONE line: emitting
+  // legacy claim rows beside it would imply this release had read them.
+  const version = classifyRecordVersion(payload.record);
+  if (version.kind === "unsupported-version") {
+    return { claims: [unsupportedVersionClaim(version.declared)], exitCode: 1 };
   }
   const claims = [evaluateUnalteredSincePushClaim(payload, publicPem), evaluateTimestampClaim(payload)];
   const exitCode = claims.some((c) => c.status === "failed") ? 1 : 0;

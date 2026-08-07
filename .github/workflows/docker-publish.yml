@@ -26,6 +26,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history so the release guard below can compute a merge-base.
+          # Harmless on the PR path, where the guard does not run.
+          fetch-depth: 0
+
+      # Tag pushes and published releases only — on a PR the ref is a merge ref
+      # and the question is meaningless. Refuses to publish an image built from
+      # a tag the default branch does not contain.
+      - name: Release guard — tag must be an ancestor of main
+        if: startsWith(github.ref, 'refs/tags/')
+        run: node scripts/check-release-ancestor.mjs
 
       - uses: docker/setup-buildx-action@v3
 

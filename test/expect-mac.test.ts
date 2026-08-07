@@ -22,6 +22,7 @@ import {
   readKeystore,
   writeKeystoreEntry,
   loadExpectKey,
+  TRANSIENT_LOCK_CREATE_RETRIES,
 } from "../src/expect-mac.js";
 import { canonicalJson } from "../src/canonical-json.js";
 import { projectObservation } from "../src/runner.js";
@@ -505,16 +506,21 @@ test("writeKeystoreEntry retries on a held lock and fails loudly when it never f
   try {
     await writeFile(lock, "held", "utf8");
     const a = mintExpectKey();
+    const slept: number[] = [];
     await assert.rejects(
       () =>
         writeKeystoreEntry(
           file,
           a.keyId,
           { key: a.key.toString("base64"), createdAt: "2026-07-29T00:00:00.000Z" },
-          { lockRetries: 2, lockRetryDelayMs: 5 }
+          { lockRetries: 2, lockRetryDelayMs: 5, sleepImpl: async (ms) => void slept.push(ms) }
         ),
       /lock/i
     );
+    // The upper end of the budget: 2 retries buys exactly 2 sleeps before the
+    // loud failure — never a third (which would mean the loop outspends what
+    // the caller authorised) and never fewer (which would mean it gave up early).
+    assert.deepEqual(slept, [5, 5]);
     // The held lock (not ours) must NOT have been deleted.
     assert.equal(await readFile(lock, "utf8"), "held");
   } finally {
@@ -524,17 +530,23 @@ test("writeKeystoreEntry retries on a held lock and fails loudly when it never f
 
 test("writeKeystoreEntry spends exactly the retries it was given — lockRetries: 0 fails on the first attempt without sleeping (A10 off-by-one)", async () => {
   // Both the correct `attempt >= retries` and an off-by-one `attempt >`
-  // eventually throw the same message, so the retry BUDGET is only
-  // observable in time: an off-by-one burns one full retry delay before
-  // giving up. A 5s delay against a 2s bound makes that unmistakable while
-  // leaving enormous headroom on a loaded machine (the correct path performs
-  // no sleep at all).
+  // eventually throw the same message, so the retry BUDGET is not observable
+  // in the error at all — only in whether a sleep happened. Two independent
+  // assertions cover each other's blind spot:
+  //   - the sleep ledger is exact and instant: an off-by-one shows up as one
+  //     recorded sleep, not as a 5s test.
+  //   - the elapsed bound still watches the REAL clock, so a future refactor
+  //     that sleeps past the seam (leaving the ledger empty while burning the
+  //     5s delay) fails here rather than passing silently.
+  // Neither is a race: the correct path performs no sleep at all, by either
+  // route, so there is no window for load to close.
   const dir = await mkdtemp(path.join(tmpdir(), "reelier-expect-"));
   const file = path.join(dir, "expect-keys.json");
   const lock = `${file}.lock`;
   try {
     await writeFile(lock, "held", "utf8");
     const a = mintExpectKey();
+    const slept: number[] = [];
     const startedAt = Date.now();
     await assert.rejects(
       () =>
@@ -542,35 +554,141 @@ test("writeKeystoreEntry spends exactly the retries it was given — lockRetries
           file,
           a.keyId,
           { key: a.key.toString("base64"), createdAt: "2026-07-29T00:00:00.000Z" },
-          { lockRetries: 0, lockRetryDelayMs: 5000 }
+          { lockRetries: 0, lockRetryDelayMs: 5000, sleepImpl: async (ms) => void slept.push(ms) }
         ),
       /lock/i
     );
     const elapsedMs = Date.now() - startedAt;
-    assert.ok(elapsedMs < 2000, `lockRetries: 0 must give up without sleeping, but took ${elapsedMs}ms`);
+    assert.deepEqual(slept, [], "lockRetries: 0 must give up without sleeping");
+    assert.ok(elapsedMs < 2000, `lockRetries: 0 must not sleep past the seam either, but took ${elapsedMs}ms`);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });
 
 test("writeKeystoreEntry proceeds once the lock frees (A10 retry path)", async () => {
+  // The lock is freed FROM INSIDE the retry sleep, so "the lock outlived two
+  // retries and then went away" is a fact this test establishes rather than a
+  // race it hopes to win. The previous form started a 30ms release timer and
+  // hoped it landed inside a 100x10ms retry budget. It could lose two ways,
+  // and under CPU contention the same write took anywhere from 46ms to 4860ms
+  // (measured over 120 loaded iterations), so nothing bounded the margin it
+  // depended on: the budget can run out before the release lands, or the
+  // release's unlink can race the loop's own O_EXCL create and come back EPERM
+  // on win32 (seen once in 60 loaded iterations — that one is a real defect,
+  // fixed in updateKeystore and covered below). Nothing here reads a clock.
   const dir = await mkdtemp(path.join(tmpdir(), "reelier-expect-"));
   const file = path.join(dir, "expect-keys.json");
   const lock = `${file}.lock`;
   try {
     await writeFile(lock, "held", "utf8");
     const a = mintExpectKey();
-    const write = writeKeystoreEntry(
+    const slept: number[] = [];
+    await writeKeystoreEntry(
       file,
       a.keyId,
       { key: a.key.toString("base64"), createdAt: "2026-07-29T00:00:00.000Z" },
-      { lockRetries: 100, lockRetryDelayMs: 10 }
+      {
+        lockRetries: 100,
+        lockRetryDelayMs: 10,
+        sleepImpl: async (ms) => {
+          slept.push(ms);
+          if (slept.length === 2) await rm(lock, { force: true });
+        },
+      },
     );
-    const release = new Promise((r) => setTimeout(r, 30)).then(() => rm(lock, { force: true }));
-    await write;
-    await release;
+    // Retry accounting, not elapsed time: it slept while the lock was held,
+    // stopped the moment it was free, and spent nothing extra. A loop that
+    // never retried would record 0 sleeps; one that kept sleeping past the
+    // release would record more than 2.
+    assert.deepEqual(slept, [10, 10]);
     const store = await readKeystore(file);
     assert.ok(store.keys[a.keyId]);
+    // The lock it took to do the write is its own, and it released it.
+    await assert.rejects(() => stat(lock), { code: "ENOENT" });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("writeKeystoreEntry retries a lock create that fails with EPERM — a concurrent RELEASE is contention, not a fatal error (A10, win32 delete-pending)", async () => {
+  // On win32 an unlink marks the file delete-pending; an O_EXCL create landing
+  // in that window returns EPERM rather than EEXIST (measured on win32 with no
+  // load: 29 EPERM in 3000 create-vs-unlink races). That is another approver
+  // handing the lock over — exactly what the retry loop is for — so treating
+  // it as fatal turns normal contention into a failed approve and an
+  // unwritten key. Forced through the seam because the real window is
+  // microseconds wide and platform-specific; a test that waited for it would
+  // be the flake this file just removed.
+  const dir = await mkdtemp(path.join(tmpdir(), "reelier-expect-"));
+  const file = path.join(dir, "expect-keys.json");
+  try {
+    const a = mintExpectKey();
+    let attempts = 0;
+    await writeKeystoreEntry(
+      file,
+      a.keyId,
+      { key: a.key.toString("base64"), createdAt: "2026-07-29T00:00:00.000Z" },
+      {
+        lockRetries: 5,
+        lockRetryDelayMs: 1,
+        sleepImpl: async () => {},
+        lockCreateImpl: async (lockPath, contents) => {
+          if (++attempts === 1) {
+            const err: NodeJS.ErrnoException = new Error(`EPERM: operation not permitted, open '${lockPath}'`);
+            err.code = "EPERM";
+            throw err;
+          }
+          await writeFile(lockPath, contents, { flag: "wx" });
+        },
+      },
+    );
+    assert.equal(attempts, 2, "the EPERM attempt must be retried, not surfaced");
+    const store = await readKeystore(file);
+    assert.ok(store.keys[a.keyId]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("writeKeystoreEntry surfaces a lock create error that never clears — a persistent EPERM is a permission failure, never a 'locked' message (A10)", async () => {
+  // The other half of the branch above, and the reason its budget is 3 rather
+  // than the full lock budget: an unwritable directory returns EPERM forever.
+  // Retrying it to exhaustion would report "is locked ... remove the stale
+  // lock", sending an operator to delete a file that was never the problem.
+  // The real errno has to survive.
+  const dir = await mkdtemp(path.join(tmpdir(), "reelier-expect-"));
+  const file = path.join(dir, "expect-keys.json");
+  try {
+    const a = mintExpectKey();
+    let attempts = 0;
+    await assert.rejects(
+      () =>
+        writeKeystoreEntry(
+          file,
+          a.keyId,
+          { key: a.key.toString("base64"), createdAt: "2026-07-29T00:00:00.000Z" },
+          {
+            lockRetries: 50,
+            lockRetryDelayMs: 1,
+            sleepImpl: async () => {},
+            lockCreateImpl: async () => {
+              attempts++;
+              const err: NodeJS.ErrnoException = new Error("EACCES: permission denied, open 'expect-keys.json.lock'");
+              err.code = "EACCES";
+              throw err;
+            },
+          },
+        ),
+      (err: Error) => {
+        assert.equal((err as NodeJS.ErrnoException).code, "EACCES");
+        assert.doesNotMatch(err.message, /is locked/, "a permission failure must not be reported as a held lock");
+        return true;
+      }
+    );
+    // Bounded: it gives up well inside the 50-retry lock budget rather than
+    // burning it on an error that is not contention.
+    assert.equal(attempts, TRANSIENT_LOCK_CREATE_RETRIES + 1);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

@@ -545,10 +545,19 @@ test("DecisionContext refuses unpaired outcome/effect presence in either directi
   assert.throws(() => parseAuthorityWire("decision-context", { ...base, outcomeKey: null, effectDigest: validDigest }), /paired nullability/i);
 });
 
+// Retargeted at the merge with the published N-1 guard (reelier@0.31.1). This branch carried its own
+// six-line refusal in evaluateVerifyClaims that hardcoded this one version string; the shipped guard
+// supersedes it by refusing ANY own top-level `v` at all three entry points, and reports under its
+// own claim name rather than failing `unaltered-since-push` for a reason that is not the signature.
+// The intent below is unchanged and now asserted against the guard's actual contract: exactly one
+// claim, so no legacy row appears beside the refusal.
 test("legacy verifier refuses an authority receipt instead of awarding a legacy pass", () => {
   const result = evaluateVerifyClaims({ record: { v: "reelier.authority-receipt/v1" } as never });
   assert.equal(result.exitCode, 1);
-  assert.match(result.claims[0].line, /unsupported authority receipt/);
+  assert.equal(result.claims.length, 1);
+  assert.equal(result.claims[0].claim, "unsupported-record-version");
+  assert.equal(result.claims[0].status, "failed");
+  assert.match(result.claims[0].line, /REFUSED/);
 });
 
 test("authority canonical bytes are JCS and digests are sha256-prefixed", () => {

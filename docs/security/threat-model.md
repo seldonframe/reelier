@@ -122,6 +122,26 @@ checkmarks only on individually proven claims; four-state honesty everywhere (`v
 **Residual risk: unbounded.** This is a language and design problem that recurs with every new
 surface, and no test catches it.
 
+### 3.7 Plugin-delivered MCP servers never reach the recorder (boundary 1)
+
+Agent plugin systems — Claude Code plugins today, the Agent Plugins standard (v1.0.0, 2026-08-06)
+portably — deliver MCP servers through plugin-owned manifests. Reelier `install` wraps MCP entries
+it finds in supported host configuration files. It does not inspect plugin-owned MCP manifests.
+Plugin-delivered calls are therefore outside Reelier's observed boundary unless the plugin itself
+invokes `reelier mcp --wrap`, or the host exposes the entry through a supported configuration and
+Reelier subsequently rewrites it. Reelier currently has no native wrapping path for URL-based MCP
+servers.
+
+The threat that matters is a §3.6-shaped misreading: a consumer who assumes wrap coverage extends
+to plugin-delivered servers. Receipts attest only calls that traversed Reelier; they do not prove
+that every host or plugin write was observed. Handling is editorial (this section;
+`docs/REFERENCE.md`; `docs/integration-tiers.md`; CLAUDE.md §7.6) plus a proposed read-only
+observed-coverage probe (`docs/specs/agent-plugins-coverage-v1.md`) that reports inventory, never
+completeness.
+
+**Residual risk:** the boundary moves with every host and plugin-system release, and nothing
+enforces that these documents move with it.
+
 ---
 
 ## 4. Explicitly out of scope

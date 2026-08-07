@@ -119,6 +119,20 @@ reelier from-session ~/.openclaw/agents/*/sessions/*.jsonl  # OpenClaw
 
 Only replayable calls — builtins or `mcp__<server>__<tool>` — compile into a skill; native file/shell/search actions are skipped, never fabricated. `--agent <claude-code|codex|openclaw|cursor|windsurf>` forces a format instead of guessing.
 
+## Wrap coverage boundary — plugins
+
+Reelier `install` wraps MCP entries it finds in supported host configuration files. It does not
+inspect plugin-owned MCP manifests (Claude Code plugins carry their own `.mcp.json`; the
+[Agent Plugins](https://agent-plugins.org) standard packages MCP servers in a plugin-owned
+`mcp.json`). Plugin-delivered calls are therefore outside Reelier's observed boundary unless the
+plugin itself invokes `reelier mcp --wrap`, or the host exposes the entry through a supported
+configuration and Reelier subsequently rewrites it. Reelier currently has no native wrapping path
+for URL-based MCP servers. Receipts attest only calls that traversed Reelier; they do not prove
+that every host or plugin write was observed.
+
+Proposed response — a read-only observed-coverage probe and plugin packaging:
+[specs/agent-plugins-coverage-v1.md](./specs/agent-plugins-coverage-v1.md)
+
 ## MCP server (`reelier serve`)
 
 `reelier serve` exposes Reelier's commands as MCP tools your coding agent can call mid-session:

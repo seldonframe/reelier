@@ -2,6 +2,564 @@
 
 All notable changes to `reelier`. Dates are release dates.
 
+## Unreleased
+
+### Added
+
+- **`reelier coverage --host claude-code` — the same read-only inventory, for
+  the Claude Code CLI.** Group A is the surface `install` can reach
+  (`<cwd>/.mcp.json` and `~/.claude.json`, both derived from
+  `knownMcpConfigPaths` so the probe and the config writer cannot drift apart
+  silently); Group B is the plugin payloads, which it cannot. They are reported
+  as separate sections with separate named denominators — never one merged
+  total, because a merged total would read as a coverage score across a boundary
+  the wrap does not cross. The Codex path is unchanged and its rendered output
+  is byte-identical; `renderCoverageReport` is now a four-line adapter over the
+  shared `renderCoverageView`, so that is a property of the code rather than a
+  claim.
+- **Plugin enablement is tri-state: `enabled` / `disabled` / `unknown`.** A
+  plugin with no `enabledPlugins` key at any scope and no `defaultEnabled` in
+  its `plugin.json` reports **`unknown`**, never `enabled`. The documented
+  default of true is an assumption, and this probe does not assert an enablement
+  it did not read. `unknown` payloads ARE inspected and every server they
+  declare is rendered under an `enablement unknown` heading; a consumer MUST NOT
+  render `unknown` as a pass, exactly as with `absent`. `PluginCoverage.enablement`
+  is additive — Codex leaves it undefined and keeps its boolean.
+- **Presence authority is `installed_plugins.json`, not a directory walk.** The
+  marketplace catalog clones ship real `.mcp.json` files and contribute zero
+  tools; on the machine this was measured against, walking the tree over-reported
+  by 16 payloads. Orphaned cache directories survive an uninstall and over-report
+  the same way. `installPath` already ends with the version segment — which is
+  the literal string `unknown` for half the observed installs — and is never
+  re-appended to.
+- **EVERY `projects["<abs path>"].mcpServers` map in `~/.claude.json` gets its
+  own source and its own denominator, cwd or not.** `install` rewrites the
+  top-level map plus the one project key matching the directory it runs in, so
+  reporting only those would have matched install's own scope and turned the
+  closing disclaimer into a fig leaf. Each map is listed under
+  `<claude.json>#projects/<path>`, marked with whether install rewrites it from
+  here, and summarised by a named denominator — *N project-scoped server(s)
+  across K of M `projects` key(s)* — that is **never** added to the top-level
+  total and never divided into one. Project keys carrying no servers count in
+  the denominator and are not listed: a project that configures no MCP server
+  is not a coverage gap.
+- **What this does NOT cover, stated in the report and in `--help`.** It is the
+  Claude Code **CLI** only: Claude Desktop / Cowork plugins are a separate host
+  with a separate registry and are not inspected. Session plugins loaded with
+  `--plugin-dir` / `--plugin-url` are recorded in no file and cannot be
+  inventoried from disk at all. As with `--host codex`, this describes a
+  configuration snapshot rather than what a host launched, it makes a gap
+  visible rather than blocked, and no command consumes its output. This
+  supersedes the 0.31.0 note that `coverage` supports `codex` alone.
+- **Implemented from documentation, not from observation — do not read these as
+  verified.** The `enabledPlugins: false` value, the `defaultEnabled` fallback,
+  project- and local-scope `enabledPlugins`, inline and pointer `mcpServers` in
+  `plugin.json`, and `CLAUDE_CODE_PLUGIN_CACHE_DIR` / `CLAUDE_CODE_PLUGIN_SEED_DIR`
+  each have **zero instances** on the one machine that was measured. They are
+  implemented and tested against fixtures; absence there is a property of that
+  machine, not confirmation of the format.
+
+### Fixed
+
+- **`reelier install` wrapped only the top-level `mcpServers` of `~/.claude.json`
+  and silently left the project-scoped ones unwrapped inside the file it had
+  just rewritten.** Claude Code stores MCP servers in two places in that file:
+  the top-level `mcpServers` object every host shares, and a per-project map at
+  `projects["<abs path>"].mcpServers`. `planInstall` read only the first.
+  Measured on one machine 2026-08-06: **2 top-level servers, 83 project keys, 5
+  of them carrying their own servers** — so install edited the file, reported
+  success, and left 5 servers unrecorded. That falsified the load-bearing claim
+  that one install covers every MCP server in the agent's config.
+  **Scope of the fix, and it is deliberate:** install rewrites only the project
+  entry whose key is the directory it runs in. Install is already cwd-sensitive
+  (it reads `<cwd>/.mcp.json`), so cwd-scoping keeps the blast radius
+  predictable; rewriting all 83 entries from an arbitrary cwd would modify
+  config for projects the operator is not in and would wreck the
+  backup/uninstall story, where one restore would have to unwind edits across
+  unrelated projects. Entries for other projects are **reported** — in the
+  install output, with their project named, under their own denominator
+  (`InstallResult.otherProjectCount`, never merged into `skippedCount`) — and
+  never rewritten. `reelier coverage --host claude-code` lists every one of them
+  from anywhere. Project keys are matched with `sameProjectDirectory`
+  (`src/project-scope.ts`), which folds separator style and case on Windows
+  only: Claude Code writes those keys with forward slashes while `process.cwd()`
+  yields backslashes on the same machine, and a raw `===` matches none of them.
+  It is a lexical compare — it does not resolve symlinks or `..`, so it
+  under-matches (report, don't rewrite) rather than over-matching.
+- **`reelier uninstall` reported a project-scoped wrap as "nothing to revert".**
+  Restoring was always correct — the backup is the whole file, byte-for-byte —
+  but `inspectWrapState` read only the top-level map, so a config whose only
+  wrapped entries lived under `projects` reported `wrapState: "unwrapped"`. With
+  the backup gone that renders as *"no backup, and nothing in it is wrapped —
+  nothing to revert"* about a file `install` had just wrapped. It now reads both
+  maps and names project-scoped entries as `<server> (projects/<path>)`.
+- **`writeKeystoreEntry`/`removeKeystoreEntries` no longer fail an approve when
+  another approver *releases* the lock at the wrong microsecond (win32).** The
+  A10 retry loop treated every non-`EEXIST` error from its `O_EXCL` lock create
+  as fatal. On win32 an unlink marks the file delete-pending, and a create
+  landing in that window returns `EPERM`, not `EEXIST` — so the one case the
+  retry loop exists for could surface as `EPERM: operation not permitted` and
+  leave the key unwritten. Measured on win32 with no load: **29 `EPERM` in 3000
+  create-vs-unlink races**. Non-`EEXIST` failures are now retried, but only
+  `TRANSIENT_LOCK_CREATE_RETRIES` (3) times: an unwritable directory returns the
+  same errno forever, and it must surface as itself rather than as
+  "`…is locked… remove the stale lock`", which would send an operator to delete
+  a file that was never the problem. Unchanged for every other caller: the lock
+  budget, the delays, and the `EEXIST` message are byte-identical.
+
+### Changed (internal)
+
+- `KeystoreWriteOptions` gains two optional test-only injection seams,
+  `sleepImpl` and `lockCreateImpl` (house pattern — `login.ts`'s `sleepImpl`,
+  `writeback.ts`'s `AtomicWriteFsOps`). Production callers pass neither and
+  behave exactly as before. They exist so the A10 lock tests assert on retry
+  accounting instead of on the wall clock: the retry-path test previously raced
+  a 30ms release timer against a 100×10ms budget and failed intermittently
+  under full-suite load.
+
+## 0.31.1 — The guard that refuses what it cannot read
+
+**Guard-only release. No new capability, one new refusal.** This version exists
+to be the last one that does NOT understand authority-aware records, and to say
+so out loud instead of guessing.
+
+Before this release, a record carrying a top-level `v` — such as
+`reelier.authority-receipt/v1`, which a later version will emit — would fall
+through `reelier verify` into the legacy claim path and be evaluated as though
+it were an ordinary run record. Its signature and timestamp siblings would be
+checked against legacy rules, and the CLI would print a confident answer about
+a record it does not actually understand. That is the one outcome a verifier
+must never produce.
+
+`reelier verify` now classifies before it evaluates:
+
+- a record with **no own top-level `v`** is legacy, and every legacy byte and
+  output line is preserved exactly as in 0.31.0;
+- a record with **any own top-level `v`** is refused with
+  `unsupported-record-version` and exit code 1.
+
+There is no allow-list. Unknown *future* versions are refused too, which is the
+point: a guard that understood one version well enough to permit it would be the
+authority-aware parser this release is deliberately without. An inherited `v` is
+not an own record version, and a valid-looking signature or timestamp sibling
+cannot pull a versioned record back into legacy crypto.
+
+Nothing else changed. If you never hand `verify` an authority record, this
+release behaves identically to 0.31.0.
+
+
+One user-visible detail, because it will look odd the first time you see it:
+the declared version is echoed back **quoted, hex-escaped and capped at 120
+characters**, not verbatim. `reelier.authority-receipt/v1` prints as-is, but a
+`v` of `{"nested":true}` prints as `"{"nested":true}"`. That is
+deliberate. The declared version is attacker-controlled bytes being spliced into
+a verdict line, and interpolating it raw let a `v` containing newlines print
+forged claim rows and the literal string "No present claim failed verification."
+underneath the refusal — measured in a real subprocess, exit code still 1, but a
+human reading the terminal was shown a pass. Only `[A-Za-z0-9._/:+-]` passes
+through; everything else, spaces included, is escaped.
+
+## 0.31.0 — The artifact that left, and where the watching stops
+
+**Read this first if you are upgrading from npm.** Published 0.30.0 shipped
+exactly one thing from this line of work: policy attestation (`meta.policy` on
+the trace, `RunRecord.policy` on the run). Everything else in that release's
+notes, and everything in these, has been sitting on `main` unreleased —
+`src/artifact.ts`, `src/defer.ts`, `src/provenance.ts`, `src/discovery.ts`,
+`src/coverage.ts`, the `emit:` grammar, `attest.defer`,
+`RunRecord.manifestChecked`, multi-config `install`, and the `discover`,
+`resolve` and `coverage` commands. The published dispatch switch carried 25
+commands; this one carries 28. This is a large jump, not an increment, and the
+0.30.0 section below does not describe what you had.
+
+Breaking format change: **yes, and only for skills that opt in.** The step
+grammar gains a tenth key, `emit:`, and `parseSkill` rejects any unrecognised
+bulleted step field by design — there is no permissive default arm — so a skill
+carrying `- emit:` is a **parse error on published 0.30.0 and every earlier
+version**, not a field an older reader ignores. `attest.defer` is the same
+shape: the `attest` sub-key set is closed, so `defer` is a parse error on older
+readers too. A skill using neither key is unaffected in every respect:
+byte-identical approval hashes, byte-identical records, byte-identical
+serialization. No API was removed, no existing record field changed meaning,
+and no enforcement behavior changed for it.
+
+Reader obligations, and there are three. **One:** every new record field —
+`StepRecord.emit`, `StepRecord.resolutionOf`, `attest.deferredUntil`,
+`write.dispatchId`, `RunRecord.deferredResolution`, `RunRecord.manifestChecked`
+— is optional and additive, and the closed `attest.method` enum was **not**
+widened to reach `confidence: "pending"`. The one real obligation: a reader
+that renders `record.passed` as PASS/FAIL will render a deferred-resolution
+record as FAIL, and must detect `deferredResolution: true` and render a neutral
+deferred-resolution state instead (SPEC §4.2). **Two:** the trace's closed `t`
+discriminator gained `"prov"`, and the call index `i` now joins three records
+instead of two. A consumer that errors on an unknown `t`, or that assumes
+exactly one `call` and one `result` per `i`, breaks on traces recorded by
+0.31.0; dropping every `t: "prov"` line yields exactly the pre-0.31.0 file, and
+earlier traces are unaffected. `seq` also absorbs the new record, so the numbers
+assigned to later records in a window differ from what a pre-0.31.0 recording of
+the same session would have produced — nothing derives a call count from `seq`,
+and `i` remains the only call identity. **Three:** `ApprovalHashInput` now
+requires an `emit` member, `computeApprovalHash` is exported, and on the public
+`reelier/serve` export `buildToolServer`, `runFromSessionTool`, `runPushTool`,
+`runDiffTool` and `runReplayTool` each take an optional trailing options
+argument; existing callers are unaffected.
+
+One behavior change operators must be told about, because it is a change in
+blast radius rather than in output: the same `reelier install` invocation that
+previously rewrote exactly one MCP config now rewrites **every one of the five
+known paths that exists**. Every rewritten file is backed up first, but
+`reelier uninstall` still reverts only the Claude Code path, so the revert is no
+longer symmetric with the install. Anyone who relied on the old single-file
+behavior should pass `--config <path>`.
+
+### Added
+
+- **`emit:` — a pre-dispatch commitment to the artifact that left**
+  (`src/artifact.ts`; SPEC §3.2, §4.1, §6.1e). For a write with no post-state to
+  probe, the attestable object is the artifact itself. `emit:` declares which
+  parts of the **filled** action args constitute it, as an ordered list of
+  `args.<top-level key>` entries; the digest is computed after the fill and
+  **before** dispatch — **never at the approval-hash gate, which recomputes over
+  the args template with `{{placeholders}}` intact and holds no rendered
+  artifact** — and no probe tool is involved. The declaration itself enters the
+  approval hash, so narrowing or deleting it is a mismatch no flag overrides.
+  Scope bound: for a **fully-static** write the approval hash already binds the
+  exact args, so `emit:` adds a named commitment and no new binding — the gap it
+  closes is the **templated** write.
+- **`StepRecord.emit`** carries `artifactDigest` (unsalted `sha256` over the
+  type-tagged projection, action tool name bound in), the declared `projection`,
+  the `resolved`/`unresolved` partition, `approvalHash` and `at` — hashes, counts
+  and field names only. `approvalHash` names WHICH approval authorized the
+  emission and is absent exactly when `write.approved` is `false`, because a flag
+  dispatch has no authorization to point at. The block is present iff the step
+  declared `emit:` AND the call dispatched; an L2 re-dispatch drops it rather
+  than carrying a stale commitment onto the healed step. Selection is own
+  top-level scalars only, so a nested `args.body` lands in `emit.unresolved`
+  (names only, omitted when empty and never `[]`) — **reporting-only in recorder
+  mode, and it gates nothing**: the write dispatches, the `· N finding(s)`
+  counter counts pre-state mismatches alone, and an unresolved emission therefore
+  appears in the record and on no terminal line.
+- **A coverage gate under the existing `state_gate: refuse` opt-in.** A write
+  step whose declared projection did not **fully** resolve is refused before
+  dispatch: `outcome: "failed"`, the unresolved fields named in `failures[]`, and
+  **no `write`, no `attest`, no `emit`** on the record. `--allow-writes`/`--yes`
+  are not consulted and **no flag overrides it**. The comparison is over field
+  NAMES, and the refusal claims only that declared coverage did not resolve —
+  never that the write was wrong.
+- **`attest.defer: "<duration>"` — the deferred probe.** Most sends do produce a
+  post-state, just late: a provider message-id, an event row, a bounce webhook.
+  `defer` takes a duration (`<positive integer>` + `m`/`h`/`d`, at most `365d`,
+  no leading zeros, no combinations, no fractions) resolved against **dispatch**,
+  so the file holds a duration and the record holds `attest.deferredUntil` as an
+  absolute instant, bound into the approval hash. It dispatches **neither** probe
+  side at run time — the provider record does not exist yet. `parseSkill` refuses
+  `defer` without an explicit `attest.projection` and without `emit:`, and the
+  runner refuses one with no matching `approve:` hash. A dispatch whose response
+  is *lost* still preserves `write`, `emit` and the `pending` attest — the call
+  crossed the tool boundary and may have landed.
+- **`attest.confidence: "pending"` is reachable for the first time**, and the
+  closed `method` enum was **not** widened to get there: a deferred probe is a
+  `declared-probe` that has not run. The record carries `deferredUntil` and **no
+  `pre`, `post` or `delta`**. Alongside it, **`write.dispatchId`** — an opaque
+  UUID minted only for deferred writes, so repeated identical dispatches of the
+  same step at the same deadline stay distinguishable. **It is not content
+  evidence and not authorization evidence**; a non-deferred write produces a
+  byte-identical record without it.
+- **`reelier resolve <skill.md> --wrap "<command>" [--var name=value …]`** walks
+  `.reelier/runs/<skill>.jsonl`, probes for the provider record and appends the
+  answer. A **polling** command an operator or CI runs, never a listener — the
+  CLI has no inbound HTTP surface. A declared manifest is preflighted first and
+  fails closed. It refuses per step rather than guessing — a skill no longer
+  declaring an `attest`, an approval hash that no longer recomputes, a
+  parameterized probe with no `expect.probeArgs` commitment or one whose filled
+  args fail that MAC — and exits 1 while still appending whatever resolved.
+  Probes are read-effect by construction.
+- **Grading (`resolveDeferred`, `src/defer.ts`) — `partial`, never `exact`.** A
+  probe resolving at least one declared field grades `partial` with a `post`:
+  post-state observed at resolution time, **not a delta across the write**. It
+  stays `pending` before the deadline; at or after it with nothing resolved it
+  grades `absent` with `deferred-deadline-elapsed: …`, test-pinned wording that
+  claims **only** that Reelier stopped waiting — never that the write failed or
+  was not delivered. An unparseable deadline is treated as NOT elapsed. Nothing
+  in the function can produce a pass.
+- **A resolution is a SECOND, non-passing record — never an amendment**
+  (`buildResolutionRecord`): `deferredResolution: true`, `passed: false`, every
+  step `outcome: "unchecked"` and `totals.failed: 0` — it evaluates no assertion,
+  so an elapsed deadline is not a step failure, and a long-lived
+  `pending`/`absent` can never serialize as a pass (never-list #1). It joins
+  through `StepRecord.resolutionOf` (`approvalHash`, `artifactDigest`,
+  `deferredUntil`, `dispatchId`, all required), the original stays byte-identical
+  and says `pending` forever, and nothing is written for an attestation that did
+  not move. The resolution's own `post.hash` uses a fresh unrecorded salt and is
+  deliberately joinable to nothing; **the only unsalted cross-record join is
+  `emit.artifactDigest`**.
+- **A `prov` record on the trace, for every call that actually dispatches.** The
+  wrap keeps a process-local, hash-only index of every scalar leaf of every
+  successful downstream response, then resolves each scalar leaf of the outbound
+  arguments and appends `{ t: "prov", seq, i }` carrying `resolved` (with
+  `via: exact|normalized` and a source coordinate), `authored`, `unresolved` and
+  a `truncated` count. It gates nothing: no call is held, altered or refused, and
+  no exit code moves. `grounded` means found in a response this window holds,
+  `authored` means the window held a complete source set and the value is not in
+  it, `unresolved` means neither — and a consumer MUST NOT render `authored` as a
+  failure, `grounded` as a pass, or `unresolved` as either. The closed two-tier
+  resolver — type-tagged byte equality, then single-hop normalizations that never
+  compose — over-reports `authored`, the safe direction. Only a successful,
+  undenied, non-dry-run `result` enters the index, so a prior call's *arguments*
+  can never ground a later call's — but it does **not** distinguish a value a
+  person spoke from one the agent invented, because the conversation is not MCP
+  traffic and is not a source. `reelier trace <file> --provenance` prefers a
+  recorded `prov` and recomputes only for calls carrying none, but recomputes
+  against the **redacted** file, so it is weaker than the live measurement. No
+  argument value and no per-value digest appears in any record: paths, states,
+  coordinates and counts only, never a ratio. Argument path *names* **are**
+  recorded (keys and array indices), clipped and capped with the overflow in
+  `truncated`; the digest index never leaves the wrap process — never on disk,
+  never pushed, never in a trace or run record.
+- **Measurement fails open, says so in the record, and saturates honestly.** If
+  the resolver refuses a value it cannot hash faithfully (an own `__proto__` key
+  at any depth), the call records `args` as `unresolved` with reason
+  `measurement-failed` and **dispatches unchanged**; a successful response that
+  cannot be indexed becomes `source-unaddressable: #N` for every later call in
+  the window. A hard **4,096-leaf cap per recording window** bounds the index: on
+  saturation it stops accepting leaves and never evicts, a hit against a retained
+  hash stays `grounded`, and every miss becomes `unresolved` with
+  `source-index-cap: 4096 leaves`. **Saturation can never manufacture
+  `authored`.** The number is a memory ceiling, not a threshold, and
+  `redacted-argument` completes the deterministic reason set.
+- **`reelier install` now wraps every MCP host config it finds, instead of one.**
+  `knownMcpConfigPaths` (`src/init.ts`) is the single candidate list — Claude
+  Code project (`<cwd>/.mcp.json`), Claude Code user (`~/.claude.json`), Cursor
+  project (`<cwd>/.cursor/mcp.json`), Cursor user (`~/.cursor/mcp.json`),
+  Windsurf user (`~/.codeium/windsurf/mcp_config.json`) — and each one that
+  exists is planned and written in order, each with its own timestamped backup.
+  Detection is less than the name suggests: file existence at a fixed path, no
+  host queried. `--config <path>` targets a single file and is the only way to
+  scope the rewrite to one host on a machine with several; the path is not
+  checked against the known list, and **a file with no `mcpServers` key is
+  reported as having nothing to wrap rather than as an error, so a typo'd path
+  reads as "nothing to do", not as a failure**. Codex (TOML) and VS Code
+  (`servers`-keyed) are excluded, so on a Codex- or VS Code-only machine
+  `install` exits 1 with "No MCP config found" and the host must be fronted by
+  hand with `reelier mcp --wrap`.
+- **`RunRecord.manifestChecked: true` — the positive "declared + verified"
+  preflight signal** (SPEC.md §4.2, §6.1b). Set iff the skill declared a manifest
+  AND `preflightManifest` found every recorded tool present on the live wrapped
+  servers with a byte-identical `inputSchema` digest; the record previously
+  carried only the negative `manifestIgnored`, with which it is mutually
+  exclusive. It names no tool, says nothing about a step that ran, gates nothing.
+- **`reelier discover` — ranks the MCP workflow shapes already in local agent
+  history, and stops there.** It reads three transcript roots and only those
+  three — `~/.claude/projects`, `~/.codex/sessions`, `~/.openclaw/agents` — or
+  one directory with `--dir <path>`; every path without `--upload` is read-only
+  and exits 0. Cursor and Windsurf are never read (SQLite `state.vscdb`, no
+  adapter). A step is an MCP call or a Reelier builtin and nothing else — every
+  native file, shell, search and subagent tool is refused by name — and when
+  nothing survives: "No replayable MCP/API workflow shapes found. Reelier does
+  not infer opportunities from shell or file edits." **No prompt text, assistant
+  message, or user instruction is read at any point.** The fingerprint is
+  argument key *paths* only, capped silently at 64, with any key matching the
+  credential/prompt/secret pattern dropped **along with its entire subtree**;
+  **server and tool names travel verbatim**.
+- **Nothing leaves the machine without `--upload`, one named selection, and one
+  confirmation.** Exactly one opportunity is selected — interactively or by
+  `--select N` — then the exact bundle prints under "Will share" / "Will never
+  share" and a y/N; declining prints "Upload declined — nothing left this
+  computer." `serve` does not expose `discover`. **Read `--yes` as two
+  consents:** with `--upload --yes` and no `--select` the command takes
+  **opportunity 1** of a ranking it computed in that same invocation, and skips
+  the y/N. The upload is one authenticated POST, attempted once, key never
+  printed, config resolved **after** consent. Excluded from the bundle:
+  `sessionPaths` (the absolute transcript paths — **the one place a home
+  directory would have appeared**), `displayLabel` and `configuredServerCount`.
+  But **the `redactionReport` is a declaration, not a proof**:
+  `rawValuesIncluded: false` is a literal, not computed from the bundle.
+- **The Ed25519 signature is tamper-evidence, not identity.**
+  `readDiscoverySigningMaterial` **generates a keypair if none exists**, so a
+  first `discover --upload` can mint a signing key as a side effect, and
+  `publicKeyPem` rides in that same unsigned block: verifying a bundle against
+  the key it names proves internal consistency only, and who sent it is
+  established by the bearer API key on the POST.
+- **`reelier coverage --host codex` — a read-only observed inventory of a host's
+  MCP surface.** It reads `~/.codex/config.toml`'s server, plugin-registration
+  and marketplace tables, then reads each ENABLED registration's payload
+  manifest. `collectCodexCoverage` only ever reads: it does not extend the wrap,
+  rewrite configuration or touch a vendor directory. Location is
+  `parsed`/`unreadable`/`absent`; routing is `wrapped`/`unwrapped`, left
+  undefined — never guessed — when the entry is unreadable. `wrapped` means the
+  entry's own tokens demonstrably invoke `reelier mcp --wrap`; **it is a routing
+  claim only** — a consumer MUST NOT read it as enforced or safe, since the
+  seatbelt behind a wrapped entry can still fail open, and MUST NOT render
+  `unwrapped`, `unreadable` or `absent` as a pass. Nesting deeper than one level
+  below the payload root is not searched, and reports `absent`, never "no
+  servers".
+- **Named denominators, no percentage, and a fixed last line.** Totals are
+  reported only against a named denominator (`N of M entries in <path> parsed;
+  W wrapped, U unwrapped`); no overall percentage is computed anywhere. The final
+  line of every report is exactly
+  `Observed inventory only; this is not proof of completeness.`
+- **Skill-only plugin packages, and `reelier serve --workspace <abs-path>`.**
+  `scripts/build-plugin-packages.mjs` writes `plugin/agent-plugins/` and
+  `plugin/claude/` from one `SKILL.md` and `package.json`'s version; `--check`
+  exits 1 on drift. Both ship **no `mcp.json`, no `.mcp.json`, no `mcpServers`
+  key and no `reelier serve` entry**, enforced by a test walking the output.
+  `--workspace` must be absolute and an existing directory, and becomes the
+  fallback for the workspace-sensitive `serve` defaults, with explicit per-call
+  `cwd`/`out` still winning. Path resolution only: it observes nothing new,
+  enforces nothing, and makes a plugin-launched `serve` cover no other server's
+  writes.
+
+### Changed
+
+- **A name whose only read evidence is a NOUN now carries `unknown: true`.**
+  Effect classification's rung 4 matched any read token anywhere in a tool name,
+  so `complete_query_tuning` classified `{read, unknown: false}` — the wrong
+  effect with **no review flag at all** — though it applies DDL to a production
+  main branch and deletes a branch. Measured 2026-08-06 against a live neon
+  server, where 0 of 23 tools ship `readOnlyHint`/`destructiveHint`, so rungs
+  1–2 never pre-empt the verb list. The eleven noun tokens (`query`, `status`,
+  `stat`, `stats`, `count`, `preview`, `health`, `head`, `info`, `screenshot`,
+  `logs`) still classify `read` — over-classifying every `*_status` tool as a
+  write would be worse — but they now surface for review. A server-supplied
+  `readOnlyHint` clears the flag. Blast radius on the same 85-name corpus:
+  3 newly flagged, 2 of them the actual leaked writes, 1 noise. **No effect
+  changed.** `compile` gives these a distinct open question — "classified read
+  on a noun, not an action verb … It is NOT gated by `--allow-writes`" — rather
+  than the rung-6 wording, because saying "downgraded to destructive" would
+  describe the step as gated when replay will let it through. **This makes the
+  leak visible, not closed:** `unknown` drives reporting and gates nothing, so a
+  flagged read still passes replay's write gate. Routing these names to rung-6
+  default-deny would close it, over-classify genuine reads, and is a separate
+  unmade decision.
+- **The run summary's verdict word is now computed, not a boolean.**
+  `record.passed ? "PASSED" : "FAILED"` became `runDisplayVerdict(record)`, which
+  returns `FAILED`, then `ATTESTATION PENDING`, then `ATTESTATION ABSENT`, then
+  `PASSED`. **The exit code is unchanged** — `cmdRun` still returns
+  `record.passed ? 0 : 1`, so a run printing `ATTESTATION PENDING` exits 0 and a
+  pipeline gating on exit status alone learns nothing about it.
+- **Records marked `deferredResolution: true` are excluded from every local
+  aggregate** via `executionRecords`: `bench`, `diff`, `serve`'s diff tool and
+  run-shape priors filter them, so appending a resolution cannot move a pass
+  rate, a baseline or a prior. `push` does **not** filter, and nothing in the OSS
+  CLI renders one.
+- **`ApprovalHashInput` gained a required `emit` member**, and both `emit` and
+  `attest.defer` join the hash input **only when present**, so a skill using
+  neither hashes byte-identically to 0.30.0. `writeback` serializes both keys, so
+  an L1/L2 write-back cannot silently drop a coverage list or a deadline.
+- **`install --dry-run` prints a line diff instead of the whole rewritten
+  config**, but it is a positional walk over a re-serialized file, so every line
+  after the first wrapped entry prints as a `-`/`+` pair — read it as what the
+  file will contain, never as a minimal changeset.
+- **Multi-config writes are sequential and reported per file, never presented as
+  atomic.** All configs are planned first, with a per-server `will wrap` /
+  `already wrapped — left alone` / `skipped — <reason>` line, then written one at
+  a time, each backed up first. If the third of five fails, the first two stay
+  written and the command exits 1 — no command undoes the pair.
+- **`uninstall` did not grow with `install`, and this is the sharp edge of the
+  release.** `cmdUninstall` still resolves a single path through
+  `detectAgentConfig`, restores its newest `.backup-*` and exits 0. It accepts no
+  `--config` and never looks at the Cursor or Windsurf paths `install` just
+  rewrote. Reproduced at HEAD: after a two-config `install`, `uninstall` reverts
+  `.mcp.json`, reports success, and leaves Cursor wrapped — reverting the rest is
+  a manual copy from the backups on disk.
+- **One unparseable host config aborts the whole install, before anything is
+  written.** A `JSON.parse` failure on any candidate — a UTF-8 BOM is enough —
+  prints a raw `SyntaxError` stack, exit 1, zero configs wrapped; widening
+  detection from two paths to five widened this. Reproduced at HEAD.
+- **The plugin coverage boundary is now written down, in one canonical wording,
+  in four places** — `docs/REFERENCE.md`, `docs/integration-tiers.md`,
+  `docs/security/threat-model.md` §3.7 and the capabilities twin §7.6: `install`
+  wraps MCP entries in supported host configuration files and does not inspect
+  plugin-owned manifests, so plugin-delivered calls sit outside the observed
+  boundary unless the plugin itself invokes `reelier mcp --wrap` or the host
+  exposes the entry through a supported configuration Reelier rewrites; there is
+  no native wrapping path for URL-based servers; and receipts attest only calls
+  that traversed Reelier. Nothing here changes that boundary, only what is
+  stated about it.
+- **`serve`'s MCP tool schemas gained no key**; without `--workspace`, behavior
+  is byte-identical to 0.30.0. `reelier trace` now prints a `[prov #N]` line per
+  dispatched call. `reelier init` lists observed opportunities first: read-only,
+  it **never uploads**, and anyone parsing its stdout sees new lines ahead of the
+  "Step 0" block.
+
+### Fixed
+
+- **An `install` that covered half the machine no longer reports unqualified
+  success.** The published behavior picked one config, so a machine running
+  agents through both Claude Code and Cursor got `Wrapped N server(s)` with an
+  entire host recording nothing — a silent coverage hole underneath a success
+  message. Every detected config is now wrapped and the closing line names the
+  totals: `<n> server(s) wrapped across <m> config(s)`.
+- **"No MCP config found" now lists every path that was checked** — all five
+  labeled candidates and the `reelier install --config <path>` escape hatch,
+  where the old message named only the two Claude Code paths.
+- **`build-plugin-packages.mjs --check` compared the platform's newline
+  translation, not package content.** With git's `autocrlf`, a fresh Windows
+  checkout failed the drift guard and took `test/plugin-packages.test.ts` with
+  it. The comparison now normalizes CRLF to LF; real content drift still exits 1.
+
+### Notes
+
+- **`emit:` attests what was emitted, and nothing downstream of that.** Not that
+  the artifact was delivered, read, or acted on, and never that its content was
+  correct (never-list #8). It does not close the blindness it makes visible:
+  server-side-rendered payloads, reference-valued fields and two-call draft→send
+  compositions stay unattested — `unresolved` names the gap without removing it,
+  and gates nothing outside `state_gate: refuse`.
+- **`attest.defer` does not make email a solved substrate.** It works only where
+  the provider later exposes a probeable record; a write with no post-state at
+  any time still has nothing to hash, and `pending` must never render as a pass.
+- **`artifactDigest` is not private.** Deliberately unsalted, third-party
+  recomputable and a **cross-run correlator** — that is what makes it checkable —
+  so a projection over a single low-entropy field is a confirmation oracle for it.
+  It adds no new exposure *class* **only because** `idempotencyKey` sits beside it
+  hashing all the filled args, **and that does not generalize to any other
+  field**; project the fields you actually approved.
+  Nothing in the shipped corpus demonstrates any of this: no example uses `emit:`
+  or `attest.defer`, and `docs/REFERENCE.md` documents neither.
+- **Provenance certifies lineage, never fit, and nothing gates on it.**
+  `grounded` does not mean correct — a fully grounded argument set can be the
+  right kind of value from the wrong record — and `authored` does not mean
+  invented, only "not present in any source this window holds"; on a healthy run
+  most string arguments are authored. **Provenance does not see human input**: a
+  value a customer spoke or typed outside a tool call resolves `authored`,
+  identically to one the agent made up. The counts must not become a ratio or a
+  score. It is wrap-path only: `RunRecord` carries no `prov` block.
+- **`install` wrapping "every known host config" is not "every MCP server the
+  agent can reach."** It wraps stdio `command` entries in five JSON files; remote
+  entries are skipped, Codex's TOML and VS Code's `servers`-keyed file are not
+  looked at, and plugin-delivered servers load from the plugin's own manifest.
+  Nor does a successful `install` mean recording is on: the agent has to be
+  restarted, and nothing verifies that it was.
+- **`manifestChecked: true` is not evidence about anything a step did**, and it
+  is neither a pass nor a fail. Its absence spans "no manifest declared",
+  "`--ignore-manifest` was used" (which stamps `manifestIgnored` instead) and
+  "written before the field existed", and a failed preflight writes no record at
+  all, so absence is never the failure signal.
+- **`discover` executes nothing and `coverage` extends nothing.** `discover`
+  produces a ranking and, on request, one signed bundle, with
+  `evaluationPotential` a heuristic used for ordering, `approvalBoundary` gating
+  nothing, and `effectCounts.destructive` including rung-6 unknown-verb tools
+  whose `unknown: true` flag does not travel in the bundle; `coverage` supports
+  `codex` alone and describes a configuration snapshot, not what a host launched
+  — it makes a gap visible, not blocked, and no command consumes its output.
+- **Installing the Reelier plugin does not cover writes.** Both packages are
+  skill-only and declare no MCP servers; "install the plugin and your writes are
+  covered" is a forbidden sentence. Only Codex has been observed loading them, on
+  one machine, and only to install + enable — it did **not** parse the Agent
+  Plugins root `plugin.json`, and skills visibility and tool naming remain
+  unchecked, as does every other host cell in spec §4. `--workspace` does not
+  change that: Agent Plugins v1 defines only `${PLUGIN_ROOT}` and
+  `${PLUGIN_DATA}`, so no portable manifest names a workspace.
+- **Nothing here proves every write was receipted.** Not a `partial` resolution,
+  not a passing run, not a clean `coverage` report, not a `prov` block. Receipts
+  prove what receipted calls did; completeness attestation remains unbuilt.
+
+Design: `docs/specs/artifact-attestation-v1.md`,
+`docs/specs/argument-provenance-v1.md`,
+`docs/specs/agent-plugins-coverage-v1.md`,
+`docs/superpowers/specs/2026-08-06-observed-work-discovery-design.md`.
+
 ## 0.30.0 — The seatbelt in the record
 
 Breaking format change: **yes, only for skills that opt into the new `emit:`
