@@ -7,12 +7,15 @@ export interface LocalDiscoveryResponse {
   opportunities: AgentOpportunity[];
 }
 
-function localBridgeUrl(baseUrl: string): string {
+function localBridgeBaseUrl(baseUrl: string): string {
   const url = new URL(baseUrl);
   if (url.protocol !== "http:" || !["localhost", "127.0.0.1", "::1"].includes(url.hostname)) {
     throw new Error("local discovery bridge requires an http localhost URL");
   }
-  return `${url.toString().replace(/\/$/, "")}/v1/discover`;
+  if (url.username || url.password || url.search || url.hash || (url.pathname !== "/" && url.pathname !== "")) {
+    throw new Error("local discovery bridge URL must be a bare loopback origin");
+  }
+  return url.origin;
 }
 
 export async function discoverLocalPlugin(
@@ -22,12 +25,12 @@ export async function discoverLocalPlugin(
 ): Promise<LocalDiscoveryResponse> {
   const validation = validateReelierPluginV1(plugin);
   if (!validation.ok) throw new Error(`invalid ReelierPluginV1 manifest: ${validation.errors.join("; ")}`);
-  const root = new URL(baseUrl);
-  const capabilitiesResponse = await fetchImpl(`${root.toString().replace(/\/$/, "")}/v1/capabilities`);
+  const origin = localBridgeBaseUrl(baseUrl);
+  const capabilitiesResponse = await fetchImpl(`${origin}/v1/capabilities`);
   if (!capabilitiesResponse.ok) throw new Error(`local discovery bridge capabilities failed (HTTP ${capabilitiesResponse.status})`);
   const capabilities = await capabilitiesResponse.json() as { nonce?: unknown };
   if (typeof capabilities.nonce !== "string") throw new Error("local discovery bridge returned no handshake nonce");
-  const response = await fetchImpl(localBridgeUrl(baseUrl).replace("/v1/discover", "/v1/recommend"), {
+  const response = await fetchImpl(`${origin}/v1/recommend`, {
     method: "POST",
     headers: { "content-type": "application/json", "x-reelier-nonce": capabilities.nonce },
     body: JSON.stringify(plugin),

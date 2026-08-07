@@ -54,12 +54,13 @@ function json(response: ServerResponse, status: number, body: unknown): void {
 
 const PRIVATE_KEY = /(authorization|api[-_]?key|credential|password|private[-_]?key|prompt|raw[-_]?trace|secret|token|cookie|header|env|home|transcript|sessionpath|absolute.?path)/i;
 function privateHost(hostname: string): boolean {
-  return hostname === "localhost" || hostname === "::1" || hostname === "127.0.0.1" || hostname.startsWith("10.") || hostname.startsWith("192.168.") || /^172\.(1[6-9]|2\d|3[01])\./.test(hostname);
+  const lower = hostname.toLowerCase();
+  return lower === "localhost" || lower === "::" || lower === "::1" || lower === "0.0.0.0" || lower === "metadata.google.internal" || lower === "127.0.0.1" || lower.startsWith("10.") || lower.startsWith("192.168.") || lower.startsWith("169.254.") || lower.startsWith("fc") || lower.startsWith("fd") || lower.startsWith("fe80:") || /^172\.(1[6-9]|2\d|3[01])\./.test(lower);
 }
 function sanitize(value: unknown, removed: string[], key = ""): unknown {
   if (PRIVATE_KEY.test(key)) { removed.push(key); return undefined; }
   if (typeof value === "string") {
-    if (/^(?:[A-Za-z]:[\\/]|\\\\|\/Users\/|\/home\/|\/tmp\/)/.test(value)) { removed.push(key || "path"); return undefined; }
+    if (/^(?:[A-Za-z]:[\\/]|\\\\|\/(?:Users|home|tmp|etc|var|root|private|opt|srv|proc|sys|dev)\/)/.test(value)) { removed.push(key || "path"); return undefined; }
     try {
       const url = new URL(value);
       if (privateHost(url.hostname)) { removed.push(key || "privateUrl"); return undefined; }
@@ -77,7 +78,12 @@ function sanitize(value: unknown, removed: string[], key = ""): unknown {
 }
 
 function sanitizeOpportunities(opportunities: AgentOpportunity[]): AgentOpportunity[] {
-  return opportunities.map((opportunity) => ({ ...opportunity, sessionPaths: [] }));
+  const removed: string[] = [];
+  return opportunities.map((opportunity) => {
+    const clean = sanitize({ ...opportunity, sessionPaths: undefined }, removed) as Record<string, unknown>;
+    clean.sessionPaths = [];
+    return clean as unknown as AgentOpportunity;
+  });
 }
 
 export function createBridgeServer(options: BridgeOptions = {}): BridgeServer {
@@ -132,7 +138,7 @@ export function createBridgeServer(options: BridgeOptions = {}): BridgeServer {
       if (request.url === "/v1/work-card") {
         const removedFields: string[] = [];
         const cleanWorkCard = sanitize(envelope.workCard ?? {}, removedFields);
-        json(response, 200, { schemaVersion: "ReelierWorkCardV1", plugin: validation.value, accepted: true, workCard: cleanWorkCard, removedFields: [...new Set(removedFields)].sort() });
+        json(response, 200, { schemaVersion: "ReelierWorkCardV1", plugin: validation.value, status: "received", outcome: "not_evaluated", localOnly: true, cloudCertificationEligible: false, workCard: cleanWorkCard, removedFields: [...new Set(removedFields)].sort() });
         return;
       }
       json(response, 200, { schemaVersion: "ReelierRecommendationV1", plugin: validation.value, opportunities: sanitizeOpportunities(await discovery(validation.value)) });

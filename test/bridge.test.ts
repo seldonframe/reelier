@@ -98,3 +98,12 @@ test("local discovery bridge accepts a nonce handshake and CORS preflight for wo
     await new Promise<void>((resolve, reject) => server.close((error: Error | undefined) => error ? reject(error) : resolve()));
   }
 });
+
+test("local bridge client validates the loopback origin before making a request", async () => {
+  let fetchCalled = false;
+  await assert.rejects(
+    () => discoverLocalPlugin(plugin, "https://attacker.example", async () => { fetchCalled = true; throw new Error("network should not be reached"); }),
+    /localhost/,
+  );
+  assert.equal(fetchCalled, false);
+});

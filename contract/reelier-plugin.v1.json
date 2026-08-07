@@ -11,6 +11,23 @@
     "name": { "type": "string", "minLength": 1, "maxLength": 200 },
     "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$" },
     "description": { "type": "string", "maxLength": 1000 },
-    "capabilities": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "const": "discovery" } }
+    "capabilities": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "enum": ["discovery", "recommendation", "work-card", "certification"] } },
+    "harness": { "$ref": "#/$defs/pin" },
+    "models": { "type": "object", "additionalProperties": false, "required": ["providers", "models"], "properties": { "providers": { "$ref": "#/$defs/names" }, "models": { "$ref": "#/$defs/names" } } },
+    "launch": { "type": "object", "additionalProperties": false, "required": ["command"], "properties": { "command": { "type": "string", "maxLength": 200 }, "version": { "$ref": "#/$defs/semver" }, "localOnly": { "type": "boolean" } } },
+    "requiredMcpTools": { "$ref": "#/$defs/names" },
+    "configuration": { "type": "object", "additionalProperties": false, "required": ["required"], "properties": { "required": { "$ref": "#/$defs/names" }, "optional": { "$ref": "#/$defs/names" } } },
+    "redaction": { "type": "object", "additionalProperties": false, "required": ["fields"], "properties": { "fields": { "$ref": "#/$defs/names" } } },
+    "verification": { "type": "object", "additionalProperties": false, "required": ["hooks", "receipt"], "properties": { "hooks": { "$ref": "#/$defs/names" }, "receipt": { "enum": ["required", "optional", "none"] } } },
+    "fixtures": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["id", "digest"], "properties": { "id": { "type": "string", "minLength": 1, "maxLength": 200 }, "digest": { "$ref": "#/$defs/digest" } } } },
+    "approval": { "type": "object", "additionalProperties": false, "required": ["beforeWrite", "rollback"], "properties": { "beforeWrite": { "type": "boolean" }, "rollback": { "enum": ["required", "supported", "none"] } } },
+    "execution": { "type": "object", "additionalProperties": false, "required": ["localOnly", "cloudCertificationEligible"], "properties": { "localOnly": { "type": "boolean" }, "cloudCertificationEligible": { "type": "boolean" } } },
+    "integrity": { "type": "object", "additionalProperties": false, "required": ["contentDigest"], "properties": { "contentDigest": { "$ref": "#/$defs/digest" }, "signature": { "type": "object", "additionalProperties": false, "required": ["algorithm", "keyId", "value"], "properties": { "algorithm": { "const": "ed25519" }, "keyId": { "type": "string" }, "value": { "type": "string" } } } } }
+  },
+  "$defs": {
+    "semver": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$" },
+    "digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "names": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 200, "pattern": "^(?!.*(?:secret|token|password|credential|authorization|cookie|api[-_]?key)).+$" } },
+    "pin": { "type": "object", "additionalProperties": false, "required": ["name", "version"], "properties": { "name": { "type": "string", "minLength": 1, "maxLength": 120 }, "version": { "$ref": "#/$defs/semver" } } }
   }
 }

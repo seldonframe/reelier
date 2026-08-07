@@ -4518,8 +4518,9 @@ export async function cmdWhoami(fetchImpl: typeof fetch = fetch): Promise<number
 }
 
 const USAGE =
-  "Usage: reelier <run|bench|baseline|cost|prices|mcp|serve|trace|compile|manifest|approve|push|get|verify|diff|ci|policy|init|discover|from-session|scan|install|uninstall|login|logout|whoami> [options]\n" +
+  "Usage: reelier <run|bench|baseline|cost|prices|mcp|serve|trace|compile|manifest|approve|push|get|verify|diff|ci|policy|init|discover|bridge|from-session|scan|install|uninstall|login|logout|whoami> [options]\n" +
   "  discover â€” rank observed workflow opportunities locally; use --upload to preview and explicitly send one sanitized bundle to Arena Cloud.\n" +
+  "  bridge  — reelier bridge --port 4777: expose nonce-gated local capabilities and Work Card handoff metadata; never executes Cloud plugin code.\n" +
   "  login  — reelier login: connect this machine to Reelier Cloud via a device-code browser handshake; writes ~/.reelier/config.json.\n" +
   "  logout — reelier logout: clears the locally stored key (revoke it from the dashboard's Settings, not locally).\n" +
   "  whoami — reelier whoami: print the identity the stored key resolves to, or that you're not logged in.\n" +
