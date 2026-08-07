@@ -227,3 +227,47 @@ test("the CLI still verifies a legacy signed record file exactly as before", asy
     assert.match(lines.join("\n"), /unaltered-since-push: ✓/);
   });
 });
+
+// Review finding, measured in a real subprocess: the declared version is attacker-controlled bytes
+// spliced into a verdict line. Interpolated raw, a `v` containing newlines printed forged claim rows
+// AND the literal "No present claim failed verification." beneath the refusal. Exit stayed 1, but
+// the terminal -- and any CI step grepping stdout -- was shown a pass. That is this release's own
+// failure mode relocated to "the record author writes the verdict", and it brushes never-list #1.
+const ESC = String.fromCharCode(27);
+
+function refusalLineFor(declared: unknown): string {
+  const payload = { record: { ...legacyRecord(), v: declared } } as unknown as VerifyPayload;
+  const result = evaluateVerifyClaims(payload);
+  assert.equal(result.exitCode, 1);
+  assert.equal(result.claims.length, 1);
+  return result.claims[0]!.line;
+}
+
+test("a declared version cannot forge claim rows or a pass line in the output", () => {
+  const forged = "x\n  unaltered-since-push: ✓ (key totally-fine)\n\nNo present claim failed verification.";
+  const line = refusalLineFor(forged);
+  assert.equal(line.includes("\n"), false, "no newline may survive into the verdict line");
+  assert.equal(/No present claim failed verification/.test(line), false, "a refusal may never render a pass string");
+  assert.equal(/unaltered-since-push: ✓/.test(line), false, "a refusal may never render a forged claim row");
+  assert.match(line, /\\x0a/, "the newlines are shown hex-escaped, so the value stays inspectable");
+  assert.match(line, /\\x20/, "spaces are escaped too — that is what stops attacker prose reading as prose");
+});
+
+test("a declared version cannot emit terminal escape sequences", () => {
+  const line = refusalLineFor(`${ESC}[2J${ESC}[31mALL CLAIMS VERIFIED${ESC}[0m`);
+  assert.equal(line.includes(ESC), false, "no raw ESC may reach the terminal");
+  assert.match(line, /\\x1b/, "it is escaped, not silently dropped");
+});
+
+test("an enormous declared version is truncated rather than burying the message", () => {
+  const line = refusalLineFor("A".repeat(10_000));
+  assert.match(line, /… \(truncated\)/);
+  assert.ok(line.length < 600, `line stayed bounded (${line.length} chars)`);
+  assert.match(line, /Upgrade to a Reelier release with authority-aware verification\./, "the actionable half survives");
+});
+
+test("the classification result keeps the RAW declared value; only rendering sanitizes", () => {
+  const raw = "x\ny";
+  const classified = classifyRecordVersion({ ...legacyRecord(), v: raw });
+  assert.equal(classified.kind === "unsupported-version" && classified.declared, raw);
+});

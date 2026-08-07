@@ -1,5 +1,5 @@
 {
   "name": "reelier",
-  "version": "0.31.0",
+  "version": "0.31.1",
   "description": "Reelier's Agent Skill: freeze a repeatable, tool-call-driven job into a deterministic, replayable skill with a receipt per run. Skill-only package — it includes no MCP servers."
 }
