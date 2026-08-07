@@ -254,6 +254,26 @@ behavior should pass `--config <path>`.
 
 ### Changed
 
+- **A name whose only read evidence is a NOUN now carries `unknown: true`.**
+  Effect classification's rung 4 matched any read token anywhere in a tool name,
+  so `complete_query_tuning` classified `{read, unknown: false}` — the wrong
+  effect with **no review flag at all** — though it applies DDL to a production
+  main branch and deletes a branch. Measured 2026-08-06 against a live neon
+  server, where 0 of 23 tools ship `readOnlyHint`/`destructiveHint`, so rungs
+  1–2 never pre-empt the verb list. The eleven noun tokens (`query`, `status`,
+  `stat`, `stats`, `count`, `preview`, `health`, `head`, `info`, `screenshot`,
+  `logs`) still classify `read` — over-classifying every `*_status` tool as a
+  write would be worse — but they now surface for review. A server-supplied
+  `readOnlyHint` clears the flag. Blast radius on the same 85-name corpus:
+  3 newly flagged, 2 of them the actual leaked writes, 1 noise. **No effect
+  changed.** `compile` gives these a distinct open question — "classified read
+  on a noun, not an action verb … It is NOT gated by `--allow-writes`" — rather
+  than the rung-6 wording, because saying "downgraded to destructive" would
+  describe the step as gated when replay will let it through. **This makes the
+  leak visible, not closed:** `unknown` drives reporting and gates nothing, so a
+  flagged read still passes replay's write gate. Routing these names to rung-6
+  default-deny would close it, over-classify genuine reads, and is a separate
+  unmade decision.
 - **The run summary's verdict word is now computed, not a boolean.**
   `record.passed ? "PASSED" : "FAILED"` became `runDisplayVerdict(record)`, which
   returns `FAILED`, then `ATTESTATION PENDING`, then `ATTESTATION ABSENT`, then
