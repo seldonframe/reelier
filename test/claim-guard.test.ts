@@ -70,7 +70,13 @@ const SKIP_DIRS = new Set([
  * They are git-excluded (`.git/info/exclude`), so CI never sees them and skipping
  * them loses no coverage the main tree does not already provide.
  */
-const SKIP_PATH_SUFFIXES = [join(".claude", "worktrees")];
+// Git-ignored agent scratch. This walker crawls the filesystem rather than
+// `git ls-files`, so it reaches directories git never sees. `.superpowers/`
+// holds subagent task reports, and a report that quotes THIS test's own
+// failure message contains the banned phrase — which failed the suite on a
+// file that ships nowhere and is not even tracked. Scratch that quotes the
+// rule is not a claim about the product.
+const SKIP_PATH_SUFFIXES = [join(".claude", "worktrees"), ".superpowers"];
 
 const SCAN_EXT = [".ts", ".tsx", ".js", ".mjs", ".md", ".mdx", ".json", ".svg", ".html", ".txt", ".yml", ".yaml"];
 
