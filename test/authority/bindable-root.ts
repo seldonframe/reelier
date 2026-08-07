@@ -63,11 +63,22 @@ export function fencePortForRoot(root: string): number {
   return fencePortFromMaterial(canonicalFenceRoot(realpathSync.native(resolved)), identity.dev, identity.ino);
 }
 
-/** True when this host will let the fence bind that port at all. */
+/**
+ * True when this host will let the fence bind that port at all.
+ *
+ * Only the two codes that mean "not this port" answer `false`. Anything else — `EPERM` in a
+ * sandbox, `ENETDOWN`, `EAFNOSUPPORT` — is not a statement about the port and is rethrown, matching
+ * `ledger.test.ts:152`. Swallowing it would exhaust `attempts` and fail every gate test with a
+ * message naming two causes, neither of which is the real one.
+ */
 export async function fencePortIsBindable(port: number): Promise<boolean> {
-  return new Promise<boolean>(resolve => {
+  return new Promise<boolean>((resolve, reject) => {
     const probe = createServer(socket => socket.destroy());
-    probe.once("error", () => resolve(false));
+    probe.once("error", error => {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "EADDRINUSE" || code === "EACCES") { resolve(false); return; }
+      reject(error);
+    });
     probe.listen({ host: "127.0.0.1", port, exclusive: true, reusePort: false }, () => probe.close(() => resolve(true)));
   });
 }

@@ -9,9 +9,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { rm } from "node:fs/promises";
 import path from "node:path";
+import { FsAuthorityLedger } from "../../src/authority/host/fs-ledger.js";
 import { bindableTempRoot, canonicalFenceRoot, fencePortForRoot, fencePortFromMaterial, fencePortIsBindable } from "./bindable-root.js";
 
 test("the mirrored fence port derivation matches its golden values and stated range", () => {
@@ -27,10 +27,35 @@ test("the mirrored fence port derivation matches its golden values and stated ra
     assert.ok(port >= 20_000 && port <= 49_999, `${root} derived ${port}, outside 20000-49999`);
   }
 
-  // Windows folds separators and case; elsewhere the path is taken verbatim.
-  const folded = canonicalFenceRoot(path.join("C:", "Temp", "Root"));
-  assert.equal(folded.includes("\\"), false, "no backslash survives canonicalisation on any platform");
-  if (process.platform === "win32") assert.equal(folded, folded.toLowerCase());
+  // Windows folds separators and case; elsewhere the path is taken verbatim. Asserted per platform
+  // because a single cross-platform assertion here is vacuous on Linux, where `path.join` never
+  // produces a backslash in the first place.
+  if (process.platform === "win32") {
+    assert.equal(canonicalFenceRoot("C:\\Temp\\Root"), "c:/temp/root", "win32 folds separators and case");
+  } else {
+    assert.equal(canonicalFenceRoot("/Tmp/Root"), "/Tmp/Root", "off win32 the path is verbatim — case is significant");
+  }
+});
+
+test("the mirror derives the SAME port the ledger actually uses", async () => {
+  // The load-bearing pin. The source-text pin below catches a changed formula, but it cannot catch
+  // a changed *input* — dropping the case fold, dropping the win32 separator fold, or feeding the
+  // resolved path instead of the native realpath all leave that regex green while this mirror
+  // silently starts choosing the wrong port and the rotation returns. This compares against the
+  // binding the ledger itself computed, so any of those drifts fails here.
+  for (const shape of ["", "/", "/."] as const) {
+    const root = await bindableTempRoot("reelier-fence-agree-");
+    try {
+      const ledger = new FsAuthorityLedger(`${root}${shape}`, { now: () => 0 }) as unknown as {
+        k1OperationFenceBinding: { endpoint: { port: number } } | null;
+      };
+      assert.notEqual(ledger.k1OperationFenceBinding, null, `${shape || "<plain>"}: the ledger derived a binding`);
+      assert.equal(
+        ledger.k1OperationFenceBinding?.endpoint.port, fencePortForRoot(root),
+        `${shape || "<plain>"}: mirror and ledger must agree, or selection is choosing the wrong port`,
+      );
+    } finally { await rm(root, { recursive: true, force: true }); }
+  }
 });
 
 test("src still derives the fence port by the formula this mirror reproduces", () => {
@@ -75,7 +100,5 @@ test("selection actually discriminates — an unselected root can be unbindable,
     await held.close();
   }
   // And a certainly-free port reads as bindable.
-  const free = await mkdtemp(path.join(tmpdir(), "reelier-fence-free-"));
-  try { assert.equal(await fencePortIsBindable(0), true, "port 0 is always bindable"); }
-  finally { await rm(free, { recursive: true, force: true }); }
+  assert.equal(await fencePortIsBindable(0), true, "port 0 is always bindable");
 });
