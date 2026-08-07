@@ -20,6 +20,7 @@ import {
   unwrapReservedDispatchHandle, type AuthorityGateDependencies, type GateResult,
 } from "../../src/authority/gate.js";
 import { AuthorityBoundaryError, type GateRefusalReason } from "../../src/authority/errors.js";
+import { bindableTempRoot } from "./bindable-root.js";
 
 const sha=(c:string)=>`sha256:${c.repeat(64)}`;
 const planAt="2026-01-15T00:00:29.000Z",decisionAt="2026-01-15T00:00:30.000Z";
@@ -51,7 +52,10 @@ const acceptedGolden=Object.freeze({
 type SinkFoundMutation="signature"|"signer"|"tenant"|"context-digest"|"event-digest"|"ingress-link"|"reservation-link"|"conflict-no-difference";
 type FixtureOverrides=Readonly<{snapshot?:(base:AuthorityStateSnapshot)=>AuthorityStateSnapshot;advance?:"changed"|"rollback"|"corruption"|"unavailable";lease?:"changed"|"corruption"|"unavailable";reads?:"refused"|"corruption"|"unavailable";clock?:readonly string[];reserveReason?:string;reservationLinkMutation?:"ingress"|"capability"|"context";ingressFailure?:"busy"|"corruption"|"throw";sinkAppend?:string;sinkLookup?:"absent"|"corruption"|"unavailable"|"throw";sinkFoundMutation?:SinkFoundMutation;structuredFailure?:Readonly<{stage:"choices"|"compile";code:"choices-invalid"|"compile-refused";message:string}>;badSigner?:boolean;signerMode?:"wrong-purpose"|"wrong-tenant"|"throw";eventIdMode?:"invalid"|"throw";capabilityIdMode?:"invalid"|"throw";contractValidUntil?:string;grantExpiresAt?:string;sourceProject?:"throw"|"ungrounded";contract?:Readonly<Record<string,unknown>>;grant?:Readonly<Record<string,unknown>>;pack?:Readonly<Record<string,unknown>>;connector?:Readonly<Record<string,unknown>>;effect?:Readonly<Record<string,unknown>>;observation?:"malformed"|"mutated";mutateBackendSnapshotAfterRead?:boolean;requireLeaseLinearization?:boolean;unknownAt?:"load"|"read"|"lease"|"compile"|"reserve"}>;
 async function fixture(overrides:FixtureOverrides={}){
-  const root=await mkdtemp(path.join(tmpdir(),"reelier-gate-"));
+  // Selected, not just created: a root whose derived K1 fence port this host reserves makes every
+  // ledger call burn its full budget and return `busy`, which this gate reports as `unavailable` —
+  // failing 1-5 tests per run, a different set each time. See test/authority/bindable-root.ts.
+  const root=await bindableTempRoot("reelier-gate-");
   const operator={privateKey:operatorPrivate,publicKey:createPublicKey(operatorPrivate)},gateKey={privateKey:gatePrivate,publicKey:createPublicKey(gatePrivate)};
   const grant={v:"reelier.delegation-grant/v1" as const,tenant:"tenant_1",grantId:"grant_1",parentDigest:null,sponsor:"sponsor_1",grantor:"operator_1",grantee:"gate_1",issuedAt:"2026-01-01T00:00:00.000Z",expiresAt:overrides.grantExpiresAt??"2026-02-01T00:00:00.000Z",constraints:grantConstraints(),...overrides.grant};
   const grantDigest=authorityDigest(grant);const policy=authorityCanonicalBytes({template:"Hello {{message}}"});
