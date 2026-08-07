@@ -98,6 +98,18 @@ THE TASKS, IN THIS ORDER:
   not merely that it did. Expect the fault-point registry to need extension — it is FROZEN, so
   any new point is an ABI break requiring an owner decision, exactly like D3(a) was. Raise it
   with the measured list before writing code.
+3b PORT THE N-1 GUARD SHAPE ONTO THIS BRANCH. Found 2026-08-07 while building the guard-only
+  0.31.1 predecessor: this branch's own version guard (src/verify.ts, grep
+  "authority-receipt/v1") is strictly weaker than the one that release carries, in three ways
+  that all matter. It is an exact string equality on ONE version, so a v2, a v99, or any other
+  versioned record falls straight through to legacy evaluation. It sits only inside
+  evaluateVerifyClaims, while evaluateUnalteredSincePushClaim and evaluateTimestampClaim are
+  exported and reach legacy crypto without it. And it reports under the `unaltered-since-push`
+  claim name, so a version refusal renders as a legacy claim failure. The guard release's shape
+  (src/record-version-guard.ts on branch codex/nminus1-guard) fixes all three: no allow-list, all
+  three entry points, its own `unsupported-record-version` claim name, plus an allow-charset
+  renderer that stops a hostile `v` from forging claim rows into the verdict line — a defect
+  measured in a real subprocess there, not hypothesized. Port it, do not re-derive it.
 4 CONFORMANCE + SECURITY items, and a FULL PATHS A/B REGRESSION proving Path C touched neither.
   The regression is not optional and not a formality: Path C has been changing shared host code
   for five batches. Run the wrap path and the replay path end to end and record the result.
