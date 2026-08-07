@@ -21,6 +21,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 
@@ -70,13 +71,38 @@ const SKIP_DIRS = new Set([
  * They are git-excluded (`.git/info/exclude`), so CI never sees them and skipping
  * them loses no coverage the main tree does not already provide.
  */
-// Git-ignored agent scratch. This walker crawls the filesystem rather than
-// `git ls-files`, so it reaches directories git never sees. `.superpowers/`
-// holds subagent task reports, and a report that quotes THIS test's own
-// failure message contains the banned phrase — which failed the suite on a
-// file that ships nowhere and is not even tracked. Scratch that quotes the
-// rule is not a claim about the product.
-const SKIP_PATH_SUFFIXES = [join(".claude", "worktrees"), ".superpowers"];
+const SKIP_PATH_SUFFIXES = [join(".claude", "worktrees")];
+
+/**
+ * Paths git actually ignores, asked of git rather than guessed from a name.
+ *
+ * This walker crawls the filesystem, not `git ls-files`, so it reaches scratch
+ * git never sees — including subagent task reports under `.superpowers/`, and
+ * a report that quotes THIS test's own failure message contains the banned
+ * phrase. That failed the suite on a file that ships nowhere.
+ *
+ * Skipping by directory name was the obvious fix and it was wrong: at the time
+ * of writing `.superpowers/` also held EIGHT TRACKED files, three of them
+ * directly under `.superpowers/sdd/`. A name-suffix skip would have made that
+ * whole subtree unreachable forever, including content that ships — a
+ * guardrail present, silent, and dead, which is the exact failure class this
+ * file exists to prevent. Asking git skips the scratch and nothing else.
+ *
+ * No git (a tarball, a vendored copy)? Scan everything. Over-scanning is the
+ * safe direction for a guard.
+ */
+function gitIgnoredFiles(root: string): Set<string> {
+  try {
+    const out = execFileSync("git", ["ls-files", "--others", "--ignored", "--exclude-standard", "-z"], {
+      cwd: root,
+      encoding: "utf8",
+      maxBuffer: 64 * 1024 * 1024,
+    });
+    return new Set(out.split("\0").filter(Boolean).map((p) => join(root, p)));
+  } catch {
+    return new Set();
+  }
+}
 
 const SCAN_EXT = [".ts", ".tsx", ".js", ".mjs", ".md", ".mdx", ".json", ".svg", ".html", ".txt", ".yml", ".yaml"];
 
@@ -107,11 +133,14 @@ const BANNED: { label: string; re: RegExp }[] = [
   { label: "one assertion per step", re: /(?:one|an)\s+assertion\s+per\s+step/gi },
 ];
 
+const IGNORED = gitIgnoredFiles(ROOT);
+
 function* walk(dir: string): Generator<string> {
   for (const entry of readdirSync(dir)) {
     if (SKIP_DIRS.has(entry)) continue;
     const full = join(dir, entry);
     if (SKIP_PATH_SUFFIXES.some((suffix) => full.endsWith(suffix))) continue;
+    if (IGNORED.has(full)) continue;
     if (statSync(full).isDirectory()) yield* walk(full);
     else if (SCAN_EXT.some((e) => entry.endsWith(e))) yield full;
   }
