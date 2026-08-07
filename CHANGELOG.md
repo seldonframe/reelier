@@ -2,6 +2,121 @@
 
 All notable changes to `reelier`. Dates are release dates.
 
+## Unreleased
+
+### Added
+
+- **`reelier coverage --host claude-code` — the same read-only inventory, for
+  the Claude Code CLI.** Group A is the surface `install` can reach
+  (`<cwd>/.mcp.json` and `~/.claude.json`, both derived from
+  `knownMcpConfigPaths` so the probe and the config writer cannot drift apart
+  silently); Group B is the plugin payloads, which it cannot. They are reported
+  as separate sections with separate named denominators — never one merged
+  total, because a merged total would read as a coverage score across a boundary
+  the wrap does not cross. The Codex path is unchanged and its rendered output
+  is byte-identical; `renderCoverageReport` is now a four-line adapter over the
+  shared `renderCoverageView`, so that is a property of the code rather than a
+  claim.
+- **Plugin enablement is tri-state: `enabled` / `disabled` / `unknown`.** A
+  plugin with no `enabledPlugins` key at any scope and no `defaultEnabled` in
+  its `plugin.json` reports **`unknown`**, never `enabled`. The documented
+  default of true is an assumption, and this probe does not assert an enablement
+  it did not read. `unknown` payloads ARE inspected and every server they
+  declare is rendered under an `enablement unknown` heading; a consumer MUST NOT
+  render `unknown` as a pass, exactly as with `absent`. `PluginCoverage.enablement`
+  is additive — Codex leaves it undefined and keeps its boolean.
+- **Presence authority is `installed_plugins.json`, not a directory walk.** The
+  marketplace catalog clones ship real `.mcp.json` files and contribute zero
+  tools; on the machine this was measured against, walking the tree over-reported
+  by 16 payloads. Orphaned cache directories survive an uninstall and over-report
+  the same way. `installPath` already ends with the version segment — which is
+  the literal string `unknown` for half the observed installs — and is never
+  re-appended to.
+- **EVERY `projects["<abs path>"].mcpServers` map in `~/.claude.json` gets its
+  own source and its own denominator, cwd or not.** `install` rewrites the
+  top-level map plus the one project key matching the directory it runs in, so
+  reporting only those would have matched install's own scope and turned the
+  closing disclaimer into a fig leaf. Each map is listed under
+  `<claude.json>#projects/<path>`, marked with whether install rewrites it from
+  here, and summarised by a named denominator — *N project-scoped server(s)
+  across K of M `projects` key(s)* — that is **never** added to the top-level
+  total and never divided into one. Project keys carrying no servers count in
+  the denominator and are not listed: a project that configures no MCP server
+  is not a coverage gap.
+- **What this does NOT cover, stated in the report and in `--help`.** It is the
+  Claude Code **CLI** only: Claude Desktop / Cowork plugins are a separate host
+  with a separate registry and are not inspected. Session plugins loaded with
+  `--plugin-dir` / `--plugin-url` are recorded in no file and cannot be
+  inventoried from disk at all. As with `--host codex`, this describes a
+  configuration snapshot rather than what a host launched, it makes a gap
+  visible rather than blocked, and no command consumes its output. This
+  supersedes the 0.31.0 note that `coverage` supports `codex` alone.
+- **Implemented from documentation, not from observation — do not read these as
+  verified.** The `enabledPlugins: false` value, the `defaultEnabled` fallback,
+  project- and local-scope `enabledPlugins`, inline and pointer `mcpServers` in
+  `plugin.json`, and `CLAUDE_CODE_PLUGIN_CACHE_DIR` / `CLAUDE_CODE_PLUGIN_SEED_DIR`
+  each have **zero instances** on the one machine that was measured. They are
+  implemented and tested against fixtures; absence there is a property of that
+  machine, not confirmation of the format.
+
+### Fixed
+
+- **`reelier install` wrapped only the top-level `mcpServers` of `~/.claude.json`
+  and silently left the project-scoped ones unwrapped inside the file it had
+  just rewritten.** Claude Code stores MCP servers in two places in that file:
+  the top-level `mcpServers` object every host shares, and a per-project map at
+  `projects["<abs path>"].mcpServers`. `planInstall` read only the first.
+  Measured on one machine 2026-08-06: **2 top-level servers, 83 project keys, 5
+  of them carrying their own servers** — so install edited the file, reported
+  success, and left 5 servers unrecorded. That falsified the load-bearing claim
+  that one install covers every MCP server in the agent's config.
+  **Scope of the fix, and it is deliberate:** install rewrites only the project
+  entry whose key is the directory it runs in. Install is already cwd-sensitive
+  (it reads `<cwd>/.mcp.json`), so cwd-scoping keeps the blast radius
+  predictable; rewriting all 83 entries from an arbitrary cwd would modify
+  config for projects the operator is not in and would wreck the
+  backup/uninstall story, where one restore would have to unwind edits across
+  unrelated projects. Entries for other projects are **reported** — in the
+  install output, with their project named, under their own denominator
+  (`InstallResult.otherProjectCount`, never merged into `skippedCount`) — and
+  never rewritten. `reelier coverage --host claude-code` lists every one of them
+  from anywhere. Project keys are matched with `sameProjectDirectory`
+  (`src/project-scope.ts`), which folds separator style and case on Windows
+  only: Claude Code writes those keys with forward slashes while `process.cwd()`
+  yields backslashes on the same machine, and a raw `===` matches none of them.
+  It is a lexical compare — it does not resolve symlinks or `..`, so it
+  under-matches (report, don't rewrite) rather than over-matching.
+- **`reelier uninstall` reported a project-scoped wrap as "nothing to revert".**
+  Restoring was always correct — the backup is the whole file, byte-for-byte —
+  but `inspectWrapState` read only the top-level map, so a config whose only
+  wrapped entries lived under `projects` reported `wrapState: "unwrapped"`. With
+  the backup gone that renders as *"no backup, and nothing in it is wrapped —
+  nothing to revert"* about a file `install` had just wrapped. It now reads both
+  maps and names project-scoped entries as `<server> (projects/<path>)`.
+- **`writeKeystoreEntry`/`removeKeystoreEntries` no longer fail an approve when
+  another approver *releases* the lock at the wrong microsecond (win32).** The
+  A10 retry loop treated every non-`EEXIST` error from its `O_EXCL` lock create
+  as fatal. On win32 an unlink marks the file delete-pending, and a create
+  landing in that window returns `EPERM`, not `EEXIST` — so the one case the
+  retry loop exists for could surface as `EPERM: operation not permitted` and
+  leave the key unwritten. Measured on win32 with no load: **29 `EPERM` in 3000
+  create-vs-unlink races**. Non-`EEXIST` failures are now retried, but only
+  `TRANSIENT_LOCK_CREATE_RETRIES` (3) times: an unwritable directory returns the
+  same errno forever, and it must surface as itself rather than as
+  "`…is locked… remove the stale lock`", which would send an operator to delete
+  a file that was never the problem. Unchanged for every other caller: the lock
+  budget, the delays, and the `EEXIST` message are byte-identical.
+
+### Changed (internal)
+
+- `KeystoreWriteOptions` gains two optional test-only injection seams,
+  `sleepImpl` and `lockCreateImpl` (house pattern — `login.ts`'s `sleepImpl`,
+  `writeback.ts`'s `AtomicWriteFsOps`). Production callers pass neither and
+  behave exactly as before. They exist so the A10 lock tests assert on retry
+  accounting instead of on the wall clock: the retry-path test previously raced
+  a 30ms release timer against a 100×10ms budget and failed intermittently
+  under full-suite load.
+
 ## 0.31.1 — The guard that refuses what it cannot read
 
 **Guard-only release. No new capability, one new refusal.** This version exists

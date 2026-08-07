@@ -131,7 +131,7 @@ tools and guidance; it does not put the Path A seatbelt around any other server'
 
 | Host | plugin loads | `mcp.json` honored | skills visible | tool naming observed |
 |---|---|---|---|---|
-| Codex | observed 2026-08-06 ¹ | unchecked ² | unchecked ³ | unchecked ⁴ |
+| Codex | observed 2026-08-06 ¹ | unchecked ² | **observed 2026-08-06** ³ | unchecked ⁴ |
 | ChatGPT | unchecked | unchecked | unchecked | unchecked |
 | Cursor | unchecked | unchecked | unchecked | unchecked |
 | GitHub Copilot | unchecked | unchecked | unchecked | unchecked |
@@ -151,9 +151,16 @@ marketplace fixtures built from the committed `plugin/` packages:
 2. Our package ships no `mcp.json` by design (§3), so this cell cannot flip from our own install.
    Codex caches other plugins' `.mcp.json` (observed via `reelier coverage --host codex`), but a
    plugin-delivered server being *launched* was not observed either.
-3. Requires an authenticated interactive session — `codex skills` refuses without a TTY. Operator
-   check that would flip it: add the marketplace to a real profile, then run `codex skills` in a
-   terminal and look for `reelier`.
+3. **Both packages' skills reach the model.** `codex debug prompt-input` renders the model-visible
+   prompt as JSON — no TTY, no model call, no tokens spent — and the `### Available skills` block
+   lists the skill from **both** installed packages by its `SKILL.md` path:
+   `…/plugins/cache/reelier-test-ap/reelier/local/skills/reelier/SKILL.md` (Agent Plugins format)
+   and `…/plugins/cache/reelier-test-claude/reelier/0.30.0/skills/reelier/SKILL.md` (Claude
+   format). So the skill-only package does the one thing it exists to do, on this host, in both
+   formats. Scope: the skill is *offered* to the model; whether a model invokes it is a different
+   question this does not answer. (Corrects an earlier note in this file claiming `codex skills`
+   is the check — there is no such subcommand in `codex-cli 0.147.0-alpha.1.2`; the word is taken
+   as a prompt. `codex debug prompt-input` is the real introspection path.)
 4. Not applicable to the skill-only package (no MCP tools to be named); flips only after §3's
    MCP component exists and 2 is observed.
 
@@ -173,8 +180,25 @@ product does not tamper with third-party artifacts. Candidates, every one unchec
 - **Codex:** `~/.codex/config.toml` is operator-owned, not vendor-owned — a comment-round-tripping
   TOML writer (the missing piece `src/init.ts:63` names) would make `[mcp_servers.*]` wrappable.
   Plugin payload dirs stay untouchable regardless.
-- **Portable:** does not exist in v1. Participate in the open project — issues, conformance tests,
-  proposals — and claim nothing about that participation until it is real and observable.
+- **Portable:** does not exist in v1, and the reason is now specific rather than general.
+  **Upstream state, 2026-08-06/07:** `agentplugins/agent-plugins-spec#40` asks for a client-supplied
+  `${WORKSPACE_ROOT}` expansion variable, because v1 expands only `${PLUGIN_ROOT}`/`${PLUGIN_DATA}`,
+  so no conformant manifest can populate `reelier serve --workspace`. Two implementers replied and
+  reframed it better than we opened: v1 never says *whose filesystem* it means, since §3 defines a
+  Client as one actor that "discovers, installs, loads, and executes plugin components" while remote
+  workspaces, split control-plane/runner architectures, and multi-root sessions all break that
+  assumption. The proposal on the table is a `plugin host` term plus one predicate: **expand only
+  when the client has exactly one workspace root on the plugin host's filesystem, otherwise absent.**
+  Two carve-outs turn out to be unnecessary under it — remote transports have no expandable field at
+  all (v1: clients "MUST NOT perform placeholder or environment-variable expansion in `url`, header
+  names, or header values"), and separator convention resolves to the plugin host's native form
+  because that is the only filesystem the value is ever used against.
+  **What each outcome means here.** If the predicate lands, the portable package can carry an
+  `mcp.json` guarded by it. If it is absent or the issue stalls, nothing changes: §3's skill-only
+  package is already the behaviour under absence, and host-specific packaging stays available where
+  a host supplies a path. **Reelier is not blocked either way**, which is worth stating so the
+  argument upstream is not read as lobbying for our own unblocking.
+  Claim nothing about this participation beyond what is observable in the thread.
 - **Author-side:** the §1 escape hatch — a plugin author declaring a stdio entry in their own
   `mcp.json` that fronts their server with `reelier mcp --wrap`. Stdio-only (`url` entries cannot
   be fronted, `src/wrap.ts:119`); expressible now, observed on no host yet — a §4 cell.

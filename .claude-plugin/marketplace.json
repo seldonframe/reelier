@@ -1,0 +1,26 @@
+{
+  "name": "seldonframe",
+  "owner": {
+    "name": "SeldonFrame",
+    "url": "https://github.com/seldonframe"
+  },
+  "plugins": [
+    {
+      "name": "reelier",
+      "source": "./plugin/claude",
+      "description": "Reelier's Agent Skill: freeze a repeatable, tool-call-driven job into a deterministic, replayable skill with a receipt per run. Skill-only package - it includes no MCP servers.",
+      "author": {
+        "name": "SeldonFrame",
+        "url": "https://github.com/seldonframe"
+      },
+      "homepage": "https://www.reelier.com",
+      "license": "MIT",
+      "keywords": [
+        "reelier",
+        "replay",
+        "receipts",
+        "agent-skills"
+      ]
+    }
+  ]
+}

@@ -84,11 +84,13 @@ import {
 import {
   planInstall,
   applyInstall,
-  findLatestBackup,
-  restoreFromBackup,
+  planUninstall,
+  applyUninstall,
+  agentGuardMessage,
   planWrapOffer,
   type InstallResult,
   type InstallPlan,
+  type UninstallPlanEntry,
 } from "./wrap.js";
 import { buildToolServer, runDiffTool } from "./serve.js";
 import { recordTotals } from "./footprint.js";
@@ -115,7 +117,7 @@ import { generateSigningKeypair, loadSigningKey, signRecordDigest, verifyRecordS
 import { resolveVerifyPayload, evaluateVerifyClaims } from "./verify.js";
 import { writeCiWorkflow, PLACEHOLDER_SKILL_PATH } from "./ci-scaffold.js";
 import { buildDiscoveryBundle, discoverOpportunities, formatDiscoveryPreview, signDiscoveryBundle, type AgentOpportunity, type DiscoverySessionInput } from "./discovery.js";
-import { collectCodexCoverage, renderCoverageReport } from "./coverage.js";
+import { collectClaudeCodeCoverage, collectCodexCoverage, renderCoverageReport, renderCoverageView } from "./coverage.js";
 import { uploadDiscoveryBundle } from "./discovery-client.js";
 
 // Exported (alongside cmdPush below) so test/push-cli.test.ts can drive
@@ -3179,17 +3181,26 @@ async function readDiscoverySigningMaterial(homedir: string): Promise<{ privateK
   return { privateKey: loaded.privateKey, keyId: loaded.keyId, publicKeyPem: publicPem };
 }
 
-export async function cmdCoverage(args: ParsedArgs, homedirOverride?: string): Promise<number> {
+const SUPPORTED_COVERAGE_HOSTS = ["codex", "claude-code"] as const;
+const SUPPORTED_COVERAGE_HOSTS_LINE = `Supported hosts: ${SUPPORTED_COVERAGE_HOSTS.join(", ")}.`;
+
+export async function cmdCoverage(args: ParsedArgs, homedirOverride?: string, cwdOverride?: string): Promise<number> {
   const host = args.opts.host;
   if (!host) {
-    console.error("Usage: reelier coverage --host <host>. Supported hosts: codex.");
+    console.error(`Usage: reelier coverage --host <host>. ${SUPPORTED_COVERAGE_HOSTS_LINE}`);
     return 1;
   }
-  if (host !== "codex") {
-    console.error(`Unsupported --host '${host}'. Supported hosts: codex.`);
+  if (!(SUPPORTED_COVERAGE_HOSTS as readonly string[]).includes(host)) {
+    console.error(`Unsupported --host '${host}'. ${SUPPORTED_COVERAGE_HOSTS_LINE}`);
     return 1;
   }
-  const report = await collectCodexCoverage(homedirOverride ?? os.homedir());
+  const homedir = homedirOverride ?? os.homedir();
+  if (host === "claude-code") {
+    const view = await collectClaudeCodeCoverage(cwdOverride ?? args.opts.workspace ?? process.cwd(), homedir, process.env);
+    for (const line of renderCoverageView(view)) console.log(line);
+    return 0;
+  }
+  const report = await collectCodexCoverage(homedir);
   for (const line of renderCoverageReport(report)) console.log(line);
   return 0;
 }
@@ -3409,7 +3420,7 @@ async function cmdScan(args: ParsedArgs): Promise<number> {
 async function cmdInstall(args: ParsedArgs): Promise<number> {
   const agent = args.opts.agent ?? "auto";
   if (agent !== "auto" && agent !== "claude") {
-    console.error(`Unsupported --agent '' — omit it: install now wraps every known host config it finds (Claude Code, Cursor, Windsurf). Use --config <path> to target one file.`);
+    console.error(agentGuardMessage("install", agent));
     return 1;
   }
 
@@ -3442,17 +3453,34 @@ async function cmdInstall(args: ParsedArgs): Promise<number> {
 
   const plans: { target: KnownMcpConfig; plan: InstallPlan }[] = [];
   for (const target of targets) {
-    const plan = await planInstall(target.path);
+    const plan = await planInstall(target.path, cwd);
     plans.push({ target, plan });
     console.log(`${target.label} — ${target.path}`);
     if (plan.entries.length === 0) {
       console.log("  (no mcpServers entries)");
     }
     for (const e of plan.entries) {
-      if (e.action === "wrap") console.log(`  ${e.name}: will wrap`);
-      else if (e.action === "already-wrapped") console.log(`  ${e.name}: already wrapped — left alone`);
-      else console.log(`  ${e.name}: skipped — ${e.reason}`);
+      // Project-scoped entries (~/.claude.json's `projects` map) are named with their project
+      // so "will wrap" and "reported, NOT wrapped" can never be read as being about the same file.
+      const label = e.projectPath ? `${e.name} (projects/${e.projectPath})` : e.name;
+      if (e.action === "wrap") console.log(`  ${label}: will wrap`);
+      else if (e.action === "already-wrapped") console.log(`  ${label}: already wrapped — left alone`);
+      else if (e.action === "skip-other-project") console.log(`  ${label}: reported, NOT wrapped — ${e.reason}`);
+      else console.log(`  ${label}: skipped — ${e.reason}`);
     }
+    console.log("");
+  }
+
+  // Printed before the "nothing to do" early return below, deliberately: the case where every
+  // wrappable server is already wrapped is exactly the case where an operator would otherwise
+  // read "nothing to do" as "fully covered".
+  const otherProject = plans.flatMap((p) => p.plan.entries).filter((e) => e.action === "skip-other-project");
+  if (otherProject.length > 0) {
+    console.log(
+      `${otherProject.length} project-scoped server(s) belong to other projects and were NOT wrapped. ` +
+        `Install wraps only the project entry matching the directory it runs in — re-run 'reelier install' from ` +
+        `that project's directory. To list every one from anywhere: reelier coverage --host claude-code`
+    );
     console.log("");
   }
 
@@ -3532,27 +3560,91 @@ export function diffLines(before: string, after: string): string[] {
 async function cmdUninstall(args: ParsedArgs): Promise<number> {
   const agent = args.opts.agent ?? "auto";
   if (agent !== "auto" && agent !== "claude") {
-    console.error(`Unsupported --agent '' — omit it: install now wraps every known host config it finds (Claude Code, Cursor, Windsurf). Use --config <path> to target one file.`);
+    console.error(agentGuardMessage("uninstall", agent));
     return 1;
   }
 
   const cwd = process.cwd();
   const homedir = os.homedir();
-  const detection = await detectAgentConfig(cwd, homedir);
-  const configPath = detection.projectConfigExists ? detection.projectConfigPath : detection.userConfigPath;
 
-  const backup = await findLatestBackup(configPath);
-  if (!backup) {
+  // The same host set `install` wraps, walked in the same order. Resolving a single path here (the
+  // old behavior) meant a Cursor or Windsurf user who installed then uninstalled stayed wrapped
+  // while being told the uninstall succeeded — a reverse gear that silently disengaged.
+  const explicit = args.opts.config;
+  const targets: KnownMcpConfig[] = explicit
+    ? [{ label: "explicit --config", path: explicit }]
+    : knownMcpConfigPaths(cwd, homedir);
+
+  const plan = await planUninstall(targets);
+
+  // Nothing restorable anywhere is an error, not a quiet success — same honest exit as before,
+  // widened from one path to every path checked.
+  if (plan.restorable === 0) {
+    const checked = plan.checkedPaths.map((p) => `  ${p}`).join("\n");
+    console.error(`No reelier install backup found to restore. Checked:\n${checked}`);
+    // Every entry gets a line, including ones whose wrap state could not be read: "unknown" is not
+    // "nothing to revert", and a config reelier cannot classify is exactly the one worth naming.
+    for (const e of plan.entries) {
+      console.error(`\n${e.label} — ${e.configPath}: ${describeUnrestorable(e)}`);
+    }
     console.error(
-      `No reelier install backup found for ${configPath}. If you have a backup file from elsewhere, restore it ` +
-        `manually by copying its contents back over ${configPath}.`
+      `\nTo undo a wrap by hand, replace each server's 'npx -y reelier mcp --wrap "<original>"' entry with ` +
+        `<original>. If you have a backup file from elsewhere, copy its contents back over the config.`
     );
     return 1;
   }
 
-  await restoreFromBackup(configPath, backup);
-  console.log(`Restored ${configPath} from ${backup}.`);
-  return 0;
+  if (args.flags.has("dry-run")) {
+    for (const e of plan.entries) {
+      if (e.action === "restore") console.log(`${e.label} — would restore ${e.configPath} from ${e.backupPath}`);
+      else console.log(`${e.label} — ${e.configPath}: ${describeUnrestorable(e)}`);
+    }
+    console.log("");
+    console.log("Nothing written (--dry-run).");
+    return 0;
+  }
+
+  const results = await applyUninstall(plan);
+
+  let restored = 0;
+  let failed = 0;
+  for (const r of results) {
+    switch (r.outcome) {
+      case "restored":
+        restored++;
+        console.log(`${r.label} — restored ${r.configPath} from ${r.backupPath}.`);
+        break;
+      case "restore-failed":
+        failed++;
+        console.error(`${r.label} — FAILED to restore ${r.configPath} from ${r.backupPath}: ${r.error}`);
+        console.error(`  Left untouched. ${describeUnrestorable(r)}`);
+        break;
+      default:
+        // Never a silent skip: a config with no backup is the one case with no CLI route back.
+        console.log(`${r.label} — ${r.configPath}: ${describeUnrestorable(r)}`);
+    }
+  }
+
+  console.log("");
+  console.log(`Restored ${restored} config(s)${failed > 0 ? `, ${failed} failed` : ""}. Backups left in place.`);
+  if (restored > 0) console.log("Restart your agent to drop the wrap.");
+
+  // A partial revert exits non-zero: the operator asked for everything back and did not get it.
+  return failed > 0 ? 1 : 0;
+}
+
+/** One line saying what is still wrapped and why reelier could not revert it — never rendered as a pass. */
+export function describeUnrestorable(e: UninstallPlanEntry): string {
+  if (e.action === "orphan-backup") {
+    return `config is gone but its backup remains (${e.backupPath}) — left alone; copy it back by hand if you want the file returned.`;
+  }
+  if (e.wrapState === "wrapped") {
+    return `STILL WRAPPED (${e.wrappedServerNames.join(", ")}) and no backup exists — reelier cannot revert this one for you.`;
+  }
+  if (e.wrapState === "unknown") {
+    return `no backup, and reelier could not read it to tell whether it is wrapped (${e.wrapStateReason ?? "unreadable"}) — check it by hand.`;
+  }
+  return "no backup, and nothing in it is wrapped — nothing to revert.";
 }
 
 function fmtFieldErrors(fieldErrors: unknown): string {
@@ -4434,8 +4526,18 @@ const USAGE =
   "           Format is sniffed from content; override with --agent <claude-code|codex|openclaw|cursor|windsurf>.\n" +
   "           --agent cursor / --agent windsurf report why those aren't supported yet instead of guessing.\n" +
   "  scan   — discover session transcripts from every known agent (also reports Cursor/Windsurf DB findings).\n" +
-  "  coverage — reelier coverage --host codex: read-only observed inventory of a host's MCP servers (config + plugins),\n" +
-  "           wrapped/unwrapped per entry. Observed inventory only; never a completeness claim.";
+  "  coverage — reelier coverage --host <codex|claude-code> [--workspace <dir>]: read-only observed inventory of a host's\n" +
+  "           MCP servers (config + plugins), wrapped/unwrapped per entry.\n" +
+  "           --host claude-code covers the Claude Code CLI only; Claude Desktop / Cowork plugins are a separate host\n" +
+  "           with a separate registry and are not inspected. It also lists EVERY project-scoped server under\n" +
+  "           ~/.claude.json's `projects` map, with its own denominator — install rewrites only the one matching cwd.\n" +
+  "           Observed inventory only; never a completeness claim.\n" +
+  "  install / uninstall — wrap, and revert, every known host MCP config: Claude Code, Cursor, Windsurf.\n" +
+  "           In ~/.claude.json install also wraps projects[<cwd>].mcpServers; other projects' entries are reported,\n" +
+  "           never rewritten — re-run install from that directory, or see 'reelier coverage --host claude-code'.\n" +
+  "           install backs up each config before rewriting it; uninstall restores the latest backup per config and\n" +
+  "           reports every config it could NOT revert rather than skipping it. Both take --config <path> to target\n" +
+  "           one file and --dry-run to see the plan; uninstall exits 1 if any config is left unreverted.";
 
 async function main(): Promise<number> {
   const [, , cmd, ...rest] = process.argv;
