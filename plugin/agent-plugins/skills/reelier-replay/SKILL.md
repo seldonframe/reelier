@@ -9,6 +9,9 @@ Reelier turns a deterministic sequence of tool calls into a `SKILL.md` file
 that replays for free (zero LLM calls) instead of being re-reasoned from
 scratch every time. This skill teaches you **when** to reach for it.
 
+_written against `reelier` 0.31.x. `reelier --help` on the installed CLI is
+always authoritative._
+
 ## How to run Reelier — in this order
 
 1. **If the `reelier_*` MCP tools are connected** (`reelier_scan`,

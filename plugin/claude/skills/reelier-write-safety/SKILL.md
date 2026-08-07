@@ -5,6 +5,9 @@ description: Bound and record an agent's writes before granting them. Use when t
 
 # Reelier — bound the write before you grant it
 
+_written against `reelier` 0.31.x. `reelier --help` on the installed CLI is
+always authoritative._
+
 ## If nothing consequential gets written, stop here
 
 If the tool being wired up only reads — a docs lookup, a search index, a
