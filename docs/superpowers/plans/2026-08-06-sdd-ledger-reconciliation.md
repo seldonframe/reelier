@@ -69,6 +69,23 @@ authorization."* Publishing is an owner act. Everything else remaining on Path C
 control; this is the one item whose duration cannot be compressed by working harder, and it gates
 3C3 through 3C5. **It should start now, in parallel, not when 3C3 starts.**
 
+> **DISCHARGED 2026-08-07 — `reelier@0.31.1` is published, dist-tag `latest`.** The base and version
+> were rebased from the brief's `0.30.1`/`946d7f1` because npm published `0.31.0` before execution;
+> the brief permits exactly that and names the invariant instead of the number, so the guard is now
+> N-1 to a first authority-aware `0.32.0`. Verified against the artifact **downloaded back from
+> npm**, not the local pack: versioned, future-versioned, and signature-sibling records are all
+> REFUSED with exit 1 and print zero legacy claim rows, while a legacy record's stdout is
+> byte-identical to published `0.31.0`. The unsafe control was measured too — published `0.31.0`
+> exits 0 and prints a confident legacy verdict for a record it cannot read, which is the failure
+> this release removes.
+>
+> **Two items outstanding on the release itself:** it carries no git tag, so the released source is
+> identifiable only from the report; and `codex/nminus1-guard` is pushed but unmerged, so `main` is
+> behind the published `latest`.
+>
+> **Consequence for the plan:** 3C is no longer gated by the guard at any slice. Its only remaining
+> blocker is 3B2's independent review and docs-only pin.
+
 ## Finding 4 — the batch A–D substrate work had no row in the ledger at all
 
 A reader of `progress.md` would not have learned that K1 admission preparation is now active by
