@@ -27,6 +27,7 @@ import { fileURLToPath } from "node:url";
 const repoRoot = path.resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
 const SKILLS = [
   { id: "reelier-replay", source: path.join(repoRoot, "integrations", "skills", "reelier-replay", "SKILL.md") },
+  { id: "reelier-write-safety", source: path.join(repoRoot, "integrations", "skills", "reelier-write-safety", "SKILL.md") },
 ];
 
 const README = `# Reelier plugin packages
