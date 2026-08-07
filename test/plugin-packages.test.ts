@@ -71,7 +71,7 @@ test("the generator emits every declared skill into both packages", async () => 
   try {
     await generateInto(out);
     for (const pkg of ["agent-plugins", "claude"]) {
-      for (const id of ["reelier-replay"]) {
+      for (const id of ["reelier-replay", "reelier-write-safety"]) {
         const skill = path.join(out, pkg, "skills", id, "SKILL.md");
         assert.ok(fs.existsSync(skill), `missing ${pkg}/skills/${id}/SKILL.md`);
       }
