@@ -3,7 +3,7 @@
   "name": "io.github.seldonframe/reelier",
   "title": "Reelier",
   "description": "Snapshot tests and CI for agent workflows: record a run, replay it at 0 tokens, diff for drift.",
-  "version": "0.24.0",
+  "version": "0.31.0",
   "websiteUrl": "https://www.reelier.com",
   "repository": {
     "url": "https://github.com/seldonframe/reelier",
@@ -13,7 +13,7 @@
     {
       "registryType": "npm",
       "identifier": "reelier",
-      "version": "0.24.0",
+      "version": "0.31.0",
       "runtimeHint": "npx",
       "transport": {
         "type": "stdio"
