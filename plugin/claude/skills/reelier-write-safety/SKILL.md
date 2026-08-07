@@ -18,14 +18,16 @@ knowledge store, a branch.
 
 ## How to run Reelier — in this order
 
-1. **If the `reelier_*` MCP tools are connected** (`reelier_scan`,
-   `reelier_from_session`, `reelier_replay`, `reelier_push`), use them.
-   Structured results, no shell.
-2. **Otherwise run the CLI:** `npx -y reelier <command>`. Nothing needs to be
-   installed first.
-3. **If neither is available** — no shell access and no MCP tools — say
-   plainly which is missing and stop. Never describe a step as done when it
-   did not run.
+1. **The `reelier_*` MCP tools do not help here.** `reelier serve` exposes
+   only `reelier_scan`, `reelier_from_session`, `reelier_replay`,
+   `reelier_push` and `reelier_diff` — the record-and-replay half. None of
+   `coverage`, `install`, `policy check` or `approve` is reachable over MCP,
+   so **every command in this skill goes through the CLI.**
+2. **Run the CLI:** `npx -y reelier <command>`. Nothing needs to be installed
+   first.
+3. **If there is no shell** — no way to run `npx` — say plainly that the CLI
+   is unavailable and stop. Never describe a step as done when it did not
+   run.
 
 Two Reelier commands sound alike and do opposite things. Keep them apart or
 every sentence you write about coverage will be wrong:
@@ -37,9 +39,9 @@ every sentence you write about coverage will be wrong:
   MCP server as a child process and sits in front of it, so every call that
   server receives is recorded. This is the one that produces coverage.
 
-Adding `serve` to the user's project MCP config makes path 1 above available
-and is faster than `npx` on every call. It does **not** put a recorder in
-front of anything.
+Adding `serve` to the user's project MCP config gives an agent the
+record-and-replay tools without shelling out. It does **not** put a recorder
+in front of anything, and it does not expose any of the commands below.
 
 ## What Reelier bounds — and what it flatly refuses to
 
@@ -98,18 +100,37 @@ rejected rather than guessed at.
 npx -y reelier install
 ```
 
-This rewrites every known host MCP config so each server entry launches
-behind the recorder, and **backs up each file before touching it**. It is
-idempotent. `npx -y reelier uninstall` reverts the configs from those
-backups.
+`install` looks at five JSON config files — `<cwd>/.mcp.json` and
+`~/.claude.json` (Claude Code), `<cwd>/.cursor/mcp.json` and
+`~/.cursor/mcp.json` (Cursor), and
+`~/.codeium/windsurf/mcp_config.json` (Windsurf) — and rewrites the entries
+it finds there so each launches behind the recorder. It **backs up each file
+before touching it**, and it is idempotent.
 
 **Do not run `install` yourself.** It edits the user's agent configuration on
 their machine. Show them the command, say what it will rewrite and that a
 backup is written first, and let them run it.
 
-Remote (`url`) server entries are skipped: the wrap speaks stdio, so an
-HTTP/SSE entry has no wrapped form. Those stay unobserved, and a receipt
-from that host says nothing about them.
+State these four gaps whenever you show this command. Each one is a server
+that keeps running unwrapped, so a receipt cannot speak for it:
+
+- **Codex is not covered at all.** `install` deliberately does not write
+  `~/.codex/config.toml` — it is TOML, and the installer only parses JSON. A
+  Codex user who ran Step 1 gets nothing from Step 2; they must front each
+  server by hand with `npx -y reelier mcp --wrap "<original command>"` in
+  their own config.
+- **In `~/.claude.json`, only the top-level `mcpServers` map is rewritten.**
+  Claude Code also stores servers per project, under
+  `projects["<abs path>"].mcpServers`. `install` does not read those, so they
+  stay unwrapped inside a file it just reported as installed. Ask the user to
+  check that file for a `projects` block before believing the coverage.
+- **`uninstall` reverts one file, not five.** It restores
+  `<cwd>/.mcp.json` if that exists, otherwise `~/.claude.json`, and nothing
+  else. Cursor and Windsurf configs stay wrapped with no revert command. The
+  backups are on disk next to each config as `<name>.backup-<timestamp>` —
+  reverting those is a manual copy.
+- **Remote (`url`) server entries are skipped.** The wrap speaks stdio, so an
+  HTTP/SSE entry has no wrapped form.
 
 ## Step 3 — draft a seatbelt, do not install one
 
@@ -131,7 +152,26 @@ That check is strict, and it is worth running precisely because the recorder
 is not: at run time a malformed policy degrades to deny-nothing. The lint is
 where a broken rule surfaces loudly instead of quietly protecting nothing.
 
-## Step 4 — bind one write with an approval
+## Steps 1–3 were one path. This next part is the other one.
+
+Steps 1, 2 and 3 are the **wrap path**: a live agent calling tools freely,
+with the recorder in front of it and `policy.yml` as its seatbelt. Nothing in
+that path involves a `skill.md`, and no approval exists there.
+
+Step 4 is the **replay path**: a frozen, ordered step list in a
+`<name>.skill.md` file that `reelier run` executes with no model in the loop.
+`approve` and `state_gate` are controls on *that* file. They do not bind
+anything a wrapped live agent does.
+
+So Step 4 does not follow from Step 3 — it needs a skill file that Steps 1–3
+never produce. You get one by recording a run and compiling it
+(`npx -y reelier from-session` / `compile`, which is the `reelier-replay`
+skill's subject), or by writing one by hand. **If the user has no
+`*.skill.md`, say so and stop at Step 3** rather than showing them a command
+with nothing to point it at. Conflating these two paths is the most common
+way to describe Reelier wrongly.
+
+## Step 4 (replay path only) — bind one write with an approval
 
 ```sh
 npx -y reelier approve <skill.md>

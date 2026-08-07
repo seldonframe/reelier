@@ -14,14 +14,24 @@ always authoritative._
 
 ## How to run Reelier — in this order
 
-1. **If the `reelier_*` MCP tools are connected** (`reelier_scan`,
-   `reelier_from_session`, `reelier_replay`, `reelier_push`), use them.
-   Structured results, no shell.
+1. **If the `reelier_*` MCP tools are connected, use them.** Structured
+   results, no shell.
 2. **Otherwise run the CLI:** `npx -y reelier <command>`. Nothing needs to be
    installed first.
 3. **If neither is available** — no shell access and no MCP tools — say
    plainly which is missing and stop. Never describe a step as done when it
    did not run.
+
+**The tool name is not the command name.** Two of them differ, and guessing
+gets you a usage error — there is no `reelier replay` subcommand:
+
+| MCP tool | CLI command |
+| --- | --- |
+| `reelier_scan` | `npx -y reelier scan` |
+| `reelier_from_session` | `npx -y reelier from-session` |
+| `reelier_replay` | `npx -y reelier run` |
+| `reelier_push` | `npx -y reelier push` |
+| `reelier_diff` | `npx -y reelier diff` |
 
 Optional, and worth offering once: adding `reelier serve` to the user's own
 project MCP config makes path 1 available and is faster than `npx` on every

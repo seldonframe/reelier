@@ -60,8 +60,9 @@ these packages is unchecked until observed per host (spec §4).
 async function buildFileMap() {
   const pkg = JSON.parse(await readFile(path.join(repoRoot, "package.json"), "utf8"));
   const description =
-    "Reelier's Agent Skill: freeze a repeatable, tool-call-driven job into a deterministic, " +
-    "replayable skill with a receipt per run. Skill-only package — it includes no MCP servers.";
+    "Ships two Agent Skills and nothing else: reelier-replay freezes a repeatable tool-call job " +
+    "into a deterministic replay with a receipt per run, and reelier-write-safety covers bounding " +
+    "an agent's writes before you grant them. Skill-only package — it includes no MCP servers.";
 
   // Closed v1.0.0 schema: only $schema, name, version, description, author,
   // homepage, repository, license, keywords, extensions are permitted.

@@ -171,8 +171,9 @@ use, and they are **not the same artifact**.
 
 **The Agent Skill format is not defined here.** It is an open standard,
 originally published by Anthropic and supported by many agent clients. Reelier
-ships one — `integrations/claude-code/reelier/SKILL.md` — whose entire job is
-to teach an agent when to reach for the CLI. It contains no steps, no
+ships two — `integrations/skills/reelier-replay/SKILL.md` and
+`integrations/skills/reelier-write-safety/SKILL.md` — whose entire job is to
+teach an agent when to reach for the CLI. They contain no steps, no
 assertions, and nothing this spec describes.
 
 **A Reelier skill file is the compiled artifact this spec defines.** It is

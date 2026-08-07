@@ -27,6 +27,36 @@ test("every shipped skill that names an MCP tool also states the CLI fallback", 
   }
 });
 
+test("every shipped skill carries the execution ladder itself, not just its vocabulary", () => {
+  // The previous version of this file guarded only the substring `npx -y
+  // reelier`, which every skill body mentions a dozen times in ordinary
+  // command examples. Deleting the entire "How to run Reelier — in this
+  // order" section left the suite green. So assert the ladder's own
+  // structure: the heading, three numbered rungs under it, and the honesty
+  // sentence the spec calls the point of the whole section. Proven to bite by
+  // deleting the section from reelier-write-safety and watching this fail.
+  for (const { id, body } of shippedSkills()) {
+    const section = /^## How to run Reelier — in this order$([\s\S]*?)(?=^## )/m.exec(body)?.[1];
+    assert.ok(section, `${id} has no "How to run Reelier — in this order" section`);
+
+    for (const rung of [1, 2, 3]) {
+      assert.match(
+        section,
+        new RegExp(`^${rung}\\. `, "m"),
+        `${id}'s execution ladder is missing rung ${rung}`,
+      );
+    }
+
+    // \s+ rather than literal spaces: the sentence is hard-wrapped in both
+    // sources, so a single-space pattern would not match either one.
+    assert.match(
+      section,
+      /Never\s+describe\s+a\s+step\s+as\s+done\s+when\s+it\s+did\s+not\s+run/,
+      `${id}'s execution ladder drops the honesty sentence, which is the point of it`,
+    );
+  }
+});
+
 test("every shipped skill's frontmatter name matches its directory", () => {
   // Both skills land in the same plugin under skills/<dir>/. When the
   // frontmatter name disagrees with the directory, a host keying on one and a
