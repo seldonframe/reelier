@@ -1,17 +1,26 @@
-// Minimal repro: does a transient lock-busy escape bindIngress as a BindIngressResult?
+// Demonstrates that bindIngress RETURNS {ok:false, reason:"busy"} when the lock budget is exhausted.
 //
-// Hypothesis: withLock's failure member is {ok:false, reason:"busy"|...}. bindIngress returns
-// withLock's result through `as Promise<BindIngressResult>` with no isLockFailure guard, unlike
-// lookupIngress / lookupIngressClaimLinkage which both throw on it. So a busy lock should surface
-// to the caller as ok:false with a `reason` that is NOT in BindIngressResult's union
-// ("integrity-failure" | "conflict"), i.e. indistinguishable from a durable authority refusal.
+// READ THE RETRACTION FIRST: 2026-08-07-bindingress-lock-busy-rootcause.md.
+//
+// This script was written to prove a defect. It does not prove one. The behaviour it shows is the
+// CONTRACT: "busy" is a declared member of BindIngressResult (src/authority/ledger.ts:128), and the
+// same three lock reasons appear in ReserveReason, TransitionReason, and RecoverResult — whose
+// failure member is exactly the lock union and nothing else. Reporting a lock the call could not
+// take as a result reason is a deliberate API decision, repeated in four places.
+//
+// It is kept because the behaviour is still worth being able to reproduce on demand: it is the
+// reason test/authority/fuzz.test.ts must not assert `ok === true` on these results. The K1
+// operation fence budgets acquisition against REAL monotonic time (monotonicNow() + lockTimeoutMs,
+// default 30s), so on a loaded machine a legal `busy` appears and any test asserting it cannot
+// happen will rotate red against an identical fixed seed.
 //
 // Forcing method: lockTimeoutMs: 0 makes the K1 fence deadline already elapsed at entry.
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { FsAuthorityLedger } from "file:///C:/Users/maxim/CascadeProjects/reelier/.worktrees/universal-compiled-authority/dist/authority/host/fs-ledger.js";
-import { authenticateOutcomeRequest } from "file:///C:/Users/maxim/CascadeProjects/reelier/.worktrees/universal-compiled-authority/dist/authority/keys.js";
+import { fileURLToPath } from "node:url";
+import { FsAuthorityLedger } from "../../../dist/authority/host/fs-ledger.js";
+import { authenticateOutcomeRequest } from "../../../dist/authority/keys.js";
 
 const at = Date.parse("2026-08-02T12:00:00.000Z");
 
@@ -30,21 +39,16 @@ async function bindWith(options, label) {
   } finally { await rm(root, { recursive: true, force: true }); }
 }
 
-// Control: a healthy budget must claim the ingress.
-const healthy = await bindWith({}, "CONTROL  (default 30s budget)");
+const healthy = await bindWith({}, "CONTROL (default 30s budget)");
+const starved = await bindWith({ lockTimeoutMs: 0 }, "STARVED (lockTimeoutMs: 0)");
 
-// Test: an exhausted budget. If the hypothesis holds this returns ok:false with reason "busy".
-const starved = await bindWith({ lockTimeoutMs: 0 }, "STARVED  (lockTimeoutMs: 0)");
-
-console.log("\n--- verdict ---");
-const BIND_REASONS = new Set(["integrity-failure", "conflict"]);
-if (starved?.ok === false && !BIND_REASONS.has(starved.reason)) {
-  console.log(`CONFIRMED: bindIngress returned ok:false with reason="${starved.reason}",`);
-  console.log(`which is NOT a BindIngressResult reason. A caller asserting binding.ok, or treating`);
-  console.log(`ok:false as a durable refusal, cannot tell this from a real ingress conflict.`);
-} else if (starved?.ok === true) {
-  console.log("REFUTED: a zero budget still claimed the ingress. The busy path is not reachable this way.");
+console.log("\n--- what this shows ---");
+if (starved?.ok === false && starved.reason === "busy" && healthy?.ok === true) {
+  console.log('An exhausted budget yields {ok:false, reason:"busy"} — a DECLARED BindIngressResult');
+  console.log("member, not an error. Any test asserting binding.ok === true is asserting something");
+  console.log("the contract explicitly permits to fail, and will rotate red under machine load.");
 } else {
-  console.log(`INCONCLUSIVE: ${JSON.stringify(starved)}`);
+  console.log(`unexpected: control=${JSON.stringify(healthy)} starved=${JSON.stringify(starved)}`);
 }
-console.log(`control ok=${healthy?.ok} status=${healthy?.status ?? "-"}`);
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) process.exitCode = 0;
