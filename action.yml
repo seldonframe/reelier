@@ -57,7 +57,7 @@ inputs:
       existed) to every adopter of this action. Override to test against a
       newer or older CLI; leave at the default for normal use.
     required: false
-    default: "0.30.0"
+    default: "0.31.0"
   vars:
     description: >-
       Newline-separated `name=value` pairs, forwarded to `reelier run` as
