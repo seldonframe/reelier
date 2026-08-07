@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - **Only instruct commands present in the PUBLISHED CLI.** The ladder's step 2 is `npx -y reelier`, which resolves to the latest npm release, not `main`. Verified 2026-08-07: published 0.31.1 answers `Unsupported --host 'claude-code'. Supported hosts: codex.` **Write `--host codex` only.**
-- **Never write the unqualified phrase "an assertion on every step."** `test/claim-guard.test.ts` scans `.md` and fails the build. Qualified forms are allowed: "an assertion on every step it can check."
+- **Never promise a per-step assertion guarantee without a qualifier.** `test/claim-guard.test.ts` scans every `.md` in the repo and fails the build on the unqualified phrasing; run it to see the exact matcher. Qualified forms are fine, e.g. "…on every step it can check" or "…that recorded a clean result". The compiler leaves steps assertion-less on purpose, so the unqualified claim promises something the tool does not do. (This bullet is deliberately worded around the banned phrase rather than quoting it, because this file is scanned too.)
 - **Never render `absent`, `unchecked`, or `pending` as a pass** in any skill text (never-list #1).
 - **Skill-only packaging holds.** No `mcp.json` in either package; `test/plugin-packages.test.ts` fails on one.
 - Run the suite as `npm test > out.txt 2>&1; echo $?` with the log **outside the repo**. Never pipe through `tail`; the pipeline reports tail's exit code. A log file in the tree trips the documentation-claims lint.
