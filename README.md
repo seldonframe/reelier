@@ -70,6 +70,24 @@ docker run --rm ghcr.io/seldonframe/reelier --help
 
 `reelier init` scans work you've already done (Claude Code, Codex, OpenClaw) into a real skill, or falls back to a zero-setup demo with a real receipt in under 60 seconds.
 
+### As an agent plugin
+
+Teach your coding agent when to reach for Reelier. Same two commands, either host:
+
+```sh
+claude plugin marketplace add seldonframe/reelier
+claude plugin install reelier@seldonframe
+```
+
+```sh
+codex plugin marketplace add seldonframe/reelier
+codex plugin add reelier@seldonframe
+```
+
+This installs Reelier's Agent Skill and nothing else. **It ships no MCP servers**, so it does not wrap, observe, or gate any tool call on its own; it tells the agent when recording a job is worth it, and the CLI above does the work. Packaged in both the [Agent Plugins](https://agent-plugins.org) v1.0.0 format (`plugin/agent-plugins/`) and the Claude Code format (`plugin/claude/`), generated from one source by `scripts/build-plugin-packages.mjs`.
+
+Verified end to end on `codex-cli 0.147.0-alpha.1.2`: both formats install, enable, and the skill reaches the model. Other hosts are untested, and per-host status is tracked in [`docs/specs/agent-plugins-coverage-v1.md`](docs/specs/agent-plugins-coverage-v1.md) §4 rather than claimed here.
+
 ## How to use it
 
 ```sh
