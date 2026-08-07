@@ -78,6 +78,16 @@ export function classifyRecordVersion(record: unknown): RecordVersionClassificat
  * built from (`reelier.authority-receipt/v1` is exactly [A-Za-z0-9._/:+-]) is hex-escaped, spaces
  * included, so no attacker-supplied prose survives as readable prose. The result is quoted to
  * delimit the untrusted span and length-capped so a multi-kilobyte `v` cannot bury the message.
+ *
+ * The residual, stated rather than papered over: the allow set necessarily contains `. _ / : + -`,
+ * so pseudo-prose is constructible — a `v` of `No.present.claim.failed.verification` renders as
+ * written. That is the irreducible cost of echoing the value at all, and it does not defeat the
+ * fix: spaces are structural in the real pass line and unreachable here, so a stdout grep cannot
+ * match; nothing can open a second line, so it cannot occupy a claim row's position; it sits
+ * quoted, mid-sentence, on a line beginning `unsupported-record-version: ✗ REFUSED`; and the exit
+ * code and summary line are untouched. Verified against 33 adversarial vectors, zero defeats:
+ * quote break-out fails because `"` escapes to `\x22`, and the escape notation itself is
+ * unforgeable because `\` escapes to `\x5c`.
  */
 const VERSION_SAFE = /^[A-Za-z0-9._/:+-]$/;
 

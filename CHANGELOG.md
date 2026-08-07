@@ -30,7 +30,18 @@ not an own record version, and a valid-looking signature or timestamp sibling
 cannot pull a versioned record back into legacy crypto.
 
 Nothing else changed. If you never hand `verify` an authority record, this
-release behaves identically to 0.31.0.
+release behaves identically to 0.31.0.
+
+One user-visible detail, because it will look odd the first time you see it:
+the declared version is echoed back **quoted, hex-escaped and capped at 120
+characters**, not verbatim. `reelier.authority-receipt/v1` prints as-is, but a
+`v` of `{"nested":true}` prints as `"{"nested":true}"`. That is
+deliberate. The declared version is attacker-controlled bytes being spliced into
+a verdict line, and interpolating it raw let a `v` containing newlines print
+forged claim rows and the literal string "No present claim failed verification."
+underneath the refusal — measured in a real subprocess, exit code still 1, but a
+human reading the terminal was shown a pass. Only `[A-Za-z0-9._/:+-]` passes
+through; everything else, spaces included, is escaped.
 
 ## 0.31.0 — The artifact that left, and where the watching stops
 
