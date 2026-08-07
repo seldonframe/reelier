@@ -18,6 +18,7 @@ import {
   buildReelierServerEntry,
   type McpConfigJson,
   type AgentConfigDetection,
+  type KnownMcpConfig,
 } from "./init.js";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -205,6 +206,157 @@ export async function findLatestBackup(configPath: string): Promise<string | und
 export async function restoreFromBackup(configPath: string, backupPath: string): Promise<void> {
   const content = await readFile(backupPath, "utf8");
   await writeFileAtomic(configPath, content);
+}
+
+// ---------------------------------------------------------------------------
+// Uninstall across every host — the reverse gear for `install`.
+//
+// `install` wraps every config in knownMcpConfigPaths; uninstall must walk the
+// SAME set or it is not a reverse gear, it is a reverse gear for one host. It
+// used to resolve a single path through detectAgentConfig (Claude Code only),
+// so a Cursor or Windsurf user who installed then uninstalled stayed wrapped
+// and was told the uninstall succeeded.
+// ---------------------------------------------------------------------------
+
+/**
+ * Whether a config on disk currently carries reelier-wrapped entries.
+ * "unknown" when the file is missing or unparseable — never collapsed to
+ * "unwrapped", which a reader would take as "nothing left to revert".
+ */
+export type WrapState = "wrapped" | "unwrapped" | "unknown";
+
+export type UninstallAction =
+  /** A backup exists and the config is on disk — restorable. */
+  | "restore"
+  /** The config is on disk with no backup beside it. Reported, never skipped: if it is wrapped, this is the one case with no CLI route back. */
+  | "no-backup"
+  /** A backup exists but the config is gone. Reported and left alone — recreating a file the user deleted is a surprise write, not a revert. */
+  | "orphan-backup";
+
+export interface UninstallPlanEntry {
+  label: string;
+  configPath: string;
+  action: UninstallAction;
+  backupPath?: string;
+  wrapState: WrapState;
+  /** Names of the currently-wrapped servers, so a no-backup report can say what is still fronted rather than just how many. */
+  wrappedServerNames: string[];
+  /** Why `wrapState` is "unknown", verbatim. Present only then. */
+  wrapStateReason?: string;
+}
+
+export interface UninstallPlan {
+  /** Only paths where a config or a backup exists. A host that was never installed has nothing to report and is not noise. */
+  entries: UninstallPlanEntry[];
+  /** How many entries `applyUninstall` will actually write. Zero is the caller's cue to fail with an honest error rather than print a success. */
+  restorable: number;
+  /** Every path considered, installed or not — what the caller lists when it finds nothing. */
+  checkedPaths: string[];
+}
+
+/** Read a config and report whether reelier currently fronts anything in it. Never throws: an unreadable config is an honest "unknown", not an assumed "unwrapped". */
+async function inspectWrapState(
+  configPath: string
+): Promise<{ wrapState: WrapState; wrappedServerNames: string[]; wrapStateReason?: string }> {
+  let raw: string;
+  try {
+    raw = await readFile(configPath, "utf8");
+  } catch (err) {
+    return { wrapState: "unknown", wrappedServerNames: [], wrapStateReason: (err as Error).message };
+  }
+  let servers: Record<string, unknown>;
+  try {
+    servers = (parseMcpConfig(raw).mcpServers ?? {}) as Record<string, unknown>;
+  } catch (err) {
+    return { wrapState: "unknown", wrappedServerNames: [], wrapStateReason: (err as Error).message };
+  }
+  const wrappedServerNames = Object.entries(servers)
+    .filter(([, entry]) => isWrappedEntry(entry))
+    .map(([name]) => name);
+  return { wrapState: wrappedServerNames.length > 0 ? "wrapped" : "unwrapped", wrappedServerNames };
+}
+
+/** Plan the revert across a set of host configs — pure inspection, writes nothing. */
+export async function planUninstall(targets: KnownMcpConfig[]): Promise<UninstallPlan> {
+  const entries: UninstallPlanEntry[] = [];
+
+  for (const target of targets) {
+    const [exists, backupPath] = await Promise.all([fileExists(target.path), findLatestBackup(target.path)]);
+    if (!exists && !backupPath) continue;
+
+    if (!exists) {
+      entries.push({
+        label: target.label,
+        configPath: target.path,
+        action: "orphan-backup",
+        backupPath,
+        wrapState: "unknown",
+        wrappedServerNames: [],
+        wrapStateReason: "the config file no longer exists",
+      });
+      continue;
+    }
+
+    const state = await inspectWrapState(target.path);
+    entries.push({
+      label: target.label,
+      configPath: target.path,
+      action: backupPath ? "restore" : "no-backup",
+      backupPath,
+      ...state,
+    });
+  }
+
+  return {
+    entries,
+    restorable: entries.filter((e) => e.action === "restore").length,
+    checkedPaths: targets.map((t) => t.path),
+  };
+}
+
+export type UninstallOutcome = "restored" | "no-backup" | "orphan-backup" | "restore-failed";
+
+export interface UninstallEntryResult extends UninstallPlanEntry {
+  outcome: UninstallOutcome;
+  /** Present only on "restore-failed" — the config was left exactly as it was. */
+  error?: string;
+}
+
+/**
+ * Restore every restorable config. A failure on one config does NOT abort the
+ * rest and is never reported as a skip: each config has its own backup, and an
+ * operator who gets three of four hosts back needs to know which one is still
+ * wrapped. Backups are left on disk — restoring is not consuming.
+ */
+export async function applyUninstall(plan: UninstallPlan): Promise<UninstallEntryResult[]> {
+  const results: UninstallEntryResult[] = [];
+  for (const entry of plan.entries) {
+    if (entry.action !== "restore") {
+      results.push({ ...entry, outcome: entry.action });
+      continue;
+    }
+    try {
+      await restoreFromBackup(entry.configPath, entry.backupPath!);
+      results.push({ ...entry, outcome: "restored" });
+    } catch (err) {
+      results.push({ ...entry, outcome: "restore-failed", error: (err as Error).message });
+    }
+  }
+  return results;
+}
+
+/**
+ * The `--agent` rejection both install and uninstall print. Shared so the two
+ * can never drift into describing different host coverage — and it names the
+ * offending value, which the message lost when install grew multi-host support
+ * (the interpolation was dropped, leaving a literal empty `''`).
+ */
+export function agentGuardMessage(command: "install" | "uninstall", agent: string): string {
+  const verb = command === "install" ? "install now wraps" : "uninstall now reverts";
+  return (
+    `Unsupported --agent '${agent}' — omit it: ${verb} every known host config it finds ` +
+    `(Claude Code, Cursor, Windsurf). Use --config <path> to target one file.`
+  );
 }
 
 // ---------------------------------------------------------------------------
