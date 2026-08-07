@@ -13,7 +13,7 @@ const execFileAsync = promisify(execFile);
 // always runs from the repo root under `npm test`.
 const repoRoot = process.cwd();
 const SCRIPT = path.join(repoRoot, "scripts", "build-plugin-packages.mjs");
-const SKILL_SOURCE = path.join(repoRoot, "integrations", "claude-code", "reelier", "SKILL.md");
+const SKILL_SOURCE = path.join(repoRoot, "integrations", "skills", "reelier-replay", "SKILL.md");
 const packageVersion = (JSON.parse(fs.readFileSync(path.join(repoRoot, "package.json"), "utf8")) as { version: string }).version;
 
 const ALLOWED_MANIFEST_KEYS = new Set([
@@ -45,7 +45,7 @@ test("the generator emits a closed-schema Agent Plugins manifest and a byte-iden
     for (const key of Object.keys(manifest)) {
       assert.ok(ALLOWED_MANIFEST_KEYS.has(key), `plugin.json key '${key}' is not in the closed v1.0.0 schema`);
     }
-    const packagedSkill = await readFile(path.join(out, "agent-plugins", "skills", "reelier", "SKILL.md"), "utf8");
+    const packagedSkill = await readFile(path.join(out, "agent-plugins", "skills", "reelier-replay", "SKILL.md"), "utf8");
     assert.equal(packagedSkill, await readFile(SKILL_SOURCE, "utf8"));
   } finally {
     await rm(out, { recursive: true, force: true });
@@ -59,8 +59,25 @@ test("the generator emits a Claude-format package from the same source", async (
     const manifest = JSON.parse(await readFile(path.join(out, "claude", ".claude-plugin", "plugin.json"), "utf8")) as Record<string, unknown>;
     assert.equal(manifest.name, "reelier");
     assert.equal(manifest.version, packageVersion);
-    const packagedSkill = await readFile(path.join(out, "claude", "skills", "reelier", "SKILL.md"), "utf8");
+    const packagedSkill = await readFile(path.join(out, "claude", "skills", "reelier-replay", "SKILL.md"), "utf8");
     assert.equal(packagedSkill, await readFile(SKILL_SOURCE, "utf8"));
+  } finally {
+    await rm(out, { recursive: true, force: true });
+  }
+});
+
+test("the generator emits every declared skill into both packages", async () => {
+  const out = await mkdtemp(path.join(os.tmpdir(), "reelier-plugin-pkg-"));
+  try {
+    await generateInto(out);
+    for (const pkg of ["agent-plugins", "claude"]) {
+      for (const id of ["reelier-replay"]) {
+        const skill = path.join(out, pkg, "skills", id, "SKILL.md");
+        assert.ok(fs.existsSync(skill), `missing ${pkg}/skills/${id}/SKILL.md`);
+      }
+    }
+    // The old single-skill path must be gone, not merely joined.
+    assert.ok(!fs.existsSync(path.join(out, "claude", "skills", "reelier", "SKILL.md")));
   } finally {
     await rm(out, { recursive: true, force: true });
   }
