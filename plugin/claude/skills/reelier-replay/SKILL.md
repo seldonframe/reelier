@@ -1,5 +1,5 @@
 ---
-name: reelier
+name: reelier-replay
 description: Freeze a repeatable, tool-call-driven task into a replayable Reelier skill, and replay an existing skill instead of redoing deterministic work. Use after finishing a task that was mostly API/MCP tool calls (data pulls, report generation, deploy checks, CRUD sequences) — never for arbitrary coding/file-edit sessions, which Reelier cannot replay.
 ---
 

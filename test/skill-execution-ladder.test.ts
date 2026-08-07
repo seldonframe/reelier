@@ -27,6 +27,19 @@ test("every shipped skill that names an MCP tool also states the CLI fallback", 
   }
 });
 
+test("every shipped skill's frontmatter name matches its directory", () => {
+  // Both skills land in the same plugin under skills/<dir>/. When the
+  // frontmatter name disagrees with the directory, a host keying on one and a
+  // reader keying on the other disagree about which skill is which — and with
+  // two skills shipping together, one of them declaring the bare product name
+  // reads like the only skill. Caught when the second skill was added: the
+  // first still said `name: reelier`.
+  for (const { id, body } of shippedSkills()) {
+    const declared = /^name:\s*(\S+)\s*$/m.exec(body)?.[1];
+    assert.equal(declared, id, `skills/${id}/SKILL.md declares name: ${declared}`);
+  }
+});
+
 test("no shipped skill forbids the CLI fallback", () => {
   for (const { id, body } of shippedSkills()) {
     assert.doesNotMatch(
