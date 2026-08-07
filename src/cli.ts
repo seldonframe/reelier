@@ -115,7 +115,7 @@ import { generateSigningKeypair, loadSigningKey, signRecordDigest, verifyRecordS
 import { resolveVerifyPayload, evaluateVerifyClaims } from "./verify.js";
 import { writeCiWorkflow, PLACEHOLDER_SKILL_PATH } from "./ci-scaffold.js";
 import { buildDiscoveryBundle, discoverOpportunities, formatDiscoveryPreview, signDiscoveryBundle, type AgentOpportunity, type DiscoverySessionInput } from "./discovery.js";
-import { collectCodexCoverage, renderCoverageReport } from "./coverage.js";
+import { collectCodexCoverage, renderCoverageReport, collectClaudeCoverage, renderClaudeCoverageReport } from "./coverage.js";
 import { uploadDiscoveryBundle } from "./discovery-client.js";
 
 // Exported (alongside cmdPush below) so test/push-cli.test.ts can drive
@@ -3179,19 +3179,29 @@ async function readDiscoverySigningMaterial(homedir: string): Promise<{ privateK
   return { privateKey: loaded.privateKey, keyId: loaded.keyId, publicKeyPem: publicPem };
 }
 
-export async function cmdCoverage(args: ParsedArgs, homedirOverride?: string): Promise<number> {
+const COVERAGE_HOSTS = "codex, claude";
+
+export async function cmdCoverage(args: ParsedArgs, homedirOverride?: string, cwdOverride?: string): Promise<number> {
   const host = args.opts.host;
   if (!host) {
-    console.error("Usage: reelier coverage --host <host>. Supported hosts: codex.");
+    console.error(`Usage: reelier coverage --host <host>. Supported hosts: ${COVERAGE_HOSTS}.`);
     return 1;
   }
-  if (host !== "codex") {
-    console.error(`Unsupported --host '${host}'. Supported hosts: codex.`);
-    return 1;
+  const homedir = homedirOverride ?? os.homedir();
+  if (host === "codex") {
+    for (const line of renderCoverageReport(await collectCodexCoverage(homedir))) console.log(line);
+    return 0;
   }
-  const report = await collectCodexCoverage(homedirOverride ?? os.homedir());
-  for (const line of renderCoverageReport(report)) console.log(line);
-  return 0;
+  if (host === "claude" || host === "claude-code") {
+    // cwd only marks WHICH project entry `install` would rewrite. Every project-scoped entry is
+    // reported either way — reporting is correct under any scoping choice, and an operator
+    // cannot act on a gap they cannot see from where they are standing.
+    const report = await collectClaudeCoverage(homedir, cwdOverride ?? process.cwd());
+    for (const line of renderClaudeCoverageReport(report)) console.log(line);
+    return 0;
+  }
+  console.error(`Unsupported --host '${host}'. Supported hosts: ${COVERAGE_HOSTS}.`);
+  return 1;
 }
 
 export async function cmdDiscover(args: ParsedArgs): Promise<number> {
@@ -3442,17 +3452,34 @@ async function cmdInstall(args: ParsedArgs): Promise<number> {
 
   const plans: { target: KnownMcpConfig; plan: InstallPlan }[] = [];
   for (const target of targets) {
-    const plan = await planInstall(target.path);
+    const plan = await planInstall(target.path, cwd);
     plans.push({ target, plan });
     console.log(`${target.label} — ${target.path}`);
     if (plan.entries.length === 0) {
       console.log("  (no mcpServers entries)");
     }
     for (const e of plan.entries) {
-      if (e.action === "wrap") console.log(`  ${e.name}: will wrap`);
-      else if (e.action === "already-wrapped") console.log(`  ${e.name}: already wrapped — left alone`);
-      else console.log(`  ${e.name}: skipped — ${e.reason}`);
+      // Project-scoped entries (~/.claude.json's `projects` map) are named with their project
+      // so "will wrap" and "reported, not wrapped" can never be read as being about the same file.
+      const label = e.projectPath ? `${e.name} (projects/${e.projectPath})` : e.name;
+      if (e.action === "wrap") console.log(`  ${label}: will wrap`);
+      else if (e.action === "already-wrapped") console.log(`  ${label}: already wrapped — left alone`);
+      else if (e.action === "skip-other-project") console.log(`  ${label}: reported, NOT wrapped — ${e.reason}`);
+      else console.log(`  ${label}: skipped — ${e.reason}`);
     }
+    console.log("");
+  }
+
+  // Printed before the "nothing to do" early return below, deliberately: the case where every
+  // wrappable server is already wrapped is exactly the case where an operator would otherwise
+  // read "nothing to do" as "fully covered".
+  const otherProject = plans.flatMap((p) => p.plan.entries).filter((e) => e.action === "skip-other-project");
+  if (otherProject.length > 0) {
+    console.log(
+      `${otherProject.length} project-scoped server(s) belong to other projects and were NOT wrapped. ` +
+        `Install wraps only the project entry matching the directory it runs in — re-run 'reelier install' from ` +
+        `that project's directory. To list every one from anywhere: reelier coverage --host claude`
+    );
     console.log("");
   }
 
@@ -4434,8 +4461,10 @@ const USAGE =
   "           Format is sniffed from content; override with --agent <claude-code|codex|openclaw|cursor|windsurf>.\n" +
   "           --agent cursor / --agent windsurf report why those aren't supported yet instead of guessing.\n" +
   "  scan   — discover session transcripts from every known agent (also reports Cursor/Windsurf DB findings).\n" +
-  "  coverage — reelier coverage --host codex: read-only observed inventory of a host's MCP servers (config + plugins),\n" +
-  "           wrapped/unwrapped per entry. Observed inventory only; never a completeness claim.";
+  "  coverage — reelier coverage --host codex|claude: read-only observed inventory of a host's MCP servers,\n" +
+  "           wrapped/unwrapped per entry. codex covers config + plugins; claude covers ~/.claude.json's top-level\n" +
+  "           servers AND every project-scoped one under `projects`, each with its own denominator.\n" +
+  "           Observed inventory only; never a completeness claim.";
 
 async function main(): Promise<number> {
   const [, , cmd, ...rest] = process.argv;

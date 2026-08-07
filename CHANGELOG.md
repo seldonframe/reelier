@@ -2,6 +2,74 @@
 
 All notable changes to `reelier`. Dates are release dates.
 
+## Unreleased — Both places Claude Code keeps servers
+
+### Fixed
+
+- **`install` no longer leaves servers unwrapped inside the file it just
+  rewrote.** `planInstall` read only the top-level `mcpServers` object, but
+  `~/.claude.json` also stores per-project servers at
+  `projects["<abs path>"].mcpServers`. Measured on one dev machine 2026-08-06:
+  2 top-level servers, 83 project keys, **5 of them carrying their own
+  servers** — all 5 left unwrapped while `install` reported success on that
+  same file. That falsified the "one install covers every MCP server in the
+  agent's config" claim, and it is the failure class this product exists to
+  catch: a guardrail present, silent, and dead. `planInstall` now reads the
+  `projects` map too.
+- **Scope, and it is deliberate: only the project entry whose key matches the
+  current working directory is rewritten.** `install` is already cwd-sensitive
+  (it looks at `<cwd>/.mcp.json`), so cwd-scoping keeps the blast radius
+  predictable and matches operator intent; rewriting all 83 entries from an
+  arbitrary cwd would modify config for projects the operator is not working in
+  and would make the backup/uninstall story much worse. An entry for a
+  DIFFERENT project is **reported and never rewritten** — a new
+  `skip-other-project` plan action with its own
+  `InstallResult.otherProjectCount` denominator (not merged into
+  `skippedCount`, which means "unwrappable", which these are not). The report
+  prints **before** the "nothing to do" early return, so the case where every
+  wrappable server is already wrapped can never be read as "fully covered".
+- **Path matching is lexical and platform-conditional**
+  (`sameProjectDirectory`, `src/project-scope.ts`). The `projects` keys are
+  absolute paths the HOST wrote, so on Windows separator style (`/` vs `\`) and
+  case are folded; on POSIX neither is, because a backslash is a legal filename
+  character there and folding case would match two genuinely different
+  directories. It does **not** resolve symlinks, `..` segments or 8.3 short
+  names, so two routes to the same directory read as different — which
+  under-matches (report, don't rewrite) rather than over-matching.
+
+### Added
+
+- **`reelier coverage --host claude` — the same read-only inventory for
+  `~/.claude.json`, including every project-scoped entry.** Reports the
+  top-level `mcpServers` object AND the per-project maps. Project-scoped
+  entries are named `<claudeJsonPath>#projects/<path>` so a reader can tell
+  them from top-level ones, and they carry **their own denominator** — never
+  merged into the top-level count, since a project-scoped server `install`
+  never touches must not be able to hide inside a total that looks covered.
+  Project keys carrying no servers still count in their own denominator
+  (`N of M project keys`). Unlike `install`, reporting is **not** cwd-scoped:
+  every project's entries are listed from wherever the command runs, with the
+  one entry `install` would rewrite marked `[cwd]`. Reporting is correct under
+  every scoping choice, and an operator cannot act on a gap they cannot see
+  from where they are standing. Read-only: `collectClaudeCoverage` opens one
+  file and writes nothing. Routing is judged by reading the entry and is left
+  undefined — never guessed — when the entry is unreadable; `absent`,
+  `unreadable` and `unwrapped` are never rendered as a pass, and the report's
+  last line is still exactly
+  `Observed inventory only; this is not proof of completeness.`
+
+### Notes
+
+- **This closes the gap for `install`, not for `uninstall`.** `cmdUninstall`
+  still resolves a single config path and restores its newest backup; that
+  backup is whole-file, so a project-scoped wrap written into `~/.claude.json`
+  IS reverted by it — but the pre-existing limitation that `uninstall` does not
+  cover every config `install` may have rewritten is unchanged by this work.
+- **`coverage --host claude` reads `~/.claude.json` and nothing else.** It does
+  not read `<cwd>/.mcp.json`, the Cursor or Windsurf configs, or any plugin
+  manifest, and the report names exactly the one location it opened. It reports
+  coverage; it does not extend the wrap.
+
 ## 0.31.0 — The artifact that left, and where the watching stops
 
 **Read this first if you are upgrading from npm.** Published 0.30.0 shipped

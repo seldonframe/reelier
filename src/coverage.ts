@@ -17,6 +17,7 @@
 
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
+import { sameProjectDirectory } from "./project-scope.js";
 
 export type CoverageLocation = "parsed" | "unreadable" | "absent";
 export type CoverageRouting = "wrapped" | "unwrapped";
@@ -477,6 +478,119 @@ export async function collectCodexCoverage(homedir: string): Promise<CodexCovera
 }
 
 // ---------------------------------------------------------------------------
+// Claude Code — `~/.claude.json` carries servers in TWO places
+//
+// The top-level `mcpServers` object every host shares, AND a per-project map at
+// `projects["<abs path>"].mcpServers`. `reelier install` rewrites only the project entry
+// matching the directory it runs in (src/wrap.ts), so an operator has no way to see the rest
+// from where they are standing. Reporting is correct under every scoping choice, so this
+// probe lists ALL project-scoped entries regardless of cwd — with their own denominator, never
+// merged into the top-level count, and with the project key named in the origin so a reader
+// can tell a project-scoped entry from a top-level one.
+
+/** How a project-scoped entry is identified in a report: `<claudeJsonPath>#projects/<project path>`. */
+export function projectScopedOrigin(configPath: string, projectPath: string): string {
+  return `${configPath}#projects/${projectPath}`;
+}
+
+export interface ClaudeProjectCoverage {
+  /** The `projects` key exactly as written in the file — never rewritten or re-normalized for display. */
+  projectPath: string;
+  origin: string;
+  /** True for the one entry `reelier install` would rewrite when run from `cwd`. */
+  isCwd: boolean;
+  servers: CoverageServer[];
+}
+
+export interface ClaudeConfigAnalysis {
+  configPath: string;
+  cwd: string;
+  location: CoverageLocation;
+  detail?: string;
+  /** Top-level `mcpServers` only. */
+  servers: CoverageServer[];
+  /** Only project keys that carry at least one server — `projectKeyCount` is the full denominator. */
+  projects: ClaudeProjectCoverage[];
+  projectKeyCount: number;
+}
+
+export interface ClaudeCoverageReport {
+  homedir: string;
+  cwd: string;
+  configPath: string;
+  config: ClaudeConfigAnalysis;
+  inspectedLocations: string[];
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function serversFromMap(map: Record<string, unknown>, origin: string): CoverageServer[] {
+  return Object.entries(map).map(([name, entry]) =>
+    isRecord(entry)
+      ? serverFromEntries(name, origin, entry)
+      : { name, origin, location: "unreadable" as const, detail: "entry is not an object" },
+  );
+}
+
+/** Analyze a `~/.claude.json`'s raw text (undefined means the file is absent). Pure. */
+export function analyzeClaudeConfig(raw: string | undefined, configPath: string, cwd: string): ClaudeConfigAnalysis {
+  const empty = { configPath, cwd, servers: [], projects: [], projectKeyCount: 0 };
+  if (raw === undefined) return { ...empty, location: "absent" };
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    return { ...empty, location: "unreadable", detail: (err as Error).message };
+  }
+  if (!isRecord(parsed)) return { ...empty, location: "unreadable", detail: "config root is not an object" };
+
+  const servers = isRecord(parsed.mcpServers) ? serversFromMap(parsed.mcpServers, configPath) : [];
+
+  const projects: ClaudeProjectCoverage[] = [];
+  let projectKeyCount = 0;
+  if (isRecord(parsed.projects)) {
+    for (const [projectPath, projectEntry] of Object.entries(parsed.projects)) {
+      projectKeyCount++;
+      // A key with no usable server map contributes to the denominator and nothing else —
+      // a project that configures no MCP server is not a coverage gap.
+      if (!isRecord(projectEntry) || !isRecord(projectEntry.mcpServers)) continue;
+      const map = projectEntry.mcpServers;
+      if (Object.keys(map).length === 0) continue;
+      const origin = projectScopedOrigin(configPath, projectPath);
+      projects.push({
+        projectPath,
+        origin,
+        isCwd: sameProjectDirectory(projectPath, cwd),
+        servers: serversFromMap(map, origin),
+      });
+    }
+  }
+
+  return { configPath, cwd, location: "parsed", servers, projects, projectKeyCount };
+}
+
+/** Inventory a Claude Code install's observed MCP surface. Read-only: writes nothing, edits nothing. */
+export async function collectClaudeCoverage(homedir: string, cwd: string): Promise<ClaudeCoverageReport> {
+  const configPath = path.join(homedir, ".claude.json");
+  let raw: string | undefined;
+  try {
+    raw = await readFile(configPath, "utf8");
+  } catch {
+    raw = undefined;
+  }
+  return {
+    homedir,
+    cwd,
+    configPath,
+    config: analyzeClaudeConfig(raw, configPath, cwd),
+    inspectedLocations: [configPath],
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Rendering — named denominators; never an overall percentage
 
 function formatServerLine(server: CoverageServer): string {
@@ -530,6 +644,79 @@ export function renderCoverageReport(report: CodexCoverageReport): string[] {
     for (const plugin of report.plugins) lines.push(...formatPluginLines(plugin));
     lines.push("");
   }
+
+  lines.push("Observed inventory only; this is not proof of completeness.");
+  return lines;
+}
+
+/** Wrapped/unwrapped tallies over the parsed entries of one list. Unreadable entries are excluded from both — they have no routing to claim. */
+function routingTally(servers: CoverageServer[]): { parsed: number; wrapped: number; unwrapped: number } {
+  const parsed = servers.filter((s) => s.location === "parsed");
+  return {
+    parsed: parsed.length,
+    wrapped: parsed.filter((s) => s.routing === "wrapped").length,
+    unwrapped: parsed.filter((s) => s.routing === "unwrapped").length,
+  };
+}
+
+/**
+ * Render the Claude Code report. Top-level and project-scoped entries get SEPARATE
+ * denominators — a single merged count would let project-scoped servers `install` never
+ * touches hide inside a total that looks covered.
+ */
+export function renderClaudeCoverageReport(report: ClaudeCoverageReport): string[] {
+  const { config } = report;
+  const lines: string[] = ["Observed coverage — host: claude-code", "", "Inspected:"];
+  for (const location of report.inspectedLocations) lines.push(`  ${location}`);
+  lines.push("");
+
+  if (config.location === "absent") {
+    lines.push(`MCP servers: ${config.configPath} — absent (no configuration found).`);
+    lines.push("");
+    lines.push("Observed inventory only; this is not proof of completeness.");
+    return lines;
+  }
+  if (config.location === "unreadable") {
+    lines.push(`MCP servers: ${config.configPath} — unreadable (${config.detail ?? "could not be parsed"}).`);
+    lines.push("  Nothing is claimed about this host's coverage; an unreadable config is not an empty one.");
+    lines.push("");
+    lines.push("Observed inventory only; this is not proof of completeness.");
+    return lines;
+  }
+
+  const top = routingTally(config.servers);
+  lines.push(`Top-level MCP servers in ${config.configPath}:`);
+  if (config.servers.length === 0) lines.push("  (none)");
+  for (const server of config.servers) lines.push(formatServerLine(server));
+  lines.push(
+    `  Observed: ${top.parsed} of ${config.servers.length} top-level entries parsed; ` +
+      `${top.wrapped} wrapped, ${top.unwrapped} unwrapped.`,
+  );
+  lines.push("");
+
+  const projectServers = config.projects.flatMap((p) => p.servers);
+  lines.push(`Project-scoped MCP servers (${config.configPath}#projects/…):`);
+  if (config.projects.length === 0) {
+    lines.push(`  (none — ${config.projectKeyCount} project key(s) present, none carrying MCP servers)`);
+  }
+  for (const project of config.projects) {
+    lines.push(`  ${project.origin}${project.isCwd ? "   [cwd — the one install would rewrite]" : ""}`);
+    for (const server of project.servers) lines.push(`  ${formatServerLine(server)}`);
+  }
+  const proj = routingTally(projectServers);
+  lines.push(
+    `  Observed: ${proj.parsed} of ${projectServers.length} project-scoped entries parsed, ` +
+      `across ${config.projects.length} of ${config.projectKeyCount} project keys; ` +
+      `${proj.wrapped} wrapped, ${proj.unwrapped} unwrapped.`,
+  );
+  const elsewhere = config.projects.filter((p) => !p.isCwd).flatMap((p) => p.servers).length;
+  if (elsewhere > 0) {
+    lines.push(
+      `  ${elsewhere} of those belong to other projects: 'reelier install' wraps only the project entry ` +
+        `matching the directory it runs in, so it reports those and never rewrites them.`,
+    );
+  }
+  lines.push("");
 
   lines.push("Observed inventory only; this is not proof of completeness.");
   return lines;
