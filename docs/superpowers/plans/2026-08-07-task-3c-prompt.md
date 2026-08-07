@@ -11,8 +11,15 @@ end of this file, outside the prompt block.
 
 **Two prerequisites that are not optional.** The 3C brief's own first line blocks the task until
 3B2 has (a) an independently approved product commit and (b) a final docs-only pin. Neither exists
-today: there is no `task-3b2-review-*.md` verdict, and `AGENTS.md` still pins `9666b90`, which is
+today: there is no `task-3b2-review-*.md` verdict, and the pin still reads `9666b90`, which is
 3B1's commit. They are small. Do them first or the whole task is built on an unpinned base.
+
+> **Prerequisite (b) was re-specified on 2026-08-07 and the original wording is now wrong.** It said
+> to re-pin `AGENTS.md`. After the merge with `origin/main` (`25dd32d`), `AGENTS.md` is a
+> byte-identical twin of `CLAUDE.md` enforced by `test/claim-guard.test.ts:177`, and carries no
+> `code pin` line at all. The pin now lives in **`docs/path-c-status.md`**. Editing either twin to
+> hold a Path C pin would break `claim-guard` and would assert capability about unbuilt work.
+> See `docs/superpowers/plans/2026-08-07-paths-ab-merge-regression.md`.
 
 ---
 
@@ -38,8 +45,18 @@ STEP 1 — CLEAR THE TWO PREREQUISITES. The 3C brief blocks on them and they are
  (a) An independent review of 3B2's fairness slice (5eca255 and its follow-ups). Tasks 1, 1A and 2
      each have task-*-review-*.md verdicts on file; 3B2 has none. Produce one: fresh reviewer,
      adversarial, grounded in file+line and reproducible runs.
- (b) The final docs-only pin. AGENTS.md reads `code pin 9666b90...`, which is 3B1's product commit.
-     Re-pin it to the reviewed 3B2 commit in a docs-only commit.
+ (b) The final docs-only pin. docs/path-c-status.md carries `code pin 9666b90...`, which is 3B1's
+     product commit. Re-pin it to the reviewed 3B2 commit in a docs-only commit. NOT AGENTS.md —
+     since 25dd32d that file is a byte-identical twin of CLAUDE.md, guarded by
+     test/claim-guard.test.ts:177, and putting a Path C pin in it breaks the guard.
+STEP 1b — #85 IS NOT MERGED AND CANNOT BE MERGED YET. Do not assume a merged base. Measured
+2026-08-07: main's CI is green, this branch fails 23 tests, CI runs `npm test` under `set -o
+pipefail`, and the README badge (1,650) disagrees with the real suite size (2,480), so
+check-badge.mjs fails on the Linux leg independently of the tests. The 16 core reds are the
+ungranted housekeeping-permission family and cannot go green without the owner's D2 decision.
+The merge with origin/main IS applied on this branch (25dd32d) and Paths A/B were measured
+non-regressing across three full runs — that work is done. What is missing is an owner decision,
+not code.
 Do not start 3C0 until both exist. If the review finds something blocking, that finding IS the
 session's outcome — report it and stop.
 STEP 2 — read these. They are the plan; do not re-derive them:
