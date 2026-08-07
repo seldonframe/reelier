@@ -6,11 +6,14 @@
 // over". So any copy promising an assertion on EVERY step describes a
 // guarantee the tool was deliberately built not to make.
 //
-// That rule was written down in reelier's docs/strategy/submissions.md on
-// 2026-07-22. Two days later the claim was live on ~40 surfaces across both
-// repos, including every public receipt permalink, llms.txt, the OG/Twitter
-// descriptions and the homepage SVG. A written rule with nothing enforcing
-// it did not hold, which is why this file exists.
+// That rule was written down on 2026-07-22, in a submissions doc that then
+// lived in this repo and has since moved to the private reelier-cloud repo
+// (docs/strategy/from-oss-repo/). Two days after it was written the claim was
+// live on ~40 surfaces across both repos, including every public receipt
+// permalink, llms.txt, the OG/Twitter descriptions and the homepage SVG. A
+// written rule with nothing enforcing it did not hold, which is why this file
+// exists — and why the rule's enforcement lives here rather than in the doc
+// that stated it.
 //
 // The QUALIFIED forms are fine and are deliberately allowed: "an assertion
 // on every step IT CAN CHECK", "...THAT RECORDED A CLEAN RESULT". Those
@@ -18,6 +21,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 
@@ -69,6 +73,37 @@ const SKIP_DIRS = new Set([
  */
 const SKIP_PATH_SUFFIXES = [join(".claude", "worktrees")];
 
+/**
+ * Paths git actually ignores, asked of git rather than guessed from a name.
+ *
+ * This walker crawls the filesystem, not `git ls-files`, so it reaches scratch
+ * git never sees — including subagent task reports under `.superpowers/`, and
+ * a report that quotes THIS test's own failure message contains the banned
+ * phrase. That failed the suite on a file that ships nowhere.
+ *
+ * Skipping by directory name was the obvious fix and it was wrong: at the time
+ * of writing `.superpowers/` also held EIGHT TRACKED files, three of them
+ * directly under `.superpowers/sdd/`. A name-suffix skip would have made that
+ * whole subtree unreachable forever, including content that ships — a
+ * guardrail present, silent, and dead, which is the exact failure class this
+ * file exists to prevent. Asking git skips the scratch and nothing else.
+ *
+ * No git (a tarball, a vendored copy)? Scan everything. Over-scanning is the
+ * safe direction for a guard.
+ */
+function gitIgnoredFiles(root: string): Set<string> {
+  try {
+    const out = execFileSync("git", ["ls-files", "--others", "--ignored", "--exclude-standard", "-z"], {
+      cwd: root,
+      encoding: "utf8",
+      maxBuffer: 64 * 1024 * 1024,
+    });
+    return new Set(out.split("\0").filter(Boolean).map((p) => join(root, p)));
+  } catch {
+    return new Set();
+  }
+}
+
 const SCAN_EXT = [".ts", ".tsx", ".js", ".mjs", ".md", ".mdx", ".json", ".svg", ".html", ".txt", ".yml", ".yaml"];
 
 // Files whose JOB is to quote the banned phrase (guardrails, this test, and
@@ -76,7 +111,6 @@ const SCAN_EXT = [".ts", ".tsx", ".js", ".mjs", ".md", ".mdx", ".json", ".svg", 
 const ALLOWLIST = new Set(
   [
     "test/claim-guard.test.ts",
-    "docs/strategy/submissions.md",
     "CONTRIBUTING.md",
   ].map((p) => p.split("/").join(sep)),
 );
@@ -99,11 +133,14 @@ const BANNED: { label: string; re: RegExp }[] = [
   { label: "one assertion per step", re: /(?:one|an)\s+assertion\s+per\s+step/gi },
 ];
 
+const IGNORED = gitIgnoredFiles(ROOT);
+
 function* walk(dir: string): Generator<string> {
   for (const entry of readdirSync(dir)) {
     if (SKIP_DIRS.has(entry)) continue;
     const full = join(dir, entry);
     if (SKIP_PATH_SUFFIXES.some((suffix) => full.endsWith(suffix))) continue;
+    if (IGNORED.has(full)) continue;
     if (statSync(full).isDirectory()) yield* walk(full);
     else if (SCAN_EXT.some((e) => entry.endsWith(e))) yield full;
   }

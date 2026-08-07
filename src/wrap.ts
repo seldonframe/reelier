@@ -1,16 +1,27 @@
 // `reelier install` / `reelier uninstall` — turn `reelier init`'s manual
 // "front an existing MCP server with reelier mcp --wrap" step into a single
 // command: detect the agent's MCP config (reusing init.ts's detection),
-// back it up, and rewrite every configured local server so it's fronted by
+// back it up, and rewrite the configured local servers so they're fronted by
 // `reelier mcp --wrap "<original command>"`. Idempotent (never double-wraps
 // an already-wrapped entry) and always reversible (original config content
 // is preserved verbatim in a timestamped backup file before anything is
 // overwritten).
+//
+// "the configured local servers" is two maps, not one: the top-level `mcpServers`
+// object every host shares, and the per-project map at
+// `projects["<abs path>"].mcpServers` — a shape only `~/.claude.json` is known to
+// use, though the planner keys off the shape rather than the host, exactly as it
+// does for the top-level map (one planner, no per-host adapter — see
+// knownMcpConfigPaths in src/init.ts). Project-scoped entries are rewritten ONLY for
+// the cwd's own project; every other project's are reported, never touched. See the
+// `projects` block in planInstall for why, and `reelier coverage --host claude-code`
+// for the report that is not cwd-scoped.
 
 import { readFile, writeFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { splitCommandLine } from "./mcp-client.js";
 import { writeFileAtomic } from "./writeback.js";
+import { sameProjectDirectory } from "./project-scope.js";
 import {
   fileExists,
   parseMcpConfig,
@@ -18,6 +29,7 @@ import {
   buildReelierServerEntry,
   type McpConfigJson,
   type AgentConfigDetection,
+  type KnownMcpConfig,
 } from "./init.js";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -78,12 +90,14 @@ export function isWrappableEntry(entry: unknown): entry is WrappableEntry {
 // review-before-write discipline as init.ts's planMcpConfigWrite).
 // ---------------------------------------------------------------------------
 
-export type WrapAction = "wrap" | "already-wrapped" | "skip-unwrappable";
+export type WrapAction = "wrap" | "already-wrapped" | "skip-unwrappable" | "skip-other-project";
 
 export interface WrapPlanEntry {
   name: string;
   action: WrapAction;
   reason?: string;
+  /** Set only for entries under `projects["<abs path>"].mcpServers`; absent for top-level ones. */
+  projectPath?: string;
 }
 
 export interface InstallPlan {
@@ -96,19 +110,19 @@ export interface InstallPlan {
   changed: boolean;
 }
 
-export async function planInstall(configPath: string): Promise<InstallPlan> {
-  const configExisted = await fileExists(configPath);
-  const raw = configExisted ? await readFile(configPath, "utf8") : undefined;
-  const config = parseMcpConfig(raw);
-  const servers = (config.mcpServers ?? {}) as Record<string, unknown>;
-
-  const entries: WrapPlanEntry[] = [];
+/** Plan one `mcpServers` map. `projectPath` tags the resulting entries when the map is project-scoped. */
+function planServerMap(
+  servers: Record<string, unknown>,
+  entries: WrapPlanEntry[],
+  projectPath?: string
+): { servers: Record<string, unknown>; changed: boolean } {
+  const tag = projectPath === undefined ? {} : { projectPath };
   const newServers: Record<string, unknown> = {};
   let changed = false;
 
   for (const [name, entry] of Object.entries(servers)) {
     if (isWrappedEntry(entry)) {
-      entries.push({ name, action: "already-wrapped" });
+      entries.push({ name, action: "already-wrapped", ...tag });
       newServers[name] = entry;
       continue;
     }
@@ -117,17 +131,84 @@ export async function planInstall(configPath: string): Promise<InstallPlan> {
         name,
         action: "skip-unwrappable",
         reason: "not a local command-based server (remote/url-based, or missing a 'command' field) — reelier only wraps stdio command servers",
+        ...tag,
       });
       newServers[name] = entry;
       continue;
     }
     const originalCommandLine = joinCommandLine(entry.command, entry.args ?? []);
     newServers[name] = buildReelierServerEntry(originalCommandLine);
-    entries.push({ name, action: "wrap" });
+    entries.push({ name, action: "wrap", ...tag });
     changed = true;
   }
 
-  const afterConfig: McpConfigJson = { ...config, mcpServers: newServers };
+  return { servers: newServers, changed };
+}
+
+/** The `mcpServers` map under a `projects["<abs path>"]` entry, or undefined when there isn't a usable one. */
+function projectServerMap(projectEntry: unknown): Record<string, unknown> | undefined {
+  if (!isRecord(projectEntry) || !isRecord(projectEntry.mcpServers)) return undefined;
+  const servers = projectEntry.mcpServers;
+  return Object.keys(servers).length > 0 ? servers : undefined;
+}
+
+/**
+ * `cwd` decides which project-scoped servers get rewritten — see the `projects` block below.
+ * It defaults to the process cwd; tests and `planWrapOffer` pass it explicitly so nothing here
+ * depends on where the process happens to be running.
+ */
+export async function planInstall(configPath: string, cwd: string = process.cwd()): Promise<InstallPlan> {
+  const configExisted = await fileExists(configPath);
+  const raw = configExisted ? await readFile(configPath, "utf8") : undefined;
+  const config = parseMcpConfig(raw);
+
+  const entries: WrapPlanEntry[] = [];
+  const topLevel = planServerMap((config.mcpServers ?? {}) as Record<string, unknown>, entries);
+  let changed = topLevel.changed;
+
+  const afterConfig: McpConfigJson = { ...config };
+  // Only re-emit `mcpServers` if the operator already had one. A project-scoped wrap must not
+  // add a top-level key to a config that never carried it.
+  if (config.mcpServers !== undefined) afterConfig.mcpServers = topLevel.servers;
+
+  // Claude Code ALSO stores per-project servers at `projects["<abs path>"].mcpServers` in the
+  // same `~/.claude.json` this planner rewrites. Reading only the top-level map meant install
+  // edited the file, reported success, and left those servers unwrapped inside it.
+  //
+  // Scope: ONLY the project entry whose key is the current working directory. Install is
+  // already cwd-sensitive (it looks at <cwd>/.mcp.json), so cwd-scoping keeps the blast radius
+  // predictable and matches operator intent. Rewriting every project entry from an arbitrary
+  // cwd would modify config for projects the operator is not working in, and would make the
+  // backup/uninstall story much worse — one restore would have to unwind edits across
+  // unrelated projects. An entry for a DIFFERENT project is reported, never rewritten; use
+  // `reelier coverage --host claude-code` to see all of them from anywhere.
+  if (isRecord(config.projects)) {
+    const newProjects: Record<string, unknown> = {};
+    for (const [projectPath, projectEntry] of Object.entries(config.projects)) {
+      const servers = projectServerMap(projectEntry);
+      if (!servers) {
+        newProjects[projectPath] = projectEntry;
+        continue;
+      }
+      if (!sameProjectDirectory(projectPath, cwd)) {
+        for (const name of Object.keys(servers)) {
+          entries.push({
+            name,
+            action: "skip-other-project",
+            reason: `configured for ${projectPath}, not the directory install is running in — reported, not rewritten`,
+            projectPath,
+          });
+        }
+        newProjects[projectPath] = projectEntry;
+        continue;
+      }
+      const planned = planServerMap(servers, entries, projectPath);
+      newProjects[projectPath] = { ...(projectEntry as Record<string, unknown>), mcpServers: planned.servers };
+      if (planned.changed) changed = true;
+    }
+    afterConfig.projects = newProjects;
+  }
+
   return {
     configPath,
     configExisted,
@@ -151,6 +232,8 @@ export interface InstallResult {
   wrappedCount: number;
   alreadyWrappedCount: number;
   skippedCount: number;
+  /** Project-scoped servers belonging to some OTHER project — reported, never rewritten. Its own denominator: merging it into `skippedCount` would read as "unwrappable", which these are not. */
+  otherProjectCount: number;
 }
 
 /** `now` is injectable only so tests can pin the timestamped backup path; production callers omit it. */
@@ -177,6 +260,7 @@ export async function applyInstall(plan: InstallPlan, now: Date = new Date()): P
     wrappedCount: plan.entries.filter((e) => e.action === "wrap").length,
     alreadyWrappedCount: plan.entries.filter((e) => e.action === "already-wrapped").length,
     skippedCount: plan.entries.filter((e) => e.action === "skip-unwrappable").length,
+    otherProjectCount: plan.entries.filter((e) => e.action === "skip-other-project").length,
   };
 }
 
@@ -205,6 +289,180 @@ export async function findLatestBackup(configPath: string): Promise<string | und
 export async function restoreFromBackup(configPath: string, backupPath: string): Promise<void> {
   const content = await readFile(backupPath, "utf8");
   await writeFileAtomic(configPath, content);
+}
+
+// ---------------------------------------------------------------------------
+// Uninstall across every host — the reverse gear for `install`.
+//
+// `install` wraps every config in knownMcpConfigPaths; uninstall must walk the
+// SAME set or it is not a reverse gear, it is a reverse gear for one host. It
+// used to resolve a single path through detectAgentConfig (Claude Code only),
+// so a Cursor or Windsurf user who installed then uninstalled stayed wrapped
+// and was told the uninstall succeeded.
+// ---------------------------------------------------------------------------
+
+/**
+ * Whether a config on disk currently carries reelier-wrapped entries.
+ * "unknown" when the file is missing or unparseable — never collapsed to
+ * "unwrapped", which a reader would take as "nothing left to revert".
+ */
+export type WrapState = "wrapped" | "unwrapped" | "unknown";
+
+export type UninstallAction =
+  /** A backup exists and the config is on disk — restorable. */
+  | "restore"
+  /** The config is on disk with no backup beside it. Reported, never skipped: if it is wrapped, this is the one case with no CLI route back. */
+  | "no-backup"
+  /** A backup exists but the config is gone. Reported and left alone — recreating a file the user deleted is a surprise write, not a revert. */
+  | "orphan-backup";
+
+export interface UninstallPlanEntry {
+  label: string;
+  configPath: string;
+  action: UninstallAction;
+  backupPath?: string;
+  wrapState: WrapState;
+  /** Names of the currently-wrapped servers, so a no-backup report can say what is still fronted rather than just how many. */
+  wrappedServerNames: string[];
+  /** Why `wrapState` is "unknown", verbatim. Present only then. */
+  wrapStateReason?: string;
+}
+
+export interface UninstallPlan {
+  /** Only paths where a config or a backup exists. A host that was never installed has nothing to report and is not noise. */
+  entries: UninstallPlanEntry[];
+  /** How many entries `applyUninstall` will actually write. Zero is the caller's cue to fail with an honest error rather than print a success. */
+  restorable: number;
+  /** Every path considered, installed or not — what the caller lists when it finds nothing. */
+  checkedPaths: string[];
+}
+
+/**
+ * Read a config and report whether reelier currently fronts anything in it. Never throws: an
+ * unreadable config is an honest "unknown", not an assumed "unwrapped".
+ *
+ * Reads BOTH maps `planInstall` can rewrite — the top-level one and every
+ * `projects["<abs path>"].mcpServers` in a `~/.claude.json`. Restoring does not need this (the
+ * backup is the whole file, byte-for-byte, so a project-scoped wrap comes back with everything
+ * else), but the no-backup report does: reading only the top level would print "nothing in it is
+ * wrapped — nothing to revert" about a file install had just wrapped inside `projects`.
+ *
+ * Project-scoped names are qualified with their project so the operator can find the entry the
+ * message is about, rather than hunting for a bare name that isn't at the top level.
+ */
+async function inspectWrapState(
+  configPath: string
+): Promise<{ wrapState: WrapState; wrappedServerNames: string[]; wrapStateReason?: string }> {
+  let raw: string;
+  try {
+    raw = await readFile(configPath, "utf8");
+  } catch (err) {
+    return { wrapState: "unknown", wrappedServerNames: [], wrapStateReason: (err as Error).message };
+  }
+  let config: McpConfigJson;
+  try {
+    config = parseMcpConfig(raw);
+  } catch (err) {
+    return { wrapState: "unknown", wrappedServerNames: [], wrapStateReason: (err as Error).message };
+  }
+  const wrappedServerNames = wrappedNamesIn((config.mcpServers ?? {}) as Record<string, unknown>);
+  if (isRecord(config.projects)) {
+    for (const [projectPath, projectEntry] of Object.entries(config.projects)) {
+      const servers = projectServerMap(projectEntry);
+      if (!servers) continue;
+      wrappedServerNames.push(...wrappedNamesIn(servers).map((name) => `${name} (projects/${projectPath})`));
+    }
+  }
+  return { wrapState: wrappedServerNames.length > 0 ? "wrapped" : "unwrapped", wrappedServerNames };
+}
+
+function wrappedNamesIn(servers: Record<string, unknown>): string[] {
+  return Object.entries(servers)
+    .filter(([, entry]) => isWrappedEntry(entry))
+    .map(([name]) => name);
+}
+
+/** Plan the revert across a set of host configs — pure inspection, writes nothing. */
+export async function planUninstall(targets: KnownMcpConfig[]): Promise<UninstallPlan> {
+  const entries: UninstallPlanEntry[] = [];
+
+  for (const target of targets) {
+    const [exists, backupPath] = await Promise.all([fileExists(target.path), findLatestBackup(target.path)]);
+    if (!exists && !backupPath) continue;
+
+    if (!exists) {
+      entries.push({
+        label: target.label,
+        configPath: target.path,
+        action: "orphan-backup",
+        backupPath,
+        wrapState: "unknown",
+        wrappedServerNames: [],
+        wrapStateReason: "the config file no longer exists",
+      });
+      continue;
+    }
+
+    const state = await inspectWrapState(target.path);
+    entries.push({
+      label: target.label,
+      configPath: target.path,
+      action: backupPath ? "restore" : "no-backup",
+      backupPath,
+      ...state,
+    });
+  }
+
+  return {
+    entries,
+    restorable: entries.filter((e) => e.action === "restore").length,
+    checkedPaths: targets.map((t) => t.path),
+  };
+}
+
+export type UninstallOutcome = "restored" | "no-backup" | "orphan-backup" | "restore-failed";
+
+export interface UninstallEntryResult extends UninstallPlanEntry {
+  outcome: UninstallOutcome;
+  /** Present only on "restore-failed" — the config was left exactly as it was. */
+  error?: string;
+}
+
+/**
+ * Restore every restorable config. A failure on one config does NOT abort the
+ * rest and is never reported as a skip: each config has its own backup, and an
+ * operator who gets three of four hosts back needs to know which one is still
+ * wrapped. Backups are left on disk — restoring is not consuming.
+ */
+export async function applyUninstall(plan: UninstallPlan): Promise<UninstallEntryResult[]> {
+  const results: UninstallEntryResult[] = [];
+  for (const entry of plan.entries) {
+    if (entry.action !== "restore") {
+      results.push({ ...entry, outcome: entry.action });
+      continue;
+    }
+    try {
+      await restoreFromBackup(entry.configPath, entry.backupPath!);
+      results.push({ ...entry, outcome: "restored" });
+    } catch (err) {
+      results.push({ ...entry, outcome: "restore-failed", error: (err as Error).message });
+    }
+  }
+  return results;
+}
+
+/**
+ * The `--agent` rejection both install and uninstall print. Shared so the two
+ * can never drift into describing different host coverage — and it names the
+ * offending value, which the message lost when install grew multi-host support
+ * (the interpolation was dropped, leaving a literal empty `''`).
+ */
+export function agentGuardMessage(command: "install" | "uninstall", agent: string): string {
+  const verb = command === "install" ? "install now wraps" : "uninstall now reverts";
+  return (
+    `Unsupported --agent '${agent}' — omit it: ${verb} every known host config it finds ` +
+    `(Claude Code, Cursor, Windsurf). Use --config <path> to target one file.`
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -252,9 +510,14 @@ export async function planWrapOffer(detection: AgentConfigDetection, interactive
       : undefined;
   if (!configPath) return { mode: "none", lines: [] };
 
+  // The cwd install would scope project entries to, derived from the detection rather than read
+  // from the process — `agentConfigPaths` builds projectConfigPath as <cwd>/.mcp.json, so this is
+  // exact, and it keeps the offer testable against fixture directories.
+  const cwd = path.dirname(detection.projectConfigPath);
+
   let plan: InstallPlan;
   try {
-    plan = await planInstall(configPath);
+    plan = await planInstall(configPath, cwd);
   } catch (err) {
     return {
       mode: "none",

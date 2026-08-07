@@ -12,7 +12,7 @@ Reelier records the run that worked, freezes it as a replayable skill, and repla
 
 [![npm version](https://img.shields.io/npm/v/reelier.svg?color=blue)](https://www.npmjs.com/package/reelier)
 [![CI](https://github.com/seldonframe/reelier/actions/workflows/ci.yml/badge.svg)](https://github.com/seldonframe/reelier/actions/workflows/ci.yml)
-[![tests](https://img.shields.io/badge/tests-1566%20passing-brightgreen.svg)](./test)
+[![tests](https://img.shields.io/badge/tests-1664%20passing-brightgreen.svg)](./test)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 [![Discord](https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white)](https://discord.gg/nSp5sd4v)
 [![stars](https://img.shields.io/github/stars/seldonframe/reelier?style=social)](https://github.com/seldonframe/reelier)
@@ -69,6 +69,28 @@ docker run --rm ghcr.io/seldonframe/reelier --help
 ```
 
 `reelier init` scans work you've already done (Claude Code, Codex, OpenClaw) into a real skill, or falls back to a zero-setup demo with a real receipt in under 60 seconds.
+
+### As an agent plugin
+
+Teach your coding agent when to reach for Reelier. Same two commands, either host:
+
+```sh
+claude plugin marketplace add seldonframe/reelier
+claude plugin install reelier@seldonframe
+```
+
+```sh
+codex plugin marketplace add seldonframe/reelier
+codex plugin add reelier@seldonframe
+```
+
+This installs two Agent Skills and nothing else. `reelier-replay` teaches your agent to freeze a
+repeatable tool-call job and replay it at 0 tokens. `reelier-write-safety` covers bounding an
+agent's writes before you grant them: what the recorder sees, what a policy refuses, and what a
+receipt does and does not prove. **It ships no MCP servers**, so it does not wrap, observe, or gate
+any tool call on its own; the `reelier` CLI does that, and the skills drive it via `npx`. Packaged in both the [Agent Plugins](https://agent-plugins.org) v1.0.0 format (`plugin/agent-plugins/`) and the Claude Code format (`plugin/claude/`), generated from one source by `scripts/build-plugin-packages.mjs`.
+
+Verified end to end on `codex-cli 0.147.0-alpha.1.2`: both formats install, enable, and the skill reaches the model. Other hosts are untested, and per-host status is tracked in [`docs/specs/agent-plugins-coverage-v1.md`](docs/specs/agent-plugins-coverage-v1.md) §4 rather than claimed here.
 
 ## How to use it
 

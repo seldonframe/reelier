@@ -1,6 +1,6 @@
 {
   "name": "reelier",
-  "version": "0.30.0",
+  "version": "0.31.1",
   "mcpName": "io.github.seldonframe/reelier",
   "description": "Agents make claims, Reelier writes receipts - record an agent workflow once, replay it deterministically at 0 tokens, and get an asserted receipt on every run.",
   "license": "MIT",
@@ -23,6 +23,9 @@
     "./mcp-tool": "./dist/mcp-tool.js",
     "./tools": "./dist/tools.js",
     "./serve": "./dist/serve.js",
+    "./plugin": "./dist/plugin.js",
+    "./bridge": "./dist/bridge.js",
+    "./bridge-client": "./dist/bridge-client.js",
     "./contract/*": "./contract/*",
     "./package.json": "./package.json"
   },

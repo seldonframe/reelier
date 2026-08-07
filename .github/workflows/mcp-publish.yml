@@ -17,6 +17,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history: the release guard below computes a merge-base, which
+          # is impossible at the default depth of 1.
+          fetch-depth: 0
+
+      # Refuses to publish a tag that is not on the default branch. 0.31.1 was
+      # published off-branch, so a breaking verify guard reached npm and never
+      # reached main. See scripts/check-release-ancestor.mjs.
+      - name: Release guard — tag must be an ancestor of main
+        run: node scripts/check-release-ancestor.mjs
 
       - name: Install mcp-publisher
         run: |
