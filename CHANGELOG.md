@@ -117,6 +117,48 @@ All notable changes to `reelier`. Dates are release dates.
   a 30ms release timer against a 100×10ms budget and failed intermittently
   under full-suite load.
 
+## 0.31.1 — The guard that refuses what it cannot read
+
+**Guard-only release. No new capability, one new refusal.** This version exists
+to be the last one that does NOT understand authority-aware records, and to say
+so out loud instead of guessing.
+
+Before this release, a record carrying a top-level `v` — such as
+`reelier.authority-receipt/v1`, which a later version will emit — would fall
+through `reelier verify` into the legacy claim path and be evaluated as though
+it were an ordinary run record. Its signature and timestamp siblings would be
+checked against legacy rules, and the CLI would print a confident answer about
+a record it does not actually understand. That is the one outcome a verifier
+must never produce.
+
+`reelier verify` now classifies before it evaluates:
+
+- a record with **no own top-level `v`** is legacy, and every legacy byte and
+  output line is preserved exactly as in 0.31.0;
+- a record with **any own top-level `v`** is refused with
+  `unsupported-record-version` and exit code 1.
+
+There is no allow-list. Unknown *future* versions are refused too, which is the
+point: a guard that understood one version well enough to permit it would be the
+authority-aware parser this release is deliberately without. An inherited `v` is
+not an own record version, and a valid-looking signature or timestamp sibling
+cannot pull a versioned record back into legacy crypto.
+
+Nothing else changed. If you never hand `verify` an authority record, this
+release behaves identically to 0.31.0.
+
+
+One user-visible detail, because it will look odd the first time you see it:
+the declared version is echoed back **quoted, hex-escaped and capped at 120
+characters**, not verbatim. `reelier.authority-receipt/v1` prints as-is, but a
+`v` of `{"nested":true}` prints as `"{"nested":true}"`. That is
+deliberate. The declared version is attacker-controlled bytes being spliced into
+a verdict line, and interpolating it raw let a `v` containing newlines print
+forged claim rows and the literal string "No present claim failed verification."
+underneath the refusal — measured in a real subprocess, exit code still 1, but a
+human reading the terminal was shown a pass. Only `[A-Za-z0-9._/:+-]` passes
+through; everything else, spaces included, is escaped.
+
 ## 0.31.0 — The artifact that left, and where the watching stops
 
 **Read this first if you are upgrading from npm.** Published 0.30.0 shipped
