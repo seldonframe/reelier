@@ -2,7 +2,56 @@
 
 All notable changes to `reelier`. Dates are release dates.
 
-## Unreleased — A lock handover is not a failure
+## Unreleased
+
+### Added
+
+- **`reelier coverage --host claude-code` — the same read-only inventory, for
+  the Claude Code CLI.** Group A is the surface `install` can reach
+  (`<cwd>/.mcp.json` and `~/.claude.json`, both derived from
+  `knownMcpConfigPaths` so the probe and the config writer cannot drift apart
+  silently); Group B is the plugin payloads, which it cannot. They are reported
+  as separate sections with separate named denominators — never one merged
+  total, because a merged total would read as a coverage score across a boundary
+  the wrap does not cross. The Codex path is unchanged and its rendered output
+  is byte-identical; `renderCoverageReport` is now a four-line adapter over the
+  shared `renderCoverageView`, so that is a property of the code rather than a
+  claim.
+- **Plugin enablement is tri-state: `enabled` / `disabled` / `unknown`.** A
+  plugin with no `enabledPlugins` key at any scope and no `defaultEnabled` in
+  its `plugin.json` reports **`unknown`**, never `enabled`. The documented
+  default of true is an assumption, and this probe does not assert an enablement
+  it did not read. `unknown` payloads ARE inspected and every server they
+  declare is rendered under an `enablement unknown` heading; a consumer MUST NOT
+  render `unknown` as a pass, exactly as with `absent`. `PluginCoverage.enablement`
+  is additive — Codex leaves it undefined and keeps its boolean.
+- **Presence authority is `installed_plugins.json`, not a directory walk.** The
+  marketplace catalog clones ship real `.mcp.json` files and contribute zero
+  tools; on the machine this was measured against, walking the tree over-reported
+  by 16 payloads. Orphaned cache directories survive an uninstall and over-report
+  the same way. `installPath` already ends with the version segment — which is
+  the literal string `unknown` for half the observed installs — and is never
+  re-appended to.
+- **`projects[<cwd>].mcpServers` in `~/.claude.json` gets its own source and its
+  own denominator.** `planInstall` rewrites only the top-level `mcpServers`, so
+  reporting only that would have matched install's blind spot and turned the
+  closing disclaimer into a fig leaf. Sibling project keys are counted, not
+  parsed, and the report says so.
+- **What this does NOT cover, stated in the report and in `--help`.** It is the
+  Claude Code **CLI** only: Claude Desktop / Cowork plugins are a separate host
+  with a separate registry and are not inspected. Session plugins loaded with
+  `--plugin-dir` / `--plugin-url` are recorded in no file and cannot be
+  inventoried from disk at all. As with `--host codex`, this describes a
+  configuration snapshot rather than what a host launched, it makes a gap
+  visible rather than blocked, and no command consumes its output. This
+  supersedes the 0.31.0 note that `coverage` supports `codex` alone.
+- **Implemented from documentation, not from observation — do not read these as
+  verified.** The `enabledPlugins: false` value, the `defaultEnabled` fallback,
+  project- and local-scope `enabledPlugins`, inline and pointer `mcpServers` in
+  `plugin.json`, and `CLAUDE_CODE_PLUGIN_CACHE_DIR` / `CLAUDE_CODE_PLUGIN_SEED_DIR`
+  each have **zero instances** on the one machine that was measured. They are
+  implemented and tested against fixtures; absence there is a property of that
+  machine, not confirmation of the format.
 
 ### Fixed
 
