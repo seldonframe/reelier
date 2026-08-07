@@ -2,6 +2,34 @@
 
 All notable changes to `reelier`. Dates are release dates.
 
+## Unreleased — A lock handover is not a failure
+
+### Fixed
+
+- **`writeKeystoreEntry`/`removeKeystoreEntries` no longer fail an approve when
+  another approver *releases* the lock at the wrong microsecond (win32).** The
+  A10 retry loop treated every non-`EEXIST` error from its `O_EXCL` lock create
+  as fatal. On win32 an unlink marks the file delete-pending, and a create
+  landing in that window returns `EPERM`, not `EEXIST` — so the one case the
+  retry loop exists for could surface as `EPERM: operation not permitted` and
+  leave the key unwritten. Measured on win32 with no load: **29 `EPERM` in 3000
+  create-vs-unlink races**. Non-`EEXIST` failures are now retried, but only
+  `TRANSIENT_LOCK_CREATE_RETRIES` (3) times: an unwritable directory returns the
+  same errno forever, and it must surface as itself rather than as
+  "`…is locked… remove the stale lock`", which would send an operator to delete
+  a file that was never the problem. Unchanged for every other caller: the lock
+  budget, the delays, and the `EEXIST` message are byte-identical.
+
+### Changed (internal)
+
+- `KeystoreWriteOptions` gains two optional test-only injection seams,
+  `sleepImpl` and `lockCreateImpl` (house pattern — `login.ts`'s `sleepImpl`,
+  `writeback.ts`'s `AtomicWriteFsOps`). Production callers pass neither and
+  behave exactly as before. They exist so the A10 lock tests assert on retry
+  accounting instead of on the wall clock: the retry-path test previously raced
+  a 30ms release timer against a 100×10ms budget and failed intermittently
+  under full-suite load.
+
 ## 0.31.0 — The artifact that left, and where the watching stops
 
 **Read this first if you are upgrading from npm.** Published 0.30.0 shipped
