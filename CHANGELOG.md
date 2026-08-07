@@ -32,11 +32,17 @@ All notable changes to `reelier`. Dates are release dates.
   the same way. `installPath` already ends with the version segment — which is
   the literal string `unknown` for half the observed installs — and is never
   re-appended to.
-- **`projects[<cwd>].mcpServers` in `~/.claude.json` gets its own source and its
-  own denominator.** `planInstall` rewrites only the top-level `mcpServers`, so
-  reporting only that would have matched install's blind spot and turned the
-  closing disclaimer into a fig leaf. Sibling project keys are counted, not
-  parsed, and the report says so.
+- **EVERY `projects["<abs path>"].mcpServers` map in `~/.claude.json` gets its
+  own source and its own denominator, cwd or not.** `install` rewrites the
+  top-level map plus the one project key matching the directory it runs in, so
+  reporting only those would have matched install's own scope and turned the
+  closing disclaimer into a fig leaf. Each map is listed under
+  `<claude.json>#projects/<path>`, marked with whether install rewrites it from
+  here, and summarised by a named denominator — *N project-scoped server(s)
+  across K of M `projects` key(s)* — that is **never** added to the top-level
+  total and never divided into one. Project keys carrying no servers count in
+  the denominator and are not listed: a project that configures no MCP server
+  is not a coverage gap.
 - **What this does NOT cover, stated in the report and in `--help`.** It is the
   Claude Code **CLI** only: Claude Desktop / Cowork plugins are a separate host
   with a separate registry and are not inspected. Session plugins loaded with
@@ -55,6 +61,38 @@ All notable changes to `reelier`. Dates are release dates.
 
 ### Fixed
 
+- **`reelier install` wrapped only the top-level `mcpServers` of `~/.claude.json`
+  and silently left the project-scoped ones unwrapped inside the file it had
+  just rewritten.** Claude Code stores MCP servers in two places in that file:
+  the top-level `mcpServers` object every host shares, and a per-project map at
+  `projects["<abs path>"].mcpServers`. `planInstall` read only the first.
+  Measured on one machine 2026-08-06: **2 top-level servers, 83 project keys, 5
+  of them carrying their own servers** — so install edited the file, reported
+  success, and left 5 servers unrecorded. That falsified the load-bearing claim
+  that one install covers every MCP server in the agent's config.
+  **Scope of the fix, and it is deliberate:** install rewrites only the project
+  entry whose key is the directory it runs in. Install is already cwd-sensitive
+  (it reads `<cwd>/.mcp.json`), so cwd-scoping keeps the blast radius
+  predictable; rewriting all 83 entries from an arbitrary cwd would modify
+  config for projects the operator is not in and would wreck the
+  backup/uninstall story, where one restore would have to unwind edits across
+  unrelated projects. Entries for other projects are **reported** — in the
+  install output, with their project named, under their own denominator
+  (`InstallResult.otherProjectCount`, never merged into `skippedCount`) — and
+  never rewritten. `reelier coverage --host claude-code` lists every one of them
+  from anywhere. Project keys are matched with `sameProjectDirectory`
+  (`src/project-scope.ts`), which folds separator style and case on Windows
+  only: Claude Code writes those keys with forward slashes while `process.cwd()`
+  yields backslashes on the same machine, and a raw `===` matches none of them.
+  It is a lexical compare — it does not resolve symlinks or `..`, so it
+  under-matches (report, don't rewrite) rather than over-matching.
+- **`reelier uninstall` reported a project-scoped wrap as "nothing to revert".**
+  Restoring was always correct — the backup is the whole file, byte-for-byte —
+  but `inspectWrapState` read only the top-level map, so a config whose only
+  wrapped entries lived under `projects` reported `wrapState: "unwrapped"`. With
+  the backup gone that renders as *"no backup, and nothing in it is wrapped —
+  nothing to revert"* about a file `install` had just wrapped. It now reads both
+  maps and names project-scoped entries as `<server> (projects/<path>)`.
 - **`writeKeystoreEntry`/`removeKeystoreEntries` no longer fail an approve when
   another approver *releases* the lock at the wrong microsecond (win32).** The
   A10 retry loop treated every non-`EEXIST` error from its `O_EXCL` lock create
