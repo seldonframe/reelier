@@ -1613,12 +1613,24 @@ test("ledger-lock publication rename attempt declares and emits its before bound
   }));
   await t.test("the collision branch emits before, then the collision successor, and never the success successor",()=>withRoot(async root=>{
     const squatter={host:hostname(),nonce:"a".repeat(64),pid:process.pid,v:1 as const},order:string[]=[];let planted=false;
-    const result=await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:20,faultInjector:(point:string)=>{
+    // The budget is 2000, not 20, and the terminal is `corruption`, not `busy`. Both corrections
+    // are one finding: at 20 the fence deadline fired before the attempt loop could re-enter and
+    // re-classify, so the operation returned `busy` from the collision catch WITHOUT ever reaching
+    // a verdict. That made the pin a coin flip — measured busy/busy/corruption at 20, and
+    // corruption 3/3 at 2000 — and it is why this test rotated red on Linux CI while passing here.
+    //
+    // The settled verdict is correct, so the assertion moved rather than the product. The squatter
+    // is same-host, same-PID (`process.pid`), different-nonce from this operation's own stage, and
+    // spec :155 states that shape "[is] ambiguous and fail[s] closed". Classification reaching
+    // `corruption` on {fixed slot, own publication stage, foreign `lock`} is that rule firing.
+    // A budget that truncates classification does not make the root healthier; it only stops the
+    // ledger from saying so.
+    const result=await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:2000,faultInjector:(point:string)=>{
       if(point==="after-lock-publication-stage-sync"&&!planted){planted=true;mkdirSync(path.join(root,"lock"));writeFileSync(path.join(root,"lock","owner.json"),publicationOwnerBytes(squatter));}
       if(point==="before-lock-publication-rename"||point==="after-lock-publication-rename"||point==="after-lock-publication-rename-collision")order.push(point);
     }} as never).observeClock();
     assert.equal(planted,true,"the fixture occupies the published name before the rename attempt");
-    assert.deepEqual(result,{ok:false,reason:"busy"});
+    assert.deepEqual(result,{ok:false,reason:"corruption"},"a same-host same-PID different-nonce occupant of the published name is ambiguous and fails closed (spec :155), never merely busy");
     assert.equal(order[0],"before-lock-publication-rename","the before boundary precedes the rename on the collision branch too");
     assert.equal(order.filter(point=>point==="before-lock-publication-rename").length,order.filter(point=>point==="after-lock-publication-rename-collision").length,"every rename attempt pairs its before boundary with the collision successor");
     assert.equal(order.includes("after-lock-publication-rename"),false,"the success successor is mutually exclusive with the collision branch");
