@@ -1,5 +1,5 @@
 ---
-name: reelier
+name: reelier-replay
 description: Freeze a repeatable, tool-call-driven task into a replayable Reelier skill, and replay an existing skill instead of redoing deterministic work. Use after finishing a task that was mostly API/MCP tool calls (data pulls, report generation, deploy checks, CRUD sequences) — never for arbitrary coding/file-edit sessions, which Reelier cannot replay.
 ---
 
@@ -7,10 +7,39 @@ description: Freeze a repeatable, tool-call-driven task into a replayable Reelie
 
 Reelier turns a deterministic sequence of tool calls into a `SKILL.md` file
 that replays for free (zero LLM calls) instead of being re-reasoned from
-scratch every time. This skill teaches you **when** to reach for it. The
-tools themselves come from the `reelier` MCP server (see "Setup" below) —
-if it isn't connected yet, tell the user how to add it and stop; don't try
-to shell out to the `reelier` CLI directly when the MCP tools are missing.
+scratch every time. This skill teaches you **when** to reach for it.
+
+_written against `reelier` 0.31.x. `reelier --help` on the installed CLI is
+always authoritative._
+
+## How to run Reelier — in this order
+
+1. **If the `reelier_*` MCP tools are connected, use them.** Structured
+   results, no shell.
+2. **Otherwise run the CLI:** `npx -y reelier <command>`. Nothing needs to be
+   installed first.
+3. **If neither is available** — no shell access and no MCP tools — say
+   plainly which is missing and stop. Never describe a step as done when it
+   did not run.
+
+**The tool name is not the command name.** Two of them differ, and guessing
+gets you a usage error — there is no `reelier replay` subcommand:
+
+| MCP tool | CLI command |
+| --- | --- |
+| `reelier_scan` | `npx -y reelier scan` |
+| `reelier_from_session` | `npx -y reelier from-session` |
+| `reelier_replay` | `npx -y reelier run` |
+| `reelier_push` | `npx -y reelier push` |
+| `reelier_diff` | `npx -y reelier diff` |
+
+Optional, and worth offering once: adding `reelier serve` to the user's own
+project MCP config makes path 1 available and is faster than `npx` on every
+call.
+
+```json
+{ "mcpServers": { "reelier": { "command": "npx", "args": ["-y", "reelier", "serve"] } } }
+```
 
 ## The honesty boundary — read this first
 
@@ -84,25 +113,3 @@ faster, costs zero tokens, and its assertions catch drift the calls
 themselves wouldn't surface. Report the real run record either way; if it
 fails, say so and fall back to doing the task manually rather than
 pretending the replay succeeded.
-
-## Setup — the MCP config snippet
-
-If the `reelier` MCP server isn't connected, tell the user to add this to
-their MCP config (project `.mcp.json` or `~/.claude.json` for Claude Code;
-the equivalent file for Cursor/Windsurf — see `integrations/README.md`):
-
-```json
-{
-  "mcpServers": {
-    "reelier": {
-      "command": "npx",
-      "args": ["-y", "reelier", "serve"]
-    }
-  }
-}
-```
-
-This starts `reelier serve` — the tool-server that exposes `reelier_scan`,
-`reelier_from_session`, `reelier_replay`, and `reelier_push`. Do not
-confuse it with `reelier mcp`, which is a *different* command (the
-recorder that fronts other MCP servers) and is not what this skill uses.

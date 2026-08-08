@@ -1,7 +1,7 @@
 # Reelier plugin packages
 
 **Generated — do not hand-edit.** Source of truth:
-`integrations/claude-code/reelier/SKILL.md` (the portable Agent Skill) and
+`integrations/skills/*/SKILL.md` (the portable Agent Skills) and
 `package.json` (version). Regenerate with
 `node scripts/build-plugin-packages.mjs`; drift is caught by
 `test/plugin-packages.test.ts` via `--check`.

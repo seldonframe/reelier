@@ -119,6 +119,7 @@ import { writeCiWorkflow, PLACEHOLDER_SKILL_PATH } from "./ci-scaffold.js";
 import { buildDiscoveryBundle, discoverOpportunities, formatDiscoveryPreview, signDiscoveryBundle, type AgentOpportunity, type DiscoverySessionInput } from "./discovery.js";
 import { collectClaudeCodeCoverage, collectCodexCoverage, renderCoverageReport, renderCoverageView } from "./coverage.js";
 import { uploadDiscoveryBundle } from "./discovery-client.js";
+import { createBridgeServer } from "./bridge.js";
 
 // Exported (alongside cmdPush below) so test/push-cli.test.ts can drive
 // cmdPush's console output directly with a fake ParsedArgs + monkeypatched
@@ -3184,6 +3185,27 @@ async function readDiscoverySigningMaterial(homedir: string): Promise<{ privateK
 const SUPPORTED_COVERAGE_HOSTS = ["codex", "claude-code"] as const;
 const SUPPORTED_COVERAGE_HOSTS_LINE = `Supported hosts: ${SUPPORTED_COVERAGE_HOSTS.join(", ")}.`;
 
+export async function cmdBridge(args: ParsedArgs): Promise<number> {
+  const rawPort = args.opts.port ?? "4777";
+  const port = Number(rawPort);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    console.error(`Invalid bridge port: ${rawPort}`);
+    return 1;
+  }
+  const server = createBridgeServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(port, "127.0.0.1", () => resolve());
+  });
+  console.log(`Reelier local discovery bridge listening on http://127.0.0.1:${port}`);
+  await new Promise<void>((resolve) => {
+    const close = () => { server.close(() => resolve()); };
+    process.once("SIGINT", close);
+    process.once("SIGTERM", close);
+  });
+  return 0;
+}
+
 export async function cmdCoverage(args: ParsedArgs, homedirOverride?: string, cwdOverride?: string): Promise<number> {
   const host = args.opts.host;
   if (!host) {
@@ -4496,8 +4518,9 @@ export async function cmdWhoami(fetchImpl: typeof fetch = fetch): Promise<number
 }
 
 const USAGE =
-  "Usage: reelier <run|bench|baseline|cost|prices|mcp|serve|trace|compile|manifest|approve|push|get|verify|diff|ci|policy|init|discover|from-session|scan|install|uninstall|login|logout|whoami> [options]\n" +
+  "Usage: reelier <run|bench|baseline|cost|prices|mcp|serve|trace|compile|manifest|approve|push|get|verify|diff|ci|policy|init|discover|bridge|from-session|scan|install|uninstall|login|logout|whoami> [options]\n" +
   "  discover â€” rank observed workflow opportunities locally; use --upload to preview and explicitly send one sanitized bundle to Arena Cloud.\n" +
+  "  bridge  — reelier bridge --port 4777: expose nonce-gated local capabilities and Work Card handoff metadata; never executes Cloud plugin code.\n" +
   "  login  — reelier login: connect this machine to Reelier Cloud via a device-code browser handshake; writes ~/.reelier/config.json.\n" +
   "  logout — reelier logout: clears the locally stored key (revoke it from the dashboard's Settings, not locally).\n" +
   "  whoami — reelier whoami: print the identity the stored key resolves to, or that you're not logged in.\n" +
@@ -4599,6 +4622,8 @@ async function main(): Promise<number> {
       return cmdInit(args);
     case "discover":
       return cmdDiscover(args);
+    case "bridge":
+      return cmdBridge(args);
     case "coverage":
       return cmdCoverage(args);
     case "from-session":

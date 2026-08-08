@@ -24,6 +24,9 @@
     "./tools": "./dist/tools.js",
     "./serve": "./dist/serve.js",
     "./authority": "./dist/authority/index.js",
+    "./plugin": "./dist/plugin.js",
+    "./bridge": "./dist/bridge.js",
+    "./bridge-client": "./dist/bridge-client.js",
     "./contract/*": "./contract/*",
     "./package.json": "./package.json"
   },

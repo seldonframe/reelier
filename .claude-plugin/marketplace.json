@@ -8,7 +8,7 @@
     {
       "name": "reelier",
       "source": "./plugin/claude",
-      "description": "Reelier's Agent Skill: freeze a repeatable, tool-call-driven job into a deterministic, replayable skill with a receipt per run. Skill-only package - it includes no MCP servers.",
+      "description": "Ships two Agent Skills and nothing else: reelier-replay freezes a repeatable tool-call job and replays it at 0 tokens, and reelier-write-safety covers bounding an agent's writes before you grant them. Skill-only package - it includes no MCP servers.",
       "author": {
         "name": "SeldonFrame",
         "url": "https://github.com/seldonframe"

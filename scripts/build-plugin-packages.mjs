@@ -2,8 +2,8 @@
 // Generates the two Reelier plugin packages from one shared source — never
 // hand-maintain the outputs (docs/specs/agent-plugins-coverage-v1.md §3).
 //
-//   source of truth: integrations/claude-code/reelier/SKILL.md  (the portable
-//                    Agent Skill — see commit 98ae6b7) + package.json (version)
+//   source of truth: integrations/skills/*/SKILL.md  (the portable Agent
+//                    Skills — see commit 98ae6b7) + package.json (version)
 //   outputs:         plugin/agent-plugins/  (Agent Plugins v1.0.0 format)
 //                    plugin/claude/         (Claude Code plugin format)
 //
@@ -25,12 +25,15 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = path.resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
-const SKILL_SOURCE = path.join(repoRoot, "integrations", "claude-code", "reelier", "SKILL.md");
+const SKILLS = [
+  { id: "reelier-replay", source: path.join(repoRoot, "integrations", "skills", "reelier-replay", "SKILL.md") },
+  { id: "reelier-write-safety", source: path.join(repoRoot, "integrations", "skills", "reelier-write-safety", "SKILL.md") },
+];
 
 const README = `# Reelier plugin packages
 
 **Generated — do not hand-edit.** Source of truth:
-\`integrations/claude-code/reelier/SKILL.md\` (the portable Agent Skill) and
+\`integrations/skills/*/SKILL.md\` (the portable Agent Skills) and
 \`package.json\` (version). Regenerate with
 \`node scripts/build-plugin-packages.mjs\`; drift is caught by
 \`test/plugin-packages.test.ts\` via \`--check\`.
@@ -56,10 +59,10 @@ these packages is unchecked until observed per host (spec §4).
 
 async function buildFileMap() {
   const pkg = JSON.parse(await readFile(path.join(repoRoot, "package.json"), "utf8"));
-  const skill = await readFile(SKILL_SOURCE, "utf8");
   const description =
-    "Reelier's Agent Skill: freeze a repeatable, tool-call-driven job into a deterministic, " +
-    "replayable skill with a receipt per run. Skill-only package — it includes no MCP servers.";
+    "Ships two Agent Skills and nothing else: reelier-replay freezes a repeatable tool-call job " +
+    "into a deterministic replay with a receipt per run, and reelier-write-safety covers bounding " +
+    "an agent's writes before you grant them. Skill-only package — it includes no MCP servers.";
 
   // Closed v1.0.0 schema: only $schema, name, version, description, author,
   // homepage, repository, license, keywords, extensions are permitted.
@@ -77,13 +80,17 @@ async function buildFileMap() {
   const claudeManifest = { name: "reelier", version: pkg.version, description };
 
   const json = (value) => `${JSON.stringify(value, null, 2)}\n`;
-  return new Map([
+  const files = new Map([
     ["README.md", README],
     ["agent-plugins/plugin.json", json(agentPluginsManifest)],
-    ["agent-plugins/skills/reelier/SKILL.md", skill],
     ["claude/.claude-plugin/plugin.json", json(claudeManifest)],
-    ["claude/skills/reelier/SKILL.md", skill],
   ]);
+  for (const skill of SKILLS) {
+    const body = await readFile(skill.source, "utf8");
+    files.set(`agent-plugins/skills/${skill.id}/SKILL.md`, body);
+    files.set(`claude/skills/${skill.id}/SKILL.md`, body);
+  }
+  return files;
 }
 
 async function listFiles(dir, prefix = "") {
