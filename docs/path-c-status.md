@@ -18,6 +18,28 @@ someone actually read.
 > longer carries a `code pin` line at all. **Re-specify that prerequisite against this file before
 > executing it.** See `docs/superpowers/plans/2026-08-07-paths-ab-merge-regression.md`.
 
+> **Why the pin did NOT move on 2026-08-08, measured.** Moving it was attempted and abandoned on
+> evidence. A pin move asserts "someone read this paragraph against that commit", so it is only
+> honest if the paragraph is re-audited — and the audit found the paragraph **materially stale**,
+> not merely old. `git diff --name-status 9666b90d HEAD -- src/authority/` reports four modules
+> **added** since the pin: `gate.ts`, `decision.ts`, `errors.ts`, `host/fs-ledger-coordination.ts`.
+> `gate.ts` exports `AuthorityGate { decide(...) }`, `GateResult` (accepted / refused / existing /
+> unavailable) and `GateDecisionSigner`; `decision.ts` exports `GateDecisionRecord`,
+> `GateDecisionSink` and its fault points; `gate.test.ts` passes 33/33. So the paragraph's
+> "**GateEvent decision/evidence runtime … remain designed/unbuilt**" is now **false**, and moving
+> the pin without rewriting that clause would have published a false capability claim under a
+> freshly-minted commit hash — worse than an openly stale one, because the new hash reads as
+> verification.
+>
+> **A warning about the method, because it nearly shipped the error.** The first pass of this audit
+> ran `git diff --stat … | tail -20` and concluded no `src/authority/` file had been added. The
+> list was 25 files; `tail -20` silently cut the additions off the top. `--name-status` without a
+> pager filter is what caught it. A truncated diff reads exactly like a clean one.
+>
+> **Therefore: re-auditing the paragraph clause by clause is its own task, not a line edit.** Until
+> it happens the pin stays at `9666b90d` where it is honest about what was actually read, and the
+> deltas below carry the corrections.
+
 ---
 
 # Reelier execution paths (audited 2026-08-02, code pin `9666b90d838820ffcf1f8f3e58ffdb370ba34530`)
@@ -39,5 +61,25 @@ Recorded here rather than edited into the paragraph above, so the pinned text st
   old CLI cannot render a confident legacy verdict about an authority receipt. The branch previously
   carried its own narrower six-line version of this in `src/verify.ts`; the merge dropped it in
   favour of the published guard.
-- **K1 admission preparation is active by default** (Batch D, `bc21407`). The 16 red ledger tests are
-  the ungranted housekeeping-permission family and are **red by design** — do not "fix" them.
+- **K1 admission preparation is active by default** (Batch D, `bc21407`).
+- **The "16 red ledger tests, red by design" claim is retired — it was wrong twice over.** This
+  entry used to read "the 16 red ledger tests are the ungranted housekeeping-permission family and
+  are red by design — do not 'fix' them." Both halves are refuted by measurement.
+  *The characterisation*: `docs/superpowers/plans/2026-08-07-d2-grant-measured.md` implemented the
+  granted permission against build output and measured 18 -> 24 failures. Granting fixed **1 of 16
+  and broke 7**, so "one family behind one switch" was false; `884dcc5` then decomposed them into
+  four unrelated groups of which only 8 concerned housekeeping permission at all.
+  *The count*: the family was closed by `0ab1a30` (six D2 pins re-scoped to the shipped contract),
+  `a0fc39e` (`:1713`'s four residues re-fixtured to dead owners), `56dbc2f` (exact-revalidate at
+  both renames), `da67f97` (the collision branch's terminal is corruption; its budget was
+  truncating it) and `f214703` (three platform bugs, all in tests). The ledger gate now measures
+  **704 pass / 0 fail**, re-measured on the merge commit with `baseline-diff` reporting no change
+  in the failing set. There is no standing red set to preserve.
+- **The K1 fence no longer burns its budget on an OS-reserved port.** `EACCES` is classified as
+  permanent and refuses at once instead of retrying to the deadline (3003ms of a 3000ms budget ->
+  immediate). The outcome is unchanged — the same refusal-only classification, never a pass — so
+  this is an honesty and latency fix, **not** an availability one: a root whose derived port the
+  host reserves still yields an unusable ledger. Pinned host-conditionally by owner grant
+  (2026-08-08); the pin skips loudly off Windows, so Linux CI records it as unpinned. The spec rule
+  gap it exposes is still open — see the OPEN DISCREPANCY beside "no port scan, no reuse, and no
+  fallback" in `docs/specs/compiled-authority-v1.md`.
