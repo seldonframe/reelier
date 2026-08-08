@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "reelier.authority/outcome-contract/v1",
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[A-Za-z0-9._~-]{1,128}$" },
+    "schemaId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._~:/-]{0,255}$" },
+    "digest": { "type": "string", "pattern": "^sha256:(?!0{64}$)[0-9a-f]{64}$" },
+    "pointer": { "type": "string", "maxLength": 512, "pattern": "^(?:/(?:[^~/]|~[01])*)+$" },
+    "limits": {
+      "type": "object", "additionalProperties": false,
+      "required": ["maxEffectsPerWindow", "windowSeconds", "maxEffectsPerSourceTrigger", "maxBodyBytes"],
+      "properties": {
+        "maxEffectsPerWindow": { "type": "integer", "minimum": 1, "maximum": 1000000 },
+        "windowSeconds": { "type": "integer", "minimum": 1, "maximum": 31536000 },
+        "maxEffectsPerSourceTrigger": { "type": "integer", "minimum": 1, "maximum": 1000000 },
+        "maxBodyBytes": { "type": "integer", "minimum": 1, "maximum": 10485760 }
+      }
+    }
+  },
+  "type": "object", "additionalProperties": false,
+  "required": ["v", "tenant", "alias", "contractId", "validFrom", "validUntil", "packDigest", "definitionDigest", "sponsor", "audiences", "delegationGrantDigest", "connectorId", "accountId", "sourceAuthority", "riskClasses", "limits", "policyCommitment"],
+  "properties": {
+    "v": { "const": "reelier.outcome-contract/v1" },
+    "tenant": { "$ref": "#/$defs/id" }, "alias": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,127}$" },
+    "contractId": { "$ref": "#/$defs/id" }, "validFrom": { "type": "string", "format": "date-time" }, "validUntil": { "type": "string", "format": "date-time" },
+    "packDigest": { "$ref": "#/$defs/digest" }, "definitionDigest": { "$ref": "#/$defs/digest" }, "sponsor": { "$ref": "#/$defs/id" },
+    "audiences": { "type": "array", "minItems": 1, "maxItems": 64, "uniqueItems": true, "items": { "$ref": "#/$defs/id" } },
+    "delegationGrantDigest": { "$ref": "#/$defs/digest" }, "connectorId": { "$ref": "#/$defs/id" }, "accountId": { "$ref": "#/$defs/id" },
+    "sourceAuthority": {
+      "type": "object", "additionalProperties": false,
+      "required": ["resolverId", "projectionSchemaId", "allowedReadEndpointIds", "authorizedProjectionPointers", "maxFreshnessSeconds"],
+      "properties": {
+        "resolverId": { "$ref": "#/$defs/id" }, "projectionSchemaId": { "$ref": "#/$defs/schemaId" },
+        "allowedReadEndpointIds": { "type": "array", "minItems": 1, "maxItems": 64, "uniqueItems": true, "items": { "$ref": "#/$defs/id" } },
+        "authorizedProjectionPointers": { "type": "array", "minItems": 1, "maxItems": 256, "uniqueItems": true, "items": { "$ref": "#/$defs/pointer" } },
+        "maxFreshnessSeconds": { "type": "integer", "minimum": 1, "maximum": 300 }
+      }
+    },
+    "riskClasses": { "type": "array", "minItems": 1, "maxItems": 32, "uniqueItems": true, "items": { "$ref": "#/$defs/id" } },
+    "limits": { "$ref": "#/$defs/limits" },
+    "policyCommitment": {
+      "type": "object", "additionalProperties": false, "required": ["schemaId", "jcsBase64", "digest"],
+      "properties": {
+        "schemaId": { "$ref": "#/$defs/schemaId" },
+        "jcsBase64": { "type": "string", "minLength": 4, "maxLength": 65536, "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$" },
+        "digest": { "$ref": "#/$defs/digest" }
+      }
+    }
+  }
+}

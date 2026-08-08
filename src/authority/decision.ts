@@ -1,0 +1,92 @@
+import { randomBytes } from "node:crypto";
+import { lstatSync,realpathSync } from "node:fs";
+import { mkdir,open,readFile,rename,rm,rmdir,unlink } from "node:fs/promises";
+import { hostname } from "node:os";
+import path from "node:path";
+import type { AuthoritySignature,DecisionContext,GateEvent } from "./types.js";
+import { authorityCanonicalBytes,authorityDigest,parseAuthorityWire } from "./wire.js";
+
+export interface GateDecisionRecord {
+  readonly v:"reelier.gate-decision-record/internal-v1";readonly role:"primary"|"conflict";readonly ingressClaimDigest:string;readonly reservationId:string|null;
+  readonly decisionContext:DecisionContext;readonly decisionContextDigest:string;readonly gateEvent:GateEvent;readonly gateEventDigest:string;readonly signerId:string;readonly signature:AuthoritySignature;
+}
+export type GateDecisionAppendResult={ok:true;status:"appended"|"idempotent";recordDigest:string}|{ok:false;reason:"event-id-conflict"|"primary-ingress-conflict"|"reservation-conflict"|"corruption"|"unavailable"};
+export type GateDecisionLookupResult={ok:true;status:"found";record:GateDecisionRecord}|{ok:true;status:"absent"}|{ok:false;reason:"corruption"|"unavailable"};
+export interface GateDecisionSink {append(record:GateDecisionRecord):Promise<GateDecisionAppendResult>;lookupByEvent(eventId:string):Promise<GateDecisionLookupResult>;lookupPrimaryByIngress(ingressClaimDigest:string):Promise<GateDecisionLookupResult>;lookupAcceptedByReservation(reservationId:string):Promise<GateDecisionLookupResult>}
+export const gateDecisionFaultPoints=Object.freeze(["before-write","after-write","before-file-sync","after-file-sync","before-rename","after-rename","before-directory-sync","after-directory-sync"] as const);
+export type GateDecisionFaultPoint=typeof gateDecisionFaultPoints[number];
+export type GateDecisionLockFaultPoint="before-owner-publish"|"after-owner-write"|"after-owner-file-sync"|"after-lock-directory-sync"|"after-root-directory-sync"|"after-owner-read"|"before-lock-retire"|"after-lock-retire";
+export interface FileGateDecisionSinkOptions {readonly faultInjector?:(point:GateDecisionFaultPoint)=>void;readonly lockFaultInjector?:(point:GateDecisionLockFaultPoint)=>void;readonly lockTimeoutMs?:number}
+
+const SHA=/^sha256:[0-9a-f]{64}$/;const ZERO_SHA=`sha256:${"0".repeat(64)}`;const ID=/^[A-Za-z0-9][A-Za-z0-9._~:-]{0,127}$/;
+const RECORD_FIELDS=["decisionContext","decisionContextDigest","gateEvent","gateEventDigest","ingressClaimDigest","reservationId","role","signature","signerId","v"];
+let tempSequence=0;
+const appendQueues=new Map<string,Promise<void>>();
+interface DecisionLockOwner {readonly host:string;readonly nonce:string;readonly pid:number;readonly v:"reelier.gate-decision-lock/internal-v1"}
+interface DecisionRootIdentity {readonly dev:number;readonly ino:number}
+class DecisionStoreCorruption extends Error {}
+
+export function parseGateDecisionRecord(value:unknown):GateDecisionRecord {
+  try{
+    if(!value||typeof value!=="object"||Array.isArray(value))throw new Error();const input=value as Record<string,unknown>;assertKeys(input,RECORD_FIELDS);
+    if(input.v!=="reelier.gate-decision-record/internal-v1"||!(input.role==="primary"||input.role==="conflict")||typeof input.ingressClaimDigest!=="string"||!SHA.test(input.ingressClaimDigest)||input.ingressClaimDigest===ZERO_SHA||typeof input.signerId!=="string"||!ID.test(input.signerId))throw new Error();
+    if(input.reservationId!==null&&(typeof input.reservationId!=="string"||!ID.test(input.reservationId)))throw new Error();
+    const decisionContext=parseAuthorityWire("decision-context",input.decisionContext) as DecisionContext,gateEvent=parseAuthorityWire("gate-event",input.gateEvent) as GateEvent;
+    if(input.decisionContextDigest!==authorityDigest(decisionContext)||input.gateEventDigest!==authorityDigest(gateEvent)||gateEvent.decisionContextDigest!==input.decisionContextDigest)throw new Error();
+    const signature=input.signature as Record<string,unknown>;if(!signature||typeof signature!=="object"||Array.isArray(signature)||Object.keys(signature).sort().join("\0")!=="alg\0sig"||signature.alg!=="ed25519"||typeof signature.sig!=="string")throw new Error();const bytes=Buffer.from(signature.sig,"base64");if(bytes.length!==64||bytes.toString("base64")!==signature.sig)throw new Error();
+    const accepted=gateEvent.verdict==="accepted"&&gateEvent.reasonCode==="accepted",conflict=gateEvent.verdict==="refused"&&gateEvent.reasonCode==="request-id-conflict";
+    if(input.role==="conflict"&&(!conflict||input.reservationId!==null)||conflict&&input.role!=="conflict"||accepted&&(input.role!=="primary"||input.reservationId===null)||!accepted&&input.role==="primary"&&input.reservationId!==null)throw new Error();
+    return deepFreeze({v:input.v,role:input.role,ingressClaimDigest:input.ingressClaimDigest,reservationId:input.reservationId,decisionContext,decisionContextDigest:input.decisionContextDigest as string,gateEvent,gateEventDigest:input.gateEventDigest as string,signerId:input.signerId,signature:{alg:"ed25519",sig:signature.sig}} as GateDecisionRecord);
+  }catch{throw new TypeError("invalid gate decision record");}
+}
+export function gateDecisionRecordDigest(record:GateDecisionRecord):string{return authorityDigest(parseGateDecisionRecord(record));}
+
+export function createFileGateDecisionSink(root:string,options:FileGateDecisionSinkOptions={}):GateDecisionSink {
+  const resolvedRoot=path.resolve(root),file=path.join(resolvedRoot,"gate-decisions.json"),lock=path.join(resolvedRoot,".gate-decisions.lock"),ownerFile=path.join(lock,"owner.json"),timeout=options.lockTimeoutMs??10_000;
+  if(!Number.isSafeInteger(timeout)||timeout<=0||timeout>60_000)throw new TypeError("decision lock timeout must be a positive integer no greater than 60000ms");
+  const inspectedRoot=inspectDecisionRoot(resolvedRoot);if(!inspectedRoot)throw new TypeError("decision root must be an existing real directory");const rootIdentity=inspectedRoot;
+  function assertCurrentRoot():void{const current=inspectDecisionRoot(resolvedRoot);if(!current||current.dev!==rootIdentity.dev||current.ino!==rootIdentity.ino)throw new Error("decision root changed");}
+  async function load():Promise<GateDecisionRecord[]>{assertCurrentRoot();let bytes:Buffer;try{bytes=await readFile(file);}catch(error){if(hasCode(error,"ENOENT"))return[];throw error;}try{const parsed=JSON.parse(bytes.toString("utf8")) as Record<string,unknown>;assertKeys(parsed,["records","v"]);if(parsed.v!=="reelier.gate-decision-store/internal-v1"||!Array.isArray(parsed.records))throw new DecisionStoreCorruption();const records=parsed.records.map(parseGateDecisionRecord);if(new Set(records.map(item=>item.gateEvent.eventId)).size!==records.length)throw new DecisionStoreCorruption();if(new Set(records.filter(item=>item.role==="primary").map(item=>item.ingressClaimDigest)).size!==records.filter(item=>item.role==="primary").length)throw new DecisionStoreCorruption();if(new Set(records.filter(item=>item.reservationId!==null).map(item=>item.reservationId)).size!==records.filter(item=>item.reservationId!==null).length)throw new DecisionStoreCorruption();return records;}catch(error){if(error instanceof DecisionStoreCorruption)throw error;throw new DecisionStoreCorruption();}}
+  async function withLock<T>(callback:()=>Promise<T>):Promise<T>{assertCurrentRoot();const owner=await acquireLock();try{assertCurrentRoot();return await callback();}finally{await releaseLock(owner);}}
+  async function acquireLock():Promise<DecisionLockOwner>{const deadline=monotonicNow()+timeout;for(;;){const owner:DecisionLockOwner={host:hostname(),nonce:randomBytes(32).toString("hex"),pid:process.pid,v:"reelier.gate-decision-lock/internal-v1"};let created=false;try{await mkdir(lock);created=true;try{await publishOwner(owner);return owner;}catch(error){await discardUnpublishedLock();throw error;}}catch(error){if(created||!hasCode(error,"EEXIST")&&!isTransientLockError(error))throw error;}let ownerBytes:Buffer;try{ownerBytes=await readFile(ownerFile);}catch(error){if(monotonicNow()<deadline&&(hasCode(error,"ENOENT")||isTransientLockError(error))){await delay(2);continue;}throw error;}let existing:DecisionLockOwner;try{existing=parseDecisionLockOwner(ownerBytes);}catch{if(monotonicNow()<deadline){await delay(2);continue;}throw new Error("decision lock owner unavailable");}if(existing.host!==hostname())throw new Error("decision lock owner unavailable");const liveness=processLiveness(existing.pid);if(liveness==="unverifiable")throw new Error("decision lock owner unavailable");if(liveness==="alive"){if(monotonicNow()>=deadline)throw new Error("decision lock busy");await delay(2);continue;}options.lockFaultInjector?.("after-owner-read");if(!await retireOwnedLock(ownerBytes,deadline))continue;}}
+  async function publishOwner(owner:DecisionLockOwner):Promise<void>{options.lockFaultInjector?.("before-owner-publish");const handle=await open(ownerFile,"wx",0o600);try{await handle.writeFile(authorityCanonicalBytes(owner));options.lockFaultInjector?.("after-owner-write");await handle.sync();options.lockFaultInjector?.("after-owner-file-sync");}finally{await handle.close();}await syncDirectory(lock);options.lockFaultInjector?.("after-lock-directory-sync");await syncRoot();options.lockFaultInjector?.("after-root-directory-sync");}
+  async function discardUnpublishedLock():Promise<void>{const tombstone=path.join(resolvedRoot,`.gate-decisions-lock-${process.pid}-${randomBytes(16).toString("hex")}.unpublished`);try{await rename(lock,tombstone);}catch(error){if(hasCode(error,"ENOENT"))return;throw error;}await syncRoot();await rm(tombstone,{recursive:true,force:true});await syncRoot();}
+  async function releaseLock(owner:DecisionLockOwner):Promise<void>{try{await retireOwnedLock(authorityCanonicalBytes(owner),monotonicNow()+timeout);}catch{/* A failed atomic retirement leaves the complete original lock owner in place. */}}
+  async function retireOwnedLock(expected:Buffer,deadline:number):Promise<boolean>{const tombstone=path.join(resolvedRoot,`.gate-decisions-lock-${process.pid}-${randomBytes(16).toString("hex")}.retired`);for(;;){const current=await readFile(ownerFile);if(!current.equals(expected))return false;options.lockFaultInjector?.("before-lock-retire");try{await rename(lock,tombstone);break;}catch(error){if(monotonicNow()<deadline&&isTransientLockError(error)){await delay(2);continue;}throw error;}}options.lockFaultInjector?.("after-lock-retire");await syncRoot();const retiredOwner=path.join(tombstone,"owner.json"),retiredBytes=await readFile(retiredOwner);if(!retiredBytes.equals(expected)){try{await rename(tombstone,lock);}catch{}throw new Error("retired decision lock owner changed");}let retiredOwnerRemoved=false;for(;;){try{if(!retiredOwnerRemoved){await unlink(retiredOwner);retiredOwnerRemoved=true;}await rmdir(tombstone);await syncRoot();return true;}catch(error){if(monotonicNow()<deadline&&(hasCode(error,"ENOENT")||isTransientLockError(error))){await delay(2);continue;}throw error;}}}
+  async function syncDirectory(directory:string):Promise<void>{if(process.platform==="win32")return;const handle=await open(directory,"r");try{await handle.sync();}finally{await handle.close();}}
+  async function syncRoot():Promise<void>{if(process.platform==="win32")return;const handle=await open(resolvedRoot,"r");try{await handle.sync();}finally{await handle.close();}}
+  async function persist(records:GateDecisionRecord[]):Promise<void>{assertCurrentRoot();const temp=path.join(resolvedRoot,`.gate-decisions-${process.pid}-${Date.now()}-${++tempSequence}.tmp`),fault=(point:GateDecisionFaultPoint)=>options.faultInjector?.(point);const bytes=authorityCanonicalBytes({v:"reelier.gate-decision-store/internal-v1",records:[...records].sort((a,b)=>compare(a.gateEvent.eventId,b.gateEvent.eventId))});try{fault("before-write");const handle=await open(temp,"wx");try{await handle.writeFile(bytes);fault("after-write");fault("before-file-sync");await handle.sync();fault("after-file-sync");}finally{await handle.close();}fault("before-rename");assertCurrentRoot();await replaceAtomically(temp,file);fault("after-rename");fault("before-directory-sync");if(process.platform!=="win32"){const directory=await open(resolvedRoot,"r");try{await directory.sync();}finally{await directory.close();}}fault("after-directory-sync");}finally{await rm(temp,{force:true});}}
+  async function replaceAtomically(source:string,target:string):Promise<void>{const deadline=monotonicNow()+timeout;for(;;){try{await rename(source,target);return;}catch(error){if(process.platform!=="win32"||!(hasCode(error,"EPERM")||hasCode(error,"EACCES")||hasCode(error,"EBUSY"))||monotonicNow()>=deadline)throw error;await new Promise(resolve=>setTimeout(resolve,2));}}}
+  const lookup=async(predicate:(record:GateDecisionRecord)=>boolean):Promise<GateDecisionLookupResult>=>{await (appendQueues.get(resolvedRoot)??Promise.resolve());try{const found=(await load()).find(predicate);return found?Object.freeze({ok:true as const,status:"found" as const,record:deepFreeze(structuredClone(found))}):Object.freeze({ok:true as const,status:"absent" as const});}catch(error){return Object.freeze({ok:false as const,reason:error instanceof DecisionStoreCorruption?"corruption" as const:"unavailable" as const});}};
+  return Object.freeze({
+    async append(candidate:GateDecisionRecord):Promise<GateDecisionAppendResult>{let record:GateDecisionRecord;try{record=parseGateDecisionRecord(candidate);}catch{return Object.freeze({ok:false,reason:"corruption"});}const preceding=appendQueues.get(resolvedRoot)??Promise.resolve();let release!:()=>void;const tail=new Promise<void>(resolve=>{release=resolve;});appendQueues.set(resolvedRoot,tail);await preceding;try{try{return await withLock(async()=>{const records=await load(),canonical=authorityCanonicalBytes(record),event=records.find(item=>item.gateEvent.eventId===record.gateEvent.eventId);if(event)return canonical.equals(authorityCanonicalBytes(event))?Object.freeze({ok:true as const,status:"idempotent" as const,recordDigest:authorityDigest(record)}):Object.freeze({ok:false as const,reason:"event-id-conflict" as const});if(record.role==="primary"&&records.some(item=>item.role==="primary"&&item.ingressClaimDigest===record.ingressClaimDigest))return Object.freeze({ok:false as const,reason:"primary-ingress-conflict" as const});if(record.reservationId!==null&&records.some(item=>item.reservationId===record.reservationId))return Object.freeze({ok:false as const,reason:"reservation-conflict" as const});await persist([...records,record]);return Object.freeze({ok:true as const,status:"appended" as const,recordDigest:authorityDigest(record)});});}catch(error){return Object.freeze({ok:false,reason:error instanceof DecisionStoreCorruption?"corruption":"unavailable"});}}finally{release();if(appendQueues.get(resolvedRoot)===tail)appendQueues.delete(resolvedRoot);}},
+    lookupByEvent:(eventId:string)=>lookup(record=>record.gateEvent.eventId===eventId),
+    lookupPrimaryByIngress:(digest:string)=>lookup(record=>record.role==="primary"&&record.ingressClaimDigest===digest),
+    lookupAcceptedByReservation:(reservationId:string)=>lookup(record=>record.reservationId===reservationId),
+  });
+}
+
+function assertKeys(value:Record<string,unknown>,keys:readonly string[]){if(Object.keys(value).sort().join("\0")!==[...keys].sort().join("\0"))throw new Error("unexpected keys");}
+function deepFreeze<T>(value:T):T{if(value&&typeof value==="object"&&!Object.isFrozen(value)){for(const child of Object.values(value as Record<string,unknown>))deepFreeze(child);Object.freeze(value);}return value;}
+function compare(left:string,right:string){return left<right?-1:left>right?1:0;}
+function hasCode(error:unknown,code:string){return Boolean(error&&typeof error==="object"&&"code" in error&&(error as {code?:unknown}).code===code);}
+function isTransientLockError(error:unknown){return hasCode(error,"EPERM")||hasCode(error,"EACCES")||hasCode(error,"EBUSY");}
+function inspectDecisionRoot(root:string):DecisionRootIdentity|null{
+  for(let current=root;;current=path.dirname(current)){
+    try{if(lstatSync(current).isSymbolicLink())throw new TypeError("decision root cannot traverse a symlink or reparse point");}
+    catch(error){if(!hasCode(error,"ENOENT"))throw error;}
+    const parent=path.dirname(current);if(parent===current)break;
+  }
+  let stat;try{stat=lstatSync(root);}catch(error){if(hasCode(error,"ENOENT"))return null;throw error;}
+  if(!stat.isDirectory()||stat.isSymbolicLink())throw new TypeError("decision root must be a real directory");
+  const real=realpathSync.native(root);
+  if(process.platform==="win32"){
+    const realStat=lstatSync(real);
+    if(realStat.dev!==stat.dev||realStat.ino!==stat.ino)throw new TypeError("decision root cannot traverse a symlink or reparse point");
+  }else if(real!==root)throw new TypeError("decision root cannot traverse a symlink or reparse point");
+  return{dev:stat.dev,ino:stat.ino};
+}
+function parseDecisionLockOwner(bytes:Buffer):DecisionLockOwner{const parsed=JSON.parse(bytes.toString("utf8")) as Record<string,unknown>;assertKeys(parsed,["host","nonce","pid","v"]);if(parsed.v!=="reelier.gate-decision-lock/internal-v1"||typeof parsed.host!=="string"||parsed.host.length===0||typeof parsed.pid!=="number"||!Number.isSafeInteger(parsed.pid)||parsed.pid<=0||typeof parsed.nonce!=="string"||!/^[0-9a-f]{64}$/.test(parsed.nonce)||!authorityCanonicalBytes(parsed).equals(bytes))throw new TypeError("invalid decision lock owner");return parsed as unknown as DecisionLockOwner;}
+function processLiveness(pid:number):"alive"|"dead"|"unverifiable"{try{process.kill(pid,0);return"alive";}catch(error){if(hasCode(error,"ESRCH"))return"dead";return"unverifiable";}}
+function monotonicNow():number{return Number(process.hrtime.bigint()/1_000_000n);}
+function delay(ms:number){return new Promise<void>(resolve=>setTimeout(resolve,ms));}

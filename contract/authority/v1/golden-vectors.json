@@ -1,0 +1,363 @@
+{
+  "principal": {
+    "canonical": "{\"id\":\"operator_1\",\"kind\":\"operator\",\"v\":\"reelier.principal/v1\"}",
+    "digest": "sha256:28b442775639001094da48c1fd5801ae4515687b92379aaa9c812186247c9d8d",
+    "signature": {
+      "alg": "ed25519",
+      "sig": "89kwKe899ecT9Ju02RE3oFFVKLqKfTYf/wp/hYzMVt5Z+OZk0yd5o6Vc+paqOKMBqkqpBcoxcrVfRpEVbZuHDA=="
+    },
+    "value": {
+      "v": "reelier.principal/v1",
+      "id": "operator_1",
+      "kind": "operator"
+    }
+  },
+  "delegation-grant": {
+    "canonical": "{\"constraints\":{\"audiences\":[\"requester_1\"],\"connectorAccounts\":[{\"accountId\":\"location_1\",\"connectorId\":\"highlevel\"}],\"definitionAliases\":[\"definition_1\"],\"limits\":{\"maxBodyBytes\":4096,\"maxEffectsPerSourceTrigger\":1,\"maxEffectsPerWindow\":10,\"windowSeconds\":3600},\"projectionPointers\":[\"/appointment/startTime\",\"/contact/phone\"],\"riskClasses\":[\"message\"]},\"expiresAt\":\"2026-02-01T00:00:00.000Z\",\"grantId\":\"grant_1\",\"grantee\":\"gate_1\",\"grantor\":\"operator_1\",\"issuedAt\":\"2026-01-01T00:00:00.000Z\",\"parentDigest\":null,\"sponsor\":\"sponsor_1\",\"tenant\":\"tenant_1\",\"v\":\"reelier.delegation-grant/v1\"}",
+    "digest": "sha256:0c76d6ea15e3c438a1b63b208f317fb7952499ac1c1476b26986267cec5073b1",
+    "signature": {
+      "alg": "ed25519",
+      "sig": "JIN0ST3QyybJQvF/qtdXKv25Ct21l/UIxoefUtGyfwaFIxOk0/EpeYgiU4oxstq9mKaZ1jeQOyATtZxP1VEkAA=="
+    },
+    "value": {
+      "v": "reelier.delegation-grant/v1",
+      "tenant": "tenant_1",
+      "grantId": "grant_1",
+      "parentDigest": null,
+      "sponsor": "sponsor_1",
+      "grantor": "operator_1",
+      "grantee": "gate_1",
+      "issuedAt": "2026-01-01T00:00:00.000Z",
+      "expiresAt": "2026-02-01T00:00:00.000Z",
+      "constraints": {
+        "definitionAliases": [
+          "definition_1"
+        ],
+        "audiences": [
+          "requester_1"
+        ],
+        "connectorAccounts": [
+          {
+            "connectorId": "highlevel",
+            "accountId": "location_1"
+          }
+        ],
+        "projectionPointers": [
+          "/appointment/startTime",
+          "/contact/phone"
+        ],
+        "riskClasses": [
+          "message"
+        ],
+        "limits": {
+          "maxEffectsPerWindow": 10,
+          "windowSeconds": 3600,
+          "maxEffectsPerSourceTrigger": 1,
+          "maxBodyBytes": 4096
+        }
+      }
+    }
+  },
+  "source-bundle": {
+    "canonical": "{\"claims\":{\"authored\":[],\"grounded\":[{\"claimId\":\"appointment_time\",\"projectionPointer\":\"/appointment/startTime\"}],\"unresolved\":[]},\"definitionDigest\":\"sha256:9999999999999999999999999999999999999999999999999999999999999999\",\"freshUntil\":\"2026-01-01T00:01:00.000Z\",\"observedAt\":\"2026-01-01T00:00:00.000Z\",\"projection\":{\"appointment\":{\"startTime\":\"2026-01-02T12:00:00.000Z\"}},\"projectionSchemaId\":\"highlevel.appointment-reminder/v1\",\"provenance\":{\"observations\":[{\"endpointId\":\"appointments.get\",\"index\":0,\"planDigest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"rawDigest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}],\"resolverId\":\"resolver_1\"},\"readSetDigest\":\"sha256:c9b2c341b154f6b30aac35b2acaf308e88e5db5274e4e247d47b00cca45c2ee0\",\"sourceIdentity\":\"source_1\",\"sourceRefsDigest\":\"sha256:a166815f2344eada07f2f80bdcba4cfa33865cc22d8fbeef0b272b5fd28d99fc\",\"tenant\":\"tenant_1\",\"triggerIdentity\":\"trigger_1\",\"v\":\"reelier.source-bundle/v1\"}",
+    "digest": "sha256:97109ac617f56ac15b5443a5efe703dcd225da14826a51fe092541cdda5016e2",
+    "signature": {
+      "alg": "ed25519",
+      "sig": "QaMva4pWlzwFfIv6lBpyLnrbB5JYJPUTif3gM3TR6dk2yz48h0K9VZpXu8DsuhZzp5/UP1TtqbbweoyClFJ8AA=="
+    },
+    "value": {
+      "v": "reelier.source-bundle/v1",
+      "tenant": "tenant_1",
+      "definitionDigest": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+      "projectionSchemaId": "highlevel.appointment-reminder/v1",
+      "sourceRefsDigest": "sha256:a166815f2344eada07f2f80bdcba4cfa33865cc22d8fbeef0b272b5fd28d99fc",
+      "readSetDigest": "sha256:c9b2c341b154f6b30aac35b2acaf308e88e5db5274e4e247d47b00cca45c2ee0",
+      "sourceIdentity": "source_1",
+      "triggerIdentity": "trigger_1",
+      "observedAt": "2026-01-01T00:00:00.000Z",
+      "freshUntil": "2026-01-01T00:01:00.000Z",
+      "provenance": {
+        "resolverId": "resolver_1",
+        "observations": [
+          {
+            "index": 0,
+            "planDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "endpointId": "appointments.get",
+            "rawDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          }
+        ]
+      },
+      "claims": {
+        "grounded": [
+          {
+            "claimId": "appointment_time",
+            "projectionPointer": "/appointment/startTime"
+          }
+        ],
+        "authored": [],
+        "unresolved": []
+      },
+      "projection": {
+        "appointment": {
+          "startTime": "2026-01-02T12:00:00.000Z"
+        }
+      }
+    }
+  },
+  "outcome-contract": {
+    "canonical": "{\"accountId\":\"location_1\",\"alias\":\"definition_1\",\"audiences\":[\"requester_1\"],\"connectorId\":\"highlevel\",\"contractId\":\"contract_1\",\"definitionDigest\":\"sha256:9999999999999999999999999999999999999999999999999999999999999999\",\"delegationGrantDigest\":\"sha256:9999999999999999999999999999999999999999999999999999999999999999\",\"limits\":{\"maxBodyBytes\":4096,\"maxEffectsPerSourceTrigger\":1,\"maxEffectsPerWindow\":10,\"windowSeconds\":3600},\"packDigest\":\"sha256:9999999999999999999999999999999999999999999999999999999999999999\",\"policyCommitment\":{\"digest\":\"sha256:171988244f4f16f849f195b47c31f24eede86fee7f0498731d891ecc529c2855\",\"jcsBase64\":\"eyJjaGFubmVsIjoic21zIiwidGVtcGxhdGUiOiJBcHBvaW50bWVudCB7e3RpbWV9fSJ9\",\"schemaId\":\"highlevel.sms-reminder-policy/v1\"},\"riskClasses\":[\"message\"],\"sourceAuthority\":{\"allowedReadEndpointIds\":[\"appointments.get\",\"contacts.get\"],\"authorizedProjectionPointers\":[\"/appointment/startTime\",\"/contact/phone\"],\"maxFreshnessSeconds\":60,\"projectionSchemaId\":\"highlevel.appointment-reminder/v1\",\"resolverId\":\"highlevel_appointment\"},\"sponsor\":\"sponsor_1\",\"tenant\":\"tenant_1\",\"v\":\"reelier.outcome-contract/v1\",\"validFrom\":\"2026-01-01T00:00:00.000Z\",\"validUntil\":\"2026-02-01T00:00:00.000Z\"}",
+    "digest": "sha256:afea61809ed1682f977c9632d717a312b1424d600de2268cb4d677571da10cf5",
+    "signature": {
+      "alg": "ed25519",
+      "sig": "MnpbonCLLoJfFdiAfzMFfgoXsJszZcxXE8ZdgIPdBTFfKnWHskrUpFCTbE2BgsGgyGzumZT3ZnezK5vDQsCkCg=="
+    },
+    "value": {
+      "v": "reelier.outcome-contract/v1",
+      "tenant": "tenant_1",
+      "alias": "definition_1",
+      "contractId": "contract_1",
+      "validFrom": "2026-01-01T00:00:00.000Z",
+      "validUntil": "2026-02-01T00:00:00.000Z",
+      "packDigest": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+      "definitionDigest": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+      "sponsor": "sponsor_1",
+      "audiences": [
+        "requester_1"
+      ],
+      "delegationGrantDigest": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+      "connectorId": "highlevel",
+      "accountId": "location_1",
+      "sourceAuthority": {
+        "resolverId": "highlevel_appointment",
+        "projectionSchemaId": "highlevel.appointment-reminder/v1",
+        "allowedReadEndpointIds": [
+          "appointments.get",
+          "contacts.get"
+        ],
+        "authorizedProjectionPointers": [
+          "/appointment/startTime",
+          "/contact/phone"
+        ],
+        "maxFreshnessSeconds": 60
+      },
+      "riskClasses": [
+        "message"
+      ],
+      "limits": {
+        "maxEffectsPerWindow": 10,
+        "windowSeconds": 3600,
+        "maxEffectsPerSourceTrigger": 1,
+        "maxBodyBytes": 4096
+      },
+      "policyCommitment": {
+        "schemaId": "highlevel.sms-reminder-policy/v1",
+        "jcsBase64": "eyJjaGFubmVsIjoic21zIiwidGVtcGxhdGUiOiJBcHBvaW50bWVudCB7e3RpbWV9fSJ9",
+        "digest": "sha256:171988244f4f16f849f195b47c31f24eede86fee7f0498731d891ecc529c2855"
+      }
+    }
+  },
+  "outcome-request": {
+    "canonical": "{\"choices\":{},\"requestId\":\"request_1\",\"sourceRefs\":{\"appointment\":\"ref_1\"},\"v\":\"reelier.outcome-request/v1\"}",
+    "digest": "sha256:b0627231c94f6e288b46bae793b7c64e90429f7e3fc27bc3e870ec23ee0b4245",
+    "signature": {
+      "alg": "ed25519",
+      "sig": "N/9rgtMvD7Q3H+/fJCpXzI5d5aZVh8zEbiFnZ+lEfHKzd45CWRA4+EViv1JLxMNLhXBpGrYnZT61TuctjBS1BQ=="
+    },
+    "value": {
+      "v": "reelier.outcome-request/v1",
+      "requestId": "request_1",
+      "sourceRefs": {
+        "appointment": "ref_1"
+      },
+      "choices": {}
+    }
+  },
+  "transport-effect": {
+    "canonical": "{\"bodyBase64\":\"e30=\",\"endpointId\":\"connector_1\",\"headers\":{\"Content-Type\":\"application/json\"},\"idempotency\":\"native\",\"method\":\"POST\",\"path\":\"/v1/messages\",\"preconditions\":[],\"query\":\"account=tenant_1&mode=send\",\"reconciliation\":{\"recipeId\":\"message-readback\"},\"riskClass\":\"message\",\"v\":\"reelier.transport-effect/v1\"}",
+    "digest": "sha256:12b647a5503c40338d70f65d4a9b04e023430d238360d1f94c2f6f7aae8a7c9c",
+    "signature": {
+      "alg": "ed25519",
+      "sig": "vk7zb2kL/75ci65lDA5/f8ppwIUBaNwpKpgLbX5fH1gAToZARtoDnPAnAKWImh9XphIlPL5Qqk05dtNHER4zBQ=="
+    },
+    "value": {
+      "v": "reelier.transport-effect/v1",
+      "endpointId": "connector_1",
+      "method": "POST",
+      "path": "/v1/messages",
+      "query": "account=tenant_1&mode=send",
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "bodyBase64": "e30=",
+      "riskClass": "message",
+      "idempotency": "native",
+      "preconditions": [],
+      "reconciliation": {
+        "recipeId": "message-readback"
+      }
+    },
+    "compiledRequest": {
+      "target": "/v1/messages?account=tenant_1&mode=send",
+      "bodyUtf8": "{}"
+    }
+  },
+  "compiled-capability": {
+    "canonical": "{\"authorityStateDigest\":\"sha256:9999999999999999999999999999999999999999999999999999999999999999\",\"capabilityId\":\"capability_1\",\"contractDigest\":\"sha256:9999999999999999999999999999999999999999999999999999999999999999\",\"definitionAlias\":\"definition_1\",\"effectDigest\":\"sha256:9999999999999999999999999999999999999999999999999999999999999999\",\"expiresAt\":\"2026-01-01T00:01:00.000Z\",\"issuedAt\":\"2026-01-01T00:00:00.000Z\",\"limits\":{\"maxBodyBytes\":4096,\"maxEffectsPerSourceTrigger\":1,\"maxEffectsPerWindow\":10,\"windowSeconds\":3600},\"limitsDigest\":\"sha256:601c0a811003d90c5b98c21de8c1a17743f63740978e61efbb5d1ad36a94c1ea\",\"outcomeKey\":\"sha256:9999999999999999999999999999999999999999999999999999999999999999\",\"requestDigest\":\"sha256:9999999999999999999999999999999999999999999999999999999999999999\",\"requestKey\":\"sha256:9999999999999999999999999999999999999999999999999999999999999999\",\"requester\":\"requester_1\",\"sourceBundleDigest\":\"sha256:9999999999999999999999999999999999999999999999999999999999999999\",\"sourceSnapshotDigest\":\"sha256:9999999999999999999999999999999999999999999999999999999999999999\",\"tenant\":\"tenant_1\",\"v\":\"reelier.compiled-capability/v1\"}",
+    "digest": "sha256:07958e88be4eab8f7cdca46361f58ef73c86d4c4bc3025a0519f86e64dc6c398",
+    "signature": {
+      "alg": "ed25519",
+      "sig": "uroK0sKadoyFe4PeK+A5ef5f6+aC5PbralEoglXLVK5yWxuiWlr5euYFoo9uyTqgGLHmoGCAjT+weUmKKzfiCg=="
+    },
+    "value": {
+      "v": "reelier.compiled-capability/v1",
+      "tenant": "tenant_1",
+      "requester": "requester_1",
+      "definitionAlias": "definition_1",
+      "requestDigest": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+      "requestKey": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+      "contractDigest": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+      "sourceBundleDigest": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+      "sourceSnapshotDigest": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+      "authorityStateDigest": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+      "limits": {
+        "maxEffectsPerWindow": 10,
+        "windowSeconds": 3600,
+        "maxEffectsPerSourceTrigger": 1,
+        "maxBodyBytes": 4096
+      },
+      "limitsDigest": "sha256:601c0a811003d90c5b98c21de8c1a17743f63740978e61efbb5d1ad36a94c1ea",
+      "capabilityId": "capability_1",
+      "outcomeKey": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+      "effectDigest": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+      "issuedAt": "2026-01-01T00:00:00.000Z",
+      "expiresAt": "2026-01-01T00:01:00.000Z"
+    }
+  },
+  "decision-context": {
+    "canonical": "{\"capabilityDigest\":\"sha256:4444444444444444444444444444444444444444444444444444444444444444\",\"capabilityId\":\"capability_1\",\"contractDigest\":\"sha256:3333333333333333333333333333333333333333333333333333333333333333\",\"definitionAlias\":\"definition_1\",\"effectDigest\":\"sha256:6666666666666666666666666666666666666666666666666666666666666666\",\"outcomeKey\":\"sha256:5555555555555555555555555555555555555555555555555555555555555555\",\"requestDigest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"requestId\":\"request_1\",\"requestKey\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\",\"requester\":\"requester_1\",\"snapshots\":{\"authorityStateDigest\":\"sha256:8888888888888888888888888888888888888888888888888888888888888888\",\"sourceBundleDigest\":\"sha256:7777777777777777777777777777777777777777777777777777777777777777\"},\"tenant\":\"tenant_1\",\"v\":\"reelier.decision-context/v1\"}",
+    "digest": "sha256:25eca991ad0345f919e8cb4a246feb670168bd56a0d55a69234c6042630edc70",
+    "signature": {
+      "alg": "ed25519",
+      "sig": "4xVIRppzG5hiiIBVmApfQ5fxq7Afk3BV9VGkOu9DNbaaHbjS03tzxanZOMklnQMvF8dCs9MyMTHeB2fqlq87CA=="
+    },
+    "value": {
+      "v": "reelier.decision-context/v1",
+      "tenant": "tenant_1",
+      "requester": "requester_1",
+      "definitionAlias": "definition_1",
+      "requestId": "request_1",
+      "requestDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "requestKey": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "contractDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "capabilityId": "capability_1",
+      "capabilityDigest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+      "outcomeKey": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+      "effectDigest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+      "snapshots": {
+        "sourceBundleDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+        "authorityStateDigest": "sha256:8888888888888888888888888888888888888888888888888888888888888888"
+      }
+    },
+    "variants": {
+      "preCompileRefusal": {
+        "canonical": "{\"capabilityDigest\":null,\"capabilityId\":null,\"contractDigest\":null,\"definitionAlias\":\"definition_1\",\"effectDigest\":null,\"outcomeKey\":null,\"requestDigest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"requestId\":\"request_1\",\"requestKey\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\",\"requester\":\"requester_1\",\"snapshots\":{\"authorityStateDigest\":null,\"sourceBundleDigest\":null},\"tenant\":\"tenant_1\",\"v\":\"reelier.decision-context/v1\"}",
+        "digest": "sha256:32c51527e961aa6e90e72233b90acdd417f3db2db4eadd241bc7ccad0ec84e7a",
+        "signature": {
+          "alg": "ed25519",
+          "sig": "BBlIDsBQt1tcbzTqOWvKkQzL3PAhkyYGHbQCmxtjyRQGglVIGQjYnRSk0wZut6Jx/QVkUVDm3emsMCT1l0uhBw=="
+        },
+        "value": {
+          "v": "reelier.decision-context/v1",
+          "tenant": "tenant_1",
+          "requester": "requester_1",
+          "definitionAlias": "definition_1",
+          "requestId": "request_1",
+          "requestDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "requestKey": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+          "contractDigest": null,
+          "capabilityId": null,
+          "capabilityDigest": null,
+          "outcomeKey": null,
+          "effectDigest": null,
+          "snapshots": {
+            "sourceBundleDigest": null,
+            "authorityStateDigest": null
+          }
+        }
+      }
+    }
+  },
+  "gate-event": {
+    "canonical": "{\"at\":\"2026-01-01T00:00:00.000Z\",\"decisionContextDigest\":\"sha256:25eca991ad0345f919e8cb4a246feb670168bd56a0d55a69234c6042630edc70\",\"eventId\":\"event_1\",\"reasonCode\":\"accepted\",\"v\":\"reelier.gate-event/v1\",\"verdict\":\"accepted\"}",
+    "digest": "sha256:549d3ec3cd06cf9c8b39b0822721b873a0302b216afbc3c752ee72e8ef427b8c",
+    "signature": {
+      "alg": "ed25519",
+      "sig": "mxuz1N0GVK/VE2T2ht4I3+YRnuRv0+NqjdDVu03b4xiCTEBGIh24Zsr6BAiQ21JQ8UtqwmSX3ZM2HRk2fV6fCQ=="
+    },
+    "value": {
+      "v": "reelier.gate-event/v1",
+      "eventId": "event_1",
+      "at": "2026-01-01T00:00:00.000Z",
+      "verdict": "accepted",
+      "reasonCode": "accepted",
+      "decisionContextDigest": "sha256:25eca991ad0345f919e8cb4a246feb670168bd56a0d55a69234c6042630edc70"
+    }
+  },
+  "authority-receipt": {
+    "canonical": "{\"claims\":{\"authorization\":\"verified\",\"completeness\":\"unchecked\",\"dispatch\":\"verified\",\"providerAcknowledgment\":\"unchecked\",\"reconciliation\":\"absent\",\"sourceCompleteness\":\"verified\",\"topology\":\"unchecked\"},\"decisionContext\":{\"capabilityDigest\":\"sha256:4444444444444444444444444444444444444444444444444444444444444444\",\"capabilityId\":\"capability_1\",\"contractDigest\":\"sha256:3333333333333333333333333333333333333333333333333333333333333333\",\"definitionAlias\":\"definition_1\",\"effectDigest\":\"sha256:6666666666666666666666666666666666666666666666666666666666666666\",\"outcomeKey\":\"sha256:5555555555555555555555555555555555555555555555555555555555555555\",\"requestDigest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"requestId\":\"request_1\",\"requestKey\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\",\"requester\":\"requester_1\",\"snapshots\":{\"authorityStateDigest\":\"sha256:8888888888888888888888888888888888888888888888888888888888888888\",\"sourceBundleDigest\":\"sha256:7777777777777777777777777777777777777777777777777777777777777777\"},\"tenant\":\"tenant_1\",\"v\":\"reelier.decision-context/v1\"},\"decisionContextDigest\":\"sha256:25eca991ad0345f919e8cb4a246feb670168bd56a0d55a69234c6042630edc70\",\"gateEventDigest\":\"sha256:549d3ec3cd06cf9c8b39b0822721b873a0302b216afbc3c752ee72e8ef427b8c\",\"receiptId\":\"receipt_1\",\"v\":\"reelier.authority-receipt/v1\"}",
+    "digest": "sha256:f53a61aef8e6f0fec4f6eff1e8c1d008d224608088cdb5d805e951644af3f258",
+    "signature": {
+      "alg": "ed25519",
+      "sig": "zYkNl1p25lcBf+O4p1igZ6d614Cn2+7abbphxSqfkT9arbCQx7bnwxHxlvSa1XrgwjWNnt8PgG7FBeLZtgzoCA=="
+    },
+    "value": {
+      "v": "reelier.authority-receipt/v1",
+      "receiptId": "receipt_1",
+      "gateEventDigest": "sha256:549d3ec3cd06cf9c8b39b0822721b873a0302b216afbc3c752ee72e8ef427b8c",
+      "decisionContextDigest": "sha256:25eca991ad0345f919e8cb4a246feb670168bd56a0d55a69234c6042630edc70",
+      "decisionContext": {
+        "v": "reelier.decision-context/v1",
+        "tenant": "tenant_1",
+        "requester": "requester_1",
+        "definitionAlias": "definition_1",
+        "requestId": "request_1",
+        "requestDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "requestKey": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "contractDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "capabilityId": "capability_1",
+        "capabilityDigest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+        "outcomeKey": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+        "effectDigest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+        "snapshots": {
+          "sourceBundleDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+          "authorityStateDigest": "sha256:8888888888888888888888888888888888888888888888888888888888888888"
+        }
+      },
+      "claims": {
+        "authorization": "verified",
+        "sourceCompleteness": "verified",
+        "dispatch": "verified",
+        "providerAcknowledgment": "unchecked",
+        "reconciliation": "absent",
+        "topology": "unchecked",
+        "completeness": "unchecked"
+      }
+    }
+  },
+  "pack-manifest": {
+    "canonical": "{\"definitions\":[\"definition_1\"],\"packDigest\":\"sha256:9999999999999999999999999999999999999999999999999999999999999999\",\"packId\":\"first_party\",\"v\":\"reelier.outcome-pack-manifest/v1\"}",
+    "digest": "sha256:7c4cdfa73905369a1d128b330a050bf7d9237896c786a911ec0673168678ef66",
+    "signature": {
+      "alg": "ed25519",
+      "sig": "JpryC7zDyBrZ6znzkIdBb5xcgB972fiPlT7+rzE6sjFPXV2l0FD+rumpUFi+P4+Bckn0iNvNbQks9NXkYIDCBQ=="
+    },
+    "value": {
+      "v": "reelier.outcome-pack-manifest/v1",
+      "packId": "first_party",
+      "packDigest": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+      "definitions": [
+        "definition_1"
+      ]
+    }
+  }
+}

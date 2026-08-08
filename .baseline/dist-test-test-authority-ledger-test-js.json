@@ -1,0 +1,8 @@
+{
+  "target": "dist-test/test/authority/ledger.test.js",
+  "pass": 704,
+  "fail": 0,
+  "failing": [],
+  "trusted": true,
+  "recorded": null
+}

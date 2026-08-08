@@ -1,0 +1,47 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { authorityDigest } from "../../src/authority/wire.js";
+import { createSourceRegistry, planSourceReads, materializeSourceBundle, isValidatedSourceBundle, type RegisteredSourceResolver } from "../../src/authority/source.js";
+
+const definitionDigest = "sha256:" + "b".repeat(64);
+const observedAt = new Date("2026-01-15T00:00:00.000Z");
+const refs = { appointment: "appointment_1", contact: "contact_1" };
+function resolver(overrides:Partial<RegisteredSourceResolver>={}):RegisteredSourceResolver{return {
+  tenant:"tenant_1",resolverId:"resolver_1",definitionDigest,projectionSchemaId:"projection/v1",readEndpointIds:["appointment.read","contact.read"],maxFreshnessSeconds:120,
+  plan:value=>[{endpointId:"appointment.read",opaqueHandle:value.appointment},{endpointId:"contact.read",opaqueHandle:value.contact}],
+  project:()=>({sourceIdentity:"appointment_1",triggerIdentity:"trigger_1",projection:{appointment:{id:"appointment_1"},contact:{id:"contact_1"}},claims:{grounded:[{claimId:"a",projectionPointer:"/appointment/id"},{claimId:"c",projectionPointer:"/contact/id"}],authored:[],unresolved:[]}}),...overrides};}
+function input(local= createSourceRegistry([resolver()])){const plans=planSourceReads(local,{tenant:"tenant_1",resolverId:"resolver_1",definitionDigest,sourceRefs:refs,allowedReadEndpointIds:["appointment.read","contact.read"]});const raws=[Buffer.from("appointment"),Buffer.from("contact")];return {local,plans,raws,args:{tenant:"tenant_1",resolverId:"resolver_1",definitionDigest,projectionSchemaId:"projection/v1",sourceRefs:refs,allowedReadEndpointIds:["appointment.read","contact.read"],authorizedProjectionPointers:["/appointment/id","/contact/id"],requiredGroundedPointers:["/appointment/id","/contact/id"],maxFreshnessSeconds:60,observedAt,validationNow:observedAt,plans,observations:[{planDigest:plans[1].planDigest,rawBytes:raws[1]},{planDigest:plans[0].planDigest,rawBytes:raws[0]}]}};}
+
+test("kernel plans indexed digest-bound reads and canonicalizes arbitrary host observation order",()=>{const f=input();assert.deepEqual(f.plans.map(p=>p.index),[0,1]);const first=materializeSourceBundle(f.local,f.args);const second=materializeSourceBundle(f.local,{...f.args,observations:[...f.args.observations].reverse()});assert.equal(isValidatedSourceBundle(first),true);assert.equal(first.digest,second.digest);assert.equal(first.sourceSnapshotDigest,second.sourceSnapshotDigest);assert.equal(first.bundle.freshUntil,"2026-01-15T00:01:00.000Z");assert.deepEqual(first.bundle.provenance.observations.map(x=>x.index),[0,1]);assert.equal(first.bundle.sourceRefsDigest,authorityDigest({v:"reelier.source-refs/internal-v1",sourceRefs:refs}));});
+
+test("resolver project receives only copied immutable evidence and owns deterministic semantic identities",()=>{let seen:unknown;const local=createSourceRegistry([resolver({project:value=>{seen=value;assert.equal(Object.isFrozen(value),true);assert.equal(Object.isFrozen(value.plans),true);assert.equal(Object.isFrozen(value.observations),true);assert.equal("rawBytes" in value.observations[0],false);assert.equal(value.observations[0].bodyBase64,Buffer.from("appointment").toString("base64"));assert.throws(()=>{(value.observations as unknown as unknown[]).push({});},/read only|extensible/i);return {sourceIdentity:"derived_source",triggerIdentity:"derived_trigger",projection:{appointment:{id:"appointment_1"},contact:{id:"contact_1"}},claims:{grounded:[{claimId:"z",projectionPointer:"/contact/id"},{claimId:"a",projectionPointer:"/appointment/id"}],authored:[],unresolved:[]}};}})]);const f=input(local);const result=materializeSourceBundle(local,f.args);assert.ok(seen);assert.equal(result.bundle.sourceIdentity,"derived_source");assert.equal(result.bundle.triggerIdentity,"derived_trigger");assert.deepEqual(result.bundle.claims.grounded.map(c=>c.projectionPointer),["/appointment/id","/contact/id"]);});
+
+test("claim canonicalization uses locale-independent code-unit order",()=>{const local=createSourceRegistry([resolver({project:()=>({sourceIdentity:"s",triggerIdentity:"t",projection:{"ä":1,z:2},claims:{grounded:[{claimId:"umlaut",projectionPointer:"/ä"},{claimId:"zed",projectionPointer:"/z"}],authored:[],unresolved:[]}})})]);const f=input(local);const result=materializeSourceBundle(local,{...f.args,authorizedProjectionPointers:["/ä","/z"],requiredGroundedPointers:["/ä","/z"]});assert.deepEqual(result.bundle.claims.grounded.map(c=>c.projectionPointer),["/z","/ä"]);});
+
+test("kernel refuses missing extra duplicate unknown observations and copies raw bytes before resolver access",()=>{const f=input();const original=Buffer.from(f.raws[0]);const result=materializeSourceBundle(f.local,f.args);f.raws[0].fill(0);assert.equal(result.bundle.provenance.observations[0].rawDigest,`sha256:${createHash("sha256").update(original).digest("hex")}`);for(const observations of [[f.args.observations[0]],[...f.args.observations,f.args.observations[0]],[...f.args.observations,{planDigest:"sha256:"+"f".repeat(64),rawBytes:Buffer.from("x")}]] as const)assert.throws(()=>materializeSourceBundle(f.local,{...f.args,observations}),/missing|duplicate|unknown|extra/i);});
+
+test("resolver cannot fabricate claim ownership or leave projection leaves unclassified",()=>{for(const projection of [
+  {sourceIdentity:"s",triggerIdentity:"t",projection:{outer:{leaf:1}},claims:{grounded:[{claimId:"x",projectionPointer:"/outer"}],authored:[],unresolved:[]}},
+  {sourceIdentity:"s",triggerIdentity:"t",projection:{one:1,two:2},claims:{grounded:[{claimId:"x",projectionPointer:"/one"}],authored:[{claimId:"y",projectionPointer:"/one"}],unresolved:[]}},
+]){const local=createSourceRegistry([resolver({project:()=>projection})]);const f=input(local);assert.throws(()=>materializeSourceBundle(local,{...f.args,requiredGroundedPointers:[]}),/cover|unique|ownership/i);}});
+
+test("freshness is kernel-owned, integral, bounded, and capped by resolver registration",()=>{for(const value of [0,121,1.5,301]){const f=input();assert.throws(()=>materializeSourceBundle(f.local,{...f.args,maxFreshnessSeconds:value}),/freshness/i);}assert.throws(()=>createSourceRegistry([resolver({maxFreshnessSeconds:0})]),/freshness/i);});
+
+test("observation and validation instants are distinct required kernel inputs",()=>{
+  const f=input();
+  const accepted=materializeSourceBundle(f.local,f.args);
+  assert.equal(accepted.bundle.observedAt,"2026-01-15T00:00:00.000Z");
+  assert.equal(accepted.bundle.freshUntil,"2026-01-15T00:01:00.000Z");
+  assert.equal(accepted.validationInstant,"2026-01-15T00:00:00.000Z");
+
+  const isSourceStale=(error:unknown)=>Boolean(error&&typeof error==="object"&&"authorityCode" in error&&(error as {authorityCode?:unknown}).authorityCode==="source-stale");
+  assert.throws(()=>materializeSourceBundle(f.local,{...f.args,validationNow:new Date("2026-01-15T00:01:00.000Z")}),isSourceStale,"the exact freshness boundary is stale");
+  assert.throws(()=>materializeSourceBundle(f.local,{...f.args,observedAt:new Date("2026-01-15T00:00:00.001Z"),validationNow:observedAt}),isSourceStale,"an observation in the future is stale");
+
+  const missingValidationNow={...f.args} as Record<string,unknown>;
+  delete missingValidationNow.validationNow;
+  assert.throws(()=>materializeSourceBundle(f.local,missingValidationNow as never),(error:unknown)=>Boolean(error&&typeof error==="object"&&"authorityCode" in error),"validationNow has no compatibility default");
+});
+
+test("planning rejects URL/path handles, tenant drift, endpoint drift, and mutable resolver replacement",()=>{const item=resolver();const local=createSourceRegistry([item]);for(const value of ["https://evil.test","../secret","C:\\secret"])assert.throws(()=>planSourceReads(local,{tenant:"tenant_1",resolverId:"resolver_1",definitionDigest,sourceRefs:{...refs,appointment:value},allowedReadEndpointIds:item.readEndpointIds}),/opaque/i);(item as {plan:RegisteredSourceResolver["plan"]}).plan=()=>[{endpointId:"evil",opaqueHandle:"x"}];assert.equal(planSourceReads(local,{tenant:"tenant_1",resolverId:"resolver_1",definitionDigest,sourceRefs:refs,allowedReadEndpointIds:item.readEndpointIds})[0].endpointId,"appointment.read");});

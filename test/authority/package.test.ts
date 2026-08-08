@@ -1,0 +1,50 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { existsSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import path from "node:path";
+
+test("public production export parses DecisionContext and its portable evidence against packaged schemas", async () => {
+  execFileSync(process.execPath, ["./dist/authority/wire.js"], { cwd: process.cwd() });
+  const authority = await import("reelier/authority");
+  const request = { v: "reelier.outcome-request/v1", requestId: "request_1", sourceRefs: { appointment: "ref_1" }, choices: {} };
+  assert.deepEqual(authority.parseAuthorityWire("outcome-request", request), request);
+  const digest = "sha256:" + "9".repeat(64);
+  const limits = { maxEffectsPerWindow: 1, windowSeconds: 60, maxEffectsPerSourceTrigger: 1, maxBodyBytes: 1024 };
+  const policy = Buffer.from("{}", "utf8");
+  const contract = { v: "reelier.outcome-contract/v1", tenant: "tenant_1", alias: "definition_1", contractId: "contract_1", validFrom: "2026-01-01T00:00:00.000Z", validUntil: "2026-02-01T00:00:00.000Z", packDigest: digest, definitionDigest: digest, sponsor: "sponsor_1", audiences: ["requester_1"], delegationGrantDigest: digest, connectorId: "connector_1", accountId: "account_1", sourceAuthority: { resolverId: "resolver_1", projectionSchemaId: "projection/v1", allowedReadEndpointIds: ["read_1"], authorizedProjectionPointers: ["/x"], maxFreshnessSeconds: 60 }, riskClasses: ["message"], limits, policyCommitment: { schemaId: "policy/v1", jcsBase64: policy.toString("base64"), digest: "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a" } };
+  const grant = { v: "reelier.delegation-grant/v1", tenant: "tenant_1", grantId: "grant_1", parentDigest: null, sponsor: "sponsor_1", grantor: "operator_1", grantee: "gate_1", issuedAt: "2026-01-01T00:00:00.000Z", expiresAt: "2026-02-01T00:00:00.000Z", constraints: { definitionAliases: ["definition_1"], audiences: ["requester_1"], connectorAccounts: [{ connectorId: "connector_1", accountId: "account_1" }], projectionPointers: ["/x"], riskClasses: ["message"], limits } };
+  const observations = [{ index: 0, planDigest: "sha256:" + "1".repeat(64), endpointId: "read_1", rawDigest: "sha256:" + "2".repeat(64) }];
+  const sourceRefsDigest = authority.authorityDigest({ v: "reelier.source-refs/internal-v1", sourceRefs: { appointment: "ref_1" } });
+  const source = { v: "reelier.source-bundle/v1", tenant: "tenant_1", definitionDigest: digest, projectionSchemaId: "projection/v1", sourceRefsDigest, readSetDigest: authority.authorityDigest({ v: "reelier.source-read-set/internal-v1", sourceRefsDigest, observations }), sourceIdentity: "source_1", triggerIdentity: "trigger_1", observedAt: "2026-01-01T00:00:00.000Z", freshUntil: "2026-01-01T00:01:00.000Z", provenance: { resolverId: "resolver_1", observations }, claims: { grounded: [{ claimId: "x", projectionPointer: "/x" }], authored: [], unresolved: [] }, projection: { x: 1 } };
+  const context = { v: "reelier.decision-context/v1", tenant: "tenant_1", requester: "requester_1", definitionAlias: "definition_1", requestId: "request_1", requestDigest: "sha256:" + "1".repeat(64), requestKey: "sha256:" + "2".repeat(64), contractDigest: "sha256:" + "3".repeat(64), capabilityId: "capability_1", capabilityDigest: "sha256:" + "4".repeat(64), outcomeKey: "sha256:" + "5".repeat(64), effectDigest: "sha256:" + "6".repeat(64), snapshots: { sourceBundleDigest: "sha256:" + "7".repeat(64), authorityStateDigest: "sha256:" + "8".repeat(64) } };
+  const decisionContextDigest = authority.authorityDigest(context);
+  const gate = { v: "reelier.gate-event/v1", eventId: "event_1", at: "2026-01-01T00:00:00.000Z", verdict: "accepted", reasonCode: "accepted", decisionContextDigest };
+  const receipt = { v: "reelier.authority-receipt/v1", receiptId: "receipt_1", gateEventDigest: authority.authorityDigest(gate), decisionContextDigest, decisionContext: context, claims: { authorization: "verified", sourceCompleteness: "verified", dispatch: "verified", providerAcknowledgment: "unchecked", reconciliation: "absent", topology: "unchecked", completeness: "unchecked" } };
+  assert.deepEqual(authority.parseAuthorityWire("outcome-contract", contract), contract);
+  assert.deepEqual(authority.parseAuthorityWire("delegation-grant", grant), grant);
+  assert.deepEqual(authority.parseAuthorityWire("source-bundle", source), source);
+  assert.deepEqual(authority.parseAuthorityWire("decision-context", context), context);
+  assert.deepEqual(authority.parseAuthorityWire("gate-event", gate), gate);
+  assert.deepEqual(authority.parseAuthorityWire("authority-receipt", receipt), receipt);
+  assert.deepEqual(authority.parsePortableAuthorityEvidence(gate, receipt), { gateEvent: gate, receipt });
+  assert.deepEqual(Object.keys(authority).sort(),[
+    "AuthorityLedgerReadError","CAPABILITY_LIFETIME_MS","FsAuthorityLedger","assertAcceptedDecisionContext","authorityCanonicalBytes","authorityDigest","authorityKinds","createSourceRegistry","decisionContextPresence","deriveAuthorityRequestKey","deriveContractWindowLimitKey","deriveProviderSourceTriggerLimitKey","deriveSemanticOutcomeKey","digestOutcomeRequest","dispatchFaultPoints","isValidatedContract","isValidatedSourceBundle","ledgerFaultPoints","materializeSourceBundle","parseAuthorityWire","parseCanonicalAuthorityJson","parsePortableAuthorityEvidence","planSourceReads","reservationFaultPoints","resultFaultPoints","signAuthorityDigest","validateStoredContract","validateVerifiedContractEligibility","verifyAuthoritySignature","verifyStoredContract",
+  ],"the public runtime export surface is an exact allowlist");
+  for (const helper of ["verifyStoredContract", "validateVerifiedContractEligibility", "validateStoredContract", "createSourceRegistry", "planSourceReads", "materializeSourceBundle"]) assert.equal(typeof (authority as unknown as Record<string, unknown>)[helper], "function", helper);
+  for (const helper of ["digestOutcomeRequest", "deriveAuthorityRequestKey", "deriveSemanticOutcomeKey", "deriveContractWindowLimitKey", "deriveProviderSourceTriggerLimitKey"]) assert.equal(typeof (authority as unknown as Record<string, unknown>)[helper], "function", helper);
+  for (const internal of ["authenticateOutcomeRequest", "authenticatedOutcomeRequestState", "createConnectorRegistry", "connectorRegistrationDigest", "createAuthorityStatePort", "digestAuthorityState", "trustRootSetDigest", "definitionRegistrationDigest", "sourceResolverRegistrationDigest", "authoritySignatureDigest", "ingressFaultPoints", "clockFaultPoints"]) assert.equal(internal in authority, false, internal);
+  assert.equal("validateSourceBundle" in authority, false, "candidate SourceBundle constructors stay private");
+  for (const internal of ["createAuthorityGate", "createReservedDispatchHandle", "unwrapReservedDispatchHandle", "createFileGateDecisionSink", "parseGateDecisionRecord", "GateDecisionSink", "GateDecisionSigner", "ReservedDispatchHandle"]) assert.equal(internal in authority, false, internal);
+  const declarations=readFileSync(path.join(process.cwd(),"dist","authority","index.d.ts"),"utf8");
+  const normalizedDeclarations=declarations.replace(/\s+/g," ").trim();
+  assert.equal(normalizedDeclarations,[
+    'export * from "./types.js";','export * from "./wire.js";','export * from "./crypto.js";','export * from "./ledger.js";',
+    'export { AuthorityLedgerReadError, FsAuthorityLedger, reservationFaultPoints, dispatchFaultPoints, resultFaultPoints, ledgerFaultPoints, type LedgerFaultPoint, type FsAuthorityLedgerOptions, } from "./host/fs-ledger.js";',
+    'export { digestOutcomeRequest, deriveAuthorityRequestKey, deriveContractWindowLimitKey, deriveProviderSourceTriggerLimitKey, } from "./keys.js";',
+    'export { deriveSemanticOutcomeKey } from "./compile.js";',
+    'export { verifyStoredContract, validateVerifiedContractEligibility, validateStoredContract, isValidatedContract, type VerifiedStoredContract, type ValidatedContract, type StoredSignedContract, } from "./contract.js";',
+    'export { createSourceRegistry, planSourceReads, materializeSourceBundle, isValidatedSourceBundle, type RegisteredSourceResolver, type PlannedSourceRead, type RawSourceObservation, type SourceProjection, type ValidatedSourceBundle, } from "./source.js";',
+  ].join(" "),"the public declaration export surface is an exact allowlist");
+  for (const kind of ["outcome-contract", "delegation-grant", "source-bundle", "decision-context", "gate-event", "authority-receipt"]) assert.ok(existsSync(path.join(process.cwd(), "dist", "authority", "schemas", `${kind}.schema.json`)));
+});
