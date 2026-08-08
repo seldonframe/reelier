@@ -1,25 +1,8 @@
 {
   "target": "dist-test/test/authority/ledger.test.js",
-  "pass": 688,
-  "fail": 16,
-  "failing": [
-    "atomic admission preparation states are non-authorizing and dead states retire",
-    "atomic admission revalidates owner bytes at every publication boundary",
-    "atomic admission slot classification gives corruption precedence and recovers only exact dead slots",
-    "atomic admission slot retirement and purpose-bound ack crash windows converge",
-    "before-admission-slot-rename",
-    "before-lock-publication-rename",
-    "dead exact slot",
-    "dead-complete",
-    "dead-empty",
-    "dead-partial",
-    "dead-zero",
-    "marker-only",
-    "marker-plus-ack",
-    "marker-plus-stage",
-    "orphan-ack",
-    "pre-admission housekeeper retires one dead slot before preparation and mutates no semantic state"
-  ],
+  "pass": 704,
+  "fail": 0,
+  "failing": [],
   "trusted": true,
   "recorded": null
 }
