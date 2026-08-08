@@ -860,7 +860,12 @@ export class FsAuthorityLedger implements AuthorityLedger {
         if(expectedStage===null)throw new LedgerCorruption("creator publication snapshot absent");
         const finalOwnStage=await this.validatePublicationStage(stageName);
         if(!samePublicationStage(expectedStage,finalOwnStage))throw new LedgerCorruption("creator publication stage changed before rename");
-        try{this.fault("before-lock-publication-rename");await rename(stagePath,this.absolute("lock"));published=true;stageCreated=false;}
+        // Spec :613 — exact-revalidated AT the stage-to-`lock` rename. The pair above runs before
+        // the boundary, so bytes replaced at `before-lock-publication-rename` were renamed through
+        // and an active lock was published from a corrupt stage; the post-rename check then reported
+        // corruption on a root that already carried `lock`. A LedgerCorruption raised here carries no
+        // errno, so the collision catch below rethrows it rather than treating it as contention.
+        try{this.fault("before-lock-publication-rename");if(!samePublicationStage(expectedStage,await this.validatePublicationStage(stageName)))throw new LedgerCorruption("creator publication stage changed at rename");await rename(stagePath,this.absolute("lock"));published=true;stageCreated=false;}
         catch(error){if(hasCode(error,"EEXIST")||hasCode(error,"ENOTEMPTY")||isTransientLockError(error)){this.fault("after-lock-publication-rename-collision");election=null;if(monotonicNow()>=deadline)return {ok:false,reason:"busy"};await backoff();continue;}throw error;}
         if(expectedStage===null||expectedStage.ownerIdentity===undefined||expectedStage.ownerBytes===undefined)throw new LedgerCorruption("published owner snapshot absent");
         const publishedSnapshot:OwnedOwnerSnapshot={directoryIdentity:expectedStage.directoryIdentity,ownerIdentity:expectedStage.ownerIdentity,ownerBytes:expectedStage.ownerBytes};
@@ -1317,6 +1322,12 @@ export class FsAuthorityLedger implements AuthorityLedger {
     let destinationPresent=true;
     try{await lstat(slotPath);}catch(error){if(hasCode(error,"ENOENT"))destinationPresent=false;else throw error;}
     if(destinationPresent)throw new LedgerCorruption("admission slot destination present before promotion");
+    // Spec :613 — every owner, stage, slot and lock object is exact-revalidated AT the
+    // preparation-to-slot rename, not merely before the boundary that precedes it. The revalidation
+    // above runs before `before-admission-slot-rename`, so bytes replaced at that boundary were
+    // promoted into the fixed slot and only caught by the post-rename check below — reporting
+    // corruption on a root where the corrupt owner is already installed as the slot.
+    await this.revalidateAdmissionPreparation(prepPath,directoryIdentity,ownerIdentity,ownerBytes);
     try{await rename(prepPath,slotPath);}
     catch(error){
       // A destination that appeared between the check and the rename is preserved, never clobbered.
