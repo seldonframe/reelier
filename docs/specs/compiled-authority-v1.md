@@ -365,6 +365,33 @@ means not proven corrupt, never proven healthy.
 > scan, no reuse, and no fallback" forbids the obvious remedy. Recorded, not resolved: changing it is
 > an owner decision. Full method, seven refuted hypotheses, and the reproduction:
 > `docs/superpowers/plans/2026-08-07-gate-rotator-rootcause.md`.
+>
+> **REMEDY (2) IS REFUTED — measured 2026-08-08, built, and REVERTED. Do not retry it as written.**
+> The root-cause document offers three responses; (2) was "classify `EACCES` as permanent and fail
+> fast", described there as "cheap and clearly right on its own merits". It was owner-granted,
+> implemented as a single branch returning the same refusal-only classification immediately, and it
+> worked exactly as designed on the authoring host: a deterministic host-conditional pin went from
+> 3003 ms of a 3000 ms budget to immediate, the full local suite stayed at 0 fail, and an
+> independent adversarial review cleared its placement, its cleanup, its four-state honesty and its
+> ABI impact.
+>
+> **CI's `windows-latest` leg then failed it, and the failure is the whole point.** In
+> `100 real processes converge on one committed reservation and one dispatch eligibility`, **all
+> 100 processes returned `{ok:false,reason:"busy"}` and none acquired the fence** — the change had
+> converted legitimate cross-process contention into instant refusal. The safety argument had been
+> measured only with a SINGLE holder (same-process, cross-process, and a non-Node .NET holder at
+> both `ExclusiveAddressUse` settings — all `EADDRINUSE`). Under ~100-way concurrent contention on
+> a GitHub Windows runner that separation does not hold, so `EACCES` is **not** a reliable
+> "permanent" signal there. Local green was not green: the same suite passed on the authoring
+> machine with the change applied.
+>
+> **What this costs the remedy, precisely.** Failing fast on `EACCES` cannot be done on the errno
+> alone. Distinguishing a permanent host reservation from transient high-contention `EACCES` needs
+> evidence the errno does not carry — a bounded number of retries before giving up, or an explicit
+> check of the host's reservation table, and the latter is what "no port scan, no reuse, and no
+> fallback" forbids. A bounded-retry variant is untried and is NOT authorised by the grant that
+> covered (2). The liveness defect therefore stands undiminished: ~1.67 % of roots still stall for
+> the full `lockTimeoutMs` on every operation. Reverted in full rather than left partly applied.
 
 Same-process fence contention distinguishes exactly two closed contender classes, declared at
 invocation by whether the operation seeks the active lock and a semantic operation callback. That

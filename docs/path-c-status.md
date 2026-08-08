@@ -75,11 +75,14 @@ Recorded here rather than edited into the paragraph above, so the pinned text st
   truncating it) and `f214703` (three platform bugs, all in tests). The ledger gate now measures
   **704 pass / 0 fail**, re-measured on the merge commit with `baseline-diff` reporting no change
   in the failing set. There is no standing red set to preserve.
-- **The K1 fence no longer burns its budget on an OS-reserved port.** `EACCES` is classified as
-  permanent and refuses at once instead of retrying to the deadline (3003ms of a 3000ms budget ->
-  immediate). The outcome is unchanged — the same refusal-only classification, never a pass — so
-  this is an honesty and latency fix, **not** an availability one: a root whose derived port the
-  host reserves still yields an unusable ledger. Pinned host-conditionally by owner grant
-  (2026-08-08); the pin skips loudly off Windows, so Linux CI records it as unpinned. The spec rule
-  gap it exposes is still open — see the OPEN DISCREPANCY beside "no port scan, no reuse, and no
-  fallback" in `docs/specs/compiled-authority-v1.md`.
+- **The K1 fence EACCES fail-fast was built, measured, and REVERTED — the defect stands.** Owner-
+  granted 2026-08-08 and implemented; it did what it promised locally (3003ms of a 3000ms budget ->
+  immediate, full local suite 0 fail, independent review clean). CI's `windows-latest` leg then
+  failed `100 real processes converge on one committed reservation`: **all 100 processes returned
+  `busy` and none acquired the fence**, because under ~100-way contention on that runner `EACCES`
+  is also returned for transient conflicts, so failing fast on it destroyed real cross-process
+  mutual exclusion. That is a far worse defect than the latency it fixed, so it was reverted in
+  full. The safety measurement had used a single holder only; local green was not green. **~1.67%
+  of roots still stall for the full `lockTimeoutMs` on every operation.** Do not retry the errno-
+  only form; see the refutation recorded beside the rule in
+  `docs/specs/compiled-authority-v1.md`.
