@@ -365,6 +365,48 @@ means not proven corrupt, never proven healthy.
 > scan, no reuse, and no fallback" forbids the obvious remedy. Recorded, not resolved: changing it is
 > an owner decision. Full method, seven refuted hypotheses, and the reproduction:
 > `docs/superpowers/plans/2026-08-07-gate-rotator-rootcause.md`.
+>
+> **PARTIAL UPDATE (2026-08-08, owner-granted — the symptom is fixed, the rule gap is NOT).**
+> **Three claims above are superseded, and the third is the one an implementer must not miss.**
+> (i) the fence no longer "retries it as transient until the whole budget is gone"; (ii) it is no
+> longer true that on such a root "every operation stalls for `lockTimeoutMs` and then returns
+> `busy`" — it returns at once; and (iii) **"The implementation is conformant; the gap is in this
+> rule" no longer holds unqualified.** The normative sentence above says contenders "of every
+> class retry binding under the one original acquisition deadline" and that the classification is
+> yielded by an endpoint "that cannot be bound by that original deadline". The implementation now
+> **anticipates** that deadline for one errno class: it decides `EACCES` means permanently
+> unbindable and refuses immediately. That is a decision this rule contains no state for, so the
+> reference implementation and the letter of the rule have diverged **on timing** — deliberately,
+> and with the owner's grant. A second host implementation written from this rule alone would
+> retry `EACCES` to the deadline and differ from the reference on ~1.67 % of roots. `EACCES` is classified as permanent and returns the refusal-only classification
+> at once (`withK1OperationFence`, `src/authority/host/fs-ledger.ts`). Measured on the authoring
+> host: the same operation went from **3003 ms of a 3000 ms budget** to **immediate**. Safety of the
+> separation was re-measured under the fence's exact listen options
+> (`{host:"127.0.0.1",exclusive:true,reusePort:false}`) rather than inherited: a port held
+> exclusively reports `EADDRINUSE` **both same-process and cross-process**, while an OS-excluded
+> port reports `EACCES` — so failing fast cannot swallow real contention. Scope: one Windows host;
+> re-measure before generalising.
+>
+> **What is deliberately unchanged, and why this block stays OPEN.** The *outcome* is identical:
+> the early return calls the same `refuseOnlyK1FenceClassification()` the deadline path would have
+> called, once, in the same order, so corruption keeps precedence over contention and a pass stays
+> unreachable. No reason, type, or fault point changed and there is no ABI movement (registry still
+> 84 emitted / 58 declared). The endpoint is still unbindable and such a root still yields an
+> unusable ledger; the operator now learns that in milliseconds instead of `lockTimeoutMs`. **This
+> rule still has no state for "this address can never be bound on this host", and "no port scan, no
+> reuse, and no fallback" still forbids the only remedy that would make those ~1.67 % of roots
+> usable.** That remains an owner decision and is not settled here.
+>
+> **What the pin does and does not cover — do not read it as more than it is.** Pinned
+> host-conditionally by owner grant (2026-08-08) in `test/authority/fence-port.test.ts`: it runs
+> only where the host reserves enough ports inside [20000, 49999] to find one by sampling, and
+> **skips loudly** elsewhere, so Linux CI records it as unpinned rather than passing vacuously. An
+> independent review established by A/B patching that the pin kills a revert (3004 ms of a 3000 ms
+> budget) but that a **hardcoded `{ok:false,reason:"busy"}` with no classification also passes it**:
+> a fresh `mkdtemp` root can only ever produce `busy`, so the corruption leg of the refusal is
+> preserved in code and **unpinned in test**. The precedence claim in the paragraph above is
+> therefore grounded in the shared call site, NOT in this pin. Closing that gap needs a planted
+> corruption fixture on a poisoned root and is not done here.
 
 Same-process fence contention distinguishes exactly two closed contender classes, declared at
 invocation by whether the operation seeks the active lock and a semantic operation callback. That
