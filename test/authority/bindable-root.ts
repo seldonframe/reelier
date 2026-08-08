@@ -4,13 +4,8 @@
 // the root, `20000 + (u32be(sha256(canonical-root NUL dev NUL ino)) mod 30000)`
 // (docs/specs/compiled-authority-v1.md:339-341). A host may reserve part of that range — Windows
 // does, for Hyper-V/WSL/Docker — and `listen` on a reserved port returns **EACCES permanently**.
-// The operation returns `busy`, which a gate honestly reports as `unavailable`.
-//
-// UPDATED 2026-08-08: the fence used to retry EACCES as if it were contention, burning the entire
-// `lockTimeoutMs` first. It now classifies EACCES as permanent and refuses at once. THIS FILE IS
-// STILL NECESSARY — a poisoned root still refuses, just immediately instead of after the budget —
-// so only the timing changed, never the outcome, and selection is still what lets a suite measure
-// its own subject instead of the host's port table.
+// The fence retries it as if it were contention, so the operation burns its entire `lockTimeoutMs`
+// and returns `busy`, which a gate honestly reports as `unavailable`.
 //
 // Measured 2026-08-07 on one ordinary developer machine: 501 of the 30000 derivable ports are
 // reserved (~1.67% of roots). Because `mkdtemp` redraws the root every run, that made 1–5 tests per
@@ -20,10 +15,8 @@
 //
 // WHAT THIS DOES AND DOES NOT DO. It selects *around* a host defect so that suites measure the
 // behaviour they are about instead of the host's port table. It does **not** fix the defect: an
-// operator whose ledger root lands on a reserved port still gets an unusable ledger where every
-// operation returns `busy` — since 2026-08-08 immediately rather than after the full budget, which
-// is an honesty and latency improvement and NOT an availability one — with no recovery but moving
-// the root. That
+// operator whose ledger root lands on a reserved port still gets a ledger where every operation
+// stalls for the full budget and then returns `busy`, with no recovery but moving the root. That
 // limit is recorded against the spec rule itself, and selecting here must never be read as closing
 // it.
 //

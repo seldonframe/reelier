@@ -659,21 +659,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
           if(runtime.monotonicNow()>deadline)return await this.refuseOnlyK1FenceClassification();
           const candidate=createServer(socket=>socket.destroy());
           try{await new Promise<void>((resolve,reject)=>{candidate.once("error",reject);candidate.listen({host:"127.0.0.1",port:binding.endpoint.port,exclusive:true,reusePort:false},resolve);});server=candidate;}
-          // EADDRINUSE is contention and is retried under the one original acquisition deadline,
-          // exactly as the spec models it. EACCES is NOT contention: it is a host port
-          // reservation (Hyper-V/WSL/Docker reserve ranges on Windows), it is permanent for this
-          // derived port, and retrying cannot resolve it — measured identically at 3s, 30s and
-          // 90s budgets, so budget size is irrelevant. Retrying it burned the entire budget and
-          // then returned the same answer it could have returned at once. Measured on the
-          // authoring host under these exact listen options, a port held exclusively reports
-          // EADDRINUSE both same-process and cross-process, so failing fast on EACCES cannot
-          // swallow real contention. The RESULT is deliberately unchanged: the same refusal-only
-          // classification, corruption still taking precedence over busy, and never a pass. Only
-          // the latency changes, and the endpoint stays unusable either way — this is an honesty
-          // and liveness fix, not an availability one. The remedy that would make such a root
-          // usable is forbidden by "no port scan, no reuse, and no fallback"; see the OPEN
-          // DISCREPANCY recorded beside that rule in docs/specs/compiled-authority-v1.md.
-          catch(error){if(!hasCode(error,"EADDRINUSE")&&!hasCode(error,"EACCES"))throw error;if(hasCode(error,"EACCES"))return await this.refuseOnlyK1FenceClassification();if(runtime.monotonicNow()>=deadline)return await this.refuseOnlyK1FenceClassification();await runtime.delay(Math.min(retryDelayMs,deadline-runtime.monotonicNow()));retryDelayMs=Math.min(50,retryDelayMs*2);}
+          catch(error){if(!hasCode(error,"EADDRINUSE")&&!hasCode(error,"EACCES"))throw error;if(runtime.monotonicNow()>=deadline)return await this.refuseOnlyK1FenceClassification();await runtime.delay(Math.min(retryDelayMs,deadline-runtime.monotonicNow()));retryDelayMs=Math.min(50,retryDelayMs*2);}
         }
         await runtime.observeK1OperationFenceBoundary?.("k1-operation-fence-only-endpoint-bound");
         if(!await this.revalidateK1OperationFenceRoot(binding))return frozen({ok:false,reason:"busy"});

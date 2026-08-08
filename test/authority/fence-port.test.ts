@@ -9,9 +9,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { execFileSync } from "node:child_process";
+import { rm } from "node:fs/promises";
 import path from "node:path";
 import { FsAuthorityLedger } from "../../src/authority/host/fs-ledger.js";
 import { bindableTempRoot, canonicalFenceRoot, fencePortForRoot, fencePortFromMaterial, fencePortIsBindable } from "./bindable-root.js";
@@ -103,93 +101,4 @@ test("selection actually discriminates — an unselected root can be unbindable,
   }
   // And a certainly-free port reads as bindable.
   assert.equal(await fencePortIsBindable(0), true, "port 0 is always bindable");
-});
-
-// The in-range TCP port exclusions this host publishes, intersected with the spec's fence range.
-// Empty off win32 (netsh is the only interface that reports these) and empty on a win32 host that
-// happens to reserve nothing in range — both of which make the pin below unrunnable, not passing.
-function inRangeHostPortExclusions(): ReadonlyArray<readonly [number, number]> {
-  if (process.platform !== "win32") return [];
-  let output: string;
-  try {
-    output = execFileSync("netsh", ["interface", "ipv4", "show", "excludedportrange", "protocol=tcp"], { encoding: "utf8" });
-  } catch { return []; }
-  const ranges: Array<readonly [number, number]> = [];
-  for (const line of output.split(/\r?\n/)) {
-    const match = line.match(/^\s*(\d+)\s+(\d+)/);
-    if (match === null) continue;
-    const start = Math.max(Number(match[1]), 20_000), end = Math.min(Number(match[2]), 49_999);
-    if (start <= end) ranges.push([start, end] as const);
-  }
-  return ranges;
-}
-
-test("an OS-excluded fence port refuses at once instead of burning the acquisition budget", async t => {
-  // HOST-CONDITIONAL BY OWNER GRANT (2026-08-08). The defect this pins is a property of the HOST,
-  // not of this repo: a port the OS reserves is permanently unbindable, `listen` returns EACCES,
-  // and the fence used to retry that as if it were contention until the whole budget was gone.
-  // It cannot be provoked portably — the fence validates the derived port into [20000,49999] so no
-  // privileged port can be injected, exclusion tables differ per machine, and there is no seam to
-  // inject a port (withK1OperationFence takes it from the DERIVED binding). So this pin runs only
-  // where the host actually reserves a port in range, and SKIPS LOUDLY everywhere else rather than
-  // passing vacuously. Linux CI skips it; a Windows dev machine running Hyper-V/WSL/Docker runs it.
-  //
-  // Measured 2026-08-08 on the authoring host, under the fence's exact listen options
-  // ({host:"127.0.0.1",exclusive:true,reusePort:false}): a held port — same-process AND
-  // cross-process — reports EADDRINUSE, while an OS-excluded port reports EACCES. That separation
-  // is what makes failing fast on EACCES safe: it cannot swallow real cross-process contention.
-  // Scope: one host. Re-measure before generalising.
-  // The search below is a random sample: each temp root derives one port, and only reserved ports
-  // provoke EACCES. So the attempt bound must be derived from how many ports this host actually
-  // reserves, NEVER a fixed number. With N reserved of the 30000 derivable, P(miss in A draws) =
-  // (1-N/30000)^A: a fixed 20000 draws is ~0 risk at this host's N=501 but a 51% COIN FLIP at N=1,
-  // and a miss here is a hard red on a required check. So: size A for P(miss)~1e-6, and when that
-  // is unaffordable (a host reserving only a handful in range), skip loudly instead of gambling.
-  const excluded = inRangeHostPortExclusions();
-  const reserved = excluded.reduce((total, [start, end]) => total + (end - start + 1), 0);
-  const MAX_ATTEMPTS = 20_000;
-  const attempts = reserved === 0 ? Infinity : Math.ceil(Math.log(1e-6) / Math.log(1 - reserved / 30_000));
-  if (attempts > MAX_ATTEMPTS) {
-    const why = reserved === 0
-      ? (process.platform === "win32"
-        ? "this win32 host reserves no TCP port inside 20000-49999"
-        : `no port-exclusion interface on '${process.platform}' (netsh is win32-only)`)
-      : `this host reserves only ${reserved} of the 30000 derivable ports, so finding one by sampling would need ~${attempts} roots (cap ${MAX_ATTEMPTS})`;
-    t.diagnostic(`SKIPPED — ${why}. The EACCES fail-fast is UNPINNED on this host: this run is not evidence either way.`);
-    t.skip(`host cannot cheaply provoke an EACCES fence bind — ${why}`);
-    return;
-  }
-  const isExcluded = (port: number) => excluded.some(([start, end]) => port >= start && port <= end);
-
-  // Non-matching roots are removed as we go: at this host's N=501 the search converges in ~838
-  // attempts, but retaining every candidate would leave thousands of live temp directories.
-  const created: string[] = [];
-  let poisoned: string | null = null;
-  try {
-    for (let attempt = 0; attempt < attempts && poisoned === null; attempt++) {
-      const root = await mkdtemp(path.join(tmpdir(), "reelier-fence-eacces-"));
-      if (isExcluded(fencePortForRoot(root))) { created.push(root); poisoned = root; }
-      else await rm(root, { recursive: true, force: true });
-    }
-    assert.notEqual(poisoned, null, `no temp root derived an excluded port in ${attempts} attempts, though the host reserves ${reserved} in range (${excluded.map(([s, e]) => `${s}-${e}`).join(", ")}) — if this fires, the mirror's derivation has drifted from the ledger's`);
-
-    const budgetMs = 3_000;
-    const ledger = new FsAuthorityLedger(poisoned as string, { now: () => 0, lockTimeoutMs: budgetMs });
-    const started = process.hrtime.bigint();
-    const result = await ledger.observeClock();
-    const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
-
-    // The OUTCOME is unchanged by the fail-fast and must stay unchanged: an unbindable endpoint
-    // still yields the refusal-only classification, never a pass. Four-state honesty, not latency,
-    // is the load-bearing part here.
-    assert.equal(result.ok, false, "an unbindable fence endpoint must never yield a pass");
-    assert.ok(["busy", "corruption"].includes((result as { reason: string }).reason),
-      `expected a refusal-only classification, got ${JSON.stringify(result)}`);
-
-    // And the latency is the fix: before it, this consumed the entire budget at every budget size.
-    assert.ok(elapsedMs < budgetMs / 3,
-      `EACCES is permanent, so the fence must refuse at once: took ${elapsedMs.toFixed(0)}ms of the ${budgetMs}ms budget`);
-  } finally {
-    await Promise.all(created.map(root => rm(root, { recursive: true, force: true })));
-  }
 });
