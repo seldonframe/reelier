@@ -2429,7 +2429,7 @@ test("the recognized admission-preparation ON value is a no-op against the flipp
       if(point==="before-ledger-operation-callback")callbacks++;
     }} as never).observeClock();
     return {result,k1:observed.filter(point=>(K1_ADMISSION_PREPARATION_POINTS as readonly string[]).includes(point)),published,retired,callbacks,preps:livePrepNames(await readdir(root)),slot:existsSync(path.join(root,".authority-ledger-admission-0"))};};
-  const byDefault=await shapeOf(root,false),withOption=await shapeOf(await tempRoot(),true);
+  const byDefault=await shapeOf(root,false),withOption=await shapeOf(await bindableTempRoot(),true);
   assert.deepEqual(byDefault.result,{ok:true,status:"advanced",observedAt:new Date(t0).toISOString()});
   assert.deepEqual(byDefault.k1,[...K1_ADMISSION_PREPARATION_POINTS],"the nine boundaries now fire on the DEFAULT path, in spec order");
   assert.deepEqual({published:byDefault.published,retired:byDefault.retired,callbacks:byDefault.callbacks},{published:1,retired:1,callbacks:1},"one publication, one retirement, one callback");
