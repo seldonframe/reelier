@@ -807,6 +807,31 @@ on the housekeeping side per D1(a), with `:1746` re-fixtured to a dead owner in 
 as granted. The fault-pin backlog is zero; the exported registry carries all 58 specified points
 (plus the 13 forbidden extras the D3(a) freeze deletes).
 
+> **Third and final re-fixture of this family — owner-granted 2026-08-07.** `ledger.test.ts:1713`
+> ("…slot retirement and purpose-bound ack crash windows converge") built its four residues —
+> `marker-only`, `marker-plus-stage`, `marker-plus-ack`, `orphan-ack`, exactly the positive residues
+> enumerated below — with `pid: process.pid`, a **live** owner. Two independent gates refuse a
+> live-owner `slot-retired-cleanup`: `fs-ledger.ts:1569` inside the permission predicate, and
+> `fs-ledger.ts:2066` unconditionally. The second is why opening the housekeeping permission
+> completely does not reach these four — measured 2026-08-07, they stay `busy` under the wide grant,
+> so this was never a permission question and must not be recorded as one. Re-fixtured to
+> `await exitedProcessPid()`, the same transformation granted for `:1746` (D1(a)) and `:1760`
+> (D5(a)): measured 0/5 live, **5/5 dead**.
+>
+> This is conformance, not a weakening. The chain requires final same-host dead-owner proof;
+> `recoveryAuthority: "exact-withdrawal-marker"` names the evidence that binds the ack, not who may
+> act on it. Nor does it retire real coverage: residue carrying a live pid is either the creator's
+> own, cleanable under exact-creator authority, or another live participant's, which must not be
+> touched. The third case — live pid, no creator authority — is reachable only by writing the
+> artifacts directly, as the fixture did, never by the ledger's own chain.
+>
+> **Separate hazard, flagged and NOT addressed here.** `processLiveness` is `process.kill(pid, 0)`
+> and nothing else (`fs-ledger.ts:3785`) — it proves that *some* process holds that pid, never that
+> it is the owner. The owner record already carries a `nonce` that liveness ignores. After pid
+> reuse, genuinely dead residue reads `alive` indefinitely and every operation on that root returns
+> `busy` with no recovery but manual intervention. Reachability is unmeasured; this is a flagged
+> hypothesis, not a finding.
+
 The creator-withdrawal chain is exact and monotonic:
 
 1. The exact `.withdrawn` slot marker and exact same-owner withdrawal marker coexist.
