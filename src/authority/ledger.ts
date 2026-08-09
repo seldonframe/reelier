@@ -38,6 +38,8 @@ export interface ReservationIntent {
   readonly limitsDigest: string;
   readonly outcomeKey: string;
   readonly effectDigest: string;
+  /** Canonical transport-effect bytes retained for restart-time evidence when available. */
+  readonly effectCanonicalBase64?: string;
   readonly issuedAt: string;
   readonly expiresAt: string;
   readonly limitSlots: readonly LimitSlotIntent[];
@@ -139,7 +141,7 @@ export interface AuthorityLedger {
   lookupIngressClaimLinkage(requestKey:string):Promise<VerifiedIngressClaimLinkage|undefined>;
   reserve(intent: ReservationIntent): Promise<ReserveResult>;
   transition(reservationId: string, expectedState: LedgerState, event: TransitionEvent): Promise<TransitionResult>;
-  recover(): Promise<RecoverResult>;
+  recover(options?: Readonly<{ deferTerminal?: boolean }>): Promise<RecoverResult>;
   getReservation(reservationId: string): Promise<ReservationSnapshot | undefined>;
   lookupReservationLinkage(reservationId:string):Promise<ReservationLinkage|undefined>;
   getReservationHistory(reservationId: string): Promise<ReservationHistory | undefined>;
