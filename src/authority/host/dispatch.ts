@@ -3,10 +3,11 @@ import { unwrapReservedDispatchHandle, type ReservedDispatchHandle } from "../ga
 import type { AuthorityLedger, LedgerState } from "../ledger.js";
 
 export interface DispatchRequestState { readonly reservation: { readonly reservationId: string; readonly state: LedgerState; readonly intent: { readonly effectDigest: string; readonly effectCanonicalBase64?: string } }; readonly effect: unknown; readonly effectCanonicalBase64: string; readonly effectDigest: string; readonly [key: string]: unknown; }
-export interface DispatchOutcome { readonly kind: "acknowledged" | "definitive-failure" | "ambiguous"; readonly resultDigest: string; readonly providerResultDigest?: string; readonly providerStatus?: number; readonly responseDigest?: string; readonly receiptRef?: string; readonly evidenceDigest?: string; }
+export type ReconciliationStatus = "matched" | "not-applied" | "conflict" | "unavailable" | "not-attempted";
+export interface DispatchOutcome { readonly kind: "acknowledged" | "definitive-failure" | "ambiguous"; readonly resultDigest: string; readonly providerResultDigest?: string; readonly providerStatus?: number; readonly responseDigest?: string; readonly reconciliationStatus?: ReconciliationStatus; readonly normalizedProjectionDigest?: string | null; readonly receiptRef?: string; readonly evidenceDigest?: string; readonly priorReceiptDigest?: string; }
 export interface DispatchAdapter { dispatch(state: DispatchRequestState): Promise<DispatchOutcome>; reconcile?(state: DispatchRequestState, outcome: DispatchOutcome): Promise<DispatchOutcome>; }
 export interface DispatchEvidenceWriter { persist(input: Readonly<{ state: DispatchRequestState; outcome: DispatchOutcome; dispatchedRequestDigest: string; }>): Promise<void>; }
-export interface DispatchPublication { publish(input: Readonly<{ phase: "dispatch" | "cancelled" | "ambiguous"; state: DispatchRequestState; outcome: DispatchOutcome; dispatchedRequestDigest: string | null; }>): Promise<Readonly<{ receiptRef: string; evidenceDigest: string }>>; }
+export interface DispatchPublication { publish(input: Readonly<{ phase: "dispatch" | "cancelled" | "ambiguous" | "reconcile"; state: DispatchRequestState; outcome: DispatchOutcome; dispatchedRequestDigest: string | null; priorReceiptDigest?: string | null; }>): Promise<Readonly<{ receiptRef: string; evidenceDigest: string }>>; }
 export interface DispatchCoordinator { dispatch(handle: ReservedDispatchHandle): Promise<DispatchOutcome>; cancel(handle: ReservedDispatchHandle, reason?: string): Promise<DispatchOutcome>; recover(): Promise<readonly string[]>; }
 
 export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: DispatchAdapter, evidence?: DispatchEvidenceWriter, publication?: DispatchPublication): DispatchCoordinator {
@@ -20,14 +21,29 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
       let outcome: DispatchOutcome;
       try { outcome = await adapter.dispatch(state); }
       catch { outcome = { kind: "ambiguous", resultDigest: authorityDigest({ v: "reelier.dispatch-result/v1", reservationId, status: "ambiguous" }) }; }
+      if (adapter.reconcile && outcome.kind !== "ambiguous") {
+        try {
+          outcome = Object.freeze(await adapter.reconcile(state, outcome));
+        } catch {
+          outcome = Object.freeze({ ...outcome, kind: "ambiguous", reconciliationStatus: "unavailable" as const, normalizedProjectionDigest: null });
+        }
+      }
       const dispatchedRequestDigest = authorityDigest({ v: "reelier.dispatched-request/v1", reservationId, effectDigest: state.effectDigest, effect: state.effect });
       if (evidence) await evidence.persist({ state, outcome, dispatchedRequestDigest });
-      if (publication) { const published = await publication.publish({ phase: "dispatch", state, outcome, dispatchedRequestDigest }); outcome = Object.freeze({ ...outcome, providerResultDigest: outcome.resultDigest, resultDigest: published.receiptRef, receiptRef: published.receiptRef, evidenceDigest: published.evidenceDigest }); }
+      let published: Readonly<{ receiptRef: string; evidenceDigest: string }> | undefined;
+      if (publication) { published = await publication.publish({ phase: "dispatch", state, outcome, dispatchedRequestDigest, priorReceiptDigest: null }); outcome = Object.freeze({ ...outcome, providerResultDigest: outcome.resultDigest, resultDigest: published.receiptRef, receiptRef: published.receiptRef, evidenceDigest: published.evidenceDigest }); }
       const terminal: LedgerState = outcome.kind;
       const result = outcome.kind === "ambiguous"
         ? await ledger.transition(reservationId, "dispatched", { to: "ambiguous" })
         : await ledger.transition(reservationId, "dispatched", { to: terminal as "acknowledged" | "definitive-failure", resultDigest: outcome.resultDigest });
       if (!result.ok) throw new Error(`dispatch result transition refused: ${result.reason}`);
+      if (publication && published && outcome.reconciliationStatus && outcome.reconciliationStatus !== "not-attempted") {
+        const reconciledState = { ...state, reservation: result.reservation } as DispatchRequestState;
+        const reconciled = await publication.publish({ phase: "reconcile", state: reconciledState, outcome, dispatchedRequestDigest, priorReceiptDigest: published.receiptRef });
+        const reconciliationTransition = await ledger.transition(reservationId, result.reservation.state, { to: "reconciled", resultDigest: reconciled.receiptRef });
+        if (!reconciliationTransition.ok) throw new Error(`reconciliation transition refused: ${reconciliationTransition.reason}`);
+        outcome = Object.freeze({ ...outcome, resultDigest: reconciled.receiptRef, receiptRef: reconciled.receiptRef, evidenceDigest: reconciled.evidenceDigest, priorReceiptDigest: published.receiptRef });
+      }
       return Object.freeze(outcome);
     },
     async cancel(handle: ReservedDispatchHandle, reason = "cancelled-before-dispatch"): Promise<DispatchOutcome> {
