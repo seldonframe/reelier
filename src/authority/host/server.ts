@@ -3,10 +3,12 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { buildAuthorityMcpServer, type AuthorityIngressOutcome, type AuthorityMcpHandler } from "../ingress/mcp.js";
 import { handleAuthorityHttp } from "../ingress/http.js";
 import type { AuthorityHostConfig } from "./config.js";
+import type { StagedArtifactCommitmentV1 } from "./artifacts.js";
 
 export interface AuthorityHostRuntime {
   readonly outcome: (alias: string, input: unknown, context: { readonly tenant: string; readonly requester: string }) => Promise<AuthorityIngressOutcome>;
   readonly status: (input: unknown, context: { readonly tenant: string; readonly requester: string }) => Promise<AuthorityIngressOutcome>;
+  readonly artifactStage?: (input: unknown, context: { readonly tenant: string; readonly requester: string }) => Promise<Readonly<{ requestId: string; verdict: "accepted" | "refused"; reasonCode: string; lifecycleState: string; commitment?: StagedArtifactCommitmentV1 }>>;
 }
 
 export interface AuthorityHostServer {
@@ -21,13 +23,13 @@ export interface AuthorityHostServer {
 export function createAuthorityHostServer(config: AuthorityHostConfig, runtime: AuthorityHostRuntime): AuthorityHostServer {
   const handler: AuthorityMcpHandler = { outcome: runtime.outcome, status: runtime.status };
   const context = { tenant: config.tenant, requester: config.requester };
-  const mcp = buildAuthorityMcpServer(config.definitions.map(alias => ({ alias })), handler, context);
-  const http = createServer((request: IncomingMessage, response: ServerResponse) => { void handleAuthorityHttp(request, response, handler, context); });
+  const mcp = buildAuthorityMcpServer(config.definitions.map(alias => ({ alias })), handler, context, runtime.artifactStage);
+  const http = createServer((request: IncomingMessage, response: ServerResponse) => { void handleAuthorityHttp(request, response, handler, context, runtime.artifactStage); });
   return {
     mcp,
     http,
     startStdio: async () => { await mcp.connect(new StdioServerTransport()); },
     startHttp: async (port, host = "127.0.0.1") => { await new Promise<void>((resolve, reject) => { const onError = (error: Error) => { http.off("listening", onListening); reject(error); }; const onListening = () => { http.off("error", onError); resolve(); }; http.once("error", onError); http.once("listening", onListening); http.listen(port, host); }); },
-    close: async () => { await new Promise<void>(resolve => { if (!http.listening) return resolve(); http.close(() => resolve()); }); },
+    close: async () => { await new Promise<void>(resolve => { if (!http.listening) return resolve(); http.close(() => resolve()); http.closeAllConnections?.(); }); },
   };
 }

@@ -7,6 +7,8 @@ import { reconcileGitHubIssueLabels } from "./github/reconcile.js";
 import { slackChannelTopicAlias } from "./slack-topic/manifest.js";
 import { parseSlackChannelTopicPolicy, slackChannelTopicDefinition, validateSlackChannelTopicChoices } from "./slack-topic/compile.js";
 import { reconcileSlackChannelTopic } from "./slack-topic/reconcile.js";
+import { gmailReplySendAlias, gmailThreadLabelsAlias, gmailReplyDefinition, parseGmailReplyPolicy, compileGmailReply, reconcileGmailReply } from "./gmail/index.js";
+import { stripeRefundIssueAlias, stripeRefundDefinition, parseStripeRefundPolicy, compileStripeRefund, reconcileStripeRefund } from "./stripe/index.js";
 
 export interface FirstPartyConformanceReport {
   readonly aliases: readonly string[];
@@ -17,9 +19,9 @@ export interface FirstPartyConformanceReport {
 
 /** Runs the mandatory common corpus. This is intentionally offline and provider-neutral. */
 export function runFirstPartyPackConformance(): FirstPartyConformanceReport {
-  const expectedAliases = [githubIssueLabelsAlias, slackChannelTopicAlias];
+  const expectedAliases = [githubIssueLabelsAlias, slackChannelTopicAlias, gmailReplySendAlias, gmailThreadLabelsAlias, stripeRefundIssueAlias];
   const actualAliases = firstPartyPacks.map(pack => pack.definition.alias).sort(compareText);
-  if (actualAliases.join("\0") !== expectedAliases.slice().sort(compareText).join("\0")) throw new TypeError("first-party conformance requires exactly the two v1 packs");
+  if (actualAliases.join("\0") !== expectedAliases.slice().sort(compareText).join("\0")) throw new TypeError("first-party conformance requires the reviewed v1 packs");
   createStaticPackRegistry(firstPartyPacks.map(pack => pack.definition));
   let checks = 0;
   const caseIds: string[] = [];
@@ -60,6 +62,14 @@ export function runFirstPartyPackConformance(): FirstPartyConformanceReport {
   check(reconcileSlackChannelTopic({ expected: slackSource.projection, response: { body: { channel: { topic: { value: "different" } } } } }).status === "conflict", "Slack conflict is honest");
   check(reconcileSlackChannelTopic({ expected: slackSource.projection, response: { status: 503, body: {} } }).status === "unavailable", "Slack unavailable is honest");
   check(reconcileSlackChannelTopic({ expected: slackSource.projection, response: { status: 404, body: {} } }).status === "not-applied", "Slack not-applied is explicit");
+  const gmailSource = { threadId: "thread_1", messageId: "<old@example.com>", recipient: "customer@example.com", subject: "Question", labelIds: [] };
+  const gmailEffect = gmailReplyDefinition.compile({ contract: {} as never, source: { projection: gmailSource } as never, choices: {}, policy: parseGmailReplyPolicy({ text: "Thanks" }), now: new Date(0), connectorAccount: { connectorId: "gmail", accountId: "account" } });
+  check(Buffer.compare(authorityCanonicalBytes(gmailEffect), authorityCanonicalBytes(gmailReplyDefinition.compile({ contract: {} as never, source: { projection: gmailSource } as never, choices: {}, policy: parseGmailReplyPolicy({ text: "Thanks" }), now: new Date(0), connectorAccount: { connectorId: "gmail", accountId: "account" } }))) === 0, "Gmail compilation deterministic");
+  check(reconcileGmailReply({ expectedMessageId: (gmailEffect as { messageId: string }).messageId, response: { body: { messageId: (gmailEffect as { messageId: string }).messageId } } }).status === "matched", "Gmail identity reconciliation");
+  const stripeSource = { chargeId: "ch_1", customerEmail: "customer@example.com", gmailSender: "customer@example.com", currency: "usd", amount: 5000, amountRefunded: 0, paid: true };
+  const stripeEffect = stripeRefundDefinition.compile({ contract: { tenant: "tenant_1" } as never, source: { projection: stripeSource } as never, choices: {}, policy: parseStripeRefundPolicy({ currency: "usd", maxRefund: 5000, maxChargeAgeSeconds: 86400 }), now: new Date("2026-08-09T00:00:00Z"), connectorAccount: { connectorId: "stripe", accountId: "account" } });
+  check(typeof (stripeEffect as { headers: Record<string, string> }).headers["Idempotency-Key"] === "string", "Stripe idempotency is present");
+  check(reconcileStripeRefund({ chargeId: "ch_1", expectedAmount: 5000, response: { body: { charge: "ch_1", amount: 5000 } } }).status === "matched", "Stripe refund reconciliation");
   caseIds.push("schema-closure", "exact-byte", "no-secret", "account-binding", "ambiguity", "reconciliation", "redaction");
   return Object.freeze({ aliases: Object.freeze(actualAliases), checks, passed: checks, caseIds: Object.freeze(caseIds) });
 }

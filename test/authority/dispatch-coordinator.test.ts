@@ -1,0 +1,18 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { createDispatchCoordinator } from "reelier/authority/host";
+// @ts-ignore test-only import uses the built module so the opaque WeakMap brand is shared.
+import { createReservedDispatchHandle } from "../../../dist/authority/gate.js";
+
+function ledger() {
+  let state: any = { reservationId: "r1", state: "reserved", intent: { effectDigest: "sha256:" + "1".repeat(64) } };
+  return { get: () => state, transition: async (id: string, expected: string, event: any) => { if (id !== "r1" || state.state !== expected) return { ok: false, reason: "state-conflict" as const }; state = { ...state, state: event.to, resultDigest: event.resultDigest }; return { ok: true, status: "transitioned" as const, reservation: state }; }, recover: async () => ({ ok: true as const, reservations: [state], highWaterMark: null, topology: { directorySync: "verified" as const } }) } as any;
+}
+
+test("dispatch consumes an opaque handle once and records ambiguity on restart", async () => {
+  const l = ledger(); let calls = 0; const coordinator = createDispatchCoordinator(l, { async dispatch() { calls++; throw new Error("socket lost"); } });
+  const handle = createReservedDispatchHandle({ reservation: l.get(), effect: { x: 1 }, effectCanonicalBase64: "e30=", effectDigest: "sha256:" + "1".repeat(64) });
+  const outcome = await coordinator.dispatch(handle); assert.equal(outcome.kind, "ambiguous"); assert.equal(calls, 1); assert.equal(l.get().state, "ambiguous");
+  await assert.rejects(() => coordinator.dispatch(handle));
+  const l2 = ledger(); await l2.transition("r1", "reserved", { to: "dispatched" }); const recovered = await createDispatchCoordinator(l2, { async dispatch() { throw new Error("must not resend"); } }).recover(); assert.deepEqual(recovered, ["r1"]); assert.equal(l2.get().state, "ambiguous");
+});

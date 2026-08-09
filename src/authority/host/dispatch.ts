@@ -6,7 +6,7 @@ export interface DispatchRequestState { readonly reservation: { readonly reserva
 export interface DispatchOutcome { readonly kind: "acknowledged" | "definitive-failure" | "ambiguous"; readonly resultDigest: string; readonly providerStatus?: number; readonly responseDigest?: string; }
 export interface DispatchAdapter { dispatch(state: DispatchRequestState): Promise<DispatchOutcome>; reconcile?(state: DispatchRequestState, outcome: DispatchOutcome): Promise<DispatchOutcome>; }
 export interface DispatchEvidenceWriter { persist(input: Readonly<{ state: DispatchRequestState; outcome: DispatchOutcome; dispatchedRequestDigest: string; }>): Promise<void>; }
-export interface DispatchCoordinator { dispatch(handle: ReservedDispatchHandle): Promise<DispatchOutcome>; recover(): Promise<readonly string[]>; }
+export interface DispatchCoordinator { dispatch(handle: ReservedDispatchHandle): Promise<DispatchOutcome>; cancel(handle: ReservedDispatchHandle, reason?: string): Promise<DispatchOutcome>; recover(): Promise<readonly string[]>; }
 
 export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: DispatchAdapter, evidence?: DispatchEvidenceWriter): DispatchCoordinator {
   return Object.freeze({
@@ -25,12 +25,25 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
       if (!result.ok) throw new Error(`dispatch result transition refused: ${result.reason}`);
       return Object.freeze(outcome);
     },
+    async cancel(handle: ReservedDispatchHandle, reason = "cancelled-before-dispatch"): Promise<DispatchOutcome> {
+      const state = unwrapReservedDispatchHandle(handle) as DispatchRequestState;
+      if (!state.reservation || state.reservation.state !== "reserved") throw new TypeError("dispatch handle is not reserved");
+      const resultDigest = authorityDigest({ v: "reelier.cancelled-result/v1", reservationId: state.reservation.reservationId, reason });
+      const result = await ledger.transition(state.reservation.reservationId, "reserved", { to: "cancelled", resultDigest });
+      if (!result.ok) throw new Error(`cancellation refused: ${result.reason}`);
+      return Object.freeze({ kind: "definitive-failure", resultDigest });
+    },
     async recover(): Promise<readonly string[]> {
       const recovered = await ledger.recover();
       if (!recovered.ok) throw new Error(`authority recovery failed: ${recovered.reason}`);
       const ambiguous: string[] = [];
       for (const reservation of recovered.reservations) {
-        if (reservation.state === "dispatched") ambiguous.push(reservation.reservationId);
+        if (reservation.state === "dispatched") {
+          const resultDigest = authorityDigest({ v: "reelier.ambiguous-result/v1", reservationId: reservation.reservationId });
+          const transitioned = await ledger.transition(reservation.reservationId, "dispatched", { to: "ambiguous", resultDigest });
+          if (!transitioned.ok) throw new Error(`ambiguity transition refused: ${transitioned.reason}`);
+          ambiguous.push(reservation.reservationId);
+        }
       }
       return Object.freeze(ambiguous);
     },

@@ -1,13 +1,14 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createPrivateKey, createPublicKey } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { signAuthorityDigest, verifyAuthoritySignature } from "./crypto.js";
 import { authorityDigest } from "./wire.js";
 import { loadAuthorityHostConfig, validateAuthorityHostConfig } from "./host/config.js";
-import { buildAuthorityMcpServer, type AuthorityMcpHandler } from "./ingress/mcp.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { createAuthorityHostServer, type AuthorityHostRuntime } from "./host/server.js";
 import { firstPartyPacks } from "../packs/index.js";
 import { verifyAuthorityReceiptBundle } from "./verify.js";
+import { createArtifactStore } from "./host/artifacts.js";
 
 export async function runAuthorityCommand(args: Readonly<{ positional: string[]; flags: Set<string>; opts: Record<string, string> }>): Promise<number> {
   const subcommand = args.positional[0] ?? "doctor";
@@ -91,9 +92,29 @@ async function authorityVerify(args: Readonly<{ opts: Record<string, string> }>)
 
 async function authorityServe(args: Readonly<{ opts: Record<string, string> }>): Promise<number> {
   const loaded = await loadAuthorityHostConfig(args.opts.path ?? "authority/authority.yml");
-  const handler: AuthorityMcpHandler = { async outcome(alias, input, context) { return { requestId: String((input as Record<string, unknown>).requestId ?? ""), verdict: "refused", reasonCode: loaded.config.definitions.includes(alias) ? "not-configured" : "unknown-definition", lifecycleState: "refused" }; }, async status(input) { return { requestId: String((input as Record<string, unknown>).requestId ?? ""), verdict: "refused", reasonCode: "not-found", lifecycleState: "unknown" }; } };
-  const server = buildAuthorityMcpServer(loaded.config.definitions.map(alias => ({ alias })), handler, { tenant: loaded.config.tenant, requester: loaded.config.requester });
-  await server.connect(new StdioServerTransport());
+  const artifactStore = createArtifactStore({ tenant: loaded.config.tenant, key: randomBytes(32) });
+  const runtime: AuthorityHostRuntime = {
+    async outcome(alias, input) {
+      const requestId = typeof input === "object" && input !== null && typeof (input as Record<string, unknown>).requestId === "string" ? String((input as Record<string, unknown>).requestId) : "";
+      if (!loaded.config.definitions.includes(alias)) return { requestId, verdict: "refused", reasonCode: "unknown-definition", lifecycleState: "refused" };
+      // A local server without a signed deployment must fail closed. The host is live and
+      // discoverable, but it never pretends that a config file is an authority grant.
+      return { requestId, verdict: "refused", reasonCode: "deployment-required", lifecycleState: "refused" };
+    },
+    async status(input) {
+      const requestId = typeof input === "object" && input !== null && typeof (input as Record<string, unknown>).requestId === "string" ? String((input as Record<string, unknown>).requestId) : "";
+      return { requestId, verdict: "refused", reasonCode: "not-found", lifecycleState: "unknown" };
+    },
+    async artifactStage(input) {
+      const value = input as Record<string, unknown>;
+      const requestId = typeof value?.requestId === "string" ? value.requestId : "";
+      if (typeof value?.text !== "string" || value.mediaType !== "text/plain") return { requestId, verdict: "refused", reasonCode: "invalid-artifact", lifecycleState: "refused" };
+      const staged = await artifactStore.stage({ mediaType: "text/plain", bytes: Buffer.from(value.text, "utf8"), sourceBinding: typeof value.sourceBinding === "string" ? value.sourceBinding : undefined });
+      return { requestId, verdict: "accepted", reasonCode: "staged", lifecycleState: "staged", commitment: staged.commitment };
+    },
+  };
+  const server = createAuthorityHostServer(loaded.config, runtime);
+  await server.startStdio();
   return 0;
 }
 
