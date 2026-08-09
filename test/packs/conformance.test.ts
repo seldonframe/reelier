@@ -9,9 +9,9 @@ import { githubIssueLabelsDefinitionDigest, githubIssueLabelsProjectionSchemaId,
 import { slackChannelTopicDefinitionDigest, slackChannelTopicProjectionSchemaId, slackChannelTopicResolverId } from "../../src/packs/slack-topic/manifest.js";
 import { assertStaticFirstPartySourcesConform } from "../../src/authority/pack.js";
 
-test("both first-party packs pass the shared closed conformance corpus", () => {
+test("all reviewed first-party packs pass the shared closed conformance corpus", () => {
   const report = runFirstPartyPackConformance();
-  assert.deepEqual(report.aliases, ["github_issue_labels_set_v1", "slack_channel_topic_set_v1"]);
+  assert.deepEqual(report.aliases, ["github_issue_labels_set_v1", "gmail_reply_send_v1", "gmail_thread_labels_set_v1", "slack_channel_topic_set_v1", "stripe_refund_issue_v1"]);
   assert.equal(report.passed, report.checks);
   assert.ok(report.checks >= 12);
 });

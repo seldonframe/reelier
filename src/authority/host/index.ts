@@ -11,6 +11,8 @@ export { buildAuthorityMcpServer } from "../ingress/mcp.js";
 export { handleAuthorityHttp } from "../ingress/http.js";
 export type { AuthorityHostRuntime, AuthorityHostServer } from "./server.js";
 export { createAuthorityHostServer } from "./server.js";
+export { createArtifactStore } from "./artifacts.js";
+export type { ArtifactStore, StagedArtifactCommitmentV1 } from "./artifacts.js";
 export type { SupportedAuthorityHost, AuthorityHostAdapter } from "./adapters.js";
 export { createAuthorityHostAdapters } from "./adapters.js";
 export type { JsonHttpsEndpoint, JsonHttpsRead, JsonHttpsResponse, JsonHttpsSecretResolver } from "../drivers/json-https.js";
