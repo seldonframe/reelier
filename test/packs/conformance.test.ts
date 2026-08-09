@@ -32,6 +32,6 @@ test("GitHub and Slack source resolvers produce grounded deterministic projectio
 });
 
 test("first-party pack sources contain no ambient I/O, secrets, or runtime module loading", () => {
-  const files = ["github/manifest.ts", "github/source.ts", "github/compile.ts", "github/reconcile.ts", "slack-topic/manifest.ts", "slack-topic/source.ts", "slack-topic/compile.ts", "slack-topic/reconcile.ts"];
+  const files = ["github/manifest.ts", "github/source.ts", "github/compile.ts", "github/reconcile.ts", "slack-topic/manifest.ts", "slack-topic/source.ts", "slack-topic/compile.ts", "slack-topic/reconcile.ts", "gmail/index.ts", "stripe/index.ts"];
   assert.doesNotThrow(() => assertStaticFirstPartySourcesConform(files.map(file => ({ file: `src/packs/${file}`, source: readFileSync(`src/packs/${file}`, "utf8") }))));
 });

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Hand-rolled argv parsing (no commander). Two subcommands: run, bench.
 
-import { readFile, writeFile, appendFile, access, readdir, realpath, stat } from "node:fs/promises";
+import { readFile, writeFile, appendFile, access, readdir, realpath, stat, mkdir } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
@@ -4522,8 +4522,36 @@ export async function cmdWhoami(fetchImpl: typeof fetch = fetch): Promise<number
   return 0;
 }
 
+async function cmdConnect(args: ParsedArgs): Promise<number> {
+  const provider = args.positional[0];
+  if (provider !== "gmail" && provider !== "stripe") { console.error("connect requires gmail or stripe"); return 1; }
+  const root = path.resolve(args.opts.path ?? "authority");
+  await mkdir(path.join(root, "connectors"), { recursive: true });
+  const file = path.join(root, "connectors", `${provider}.json`);
+  try { await access(file); console.log(JSON.stringify({ provider, status: "configured", file })); return 0; } catch { /* create metadata below */ }
+  await writeFile(file, `${JSON.stringify({ v: "reelier.connector-intent/v1", provider, status: "oauth-required", createdAt: new Date().toISOString() }, null, 2)}\n`, "utf8");
+  console.log(JSON.stringify({ provider, status: "oauth-required", next: "open browser to authorize the managed worker", file }));
+  return 0;
+}
+
+async function cmdDeploy(args: ParsedArgs): Promise<number> {
+  const candidate = args.positional[0];
+  if (!candidate) { console.error("deploy requires a candidate alias or file"); return 1; }
+  const root = path.resolve(args.opts.path ?? "authority");
+  await mkdir(path.join(root, "deployments"), { recursive: true });
+  const alias = path.basename(candidate).replace(/\.json$/i, "");
+  const file = path.join(root, "deployments", `${alias}.json`);
+  await writeFile(file, `${JSON.stringify({ v: "reelier.deployment-intent/v1", alias, status: "review-required", createdAt: new Date().toISOString(), note: "Human signature and provider account review are required before dispatch." }, null, 2)}\n`, "utf8");
+  console.log(JSON.stringify({ alias, status: "review-required", file }));
+  return 0;
+}
+
+async function cmdDoctor(args: ParsedArgs): Promise<number> {
+  return runAuthorityCommand({ positional: ["doctor"], flags: args.flags, opts: { path: args.opts.path ?? "authority/authority.yml" } });
+}
+
 const USAGE =
-  "Usage: reelier <run|bench|baseline|cost|prices|mcp|serve|trace|compile|manifest|approve|push|get|verify|diff|ci|policy|init|discover|bridge|from-session|scan|install|uninstall|login|logout|whoami> [options]\n" +
+  "Usage: reelier <run|bench|baseline|cost|prices|mcp|serve|trace|compile|manifest|approve|push|get|verify|diff|ci|policy|init|discover|connect|deploy|doctor|bridge|from-session|scan|install|uninstall|login|logout|whoami> [options]\n" +
   "  discover â€” rank observed workflow opportunities locally; use --upload to preview and explicitly send one sanitized bundle to Arena Cloud.\n" +
   "  bridge  — reelier bridge --port 4777: expose nonce-gated local capabilities and Work Card handoff metadata; never executes Cloud plugin code.\n" +
   "  login  — reelier login: connect this machine to Reelier Cloud via a device-code browser handshake; writes ~/.reelier/config.json.\n" +
@@ -4629,6 +4657,12 @@ async function main(): Promise<number> {
       return cmdInit(args);
     case "discover":
       return cmdDiscover(args);
+    case "connect":
+      return cmdConnect(args);
+    case "deploy":
+      return cmdDeploy(args);
+    case "doctor":
+      return cmdDoctor(args);
     case "bridge":
       return cmdBridge(args);
     case "coverage":

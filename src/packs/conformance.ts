@@ -65,10 +65,14 @@ export function runFirstPartyPackConformance(): FirstPartyConformanceReport {
   const gmailSource = { threadId: "thread_1", messageId: "<old@example.com>", recipient: "customer@example.com", subject: "Question", labelIds: [] };
   const gmailEffect = gmailReplyDefinition.compile({ contract: {} as never, source: { projection: gmailSource } as never, choices: {}, policy: parseGmailReplyPolicy({ text: "Thanks" }), now: new Date(0), connectorAccount: { connectorId: "gmail", accountId: "account" } });
   check(Buffer.compare(authorityCanonicalBytes(gmailEffect), authorityCanonicalBytes(gmailReplyDefinition.compile({ contract: {} as never, source: { projection: gmailSource } as never, choices: {}, policy: parseGmailReplyPolicy({ text: "Thanks" }), now: new Date(0), connectorAccount: { connectorId: "gmail", accountId: "account" } }))) === 0, "Gmail compilation deterministic");
+  check(parseAuthorityWire("transport-effect", gmailEffect).endpointId === "gmail.users.messages.send", "Gmail effect schema closure");
+  check(!Object.keys((gmailEffect as { headers: Record<string, string> }).headers).some(key => ["authorization", "cookie", "host"].includes(key.toLowerCase())), "Gmail effect has no credential headers");
   check(reconcileGmailReply({ expectedMessageId: (gmailEffect as { messageId: string }).messageId, response: { body: { messageId: (gmailEffect as { messageId: string }).messageId } } }).status === "matched", "Gmail identity reconciliation");
   const stripeSource = { chargeId: "ch_1", customerEmail: "customer@example.com", gmailSender: "customer@example.com", currency: "usd", amount: 5000, amountRefunded: 0, paid: true };
   const stripeEffect = stripeRefundDefinition.compile({ contract: { tenant: "tenant_1" } as never, source: { projection: stripeSource } as never, choices: {}, policy: parseStripeRefundPolicy({ currency: "usd", maxRefund: 5000, maxChargeAgeSeconds: 86400 }), now: new Date("2026-08-09T00:00:00Z"), connectorAccount: { connectorId: "stripe", accountId: "account" } });
   check(typeof (stripeEffect as { headers: Record<string, string> }).headers["Idempotency-Key"] === "string", "Stripe idempotency is present");
+  check(parseAuthorityWire("transport-effect", stripeEffect).endpointId === "stripe.refunds.create", "Stripe effect schema closure");
+  check(!Object.keys((stripeEffect as { headers: Record<string, string> }).headers).some(key => ["authorization", "cookie", "host"].includes(key.toLowerCase())), "Stripe effect has no credential headers");
   check(reconcileStripeRefund({ chargeId: "ch_1", expectedAmount: 5000, response: { body: { charge: "ch_1", amount: 5000 } } }).status === "matched", "Stripe refund reconciliation");
   caseIds.push("schema-closure", "exact-byte", "no-secret", "account-binding", "ambiguity", "reconciliation", "redaction");
   return Object.freeze({ aliases: Object.freeze(actualAliases), checks, passed: checks, caseIds: Object.freeze(caseIds) });

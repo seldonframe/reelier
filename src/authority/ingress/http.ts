@@ -2,8 +2,9 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { authenticateOutcomeRequest } from "../keys.js";
 import type { AuthorityMcpHandler } from "./mcp.js";
 
-export async function handleAuthorityHttp(request: IncomingMessage, response: ServerResponse, handler: AuthorityMcpHandler, context: { readonly tenant: string; readonly requester: string }, artifactStage?: (input: unknown, context: { readonly tenant: string; readonly requester: string }) => Promise<unknown>): Promise<void> {
+export async function handleAuthorityHttp(request: IncomingMessage, response: ServerResponse, handler: AuthorityMcpHandler, context: { readonly tenant: string; readonly requester: string; readonly requireBearer?: boolean; readonly authenticate?: (header: string | undefined) => Promise<boolean> }, artifactStage?: (input: unknown, context: { readonly tenant: string; readonly requester: string }) => Promise<unknown>): Promise<void> {
   try {
+    if (context.authenticate ? !await context.authenticate(request.headers.authorization) : context.requireBearer && !/^Bearer\s+\S+$/.test(String(request.headers.authorization ?? ""))) return write(response, 401, { verdict: "refused", reasonCode: "authentication-required", lifecycleState: "refused", requestId: "" });
     if (request.method !== "POST" && request.method !== "GET") return write(response, 405, { verdict: "refused", reasonCode: "method-not-allowed" });
     const url = new URL(request.url ?? "/", "http://authority.invalid");
     if (url.pathname === "/v1/artifacts" && request.method === "POST") {

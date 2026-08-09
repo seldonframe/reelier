@@ -9,6 +9,8 @@ import { createAuthorityHostServer, type AuthorityHostRuntime } from "./host/ser
 import { firstPartyPacks } from "../packs/index.js";
 import { verifyAuthorityReceiptBundle } from "./verify.js";
 import { createArtifactStore } from "./host/artifacts.js";
+import { runFirstPartyPackConformance } from "../packs/conformance.js";
+import { createLocalAuthorityRuntime } from "./host/local.js";
 
 export async function runAuthorityCommand(args: Readonly<{ positional: string[]; flags: Set<string>; opts: Record<string, string> }>): Promise<number> {
   const subcommand = args.positional[0] ?? "doctor";
@@ -92,19 +94,12 @@ async function authorityVerify(args: Readonly<{ opts: Record<string, string> }>)
 
 async function authorityServe(args: Readonly<{ opts: Record<string, string> }>): Promise<number> {
   const loaded = await loadAuthorityHostConfig(args.opts.path ?? "authority/authority.yml");
-  const artifactStore = createArtifactStore({ tenant: loaded.config.tenant, key: randomBytes(32) });
+  const artifactKey = await loadOrCreateArtifactKey(path.dirname(loaded.file));
+  const artifactStore = createArtifactStore({ tenant: loaded.config.tenant, key: artifactKey, masterKey: artifactKey, rootDir: path.join(loaded.config.receiptDir, "artifacts") });
+  const authorityRuntime = await createLocalAuthorityRuntime(loaded.config);
   const runtime: AuthorityHostRuntime = {
-    async outcome(alias, input) {
-      const requestId = typeof input === "object" && input !== null && typeof (input as Record<string, unknown>).requestId === "string" ? String((input as Record<string, unknown>).requestId) : "";
-      if (!loaded.config.definitions.includes(alias)) return { requestId, verdict: "refused", reasonCode: "unknown-definition", lifecycleState: "refused" };
-      // A local server without a signed deployment must fail closed. The host is live and
-      // discoverable, but it never pretends that a config file is an authority grant.
-      return { requestId, verdict: "refused", reasonCode: "deployment-required", lifecycleState: "refused" };
-    },
-    async status(input) {
-      const requestId = typeof input === "object" && input !== null && typeof (input as Record<string, unknown>).requestId === "string" ? String((input as Record<string, unknown>).requestId) : "";
-      return { requestId, verdict: "refused", reasonCode: "not-found", lifecycleState: "unknown" };
-    },
+    outcome: authorityRuntime.outcome,
+    status: authorityRuntime.status,
     async artifactStage(input) {
       const value = input as Record<string, unknown>;
       const requestId = typeof value?.requestId === "string" ? value.requestId : "";
@@ -118,9 +113,20 @@ async function authorityServe(args: Readonly<{ opts: Record<string, string> }>):
   return 0;
 }
 
+async function loadOrCreateArtifactKey(root: string): Promise<Buffer> {
+  const file = path.join(root, "trust", "artifact-master.key");
+  try { const existing = await readFile(file); if (existing.length === 32) return existing; } catch { /* create below */ }
+  const key = randomBytes(32); await mkdir(path.dirname(file), { recursive: true }); await writeFile(file, key, { mode: 0o600 }); return key;
+}
+
 async function authorityConformance(args: Readonly<{ opts: Record<string, string> }>): Promise<number> {
   const aliases = args.opts.pack ? [args.opts.pack] : firstPartyPacks.map(pack => pack.definition.alias);
   const unknown = aliases.filter(alias => !firstPartyPacks.some(pack => pack.definition.alias === alias));
   if (unknown.length) { console.error(`unknown pack: ${unknown.join(", ")}`); return 1; }
-  console.log(JSON.stringify({ conformance: "passed", packs: aliases, corpus: "shared-v1" })); return 0;
+  try {
+    const report = runFirstPartyPackConformance();
+    const selected = report.aliases.filter(alias => aliases.includes(alias));
+    console.log(JSON.stringify({ conformance: selected.length === aliases.length ? "passed" : "failed", packs: selected, corpus: "shared-v1", checks: report.checks, passed: report.passed, caseIds: report.caseIds }));
+    return selected.length === aliases.length ? 0 : 1;
+  } catch (error) { console.error(JSON.stringify({ conformance: "failed", packs: aliases, corpus: "shared-v1", reasonCode: "pack-conformance-failed", message: error instanceof Error ? error.message : String(error) })); return 1; }
 }
