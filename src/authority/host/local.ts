@@ -10,6 +10,7 @@ import { createStaticPackRegistry } from "../pack.js";
 import { createFileGateDecisionSink } from "../decision.js";
 import { FsAuthorityLedger } from "./fs-ledger.js";
 import { createDispatchCoordinator } from "./dispatch.js";
+import { createFileReceiptPublication } from "./receipts.js";
 import { createAuthorityHostRuntime } from "./runtime.js";
 import type { AuthorityHostConfig } from "./config.js";
 import type { AuthorityHostRuntime } from "./server.js";
@@ -32,6 +33,7 @@ export async function createLocalAuthorityRuntime(config: AuthorityHostConfig): 
     async executeSourceReads() { return { ok: false as const, reason: "unavailable" as const }; },
   });
   const gate = createAuthorityGate({ trustRoots, packs, sources, connectors: createConnectorRegistry([]), state, ledger, localGatePolicyDigest: authorityDigest({ v: "reelier.local-gate-policy/v1", tenant: config.tenant }), decisionSink: decisions, signer: { async sign(input) { return { signerId: "local-gate", signature: signAuthorityDigest(privateKey, input.purpose, input.digest) }; } }, eventId: () => `evt_${randomUUID()}`, capabilityId: () => `cap_${randomUUID()}` });
-  const dispatch = createDispatchCoordinator(ledger, { async dispatch() { return { kind: "definitive-failure", resultDigest: authorityDigest({ v: "reelier.local-dispatch/v1", reason: "connector-not-configured" }) }; } });
+  const publication = createFileReceiptPublication({ rootDir: config.receiptDir });
+  const dispatch = createDispatchCoordinator(ledger, { async dispatch() { return { kind: "definitive-failure", resultDigest: authorityDigest({ v: "reelier.local-dispatch/v1", reason: "connector-not-configured" }) }; } }, undefined, publication);
   return createAuthorityHostRuntime({ gate, dispatch, ledger, decisions });
 }
