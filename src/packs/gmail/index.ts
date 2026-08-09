@@ -2,6 +2,7 @@ import { authorityCanonicalBytes, authorityDigest } from "../../authority/wire.j
 import type { PackReconciliationResult } from "../types.js";
 import type { RegisteredSourceResolver, SourceProjection, ResolverSourceObservation, PlannedSourceRead } from "../../authority/source.js";
 import type { StaticPackDefinition } from "../../authority/pack.js";
+import type { TransportEffect } from "../../authority/types.js";
 
 export const gmailReplySendAlias = "gmail_reply_send_v1" as const;
 export const gmailThreadLabelsAlias = "gmail_thread_labels_set_v1" as const;
@@ -30,11 +31,11 @@ export function parseGmailLabelsPolicy(value: unknown): GmailLabelsPolicy {
   return Object.freeze({ addLabelIds: valid(raw.addLabelIds ?? []), removeLabelIds: valid(raw.removeLabelIds ?? []) });
 }
 function encodeHeader(value: string): string { return value.replace(/[\r\n]/g, ""); }
-export function compileGmailReply(input: Readonly<{ source: GmailThreadProjection; policy: GmailReplyPolicy; outcomeKey: string }>): Readonly<{ v: "reelier.transport-effect/v1"; endpointId: string; method: "POST"; path: string; query: string; headers: Record<string, string>; bodyBase64: string; messageId: string; }> {
+export function compileGmailReply(input: Readonly<{ source: GmailThreadProjection; policy: GmailReplyPolicy; outcomeKey: string }>): Readonly<TransportEffect & { messageId: string }> {
   const messageId = `<reelier-${authorityDigest({ v: "reelier.gmail-message-id/v1", outcomeKey: input.outcomeKey, threadId: input.source.threadId }).slice(7)}@reelier.local>`;
   const mime = [`To: ${encodeHeader(input.source.recipient)}`, `Subject: ${encodeHeader(input.source.subject.startsWith("Re:") ? input.source.subject : `Re: ${input.source.subject}`)}`, `In-Reply-To: ${encodeHeader(input.source.messageId)}`, `References: ${encodeHeader(input.source.messageId)}`, `Message-ID: ${messageId}`, "Content-Type: text/plain; charset=utf-8", "MIME-Version: 1.0", "", input.policy.text].join("\r\n");
   const body = authorityCanonicalBytes({ raw: Buffer.from(mime, "utf8").toString("base64url") });
-  return Object.freeze({ v: "reelier.transport-effect/v1", endpointId: "gmail.users.messages.send", method: "POST", path: "/gmail/v1/users/me/messages/send", query: "", headers: { "Content-Type": "application/json" }, bodyBase64: body.toString("base64"), messageId });
+  return withMetadata({ v: "reelier.transport-effect/v1", endpointId: "gmail.users.messages.send", method: "POST", path: "/gmail/v1/users/me/messages/send", query: "", headers: { "Content-Type": "application/json" }, bodyBase64: body.toString("base64"), riskClass: "gmail_send", idempotency: "reconcile-only", preconditions: [{ kind: "gmail-thread-message-digest", digest: authorityDigest({ v: "reelier.gmail-thread-message/v1", threadId: input.source.threadId, messageId: input.source.messageId }) }], reconciliation: { recipeId: "gmail_reply_send_readback_v1" } }, "messageId", messageId);
 }
 export function compileGmailLabels(input: Readonly<{ source: GmailThreadProjection; policy: GmailLabelsPolicy }>): unknown {
   return Object.freeze({ v: "reelier.transport-effect/v1", endpointId: "gmail.users.threads.modify", method: "POST", path: `/gmail/v1/users/me/threads/${encodeURIComponent(input.source.threadId)}/modify`, query: "", headers: { "Content-Type": "application/json" }, bodyBase64: authorityCanonicalBytes({ addLabelIds: input.policy.addLabelIds, removeLabelIds: input.policy.removeLabelIds }).toString("base64"), riskClass: "gmail_thread_labels", idempotency: "reconcile-only", preconditions: [{ kind: "gmail-labels-digest", digest: authorityDigest({ v: "reelier.gmail-labels/v1", labelIds: [...input.source.labelIds].sort() }) }], reconciliation: { recipeId: "gmail_thread_labels_readback_v1" } });
@@ -53,3 +54,4 @@ export const gmailReplyDefinition: StaticPackDefinition = Object.freeze({ alias:
 export const gmailLabelsDefinition: StaticPackDefinition = Object.freeze({ ...gmailReplyDefinition, alias: gmailThreadLabelsAlias, definitionDigest: gmailLabelsDefinitionDigest, resolverId: gmailLabelsResolverId, writeEndpointIds: [gmailLabelsWriteEndpointId], riskClasses: ["gmail_thread_labels"], parsePolicy: parseGmailLabelsPolicy, compile: (input: import("../../authority/pack.js").StaticPackCompileInput) => compileGmailLabels({ source: input.source.projection as GmailThreadProjection, policy: input.policy as GmailLabelsPolicy }) });
 function normalizeBody(value: unknown): { status?: number; body: unknown } { return value && typeof value === "object" && "body" in value ? value as { status?: number; body: unknown } : { body: value }; }
 function result(status: PackReconciliationResult["status"], reasonCode: string, projectionDigest: string | null, recipeId: string): PackReconciliationResult { return Object.freeze({ status, reasonCode, projectionDigest, recipeId }); }
+function withMetadata<T extends object, K extends string, V>(effect: T, key: K, value: V): T & Record<K, V> { Object.defineProperty(effect, key, { value, enumerable: false, writable: false, configurable: false }); return Object.freeze(effect) as T & Record<K, V>; }
