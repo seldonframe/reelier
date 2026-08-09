@@ -1,0 +1,13 @@
+{
+  "v": "reelier.pack-conformance/v1",
+  "requiredAliases": [
+    "github_issue_labels_set_v1",
+    "slack_channel_topic_set_v1"
+  ],
+  "cases": [
+    { "id": "github-matched", "status": "matched" },
+    { "id": "github-unavailable", "status": "unavailable" },
+    { "id": "slack-matched", "status": "matched" },
+    { "id": "slack-conflict", "status": "conflict" }
+  ]
+}

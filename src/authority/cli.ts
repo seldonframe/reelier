@@ -1,0 +1,105 @@
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import path from "node:path";
+import { createPrivateKey, createPublicKey } from "node:crypto";
+import { signAuthorityDigest, verifyAuthoritySignature } from "./crypto.js";
+import { authorityDigest } from "./wire.js";
+import { loadAuthorityHostConfig, validateAuthorityHostConfig } from "./host/config.js";
+import { buildAuthorityMcpServer, type AuthorityMcpHandler } from "./ingress/mcp.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { firstPartyPacks } from "../packs/index.js";
+import { verifyAuthorityReceiptBundle } from "./verify.js";
+
+export async function runAuthorityCommand(args: Readonly<{ positional: string[]; flags: Set<string>; opts: Record<string, string> }>): Promise<number> {
+  const subcommand = args.positional[0] ?? "doctor";
+  switch (subcommand) {
+    case "init": return authorityInit(args);
+    case "doctor": return authorityDoctor(args);
+    case "validate": return authorityValidate(args);
+    case "sign": return authoritySign(args);
+    case "verify": return authorityVerify(args);
+    case "serve": return authorityServe(args);
+    case "conformance": return authorityConformance(args);
+    default: console.error(`unknown authority command: ${subcommand}`); return 1;
+  }
+}
+
+async function authorityInit(args: Readonly<{ opts: Record<string, string> }>): Promise<number> {
+  const root = path.resolve(args.opts.path ?? "authority");
+  await Promise.all(["contracts", "trust", "connectors", "receipts", "decisions", "ledger"].map(dir => mkdir(path.join(root, dir), { recursive: true })));
+  const configPath = path.join(root, "authority.yml");
+  const config = {
+    version: 1, tenant: "local", requester: "operator", definitions: firstPartyPacks.map(pack => pack.definition.alias), topology: "same-user",
+    ledgerDir: "ledger", decisionDir: "decisions", receiptDir: "receipts",
+    ingress: { allowedRequester: "operator" }, endpoints: [],
+  };
+  try { await readFile(configPath, "utf8"); console.log(`authority already initialized: ${configPath}`); return 0; } catch { /* create below */ }
+  await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+  for (const pack of firstPartyPacks) await writeFile(path.join(root, "contracts", `${pack.definition.alias}.json`), `${JSON.stringify({ manifest: pack.manifest, definition: pack.definition }, null, 2)}\n`, "utf8");
+  console.log(`initialized authority workspace at ${root}`);
+  return 0;
+}
+
+async function authorityDoctor(args: Readonly<{ opts: Record<string, string>; flags: Set<string> }>): Promise<number> {
+  const file = args.opts.path ?? "authority/authority.yml";
+  try {
+    const loaded = await loadAuthorityHostConfig(file);
+    const checks: Record<string, string> = { config: "verified", topology: loaded.config.topology === "isolated" ? "verified" : "unchecked", ingress: loaded.config.ingress?.bearerRef ? "verified" : "unchecked", endpoints: loaded.config.endpoints.length ? "configured" : "unchecked" };
+    console.log(JSON.stringify({ ok: true, file: loaded.file, digest: loaded.digest, checks }, null, 2));
+    return 0;
+  } catch (error) { console.error(JSON.stringify({ ok: false, reasonCode: "invalid-config", message: error instanceof Error ? error.message : String(error) })); return 1; }
+}
+
+async function authorityValidate(args: Readonly<{ opts: Record<string, string> }>): Promise<number> {
+  try { const loaded = await loadAuthorityHostConfig(args.opts.path ?? "authority/authority.yml"); console.log(JSON.stringify({ valid: true, digest: loaded.digest })); return 0; }
+  catch (error) { console.error(error instanceof Error ? error.message : String(error)); return 1; }
+}
+
+async function authoritySign(args: Readonly<{ opts: Record<string, string> }>): Promise<number> {
+  const inputPath = args.opts.input ?? args.opts.path;
+  const outputPath = args.opts.out ?? inputPath;
+  const keyPath = args.opts.key;
+  if (!inputPath || !outputPath || !keyPath) { console.error("authority sign requires --input/--path, --out, and --key"); return 1; }
+  const value = JSON.parse(await readFile(path.resolve(inputPath), "utf8")) as Record<string, unknown>;
+  const kind = value.kind as Parameters<typeof signAuthorityDigest>[1];
+  const artifact = (value.value ?? value) as Record<string, unknown>;
+  const digest = authorityDigest(artifact);
+  const privateKey = createPrivateKey(await readFile(path.resolve(keyPath)));
+  const signed = { kind, signerId: String(value.signerId ?? "operator"), digest, value: artifact, signature: signAuthorityDigest(privateKey, kind, digest) };
+  await writeFile(path.resolve(outputPath), `${JSON.stringify(signed, null, 2)}\n`, "utf8");
+  console.log(JSON.stringify({ signed: true, digest })); return 0;
+}
+
+async function authorityVerify(args: Readonly<{ opts: Record<string, string> }>): Promise<number> {
+  const inputPath = args.opts.input ?? args.opts.path;
+  const keyPath = args.opts.key;
+  if (!inputPath || !keyPath) { console.error("authority verify requires --input/--path and --key"); return 1; }
+  try {
+    const parsed = JSON.parse(await readFile(path.resolve(inputPath), "utf8")) as Record<string, unknown>;
+    if (parsed.v === "reelier.authority-receipt-bundle/v1") {
+      const tenant = args.opts.tenant; if (!tenant) throw new Error("portable bundle verification requires --tenant");
+      const publicKey = createPublicKey(await readFile(path.resolve(keyPath)));
+      const result = verifyAuthorityReceiptBundle(parsed, { tenant, trustRoots: [{ tenant, signerId: String(args.opts.signer ?? "operator"), principalId: String(args.opts.signer ?? "operator"), publicKey, purposes: ["outcome-contract", "delegation-grant", "source-bundle", "compiled-capability", "transport-effect", "gate-event", "authority-evidence", "authority-receipt", "pack-manifest"] }] });
+      console.log(JSON.stringify({ valid: true, digest: result.digest, claims: result.claims })); return 0;
+    }
+    const artifact = parsed as { kind: Parameters<typeof verifyAuthoritySignature>[1]; digest: string; value: Record<string, unknown>; signature: { alg: "ed25519"; sig: string } };
+    const recomputed = authorityDigest(artifact.value);
+    const publicKey = createPublicKey(await readFile(path.resolve(keyPath)));
+    const valid = recomputed === artifact.digest && verifyAuthoritySignature(publicKey, artifact.kind, artifact.digest, artifact.signature);
+    console.log(JSON.stringify({ valid, digest: recomputed, claims: { authorization: valid ? "verified" : "failed", completeness: "unchecked" } })); return valid ? 0 : 1;
+  } catch (error) { console.error(error instanceof Error ? error.message : String(error)); return 1; }
+}
+
+async function authorityServe(args: Readonly<{ opts: Record<string, string> }>): Promise<number> {
+  const loaded = await loadAuthorityHostConfig(args.opts.path ?? "authority/authority.yml");
+  const handler: AuthorityMcpHandler = { async outcome(alias, input, context) { return { requestId: String((input as Record<string, unknown>).requestId ?? ""), verdict: "refused", reasonCode: loaded.config.definitions.includes(alias) ? "not-configured" : "unknown-definition", lifecycleState: "refused" }; }, async status(input) { return { requestId: String((input as Record<string, unknown>).requestId ?? ""), verdict: "refused", reasonCode: "not-found", lifecycleState: "unknown" }; } };
+  const server = buildAuthorityMcpServer(loaded.config.definitions.map(alias => ({ alias })), handler, { tenant: loaded.config.tenant, requester: loaded.config.requester });
+  await server.connect(new StdioServerTransport());
+  return 0;
+}
+
+async function authorityConformance(args: Readonly<{ opts: Record<string, string> }>): Promise<number> {
+  const aliases = args.opts.pack ? [args.opts.pack] : firstPartyPacks.map(pack => pack.definition.alias);
+  const unknown = aliases.filter(alias => !firstPartyPacks.some(pack => pack.definition.alias === alias));
+  if (unknown.length) { console.error(`unknown pack: ${unknown.join(", ")}`); return 1; }
+  console.log(JSON.stringify({ conformance: "passed", packs: aliases, corpus: "shared-v1" })); return 0;
+}

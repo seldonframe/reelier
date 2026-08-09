@@ -1,4 +1,4 @@
-export const authorityKinds = ["principal","delegation-grant","source-bundle","outcome-contract","outcome-request","transport-effect","compiled-capability","decision-context","gate-event","authority-receipt","pack-manifest"] as const;
+export const authorityKinds = ["principal","delegation-grant","source-bundle","outcome-contract","outcome-request","transport-effect","compiled-capability","decision-context","gate-event","authority-evidence","authority-receipt","pack-manifest"] as const;
 export type AuthorityKind = (typeof authorityKinds)[number];
 export type ClaimStatus = "verified" | "failed" | "unchecked" | "absent";
 type Wire<V extends string> = Readonly<{ v: V }>;
@@ -18,8 +18,42 @@ export interface DecisionContext extends Wire<"reelier.decision-context/v1"> { t
 export type DecisionArtifactPresence = "absent" | "unchecked";
 export interface DecisionContextPresence { contract:DecisionArtifactPresence;capability:DecisionArtifactPresence;outcome:DecisionArtifactPresence;effect:DecisionArtifactPresence;sourceBundleSnapshot:DecisionArtifactPresence;authorityStateSnapshot:DecisionArtifactPresence }
 export interface GateEvent extends Wire<"reelier.gate-event/v1"> { eventId:string;at:string;verdict:"accepted"|"refused";reasonCode:string;decisionContextDigest:string }
-export interface AuthorityReceipt extends Wire<"reelier.authority-receipt/v1"> { receiptId:string;gateEventDigest:string;decisionContextDigest:string;decisionContext:DecisionContext;claims:{authorization:ClaimStatus;sourceCompleteness:ClaimStatus;dispatch:ClaimStatus;providerAcknowledgment:ClaimStatus;reconciliation:ClaimStatus;topology:ClaimStatus;completeness:ClaimStatus} }
+export interface AuthorityEvidence extends Wire<"reelier.authority-evidence/v1"> {
+  evidenceId:string;
+  receiptId:string;
+  decisionContextDigest:string;
+  gateEventDigest:string;
+  effectDigest:string;
+  reservationId:string;
+  timeline:readonly { state:"reserved"|"dispatched"|"acknowledged"|"definitive-failure"|"ambiguous"|"reconciled"|"cancelled"; at:string; eventDigest:string }[];
+  dispatchedRequestDigest:string|null;
+  providerResponseDigest:string|null;
+  reconciliation:{ recipeId:string; verdict:"matched"|"not-applied"|"conflict"|"unavailable"|"not-attempted"; normalizedProjectionDigest:string|null };
+  topology:{ egress:ClaimStatus; secretIsolation:ClaimStatus; ingressAuthentication:ClaimStatus; notes:string|null };
+}
+export interface AuthorityReceipt extends Wire<"reelier.authority-receipt/v1"> { receiptId:string;gateEventDigest:string;decisionContextDigest:string;decisionContext:DecisionContext;evidenceDigest:string;priorReceiptDigest:string|null;claims:{authorization:ClaimStatus;sourceCompleteness:ClaimStatus;dispatch:ClaimStatus;providerAcknowledgment:ClaimStatus;reconciliation:ClaimStatus;topology:ClaimStatus;completeness:ClaimStatus} }
 export interface OutcomePackManifest extends Wire<"reelier.outcome-pack-manifest/v1"> { packId:string;packDigest:string;definitions:string[] }
-export interface AuthorityWireByKind { principal:Principal;"delegation-grant":DelegationGrant;"source-bundle":SourceBundle;"outcome-contract":OutcomeContract;"outcome-request":OutcomeRequest;"transport-effect":TransportEffect;"compiled-capability":CompiledCapability;"decision-context":DecisionContext;"gate-event":GateEvent;"authority-receipt":AuthorityReceipt;"pack-manifest":OutcomePackManifest }
+export interface AuthorityWireByKind { principal:Principal;"delegation-grant":DelegationGrant;"source-bundle":SourceBundle;"outcome-contract":OutcomeContract;"outcome-request":OutcomeRequest;"transport-effect":TransportEffect;"compiled-capability":CompiledCapability;"decision-context":DecisionContext;"gate-event":GateEvent;"authority-evidence":AuthorityEvidence;"authority-receipt":AuthorityReceipt;"pack-manifest":OutcomePackManifest }
 export type AuthorityWire = AuthorityWireByKind[AuthorityKind];
 export type AuthoritySignature = Readonly<{ alg:"ed25519";sig:string }>;
+
+export interface SignedAuthorityArtifact<K extends AuthorityKind = AuthorityKind> {
+  readonly kind:K;
+  readonly signerId:string;
+  readonly digest:string;
+  readonly value:AuthorityWireByKind[K];
+  readonly signature:AuthoritySignature;
+}
+export interface AuthorityReceiptBundle {
+  readonly v:"reelier.authority-receipt-bundle/v1";
+  readonly contract:SignedAuthorityArtifact<"outcome-contract">;
+  readonly delegation:readonly SignedAuthorityArtifact<"delegation-grant">[];
+  readonly sourceBundle:SignedAuthorityArtifact<"source-bundle">;
+  readonly capability:SignedAuthorityArtifact<"compiled-capability">;
+  readonly transportEffect:SignedAuthorityArtifact<"transport-effect">;
+  readonly gateEvent:SignedAuthorityArtifact<"gate-event">;
+  readonly evidence:SignedAuthorityArtifact<"authority-evidence">;
+  readonly receipt:SignedAuthorityArtifact<"authority-receipt">;
+  readonly packManifest:SignedAuthorityArtifact<"pack-manifest">;
+  readonly signatures:readonly { readonly kind:AuthorityKind; readonly digest:string; readonly signerId:string; readonly signature:AuthoritySignature }[];
+}

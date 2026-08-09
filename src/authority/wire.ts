@@ -104,6 +104,29 @@ export function parseAuthorityWire<K extends AuthorityKind>(kind: K, value: unkn
     if (authorityDigest(context) !== receipt.decisionContextDigest) {
       throw new TypeError("invalid authority-receipt: decision context digest mismatch");
     }
+    if (receipt.claims.completeness === "verified") throw new TypeError("invalid authority-receipt: completeness cannot be verified");
+  }
+  if (kind === "authority-evidence") {
+    const evidence = parsed as AuthorityWireByKind["authority-evidence"];
+    let previous = -Infinity;
+    const eventDigests = new Set<string>();
+    let state: "issued"|"reserved"|"dispatched"|"acknowledged"|"definitive-failure"|"ambiguous"|"reconciled"|"cancelled" = "issued";
+    const next: Record<string, readonly string[]> = {
+      issued: ["reserved"], reserved: ["dispatched", "cancelled"], dispatched: ["acknowledged", "definitive-failure", "ambiguous"], acknowledged: ["reconciled"], "definitive-failure": ["reconciled"], ambiguous: ["reconciled"], reconciled: [], cancelled: [],
+    };
+    for (const entry of evidence.timeline) {
+      const at = Date.parse(entry.at);
+      if (!Number.isFinite(at) || at < previous) throw new TypeError("invalid authority-evidence: timeline is not chronological");
+      previous = at;
+      if (eventDigests.has(entry.eventDigest)) throw new TypeError("invalid authority-evidence: duplicate timeline event digest");
+      eventDigests.add(entry.eventDigest);
+      if (!next[state].includes(entry.state)) throw new TypeError(`invalid authority-evidence: illegal transition ${state}->${entry.state}`);
+      state = entry.state;
+    }
+    if (evidence.timeline.length === 0 || evidence.timeline[0].state !== "reserved") throw new TypeError("invalid authority-evidence: timeline must begin reserved");
+    const dispatched = evidence.timeline.some(entry => entry.state === "dispatched");
+    if (dispatched !== (evidence.dispatchedRequestDigest !== null)) throw new TypeError("invalid authority-evidence: dispatch digest does not match timeline");
+    if (evidence.reconciliation.verdict === "matched" && evidence.reconciliation.normalizedProjectionDigest === null) throw new TypeError("invalid authority-evidence: matched reconciliation requires normalized projection digest");
   }
   if (kind === "transport-effect") {
     const effect = parsed as AuthorityWireByKind["transport-effect"];

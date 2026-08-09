@@ -22,7 +22,7 @@ import { validateContractAgainstDelegation,validateDelegationChain } from "./del
 import { validateVerifiedContractEligibility,verifyStoredContract,type ValidatedContract } from "./contract.js";
 import { compileOutcome,type CompiledOutcome } from "./compile.js";
 
-export type ReservationLifecycleState="reserved"|"dispatched"|"acknowledged"|"definitive-failure"|"ambiguous"|"reconciled";
+export type ReservationLifecycleState="reserved"|"dispatched"|"acknowledged"|"definitive-failure"|"ambiguous"|"cancelled"|"reconciled";
 export type RedactedGateStatus=
   |Readonly<{requestId:string;requestKey:string;verdict:"accepted";reasonCode:"accepted";decisionContextDigest:string;gateEventDigest:string;lifecycleState:ReservationLifecycleState;updatedAt:string;receiptRef?:string}>
   |Readonly<{requestId:string;requestKey:string;verdict:"refused";reasonCode:GateRefusalReason;decisionContextDigest:string;gateEventDigest:string;lifecycleState:"refused";updatedAt:string;receiptRef?:string}>;
@@ -34,7 +34,7 @@ export interface AuthorityGate {decide(request:AuthenticatedOutcomeRequest):Prom
 declare const reservedHandleBrand:unique symbol;export interface ReservedDispatchHandle{readonly [reservedHandleBrand]:true}
 const handleStates=new WeakMap<object,unknown>();
 export function createReservedDispatchHandle(state:unknown):ReservedDispatchHandle{const handle=Object.freeze(Object.create(null)) as ReservedDispatchHandle;handleStates.set(handle,deepFreeze(structuredClone(state)));return handle;}
-export function unwrapReservedDispatchHandle(handle:ReservedDispatchHandle):any{const state=handleStates.get(handle as object);if(state===undefined)throw new TypeError("invalid reserved dispatch handle");return deepFreeze(structuredClone(state));}
+export function unwrapReservedDispatchHandle(handle:ReservedDispatchHandle):any{const state=handleStates.get(handle as object);if(state===undefined)throw new TypeError("invalid or already-consumed reserved dispatch handle");handleStates.delete(handle as object);return deepFreeze(structuredClone(state));}
 
 const ID=/^[A-Za-z0-9][A-Za-z0-9._~:-]{0,127}$/;
 type ContextParts={contractDigest:string|null;authorityStateDigest:string|null;sourceBundleDigest:string|null;capabilityId:string|null;capabilityDigest:string|null;outcomeKey:string|null;effectDigest:string|null};

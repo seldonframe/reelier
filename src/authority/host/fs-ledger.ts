@@ -394,7 +394,7 @@ const CLEANUP_STAGE = /^\.authority-ledger-lock-cleanup-stage-([1-9][0-9]*)-([0-
 const K1_WRITER_NAME=".authority-ledger-k1-writer";
 const K1_WRITER_PREFIX=".authority-ledger-k1-writer-";
 const JOURNAL_FILE = /^(\d{16})-([0-9a-f]{64})$/;
-const LEGAL = new Set(["reserved>dispatched", "dispatched>acknowledged", "dispatched>definitive-failure", "dispatched>ambiguous", "acknowledged>reconciled", "ambiguous>reconciled"]);
+const LEGAL = new Set(["reserved>dispatched", "reserved>cancelled", "dispatched>acknowledged", "dispatched>definitive-failure", "dispatched>ambiguous", "acknowledged>reconciled", "ambiguous>reconciled"]);
 const TOMBSTONE_REASONS = new Set<ReserveReason>(["idempotency-conflict", "semantic-duplicate", "capability-integrity", "capability-already-reserved", "limit-exceeded"]);
 
 class LedgerCorruption extends Error {}
@@ -2973,9 +2973,17 @@ export class FsAuthorityLedger implements AuthorityLedger {
     view = await this.recoverTransactions(view, context);
     if (reclaimed || makeDispatchedAmbiguous) {
       for (const reservation of [...view.reservations.values()]) {
+        if (reservation.state === "reserved") {
+          if (view.highWaterMark === null) throw new LedgerCorruption("reserved reservation has no durable clock");
+          const resultDigest = rawDigest(canonicalBytes({ v: "reelier.dispatch-cancellation/v1", reservationId: reservation.reservationId, reason: "restart" }));
+          await this.appendEvent(view, { type: "transition", reservationId: reservation.reservationId, from: "reserved", to: "cancelled", at: view.highWaterMark, resultDigest }, "result");
+          view = await this.loadView();
+          continue;
+        }
         if (reservation.state !== "dispatched") continue;
         if (view.highWaterMark === null) throw new LedgerCorruption("dispatched reservation has no durable clock");
-        const transition = await this.appendEvent(view, { type: "transition", reservationId: reservation.reservationId, from: "dispatched", to: "ambiguous", at: view.highWaterMark }, "result") as TransitionJournalEvent;
+        const resultDigest = rawDigest(canonicalBytes({ v: "reelier.dispatch-ambiguity/v1", reservationId: reservation.reservationId, reason: "restart" }));
+        const transition = await this.appendEvent(view, { type: "transition", reservationId: reservation.reservationId, from: "dispatched", to: "ambiguous", at: view.highWaterMark, resultDigest }, "result") as TransitionJournalEvent;
         view = await this.loadView();
         if (!view.reservations.has(transition.reservationId)) throw new LedgerCorruption("lost recovered reservation");
       }
@@ -3486,7 +3494,9 @@ function isTransitionEventInput(value: unknown): value is TransitionEvent {
   return Object.keys(value).sort().join("\0") === expectedKeys.join("\0");
 }
 function hasValidResultDigest(to: unknown, resultDigest: unknown): boolean {
-  if (to === "dispatched" || to === "ambiguous") return resultDigest === undefined;
+  if (to === "dispatched") return resultDigest === undefined;
+  if (to === "ambiguous") return resultDigest === undefined || (typeof resultDigest === "string" && SHA.test(resultDigest) && resultDigest !== ZERO_SHA);
+  if (to === "cancelled") return typeof resultDigest === "string" && SHA.test(resultDigest) && resultDigest !== ZERO_SHA;
   if (to === "acknowledged" || to === "definitive-failure" || to === "reconciled") {
     return typeof resultDigest === "string" && SHA.test(resultDigest) && resultDigest !== ZERO_SHA;
   }
