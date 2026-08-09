@@ -78,3 +78,6 @@ export function createShadowReport(candidate: BoundableTaskCandidateV1, proposed
   const base = { v: "reelier.shadow-report/v1" as const, candidateId: candidate.candidateId, status, reasonCodes: candidate.unresolvedActions.length ? ["unresolved-actions"] : candidate.compatiblePacks.length ? [] : ["no-reviewed-pack"], proposedAliases: Object.freeze([...proposedAliases]), observedCoverage: candidate.coverage };
   return Object.freeze({ ...base, reportDigest: authorityDigest(base) });
 }
+
+export type { ObservationHost, ObservationEnvelopeV1, ObservationService } from "./live.js";
+export { createObservationAdapter, createObservationService, matchInstalledPacks, parseObservationEnvelope } from "./live.js";

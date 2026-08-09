@@ -83,6 +83,13 @@ export function agentSources(homedir: string = os.homedir()): AgentSource[] {
     { id: "codex", label: "Codex CLI", dir: path.join(homedir, ".codex", "sessions"), format: "codex" },
     // ~/.openclaw/agents/<agentId>/sessions/<sessionId>.jsonl — openclaw/openclaw src/config/paths.ts + src/config/sessions/paths.ts.
     { id: "openclaw", label: "OpenClaw", dir: path.join(homedir, ".openclaw", "agents"), format: "openclaw" },
+    // These hosts expose live adapters through the observation service. Their historical
+    // locations are best-effort and remain coverage-labelled until a native transcript parser
+    // is available; an unreadable/unknown history is never treated as observed.
+    { id: "cursor", label: "Cursor", dir: path.join(homedir, ".cursor", "projects") },
+    { id: "eve", label: "Eve", dir: path.join(homedir, ".eve", "sessions") },
+    { id: "hermes", label: "Hermes", dir: path.join(homedir, ".hermes", "sessions") },
+    { id: "herdr", label: "Herdr", dir: path.join(homedir, ".herdr", "sessions") },
   ];
 }
 
