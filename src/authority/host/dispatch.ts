@@ -3,7 +3,7 @@ import { unwrapReservedDispatchHandle, type ReservedDispatchHandle } from "../ga
 import type { AuthorityLedger, LedgerState } from "../ledger.js";
 
 export interface DispatchRequestState { readonly reservation: { readonly reservationId: string; readonly state: LedgerState; readonly intent: { readonly effectDigest: string } }; readonly effect: unknown; readonly effectCanonicalBase64: string; readonly effectDigest: string; readonly [key: string]: unknown; }
-export interface DispatchOutcome { readonly kind: "acknowledged" | "definitive-failure" | "ambiguous"; readonly resultDigest: string; readonly providerStatus?: number; readonly responseDigest?: string; readonly receiptRef?: string; readonly evidenceDigest?: string; }
+export interface DispatchOutcome { readonly kind: "acknowledged" | "definitive-failure" | "ambiguous"; readonly resultDigest: string; readonly providerResultDigest?: string; readonly providerStatus?: number; readonly responseDigest?: string; readonly receiptRef?: string; readonly evidenceDigest?: string; }
 export interface DispatchAdapter { dispatch(state: DispatchRequestState): Promise<DispatchOutcome>; reconcile?(state: DispatchRequestState, outcome: DispatchOutcome): Promise<DispatchOutcome>; }
 export interface DispatchEvidenceWriter { persist(input: Readonly<{ state: DispatchRequestState; outcome: DispatchOutcome; dispatchedRequestDigest: string; }>): Promise<void>; }
 export interface DispatchPublication { publish(input: Readonly<{ phase: "dispatch" | "cancelled" | "ambiguous"; state: DispatchRequestState; outcome: DispatchOutcome; dispatchedRequestDigest: string | null; }>): Promise<Readonly<{ receiptRef: string; evidenceDigest: string }>>; }
@@ -22,7 +22,7 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
       catch { outcome = { kind: "ambiguous", resultDigest: authorityDigest({ v: "reelier.dispatch-result/v1", reservationId, status: "ambiguous" }) }; }
       const dispatchedRequestDigest = authorityDigest({ v: "reelier.dispatched-request/v1", reservationId, effectDigest: state.effectDigest, effect: state.effect });
       if (evidence) await evidence.persist({ state, outcome, dispatchedRequestDigest });
-      if (publication) { const published = await publication.publish({ phase: "dispatch", state, outcome, dispatchedRequestDigest }); outcome = Object.freeze({ ...outcome, resultDigest: published.receiptRef, receiptRef: published.receiptRef, evidenceDigest: published.evidenceDigest }); }
+      if (publication) { const published = await publication.publish({ phase: "dispatch", state, outcome, dispatchedRequestDigest }); outcome = Object.freeze({ ...outcome, providerResultDigest: outcome.resultDigest, resultDigest: published.receiptRef, receiptRef: published.receiptRef, evidenceDigest: published.evidenceDigest }); }
       const terminal: LedgerState = outcome.kind;
       const result = await ledger.transition(reservationId, "dispatched", { to: terminal as "acknowledged" | "definitive-failure" | "ambiguous", resultDigest: outcome.resultDigest });
       if (!result.ok) throw new Error(`dispatch result transition refused: ${result.reason}`);
@@ -37,7 +37,7 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
       const terminalDigest = published?.receiptRef ?? resultDigest;
       const result = await ledger.transition(state.reservation.reservationId, "reserved", { to: "cancelled", resultDigest: terminalDigest });
       if (!result.ok) throw new Error(`cancellation refused: ${result.reason}`);
-      return Object.freeze({ ...outcome, resultDigest: result.reservation.resultDigest ?? terminalDigest, receiptRef: published?.receiptRef, evidenceDigest: published?.evidenceDigest });
+      return Object.freeze({ ...outcome, ...(published ? { providerResultDigest: outcome.resultDigest } : {}), resultDigest: result.reservation.resultDigest ?? terminalDigest, receiptRef: published?.receiptRef, evidenceDigest: published?.evidenceDigest });
     },
     async recover(): Promise<readonly string[]> {
       const recovered = await ledger.recover();

@@ -1,6 +1,7 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, rename, unlink } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
 import path from "node:path";
-import { authorityDigest } from "../wire.js";
+import { authorityCanonicalBytes, authorityDigest } from "../wire.js";
 import type { DispatchPublication, DispatchRequestState, DispatchOutcome } from "./dispatch.js";
 
 /**
@@ -25,7 +26,6 @@ export interface LocalAuthorityPublication {
 
 export interface FileReceiptPublicationOptions {
   readonly rootDir: string;
-  readonly now?: () => Date;
 }
 
 function fileName(receiptRef: string): string {
@@ -35,7 +35,6 @@ function fileName(receiptRef: string): string {
 /** Creates an immutable, restart-safe local receipt/evidence publication. */
 export function createFileReceiptPublication(options: FileReceiptPublicationOptions): DispatchPublication {
   const root = path.resolve(options.rootDir);
-  const now = options.now ?? (() => new Date());
   return Object.freeze({
     async publish(input: Readonly<{ phase: "dispatch" | "cancelled" | "ambiguous"; state: DispatchRequestState; outcome: DispatchOutcome; dispatchedRequestDigest: string | null }>) {
       const reservationId = input.state.reservation.reservationId;
@@ -72,15 +71,26 @@ export function createFileReceiptPublication(options: FileReceiptPublicationOpti
       });
       const file = path.join(root, fileName(receiptRef));
       await mkdir(root, { recursive: true });
-      const serialized = `${JSON.stringify({ ...record, publishedAt: now().toISOString() })}\n`;
+      const serialized = Buffer.concat([authorityCanonicalBytes(record), Buffer.from("\n", "utf8")]);
+      const temporary = path.join(root, `.${fileName(receiptRef)}.${randomBytes(8).toString("hex")}.tmp`);
       try {
-        await writeFile(file, serialized, { encoding: "utf8", flag: "wx" });
+        const handle = await open(temporary, "wx", 0o600);
+        try { await handle.writeFile(serialized); await handle.sync(); } finally { await handle.close(); }
+        try { await rename(temporary, file); } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "EEXIST" && (error as NodeJS.ErrnoException).code !== "EPERM") throw error;
+        }
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-        const existing = JSON.parse(await readFile(file, "utf8")) as Partial<LocalAuthorityPublication>;
-        if (existing.receiptRef !== receiptRef || existing.evidenceDigest !== evidenceDigest || existing.reservationId !== reservationId || existing.phase !== input.phase) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST" && (error as NodeJS.ErrnoException).code !== "EPERM") throw error;
+      } finally { await unlink(temporary).catch(() => {}); }
+      try {
+        const existingBytes = await readFile(file);
+        const existing = JSON.parse(existingBytes.toString("utf8")) as Partial<LocalAuthorityPublication>;
+        if (authorityDigest(existing) !== authorityDigest(record) || existing.receiptRef !== receiptRef || existing.evidenceDigest !== evidenceDigest || existing.reservationId !== reservationId || existing.phase !== input.phase || existing.lifecycle !== input.outcome.kind || existing.effectDigest !== input.state.effectDigest || existing.dispatchedRequestDigest !== input.dispatchedRequestDigest || existing.providerResultDigest !== input.outcome.resultDigest) {
           throw new Error("conflicting immutable authority publication");
         }
+      } catch (error) {
+        if (error instanceof Error && error.message === "conflicting immutable authority publication") throw error;
+        throw new Error("authority publication is missing or unreadable", { cause: error });
       }
       return Object.freeze({ receiptRef, evidenceDigest });
     },

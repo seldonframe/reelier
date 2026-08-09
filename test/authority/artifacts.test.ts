@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createArtifactStore } from "reelier/authority/host";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -50,4 +50,13 @@ test("artifact metadata is authenticated, bounded, and references cannot escape 
     await assert.rejects(() => store.read("../../outside"));
     await assert.rejects(() => store.stage({ mediaType: "text/plain", bytes: Buffer.alloc(262145) }));
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("artifact deletion tombstone remains authoritative after restart", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-artifact-tombstone-"));
+  const store = createArtifactStore({ tenant: "tenant", key: Buffer.alloc(32, 4), rootDir: root });
+  const staged = await store.stage({ mediaType: "text/plain", bytes: Buffer.from("secret") });
+  await writeFile(path.join(root, `${staged.commitment.reference}.deleted`), JSON.stringify({ reference: staged.commitment.reference, digest: staged.commitment.digest, deletedAt: new Date().toISOString(), reason: "terminal" }));
+  const restarted = createArtifactStore({ tenant: "tenant", key: Buffer.alloc(32, 4), rootDir: root });
+  await assert.rejects(() => restarted.read(staged.commitment.reference), /unavailable/);
 });

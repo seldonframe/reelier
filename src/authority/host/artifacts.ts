@@ -65,7 +65,13 @@ export function createArtifactStore(input: Readonly<{ tenant: string; key: Uint8
   const evidence = new Map<string, ArtifactDeletionEvidence>();
   const deletionEvidence = async (reference: string) => {
     const memory = evidence.get(reference); if (memory || !root) return memory;
-    try { return JSON.parse(await readFile(fileFor(reference, "deleted"), "utf8")) as ArtifactDeletionEvidence; } catch { return undefined; }
+    try {
+      const parsed = JSON.parse(await readFile(fileFor(reference, "deleted"), "utf8")) as unknown;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("invalid deletion evidence");
+      const value = parsed as Record<string, unknown>;
+      if (Object.keys(value).length !== 4 || value.reference !== reference || typeof value.digest !== "string" || !/^sha256:(?!0{64}$)[0-9a-f]{64}$/.test(value.digest) || typeof value.deletedAt !== "string" || !Number.isFinite(Date.parse(value.deletedAt)) || (value.reason !== "terminal" && value.reason !== "expired")) throw new Error("invalid deletion evidence");
+      return Object.freeze(value as unknown as ArtifactDeletionEvidence);
+    } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw new Error("invalid artifact deletion evidence", { cause: error }); }
   };
   return Object.freeze({
     async stage(value: Parameters<ArtifactStore["stage"]>[0]) {
@@ -80,18 +86,19 @@ export function createArtifactStore(input: Readonly<{ tenant: string; key: Uint8
       return Object.freeze({ commitment });
     },
     async read(reference: string) {
+      if (await deletionEvidence(reference)) throw new Error("artifact unavailable");
       const stored = await load(reference); if (!stored || stored.commitment.deletionState === "deleted") throw new Error("artifact unavailable");
       if (now().getTime() >= Date.parse(stored.commitment.expiresAt)) { await remove(reference, stored, "expired"); throw new Error("artifact expired"); }
       const decipher = createDecipheriv("aes-256-gcm", unwrapKey(stored.wrappedKey), stored.iv); decipher.setAAD(Buffer.from(JSON.stringify(stored.commitment), "utf8")); decipher.setAuthTag(stored.tag); const plaintext = Buffer.concat([decipher.update(stored.ciphertext), decipher.final()]);
       if (plaintext.byteLength !== stored.commitment.byteCount || `sha256:${createHash("sha256").update(plaintext).digest("hex")}` !== stored.commitment.digest) throw new Error("artifact commitment mismatch");
       return plaintext;
     },
-    async deleteAfterTerminal(reference: string) { const stored = await load(reference); if (!stored) return; await remove(reference, stored, "terminal"); },
+    async deleteAfterTerminal(reference: string) { if (await deletionEvidence(reference)) return; const stored = await load(reference); if (!stored) return; await remove(reference, stored, "terminal"); },
     deletionEvidence,
   });
 
   async function remove(reference: string, stored: Stored, reason: "terminal" | "expired"): Promise<void> {
     const deletedAt = now().toISOString(); evidence.set(reference, Object.freeze({ reference, digest: stored.commitment.digest, deletedAt, reason })); records.delete(reference);
-    if (root) { await writeFile(fileFor(reference, "deleted"), JSON.stringify(evidence.get(reference)), { encoding: "utf8" }); await Promise.all([rm(fileFor(reference, "json"), { force: true }), rm(fileFor(reference, "bin"), { force: true })]); }
+    if (root) { try { await writeFile(fileFor(reference, "deleted"), JSON.stringify(evidence.get(reference)), { encoding: "utf8", flag: "wx" }); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; } await Promise.all([rm(fileFor(reference, "json"), { force: true }), rm(fileFor(reference, "bin"), { force: true })]); }
   }
 }
