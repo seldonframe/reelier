@@ -28,6 +28,10 @@ const refusedDecisionContext = {
 const decisionContextDigest = "sha256:" + createHash("sha256").update(canonicalize(acceptedDecisionContext), "utf8").digest("hex");
 const gateEvent = { v: "reelier.gate-event/v1", eventId: "event_1", at, verdict: "accepted", reasonCode: "accepted", decisionContextDigest };
 const gateEventDigest = "sha256:" + createHash("sha256").update(canonicalize(gateEvent), "utf8").digest("hex");
+const evidenceEventDigest = "sha256:" + createHash("sha256").update(canonicalize({ v: "reelier.authority-evidence-event/internal-v1", reservationId: "reservation_1", state: "reserved", at }), "utf8").digest("hex");
+const evidenceDispatchEventDigest = "sha256:" + createHash("sha256").update(canonicalize({ v: "reelier.authority-evidence-event/internal-v1", reservationId: "reservation_1", state: "dispatched", at: "2026-01-01T00:00:01.000Z" }), "utf8").digest("hex");
+const authorityEvidence = { v: "reelier.authority-evidence/v1", evidenceId: "evidence_1", receiptId: "receipt_1", decisionContextDigest, gateEventDigest, effectDigest: "sha256:" + "6".repeat(64), reservationId: "reservation_1", timeline: [{ state: "reserved", at, eventDigest: evidenceEventDigest }, { state: "dispatched", at: "2026-01-01T00:00:01.000Z", eventDigest: evidenceDispatchEventDigest }], dispatchedRequestDigest: "sha256:" + "a".repeat(64), providerResponseDigest: "sha256:" + "b".repeat(64), reconciliation: { recipeId: "fixture-reconcile", verdict: "not-attempted", normalizedProjectionDigest: null }, topology: { egress: "unchecked", secretIsolation: "unchecked", ingressAuthentication: "verified", notes: null } };
+const authorityEvidenceDigest = "sha256:" + createHash("sha256").update(canonicalize(authorityEvidence), "utf8").digest("hex");
 const vectorSourceRefsDigest = "sha256:" + createHash("sha256").update(canonicalize({ v: "reelier.source-refs/internal-v1", sourceRefs: { appointment: "ref_1" } }), "utf8").digest("hex");
 const vectorObservations = [{ index: 0, planDigest: "sha256:" + "a".repeat(64), endpointId: "appointments.get", rawDigest: "sha256:" + "b".repeat(64) }];
 const vectorReadSetDigest = "sha256:" + createHash("sha256").update(canonicalize({ v: "reelier.source-read-set/internal-v1", sourceRefsDigest: vectorSourceRefsDigest, observations: vectorObservations }), "utf8").digest("hex");
@@ -42,7 +46,8 @@ const vectors = {
   "compiled-capability": { v: "reelier.compiled-capability/v1", tenant: "tenant_1", requester: "requester_1", definitionAlias: "definition_1", requestDigest: digest, requestKey: digest, contractDigest: digest, sourceBundleDigest: digest, sourceSnapshotDigest: digest, authorityStateDigest: digest, limits, limitsDigest: vectorLimitsDigest, capabilityId: "capability_1", outcomeKey: digest, effectDigest: digest, issuedAt: at, expiresAt: "2026-01-01T00:01:00.000Z" },
   "decision-context": acceptedDecisionContext,
   "gate-event": gateEvent,
-  "authority-receipt": { v: "reelier.authority-receipt/v1", receiptId: "receipt_1", gateEventDigest, decisionContextDigest, decisionContext: acceptedDecisionContext, claims: { authorization: "verified", sourceCompleteness: "verified", dispatch: "verified", providerAcknowledgment: "unchecked", reconciliation: "absent", topology: "unchecked", completeness: "unchecked" } },
+  "authority-evidence": authorityEvidence,
+  "authority-receipt": { v: "reelier.authority-receipt/v1", receiptId: "receipt_1", gateEventDigest, decisionContextDigest, decisionContext: acceptedDecisionContext, evidenceDigest: authorityEvidenceDigest, priorReceiptDigest: null, claims: { authorization: "verified", sourceCompleteness: "verified", dispatch: "verified", providerAcknowledgment: "unchecked", reconciliation: "absent", topology: "unchecked", completeness: "unchecked" } },
   "pack-manifest": { v: "reelier.outcome-pack-manifest/v1", packId: "first_party", packDigest: digest, definitions: ["definition_1"] },
 };
 function makeVector(kind, value) {

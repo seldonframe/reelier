@@ -111,6 +111,15 @@ const FORBIDDEN_SOURCE_PATTERNS: readonly [RegExp, string][] = [
 
 const STATIC_RUNTIME_SPECIFIER_ALLOWLIST: Readonly<Record<string, ReadonlySet<string>>> = Object.freeze({
   "src/authority/compile.ts": new Set(["node:crypto", "./types.js", "./wire.js", "./contract.js", "./source.js", "./pack.js", "./errors.js"]),
+  "src/packs/github/manifest.ts": new Set(["../../authority/wire.js"]),
+  "src/packs/github/source.ts": new Set(["../../authority/source.js", "../../authority/wire.js", "./manifest.js"]),
+  "src/packs/github/compile.ts": new Set(["../../authority/wire.js", "./manifest.js"]),
+  "src/packs/github/reconcile.ts": new Set(["../../authority/wire.js", "./manifest.js", "../types.js"]),
+  "src/packs/slack-topic/manifest.ts": new Set(["../../authority/wire.js"]),
+  "src/packs/slack-topic/source.ts": new Set(["../../authority/source.js", "../../authority/wire.js", "./manifest.js"]),
+  "src/packs/slack-topic/compile.ts": new Set(["../../authority/wire.js", "./manifest.js"]),
+  "src/packs/slack-topic/reconcile.ts": new Set(["../../authority/wire.js", "./manifest.js", "../types.js"]),
+  "src/packs/index.ts": new Set(["../authority/pack.js", "../authority/source.js", "./github/compile.js", "./github/manifest.js", "./github/source.js", "./github/reconcile.js", "./github/index.js", "./slack-topic/compile.js", "./slack-topic/manifest.js", "./slack-topic/source.js", "./slack-topic/reconcile.js", "./slack-topic/index.js"]),
 });
 const STATIC_RUNTIME_SPECIFIER = /\b(?:import|export)\s+(?!type\b)(?:(?:[^"'`;]*?\bfrom\s*)?["']([^"']+)["'])/gs;
 

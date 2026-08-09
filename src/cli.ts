@@ -120,6 +120,7 @@ import { buildDiscoveryBundle, discoverOpportunities, formatDiscoveryPreview, si
 import { collectClaudeCodeCoverage, collectCodexCoverage, renderCoverageReport, renderCoverageView } from "./coverage.js";
 import { uploadDiscoveryBundle } from "./discovery-client.js";
 import { createBridgeServer } from "./bridge.js";
+import { runAuthorityCommand } from "./authority/cli.js";
 
 // Exported (alongside cmdPush below) so test/push-cli.test.ts can drive
 // cmdPush's console output directly with a fake ParsedArgs + monkeypatched
@@ -195,6 +196,10 @@ function parseArgv(argv: string[]): ParsedArgs {
       arg === "--expires" ||
       arg === "--key" ||
       arg === "--path"
+      || arg === "--input"
+      || arg === "--pack"
+      || arg === "--tenant"
+      || arg === "--signer"
     ) {
       const val = argv[++i];
       if (!val) {
@@ -4618,6 +4623,8 @@ async function main(): Promise<number> {
       return cmdCi(args);
     case "policy":
       return cmdPolicy(args);
+    case "authority":
+      return runAuthorityCommand(args);
     case "init":
       return cmdInit(args);
     case "discover":

@@ -1,41 +1,6 @@
+/** Portable Path C ABI: closed wire schemas, JCS digests, signatures, and offline bundle verification. */
 export * from "./types.js";
-export * from "./wire.js";
-export * from "./crypto.js";
-export * from "./ledger.js";
-export {
-  AuthorityLedgerReadError,
-  FsAuthorityLedger,
-  reservationFaultPoints,
-  dispatchFaultPoints,
-  resultFaultPoints,
-  ledgerFaultPoints,
-  type LedgerFaultPoint,
-  type FsAuthorityLedgerOptions,
-} from "./host/fs-ledger.js";
-export {
-  digestOutcomeRequest,
-  deriveAuthorityRequestKey,
-  deriveContractWindowLimitKey,
-  deriveProviderSourceTriggerLimitKey,
-} from "./keys.js";
-export { deriveSemanticOutcomeKey } from "./compile.js";
-export {
-  verifyStoredContract,
-  validateVerifiedContractEligibility,
-  validateStoredContract,
-  isValidatedContract,
-  type VerifiedStoredContract,
-  type ValidatedContract,
-  type StoredSignedContract,
-} from "./contract.js";
-export {
-  createSourceRegistry,
-  planSourceReads,
-  materializeSourceBundle,
-  isValidatedSourceBundle,
-  type RegisteredSourceResolver,
-  type PlannedSourceRead,
-  type RawSourceObservation,
-  type SourceProjection,
-  type ValidatedSourceBundle,
-} from "./source.js";
+export { authorityCanonicalBytes, authorityDigest, parseAuthorityWire, parseCanonicalAuthorityJson, parsePortableAuthorityEvidence, assertAcceptedDecisionContext, decisionContextPresence } from "./wire.js";
+export { signAuthorityDigest, verifyAuthoritySignature } from "./crypto.js";
+export { createAuthorityEvidence, createAuthorityReceipt, createAuthorityReceiptBundle, parseAuthorityReceiptBundle, digestAuthorityReceiptBundle, authorityEvidenceCanonicalBytes } from "./evidence.js";
+export { verifyAuthorityReceiptBundle, verifyAuthorityReceipt, type AuthorityReceiptVerificationOptions, type VerifiedAuthorityReceiptBundle } from "./verify.js";

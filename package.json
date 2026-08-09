@@ -24,6 +24,8 @@
     "./tools": "./dist/tools.js",
     "./serve": "./dist/serve.js",
     "./authority": "./dist/authority/index.js",
+    "./authority/pack": "./dist/authority/pack/index.js",
+    "./authority/host": "./dist/authority/host/index.js",
     "./plugin": "./dist/plugin.js",
     "./bridge": "./dist/bridge.js",
     "./bridge-client": "./dist/bridge-client.js",
@@ -69,7 +71,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && node scripts/build-authority-contract.mjs --copy-schemas",
+    "build": "tsc -p tsconfig.json && node scripts/build-authority-contract.mjs --copy-schemas && node scripts/build-packs.mjs",
     "build:authority-contract": "node scripts/build-authority-contract.mjs",
     "check:authority-contract": "node scripts/build-authority-contract.mjs --check",
     "lint:fault-pins": "node scripts/lint-fault-pins.mjs",

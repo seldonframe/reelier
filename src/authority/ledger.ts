@@ -7,6 +7,7 @@ export type LedgerState =
   | "acknowledged"
   | "definitive-failure"
   | "ambiguous"
+  | "cancelled"
   | "reconciled";
 
 export interface LimitSlotIntent {
@@ -60,7 +61,9 @@ export interface ReservationSnapshot {
 }
 
 export type TransitionEvent =
-  | Readonly<{ to: "dispatched" | "ambiguous" }>
+  | Readonly<{ to: "dispatched" }>
+  | Readonly<{ to: "ambiguous"; resultDigest?: string }>
+  | Readonly<{ to: "cancelled"; resultDigest: string }>
   | Readonly<{ to: "acknowledged" | "definitive-failure" | "reconciled"; resultDigest: string }>;
 
 export interface ReservationHistoryEntry {
