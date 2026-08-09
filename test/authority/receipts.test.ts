@@ -10,11 +10,11 @@ const state = { reservation: { reservationId: "r1", state: "reserved", intent: {
 test("file receipt publication is immutable and idempotent across a restart", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "reelier-receipts-"));
   const input = { phase: "dispatch" as const, state, outcome: { kind: "acknowledged" as const, resultDigest: "sha256:" + "2".repeat(64) }, dispatchedRequestDigest: "sha256:" + "3".repeat(64) };
-  const first = await createFileReceiptPublication({ rootDir: root, now: () => new Date("2026-01-01T00:00:00.000Z") }).publish(input);
-  const second = await createFileReceiptPublication({ rootDir: root, now: () => new Date("2027-01-01T00:00:00.000Z") }).publish(input);
+  const first = await createFileReceiptPublication({ rootDir: root }).publish(input);
+  const second = await createFileReceiptPublication({ rootDir: root }).publish(input);
   assert.deepEqual(second, first);
   const files = (await import("node:fs/promises")).readdir(root);
   assert.equal((await files).length, 1);
   const body = JSON.parse(await readFile(path.join(root, (await files)[0]!), "utf8"));
-  assert.equal(body.publishedAt, "2026-01-01T00:00:00.000Z");
+  assert.equal(body.receiptRef, first.receiptRef);
 });

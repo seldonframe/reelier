@@ -69,7 +69,23 @@ function parseSimpleYaml(raw: string): unknown {
     const parent = stack[stack.length - 1].value;
     if (text.startsWith("- ")) {
       if (!Array.isArray(parent)) throw new TypeError("invalid authority.yml list indentation");
-      parent.push(parseYamlScalar(text.slice(2).trim()));
+      const item = text.slice(2).trim();
+      const itemColon = item.indexOf(":");
+      if (itemColon > 0) {
+        const object: Record<string, unknown> = {};
+        parent.push(object);
+        const key = item.slice(0, itemColon).trim();
+        const rest = item.slice(itemColon + 1).trim();
+        if (!key) throw new TypeError("invalid authority.yml list mapping");
+        if (rest) object[key] = parseYamlScalar(rest);
+        else {
+          const next = lines.find(candidate => candidate !== line && (candidate.length - candidate.trimStart().length) > indent && candidate.trim().length > 0);
+          object[key] = next && next.trimStart().startsWith("-") ? [] : {};
+        }
+        stack.push({ indent, value: object });
+      } else {
+        parent.push(parseYamlScalar(item));
+      }
       continue;
     }
     const colon = text.indexOf(":");
