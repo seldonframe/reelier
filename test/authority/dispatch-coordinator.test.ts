@@ -38,3 +38,17 @@ test("restart recovery publishes cancellation and ambiguity before terminal ledg
   assert.ok(phases.some(phase => phase.startsWith("cancelled:")));
   assert.equal(l.get().state, "cancelled");
 });
+
+test("dispatch performs authoritative read-back before publishing the terminal receipt", async () => {
+  const l = ledger(); const order: string[] = [];
+  const publication = { async publish(input: { phase: string; outcome: any }) { order.push(`publish:${input.outcome.reconciliationStatus}`); return { receiptRef: "sha256:" + "4".repeat(64), evidenceDigest: "sha256:" + "5".repeat(64) }; } };
+  const coordinator = createDispatchCoordinator(l, {
+    async dispatch() { order.push("dispatch"); return { kind: "acknowledged" as const, resultDigest: "sha256:" + "1".repeat(64) }; },
+    async reconcile(_state, outcome) { order.push("reconcile"); return { ...outcome, reconciliationStatus: "matched" as const, normalizedProjectionDigest: "sha256:" + "2".repeat(64) }; },
+  }, undefined, publication);
+  const handle = createReservedDispatchHandle({ reservation: l.get(), effect: { x: 1 }, effectCanonicalBase64: "e30=", effectDigest: "sha256:" + "1".repeat(64) });
+  const outcome = await coordinator.dispatch(handle);
+  assert.equal(outcome.reconciliationStatus, "matched");
+  assert.deepEqual(order, ["dispatch", "reconcile", "publish:matched", "publish:matched"]);
+  assert.equal(l.get().state, "reconciled");
+});

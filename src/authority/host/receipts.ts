@@ -17,11 +17,14 @@ export interface LocalAuthorityPublication {
   readonly receiptRef: string;
   readonly evidenceDigest: string;
   readonly reservationId: string;
-  readonly phase: "dispatch" | "cancelled" | "ambiguous";
+  readonly phase: "dispatch" | "cancelled" | "ambiguous" | "reconcile";
   readonly lifecycle: DispatchOutcome["kind"];
   readonly effectDigest: string;
   readonly dispatchedRequestDigest: string | null;
   readonly providerResultDigest: string;
+  readonly reconciliationStatus: string | null;
+  readonly normalizedProjectionDigest: string | null;
+  readonly priorReceiptDigest: string | null;
 }
 
 export interface FileReceiptPublicationOptions {
@@ -36,7 +39,7 @@ function fileName(receiptRef: string): string {
 export function createFileReceiptPublication(options: FileReceiptPublicationOptions): DispatchPublication {
   const root = path.resolve(options.rootDir);
   return Object.freeze({
-    async publish(input: Readonly<{ phase: "dispatch" | "cancelled" | "ambiguous"; state: DispatchRequestState; outcome: DispatchOutcome; dispatchedRequestDigest: string | null }>) {
+    async publish(input: Readonly<{ phase: "dispatch" | "cancelled" | "ambiguous" | "reconcile"; state: DispatchRequestState; outcome: DispatchOutcome; dispatchedRequestDigest: string | null; priorReceiptDigest?: string | null }>) {
       const reservationId = input.state.reservation.reservationId;
       const stable = {
         v: "reelier.authority-publication-preimage/internal-v1",
@@ -46,6 +49,9 @@ export function createFileReceiptPublication(options: FileReceiptPublicationOpti
         effectDigest: input.state.effectDigest,
         dispatchedRequestDigest: input.dispatchedRequestDigest,
         providerResultDigest: input.outcome.resultDigest,
+        reconciliationStatus: input.outcome.reconciliationStatus ?? null,
+        normalizedProjectionDigest: input.outcome.normalizedProjectionDigest ?? null,
+        priorReceiptDigest: input.priorReceiptDigest ?? null,
       } as const;
       const receiptRef = authorityDigest(stable);
       const evidence = {
@@ -56,6 +62,9 @@ export function createFileReceiptPublication(options: FileReceiptPublicationOpti
         effectDigest: input.state.effectDigest,
         dispatchedRequestDigest: input.dispatchedRequestDigest,
         providerResultDigest: input.outcome.resultDigest,
+        reconciliationStatus: input.outcome.reconciliationStatus ?? null,
+        normalizedProjectionDigest: input.outcome.normalizedProjectionDigest ?? null,
+        priorReceiptDigest: input.priorReceiptDigest ?? null,
       } as const;
       const evidenceDigest = authorityDigest(evidence);
       const record: LocalAuthorityPublication = Object.freeze({
@@ -68,6 +77,9 @@ export function createFileReceiptPublication(options: FileReceiptPublicationOpti
         effectDigest: input.state.effectDigest,
         dispatchedRequestDigest: input.dispatchedRequestDigest,
         providerResultDigest: input.outcome.resultDigest,
+        reconciliationStatus: input.outcome.reconciliationStatus ?? null,
+        normalizedProjectionDigest: input.outcome.normalizedProjectionDigest ?? null,
+        priorReceiptDigest: input.priorReceiptDigest ?? null,
       });
       const file = path.join(root, fileName(receiptRef));
       await mkdir(root, { recursive: true });
@@ -85,7 +97,7 @@ export function createFileReceiptPublication(options: FileReceiptPublicationOpti
       try {
         const existingBytes = await readFile(file);
         const existing = JSON.parse(existingBytes.toString("utf8")) as Partial<LocalAuthorityPublication>;
-        if (authorityDigest(existing) !== authorityDigest(record) || existing.receiptRef !== receiptRef || existing.evidenceDigest !== evidenceDigest || existing.reservationId !== reservationId || existing.phase !== input.phase || existing.lifecycle !== input.outcome.kind || existing.effectDigest !== input.state.effectDigest || existing.dispatchedRequestDigest !== input.dispatchedRequestDigest || existing.providerResultDigest !== input.outcome.resultDigest) {
+        if (authorityDigest(existing) !== authorityDigest(record) || existing.receiptRef !== receiptRef || existing.evidenceDigest !== evidenceDigest || existing.reservationId !== reservationId || existing.phase !== input.phase || existing.lifecycle !== input.outcome.kind || existing.effectDigest !== input.state.effectDigest || existing.dispatchedRequestDigest !== input.dispatchedRequestDigest || existing.providerResultDigest !== input.outcome.resultDigest || existing.reconciliationStatus !== (input.outcome.reconciliationStatus ?? null) || existing.normalizedProjectionDigest !== (input.outcome.normalizedProjectionDigest ?? null) || existing.priorReceiptDigest !== (input.priorReceiptDigest ?? null)) {
           throw new Error("conflicting immutable authority publication");
         }
       } catch (error) {
