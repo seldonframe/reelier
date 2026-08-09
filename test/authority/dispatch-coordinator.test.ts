@@ -28,3 +28,13 @@ test("publication is durable before acknowledged, cancelled, and recovered termi
   const cancelHandle = createReservedDispatchHandle({ reservation: l2.get(), effect: {}, effectCanonicalBase64: "e30=", effectDigest: "sha256:" + "1".repeat(64) }); await cancelCoordinator.cancel(cancelHandle); assert.ok(phases.includes("cancelled"));
   const l3 = ledger(); await l3.transition("r1", "reserved", { to: "dispatched" }); const recoverCoordinator = createDispatchCoordinator(l3, { async dispatch() { throw new Error("must not resend"); } }, undefined, publication2); await recoverCoordinator.recover(); assert.ok(phases.includes("ambiguous"));
 });
+
+test("restart recovery publishes cancellation and ambiguity before terminal ledger transitions", async () => {
+  const phases: string[] = [];
+  const l = ledger();
+  const publication = { async publish(input: { phase: string; state: any }) { phases.push(`${input.phase}:${input.state.effectCanonicalBase64}`); return { receiptRef: "sha256:" + "7".repeat(64), evidenceDigest: "sha256:" + "6".repeat(64) }; } };
+  const coordinator = createDispatchCoordinator(l, { async dispatch() { throw new Error("must not dispatch"); } }, undefined, publication);
+  await coordinator.recover();
+  assert.ok(phases.some(phase => phase.startsWith("cancelled:")));
+  assert.equal(l.get().state, "cancelled");
+});

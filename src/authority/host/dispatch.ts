@@ -2,7 +2,7 @@ import { authorityDigest } from "../wire.js";
 import { unwrapReservedDispatchHandle, type ReservedDispatchHandle } from "../gate.js";
 import type { AuthorityLedger, LedgerState } from "../ledger.js";
 
-export interface DispatchRequestState { readonly reservation: { readonly reservationId: string; readonly state: LedgerState; readonly intent: { readonly effectDigest: string } }; readonly effect: unknown; readonly effectCanonicalBase64: string; readonly effectDigest: string; readonly [key: string]: unknown; }
+export interface DispatchRequestState { readonly reservation: { readonly reservationId: string; readonly state: LedgerState; readonly intent: { readonly effectDigest: string; readonly effectCanonicalBase64?: string } }; readonly effect: unknown; readonly effectCanonicalBase64: string; readonly effectDigest: string; readonly [key: string]: unknown; }
 export interface DispatchOutcome { readonly kind: "acknowledged" | "definitive-failure" | "ambiguous"; readonly resultDigest: string; readonly providerResultDigest?: string; readonly providerStatus?: number; readonly responseDigest?: string; readonly receiptRef?: string; readonly evidenceDigest?: string; }
 export interface DispatchAdapter { dispatch(state: DispatchRequestState): Promise<DispatchOutcome>; reconcile?(state: DispatchRequestState, outcome: DispatchOutcome): Promise<DispatchOutcome>; }
 export interface DispatchEvidenceWriter { persist(input: Readonly<{ state: DispatchRequestState; outcome: DispatchOutcome; dispatchedRequestDigest: string; }>): Promise<void>; }
@@ -42,13 +42,22 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
       return Object.freeze({ ...outcome, ...(published ? { providerResultDigest: outcome.resultDigest } : {}), resultDigest: result.reservation.resultDigest ?? terminalDigest, receiptRef: published?.receiptRef, evidenceDigest: published?.evidenceDigest });
     },
     async recover(): Promise<readonly string[]> {
-      const recovered = await ledger.recover();
+      const recovered = await ledger.recover({ deferTerminal: true });
       if (!recovered.ok) throw new Error(`authority recovery failed: ${recovered.reason}`);
       const ambiguous: string[] = [];
       for (const reservation of recovered.reservations) {
+        if (reservation.state === "reserved") {
+          const resultDigest = authorityDigest({ v: "reelier.cancelled-result/v1", reservationId: reservation.reservationId, reason: "restart" });
+          const state = recoveredState(reservation);
+          const outcome = Object.freeze({ kind: "definitive-failure" as const, resultDigest });
+          const published = publication ? await publication.publish({ phase: "cancelled", state, outcome, dispatchedRequestDigest: null }) : undefined;
+          const transitioned = await ledger.transition(reservation.reservationId, "reserved", { to: "cancelled", resultDigest: published?.receiptRef ?? resultDigest });
+          if (!transitioned.ok) throw new Error(`cancellation recovery transition refused: ${transitioned.reason}`);
+          continue;
+        }
         if (reservation.state === "dispatched") {
           const resultDigest = authorityDigest({ v: "reelier.ambiguous-result/v1", reservationId: reservation.reservationId });
-          const state = { reservation, effect: {}, effectCanonicalBase64: "", effectDigest: reservation.intent.effectDigest } as DispatchRequestState;
+          const state = recoveredState(reservation);
           const outcome = Object.freeze({ kind: "ambiguous" as const, resultDigest });
           const published = publication ? await publication.publish({ phase: "ambiguous", state, outcome, dispatchedRequestDigest: authorityDigest({ v: "reelier.dispatched-request/v1", reservationId: reservation.reservationId, effectDigest: reservation.intent.effectDigest }) }) : undefined;
           const transitioned = await ledger.transition(reservation.reservationId, "dispatched", { to: "ambiguous" });
@@ -59,4 +68,13 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
       return Object.freeze(ambiguous);
     },
   });
+}
+
+function recoveredState(reservation: DispatchRequestState["reservation"]): DispatchRequestState {
+  const encoded = reservation.intent.effectCanonicalBase64;
+  let effect: unknown = {};
+  if (encoded) {
+    try { effect = JSON.parse(Buffer.from(encoded, "base64").toString("utf8")); } catch { effect = {}; }
+  }
+  return { reservation, effect, effectCanonicalBase64: encoded ?? "", effectDigest: reservation.intent.effectDigest } as DispatchRequestState;
 }

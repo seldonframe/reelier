@@ -552,10 +552,10 @@ export class FsAuthorityLedger implements AuthorityLedger {
     });
   }
 
-  async recover(): Promise<RecoverResult> {
+  async recover(options: Readonly<{ deferTerminal?: boolean }> = {}): Promise<RecoverResult> {
     return this.withLock("reservation", async () => {
       try {
-        const view = await this.prepare(false, true, "reservation");
+        const view = await this.prepare(false, options.deferTerminal !== true, "reservation");
         return frozen({
           ok: true,
           reservations: Object.freeze([...view.reservations.values()].sort((a, b) => a.reservationId.localeCompare(b.reservationId)).map(detachReservation)),
@@ -3346,6 +3346,15 @@ function normalizeIntent(input: ReservationIntent): StoredReservationIntent {
   const request = Buffer.from(input.canonicalRequestBytes);
   const capability = Buffer.from(input.capabilityBytes);
   if (request.length === 0 || capability.length === 0) throw new TypeError("canonical bytes must be nonempty");
+  let effectCanonicalBase64: string | undefined;
+  if (input.effectCanonicalBase64 !== undefined) {
+    if (typeof input.effectCanonicalBase64 !== "string") throw new TypeError("effect canonical bytes must be base64");
+    const effectBytes = Buffer.from(input.effectCanonicalBase64, "base64");
+    if (effectBytes.length === 0 || effectBytes.toString("base64") !== input.effectCanonicalBase64) throw new TypeError("noncanonical effect base64");
+    const effect = parseCanonicalAuthorityJson("transport-effect", effectBytes.toString("utf8"));
+    if (authorityDigest(effect) !== input.effectDigest) throw new TypeError("effect canonical byte digest mismatch");
+    effectCanonicalBase64 = input.effectCanonicalBase64;
+  }
   if (rawDigest(request) !== input.canonicalRequestDigest || sealed.requestDigest !== input.canonicalRequestDigest || rawDigest(capability) !== input.capabilityDigest) throw new TypeError("canonical byte digest mismatch");
   const requestWire = parseCanonicalAuthorityJson("outcome-request", request.toString("utf8")) as OutcomeRequest;
   const capabilityWire = parseCanonicalAuthorityJson("compiled-capability", capability.toString("utf8")) as CompiledCapability;
@@ -3376,14 +3385,14 @@ function normalizeIntent(input: ReservationIntent): StoredReservationIntent {
     capabilityId: input.capabilityId, capabilityDigest: input.capabilityDigest, capabilityBase64: capability.toString("base64"),
     contractDigest: sealed.contractDigest, sourceBundleDigest: sealed.sourceBundleDigest, sourceSnapshotDigest: sealed.sourceSnapshotDigest,
     authorityStateDigest: sealed.authorityStateDigest, limits: frozen({ ...sealed.limits }), limitsDigest: sealed.limitsDigest,
-    outcomeKey: input.outcomeKey, effectDigest: input.effectDigest, issuedAt: input.issuedAt, expiresAt: input.expiresAt,
+    outcomeKey: input.outcomeKey, effectDigest: input.effectDigest, ...(effectCanonicalBase64 === undefined ? {} : { effectCanonicalBase64 }), issuedAt: input.issuedAt, expiresAt: input.expiresAt,
     limitSlots: Object.freeze(slots),
   });
 }
 
 function normalizeStoredIntent(input: StoredReservationIntent): StoredReservationIntent {
   if (!input || typeof input !== "object" || typeof input.canonicalRequestBase64 !== "string" || typeof input.capabilityBase64 !== "string") throw new LedgerCorruption("malformed stored intent");
-  assertExactKeys(input, ["authorityStateDigest", "capabilityBase64", "capabilityDigest", "capabilityId", "canonicalRequestBase64", "canonicalRequestDigest", "contractDigest", "decisionContextDigest", "definitionAlias", "effectDigest", "expiresAt", "ingressClaimDigest", "issuedAt", "limitSlots", "limits", "limitsDigest", "outcomeKey", "requestDigest", "requestId", "requestKey", "requester", "sourceBundleDigest", "sourceSnapshotDigest", "tenant"]);
+  assertExactKeysOptional(input, ["authorityStateDigest", "capabilityBase64", "capabilityDigest", "capabilityId", "canonicalRequestBase64", "canonicalRequestDigest", "contractDigest", "decisionContextDigest", "definitionAlias", "effectDigest", "expiresAt", "ingressClaimDigest", "issuedAt", "limitSlots", "limits", "limitsDigest", "outcomeKey", "requestDigest", "requestId", "requestKey", "requester", "sourceBundleDigest", "sourceSnapshotDigest", "tenant"], ["effectCanonicalBase64"]);
   if (!Array.isArray(input.limitSlots)) throw new LedgerCorruption("malformed stored limit slots");
   for (const slot of input.limitSlots) assertExactKeys(slot, ["key", "kind", "maximum"]);
   const request = Buffer.from(input.canonicalRequestBase64, "base64");
@@ -3435,6 +3444,11 @@ function assertJournalEvent(event: JournalEvent): void {
 
 function assertExactKeys(value: object, expected: readonly string[]): void {
   if (Object.keys(value).sort().join("\0") !== [...expected].sort().join("\0")) throw new LedgerCorruption("record contains missing or unexpected fields");
+}
+function assertExactKeysOptional(value: object, required: readonly string[], optional: readonly string[]): void {
+  const allowed = new Set([...required, ...optional]);
+  const actual = Object.keys(value);
+  if (actual.some(key => !allowed.has(key)) || required.some(key => !Object.prototype.hasOwnProperty.call(value, key))) throw new LedgerCorruption("record contains missing or unexpected fields");
 }
 
 function applyTransition(current: ReservationSnapshot, event: TransitionJournalEvent): ReservationSnapshot {

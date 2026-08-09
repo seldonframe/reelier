@@ -212,6 +212,39 @@ async function snapshotRootArtifacts(root:string):Promise<ReadonlyArray<Readonly
 
 async function commitRawBoundIntent(root:string):Promise<Readonly<{candidate:ReservationIntent;reservation:ReservationSnapshot}>>{const candidate=intent(),ledger=new RawFsAuthorityLedger(root,{now:()=>t0}),request=JSON.parse(Buffer.from(candidate.canonicalRequestBytes).toString("utf8")),authenticated=authenticateOutcomeRequest({tenant:candidate.tenant,requester:candidate.requester,definitionAlias:candidate.definitionAlias,request}),binding=await ledger.bindIngress(authenticated);assert.equal(binding.ok,true);if(!binding.ok)throw new Error("fixture ingress bind refused");const boundCandidate:ReservationIntent={...candidate,ingressClaimDigest:binding.ingressClaimDigest},created=await ledger.reserve(boundCandidate);assert.equal(created.ok,true);if(!created.ok)throw new Error("fixture reservation refused");return {candidate:boundCandidate,reservation:created.reservation};}
 
+test("reservation retains an exact transport effect commitment for restart evidence", async () => {
+  await withRoot(async root => {
+    const effect = { v: "reelier.transport-effect/v1", endpointId: "write", method: "POST", path: "/items", query: "", headers: { "Content-Type": "application/json" }, bodyBase64: Buffer.from("{}").toString("base64"), riskClass: "test", idempotency: "native", preconditions: [], reconciliation: { recipeId: "recipe" } } as const;
+    const effectBytes = authorityCanonicalBytes(effect);
+    const candidate = intent({ effectDigest: authorityDigest(effect), effectCanonicalBase64: effectBytes.toString("base64") });
+    const ledger = new FsAuthorityLedger(root, { now: () => t0 });
+    const request = JSON.parse(Buffer.from(candidate.canonicalRequestBytes).toString("utf8"));
+    const binding = await ledger.bindIngress(authenticateOutcomeRequest({ tenant: candidate.tenant, requester: candidate.requester, definitionAlias: candidate.definitionAlias, request }));
+    assert.equal(binding.ok, true);
+    if (!binding.ok) return;
+    const reserved = await ledger.reserve({ ...candidate, ingressClaimDigest: binding.ingressClaimDigest });
+    assert.equal(reserved.ok, true);
+    if (!reserved.ok) return;
+    const restarted = new FsAuthorityLedger(root, { now: () => t0 });
+    const snapshot = await restarted.getReservation(reserved.reservation.reservationId);
+    assert.equal(snapshot?.intent.effectCanonicalBase64, effectBytes.toString("base64"));
+  });
+});
+
+test("deferred recovery leaves orphaned reservations for publication before transition", async () => {
+  await withRoot(async root => {
+    const ledger = new FsAuthorityLedger(root, { now: () => t0 });
+    const created = await ledger.reserve(intent());
+    assert.equal(created.ok, true);
+    if (!created.ok) return;
+    const pending = await new FsAuthorityLedger(root, { now: () => t0 }).recover({ deferTerminal: true });
+    assert.equal(pending.ok, true);
+    if (!pending.ok) return;
+    assert.equal(pending.reservations[0]?.state, "reserved");
+    assert.equal((await ledger.transition(created.reservation.reservationId, "reserved", { to: "cancelled", resultDigest: digest("a") })).ok, true);
+  });
+});
+
 test("100 real processes converge on one committed reservation and one dispatch eligibility", { timeout: 120_000 }, async () => {
   await withRoot(async root => {
     const results = await Promise.all(Array.from({ length: 100 }, () => spawnReserve(root, intent())));
