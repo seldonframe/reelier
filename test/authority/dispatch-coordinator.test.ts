@@ -16,3 +16,15 @@ test("dispatch consumes an opaque handle once and records ambiguity on restart",
   await assert.rejects(() => coordinator.dispatch(handle));
   const l2 = ledger(); await l2.transition("r1", "reserved", { to: "dispatched" }); const recovered = await createDispatchCoordinator(l2, { async dispatch() { throw new Error("must not resend"); } }).recover(); assert.deepEqual(recovered, ["r1"]); assert.equal(l2.get().state, "ambiguous");
 });
+
+test("publication is durable before acknowledged, cancelled, and recovered terminal transitions", async () => {
+  const l = ledger(); const phases: string[] = [];
+  const publication = { async publish(input: { phase: string }) { phases.push(input.phase); return { receiptRef: "sha256:" + "8".repeat(64), evidenceDigest: "sha256:" + "9".repeat(64) }; } };
+  const coordinator = createDispatchCoordinator(l, { async dispatch() { return { kind: "acknowledged", resultDigest: "sha256:" + "1".repeat(64) }; } }, undefined, publication);
+  const handle = createReservedDispatchHandle({ reservation: l.get(), effect: { x: 1 }, effectCanonicalBase64: "e30=", effectDigest: "sha256:" + "1".repeat(64) });
+  const outcome = await coordinator.dispatch(handle); assert.equal(outcome.resultDigest, "sha256:" + "8".repeat(64)); assert.deepEqual(phases, ["dispatch"]);
+  const l2 = ledger(); const publication2 = { async publish(input: { phase: string }) { phases.push(input.phase); return { receiptRef: "sha256:" + "a".repeat(64), evidenceDigest: "sha256:" + "b".repeat(64) }; } };
+  const cancelCoordinator = createDispatchCoordinator(l2, { async dispatch() { throw new Error("must not dispatch"); } }, undefined, publication2);
+  const cancelHandle = createReservedDispatchHandle({ reservation: l2.get(), effect: {}, effectCanonicalBase64: "e30=", effectDigest: "sha256:" + "1".repeat(64) }); await cancelCoordinator.cancel(cancelHandle); assert.ok(phases.includes("cancelled"));
+  const l3 = ledger(); await l3.transition("r1", "reserved", { to: "dispatched" }); const recoverCoordinator = createDispatchCoordinator(l3, { async dispatch() { throw new Error("must not resend"); } }, undefined, publication2); await recoverCoordinator.recover(); assert.ok(phases.includes("ambiguous"));
+});
