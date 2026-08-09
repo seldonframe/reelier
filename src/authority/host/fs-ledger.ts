@@ -2982,8 +2982,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
         }
         if (reservation.state !== "dispatched") continue;
         if (view.highWaterMark === null) throw new LedgerCorruption("dispatched reservation has no durable clock");
-        const resultDigest = rawDigest(canonicalBytes({ v: "reelier.dispatch-ambiguity/v1", reservationId: reservation.reservationId, reason: "restart" }));
-        const transition = await this.appendEvent(view, { type: "transition", reservationId: reservation.reservationId, from: "dispatched", to: "ambiguous", at: view.highWaterMark, resultDigest }, "result") as TransitionJournalEvent;
+        const transition = await this.appendEvent(view, { type: "transition", reservationId: reservation.reservationId, from: "dispatched", to: "ambiguous", at: view.highWaterMark }, "result") as TransitionJournalEvent;
         view = await this.loadView();
         if (!view.reservations.has(transition.reservationId)) throw new LedgerCorruption("lost recovered reservation");
       }
@@ -3495,7 +3494,7 @@ function isTransitionEventInput(value: unknown): value is TransitionEvent {
 }
 function hasValidResultDigest(to: unknown, resultDigest: unknown): boolean {
   if (to === "dispatched") return resultDigest === undefined;
-  if (to === "ambiguous") return resultDigest === undefined || (typeof resultDigest === "string" && SHA.test(resultDigest) && resultDigest !== ZERO_SHA);
+  if (to === "ambiguous") return resultDigest === undefined;
   if (to === "cancelled") return typeof resultDigest === "string" && SHA.test(resultDigest) && resultDigest !== ZERO_SHA;
   if (to === "acknowledged" || to === "definitive-failure" || to === "reconciled") {
     return typeof resultDigest === "string" && SHA.test(resultDigest) && resultDigest !== ZERO_SHA;
