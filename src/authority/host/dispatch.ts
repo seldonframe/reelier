@@ -24,7 +24,9 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
       if (evidence) await evidence.persist({ state, outcome, dispatchedRequestDigest });
       if (publication) { const published = await publication.publish({ phase: "dispatch", state, outcome, dispatchedRequestDigest }); outcome = Object.freeze({ ...outcome, providerResultDigest: outcome.resultDigest, resultDigest: published.receiptRef, receiptRef: published.receiptRef, evidenceDigest: published.evidenceDigest }); }
       const terminal: LedgerState = outcome.kind;
-      const result = await ledger.transition(reservationId, "dispatched", { to: terminal as "acknowledged" | "definitive-failure" | "ambiguous", resultDigest: outcome.resultDigest });
+      const result = outcome.kind === "ambiguous"
+        ? await ledger.transition(reservationId, "dispatched", { to: "ambiguous" })
+        : await ledger.transition(reservationId, "dispatched", { to: terminal as "acknowledged" | "definitive-failure", resultDigest: outcome.resultDigest });
       if (!result.ok) throw new Error(`dispatch result transition refused: ${result.reason}`);
       return Object.freeze(outcome);
     },
@@ -49,7 +51,7 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
           const state = { reservation, effect: {}, effectCanonicalBase64: "", effectDigest: reservation.intent.effectDigest } as DispatchRequestState;
           const outcome = Object.freeze({ kind: "ambiguous" as const, resultDigest });
           const published = publication ? await publication.publish({ phase: "ambiguous", state, outcome, dispatchedRequestDigest: authorityDigest({ v: "reelier.dispatched-request/v1", reservationId: reservation.reservationId, effectDigest: reservation.intent.effectDigest }) }) : undefined;
-          const transitioned = await ledger.transition(reservation.reservationId, "dispatched", { to: "ambiguous", resultDigest: published?.receiptRef ?? resultDigest });
+          const transitioned = await ledger.transition(reservation.reservationId, "dispatched", { to: "ambiguous" });
           if (!transitioned.ok) throw new Error(`ambiguity transition refused: ${transitioned.reason}`);
           ambiguous.push(reservation.reservationId);
         }
