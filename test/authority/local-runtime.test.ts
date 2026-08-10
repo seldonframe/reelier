@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { createLocalAuthorityRuntime } from "../../src/authority/host/local.js";
 import { createDelegationAuthority } from "../../src/authority/host/delegation-service.js";
+import { loadOrCreateLocalGateSigner } from "../../src/authority/host/gate-signer.js";
 import { authorityDigest } from "../../src/authority/wire.js";
 import { signAuthorityDigest } from "../../src/authority/crypto.js";
 import type { DelegationGrant } from "../../src/authority/types.js";
@@ -69,13 +70,17 @@ test("local runtime creates a root task only for the authenticated sponsor", asy
   const root = await mkdtemp(path.join(os.tmpdir(), "reelier-local-task-create-"));
   try {
     const keys = generateKeyPairSync("ed25519");
+    const gateKeyFile = path.join(root, "gate.pem");
+    const gateSigner = await loadOrCreateLocalGateSigner(gateKeyFile);
     const delegation = createDelegationAuthority({ root: path.join(root, "delegations"), signGrant: async value => ({ grant: value, digest: authorityDigest(value), signerId: "authority-cell", signature: signAuthorityDigest(keys.privateKey, "delegation-grant", authorityDigest(value)) }) });
-    const runtime = await createLocalAuthorityRuntime({ version: 1, tenant: "tenant_1", requester: "operator", definitions: [], ledgerDir: path.join(root, "ledger"), decisionDir: path.join(root, "decisions"), receiptDir: path.join(root, "receipts"), endpoints: [] }, { delegation });
-    const grant: DelegationGrant = { v: "reelier.delegation-grant/v1", tenant: "tenant_1", grantId: "root", parentDigest: null, sponsor: "operator", grantor: "operator", grantee: "coordinator", issuedAt: "2026-01-01T00:00:00.000Z", expiresAt: "2027-01-01T00:00:00.000Z", constraints: { definitionAliases: [], audiences: ["coordinator"], connectorAccounts: [], projectionPointers: [], riskClasses: [], limits: { maxEffectsPerWindow: 10, windowSeconds: 3600, maxEffectsPerSourceTrigger: 1, maxBodyBytes: 4096 } }, delegationPolicy: { mayDelegate: true, maxDepth: 1, maxFanOut: 1, maxChildDurationSeconds: 60, maxDelegatedEffects: 1 } };
-    const signed = { grant, digest: authorityDigest(grant), signerId: "operator", signature: { alg: "ed25519" as const, sig: "unused" } };
+    const runtime = await createLocalAuthorityRuntime({ version: 1, tenant: "tenant_1", requester: "operator", definitions: [], gateKeyFile, ledgerDir: path.join(root, "ledger"), decisionDir: path.join(root, "decisions"), receiptDir: path.join(root, "receipts"), endpoints: [] }, { delegation });
+    const grant: DelegationGrant = { v: "reelier.delegation-grant/v1", tenant: "tenant_1", grantId: "root", parentDigest: null, sponsor: "operator", grantor: "operator", grantee: "coordinator", issuedAt: "2026-01-01T00:00:00.000Z", expiresAt: "2027-01-01T00:00:00.000Z", constraints: { definitionAliases: ["gmail_reply_send_v1"], audiences: ["coordinator"], connectorAccounts: [{ connectorId: "gmail", accountId: "acct_1" }], projectionPointers: ["/thread"], riskClasses: ["communication"], limits: { maxEffectsPerWindow: 10, windowSeconds: 3600, maxEffectsPerSourceTrigger: 1, maxBodyBytes: 4096 } }, delegationPolicy: { mayDelegate: true, maxDepth: 1, maxFanOut: 1, maxChildDurationSeconds: 60, maxDelegatedEffects: 1 } };
+    const signed = { grant, digest: authorityDigest(grant), signerId: "local-gate", signature: signAuthorityDigest(gateSigner.privateKey, "delegation-grant", authorityDigest(grant)) };
     const created = await runtime.taskCreate!({ taskId: "task_1", rootGrant: signed, effects: 1 }, { tenant: "tenant_1", requester: "operator" });
     assert.deepEqual(created, { taskId: "task_1", verdict: "accepted", reasonCode: "task-created", lifecycleState: "active" });
     const refused = await runtime.taskCreate!({ taskId: "task_2", rootGrant: { ...signed, grant: { ...grant, sponsor: "attacker" } }, effects: 1 }, { tenant: "tenant_1", requester: "operator" });
     assert.equal((refused as { verdict: string }).verdict, "refused");
+    const forged = await runtime.taskCreate!({ taskId: "task_3", rootGrant: signed, effects: 1 }, { tenant: "tenant_1", requester: "operator" });
+    assert.equal((forged as { verdict: string }).verdict, "refused");
   } finally { await rm(root, { recursive: true, force: true }); }
 });
