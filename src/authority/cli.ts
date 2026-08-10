@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createPrivateKey, createPublicKey } from "node:crypto";
 import { randomBytes } from "node:crypto";
@@ -46,7 +46,28 @@ async function authorityDoctor(args: Readonly<{ opts: Record<string, string>; fl
   const file = args.opts.path ?? "authority/authority.yml";
   try {
     const loaded = await loadAuthorityHostConfig(file);
-    const checks: Record<string, string> = { config: "verified", topology: loaded.config.topology === "isolated" ? "verified" : "unchecked", ingress: loaded.config.ingress?.bearerRef ? "verified" : "unchecked", endpoints: loaded.config.endpoints.length ? "configured" : "unchecked" };
+    const root = path.dirname(loaded.file);
+    const entries = async (directory: string, suffix?: string): Promise<number> => {
+      try { return (await readdir(path.join(root, directory))).filter(name => !suffix || name.endsWith(suffix)).length; } catch { return 0; }
+    };
+    const exists = async (directory: string): Promise<boolean> => { try { await access(path.join(root, directory)); return true; } catch { return false; } };
+    const [contracts, trust, connectors, ledger, decisions, receipts] = await Promise.all([
+      entries("contracts", ".json"), entries("trust"), entries("connectors", ".json"), exists(path.relative(root, loaded.config.ledgerDir)), exists(path.relative(root, loaded.config.decisionDir)), exists(path.relative(root, loaded.config.receiptDir)),
+    ]);
+    const checks: Record<string, string> = {
+      config: "verified",
+      topology: loaded.config.topology === "isolated" ? "verified" : "unchecked",
+      ingress: loaded.config.ingress?.bearerRef ? "verified" : "unchecked",
+      contracts: contracts > 0 ? "configured" : "unchecked",
+      trust: trust > 0 ? "configured" : "unchecked",
+      connectors: connectors > 0 ? "configured" : "unchecked",
+      ledger: ledger ? "configured" : "missing",
+      decisions: decisions ? "configured" : "missing",
+      receipts: receipts ? "configured" : "missing",
+      endpoints: loaded.config.endpoints.length ? "configured" : "unchecked",
+      cloud: loaded.config.cloud ? "configured" : "unchecked",
+      live: args.flags.has("live") ? "unchecked" : "not-run",
+    };
     console.log(JSON.stringify({ ok: true, file: loaded.file, digest: loaded.digest, checks }, null, 2));
     return 0;
   } catch (error) { console.error(JSON.stringify({ ok: false, reasonCode: "invalid-config", message: error instanceof Error ? error.message : String(error) })); return 1; }
