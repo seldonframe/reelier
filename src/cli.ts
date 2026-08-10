@@ -137,7 +137,7 @@ export interface ParsedArgs {
   fails: string[];
 }
 
-function parseArgv(argv: string[]): ParsedArgs {
+export function parseArgv(argv: string[]): ParsedArgs {
   const positional: string[] = [];
   const flags = new Set<string>();
   const vars: Record<string, string> = {};
@@ -202,6 +202,9 @@ function parseArgv(argv: string[]): ParsedArgs {
       || arg === "--tenant"
       || arg === "--signer"
       || arg === "--adapter"
+      || arg === "--transport"
+      || arg === "--port"
+      || arg === "--certification-config"
     ) {
       const val = argv[++i];
       if (!val) {

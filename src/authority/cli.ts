@@ -32,6 +32,27 @@ export async function runAuthorityCommand(args: Readonly<{ positional: string[];
   }
 }
 
+export type AuthorityServeMode =
+  | Readonly<{ transport: "stdio" }>
+  | Readonly<{ transport: "http"; host: string; port: number }>;
+
+/** Parse the host-owned serving boundary. Network exposure is always explicit. */
+export function parseAuthorityServeMode(opts: Readonly<Record<string, string>>): AuthorityServeMode {
+  const transport = opts.transport ?? "stdio";
+  if (transport === "stdio") {
+    if (opts.host !== undefined || opts.port !== undefined) throw new TypeError("stdio authority transport does not accept host or port");
+    return Object.freeze({ transport: "stdio" });
+  }
+  if (transport !== "http") throw new TypeError("authority serve transport must be stdio or http");
+  const rawPort = opts.port ?? "8080";
+  if (!/^[1-9][0-9]{0,4}$/.test(rawPort)) throw new TypeError("authority HTTP port is invalid");
+  const port = Number(rawPort);
+  if (!Number.isSafeInteger(port) || port > 65535) throw new TypeError("authority HTTP port is invalid");
+  const host = opts.host ?? "127.0.0.1";
+  if (!/^[A-Za-z0-9.:[\]-]{1,253}$/.test(host)) throw new TypeError("authority HTTP host is invalid");
+  return Object.freeze({ transport: "http", host, port });
+}
+
 async function authorityInit(args: Readonly<{ opts: Record<string, string> }>): Promise<number> {
   const root = path.resolve(args.opts.path ?? "authority");
   await Promise.all(["contracts", "trust", "connectors", "receipts", "decisions", "ledger", "keys"].map(dir => mkdir(path.join(root, dir), { recursive: true })));
@@ -143,6 +164,7 @@ async function authorityVerify(args: Readonly<{ opts: Record<string, string> }>)
 }
 
 async function authorityServe(args: Readonly<{ opts: Record<string, string> }>): Promise<number> {
+  const serveMode = parseAuthorityServeMode(args.opts);
   const loaded = await loadAuthorityHostConfig(args.opts.path ?? "authority/authority.yml");
   const artifactRoot = path.dirname(loaded.file);
   const artifactDataKey = await loadOrCreateArtifactKey(artifactRoot, "artifact-data.key");
@@ -170,7 +192,12 @@ async function authorityServe(args: Readonly<{ opts: Record<string, string> }>):
     },
   };
   const server = createAuthorityHostServer(loaded.config, runtime);
-  await server.startStdio();
+  if (serveMode.transport === "http") {
+    await server.startHttp(serveMode.port, serveMode.host);
+    console.error(JSON.stringify({ status: "ready", transport: "http", host: serveMode.host, port: serveMode.port }));
+  } else {
+    await server.startStdio();
+  }
   return 0;
 }
 
