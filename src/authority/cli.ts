@@ -52,7 +52,9 @@ async function authorityBootstrap(args: Readonly<{ opts: Record<string, string> 
   const root = path.resolve(args.opts.path ?? "authority");
   console.error(JSON.stringify({ status: "ready", service: "authority-bootstrap", path: root }));
   await new Promise<void>((resolve) => {
+    const keepalive = setInterval(() => undefined, 60_000);
     const finish = (): void => {
+      clearInterval(keepalive);
       process.off("SIGINT", finish);
       process.off("SIGTERM", finish);
       resolve();
