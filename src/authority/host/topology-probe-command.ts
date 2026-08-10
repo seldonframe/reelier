@@ -52,10 +52,10 @@ export async function runTopologyProbeCommand(input: Readonly<{
   env?: Readonly<Record<string, string | undefined>>;
   connect?: (endpoint: string) => Promise<boolean>;
 }>): Promise<TopologyProbeCommandResult> {
-  const config = parseTopologyProbeMachineConfig(input.config);
+  const env = input.env ?? process.env;
+  const config = parseTopologyProbeMachineConfig(input.config, env);
   if (input.action === "snapshot") {
     if (!ID.test(input.argument)) throw new TypeError("topology probe nonce is invalid");
-    const env = input.env ?? process.env;
     const present = new Set(Object.keys(env).filter(name => env[name] !== undefined));
     const runtimeSession = typeof env.FLY_MACHINE_ID === "string" && ID.test(env.FLY_MACHINE_ID) ? env.FLY_MACHINE_ID : config.runtimeSession;
     const providerCredentialRefs = config.providerCredentialEnvNames.filter(name => present.has(name));
@@ -81,7 +81,7 @@ export async function runTopologyProbeCommand(input: Readonly<{
   return Object.freeze({ v: "reelier.topology-probe-egress/v1" as const, endpoint, reachable: Boolean(reachable) });
 }
 
-export function parseTopologyProbeMachineConfig(value: unknown): TopologyProbeMachineConfigV1 {
+export function parseTopologyProbeMachineConfig(value: unknown, env: Readonly<Record<string, string | undefined>> = process.env): TopologyProbeMachineConfigV1 {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("topology probe config must be an object");
   const raw = value as Record<string, unknown>;
   const keys = ["v", "role", "runtimeSession", "providerCredentialEnvNames", "allowedCredentialEnvNames", "rawWriteRouteIds", "readSurfaceIds", "providerEndpoints", "egressProxy", "schemaDigest"];
@@ -101,7 +101,7 @@ export function parseTopologyProbeMachineConfig(value: unknown): TopologyProbeMa
     rawWriteRouteIds: stringList(raw.rawWriteRouteIds, "raw write route", ID, true),
     readSurfaceIds: stringList(raw.readSurfaceIds, "read surface", ID, true),
     providerEndpoints: dnsList(raw.providerEndpoints),
-    egressProxy: parseEgressProxy(raw.egressProxy),
+    egressProxy: parseEgressProxy(raw.egressProxy, env),
     schemaDigest: raw.schemaDigest,
   });
 }
@@ -170,12 +170,15 @@ function dnsList(value: unknown): readonly string[] {
   return Object.freeze(list);
 }
 
-function parseEgressProxy(value: unknown): TopologyProbeMachineConfigV1["egressProxy"] {
+function parseEgressProxy(value: unknown, env: Readonly<Record<string, string | undefined>>): TopologyProbeMachineConfigV1["egressProxy"] {
   if (value === null) return null;
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("topology probe egress proxy is invalid");
   const raw = value as Record<string, unknown>;
   if (Object.keys(raw).length !== 2 || typeof raw.baseUrl !== "string" || typeof raw.bearerEnvName !== "string" || !ENV_NAME.test(raw.bearerEnvName)) throw new TypeError("topology probe egress proxy is closed");
-  let origin: URL; try { origin = new URL(raw.baseUrl); } catch { throw new TypeError("topology probe egress proxy is invalid"); }
+  const reference = /^env:([A-Za-z_][A-Za-z0-9_]{0,127})$/.exec(raw.baseUrl);
+  const baseUrl = reference ? env[reference[1]] : raw.baseUrl;
+  if (reference && !baseUrl) throw new TypeError("topology probe egress proxy environment reference is unavailable");
+  let origin: URL; try { origin = new URL(baseUrl as string); } catch { throw new TypeError("topology probe egress proxy is invalid"); }
   if (origin.protocol !== "http:" || !origin.hostname.endsWith(".internal") || origin.pathname !== "/" || origin.username || origin.password || origin.search || origin.hash) throw new TypeError("topology probe egress proxy is invalid");
   return Object.freeze({ baseUrl: origin.toString().replace(/\/$/, ""), bearerEnvName: raw.bearerEnvName });
 }

@@ -56,7 +56,7 @@ $env:REELIER_LIVE_CERTIFY = "1"
 reelier authority certify run --adapter fly-topology --config authority/certification.local.json
 ```
 
-It reads actual Machine/image state, executes in-Machine challenge probes, fetches all three deployed network policies, and writes signed evidence locally. Any stale digest, reachable raw write route, agent provider credential, unexpected secret-shaped environment name, or failed Cell-versus-agent egress check blocks dispatch. Set the same strong `REELIER_EGRESS_GATEWAY_BEARER` Fly secret on the Cell and gateway, update the Cell probe manifest to the exact `<egress-app>.internal` name, and deploy the authenticated CONNECT gateway. The probe originates provider TLS from the Cell through that route; gateway-only public reachability is not accepted as Cell egress evidence.
+It reads actual Machine/image state, executes in-Machine challenge probes, fetches all three deployed network policies, and writes signed evidence locally. Any stale digest, reachable raw write route, agent provider credential, unexpected secret-shaped environment name, or failed Cell-versus-agent egress check blocks dispatch. Set the same strong `REELIER_EGRESS_GATEWAY_BEARER` Fly secret on the Cell and gateway, and set the Cell's non-secret `REELIER_EGRESS_PROXY_BASE_URL` to the exact `http://<egress-app>.internal:8443` origin. The committed probe manifest resolves that project-specific origin from the environment and refuses when it is missing or public. The probe originates provider TLS from the Cell through that route; gateway-only public reachability is not accepted as Cell egress evidence.
 
 Run the Codex dogfood adapter with ten distinct sessions:
 
