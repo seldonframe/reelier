@@ -35,7 +35,14 @@ The fixed opaque source references for the first live slice are `certification_g
 
 Run each adapter from the Authority Cell with `REELIER_LIVE_CERTIFY=1`. Every adapter must perform a controlled connection cut after the provider may have applied the write, reconcile without resending, export its receipt bundle, and run cleanup. A failed cleanup is a failed certification.
 
-Run the Fly topology adapter before provider writes. Any stale digest, reachable raw write route, agent credential, or failed provider-egress check blocks dispatch.
+Run the Fly topology adapter before provider writes:
+
+```powershell
+$env:REELIER_LIVE_CERTIFY = "1"
+reelier authority certify run --adapter fly-topology --config authority/certification.local.json
+```
+
+It reads actual Machine/image state, executes in-Machine challenge probes, fetches all three deployed network policies, and writes signed evidence locally. Any stale digest, reachable raw write route, agent provider credential, unexpected secret-shaped environment name, or failed Cell-versus-agent egress check blocks dispatch. The current reference gateway manifest is intentionally non-serving; the command must remain blocked until the authenticated gateway path is deployed. Gateway-only public reachability is not accepted as Cell egress evidence.
 
 Run the Codex dogfood adapter with ten distinct sessions:
 

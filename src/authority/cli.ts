@@ -19,6 +19,10 @@ import { createFounderJsonHttpsDispatchAdapter } from "./host/founder-dispatch-a
 import { createCodexDogfoodPlan } from "./host/codex-dogfood.js";
 import { launchCodexDogfood, materializeCodexDogfood, probeCodexLogin } from "./host/codex-launcher.js";
 import { createFilePrincipalRegistry } from "./host/principal-registry.js";
+import { runTopologyProbeCommand } from "./host/topology-probe-command.js";
+import { createFlyRemoteTopologyOperations, probePinnedFlyBinary } from "./host/fly-remote-probe.js";
+import { runFlyCertification } from "./host/fly-certification.js";
+import { loadOrCreateLocalGateSigner } from "./host/gate-signer.js";
 
 export async function runAuthorityCommand(args: Readonly<{ positional: string[]; flags: Set<string>; opts: Record<string, string> }>): Promise<number> {
   const subcommand = args.positional[0] ?? "doctor";
@@ -31,7 +35,27 @@ export async function runAuthorityCommand(args: Readonly<{ positional: string[];
     case "serve": return authorityServe(args);
     case "conformance": return authorityConformance(args);
     case "certify": return authorityCertify(args);
+    case "topology-probe": return authorityTopologyProbe(args);
     default: console.error(`unknown authority command: ${subcommand}`); return 1;
+  }
+}
+
+async function authorityTopologyProbe(args: Readonly<{ positional: string[]; opts: Record<string, string> }>): Promise<number> {
+  const action = args.positional[1];
+  const argument = args.positional[2];
+  const configPath = args.opts.config;
+  if ((action !== "snapshot" && action !== "egress") || !argument || !configPath) {
+    console.error(JSON.stringify({ status: "refused", reasonCode: "topology-probe-input-required" }));
+    return 1;
+  }
+  try {
+    const config = JSON.parse(await readFile(path.resolve(configPath), "utf8"));
+    const result = await runTopologyProbeCommand({ action, argument, config });
+    console.log(JSON.stringify(result));
+    return 0;
+  } catch (error) {
+    console.error(JSON.stringify({ status: "refused", reasonCode: "topology-probe-failed", message: error instanceof Error ? error.message : String(error) }));
+    return 1;
   }
 }
 
@@ -216,17 +240,19 @@ async function authorityCertify(args: Readonly<{ positional: string[]; flags: Se
         const codexBinary = await probePinnedCodexBinary(config.codex.binaryPath, config.codex.version);
         const codexLogin = codexBinary === "available" ? await probeCodexLogin(config.codex.binaryPath, config.codex.codexHomePath) : "missing";
         const codex = codexBinary === "available" && codexLogin === "available" ? "available" : "missing";
+        const flyBinary = await probePinnedFlyBinary(config.fly.flyctlPath, config.fly.flyctlVersion);
         const packageVersion = process.env.npm_package_version ?? "0.32.0";
         const base = createCertificationPreflight({
           packageVersion,
           expectedPackageVersion: "0.32.0",
           cloud: { deploymentId: process.env.REELIER_CLOUD_DEPLOYMENT_ID ?? "", status: process.env.REELIER_CLOUD_DEPLOYMENT_STATUS === "ready" ? "ready" : "unknown" },
           migrations: { status: process.env.REELIER_MIGRATIONS_DIGEST ? "applied" : "unknown", digest: process.env.REELIER_MIGRATIONS_DIGEST ?? "sha256:" + "0".repeat(64) },
-          runtime: { codex, fly: secretStatus("fly", "api") ? "available" : "missing" },
+          runtime: { codex, fly: secretStatus("fly", "api") && flyBinary === "available" ? "available" : "missing" },
           resources: Object.entries(config.providers).map(([provider, resource]) => ({ provider, accountId: resource.accountId, credentialRef: secretStatus(provider) ? "configured" : undefined, cleanupRef: resource.cleanupRef })),
         });
         const extraMissing = secretStatuses.filter(item => item.status === "missing").map(item => `secret:${item.owner}:${item.slot}`);
         if (codexBinary === "available" && codexLogin === "missing") extraMissing.push("runtime:codex-authentication");
+        if (flyBinary === "missing") extraMissing.push("runtime:flyctl-version");
         const missing = Object.freeze([...new Set([...base.missing, ...extraMissing])].sort());
         const { digest: _baseDigest, ...baseBody } = base;
         void _baseDigest;
@@ -270,6 +296,43 @@ async function authorityCertify(args: Readonly<{ positional: string[]; flags: Se
         console.log(JSON.stringify({ status: result.exitCode === 0 ? "completed" : "failed", adapter: "codex-ten-agent", exitCode: result.exitCode, stdoutPath: result.stdoutPath, stderrPath: result.stderrPath, identityMapPath: result.identityMapPath, hookEvidenceDirectory: result.hookEvidenceDirectory }, null, 2));
         return result.exitCode === 0 ? 0 : 1;
       } catch (error) { console.error(JSON.stringify({ status: "refused", reasonCode: "codex-dogfood-unavailable", message: error instanceof Error ? error.message : String(error) })); return 1; }
+    }
+    if (args.opts.adapter === "fly-topology") {
+      if (!args.opts.config) { console.error(JSON.stringify({ status: "refused", reasonCode: "certification-config-required" })); return 1; }
+      try {
+        const config = parseCertificationOperatorConfig(JSON.parse(await readFile(path.resolve(args.opts.config), "utf8")));
+        if (await probePinnedFlyBinary(config.fly.flyctlPath, config.fly.flyctlVersion) !== "available") throw new Error("pinned flyctl binary is unavailable");
+        const loaded = await loadAuthorityHostConfig(config.authorityConfigPath);
+        const endpoints = Object.values(config.providers).map(provider => new URL(provider.apiBaseUrl).hostname.toLowerCase()).sort();
+        const operations = createFlyRemoteTopologyOperations({
+          resource: config.fly,
+          expected: {
+            providerEndpoints: endpoints,
+            schemaDigest: config.fly.schemaDigest,
+            networkPolicyDigest: config.fly.networkPolicyDigest,
+            runtimeImageDigest: config.fly.agentImageDigest,
+            authorityImageDigest: config.fly.authorityImageDigest,
+            gatewayImageDigest: config.fly.gatewayImageDigest,
+          },
+        });
+        const observedAt = new Date();
+        const expiresAt = new Date(observedAt.getTime() + 60_000);
+        const signer = await loadOrCreateLocalGateSigner(loaded.config.gateKeyFile ?? path.join(path.dirname(loaded.file), "keys", "local-gate.pem"));
+        const result = await runFlyCertification({
+          declaredSurface: { providerEndpoints: endpoints, rawWriteRouteIds: [], schemaDigest: config.fly.schemaDigest, networkPolicyDigest: config.fly.networkPolicyDigest, runtimeImageDigest: config.fly.agentImageDigest },
+          operations,
+          tenant: loaded.config.tenant,
+          observedAt: observedAt.toISOString(),
+          expiresAt: expiresAt.toISOString(),
+          nonce: randomBytes(24).toString("hex"),
+          signer: { signerId: "authority-cell", privateKey: signer.privateKey },
+        });
+        await mkdir(path.resolve(config.evidenceDirectory), { recursive: true });
+        const output = path.join(path.resolve(config.evidenceDirectory), `topology-${result.evidenceDigest.slice(7, 23)}.json`);
+        await writeFile(output, `${JSON.stringify(result.signed ?? result, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+        console.log(JSON.stringify({ status: "verified", adapter: "fly-topology", evidenceDigest: result.evidenceDigest, output }, null, 2));
+        return 0;
+      } catch (error) { console.error(JSON.stringify({ status: "refused", reasonCode: "fly-topology-unavailable", message: error instanceof Error ? error.message : String(error) })); return 1; }
     }
     console.error(JSON.stringify({ status: "refused", reasonCode: "adapter-runner-not-configured", adapter: args.opts.adapter ?? null }));
     return 1;

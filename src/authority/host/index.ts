@@ -40,6 +40,8 @@ export { readGuardedLiveProviderConfig, runGuardedLiveProviderCertification, typ
 export { CERTIFICATION_PROVIDER_IDS, createCertificationPreflight, createReleaseEvidenceManifest, type CertificationClaim, type CertificationEvidence, type CertificationPreflightInput, type CertificationPreflightReport, type CertificationProviderId, type CertificationResourceInput, type CertificationResourceReport, type ReleaseEvidenceManifest } from "./certification.js";
 export { certificationPreflightForAdapter, runCertification, type CertificationAdapter, type CertificationAdapterRunResult } from "./certification-runner.js";
 export { runFlyCertification, type FlyCertificationInput, type FlyCertificationResult } from "./fly-certification.js";
+export { createFlyRemoteTopologyOperations, digestFlyPolicyDeployment, probePinnedFlyBinary, type FlyRemoteProbeResource, type FlyRemoteProbeExpected, type FlyRemoteProbeDependencies, type FlyMachineObservation } from "./fly-remote-probe.js";
+export { parseTopologyProbeMachineConfig, runTopologyProbeCommand, type TopologyProbeMachineConfigV1, type TopologyProbeSnapshotV1, type TopologyProbeEgressV1, type TopologyProbeCommandResult } from "./topology-probe-command.js";
 export { runCodexCertification, type CodexCertificationEvent, type CodexCertificationOperations, type CodexCertificationResult } from "./codex-certification.js";
 export { materializeCodexDogfood, launchCodexDogfood, probeCodexLogin, type MaterializedCodexDogfood, type CodexDogfoodExecutionOptions, type CodexDogfoodLauncherOperations, type CodexDogfoodLaunchResult } from "./codex-launcher.js";
 export { createFilePrincipalRegistry } from "./principal-registry.js";

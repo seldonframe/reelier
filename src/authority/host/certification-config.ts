@@ -14,7 +14,24 @@ export interface NeonCertificationResource { readonly apiBaseUrl: string; readon
 export interface CloudflareCertificationResource { readonly apiBaseUrl: string; readonly accountId: string; readonly credentialRef: string; readonly cleanupRef: string; readonly zoneId: string; readonly recordId: string; readonly recordName: string; readonly tokenName: string }
 export interface HubSpotCertificationResource { readonly apiBaseUrl: string; readonly accountId: string; readonly credentialRef: string; readonly cleanupRef: string; readonly ticketId: string; readonly contactId: string; readonly approvedProperties: readonly string[] }
 export interface SlackCertificationResource { readonly apiBaseUrl: string; readonly accountId: string; readonly credentialRef: string; readonly cleanupRef: string; readonly channelId: string }
-export interface FlyCertificationResource { readonly appName: string; readonly agentAppName: string; readonly orgSlug: string; readonly region: string; readonly apiCredentialRef: string; readonly authorityImageDigest: string; readonly networkPolicyDigest: string; readonly schemaDigest: string }
+export interface FlyCertificationResource {
+  readonly appName: string;
+  readonly authorityMachineId: string;
+  readonly agentAppName: string;
+  readonly agentMachineId: string;
+  readonly egressAppName: string;
+  readonly egressMachineId: string;
+  readonly orgSlug: string;
+  readonly region: string;
+  readonly apiCredentialRef: string;
+  readonly flyctlPath: string;
+  readonly flyctlVersion: string;
+  readonly authorityImageDigest: string;
+  readonly agentImageDigest: string;
+  readonly gatewayImageDigest: string;
+  readonly networkPolicyDigest: string;
+  readonly schemaDigest: string;
+}
 export interface CodexCertificationResource { readonly binaryPath: string; readonly version: string; readonly authorityEndpoint: string; readonly taskId: string; readonly codexHomePath: string; readonly workspacePath: string; readonly sessionCredentialDirectory: string }
 
 export interface CertificationOperatorConfigV1 {
@@ -132,8 +149,26 @@ function slack(value: unknown): SlackCertificationResource {
 }
 function fly(value: unknown): FlyCertificationResource {
   const raw = object(value, "fly certification resource");
-  closed(raw, ["appName", "agentAppName", "orgSlug", "region", "apiCredentialRef", "authorityImageDigest", "networkPolicyDigest", "schemaDigest"], "fly certification resource");
-  return Object.freeze({ appName: id(raw.appName, "fly appName"), agentAppName: id(raw.agentAppName, "fly agentAppName"), orgSlug: id(raw.orgSlug, "fly orgSlug"), region: id(raw.region, "fly region"), apiCredentialRef: secretRef(raw.apiCredentialRef, "fly apiCredentialRef"), authorityImageDigest: digest(raw.authorityImageDigest, "fly authorityImageDigest"), networkPolicyDigest: digest(raw.networkPolicyDigest, "fly networkPolicyDigest"), schemaDigest: digest(raw.schemaDigest, "fly schemaDigest") });
+  closed(raw, ["appName", "authorityMachineId", "agentAppName", "agentMachineId", "egressAppName", "egressMachineId", "orgSlug", "region", "apiCredentialRef", "flyctlPath", "flyctlVersion", "authorityImageDigest", "agentImageDigest", "gatewayImageDigest", "networkPolicyDigest", "schemaDigest"], "fly certification resource");
+  if (typeof raw.flyctlVersion !== "string" || !/^\d+\.\d+\.\d+$/.test(raw.flyctlVersion)) throw new TypeError("fly flyctlVersion is invalid");
+  return Object.freeze({
+    appName: id(raw.appName, "fly appName"),
+    authorityMachineId: id(raw.authorityMachineId, "fly authorityMachineId"),
+    agentAppName: id(raw.agentAppName, "fly agentAppName"),
+    agentMachineId: id(raw.agentMachineId, "fly agentMachineId"),
+    egressAppName: id(raw.egressAppName, "fly egressAppName"),
+    egressMachineId: id(raw.egressMachineId, "fly egressMachineId"),
+    orgSlug: id(raw.orgSlug, "fly orgSlug"),
+    region: id(raw.region, "fly region"),
+    apiCredentialRef: secretRef(raw.apiCredentialRef, "fly apiCredentialRef"),
+    flyctlPath: text(raw.flyctlPath, "fly flyctlPath", 1024),
+    flyctlVersion: raw.flyctlVersion,
+    authorityImageDigest: digest(raw.authorityImageDigest, "fly authorityImageDigest"),
+    agentImageDigest: digest(raw.agentImageDigest, "fly agentImageDigest"),
+    gatewayImageDigest: digest(raw.gatewayImageDigest, "fly gatewayImageDigest"),
+    networkPolicyDigest: digest(raw.networkPolicyDigest, "fly networkPolicyDigest"),
+    schemaDigest: digest(raw.schemaDigest, "fly schemaDigest"),
+  });
 }
 function codex(value: unknown): CodexCertificationResource {
   const raw = object(value, "codex certification resource");

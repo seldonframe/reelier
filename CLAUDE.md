@@ -144,13 +144,15 @@ Ops note: **no auto-migrate wiring** — migrations are applied by hand after me
 ## 7. Known limits — state these, do not paper over them
 
 0. **Authority certification is partially implemented on the current branch.** Post-0.32.0 branch
-work includes closed preflight contracts, guarded provider runner contracts, Fly policy/probe
-orchestration, a durable hash-only principal registry, a pinned Codex launcher that generates one
+work includes closed preflight contracts, guarded provider runner contracts, a remote Fly probe
+runner that pins `flyctl`, reads Machine image and network-policy state, executes closed in-Machine
+challenge probes, and signs evidence, a durable hash-only principal registry, and a pinned Codex launcher that generates one
 coordinator plus nine scoped custom-agent profiles, pre-spawn profile enforcement,
 `SubagentStart.agent_id` evidence, and signed release-evidence verification. The launcher does not
 mint authority: its ten bearer files must come from real task grants, and a successful Codex process
 is not a verified task graph. Vercel compound source reads, Neon execution, confidential
-Cloudflare-to-Vercel transfer, deployed Fly probes, provider cleanup, and the live ten-agent graph
+Cloudflare-to-Vercel transfer, the authenticated Cell-to-gateway provider route, actual deployed Fly
+evidence, provider cleanup, and the live ten-agent graph
 remain uncertified. A hermetic fixture pass is not live certification; live claims remain
 `unchecked` until the Authority Cell and guarded provider resources produce signed evidence.
 
