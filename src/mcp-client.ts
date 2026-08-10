@@ -6,6 +6,7 @@
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 
 /** A tool as reported by a downstream MCP server's tools/list. */
@@ -124,6 +125,19 @@ export async function connectDownstream(spec: string): Promise<DownstreamConnect
   }
   const [command, ...args] = argv;
   const transport = new StdioClientTransport({ command, args });
+  return connectDownstreamTransport(transport, spec);
+}
+
+/**
+ * Connect to an operator-selected Streamable HTTP MCP endpoint. The URL is
+ * treated as connection configuration, never as an agent-provided target:
+ * HTTPS, no userinfo/fragments, no redirects, and no ambient credentials.
+ */
+export async function connectDownstreamHttp(spec: string): Promise<DownstreamConnection> {
+  let url: URL;
+  try { url = new URL(spec); } catch { throw new Error("invalid MCP HTTP endpoint"); }
+  if (url.protocol !== "https:" || url.username || url.password || url.hash) throw new Error("MCP HTTP endpoint must be HTTPS without userinfo or fragments");
+  const transport = new StreamableHTTPClientTransport(url, { requestInit: { redirect: "error", credentials: "omit" } });
   return connectDownstreamTransport(transport, spec);
 }
 
