@@ -16,6 +16,7 @@ test("authority runtime authenticates host identity, dispatches once, and return
   const dispatch: DispatchCoordinator = {
     dispatch: async () => { dispatched += 1; return { kind: "acknowledged", resultDigest: "sha256:" + "1".repeat(64) }; },
     cancel: async () => ({ kind: "definitive-failure", resultDigest: "sha256:" + "2".repeat(64) }),
+    reconcile: async () => ({ kind: "ambiguous", resultDigest: "sha256:" + "3".repeat(64), reconciliationStatus: "unavailable" }),
     recover: async () => [],
   };
   const linkage: ReservationLinkage = { reservationId: "res-runtime-1", state: "acknowledged", ingressClaimDigest: "sha256:" + "3".repeat(64), capabilityId: "cap", capabilityDigest: "sha256:" + "4".repeat(64), authorityStateDigest: "sha256:" + "5".repeat(64), decisionContextDigest: "sha256:" + "6".repeat(64), updatedAt: "2026-08-09T00:00:01.000Z" };
