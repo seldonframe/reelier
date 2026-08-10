@@ -15,7 +15,9 @@ reelier authority certify preflight --config authority/certification.json
 reelier authority serve --path authority/authority.yml --certification-config authority/certification.json
 ```
 
-The file contains disposable resource identifiers and `env:`/`file:` references only. The current live host path supports authoritative GitHub issue, Cloudflare DNS, and Slack channel reads plus their bounded writes and read-back reconciliation. Vercel compound deployment state, Neon catalog/migration execution, confidential Cloudflare-to-Vercel transfer, Fly topology evidence, and Codex dogfood remain blocked until their dedicated drivers pass certification; the preflight must not render those placeholders as live evidence.
+Start by copying `docs/runbooks/certification.operator.example.json` to the ignored file `authority/certification.local.json`. Replace only resource identifiers, cleanup names, the pinned Codex path/version, and secret references. Put credential values under the ignored `authority/secrets/` directory or in environment variables; never place values in the JSON file, command line, issue, pull request, chat, receipt, or evidence directory.
+
+The file contains disposable resource identifiers and `env:`/`file:` references only. The current live host path supports authoritative GitHub issue, Cloudflare DNS, and Slack channel reads plus their bounded writes and read-back reconciliation. Vercel's deterministic compiler uses the current official `POST /v10/projects/{projectId}/promote/{deploymentId}` request, but the compound GitHub-check/current-alias source reader is not yet certified. Neon catalog/migration execution, confidential Cloudflare-to-Vercel transfer, measured Fly topology evidence, and Codex dogfood remain blocked until their dedicated drivers pass certification; the preflight must not render those placeholders as live evidence.
 
 The fixed opaque source references for the first live slice are `certification_github_issue`, `certification_cloudflare_record`, and `certification_slack_channel`. They identify host-owned bindings; they are not provider IDs and cannot change the configured account or resource.
 
