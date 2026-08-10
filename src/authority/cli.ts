@@ -32,6 +32,7 @@ export async function runAuthorityCommand(args: Readonly<{ positional: string[];
   const subcommand = args.positional[0] ?? "doctor";
   switch (subcommand) {
     case "init": return authorityInit(args);
+    case "bootstrap": return authorityBootstrap(args);
     case "doctor": return authorityDoctor(args);
     case "validate": return authorityValidate(args);
     case "sign": return authoritySign(args);
@@ -43,6 +44,23 @@ export async function runAuthorityCommand(args: Readonly<{ positional: string[];
     case "egress-gateway": return authorityEgressGateway(args);
     default: console.error(`unknown authority command: ${subcommand}`); return 1;
   }
+}
+
+async function authorityBootstrap(args: Readonly<{ opts: Record<string, string> }>): Promise<number> {
+  const result = await authorityInit(args);
+  if (result !== 0) return result;
+  const root = path.resolve(args.opts.path ?? "authority");
+  console.error(JSON.stringify({ status: "ready", service: "authority-bootstrap", path: root }));
+  await new Promise<void>((resolve) => {
+    const finish = (): void => {
+      process.off("SIGINT", finish);
+      process.off("SIGTERM", finish);
+      resolve();
+    };
+    process.once("SIGINT", finish);
+    process.once("SIGTERM", finish);
+  });
+  return 0;
 }
 
 async function authorityEgressGateway(args: Readonly<{ opts: Record<string, string> }>): Promise<number> {

@@ -4,7 +4,7 @@ primary_region = "yyz"
   dockerfile = "../../../Dockerfile"
 
 [processes]
-  app = "/bin/sh -c 'node /app/dist/cli.js authority init --path /data/authority && exec tail -f /dev/null'"
+  app = "authority bootstrap --path /data/authority"
 
 [env]
   REELIER_TOPOLOGY_MODE = "managed-bootstrap"
