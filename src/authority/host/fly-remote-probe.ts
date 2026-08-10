@@ -137,19 +137,32 @@ async function runFlyctlProbe(resource: FlyRemoteProbeResource, secrets: SecretR
   const token = await secrets.resolve(resource.apiCredentialRef);
   const command = `node /app/dist/cli.js authority topology-probe ${action} ${argument} --config ${PROBE_CONFIG}`;
   const result = await executeProcess(resource.flyctlPath, ["ssh", "console", "--app", appName, "--machine", machineId, "--quiet", "--command", command], { ...process.env, FLY_API_TOKEN: token }, 15_000);
-  if (result.code !== 0) throw new Error("Fly remote topology probe failed");
-  try { return JSON.parse(result.output.trim()) as TopologyProbeCommandResult; } catch { throw new Error("Fly remote topology probe did not return JSON"); }
+  return parseFlyctlProbeProcessResult(result);
 }
 
-async function executeFlyVersion(binaryPath: string, timeoutMs: number) { return executeProcess(binaryPath, ["version"], process.env, timeoutMs); }
+export function parseFlyctlProbeProcessResult(result: Readonly<{ code: number; stdout: string; stderr: string }>, platform: NodeJS.Platform = process.platform): TopologyProbeCommandResult {
+  const windowsHandleTrailer = platform === "win32" && result.code === 1 && result.stderr.trim() === "Error: The handle is invalid.";
+  if (result.code !== 0 && !windowsHandleTrailer) throw new Error("Fly remote topology probe failed");
+  let parsed: unknown;
+  try { parsed = JSON.parse(result.stdout.trim()); } catch { throw new Error("Fly remote topology probe did not return JSON"); }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Fly remote topology probe did not return JSON");
+  const version = (parsed as Record<string, unknown>).v;
+  if (version !== "reelier.topology-probe-snapshot/v1" && version !== "reelier.topology-probe-egress/v1") throw new Error("Fly remote topology probe did not return a probe result");
+  return parsed as TopologyProbeCommandResult;
+}
 
-function executeProcess(binaryPath: string, args: readonly string[], env: NodeJS.ProcessEnv, timeoutMs: number): Promise<{ code: number; output: string }> {
+async function executeFlyVersion(binaryPath: string, timeoutMs: number) {
+  const result = await executeProcess(binaryPath, ["version"], process.env, timeoutMs);
+  return { code: result.code, output: result.output };
+}
+
+function executeProcess(binaryPath: string, args: readonly string[], env: NodeJS.ProcessEnv, timeoutMs: number): Promise<{ code: number; output: string; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    let output = ""; let settled = false;
+    let stdout = ""; let stderr = ""; let settled = false;
     const child = spawn(binaryPath, [...args], { shell: false, windowsHide: true, stdio: ["ignore", "pipe", "pipe"], env });
-    const finish = (error?: Error, code = 1) => { if (settled) return; settled = true; clearTimeout(timer); if (error) reject(error); else resolve({ code, output }); };
-    const collect = (chunk: Buffer) => { if (output.length + chunk.length <= 64 * 1024) output += chunk.toString("utf8"); };
-    child.stdout.on("data", collect); child.stderr.on("data", collect);
+    const finish = (error?: Error, code = 1) => { if (settled) return; settled = true; clearTimeout(timer); if (error) reject(error); else resolve({ code, stdout, stderr, output: `${stdout}${stderr}` }); };
+    child.stdout.on("data", (chunk: Buffer) => { if (stdout.length + chunk.length <= 64 * 1024) stdout += chunk.toString("utf8"); });
+    child.stderr.on("data", (chunk: Buffer) => { if (stderr.length + chunk.length <= 64 * 1024) stderr += chunk.toString("utf8"); });
     child.once("error", error => finish(error)); child.once("close", code => finish(undefined, code ?? 1));
     const timer = setTimeout(() => { child.kill(); finish(new Error("Fly command timed out")); }, timeoutMs); timer.unref();
   });
