@@ -31,6 +31,7 @@ export { FsDelegationBudgetLedger, type BudgetAllocation } from "./delegation-bu
 export { createDelegationAuthority, type DelegationAuthority, type DelegationAuthoritySigner } from "./delegation-service.js";
 export { createPrincipalRegistry, type PrincipalRegistry, type PrincipalCredential, type PrincipalCredentialIssue, type PrincipalSessionContext } from "./principal-registry.js";
 export { createSecretHandle, isSecretHandle, redactSecretValue, type SecretHandle } from "./secret-handle.js";
+export { createCloudflareTokenCreateDispatchAdapter, createVercelProjectEnvironmentSecretDispatchAdapter, type CloudflareTokenCreateProvider, type VercelProjectEnvironmentSecretProvider } from "./secret-adapters.js";
 export { assertCodexDogfoodPlan, createCodexDogfoodPlan, CODEX_DOGFOOD_PROFILES, type CodexDogfoodPlan, type CodexDogfoodProfile, type CodexDogfoodProfileConfig } from "./codex-dogfood.js";
 export { readGuardedLiveProviderConfig, runGuardedLiveProviderCertification, type GuardedLiveProviderConfig, type LiveCertificationResult } from "./live-certification.js";
 export { createArtifactStore } from "./artifacts.js";
