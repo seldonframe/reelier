@@ -1,19 +1,19 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { authorityCanonicalBytes, authorityDigest, signAuthorityDigest } from "../../src/authority/index.js";
 import { buildAuthorityDeployment } from "../../src/authority/host/deploy.js";
 import { createLocalAuthorityRuntime } from "../../src/authority/host/local.js";
 import type { DispatchAdapter } from "../../src/authority/host/dispatch.js";
 import { gmailPackDigest, gmailReplyDefinitionDigest, gmailResolverId, gmailProjectionSchemaId, gmailReadEndpointId, gmailReplyWriteEndpointId, gmailPolicySchemaId } from "../../src/packs/gmail/index.js";
+import { bindableTempRoot } from "./bindable-root.js";
 
 const sha = (seed: string) => `sha256:${seed.repeat(64).slice(0, 64)}`;
 
 test("local deployment dispatches once, reconciles, publishes a receipt, and survives restart", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-local-e2e-"));
+  const root = await bindableTempRoot("reelier-local-e2e-");
   let dispatches = 0;
   let reconciliations = 0;
   try {
