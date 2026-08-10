@@ -4,3 +4,4 @@ export { authorityCanonicalBytes, authorityDigest, parseAuthorityWire, parseCano
 export { signAuthorityDigest, verifyAuthoritySignature } from "./crypto.js";
 export { createAuthorityEvidence, createAuthorityReceipt, createAuthorityReceiptBundle, parseAuthorityReceiptBundle, digestAuthorityReceiptBundle, authorityEvidenceCanonicalBytes } from "./evidence.js";
 export { verifyAuthorityReceiptBundle, verifyAuthorityReceipt, type AuthorityReceiptVerificationOptions, type VerifiedAuthorityReceiptBundle } from "./verify.js";
+export { normalizeSignedJobCard, type SignedJobCardV1, type OutcomeSemanticClass } from "./job.js";

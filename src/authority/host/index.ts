@@ -4,6 +4,8 @@ export type { SecretResolver } from "./secret-resolver.js";
 export { createSecretResolver } from "./secret-resolver.js";
 export type { DispatchAdapter, DispatchCoordinator, DispatchOutcome, DispatchEvidenceWriter, DispatchPublication } from "./dispatch.js";
 export { createDispatchCoordinator } from "./dispatch.js";
+export type { McpDispatchRoute, McpDispatchAdapterOptions } from "./mcp-connector.js";
+export { createMcpDispatchAdapter } from "./mcp-connector.js";
 export type { AuthorityLedger, LedgerState, ReservationSnapshot, TransitionEvent } from "../ledger.js";
 export { FsAuthorityLedger } from "./fs-ledger.js";
 export type { AuthorityMcpHandler, AuthorityMcpDefinition } from "../ingress/mcp.js";

@@ -7,9 +7,19 @@ export async function handleAuthorityHttp(request: IncomingMessage, response: Se
     if (context.authenticate ? !await context.authenticate(request.headers.authorization) : context.requireBearer && !/^Bearer\s+\S+$/.test(String(request.headers.authorization ?? ""))) return write(response, 401, { verdict: "refused", reasonCode: "authentication-required", lifecycleState: "refused", requestId: "" });
     if (request.method !== "POST" && request.method !== "GET") return write(response, 405, { verdict: "refused", reasonCode: "method-not-allowed" });
     const url = new URL(request.url ?? "/", "http://authority.invalid");
+    if (url.pathname === "/v1/jobs" && request.method === "GET") {
+      if (!handler.jobsSearch) return write(response, 503, { verdict: "refused", reasonCode: "job-catalog-unavailable", lifecycleState: "unavailable", requestId: "" });
+      return write(response, 200, await handler.jobsSearch({ query: url.searchParams.get("query") ?? "" }, publicContext(context)));
+    }
+    const jobLoad = /^\/v1\/jobs\/([^/]+)\/load$/.exec(url.pathname);
+    if (jobLoad && request.method === "POST") {
+      if (!handler.jobLoad) return write(response, 503, { verdict: "refused", reasonCode: "job-catalog-unavailable", lifecycleState: "unavailable", requestId: "" });
+      await readJson(request);
+      return write(response, 200, await handler.jobLoad({ jobId: decodeURIComponent(jobLoad[1]) }, publicContext(context)));
+    }
     if (url.pathname === "/v1/artifacts" && request.method === "POST") {
       if (!artifactStage) return write(response, 503, { verdict: "refused", reasonCode: "artifact-staging-unavailable", lifecycleState: "unavailable", requestId: "" });
-      return write(response, 202, await artifactStage(await readJson(request), publicContext(context)));
+      return write(response, 202, await artifactStage(await readJson(request, 10 * 1024 * 1024), publicContext(context)));
     }
     const match = /^\/v1\/outcomes\/([^/]+)(?:\/([^/]+))?$/.exec(url.pathname);
     if (!match) return write(response, 404, { verdict: "refused", reasonCode: "not-found" });
@@ -21,7 +31,7 @@ export async function handleAuthorityHttp(request: IncomingMessage, response: Se
     return write(response, 202, await handler.outcome(alias, normalized, publicContext(context)));
   } catch { return write(response, 400, { verdict: "refused", reasonCode: "invalid-request", lifecycleState: "refused", requestId: "" }); }
 }
-async function readJson(request: IncomingMessage): Promise<unknown> { const chunks: Buffer[] = []; for await (const chunk of request) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)); if (Buffer.concat(chunks).length > 64 * 1024) throw new Error("request too large"); return JSON.parse(Buffer.concat(chunks).toString("utf8")); }
+async function readJson(request: IncomingMessage, maxBytes = 64 * 1024): Promise<unknown> { const chunks: Buffer[] = []; let total = 0; for await (const chunk of request) { const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk); total += buffer.byteLength; if (total > maxBytes) throw new Error("request too large"); chunks.push(buffer); } return JSON.parse(Buffer.concat(chunks).toString("utf8")); }
 function write(response: ServerResponse, status: number, value: unknown): void { response.statusCode = status; response.setHeader("content-type", "application/json"); response.setHeader("connection", "close"); response.end(JSON.stringify(value)); }
 function publicContext(context: { readonly tenant: string; readonly requester: string }): { readonly tenant: string; readonly requester: string } { return { tenant: context.tenant, requester: context.requester }; }
 function normalizeIngressRequest(value: unknown): unknown { if (!value || typeof value !== "object" || Array.isArray(value)) return value; const raw = value as Record<string, unknown>; return raw.v === undefined ? { v: "reelier.outcome-request/v1", ...raw } : value; }

@@ -1,6 +1,7 @@
 import { request as httpsRequest } from "node:https";
 import { lookup as dnsLookup } from "node:dns/promises";
 import { isIP } from "node:net";
+import { createHash } from "node:crypto";
 import type { TransportEffect } from "../types.js";
 
 const FORBIDDEN = new Set(["authorization", "cookie", "host"]);
@@ -86,7 +87,6 @@ async function requestPinned(endpoint: JsonHttpsEndpoint, method: string, path: 
   const timeoutMs = options.timeoutMs ?? 15_000;
   const maxResponseBytes = Math.min(options.maxResponseBytes ?? MAX_RESPONSE_BYTES, MAX_RESPONSE_BYTES);
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 120_000) throw new TypeError("invalid HTTPS timeout");
-  const { createHash } = await import("node:crypto");
   const requestBytesDigest = `sha256:${createHash("sha256").update(body).digest("hex")}`;
   return new Promise((resolve, reject) => {
     const req = httpsRequest({ protocol: "https:", hostname: base.hostname, port: base.port || 443, method, path: `${target.pathname}${target.search}`, headers: requestHeaders, servername: base.hostname, lookup: (_hostname, _options, callback) => callback(null, chosen, isIP(chosen)) }, response => {

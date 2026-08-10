@@ -35,5 +35,26 @@ export async function createLocalAuthorityRuntime(config: AuthorityHostConfig): 
   const gate = createAuthorityGate({ trustRoots, packs, sources, connectors: createConnectorRegistry([]), state, ledger, localGatePolicyDigest: authorityDigest({ v: "reelier.local-gate-policy/v1", tenant: config.tenant }), decisionSink: decisions, signer: { async sign(input) { return { signerId: "local-gate", signature: signAuthorityDigest(privateKey, input.purpose, input.digest) }; } }, eventId: () => `evt_${randomUUID()}`, capabilityId: () => `cap_${randomUUID()}` });
   const publication = createFileReceiptPublication({ rootDir: config.receiptDir });
   const dispatch = createDispatchCoordinator(ledger, { async dispatch() { return { kind: "definitive-failure", resultDigest: authorityDigest({ v: "reelier.local-dispatch/v1", reason: "connector-not-configured" }) }; } }, undefined, publication);
-  return createAuthorityHostRuntime({ gate, dispatch, ledger, decisions });
+  const runtime = createAuthorityHostRuntime({ gate, dispatch, ledger, decisions });
+  const jobs = Object.freeze(config.definitions.map(alias => Object.freeze({ jobId: alias, alias })));
+  return Object.freeze({
+    ...runtime,
+    async jobsSearch(input: unknown) {
+      const query = input && typeof input === "object" && !Array.isArray(input) && typeof (input as Record<string, unknown>).query === "string" ? String((input as Record<string, unknown>).query).toLowerCase() : "";
+      return Object.freeze({ requestId: "", verdict: "accepted" as const, reasonCode: "jobs-found", lifecycleState: "catalog", jobs: Object.freeze(jobs.filter(job => !query || job.alias.toLowerCase().includes(query))) });
+    },
+    async jobLoad(input: unknown) {
+      const jobId = input && typeof input === "object" && !Array.isArray(input) && typeof (input as Record<string, unknown>).jobId === "string" ? String((input as Record<string, unknown>).jobId) : "";
+      if (!jobs.some(job => job.jobId === jobId)) return Object.freeze({ requestId: "", verdict: "refused" as const, reasonCode: "job-not-found", lifecycleState: "unknown" });
+      return Object.freeze({ requestId: "", verdict: "accepted" as const, reasonCode: "job-loaded", lifecycleState: "loaded", jobRef: jobId });
+    },
+    async invoke(input: unknown, context: { readonly tenant: string; readonly requester: string }) {
+      if (!input || typeof input !== "object" || Array.isArray(input)) return Object.freeze({ requestId: "", verdict: "refused" as const, reasonCode: "invalid-request", lifecycleState: "refused" });
+      const raw = input as Record<string, unknown>;
+      const jobRef = typeof raw.jobRef === "string" ? raw.jobRef : "";
+      if (!jobs.some(job => job.jobId === jobRef)) return Object.freeze({ requestId: typeof raw.requestId === "string" ? raw.requestId : "", verdict: "refused" as const, reasonCode: "job-not-found", lifecycleState: "unknown" });
+      const request = { ...raw }; delete request.jobRef;
+      return runtime.outcome(jobRef, request, context);
+    },
+  });
 }

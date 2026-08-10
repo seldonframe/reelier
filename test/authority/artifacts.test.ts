@@ -24,6 +24,14 @@ test("staged artifact TTL is bounded to seven days by default and thirty days by
   await assert.rejects(() => store.stage({ mediaType: "text/plain", bytes: Buffer.from("x"), expiresAt: new Date("2026-09-10T00:00:00.000Z") }));
 });
 
+test("staged artifacts support binary preparation up to ten megabytes", async () => {
+  const store = createArtifactStore({ tenant: "tenant_1", key: Buffer.alloc(32, 6), now: () => new Date("2026-08-09T00:00:00.000Z") });
+  const bytes = Buffer.alloc(1024 * 1024, 9);
+  const staged = await store.stage({ mediaType: "application/vnd.openxmlformats-officedocument.presentationml.presentation", bytes });
+  assert.equal(staged.commitment.byteCount, bytes.byteLength);
+  assert.deepEqual(await store.read(staged.commitment.reference), bytes);
+});
+
 test("durable artifact store survives a new host instance with a wrapped tenant key", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "reelier-artifacts-"));
   try {
@@ -48,7 +56,7 @@ test("artifact metadata is authenticated, bounded, and references cannot escape 
     await (await import("node:fs/promises")).writeFile(metadataPath, JSON.stringify(metadata), "utf8");
     await assert.rejects(() => store.read(staged.commitment.reference));
     await assert.rejects(() => store.read("../../outside"));
-    await assert.rejects(() => store.stage({ mediaType: "text/plain", bytes: Buffer.alloc(262145) }));
+    await assert.rejects(() => store.stage({ mediaType: "application/octet-stream", bytes: Buffer.alloc(10 * 1024 * 1024 + 1) }));
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
