@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "reelier",
-  "version": "0.32.0",
+  "version": "0.32.1",
   "description": "Ships two Agent Skills and nothing else: reelier-replay freezes a repeatable tool-call job into a deterministic replay with a receipt per run, and reelier-write-safety covers bounding an agent's writes before you grant them. Skill-only package — it includes no MCP servers.",
   "homepage": "https://github.com/seldonframe/reelier",
   "repository": "https://github.com/seldonframe/reelier",

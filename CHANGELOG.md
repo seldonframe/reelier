@@ -13,7 +13,7 @@ All notable changes to `reelier`. Dates are release dates.
 - This branch adds guarded certification contracts, Fly/Codex orchestration, release-evidence verification, and runbooks. Those additions are not in the immutable npm `0.32.0` tarball.
 - Hermetic certification fixtures pass. Live provider certification and the real ten-agent Codex run remain unchecked until isolated resources, registered live adapters, and a pinned runtime produce signed evidence.
 
-## Unreleased
+## 0.32.1 — Unreleased
 
 - Correct the post-`0.32.0` secret lifecycle prototype so Cloudflare, not Reelier, generates the account-owned API token. The Authority Cell captures the one-time value into a non-serializable transfer, injects it into a Vercel sensitive environment variable, binds the route and exact secret-bearing body digest into evidence without persisting the body, reconciles metadata only, and zeroes owned response/materialization buffers. Guarded live evidence remains required.
 - Close the intermittent Windows authority-ledger outage caused by reserved or unrelated primary fence ports. A full-digest named-pipe mutex preserves one same-root writer while bounded TCP fallback skips reserved or verified-foreign candidates and keeps silent or unverifiable listeners fail-closed.
