@@ -31,14 +31,14 @@ test("the Fly Authority Cell starts the authenticated HTTP transport with durabl
 });
 
 test("every Fly certification manifest resolves the repository Dockerfile from its own directory", async () => {
-  for (const name of ["authority-cell", "agent-runtime", "egress-gateway"]) {
+  for (const name of ["authority-cell-bootstrap", "authority-cell", "agent-runtime", "egress-gateway"]) {
     const manifest = await readFile(path.resolve(`infra/fly/authority-cell/${name}.toml`), "utf8");
     assert.match(manifest, /dockerfile = "\.\.\/\.\.\/\.\.\/Dockerfile"/, `${name} must not resolve a nonexistent adjacent Dockerfile`);
   }
 });
 
 test("every Fly certification file mount resolves from the repository deploy context", async () => {
-  for (const name of ["authority-cell", "agent-runtime", "egress-gateway"]) {
+  for (const name of ["authority-cell-bootstrap", "authority-cell", "agent-runtime", "egress-gateway"]) {
     const manifest = await readFile(path.resolve(`infra/fly/authority-cell/${name}.toml`), "utf8");
     const localPaths = [...manifest.matchAll(/local_path = "([^"]+)"/g)].map(match => match[1]);
     assert.ok(localPaths.length > 0, `${name} must mount its probe manifest`);
