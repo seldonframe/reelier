@@ -14,6 +14,8 @@ import { createLocalAuthorityRuntime } from "./host/local.js";
 import { createCertificationPreflight } from "./host/certification.js";
 import { verifyReleaseEvidenceManifest } from "./host/release-evidence.js";
 import { inspectCertificationSecretReferences, parseCertificationOperatorConfig, probePinnedCodexBinary } from "./host/certification-config.js";
+import { createFounderCertificationSourceAdapter } from "./host/founder-source-adapter.js";
+import { createFounderJsonHttpsDispatchAdapter } from "./host/founder-dispatch-adapter.js";
 
 export async function runAuthorityCommand(args: Readonly<{ positional: string[]; flags: Set<string>; opts: Record<string, string> }>): Promise<number> {
   const subcommand = args.positional[0] ?? "doctor";
@@ -146,7 +148,13 @@ async function authorityServe(args: Readonly<{ opts: Record<string, string> }>):
   const artifactDataKey = await loadOrCreateArtifactKey(artifactRoot, "artifact-data.key");
   const artifactMasterKey = await loadOrCreateArtifactKey(artifactRoot, "artifact-master.key");
   const artifactStore = createArtifactStore({ tenant: loaded.config.tenant, key: artifactDataKey, masterKey: artifactMasterKey, rootDir: path.join(loaded.config.receiptDir, "artifacts") });
-  const authorityRuntime = await createLocalAuthorityRuntime(loaded.config);
+  const certificationConfig = args.opts["certification-config"]
+    ? parseCertificationOperatorConfig(JSON.parse(await readFile(path.resolve(args.opts["certification-config"]), "utf8")))
+    : undefined;
+  const authorityRuntime = await createLocalAuthorityRuntime(loaded.config, certificationConfig ? {
+    sourceReadAdapter: createFounderCertificationSourceAdapter({ config: certificationConfig, handles: { githubIssue: "certification_github_issue", cloudflareRecord: "certification_cloudflare_record", slackChannel: "certification_slack_channel" } }),
+    dispatchAdapter: createFounderJsonHttpsDispatchAdapter({ config: certificationConfig }),
+  } : {});
   const runtime: AuthorityHostRuntime = {
     outcome: authorityRuntime.outcome,
     status: authorityRuntime.status,

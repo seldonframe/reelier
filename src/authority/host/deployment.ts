@@ -17,7 +17,7 @@ export interface AuthorityDeploymentTrustEntry {
 export interface AuthorityDeploymentManifest {
   readonly v: "reelier.authority-deployment/v1";
   readonly tenant: string;
-  readonly state: AuthorityStateSnapshot;
+  readonly states: readonly AuthorityStateSnapshot[];
   readonly connectors: readonly ConnectorRegistration[];
   readonly trust: readonly AuthorityDeploymentTrustEntry[];
   readonly sourceDirectory: string;
@@ -32,8 +32,8 @@ export interface LoadedAuthorityDeployment extends AuthorityDeploymentManifest {
 }
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._~:-]{0,127}$/;
-const TOP_LEVEL = new Set(["connectors", "jobCard", "sourceDirectory", "state", "tenant", "trust", "v"]);
-const REQUIRED_TOP_LEVEL = new Set(["connectors", "sourceDirectory", "state", "tenant", "trust", "v"]);
+const TOP_LEVEL = new Set(["connectors", "jobCard", "sourceDirectory", "state", "states", "tenant", "trust", "v"]);
+const REQUIRED_TOP_LEVEL = new Set(["connectors", "sourceDirectory", "tenant", "trust", "v"]);
 const TRUST_FIELDS = new Set(["principalId", "publicKeyFile", "purposes", "signerId"]);
 
 export async function loadAuthorityDeployment(file: string): Promise<LoadedAuthorityDeployment> {
@@ -42,7 +42,7 @@ export async function loadAuthorityDeployment(file: string): Promise<LoadedAutho
   let raw: unknown;
   try { raw = JSON.parse(await readFile(resolved, "utf8")); } catch (error) { throw new TypeError(`authority deployment is not valid JSON: ${error instanceof Error ? error.message : String(error)}`); }
   const manifest = parseManifest(raw);
-  if (manifest.tenant !== manifest.state.tenant) throw new TypeError("authority deployment tenant does not match state tenant");
+  if (manifest.states.some(state => manifest.tenant !== state.tenant)) throw new TypeError("authority deployment tenant does not match state tenant");
   const trustEntries = [] as Array<{ tenant: string; signerId: string; principalId: string; publicKey: KeyObject; purposes: readonly AuthorityKind[] }>;
   for (const entry of manifest.trust) {
     const keyFile = resolveInside(root, entry.publicKeyFile, "trust key path");
@@ -56,14 +56,23 @@ export async function loadAuthorityDeployment(file: string): Promise<LoadedAutho
 function parseManifest(value: unknown): AuthorityDeploymentManifest {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("authority deployment must be an object");
   const raw = value as Record<string, unknown>;
-  if (Object.keys(raw).some(key => !TOP_LEVEL.has(key)) || ![...REQUIRED_TOP_LEVEL].every(key => key in raw)) throw new TypeError("authority deployment has an unknown or missing field");
+  if (Object.keys(raw).some(key => !TOP_LEVEL.has(key)) || ![...REQUIRED_TOP_LEVEL].every(key => key in raw) || ("state" in raw) === ("states" in raw)) throw new TypeError("authority deployment has an unknown or missing field");
   if (raw.v !== "reelier.authority-deployment/v1" || typeof raw.tenant !== "string" || !ID.test(raw.tenant) || typeof raw.sourceDirectory !== "string" || !raw.sourceDirectory || path.isAbsolute(raw.sourceDirectory)) throw new TypeError("authority deployment identity or source directory is invalid");
-  const state = parseState(raw.state, raw.tenant);
+  const states = "states" in raw
+    ? parseStates(raw.states, raw.tenant)
+    : Object.freeze([parseState(raw.state, raw.tenant)]);
   if (!Array.isArray(raw.connectors)) throw new TypeError("authority deployment connectors must be an array");
   if (!Array.isArray(raw.trust) || raw.trust.length === 0) throw new TypeError("authority deployment trust roots are required");
   const trust = raw.trust.map(parseTrustEntry);
   const jobCard = raw.jobCard === undefined ? undefined : normalizeSignedJobCard(raw.jobCard);
-  return Object.freeze({ v: raw.v, tenant: raw.tenant, state, connectors: Object.freeze(raw.connectors.map(item => item as ConnectorRegistration)), trust: Object.freeze(trust), sourceDirectory: raw.sourceDirectory, ...(jobCard ? { jobCard } : {}) });
+  return Object.freeze({ v: raw.v, tenant: raw.tenant, states, connectors: Object.freeze(raw.connectors.map(item => item as ConnectorRegistration)), trust: Object.freeze(trust), sourceDirectory: raw.sourceDirectory, ...(jobCard ? { jobCard } : {}) });
+}
+
+function parseStates(value: unknown, tenant: string): readonly AuthorityStateSnapshot[] {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 256) throw new TypeError("authority deployment states must be a bounded nonempty array");
+  const states = value.map(item => parseState(item, tenant));
+  if (new Set(states.map(state => state.definitionAlias)).size !== states.length) throw new TypeError("authority deployment has duplicate definition state");
+  return Object.freeze(states.sort((left, right) => left.definitionAlias.localeCompare(right.definitionAlias)));
 }
 
 function parseState(value: unknown, tenant: string): AuthorityStateSnapshot {
