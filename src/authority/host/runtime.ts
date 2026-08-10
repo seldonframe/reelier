@@ -61,13 +61,14 @@ export function createAuthorityHostRuntime(deps: AuthorityHostRuntimeDependencie
     } catch { return refusal(requestId, "status-unavailable", "unavailable"); }
   }
 
-  const delegationRequest = deps.delegation ? async (input: unknown, context: { readonly tenant: string; readonly requester: string }): Promise<unknown> => {
+  const delegationRequest = deps.delegation ? async (input: unknown, context: { readonly tenant: string; readonly requester: string; readonly executionContext?: AuthorityExecutionContextV1 }): Promise<unknown> => {
     try {
       if (!input || typeof input !== "object" || Array.isArray(input)) throw new TypeError("invalid delegation request");
       const raw = input as Record<string, unknown>;
-      const allowed = new Set(["taskId", "parentAllocationId", "child", "effects"]);
+      const allowed = new Set(["child", "effects"]);
       if (Object.keys(raw).some(key => !allowed.has(key))) throw new TypeError("delegation request contains an identity or unknown field");
-      return await deps.delegation!.request(Object.assign({}, raw, { tenant: context.tenant, parentPrincipal: context.requester }) as never);
+      if (!context.executionContext || context.executionContext.principalId !== context.requester) throw new TypeError("delegation request requires authenticated task authority");
+      return await deps.delegation!.request({ tenant: context.tenant, parentPrincipal: context.requester, taskId: context.executionContext.taskId, parentAllocationId: context.executionContext.allocationId, child: raw.child as never, effects: Number(raw.effects) });
     } catch (error) { return Object.freeze({ verdict: "refused", reasonCode: error instanceof Error ? error.message : "delegation-refused", lifecycleState: "refused" }); }
   } : undefined;
   const delegationStatus = deps.delegation ? async (input: unknown, context: { readonly tenant: string; readonly requester: string }): Promise<unknown> => {

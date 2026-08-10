@@ -4,6 +4,7 @@ import { validateChildDelegationRequest, type StoredSignedGrant } from "../deleg
 import { FsDelegationBudgetLedger } from "./delegation-budget.js";
 import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
+import type { CodexSessionGrantBinding } from "./codex-session-activation.js";
 
 export interface DelegationAuthoritySigner {
   signGrant(value: DelegationGrant): Promise<StoredSignedGrant>;
@@ -14,6 +15,7 @@ export interface DelegationAuthority {
   request(input: Readonly<{ tenant: string; parentPrincipal: string; taskId: string; parentAllocationId: string; child: DelegationGrant; effects: number }>): Promise<Readonly<{ verdict: "accepted"; reasonCode: "delegation-allocated"; lifecycleState: "allocated"; grant: DelegationGrant; grantDigest: string; allocationId: string }>>;
   status(input: Readonly<{ tenant: string; requester: string; grantId: string }>): Promise<Readonly<{ grantId: string; taskId: string; parentGrantDigest: string; grantee: string; lifecycleState: "allocated" | "revoked" }>>;
   taskStatus(input: Readonly<{ tenant: string; requester: string; taskId: string }>): Promise<Readonly<{ taskId: string; lifecycleState: "active" | "revoked"; grants: readonly string[] }>>;
+  resolveSessionBinding(input: Readonly<{ tenant: string; taskId: string; principalId: string }>): Promise<CodexSessionGrantBinding>;
   revoke(tenant: string, taskId: string): Promise<void>;
   readonly budget: FsDelegationBudgetLedger;
 }
@@ -99,7 +101,21 @@ export function createDelegationAuthority(input: Readonly<{ root: string; signGr
     return Object.freeze({ taskId: value.taskId, lifecycleState: record.revoked ? "revoked" as const : "active" as const, grants: Object.freeze([...record.grants.values()].map(candidate => candidate.grant.grantId).sort()) });
   }
 
-  return Object.freeze({ registerRoot, request, status, taskStatus, revoke, budget: budgets });
+  async function resolveSessionBinding(value: Readonly<{ tenant: string; taskId: string; principalId: string }>): Promise<CodexSessionGrantBinding> {
+    await ensureLoaded();
+    const record = roots.get(value.taskId);
+    if (!record || record.tenant !== value.tenant || record.revoked) throw new TypeError("delegation task is not active");
+    const matching = [...record.grants.values()].filter(candidate => candidate.grant.grantee === value.principalId);
+    if (matching.length !== 1) throw new TypeError(matching.length === 0 ? "delegation principal grant not found" : "delegation principal grant is ambiguous");
+    const entry = matching[0];
+    const now = (input.now?.() ?? new Date()).getTime();
+    if (now < Date.parse(entry.grant.issuedAt) || now >= Date.parse(entry.grant.expiresAt)) throw new TypeError("delegation principal grant is not active");
+    const allocation = await budgets.get(entry.allocationId);
+    if (!allocation || allocation.taskId !== value.taskId || allocation.revoked) throw new TypeError("delegation allocation is not active");
+    return Object.freeze({ taskId: value.taskId, grantId: entry.grant.grantId, grantDigest: entry.digest, grantee: entry.grant.grantee, allocationId: entry.allocationId, expiresAt: entry.grant.expiresAt, effects: allocation.effects, lifecycleState: "allocated" as const });
+  }
+
+  return Object.freeze({ registerRoot, request, status, taskStatus, resolveSessionBinding, revoke, budget: budgets });
 
   async function loadRegistry(): Promise<void> {
     await mkdir(input.root, { recursive: true });
