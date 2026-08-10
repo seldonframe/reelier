@@ -4,14 +4,13 @@ All notable changes to `reelier`. Dates are release dates.
 
 ## 0.32.0 — 2026-08-10
 
-### Added
+### Published
 
-- Guarded `authority certify preflight`, `authority certify run`, and `authority certify verify` command surfaces.
-- Redacted certification contracts, Fly Authority Cell probe orchestration, ten-profile Codex dogfood graph export, and signed release-evidence verification.
-- Release, live-certification, provider-cleanup, and merge runbooks.
+- Authority ABI, durable dispatch, signed jobs, delegation, budgets, secret-handle primitives, and founder-stack pack prototypes.
 
-### Verification boundary
+### Post-publication branch work
 
+- This branch adds guarded certification contracts, Fly/Codex orchestration, release-evidence verification, and runbooks. Those additions are not in the immutable npm `0.32.0` tarball.
 - Hermetic certification fixtures pass. Live provider certification and the real ten-agent Codex run remain unchecked until isolated resources, registered live adapters, and a pinned runtime produce signed evidence.
 
 ## Unreleased
