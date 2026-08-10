@@ -11,11 +11,12 @@ import { createSourceRegistry, type SourceRegistry } from "../authority/source.j
 import type { StaticPackDefinition } from "../authority/pack.js";
 import { gmailReplyManifest, gmailLabelsManifest, gmailReplyDefinition, gmailLabelsDefinition, createGmailSourceResolver, reconcileGmailReply, reconcileGmailLabels } from "./gmail/index.js";
 import { stripeManifest, stripeRefundDefinition, createStripeSourceResolver, reconcileStripeRefund } from "./stripe/index.js";
+import { vercelDeploymentReleaseManifest, vercelDeploymentReleaseDefinition, createVercelDeploymentReleaseSourceResolver, reconcileVercelDeploymentRelease } from "./vercel/index.js";
 
 export interface FirstPartyPack {
   readonly manifest: Readonly<Record<string, unknown>>;
   readonly definition: StaticPackDefinition;
-  readonly resolver: ReturnType<typeof createGitHubIssueLabelsSourceResolver> | ReturnType<typeof createSlackChannelTopicSourceResolver> | ReturnType<typeof createGmailSourceResolver> | ReturnType<typeof createStripeSourceResolver>;
+  readonly resolver: ReturnType<typeof createGitHubIssueLabelsSourceResolver> | ReturnType<typeof createSlackChannelTopicSourceResolver> | ReturnType<typeof createGmailSourceResolver> | ReturnType<typeof createStripeSourceResolver> | ReturnType<typeof createVercelDeploymentReleaseSourceResolver>;
   readonly reconcile: (...args: any[]) => any;
 }
 
@@ -24,14 +25,16 @@ export const slackChannelTopicPack: FirstPartyPack = Object.freeze({ manifest: s
 export const gmailReplyPack: FirstPartyPack = Object.freeze({ manifest: gmailReplyManifest, definition: gmailReplyDefinition, resolver: createGmailSourceResolver(), reconcile: reconcileGmailReply });
 export const gmailLabelsPack: FirstPartyPack = Object.freeze({ manifest: gmailLabelsManifest, definition: gmailLabelsDefinition, resolver: createGmailSourceResolver("*", true), reconcile: reconcileGmailLabels });
 export const stripeRefundPack: FirstPartyPack = Object.freeze({ manifest: stripeManifest, definition: stripeRefundDefinition, resolver: createStripeSourceResolver(), reconcile: reconcileStripeRefund });
-export const firstPartyPacks = Object.freeze([githubIssueLabelsPack, slackChannelTopicPack, gmailReplyPack, gmailLabelsPack, stripeRefundPack]);
+export const vercelDeploymentReleasePack: FirstPartyPack = Object.freeze({ manifest: vercelDeploymentReleaseManifest, definition: vercelDeploymentReleaseDefinition, resolver: createVercelDeploymentReleaseSourceResolver(), reconcile: reconcileVercelDeploymentRelease });
+export const firstPartyPacks = Object.freeze([githubIssueLabelsPack, slackChannelTopicPack, gmailReplyPack, gmailLabelsPack, stripeRefundPack, vercelDeploymentReleasePack]);
 
 export function createFirstPartyPackRegistry(): StaticPackRegistry { return createStaticPackRegistry(firstPartyPacks.map(pack => pack.definition)); }
-export function createFirstPartySourceRegistry(tenant: string): SourceRegistry { return createSourceRegistry([createGitHubIssueLabelsSourceResolver(tenant), createSlackChannelTopicSourceResolver(tenant), createGmailSourceResolver(tenant), createGmailSourceResolver(tenant, true), createStripeSourceResolver(tenant)]); }
+export function createFirstPartySourceRegistry(tenant: string): SourceRegistry { return createSourceRegistry([createGitHubIssueLabelsSourceResolver(tenant), createSlackChannelTopicSourceResolver(tenant), createGmailSourceResolver(tenant), createGmailSourceResolver(tenant, true), createStripeSourceResolver(tenant), createVercelDeploymentReleaseSourceResolver(tenant)]); }
 export function firstPartyPackForAlias(alias: string): FirstPartyPack | undefined { return firstPartyPacks.find(pack => pack.definition.alias === alias); }
 
 export { githubIssueLabelsManifest, githubIssueLabelsDefinition, createGitHubIssueLabelsSourceResolver, compileGitHubIssueLabels, parseGitHubIssueLabelsPolicy, validateGitHubIssueLabelsChoices, reconcileGitHubIssueLabels } from "./github/index.js";
 export { slackChannelTopicManifest, slackChannelTopicDefinition, createSlackChannelTopicSourceResolver, compileSlackChannelTopic, parseSlackChannelTopicPolicy, validateSlackChannelTopicChoices, reconcileSlackChannelTopic } from "./slack-topic/index.js";
 export { gmailReplySendAlias, gmailThreadLabelsAlias, parseGmailReplyPolicy, parseGmailLabelsPolicy, compileGmailReply, compileGmailLabels, reconcileGmailReply, reconcileGmailLabels, createGmailSourceResolver, gmailReplyDefinition, gmailLabelsDefinition, gmailReplyManifest, gmailLabelsManifest } from "./gmail/index.js";
 export { stripeRefundIssueAlias, parseStripeRefundPolicy, compileStripeRefund, reconcileStripeRefund, createStripeSourceResolver, stripeRefundDefinition, stripeManifest } from "./stripe/index.js";
+export { vercelDeploymentReleaseAlias, parseVercelDeploymentReleasePolicy, compileVercelDeploymentRelease, validateVercelDeploymentReleaseChoices, createVercelDeploymentReleaseSourceResolver, reconcileVercelDeploymentRelease, vercelDeploymentReleaseDefinition, vercelDeploymentReleaseManifest, type VercelDeploymentReleaseProjection, type VercelDeploymentReleasePolicy } from "./vercel/index.js";
 export { semanticOutcomeCatalog, semanticOutcomeForAlias, type SemanticOutcomeCatalogEntry } from "./semantic.js";

@@ -9,6 +9,7 @@ import { parseSlackChannelTopicPolicy, slackChannelTopicDefinition, validateSlac
 import { reconcileSlackChannelTopic } from "./slack-topic/reconcile.js";
 import { gmailReplySendAlias, gmailThreadLabelsAlias, gmailReplyDefinition, parseGmailReplyPolicy, compileGmailReply, reconcileGmailReply } from "./gmail/index.js";
 import { stripeRefundIssueAlias, stripeRefundDefinition, parseStripeRefundPolicy, compileStripeRefund, reconcileStripeRefund } from "./stripe/index.js";
+import { vercelDeploymentReleaseAlias, vercelDeploymentReleaseDefinition, parseVercelDeploymentReleasePolicy, compileVercelDeploymentRelease, reconcileVercelDeploymentRelease, type VercelDeploymentReleaseProjection } from "./vercel/index.js";
 
 export interface FirstPartyConformanceReport {
   readonly aliases: readonly string[];
@@ -19,7 +20,7 @@ export interface FirstPartyConformanceReport {
 
 /** Runs the mandatory common corpus. This is intentionally offline and provider-neutral. */
 export function runFirstPartyPackConformance(): FirstPartyConformanceReport {
-  const expectedAliases = [githubIssueLabelsAlias, slackChannelTopicAlias, gmailReplySendAlias, gmailThreadLabelsAlias, stripeRefundIssueAlias];
+  const expectedAliases = [githubIssueLabelsAlias, slackChannelTopicAlias, gmailReplySendAlias, gmailThreadLabelsAlias, stripeRefundIssueAlias, vercelDeploymentReleaseAlias];
   const actualAliases = firstPartyPacks.map(pack => pack.definition.alias).sort(compareText);
   if (actualAliases.join("\0") !== expectedAliases.slice().sort(compareText).join("\0")) throw new TypeError("first-party conformance requires the reviewed v1 packs");
   createStaticPackRegistry(firstPartyPacks.map(pack => pack.definition));
@@ -74,6 +75,14 @@ export function runFirstPartyPackConformance(): FirstPartyConformanceReport {
   check(parseAuthorityWire("transport-effect", stripeEffect).endpointId === "stripe.refunds.create", "Stripe effect schema closure");
   check(!Object.keys((stripeEffect as { headers: Record<string, string> }).headers).some(key => ["authorization", "cookie", "host"].includes(key.toLowerCase())), "Stripe effect has no credential headers");
   check(reconcileStripeRefund({ chargeId: "ch_1", expectedAmount: 5000, response: { body: { charge: "ch_1", amount: 5000 } } }).status === "matched", "Stripe refund reconciliation");
+  const vercelSource: VercelDeploymentReleaseProjection = { teamId: "team_demo", projectId: "prj_demo", deploymentId: "dpl_preview", deploymentUrl: "https://preview-demo.vercel.app", commitSha: "0123456789abcdef0123456789abcdef01234567", checks: [{ name: "build", status: "passed" }], domains: ["app.example.com"], currentProductionDeploymentId: "dpl_previous" };
+  const vercelPolicy = parseVercelDeploymentReleasePolicy({ teamId: "team_demo", projectId: "prj_demo", allowedDomains: ["app.example.com"] });
+  const vercelEffect = vercelDeploymentReleaseDefinition.compile({ contract: {} as never, source: { projection: vercelSource } as never, choices: {}, policy: vercelPolicy, now: new Date(0), connectorAccount: { connectorId: "vercel", accountId: "team_demo" } });
+  check(parseAuthorityWire("transport-effect", vercelEffect).endpointId === "vercel.deployment.promote", "Vercel effect schema closure");
+  check(Buffer.compare(authorityCanonicalBytes(vercelEffect), authorityCanonicalBytes(compileVercelDeploymentRelease({ source: vercelSource, policy: vercelPolicy }))) === 0, "Vercel compilation deterministic");
+  check(throws(() => compileVercelDeploymentRelease({ source: { ...vercelSource, currentProductionDeploymentId: "dpl_preview" }, policy: vercelPolicy })), "Vercel already-current deployment refused");
+  check(reconcileVercelDeploymentRelease({ expected: vercelSource, response: { body: { id: "dpl_preview", teamId: "team_demo", projectId: "prj_demo", target: "production", commitSha: vercelSource.commitSha, domains: vercelSource.domains, currentProductionDeploymentId: "dpl_preview" } } }).status === "matched", "Vercel authoritative read-back");
+  check(reconcileVercelDeploymentRelease({ expected: vercelSource, response: { status: 200, body: { id: "dpl_other", teamId: "team_demo", projectId: "prj_demo", target: "production", commitSha: vercelSource.commitSha, domains: vercelSource.domains, currentProductionDeploymentId: "dpl_other" } } }).status === "conflict", "Vercel conflicting production is explicit");
   caseIds.push("schema-closure", "exact-byte", "no-secret", "account-binding", "ambiguity", "reconciliation", "redaction");
   return Object.freeze({ aliases: Object.freeze(actualAliases), checks, passed: checks, caseIds: Object.freeze(caseIds) });
 }
