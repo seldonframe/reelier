@@ -21,16 +21,19 @@ import { firstPartyPacks, createFirstPartySourceRegistry } from "../../packs/ind
 import { loadAuthorityDeployment } from "./deployment.js";
 import { loadOrCreateLocalGateSigner } from "./gate-signer.js";
 import type { DelegationAuthority } from "./delegation-service.js";
+import { assertManagedTopologyEvidence, type TopologyEvidenceV1 } from "./topology.js";
 
 /** Builds the local host from signed-artifact boundaries. An empty workspace is intentionally
  * usable for discovery and status, but every Outcome refuses until a signed contract is installed. */
 export interface LocalAuthorityRuntimeOptions {
   readonly dispatchAdapter?: DispatchAdapter;
   readonly delegation?: DelegationAuthority;
+  readonly topologyEvidence?: TopologyEvidenceV1;
 }
 
 export async function createLocalAuthorityRuntime(config: AuthorityHostConfig, options: LocalAuthorityRuntimeOptions = {}): Promise<AuthorityHostRuntime> {
   if (config.cloud && config.topology !== "isolated") throw new TypeError("managed authority requires isolated topology");
+  if (config.cloud) assertManagedTopologyEvidence(options.topologyEvidence);
   await mkdir(config.ledgerDir, { recursive: true }); await mkdir(config.decisionDir, { recursive: true }); await mkdir(config.receiptDir, { recursive: true });
   const deployment = config.deploymentPath ? await loadAuthorityDeployment(config.deploymentPath) : undefined;
   if (deployment && deployment.tenant !== config.tenant) throw new TypeError("authority deployment tenant does not match host config");

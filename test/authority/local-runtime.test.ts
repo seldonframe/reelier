@@ -43,3 +43,19 @@ test("managed local authority refuses a non-exclusive topology", async () => {
     await assert.rejects(() => createLocalAuthorityRuntime({ version: 1, tenant: "tenant_1", requester: "operator", definitions: ["gmail_reply_send_v1"], topology: "same-user", ledgerDir: path.join(root, "ledger"), decisionDir: path.join(root, "decisions"), receiptDir: path.join(root, "receipts"), endpoints: [], cloud: { baseUrl: "https://cloud.example", tokenRef: "cloud-token" } }), /managed authority requires isolated topology/);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test("managed local authority refuses isolated declarations without host topology evidence", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-managed-topology-evidence-"));
+  try {
+    await assert.rejects(() => createLocalAuthorityRuntime({ version: 1, tenant: "tenant_1", requester: "operator", definitions: ["gmail_reply_send_v1"], topology: "isolated", ledgerDir: path.join(root, "ledger"), decisionDir: path.join(root, "decisions"), receiptDir: path.join(root, "receipts"), endpoints: [], cloud: { baseUrl: "https://cloud.example", tokenRef: "cloud-token" } }), /topology evidence/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("managed local authority accepts only complete verified topology evidence", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-managed-topology-verified-"));
+  try {
+    const evidence = { v: "reelier.topology-evidence/v1" as const, credentialIsolation: "verified" as const, providerEgress: "verified" as const, rawWriteReachability: "verified" as const, readCoverage: "verified" as const, runtimeIdentity: "verified" as const, declaredSurfaceEnforcement: "verified" as const };
+    const runtime = await createLocalAuthorityRuntime({ version: 1, tenant: "tenant_1", requester: "operator", definitions: ["gmail_reply_send_v1"], topology: "isolated", ledgerDir: path.join(root, "ledger"), decisionDir: path.join(root, "decisions"), receiptDir: path.join(root, "receipts"), endpoints: [], cloud: { baseUrl: "https://cloud.example", tokenRef: "cloud-token" } }, { topologyEvidence: evidence });
+    assert.equal(typeof runtime.status, "function");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
