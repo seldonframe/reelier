@@ -16,6 +16,7 @@ export interface AuthorityHostRuntime {
   readonly artifactStage?: (input: unknown, context: { readonly tenant: string; readonly requester: string }) => Promise<Readonly<{ requestId: string; verdict: "accepted" | "refused"; reasonCode: string; lifecycleState: string; commitment?: StagedArtifactCommitmentV1 }>>;
   readonly delegationRequest?: (input: unknown, context: { readonly tenant: string; readonly requester: string }) => Promise<unknown>;
   readonly delegationStatus?: (input: unknown, context: { readonly tenant: string; readonly requester: string }) => Promise<unknown>;
+  readonly taskCreate?: (input: unknown, context: { readonly tenant: string; readonly requester: string }) => Promise<unknown>;
   readonly taskStatus?: (input: unknown, context: { readonly tenant: string; readonly requester: string }) => Promise<unknown>;
 }
 
@@ -29,7 +30,7 @@ export interface AuthorityHostServer {
 
 /** One host-neutral server for every supported agent adapter. Provider effects remain injected. */
 export function createAuthorityHostServer(config: AuthorityHostConfig, runtime: AuthorityHostRuntime): AuthorityHostServer {
-  const handler: AuthorityMcpHandler = { outcome: runtime.outcome, status: runtime.status, jobsSearch: runtime.jobsSearch, jobLoad: runtime.jobLoad, invoke: runtime.invoke, delegationRequest: runtime.delegationRequest, delegationStatus: runtime.delegationStatus, taskStatus: runtime.taskStatus };
+  const handler: AuthorityMcpHandler = { outcome: runtime.outcome, status: runtime.status, jobsSearch: runtime.jobsSearch, jobLoad: runtime.jobLoad, invoke: runtime.invoke, delegationRequest: runtime.delegationRequest, delegationStatus: runtime.delegationStatus, taskCreate: runtime.taskCreate, taskStatus: runtime.taskStatus };
   const context = { tenant: config.tenant, requester: config.requester, requireBearer: Boolean(config.ingress?.bearerRef), authenticate: config.ingress?.bearerRef ? async (header: string | undefined) => { try { const raw = header?.startsWith("Bearer ") ? header.slice(7) : ""; const expected = await createSecretResolver().resolve(config.ingress!.bearerRef!); const a = Buffer.from(raw); const b = Buffer.from(expected); return a.length === b.length && timingSafeEqual(a, b); } catch { return false; } } : undefined };
   const mcp = buildAuthorityMcpServer(config.definitions.map(alias => ({ alias })), handler, context, runtime.artifactStage);
   const http = createServer((request: IncomingMessage, response: ServerResponse) => { void handleAuthorityHttp(request, response, handler, context, runtime.artifactStage); });

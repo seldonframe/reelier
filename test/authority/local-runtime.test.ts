@@ -1,9 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { generateKeyPairSync } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createLocalAuthorityRuntime } from "../../src/authority/host/local.js";
+import { createDelegationAuthority } from "../../src/authority/host/delegation-service.js";
+import { authorityDigest } from "../../src/authority/wire.js";
+import { signAuthorityDigest } from "../../src/authority/crypto.js";
+import type { DelegationGrant } from "../../src/authority/types.js";
 
 test("local authority serve uses the real gate and refuses an unsigned empty deployment", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "reelier-local-runtime-"));
@@ -57,5 +62,20 @@ test("managed local authority accepts only complete verified topology evidence",
     const evidence = { v: "reelier.topology-evidence/v1" as const, credentialIsolation: "verified" as const, providerEgress: "verified" as const, rawWriteReachability: "verified" as const, readCoverage: "verified" as const, runtimeIdentity: "verified" as const, declaredSurfaceEnforcement: "verified" as const };
     const runtime = await createLocalAuthorityRuntime({ version: 1, tenant: "tenant_1", requester: "operator", definitions: ["gmail_reply_send_v1"], topology: "isolated", ledgerDir: path.join(root, "ledger"), decisionDir: path.join(root, "decisions"), receiptDir: path.join(root, "receipts"), endpoints: [], cloud: { baseUrl: "https://cloud.example", tokenRef: "cloud-token" } }, { topologyEvidence: evidence });
     assert.equal(typeof runtime.status, "function");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("local runtime creates a root task only for the authenticated sponsor", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-local-task-create-"));
+  try {
+    const keys = generateKeyPairSync("ed25519");
+    const delegation = createDelegationAuthority({ root: path.join(root, "delegations"), signGrant: async value => ({ grant: value, digest: authorityDigest(value), signerId: "authority-cell", signature: signAuthorityDigest(keys.privateKey, "delegation-grant", authorityDigest(value)) }) });
+    const runtime = await createLocalAuthorityRuntime({ version: 1, tenant: "tenant_1", requester: "operator", definitions: [], ledgerDir: path.join(root, "ledger"), decisionDir: path.join(root, "decisions"), receiptDir: path.join(root, "receipts"), endpoints: [] }, { delegation });
+    const grant: DelegationGrant = { v: "reelier.delegation-grant/v1", tenant: "tenant_1", grantId: "root", parentDigest: null, sponsor: "operator", grantor: "operator", grantee: "coordinator", issuedAt: "2026-01-01T00:00:00.000Z", expiresAt: "2027-01-01T00:00:00.000Z", constraints: { definitionAliases: [], audiences: ["coordinator"], connectorAccounts: [], projectionPointers: [], riskClasses: [], limits: { maxEffectsPerWindow: 10, windowSeconds: 3600, maxEffectsPerSourceTrigger: 1, maxBodyBytes: 4096 } }, delegationPolicy: { mayDelegate: true, maxDepth: 1, maxFanOut: 1, maxChildDurationSeconds: 60, maxDelegatedEffects: 1 } };
+    const signed = { grant, digest: authorityDigest(grant), signerId: "operator", signature: { alg: "ed25519" as const, sig: "unused" } };
+    const created = await runtime.taskCreate!({ taskId: "task_1", rootGrant: signed, effects: 1 }, { tenant: "tenant_1", requester: "operator" });
+    assert.deepEqual(created, { taskId: "task_1", verdict: "accepted", reasonCode: "task-created", lifecycleState: "active" });
+    const refused = await runtime.taskCreate!({ taskId: "task_2", rootGrant: { ...signed, grant: { ...grant, sponsor: "attacker" } }, effects: 1 }, { tenant: "tenant_1", requester: "operator" });
+    assert.equal((refused as { verdict: string }).verdict, "refused");
   } finally { await rm(root, { recursive: true, force: true }); }
 });
