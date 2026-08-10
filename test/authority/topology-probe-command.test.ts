@@ -1,8 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { parseTopologyProbeMachineConfig, runTopologyProbeCommand } from "../../src/authority/host/topology-probe-command.js";
+import { authorityDigest } from "../../src/authority/wire.js";
 
-const base = {
+const baseWithoutDigest = {
   v: "reelier.topology-probe-config/v1" as const,
   role: "agent" as const,
   runtimeSession: "session-1",
@@ -12,8 +14,8 @@ const base = {
   readSurfaceIds: ["github.issue.read"],
   providerEndpoints: ["api.github.com"],
   egressProxy: null,
-  schemaDigest: "sha256:" + "a".repeat(64),
 };
+const base = { ...baseWithoutDigest, schemaDigest: authorityDigest({ v: "reelier.topology-probe-declared-surface/v1", role: baseWithoutDigest.role, providerCredentialEnvNames: baseWithoutDigest.providerCredentialEnvNames, allowedCredentialEnvNames: baseWithoutDigest.allowedCredentialEnvNames, rawWriteRouteIds: baseWithoutDigest.rawWriteRouteIds, readSurfaceIds: baseWithoutDigest.readSurfaceIds, providerEndpoints: baseWithoutDigest.providerEndpoints, egressProxy: baseWithoutDigest.egressProxy }) };
 
 test("topology snapshot reports names and commitments without values", async () => {
   const result = await runTopologyProbeCommand({ action: "snapshot", argument: "challenge-1", config: base, env: { OPENAI_API_KEY: "model-secret", GITHUB_TOKEN: "provider-secret", PATH: "/bin" } });
@@ -52,9 +54,23 @@ test("probe configuration is closed and validates all identifiers", async () => 
   await assert.rejects(() => runTopologyProbeCommand({ action: "snapshot", argument: "bad nonce!", config: base, env: {} }), /nonce/);
 });
 
+test("probe configuration schema digest is derived from the declared surface", () => {
+  assert.throws(() => parseTopologyProbeMachineConfig({ ...base, readSurfaceIds: ["github.commit.read"] }), /schema digest does not match/);
+});
+
 test("Cell topology resolves its project-specific internal gateway from a non-secret environment reference", () => {
-  const config = { ...base, role: "cell" as const, egressProxy: { baseUrl: "env:REELIER_EGRESS_PROXY_BASE_URL", bearerEnvName: "REELIER_EGRESS_GATEWAY_BEARER" } };
+  const egressProxy = { baseUrl: "env:REELIER_EGRESS_PROXY_BASE_URL", bearerEnvName: "REELIER_EGRESS_GATEWAY_BEARER" };
+  const config = { ...base, role: "cell" as const, egressProxy, schemaDigest: authorityDigest({ v: "reelier.topology-probe-declared-surface/v1", role: "cell", providerCredentialEnvNames: base.providerCredentialEnvNames, allowedCredentialEnvNames: base.allowedCredentialEnvNames, rawWriteRouteIds: base.rawWriteRouteIds, readSurfaceIds: base.readSurfaceIds, providerEndpoints: base.providerEndpoints, egressProxy }) };
   const parsed = parseTopologyProbeMachineConfig(config, { REELIER_EGRESS_PROXY_BASE_URL: "http://reelier-cert-egress.internal:8443" });
   assert.deepEqual(parsed.egressProxy, { baseUrl: "http://reelier-cert-egress.internal:8443", bearerEnvName: "REELIER_EGRESS_GATEWAY_BEARER" });
   assert.throws(() => parseTopologyProbeMachineConfig(config, {}), /environment reference is unavailable/);
+});
+
+test("the committed Fly probe manifests carry derived surface digests rather than placeholders", async () => {
+  for (const name of ["agent-runtime", "authority-cell", "egress-gateway"]) {
+    const config = JSON.parse(await readFile(`infra/fly/authority-cell/${name}.topology-probe.json`, "utf8"));
+    const parsed = parseTopologyProbeMachineConfig(config, { REELIER_EGRESS_PROXY_BASE_URL: "http://reelier-cert-egress.internal:8443" });
+    assert.match(parsed.schemaDigest, /^sha256:[0-9a-f]{64}$/);
+    assert.notEqual(parsed.schemaDigest, "sha256:" + "c".repeat(64));
+  }
 });

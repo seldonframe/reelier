@@ -4,6 +4,7 @@ import { request as httpRequest } from "node:http";
 import { isIP } from "node:net";
 import { connect as tlsConnect } from "node:tls";
 import { createPinnedLookup } from "../drivers/json-https.js";
+import { authorityDigest } from "../wire.js";
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/;
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
@@ -92,17 +93,36 @@ export function parseTopologyProbeMachineConfig(value: unknown, env: Readonly<Re
   const providerCredentialEnvNames = stringList(raw.providerCredentialEnvNames, "provider credential environment", ENV_NAME, true);
   const allowedCredentialEnvNames = stringList(raw.allowedCredentialEnvNames, "allowed credential environment", ENV_NAME, true);
   if (providerCredentialEnvNames.some(name => allowedCredentialEnvNames.includes(name))) throw new TypeError("topology probe credential lists overlap");
+  const rawWriteRouteIds = stringList(raw.rawWriteRouteIds, "raw write route", ID, true);
+  const readSurfaceIds = stringList(raw.readSurfaceIds, "read surface", ID, true);
+  const providerEndpoints = dnsList(raw.providerEndpoints);
+  const egressProxy = parseEgressProxy(raw.egressProxy, env);
+  const egressProxyCommitment = raw.egressProxy === null ? null : Object.freeze({
+    baseUrl: (raw.egressProxy as Record<string, unknown>).baseUrl,
+    bearerEnvName: (raw.egressProxy as Record<string, unknown>).bearerEnvName,
+  });
+  const schemaDigest = authorityDigest({
+    v: "reelier.topology-probe-declared-surface/v1",
+    role: raw.role,
+    providerCredentialEnvNames,
+    allowedCredentialEnvNames,
+    rawWriteRouteIds,
+    readSurfaceIds,
+    providerEndpoints,
+    egressProxy: egressProxyCommitment,
+  });
+  if (raw.schemaDigest !== schemaDigest) throw new TypeError("topology probe schema digest does not match the declared surface");
   return Object.freeze({
     v: "reelier.topology-probe-config/v1",
     role: raw.role,
     runtimeSession: raw.runtimeSession,
     providerCredentialEnvNames,
     allowedCredentialEnvNames,
-    rawWriteRouteIds: stringList(raw.rawWriteRouteIds, "raw write route", ID, true),
-    readSurfaceIds: stringList(raw.readSurfaceIds, "read surface", ID, true),
-    providerEndpoints: dnsList(raw.providerEndpoints),
-    egressProxy: parseEgressProxy(raw.egressProxy, env),
-    schemaDigest: raw.schemaDigest,
+    rawWriteRouteIds,
+    readSurfaceIds,
+    providerEndpoints,
+    egressProxy,
+    schemaDigest,
   });
 }
 
