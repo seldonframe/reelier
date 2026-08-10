@@ -10,6 +10,7 @@ import { reconcileSlackChannelTopic } from "./slack-topic/reconcile.js";
 import { gmailReplySendAlias, gmailThreadLabelsAlias, gmailReplyDefinition, parseGmailReplyPolicy, compileGmailReply, reconcileGmailReply } from "./gmail/index.js";
 import { stripeRefundIssueAlias, stripeRefundDefinition, parseStripeRefundPolicy, compileStripeRefund, reconcileStripeRefund } from "./stripe/index.js";
 import { vercelDeploymentReleaseAlias, vercelDeploymentReleaseDefinition, parseVercelDeploymentReleasePolicy, compileVercelDeploymentRelease, reconcileVercelDeploymentRelease, type VercelDeploymentReleaseProjection } from "./vercel/index.js";
+import { cloudflareDnsRecordSetAlias, cloudflareDnsRecordSetDefinition, parseCloudflareDnsRecordPolicy, compileCloudflareDnsRecordSet, reconcileCloudflareDnsRecordSet, type CloudflareDnsRecordProjection } from "./cloudflare/index.js";
 
 export interface FirstPartyConformanceReport {
   readonly aliases: readonly string[];
@@ -20,7 +21,7 @@ export interface FirstPartyConformanceReport {
 
 /** Runs the mandatory common corpus. This is intentionally offline and provider-neutral. */
 export function runFirstPartyPackConformance(): FirstPartyConformanceReport {
-  const expectedAliases = [githubIssueLabelsAlias, slackChannelTopicAlias, gmailReplySendAlias, gmailThreadLabelsAlias, stripeRefundIssueAlias, vercelDeploymentReleaseAlias];
+  const expectedAliases = [githubIssueLabelsAlias, slackChannelTopicAlias, gmailReplySendAlias, gmailThreadLabelsAlias, stripeRefundIssueAlias, vercelDeploymentReleaseAlias, cloudflareDnsRecordSetAlias];
   const actualAliases = firstPartyPacks.map(pack => pack.definition.alias).sort(compareText);
   if (actualAliases.join("\0") !== expectedAliases.slice().sort(compareText).join("\0")) throw new TypeError("first-party conformance requires the reviewed v1 packs");
   createStaticPackRegistry(firstPartyPacks.map(pack => pack.definition));
@@ -83,6 +84,13 @@ export function runFirstPartyPackConformance(): FirstPartyConformanceReport {
   check(throws(() => compileVercelDeploymentRelease({ source: { ...vercelSource, currentProductionDeploymentId: "dpl_preview" }, policy: vercelPolicy })), "Vercel already-current deployment refused");
   check(reconcileVercelDeploymentRelease({ expected: vercelSource, response: { body: { id: "dpl_preview", teamId: "team_demo", projectId: "prj_demo", target: "production", commitSha: vercelSource.commitSha, domains: vercelSource.domains, currentProductionDeploymentId: "dpl_preview" } } }).status === "matched", "Vercel authoritative read-back");
   check(reconcileVercelDeploymentRelease({ expected: vercelSource, response: { status: 200, body: { id: "dpl_other", teamId: "team_demo", projectId: "prj_demo", target: "production", commitSha: vercelSource.commitSha, domains: vercelSource.domains, currentProductionDeploymentId: "dpl_other" } } }).status === "conflict", "Vercel conflicting production is explicit");
+  const cloudflareSource: CloudflareDnsRecordProjection = { accountId: "acct_demo", zoneId: "zone_demo", recordId: "record_demo", name: "app.example.com", type: "A", content: "203.0.113.10", ttl: 300, proxied: false };
+  const cloudflarePolicy = parseCloudflareDnsRecordPolicy({ accountId: "acct_demo", zoneId: "zone_demo", name: "app.example.com", type: "A", desiredContent: "203.0.113.20", desiredTtl: 300, desiredProxied: false });
+  const cloudflareEffect = cloudflareDnsRecordSetDefinition.compile({ contract: {} as never, source: { projection: cloudflareSource } as never, choices: {}, policy: cloudflarePolicy, now: new Date(0), connectorAccount: { connectorId: "cloudflare", accountId: "acct_demo" } });
+  check(parseAuthorityWire("transport-effect", cloudflareEffect).endpointId === "cloudflare.dns.record.set", "Cloudflare effect schema closure");
+  check(Buffer.compare(authorityCanonicalBytes(cloudflareEffect), authorityCanonicalBytes(compileCloudflareDnsRecordSet({ source: cloudflareSource, policy: cloudflarePolicy }))) === 0, "Cloudflare compilation deterministic");
+  check(reconcileCloudflareDnsRecordSet({ expected: cloudflareSource, desired: { content: "203.0.113.20", ttl: 300, proxied: false }, response: { body: { result: { id: "record_demo", accountId: "acct_demo", zoneId: "zone_demo", name: "app.example.com", type: "A", content: "203.0.113.20", ttl: 300, proxied: false } } } }).status === "matched", "Cloudflare authoritative read-back");
+  check(throws(() => compileCloudflareDnsRecordSet({ source: { ...cloudflareSource, accountId: "attacker" }, policy: cloudflarePolicy })), "Cloudflare account binding");
   caseIds.push("schema-closure", "exact-byte", "no-secret", "account-binding", "ambiguity", "reconciliation", "redaction");
   return Object.freeze({ aliases: Object.freeze(actualAliases), checks, passed: checks, caseIds: Object.freeze(caseIds) });
 }
