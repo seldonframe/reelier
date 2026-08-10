@@ -27,7 +27,15 @@ $env:CODEX_HOME = "C:\Users\you\.reelier\codex-certification\home"
 
 Do not invent or manually copy the ten `rat_...` session values. They must be issued by the Authority Cell against the real task grants and installed as `<profile>.token` files in the private session-credential directory. The Cell stores only their hashes in its append-only principal registry. Configure `ingress.principalRegistryFile` in `authority.yml`; do not combine it with the single-bearer mode.
 
-The file contains disposable resource identifiers and `env:`/`file:` references only. The current live host path supports authoritative GitHub issue, Cloudflare DNS, and Slack channel reads plus their bounded writes and read-back reconciliation. Vercel's deterministic compiler uses the current official `POST /v10/projects/{projectId}/promote/{deploymentId}` request, but the compound GitHub-check/current-alias source reader is not yet certified. Neon catalog/migration execution, confidential Cloudflare-to-Vercel transfer, and measured Fly topology evidence remain blocked until their dedicated drivers pass certification. The Codex launcher and profile/hook materializer are built, but the run is not certified until the Cell issues the real task-bound sessions and the exported graph verifies offline.
+After the human-signed root task and all nine child grants exist, activate the ten sessions from the Cell's durable delegation tree:
+
+```powershell
+reelier authority certify activate-codex --config authority/certification.local.json
+```
+
+The command refuses missing, expired, revoked, duplicated, or wrong-principal grants; it requires zero-effect allocations for the code, test, security-review, and independent-verifier profiles. It writes each bearer once with private permissions, emits only token digests in its activation evidence, and revokes every newly issued session if any file installation fails.
+
+The file contains disposable resource identifiers and `env:`/`file:` references only. The current live host path supports authoritative GitHub issue, Cloudflare DNS, and Slack channel reads plus their bounded writes and read-back reconciliation. Vercel's deterministic compiler uses the current official `POST /v10/projects/{projectId}/promote/{deploymentId}` request, but the compound GitHub-check/current-alias source reader is not yet certified. Neon catalog/migration execution and confidential Cloudflare-to-Vercel transfer remain blocked until their dedicated drivers pass certification. The measured Fly probe and grant-bound Codex session activation are implemented; their real deployed evidence and the exported ten-agent task graph remain required before certification.
 
 The fixed opaque source references for the first live slice are `certification_github_issue`, `certification_cloudflare_record`, and `certification_slack_channel`. They identify host-owned bindings; they are not provider IDs and cannot change the configured account or resource.
 

@@ -29,9 +29,20 @@ test("delegation authority mints a narrower child and consumes conserved budget"
     const result = await service.request({ tenant: "tenant_1", parentPrincipal: "coordinator", taskId: "task_1", parentAllocationId: "root", child, effects: 2 });
     assert.equal(result.verdict, "accepted");
     assert.equal(result.grant.grantee, "worker");
+    assert.deepEqual(await service.resolveSessionBinding({ tenant: "tenant_1", taskId: "task_1", principalId: "worker" }), {
+      taskId: "task_1",
+      grantId: "child_1",
+      grantDigest: result.grantDigest,
+      grantee: "worker",
+      allocationId: "child_1",
+      expiresAt: "2026-01-01T00:40:00.000Z",
+      effects: 2,
+      lifecycleState: "allocated",
+    });
     const status = await service.status({ tenant: "tenant_1", requester: "coordinator", grantId: "child_1" });
     assert.equal(status.lifecycleState, "allocated");
     await service.revoke("tenant_1", "task_1");
+    await assert.rejects(() => service.resolveSessionBinding({ tenant: "tenant_1", taskId: "task_1", principalId: "worker" }), /not active/i);
     assert.equal((await service.status({ tenant: "tenant_1", requester: "coordinator", grantId: "child_1" })).lifecycleState, "revoked");
     const restarted = createDelegationAuthority({ root, now: () => new Date("2026-01-01T00:10:00.000Z"), signGrant: async value => ({ grant: value, digest: authorityDigest(value), signerId: "authority-cell", signature: signAuthorityDigest(keys.privateKey, "delegation-grant", authorityDigest(value)) }) });
     assert.equal((await restarted.taskStatus({ tenant: "tenant_1", requester: "coordinator", taskId: "task_1" })).lifecycleState, "revoked");

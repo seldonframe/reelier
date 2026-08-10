@@ -19,6 +19,8 @@ import { createFounderJsonHttpsDispatchAdapter } from "./host/founder-dispatch-a
 import { createCodexDogfoodPlan } from "./host/codex-dogfood.js";
 import { launchCodexDogfood, materializeCodexDogfood, probeCodexLogin } from "./host/codex-launcher.js";
 import { createFilePrincipalRegistry } from "./host/principal-registry.js";
+import { createDelegationAuthority } from "./host/delegation-service.js";
+import { activateCodexPrincipalSessions } from "./host/codex-session-activation.js";
 import { runTopologyProbeCommand } from "./host/topology-probe-command.js";
 import { createFlyRemoteTopologyOperations, probePinnedFlyBinary } from "./host/fly-remote-probe.js";
 import { runFlyCertification } from "./host/fly-certification.js";
@@ -221,16 +223,29 @@ async function authorityServe(args: Readonly<{ opts: Record<string, string> }>):
   const certificationConfig = args.opts["certification-config"]
     ? parseCertificationOperatorConfig(JSON.parse(await readFile(path.resolve(args.opts["certification-config"]), "utf8")))
     : undefined;
-  const authorityRuntime = await createLocalAuthorityRuntime(loaded.config, certificationConfig ? {
-    sourceReadAdapter: createFounderCertificationSourceAdapter({ config: certificationConfig, handles: { githubIssue: "certification_github_issue", cloudflareRecord: "certification_cloudflare_record", slackChannel: "certification_slack_channel" } }),
-    dispatchAdapter: createFounderJsonHttpsDispatchAdapter({ config: certificationConfig }),
-  } : {});
+  const principalRegistry = loaded.config.ingress?.principalRegistryFile ? createFilePrincipalRegistry({ tenant: loaded.config.tenant, file: loaded.config.ingress.principalRegistryFile }) : undefined;
+  const gateSigner = principalRegistry ? await loadOrCreateLocalGateSigner(loaded.config.gateKeyFile ?? path.join(loaded.config.receiptDir, "..", "keys", "local-gate.pem")) : undefined;
+  const delegation = gateSigner ? createDelegationAuthority({ root: delegationRoot(loaded.config.ledgerDir), signGrant: async value => {
+    const digest = authorityDigest(value);
+    return Object.freeze({ grant: value, digest, signerId: "local-gate", signature: signAuthorityDigest(gateSigner.privateKey, "delegation-grant", digest) });
+  } }) : undefined;
+  const authorityRuntime = await createLocalAuthorityRuntime(loaded.config, {
+    ...(certificationConfig ? {
+      sourceReadAdapter: createFounderCertificationSourceAdapter({ config: certificationConfig, handles: { githubIssue: "certification_github_issue", cloudflareRecord: "certification_cloudflare_record", slackChannel: "certification_slack_channel" } }),
+      dispatchAdapter: createFounderJsonHttpsDispatchAdapter({ config: certificationConfig }),
+    } : {}),
+    ...(delegation ? { delegation } : {}),
+  });
   const runtime: AuthorityHostRuntime = {
     outcome: authorityRuntime.outcome,
     status: authorityRuntime.status,
     jobsSearch: authorityRuntime.jobsSearch,
     jobLoad: authorityRuntime.jobLoad,
     invoke: authorityRuntime.invoke,
+    delegationRequest: authorityRuntime.delegationRequest,
+    delegationStatus: authorityRuntime.delegationStatus,
+    taskCreate: authorityRuntime.taskCreate,
+    taskStatus: authorityRuntime.taskStatus,
     async artifactStage(input) {
       const value = input as Record<string, unknown>;
       const requestId = typeof value?.requestId === "string" ? value.requestId : "";
@@ -239,7 +254,6 @@ async function authorityServe(args: Readonly<{ opts: Record<string, string> }>):
       return { requestId, verdict: "accepted", reasonCode: "staged", lifecycleState: "staged", commitment: staged.commitment };
     },
   };
-  const principalRegistry = loaded.config.ingress?.principalRegistryFile ? createFilePrincipalRegistry({ tenant: loaded.config.tenant, file: loaded.config.ingress.principalRegistryFile }) : undefined;
   const server = createAuthorityHostServer(loaded.config, runtime, principalRegistry ? { principalRegistry } : {});
   if (serveMode.transport === "http") {
     await server.startHttp(serveMode.port, serveMode.host);
@@ -252,6 +266,23 @@ async function authorityServe(args: Readonly<{ opts: Record<string, string> }>):
 
 async function authorityCertify(args: Readonly<{ positional: string[]; flags: Set<string>; opts: Record<string, string> }>): Promise<number> {
   const action = args.positional[1] ?? "preflight";
+  if (action === "activate-codex") {
+    if (!args.opts.config) { console.error(JSON.stringify({ status: "refused", reasonCode: "certification-config-required" })); return 1; }
+    try {
+      const config = parseCertificationOperatorConfig(JSON.parse(await readFile(path.resolve(args.opts.config), "utf8")));
+      const loaded = await loadAuthorityHostConfig(config.authorityConfigPath);
+      if (!loaded.config.ingress?.principalRegistryFile) throw new TypeError("authority principal registry is required for Codex activation");
+      const delegation = createDelegationAuthority({ root: delegationRoot(loaded.config.ledgerDir), signGrant: async () => { throw new TypeError("read-only certification activation cannot mint grants"); } });
+      const principalRegistry = createFilePrincipalRegistry({ tenant: loaded.config.tenant, file: loaded.config.ingress.principalRegistryFile });
+      const plan = createCodexDogfoodPlan({ taskId: config.codex.taskId, endpoint: config.codex.authorityEndpoint });
+      const result = await activateCodexPrincipalSessions({ tenant: loaded.config.tenant, plan, jobId: config.codex.jobId, authorityCellId: config.codex.authorityCellId, credentialDirectory: config.codex.sessionCredentialDirectory, principalRegistry, resolveBinding: value => delegation.resolveSessionBinding(value) });
+      await mkdir(path.resolve(config.evidenceDirectory), { recursive: true });
+      const output = path.join(path.resolve(config.evidenceDirectory), `codex-session-activation-${result.digest.slice(7, 23)}.json`);
+      await writeFile(output, `${JSON.stringify(result, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+      console.log(JSON.stringify({ status: "activated", taskId: result.taskId, sessions: result.sessions.length, digest: result.digest, output }, null, 2));
+      return 0;
+    } catch (error) { console.error(JSON.stringify({ status: "refused", reasonCode: "codex-activation-unavailable", message: error instanceof Error ? error.message : String(error) })); return 1; }
+  }
   if (action === "preflight") {
     if (args.opts.config) {
       try {
@@ -373,6 +404,10 @@ async function authorityCertify(args: Readonly<{ positional: string[]; flags: Se
   }
   console.error(`unknown authority certify action: ${action}`);
   return 1;
+}
+
+function delegationRoot(ledgerDir: string): string {
+  return path.join(path.dirname(path.resolve(ledgerDir)), "delegations");
 }
 
 async function loadOrCreateArtifactKey(root: string, name = "artifact-master.key"): Promise<Buffer> {

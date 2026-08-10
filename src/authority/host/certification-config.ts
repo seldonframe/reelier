@@ -34,7 +34,7 @@ export interface FlyCertificationResource {
   readonly networkPolicyDigest: string;
   readonly schemaDigest: string;
 }
-export interface CodexCertificationResource { readonly binaryPath: string; readonly version: string; readonly authorityEndpoint: string; readonly taskId: string; readonly codexHomePath: string; readonly workspacePath: string; readonly sessionCredentialDirectory: string }
+export interface CodexCertificationResource { readonly binaryPath: string; readonly version: string; readonly authorityEndpoint: string; readonly taskId: string; readonly jobId: string; readonly authorityCellId: string; readonly codexHomePath: string; readonly workspacePath: string; readonly sessionCredentialDirectory: string }
 
 export interface CertificationOperatorConfigV1 {
   readonly v: "reelier.certification-operator-config/v1";
@@ -182,12 +182,12 @@ function fly(value: unknown): FlyCertificationResource {
 }
 function codex(value: unknown): CodexCertificationResource {
   const raw = object(value, "codex certification resource");
-  closed(raw, ["binaryPath", "version", "authorityEndpoint", "taskId", "codexHomePath", "workspacePath", "sessionCredentialDirectory"], "codex certification resource");
+  closed(raw, ["binaryPath", "version", "authorityEndpoint", "taskId", "jobId", "authorityCellId", "codexHomePath", "workspacePath", "sessionCredentialDirectory"], "codex certification resource");
   if (typeof raw.version !== "string" || !/^\d+\.\d+\.\d+$/.test(raw.version)) throw new TypeError("codex version is invalid");
   const workspacePath = safePath(raw.workspacePath, "codex workspacePath");
   const sessionCredentialDirectory = safePath(raw.sessionCredentialDirectory, "codex sessionCredentialDirectory");
   if (isWithin(path.resolve(workspacePath), path.resolve(sessionCredentialDirectory))) throw new TypeError("codex session credentials must be outside the workspace");
-  return Object.freeze({ binaryPath: text(raw.binaryPath, "codex binaryPath", 1024), version: raw.version, authorityEndpoint: https(raw.authorityEndpoint, "codex authorityEndpoint"), taskId: id(raw.taskId, "codex taskId"), codexHomePath: safePath(raw.codexHomePath, "codex codexHomePath"), workspacePath, sessionCredentialDirectory });
+  return Object.freeze({ binaryPath: text(raw.binaryPath, "codex binaryPath", 1024), version: raw.version, authorityEndpoint: https(raw.authorityEndpoint, "codex authorityEndpoint"), taskId: id(raw.taskId, "codex taskId"), jobId: id(raw.jobId, "codex jobId"), authorityCellId: id(raw.authorityCellId, "codex authorityCellId"), codexHomePath: safePath(raw.codexHomePath, "codex codexHomePath"), workspacePath, sessionCredentialDirectory });
 }
 function resource(value: unknown, label: string, extras: readonly string[]): Record<string, unknown> {
   const raw = object(value, `${label} certification resource`);

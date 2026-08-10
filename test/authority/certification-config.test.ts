@@ -19,7 +19,7 @@ function completeConfig(): unknown {
       slack: { apiBaseUrl: "https://slack.com", accountId: "team_1", credentialRef: "env:REELIER_SLACK_TOKEN", cleanupRef: "slack-cleanup", channelId: "C0123456789" },
     },
     fly: { appName: "reelier-cell-demo", authorityMachineId: "cell123", agentAppName: "reelier-agent-demo", agentMachineId: "agent123", egressAppName: "reelier-egress-demo", egressMachineId: "gateway123", orgSlug: "personal", region: "yyz", apiCredentialRef: "env:FLY_API_TOKEN", flyctlPath: "flyctl", flyctlVersion: "0.3.200", egressProxyBaseUrl: "http://reelier-egress-demo.internal:8443", egressProxyBearerRef: "env:REELIER_EGRESS_GATEWAY_BEARER", authorityImageDigest: "sha256:" + "a".repeat(64), agentImageDigest: "sha256:" + "d".repeat(64), gatewayImageDigest: "sha256:" + "e".repeat(64), networkPolicyDigest: "sha256:" + "b".repeat(64), schemaDigest: "sha256:" + "c".repeat(64) },
-    codex: { binaryPath: "codex", version: "0.134.0", authorityEndpoint: "https://reelier-cell-demo.fly.dev/mcp", taskId: "task_certification_1", codexHomePath: "C:/reelier-private/codex-home", workspacePath: "C:/work/reelier-certification", sessionCredentialDirectory: "C:/reelier-private/codex-sessions" },
+    codex: { binaryPath: "codex", version: "0.134.0", authorityEndpoint: "https://reelier-cell-demo.fly.dev/mcp", taskId: "task_certification_1", jobId: "job_founder_stack", authorityCellId: "cell_certification_1", codexHomePath: "C:/reelier-private/codex-home", workspacePath: "C:/work/reelier-certification", sessionCredentialDirectory: "C:/reelier-private/codex-sessions" },
   };
 }
 
@@ -28,6 +28,7 @@ test("certification operator config is closed and preserves only secret referenc
   assert.equal(parsed.providers.github.repository, "reelier-certification");
   assert.equal(parsed.fly.appName, "reelier-cell-demo");
   assert.equal(parsed.codex.codexHomePath, "C:/reelier-private/codex-home");
+  assert.equal(parsed.codex.jobId, "job_founder_stack");
   assert.doesNotMatch(JSON.stringify(parsed), /ghp_|xoxb-|Bearer /);
   assert.throws(() => parseCertificationOperatorConfig({ ...(completeConfig() as object), token: "ghp_leak" }), /closed/);
   const raw = completeConfig() as { providers: { github: Record<string, unknown> } };

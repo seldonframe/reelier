@@ -147,10 +147,10 @@ Ops note: **no auto-migrate wiring** — migrations are applied by hand after me
 work includes closed preflight contracts, guarded provider runner contracts, a remote Fly probe
 runner that pins `flyctl`, reads Machine image and network-policy state, executes closed in-Machine
 challenge probes, and signs evidence; an authenticated hostname-allowlisted CONNECT gateway whose
-provider TLS terminates in the Cell; a durable hash-only principal registry; and a pinned Codex launcher that generates one
+provider TLS terminates in the Cell; a durable hash-only principal registry; grant-bound, rollback-safe issuance of ten private Codex sessions; and a pinned Codex launcher that generates one
 coordinator plus nine scoped custom-agent profiles, pre-spawn profile enforcement,
-`SubagentStart.agent_id` evidence, and signed release-evidence verification. The launcher does not
-mint authority: its ten bearer files must come from real task grants, and a successful Codex process
+`SubagentStart.agent_id` evidence, and signed release-evidence verification. The activation command
+mints bearer files only from the live task's exact grants and allocations; a successful Codex process
 is not a verified task graph. Vercel compound source reads, Neon execution, confidential
 Cloudflare-to-Vercel transfer, actual deployed Fly evidence, provider cleanup, and the live ten-agent graph
 remain uncertified. A hermetic fixture pass is not live certification; live claims remain
