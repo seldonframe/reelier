@@ -30,7 +30,15 @@ export function createObservationAdapter(host: ObservationHost): ObservationAdap
       const raw = input && typeof input === "object" && !Array.isArray(input) ? input as Record<string, unknown> : {};
       const sessionId = typeof raw.sessionId === "string" && raw.sessionId ? raw.sessionId : "unknown-session";
       const items = Array.isArray(raw.actions) ? raw.actions : Array.isArray(input) ? input : [];
-      return Object.freeze(items.map((item, index) => normalizeObservedAction({ ...(item as Record<string, unknown>), v: "reelier.observed-action/v1", adapterId, sessionId, actionId: typeof (item as Record<string, unknown>).actionId === "string" ? (item as Record<string, unknown>).actionId : `${sessionId}-${index}` })).map(action => Object.freeze(action)));
+      return Object.freeze(items.map((rawItem, index) => {
+        const item = rawItem && typeof rawItem === "object" && !Array.isArray(rawItem)
+          ? rawItem as Record<string, unknown>
+          : {};
+        const allowed = new Set(["atom", "coverage", "destinationKinds", "effect", "fieldNames", "observedAt", "predecessorActionIds", "readBackSchemaDigests", "readBackTools", "sourceKinds", "taskId", "tool", "toolSchemaDigest"]);
+        const input: Record<string, unknown> = { v: "reelier.observed-action/v1", adapterId, sessionId, actionId: typeof item.actionId === "string" ? item.actionId : `${sessionId}-${index}` };
+        for (const key of allowed) if (key in item) input[key] = item[key];
+        return Object.freeze(normalizeObservedAction(input));
+      }));
     },
   });
 }
