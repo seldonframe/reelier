@@ -3,6 +3,7 @@ import { request as httpsRequest } from "node:https";
 import { request as httpRequest } from "node:http";
 import { isIP } from "node:net";
 import { connect as tlsConnect } from "node:tls";
+import { createPinnedLookup } from "../drivers/json-https.js";
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/;
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
@@ -114,7 +115,7 @@ async function probeProviderHttps(hostname: string, proxy: TopologyProbeMachineC
     return await new Promise<boolean>(resolve => {
       let settled = false;
       const finish = (value: boolean) => { if (settled) return; settled = true; clearTimeout(timer); resolve(value); };
-      const request = httpsRequest({ method: "HEAD", hostname, port: 443, path: "/", servername: hostname, lookup: (_host, _options, callback) => callback(null, chosen, isIP(chosen)), headers: { "user-agent": "reelier-topology-probe/1" } }, response => { response.resume(); finish(true); });
+      const request = httpsRequest({ method: "HEAD", hostname, port: 443, path: "/", servername: hostname, lookup: createPinnedLookup(chosen), headers: { "user-agent": "reelier-topology-probe/1" } }, response => { response.resume(); finish(true); });
       request.once("error", () => finish(false));
       const timer = setTimeout(() => { request.destroy(); finish(false); }, 5_000);
       timer.unref();
@@ -134,7 +135,7 @@ async function probeHttpsThroughProxy(hostname: string, proxy: NonNullable<Topol
     return await new Promise<boolean>(resolve => {
       let settled = false;
       const finish = (value: boolean) => { if (settled) return; settled = true; clearTimeout(timer); resolve(value); };
-      const request = httpRequest({ protocol: "http:", hostname: origin.hostname, port: origin.port || 8443, method: "CONNECT", path: `${hostname}:443`, headers: { "Proxy-Authorization": `Bearer ${bearer}` }, lookup: (_host, _options, callback) => callback(null, chosen, isIP(chosen)) });
+      const request = httpRequest({ protocol: "http:", hostname: origin.hostname, port: origin.port || 8443, method: "CONNECT", path: `${hostname}:443`, headers: { "Proxy-Authorization": `Bearer ${bearer}` }, lookup: createPinnedLookup(chosen) });
       request.once("connect", (response, socket, head) => {
         if (response.statusCode !== 200 || head.length) { socket.destroy(); finish(false); return; }
         const secure = tlsConnect({ socket, servername: hostname, rejectUnauthorized: true });
