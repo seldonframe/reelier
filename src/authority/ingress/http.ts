@@ -23,6 +23,12 @@ export async function handleAuthorityHttp(request: IncomingMessage, response: Se
       if (hasIdentityOverride(body)) throw new Error("delegation identity is host-bound");
       return write(response, 202, await handler.delegationRequest(body, publicContext(context)));
     }
+    if (url.pathname === "/v1/tasks" && request.method === "POST") {
+      if (!handler.taskCreate) return write(response, 503, { verdict: "refused", reasonCode: "task-unavailable", lifecycleState: "unavailable" });
+      const body = await readJson(request);
+      if (hasIdentityOverride(body)) throw new Error("task identity is host-bound");
+      return write(response, 202, await handler.taskCreate(body, publicContext(context)));
+    }
     const delegationStatus = /^\/v1\/delegations\/([^/]+)$/.exec(url.pathname);
     if (delegationStatus && request.method === "GET") {
       if (!handler.delegationStatus) return write(response, 503, { verdict: "refused", reasonCode: "delegation-unavailable", lifecycleState: "unavailable" });
