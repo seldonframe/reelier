@@ -13,6 +13,7 @@ import { vercelDeploymentReleaseAlias, vercelDeploymentReleaseDefinition, parseV
 import { cloudflareDnsRecordSetAlias, cloudflareDnsRecordSetDefinition, parseCloudflareDnsRecordPolicy, compileCloudflareDnsRecordSet, reconcileCloudflareDnsRecordSet, type CloudflareDnsRecordProjection } from "./cloudflare/index.js";
 import { neonDatabaseMigrationAlias, neonDatabaseMigrationDefinition, parseNeonDatabaseMigrationPolicy, compileNeonDatabaseMigration, reconcileNeonDatabaseMigration, type NeonDatabaseMigrationProjection } from "./neon/index.js";
 import { cloudflareTokenRollAlias, cloudflareTokenRollDefinition, parseCloudflareTokenRollPolicy, compileCloudflareTokenRoll, reconcileCloudflareTokenRoll, type CloudflareTokenProjection } from "./cloudflare-token/index.js";
+import { informationFlowCommitAlias, informationFlowDefinition, parseInformationFlowPolicy, compileInformationFlowCommit, reconcileInformationFlowCommit, type InformationFlowProjection } from "./information-flow/index.js";
 
 export interface FirstPartyConformanceReport {
   readonly aliases: readonly string[];
@@ -23,7 +24,7 @@ export interface FirstPartyConformanceReport {
 
 /** Runs the mandatory common corpus. This is intentionally offline and provider-neutral. */
 export function runFirstPartyPackConformance(): FirstPartyConformanceReport {
-  const expectedAliases = [githubIssueLabelsAlias, slackChannelTopicAlias, gmailReplySendAlias, gmailThreadLabelsAlias, stripeRefundIssueAlias, vercelDeploymentReleaseAlias, cloudflareDnsRecordSetAlias, neonDatabaseMigrationAlias, cloudflareTokenRollAlias];
+  const expectedAliases = [githubIssueLabelsAlias, slackChannelTopicAlias, gmailReplySendAlias, gmailThreadLabelsAlias, stripeRefundIssueAlias, vercelDeploymentReleaseAlias, cloudflareDnsRecordSetAlias, neonDatabaseMigrationAlias, cloudflareTokenRollAlias, informationFlowCommitAlias];
   const actualAliases = firstPartyPacks.map(pack => pack.definition.alias).sort(compareText);
   if (actualAliases.join("\0") !== expectedAliases.slice().sort(compareText).join("\0")) throw new TypeError("first-party conformance requires the reviewed v1 packs");
   createStaticPackRegistry(firstPartyPacks.map(pack => pack.definition));
@@ -107,6 +108,12 @@ export function runFirstPartyPackConformance(): FirstPartyConformanceReport {
   check(Buffer.compare(authorityCanonicalBytes(tokenEffect), authorityCanonicalBytes(compileCloudflareTokenRoll({ source: tokenSource, policy: tokenPolicy }))) === 0, "Cloudflare token compilation deterministic");
   check(!JSON.stringify(tokenEffect).match(/secret|token-value|bearer/i), "Cloudflare token effect has no secret");
   check(reconcileCloudflareTokenRoll({ expected: tokenSource, policy: tokenPolicy, response: { body: { result: { id: "token_demo", accountId: "acct_demo", name: "deploy-token", scopes: tokenPolicy.scopes, resources: tokenPolicy.resources, expiresAt: tokenPolicy.expiresAt, status: "active", value: "redact-me" } } } }).status === "matched", "Cloudflare token metadata read-back");
+  const flowSource: InformationFlowProjection = { hubspotAccountId: "hs_acct", ticketId: "ticket_1", contactId: "contact_1", customerEmail: "customer@example.com", subject: "Refund request", status: "open", priority: "high" };
+  const flowPolicy = parseInformationFlowPolicy({ hubspotAccountId: "hs_acct", slackTeamId: "T1", slackChannelId: "C_PRIVATE", authorizedFields: ["ticketId", "subject", "status", "priority"], transformation: "selected_fields_only", stagedText: "Ticket ticket_1: Refund request (open, high)" });
+  const flowEffect = informationFlowDefinition.compile({ contract: {} as never, source: { projection: flowSource } as never, choices: {}, policy: flowPolicy, now: new Date(0), connectorAccount: { connectorId: "slack", accountId: "T1" } });
+  check(parseAuthorityWire("transport-effect", flowEffect).endpointId === "slack.chat.postMessage", "Information-flow effect schema closure");
+  check(Buffer.compare(authorityCanonicalBytes(flowEffect), authorityCanonicalBytes(compileInformationFlowCommit({ source: flowSource, policy: flowPolicy }))) === 0, "Information-flow compilation deterministic");
+  check(reconcileInformationFlowCommit({ expected: flowSource, policy: flowPolicy, response: { body: { teamId: "T1", channelId: "C_PRIVATE", messageId: "m_1", text: flowPolicy.stagedText } } }).status === "matched", "Information-flow authoritative read-back");
   caseIds.push("schema-closure", "exact-byte", "no-secret", "account-binding", "ambiguity", "reconciliation", "redaction");
   return Object.freeze({ aliases: Object.freeze(actualAliases), checks, passed: checks, caseIds: Object.freeze(caseIds) });
 }
