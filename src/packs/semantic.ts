@@ -17,6 +17,7 @@ export const semanticOutcomeCatalog: readonly SemanticOutcomeCatalogEntry[] = Ob
   { alias: "vercel_deployment_release_v1", semanticClass: "deployment_release_v1", provider: "vercel", supported: true },
   { alias: "cloudflare_dns_record_set_v1", semanticClass: "infrastructure_resource_set_v1", provider: "cloudflare", supported: true },
   { alias: "neon_database_migration_apply_v1", semanticClass: "database_migration_apply_v1", provider: "neon", supported: true },
+  { alias: "cloudflare_api_token_roll_v1", semanticClass: "secret_lifecycle_commit_v1", provider: "cloudflare", supported: true },
   { alias: "hubspot_ticket_stage_set_v1", semanticClass: "record_state_set_v1", provider: "hubspot", supported: false },
   { alias: "google_calendar_event_set_v1", semanticClass: "schedule_commit_v1", provider: "google-calendar", supported: false },
   { alias: "google_drive_artifact_publish_v1", semanticClass: "artifact_deliver_v1", provider: "google-drive", supported: false },
