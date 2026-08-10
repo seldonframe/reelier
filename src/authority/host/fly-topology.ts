@@ -73,7 +73,7 @@ export function createFlyTopologyProbe(options: FlyTopologyProbeOptions): Topolo
     },
     rawWriteReachability: async context => {
       const observation = await operations.inspectRawWriteReachability(context);
-      return observation.complete && observation.routes.every(route => !declared.rawWriteRouteIds.includes(route));
+      return observation.complete && observation.routes.length === 0;
     },
     readCoverage: async context => {
       const observation = await operations.inspectReadCoverage(context);
