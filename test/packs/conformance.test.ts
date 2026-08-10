@@ -8,10 +8,12 @@ import { planSourceReads, materializeSourceBundle, createSourceRegistry } from "
 import { githubIssueLabelsDefinitionDigest, githubIssueLabelsProjectionSchemaId, githubIssueLabelsResolverId } from "../../src/packs/github/manifest.js";
 import { slackChannelTopicDefinitionDigest, slackChannelTopicProjectionSchemaId, slackChannelTopicResolverId } from "../../src/packs/slack-topic/manifest.js";
 import { assertStaticFirstPartySourcesConform } from "../../src/authority/pack.js";
+import { createVercelDeploymentReleaseSourceResolver } from "../../src/packs/vercel/source.js";
+import { vercelDeploymentReleaseDefinitionDigest, vercelDeploymentReleaseProjectionSchemaId, vercelDeploymentReleaseResolverId } from "../../src/packs/vercel/manifest.js";
 
 test("all reviewed first-party packs pass the shared closed conformance corpus", () => {
   const report = runFirstPartyPackConformance();
-  assert.deepEqual(report.aliases, ["github_issue_labels_set_v1", "gmail_reply_send_v1", "gmail_thread_labels_set_v1", "slack_channel_topic_set_v1", "stripe_refund_issue_v1"]);
+  assert.deepEqual(report.aliases, ["github_issue_labels_set_v1", "gmail_reply_send_v1", "gmail_thread_labels_set_v1", "slack_channel_topic_set_v1", "stripe_refund_issue_v1", "vercel_deployment_release_v1"]);
   assert.equal(report.passed, report.checks);
   assert.ok(report.checks >= 12);
 });
@@ -29,9 +31,15 @@ test("GitHub and Slack source resolvers produce grounded deterministic projectio
   const slackPlans = planSourceReads(slackRegistry, { tenant: "tenant_1", resolverId: slackChannelTopicResolverId, definitionDigest: slackChannelTopicDefinitionDigest, sourceRefs: { channel: "channel_1" }, allowedReadEndpointIds: ["slack.conversations.info"] });
   const slackSource = materializeSourceBundle(slackRegistry, { tenant: "tenant_1", definitionDigest: slackChannelTopicDefinitionDigest, resolverId: slackChannelTopicResolverId, projectionSchemaId: slackChannelTopicProjectionSchemaId, sourceRefs: { channel: "channel_1" }, allowedReadEndpointIds: ["slack.conversations.info"], authorizedProjectionPointers: ["/teamId", "/channelId", "/channelName", "/isPrivate", "/topic"], requiredGroundedPointers: ["/teamId", "/channelId", "/channelName", "/isPrivate", "/topic"], maxFreshnessSeconds: 60, observedAt: now, validationNow: now, plans: slackPlans, observations: [{ planDigest: slackPlans[0].planDigest, rawBytes: Buffer.from(JSON.stringify({ team_id: "T1", channel: { id: "C1", name: "private-test", is_private: true, topic: { value: "old" } } })) }] });
   assert.deepEqual(slackSource.bundle.projection, { teamId: "T1", channelId: "C1", channelName: "private-test", isPrivate: true, topic: "old" });
+
+  const vercel = createVercelDeploymentReleaseSourceResolver("tenant_1");
+  const vercelRegistry = createSourceRegistry([vercel]);
+  const vercelPlans = planSourceReads(vercelRegistry, { tenant: "tenant_1", resolverId: vercelDeploymentReleaseResolverId, definitionDigest: vercelDeploymentReleaseDefinitionDigest, sourceRefs: { deployment: "deployment_1" }, allowedReadEndpointIds: ["vercel.deployment.get"] });
+  const vercelSource = materializeSourceBundle(vercelRegistry, { tenant: "tenant_1", definitionDigest: vercelDeploymentReleaseDefinitionDigest, resolverId: vercelDeploymentReleaseResolverId, projectionSchemaId: vercelDeploymentReleaseProjectionSchemaId, sourceRefs: { deployment: "deployment_1" }, allowedReadEndpointIds: ["vercel.deployment.get"], authorizedProjectionPointers: ["/teamId", "/projectId", "/deploymentId", "/deploymentUrl", "/commitSha", "/checks", "/domains", "/currentProductionDeploymentId"], requiredGroundedPointers: ["/teamId", "/projectId", "/deploymentId", "/deploymentUrl", "/commitSha", "/checks", "/domains", "/currentProductionDeploymentId"], maxFreshnessSeconds: 60, observedAt: now, validationNow: now, plans: vercelPlans, observations: [{ planDigest: vercelPlans[0].planDigest, rawBytes: Buffer.from(JSON.stringify({ teamId: "team_demo", projectId: "prj_demo", id: "dpl_preview", url: "https://preview-demo.vercel.app", commitSha: "0123456789abcdef0123456789abcdef01234567", checks: [{ name: "tests", status: "passed" }], domains: ["app.example.com"], currentProductionDeploymentId: "dpl_previous" })) }] });
+  assert.equal((vercelSource.bundle.projection as Record<string, unknown>).deploymentId, "dpl_preview");
 });
 
 test("first-party pack sources contain no ambient I/O, secrets, or runtime module loading", () => {
-  const files = ["github/manifest.ts", "github/source.ts", "github/compile.ts", "github/reconcile.ts", "slack-topic/manifest.ts", "slack-topic/source.ts", "slack-topic/compile.ts", "slack-topic/reconcile.ts", "gmail/index.ts", "stripe/index.ts"];
+  const files = ["github/manifest.ts", "github/source.ts", "github/compile.ts", "github/reconcile.ts", "slack-topic/manifest.ts", "slack-topic/source.ts", "slack-topic/compile.ts", "slack-topic/reconcile.ts", "gmail/index.ts", "stripe/index.ts", "vercel/manifest.ts", "vercel/source.ts", "vercel/compile.ts", "vercel/reconcile.ts", "vercel/index.ts"];
   assert.doesNotThrow(() => assertStaticFirstPartySourcesConform(files.map(file => ({ file: `src/packs/${file}`, source: readFileSync(`src/packs/${file}`, "utf8") }))));
 });
