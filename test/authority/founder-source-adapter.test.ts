@@ -9,6 +9,7 @@ const config = {
     cloudflare: { apiBaseUrl: "https://api.cloudflare.com", accountId: "account", credentialRef: "env:CLOUDFLARE", cleanupRef: "cleanup", zoneId: "zone", recordId: "record", recordName: "certification.example.com", tokenName: "token" },
     slack: { apiBaseUrl: "https://slack.com", accountId: "T123", credentialRef: "env:SLACK", cleanupRef: "cleanup", channelId: "C123" },
   },
+  fly: { egressProxyBaseUrl: "http://reelier-egress.internal:8443", egressProxyBearerRef: "env:REELIER_EGRESS_GATEWAY_BEARER" },
 } as unknown as CertificationOperatorConfigV1;
 
 const plans = [
@@ -48,4 +49,3 @@ test("founder source adapter refuses an unbound handle before provider access", 
   assert.deepEqual(await adapter.execute([{ ...plans[0], opaqueHandle: "attacker" }]), { ok: false, reason: "refused" });
   assert.equal(requests, 0);
 });
-

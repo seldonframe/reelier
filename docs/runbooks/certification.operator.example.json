@@ -70,6 +70,8 @@
     "apiCredentialRef": "file:authority/secrets/fly.token",
     "flyctlPath": "C:/tools/flyctl/flyctl.exe",
     "flyctlVersion": "0.3.200",
+    "egressProxyBaseUrl": "http://reelier-egress-example.internal:8443",
+    "egressProxyBearerRef": "env:REELIER_EGRESS_GATEWAY_BEARER",
     "authorityImageDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "agentImageDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
     "gatewayImageDigest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",

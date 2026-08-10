@@ -1,0 +1,12 @@
+{
+  "v": "reelier.egress-gateway-config/v1",
+  "bearerRef": "env:REELIER_EGRESS_GATEWAY_BEARER",
+  "allowedHosts": [
+    "api.cloudflare.com",
+    "api.github.com",
+    "api.hubapi.com",
+    "api.vercel.com",
+    "console.neon.tech",
+    "slack.com"
+  ]
+}

@@ -11,6 +11,7 @@ const base = {
   rawWriteRouteIds: [],
   readSurfaceIds: ["github.issue.read"],
   providerEndpoints: ["api.github.com"],
+  egressProxy: null,
   schemaDigest: "sha256:" + "a".repeat(64),
 };
 

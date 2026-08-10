@@ -26,6 +26,8 @@ export interface FlyCertificationResource {
   readonly apiCredentialRef: string;
   readonly flyctlPath: string;
   readonly flyctlVersion: string;
+  readonly egressProxyBaseUrl: string;
+  readonly egressProxyBearerRef: string;
   readonly authorityImageDigest: string;
   readonly agentImageDigest: string;
   readonly gatewayImageDigest: string;
@@ -52,7 +54,7 @@ export interface CertificationOperatorConfigV1 {
 
 export interface CertificationSecretReferenceStatus {
   readonly owner: "github" | "vercel" | "neon" | "cloudflare" | "hubspot" | "slack" | "fly" | "codex";
-  readonly slot: "credential" | "database" | "api" | `session:${typeof CODEX_DOGFOOD_PROFILES[number]}`;
+  readonly slot: "credential" | "database" | "api" | "egress" | `session:${typeof CODEX_DOGFOOD_PROFILES[number]}`;
   readonly kind: "environment" | "file";
   readonly status: "configured" | "missing";
 }
@@ -91,6 +93,7 @@ export async function inspectCertificationSecretReferences(config: Certification
     ["hubspot", "credential", config.providers.hubspot.credentialRef],
     ["slack", "credential", config.providers.slack.credentialRef],
     ["fly", "api", config.fly.apiCredentialRef],
+    ["fly", "egress", config.fly.egressProxyBearerRef],
     ...CODEX_DOGFOOD_PROFILES.map(profile => ["codex" as const, `session:${profile}` as const, `file:${path.join(config.codex.sessionCredentialDirectory, `${profile}.token`)}`] as const),
   ];
   const reports = await Promise.all(refs.map(async ([owner, slot, reference]) => {
@@ -149,20 +152,27 @@ function slack(value: unknown): SlackCertificationResource {
 }
 function fly(value: unknown): FlyCertificationResource {
   const raw = object(value, "fly certification resource");
-  closed(raw, ["appName", "authorityMachineId", "agentAppName", "agentMachineId", "egressAppName", "egressMachineId", "orgSlug", "region", "apiCredentialRef", "flyctlPath", "flyctlVersion", "authorityImageDigest", "agentImageDigest", "gatewayImageDigest", "networkPolicyDigest", "schemaDigest"], "fly certification resource");
+  closed(raw, ["appName", "authorityMachineId", "agentAppName", "agentMachineId", "egressAppName", "egressMachineId", "orgSlug", "region", "apiCredentialRef", "flyctlPath", "flyctlVersion", "egressProxyBaseUrl", "egressProxyBearerRef", "authorityImageDigest", "agentImageDigest", "gatewayImageDigest", "networkPolicyDigest", "schemaDigest"], "fly certification resource");
   if (typeof raw.flyctlVersion !== "string" || !/^\d+\.\d+\.\d+$/.test(raw.flyctlVersion)) throw new TypeError("fly flyctlVersion is invalid");
+  const appName = id(raw.appName, "fly appName");
+  const agentAppName = id(raw.agentAppName, "fly agentAppName");
+  const egressAppName = id(raw.egressAppName, "fly egressAppName");
+  const egressProxyBaseUrl = internalHttp(raw.egressProxyBaseUrl, "fly egressProxyBaseUrl");
+  if (new URL(egressProxyBaseUrl).hostname !== `${egressAppName}.internal`) throw new TypeError("fly egressProxyBaseUrl does not match egressAppName");
   return Object.freeze({
-    appName: id(raw.appName, "fly appName"),
+    appName,
     authorityMachineId: id(raw.authorityMachineId, "fly authorityMachineId"),
-    agentAppName: id(raw.agentAppName, "fly agentAppName"),
+    agentAppName,
     agentMachineId: id(raw.agentMachineId, "fly agentMachineId"),
-    egressAppName: id(raw.egressAppName, "fly egressAppName"),
+    egressAppName,
     egressMachineId: id(raw.egressMachineId, "fly egressMachineId"),
     orgSlug: id(raw.orgSlug, "fly orgSlug"),
     region: id(raw.region, "fly region"),
     apiCredentialRef: secretRef(raw.apiCredentialRef, "fly apiCredentialRef"),
     flyctlPath: text(raw.flyctlPath, "fly flyctlPath", 1024),
     flyctlVersion: raw.flyctlVersion,
+    egressProxyBaseUrl,
+    egressProxyBearerRef: secretRef(raw.egressProxyBearerRef, "fly egressProxyBearerRef"),
     authorityImageDigest: digest(raw.authorityImageDigest, "fly authorityImageDigest"),
     agentImageDigest: digest(raw.agentImageDigest, "fly agentImageDigest"),
     gatewayImageDigest: digest(raw.gatewayImageDigest, "fly gatewayImageDigest"),
@@ -190,6 +200,7 @@ function closed(raw: Record<string, unknown>, keys: readonly string[], label: st
 function id(value: unknown, label: string): string { if (typeof value !== "string" || !ID.test(value)) throw new TypeError(`${label} is invalid`); return value; }
 function text(value: unknown, label: string, max: number): string { if (typeof value !== "string" || value.length === 0 || value.length > max || /[\0\r\n]/.test(value)) throw new TypeError(`${label} is invalid`); return value; }
 function https(value: unknown, label: string): string { const raw = text(value, label, 2048); let url: URL; try { url = new URL(raw); } catch { throw new TypeError(`${label} is invalid`); } if (url.protocol !== "https:" || url.username || url.password || url.hash || url.search) throw new TypeError(`${label} must be an HTTPS URL without credentials or query`); return url.toString().replace(/\/$/, ""); }
+function internalHttp(value: unknown, label: string): string { const raw = text(value, label, 2048); let url: URL; try { url = new URL(raw); } catch { throw new TypeError(`${label} is invalid`); } if (url.protocol !== "http:" || !url.hostname.endsWith(".internal") || url.username || url.password || url.pathname !== "/" || url.hash || url.search) throw new TypeError(`${label} must be a Fly internal HTTP origin`); return url.toString().replace(/\/$/, ""); }
 function secretRef(value: unknown, label: string): string { if (typeof value !== "string" || !SECRET_REF.test(value) || /[\0\r\n]/.test(value)) throw new TypeError(`${label} is invalid`); return value; }
 function digest(value: unknown, label: string): string { if (typeof value !== "string" || !DIGEST.test(value)) throw new TypeError(`${label} is invalid`); return value; }
 function safePath(value: unknown, label: string): string { const result = text(value, label, 1024); if (/^(?:https?:|file:)/i.test(result) || result.includes("\0")) throw new TypeError(`${label} is invalid`); return result; }

@@ -31,10 +31,11 @@ export function createFounderCertificationSourceAdapter(input: Readonly<{
   const github = input.config.providers.github;
   const cloudflare = input.config.providers.cloudflare;
   const slack = input.config.providers.slack;
+  const egressProxy = Object.freeze({ baseUrl: input.config.fly.egressProxyBaseUrl, bearerRef: input.config.fly.egressProxyBearerRef });
   const endpoints = new Map<string, JsonHttpsEndpoint>([
-    [githubIssueLabelsReadEndpointId, Object.freeze({ endpointId: githubIssueLabelsReadEndpointId, baseUrl: github.apiBaseUrl, allowedMethods: ["GET"] as const, allowedPathPrefixes: [`/repos/${github.accountId}/${github.repository}/issues/${github.issueNumber}`], secretRef: github.credentialRef, accountIdentity: github.accountId })],
-    [cloudflareDnsRecordSetReadEndpointId, Object.freeze({ endpointId: cloudflareDnsRecordSetReadEndpointId, baseUrl: cloudflare.apiBaseUrl, allowedMethods: ["GET"] as const, allowedPathPrefixes: [`/client/v4/zones/${cloudflare.zoneId}/dns_records/${cloudflare.recordId}`], secretRef: cloudflare.credentialRef, accountIdentity: cloudflare.accountId })],
-    [slackChannelTopicReadEndpointId, Object.freeze({ endpointId: slackChannelTopicReadEndpointId, baseUrl: slack.apiBaseUrl, allowedMethods: ["GET"] as const, allowedPathPrefixes: ["/api/conversations.info"], secretRef: slack.credentialRef, accountIdentity: slack.accountId })],
+    [githubIssueLabelsReadEndpointId, Object.freeze({ endpointId: githubIssueLabelsReadEndpointId, baseUrl: github.apiBaseUrl, allowedMethods: ["GET"] as const, allowedPathPrefixes: [`/repos/${github.accountId}/${github.repository}/issues/${github.issueNumber}`], secretRef: github.credentialRef, accountIdentity: github.accountId, egressProxy })],
+    [cloudflareDnsRecordSetReadEndpointId, Object.freeze({ endpointId: cloudflareDnsRecordSetReadEndpointId, baseUrl: cloudflare.apiBaseUrl, allowedMethods: ["GET"] as const, allowedPathPrefixes: [`/client/v4/zones/${cloudflare.zoneId}/dns_records/${cloudflare.recordId}`], secretRef: cloudflare.credentialRef, accountIdentity: cloudflare.accountId, egressProxy })],
+    [slackChannelTopicReadEndpointId, Object.freeze({ endpointId: slackChannelTopicReadEndpointId, baseUrl: slack.apiBaseUrl, allowedMethods: ["GET"] as const, allowedPathPrefixes: ["/api/conversations.info"], secretRef: slack.credentialRef, accountIdentity: slack.accountId, egressProxy })],
   ]);
   const secrets = input.secrets ?? createSecretResolver();
   const request = input.request ?? (async ({ endpoint, read }: FounderCertificationSourceRequest) => {
@@ -87,4 +88,3 @@ function normalizeSlack(bytes: Uint8Array, teamId: string): Uint8Array {
 
 function objectJson(bytes: Uint8Array, label: string): Record<string, unknown> { let parsed: unknown; try { parsed = JSON.parse(Buffer.from(bytes).toString("utf8")); } catch { throw new TypeError(`${label} response is not JSON`); } return object(parsed, label); }
 function object(value: unknown, label: string): Record<string, unknown> { if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError(`${label} response is invalid`); return value as Record<string, unknown>; }
-

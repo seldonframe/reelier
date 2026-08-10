@@ -53,9 +53,10 @@ test("founder HTTPS endpoint set pins exact accounts, methods, and resource path
       cloudflare: { apiBaseUrl: "https://api.cloudflare.com", accountId: "account", credentialRef: "env:CLOUDFLARE", zoneId: "zone", recordId: "record" },
       slack: { apiBaseUrl: "https://slack.com", accountId: "T123", credentialRef: "env:SLACK", channelId: "C123" },
     },
+    fly: { egressProxyBaseUrl: "http://reelier-egress.internal:8443", egressProxyBearerRef: "env:REELIER_EGRESS_GATEWAY_BEARER" },
   } as never;
   const endpoints = createFounderJsonHttpsEndpoints(full);
   assert.equal(endpoints.length, 6);
-  assert.deepEqual(endpoints.find(item => item.endpointId === "github.issue.labels.replace"), { endpointId: "github.issue.labels.replace", baseUrl: "https://api.github.com", allowedMethods: ["PUT"], allowedPathPrefixes: ["/repos/owner/repo/issues/7/labels"], secretRef: "env:GITHUB", accountIdentity: "owner" });
+  assert.deepEqual(endpoints.find(item => item.endpointId === "github.issue.labels.replace"), { endpointId: "github.issue.labels.replace", baseUrl: "https://api.github.com", allowedMethods: ["PUT"], allowedPathPrefixes: ["/repos/owner/repo/issues/7/labels"], secretRef: "env:GITHUB", accountIdentity: "owner", egressProxy: { baseUrl: "http://reelier-egress.internal:8443", bearerRef: "env:REELIER_EGRESS_GATEWAY_BEARER" } });
   assert.deepEqual(endpoints.find(item => item.endpointId === "slack.conversations.info.readback")?.allowedMethods, ["GET"]);
 });

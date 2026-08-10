@@ -7,6 +7,7 @@
       "direction": "egress",
       "ports": [
         { "protocol": "tcp", "port": 53 },
+        { "protocol": "tcp", "port": 8443 },
         { "protocol": "udp", "port": 53 }
       ]
     }

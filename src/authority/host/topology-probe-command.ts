@@ -1,6 +1,8 @@
 import { lookup as dnsLookup } from "node:dns/promises";
 import { request as httpsRequest } from "node:https";
+import { request as httpRequest } from "node:http";
 import { isIP } from "node:net";
+import { connect as tlsConnect } from "node:tls";
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/;
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
@@ -17,6 +19,7 @@ export interface TopologyProbeMachineConfigV1 {
   readonly rawWriteRouteIds: readonly string[];
   readonly readSurfaceIds: readonly string[];
   readonly providerEndpoints: readonly string[];
+  readonly egressProxy: Readonly<{ baseUrl: string; bearerEnvName: string }> | null;
   readonly schemaDigest: string;
 }
 
@@ -73,14 +76,14 @@ export async function runTopologyProbeCommand(input: Readonly<{
   if (input.action !== "egress") throw new TypeError("topology probe action is invalid");
   const endpoint = normalizeEndpoint(input.argument);
   if (!config.providerEndpoints.includes(endpoint)) throw new TypeError("topology probe endpoint is not declared");
-  const reachable = await (input.connect ?? probePublicHttps)(endpoint);
+  const reachable = await (input.connect ?? (host => probeProviderHttps(host, config.egressProxy, input.env ?? process.env)))(endpoint);
   return Object.freeze({ v: "reelier.topology-probe-egress/v1" as const, endpoint, reachable: Boolean(reachable) });
 }
 
 export function parseTopologyProbeMachineConfig(value: unknown): TopologyProbeMachineConfigV1 {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("topology probe config must be an object");
   const raw = value as Record<string, unknown>;
-  const keys = ["v", "role", "runtimeSession", "providerCredentialEnvNames", "allowedCredentialEnvNames", "rawWriteRouteIds", "readSurfaceIds", "providerEndpoints", "schemaDigest"];
+  const keys = ["v", "role", "runtimeSession", "providerCredentialEnvNames", "allowedCredentialEnvNames", "rawWriteRouteIds", "readSurfaceIds", "providerEndpoints", "egressProxy", "schemaDigest"];
   if (Object.keys(raw).length !== keys.length || Object.keys(raw).some(key => !keys.includes(key))) throw new TypeError("topology probe config is closed");
   if (raw.v !== "reelier.topology-probe-config/v1" || (raw.role !== "agent" && raw.role !== "cell" && raw.role !== "gateway")) throw new TypeError("topology probe config identity is invalid");
   if (typeof raw.runtimeSession !== "string" || !ID.test(raw.runtimeSession)) throw new TypeError("topology probe runtime session is invalid");
@@ -97,11 +100,13 @@ export function parseTopologyProbeMachineConfig(value: unknown): TopologyProbeMa
     rawWriteRouteIds: stringList(raw.rawWriteRouteIds, "raw write route", ID, true),
     readSurfaceIds: stringList(raw.readSurfaceIds, "read surface", ID, true),
     providerEndpoints: dnsList(raw.providerEndpoints),
+    egressProxy: parseEgressProxy(raw.egressProxy),
     schemaDigest: raw.schemaDigest,
   });
 }
 
-async function probePublicHttps(hostname: string): Promise<boolean> {
+async function probeProviderHttps(hostname: string, proxy: TopologyProbeMachineConfigV1["egressProxy"], env: Readonly<Record<string, string | undefined>>): Promise<boolean> {
+  if (proxy) return probeHttpsThroughProxy(hostname, proxy, env);
   try {
     const addresses = await dnsLookup(hostname, { all: true, verbatim: true });
     if (!addresses.length || addresses.some(item => !isPublicAddress(item.address))) return false;
@@ -114,6 +119,29 @@ async function probePublicHttps(hostname: string): Promise<boolean> {
       const timer = setTimeout(() => { request.destroy(); finish(false); }, 5_000);
       timer.unref();
       request.end();
+    });
+  } catch { return false; }
+}
+
+async function probeHttpsThroughProxy(hostname: string, proxy: NonNullable<TopologyProbeMachineConfigV1["egressProxy"]>, env: Readonly<Record<string, string | undefined>>): Promise<boolean> {
+  try {
+    const origin = new URL(proxy.baseUrl);
+    const bearer = env[proxy.bearerEnvName];
+    if (!bearer) return false;
+    const addresses = await dnsLookup(origin.hostname, { all: true, verbatim: true });
+    if (!addresses.length) return false;
+    const chosen = addresses[0].address;
+    return await new Promise<boolean>(resolve => {
+      let settled = false;
+      const finish = (value: boolean) => { if (settled) return; settled = true; clearTimeout(timer); resolve(value); };
+      const request = httpRequest({ protocol: "http:", hostname: origin.hostname, port: origin.port || 8443, method: "CONNECT", path: `${hostname}:443`, headers: { "Proxy-Authorization": `Bearer ${bearer}` }, lookup: (_host, _options, callback) => callback(null, chosen, isIP(chosen)) });
+      request.once("connect", (response, socket, head) => {
+        if (response.statusCode !== 200 || head.length) { socket.destroy(); finish(false); return; }
+        const secure = tlsConnect({ socket, servername: hostname, rejectUnauthorized: true });
+        secure.once("secureConnect", () => { secure.destroy(); finish(true); }); secure.once("error", () => finish(false));
+      });
+      request.once("error", () => finish(false)); request.end();
+      const timer = setTimeout(() => { request.destroy(); finish(false); }, 5_000); timer.unref();
     });
   } catch { return false; }
 }
@@ -139,6 +167,16 @@ function dnsList(value: unknown): readonly string[] {
   const list = value.map(normalizeEndpoint).sort();
   if (new Set(list).size !== list.length) throw new TypeError("topology probe provider endpoints must be unique");
   return Object.freeze(list);
+}
+
+function parseEgressProxy(value: unknown): TopologyProbeMachineConfigV1["egressProxy"] {
+  if (value === null) return null;
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("topology probe egress proxy is invalid");
+  const raw = value as Record<string, unknown>;
+  if (Object.keys(raw).length !== 2 || typeof raw.baseUrl !== "string" || typeof raw.bearerEnvName !== "string" || !ENV_NAME.test(raw.bearerEnvName)) throw new TypeError("topology probe egress proxy is closed");
+  let origin: URL; try { origin = new URL(raw.baseUrl); } catch { throw new TypeError("topology probe egress proxy is invalid"); }
+  if (origin.protocol !== "http:" || !origin.hostname.endsWith(".internal") || origin.pathname !== "/" || origin.username || origin.password || origin.search || origin.hash) throw new TypeError("topology probe egress proxy is invalid");
+  return Object.freeze({ baseUrl: origin.toString().replace(/\/$/, ""), bearerEnvName: raw.bearerEnvName });
 }
 
 function stringList(value: unknown, label: string, pattern: RegExp, emptyAllowed: boolean): readonly string[] {

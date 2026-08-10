@@ -10,9 +10,13 @@ primary_region = "yyz"
   guest_path = "/etc/reelier/topology-probe.json"
   local_path = "egress-gateway.topology-probe.json"
 
-[experimental]
-  exec = ["/bin/sh", "-c", "exec tail -f /dev/null"]
+[[files]]
+  guest_path = "/etc/reelier/egress-gateway.json"
+  local_path = "egress-gateway.json"
 
-# This Machine is only a topology placeholder until the authenticated CONNECT
-# gateway is enabled. Do not claim declared-surface enforcement merely because
-# this app can reach TCP 443.
+[experimental]
+  exec = ["node", "/app/dist/cli.js", "authority", "egress-gateway", "--host", "::", "--port", "8443", "--config", "/etc/reelier/egress-gateway.json"]
+
+# Set REELIER_EGRESS_GATEWAY_BEARER as a Fly secret on both the gateway and the
+# Authority Cell. It authenticates the tunnel only; provider grants remain in
+# the Cell and stay encrypted end-to-end inside provider TLS.
