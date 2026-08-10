@@ -21,6 +21,7 @@ export type { AuthorityHostRuntimeDependencies } from "./runtime.js";
 export { createAuthorityHostRuntime } from "./runtime.js";
 export { createLocalAuthorityRuntime, type LocalAuthorityRuntimeOptions } from "./local.js";
 export { assertFreshManagedTopologyEvidence, assertManagedTopologyEvidence, createTopologyProbe, parseTopologyEvidence, runTopologyProbe, signTopologyEvidence, topologyEvidenceDigest, verifyTopologyEvidence, type SignedTopologyEvidenceV1, type TopologyEvidenceV1, type TopologyEvidenceField, type TopologyProbe, type TopologyProbeCheck, type TopologyProbeDefinition, type TopologyProbeResult, type TopologyProbeRunInput, type TopologyEvidenceVerificationOptions } from "./topology.js";
+export { createActiveTopologyProbe, createReferenceTopologyProbe, createLiveTopologyProbe, runActiveTopologyProbe, type ActiveTopologyProbeContext, type ActiveTopologyProbeOperation, type ActiveTopologyProbeOperations, type ActiveTopologyProbeOptions, type ActiveTopologyProbeOutcome } from "./active-probe.js";
 export { signAuthorityLease, verifyAuthorityLease } from "./lease.js";
 export type { AuthorityDeploymentManifest, AuthorityDeploymentTrustEntry, LoadedAuthorityDeployment } from "./deployment.js";
 export { loadAuthorityDeployment } from "./deployment.js";
@@ -30,6 +31,7 @@ export { FsDelegationBudgetLedger, type BudgetAllocation } from "./delegation-bu
 export { createDelegationAuthority, type DelegationAuthority, type DelegationAuthoritySigner } from "./delegation-service.js";
 export { createPrincipalRegistry, type PrincipalRegistry, type PrincipalCredential, type PrincipalCredentialIssue, type PrincipalSessionContext } from "./principal-registry.js";
 export { createSecretHandle, isSecretHandle, redactSecretValue, type SecretHandle } from "./secret-handle.js";
+export { assertCodexDogfoodPlan, createCodexDogfoodPlan, CODEX_DOGFOOD_PROFILES, type CodexDogfoodPlan, type CodexDogfoodProfile, type CodexDogfoodProfileConfig } from "./codex-dogfood.js";
 export { createArtifactStore } from "./artifacts.js";
 export type { ArtifactStore, StagedArtifactCommitmentV1 } from "./artifacts.js";
 export { createFileReceiptPublication } from "./receipts.js";
