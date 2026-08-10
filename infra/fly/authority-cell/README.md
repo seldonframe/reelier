@@ -6,6 +6,8 @@ Deploy from the repository root so the manifest can build the root `Dockerfile`.
 
 Do not treat the environment declarations in the manifest as topology proof. The managed release remains blocked until active probes verify the deployed image, actual Fly network-policy digest, credential mounts, Cell-versus-agent provider reachability, raw-write routes, and read coverage.
 
+The three `*.network-policy.json` files are the canonical reference policies. Applying any egress rule makes unmatched egress default-deny on Fly. The agent and Cell policies intentionally omit TCP 443; their external traffic must traverse a separately authenticated Fly Proxy/Flycast gateway. Only the egress-gateway policy permits public HTTPS. Apply policies through Fly's Machines API, restart the Machines as Fly requires, fetch the deployed policies back, and bind `digestFlyNetworkPolicies(...)` over that read-back into topology evidence. A local file digest is not deployment evidence.
+
 Before enabling managed dispatch, record the image, network policy, connector schema, and provider-surface digests in the signed deployment. Run `reelier authority certify preflight` and `reelier authority certify run --adapter fly-topology` from the Cell. Any topology change invalidates the evidence and current lease.
 
 The reference manifest intentionally contains no tokens, OAuth grants, hostnames with embedded credentials, or provider response bodies.
