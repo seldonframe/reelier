@@ -134,8 +134,10 @@ async function authorityVerify(args: Readonly<{ opts: Record<string, string> }>)
 
 async function authorityServe(args: Readonly<{ opts: Record<string, string> }>): Promise<number> {
   const loaded = await loadAuthorityHostConfig(args.opts.path ?? "authority/authority.yml");
-  const artifactKey = await loadOrCreateArtifactKey(path.dirname(loaded.file));
-  const artifactStore = createArtifactStore({ tenant: loaded.config.tenant, key: artifactKey, masterKey: artifactKey, rootDir: path.join(loaded.config.receiptDir, "artifacts") });
+  const artifactRoot = path.dirname(loaded.file);
+  const artifactDataKey = await loadOrCreateArtifactKey(artifactRoot, "artifact-data.key");
+  const artifactMasterKey = await loadOrCreateArtifactKey(artifactRoot, "artifact-master.key");
+  const artifactStore = createArtifactStore({ tenant: loaded.config.tenant, key: artifactDataKey, masterKey: artifactMasterKey, rootDir: path.join(loaded.config.receiptDir, "artifacts") });
   const authorityRuntime = await createLocalAuthorityRuntime(loaded.config);
   const runtime: AuthorityHostRuntime = {
     outcome: authorityRuntime.outcome,
@@ -156,8 +158,8 @@ async function authorityServe(args: Readonly<{ opts: Record<string, string> }>):
   return 0;
 }
 
-async function loadOrCreateArtifactKey(root: string): Promise<Buffer> {
-  const file = path.join(root, "trust", "artifact-master.key");
+async function loadOrCreateArtifactKey(root: string, name = "artifact-master.key"): Promise<Buffer> {
+  const file = path.join(root, "trust", name);
   try { const existing = await readFile(file); if (existing.length === 32) return existing; } catch { /* create below */ }
   const key = randomBytes(32); await mkdir(path.dirname(file), { recursive: true }); await writeFile(file, key, { mode: 0o600 }); return key;
 }
