@@ -26,6 +26,7 @@ export interface CertificationPreflightInput {
 export interface CertificationResourceReport {
   readonly provider: CertificationProviderId;
   readonly accountIdDigest: string;
+  readonly accountIdStatus: "configured" | "missing";
   readonly credentialRefStatus: "configured" | "missing";
   readonly cleanupRefStatus: "configured" | "missing";
 }
@@ -78,13 +79,14 @@ export function createCertificationPreflight(input: CertificationPreflightInput)
   if (input.runtime.fly !== "available") missing.push("runtime:fly");
   const resources = input.resources.map(resource => {
     if (!isProvider(resource.provider)) throw new TypeError(`unknown certification provider: ${resource.provider}`);
-    if (!resource.accountId) throw new TypeError(`resource ${resource.provider} account is required`);
     const report: CertificationResourceReport = {
       provider: resource.provider,
-      accountIdDigest: digestOpaque(resource.accountId),
+      accountIdDigest: resource.accountId ? digestOpaque(resource.accountId) : "sha256:" + "0".repeat(64),
+      accountIdStatus: resource.accountId ? "configured" : "missing",
       credentialRefStatus: resource.credentialRef ? "configured" : "missing",
       cleanupRefStatus: resource.cleanupRef ? "configured" : "missing",
     };
+    if (!resource.accountId) missing.push(`resource:${resource.provider}:accountId`);
     if (!resource.credentialRef) missing.push(`resource:${resource.provider}:credentialRef`);
     if (!resource.cleanupRef) missing.push(`resource:${resource.provider}:cleanupRef`);
     return Object.freeze(report);

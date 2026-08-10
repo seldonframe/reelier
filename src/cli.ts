@@ -201,6 +201,7 @@ function parseArgv(argv: string[]): ParsedArgs {
       || arg === "--pack"
       || arg === "--tenant"
       || arg === "--signer"
+      || arg === "--adapter"
     ) {
       const val = argv[++i];
       if (!val) {
