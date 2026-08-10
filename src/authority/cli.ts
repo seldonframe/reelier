@@ -11,6 +11,8 @@ import { verifyAuthorityReceiptBundle } from "./verify.js";
 import { createArtifactStore } from "./host/artifacts.js";
 import { runFirstPartyPackConformance } from "../packs/conformance.js";
 import { createLocalAuthorityRuntime } from "./host/local.js";
+import { createCertificationPreflight } from "./host/certification.js";
+import { verifyReleaseEvidenceManifest } from "./host/release-evidence.js";
 
 export async function runAuthorityCommand(args: Readonly<{ positional: string[]; flags: Set<string>; opts: Record<string, string> }>): Promise<number> {
   const subcommand = args.positional[0] ?? "doctor";
@@ -22,6 +24,7 @@ export async function runAuthorityCommand(args: Readonly<{ positional: string[];
     case "verify": return authorityVerify(args);
     case "serve": return authorityServe(args);
     case "conformance": return authorityConformance(args);
+    case "certify": return authorityCertify(args);
     default: console.error(`unknown authority command: ${subcommand}`); return 1;
   }
 }
@@ -160,6 +163,50 @@ async function authorityServe(args: Readonly<{ opts: Record<string, string> }>):
   const server = createAuthorityHostServer(loaded.config, runtime);
   await server.startStdio();
   return 0;
+}
+
+async function authorityCertify(args: Readonly<{ positional: string[]; flags: Set<string>; opts: Record<string, string> }>): Promise<number> {
+  const action = args.positional[1] ?? "preflight";
+  if (action === "preflight") {
+    const packageVersion = process.env.npm_package_version ?? "0.32.0";
+    const providers = ["github", "vercel", "neon", "cloudflare", "hubspot", "slack", "codex", "fly"] as const;
+    const resources = providers.map(provider => {
+      const envName = provider.toUpperCase().replace(/-/g, "_");
+      const current = process.env.REELIER_LIVE_PROVIDER === provider;
+      return { provider, accountId: process.env[`REELIER_CERTIFY_${envName}_ACCOUNT`] ?? (current ? process.env.REELIER_LIVE_ACCOUNT : undefined) ?? "", credentialRef: process.env[`REELIER_CERTIFY_${envName}_CREDENTIAL_REF`] ?? (current ? process.env.REELIER_LIVE_CREDENTIAL_REF : undefined), cleanupRef: process.env[`REELIER_CERTIFY_${envName}_CLEANUP_REF`] ?? (current ? process.env.REELIER_LIVE_CLEANUP_REF : undefined) };
+    });
+    const migrationDigest = process.env.REELIER_MIGRATIONS_DIGEST ?? "sha256:" + "0".repeat(64);
+    const report = createCertificationPreflight({
+      packageVersion,
+      expectedPackageVersion: "0.32.0",
+      cloud: { deploymentId: process.env.REELIER_CLOUD_DEPLOYMENT_ID ?? "", status: process.env.REELIER_CLOUD_DEPLOYMENT_STATUS === "ready" ? "ready" : "unknown" },
+      migrations: { status: process.env.REELIER_MIGRATIONS_DIGEST ? "applied" : "unknown", digest: migrationDigest },
+      runtime: { codex: process.env.REELIER_CODEX_BIN ? "available" : "missing", fly: process.env.REELIER_FLY_APP ? "available" : "missing" },
+      resources,
+    });
+    console.log(JSON.stringify(report, null, 2));
+    return report.ok ? 0 : 1;
+  }
+  if (action === "run") {
+    if (process.env.REELIER_LIVE_CERTIFY !== "1") { console.error(JSON.stringify({ status: "refused", reasonCode: "live-acknowledgement-required" })); return 1; }
+    console.error(JSON.stringify({ status: "refused", reasonCode: "adapter-runner-not-configured", adapter: args.opts.adapter ?? null }));
+    return 1;
+  }
+  if (action === "verify") {
+    const inputPath = args.opts.input;
+    const keyPath = args.opts.key;
+    if (!inputPath || !keyPath) { console.error("authority certify verify requires --input and --key"); return 1; }
+    try {
+      const { createPublicKey } = await import("node:crypto");
+      const manifest = JSON.parse(await readFile(path.resolve(inputPath), "utf8"));
+      const publicKey = createPublicKey(await readFile(path.resolve(keyPath)));
+      const verified = verifyReleaseEvidenceManifest(manifest, { signerId: args.opts.signer ?? "cell", publicKey });
+      console.log(JSON.stringify({ valid: true, digest: verified.digest, packageVersion: verified.manifest.package.version }));
+      return 0;
+    } catch (error) { console.error(JSON.stringify({ valid: false, reasonCode: "release-evidence-invalid", message: error instanceof Error ? error.message : String(error) })); return 1; }
+  }
+  console.error(`unknown authority certify action: ${action}`);
+  return 1;
 }
 
 async function loadOrCreateArtifactKey(root: string, name = "artifact-master.key"): Promise<Buffer> {
