@@ -12,10 +12,12 @@ import { createVercelDeploymentReleaseSourceResolver } from "../../src/packs/ver
 import { vercelDeploymentReleaseDefinitionDigest, vercelDeploymentReleaseProjectionSchemaId, vercelDeploymentReleaseResolverId } from "../../src/packs/vercel/manifest.js";
 import { createCloudflareDnsRecordSourceResolver } from "../../src/packs/cloudflare/source.js";
 import { cloudflareDnsRecordSetDefinitionDigest, cloudflareDnsRecordSetProjectionSchemaId, cloudflareDnsRecordSetResolverId } from "../../src/packs/cloudflare/manifest.js";
+import { createNeonDatabaseMigrationSourceResolver } from "../../src/packs/neon/source.js";
+import { neonDatabaseMigrationDefinitionDigest, neonDatabaseMigrationProjectionSchemaId, neonDatabaseMigrationResolverId } from "../../src/packs/neon/manifest.js";
 
 test("all reviewed first-party packs pass the shared closed conformance corpus", () => {
   const report = runFirstPartyPackConformance();
-  assert.deepEqual(report.aliases, ["cloudflare_dns_record_set_v1", "github_issue_labels_set_v1", "gmail_reply_send_v1", "gmail_thread_labels_set_v1", "slack_channel_topic_set_v1", "stripe_refund_issue_v1", "vercel_deployment_release_v1"]);
+  assert.deepEqual(report.aliases, ["cloudflare_dns_record_set_v1", "github_issue_labels_set_v1", "gmail_reply_send_v1", "gmail_thread_labels_set_v1", "neon_database_migration_apply_v1", "slack_channel_topic_set_v1", "stripe_refund_issue_v1", "vercel_deployment_release_v1"]);
   assert.equal(report.passed, report.checks);
   assert.ok(report.checks >= 12);
 });
@@ -45,9 +47,15 @@ test("GitHub and Slack source resolvers produce grounded deterministic projectio
   const cloudflarePlans = planSourceReads(cloudflareRegistry, { tenant: "tenant_1", resolverId: cloudflareDnsRecordSetResolverId, definitionDigest: cloudflareDnsRecordSetDefinitionDigest, sourceRefs: { record: "record_1" }, allowedReadEndpointIds: ["cloudflare.dns.record.get"] });
   const cloudflareSource = materializeSourceBundle(cloudflareRegistry, { tenant: "tenant_1", definitionDigest: cloudflareDnsRecordSetDefinitionDigest, resolverId: cloudflareDnsRecordSetResolverId, projectionSchemaId: cloudflareDnsRecordSetProjectionSchemaId, sourceRefs: { record: "record_1" }, allowedReadEndpointIds: ["cloudflare.dns.record.get"], authorizedProjectionPointers: ["/accountId", "/zoneId", "/recordId", "/name", "/type", "/content", "/ttl", "/proxied"], requiredGroundedPointers: ["/accountId", "/zoneId", "/recordId", "/name", "/type", "/content", "/ttl", "/proxied"], maxFreshnessSeconds: 60, observedAt: now, validationNow: now, plans: cloudflarePlans, observations: [{ planDigest: cloudflarePlans[0].planDigest, rawBytes: Buffer.from(JSON.stringify({ accountId: "acct_demo", zoneId: "zone_demo", id: "record_demo", name: "app.example.com", type: "A", content: "203.0.113.10", ttl: 300, proxied: false })) }] });
   assert.equal((cloudflareSource.bundle.projection as Record<string, unknown>).recordId, "record_demo");
+
+  const neon = createNeonDatabaseMigrationSourceResolver("tenant_1");
+  const neonRegistry = createSourceRegistry([neon]);
+  const neonPlans = planSourceReads(neonRegistry, { tenant: "tenant_1", resolverId: neonDatabaseMigrationResolverId, definitionDigest: neonDatabaseMigrationDefinitionDigest, sourceRefs: { database: "database_1" }, allowedReadEndpointIds: ["neon.database.catalog.get"] });
+  const neonSource = materializeSourceBundle(neonRegistry, { tenant: "tenant_1", definitionDigest: neonDatabaseMigrationDefinitionDigest, resolverId: neonDatabaseMigrationResolverId, projectionSchemaId: neonDatabaseMigrationProjectionSchemaId, sourceRefs: { database: "database_1" }, allowedReadEndpointIds: ["neon.database.catalog.get"], authorizedProjectionPointers: ["/projectId", "/branchId", "/databaseId", "/roleId", "/schemaDigest", "/catalogDigest", "/lastMigrationId"], requiredGroundedPointers: ["/projectId", "/branchId", "/databaseId", "/roleId", "/schemaDigest", "/catalogDigest", "/lastMigrationId"], maxFreshnessSeconds: 60, observedAt: now, validationNow: now, plans: neonPlans, observations: [{ planDigest: neonPlans[0].planDigest, rawBytes: Buffer.from(JSON.stringify({ projectId: "prj_demo", branchId: "br_demo", databaseId: "db_demo", roleId: "role_app", schemaDigest: "sha256:1111111111111111111111111111111111111111111111111111111111111111", catalogDigest: "sha256:2222222222222222222222222222222222222222222222222222222222222222", lastMigrationId: "migration_previous" })) }] });
+  assert.equal((neonSource.bundle.projection as Record<string, unknown>).databaseId, "db_demo");
 });
 
 test("first-party pack sources contain no ambient I/O, secrets, or runtime module loading", () => {
-  const files = ["github/manifest.ts", "github/source.ts", "github/compile.ts", "github/reconcile.ts", "slack-topic/manifest.ts", "slack-topic/source.ts", "slack-topic/compile.ts", "slack-topic/reconcile.ts", "gmail/index.ts", "stripe/index.ts", "vercel/manifest.ts", "vercel/source.ts", "vercel/compile.ts", "vercel/reconcile.ts", "vercel/index.ts", "cloudflare/manifest.ts", "cloudflare/source.ts", "cloudflare/compile.ts", "cloudflare/reconcile.ts", "cloudflare/index.ts"];
+  const files = ["github/manifest.ts", "github/source.ts", "github/compile.ts", "github/reconcile.ts", "slack-topic/manifest.ts", "slack-topic/source.ts", "slack-topic/compile.ts", "slack-topic/reconcile.ts", "gmail/index.ts", "stripe/index.ts", "vercel/manifest.ts", "vercel/source.ts", "vercel/compile.ts", "vercel/reconcile.ts", "vercel/index.ts", "cloudflare/manifest.ts", "cloudflare/source.ts", "cloudflare/compile.ts", "cloudflare/reconcile.ts", "cloudflare/index.ts", "neon/manifest.ts", "neon/source.ts", "neon/compile.ts", "neon/reconcile.ts", "neon/index.ts"];
   assert.doesNotThrow(() => assertStaticFirstPartySourcesConform(files.map(file => ({ file: `src/packs/${file}`, source: readFileSync(`src/packs/${file}`, "utf8") }))));
 });

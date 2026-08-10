@@ -11,6 +11,7 @@ import { gmailReplySendAlias, gmailThreadLabelsAlias, gmailReplyDefinition, pars
 import { stripeRefundIssueAlias, stripeRefundDefinition, parseStripeRefundPolicy, compileStripeRefund, reconcileStripeRefund } from "./stripe/index.js";
 import { vercelDeploymentReleaseAlias, vercelDeploymentReleaseDefinition, parseVercelDeploymentReleasePolicy, compileVercelDeploymentRelease, reconcileVercelDeploymentRelease, type VercelDeploymentReleaseProjection } from "./vercel/index.js";
 import { cloudflareDnsRecordSetAlias, cloudflareDnsRecordSetDefinition, parseCloudflareDnsRecordPolicy, compileCloudflareDnsRecordSet, reconcileCloudflareDnsRecordSet, type CloudflareDnsRecordProjection } from "./cloudflare/index.js";
+import { neonDatabaseMigrationAlias, neonDatabaseMigrationDefinition, parseNeonDatabaseMigrationPolicy, compileNeonDatabaseMigration, reconcileNeonDatabaseMigration, type NeonDatabaseMigrationProjection } from "./neon/index.js";
 
 export interface FirstPartyConformanceReport {
   readonly aliases: readonly string[];
@@ -21,7 +22,7 @@ export interface FirstPartyConformanceReport {
 
 /** Runs the mandatory common corpus. This is intentionally offline and provider-neutral. */
 export function runFirstPartyPackConformance(): FirstPartyConformanceReport {
-  const expectedAliases = [githubIssueLabelsAlias, slackChannelTopicAlias, gmailReplySendAlias, gmailThreadLabelsAlias, stripeRefundIssueAlias, vercelDeploymentReleaseAlias, cloudflareDnsRecordSetAlias];
+  const expectedAliases = [githubIssueLabelsAlias, slackChannelTopicAlias, gmailReplySendAlias, gmailThreadLabelsAlias, stripeRefundIssueAlias, vercelDeploymentReleaseAlias, cloudflareDnsRecordSetAlias, neonDatabaseMigrationAlias];
   const actualAliases = firstPartyPacks.map(pack => pack.definition.alias).sort(compareText);
   if (actualAliases.join("\0") !== expectedAliases.slice().sort(compareText).join("\0")) throw new TypeError("first-party conformance requires the reviewed v1 packs");
   createStaticPackRegistry(firstPartyPacks.map(pack => pack.definition));
@@ -91,6 +92,13 @@ export function runFirstPartyPackConformance(): FirstPartyConformanceReport {
   check(Buffer.compare(authorityCanonicalBytes(cloudflareEffect), authorityCanonicalBytes(compileCloudflareDnsRecordSet({ source: cloudflareSource, policy: cloudflarePolicy }))) === 0, "Cloudflare compilation deterministic");
   check(reconcileCloudflareDnsRecordSet({ expected: cloudflareSource, desired: { content: "203.0.113.20", ttl: 300, proxied: false }, response: { body: { result: { id: "record_demo", accountId: "acct_demo", zoneId: "zone_demo", name: "app.example.com", type: "A", content: "203.0.113.20", ttl: 300, proxied: false } } } }).status === "matched", "Cloudflare authoritative read-back");
   check(throws(() => compileCloudflareDnsRecordSet({ source: { ...cloudflareSource, accountId: "attacker" }, policy: cloudflarePolicy })), "Cloudflare account binding");
+  const neonSource: NeonDatabaseMigrationProjection = { projectId: "prj_demo", branchId: "br_demo", databaseId: "db_demo", roleId: "role_app", schemaDigest: "sha256:1111111111111111111111111111111111111111111111111111111111111111", catalogDigest: "sha256:2222222222222222222222222222222222222222222222222222222222222222", lastMigrationId: "migration_previous" };
+  const neonPolicy = parseNeonDatabaseMigrationPolicy({ projectId: "prj_demo", branchId: "br_demo", databaseId: "db_demo", roleId: "role_app", migrationId: "migration_2026_08_10", expectedSchemaDigest: neonSource.schemaDigest, sql: "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS plan text NOT NULL;" });
+  const neonEffect = neonDatabaseMigrationDefinition.compile({ contract: {} as never, source: { projection: neonSource } as never, choices: {}, policy: neonPolicy, now: new Date(0), connectorAccount: { connectorId: "neon", accountId: "prj_demo" } });
+  check(parseAuthorityWire("transport-effect", neonEffect).endpointId === "neon.database.migration.apply", "Neon effect schema closure");
+  check(Buffer.compare(authorityCanonicalBytes(neonEffect), authorityCanonicalBytes(compileNeonDatabaseMigration({ source: neonSource, policy: neonPolicy }))) === 0, "Neon compilation deterministic");
+  check(throws(() => parseNeonDatabaseMigrationPolicy({ ...neonPolicy, sql: "DROP TABLE accounts;" })), "Neon destructive SQL refused");
+  check(reconcileNeonDatabaseMigration({ expected: neonSource, policy: neonPolicy, response: { body: { projectId: "prj_demo", branchId: "br_demo", databaseId: "db_demo", roleId: "role_app", migrationId: "migration_2026_08_10", schemaDigest: "sha256:3333333333333333333333333333333333333333333333333333333333333333", catalogDigest: "sha256:4444444444444444444444444444444444444444444444444444444444444444" } } }).status === "matched", "Neon migration read-back");
   caseIds.push("schema-closure", "exact-byte", "no-secret", "account-binding", "ambiguity", "reconciliation", "redaction");
   return Object.freeze({ aliases: Object.freeze(actualAliases), checks, passed: checks, caseIds: Object.freeze(caseIds) });
 }

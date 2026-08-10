@@ -131,7 +131,12 @@ const STATIC_RUNTIME_SPECIFIER_ALLOWLIST: Readonly<Record<string, ReadonlySet<st
   "src/packs/cloudflare/compile.ts": new Set(["../../authority/wire.js", "./manifest.js"]),
   "src/packs/cloudflare/reconcile.ts": new Set(["../../authority/wire.js", "./manifest.js", "../types.js"]),
   "src/packs/cloudflare/index.ts": new Set(["./manifest.js", "./source.js", "./compile.js", "./reconcile.js"]),
-  "src/packs/index.ts": new Set(["../authority/pack.js", "../authority/source.js", "./github/compile.js", "./github/manifest.js", "./github/source.js", "./github/reconcile.js", "./github/index.js", "./slack-topic/compile.js", "./slack-topic/manifest.js", "./slack-topic/source.js", "./slack-topic/reconcile.js", "./slack-topic/index.js", "./gmail/index.js", "./stripe/index.js", "./vercel/index.js", "./cloudflare/index.js"]),
+  "src/packs/neon/manifest.ts": new Set(["../../authority/wire.js"]),
+  "src/packs/neon/source.ts": new Set(["../../authority/source.js", "../../authority/wire.js", "./manifest.js"]),
+  "src/packs/neon/compile.ts": new Set(["../../authority/wire.js", "./manifest.js"]),
+  "src/packs/neon/reconcile.ts": new Set(["../../authority/wire.js", "./manifest.js", "./compile.js", "../types.js"]),
+  "src/packs/neon/index.ts": new Set(["./manifest.js", "./source.js", "./compile.js", "./reconcile.js"]),
+  "src/packs/index.ts": new Set(["../authority/pack.js", "../authority/source.js", "./github/compile.js", "./github/manifest.js", "./github/source.js", "./github/reconcile.js", "./github/index.js", "./slack-topic/compile.js", "./slack-topic/manifest.js", "./slack-topic/source.js", "./slack-topic/reconcile.js", "./slack-topic/index.js", "./gmail/index.js", "./stripe/index.js", "./vercel/index.js", "./cloudflare/index.js", "./neon/index.js"]),
 });
 const STATIC_RUNTIME_SPECIFIER = /\b(?:import|export)\s+(?!type\b)(?:(?:[^"'`;]*?\bfrom\s*)?["']([^"']+)["'])/gs;
 
