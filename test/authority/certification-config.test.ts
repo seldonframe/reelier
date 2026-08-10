@@ -19,7 +19,7 @@ function completeConfig(): unknown {
       slack: { apiBaseUrl: "https://slack.com", accountId: "team_1", credentialRef: "env:REELIER_SLACK_TOKEN", cleanupRef: "slack-cleanup", channelId: "C0123456789" },
     },
     fly: { appName: "reelier-cell-demo", agentAppName: "reelier-agent-demo", orgSlug: "personal", region: "yyz", apiCredentialRef: "env:FLY_API_TOKEN", authorityImageDigest: "sha256:" + "a".repeat(64), networkPolicyDigest: "sha256:" + "b".repeat(64), schemaDigest: "sha256:" + "c".repeat(64) },
-    codex: { binaryPath: "codex", version: "0.134.0", authorityEndpoint: "https://reelier-cell-demo.fly.dev/mcp", taskId: "task_certification_1" },
+    codex: { binaryPath: "codex", version: "0.134.0", authorityEndpoint: "https://reelier-cell-demo.fly.dev/mcp", taskId: "task_certification_1", codexHomePath: "C:/reelier-private/codex-home", workspacePath: "C:/work/reelier-certification", sessionCredentialDirectory: "C:/reelier-private/codex-sessions" },
   };
 }
 
@@ -27,6 +27,7 @@ test("certification operator config is closed and preserves only secret referenc
   const parsed = parseCertificationOperatorConfig(completeConfig());
   assert.equal(parsed.providers.github.repository, "reelier-certification");
   assert.equal(parsed.fly.appName, "reelier-cell-demo");
+  assert.equal(parsed.codex.codexHomePath, "C:/reelier-private/codex-home");
   assert.doesNotMatch(JSON.stringify(parsed), /ghp_|xoxb-|Bearer /);
   assert.throws(() => parseCertificationOperatorConfig({ ...(completeConfig() as object), token: "ghp_leak" }), /closed/);
   const raw = completeConfig() as { providers: { github: Record<string, unknown> } };
@@ -49,9 +50,17 @@ test("secret-reference inspection reports availability without returning values"
     REELIER_SLACK_TOKEN: "slack-private",
     FLY_API_TOKEN: "fly-private",
   });
-  assert.equal(report.every(item => item.status === "configured"), true);
+  assert.equal(report.filter(item => item.owner !== "codex").every(item => item.status === "configured"), true);
+  assert.equal(report.filter(item => item.owner === "codex").length, 10);
+  assert.equal(report.filter(item => item.owner === "codex").every(item => item.status === "missing"), true);
   const serialized = JSON.stringify(report);
   for (const value of ["github-private", "vercel-private", "postgresql://private-value", "fly-private"]) assert.equal(serialized.includes(value), false);
+});
+
+test("Codex session credentials must remain outside the agent workspace", () => {
+  const config = completeConfig() as { codex: { sessionCredentialDirectory: string } };
+  config.codex.sessionCredentialDirectory = "C:/work/reelier-certification/.secrets";
+  assert.throws(() => parseCertificationOperatorConfig(config), /outside the workspace/);
 });
 
 test("the tracked operator example remains a parseable non-secret template", async () => {

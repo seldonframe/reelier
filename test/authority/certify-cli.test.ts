@@ -57,7 +57,7 @@ test("authority certify preflight reads a closed operator file and never prints 
       slack: { apiBaseUrl: "https://slack.com", accountId: "team", credentialRef: "env:REELIER_TEST_SLACK", cleanupRef: "slack-cleanup", channelId: "C0123456789" },
     },
     fly: { appName: "cell", agentAppName: "agent", orgSlug: "personal", region: "yyz", apiCredentialRef: "env:REELIER_TEST_FLY", authorityImageDigest: "sha256:" + "a".repeat(64), networkPolicyDigest: "sha256:" + "b".repeat(64), schemaDigest: "sha256:" + "c".repeat(64) },
-    codex: { binaryPath: "missing-codex-for-test", version: "0.134.0", authorityEndpoint: "https://cell.example.com/mcp", taskId: "task_1" },
+    codex: { binaryPath: "missing-codex-for-test", version: "0.134.0", authorityEndpoint: "https://cell.example.com/mcp", taskId: "task_1", codexHomePath: "C:/reelier-private/codex-home", workspacePath: "C:/work/reelier-certification", sessionCredentialDirectory: "C:/reelier-private/codex-sessions" },
   }), "utf8");
   const prior = process.env.REELIER_TEST_GITHUB;
   process.env.REELIER_TEST_GITHUB = "private-github-value";

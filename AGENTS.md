@@ -48,7 +48,7 @@ config — lives in the research topic).
 
 **Path A is also where the fail-open gap lives.** See §7.
 
-## 3. OSS command surface (authority certification is available in v0.32.0)
+## 3. OSS command surface (separate published 0.32.0 from post-release certification work)
 
 Counted from the dispatch switch in `src/cli.ts`, not from a bare `case "` grep — see §10.1 for
 why that distinction matters.
@@ -71,9 +71,10 @@ and every npm user has 27. Say which one you mean.
 - **Prove:** `verify`, `push`, `get`, `serve` (exposes Reelier's own commands as MCP tools — the
   OPPOSITE of `mcp`; takes no `--wrap`), `resolve` (walks the ledger for a deferred probe and
   appends the answer — a **polling** command an operator or CI runs, never a listener; the CLI has
-  no inbound HTTP), `authority certify preflight|run|verify` (preflight is live-resource aware and
-  redacts credentials; run remains refused until a registered live adapter is present; verify checks
-  signed release evidence offline)
+  no inbound HTTP), `authority certify preflight|run|verify` (**post-0.32.0 branch work**: preflight
+  is live-resource aware and redacts credentials; the Codex ten-agent runner is implemented but
+  requires Cell-issued scoped sessions; other live adapters still refuse until registered; verify
+  checks signed release evidence offline)
 - **Account/meta:** `login`, `logout`, `whoami`, `cost`, `prices`
 
 ## 4. Skill grammar (what a step can express)
@@ -143,11 +144,15 @@ Ops note: **no auto-migrate wiring** — migrations are applied by hand after me
 ## 7. Known limits — state these, do not paper over them
 
 0. **Authority certification is partially implemented on the current branch.** Post-0.32.0 branch
-work includes closed preflight contracts,
-guarded runner contracts, Fly probe orchestration, Codex ten-profile graph orchestration, and signed
-release-evidence verification. The command does not invent provider adapters, Fly infrastructure, or
-Codex processes. A hermetic fixture pass is not live certification; live claims remain `unchecked`
-until the Authority Cell and guarded provider resources produce signed evidence.
+work includes closed preflight contracts, guarded provider runner contracts, Fly policy/probe
+orchestration, a durable hash-only principal registry, a pinned Codex launcher that generates one
+coordinator plus nine scoped custom-agent profiles, pre-spawn profile enforcement,
+`SubagentStart.agent_id` evidence, and signed release-evidence verification. The launcher does not
+mint authority: its ten bearer files must come from real task grants, and a successful Codex process
+is not a verified task graph. Vercel compound source reads, Neon execution, confidential
+Cloudflare-to-Vercel transfer, deployed Fly probes, provider cleanup, and the live ten-agent graph
+remain uncertified. A hermetic fixture pass is not live certification; live claims remain
+`unchecked` until the Authority Cell and guarded provider resources produce signed evidence.
 
 1. **Probe-less writes degrade — but as of 0.30.0, "later" counts.** `attest` still needs a
    read-back tool. What changed (§10.4 move, shipped 0.30.0): **most sends DO produce a post-state,

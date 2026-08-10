@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { parseAuthorityServeMode } from "../../src/authority/cli.js";
+import { validateAuthorityHostConfig } from "../../src/authority/host/config.js";
 import { parseArgv } from "../../src/cli.js";
 
 test("authority serve defaults to stdio and accepts an explicit authenticated HTTP bind", () => {
@@ -36,4 +37,18 @@ test("the root CLI preserves authority HTTP and certification options as values"
   assert.equal(parsed.opts.host, "0.0.0.0");
   assert.equal(parsed.opts.port, "8080");
   assert.equal(parsed.opts["certification-config"], "/data/authority/certification.local.json");
+});
+
+test("the root CLI treats certification config as a value option", () => {
+  const parsed = parseArgv(["authority", "certify", "preflight", "--config", "authority/certification.local.json"]);
+  assert.deepEqual(parsed.positional, ["authority", "certify", "preflight"]);
+  assert.equal(parsed.opts.config, "authority/certification.local.json");
+});
+
+test("authority ingress accepts one durable principal registry and refuses mixed authentication", () => {
+  const base = { version: 1 as const, tenant: "tenant_1", requester: "operator", definitions: [], ledgerDir: "ledger", decisionDir: "decisions", receiptDir: "receipts", endpoints: [] };
+  const config = validateAuthorityHostConfig({ ...base, ingress: { principalRegistryFile: "principals.jsonl" } }, "C:/authority");
+  assert.match(config.ingress?.principalRegistryFile ?? "", /principals\.jsonl$/);
+  assert.throws(() => validateAuthorityHostConfig({ ...base, ingress: { principalRegistryFile: "principals.jsonl", bearerRef: "env:TOKEN" } }, "C:/authority"), /mutually exclusive/);
+  assert.throws(() => validateAuthorityHostConfig({ ...base, ingress: { principalRegistryFile: "principals.jsonl", extra: true } }, "C:/authority"), /closed/);
 });
