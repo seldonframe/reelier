@@ -54,6 +54,8 @@ test("connection descriptors preserve account identity without secrets", () => {
 test("signed job cards reject unreviewed authority fields", () => {
   const card = normalizeSignedJobCard({
     v: "reelier.signed-job-card/v1",
+    signerId: "operator_1",
+    signature: { alg: "ed25519", sig: Buffer.alloc(64, 1).toString("base64") },
     jobId: "job_1",
     title: "Reply to qualified customer requests",
     taskShapeDigest: "sha256:" + "a".repeat(64),
