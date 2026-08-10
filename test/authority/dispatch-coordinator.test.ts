@@ -92,3 +92,14 @@ test("dispatch binds one effect to the authenticated allocation and returns it o
   await cancelCoordinator.cancel(cancelHandle);
   assert.deepEqual(calls, ["consume:alloc_1:r1:1", "return:alloc_2:r1:1"]);
 });
+
+test("confidential dispatch evidence uses the exact materialized request digest", async () => {
+  const l = ledger();
+  let evidenceDigest = "";
+  const coordinator = createDispatchCoordinator(l, {
+    async dispatch() { return { kind: "acknowledged" as const, resultDigest: "sha256:" + "1".repeat(64), materializedRequestDigest: "sha256:" + "7".repeat(64) }; },
+  }, { async persist(input) { evidenceDigest = input.dispatchedRequestDigest; } });
+  const handle = createReservedDispatchHandle({ reservation: l.get(), effect: { x: 1 }, effectCanonicalBase64: "e30=", effectDigest: "sha256:" + "1".repeat(64) });
+  await coordinator.dispatch(handle);
+  assert.equal(evidenceDigest, "sha256:" + "7".repeat(64));
+});
