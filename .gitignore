@@ -38,3 +38,9 @@ reports/
 .screenshots-tmp/
 .house-tenant-key.local
 .superpowers/
+
+# Local live-certification bindings and credential files. The example and
+# signed/redacted evidence remain trackable; operator resource IDs and secret
+# material do not.
+authority/certification.local.json
+authority/secrets/

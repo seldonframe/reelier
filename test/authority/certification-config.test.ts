@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { parseCertificationOperatorConfig, inspectCertificationSecretReferences } from "../../src/authority/host/certification-config.js";
@@ -54,3 +54,11 @@ test("secret-reference inspection reports availability without returning values"
   for (const value of ["github-private", "vercel-private", "postgresql://private-value", "fly-private"]) assert.equal(serialized.includes(value), false);
 });
 
+test("the tracked operator example remains a parseable non-secret template", async () => {
+  const raw = await readFile(path.resolve("docs/runbooks/certification.operator.example.json"), "utf8");
+  const parsed = parseCertificationOperatorConfig(JSON.parse(raw));
+  const serialized = JSON.stringify(parsed);
+  assert.equal(parsed.v, "reelier.certification-operator-config/v1");
+  assert.match(parsed.providers.github.credentialRef, /^(?:env:|file:)/);
+  assert.doesNotMatch(serialized, /ghp_|xox[baprs]-|Bearer\s|postgres(?:ql)?:\/\/[^\"]+@/i);
+});
