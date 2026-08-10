@@ -1,7 +1,7 @@
 import { request as httpsRequest } from "node:https";
 import { request as httpRequest } from "node:http";
 import { lookup as dnsLookup } from "node:dns/promises";
-import { isIP } from "node:net";
+import { isIP, type LookupFunction } from "node:net";
 import { createHash } from "node:crypto";
 import { connect as tlsConnect } from "node:tls";
 import type { TransportEffect } from "../types.js";
@@ -33,6 +33,16 @@ export interface JsonHttpsRead { readonly endpointId: string; readonly method?: 
 export interface JsonHttpsConfidentialRequest { readonly endpointId: string; readonly method: "POST" | "PUT" | "PATCH" | "DELETE"; readonly path: string; readonly query?: string; readonly headers?: Readonly<Record<string, string>>; readonly body: Uint8Array; }
 
 export class JsonHttpsSecurityError extends Error { override name = "JsonHttpsSecurityError"; }
+
+/** Returns a DNS lookup function that preserves an already-validated address pin on every supported Node callback shape. */
+export function createPinnedLookup(address: string): LookupFunction {
+  const family = isIP(address);
+  if (family !== 4 && family !== 6) throw new JsonHttpsSecurityError("pinned lookup requires a valid IP address");
+  return (_hostname, options, callback) => {
+    if (options.all) callback(null, [{ address, family }]);
+    else callback(null, address, family);
+  };
+}
 
 export async function executeJsonHttpsEffect(effect: TransportEffect, endpoint: JsonHttpsEndpoint, secrets: JsonHttpsSecretResolver, options: { readonly timeoutMs?: number; readonly maxResponseBytes?: number } = {}): Promise<JsonHttpsResponse> {
   if (effect.endpointId !== endpoint.endpointId) throw new JsonHttpsSecurityError("effect endpoint does not match configured endpoint");
@@ -99,7 +109,7 @@ async function requestPinned(endpoint: JsonHttpsEndpoint, method: string, path: 
   if (!addresses.length || addresses.some(item => !SAFE_PUBLIC(item.address))) throw new JsonHttpsSecurityError("endpoint resolved to a non-public address");
   const chosen = addresses[0].address;
   return new Promise((resolve, reject) => {
-    const req = httpsRequest({ protocol: "https:", hostname: base.hostname, port: base.port || 443, method, path: `${target.pathname}${target.search}`, headers: requestHeaders, servername: base.hostname, lookup: (_hostname, _options, callback) => callback(null, chosen, isIP(chosen)) }, response => {
+    const req = httpsRequest({ protocol: "https:", hostname: base.hostname, port: base.port || 443, method, path: `${target.pathname}${target.search}`, headers: requestHeaders, servername: base.hostname, lookup: createPinnedLookup(chosen) }, response => {
       const chunks: Buffer[] = []; let size = 0;
       response.on("data", chunk => { const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk); size += bytes.length; if (size > maxResponseBytes) { req.destroy(new JsonHttpsSecurityError("response exceeds configured limit")); return; } chunks.push(bytes); });
       response.on("end", () => { const out: Record<string, string> = {}; for (const [key, value] of Object.entries(response.headers)) if (typeof value === "string") out[key] = value; resolve({ status: response.statusCode ?? 0, headers: out, body: Buffer.concat(chunks), requestBytesDigest }); });
@@ -140,7 +150,7 @@ async function requestThroughProxy(proxy: NonNullable<JsonHttpsEndpoint["egressP
     const connectRequest = httpRequest({
       protocol: "http:", hostname: origin.hostname, port: origin.port || 8443, method: "CONNECT", path: `${base.hostname}:${base.port || "443"}`,
       headers: { "Proxy-Authorization": `Bearer ${proxySecret}` },
-      lookup: (_hostname, _options, callback) => callback(null, chosen, isIP(chosen)),
+      lookup: createPinnedLookup(chosen),
     });
     connectRequest.once("connect", (response, socket, head) => {
       if (response.statusCode !== 200 || head.length) { socket.destroy(); fail(new JsonHttpsSecurityError("egress proxy refused the tunnel")); return; }

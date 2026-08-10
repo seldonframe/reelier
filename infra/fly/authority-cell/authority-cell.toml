@@ -1,7 +1,7 @@
 primary_region = "yyz"
 
 [build]
-  dockerfile = "Dockerfile"
+  dockerfile = "../../../Dockerfile"
 
 [processes]
   app = "authority serve --transport http --host 0.0.0.0 --port 8080 --path /data/authority/authority.yml --certification-config /data/authority/certification.local.json"
@@ -14,7 +14,7 @@ primary_region = "yyz"
 
 [[files]]
   guest_path = "/etc/reelier/topology-probe.json"
-  local_path = "authority-cell.topology-probe.json"
+  local_path = "infra/fly/authority-cell/authority-cell.topology-probe.json"
 
 [[mounts]]
   source = "reelier_authority_data"

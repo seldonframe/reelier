@@ -32,10 +32,8 @@ export interface ProvisionFlyNetworkPolicyInput extends FlyNetworkPolicyClientIn
 export async function readFlyNetworkPolicyDigest(input: FlyNetworkPolicyClientInput): Promise<string> {
   validateClient(input);
   const request = input.request ?? createRequest(input);
-  const path = `/v1/apps/${input.appName}/network_policies/`;
-  const response = await request({ method: "GET", path, body: null });
-  if (response.status < 200 || response.status >= 300) throw new Error("Fly network policy read failed");
-  return digestFlyNetworkPolicies(normalizeProviderPolicies(response.body));
+  const path = `/v1/apps/${input.appName}/network_policies`;
+  return digestFlyNetworkPolicies((await readProviderPolicies(request, path)).map(entry => entry.policy));
 }
 
 export async function provisionFlyNetworkPolicy(input: ProvisionFlyNetworkPolicyInput): Promise<Readonly<{ status: "verified"; digest: string }>> {
@@ -45,8 +43,12 @@ export async function provisionFlyNetworkPolicy(input: ProvisionFlyNetworkPolicy
   const expectedDigest = digestFlyNetworkPolicies([policy]);
   const request = input.request ?? createRequest(input);
   const path = `/v1/apps/${input.appName}/network_policies`;
-  const written = await request({ method: "POST", path, body: policy });
-  if (written.status < 200 || written.status >= 300) throw new Error("Fly network policy write failed");
+  const existing = (await readProviderPolicies(request, path)).find(entry => entry.policy.name === policy.name);
+  if (!existing || digestFlyNetworkPolicies([existing.policy]) !== expectedDigest) {
+    const body = existing ? { id: existing.id, ...policy } : policy;
+    const written = await request({ method: "POST", path, body });
+    if (written.status < 200 || written.status >= 300) throw new Error("Fly network policy write failed");
+  }
   const actualDigest = await readFlyNetworkPolicyDigest({ ...input, request });
   if (actualDigest !== expectedDigest) throw new Error("Fly network policy read-back does not match the intended policy");
   return Object.freeze({ status: "verified", digest: actualDigest });
@@ -90,8 +92,23 @@ function normalizeProviderPolicies(value: unknown): readonly unknown[] {
   return value.map((item, index) => {
     if (!item || typeof item !== "object" || Array.isArray(item)) throw new TypeError(`Fly network policy read-back ${index} is invalid`);
     const raw = item as Record<string, unknown>;
-    return { name: raw.name, selector: raw.selector, rules: raw.rules };
+    return { name: raw.name, selector: raw.netpolSelector ?? raw.selector, rules: raw.rules };
   });
+}
+
+async function readProviderPolicies(request: (input: Readonly<FlyNetworkPolicyApiRequest>) => Promise<FlyNetworkPolicyApiResponse>, path: string): Promise<readonly Readonly<{ id: string; policy: FlyNetworkPolicyV1 }>[]> {
+  const response = await request({ method: "GET", path, body: null });
+  if (response.status < 200 || response.status >= 300) throw new Error("Fly network policy read failed");
+  const body = response.body;
+  if (!Array.isArray(body)) throw new TypeError("Fly network policy read-back is invalid");
+  if (body.length === 0) return Object.freeze([]);
+  const normalized = normalizeProviderPolicies(body);
+  const policies = parseFlyNetworkPolicies(normalized);
+  return Object.freeze(policies.map((policy, index) => {
+    const raw = body[index] as Record<string, unknown>;
+    if (typeof raw.id !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(raw.id)) throw new TypeError(`Fly network policy read-back ${index} has an invalid id`);
+    return Object.freeze({ id: raw.id, policy });
+  }));
 }
 
 function validateClient(input: FlyNetworkPolicyClientInput): void {

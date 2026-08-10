@@ -1,18 +1,18 @@
 primary_region = "yyz"
 
 [build]
-  dockerfile = "Dockerfile"
+  dockerfile = "../../../Dockerfile"
 
 [env]
   REELIER_TOPOLOGY_MODE = "managed-egress-gateway"
 
 [[files]]
   guest_path = "/etc/reelier/topology-probe.json"
-  local_path = "egress-gateway.topology-probe.json"
+  local_path = "infra/fly/authority-cell/egress-gateway.topology-probe.json"
 
 [[files]]
   guest_path = "/etc/reelier/egress-gateway.json"
-  local_path = "egress-gateway.json"
+  local_path = "infra/fly/authority-cell/egress-gateway.json"
 
 [experimental]
   exec = ["node", "/app/dist/cli.js", "authority", "egress-gateway", "--host", "::", "--port", "8443", "--config", "/etc/reelier/egress-gateway.json"]
