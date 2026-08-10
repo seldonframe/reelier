@@ -25,9 +25,11 @@ test("Vercel release rejects agent choices and compiles an exact promotion", () 
   const effect = compileVercelDeploymentRelease({ source, policy });
   assert.equal(effect.endpointId, "vercel.deployment.promote");
   assert.equal(effect.method, "POST");
-  assert.equal(effect.path, "/v13/deployments/dpl_preview/promote");
+  assert.equal(effect.path, "/v10/projects/prj_demo/promote/dpl_preview");
   assert.equal(effect.query, "teamId=team_demo");
-  assert.deepEqual(JSON.parse(Buffer.from(effect.bodyBase64, "base64").toString("utf8")), { projectId: "prj_demo", target: "production" });
+  assert.equal(effect.bodyBase64, "");
+  assert.deepEqual(effect.headers, { Accept: "*/*" });
+  assert.equal(effect.idempotency, "reconcile-only");
   assert.deepEqual(effect.preconditions.map(item => item.kind), ["vercel-production-deployment", "vercel-deployment-commit", "vercel-deployment-checks", "vercel-deployment-domains"]);
   assert.equal(effect.reconciliation.recipeId, "vercel_deployment_release_readback_v1");
 });
