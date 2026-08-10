@@ -16,10 +16,12 @@ import { createNeonDatabaseMigrationSourceResolver } from "../../src/packs/neon/
 import { neonDatabaseMigrationDefinitionDigest, neonDatabaseMigrationProjectionSchemaId, neonDatabaseMigrationResolverId } from "../../src/packs/neon/manifest.js";
 import { createCloudflareTokenRollSourceResolver } from "../../src/packs/cloudflare-token/source.js";
 import { cloudflareTokenRollDefinitionDigest, cloudflareTokenRollProjectionSchemaId, cloudflareTokenRollResolverId } from "../../src/packs/cloudflare-token/manifest.js";
+import { createInformationFlowSourceResolver } from "../../src/packs/information-flow/source.js";
+import { informationFlowDefinitionDigest, informationFlowProjectionSchemaId, informationFlowResolverId } from "../../src/packs/information-flow/manifest.js";
 
 test("all reviewed first-party packs pass the shared closed conformance corpus", () => {
   const report = runFirstPartyPackConformance();
-  assert.deepEqual(report.aliases, ["cloudflare_api_token_roll_v1", "cloudflare_dns_record_set_v1", "github_issue_labels_set_v1", "gmail_reply_send_v1", "gmail_thread_labels_set_v1", "neon_database_migration_apply_v1", "slack_channel_topic_set_v1", "stripe_refund_issue_v1", "vercel_deployment_release_v1"]);
+  assert.deepEqual(report.aliases, ["cloudflare_api_token_roll_v1", "cloudflare_dns_record_set_v1", "github_issue_labels_set_v1", "gmail_reply_send_v1", "gmail_thread_labels_set_v1", "hubspot_slack_information_flow_commit_v1", "neon_database_migration_apply_v1", "slack_channel_topic_set_v1", "stripe_refund_issue_v1", "vercel_deployment_release_v1"]);
   assert.equal(report.passed, report.checks);
   assert.ok(report.checks >= 12);
 });
@@ -58,6 +60,6 @@ test("GitHub and Slack source resolvers produce grounded deterministic projectio
 });
 
 test("first-party pack sources contain no ambient I/O, secrets, or runtime module loading", () => {
-  const files = ["github/manifest.ts", "github/source.ts", "github/compile.ts", "github/reconcile.ts", "slack-topic/manifest.ts", "slack-topic/source.ts", "slack-topic/compile.ts", "slack-topic/reconcile.ts", "gmail/index.ts", "stripe/index.ts", "vercel/manifest.ts", "vercel/source.ts", "vercel/compile.ts", "vercel/reconcile.ts", "vercel/index.ts", "cloudflare/manifest.ts", "cloudflare/source.ts", "cloudflare/compile.ts", "cloudflare/reconcile.ts", "cloudflare/index.ts", "neon/manifest.ts", "neon/source.ts", "neon/compile.ts", "neon/reconcile.ts", "neon/index.ts", "cloudflare-token/manifest.ts", "cloudflare-token/source.ts", "cloudflare-token/compile.ts", "cloudflare-token/reconcile.ts", "cloudflare-token/index.ts"];
+  const files = ["github/manifest.ts", "github/source.ts", "github/compile.ts", "github/reconcile.ts", "slack-topic/manifest.ts", "slack-topic/source.ts", "slack-topic/compile.ts", "slack-topic/reconcile.ts", "gmail/index.ts", "stripe/index.ts", "vercel/manifest.ts", "vercel/source.ts", "vercel/compile.ts", "vercel/reconcile.ts", "vercel/index.ts", "cloudflare/manifest.ts", "cloudflare/source.ts", "cloudflare/compile.ts", "cloudflare/reconcile.ts", "cloudflare/index.ts", "neon/manifest.ts", "neon/source.ts", "neon/compile.ts", "neon/reconcile.ts", "neon/index.ts", "cloudflare-token/manifest.ts", "cloudflare-token/source.ts", "cloudflare-token/compile.ts", "cloudflare-token/reconcile.ts", "cloudflare-token/index.ts", "information-flow/manifest.ts", "information-flow/source.ts", "information-flow/compile.ts", "information-flow/reconcile.ts", "information-flow/index.ts"];
   assert.doesNotThrow(() => assertStaticFirstPartySourcesConform(files.map(file => ({ file: `src/packs/${file}`, source: readFileSync(`src/packs/${file}`, "utf8") }))));
 });
