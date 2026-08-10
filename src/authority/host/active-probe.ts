@@ -110,6 +110,14 @@ export async function runActiveTopologyProbe(probe: TopologyProbe, input: Readon
   return runTopologyProbe(probe, input);
 }
 
+/** Convenience form for callers that do not need to retain the probe object. */
+export async function runReferenceTopologyProbe(options: ActiveTopologyProbeOptions, input: Readonly<TopologyProbeRunInput>) {
+  return runActiveTopologyProbe(createReferenceTopologyProbe(options), input);
+}
+
+export const createReferenceActiveTopologyProbe = createActiveTopologyProbe;
+export const runReferenceActiveTopologyProbe = runReferenceTopologyProbe;
+
 function normalizeActiveOutcome(value: ActiveTopologyProbeOutcome, field: TopologyEvidenceField): ClaimStatus {
   if (typeof value === "boolean") return value ? "verified" : "failed";
   if (typeof value === "string") {
