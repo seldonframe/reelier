@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createFlyRemoteTopologyOperations, digestFlyPolicyDeployment, probePinnedFlyBinary } from "../../src/authority/host/fly-remote-probe.js";
+import { createFlyRemoteTopologyOperations, digestFlyPolicyDeployment, parseFlyctlProbeProcessResult, probePinnedFlyBinary } from "../../src/authority/host/fly-remote-probe.js";
 
 const digest = (character: string) => `sha256:${character.repeat(64)}`;
 const resource = {
@@ -69,4 +69,14 @@ test("remote Fly operations fail closed on stopped or substituted Machines", asy
 test("pinned flyctl probe validates the exact version", async () => {
   assert.equal(await probePinnedFlyBinary("flyctl", "0.3.200", 100, async () => ({ code: 0, output: "flyctl v0.3.200 linux/amd64" })), "available");
   assert.equal(await probePinnedFlyBinary("flyctl", "0.3.200", 100, async () => ({ code: 0, output: "flyctl v0.3.201 linux/amd64" })), "missing");
+});
+
+test("Windows Fly SSH accepts only a valid probe followed by the exact local handle trailer", () => {
+  const value = snapshot("cell", "challenge-1");
+  const stdout = JSON.stringify(value);
+  assert.deepEqual(parseFlyctlProbeProcessResult({ code: 0, stdout, stderr: "" }, "linux"), value);
+  assert.deepEqual(parseFlyctlProbeProcessResult({ code: 1, stdout, stderr: "Error: The handle is invalid.\r\n" }, "win32"), value);
+  assert.throws(() => parseFlyctlProbeProcessResult({ code: 1, stdout, stderr: "permission denied" }, "win32"), /failed/);
+  assert.throws(() => parseFlyctlProbeProcessResult({ code: 1, stdout: `${stdout}\nextra`, stderr: "Error: The handle is invalid.\r\n" }, "win32"), /JSON/);
+  assert.throws(() => parseFlyctlProbeProcessResult({ code: 1, stdout, stderr: "Error: The handle is invalid.\r\n" }, "linux"), /failed/);
 });
