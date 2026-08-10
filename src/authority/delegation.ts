@@ -76,7 +76,7 @@ export function validateChildDelegationRequest(input: ChildDelegationRequestV1):
   const policy = input.parent.delegationPolicy;
   if (!policy?.mayDelegate) throw new TypeError("delegation parent has no mayDelegate authority");
   if (!Number.isInteger(input.activeChildCount) || input.activeChildCount < 0 || input.activeChildCount >= policy.maxFanOut) throw new TypeError("delegation fan-out exceeds parent policy");
-  if (!Number.isInteger(input.effects) || input.effects <= 0 || input.effects > policy.maxDelegatedEffects) throw new TypeError("delegation budget exceeds parent policy");
+  if (!Number.isInteger(input.effects) || input.effects < 0 || input.effects > policy.maxDelegatedEffects) throw new TypeError("delegation budget exceeds parent policy");
   const issued = Date.parse(input.child.issuedAt), expires = Date.parse(input.child.expiresAt), now = input.now.getTime();
   if (!Number.isFinite(issued) || !Number.isFinite(expires) || now < issued || expires <= now || issued < Date.parse(input.parent.issuedAt) || expires > Date.parse(input.parent.expiresAt)) throw new TypeError("child validity exceeds parent delegation");
   if (expires - now > policy.maxChildDurationSeconds * 1000) throw new TypeError("delegation child duration exceeds parent policy");

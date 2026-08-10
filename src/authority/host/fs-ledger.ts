@@ -3343,6 +3343,7 @@ function normalizeIntent(input: ReservationIntent): StoredReservationIntent {
   for (const digest of [input.requestDigest, input.canonicalRequestDigest, input.requestKey, input.ingressClaimDigest,input.decisionContextDigest, input.capabilityDigest, input.contractDigest, input.sourceBundleDigest, input.sourceSnapshotDigest, input.authorityStateDigest, input.limitsDigest, input.outcomeKey, input.effectDigest]) if (typeof digest !== "string" || !SHA.test(digest) || digest === ZERO_SHA) throw new TypeError("invalid reservation digest");
   if (!input.limits) throw new TypeError("sealed limits required");
   const sealed = input as ReservationIntent & Required<Pick<ReservationIntent, "definitionAlias" | "requestDigest" | "contractDigest" | "sourceBundleDigest" | "sourceSnapshotDigest" | "authorityStateDigest" | "limits" | "limitsDigest">>;
+  if (input.executionContext && (input.executionContext.principalId !== input.requester || input.executionContext.grantDigest === ZERO_SHA || !SHA.test(input.executionContext.grantDigest))) throw new TypeError("invalid execution context linkage");
   const request = Buffer.from(input.canonicalRequestBytes);
   const capability = Buffer.from(input.capabilityBytes);
   if (request.length === 0 || capability.length === 0) throw new TypeError("canonical bytes must be nonempty");
@@ -3387,12 +3388,13 @@ function normalizeIntent(input: ReservationIntent): StoredReservationIntent {
     authorityStateDigest: sealed.authorityStateDigest, limits: frozen({ ...sealed.limits }), limitsDigest: sealed.limitsDigest,
     outcomeKey: input.outcomeKey, effectDigest: input.effectDigest, ...(effectCanonicalBase64 === undefined ? {} : { effectCanonicalBase64 }), issuedAt: input.issuedAt, expiresAt: input.expiresAt,
     limitSlots: Object.freeze(slots),
+    ...(input.executionContext ? { executionContext: frozen(input.executionContext) } : {}),
   });
 }
 
 function normalizeStoredIntent(input: StoredReservationIntent): StoredReservationIntent {
   if (!input || typeof input !== "object" || typeof input.canonicalRequestBase64 !== "string" || typeof input.capabilityBase64 !== "string") throw new LedgerCorruption("malformed stored intent");
-  assertExactKeysOptional(input, ["authorityStateDigest", "capabilityBase64", "capabilityDigest", "capabilityId", "canonicalRequestBase64", "canonicalRequestDigest", "contractDigest", "decisionContextDigest", "definitionAlias", "effectDigest", "expiresAt", "ingressClaimDigest", "issuedAt", "limitSlots", "limits", "limitsDigest", "outcomeKey", "requestDigest", "requestId", "requestKey", "requester", "sourceBundleDigest", "sourceSnapshotDigest", "tenant"], ["effectCanonicalBase64"]);
+  assertExactKeysOptional(input, ["authorityStateDigest", "capabilityBase64", "capabilityDigest", "capabilityId", "canonicalRequestBase64", "canonicalRequestDigest", "contractDigest", "decisionContextDigest", "definitionAlias", "effectDigest", "expiresAt", "ingressClaimDigest", "issuedAt", "limitSlots", "limits", "limitsDigest", "outcomeKey", "requestDigest", "requestId", "requestKey", "requester", "sourceBundleDigest", "sourceSnapshotDigest", "tenant"], ["effectCanonicalBase64", "executionContext"]);
   if (!Array.isArray(input.limitSlots)) throw new LedgerCorruption("malformed stored limit slots");
   for (const slot of input.limitSlots) assertExactKeys(slot, ["key", "kind", "maximum"]);
   const request = Buffer.from(input.canonicalRequestBase64, "base64");

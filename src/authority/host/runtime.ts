@@ -6,6 +6,7 @@ import type { DispatchCoordinator } from "./dispatch.js";
 import type { AuthorityIngressOutcome } from "../ingress/mcp.js";
 import type { DelegationAuthority } from "./delegation-service.js";
 import type { StoredSignedGrant } from "../delegation.js";
+import type { AuthorityExecutionContextV1 } from "../types.js";
 
 export interface AuthorityHostRuntimeDependencies {
   readonly gate: AuthorityGate;
@@ -22,10 +23,10 @@ export function createAuthorityHostRuntime(deps: AuthorityHostRuntimeDependencie
   const refusal = (requestId: string, reasonCode: string, lifecycleState = "refused"): AuthorityIngressOutcome => Object.freeze({ requestId, verdict: "refused", reasonCode, lifecycleState });
   const accepted = (requestId: string, lifecycleState: string, receiptRef?: string): AuthorityIngressOutcome => Object.freeze({ requestId, verdict: "accepted", reasonCode: "accepted", lifecycleState, ...(receiptRef ? { receiptRef } : {}) });
 
-  async function outcome(alias: string, input: unknown, context: { readonly tenant: string; readonly requester: string }): Promise<AuthorityIngressOutcome> {
+  async function outcome(alias: string, input: unknown, context: { readonly tenant: string; readonly requester: string; readonly executionContext?: AuthorityExecutionContextV1 }): Promise<AuthorityIngressOutcome> {
     const requestId = readRequestId(input);
     let authenticated;
-    try { authenticated = authenticateOutcomeRequest({ tenant: context.tenant, requester: context.requester, definitionAlias: alias, request: input }); }
+    try { authenticated = authenticateOutcomeRequest({ tenant: context.tenant, requester: context.requester, definitionAlias: alias, request: input, ...(context.executionContext ? { executionContext: context.executionContext } : {}) }); }
     catch { return refusal(requestId, "invalid-request"); }
     if (deps.shadow) {
       try { const report = await deps.shadow({ alias, request: input, tenant: context.tenant, requester: context.requester }); return Object.freeze({ requestId: report.requestId, verdict: "refused" as const, reasonCode: `shadow-${report.reasonCode}`, lifecycleState: "shadow" }); }

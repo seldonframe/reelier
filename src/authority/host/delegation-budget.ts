@@ -30,6 +30,7 @@ interface PersistedState {
   tasks: Record<string, { taskId: string; revoked: boolean }>;
   allocations: Record<string, PersistedAllocation>;
   events: readonly Record<string, unknown>[];
+  operations?: Record<string, { kind: "consume" | "return"; allocationId: string; effects: number }>;
 }
 
 type Mutation<T> = (state: PersistedState) => T;
@@ -64,7 +65,7 @@ export class FsDelegationBudgetLedger {
   }
 
   async allocate(input: Readonly<{ allocationId: string; parentAllocationId: string; effects: number; maxFanOut: number }>): Promise<BudgetAllocation> {
-    assertEffects(input.effects);
+    assertAllocationEffects(input.effects);
     if (!Number.isInteger(input.maxFanOut) || input.maxFanOut < 0) throw new RangeError("delegation fan-out must be a non-negative integer");
     return this.mutate(state => {
       const parent = requireAllocation(state, input.parentAllocationId);
@@ -99,6 +100,28 @@ export class FsDelegationBudgetLedger {
     });
   }
 
+  /** Consume an effect exactly once for a reservation. Retries return the prior view. */
+  async consumeOnce(input: Readonly<{ allocationId: string; reservationId: string; effects: number }>): Promise<BudgetAllocation> {
+    assertEffects(input.effects);
+    return this.mutate(state => {
+      const key = `consume:${input.reservationId}`;
+      const prior = state.operations?.[key];
+      if (prior) {
+        if (prior.allocationId !== input.allocationId || prior.effects !== input.effects) throw new TypeError("budget operation identity conflict");
+        return view(requireAllocation(state, input.allocationId));
+      }
+      const allocation = requireAllocation(state, input.allocationId);
+      assertActive(state, allocation);
+      if (input.effects > consumable(allocation)) throw new RangeError("budget consumption exceeds remaining allocation");
+      allocation.consumed += input.effects;
+      bumpAncestors(state, allocation, input.effects, "consume");
+      appendEvent(state, "consumed", allocation, input.effects, input.reservationId);
+      state.operations ??= {};
+      state.operations[key] = { kind: "consume", allocationId: input.allocationId, effects: input.effects };
+      return view(allocation);
+    });
+  }
+
   async returnUnused(input: Readonly<{ allocationId: string; effects: number }>): Promise<BudgetAllocation> {
     assertEffects(input.effects);
     return this.mutate(state => {
@@ -107,6 +130,48 @@ export class FsDelegationBudgetLedger {
       allocation.returned += input.effects;
       bumpAncestors(state, allocation, input.effects, "return");
       appendEvent(state, "returned", allocation, input.effects);
+      return view(allocation);
+    });
+  }
+
+  /** Return an effect exactly once for a reservation cancellation/not-applied result. */
+  async returnOnce(input: Readonly<{ allocationId: string; reservationId: string; effects: number }>): Promise<BudgetAllocation> {
+    assertEffects(input.effects);
+    return this.mutate(state => {
+      const key = `return:${input.reservationId}`;
+      const prior = state.operations?.[key];
+      if (prior) {
+        if (prior.allocationId !== input.allocationId || prior.effects !== input.effects) throw new TypeError("budget operation identity conflict");
+        return view(requireAllocation(state, input.allocationId));
+      }
+      const allocation = requireAllocation(state, input.allocationId);
+      if (input.effects > consumable(allocation)) throw new RangeError("budget return exceeds remaining allocation");
+      allocation.returned += input.effects;
+      bumpAncestors(state, allocation, input.effects, "return");
+      appendEvent(state, "returned", allocation, input.effects, input.reservationId);
+      state.operations ??= {};
+      state.operations[key] = { kind: "return", allocationId: input.allocationId, effects: input.effects };
+      return view(allocation);
+    });
+  }
+
+  /** Release a consumed effect after authoritative not-applied reconciliation. */
+  async releaseConsumedOnce(input: Readonly<{ allocationId: string; reservationId: string; effects: number }>): Promise<BudgetAllocation> {
+    assertEffects(input.effects);
+    return this.mutate(state => {
+      const key = `release:${input.reservationId}`;
+      const prior = state.operations?.[key];
+      if (prior) {
+        if (prior.allocationId !== input.allocationId || prior.effects !== input.effects) throw new TypeError("budget operation identity conflict");
+        return view(requireAllocation(state, input.allocationId));
+      }
+      const allocation = requireAllocation(state, input.allocationId);
+      if (input.effects > allocation.consumed) throw new RangeError("budget release exceeds consumed allocation");
+      allocation.consumed -= input.effects;
+      releaseAncestors(state, allocation, input.effects);
+      appendEvent(state, "released", allocation, input.effects, input.reservationId);
+      state.operations ??= {};
+      state.operations[key] = { kind: "return", allocationId: input.allocationId, effects: input.effects };
       return view(allocation);
     });
   }
@@ -144,9 +209,10 @@ export class FsDelegationBudgetLedger {
     try {
       const parsed = JSON.parse(await readFile(this.statePath, "utf8")) as PersistedState;
       if (parsed.version !== 1 || !parsed.tasks || !parsed.allocations || !Array.isArray(parsed.events)) throw new Error("invalid budget state");
+      parsed.operations ??= {};
       return parsed;
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return { version: 1, tasks: {}, allocations: {}, events: [] };
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return { version: 1, tasks: {}, allocations: {}, events: [], operations: {} };
       throw new Error("invalid delegation budget state", { cause: error });
     }
   }
@@ -178,6 +244,10 @@ export class FsDelegationBudgetLedger {
 
 function assertEffects(effects: number): void {
   if (!Number.isInteger(effects) || effects <= 0) throw new RangeError("budget effects must be a positive integer");
+}
+
+function assertAllocationEffects(effects: number): void {
+  if (!Number.isInteger(effects) || effects < 0) throw new RangeError("budget effects must be a non-negative integer");
 }
 
 function requireAllocation(state: PersistedState, allocationId: string): PersistedAllocation {
@@ -219,6 +289,16 @@ function bumpAncestors(state: PersistedState, allocation: PersistedAllocation, e
   }
 }
 
+function releaseAncestors(state: PersistedState, allocation: PersistedAllocation, effects: number): void {
+  let current: PersistedAllocation | undefined = allocation;
+  while (current?.parentAllocationId) {
+    const parent = requireAllocation(state, current.parentAllocationId);
+    if (parent.consumed < effects) throw new Error("budget consumed underflow");
+    parent.consumed -= effects;
+    current = parent;
+  }
+}
+
 function reserveInAncestors(state: PersistedState, allocation: PersistedAllocation, effects: number): void {
   let current: PersistedAllocation | undefined = allocation;
   while (current) {
@@ -227,8 +307,8 @@ function reserveInAncestors(state: PersistedState, allocation: PersistedAllocati
   }
 }
 
-function appendEvent(state: PersistedState, type: string, allocation: Readonly<{ allocationId: string; taskId: string }>, effects: number): void {
-  const body = { v: "reelier.delegation-budget-event/v1", type, allocationId: allocation.allocationId, taskId: allocation.taskId, effects, at: new Date().toISOString() };
+function appendEvent(state: PersistedState, type: string, allocation: Readonly<{ allocationId: string; taskId: string }>, effects: number, reservationId?: string): void {
+  const body = { v: "reelier.delegation-budget-event/v1", type, allocationId: allocation.allocationId, taskId: allocation.taskId, effects, ...(reservationId ? { reservationId } : {}), at: new Date().toISOString() };
   state.events = [...state.events, { ...body, eventDigest: authorityDigest(body) }];
 }
 

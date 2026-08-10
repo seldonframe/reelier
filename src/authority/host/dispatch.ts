@@ -1,16 +1,21 @@
 import { authorityDigest } from "../wire.js";
 import { unwrapReservedDispatchHandle, type ReservedDispatchHandle } from "../gate.js";
-import type { AuthorityLedger, LedgerState } from "../ledger.js";
+import type { AuthorityLedger, LedgerState, StoredReservationIntent } from "../ledger.js";
 
-export interface DispatchRequestState { readonly reservation: { readonly reservationId: string; readonly state: LedgerState; readonly intent: { readonly effectDigest: string; readonly effectCanonicalBase64?: string } }; readonly effect: unknown; readonly effectCanonicalBase64: string; readonly effectDigest: string; readonly [key: string]: unknown; }
+export interface DispatchRequestState { readonly reservation: { readonly reservationId: string; readonly state: LedgerState; readonly intent: Pick<StoredReservationIntent, "effectDigest" | "effectCanonicalBase64" | "executionContext"> }; readonly effect: unknown; readonly effectCanonicalBase64: string; readonly effectDigest: string; readonly [key: string]: unknown; }
 export type ReconciliationStatus = "matched" | "not-applied" | "conflict" | "unavailable" | "not-attempted";
 export interface DispatchOutcome { readonly kind: "acknowledged" | "definitive-failure" | "ambiguous"; readonly resultDigest: string; readonly providerResultDigest?: string; readonly providerStatus?: number; readonly responseDigest?: string; readonly reconciliationStatus?: ReconciliationStatus; readonly normalizedProjectionDigest?: string | null; readonly receiptRef?: string; readonly evidenceDigest?: string; readonly priorReceiptDigest?: string; }
 export interface DispatchAdapter { dispatch(state: DispatchRequestState): Promise<DispatchOutcome>; reconcile?(state: DispatchRequestState, outcome: DispatchOutcome): Promise<DispatchOutcome>; }
 export interface DispatchEvidenceWriter { persist(input: Readonly<{ state: DispatchRequestState; outcome: DispatchOutcome; dispatchedRequestDigest: string; }>): Promise<void>; }
 export interface DispatchPublication { publish(input: Readonly<{ phase: "dispatch" | "cancelled" | "ambiguous" | "reconcile"; state: DispatchRequestState; outcome: DispatchOutcome; dispatchedRequestDigest: string | null; priorReceiptDigest?: string | null; }>): Promise<Readonly<{ receiptRef: string; evidenceDigest: string }>>; }
 export interface DispatchCoordinator { dispatch(handle: ReservedDispatchHandle): Promise<DispatchOutcome>; cancel(handle: ReservedDispatchHandle, reason?: string): Promise<DispatchOutcome>; reconcile(reservationId: string): Promise<DispatchOutcome>; recover(): Promise<readonly string[]>; }
+export interface DispatchBudget { consumeOnce(input: Readonly<{ allocationId: string; reservationId: string; effects: number }>): Promise<unknown>; returnOnce(input: Readonly<{ allocationId: string; reservationId: string; effects: number }>): Promise<unknown>; releaseConsumedOnce?(input: Readonly<{ allocationId: string; reservationId: string; effects: number }>): Promise<unknown>; }
 
-export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: DispatchAdapter, evidence?: DispatchEvidenceWriter, publication?: DispatchPublication): DispatchCoordinator {
+export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: DispatchAdapter, evidence?: DispatchEvidenceWriter, publication?: DispatchPublication, budget?: DispatchBudget): DispatchCoordinator {
+  const budgetFor = (state: DispatchRequestState): { allocationId: string; reservationId: string; effects: number } | undefined => {
+    const context = state.reservation.intent.executionContext;
+    return context ? { allocationId: context.allocationId, reservationId: state.reservation.reservationId, effects: 1 } : undefined;
+  };
   return Object.freeze({
     async dispatch(handle: ReservedDispatchHandle): Promise<DispatchOutcome> {
       const state = unwrapReservedDispatchHandle(handle) as DispatchRequestState;
@@ -18,6 +23,8 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
       const reservationId = state.reservation.reservationId;
       const transitioned = await ledger.transition(reservationId, "reserved", { to: "dispatched" });
       if (!transitioned.ok) throw new Error(`dispatch transition refused: ${transitioned.reason}`);
+      const budgetClaim = budgetFor(state);
+      if (budget && budgetClaim) await budget.consumeOnce(budgetClaim);
       let outcome: DispatchOutcome;
       try { outcome = await adapter.dispatch(state); }
       catch { outcome = { kind: "ambiguous", resultDigest: authorityDigest({ v: "reelier.dispatch-result/v1", reservationId, status: "ambiguous" }) }; }
@@ -50,6 +57,8 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
       const state = unwrapReservedDispatchHandle(handle) as DispatchRequestState;
       if (!state.reservation || state.reservation.state !== "reserved") throw new TypeError("dispatch handle is not reserved");
       const resultDigest = authorityDigest({ v: "reelier.cancelled-result/v1", reservationId: state.reservation.reservationId, reason });
+      const budgetClaim = budgetFor(state);
+      if (budget && budgetClaim) await budget.returnOnce(budgetClaim);
       const outcome = Object.freeze({ kind: "definitive-failure" as const, resultDigest });
       const published = publication ? await publication.publish({ phase: "cancelled", state, outcome, dispatchedRequestDigest: null }) : undefined;
       const terminalDigest = published?.receiptRef ?? resultDigest;
@@ -72,6 +81,11 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
       });
       let outcome = Object.freeze(await adapter.reconcile(state, pending));
       if (outcome.reconciliationStatus === "not-attempted") throw new Error("reconciliation did not produce a verdict");
+      const budgetClaim = budgetFor(state);
+      if (budget && budgetClaim && outcome.reconciliationStatus === "not-applied") {
+        if (budget.releaseConsumedOnce) await budget.releaseConsumedOnce(budgetClaim);
+        else await budget.returnOnce(budgetClaim);
+      }
       const published = publication ? await publication.publish({ phase: "reconcile", state, outcome, dispatchedRequestDigest: authorityDigest({ v: "reelier.dispatched-request/v1", reservationId, effectDigest: state.effectDigest, effect: state.effect }), priorReceiptDigest }) : undefined;
       const resultDigest = published?.receiptRef ?? outcome.resultDigest;
       const terminal = await ledger.transition(reservationId, "ambiguous", { to: "reconciled", resultDigest });
@@ -86,6 +100,8 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
         if (reservation.state === "reserved") {
           const resultDigest = authorityDigest({ v: "reelier.cancelled-result/v1", reservationId: reservation.reservationId, reason: "restart" });
           const state = recoveredState(reservation);
+          const budgetClaim = budgetFor(state);
+          if (budget && budgetClaim) await budget.returnOnce(budgetClaim);
           const outcome = Object.freeze({ kind: "definitive-failure" as const, resultDigest });
           const published = publication ? await publication.publish({ phase: "cancelled", state, outcome, dispatchedRequestDigest: null }) : undefined;
           const transitioned = await ledger.transition(reservation.reservationId, "reserved", { to: "cancelled", resultDigest: published?.receiptRef ?? resultDigest });
