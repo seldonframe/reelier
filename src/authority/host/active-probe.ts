@@ -84,14 +84,15 @@ export function createActiveTopologyProbe(options: ActiveTopologyProbeOptions): 
   const checks = Object.fromEntries(operationFields.map(field => [field, async (input: Readonly<TopologyProbeRunInput>) => {
     const context: ActiveTopologyProbeContext = Object.freeze({ ...input, nonce: nonceFor(input), mode });
     const operation = options.operations[field];
+    let outcome: ActiveTopologyProbeOutcome;
     try {
-      const outcome = await operation(context);
-      return normalizeActiveOutcome(outcome, field);
+      outcome = await operation(context);
     } catch {
       // A failed observation cannot establish a boundary. Preserve a closed
       // evidence result instead of allowing an exception to become a pass.
       return "failed";
     }
+    return normalizeActiveOutcome(outcome, field);
   }])) as Record<TopologyEvidenceField, (input: Readonly<TopologyProbeRunInput>) => Promise<ClaimStatus>>;
   return createTopologyProbe({ probeId, checks });
 }
