@@ -1,0 +1,18 @@
+primary_region = "yyz"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  REELIER_TOPOLOGY_MODE = "managed-egress-gateway"
+
+[[files]]
+  guest_path = "/etc/reelier/topology-probe.json"
+  local_path = "egress-gateway.topology-probe.json"
+
+[experimental]
+  exec = ["/bin/sh", "-c", "exec tail -f /dev/null"]
+
+# This Machine is only a topology placeholder until the authenticated CONNECT
+# gateway is enabled. Do not claim declared-surface enforcement merely because
+# this app can reach TCP 443.

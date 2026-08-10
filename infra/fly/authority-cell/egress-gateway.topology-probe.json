@@ -1,0 +1,18 @@
+{
+  "v": "reelier.topology-probe-config/v1",
+  "role": "gateway",
+  "runtimeSession": "fly-machine-runtime",
+  "providerCredentialEnvNames": [],
+  "allowedCredentialEnvNames": [],
+  "rawWriteRouteIds": [],
+  "readSurfaceIds": [],
+  "providerEndpoints": [
+    "api.cloudflare.com",
+    "api.github.com",
+    "api.hubapi.com",
+    "api.vercel.com",
+    "console.neon.tech",
+    "slack.com"
+  ],
+  "schemaDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+}

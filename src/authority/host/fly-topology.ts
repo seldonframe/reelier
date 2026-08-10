@@ -18,6 +18,7 @@ export interface FlyRuntimeIdentityObservation {
 export interface FlyCredentialIsolationObservation {
   readonly cellCredentialRefs: readonly string[];
   readonly agentCredentialRefs: readonly string[];
+  readonly unexpectedCredentialRefs?: readonly string[];
   readonly complete: boolean;
 }
 
@@ -61,7 +62,7 @@ export function createFlyTopologyProbe(options: FlyTopologyProbeOptions): Topolo
   const wrapped: Parameters<typeof createLiveTopologyProbe>[0]["operations"] = {
     credentialIsolation: async context => {
       const observation = await operations.inspectCredentialIsolation(context);
-      return observation.complete && observation.cellCredentialRefs.length > 0 && observation.agentCredentialRefs.length === 0;
+      return observation.complete && observation.cellCredentialRefs.length > 0 && observation.agentCredentialRefs.length === 0 && (observation.unexpectedCredentialRefs?.length ?? 0) === 0;
     },
     providerEgress: async context => {
       for (const endpoint of declared.providerEndpoints) {
