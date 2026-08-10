@@ -12,6 +12,7 @@ import { stripeRefundIssueAlias, stripeRefundDefinition, parseStripeRefundPolicy
 import { vercelDeploymentReleaseAlias, vercelDeploymentReleaseDefinition, parseVercelDeploymentReleasePolicy, compileVercelDeploymentRelease, reconcileVercelDeploymentRelease, type VercelDeploymentReleaseProjection } from "./vercel/index.js";
 import { cloudflareDnsRecordSetAlias, cloudflareDnsRecordSetDefinition, parseCloudflareDnsRecordPolicy, compileCloudflareDnsRecordSet, reconcileCloudflareDnsRecordSet, type CloudflareDnsRecordProjection } from "./cloudflare/index.js";
 import { neonDatabaseMigrationAlias, neonDatabaseMigrationDefinition, parseNeonDatabaseMigrationPolicy, compileNeonDatabaseMigration, reconcileNeonDatabaseMigration, type NeonDatabaseMigrationProjection } from "./neon/index.js";
+import { cloudflareTokenRollAlias, cloudflareTokenRollDefinition, parseCloudflareTokenRollPolicy, compileCloudflareTokenRoll, reconcileCloudflareTokenRoll, type CloudflareTokenProjection } from "./cloudflare-token/index.js";
 
 export interface FirstPartyConformanceReport {
   readonly aliases: readonly string[];
@@ -22,7 +23,7 @@ export interface FirstPartyConformanceReport {
 
 /** Runs the mandatory common corpus. This is intentionally offline and provider-neutral. */
 export function runFirstPartyPackConformance(): FirstPartyConformanceReport {
-  const expectedAliases = [githubIssueLabelsAlias, slackChannelTopicAlias, gmailReplySendAlias, gmailThreadLabelsAlias, stripeRefundIssueAlias, vercelDeploymentReleaseAlias, cloudflareDnsRecordSetAlias, neonDatabaseMigrationAlias];
+  const expectedAliases = [githubIssueLabelsAlias, slackChannelTopicAlias, gmailReplySendAlias, gmailThreadLabelsAlias, stripeRefundIssueAlias, vercelDeploymentReleaseAlias, cloudflareDnsRecordSetAlias, neonDatabaseMigrationAlias, cloudflareTokenRollAlias];
   const actualAliases = firstPartyPacks.map(pack => pack.definition.alias).sort(compareText);
   if (actualAliases.join("\0") !== expectedAliases.slice().sort(compareText).join("\0")) throw new TypeError("first-party conformance requires the reviewed v1 packs");
   createStaticPackRegistry(firstPartyPacks.map(pack => pack.definition));
@@ -99,6 +100,13 @@ export function runFirstPartyPackConformance(): FirstPartyConformanceReport {
   check(Buffer.compare(authorityCanonicalBytes(neonEffect), authorityCanonicalBytes(compileNeonDatabaseMigration({ source: neonSource, policy: neonPolicy }))) === 0, "Neon compilation deterministic");
   check(throws(() => parseNeonDatabaseMigrationPolicy({ ...neonPolicy, sql: "DROP TABLE accounts;" })), "Neon destructive SQL refused");
   check(reconcileNeonDatabaseMigration({ expected: neonSource, policy: neonPolicy, response: { body: { projectId: "prj_demo", branchId: "br_demo", databaseId: "db_demo", roleId: "role_app", migrationId: "migration_2026_08_10", schemaDigest: "sha256:3333333333333333333333333333333333333333333333333333333333333333", catalogDigest: "sha256:4444444444444444444444444444444444444444444444444444444444444444" } } }).status === "matched", "Neon migration read-back");
+  const tokenSource: CloudflareTokenProjection = { accountId: "acct_demo", tokenId: "token_demo", tokenName: "deploy-token", scopes: ["com.cloudflare.api.account.zone.read", "com.cloudflare.api.account.zone.write"], resources: ["com.cloudflare.api.account.zone:zone_demo"], expiresAt: "2026-12-31T00:00:00.000Z", status: "active" };
+  const tokenPolicy = parseCloudflareTokenRollPolicy({ accountId: "acct_demo", tokenId: "token_demo", tokenName: "deploy-token", scopes: tokenSource.scopes, resources: tokenSource.resources, expiresAt: "2027-01-31T00:00:00.000Z" });
+  const tokenEffect = cloudflareTokenRollDefinition.compile({ contract: {} as never, source: { projection: tokenSource } as never, choices: {}, policy: tokenPolicy, now: new Date(0), connectorAccount: { connectorId: "cloudflare", accountId: "acct_demo" } });
+  check(parseAuthorityWire("transport-effect", tokenEffect).endpointId === "cloudflare.api_token.roll", "Cloudflare token effect schema closure");
+  check(Buffer.compare(authorityCanonicalBytes(tokenEffect), authorityCanonicalBytes(compileCloudflareTokenRoll({ source: tokenSource, policy: tokenPolicy }))) === 0, "Cloudflare token compilation deterministic");
+  check(!JSON.stringify(tokenEffect).match(/secret|token-value|bearer/i), "Cloudflare token effect has no secret");
+  check(reconcileCloudflareTokenRoll({ expected: tokenSource, policy: tokenPolicy, response: { body: { result: { id: "token_demo", accountId: "acct_demo", name: "deploy-token", scopes: tokenPolicy.scopes, resources: tokenPolicy.resources, expiresAt: tokenPolicy.expiresAt, status: "active", value: "redact-me" } } } }).status === "matched", "Cloudflare token metadata read-back");
   caseIds.push("schema-closure", "exact-byte", "no-secret", "account-binding", "ambiguity", "reconciliation", "redaction");
   return Object.freeze({ aliases: Object.freeze(actualAliases), checks, passed: checks, caseIds: Object.freeze(caseIds) });
 }
