@@ -38,6 +38,7 @@ export { readGuardedLiveProviderConfig, runGuardedLiveProviderCertification, typ
 export { CERTIFICATION_PROVIDER_IDS, createCertificationPreflight, createReleaseEvidenceManifest, type CertificationClaim, type CertificationEvidence, type CertificationPreflightInput, type CertificationPreflightReport, type CertificationProviderId, type CertificationResourceInput, type CertificationResourceReport, type ReleaseEvidenceManifest } from "./certification.js";
 export { certificationPreflightForAdapter, runCertification, type CertificationAdapter, type CertificationAdapterRunResult } from "./certification-runner.js";
 export { runFlyCertification, type FlyCertificationInput, type FlyCertificationResult } from "./fly-certification.js";
+export { runCodexCertification, type CodexCertificationEvent, type CodexCertificationOperations, type CodexCertificationResult } from "./codex-certification.js";
 export { createArtifactStore } from "./artifacts.js";
 export type { ArtifactStore, StagedArtifactCommitmentV1 } from "./artifacts.js";
 export { createFileReceiptPublication } from "./receipts.js";
