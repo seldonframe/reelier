@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -33,6 +33,18 @@ test("delegation authority mints a narrower child and consumes conserved budget"
     assert.equal(status.lifecycleState, "allocated");
     await service.revoke("tenant_1", "task_1");
     assert.equal((await service.status({ tenant: "tenant_1", requester: "coordinator", grantId: "child_1" })).lifecycleState, "revoked");
+    const restarted = createDelegationAuthority({ root, now: () => new Date("2026-01-01T00:10:00.000Z"), signGrant: async value => ({ grant: value, digest: authorityDigest(value), signerId: "authority-cell", signature: signAuthorityDigest(keys.privateKey, "delegation-grant", authorityDigest(value)) }) });
+    assert.equal((await restarted.taskStatus({ tenant: "tenant_1", requester: "coordinator", taskId: "task_1" })).lifecycleState, "revoked");
+    assert.deepEqual((await restarted.taskStatus({ tenant: "tenant_1", requester: "coordinator", taskId: "task_1" })).grants, ["child_1", "root"]);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("delegation authority refuses a corrupt durable registry", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-delegation-service-corrupt-"));
+  try {
+    await writeFile(path.join(root, "delegation-registry.json"), "{not-json", "utf8");
+    const service = createDelegationAuthority({ root, signGrant: async value => ({ grant: value, digest: authorityDigest(value), signerId: "cell", signature: { alg: "ed25519", sig: "unused" } }) });
+    await assert.rejects(() => service.taskStatus({ tenant: "tenant_1", requester: "operator", taskId: "task_1" }), /corrupt/i);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

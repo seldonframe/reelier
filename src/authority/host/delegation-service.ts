@@ -2,6 +2,8 @@ import type { DelegationGrant } from "../types.js";
 import { authorityDigest } from "../wire.js";
 import { validateChildDelegationRequest, type StoredSignedGrant } from "../delegation.js";
 import { FsDelegationBudgetLedger } from "./delegation-budget.js";
+import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import path from "node:path";
 
 export interface DelegationAuthoritySigner {
   signGrant(value: DelegationGrant): Promise<StoredSignedGrant>;
@@ -19,24 +21,35 @@ interface RootRecord {
   readonly tenant: string;
   readonly taskId: string;
   readonly root: StoredSignedGrant;
-  readonly grants: Map<string, { readonly grant: DelegationGrant; readonly digest: string; readonly allocationId: string }>;
+  readonly grants: Map<string, { readonly grant: DelegationGrant; readonly digest: string; readonly allocationId: string; readonly signed: StoredSignedGrant }>;
   revoked: boolean;
 }
 
 export function createDelegationAuthority(input: Readonly<{ root: string; signGrant: (value: DelegationGrant) => Promise<StoredSignedGrant>; now?: () => Date }>): DelegationAuthority {
   const budgets = new FsDelegationBudgetLedger(input.root);
   const roots = new Map<string, RootRecord>();
+  const registryPath = path.join(input.root, "delegation-registry.json");
+  const lockPath = path.join(input.root, "delegation-registry.lock");
+  let loaded: Promise<void> | undefined;
+
+  async function ensureLoaded(): Promise<void> {
+    loaded ??= loadRegistry();
+    await loaded;
+  }
 
   async function registerRoot(value: Readonly<{ taskId: string; rootGrant: StoredSignedGrant; effects: number }>): Promise<void> {
+    await ensureLoaded();
     const grant = asGrant(value.rootGrant.grant);
     if (grant.parentDigest !== null) throw new TypeError("root delegation parent digest must be null");
     if (authorityDigest(grant) !== value.rootGrant.digest) throw new TypeError("root delegation digest mismatch");
     if (roots.has(value.taskId)) throw new TypeError("delegation task already exists");
     await budgets.createRoot({ taskId: value.taskId, allocationId: "root", effects: value.effects });
-    roots.set(value.taskId, { tenant: grant.tenant, taskId: value.taskId, root: value.rootGrant, grants: new Map([["root", { grant, digest: value.rootGrant.digest, allocationId: "root" }]]), revoked: false });
+    roots.set(value.taskId, { tenant: grant.tenant, taskId: value.taskId, root: value.rootGrant, grants: new Map([["root", { grant, digest: value.rootGrant.digest, allocationId: "root", signed: value.rootGrant }]]), revoked: false });
+    await persistRegistry();
   }
 
   async function request(value: Readonly<{ tenant: string; parentPrincipal: string; taskId: string; parentAllocationId: string; child: DelegationGrant; effects: number; activeChildCount: number }>) {
+    await ensureLoaded();
     const record = roots.get(value.taskId);
     if (!record || record.tenant !== value.tenant || record.revoked) throw new TypeError("delegation task is not active");
     const parent = record.grants.get(value.parentAllocationId);
@@ -50,11 +63,13 @@ export function createDelegationAuthority(input: Readonly<{ root: string; signGr
     const signedGrant = asGrant(signed.grant);
     if (authorityDigest(signedGrant) !== signed.digest || authorityDigest(signedGrant) !== authorityDigest(value.child) || signedGrant.grantId !== value.child.grantId) throw new TypeError("authority cell returned an invalid child grant");
     await budgets.allocate({ allocationId, parentAllocationId: value.parentAllocationId, effects: value.effects, maxFanOut: parent.grant.delegationPolicy!.maxFanOut });
-    record.grants.set(allocationId, { grant: signedGrant, digest: signed.digest, allocationId });
+    record.grants.set(allocationId, { grant: signedGrant, digest: signed.digest, allocationId, signed });
+    await persistRegistry();
     return Object.freeze({ verdict: "accepted" as const, reasonCode: "delegation-allocated" as const, lifecycleState: "allocated" as const, grant: signedGrant, grantDigest: signed.digest, allocationId });
   }
 
   async function status(value: Readonly<{ tenant: string; requester: string; grantId: string }>) {
+    await ensureLoaded();
     for (const record of roots.values()) {
       const entry = [...record.grants.values()].find(candidate => candidate.grant.grantId === value.grantId);
       if (!entry || record.tenant !== value.tenant) continue;
@@ -65,13 +80,16 @@ export function createDelegationAuthority(input: Readonly<{ root: string; signGr
   }
 
   async function revoke(tenant: string, taskId: string): Promise<void> {
+    await ensureLoaded();
     const record = roots.get(taskId);
     if (!record || record.tenant !== tenant) throw new TypeError("delegation task not found");
     await budgets.revokeTask(taskId);
     record.revoked = true;
+    await persistRegistry();
   }
 
   async function taskStatus(value: Readonly<{ tenant: string; requester: string; taskId: string }>) {
+    await ensureLoaded();
     const record = roots.get(value.taskId);
     if (!record || record.tenant !== value.tenant) throw new TypeError("delegation task not found");
     if (asGrant(record.root.grant).sponsor !== value.requester && ![...record.grants.values()].some(candidate => candidate.grant.grantee === value.requester)) throw new TypeError("task status principal mismatch");
@@ -79,6 +97,55 @@ export function createDelegationAuthority(input: Readonly<{ root: string; signGr
   }
 
   return Object.freeze({ registerRoot, request, status, taskStatus, revoke });
+
+  async function loadRegistry(): Promise<void> {
+    await mkdir(input.root, { recursive: true });
+    let raw: string;
+    try { raw = await readFile(registryPath, "utf8"); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw new Error("delegation registry unavailable", { cause: error });
+    }
+    let parsed: unknown;
+    try { parsed = JSON.parse(raw); } catch (error) { throw new Error("delegation registry is corrupt", { cause: error }); }
+    if (!parsed || typeof parsed !== "object" || (parsed as Record<string, unknown>).v !== "reelier.delegation-registry/v1" || !Array.isArray((parsed as Record<string, unknown>).tasks)) throw new Error("delegation registry is corrupt");
+    for (const item of (parsed as { tasks: unknown[] }).tasks) {
+      if (!item || typeof item !== "object" || typeof (item as Record<string, unknown>).taskId !== "string" || typeof (item as Record<string, unknown>).tenant !== "string" || !Array.isArray((item as Record<string, unknown>).grants)) throw new Error("delegation registry is corrupt");
+      const value = item as { taskId: string; tenant: string; root: StoredSignedGrant; grants: StoredSignedGrant[]; revoked?: boolean };
+      const rootGrant = asGrant(value.root.grant);
+      if (authorityDigest(rootGrant) !== value.root.digest) throw new Error("delegation registry digest mismatch");
+      const grants = new Map<string, { readonly grant: DelegationGrant; readonly digest: string; readonly allocationId: string; readonly signed: StoredSignedGrant }>();
+      grants.set("root", { grant: rootGrant, digest: value.root.digest, allocationId: "root", signed: value.root });
+      for (const stored of value.grants) {
+        const child = asGrant(stored.grant);
+        if (authorityDigest(child) !== stored.digest) throw new Error("delegation registry child digest mismatch");
+        grants.set(child.grantId, { grant: child, digest: stored.digest, allocationId: child.grantId, signed: stored });
+      }
+      roots.set(value.taskId, { tenant: value.tenant, taskId: value.taskId, root: value.root, grants, revoked: value.revoked === true });
+    }
+  }
+
+  async function persistRegistry(): Promise<void> {
+    const release = await acquireRegistryLock();
+    try {
+      const tasks = [...roots.values()].map(record => ({ v: "reelier.delegation-task/v1", taskId: record.taskId, tenant: record.tenant, root: record.root, grants: [...record.grants.values()].filter(item => item.allocationId !== "root").map(item => item.signed), revoked: record.revoked }));
+      const temporary = `${registryPath}.${process.pid}.tmp`;
+      await writeFile(temporary, JSON.stringify({ v: "reelier.delegation-registry/v1", tasks }), "utf8");
+      await rename(temporary, registryPath);
+    } finally { await release(); }
+  }
+
+  async function acquireRegistryLock(): Promise<() => Promise<void>> {
+    const started = Date.now();
+    for (;;) {
+      try { await mkdir(lockPath); return async () => { await rm(lockPath, { recursive: true, force: true }); }; }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        try { if (Date.now() - (await stat(lockPath)).mtimeMs > 20_000) await rm(lockPath, { recursive: true, force: true }); } catch { /* another writer owns it */ }
+        if (Date.now() - started > 10_000) throw new Error("delegation registry busy");
+        await new Promise(resolve => setTimeout(resolve, 5));
+      }
+    }
+  }
 }
 
 function asGrant(value: unknown): DelegationGrant {
