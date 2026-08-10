@@ -17,6 +17,14 @@ export interface ValidatedDelegationChain {
   readonly leafGrantee: string;
 }
 
+export interface ChildDelegationRequestV1 {
+  readonly parent: DelegationGrant;
+  readonly child: DelegationGrant;
+  readonly activeChildCount: number;
+  readonly effects: number;
+  readonly now: Date;
+}
+
 const validatedDelegationChains = new WeakSet<object>();
 
 export function validateDelegationChain(input: Readonly<{ tenant: string; sponsor: string; now: Date; trustRoots: TrustRoots; grants: readonly StoredSignedGrant[] }>): ValidatedDelegationChain {
@@ -61,6 +69,20 @@ export function validateDelegationChain(input: Readonly<{ tenant: string; sponso
 
 export function assertValidatedDelegationChain(value: unknown): asserts value is ValidatedDelegationChain {
   if (!value || typeof value !== "object" || !validatedDelegationChains.has(value)) throw new TypeError("validated delegation chain required");
+}
+
+/** Validates an unsigned child request before the Authority Cell mints a grant. */
+export function validateChildDelegationRequest(input: ChildDelegationRequestV1): void {
+  const policy = input.parent.delegationPolicy;
+  if (!policy?.mayDelegate) throw new TypeError("delegation parent has no mayDelegate authority");
+  if (!Number.isInteger(input.activeChildCount) || input.activeChildCount < 0 || input.activeChildCount >= policy.maxFanOut) throw new TypeError("delegation fan-out exceeds parent policy");
+  if (!Number.isInteger(input.effects) || input.effects <= 0 || input.effects > policy.maxDelegatedEffects) throw new TypeError("delegation budget exceeds parent policy");
+  const issued = Date.parse(input.child.issuedAt), expires = Date.parse(input.child.expiresAt), now = input.now.getTime();
+  if (!Number.isFinite(issued) || !Number.isFinite(expires) || now < issued || expires <= now || issued < Date.parse(input.parent.issuedAt) || expires > Date.parse(input.parent.expiresAt)) throw new TypeError("child validity exceeds parent delegation");
+  if (expires - now > policy.maxChildDurationSeconds * 1000) throw new TypeError("delegation child duration exceeds parent policy");
+  if (input.child.grantor !== input.parent.grantee) throw new TypeError("child grantor must equal parent grantee");
+  assertAttenuated(input.parent.constraints, input.child.constraints);
+  assertDelegationPolicyAttenuated(policy, input.child.delegationPolicy);
 }
 
 function assertAttenuated(parent: DelegationConstraints, child: DelegationConstraints): void {

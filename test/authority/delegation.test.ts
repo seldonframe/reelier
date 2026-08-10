@@ -5,7 +5,7 @@ import { signAuthorityDigest } from "../../src/authority/crypto.js";
 import { authorityDigest } from "../../src/authority/wire.js";
 import type { DelegationGrant } from "../../src/authority/types.js";
 import { createTrustRoots } from "../../src/authority/trust.js";
-import { validateDelegationChain, validateContractAgainstDelegation, type StoredSignedGrant } from "../../src/authority/delegation.js";
+import { validateChildDelegationRequest, validateDelegationChain, validateContractAgainstDelegation, type StoredSignedGrant } from "../../src/authority/delegation.js";
 
 const now = new Date("2026-01-15T00:00:00.000Z");
 const limits = { maxEffectsPerWindow: 10, windowSeconds: 3600, maxEffectsPerSourceTrigger: 2, maxBodyBytes: 4096 };
@@ -100,4 +100,15 @@ test("delegation policy requires explicit permission and attenuates child depth,
   assert.throws(() => widen({ maxFanOut: 4 }), /delegation|fan.?out|widen/i);
   assert.throws(() => widen({ maxChildDurationSeconds: 3601 }), /delegation|duration|widen/i);
   assert.throws(() => widen({ maxDelegatedEffects: 7 }), /delegation|budget|widen/i);
+});
+
+test("an Authority Cell accepts only a narrower unsigned child request", () => {
+  const f = fixture();
+  const parent = signed({ ...root, delegationPolicy: { mayDelegate: true, maxDepth: 2, maxFanOut: 2, maxChildDurationSeconds: 3600, maxDelegatedEffects: 4 } } as DelegationGrant, "operator_key", f.operator.privateKey);
+  const parentGrant = parent.grant as DelegationGrant;
+  const child = { ...f.child, grantor: "delegate_1", issuedAt: "2026-01-15T00:00:00.000Z", expiresAt: "2026-01-15T00:30:00.000Z", delegationPolicy: { mayDelegate: false, maxDepth: 0, maxFanOut: 0, maxChildDurationSeconds: 1, maxDelegatedEffects: 0 } } as DelegationGrant;
+  assert.doesNotThrow(() => validateChildDelegationRequest({ parent: parentGrant, child, activeChildCount: 0, effects: 2, now }));
+  assert.throws(() => validateChildDelegationRequest({ parent: parentGrant, child, activeChildCount: 2, effects: 1, now }), /fan.?out/i);
+  assert.throws(() => validateChildDelegationRequest({ parent: parentGrant, child, activeChildCount: 0, effects: 5, now }), /budget/i);
+  assert.throws(() => validateChildDelegationRequest({ parent: { ...parentGrant, delegationPolicy: undefined }, child, activeChildCount: 0, effects: 1, now }), /mayDelegate/i);
 });
