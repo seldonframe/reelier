@@ -1,0 +1,19 @@
+app = "reelier-authority-cell-reference"
+primary_region = "ord"
+
+[build]
+  image = "reelier/authority-cell:0.32.0"
+
+[env]
+  REELIER_TOPOLOGY_MODE = "managed"
+  REELIER_AGENT_PROVIDER_EGRESS = "deny"
+  REELIER_RAW_WRITE_ROUTES = "deny"
+  REELIER_LEDGER_MODE = "durable"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+
+# Mount provider grants only through Fly secrets. Never commit values here.
