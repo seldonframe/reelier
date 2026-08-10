@@ -76,3 +76,23 @@ test("authority certify preflight reads a closed operator file and never prints 
     if (prior === undefined) delete process.env.REELIER_TEST_GITHUB; else process.env.REELIER_TEST_GITHUB = prior;
   }
 });
+
+test("authority certify preflight reports placeholder resource fields", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "reelier-certify-placeholder-"));
+  const file = path.join(root, "certification.json");
+  const source = JSON.parse(await import("node:fs/promises").then(fs => fs.readFile(path.resolve("docs/runbooks/certification.operator.example.json"), "utf8")));
+  source.fly.flyctlPath = "missing-flyctl-for-test";
+  source.codex.binaryPath = "missing-codex-for-test";
+  await writeFile(file, JSON.stringify(source), "utf8");
+  let output = "";
+  const original = console.log;
+  try {
+    console.log = (...args: unknown[]) => { output += args.join(" "); };
+    const code = await runAuthorityCommand({ positional: ["certify", "preflight"], flags: new Set(), opts: { config: file } });
+    assert.equal(code, 1);
+    assert.match(output, /resource:github:accountId/);
+    assert.match(output, /resource:github:repository/);
+    assert.match(output, /resource:vercel:deploymentId/);
+    assert.doesNotMatch(output, /github-owner|prj_example|dpl_example/);
+  } finally { console.log = original; }
+});

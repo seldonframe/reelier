@@ -5,57 +5,57 @@
   "providers": {
     "github": {
       "apiBaseUrl": "https://api.github.com",
-      "accountId": "github-owner",
+      "accountId": "replace-github-owner",
       "credentialRef": "env:REELIER_GITHUB_TOKEN",
       "cleanupRef": "restore-github-issue-labels",
-      "repository": "reelier-certification",
+      "repository": "replace-github-repository",
       "issueNumber": 1
     },
     "vercel": {
       "apiBaseUrl": "https://api.vercel.com",
-      "accountId": "team_example",
+      "accountId": "replace-vercel-team",
       "credentialRef": "env:REELIER_VERCEL_TOKEN",
       "cleanupRef": "restore-vercel-production-deployment",
-      "projectId": "prj_example",
-      "deploymentId": "dpl_example",
-      "domains": ["certification.example.com"]
+      "projectId": "replace-vercel-project",
+      "deploymentId": "replace-vercel-deployment",
+      "domains": ["replace.example.com"]
     },
     "neon": {
       "apiBaseUrl": "https://console.neon.tech/api/v2",
-      "accountId": "org_example",
+      "accountId": "replace-neon-org",
       "credentialRef": "env:REELIER_NEON_API_KEY",
       "cleanupRef": "delete-neon-rehearsal-branch",
-      "projectId": "project_example",
-      "branchId": "br_example",
+      "projectId": "replace-neon-project",
+      "branchId": "replace-neon-branch",
       "database": "neondb",
       "role": "neondb_owner",
       "databaseUrlRef": "env:REELIER_NEON_DATABASE_URL"
     },
     "cloudflare": {
       "apiBaseUrl": "https://api.cloudflare.com",
-      "accountId": "account_example",
+      "accountId": "replace-cloudflare-account",
       "credentialRef": "env:REELIER_CLOUDFLARE_TOKEN",
       "cleanupRef": "restore-cloudflare-dns-record",
-      "zoneId": "zone_example",
-      "recordId": "record_example",
-      "recordName": "certification.example.com",
+      "zoneId": "replace-cloudflare-zone",
+      "recordId": "replace-cloudflare-record",
+      "recordName": "replace.example.com",
       "tokenName": "reelier-certification-token"
     },
     "hubspot": {
       "apiBaseUrl": "https://api.hubapi.com",
-      "accountId": "portal_example",
+      "accountId": "replace-hubspot-portal",
       "credentialRef": "env:REELIER_HUBSPOT_TOKEN",
       "cleanupRef": "archive-hubspot-certification-records",
-      "ticketId": "ticket_example",
-      "contactId": "contact_example",
+      "ticketId": "replace-hubspot-ticket",
+      "contactId": "replace-hubspot-contact",
       "approvedProperties": ["subject"]
     },
     "slack": {
       "apiBaseUrl": "https://slack.com",
-      "accountId": "T0123456789",
+      "accountId": "replace-slack-team",
       "credentialRef": "env:REELIER_SLACK_TOKEN",
       "cleanupRef": "restore-slack-channel-topic",
-      "channelId": "C0123456789"
+      "channelId": "replace-slack-channel"
     }
   },
   "fly": {
@@ -82,9 +82,9 @@
     "binaryPath": "C:/tools/codex/codex.exe",
     "version": "0.134.0",
     "authorityEndpoint": "https://reelier-cell-example.fly.dev/mcp",
-    "taskId": "task_certification_1",
-    "jobId": "job_founder_stack",
-    "authorityCellId": "cell_certification_1",
+    "taskId": "replace-task",
+    "jobId": "replace-job",
+    "authorityCellId": "replace-cell",
     "codexHomePath": "C:/Users/example/.reelier/codex-certification/home",
     "workspacePath": "C:/Users/example/reelier-certification-worktree",
     "sessionCredentialDirectory": "C:/Users/example/.reelier/codex-certification/sessions"
