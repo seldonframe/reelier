@@ -1,12 +1,16 @@
 export const authorityKinds = ["principal","delegation-grant","source-bundle","outcome-contract","outcome-request","transport-effect","compiled-capability","decision-context","gate-event","authority-evidence","authority-receipt","pack-manifest"] as const;
 export type AuthorityKind = (typeof authorityKinds)[number];
+export type AuthoritySignaturePurpose = AuthorityKind | "signed-job-card";
 export type ClaimStatus = "verified" | "failed" | "unchecked" | "absent";
 type Wire<V extends string> = Readonly<{ v: V }>;
 export interface Principal extends Wire<"reelier.principal/v1"> { id: string; kind: "operator"|"requester"|"sponsor"|"gate"|"provider" }
 export interface AuthorityLimits { maxEffectsPerWindow:number; windowSeconds:number; maxEffectsPerSourceTrigger:number; maxBodyBytes:number }
 export interface ConnectorAccount { connectorId:string; accountId:string }
+export interface DelegationPolicy { mayDelegate:boolean; maxDepth:number; maxFanOut:number; maxChildDurationSeconds:number; maxDelegatedEffects:number }
+export interface ConservedBudgetV1 extends Wire<"reelier.conserved-budget/v1"> { taskId:string; allocationId:string; rootAllocationId:string; effects:{root:number;reserved:number;consumed:number;returned:number;remaining:number} }
+export interface DelegationBudgetEventV1 extends Wire<"reelier.delegation-budget-event/v1"> { eventId:string; taskId:string; allocationId:string; kind:"allocated"|"consumed"|"returned"|"expired"|"revoked"; effects:number; at:string; previousDigest:string|null }
 export interface DelegationConstraints { definitionAliases:string[]; audiences:string[]; connectorAccounts:ConnectorAccount[]; projectionPointers:string[]; riskClasses:string[]; limits:AuthorityLimits }
-export interface DelegationGrant extends Wire<"reelier.delegation-grant/v1"> { tenant:string; grantId:string; parentDigest:string|null; sponsor:string; grantor:string; grantee:string; issuedAt:string; expiresAt:string; constraints:DelegationConstraints }
+export interface DelegationGrant extends Wire<"reelier.delegation-grant/v1"> { tenant:string; grantId:string; parentDigest:string|null; sponsor:string; grantor:string; grantee:string; issuedAt:string; expiresAt:string; constraints:DelegationConstraints; delegationPolicy?:DelegationPolicy }
 export interface OutcomeRequest extends Wire<"reelier.outcome-request/v1"> { requestId:string; sourceRefs:Record<string,string>; choices:Record<string,string|number|boolean|null> }
 export interface SourceClaim { claimId:string; projectionPointer:string }
 export interface SourceObservationEvidence { index:number;planDigest:string;endpointId:string;rawDigest:string }

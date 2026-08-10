@@ -33,6 +33,6 @@ test("local authority runtime refuses a malformed signed deployment instead of s
   try {
     const deploymentPath = path.join(root, "deployment.json");
     await (await import("node:fs/promises")).writeFile(deploymentPath, JSON.stringify({ v: "reelier.authority-deployment/v1", tenant: "tenant_1", state: { tenant: "tenant_1", definitionAlias: "gmail_reply_send_v1", stateVersion: 1, candidates: [] }, connectors: "not-an-array", trust: [], sourceDirectory: "sources" }));
-    await assert.rejects(() => createLocalAuthorityRuntime({ version: 1, tenant: "tenant_1", requester: "operator", definitions: ["gmail_reply_send_v1"], ledgerDir: path.join(root, "ledger"), decisionDir: path.join(root, "decisions"), receiptDir: path.join(root, "receipts"), endpoints: [], deploymentPath } as never), /deployment connectors|trust roots/i);
+    await assert.rejects(() => createLocalAuthorityRuntime({ version: 1, tenant: "tenant_1", requester: "operator", definitions: ["gmail_reply_send_v1"], ledgerDir: path.join(root, "ledger"), decisionDir: path.join(root, "decisions"), receiptDir: path.join(root, "receipts"), endpoints: [], deploymentPath } as never), /deployment connectors|trust roots|unknown or missing field/i);
   } finally { await rm(root, { recursive: true, force: true }); }
 });

@@ -1,4 +1,4 @@
-import { generateKeyPairSync, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { authorityDigest } from "../wire.js";
@@ -10,7 +10,7 @@ import { createAuthorityStatePort } from "../state.js";
 import { createStaticPackRegistry } from "../pack.js";
 import { createFileGateDecisionSink } from "../decision.js";
 import { FsAuthorityLedger } from "./fs-ledger.js";
-import { createDispatchCoordinator } from "./dispatch.js";
+import { createDispatchCoordinator, type DispatchAdapter } from "./dispatch.js";
 import { createJsonHttpsDispatchAdapter } from "./json-https-connector.js";
 import { createFileReceiptPublication } from "./receipts.js";
 import { createAuthorityHostRuntime } from "./runtime.js";
@@ -19,17 +19,25 @@ import type { AuthorityHostRuntime } from "./server.js";
 import { createSecretResolver } from "./secret-resolver.js";
 import { firstPartyPacks, createFirstPartySourceRegistry } from "../../packs/index.js";
 import { loadAuthorityDeployment } from "./deployment.js";
+import { loadOrCreateLocalGateSigner } from "./gate-signer.js";
 
 /** Builds the local host from signed-artifact boundaries. An empty workspace is intentionally
  * usable for discovery and status, but every Outcome refuses until a signed contract is installed. */
-export async function createLocalAuthorityRuntime(config: AuthorityHostConfig): Promise<AuthorityHostRuntime> {
+export interface LocalAuthorityRuntimeOptions {
+  readonly dispatchAdapter?: DispatchAdapter;
+}
+
+export async function createLocalAuthorityRuntime(config: AuthorityHostConfig, options: LocalAuthorityRuntimeOptions = {}): Promise<AuthorityHostRuntime> {
   await mkdir(config.ledgerDir, { recursive: true }); await mkdir(config.decisionDir, { recursive: true }); await mkdir(config.receiptDir, { recursive: true });
   const deployment = config.deploymentPath ? await loadAuthorityDeployment(config.deploymentPath) : undefined;
   if (deployment && deployment.tenant !== config.tenant) throw new TypeError("authority deployment tenant does not match host config");
   const ledger = new FsAuthorityLedger(config.ledgerDir);
   const decisions = createFileGateDecisionSink(config.decisionDir);
-  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
-  const trustRoots = createTrustRoots([...(deployment?.trustEntries ?? []), { tenant: config.tenant, signerId: "local-gate", principalId: config.requester, publicKey, purposes: ["gate-event"] }]);
+  const gateSigner = await loadOrCreateLocalGateSigner(config.gateKeyFile ?? path.join(config.receiptDir, "..", "keys", "local-gate.pem"));
+  const { privateKey, publicKey } = gateSigner;
+  const deploymentGate = deployment?.trustEntries.find(entry => entry.signerId === "local-gate");
+  if (deploymentGate && !deploymentGate.publicKey.export({ type: "spki", format: "der" }).equals(publicKey.export({ type: "spki", format: "der" }))) throw new TypeError("deployment local gate key does not match host gate key");
+  const trustRoots = createTrustRoots([...(deployment?.trustEntries.filter(entry => entry.signerId !== "local-gate") ?? []), { tenant: config.tenant, signerId: "local-gate", principalId: config.requester, publicKey, purposes: ["gate-event", "principal"] }]);
   const packs = createStaticPackRegistry(firstPartyPacks.map(pack => pack.definition));
   const sources = createFirstPartySourceRegistry(config.tenant);
   const snapshot = deployment?.state;
@@ -48,7 +56,8 @@ export async function createLocalAuthorityRuntime(config: AuthorityHostConfig): 
   });
   const gate = createAuthorityGate({ trustRoots, packs, sources, connectors: connectorRegistry, state, ledger, localGatePolicyDigest: authorityDigest({ v: "reelier.local-gate-policy/v1", tenant: config.tenant }), decisionSink: decisions, signer: { async sign(input) { return { signerId: "local-gate", signature: signAuthorityDigest(privateKey, input.purpose, input.digest) }; } }, eventId: () => `evt_${randomUUID()}`, capabilityId: () => `cap_${randomUUID()}` });
   const publication = createFileReceiptPublication({ rootDir: config.receiptDir });
-  const dispatch = createDispatchCoordinator(ledger, createJsonHttpsDispatchAdapter({ endpoints: config.endpoints, secrets: createSecretResolver() }), undefined, publication);
+  const adapter = options.dispatchAdapter ?? createJsonHttpsDispatchAdapter({ endpoints: config.endpoints, secrets: createSecretResolver() });
+  const dispatch = createDispatchCoordinator(ledger, adapter, undefined, publication);
   const runtime = createAuthorityHostRuntime({ gate, dispatch, ledger, decisions });
   const jobs = Object.freeze(config.definitions.map(alias => Object.freeze({ jobId: alias, alias })));
   return Object.freeze({

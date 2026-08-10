@@ -1,4 +1,7 @@
 import type { AuthoritySignature } from "./types.js";
+import type { KeyObject } from "node:crypto";
+import { signAuthorityDigest, verifyAuthoritySignature } from "./crypto.js";
+import { authorityDigest } from "./wire.js";
 
 export type OutcomeSemanticClass = "communication_commit_v1" | "record_state_set_v1" | "artifact_deliver_v1" | "schedule_commit_v1" | "money_refund_v1" | "commerce_purchase_commit_v1";
 
@@ -21,6 +24,24 @@ export interface SignedJobCardV1 {
   readonly exceptionPolicy: readonly string[];
   readonly coverage: "declared-surface" | "not-declared" | "unknown";
   readonly pathBSkillDigest?: string;
+}
+
+export type UnsignedJobCardV1 = Omit<SignedJobCardV1, "signerId" | "signature">;
+
+/** Canonical commitment signed when a human deploys a reviewed job card. */
+export function signedJobCardDigest(value: UnsignedJobCardV1): string {
+  const { v: _v, ...fields } = value;
+  return authorityDigest({ v: "reelier.signed-job-card-signing/v1", ...fields });
+}
+
+export function signJobCard(value: UnsignedJobCardV1, signerId: string, privateKey: KeyObject): SignedJobCardV1 {
+  const card = { ...value, signerId, signature: signAuthorityDigest(privateKey, "signed-job-card", signedJobCardDigest(value)) };
+  return normalizeSignedJobCard(card);
+}
+
+export function verifySignedJobCard(value: SignedJobCardV1, publicKey: KeyObject): boolean {
+  const { signerId: _signerId, signature: _signature, ...unsigned } = value;
+  return verifyAuthoritySignature(publicKey, "signed-job-card", signedJobCardDigest(unsigned), value.signature);
 }
 
 export function normalizeSignedJobCard(value: unknown): SignedJobCardV1 {

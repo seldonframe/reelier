@@ -28,11 +28,11 @@ export async function runAuthorityCommand(args: Readonly<{ positional: string[];
 
 async function authorityInit(args: Readonly<{ opts: Record<string, string> }>): Promise<number> {
   const root = path.resolve(args.opts.path ?? "authority");
-  await Promise.all(["contracts", "trust", "connectors", "receipts", "decisions", "ledger"].map(dir => mkdir(path.join(root, dir), { recursive: true })));
+  await Promise.all(["contracts", "trust", "connectors", "receipts", "decisions", "ledger", "keys"].map(dir => mkdir(path.join(root, dir), { recursive: true })));
   const configPath = path.join(root, "authority.yml");
   const config = {
     version: 1, tenant: "local", requester: "operator", definitions: firstPartyPacks.map(pack => pack.definition.alias), topology: "same-user",
-    ledgerDir: "ledger", decisionDir: "decisions", receiptDir: "receipts",
+    ledgerDir: "ledger", decisionDir: "decisions", receiptDir: "receipts", gateKeyFile: "keys/local-gate.pem",
     ingress: { allowedRequester: "operator" }, endpoints: [],
   };
   try { await readFile(configPath, "utf8"); console.log(`authority already initialized: ${configPath}`); return 0; } catch { /* create below */ }

@@ -13,6 +13,7 @@ export interface AuthorityHostConfig {
   readonly ledgerDir: string;
   readonly decisionDir: string;
   readonly receiptDir: string;
+  readonly gateKeyFile?: string;
   readonly endpoints: readonly JsonHttpsEndpoint[];
   readonly deploymentPath?: string;
   readonly cloud?: { readonly baseUrl: string; readonly tokenRef: string };
@@ -41,7 +42,8 @@ function validateConfig(value: unknown, baseDir: string): AuthorityHostConfig {
   if (topology !== "isolated" && topology !== "same-user" && topology !== "unknown") throw new TypeError("invalid authority topology");
   const cloud = raw.cloud === undefined ? undefined : validateCloud(raw.cloud);
   const deploymentPath = raw.deploymentPath === undefined ? undefined : resolvePath(raw.deploymentPath, "deployment.json");
-  return Object.freeze({ version: 1, tenant: raw.tenant, requester: raw.requester, definitions, ingress, topology, ledgerDir: resolvePath(raw.ledgerDir, ".authority/ledger"), decisionDir: resolvePath(raw.decisionDir, ".authority/decisions"), receiptDir: resolvePath(raw.receiptDir, ".authority/receipts"), endpoints, ...(deploymentPath ? { deploymentPath } : {}), cloud });
+  const gateKeyFile = raw.gateKeyFile === undefined ? undefined : resolvePath(raw.gateKeyFile, "keys/local-gate.pem");
+  return Object.freeze({ version: 1, tenant: raw.tenant, requester: raw.requester, definitions, ingress, topology, ledgerDir: resolvePath(raw.ledgerDir, ".authority/ledger"), decisionDir: resolvePath(raw.decisionDir, ".authority/decisions"), receiptDir: resolvePath(raw.receiptDir, ".authority/receipts"), ...(gateKeyFile ? { gateKeyFile } : {}), endpoints, ...(deploymentPath ? { deploymentPath } : {}), cloud });
 }
 
 function validateEndpoint(value: unknown): JsonHttpsEndpoint {
