@@ -2,6 +2,18 @@
 
 All notable changes to `reelier`. Dates are release dates.
 
+## 0.32.0 — 2026-08-10
+
+### Added
+
+- Guarded `authority certify preflight`, `authority certify run`, and `authority certify verify` command surfaces.
+- Redacted certification contracts, Fly Authority Cell probe orchestration, ten-profile Codex dogfood graph export, and signed release-evidence verification.
+- Release, live-certification, provider-cleanup, and merge runbooks.
+
+### Verification boundary
+
+- Hermetic certification fixtures pass. Live provider certification and the real ten-agent Codex run remain unchecked until isolated resources, registered live adapters, and a pinned runtime produce signed evidence.
+
 ## Unreleased
 
 ### Added
