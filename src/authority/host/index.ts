@@ -20,7 +20,7 @@ export { createAuthorityHostServer } from "./server.js";
 export type { AuthorityHostRuntimeDependencies } from "./runtime.js";
 export { createAuthorityHostRuntime } from "./runtime.js";
 export { createLocalAuthorityRuntime, type LocalAuthorityRuntimeOptions } from "./local.js";
-export { assertManagedTopologyEvidence, parseTopologyEvidence, type TopologyEvidenceV1 } from "./topology.js";
+export { assertFreshManagedTopologyEvidence, assertManagedTopologyEvidence, createTopologyProbe, parseTopologyEvidence, runTopologyProbe, signTopologyEvidence, topologyEvidenceDigest, verifyTopologyEvidence, type SignedTopologyEvidenceV1, type TopologyEvidenceV1, type TopologyEvidenceField, type TopologyProbe, type TopologyProbeCheck, type TopologyProbeDefinition, type TopologyProbeResult, type TopologyProbeRunInput, type TopologyEvidenceVerificationOptions } from "./topology.js";
 export type { AuthorityDeploymentManifest, AuthorityDeploymentTrustEntry, LoadedAuthorityDeployment } from "./deployment.js";
 export { loadAuthorityDeployment } from "./deployment.js";
 export { loadOrCreateLocalGateSigner, type LocalGateSigner } from "./gate-signer.js";
