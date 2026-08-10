@@ -8,6 +8,8 @@ export type { McpDispatchRoute, McpDispatchAdapterOptions } from "./mcp-connecto
 export { createMcpDispatchAdapter } from "./mcp-connector.js";
 export type { JsonHttpsDispatchAdapterOptions } from "./json-https-connector.js";
 export { createJsonHttpsDispatchAdapter } from "./json-https-connector.js";
+export type { ComposioConnection, ComposioDispatchRoute, ComposioDispatchAdapterOptions } from "./composio-connector.js";
+export { createComposioDispatchAdapter } from "./composio-connector.js";
 export type { AuthorityLedger, LedgerState, ReservationSnapshot, TransitionEvent } from "../ledger.js";
 export { FsAuthorityLedger } from "./fs-ledger.js";
 export type { AuthorityMcpHandler, AuthorityMcpDefinition } from "../ingress/mcp.js";
