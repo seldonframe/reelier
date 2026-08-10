@@ -1,0 +1,14 @@
+{
+  "name": "agent-runtime-default-deny",
+  "selector": { "all": true },
+  "rules": [
+    {
+      "action": "allow",
+      "direction": "egress",
+      "ports": [
+        { "protocol": "tcp", "port": 53 },
+        { "protocol": "udp", "port": 53 }
+      ]
+    }
+  ]
+}
