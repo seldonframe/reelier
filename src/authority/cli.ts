@@ -75,7 +75,11 @@ async function authorityDoctor(args: Readonly<{ opts: Record<string, string>; fl
     ]);
     const checks: Record<string, string> = {
       config: "verified",
-      topology: loaded.config.topology === "isolated" ? "verified" : "unchecked",
+      // A config value is an operator claim, not proof that agents lack credentials or
+      // direct provider egress. Keep the claim visible separately and leave evidence
+      // unchecked until a live topology probe establishes it.
+      topology: "unchecked",
+      topologyDeclaration: loaded.config.topology ?? "unknown",
       ingress: loaded.config.ingress?.bearerRef ? "verified" : "unchecked",
       contracts: contracts > 0 ? "configured" : "unchecked",
       trust: trust > 0 ? "configured" : "unchecked",

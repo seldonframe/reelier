@@ -33,3 +33,18 @@ test("authority doctor reports non-secret preflight surfaces without calling pro
     assert.equal(report.checks.live, "not-run");
   } finally { console.log = original; await rm(root, { recursive: true, force: true }); }
 });
+
+test("authority doctor does not treat a topology declaration as isolation evidence", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-authority-doctor-topology-"));
+  const authority = path.join(root, "authority");
+  const output: string[] = [];
+  const original = console.log;
+  console.log = (...values: unknown[]) => output.push(values.join(" "));
+  try {
+    await mkdir(authority, { recursive: true });
+    await writeFile(path.join(authority, "authority.yml"), JSON.stringify({ version: 1, tenant: "tenant_1", requester: "operator", definitions: [], topology: "isolated", ledgerDir: "ledger", decisionDir: "decisions", receiptDir: "receipts", endpoints: [] }));
+    assert.equal(await runAuthorityCommand({ positional: ["doctor"], flags: new Set(), opts: { path: path.join(authority, "authority.yml") } }), 0);
+    const report = JSON.parse(output[0]) as { checks: Record<string, string> };
+    assert.equal(report.checks.topology, "unchecked");
+  } finally { console.log = original; await rm(root, { recursive: true, force: true }); }
+});
