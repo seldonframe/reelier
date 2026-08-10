@@ -39,8 +39,9 @@ export function parseCloudflareTokenCreatePolicy(value: unknown): CloudflareToke
   if (Object.keys(raw).length !== keys.length || Object.keys(raw).some(key => !keys.includes(key))) throw new TypeError("Cloudflare token create policy is closed");
   return Object.freeze({ accountId: id(raw.accountId, "accountId"), tokenName: id(raw.tokenName, "tokenName"), scopes: list(raw.scopes, "scopes"), resources: list(raw.resources, "resources"), secretDigest: digest(raw.secretDigest) });
 }
-export function compileCloudflareTokenCreate(input: Readonly<{ policy: CloudflareTokenCreatePolicy }>): TransportEffect {
-  const { policy } = input;
+export function compileCloudflareTokenCreate(input: Readonly<{ policy: CloudflareTokenCreatePolicy | Omit<CloudflareTokenCreatePolicy, "secretDigest">; secret?: Readonly<{ digest: string }> }>): TransportEffect {
+  const raw = input.policy as CloudflareTokenCreatePolicy;
+  const policy = raw.secretDigest ? parseCloudflareTokenCreatePolicy(raw) : parseCloudflareTokenCreatePolicy({ ...raw, secretDigest: input.secret?.digest });
   const body = authorityCanonicalBytes({ accountId: policy.accountId, name: policy.tokenName, scopes: policy.scopes, resources: policy.resources, secretDigest: policy.secretDigest });
   return Object.freeze({ v: "reelier.transport-effect/v1", endpointId: cloudflareTokenCreateWriteEndpointId, method: "POST", path: `/client/v4/accounts/${policy.accountId}/tokens`, query: "", headers: { "Content-Type": "application/json" }, bodyBase64: body.toString("base64"), riskClass: cloudflareTokenCreateRiskClass, idempotency: "reconcile-only", preconditions: [{ kind: "cloudflare-token-create-policy", digest: authorityDigest({ v: "reelier.cloudflare-token-create-policy/v1", ...policy }) }], reconciliation: { recipeId: cloudflareTokenCreateRecipeId } });
 }
