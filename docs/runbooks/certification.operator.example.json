@@ -76,7 +76,7 @@
     "agentImageDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
     "gatewayImageDigest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
     "networkPolicyDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-    "schemaDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    "schemaDigest": "sha256:a8a9fbf0275cd6f62b6948323e568f962b3ddd01b87f8d06cb5bff7da24a2374"
   },
   "codex": {
     "binaryPath": "C:/tools/codex/codex.exe",
