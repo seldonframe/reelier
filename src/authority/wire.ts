@@ -4,12 +4,17 @@ import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import type { AuthorityKind, AuthorityWire, AuthorityWireByKind, DecisionArtifactPresence, DecisionContext, DecisionContextPresence } from "./types.js";
 
-const packagedSchemaDirectory = fileURLToPath(new URL("./schemas/", import.meta.url));
+// Keep the schema lookup filesystem-based rather than passing directory URLs to
+// bundlers. Node resolves both forms, but Turbopack treats a directory-shaped
+// `new URL("./schemas/", import.meta.url)` as an import and fails the build.
+const authorityDirectory = dirname(fileURLToPath(import.meta.url));
+const packagedSchemaDirectory = join(authorityDirectory, "schemas");
 const schemaDirectory = existsSync(packagedSchemaDirectory)
   ? packagedSchemaDirectory
-  : fileURLToPath(new URL("../../../contract/authority/v1/", import.meta.url));
+  : join(authorityDirectory, "../../../contract/authority/v1");
 const schemas = new Map<AuthorityKind, ValidateFunction>();
 const require = createRequire(import.meta.url);
 const Ajv = require("ajv/dist/2020").default as new (options: object) => {
@@ -23,7 +28,7 @@ addFormats(ajv);
 function validator(kind: AuthorityKind): ValidateFunction {
   const cached = schemas.get(kind);
   if (cached) return cached;
-  const schema = JSON.parse(readFileSync(`${schemaDirectory}${kind}.schema.json`, "utf8")) as object;
+  const schema = JSON.parse(readFileSync(join(schemaDirectory, `${kind}.schema.json`), "utf8")) as object;
   const compiled = ajv.compile(schema);
   schemas.set(kind, compiled);
   return compiled;
