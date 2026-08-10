@@ -3,7 +3,7 @@ import type { KeyObject } from "node:crypto";
 import { signAuthorityDigest, verifyAuthoritySignature } from "./crypto.js";
 import { authorityDigest } from "./wire.js";
 
-export type OutcomeSemanticClass = "communication_commit_v1" | "record_state_set_v1" | "artifact_deliver_v1" | "schedule_commit_v1" | "money_refund_v1" | "commerce_purchase_commit_v1" | "deployment_release_v1" | "infrastructure_resource_set_v1";
+export type OutcomeSemanticClass = "communication_commit_v1" | "record_state_set_v1" | "artifact_deliver_v1" | "schedule_commit_v1" | "money_refund_v1" | "commerce_purchase_commit_v1" | "deployment_release_v1" | "infrastructure_resource_set_v1" | "database_migration_apply_v1";
 
 export interface SignedJobCardV1 {
   readonly v: "reelier.signed-job-card/v1";
@@ -55,7 +55,7 @@ export function normalizeSignedJobCard(value: unknown): SignedJobCardV1 {
   if (signatureBytes.length !== 64 || signatureBytes.toString("base64") !== (signature as Record<string, unknown>).sig) throw new TypeError("invalid signed job card signature");
   const list = (name: string): readonly string[] => { const value = raw[name]; if (!Array.isArray(value) || value.length === 0 || value.some(item => typeof item !== "string" || !item)) throw new TypeError(`${name} must be a non-empty string array`); return Object.freeze([...new Set(value)].sort()); };
   const classes = raw.semanticClasses;
-  if (!Array.isArray(classes) || classes.length === 0 || classes.some(item => !["communication_commit_v1", "record_state_set_v1", "artifact_deliver_v1", "schedule_commit_v1", "money_refund_v1", "commerce_purchase_commit_v1", "deployment_release_v1", "infrastructure_resource_set_v1"].includes(String(item)))) throw new TypeError("invalid semantic classes");
+  if (!Array.isArray(classes) || classes.length === 0 || classes.some(item => !["communication_commit_v1", "record_state_set_v1", "artifact_deliver_v1", "schedule_commit_v1", "money_refund_v1", "commerce_purchase_commit_v1", "deployment_release_v1", "infrastructure_resource_set_v1", "database_migration_apply_v1"].includes(String(item)))) throw new TypeError("invalid semantic classes");
   if (raw.pathBSkillDigest !== undefined && !digest(raw.pathBSkillDigest)) throw new TypeError("invalid Path B skill digest");
   return Object.freeze({ v: raw.v, signerId: raw.signerId, signature: Object.freeze({ alg: "ed25519" as const, sig: (signature as Record<string, unknown>).sig as string }), jobId: raw.jobId, title: raw.title, taskShapeDigest: raw.taskShapeDigest, semanticClasses: Object.freeze([...new Set(classes)] as OutcomeSemanticClass[]), definitionAliases: list("definitionAliases"), connectorIds: list("connectorIds"), accountIdentities: list("accountIdentities"), sourceRefs: list("sourceRefs"), audiences: list("audiences"), limitsDigest: raw.limitsDigest, instructionsDigest: raw.instructionsDigest, packDigests: list("packDigests"), exceptionPolicy: list("exceptionPolicy"), coverage: raw.coverage as SignedJobCardV1["coverage"], ...(raw.pathBSkillDigest === undefined ? {} : { pathBSkillDigest: raw.pathBSkillDigest }) });
 }

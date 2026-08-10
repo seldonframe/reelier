@@ -13,11 +13,12 @@ import { gmailReplyManifest, gmailLabelsManifest, gmailReplyDefinition, gmailLab
 import { stripeManifest, stripeRefundDefinition, createStripeSourceResolver, reconcileStripeRefund } from "./stripe/index.js";
 import { vercelDeploymentReleaseManifest, vercelDeploymentReleaseDefinition, createVercelDeploymentReleaseSourceResolver, reconcileVercelDeploymentRelease } from "./vercel/index.js";
 import { cloudflareDnsRecordSetManifest, cloudflareDnsRecordSetDefinition, createCloudflareDnsRecordSourceResolver, reconcileCloudflareDnsRecordSet } from "./cloudflare/index.js";
+import { neonDatabaseMigrationManifest, neonDatabaseMigrationDefinition, createNeonDatabaseMigrationSourceResolver, reconcileNeonDatabaseMigration } from "./neon/index.js";
 
 export interface FirstPartyPack {
   readonly manifest: Readonly<Record<string, unknown>>;
   readonly definition: StaticPackDefinition;
-  readonly resolver: ReturnType<typeof createGitHubIssueLabelsSourceResolver> | ReturnType<typeof createSlackChannelTopicSourceResolver> | ReturnType<typeof createGmailSourceResolver> | ReturnType<typeof createStripeSourceResolver> | ReturnType<typeof createVercelDeploymentReleaseSourceResolver> | ReturnType<typeof createCloudflareDnsRecordSourceResolver>;
+  readonly resolver: ReturnType<typeof createGitHubIssueLabelsSourceResolver> | ReturnType<typeof createSlackChannelTopicSourceResolver> | ReturnType<typeof createGmailSourceResolver> | ReturnType<typeof createStripeSourceResolver> | ReturnType<typeof createVercelDeploymentReleaseSourceResolver> | ReturnType<typeof createCloudflareDnsRecordSourceResolver> | ReturnType<typeof createNeonDatabaseMigrationSourceResolver>;
   readonly reconcile: (...args: any[]) => any;
 }
 
@@ -28,10 +29,11 @@ export const gmailLabelsPack: FirstPartyPack = Object.freeze({ manifest: gmailLa
 export const stripeRefundPack: FirstPartyPack = Object.freeze({ manifest: stripeManifest, definition: stripeRefundDefinition, resolver: createStripeSourceResolver(), reconcile: reconcileStripeRefund });
 export const vercelDeploymentReleasePack: FirstPartyPack = Object.freeze({ manifest: vercelDeploymentReleaseManifest, definition: vercelDeploymentReleaseDefinition, resolver: createVercelDeploymentReleaseSourceResolver(), reconcile: reconcileVercelDeploymentRelease });
 export const cloudflareDnsRecordSetPack: FirstPartyPack = Object.freeze({ manifest: cloudflareDnsRecordSetManifest, definition: cloudflareDnsRecordSetDefinition, resolver: createCloudflareDnsRecordSourceResolver(), reconcile: reconcileCloudflareDnsRecordSet });
-export const firstPartyPacks = Object.freeze([githubIssueLabelsPack, slackChannelTopicPack, gmailReplyPack, gmailLabelsPack, stripeRefundPack, vercelDeploymentReleasePack, cloudflareDnsRecordSetPack]);
+export const neonDatabaseMigrationPack: FirstPartyPack = Object.freeze({ manifest: neonDatabaseMigrationManifest, definition: neonDatabaseMigrationDefinition, resolver: createNeonDatabaseMigrationSourceResolver(), reconcile: reconcileNeonDatabaseMigration });
+export const firstPartyPacks = Object.freeze([githubIssueLabelsPack, slackChannelTopicPack, gmailReplyPack, gmailLabelsPack, stripeRefundPack, vercelDeploymentReleasePack, cloudflareDnsRecordSetPack, neonDatabaseMigrationPack]);
 
 export function createFirstPartyPackRegistry(): StaticPackRegistry { return createStaticPackRegistry(firstPartyPacks.map(pack => pack.definition)); }
-export function createFirstPartySourceRegistry(tenant: string): SourceRegistry { return createSourceRegistry([createGitHubIssueLabelsSourceResolver(tenant), createSlackChannelTopicSourceResolver(tenant), createGmailSourceResolver(tenant), createGmailSourceResolver(tenant, true), createStripeSourceResolver(tenant), createVercelDeploymentReleaseSourceResolver(tenant), createCloudflareDnsRecordSourceResolver(tenant)]); }
+export function createFirstPartySourceRegistry(tenant: string): SourceRegistry { return createSourceRegistry([createGitHubIssueLabelsSourceResolver(tenant), createSlackChannelTopicSourceResolver(tenant), createGmailSourceResolver(tenant), createGmailSourceResolver(tenant, true), createStripeSourceResolver(tenant), createVercelDeploymentReleaseSourceResolver(tenant), createCloudflareDnsRecordSourceResolver(tenant), createNeonDatabaseMigrationSourceResolver(tenant)]); }
 export function firstPartyPackForAlias(alias: string): FirstPartyPack | undefined { return firstPartyPacks.find(pack => pack.definition.alias === alias); }
 
 export { githubIssueLabelsManifest, githubIssueLabelsDefinition, createGitHubIssueLabelsSourceResolver, compileGitHubIssueLabels, parseGitHubIssueLabelsPolicy, validateGitHubIssueLabelsChoices, reconcileGitHubIssueLabels } from "./github/index.js";
@@ -40,4 +42,5 @@ export { gmailReplySendAlias, gmailThreadLabelsAlias, parseGmailReplyPolicy, par
 export { stripeRefundIssueAlias, parseStripeRefundPolicy, compileStripeRefund, reconcileStripeRefund, createStripeSourceResolver, stripeRefundDefinition, stripeManifest } from "./stripe/index.js";
 export { vercelDeploymentReleaseAlias, parseVercelDeploymentReleasePolicy, compileVercelDeploymentRelease, validateVercelDeploymentReleaseChoices, createVercelDeploymentReleaseSourceResolver, reconcileVercelDeploymentRelease, vercelDeploymentReleaseDefinition, vercelDeploymentReleaseManifest, type VercelDeploymentReleaseProjection, type VercelDeploymentReleasePolicy } from "./vercel/index.js";
 export { cloudflareDnsRecordSetAlias, parseCloudflareDnsRecordPolicy, compileCloudflareDnsRecordSet, validateCloudflareDnsRecordChoices, createCloudflareDnsRecordSourceResolver, reconcileCloudflareDnsRecordSet, cloudflareDnsRecordSetDefinition, cloudflareDnsRecordSetManifest, type CloudflareDnsRecordProjection, type CloudflareDnsRecordPolicy } from "./cloudflare/index.js";
+export { neonDatabaseMigrationAlias, parseNeonDatabaseMigrationPolicy, compileNeonDatabaseMigration, validateNeonDatabaseMigrationChoices, createNeonDatabaseMigrationSourceResolver, reconcileNeonDatabaseMigration, neonDatabaseMigrationDefinition, neonDatabaseMigrationManifest, type NeonDatabaseMigrationProjection, type NeonDatabaseMigrationPolicy } from "./neon/index.js";
 export { semanticOutcomeCatalog, semanticOutcomeForAlias, type SemanticOutcomeCatalogEntry } from "./semantic.js";
