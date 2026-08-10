@@ -30,6 +30,7 @@ export interface LocalAuthorityRuntimeOptions {
 }
 
 export async function createLocalAuthorityRuntime(config: AuthorityHostConfig, options: LocalAuthorityRuntimeOptions = {}): Promise<AuthorityHostRuntime> {
+  if (config.cloud && config.topology !== "isolated") throw new TypeError("managed authority requires isolated topology");
   await mkdir(config.ledgerDir, { recursive: true }); await mkdir(config.decisionDir, { recursive: true }); await mkdir(config.receiptDir, { recursive: true });
   const deployment = config.deploymentPath ? await loadAuthorityDeployment(config.deploymentPath) : undefined;
   if (deployment && deployment.tenant !== config.tenant) throw new TypeError("authority deployment tenant does not match host config");

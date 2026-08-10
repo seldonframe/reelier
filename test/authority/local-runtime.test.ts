@@ -36,3 +36,10 @@ test("local authority runtime refuses a malformed signed deployment instead of s
     await assert.rejects(() => createLocalAuthorityRuntime({ version: 1, tenant: "tenant_1", requester: "operator", definitions: ["gmail_reply_send_v1"], ledgerDir: path.join(root, "ledger"), decisionDir: path.join(root, "decisions"), receiptDir: path.join(root, "receipts"), endpoints: [], deploymentPath } as never), /deployment connectors|trust roots|unknown or missing field/i);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test("managed local authority refuses a non-exclusive topology", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-managed-topology-"));
+  try {
+    await assert.rejects(() => createLocalAuthorityRuntime({ version: 1, tenant: "tenant_1", requester: "operator", definitions: ["gmail_reply_send_v1"], topology: "same-user", ledgerDir: path.join(root, "ledger"), decisionDir: path.join(root, "decisions"), receiptDir: path.join(root, "receipts"), endpoints: [], cloud: { baseUrl: "https://cloud.example", tokenRef: "cloud-token" } }), /managed authority requires isolated topology/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
