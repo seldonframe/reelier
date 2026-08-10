@@ -30,6 +30,13 @@ test("the Fly Authority Cell starts the authenticated HTTP transport with durabl
   assert.doesNotMatch(manifest, /(?:TOKEN|PASSWORD|SECRET)\s*=\s*"[^\"]+"/i);
 });
 
+test("the Fly Authority Cell bootstrap initializes through the image entrypoint without exposing HTTP", async () => {
+  const manifest = await readFile(path.resolve("infra/fly/authority-cell/authority-cell-bootstrap.toml"), "utf8");
+  assert.match(manifest, /app = "authority bootstrap --path \/data\/authority"/);
+  assert.doesNotMatch(manifest, /\/bin\/sh|http_service|authority serve/);
+  assert.match(manifest, /destination = "\/data"/);
+});
+
 test("every Fly certification manifest resolves the repository Dockerfile from its own directory", async () => {
   for (const name of ["authority-cell-bootstrap", "authority-cell", "agent-runtime", "egress-gateway"]) {
     const manifest = await readFile(path.resolve(`infra/fly/authority-cell/${name}.toml`), "utf8");
