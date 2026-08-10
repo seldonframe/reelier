@@ -83,7 +83,7 @@ export function parseCertificationOperatorConfig(value: unknown): CertificationO
   return Object.freeze(parsed);
 }
 
-export async function inspectCertificationSecretReferences(config: CertificationOperatorConfigV1, env: Readonly<Record<string, string | undefined>> = process.env): Promise<readonly CertificationSecretReferenceStatus[]> {
+export async function inspectCertificationSecretReferences(config: CertificationOperatorConfigV1, env: Readonly<Record<string, string | undefined>> = process.env, managedEnvironmentNames?: ReadonlySet<string>): Promise<readonly CertificationSecretReferenceStatus[]> {
   const refs: ReadonlyArray<readonly [CertificationSecretReferenceStatus["owner"], CertificationSecretReferenceStatus["slot"], string]> = [
     ["github", "credential", config.providers.github.credentialRef],
     ["vercel", "credential", config.providers.vercel.credentialRef],
@@ -98,9 +98,10 @@ export async function inspectCertificationSecretReferences(config: Certification
   ];
   const reports = await Promise.all(refs.map(async ([owner, slot, reference]) => {
     const environment = reference.startsWith("env:");
-    const configured = environment
-      ? Boolean(env[reference.slice(4)])
-      : await fileExistsAndIsNonEmpty(reference.slice(5));
+    const managed = managedEnvironmentNames !== undefined && owner !== "codex" && !(owner === "fly" && slot === "api");
+    const configured = managed
+      ? environment && managedEnvironmentNames.has(reference.slice(4))
+      : environment ? Boolean(env[reference.slice(4)]) : await fileExistsAndIsNonEmpty(reference.slice(5));
     return Object.freeze({ owner, slot, kind: environment ? "environment" as const : "file" as const, status: configured ? "configured" as const : "missing" as const });
   }));
   return Object.freeze(reports);

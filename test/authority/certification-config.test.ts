@@ -59,6 +59,27 @@ test("secret-reference inspection reports availability without returning values"
   for (const value of ["github-private", "vercel-private", "postgresql://private-value", "fly-private"]) assert.equal(serialized.includes(value), false);
 });
 
+test("managed secret inspection requires provider credentials in the Authority Cell", async () => {
+  const config = parseCertificationOperatorConfig(completeConfig());
+  const report = await inspectCertificationSecretReferences(config, {
+    REELIER_GITHUB_TOKEN: "local-only-github-value",
+    FLY_API_TOKEN: "local-fly-value",
+  }, new Set([
+    "REELIER_VERCEL_TOKEN",
+    "REELIER_NEON_API_KEY",
+    "REELIER_NEON_DATABASE_URL",
+    "REELIER_CLOUDFLARE_TOKEN",
+    "REELIER_HUBSPOT_TOKEN",
+    "REELIER_SLACK_TOKEN",
+    "REELIER_EGRESS_GATEWAY_BEARER",
+  ]));
+  assert.equal(report.find(item => item.owner === "github" && item.slot === "credential")?.status, "missing");
+  assert.equal(report.find(item => item.owner === "vercel" && item.slot === "credential")?.status, "configured");
+  assert.equal(report.find(item => item.owner === "fly" && item.slot === "api")?.status, "configured");
+  assert.equal(report.find(item => item.owner === "fly" && item.slot === "egress")?.status, "configured");
+  assert.doesNotMatch(JSON.stringify(report), /local-only-github-value|local-fly-value/);
+});
+
 test("Codex session credentials must remain outside the agent workspace", () => {
   const config = completeConfig() as { codex: { sessionCredentialDirectory: string } };
   config.codex.sessionCredentialDirectory = "C:/work/reelier-certification/.secrets";

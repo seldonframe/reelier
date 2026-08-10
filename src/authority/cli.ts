@@ -22,7 +22,7 @@ import { createFilePrincipalRegistry } from "./host/principal-registry.js";
 import { createDelegationAuthority } from "./host/delegation-service.js";
 import { activateCodexPrincipalSessions } from "./host/codex-session-activation.js";
 import { runTopologyProbeCommand } from "./host/topology-probe-command.js";
-import { createFlyRemoteTopologyOperations, probePinnedFlyBinary } from "./host/fly-remote-probe.js";
+import { createFlyRemoteTopologyOperations, listFlySecretNames, probePinnedFlyBinary } from "./host/fly-remote-probe.js";
 import { runFlyCertification } from "./host/fly-certification.js";
 import { loadOrCreateLocalGateSigner } from "./host/gate-signer.js";
 import { createAuthorityEgressGateway } from "./host/egress-gateway.js";
@@ -307,12 +307,16 @@ async function authorityCertify(args: Readonly<{ positional: string[]; flags: Se
     if (args.opts.config) {
       try {
         const config = parseCertificationOperatorConfig(JSON.parse(await readFile(path.resolve(args.opts.config), "utf8")));
-        const secretStatuses = await inspectCertificationSecretReferences(config);
-        const secretStatus = (owner: string, slot = "credential") => secretStatuses.find(item => item.owner === owner && item.slot === slot)?.status === "configured";
         const codexBinary = await probePinnedCodexBinary(config.codex.binaryPath, config.codex.version);
         const codexLogin = codexBinary === "available" ? await probeCodexLogin(config.codex.binaryPath, config.codex.codexHomePath) : "missing";
         const codex = codexBinary === "available" && codexLogin === "available" ? "available" : "missing";
         const flyBinary = await probePinnedFlyBinary(config.fly.flyctlPath, config.fly.flyctlVersion);
+        let flySecretInventory: readonly string[] | undefined;
+        if (flyBinary === "available") {
+          try { flySecretInventory = await listFlySecretNames(config.fly.flyctlPath, config.fly.appName); } catch { /* surfaced below without exposing flyctl output */ }
+        }
+        const secretStatuses = await inspectCertificationSecretReferences(config, process.env, new Set(flySecretInventory ?? []));
+        const secretStatus = (owner: string, slot = "credential") => secretStatuses.find(item => item.owner === owner && item.slot === slot)?.status === "configured";
         const packageVersion = process.env.npm_package_version ?? CERTIFICATION_TARGET_PACKAGE_VERSION;
         const base = createCertificationPreflight({
           packageVersion,
@@ -325,6 +329,7 @@ async function authorityCertify(args: Readonly<{ positional: string[]; flags: Se
         const extraMissing = secretStatuses.filter(item => item.status === "missing").map(item => `secret:${item.owner}:${item.slot}`);
         if (codexBinary === "available" && codexLogin === "missing") extraMissing.push("runtime:codex-authentication");
         if (flyBinary === "missing") extraMissing.push("runtime:flyctl-version");
+        else if (!flySecretInventory) extraMissing.push("runtime:fly-secret-inventory");
         const missing = Object.freeze([...new Set([...base.missing, ...extraMissing])].sort());
         const { digest: _baseDigest, ...baseBody } = base;
         void _baseDigest;
