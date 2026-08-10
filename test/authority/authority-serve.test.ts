@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { access, readFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { parseAuthorityServeMode } from "../../src/authority/cli.js";
 import { validateAuthorityHostConfig } from "../../src/authority/host/config.js";
@@ -35,6 +37,33 @@ test("the Fly Authority Cell bootstrap initializes through the image entrypoint 
   assert.match(manifest, /app = "authority bootstrap --path \/data\/authority"/);
   assert.doesNotMatch(manifest, /\/bin\/sh|http_service|authority serve/);
   assert.match(manifest, /destination = "\/data"/);
+});
+
+test("authority bootstrap remains alive after initialization until it receives a shutdown signal", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "reelier-authority-bootstrap-"));
+  const child = spawn(process.execPath, [path.resolve("dist-test/src/cli.js"), "authority", "bootstrap", "--path", root], {
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("authority bootstrap did not become ready")), 5_000);
+      child.stderr.setEncoding("utf8");
+      child.stderr.on("data", (chunk: string) => {
+        if (!chunk.includes('"service":"authority-bootstrap"')) return;
+        clearTimeout(timer);
+        resolve();
+      });
+      child.once("error", reject);
+    });
+    await new Promise(resolve => setTimeout(resolve, 100));
+    assert.equal(child.exitCode, null);
+  } finally {
+    if (child.exitCode === null) {
+      child.kill();
+      await new Promise(resolve => child.once("exit", resolve));
+    }
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("every Fly certification manifest resolves the repository Dockerfile from its own directory", async () => {
