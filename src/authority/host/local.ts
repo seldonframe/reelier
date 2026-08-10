@@ -20,11 +20,13 @@ import { createSecretResolver } from "./secret-resolver.js";
 import { firstPartyPacks, createFirstPartySourceRegistry } from "../../packs/index.js";
 import { loadAuthorityDeployment } from "./deployment.js";
 import { loadOrCreateLocalGateSigner } from "./gate-signer.js";
+import type { DelegationAuthority } from "./delegation-service.js";
 
 /** Builds the local host from signed-artifact boundaries. An empty workspace is intentionally
  * usable for discovery and status, but every Outcome refuses until a signed contract is installed. */
 export interface LocalAuthorityRuntimeOptions {
   readonly dispatchAdapter?: DispatchAdapter;
+  readonly delegation?: DelegationAuthority;
 }
 
 export async function createLocalAuthorityRuntime(config: AuthorityHostConfig, options: LocalAuthorityRuntimeOptions = {}): Promise<AuthorityHostRuntime> {
@@ -58,7 +60,7 @@ export async function createLocalAuthorityRuntime(config: AuthorityHostConfig, o
   const publication = createFileReceiptPublication({ rootDir: config.receiptDir });
   const adapter = options.dispatchAdapter ?? createJsonHttpsDispatchAdapter({ endpoints: config.endpoints, secrets: createSecretResolver() });
   const dispatch = createDispatchCoordinator(ledger, adapter, undefined, publication);
-  const runtime = createAuthorityHostRuntime({ gate, dispatch, ledger, decisions });
+  const runtime = createAuthorityHostRuntime({ gate, dispatch, ledger, decisions, delegation: options.delegation });
   const jobs = Object.freeze(config.definitions.map(alias => Object.freeze({ jobId: alias, alias })));
   return Object.freeze({
     ...runtime,

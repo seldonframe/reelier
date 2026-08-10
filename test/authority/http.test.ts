@@ -10,6 +10,9 @@ test("authority REST exposes job search and load with host identity", async () =
       async status() { return { requestId: "r1", verdict: "accepted", reasonCode: "accepted", lifecycleState: "reconciled" }; },
       async jobsSearch(_input, context) { return { tenant: context.tenant, requester: context.requester, jobs: [{ jobId: "job_1" }] }; },
       async jobLoad(input, context) { return { tenant: context.tenant, requester: context.requester, jobRef: (input as { jobId: string }).jobId }; },
+      async delegationRequest(_input, context) { return { tenant: context.tenant, requester: context.requester, lifecycleState: "allocated" }; },
+      async delegationStatus(_input, context) { return { tenant: context.tenant, requester: context.requester, lifecycleState: "allocated" }; },
+      async taskStatus(_input, context) { return { tenant: context.tenant, requester: context.requester, lifecycleState: "active" }; },
     }, { tenant: "tenant_1", requester: "agent_1" });
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -22,6 +25,12 @@ test("authority REST exposes job search and load with host identity", async () =
     const loaded = await postJson(`http://127.0.0.1:${address.port}/v1/jobs/job_1/load`, {});
     assert.equal(loaded.jobRef, "job_1");
     assert.equal(loaded.requester, "agent_1");
+    const delegated = await postJson(`http://127.0.0.1:${address.port}/v1/delegations`, { tenant: "attacker", parentPrincipal: "attacker" });
+    assert.equal(delegated.reasonCode, "invalid-request");
+    const delegationStatus = await getJson(`http://127.0.0.1:${address.port}/v1/delegations/grant_1`);
+    assert.equal(delegationStatus.requester, "agent_1");
+    const taskStatus = await getJson(`http://127.0.0.1:${address.port}/v1/tasks/task_1`);
+    assert.equal(taskStatus.requester, "agent_1");
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
