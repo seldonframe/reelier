@@ -8,7 +8,7 @@ export interface AuthorityHostConfig {
   readonly tenant: string;
   readonly requester: string;
   readonly definitions: readonly string[];
-  readonly ingress?: { readonly bearerRef?: string; readonly allowedRequester?: string };
+  readonly ingress?: { readonly bearerRef?: string; readonly allowedRequester?: string; readonly principalRegistryFile?: string };
   readonly topology?: "isolated" | "same-user" | "unknown";
   readonly ledgerDir: string;
   readonly decisionDir: string;
@@ -37,7 +37,7 @@ function validateConfig(value: unknown, baseDir: string): AuthorityHostConfig {
   const definitions = list(raw.definitions, "definitions");
   const endpoints = Array.isArray(raw.endpoints) ? raw.endpoints.map(item => validateEndpoint(item)) : [];
   const resolvePath = (item: unknown, fallback: string) => path.resolve(baseDir, typeof item === "string" && item ? item : fallback);
-  const ingress = raw.ingress === undefined ? undefined : validateIngress(raw.ingress);
+  const ingress = raw.ingress === undefined ? undefined : validateIngress(raw.ingress, baseDir);
   const topology = raw.topology === undefined ? "unknown" : raw.topology;
   if (topology !== "isolated" && topology !== "same-user" && topology !== "unknown") throw new TypeError("invalid authority topology");
   const cloud = raw.cloud === undefined ? undefined : validateCloud(raw.cloud);
@@ -56,7 +56,7 @@ function validateEndpoint(value: unknown): JsonHttpsEndpoint {
   for (const method of methods) if (!["GET", "POST", "PUT", "PATCH", "DELETE"].includes(method)) throw new TypeError("invalid endpoint method");
   return Object.freeze({ endpointId: raw.endpointId, baseUrl: raw.baseUrl, allowedMethods: Object.freeze([...methods]), allowedPathPrefixes: Object.freeze([...prefixes]), accountIdentity: raw.accountIdentity, ...(typeof raw.secretRef === "string" ? { secretRef: raw.secretRef } : {}) });
 }
-function validateIngress(value: unknown): AuthorityHostConfig["ingress"] { if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("ingress must be an object"); const raw = value as Record<string, unknown>; if (raw.bearerRef !== undefined && typeof raw.bearerRef !== "string") throw new TypeError("invalid ingress bearer reference"); if (raw.allowedRequester !== undefined && typeof raw.allowedRequester !== "string") throw new TypeError("invalid ingress requester"); return Object.freeze({ ...(raw.bearerRef ? { bearerRef: raw.bearerRef } : {}), ...(raw.allowedRequester ? { allowedRequester: raw.allowedRequester } : {}) }); }
+function validateIngress(value: unknown, baseDir: string): AuthorityHostConfig["ingress"] { if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("ingress must be an object"); const raw = value as Record<string, unknown>; const allowed = ["bearerRef", "allowedRequester", "principalRegistryFile"]; if (Object.keys(raw).some(key => !allowed.includes(key))) throw new TypeError("ingress is closed"); if (raw.bearerRef !== undefined && typeof raw.bearerRef !== "string") throw new TypeError("invalid ingress bearer reference"); if (raw.allowedRequester !== undefined && typeof raw.allowedRequester !== "string") throw new TypeError("invalid ingress requester"); if (raw.principalRegistryFile !== undefined && (typeof raw.principalRegistryFile !== "string" || !raw.principalRegistryFile)) throw new TypeError("invalid ingress principal registry"); if (raw.bearerRef && raw.principalRegistryFile) throw new TypeError("ingress bearer and principal registry are mutually exclusive"); return Object.freeze({ ...(raw.bearerRef ? { bearerRef: raw.bearerRef } : {}), ...(raw.allowedRequester ? { allowedRequester: raw.allowedRequester } : {}), ...(raw.principalRegistryFile ? { principalRegistryFile: path.resolve(baseDir, raw.principalRegistryFile as string) } : {}) }); }
 function validateCloud(value: unknown): NonNullable<AuthorityHostConfig["cloud"]> { if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("cloud must be an object"); const raw = value as Record<string, unknown>; if (typeof raw.baseUrl !== "string" || !raw.baseUrl || typeof raw.tokenRef !== "string" || !raw.tokenRef) throw new TypeError("cloud requires baseUrl and tokenRef"); return Object.freeze({ baseUrl: raw.baseUrl, tokenRef: raw.tokenRef }); }
 function list(value: unknown, label: string): string[] { if (!Array.isArray(value) || value.some(item => typeof item !== "string" || !item) || new Set(value).size !== value.length) throw new TypeError(`${label} must be a unique string array`); return [...value]; }
 

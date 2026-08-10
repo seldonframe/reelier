@@ -42,7 +42,7 @@ export function createAuthorityHostServer(config: AuthorityHostConfig, runtime: 
     mcp,
     http,
     startStdio: async () => { await mcp.connect(new StdioServerTransport()); },
-    startHttp: async (port, host = "127.0.0.1") => { if (!isLoopback(host) && !config.ingress?.bearerRef) throw new Error("non-loopback authority HTTP requires ingress bearer authentication"); await new Promise<void>((resolve, reject) => { const onError = (error: Error) => { http.off("listening", onListening); reject(error); }; const onListening = () => { http.off("error", onError); resolve(); }; http.once("error", onError); http.once("listening", onListening); http.listen(port, host); }); },
+    startHttp: async (port, host = "127.0.0.1") => { if (!isLoopback(host) && !config.ingress?.bearerRef && !options.principalRegistry) throw new Error("non-loopback authority HTTP requires ingress bearer authentication"); await new Promise<void>((resolve, reject) => { const onError = (error: Error) => { http.off("listening", onListening); reject(error); }; const onListening = () => { http.off("error", onError); resolve(); }; http.once("error", onError); http.once("listening", onListening); http.listen(port, host); }); },
     close: async () => { await new Promise<void>(resolve => { if (!http.listening) return resolve(); http.close(() => resolve()); http.closeAllConnections?.(); }); },
   };
 }

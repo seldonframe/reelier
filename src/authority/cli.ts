@@ -16,6 +16,9 @@ import { verifyReleaseEvidenceManifest } from "./host/release-evidence.js";
 import { inspectCertificationSecretReferences, parseCertificationOperatorConfig, probePinnedCodexBinary } from "./host/certification-config.js";
 import { createFounderCertificationSourceAdapter } from "./host/founder-source-adapter.js";
 import { createFounderJsonHttpsDispatchAdapter } from "./host/founder-dispatch-adapter.js";
+import { createCodexDogfoodPlan } from "./host/codex-dogfood.js";
+import { launchCodexDogfood, materializeCodexDogfood, probeCodexLogin } from "./host/codex-launcher.js";
+import { createFilePrincipalRegistry } from "./host/principal-registry.js";
 
 export async function runAuthorityCommand(args: Readonly<{ positional: string[]; flags: Set<string>; opts: Record<string, string> }>): Promise<number> {
   const subcommand = args.positional[0] ?? "doctor";
@@ -107,7 +110,7 @@ async function authorityDoctor(args: Readonly<{ opts: Record<string, string>; fl
       // unchecked until a live topology probe establishes it.
       topology: "unchecked",
       topologyDeclaration: loaded.config.topology ?? "unknown",
-      ingress: loaded.config.ingress?.bearerRef ? "verified" : "unchecked",
+      ingress: loaded.config.ingress?.bearerRef || loaded.config.ingress?.principalRegistryFile ? "verified" : "unchecked",
       contracts: contracts > 0 ? "configured" : "unchecked",
       trust: trust > 0 ? "configured" : "unchecked",
       connectors: connectors > 0 ? "configured" : "unchecked",
@@ -191,7 +194,8 @@ async function authorityServe(args: Readonly<{ opts: Record<string, string> }>):
       return { requestId, verdict: "accepted", reasonCode: "staged", lifecycleState: "staged", commitment: staged.commitment };
     },
   };
-  const server = createAuthorityHostServer(loaded.config, runtime);
+  const principalRegistry = loaded.config.ingress?.principalRegistryFile ? createFilePrincipalRegistry({ tenant: loaded.config.tenant, file: loaded.config.ingress.principalRegistryFile }) : undefined;
+  const server = createAuthorityHostServer(loaded.config, runtime, principalRegistry ? { principalRegistry } : {});
   if (serveMode.transport === "http") {
     await server.startHttp(serveMode.port, serveMode.host);
     console.error(JSON.stringify({ status: "ready", transport: "http", host: serveMode.host, port: serveMode.port }));
@@ -209,7 +213,9 @@ async function authorityCertify(args: Readonly<{ positional: string[]; flags: Se
         const config = parseCertificationOperatorConfig(JSON.parse(await readFile(path.resolve(args.opts.config), "utf8")));
         const secretStatuses = await inspectCertificationSecretReferences(config);
         const secretStatus = (owner: string, slot = "credential") => secretStatuses.find(item => item.owner === owner && item.slot === slot)?.status === "configured";
-        const codex = await probePinnedCodexBinary(config.codex.binaryPath, config.codex.version);
+        const codexBinary = await probePinnedCodexBinary(config.codex.binaryPath, config.codex.version);
+        const codexLogin = codexBinary === "available" ? await probeCodexLogin(config.codex.binaryPath, config.codex.codexHomePath) : "missing";
+        const codex = codexBinary === "available" && codexLogin === "available" ? "available" : "missing";
         const packageVersion = process.env.npm_package_version ?? "0.32.0";
         const base = createCertificationPreflight({
           packageVersion,
@@ -220,6 +226,7 @@ async function authorityCertify(args: Readonly<{ positional: string[]; flags: Se
           resources: Object.entries(config.providers).map(([provider, resource]) => ({ provider, accountId: resource.accountId, credentialRef: secretStatus(provider) ? "configured" : undefined, cleanupRef: resource.cleanupRef })),
         });
         const extraMissing = secretStatuses.filter(item => item.status === "missing").map(item => `secret:${item.owner}:${item.slot}`);
+        if (codexBinary === "available" && codexLogin === "missing") extraMissing.push("runtime:codex-authentication");
         const missing = Object.freeze([...new Set([...base.missing, ...extraMissing])].sort());
         const { digest: _baseDigest, ...baseBody } = base;
         void _baseDigest;
@@ -253,6 +260,17 @@ async function authorityCertify(args: Readonly<{ positional: string[]; flags: Se
   }
   if (action === "run") {
     if (process.env.REELIER_LIVE_CERTIFY !== "1") { console.error(JSON.stringify({ status: "refused", reasonCode: "live-acknowledgement-required" })); return 1; }
+    if (args.opts.adapter === "codex-ten-agent") {
+      if (!args.opts.config) { console.error(JSON.stringify({ status: "refused", reasonCode: "certification-config-required" })); return 1; }
+      try {
+        const config = parseCertificationOperatorConfig(JSON.parse(await readFile(path.resolve(args.opts.config), "utf8")));
+        const plan = createCodexDogfoodPlan({ taskId: config.codex.taskId, endpoint: config.codex.authorityEndpoint });
+        const materialized = await materializeCodexDogfood({ plan, workspace: config.codex.workspacePath, codexHome: config.codex.codexHomePath, evidenceDirectory: config.evidenceDirectory });
+        const result = await launchCodexDogfood({ plan, binaryPath: config.codex.binaryPath, expectedVersion: config.codex.version, codexHome: config.codex.codexHomePath, workspace: config.codex.workspacePath, evidenceDirectory: config.evidenceDirectory, sessionCredentialDirectory: config.codex.sessionCredentialDirectory, materialized });
+        console.log(JSON.stringify({ status: result.exitCode === 0 ? "completed" : "failed", adapter: "codex-ten-agent", exitCode: result.exitCode, stdoutPath: result.stdoutPath, stderrPath: result.stderrPath, identityMapPath: result.identityMapPath, hookEvidenceDirectory: result.hookEvidenceDirectory }, null, 2));
+        return result.exitCode === 0 ? 0 : 1;
+      } catch (error) { console.error(JSON.stringify({ status: "refused", reasonCode: "codex-dogfood-unavailable", message: error instanceof Error ? error.message : String(error) })); return 1; }
+    }
     console.error(JSON.stringify({ status: "refused", reasonCode: "adapter-runner-not-configured", adapter: args.opts.adapter ?? null }));
     return 1;
   }

@@ -205,6 +205,7 @@ export function parseArgv(argv: string[]): ParsedArgs {
       || arg === "--transport"
       || arg === "--port"
       || arg === "--certification-config"
+      || arg === "--config"
     ) {
       const val = argv[++i];
       if (!val) {

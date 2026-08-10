@@ -1,5 +1,7 @@
 import { stat } from "node:fs/promises";
 import { spawn } from "node:child_process";
+import path from "node:path";
+import { CODEX_DOGFOOD_PROFILES } from "./codex-dogfood.js";
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/;
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
@@ -13,7 +15,7 @@ export interface CloudflareCertificationResource { readonly apiBaseUrl: string; 
 export interface HubSpotCertificationResource { readonly apiBaseUrl: string; readonly accountId: string; readonly credentialRef: string; readonly cleanupRef: string; readonly ticketId: string; readonly contactId: string; readonly approvedProperties: readonly string[] }
 export interface SlackCertificationResource { readonly apiBaseUrl: string; readonly accountId: string; readonly credentialRef: string; readonly cleanupRef: string; readonly channelId: string }
 export interface FlyCertificationResource { readonly appName: string; readonly agentAppName: string; readonly orgSlug: string; readonly region: string; readonly apiCredentialRef: string; readonly authorityImageDigest: string; readonly networkPolicyDigest: string; readonly schemaDigest: string }
-export interface CodexCertificationResource { readonly binaryPath: string; readonly version: string; readonly authorityEndpoint: string; readonly taskId: string }
+export interface CodexCertificationResource { readonly binaryPath: string; readonly version: string; readonly authorityEndpoint: string; readonly taskId: string; readonly codexHomePath: string; readonly workspacePath: string; readonly sessionCredentialDirectory: string }
 
 export interface CertificationOperatorConfigV1 {
   readonly v: "reelier.certification-operator-config/v1";
@@ -32,8 +34,8 @@ export interface CertificationOperatorConfigV1 {
 }
 
 export interface CertificationSecretReferenceStatus {
-  readonly owner: "github" | "vercel" | "neon" | "cloudflare" | "hubspot" | "slack" | "fly";
-  readonly slot: "credential" | "database" | "api";
+  readonly owner: "github" | "vercel" | "neon" | "cloudflare" | "hubspot" | "slack" | "fly" | "codex";
+  readonly slot: "credential" | "database" | "api" | `session:${typeof CODEX_DOGFOOD_PROFILES[number]}`;
   readonly kind: "environment" | "file";
   readonly status: "configured" | "missing";
 }
@@ -63,7 +65,7 @@ export function parseCertificationOperatorConfig(value: unknown): CertificationO
 }
 
 export async function inspectCertificationSecretReferences(config: CertificationOperatorConfigV1, env: Readonly<Record<string, string | undefined>> = process.env): Promise<readonly CertificationSecretReferenceStatus[]> {
-  const refs: readonly [CertificationSecretReferenceStatus["owner"], CertificationSecretReferenceStatus["slot"], string][] = [
+  const refs: ReadonlyArray<readonly [CertificationSecretReferenceStatus["owner"], CertificationSecretReferenceStatus["slot"], string]> = [
     ["github", "credential", config.providers.github.credentialRef],
     ["vercel", "credential", config.providers.vercel.credentialRef],
     ["neon", "credential", config.providers.neon.credentialRef],
@@ -72,6 +74,7 @@ export async function inspectCertificationSecretReferences(config: Certification
     ["hubspot", "credential", config.providers.hubspot.credentialRef],
     ["slack", "credential", config.providers.slack.credentialRef],
     ["fly", "api", config.fly.apiCredentialRef],
+    ...CODEX_DOGFOOD_PROFILES.map(profile => ["codex" as const, `session:${profile}` as const, `file:${path.join(config.codex.sessionCredentialDirectory, `${profile}.token`)}`] as const),
   ];
   const reports = await Promise.all(refs.map(async ([owner, slot, reference]) => {
     const environment = reference.startsWith("env:");
@@ -134,9 +137,12 @@ function fly(value: unknown): FlyCertificationResource {
 }
 function codex(value: unknown): CodexCertificationResource {
   const raw = object(value, "codex certification resource");
-  closed(raw, ["binaryPath", "version", "authorityEndpoint", "taskId"], "codex certification resource");
+  closed(raw, ["binaryPath", "version", "authorityEndpoint", "taskId", "codexHomePath", "workspacePath", "sessionCredentialDirectory"], "codex certification resource");
   if (typeof raw.version !== "string" || !/^\d+\.\d+\.\d+$/.test(raw.version)) throw new TypeError("codex version is invalid");
-  return Object.freeze({ binaryPath: text(raw.binaryPath, "codex binaryPath", 1024), version: raw.version, authorityEndpoint: https(raw.authorityEndpoint, "codex authorityEndpoint"), taskId: id(raw.taskId, "codex taskId") });
+  const workspacePath = safePath(raw.workspacePath, "codex workspacePath");
+  const sessionCredentialDirectory = safePath(raw.sessionCredentialDirectory, "codex sessionCredentialDirectory");
+  if (isWithin(path.resolve(workspacePath), path.resolve(sessionCredentialDirectory))) throw new TypeError("codex session credentials must be outside the workspace");
+  return Object.freeze({ binaryPath: text(raw.binaryPath, "codex binaryPath", 1024), version: raw.version, authorityEndpoint: https(raw.authorityEndpoint, "codex authorityEndpoint"), taskId: id(raw.taskId, "codex taskId"), codexHomePath: safePath(raw.codexHomePath, "codex codexHomePath"), workspacePath, sessionCredentialDirectory });
 }
 function resource(value: unknown, label: string, extras: readonly string[]): Record<string, unknown> {
   const raw = object(value, `${label} certification resource`);
@@ -156,3 +162,4 @@ function idList(value: unknown, label: string): readonly string[] { if (!Array.i
 function dnsList(value: unknown, label: string): readonly string[] { if (!Array.isArray(value) || value.length === 0 || value.length > 64) throw new TypeError(`${label} is invalid`); const values = value.map(item => text(item, label, 253).toLowerCase()); if (values.some(item => !DNS.test(item)) || new Set(values).size !== values.length) throw new TypeError(`${label} is invalid`); return Object.freeze(values.sort()); }
 async function fileExistsAndIsNonEmpty(file: string): Promise<boolean> { try { return (await stat(file)).size > 0; } catch { return false; } }
 function escapeRegExp(value: string): string { return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
+function isWithin(parent: string, candidate: string): boolean { const relative = path.relative(parent, candidate); return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative)); }

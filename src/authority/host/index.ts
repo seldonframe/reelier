@@ -41,6 +41,8 @@ export { CERTIFICATION_PROVIDER_IDS, createCertificationPreflight, createRelease
 export { certificationPreflightForAdapter, runCertification, type CertificationAdapter, type CertificationAdapterRunResult } from "./certification-runner.js";
 export { runFlyCertification, type FlyCertificationInput, type FlyCertificationResult } from "./fly-certification.js";
 export { runCodexCertification, type CodexCertificationEvent, type CodexCertificationOperations, type CodexCertificationResult } from "./codex-certification.js";
+export { materializeCodexDogfood, launchCodexDogfood, probeCodexLogin, type MaterializedCodexDogfood, type CodexDogfoodExecutionOptions, type CodexDogfoodLauncherOperations, type CodexDogfoodLaunchResult } from "./codex-launcher.js";
+export { createFilePrincipalRegistry } from "./principal-registry.js";
 export { parseCertificationOperatorConfig, inspectCertificationSecretReferences, probePinnedCodexBinary, type CertificationOperatorConfigV1, type CertificationSecretReferenceStatus, type GitHubCertificationResource, type VercelCertificationResource, type NeonCertificationResource, type CloudflareCertificationResource, type HubSpotCertificationResource, type SlackCertificationResource, type FlyCertificationResource, type CodexCertificationResource } from "./certification-config.js";
 export { createBoundSourceReadAdapter, createJsonHttpsSourceReadAdapter, type SourceReadAdapter, type BoundSourceRead, type BoundSourceReadRequest } from "./source-read-adapter.js";
 export { createFounderCertificationSourceAdapter, type FounderCertificationSourceHandles, type FounderCertificationSourceRequest } from "./founder-source-adapter.js";
