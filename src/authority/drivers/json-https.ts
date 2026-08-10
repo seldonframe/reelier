@@ -30,6 +30,7 @@ export interface JsonHttpsEndpoint {
 export interface JsonHttpsSecretResolver { resolve(reference: string): Promise<string>; }
 export interface JsonHttpsResponse { readonly status: number; readonly headers: Readonly<Record<string, string>>; readonly body: Buffer; readonly requestBytesDigest: string; }
 export interface JsonHttpsRead { readonly endpointId: string; readonly method?: "GET"; readonly path: string; readonly query?: string; readonly headers?: Readonly<Record<string, string>>; }
+export interface JsonHttpsConfidentialRequest { readonly endpointId: string; readonly method: "POST" | "PUT" | "PATCH" | "DELETE"; readonly path: string; readonly query?: string; readonly headers?: Readonly<Record<string, string>>; readonly body: Uint8Array; }
 
 export class JsonHttpsSecurityError extends Error { override name = "JsonHttpsSecurityError"; }
 
@@ -109,6 +110,20 @@ async function requestPinned(endpoint: JsonHttpsEndpoint, method: string, path: 
     if (body.length) req.write(body);
     req.end();
   });
+}
+
+/** Executes host-materialized confidential bytes without placing them in a serializable TransportEffect. */
+export async function executeJsonHttpsConfidentialRequest(request: JsonHttpsConfidentialRequest, endpoint: JsonHttpsEndpoint, secrets: JsonHttpsSecretResolver, options: { readonly timeoutMs?: number; readonly maxResponseBytes?: number; readonly maxRequestBytes?: number } = {}): Promise<JsonHttpsResponse> {
+  if (request.endpointId !== endpoint.endpointId) throw new JsonHttpsSecurityError("confidential request endpoint does not match configured endpoint");
+  if (!endpoint.allowedMethods.includes(request.method)) throw new JsonHttpsSecurityError("method is not allowed for endpoint");
+  validatePath(request.path, endpoint); validateQuery(request.query ?? ""); validateHeaders(request.headers ?? {});
+  const maxRequestBytes = Math.min(options.maxRequestBytes ?? 10 * 1024 * 1024, 10 * 1024 * 1024);
+  if (!Number.isSafeInteger(maxRequestBytes) || maxRequestBytes < 1 || request.body.byteLength > maxRequestBytes) throw new JsonHttpsSecurityError("confidential request exceeds configured limit");
+  const body = Buffer.from(request.body);
+  const secret = endpoint.secretRef ? await secrets.resolve(endpoint.secretRef) : undefined;
+  const proxySecret = endpoint.egressProxy ? await secrets.resolve(endpoint.egressProxy.bearerRef) : undefined;
+  try { return await requestPinned(endpoint, request.method, request.path, request.query ?? "", request.headers ?? {}, body, secret, proxySecret, options); }
+  finally { body.fill(0); }
 }
 
 async function requestThroughProxy(proxy: NonNullable<JsonHttpsEndpoint["egressProxy"]>, base: URL, target: URL, method: string, headers: Readonly<Record<string, string>>, body: Buffer, proxySecret: string, timeoutMs: number, maxResponseBytes: number, requestBytesDigest: string): Promise<JsonHttpsResponse> {

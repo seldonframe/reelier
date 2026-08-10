@@ -17,7 +17,7 @@ import {
   unlink,
 } from "node:fs/promises";
 import { hostname } from "node:os";
-import { createServer, type Server } from "node:net";
+import { createConnection, createServer, type Server, type Socket } from "node:net";
 import path from "node:path";
 import type {
   AuthorityLedger,
@@ -648,18 +648,31 @@ export class FsAuthorityLedger implements AuthorityLedger {
       if(housekeepingEpisode){const remaining=deadline-runtime.monotonicNow();if(remaining>0)await runtime.delay(Math.min(5,remaining));runtime.monotonicNow();return frozen({ok:false,reason:"busy"});}
       if(!await awaitK1OperationFenceAdmission(key,drawn.ticket,runtime,deadline))return frozen({ok:false,reason:"busy"});
     }else activeK1OperationFences.add(key);
-    let server:Server|null=null,capability:K1OperationFenceCapability|undefined;
+    let server:Server|null=null,windowsRootMutex:Server|null=null,capability:K1OperationFenceCapability|undefined;
     try{
       try{
         if(deadline-runtime.monotonicNow()<=0)return frozen({ok:false,reason:"busy"});
         await runtime.observeK1OperationFenceBoundary?.("k1-operation-fence-only-topology-accepted");
         await runtime.observeK1OperationFenceBoundary?.("k1-operation-fence-only-root-captured");
-        let retryDelayMs=5;
+        if(process.platform==="win32"){
+          windowsRootMutex=await acquireWindowsK1RootMutex(binding,runtime,deadline);
+          if(windowsRootMutex===null)return await this.refuseOnlyK1FenceClassification();
+        }
+        let retryDelayMs=5,candidateIndex=0;
         while(server===null){
           if(runtime.monotonicNow()>deadline)return await this.refuseOnlyK1FenceClassification();
-          const candidate=createServer(socket=>socket.destroy());
-          try{await new Promise<void>((resolve,reject)=>{candidate.once("error",reject);candidate.listen({host:"127.0.0.1",port:binding.endpoint.port,exclusive:true,reusePort:false},resolve);});server=candidate;}
-          catch(error){if(!hasCode(error,"EADDRINUSE")&&!hasCode(error,"EACCES"))throw error;if(runtime.monotonicNow()>=deadline)return await this.refuseOnlyK1FenceClassification();await runtime.delay(Math.min(retryDelayMs,deadline-runtime.monotonicNow()));retryDelayMs=Math.min(50,retryDelayMs*2);}
+          if(candidateIndex>=K1_FENCE_CANDIDATE_LIMIT)return await this.refuseOnlyK1FenceClassification();
+          const port=k1OperationFenceCandidatePort(binding,candidateIndex),candidate=createK1OperationFenceServer(binding.materialDigest);
+          try{await new Promise<void>((resolve,reject)=>{candidate.once("error",reject);candidate.listen({host:"127.0.0.1",port,exclusive:true,reusePort:false},resolve);});server=candidate;}
+          catch(error){
+            if(hasCode(error,"EACCES")&&windowsRootMutex!==null){candidateIndex++;retryDelayMs=5;continue;}
+            if(hasCode(error,"EACCES")){if(runtime.monotonicNow()>=deadline)return await this.refuseOnlyK1FenceClassification();await runtime.delay(Math.min(retryDelayMs,deadline-runtime.monotonicNow()));retryDelayMs=Math.min(50,retryDelayMs*2);continue;}
+            if(!hasCode(error,"EADDRINUSE"))throw error;
+            const occupant=await probeK1OperationFenceIdentity(port,binding.materialDigest,Math.min(250,Math.max(1,deadline-runtime.monotonicNow())));
+            if(occupant==="foreign"){candidateIndex++;retryDelayMs=5;continue;}
+            if(occupant==="vacant")continue;
+            if(runtime.monotonicNow()>=deadline)return await this.refuseOnlyK1FenceClassification();await runtime.delay(Math.min(retryDelayMs,deadline-runtime.monotonicNow()));retryDelayMs=Math.min(50,retryDelayMs*2);
+          }
         }
         await runtime.observeK1OperationFenceBoundary?.("k1-operation-fence-only-endpoint-bound");
         if(!await this.revalidateK1OperationFenceRoot(binding))return frozen({ok:false,reason:"busy"});
@@ -673,6 +686,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
       }finally{
         if(capability!==undefined){const generation=k1OperationFenceBindings.get(capability);if(generation!==undefined)generation.status="closed";}
         if(server!==null){await closeK1OperationFenceServer(server);await runtime.observeK1OperationFenceBoundary?.("k1-operation-fence-only-closed",capability);}
+        if(windowsRootMutex!==null)await closeK1OperationFenceServer(windowsRootMutex);
       }
     }finally{releaseK1OperationFence(key);}
   }
@@ -3760,6 +3774,49 @@ function isExactObject(value:unknown,keys:readonly string[],optional:readonly st
 function normalizedK1OperationFenceRoot(value:string):string{const normalized=path.normalize(value);return process.platform==="win32"?normalized.replaceAll("\\","/").toLowerCase():normalized;}
 function deriveK1OperationFenceBinding(root:string,identity:FileIdentity):K1OperationFenceBinding{const canonicalRoot=normalizedK1OperationFenceRoot(root),material=Buffer.from(`${canonicalRoot}\0${identity.dev}\0${identity.ino}`,"utf8"),digest=createHash("sha256").update(material).digest(),materialDigest=`sha256:${digest.toString("hex")}`,port=20_000+digest.readUInt32BE(0)%30_000;return frozen({canonicalRoot,rootIdentity:{dev:String(identity.dev),ino:String(identity.ino),mode:String(identity.mode)},materialDigest,endpoint:{host:"127.0.0.1",port}});}
 function sameK1OperationFenceBinding(left:K1OperationFenceBinding,right:K1OperationFenceBinding):boolean{return left.canonicalRoot===right.canonicalRoot&&left.materialDigest===right.materialDigest&&left.endpoint.host===right.endpoint.host&&left.endpoint.port===right.endpoint.port&&left.rootIdentity.dev===right.rootIdentity.dev&&left.rootIdentity.ino===right.rootIdentity.ino&&left.rootIdentity.mode===right.rootIdentity.mode;}
+const K1_FENCE_CANDIDATE_LIMIT=64;
+const k1OperationFenceServerSockets=new WeakMap<Server,Set<Socket>>();
+async function acquireWindowsK1RootMutex(binding:K1OperationFenceBinding,runtime:K1OperationFenceRuntime,deadline:number):Promise<Server|null>{
+  const pipe=`\\\\.\\pipe\\reelier-k1-${binding.materialDigest.slice(7)}`;let retryDelayMs=5;
+  while(runtime.monotonicNow()<deadline){
+    const candidate=createTrackedK1OperationFenceServer(socket=>resetK1OperationFenceSocket(socket));
+    try{await new Promise<void>((resolve,reject)=>{candidate.once("error",reject);candidate.listen(pipe,resolve);});return candidate;}
+    catch(error){if(!hasCode(error,"EADDRINUSE")&&!hasCode(error,"EACCES"))throw error;const remaining=deadline-runtime.monotonicNow();if(remaining<=0)return null;await runtime.delay(Math.min(retryDelayMs,remaining));retryDelayMs=Math.min(50,retryDelayMs*2);}
+  }
+  return null;
+}
+function k1OperationFenceCandidatePort(binding:K1OperationFenceBinding,index:number):number{
+  if(index===0)return binding.endpoint.port;
+  const digest=createHash("sha256").update(`${binding.materialDigest}\0${index}`,"utf8").digest();
+  return 20_000+digest.readUInt32BE(0)%30_000;
+}
+function k1OperationFenceIdentity(materialDigest:string):string{return `reelier-k1-operation-fence/v1 ${materialDigest}\n`;}
+function createK1OperationFenceServer(materialDigest:string):Server{
+  return createTrackedK1OperationFenceServer(socket=>serveK1OperationFenceIdentity(socket,materialDigest));
+}
+function createTrackedK1OperationFenceServer(accept:(socket:Socket)=>void):Server{
+  const sockets=new Set<Socket>(),server=createServer(socket=>{sockets.add(socket);socket.once("close",()=>sockets.delete(socket));accept(socket);});
+  k1OperationFenceServerSockets.set(server,sockets);
+  return server;
+}
+function serveK1OperationFenceIdentity(socket:Socket,materialDigest:string):void{
+  socket.on("error",()=>{});
+  const cutoff=setTimeout(()=>resetK1OperationFenceSocket(socket),100);cutoff.unref();
+  socket.write(k1OperationFenceIdentity(materialDigest),"utf8",()=>{clearTimeout(cutoff);resetK1OperationFenceSocket(socket);});
+}
+function resetK1OperationFenceSocket(socket:Socket):void{if(typeof socket.resetAndDestroy==="function")socket.resetAndDestroy();else socket.destroy();}
+async function probeK1OperationFenceIdentity(port:number,materialDigest:string,timeoutMs:number):Promise<"same"|"foreign"|"vacant"|"unknown">{
+  return new Promise(resolve=>{
+    const expected=k1OperationFenceIdentity(materialDigest);let settled=false,text="";
+    const socket=createConnection({host:"127.0.0.1",port});
+    const finish=(result:"same"|"foreign"|"vacant"|"unknown")=>{if(settled)return;settled=true;socket.destroy();resolve(result);};
+    socket.setEncoding("utf8");
+    socket.setTimeout(timeoutMs,()=>finish("unknown"));
+    socket.on("data",chunk=>{text+=String(chunk);if(text.length>256)return finish("foreign");if(text.includes("\n"))finish(text===expected?"same":"foreign");});
+    socket.on("end",()=>finish(text===expected?"same":text.length>0?"foreign":"unknown"));
+    socket.on("error",error=>finish(hasCode(error,"ECONNREFUSED")?"vacant":"unknown"));
+  });
+}
 function drawK1AdmissionTicket(admissionClock:()=>unknown):Readonly<{ok:true;ticket:bigint}>|Readonly<{ok:false;reason:"busy"|"corruption"}>{
   let raw:unknown;try{raw=admissionClock();}catch{return frozen({ok:false,reason:"corruption"});}
   if(typeof raw!=="bigint"||raw<0n||raw>MAX_PUBLICATION_TICKET)return frozen({ok:false,reason:"corruption"});
@@ -3806,7 +3863,12 @@ async function awaitK1OperationFenceAdmission(key:string,ticket:bigint,runtime:K
   }
 }
 function defaultK1OperationFenceRuntime(binding:K1OperationFenceBinding):K1OperationFenceRuntime{return {topology:{filesystem:"local-fs",networkNamespace:"same-network-namespace",identity:"isolated"},expectedBinding:binding,monotonicNow,delay};}
-async function closeK1OperationFenceServer(server:Server):Promise<void>{await new Promise<void>((resolve,reject)=>server.close(error=>error&&!hasCode(error,"ERR_SERVER_NOT_RUNNING")?reject(error):resolve()));}
+async function closeK1OperationFenceServer(server:Server):Promise<void>{
+  await new Promise<void>((resolve,reject)=>{
+    server.close(error=>error&&!hasCode(error,"ERR_SERVER_NOT_RUNNING")?reject(error):resolve());
+    for(const socket of k1OperationFenceServerSockets.get(server)??[])resetK1OperationFenceSocket(socket);
+  });
+}
 function processLiveness(pid: number): "alive" | "dead" | "unverifiable" {
   try { process.kill(pid, 0); return "alive"; }
   catch (error) {

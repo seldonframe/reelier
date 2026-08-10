@@ -2,7 +2,8 @@
 
 - [ ] `npm run build` passes on the merge result.
 - [ ] Full Windows and Linux test suites pass without hangs.
-- [ ] Packed `reelier@0.32.0` is the exact Cloud dependency.
+- [ ] Assign a new version; never attempt to overwrite published `reelier@0.32.0`.
+- [ ] The exact next-release tarball is the Cloud dependency used by build and E2E.
 - [ ] Cloud migrations are generated from the final schema and applied manually.
 - [ ] Signed Fly topology evidence is fresh and all six claims are verified.
 - [ ] All guarded provider scenarios pass with cleanup and offline bundle verification.

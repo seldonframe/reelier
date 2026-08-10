@@ -1,4 +1,4 @@
-// Chooses temp roots whose derived K1 operation-fence port is actually bindable on this host.
+// Chooses temp roots whose PRIMARY K1 operation-fence port is bindable on this host.
 //
 // WHY THIS EXISTS. The fence's mutual exclusion is one exclusively bound loopback port derived from
 // the root, `20000 + (u32be(sha256(canonical-root NUL dev NUL ino)) mod 30000)`
@@ -13,12 +13,10 @@
 // platform. Full method, seven refuted hypotheses, and the reproduction:
 // docs/superpowers/plans/2026-08-07-gate-rotator-rootcause.md
 //
-// WHAT THIS DOES AND DOES NOT DO. It selects *around* a host defect so that suites measure the
-// behaviour they are about instead of the host's port table. It does **not** fix the defect: an
-// operator whose ledger root lands on a reserved port still gets a ledger where every operation
-// stalls for the full budget and then returns `busy`, with no recovery but moving the root. That
-// limit is recorded against the spec rule itself, and selecting here must never be read as closing
-// it.
+// WHAT THIS DOES AND DOES NOT DO. The production ledger now has an identity-aware deterministic
+// fallback, so a reserved primary port no longer disables an operator root. This helper deliberately
+// keeps primary-port selection for tests that assert the original endpoint directly. It avoids
+// making those tests accidentally exercise a fallback when the behavior under test is unrelated.
 //
 // PRIOR ART, AND WHY THIS IS NOT THE FIRST COPY. `ledger.test.ts:146` already had an equivalent
 // private `bindableTempRoot` (with `derivedFenceBinding`/`bindFenceEndpoint`, retrying the same two
