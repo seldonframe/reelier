@@ -1,10 +1,11 @@
 # Reelier — what it actually does
 
-**Pinned to `origin/main` @ `315b896`, verified 2026-08-06.** npm serves **v0.30.0**; `main` carries
-unreleased work on top of it (`coverage`, plugin packages — §3, §7.6), so "on main" and "what users
-have" are different answers and this file says which. Every claim below was read out of code or a
-live-verified example on that commit, not from memory. If the pin is stale, treat this file as a
-hypothesis and re-verify (see §10) before telling anyone Reelier can or cannot do something.
+**Release snapshot: `reelier@0.32.0`, verified 2026-08-10.** npm serves **v0.32.0**. The
+authority-cell implementation is currently on `codex/outcomes-delegation-infra`; the Cloud branch is
+`codex/outcomes-cloud`. Production Cloud is deployed and database migrations are applied, but live
+provider certification and the real ten-agent Codex run remain gated on isolated resources and
+credentials. Every claim below must be re-verified against code and live evidence before saying a
+capability is production-certified.
 
 > **What the 2026-08-06 pass found, as a warning about this file's own failure mode.** The previous
 > pin (`62cd841`, 2026-08-01) claimed policy attestation was "fixed on main, NOT yet released" and
