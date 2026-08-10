@@ -34,7 +34,9 @@ export { FsDelegationBudgetLedger, type BudgetAllocation } from "./delegation-bu
 export { createDelegationAuthority, type DelegationAuthority, type DelegationAuthoritySigner } from "./delegation-service.js";
 export { createPrincipalRegistry, type PrincipalRegistry, type PrincipalCredential, type PrincipalCredentialIssue, type PrincipalSessionContext } from "./principal-registry.js";
 export { createSecretHandle, isSecretHandle, redactSecretValue, type SecretHandle } from "./secret-handle.js";
+export { createMemoryConfidentialTransferStore, type ConfidentialTransferCapture, type CapturedConfidentialTransfer, type ConfidentialTransferStatus, type ConfidentialTransferStore } from "./confidential-transfer.js";
 export { createCloudflareTokenCreateDispatchAdapter, createVercelProjectEnvironmentSecretDispatchAdapter, createCloudflareTokenCreateAdapter, createVercelProjectEnvironmentSecretAdapter, type CloudflareTokenCreateProvider, type VercelProjectEnvironmentSecretProvider } from "./secret-adapters.js";
+export { createCloudflareTokenCreateHttpsProvider, createVercelProjectEnvironmentSecretHttpsProvider } from "./secret-provider-clients.js";
 export { assertCodexDogfoodPlan, createCodexDogfoodPlan, CODEX_DOGFOOD_PROFILES, type CodexDogfoodPlan, type CodexDogfoodProfile, type CodexDogfoodProfileConfig, type CodexDogfoodAuthorityMode } from "./codex-dogfood.js";
 export { activateCodexPrincipalSessions, type ActivatedCodexSession, type CodexSessionActivationResult, type CodexSessionGrantBinding } from "./codex-session-activation.js";
 export { readGuardedLiveProviderConfig, runGuardedLiveProviderCertification, type GuardedLiveProviderConfig, type LiveCertificationExecutionResult, type LiveCertificationResult } from "./live-certification.js";
@@ -59,5 +61,5 @@ export { createFileReceiptPublication } from "./receipts.js";
 export type { FileReceiptPublicationOptions, LocalAuthorityPublication } from "./receipts.js";
 export type { SupportedAuthorityHost, AuthorityHostAdapter } from "./adapters.js";
 export { createAuthorityHostAdapters } from "./adapters.js";
-export type { JsonHttpsEndpoint, JsonHttpsRead, JsonHttpsResponse, JsonHttpsSecretResolver } from "../drivers/json-https.js";
+export type { JsonHttpsEndpoint, JsonHttpsRead, JsonHttpsResponse, JsonHttpsSecretResolver, JsonHttpsConfidentialRequest } from "../drivers/json-https.js";
 export { JsonHttpsSecurityError, executeJsonHttpsEffect, executeJsonHttpsRead } from "../drivers/json-https.js";

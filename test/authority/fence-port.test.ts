@@ -1,7 +1,7 @@
 // Pins the K1 fence port derivation that `bindable-root.ts` mirrors.
 //
 // `bindable-root.ts` reproduces a module-private derivation so suites can select temp roots the
-// host will actually let the fence bind (see that file's header for why the host defect exists).
+// host will let the PRIMARY fence bind (see that file's header for why primary selection remains).
 // A silent divergence between the mirror and `src/` would not fail anything — it would quietly stop
 // selecting and bring back a rotating, nondeterministic failing set, which is the exact failure
 // this whole exercise was spent diagnosing. These pins make that divergence loud.
@@ -101,4 +101,22 @@ test("selection actually discriminates — an unselected root can be unbindable,
   }
   // And a certainly-free port reads as bindable.
   assert.equal(await fencePortIsBindable(0), true, "port 0 is always bindable");
+});
+
+test("an unrelated listener on the primary fence port cannot disable a fresh ledger root", async () => {
+  const { createServer } = await import("node:net");
+  const root = await bindableTempRoot("reelier-fence-foreign-");
+  const port = fencePortForRoot(root);
+  const foreign = createServer(socket => socket.end("foreign-service\n"));
+  await new Promise<void>((resolve, reject) => {
+    foreign.once("error", reject);
+    foreign.listen({ host: "127.0.0.1", port, exclusive: true, reusePort: false }, resolve);
+  });
+  try {
+    const result = await new FsAuthorityLedger(root, { now: () => 1, lockTimeoutMs: 1_000 }).observeClock();
+    assert.deepEqual(result, { ok: true, status: "advanced", observedAt: "1970-01-01T00:00:00.001Z" });
+  } finally {
+    await new Promise<void>(resolve => foreign.close(() => resolve()));
+    await rm(root, { recursive: true, force: true });
+  }
 });

@@ -15,6 +15,9 @@ All notable changes to `reelier`. Dates are release dates.
 
 ## Unreleased
 
+- Correct the post-`0.32.0` secret lifecycle prototype so Cloudflare, not Reelier, generates the account-owned API token. The Authority Cell captures the one-time value into a non-serializable transfer, injects it into a Vercel sensitive environment variable, reconciles metadata only, and zeroes owned response/materialization buffers. Guarded live evidence remains required.
+- Close the intermittent Windows authority-ledger outage caused by reserved or unrelated primary fence ports. A full-digest named-pipe mutex preserves one same-root writer while bounded TCP fallback skips reserved or verified-foreign candidates and keeps silent or unverifiable listeners fail-closed.
+
 ### Added
 
 - **`reelier coverage --host claude-code` — the same read-only inventory, for

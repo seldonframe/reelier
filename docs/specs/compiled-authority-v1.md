@@ -336,62 +336,39 @@ No ledger-lock operation reaches a fault-point-bearing filesystem hook without h
 operation fence, held from before its first such hook through its target root sync; fence
 acquisition itself captures the frozen root identity before endpoint bind and revalidates it after.
 The fence is one same-process held-set entry plus one exclusively bound loopback endpoint at
-`127.0.0.1` on port
+`127.0.0.1`. Its primary port remains
 `20000 + ((u32be of the first four bytes of SHA-256 over <canonical-resolved-root> NUL <root-dev> NUL
 <root-ino>) mod 30000)`, where `<canonical-resolved-root>` is the natively realpath-resolved root —
 on Windows with separators normalized to forward slashes and case folded to lowercase, elsewhere
-verbatim — bound with no port scan, no reuse, and no fallback; inbound connections are severed at
-accept so a local dialer cannot wedge the awaited close. Fence phases are private runtime boundaries
-and never exported ledger fault points. Cross-process contention is resolved only by the exclusive
-endpoint: contenders of every class retry binding under the one original acquisition deadline, and
-the endpoint grants no ordering. An endpoint that cannot be bound by that original deadline yields a
-refusal-only classification — the sole fence-less filesystem access, read-only and fault-silent by
-construction, writing nothing: corruption keeps precedence over contention, and a refusal-pass `busy`
-means not proven corrupt, never proven healthy.
+verbatim. If that port is unavailable, the implementation may try at most 63 additional,
+deterministically ordered candidates derived from the complete root-material digest, always inside
+`20000..49999` and always under the one original acquisition deadline.
 
-> **OPEN DISCREPANCY (2026-08-07, measured — spec vs. host reality, unresolved).** This rule models
-> an unbindable endpoint as *contention*: "contenders of every class retry binding under the one
-> original acquisition deadline." A host can make the derived port **permanently** unbindable, which
-> retrying can never resolve. Windows reserves ranges for Hyper-V/WSL/Docker; `listen` on one returns
-> **`EACCES`**, and the fence retries it as transient until the whole budget is gone. Measured on one
-> Windows host: `[PORT] 544 EACCES port=49264`, inside the excluded range 49252–49351; the operation
-> then burned 3 s, 30 s and 90 s budgets identically — budget size is irrelevant because the
-> exclusion is permanent. Intersecting that host's exclusion table with this rule's [20000, 49999]
-> range leaves **501 of 30 000 ports (≈1.67 %) permanently unusable**, so ~1.7 % of roots yield a
-> ledger where every operation stalls for `lockTimeoutMs` and then returns `busy`, with no recovery
-> short of moving the root. Four-state honesty holds — it degrades to `unavailable`, never to a pass
-> — so this is liveness, not correctness. **The implementation is conformant; the gap is in this
-> rule**, which has no state for "this address can never be bound on this host", and whose "no port
-> scan, no reuse, and no fallback" forbids the obvious remedy. Recorded, not resolved: changing it is
-> an owner decision. Full method, seven refuted hypotheses, and the reproduction:
+Every Reelier fence endpoint identifies itself with the complete root-material digest before its
+accepted socket is reset. On `EADDRINUSE`, an exact matching identity is same-root contention and the
+contender retries the same candidate. An explicit different identity is an unrelated listener and
+permits the next deterministic candidate. Silence, timeout, or an unverifiable peer never permits a
+fallback and remains contention. On Windows, the contender first holds a named-pipe mutex whose name
+contains the complete root-material digest. Only that holder may select a TCP candidate, so
+`EACCES` may advance to the next candidate without splitting same-root writers. On other platforms,
+`EACCES` remains contention. Exhaustion of the candidate set or original deadline yields the
+refusal-only classification. Inbound connections are reset and all accepted sockets are destroyed
+during close, so a local dialer cannot wedge the awaited close.
+
+Fence phases are private runtime boundaries and never exported ledger fault points. Cross-process
+contention is resolved only by the exclusive endpoint and grants no ordering. The refusal-only
+classification is the sole fence-less filesystem access, read-only and fault-silent by construction,
+writing nothing: corruption keeps precedence over contention, and a refusal-pass `busy` means not
+proven corrupt, never proven healthy.
+
+> **RESOLVED (2026-08-10).** The identity-aware deterministic fallback above closes the Windows
+> reserved-port liveness discrepancy measured on 2026-08-07 without repeating the reverted “fail
+> immediately on every `EACCES`” experiment. That experiment incorrectly treated an errno as proof
+> of permanent reservation and failed under 100-way Windows contention. The resolved rule preserves
+> one deadline, serializes Windows contenders through the full-digest named-pipe mutex, recognizes
+> same-root TCP holders by the full root-material digest, and never treats a silent or unverifiable
+> occupant as foreign. The original investigation remains at
 > `docs/superpowers/plans/2026-08-07-gate-rotator-rootcause.md`.
->
-> **REMEDY (2) IS REFUTED — measured 2026-08-08, built, and REVERTED. Do not retry it as written.**
-> The root-cause document offers three responses; (2) was "classify `EACCES` as permanent and fail
-> fast", described there as "cheap and clearly right on its own merits". It was owner-granted,
-> implemented as a single branch returning the same refusal-only classification immediately, and it
-> worked exactly as designed on the authoring host: a deterministic host-conditional pin went from
-> 3003 ms of a 3000 ms budget to immediate, the full local suite stayed at 0 fail, and an
-> independent adversarial review cleared its placement, its cleanup, its four-state honesty and its
-> ABI impact.
->
-> **CI's `windows-latest` leg then failed it, and the failure is the whole point.** In
-> `100 real processes converge on one committed reservation and one dispatch eligibility`, **all
-> 100 processes returned `{ok:false,reason:"busy"}` and none acquired the fence** — the change had
-> converted legitimate cross-process contention into instant refusal. The safety argument had been
-> measured only with a SINGLE holder (same-process, cross-process, and a non-Node .NET holder at
-> both `ExclusiveAddressUse` settings — all `EADDRINUSE`). Under ~100-way concurrent contention on
-> a GitHub Windows runner that separation does not hold, so `EACCES` is **not** a reliable
-> "permanent" signal there. Local green was not green: the same suite passed on the authoring
-> machine with the change applied.
->
-> **What this costs the remedy, precisely.** Failing fast on `EACCES` cannot be done on the errno
-> alone. Distinguishing a permanent host reservation from transient high-contention `EACCES` needs
-> evidence the errno does not carry — a bounded number of retries before giving up, or an explicit
-> check of the host's reservation table, and the latter is what "no port scan, no reuse, and no
-> fallback" forbids. A bounded-retry variant is untried and is NOT authorised by the grant that
-> covered (2). The liveness defect therefore stands undiminished: ~1.67 % of roots still stall for
-> the full `lockTimeoutMs` on every operation. Reverted in full rather than left partly applied.
 
 Same-process fence contention distinguishes exactly two closed contender classes, declared at
 invocation by whether the operation seeks the active lock and a semantic operation callback. That

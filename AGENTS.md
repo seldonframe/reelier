@@ -152,9 +152,15 @@ coordinator plus nine scoped custom-agent profiles, pre-spawn profile enforcemen
 `SubagentStart.agent_id` evidence, and signed release-evidence verification. The activation command
 mints bearer files only from the live task's exact grants and allocations; a successful Codex process
 is not a verified task graph. Vercel compound source reads, Neon execution, confidential
-Cloudflare-to-Vercel transfer, actual deployed Fly evidence, provider cleanup, and the live ten-agent graph
+Cloudflare-to-Vercel provider-generated secret transfer is implemented hermetically with a one-use
+memory-only handoff, Vercel sensitive-variable materialization, metadata-only reconciliation, and
+owned-buffer zeroing. It has no guarded live evidence or complete leakage scan yet. Vercel compound
+source reads, Neon execution, actual deployed Fly evidence, provider cleanup, and the live ten-agent graph
 remain uncertified. A hermetic fixture pass is not live certification; live claims remain
 `unchecked` until the Authority Cell and guarded provider resources produce signed evidence.
+The Windows ledger's reserved-primary-port liveness defect is closed on this branch by a full-digest
+named-pipe mutex plus bounded, identity-aware TCP fallback; 100-process same-root contention still
+serializes and unverifiable listeners still fail closed.
 
 1. **Probe-less writes degrade — but as of 0.30.0, "later" counts.** `attest` still needs a
    read-back tool. What changed (§10.4 move, shipped 0.30.0): **most sends DO produce a post-state,

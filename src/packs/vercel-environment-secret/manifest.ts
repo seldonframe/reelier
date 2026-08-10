@@ -8,4 +8,4 @@ export const vercelProjectEnvironmentSecretSetPolicySchemaId = "vercel_project_e
 export const vercelProjectEnvironmentSecretSetRiskClass = "vercel_project_environment_secret_set" as const;
 export const vercelProjectEnvironmentSecretSetRecipeId = "vercel_project_environment_secret_readback_v1" as const;
 export const vercelProjectEnvironmentSecretSetPackDigest = authorityDigest({ v: "reelier.outcome-pack/v1", packId: "vercel_project_environment_secret", definitions: [vercelProjectEnvironmentSecretSetAlias] });
-export interface VercelProjectEnvironmentSecretSetPolicy { readonly teamId: string; readonly projectId: string; readonly environment: "production" | "preview" | "development"; readonly key: string; readonly secretDigest: string; }
+export interface VercelProjectEnvironmentSecretSetPolicy { readonly teamId: string; readonly projectId: string; readonly environment: "production" | "preview"; readonly key: string; readonly secretDigest: string; }

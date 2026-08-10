@@ -5,6 +5,7 @@ const HANDLE = Symbol("reelier.secret-handle");
 export interface SecretHandle {
   readonly digest: string;
   readonly readOnce: () => Uint8Array;
+  readonly destroy: () => void;
   readonly expiresAt: string;
 }
 
@@ -29,9 +30,15 @@ export function createSecretHandle(value: Uint8Array | string, input: Readonly<{
         throw new Error("secret handle is unavailable");
       }
       used = true;
-      const output = buffer;
+      const output = Uint8Array.from(buffer);
+      buffer.fill(0);
       buffer = undefined;
-      return Uint8Array.from(output);
+      return output;
+    },
+    destroy() {
+      if (buffer) buffer.fill(0);
+      buffer = undefined;
+      used = true;
     },
   };
   return Object.freeze(handle);

@@ -5,7 +5,7 @@
 1. Provision one isolated Fly Authority Cell and durable ledger.
 2. Provision disposable provider resources and cleanup approvals.
 3. Add only opaque secret references to the Authority Cell environment.
-4. Confirm the packed OSS version is `0.32.0` and Cloud migrations are applied.
+4. Confirm Cloud is tested against the exact next-release tarball. The published `0.32.0` tarball is immutable and does not contain the post-release certification work.
 5. Run `reelier authority certify preflight` and resolve every reported missing item.
 
 Use a strict operator file rather than putting credentials in command arguments:
@@ -35,7 +35,13 @@ reelier authority certify activate-codex --config authority/certification.local.
 
 The command refuses missing, expired, revoked, duplicated, or wrong-principal grants; it requires zero-effect allocations for the code, test, security-review, and independent-verifier profiles. It writes each bearer once with private permissions, emits only token digests in its activation evidence, and revokes every newly issued session if any file installation fails.
 
-The file contains disposable resource identifiers and `env:`/`file:` references only. The current live host path supports authoritative GitHub issue, Cloudflare DNS, and Slack channel reads plus their bounded writes and read-back reconciliation. Vercel's deterministic compiler uses the current official `POST /v10/projects/{projectId}/promote/{deploymentId}` request, but the compound GitHub-check/current-alias source reader is not yet certified. Neon catalog/migration execution and confidential Cloudflare-to-Vercel transfer remain blocked until their dedicated drivers pass certification. The measured Fly probe and grant-bound Codex session activation are implemented; their real deployed evidence and the exported ten-agent task graph remain required before certification.
+The file contains disposable resource identifiers and `env:`/`file:` references only. The current live host path supports authoritative GitHub issue, Cloudflare DNS, and Slack channel reads plus their bounded writes and read-back reconciliation. Vercel's deterministic compiler uses the current official `POST /v10/projects/{projectId}/promote/{deploymentId}` request, but the compound GitHub-check/current-alias source reader is not yet certified. Neon catalog/migration execution remain blocked until their dedicated drivers pass certification.
+
+The confidential Cloudflare-to-Vercel driver is implemented and hermetically verified. Its direction is important: Cloudflare creates and returns the token value once; the Authority Cell captures it into a non-serializable one-use transfer and materializes Vercel's `type: "sensitive"` request privately. The Cloudflare creation effect contains only the exact name, permission-group IDs, resources, time bounds, and IP restrictions. Reconciliation observes Cloudflare token metadata and Vercel environment-variable metadata, never plaintext. A connection cut after Cloudflare may have created the token can reconcile the source metadata, but the lost one-time value is never recreated and the destination remains a partial-completion exception. This implementation is not live-certified until the guarded disposable resources and leakage scan pass.
+
+For that live scenario, the operator must create a disposable Cloudflare account-owned bootstrap token with only Account API Tokens Read and Write, and a Vercel access token limited operationally to the disposable team/project. Store both values only in the ignored secret files or Fly secrets referenced by the operator config. Record only the Cloudflare account ID, exact permission-group IDs/resource expressions, Vercel team/project IDs, target (`production` or `preview`), and variable name in signed authority. Never paste either credential into this file, the operator JSON, the CLI, a PR, chat, evidence, or receipts.
+
+The measured Fly probe and grant-bound Codex session activation are implemented; their real deployed evidence and the exported ten-agent task graph remain required before certification.
 
 The fixed opaque source references for the first live slice are `certification_github_issue`, `certification_cloudflare_record`, and `certification_slack_channel`. They identify host-owned bindings; they are not provider IDs and cannot change the configured account or resource.
 
