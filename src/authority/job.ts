@@ -1,0 +1,34 @@
+export type OutcomeSemanticClass = "communication_commit_v1" | "record_state_set_v1" | "artifact_deliver_v1" | "schedule_commit_v1" | "money_refund_v1" | "commerce_purchase_commit_v1";
+
+export interface SignedJobCardV1 {
+  readonly v: "reelier.signed-job-card/v1";
+  readonly jobId: string;
+  readonly title: string;
+  readonly taskShapeDigest: string;
+  readonly semanticClasses: readonly OutcomeSemanticClass[];
+  readonly definitionAliases: readonly string[];
+  readonly connectorIds: readonly string[];
+  readonly accountIdentities: readonly string[];
+  readonly sourceRefs: readonly string[];
+  readonly audiences: readonly string[];
+  readonly limitsDigest: string;
+  readonly instructionsDigest: string;
+  readonly packDigests: readonly string[];
+  readonly exceptionPolicy: readonly string[];
+  readonly coverage: "declared-surface" | "not-declared" | "unknown";
+  readonly pathBSkillDigest?: string;
+}
+
+export function normalizeSignedJobCard(value: unknown): SignedJobCardV1 {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("job card must be an object");
+  const raw = value as Record<string, unknown>;
+  const allowed = new Set(["v", "jobId", "title", "taskShapeDigest", "semanticClasses", "definitionAliases", "connectorIds", "accountIdentities", "sourceRefs", "audiences", "limitsDigest", "instructionsDigest", "packDigests", "exceptionPolicy", "coverage", "pathBSkillDigest"]);
+  if (Object.keys(raw).some(key => !allowed.has(key)) || raw.v !== "reelier.signed-job-card/v1" || typeof raw.jobId !== "string" || !raw.jobId || typeof raw.title !== "string" || !raw.title || !digest(raw.taskShapeDigest) || !digest(raw.limitsDigest) || !digest(raw.instructionsDigest) || !["declared-surface", "not-declared", "unknown"].includes(String(raw.coverage))) throw new TypeError("invalid signed job card");
+  const list = (name: string): readonly string[] => { const value = raw[name]; if (!Array.isArray(value) || value.length === 0 || value.some(item => typeof item !== "string" || !item)) throw new TypeError(`${name} must be a non-empty string array`); return Object.freeze([...new Set(value)].sort()); };
+  const classes = raw.semanticClasses;
+  if (!Array.isArray(classes) || classes.length === 0 || classes.some(item => !["communication_commit_v1", "record_state_set_v1", "artifact_deliver_v1", "schedule_commit_v1", "money_refund_v1", "commerce_purchase_commit_v1"].includes(String(item)))) throw new TypeError("invalid semantic classes");
+  if (raw.pathBSkillDigest !== undefined && !digest(raw.pathBSkillDigest)) throw new TypeError("invalid Path B skill digest");
+  return Object.freeze({ v: raw.v, jobId: raw.jobId, title: raw.title, taskShapeDigest: raw.taskShapeDigest, semanticClasses: Object.freeze([...new Set(classes)] as OutcomeSemanticClass[]), definitionAliases: list("definitionAliases"), connectorIds: list("connectorIds"), accountIdentities: list("accountIdentities"), sourceRefs: list("sourceRefs"), audiences: list("audiences"), limitsDigest: raw.limitsDigest, instructionsDigest: raw.instructionsDigest, packDigests: list("packDigests"), exceptionPolicy: list("exceptionPolicy"), coverage: raw.coverage as SignedJobCardV1["coverage"], ...(raw.pathBSkillDigest === undefined ? {} : { pathBSkillDigest: raw.pathBSkillDigest }) });
+}
+
+function digest(value: unknown): value is string { return typeof value === "string" && /^sha256:[0-9a-f]{64}$/.test(value); }

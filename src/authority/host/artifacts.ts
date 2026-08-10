@@ -24,7 +24,7 @@ export interface ArtifactStore {
 
 interface Stored { readonly commitment: StagedArtifactCommitmentV1; readonly iv: Buffer; readonly tag: Buffer; readonly ciphertext: Buffer; readonly wrappedKey?: WrappedKey; }
 interface WrappedKey { readonly iv: string; readonly tag: string; readonly ciphertext: string; }
-const MAX_ARTIFACT_BYTES = 262_144;
+const MAX_ARTIFACT_BYTES = 10 * 1024 * 1024;
 const REFERENCE = /^artifact_[A-Za-z0-9_-]{1,64}$/;
 
 export function createArtifactStore(input: Readonly<{ tenant: string; key: Uint8Array; masterKey?: Uint8Array; rootDir?: string; now?: () => Date }>): ArtifactStore {

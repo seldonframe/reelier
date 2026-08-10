@@ -100,6 +100,9 @@ async function authorityServe(args: Readonly<{ opts: Record<string, string> }>):
   const runtime: AuthorityHostRuntime = {
     outcome: authorityRuntime.outcome,
     status: authorityRuntime.status,
+    jobsSearch: authorityRuntime.jobsSearch,
+    jobLoad: authorityRuntime.jobLoad,
+    invoke: authorityRuntime.invoke,
     async artifactStage(input) {
       const value = input as Record<string, unknown>;
       const requestId = typeof value?.requestId === "string" ? value.requestId : "";
