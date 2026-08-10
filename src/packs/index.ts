@@ -34,3 +34,4 @@ export { githubIssueLabelsManifest, githubIssueLabelsDefinition, createGitHubIss
 export { slackChannelTopicManifest, slackChannelTopicDefinition, createSlackChannelTopicSourceResolver, compileSlackChannelTopic, parseSlackChannelTopicPolicy, validateSlackChannelTopicChoices, reconcileSlackChannelTopic } from "./slack-topic/index.js";
 export { gmailReplySendAlias, gmailThreadLabelsAlias, parseGmailReplyPolicy, parseGmailLabelsPolicy, compileGmailReply, compileGmailLabels, reconcileGmailReply, reconcileGmailLabels, createGmailSourceResolver, gmailReplyDefinition, gmailLabelsDefinition, gmailReplyManifest, gmailLabelsManifest } from "./gmail/index.js";
 export { stripeRefundIssueAlias, parseStripeRefundPolicy, compileStripeRefund, reconcileStripeRefund, createStripeSourceResolver, stripeRefundDefinition, stripeManifest } from "./stripe/index.js";
+export { semanticOutcomeCatalog, semanticOutcomeForAlias, type SemanticOutcomeCatalogEntry } from "./semantic.js";
