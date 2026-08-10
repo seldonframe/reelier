@@ -73,3 +73,22 @@ test("ambiguous reservations reconcile without invoking dispatch", async () => {
   assert.equal(result.receiptRef, "sha256:" + "4".repeat(64));
   assert.equal(l.get().state, "reconciled");
 });
+
+test("dispatch binds one effect to the authenticated allocation and returns it on cancellation", async () => {
+  const l = ledger();
+  l.get().intent.executionContext = { allocationId: "alloc_1" };
+  const calls: string[] = [];
+  const budget = {
+    async consumeOnce(input: { allocationId: string; reservationId: string; effects: number }) { calls.push(`consume:${input.allocationId}:${input.reservationId}:${input.effects}`); },
+    async returnOnce(input: { allocationId: string; reservationId: string; effects: number }) { calls.push(`return:${input.allocationId}:${input.reservationId}:${input.effects}`); },
+  };
+  const coordinator = createDispatchCoordinator(l, { async dispatch() { return { kind: "acknowledged" as const, resultDigest: "sha256:" + "1".repeat(64) }; } }, undefined, undefined, budget);
+  const handle = createReservedDispatchHandle({ reservation: l.get(), effect: {}, effectCanonicalBase64: "e30=", effectDigest: "sha256:" + "1".repeat(64) });
+  await coordinator.dispatch(handle);
+  assert.deepEqual(calls, ["consume:alloc_1:r1:1"]);
+  const l2 = ledger(); l2.get().intent.executionContext = { allocationId: "alloc_2" };
+  const cancelCoordinator = createDispatchCoordinator(l2, { async dispatch() { throw new Error("must not dispatch"); } }, undefined, undefined, budget);
+  const cancelHandle = createReservedDispatchHandle({ reservation: l2.get(), effect: {}, effectCanonicalBase64: "e30=", effectDigest: "sha256:" + "1".repeat(64) });
+  await cancelCoordinator.cancel(cancelHandle);
+  assert.deepEqual(calls, ["consume:alloc_1:r1:1", "return:alloc_2:r1:1"]);
+});

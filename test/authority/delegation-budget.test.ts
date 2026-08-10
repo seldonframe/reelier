@@ -63,3 +63,35 @@ test("fan-out is enforced independently of remaining effects", async () => {
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("reservation-keyed consumption and return are idempotent", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-budget-once-"));
+  try {
+    const ledger = new FsDelegationBudgetLedger(root);
+    await ledger.createRoot({ taskId: "task_once", allocationId: "root", effects: 2 });
+    await ledger.allocate({ allocationId: "child", parentAllocationId: "root", effects: 1, maxFanOut: 2 });
+    await ledger.consumeOnce({ allocationId: "child", reservationId: "reservation_1", effects: 1 });
+    await ledger.consumeOnce({ allocationId: "child", reservationId: "reservation_1", effects: 1 });
+    const consumed = await ledger.get("child");
+    assert.equal(consumed?.consumed, 1);
+    await ledger.releaseConsumedOnce({ allocationId: "child", reservationId: "reservation_1", effects: 1 });
+    await ledger.releaseConsumedOnce({ allocationId: "child", reservationId: "reservation_1", effects: 1 });
+    const returned = await ledger.get("child");
+    assert.equal(returned?.consumed, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("zero-effect child allocation is preparation-only budget", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-budget-zero-"));
+  try {
+    const ledger = new FsDelegationBudgetLedger(root);
+    await ledger.createRoot({ taskId: "task_zero", allocationId: "root", effects: 1 });
+    const child = await ledger.allocate({ allocationId: "prep", parentAllocationId: "root", effects: 0, maxFanOut: 2 });
+    assert.equal(child.effects, 0);
+    await assert.rejects(() => ledger.consumeOnce({ allocationId: "prep", reservationId: "r", effects: 1 }), /budget|remaining/i);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

@@ -2,7 +2,7 @@ export type { AuthorityHostConfig } from "./config.js";
 export { loadAuthorityHostConfig, validateAuthorityHostConfig } from "./config.js";
 export type { SecretResolver } from "./secret-resolver.js";
 export { createSecretResolver } from "./secret-resolver.js";
-export type { DispatchAdapter, DispatchCoordinator, DispatchOutcome, DispatchEvidenceWriter, DispatchPublication } from "./dispatch.js";
+export type { DispatchAdapter, DispatchCoordinator, DispatchOutcome, DispatchEvidenceWriter, DispatchPublication, DispatchBudget } from "./dispatch.js";
 export { createDispatchCoordinator } from "./dispatch.js";
 export type { McpDispatchRoute, McpDispatchAdapterOptions } from "./mcp-connector.js";
 export { createMcpDispatchAdapter } from "./mcp-connector.js";
@@ -27,6 +27,8 @@ export { loadOrCreateLocalGateSigner, type LocalGateSigner } from "./gate-signer
 export { buildAuthorityDeployment, type AuthorityDeploymentCandidateV1, type BuiltAuthorityDeployment } from "./deploy.js";
 export { FsDelegationBudgetLedger, type BudgetAllocation } from "./delegation-budget.js";
 export { createDelegationAuthority, type DelegationAuthority, type DelegationAuthoritySigner } from "./delegation-service.js";
+export { createPrincipalRegistry, type PrincipalRegistry, type PrincipalCredential, type PrincipalCredentialIssue, type PrincipalSessionContext } from "./principal-registry.js";
+export { createSecretHandle, isSecretHandle, redactSecretValue, type SecretHandle } from "./secret-handle.js";
 export { createArtifactStore } from "./artifacts.js";
 export type { ArtifactStore, StagedArtifactCommitmentV1 } from "./artifacts.js";
 export { createFileReceiptPublication } from "./receipts.js";

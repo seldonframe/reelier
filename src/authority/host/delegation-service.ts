@@ -15,6 +15,7 @@ export interface DelegationAuthority {
   status(input: Readonly<{ tenant: string; requester: string; grantId: string }>): Promise<Readonly<{ grantId: string; taskId: string; parentGrantDigest: string; grantee: string; lifecycleState: "allocated" | "revoked" }>>;
   taskStatus(input: Readonly<{ tenant: string; requester: string; taskId: string }>): Promise<Readonly<{ taskId: string; lifecycleState: "active" | "revoked"; grants: readonly string[] }>>;
   revoke(tenant: string, taskId: string): Promise<void>;
+  readonly budget: FsDelegationBudgetLedger;
 }
 
 interface RootRecord {
@@ -98,7 +99,7 @@ export function createDelegationAuthority(input: Readonly<{ root: string; signGr
     return Object.freeze({ taskId: value.taskId, lifecycleState: record.revoked ? "revoked" as const : "active" as const, grants: Object.freeze([...record.grants.values()].map(candidate => candidate.grant.grantId).sort()) });
   }
 
-  return Object.freeze({ registerRoot, request, status, taskStatus, revoke });
+  return Object.freeze({ registerRoot, request, status, taskStatus, revoke, budget: budgets });
 
   async function loadRegistry(): Promise<void> {
     await mkdir(input.root, { recursive: true });

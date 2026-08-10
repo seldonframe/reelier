@@ -4,6 +4,40 @@ export type AuthoritySignaturePurpose = AuthorityKind | "signed-job-card";
 export type ClaimStatus = "verified" | "failed" | "unchecked" | "absent";
 type Wire<V extends string> = Readonly<{ v: V }>;
 export interface Principal extends Wire<"reelier.principal/v1"> { id: string; kind: "operator"|"requester"|"sponsor"|"gate"|"provider" }
+/** Host-authenticated execution identity. It is never accepted from an Outcome request body. */
+export interface AuthorityExecutionContextV1 extends Wire<"reelier.authority-execution-context/v1"> {
+  taskId: string;
+  principalId: string;
+  grantId: string;
+  grantDigest: string;
+  allocationId: string;
+  runtimeSessionId: string;
+  jobId: string;
+  authorityCellId: string;
+}
+export interface SignedAuthorityLeaseV1 extends Wire<"reelier.authority-lease/v1"> {
+  tenant: string; kernel: string; taskId: string; definitionAlias: string;
+  stateVersion: number; stateDigest: string; jobCardDigest: string; rootGrantDigest: string;
+  topologyEvidenceDigest: string; issuedAt: string; expiresAt: string; nonce: string;
+  signerId: string; signature: AuthoritySignature;
+}
+export interface TopologyProbeEvidenceV1 extends Wire<"reelier.topology-probe-evidence/v1"> {
+  runtimeIdentity: string; imageIdentity: string; declaredProviderSurfaceDigest: string;
+  networkPolicyDigest: string; credentialInventoryDigest: string;
+  probeResultsDigest: string; issuedAt: string; freshUntil: string;
+  claims: { credentialIsolation: ClaimStatus; providerEgress: ClaimStatus; rawWriteReachability: ClaimStatus; readCoverage: ClaimStatus; runtimeIdentity: ClaimStatus; declaredSurfaceEnforcement: ClaimStatus };
+}
+export interface ConfidentialTransferCommitmentV1 extends Wire<"reelier.confidential-transfer/v1"> {
+  sourceOutcome: string; destinationOutcome: string; secretSlot: string; valueDigest: string;
+  destination: string; retention: { expiresAt: string; deleteAfterTerminalHours: number };
+  deletion: "pending" | "deleted" | "unavailable";
+}
+export interface TaskReceiptGraphV1 extends Wire<"reelier.task-receipt-graph/v1"> {
+  taskId: string; rootGrantDigest: string; grants: readonly string[]; principals: readonly string[];
+  allocations: readonly string[]; budgetEvents: readonly string[]; outcomes: readonly string[];
+  exceptions: readonly string[]; topologyEvidence: readonly string[]; leases: readonly string[];
+  receipts: readonly string[]; priorReceiptLinks: readonly string[];
+}
 export interface AuthorityLimits { maxEffectsPerWindow:number; windowSeconds:number; maxEffectsPerSourceTrigger:number; maxBodyBytes:number }
 export interface ConnectorAccount { connectorId:string; accountId:string }
 export interface DelegationPolicy { mayDelegate:boolean; maxDepth:number; maxFanOut:number; maxChildDurationSeconds:number; maxDelegatedEffects:number }

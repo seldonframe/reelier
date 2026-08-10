@@ -43,6 +43,8 @@ export interface ReservationIntent {
   readonly issuedAt: string;
   readonly expiresAt: string;
   readonly limitSlots: readonly LimitSlotIntent[];
+  /** Host-authenticated task/principal lineage; never read from OutcomeRequest. */
+  readonly executionContext?: import("./types.js").AuthorityExecutionContextV1;
 }
 
 export interface StoredReservationIntent extends Omit<ReservationIntent, "canonicalRequestBytes" | "capabilityBytes" | "limitSlots"> {

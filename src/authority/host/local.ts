@@ -22,7 +22,7 @@ import { firstPartyPacks, createFirstPartySourceRegistry } from "../../packs/ind
 import { loadAuthorityDeployment } from "./deployment.js";
 import { loadOrCreateLocalGateSigner } from "./gate-signer.js";
 import type { DelegationAuthority } from "./delegation-service.js";
-import { assertManagedTopologyEvidence, type TopologyEvidenceV1 } from "./topology.js";
+import { assertFreshManagedTopologyEvidence, assertManagedTopologyEvidence, type SignedTopologyEvidenceV1, type TopologyEvidenceV1 } from "./topology.js";
 
 /** Builds the local host from signed-artifact boundaries. An empty workspace is intentionally
  * usable for discovery and status, but every Outcome refuses until a signed contract is installed. */
@@ -30,11 +30,17 @@ export interface LocalAuthorityRuntimeOptions {
   readonly dispatchAdapter?: DispatchAdapter;
   readonly delegation?: DelegationAuthority;
   readonly topologyEvidence?: TopologyEvidenceV1;
+  readonly signedTopologyEvidence?: SignedTopologyEvidenceV1;
+  readonly topologySigner?: Readonly<{ signerId: string; publicKey: import("node:crypto").KeyObject }>;
 }
 
 export async function createLocalAuthorityRuntime(config: AuthorityHostConfig, options: LocalAuthorityRuntimeOptions = {}): Promise<AuthorityHostRuntime> {
   if (config.cloud && config.topology !== "isolated") throw new TypeError("managed authority requires isolated topology");
-  if (config.cloud) assertManagedTopologyEvidence(options.topologyEvidence);
+  if (config.cloud) {
+    if (!options.signedTopologyEvidence || !options.topologySigner) throw new TypeError("managed authority requires signed topology evidence");
+    assertFreshManagedTopologyEvidence(options.signedTopologyEvidence, { tenant: config.tenant, now: new Date(), signerId: options.topologySigner.signerId, publicKey: options.topologySigner.publicKey, maxAgeMs: 5 * 60 * 1000 });
+    assertManagedTopologyEvidence(options.signedTopologyEvidence.evidence);
+  }
   await mkdir(config.ledgerDir, { recursive: true }); await mkdir(config.decisionDir, { recursive: true }); await mkdir(config.receiptDir, { recursive: true });
   const deployment = config.deploymentPath ? await loadAuthorityDeployment(config.deploymentPath) : undefined;
   if (deployment && deployment.tenant !== config.tenant) throw new TypeError("authority deployment tenant does not match host config");
@@ -64,7 +70,7 @@ export async function createLocalAuthorityRuntime(config: AuthorityHostConfig, o
   const gate = createAuthorityGate({ trustRoots, packs, sources, connectors: connectorRegistry, state, ledger, localGatePolicyDigest: authorityDigest({ v: "reelier.local-gate-policy/v1", tenant: config.tenant }), decisionSink: decisions, signer: { async sign(input) { return { signerId: "local-gate", signature: signAuthorityDigest(privateKey, input.purpose, input.digest) }; } }, eventId: () => `evt_${randomUUID()}`, capabilityId: () => `cap_${randomUUID()}` });
   const publication = createFileReceiptPublication({ rootDir: config.receiptDir });
   const adapter = options.dispatchAdapter ?? createJsonHttpsDispatchAdapter({ endpoints: config.endpoints, secrets: createSecretResolver() });
-  const dispatch = createDispatchCoordinator(ledger, adapter, undefined, publication);
+  const dispatch = createDispatchCoordinator(ledger, adapter, undefined, publication, options.delegation?.budget);
   const runtime = createAuthorityHostRuntime({ gate, dispatch, ledger, decisions, delegation: options.delegation, ...(options.delegation ? { verifyRootGrant: (grant, tenant) => { verifyTrustedAuthority(trustRoots, { tenant, signerId: grant.signerId, purpose: "delegation-grant", advertisedDigest: grant.digest, value: grant.grant, signature: grant.signature }); } } : {}) });
   const jobs = Object.freeze(config.definitions.map(alias => Object.freeze({ jobId: alias, alias })));
   return Object.freeze({
