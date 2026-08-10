@@ -1,4 +1,4 @@
-import { createCertificationPreflight, type CertificationEvidence, type CertificationProviderId } from "./certification.js";
+import { CERTIFICATION_TARGET_PACKAGE_VERSION, createCertificationPreflight, type CertificationEvidence, type CertificationProviderId } from "./certification.js";
 import type { GuardedLiveProviderConfig } from "./live-certification.js";
 
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
@@ -50,8 +50,8 @@ export async function runCertification(input: Readonly<{
 
 export function certificationPreflightForAdapter(input: Readonly<{ config: GuardedLiveProviderConfig; adapter: CertificationAdapter }>) {
   return createCertificationPreflight({
-    packageVersion: process.env.npm_package_version ?? "0.32.0",
-    expectedPackageVersion: "0.32.0",
+    packageVersion: process.env.npm_package_version ?? CERTIFICATION_TARGET_PACKAGE_VERSION,
+    expectedPackageVersion: CERTIFICATION_TARGET_PACKAGE_VERSION,
     cloud: { deploymentId: "local", status: "ready" },
     migrations: { status: "applied", digest: "sha256:" + "0".repeat(64) },
     runtime: { codex: "missing", fly: "missing" },

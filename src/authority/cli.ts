@@ -11,7 +11,7 @@ import { verifyAuthorityReceiptBundle } from "./verify.js";
 import { createArtifactStore } from "./host/artifacts.js";
 import { runFirstPartyPackConformance } from "../packs/conformance.js";
 import { createLocalAuthorityRuntime } from "./host/local.js";
-import { createCertificationPreflight } from "./host/certification.js";
+import { CERTIFICATION_TARGET_PACKAGE_VERSION, createCertificationPreflight } from "./host/certification.js";
 import { verifyReleaseEvidenceManifest } from "./host/release-evidence.js";
 import { inspectCertificationSecretReferences, parseCertificationOperatorConfig, probePinnedCodexBinary } from "./host/certification-config.js";
 import { createFounderCertificationSourceAdapter } from "./host/founder-source-adapter.js";
@@ -313,10 +313,10 @@ async function authorityCertify(args: Readonly<{ positional: string[]; flags: Se
         const codexLogin = codexBinary === "available" ? await probeCodexLogin(config.codex.binaryPath, config.codex.codexHomePath) : "missing";
         const codex = codexBinary === "available" && codexLogin === "available" ? "available" : "missing";
         const flyBinary = await probePinnedFlyBinary(config.fly.flyctlPath, config.fly.flyctlVersion);
-        const packageVersion = process.env.npm_package_version ?? "0.32.0";
+        const packageVersion = process.env.npm_package_version ?? CERTIFICATION_TARGET_PACKAGE_VERSION;
         const base = createCertificationPreflight({
           packageVersion,
-          expectedPackageVersion: "0.32.0",
+          expectedPackageVersion: CERTIFICATION_TARGET_PACKAGE_VERSION,
           cloud: { deploymentId: process.env.REELIER_CLOUD_DEPLOYMENT_ID ?? "", status: process.env.REELIER_CLOUD_DEPLOYMENT_STATUS === "ready" ? "ready" : "unknown" },
           migrations: { status: process.env.REELIER_MIGRATIONS_DIGEST ? "applied" : "unknown", digest: process.env.REELIER_MIGRATIONS_DIGEST ?? "sha256:" + "0".repeat(64) },
           runtime: { codex, fly: secretStatus("fly", "api") && secretStatus("fly", "egress") && flyBinary === "available" ? "available" : "missing" },
@@ -337,7 +337,7 @@ async function authorityCertify(args: Readonly<{ positional: string[]; flags: Se
         return 1;
       }
     }
-    const packageVersion = process.env.npm_package_version ?? "0.32.0";
+    const packageVersion = process.env.npm_package_version ?? CERTIFICATION_TARGET_PACKAGE_VERSION;
     const providers = ["github", "vercel", "neon", "cloudflare", "hubspot", "slack", "codex", "fly"] as const;
     const resources = providers.map(provider => {
       const envName = provider.toUpperCase().replace(/-/g, "_");
@@ -347,7 +347,7 @@ async function authorityCertify(args: Readonly<{ positional: string[]; flags: Se
     const migrationDigest = process.env.REELIER_MIGRATIONS_DIGEST ?? "sha256:" + "0".repeat(64);
     const report = createCertificationPreflight({
       packageVersion,
-      expectedPackageVersion: "0.32.0",
+      expectedPackageVersion: CERTIFICATION_TARGET_PACKAGE_VERSION,
       cloud: { deploymentId: process.env.REELIER_CLOUD_DEPLOYMENT_ID ?? "", status: process.env.REELIER_CLOUD_DEPLOYMENT_STATUS === "ready" ? "ready" : "unknown" },
       migrations: { status: process.env.REELIER_MIGRATIONS_DIGEST ? "applied" : "unknown", digest: migrationDigest },
       runtime: { codex: process.env.REELIER_CODEX_BIN ? "available" : "missing", fly: process.env.REELIER_FLY_APP ? "available" : "missing" },

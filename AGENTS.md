@@ -7,6 +7,9 @@ provider certification and the real ten-agent Codex run remain gated on isolated
 credentials. Every claim below must be re-verified against code and live evidence before saying a
 capability is production-certified.
 
+**The branch target is `0.32.1`, not a republish of `0.32.0`.** Cloud must be pinned and retested
+against the exact final `0.32.1` tarball before either PR merges.
+
 > **What the 2026-08-06 pass found, as a warning about this file's own failure mode.** The previous
 > pin (`62cd841`, 2026-08-01) claimed policy attestation was "fixed on main, NOT yet released" and
 > that npm still carried the silent version. By 2026-08-06 `npm view reelier version` returned
