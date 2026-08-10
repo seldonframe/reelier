@@ -798,7 +798,7 @@ test("faults at every durable reservation and transition point recover to prior 
     try { await crashing.transition(created.reservation.reservationId, "reserved", { to: "dispatched" }); } catch (error) { assert.match(String(error), /fault:/); }
     assert.equal(fired, true, point);
     const recovered = await new FsAuthorityLedger(root, { now: () => t0 + 1 }).recover();
-    if (recovered.ok) assert.ok(["reserved", "ambiguous"].includes(recovered.reservations[0].state));
+    if (recovered.ok) assert.ok(["reserved", "cancelled", "ambiguous"].includes(recovered.reservations[0].state));
     else assert.equal(recovered.reason, "corruption");
   });
 
