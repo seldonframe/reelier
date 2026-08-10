@@ -16,6 +16,11 @@ export interface LiveCertificationResult {
   readonly cleanupRequired: boolean;
 }
 
+export interface LiveCertificationExecutionResult {
+  readonly writes: number;
+  readonly cleanupRequired?: boolean;
+}
+
 export function readGuardedLiveProviderConfig(env: Readonly<Record<string, string | undefined>> = process.env): GuardedLiveProviderConfig {
   const enabled = env.REELIER_LIVE_CERTIFY === "1";
   if (!enabled) return Object.freeze({ enabled: false, provider: "", endpoint: "", accountId: "", credentialRef: "", cleanupRef: "" });
@@ -28,7 +33,10 @@ export function readGuardedLiveProviderConfig(env: Readonly<Record<string, strin
   return Object.freeze({ enabled, provider, endpoint, accountId, credentialRef, cleanupRef });
 }
 
-export async function runGuardedLiveProviderCertification(input: Readonly<{ config: GuardedLiveProviderConfig; execute: () => Promise<Readonly<{ writes: number; cleanupRequired?: boolean }>> }): Promise<LiveCertificationResult> {
+export async function runGuardedLiveProviderCertification(input: Readonly<{
+  config: GuardedLiveProviderConfig;
+  execute: () => Promise<LiveCertificationExecutionResult>;
+}>): Promise<LiveCertificationResult> {
   if (!input.config.enabled) return Object.freeze({ provider: input.config.provider, status: "skipped", writes: 0, cleanupRequired: false });
   const result = await input.execute();
   if (!Number.isSafeInteger(result.writes) || result.writes < 1) throw new TypeError("guarded certification must report at least one provider write");
