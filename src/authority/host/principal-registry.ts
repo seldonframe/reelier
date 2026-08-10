@@ -39,6 +39,7 @@ export interface PrincipalRegistry {
   issue(input: PrincipalCredentialIssue): Promise<PrincipalCredential>;
   resolve(token: string, now?: Date): Promise<PrincipalSessionContext>;
   revoke(sessionTokenDigest: string): Promise<void>;
+  revokeTask(taskId: string): Promise<void>;
 }
 
 /**
@@ -99,6 +100,11 @@ export function createPrincipalRegistry(options: Readonly<{ tenant: string }>): 
       const stored = sessions.get(sessionTokenDigest);
       if (!stored) return;
       stored.revoked = true;
+    },
+
+    async revokeTask(taskId: string): Promise<void> {
+      assertId(taskId, "taskId");
+      for (const stored of sessions.values()) if (stored.taskId === taskId) stored.revoked = true;
     },
   });
 }
