@@ -4,6 +4,7 @@ import type { GateDecisionRecord, GateDecisionSink } from "../decision.js";
 import type { AuthorityLedger, ReservationLinkage } from "../ledger.js";
 import type { DispatchCoordinator } from "./dispatch.js";
 import type { AuthorityIngressOutcome } from "../ingress/mcp.js";
+import type { DelegationAuthority } from "./delegation-service.js";
 
 export interface AuthorityHostRuntimeDependencies {
   readonly gate: AuthorityGate;
@@ -11,6 +12,7 @@ export interface AuthorityHostRuntimeDependencies {
   readonly ledger: AuthorityLedger;
   readonly decisions: GateDecisionSink;
   readonly shadow?: (input: Readonly<{ alias: string; request: unknown; tenant: string; requester: string }>) => Promise<Readonly<{ requestId: string; verdict: "accepted" | "refused"; reasonCode: string; lifecycleState: string }>>;
+  readonly delegation?: DelegationAuthority;
 }
 
 export function createAuthorityHostRuntime(deps: AuthorityHostRuntimeDependencies) {
@@ -56,7 +58,24 @@ export function createAuthorityHostRuntime(deps: AuthorityHostRuntimeDependencie
     } catch { return refusal(requestId, "status-unavailable", "unavailable"); }
   }
 
-  return Object.freeze({ outcome, status });
+  const delegationRequest = deps.delegation ? async (input: unknown, context: { readonly tenant: string; readonly requester: string }): Promise<unknown> => {
+    try {
+      if (!input || typeof input !== "object" || Array.isArray(input)) throw new TypeError("invalid delegation request");
+      const raw = input as Record<string, unknown>;
+      const allowed = new Set(["taskId", "parentAllocationId", "child", "effects", "activeChildCount"]);
+      if (Object.keys(raw).some(key => !allowed.has(key))) throw new TypeError("delegation request contains an identity or unknown field");
+      return await deps.delegation!.request(Object.assign({}, raw, { tenant: context.tenant, parentPrincipal: context.requester }) as never);
+    } catch (error) { return Object.freeze({ verdict: "refused", reasonCode: error instanceof Error ? error.message : "delegation-refused", lifecycleState: "refused" }); }
+  } : undefined;
+  const delegationStatus = deps.delegation ? async (input: unknown, context: { readonly tenant: string; readonly requester: string }): Promise<unknown> => {
+    try { const grantId = readField(input, "grantId"); return await deps.delegation!.status({ tenant: context.tenant, requester: context.requester, grantId }); }
+    catch (error) { return Object.freeze({ verdict: "refused", reasonCode: error instanceof Error ? error.message : "delegation-status-unavailable", lifecycleState: "unknown" }); }
+  } : undefined;
+  const taskStatus = deps.delegation ? async (input: unknown, context: { readonly tenant: string; readonly requester: string }): Promise<unknown> => {
+    try { const taskId = readField(input, "taskId"); return await deps.delegation!.taskStatus({ tenant: context.tenant, requester: context.requester, taskId }); }
+    catch (error) { return Object.freeze({ verdict: "refused", reasonCode: error instanceof Error ? error.message : "task-status-unavailable", lifecycleState: "unknown" }); }
+  } : undefined;
+  return Object.freeze({ outcome, status, delegationRequest, delegationStatus, taskStatus });
 }
 
 async function statusFromDecision(record: GateDecisionRecord, ledger: AuthorityLedger): Promise<AuthorityIngressOutcome> {
@@ -73,6 +92,11 @@ function redacted(status: RedactedGateStatus): AuthorityIngressOutcome {
 
 function readRequestId(input: unknown): string {
   return input && typeof input === "object" && !Array.isArray(input) && typeof (input as Record<string, unknown>).requestId === "string" ? String((input as Record<string, unknown>).requestId) : "";
+}
+
+function readField(input: unknown, name: string): string {
+  if (!input || typeof input !== "object" || Array.isArray(input) || typeof (input as Record<string, unknown>)[name] !== "string" || !(input as Record<string, unknown>)[name]) throw new TypeError("invalid request");
+  return String((input as Record<string, unknown>)[name]);
 }
 
 function dispatchLifecycle(kind: "acknowledged" | "definitive-failure" | "ambiguous"): string {

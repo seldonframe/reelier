@@ -25,6 +25,7 @@ export { loadAuthorityDeployment } from "./deployment.js";
 export { loadOrCreateLocalGateSigner, type LocalGateSigner } from "./gate-signer.js";
 export { buildAuthorityDeployment, type AuthorityDeploymentCandidateV1, type BuiltAuthorityDeployment } from "./deploy.js";
 export { FsDelegationBudgetLedger, type BudgetAllocation } from "./delegation-budget.js";
+export { createDelegationAuthority, type DelegationAuthority, type DelegationAuthoritySigner } from "./delegation-service.js";
 export { createArtifactStore } from "./artifacts.js";
 export type { ArtifactStore, StagedArtifactCommitmentV1 } from "./artifacts.js";
 export { createFileReceiptPublication } from "./receipts.js";
