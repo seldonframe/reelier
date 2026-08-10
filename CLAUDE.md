@@ -1,7 +1,7 @@
 # Reelier — what it actually does
 
-**Release snapshot: `reelier@0.32.0`, verified 2026-08-10.** npm serves **v0.32.0**. The
-authority-cell implementation is currently on `codex/outcomes-delegation-infra`; the Cloud branch is
+**Release snapshot: `reelier@0.32.0`, verified 2026-08-10.** npm serves **v0.32.0**. The published
+artifact predates the certification additions now on `codex/outcomes-delegation-infra`; the Cloud branch is
 `codex/outcomes-cloud`. Production Cloud is deployed and database migrations are applied, but live
 provider certification and the real ten-agent Codex run remain gated on isolated resources and
 credentials. Every claim below must be re-verified against code and live evidence before saying a
@@ -142,7 +142,8 @@ Ops note: **no auto-migrate wiring** — migrations are applied by hand after me
 
 ## 7. Known limits — state these, do not paper over them
 
-0. **Authority certification is partially shipped.** v0.32.0 includes closed preflight contracts,
+0. **Authority certification is partially implemented on the current branch.** Post-0.32.0 branch
+work includes closed preflight contracts,
 guarded runner contracts, Fly probe orchestration, Codex ten-profile graph orchestration, and signed
 release-evidence verification. The command does not invent provider adapters, Fly infrastructure, or
 Codex processes. A hermetic fixture pass is not live certification; live claims remain `unchecked`
