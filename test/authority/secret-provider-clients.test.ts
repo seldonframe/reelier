@@ -42,6 +42,6 @@ test("Vercel HTTPS provider materializes a sensitive variable only inside the co
   assert.match(bodyDuringCall, /abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN/);
   assert.ok(retainedBody);
   assert.equal(retainedBody.every(byte => byte === 0), true, "client zeroes its confidential request bytes");
-  assert.deepEqual(created, { teamId: policy.teamId, projectId: policy.projectId, environment: policy.environment, key: policy.key, type: "sensitive", status: "active", id: "env_1" });
+  assert.deepEqual(created, { metadata: { teamId: policy.teamId, projectId: policy.projectId, environment: policy.environment, key: policy.key, type: "sensitive", status: "active", id: "env_1" }, requestBytesDigest: "sha256:" + "3".repeat(64) });
   assert.equal((await provider.readEnvironmentSecretMetadata(policy) as Record<string, unknown>).id, "env_1");
 });

@@ -70,7 +70,8 @@ export function createVercelProjectEnvironmentSecretHttpsProvider(input: Readonl
         const parsed = JSON.parse(response.body.toString("utf8"));
         const found = findVercelEnvironmentRecord(parsed, value);
         if (!found) throw new Error("Vercel sensitive environment response is invalid");
-        return Object.freeze({ teamId: value.teamId, projectId: value.projectId, environment: value.environment, key: value.key, type: "sensitive", status: "active", ...(typeof found.id === "string" ? { id: found.id } : {}) });
+        const metadata = Object.freeze({ teamId: value.teamId, projectId: value.projectId, environment: value.environment, key: value.key, type: "sensitive", status: "active", ...(typeof found.id === "string" ? { id: found.id } : {}) });
+        return Object.freeze({ metadata, requestBytesDigest: response.requestBytesDigest });
       } finally { body.fill(0); if (response) response.body.fill(0); }
     },
     async readEnvironmentSecretMetadata(policy: VercelProjectEnvironmentSecretSetPolicy) {

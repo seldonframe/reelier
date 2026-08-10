@@ -11,7 +11,7 @@ export interface CloudflareTokenCreateProvider {
   findToken(input: Readonly<CloudflareTokenCreatePolicy>): Promise<unknown | undefined>;
 }
 export interface VercelProjectEnvironmentSecretProvider {
-  setEnvironmentSecret(input: Readonly<VercelProjectEnvironmentSecretSetPolicy & { readonly secret: Uint8Array }>): Promise<unknown>;
+  setEnvironmentSecret(input: Readonly<VercelProjectEnvironmentSecretSetPolicy & { readonly secret: Uint8Array }>): Promise<Readonly<{ metadata: unknown; requestBytesDigest: string }>>;
   readEnvironmentSecretMetadata(input: Readonly<VercelProjectEnvironmentSecretSetPolicy>): Promise<unknown | undefined>;
 }
 
@@ -68,7 +68,10 @@ export function createVercelProjectEnvironmentSecretDispatchAdapter(input: Reado
         if (transfer.handle.digest !== policy.secretDigest || transfer.commitment.valueDigest !== policy.secretDigest) throw new Error("confidential transfer digest does not match approved effect");
         secret = transfer.handle.readOnce();
         const result = await input.provider.setEnvironmentSecret({ ...policy, secret });
-        return Object.freeze({ kind: "acknowledged" as const, resultDigest: authorityDigest({ v: "reelier.vercel-environment-secret-result/v1", reservationId: state.reservation.reservationId, metadata: redactProviderResult(result), transferCommitmentDigest: transfer.commitmentDigest }) });
+        if (!/^sha256:[0-9a-f]{64}$/.test(result.requestBytesDigest)) throw new TypeError("Vercel confidential request digest is invalid");
+        const effect = transportEnvelope(state.effect);
+        const materializedRequestDigest = authorityDigest({ v: "reelier.materialized-provider-request/v1", endpointId: effect.endpointId, method: effect.method, path: effect.path, query: effect.query, headers: effect.headers, bodyDigest: result.requestBytesDigest });
+        return Object.freeze({ kind: "acknowledged" as const, resultDigest: authorityDigest({ v: "reelier.vercel-environment-secret-result/v1", reservationId: state.reservation.reservationId, metadata: redactProviderResult(result.metadata), transferCommitmentDigest: transfer.commitmentDigest }), materializedRequestDigest });
       } catch (error) { return Object.freeze({ kind: "ambiguous" as const, resultDigest: authorityDigest({ v: "reelier.vercel-environment-secret-result/v1", reservationId: state.reservation.reservationId, status: "ambiguous", error: error instanceof Error ? error.name : "Error" }) }); }
       finally { if (secret) secret.fill(0); }
     },
@@ -121,3 +124,4 @@ function sameList(actual: unknown, expected: readonly string[]): boolean { retur
 function sameRecord(actual: unknown, expected: Readonly<Record<string, string>>): boolean { if (!actual || typeof actual !== "object" || Array.isArray(actual)) return false; const left = actual as Record<string, unknown>, keys = Object.keys(expected); return Object.keys(left).length === keys.length && keys.every(key => left[key] === expected[key]); }
 function digestBytes(value: Uint8Array): string { return authorityDigest(Buffer.from(value).toString("base64")); }
 function compareText(left: string, right: string): number { return left < right ? -1 : left > right ? 1 : 0; }
+function transportEnvelope(value: unknown): Readonly<{ endpointId: string; method: string; path: string; query: string; headers: Record<string, string> }> { if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("confidential transport effect is invalid"); const raw = value as Record<string, unknown>; if (typeof raw.endpointId !== "string" || typeof raw.method !== "string" || typeof raw.path !== "string" || typeof raw.query !== "string" || !raw.headers || typeof raw.headers !== "object" || Array.isArray(raw.headers)) throw new TypeError("confidential transport effect is invalid"); return { endpointId: raw.endpointId, method: raw.method, path: raw.path, query: raw.query, headers: raw.headers as Record<string, string> }; }

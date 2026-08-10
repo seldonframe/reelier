@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { compileCloudflareTokenCreate, parseCloudflareTokenCreatePolicy, compileVercelProjectEnvironmentSecretSet, parseVercelProjectEnvironmentSecretSetPolicy } from "reelier/packs";
 import { createCloudflareTokenCreateDispatchAdapter, createMemoryConfidentialTransferStore, createVercelProjectEnvironmentSecretDispatchAdapter } from "reelier/authority/host";
+import { authorityDigest } from "reelier/authority";
 
 const handoffExpiry = "2099-01-01T00:00:00.000Z";
 const tokenExpiry = "2098-12-31T00:00:00.000Z";
@@ -86,11 +87,12 @@ test("Vercel sensitive environment adapter consumes the exact captured value and
   let observedDuringCall = "";
   let retainedReference: Uint8Array | undefined;
   const adapter = createVercelProjectEnvironmentSecretDispatchAdapter({ transferId: "transfer_3", transfers, provider: {
-    async setEnvironmentSecret(input) { observedDuringCall = Buffer.from(input.secret).toString("utf8"); retainedReference = input.secret; return { teamId: input.teamId, projectId: input.projectId, environment: input.environment, key: input.key, type: "sensitive", status: "active" }; },
+    async setEnvironmentSecret(input) { observedDuringCall = Buffer.from(input.secret).toString("utf8"); retainedReference = input.secret; return { metadata: { teamId: input.teamId, projectId: input.projectId, environment: input.environment, key: input.key, type: "sensitive", status: "active" }, requestBytesDigest: "sha256:" + "7".repeat(64) }; },
     async readEnvironmentSecretMetadata() { return { teamId: "team_demo", projectId: "proj_demo", environment: "production", key: "CLOUDFLARE_API_TOKEN", type: "sensitive", status: "active" }; },
   } });
   const out = await adapter.dispatch({ effect, reservation: { reservationId: "r3" } } as never);
   assert.equal(out.kind, "acknowledged");
+  assert.equal(out.materializedRequestDigest, authorityDigest({ v: "reelier.materialized-provider-request/v1", endpointId: effect.endpointId, method: effect.method, path: effect.path, query: effect.query, headers: effect.headers, bodyDigest: "sha256:" + "7".repeat(64) }), "evidence binds the route and exact secret-bearing provider body without storing its bytes");
   assert.equal(observedDuringCall, tokenValue);
   assert.ok(retainedReference);
   assert.equal(retainedReference.every(byte => byte === 0), true, "materialized secret bytes are zeroed after provider call");
