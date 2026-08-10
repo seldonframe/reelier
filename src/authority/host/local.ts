@@ -23,6 +23,8 @@ import { loadAuthorityDeployment } from "./deployment.js";
 import { loadOrCreateLocalGateSigner } from "./gate-signer.js";
 import type { DelegationAuthority } from "./delegation-service.js";
 import { assertFreshManagedTopologyEvidence, assertManagedTopologyEvidence, type SignedTopologyEvidenceV1, type TopologyEvidenceV1 } from "./topology.js";
+import { verifyAuthorityLease } from "./lease.js";
+import type { SignedAuthorityLeaseV1 } from "../types.js";
 
 /** Builds the local host from signed-artifact boundaries. An empty workspace is intentionally
  * usable for discovery and status, but every Outcome refuses until a signed contract is installed. */
@@ -32,6 +34,8 @@ export interface LocalAuthorityRuntimeOptions {
   readonly topologyEvidence?: TopologyEvidenceV1;
   readonly signedTopologyEvidence?: SignedTopologyEvidenceV1;
   readonly topologySigner?: Readonly<{ signerId: string; publicKey: import("node:crypto").KeyObject }>;
+  readonly signedLease?: SignedAuthorityLeaseV1;
+  readonly leaseSigner?: Readonly<{ signerId: string; publicKey: import("node:crypto").KeyObject }>;
 }
 
 export async function createLocalAuthorityRuntime(config: AuthorityHostConfig, options: LocalAuthorityRuntimeOptions = {}): Promise<AuthorityHostRuntime> {
@@ -40,6 +44,8 @@ export async function createLocalAuthorityRuntime(config: AuthorityHostConfig, o
     if (!options.signedTopologyEvidence || !options.topologySigner) throw new TypeError("managed authority requires signed topology evidence");
     assertFreshManagedTopologyEvidence(options.signedTopologyEvidence, { tenant: config.tenant, now: new Date(), signerId: options.topologySigner.signerId, publicKey: options.topologySigner.publicKey, maxAgeMs: 5 * 60 * 1000 });
     assertManagedTopologyEvidence(options.signedTopologyEvidence.evidence);
+    if (!options.signedLease || !options.leaseSigner) throw new TypeError("managed authority requires a signed lease");
+    verifyAuthorityLease(options.signedLease, { tenant: config.tenant, now: new Date(), signerId: options.leaseSigner.signerId, publicKey: options.leaseSigner.publicKey, topologyEvidenceDigest: options.signedTopologyEvidence.digest });
   }
   await mkdir(config.ledgerDir, { recursive: true }); await mkdir(config.decisionDir, { recursive: true }); await mkdir(config.receiptDir, { recursive: true });
   const deployment = config.deploymentPath ? await loadAuthorityDeployment(config.deploymentPath) : undefined;

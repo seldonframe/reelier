@@ -10,6 +10,7 @@ import { loadOrCreateLocalGateSigner } from "../../src/authority/host/gate-signe
 import { authorityDigest } from "../../src/authority/wire.js";
 import { signAuthorityDigest } from "../../src/authority/crypto.js";
 import { createTopologyProbe, runTopologyProbe, signTopologyEvidence } from "../../src/authority/host/topology.js";
+import { signAuthorityLease } from "../../src/authority/host/lease.js";
 import type { DelegationGrant } from "../../src/authority/types.js";
 
 test("local authority serve uses the real gate and refuses an unsigned empty deployment", async () => {
@@ -66,7 +67,8 @@ test("managed local authority accepts only complete verified topology evidence",
     const probe = createTopologyProbe({ probeId: "local-test", checks: Object.fromEntries(["credentialIsolation", "providerEgress", "rawWriteReachability", "readCoverage", "runtimeIdentity", "declaredSurfaceEnforcement"].map(field => [field, async () => "verified" as const])) as never });
     const result = await runTopologyProbe(probe, { tenant: "tenant_1", observedAt: observedAt.toISOString(), expiresAt: new Date(observedAt.getTime() + 60_000).toISOString() });
     const signed = signTopologyEvidence(result, { signerId: "topology-signer", privateKey: keys.privateKey });
-    const runtime = await createLocalAuthorityRuntime({ version: 1, tenant: "tenant_1", requester: "operator", definitions: ["gmail_reply_send_v1"], topology: "isolated", ledgerDir: path.join(root, "ledger"), decisionDir: path.join(root, "decisions"), receiptDir: path.join(root, "receipts"), endpoints: [], cloud: { baseUrl: "https://cloud.example", tokenRef: "cloud-token" } }, { signedTopologyEvidence: signed, topologySigner: { signerId: "topology-signer", publicKey: keys.publicKey } });
+    const lease = signAuthorityLease({ tenant: "tenant_1", kernel: "kernel_1", taskId: "task_1", definitionAlias: "gmail_reply_send_v1", stateVersion: 1, stateDigest: "sha256:" + "1".repeat(64), jobCardDigest: "sha256:" + "2".repeat(64), rootGrantDigest: "sha256:" + "3".repeat(64), topologyEvidenceDigest: signed.digest, issuedAt: observedAt.toISOString(), expiresAt: new Date(observedAt.getTime() + 60_000).toISOString(), nonce: "nonce_1", signerId: "topology-signer", privateKey: keys.privateKey });
+    const runtime = await createLocalAuthorityRuntime({ version: 1, tenant: "tenant_1", requester: "operator", definitions: ["gmail_reply_send_v1"], topology: "isolated", ledgerDir: path.join(root, "ledger"), decisionDir: path.join(root, "decisions"), receiptDir: path.join(root, "receipts"), endpoints: [], cloud: { baseUrl: "https://cloud.example", tokenRef: "cloud-token" } }, { signedTopologyEvidence: signed, topologySigner: { signerId: "topology-signer", publicKey: keys.publicKey }, signedLease: lease, leaseSigner: { signerId: "topology-signer", publicKey: keys.publicKey } });
     assert.equal(typeof runtime.status, "function");
   } finally { await rm(root, { recursive: true, force: true }); }
 });
