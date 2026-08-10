@@ -15,7 +15,7 @@ reelier authority certify preflight --config authority/certification.json
 reelier authority serve --path authority/authority.yml --certification-config authority/certification.json
 ```
 
-Start by copying `docs/runbooks/certification.operator.example.json` to the ignored file `authority/certification.local.json`. Replace only resource identifiers, cleanup names, the pinned Codex path/version, and secret references. Put credential values under the ignored `authority/secrets/` directory or in environment variables; never place values in the JSON file, command line, issue, pull request, chat, receipt, or evidence directory.
+Start by copying `docs/runbooks/certification.operator.example.json` to the ignored file `authority/certification.local.json`. Replace only resource identifiers, cleanup names, the pinned Codex path/version, and secret references. Managed provider references must keep the documented `env:REELIER_*` names because those names identify secrets staged in the Authority Cell. Keep the local Fly API credential in a local environment variable or ignored file. Never place values in the JSON file, command line, issue, pull request, chat, receipt, or evidence directory.
 
 On Windows, stage each provider credential directly into the Fly Authority Cell with the repository helper. It prompts with masked input and sends the value to `flyctl secrets import` over standard input; the value is not placed in a process argument or file. Run only the names for which the disposable resource is ready:
 
@@ -30,6 +30,8 @@ On Windows, stage each provider credential directly into the Fly Authority Cell 
 ```
 
 The helper stages secrets without restarting the bootstrap Cell. After all required names exist, deploy the serving manifest once; do not repeatedly restart the Cell while entering values. The values still exist transiently in the local PowerShell and `flyctl` process memory, so use a trusted operator machine and close the shell afterward.
+
+`authority certify preflight --config ...` asks Fly only for secret metadata and retains only the secret names. A provider credential present on the operator laptop does not satisfy managed preflight unless the corresponding name exists in the Authority Cell. Secret values and Fly secret digests are never included in the report.
 
 The Codex certification uses a dedicated `CODEX_HOME`, workspace, and session-credential directory. The session-credential directory must be outside the agent workspace. Authenticate that dedicated home once with the pinned standalone Codex binary:
 

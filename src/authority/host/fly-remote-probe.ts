@@ -34,6 +34,7 @@ export interface FlyRemoteProbeExpected {
 }
 
 export interface FlyMachineObservation { readonly state: string; readonly imageDigest: string }
+export type FlyctlMetadataExecutor = (binaryPath: string, args: readonly string[], timeoutMs: number) => Promise<Readonly<{ code: number; stdout: string; stderr: string }>>;
 
 export interface FlyRemoteProbeDependencies {
   readonly getMachine?: (appName: string, machineId: string) => Promise<FlyMachineObservation>;
@@ -120,6 +121,27 @@ export async function probePinnedFlyBinary(binaryPath: string, expectedVersion: 
   } catch { return "missing"; }
 }
 
+/**
+ * Reads only the names exposed by `flyctl secrets list`. Secret values are
+ * neither requested nor returned, and all other metadata is discarded before
+ * the result crosses this boundary.
+ */
+export async function listFlySecretNames(binaryPath: string, appName: string, timeoutMs = 5_000, execute: FlyctlMetadataExecutor = executeFlyMetadata): Promise<readonly string[]> {
+  if (typeof binaryPath !== "string" || binaryPath.length === 0 || !APP.test(appName) || !Number.isSafeInteger(timeoutMs) || timeoutMs < 50 || timeoutMs > 30_000) throw new TypeError("Fly secret inventory input is invalid");
+  const result = await execute(binaryPath, ["secrets", "list", "--app", appName, "--json"], timeoutMs);
+  if (result.code !== 0) throw new Error("Fly secret inventory failed");
+  let raw: unknown;
+  try { raw = JSON.parse(result.stdout); } catch { throw new Error("Fly secret inventory is not JSON"); }
+  if (!Array.isArray(raw) || raw.length > 512) throw new Error("Fly secret inventory is invalid");
+  const names = raw.map(item => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error("Fly secret inventory is invalid");
+    const name = (item as Record<string, unknown>).name;
+    if (typeof name !== "string" || !/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(name)) throw new Error("Fly secret inventory name is invalid");
+    return name;
+  });
+  return Object.freeze([...new Set(names)].sort());
+}
+
 async function readMachine(appName: string, machineId: string, credentialRef: string, secrets: SecretResolver): Promise<FlyMachineObservation> {
   const endpoint = { endpointId: "fly.machine.read", baseUrl: "https://api.machines.dev", allowedMethods: ["GET" as const], allowedPathPrefixes: [`/v1/apps/${appName}/machines`], secretRef: credentialRef, accountIdentity: appName };
   const response = await executeJsonHttpsRead({ endpointId: endpoint.endpointId, path: `/v1/apps/${appName}/machines/${machineId}`, query: "", headers: { Accept: "application/json" } }, endpoint, secrets);
@@ -154,6 +176,11 @@ export function parseFlyctlProbeProcessResult(result: Readonly<{ code: number; s
 async function executeFlyVersion(binaryPath: string, timeoutMs: number) {
   const result = await executeProcess(binaryPath, ["version"], process.env, timeoutMs);
   return { code: result.code, output: result.output };
+}
+
+async function executeFlyMetadata(binaryPath: string, args: readonly string[], timeoutMs: number) {
+  const result = await executeProcess(binaryPath, args, process.env, timeoutMs);
+  return { code: result.code, stdout: result.stdout, stderr: result.stderr };
 }
 
 function executeProcess(binaryPath: string, args: readonly string[], env: NodeJS.ProcessEnv, timeoutMs: number): Promise<{ code: number; output: string; stdout: string; stderr: string }> {

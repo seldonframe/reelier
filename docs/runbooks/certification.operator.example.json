@@ -6,7 +6,7 @@
     "github": {
       "apiBaseUrl": "https://api.github.com",
       "accountId": "github-owner",
-      "credentialRef": "file:authority/secrets/github.token",
+      "credentialRef": "env:REELIER_GITHUB_TOKEN",
       "cleanupRef": "restore-github-issue-labels",
       "repository": "reelier-certification",
       "issueNumber": 1
@@ -14,7 +14,7 @@
     "vercel": {
       "apiBaseUrl": "https://api.vercel.com",
       "accountId": "team_example",
-      "credentialRef": "file:authority/secrets/vercel.token",
+      "credentialRef": "env:REELIER_VERCEL_TOKEN",
       "cleanupRef": "restore-vercel-production-deployment",
       "projectId": "prj_example",
       "deploymentId": "dpl_example",
@@ -23,18 +23,18 @@
     "neon": {
       "apiBaseUrl": "https://console.neon.tech/api/v2",
       "accountId": "org_example",
-      "credentialRef": "file:authority/secrets/neon.token",
+      "credentialRef": "env:REELIER_NEON_API_KEY",
       "cleanupRef": "delete-neon-rehearsal-branch",
       "projectId": "project_example",
       "branchId": "br_example",
       "database": "neondb",
       "role": "neondb_owner",
-      "databaseUrlRef": "file:authority/secrets/neon-database-url"
+      "databaseUrlRef": "env:REELIER_NEON_DATABASE_URL"
     },
     "cloudflare": {
       "apiBaseUrl": "https://api.cloudflare.com",
       "accountId": "account_example",
-      "credentialRef": "file:authority/secrets/cloudflare.token",
+      "credentialRef": "env:REELIER_CLOUDFLARE_TOKEN",
       "cleanupRef": "restore-cloudflare-dns-record",
       "zoneId": "zone_example",
       "recordId": "record_example",
@@ -44,7 +44,7 @@
     "hubspot": {
       "apiBaseUrl": "https://api.hubapi.com",
       "accountId": "portal_example",
-      "credentialRef": "file:authority/secrets/hubspot.token",
+      "credentialRef": "env:REELIER_HUBSPOT_TOKEN",
       "cleanupRef": "archive-hubspot-certification-records",
       "ticketId": "ticket_example",
       "contactId": "contact_example",
@@ -53,7 +53,7 @@
     "slack": {
       "apiBaseUrl": "https://slack.com",
       "accountId": "T0123456789",
-      "credentialRef": "file:authority/secrets/slack.token",
+      "credentialRef": "env:REELIER_SLACK_TOKEN",
       "cleanupRef": "restore-slack-channel-topic",
       "channelId": "C0123456789"
     }

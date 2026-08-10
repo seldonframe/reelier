@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createFlyRemoteTopologyOperations, digestFlyPolicyDeployment, parseFlyctlProbeProcessResult, probePinnedFlyBinary } from "../../src/authority/host/fly-remote-probe.js";
+import { createFlyRemoteTopologyOperations, digestFlyPolicyDeployment, listFlySecretNames, parseFlyctlProbeProcessResult, probePinnedFlyBinary } from "../../src/authority/host/fly-remote-probe.js";
 
 const digest = (character: string) => `sha256:${character.repeat(64)}`;
 const resource = {
@@ -69,6 +69,20 @@ test("remote Fly operations fail closed on stopped or substituted Machines", asy
 test("pinned flyctl probe validates the exact version", async () => {
   assert.equal(await probePinnedFlyBinary("flyctl", "0.3.200", 100, async () => ({ code: 0, output: "flyctl v0.3.200 linux/amd64" })), "available");
   assert.equal(await probePinnedFlyBinary("flyctl", "0.3.200", 100, async () => ({ code: 0, output: "flyctl v0.3.201 linux/amd64" })), "missing");
+});
+
+test("Fly secret inventory returns names only and rejects malformed metadata", async () => {
+  const names = await listFlySecretNames("flyctl", "reelier-cell", 100, async (_binary, args) => {
+    assert.deepEqual(args, ["secrets", "list", "--app", "reelier-cell", "--json"]);
+    return { code: 0, stdout: JSON.stringify([
+      { name: "REELIER_GITHUB_TOKEN", digest: "opaque-digest", status: "staged", value: "must-not-escape" },
+      { name: "REELIER_EGRESS_GATEWAY_BEARER", digest: "opaque-digest-2", status: "deployed" },
+    ]), stderr: "" };
+  });
+  assert.deepEqual(names, ["REELIER_EGRESS_GATEWAY_BEARER", "REELIER_GITHUB_TOKEN"]);
+  assert.doesNotMatch(JSON.stringify(names), /must-not-escape|opaque-digest/);
+  await assert.rejects(() => listFlySecretNames("flyctl", "reelier-cell", 100, async () => ({ code: 0, stdout: JSON.stringify([{ name: "bad-name" }]), stderr: "" })), /invalid/);
+  await assert.rejects(() => listFlySecretNames("flyctl", "reelier-cell", 100, async () => ({ code: 1, stdout: "[]", stderr: "denied" })), /failed/);
 });
 
 test("Windows Fly SSH accepts only a valid probe followed by the exact local handle trailer", () => {
