@@ -13,7 +13,7 @@ import { runFirstPartyPackConformance } from "../packs/conformance.js";
 import { createLocalAuthorityRuntime } from "./host/local.js";
 import { CERTIFICATION_TARGET_PACKAGE_VERSION, createCertificationPreflight } from "./host/certification.js";
 import { verifyReleaseEvidenceManifest } from "./host/release-evidence.js";
-import { inspectCertificationSecretReferences, parseCertificationOperatorConfig, probePinnedCodexBinary } from "./host/certification-config.js";
+import { inspectCertificationResourceIdentifiers, inspectCertificationSecretReferences, parseCertificationOperatorConfig, probePinnedCodexBinary } from "./host/certification-config.js";
 import { createFounderCertificationSourceAdapter } from "./host/founder-source-adapter.js";
 import { createFounderJsonHttpsDispatchAdapter } from "./host/founder-dispatch-adapter.js";
 import { createCodexDogfoodPlan } from "./host/codex-dogfood.js";
@@ -316,7 +316,9 @@ async function authorityCertify(args: Readonly<{ positional: string[]; flags: Se
           try { flySecretInventory = await listFlySecretNames(config.fly.flyctlPath, config.fly.appName); } catch { /* surfaced below without exposing flyctl output */ }
         }
         const secretStatuses = await inspectCertificationSecretReferences(config, process.env, new Set(flySecretInventory ?? []));
+        const resourceStatuses = inspectCertificationResourceIdentifiers(config);
         const secretStatus = (owner: string, slot = "credential") => secretStatuses.find(item => item.owner === owner && item.slot === slot)?.status === "configured";
+        const resourceStatus = (owner: string, field: string) => resourceStatuses.find(item => item.owner === owner && item.field === field)?.status === "configured";
         const packageVersion = process.env.npm_package_version ?? CERTIFICATION_TARGET_PACKAGE_VERSION;
         const base = createCertificationPreflight({
           packageVersion,
@@ -324,9 +326,10 @@ async function authorityCertify(args: Readonly<{ positional: string[]; flags: Se
           cloud: { deploymentId: process.env.REELIER_CLOUD_DEPLOYMENT_ID ?? "", status: process.env.REELIER_CLOUD_DEPLOYMENT_STATUS === "ready" ? "ready" : "unknown" },
           migrations: { status: process.env.REELIER_MIGRATIONS_DIGEST ? "applied" : "unknown", digest: process.env.REELIER_MIGRATIONS_DIGEST ?? "sha256:" + "0".repeat(64) },
           runtime: { codex, fly: secretStatus("fly", "api") && secretStatus("fly", "egress") && flyBinary === "available" ? "available" : "missing" },
-          resources: Object.entries(config.providers).map(([provider, resource]) => ({ provider, accountId: resource.accountId, credentialRef: secretStatus(provider) ? "configured" : undefined, cleanupRef: resource.cleanupRef })),
+          resources: Object.entries(config.providers).map(([provider, resource]) => ({ provider, accountId: resourceStatus(provider, "accountId") ? resource.accountId : "", credentialRef: secretStatus(provider) ? "configured" : undefined, cleanupRef: resource.cleanupRef })),
         });
         const extraMissing = secretStatuses.filter(item => item.status === "missing").map(item => `secret:${item.owner}:${item.slot}`);
+        extraMissing.push(...resourceStatuses.filter(item => item.status === "missing").map(item => `resource:${item.owner}:${item.field}`));
         if (codexBinary === "available" && codexLogin === "missing") extraMissing.push("runtime:codex-authentication");
         if (flyBinary === "missing") extraMissing.push("runtime:flyctl-version");
         else if (!flySecretInventory) extraMissing.push("runtime:fly-secret-inventory");

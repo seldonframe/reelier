@@ -59,6 +59,12 @@ export interface CertificationSecretReferenceStatus {
   readonly status: "configured" | "missing";
 }
 
+export interface CertificationResourceIdentifierStatus {
+  readonly owner: "github" | "vercel" | "neon" | "cloudflare" | "hubspot" | "slack" | "fly" | "codex";
+  readonly field: string;
+  readonly status: "configured" | "missing";
+}
+
 export function parseCertificationOperatorConfig(value: unknown): CertificationOperatorConfigV1 {
   const root = object(value, "certification operator config");
   closed(root, ["v", "authorityConfigPath", "evidenceDirectory", "providers", "fly", "codex"], "certification operator config");
@@ -105,6 +111,20 @@ export async function inspectCertificationSecretReferences(config: Certification
     return Object.freeze({ owner, slot, kind: environment ? "environment" as const : "file" as const, status: configured ? "configured" as const : "missing" as const });
   }));
   return Object.freeze(reports);
+}
+
+export function inspectCertificationResourceIdentifiers(config: CertificationOperatorConfigV1): readonly CertificationResourceIdentifierStatus[] {
+  const fields: ReadonlyArray<readonly [CertificationResourceIdentifierStatus["owner"], string, unknown]> = [
+    ["github", "accountId", config.providers.github.accountId], ["github", "repository", config.providers.github.repository],
+    ["vercel", "accountId", config.providers.vercel.accountId], ["vercel", "projectId", config.providers.vercel.projectId], ["vercel", "deploymentId", config.providers.vercel.deploymentId], ["vercel", "domains", config.providers.vercel.domains],
+    ["neon", "accountId", config.providers.neon.accountId], ["neon", "projectId", config.providers.neon.projectId], ["neon", "branchId", config.providers.neon.branchId], ["neon", "database", config.providers.neon.database], ["neon", "role", config.providers.neon.role],
+    ["cloudflare", "accountId", config.providers.cloudflare.accountId], ["cloudflare", "zoneId", config.providers.cloudflare.zoneId], ["cloudflare", "recordId", config.providers.cloudflare.recordId], ["cloudflare", "recordName", config.providers.cloudflare.recordName],
+    ["hubspot", "accountId", config.providers.hubspot.accountId], ["hubspot", "ticketId", config.providers.hubspot.ticketId], ["hubspot", "contactId", config.providers.hubspot.contactId],
+    ["slack", "accountId", config.providers.slack.accountId], ["slack", "channelId", config.providers.slack.channelId],
+    ["fly", "appName", config.fly.appName], ["fly", "authorityMachineId", config.fly.authorityMachineId], ["fly", "agentAppName", config.fly.agentAppName], ["fly", "agentMachineId", config.fly.agentMachineId], ["fly", "egressAppName", config.fly.egressAppName], ["fly", "egressMachineId", config.fly.egressMachineId], ["fly", "authorityImageDigest", config.fly.authorityImageDigest], ["fly", "agentImageDigest", config.fly.agentImageDigest], ["fly", "gatewayImageDigest", config.fly.gatewayImageDigest], ["fly", "networkPolicyDigest", config.fly.networkPolicyDigest], ["fly", "schemaDigest", config.fly.schemaDigest],
+    ["codex", "taskId", config.codex.taskId], ["codex", "jobId", config.codex.jobId], ["codex", "authorityCellId", config.codex.authorityCellId],
+  ];
+  return Object.freeze(fields.map(([owner, field, value]) => Object.freeze({ owner, field, status: resourceValueIsConfigured(value) ? "configured" as const : "missing" as const })));
 }
 
 export async function probePinnedCodexBinary(binaryPath: string, expectedVersion: string, timeoutMs = 5_000): Promise<"available" | "missing"> {
@@ -210,3 +230,11 @@ function dnsList(value: unknown, label: string): readonly string[] { if (!Array.
 async function fileExistsAndIsNonEmpty(file: string): Promise<boolean> { try { return (await stat(file)).size > 0; } catch { return false; } }
 function escapeRegExp(value: string): string { return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
 function isWithin(parent: string, candidate: string): boolean { const relative = path.relative(parent, candidate); return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative)); }
+function resourceValueIsConfigured(value: unknown): boolean {
+  if (Array.isArray(value)) return value.length > 0 && value.every(resourceValueIsConfigured);
+  if (typeof value !== "string" || value.length === 0) return false;
+  const normalized = value.toLowerCase();
+  if (normalized.startsWith("replace-") || normalized.includes("_example") || normalized.includes("-example") || normalized.endsWith(".example.com")) return false;
+  const digest = /^sha256:([0-9a-f])\1{63}$/.exec(normalized);
+  return !digest;
+}

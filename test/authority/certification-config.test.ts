@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { parseCertificationOperatorConfig, inspectCertificationSecretReferences } from "../../src/authority/host/certification-config.js";
+import { inspectCertificationResourceIdentifiers, parseCertificationOperatorConfig, inspectCertificationSecretReferences } from "../../src/authority/host/certification-config.js";
 
 function completeConfig(): unknown {
   return {
@@ -78,6 +78,19 @@ test("managed secret inspection requires provider credentials in the Authority C
   assert.equal(report.find(item => item.owner === "fly" && item.slot === "api")?.status, "configured");
   assert.equal(report.find(item => item.owner === "fly" && item.slot === "egress")?.status, "configured");
   assert.doesNotMatch(JSON.stringify(report), /local-only-github-value|local-fly-value/);
+});
+
+test("resource inspection rejects operator placeholders without returning identifiers", () => {
+  const raw = completeConfig() as { providers: { github: { repository: string }; vercel: { domains: string[] } }; codex: { taskId: string } };
+  raw.providers.github.repository = "replace-github-repo";
+  raw.providers.vercel.domains = ["replace.example.com"];
+  raw.codex.taskId = "replace-task";
+  const report = inspectCertificationResourceIdentifiers(parseCertificationOperatorConfig(raw));
+  assert.equal(report.find(item => item.owner === "github" && item.field === "repository")?.status, "missing");
+  assert.equal(report.find(item => item.owner === "vercel" && item.field === "domains")?.status, "missing");
+  assert.equal(report.find(item => item.owner === "codex" && item.field === "taskId")?.status, "missing");
+  assert.equal(report.find(item => item.owner === "cloudflare" && item.field === "zoneId")?.status, "configured");
+  assert.doesNotMatch(JSON.stringify(report), /github-repo|example\.com|task_1/);
 });
 
 test("Codex session credentials must remain outside the agent workspace", () => {
