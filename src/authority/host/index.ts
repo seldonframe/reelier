@@ -32,6 +32,7 @@ export { createDelegationAuthority, type DelegationAuthority, type DelegationAut
 export { createPrincipalRegistry, type PrincipalRegistry, type PrincipalCredential, type PrincipalCredentialIssue, type PrincipalSessionContext } from "./principal-registry.js";
 export { createSecretHandle, isSecretHandle, redactSecretValue, type SecretHandle } from "./secret-handle.js";
 export { assertCodexDogfoodPlan, createCodexDogfoodPlan, CODEX_DOGFOOD_PROFILES, type CodexDogfoodPlan, type CodexDogfoodProfile, type CodexDogfoodProfileConfig } from "./codex-dogfood.js";
+export { readGuardedLiveProviderConfig, runGuardedLiveProviderCertification, type GuardedLiveProviderConfig, type LiveCertificationResult } from "./live-certification.js";
 export { createArtifactStore } from "./artifacts.js";
 export type { ArtifactStore, StagedArtifactCommitmentV1 } from "./artifacts.js";
 export { createFileReceiptPublication } from "./receipts.js";
