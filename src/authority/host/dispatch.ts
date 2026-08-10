@@ -8,7 +8,7 @@ export interface DispatchOutcome { readonly kind: "acknowledged" | "definitive-f
 export interface DispatchAdapter { dispatch(state: DispatchRequestState): Promise<DispatchOutcome>; reconcile?(state: DispatchRequestState, outcome: DispatchOutcome): Promise<DispatchOutcome>; }
 export interface DispatchEvidenceWriter { persist(input: Readonly<{ state: DispatchRequestState; outcome: DispatchOutcome; dispatchedRequestDigest: string; }>): Promise<void>; }
 export interface DispatchPublication { publish(input: Readonly<{ phase: "dispatch" | "cancelled" | "ambiguous" | "reconcile"; state: DispatchRequestState; outcome: DispatchOutcome; dispatchedRequestDigest: string | null; priorReceiptDigest?: string | null; }>): Promise<Readonly<{ receiptRef: string; evidenceDigest: string }>>; }
-export interface DispatchCoordinator { dispatch(handle: ReservedDispatchHandle): Promise<DispatchOutcome>; cancel(handle: ReservedDispatchHandle, reason?: string): Promise<DispatchOutcome>; recover(): Promise<readonly string[]>; }
+export interface DispatchCoordinator { dispatch(handle: ReservedDispatchHandle): Promise<DispatchOutcome>; cancel(handle: ReservedDispatchHandle, reason?: string): Promise<DispatchOutcome>; reconcile(reservationId: string): Promise<DispatchOutcome>; recover(): Promise<readonly string[]>; }
 
 export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: DispatchAdapter, evidence?: DispatchEvidenceWriter, publication?: DispatchPublication): DispatchCoordinator {
   return Object.freeze({
@@ -57,6 +57,27 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
       if (!result.ok) throw new Error(`cancellation refused: ${result.reason}`);
       return Object.freeze({ ...outcome, ...(published ? { providerResultDigest: outcome.resultDigest } : {}), resultDigest: result.reservation.resultDigest ?? terminalDigest, receiptRef: published?.receiptRef, evidenceDigest: published?.evidenceDigest });
     },
+    async reconcile(reservationId: string): Promise<DispatchOutcome> {
+      if (!adapter.reconcile) throw new Error("reconciliation adapter is not configured");
+      const reservation = await ledger.getReservation(reservationId);
+      if (!reservation) throw new Error("reservation not found");
+      if (reservation.state !== "ambiguous") throw new Error("only ambiguous reservations can be reconciled");
+      const state = recoveredState(reservation);
+      const priorReceiptDigest = reservation.resultDigest ?? null;
+      const pending = Object.freeze({
+        kind: "ambiguous" as const,
+        resultDigest: authorityDigest({ v: "reelier.ambiguous-result/v1", reservationId }),
+        reconciliationStatus: "not-attempted" as const,
+        normalizedProjectionDigest: null,
+      });
+      let outcome = Object.freeze(await adapter.reconcile(state, pending));
+      if (outcome.reconciliationStatus === "not-attempted") throw new Error("reconciliation did not produce a verdict");
+      const published = publication ? await publication.publish({ phase: "reconcile", state, outcome, dispatchedRequestDigest: authorityDigest({ v: "reelier.dispatched-request/v1", reservationId, effectDigest: state.effectDigest, effect: state.effect }), priorReceiptDigest }) : undefined;
+      const resultDigest = published?.receiptRef ?? outcome.resultDigest;
+      const terminal = await ledger.transition(reservationId, "ambiguous", { to: "reconciled", resultDigest });
+      if (!terminal.ok) throw new Error(`reconciliation transition refused: ${terminal.reason}`);
+      return Object.freeze({ ...outcome, resultDigest, ...(published ? { receiptRef: published.receiptRef, evidenceDigest: published.evidenceDigest } : {}), ...(priorReceiptDigest ? { priorReceiptDigest } : {}) });
+    },
     async recover(): Promise<readonly string[]> {
       const recovered = await ledger.recover({ deferTerminal: true });
       if (!recovered.ok) throw new Error(`authority recovery failed: ${recovered.reason}`);
@@ -76,7 +97,7 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
           const state = recoveredState(reservation);
           const outcome = Object.freeze({ kind: "ambiguous" as const, resultDigest });
           const published = publication ? await publication.publish({ phase: "ambiguous", state, outcome, dispatchedRequestDigest: authorityDigest({ v: "reelier.dispatched-request/v1", reservationId: reservation.reservationId, effectDigest: reservation.intent.effectDigest }) }) : undefined;
-          const transitioned = await ledger.transition(reservation.reservationId, "dispatched", { to: "ambiguous" });
+          const transitioned = await ledger.transition(reservation.reservationId, "dispatched", { to: "ambiguous", resultDigest: published?.receiptRef ?? resultDigest });
           if (!transitioned.ok) throw new Error(`ambiguity transition refused: ${transitioned.reason}`);
           ambiguous.push(reservation.reservationId);
         }
