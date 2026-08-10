@@ -1,5 +1,6 @@
 import { generateKeyPairSync, randomUUID } from "node:crypto";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
+import path from "node:path";
 import { authorityDigest } from "../wire.js";
 import { signAuthorityDigest } from "../crypto.js";
 import { createAuthorityGate } from "../gate.js";
@@ -17,24 +18,35 @@ import type { AuthorityHostConfig } from "./config.js";
 import type { AuthorityHostRuntime } from "./server.js";
 import { createSecretResolver } from "./secret-resolver.js";
 import { firstPartyPacks, createFirstPartySourceRegistry } from "../../packs/index.js";
+import { loadAuthorityDeployment } from "./deployment.js";
 
 /** Builds the local host from signed-artifact boundaries. An empty workspace is intentionally
  * usable for discovery and status, but every Outcome refuses until a signed contract is installed. */
 export async function createLocalAuthorityRuntime(config: AuthorityHostConfig): Promise<AuthorityHostRuntime> {
   await mkdir(config.ledgerDir, { recursive: true }); await mkdir(config.decisionDir, { recursive: true }); await mkdir(config.receiptDir, { recursive: true });
+  const deployment = config.deploymentPath ? await loadAuthorityDeployment(config.deploymentPath) : undefined;
+  if (deployment && deployment.tenant !== config.tenant) throw new TypeError("authority deployment tenant does not match host config");
   const ledger = new FsAuthorityLedger(config.ledgerDir);
   const decisions = createFileGateDecisionSink(config.decisionDir);
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
-  const trustRoots = createTrustRoots([{ tenant: config.tenant, signerId: "local-gate", principalId: config.requester, publicKey, purposes: ["gate-event"] }]);
+  const trustRoots = createTrustRoots([...(deployment?.trustEntries ?? []), { tenant: config.tenant, signerId: "local-gate", principalId: config.requester, publicKey, purposes: ["gate-event"] }]);
   const packs = createStaticPackRegistry(firstPartyPacks.map(pack => pack.definition));
   const sources = createFirstPartySourceRegistry(config.tenant);
+  const snapshot = deployment?.state;
+  const connectorRegistry = deployment?.connectorRegistry ?? createConnectorRegistry([]);
   const state = createAuthorityStatePort({
-    async loadCompleteContractSet(tenant, definitionAlias) { return { ok: true as const, snapshot: { tenant, definitionAlias, stateVersion: 1, candidates: [] }, backendToken: Object.freeze({}) }; },
+    async loadCompleteContractSet(tenant, definitionAlias) { return { ok: true as const, snapshot: snapshot && snapshot.tenant === tenant && snapshot.definitionAlias === definitionAlias ? snapshot : { tenant, definitionAlias, stateVersion: 1, candidates: [] }, backendToken: Object.freeze({}) }; },
     async advanceVersion(backendToken) { void backendToken; return { ok: true as const, backendObservedToken: Object.freeze({}) }; },
     async withCurrent(_token, callback) { return { ok: true as const, value: await callback() }; },
-    async executeSourceReads() { return { ok: false as const, reason: "unavailable" as const }; },
+    async executeSourceReads(plans) {
+      if (!deployment) return { ok: false as const, reason: "unavailable" as const };
+      try {
+        const observations = await Promise.all(plans.map(async plan => ({ planDigest: plan.planDigest, rawBytes: Uint8Array.from(await readFile(path.join(deployment.sourceDirectory, `${plan.opaqueHandle}.json`))) })));
+        return { ok: true as const, observations };
+      } catch { return { ok: false as const, reason: "unavailable" as const }; }
+    },
   });
-  const gate = createAuthorityGate({ trustRoots, packs, sources, connectors: createConnectorRegistry([]), state, ledger, localGatePolicyDigest: authorityDigest({ v: "reelier.local-gate-policy/v1", tenant: config.tenant }), decisionSink: decisions, signer: { async sign(input) { return { signerId: "local-gate", signature: signAuthorityDigest(privateKey, input.purpose, input.digest) }; } }, eventId: () => `evt_${randomUUID()}`, capabilityId: () => `cap_${randomUUID()}` });
+  const gate = createAuthorityGate({ trustRoots, packs, sources, connectors: connectorRegistry, state, ledger, localGatePolicyDigest: authorityDigest({ v: "reelier.local-gate-policy/v1", tenant: config.tenant }), decisionSink: decisions, signer: { async sign(input) { return { signerId: "local-gate", signature: signAuthorityDigest(privateKey, input.purpose, input.digest) }; } }, eventId: () => `evt_${randomUUID()}`, capabilityId: () => `cap_${randomUUID()}` });
   const publication = createFileReceiptPublication({ rootDir: config.receiptDir });
   const dispatch = createDispatchCoordinator(ledger, createJsonHttpsDispatchAdapter({ endpoints: config.endpoints, secrets: createSecretResolver() }), undefined, publication);
   const runtime = createAuthorityHostRuntime({ gate, dispatch, ledger, decisions });

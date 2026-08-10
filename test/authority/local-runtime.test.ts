@@ -27,3 +27,12 @@ test("local authority catalog lists only configured definitions and loads an opa
     assert.equal(loaded.jobRef, "gmail_reply_send_v1");
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test("local authority runtime refuses a malformed signed deployment instead of silently using an empty authority state", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-local-deployment-"));
+  try {
+    const deploymentPath = path.join(root, "deployment.json");
+    await (await import("node:fs/promises")).writeFile(deploymentPath, JSON.stringify({ v: "reelier.authority-deployment/v1", tenant: "tenant_1", state: { tenant: "tenant_1", definitionAlias: "gmail_reply_send_v1", stateVersion: 1, candidates: [] }, connectors: "not-an-array", trust: [], sourceDirectory: "sources" }));
+    await assert.rejects(() => createLocalAuthorityRuntime({ version: 1, tenant: "tenant_1", requester: "operator", definitions: ["gmail_reply_send_v1"], ledgerDir: path.join(root, "ledger"), decisionDir: path.join(root, "decisions"), receiptDir: path.join(root, "receipts"), endpoints: [], deploymentPath } as never), /deployment connectors|trust roots/i);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

@@ -20,6 +20,8 @@ export { createAuthorityHostServer } from "./server.js";
 export type { AuthorityHostRuntimeDependencies } from "./runtime.js";
 export { createAuthorityHostRuntime } from "./runtime.js";
 export { createLocalAuthorityRuntime } from "./local.js";
+export type { AuthorityDeploymentManifest, AuthorityDeploymentTrustEntry, LoadedAuthorityDeployment } from "./deployment.js";
+export { loadAuthorityDeployment } from "./deployment.js";
 export { createArtifactStore } from "./artifacts.js";
 export type { ArtifactStore, StagedArtifactCommitmentV1 } from "./artifacts.js";
 export { createFileReceiptPublication } from "./receipts.js";
