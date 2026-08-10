@@ -42,11 +42,13 @@ export function createDelegationAuthority(input: Readonly<{ root: string; signGr
     const parent = record.grants.get(value.parentAllocationId);
     if (!parent || parent.grant.grantee !== value.parentPrincipal) throw new TypeError("delegation parent principal mismatch");
     if (value.child.tenant !== value.tenant || value.child.grantor !== value.parentPrincipal) throw new TypeError("delegation child identity mismatch");
+    if (value.child.parentDigest !== parent.digest) throw new TypeError("delegation child parent digest mismatch");
+    if (record.grants.has(value.child.grantId)) throw new TypeError("delegation child grant id already exists");
     validateChildDelegationRequest({ parent: parent.grant, child: value.child, activeChildCount: value.activeChildCount, effects: value.effects, now: input.now?.() ?? new Date() });
     const allocationId = value.child.grantId;
     const signed = await input.signGrant(value.child);
     const signedGrant = asGrant(signed.grant);
-    if (authorityDigest(signedGrant) !== signed.digest || signedGrant.grantId !== value.child.grantId) throw new TypeError("authority cell returned an invalid child grant");
+    if (authorityDigest(signedGrant) !== signed.digest || authorityDigest(signedGrant) !== authorityDigest(value.child) || signedGrant.grantId !== value.child.grantId) throw new TypeError("authority cell returned an invalid child grant");
     await budgets.allocate({ allocationId, parentAllocationId: value.parentAllocationId, effects: value.effects, maxFanOut: parent.grant.delegationPolicy!.maxFanOut });
     record.grants.set(allocationId, { grant: signedGrant, digest: signed.digest, allocationId });
     return Object.freeze({ verdict: "accepted" as const, reasonCode: "delegation-allocated" as const, lifecycleState: "allocated" as const, grant: signedGrant, grantDigest: signed.digest, allocationId });
