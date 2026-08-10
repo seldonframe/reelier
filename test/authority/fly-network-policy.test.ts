@@ -18,9 +18,18 @@ test("agent and Authority Cell policies default-deny direct provider HTTPS", asy
   }
 });
 
+test("only the Authority Cell can reach the private gateway port", async () => {
+  const agent = await policy("agent-runtime");
+  const cell = await policy("authority-cell");
+  const permitsGateway = (value: Awaited<ReturnType<typeof policy>>) => value.rules.some(rule => rule.direction === "egress" && rule.ports.some(port => port.protocol === "tcp" && port.port === 8443));
+  assert.equal(permitsGateway(agent), false);
+  assert.equal(permitsGateway(cell), true);
+});
+
 test("only the egress gateway policy permits public HTTPS", async () => {
   const parsed = await policy("egress-gateway");
   assert.equal(parsed.rules.flatMap(rule => rule.ports).some(port => port.protocol === "tcp" && port.port === 443), true);
+  assert.equal(parsed.rules.some(rule => rule.direction === "ingress" && rule.ports.some(port => port.protocol === "tcp" && port.port === 8443)), true);
 });
 
 test("Fly policy digest is canonical and the parser is closed", () => {

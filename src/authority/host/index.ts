@@ -42,6 +42,7 @@ export { certificationPreflightForAdapter, runCertification, type CertificationA
 export { runFlyCertification, type FlyCertificationInput, type FlyCertificationResult } from "./fly-certification.js";
 export { createFlyRemoteTopologyOperations, digestFlyPolicyDeployment, probePinnedFlyBinary, type FlyRemoteProbeResource, type FlyRemoteProbeExpected, type FlyRemoteProbeDependencies, type FlyMachineObservation } from "./fly-remote-probe.js";
 export { parseTopologyProbeMachineConfig, runTopologyProbeCommand, type TopologyProbeMachineConfigV1, type TopologyProbeSnapshotV1, type TopologyProbeEgressV1, type TopologyProbeCommandResult } from "./topology-probe-command.js";
+export { createAuthorityEgressGateway, parseAuthorityEgressGatewayConfig, type AuthorityEgressGateway, type AuthorityEgressGatewayConfigV1, type AuthorityEgressGatewayOptions } from "./egress-gateway.js";
 export { runCodexCertification, type CodexCertificationEvent, type CodexCertificationOperations, type CodexCertificationResult } from "./codex-certification.js";
 export { materializeCodexDogfood, launchCodexDogfood, probeCodexLogin, type MaterializedCodexDogfood, type CodexDogfoodExecutionOptions, type CodexDogfoodLauncherOperations, type CodexDogfoodLaunchResult } from "./codex-launcher.js";
 export { createFilePrincipalRegistry } from "./principal-registry.js";

@@ -24,7 +24,8 @@ export interface FounderReconciliationReadResponse { readonly status: number; re
 export function createFounderJsonHttpsEndpoints(config: CertificationOperatorConfigV1): readonly JsonHttpsEndpoint[] {
   if (!config?.providers) throw new TypeError("founder HTTPS endpoint config is invalid");
   const github = config.providers.github, cloudflare = config.providers.cloudflare, slack = config.providers.slack;
-  const make = (endpointId: string, baseUrl: string, allowedMethods: JsonHttpsEndpoint["allowedMethods"], allowedPathPrefixes: readonly string[], secretRef: string, accountIdentity: string): JsonHttpsEndpoint => Object.freeze({ endpointId, baseUrl, allowedMethods: Object.freeze([...allowedMethods]), allowedPathPrefixes: Object.freeze([...allowedPathPrefixes]), secretRef, accountIdentity });
+  const egressProxy = Object.freeze({ baseUrl: config.fly.egressProxyBaseUrl, bearerRef: config.fly.egressProxyBearerRef });
+  const make = (endpointId: string, baseUrl: string, allowedMethods: JsonHttpsEndpoint["allowedMethods"], allowedPathPrefixes: readonly string[], secretRef: string, accountIdentity: string): JsonHttpsEndpoint => Object.freeze({ endpointId, baseUrl, allowedMethods: Object.freeze([...allowedMethods]), allowedPathPrefixes: Object.freeze([...allowedPathPrefixes]), secretRef, accountIdentity, egressProxy });
   return Object.freeze([
     make(githubIssueLabelsWriteEndpointId, github.apiBaseUrl, ["PUT"], [`/repos/${github.accountId}/${github.repository}/issues/${github.issueNumber}/labels`], github.credentialRef, github.accountId),
     make("github.issue.labels.readback", github.apiBaseUrl, ["GET"], [`/repos/${github.accountId}/${github.repository}/issues/${github.issueNumber}/labels`], github.credentialRef, github.accountId),

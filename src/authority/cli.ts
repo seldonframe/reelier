@@ -23,6 +23,8 @@ import { runTopologyProbeCommand } from "./host/topology-probe-command.js";
 import { createFlyRemoteTopologyOperations, probePinnedFlyBinary } from "./host/fly-remote-probe.js";
 import { runFlyCertification } from "./host/fly-certification.js";
 import { loadOrCreateLocalGateSigner } from "./host/gate-signer.js";
+import { createAuthorityEgressGateway } from "./host/egress-gateway.js";
+import { createSecretResolver } from "./host/secret-resolver.js";
 
 export async function runAuthorityCommand(args: Readonly<{ positional: string[]; flags: Set<string>; opts: Record<string, string> }>): Promise<number> {
   const subcommand = args.positional[0] ?? "doctor";
@@ -36,7 +38,26 @@ export async function runAuthorityCommand(args: Readonly<{ positional: string[];
     case "conformance": return authorityConformance(args);
     case "certify": return authorityCertify(args);
     case "topology-probe": return authorityTopologyProbe(args);
+    case "egress-gateway": return authorityEgressGateway(args);
     default: console.error(`unknown authority command: ${subcommand}`); return 1;
+  }
+}
+
+async function authorityEgressGateway(args: Readonly<{ opts: Record<string, string> }>): Promise<number> {
+  const configPath = args.opts.config;
+  if (!configPath) { console.error(JSON.stringify({ status: "refused", reasonCode: "egress-gateway-config-required" })); return 1; }
+  try {
+    const rawPort = args.opts.port ?? "8443";
+    if (!/^[1-9][0-9]{0,4}$/.test(rawPort) || Number(rawPort) > 65535) throw new TypeError("egress gateway port is invalid");
+    const host = args.opts.host ?? "::";
+    const config = JSON.parse(await readFile(path.resolve(configPath), "utf8"));
+    const gateway = createAuthorityEgressGateway({ config, secrets: createSecretResolver() });
+    const address = await gateway.start(Number(rawPort), host);
+    console.error(JSON.stringify({ status: "ready", service: "authority-egress-gateway", host: address.host, port: address.port }));
+    return 0;
+  } catch (error) {
+    console.error(JSON.stringify({ status: "refused", reasonCode: "egress-gateway-unavailable", message: error instanceof Error ? error.message : String(error) }));
+    return 1;
   }
 }
 
@@ -247,7 +268,7 @@ async function authorityCertify(args: Readonly<{ positional: string[]; flags: Se
           expectedPackageVersion: "0.32.0",
           cloud: { deploymentId: process.env.REELIER_CLOUD_DEPLOYMENT_ID ?? "", status: process.env.REELIER_CLOUD_DEPLOYMENT_STATUS === "ready" ? "ready" : "unknown" },
           migrations: { status: process.env.REELIER_MIGRATIONS_DIGEST ? "applied" : "unknown", digest: process.env.REELIER_MIGRATIONS_DIGEST ?? "sha256:" + "0".repeat(64) },
-          runtime: { codex, fly: secretStatus("fly", "api") && flyBinary === "available" ? "available" : "missing" },
+          runtime: { codex, fly: secretStatus("fly", "api") && secretStatus("fly", "egress") && flyBinary === "available" ? "available" : "missing" },
           resources: Object.entries(config.providers).map(([provider, resource]) => ({ provider, accountId: resource.accountId, credentialRef: secretStatus(provider) ? "configured" : undefined, cleanupRef: resource.cleanupRef })),
         });
         const extraMissing = secretStatuses.filter(item => item.status === "missing").map(item => `secret:${item.owner}:${item.slot}`);

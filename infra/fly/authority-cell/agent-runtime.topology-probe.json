@@ -22,5 +22,6 @@
     "console.neon.tech",
     "slack.com"
   ],
+  "egressProxy": null,
   "schemaDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 }

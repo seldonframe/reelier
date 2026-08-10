@@ -29,5 +29,9 @@
     "console.neon.tech",
     "slack.com"
   ],
+  "egressProxy": {
+    "baseUrl": "http://reelier-egress-example.internal:8443",
+    "bearerEnvName": "REELIER_EGRESS_GATEWAY_BEARER"
+  },
   "schemaDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 }

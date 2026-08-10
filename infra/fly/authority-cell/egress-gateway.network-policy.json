@@ -4,6 +4,13 @@
   "rules": [
     {
       "action": "allow",
+      "direction": "ingress",
+      "ports": [
+        { "protocol": "tcp", "port": 8443 }
+      ]
+    },
+    {
+      "action": "allow",
       "direction": "egress",
       "ports": [
         { "protocol": "tcp", "port": 53 },
