@@ -37,7 +37,26 @@ async function authorityInit(args: Readonly<{ opts: Record<string, string> }>): 
   };
   try { await readFile(configPath, "utf8"); console.log(`authority already initialized: ${configPath}`); return 0; } catch { /* create below */ }
   await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
-  for (const pack of firstPartyPacks) await writeFile(path.join(root, "contracts", `${pack.definition.alias}.json`), `${JSON.stringify({ manifest: pack.manifest, definition: pack.definition }, null, 2)}\n`, "utf8");
+  for (const pack of firstPartyPacks) {
+    const definition = pack.definition;
+    const template = {
+      v: "reelier.outcome-contract-template/v1",
+      status: "unsigned-template",
+      alias: definition.alias,
+      packDigest: definition.packDigest,
+      definitionDigest: definition.definitionDigest,
+      resolverId: definition.resolverId,
+      projectionSchemaId: definition.projectionSchemaId,
+      readEndpointIds: definition.readEndpointIds,
+      writeEndpointIds: definition.writeEndpointIds,
+      riskClasses: definition.riskClasses,
+      policySchemaId: definition.policySchemaId,
+      requiredGroundedPointers: definition.requiredGroundedPointers,
+      manifest: pack.manifest,
+      note: "Template only. Add a signed contract, delegation, trust, account, and activation state before deployment.",
+    };
+    await writeFile(path.join(root, "contracts", `${definition.alias}.template.json`), `${JSON.stringify(template, null, 2)}\n`, "utf8");
+  }
   console.log(`initialized authority workspace at ${root}`);
   return 0;
 }
