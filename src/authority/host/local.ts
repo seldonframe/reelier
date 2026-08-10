@@ -10,10 +10,12 @@ import { createStaticPackRegistry } from "../pack.js";
 import { createFileGateDecisionSink } from "../decision.js";
 import { FsAuthorityLedger } from "./fs-ledger.js";
 import { createDispatchCoordinator } from "./dispatch.js";
+import { createJsonHttpsDispatchAdapter } from "./json-https-connector.js";
 import { createFileReceiptPublication } from "./receipts.js";
 import { createAuthorityHostRuntime } from "./runtime.js";
 import type { AuthorityHostConfig } from "./config.js";
 import type { AuthorityHostRuntime } from "./server.js";
+import { createSecretResolver } from "./secret-resolver.js";
 import { firstPartyPacks, createFirstPartySourceRegistry } from "../../packs/index.js";
 
 /** Builds the local host from signed-artifact boundaries. An empty workspace is intentionally
@@ -34,7 +36,7 @@ export async function createLocalAuthorityRuntime(config: AuthorityHostConfig): 
   });
   const gate = createAuthorityGate({ trustRoots, packs, sources, connectors: createConnectorRegistry([]), state, ledger, localGatePolicyDigest: authorityDigest({ v: "reelier.local-gate-policy/v1", tenant: config.tenant }), decisionSink: decisions, signer: { async sign(input) { return { signerId: "local-gate", signature: signAuthorityDigest(privateKey, input.purpose, input.digest) }; } }, eventId: () => `evt_${randomUUID()}`, capabilityId: () => `cap_${randomUUID()}` });
   const publication = createFileReceiptPublication({ rootDir: config.receiptDir });
-  const dispatch = createDispatchCoordinator(ledger, { async dispatch() { return { kind: "definitive-failure", resultDigest: authorityDigest({ v: "reelier.local-dispatch/v1", reason: "connector-not-configured" }) }; } }, undefined, publication);
+  const dispatch = createDispatchCoordinator(ledger, createJsonHttpsDispatchAdapter({ endpoints: config.endpoints, secrets: createSecretResolver() }), undefined, publication);
   const runtime = createAuthorityHostRuntime({ gate, dispatch, ledger, decisions });
   const jobs = Object.freeze(config.definitions.map(alias => Object.freeze({ jobId: alias, alias })));
   return Object.freeze({

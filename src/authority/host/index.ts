@@ -6,6 +6,8 @@ export type { DispatchAdapter, DispatchCoordinator, DispatchOutcome, DispatchEvi
 export { createDispatchCoordinator } from "./dispatch.js";
 export type { McpDispatchRoute, McpDispatchAdapterOptions } from "./mcp-connector.js";
 export { createMcpDispatchAdapter } from "./mcp-connector.js";
+export type { JsonHttpsDispatchAdapterOptions } from "./json-https-connector.js";
+export { createJsonHttpsDispatchAdapter } from "./json-https-connector.js";
 export type { AuthorityLedger, LedgerState, ReservationSnapshot, TransitionEvent } from "../ledger.js";
 export { FsAuthorityLedger } from "./fs-ledger.js";
 export type { AuthorityMcpHandler, AuthorityMcpDefinition } from "../ingress/mcp.js";
