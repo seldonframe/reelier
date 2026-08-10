@@ -60,7 +60,7 @@ export async function buildAuthorityDeployment(inputFile: string, outputDirector
     const manifest: AuthorityDeploymentManifest = {
       v: "reelier.authority-deployment/v1",
       tenant: candidate.state.tenant,
-      state: candidate.state,
+      states: [candidate.state],
       connectors: candidate.connectors,
       trust,
       sourceDirectory: "sources",

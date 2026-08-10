@@ -25,6 +25,7 @@ import type { DelegationAuthority } from "./delegation-service.js";
 import { assertFreshManagedTopologyEvidence, assertManagedTopologyEvidence, type SignedTopologyEvidenceV1, type TopologyEvidenceV1 } from "./topology.js";
 import { verifyAuthorityLease } from "./lease.js";
 import type { SignedAuthorityLeaseV1 } from "../types.js";
+import type { SourceReadAdapter } from "./source-read-adapter.js";
 
 /** Builds the local host from signed-artifact boundaries. An empty workspace is intentionally
  * usable for discovery and status, but every Outcome refuses until a signed contract is installed. */
@@ -36,6 +37,9 @@ export interface LocalAuthorityRuntimeOptions {
   readonly topologySigner?: Readonly<{ signerId: string; publicKey: import("node:crypto").KeyObject }>;
   readonly signedLease?: SignedAuthorityLeaseV1;
   readonly leaseSigner?: Readonly<{ signerId: string; publicKey: import("node:crypto").KeyObject }>;
+  /** Production hosts inject an account-bound live reader. Fixture-file reads remain the
+   * explicit hermetic default for local conformance and offline tests. */
+  readonly sourceReadAdapter?: SourceReadAdapter;
 }
 
 export async function createLocalAuthorityRuntime(config: AuthorityHostConfig, options: LocalAuthorityRuntimeOptions = {}): Promise<AuthorityHostRuntime> {
@@ -59,13 +63,14 @@ export async function createLocalAuthorityRuntime(config: AuthorityHostConfig, o
   const trustRoots = createTrustRoots([...(deployment?.trustEntries.filter(entry => entry.signerId !== "local-gate") ?? []), { tenant: config.tenant, signerId: "local-gate", principalId: config.requester, publicKey, purposes: ["gate-event", "principal", "delegation-grant"] }]);
   const packs = createStaticPackRegistry(firstPartyPacks.map(pack => pack.definition));
   const sources = createFirstPartySourceRegistry(config.tenant);
-  const snapshot = deployment?.state;
+  const snapshots = new Map(deployment?.states.map(state => [state.definitionAlias, state]) ?? []);
   const connectorRegistry = deployment?.connectorRegistry ?? createConnectorRegistry([]);
   const state = createAuthorityStatePort({
-    async loadCompleteContractSet(tenant, definitionAlias) { return { ok: true as const, snapshot: snapshot && snapshot.tenant === tenant && snapshot.definitionAlias === definitionAlias ? snapshot : { tenant, definitionAlias, stateVersion: 1, candidates: [] }, backendToken: Object.freeze({}) }; },
+    async loadCompleteContractSet(tenant, definitionAlias) { const snapshot = snapshots.get(definitionAlias); return { ok: true as const, snapshot: snapshot && snapshot.tenant === tenant ? snapshot : { tenant, definitionAlias, stateVersion: 1, candidates: [] }, backendToken: Object.freeze({}) }; },
     async advanceVersion(backendToken) { void backendToken; return { ok: true as const, backendObservedToken: Object.freeze({}) }; },
     async withCurrent(_token, callback) { return { ok: true as const, value: await callback() }; },
     async executeSourceReads(plans) {
+      if (options.sourceReadAdapter) return options.sourceReadAdapter.execute(plans);
       if (!deployment) return { ok: false as const, reason: "unavailable" as const };
       try {
         const observations = await Promise.all(plans.map(async plan => ({ planDigest: plan.planDigest, rawBytes: Uint8Array.from(await readFile(path.join(deployment.sourceDirectory, `${plan.opaqueHandle}.json`))) })));
