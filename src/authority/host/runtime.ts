@@ -62,7 +62,7 @@ export function createAuthorityHostRuntime(deps: AuthorityHostRuntimeDependencie
     try {
       if (!input || typeof input !== "object" || Array.isArray(input)) throw new TypeError("invalid delegation request");
       const raw = input as Record<string, unknown>;
-      const allowed = new Set(["taskId", "parentAllocationId", "child", "effects", "activeChildCount"]);
+      const allowed = new Set(["taskId", "parentAllocationId", "child", "effects"]);
       if (Object.keys(raw).some(key => !allowed.has(key))) throw new TypeError("delegation request contains an identity or unknown field");
       return await deps.delegation!.request(Object.assign({}, raw, { tenant: context.tenant, parentPrincipal: context.requester }) as never);
     } catch (error) { return Object.freeze({ verdict: "refused", reasonCode: error instanceof Error ? error.message : "delegation-refused", lifecycleState: "refused" }); }

@@ -26,7 +26,7 @@ test("delegation authority mints a narrower child and consumes conserved budget"
     const service = createDelegationAuthority({ root, now: () => new Date("2026-01-01T00:10:00.000Z"), signGrant: async value => ({ grant: value, digest: authorityDigest(value), signerId: "authority-cell", signature: signAuthorityDigest(keys.privateKey, "delegation-grant", authorityDigest(value)) }) });
     await service.registerRoot({ taskId: "task_1", rootGrant: { grant: parent, digest: parentDigest, signerId: "operator", signature: { alg: "ed25519", sig: "unused" } }, effects: 4 });
     const child = grant({ grantId: "child_1", parentDigest, grantor: "coordinator", grantee: "worker", issuedAt: "2026-01-01T00:10:00.000Z", expiresAt: "2026-01-01T00:40:00.000Z", delegationPolicy: { mayDelegate: false, maxDepth: 0, maxFanOut: 0, maxChildDurationSeconds: 1, maxDelegatedEffects: 0 } });
-    const result = await service.request({ tenant: "tenant_1", parentPrincipal: "coordinator", taskId: "task_1", parentAllocationId: "root", child, effects: 2, activeChildCount: 0 });
+    const result = await service.request({ tenant: "tenant_1", parentPrincipal: "coordinator", taskId: "task_1", parentAllocationId: "root", child, effects: 2 });
     assert.equal(result.verdict, "accepted");
     assert.equal(result.grant.grantee, "worker");
     const status = await service.status({ tenant: "tenant_1", requester: "coordinator", grantId: "child_1" });
@@ -52,6 +52,27 @@ test("delegation authority never accepts a body-supplied parent identity", async
   const root = await mkdtemp(path.join(os.tmpdir(), "reelier-delegation-service-identity-"));
   try {
     const service = createDelegationAuthority({ root, signGrant: async value => ({ grant: value, digest: authorityDigest(value), signerId: "cell", signature: { alg: "ed25519", sig: "unused" } }) });
-    await assert.rejects(() => service.request({ tenant: "tenant_2", parentPrincipal: "attacker", taskId: "missing", parentAllocationId: "root", child: grant(), effects: 1, activeChildCount: 0 }), /task|parent|not found/i);
+    await assert.rejects(() => service.request({ tenant: "tenant_2", parentPrincipal: "attacker", taskId: "missing", parentAllocationId: "root", child: grant(), effects: 1 }), /task|parent|not found/i);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("delegation authority derives active fan-out from its durable registry", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-delegation-service-fanout-"));
+  try {
+    const keys = generateKeyPairSync("ed25519");
+    const parent = grant({
+      grantId: "root-fanout",
+      delegationPolicy: { mayDelegate: true, maxDepth: 2, maxFanOut: 1, maxChildDurationSeconds: 3600, maxDelegatedEffects: 4 },
+    });
+    const parentDigest = authorityDigest(parent);
+    const service = createDelegationAuthority({ root, now: () => new Date("2026-01-01T00:10:00.000Z"), signGrant: async value => ({ grant: value, digest: authorityDigest(value), signerId: "authority-cell", signature: signAuthorityDigest(keys.privateKey, "delegation-grant", authorityDigest(value)) }) });
+    await service.registerRoot({ taskId: "task_fanout", rootGrant: { grant: parent, digest: parentDigest, signerId: "operator", signature: { alg: "ed25519", sig: "unused" } }, effects: 4 });
+    const child = (grantId: string): DelegationGrant => grant({ grantId, parentDigest, grantor: "coordinator", grantee: "worker", issuedAt: "2026-01-01T00:10:00.000Z", expiresAt: "2026-01-01T00:40:00.000Z", delegationPolicy: { mayDelegate: false, maxDepth: 0, maxFanOut: 0, maxChildDurationSeconds: 1, maxDelegatedEffects: 0 } });
+    const results = await Promise.allSettled([
+      service.request({ tenant: "tenant_1", parentPrincipal: "coordinator", taskId: "task_fanout", parentAllocationId: "root", child: child("child_1"), effects: 1 }),
+      service.request({ tenant: "tenant_1", parentPrincipal: "coordinator", taskId: "task_fanout", parentAllocationId: "root", child: child("child_2"), effects: 1 }),
+    ]);
+    assert.equal(results.filter(result => result.status === "fulfilled").length, 1);
+    assert.match(results.find(result => result.status === "rejected")?.reason?.message ?? "", /fan.?out/i);
   } finally { await rm(root, { recursive: true, force: true }); }
 });

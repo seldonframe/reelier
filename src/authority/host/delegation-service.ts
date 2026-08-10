@@ -11,7 +11,7 @@ export interface DelegationAuthoritySigner {
 
 export interface DelegationAuthority {
   registerRoot(input: Readonly<{ taskId: string; rootGrant: StoredSignedGrant; effects: number }>): Promise<void>;
-  request(input: Readonly<{ tenant: string; parentPrincipal: string; taskId: string; parentAllocationId: string; child: DelegationGrant; effects: number; activeChildCount: number }>): Promise<Readonly<{ verdict: "accepted"; reasonCode: "delegation-allocated"; lifecycleState: "allocated"; grant: DelegationGrant; grantDigest: string; allocationId: string }>>;
+  request(input: Readonly<{ tenant: string; parentPrincipal: string; taskId: string; parentAllocationId: string; child: DelegationGrant; effects: number }>): Promise<Readonly<{ verdict: "accepted"; reasonCode: "delegation-allocated"; lifecycleState: "allocated"; grant: DelegationGrant; grantDigest: string; allocationId: string }>>;
   status(input: Readonly<{ tenant: string; requester: string; grantId: string }>): Promise<Readonly<{ grantId: string; taskId: string; parentGrantDigest: string; grantee: string; lifecycleState: "allocated" | "revoked" }>>;
   taskStatus(input: Readonly<{ tenant: string; requester: string; taskId: string }>): Promise<Readonly<{ taskId: string; lifecycleState: "active" | "revoked"; grants: readonly string[] }>>;
   revoke(tenant: string, taskId: string): Promise<void>;
@@ -48,7 +48,7 @@ export function createDelegationAuthority(input: Readonly<{ root: string; signGr
     await persistRegistry();
   }
 
-  async function request(value: Readonly<{ tenant: string; parentPrincipal: string; taskId: string; parentAllocationId: string; child: DelegationGrant; effects: number; activeChildCount: number }>) {
+  async function request(value: Readonly<{ tenant: string; parentPrincipal: string; taskId: string; parentAllocationId: string; child: DelegationGrant; effects: number }>) {
     await ensureLoaded();
     const record = roots.get(value.taskId);
     if (!record || record.tenant !== value.tenant || record.revoked) throw new TypeError("delegation task is not active");
@@ -57,7 +57,9 @@ export function createDelegationAuthority(input: Readonly<{ root: string; signGr
     if (value.child.tenant !== value.tenant || value.child.grantor !== value.parentPrincipal) throw new TypeError("delegation child identity mismatch");
     if (value.child.parentDigest !== parent.digest) throw new TypeError("delegation child parent digest mismatch");
     if (record.grants.has(value.child.grantId)) throw new TypeError("delegation child grant id already exists");
-    validateChildDelegationRequest({ parent: parent.grant, child: value.child, activeChildCount: value.activeChildCount, effects: value.effects, now: input.now?.() ?? new Date() });
+    const now = input.now?.() ?? new Date();
+    const activeChildCount = [...record.grants.values()].filter(candidate => candidate.grant.parentDigest === parent.digest && Date.parse(candidate.grant.expiresAt) > now.getTime()).length;
+    validateChildDelegationRequest({ parent: parent.grant, child: value.child, activeChildCount, effects: value.effects, now });
     const allocationId = value.child.grantId;
     const signed = await input.signGrant(value.child);
     const signedGrant = asGrant(signed.grant);
