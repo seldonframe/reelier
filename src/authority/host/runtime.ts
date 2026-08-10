@@ -5,6 +5,7 @@ import type { AuthorityLedger, ReservationLinkage } from "../ledger.js";
 import type { DispatchCoordinator } from "./dispatch.js";
 import type { AuthorityIngressOutcome } from "../ingress/mcp.js";
 import type { DelegationAuthority } from "./delegation-service.js";
+import type { StoredSignedGrant } from "../delegation.js";
 
 export interface AuthorityHostRuntimeDependencies {
   readonly gate: AuthorityGate;
@@ -13,6 +14,7 @@ export interface AuthorityHostRuntimeDependencies {
   readonly decisions: GateDecisionSink;
   readonly shadow?: (input: Readonly<{ alias: string; request: unknown; tenant: string; requester: string }>) => Promise<Readonly<{ requestId: string; verdict: "accepted" | "refused"; reasonCode: string; lifecycleState: string }>>;
   readonly delegation?: DelegationAuthority;
+  readonly verifyRootGrant?: (grant: StoredSignedGrant, tenant: string) => void;
 }
 
 export function createAuthorityHostRuntime(deps: AuthorityHostRuntimeDependencies) {
@@ -85,6 +87,8 @@ export function createAuthorityHostRuntime(deps: AuthorityHostRuntimeDependencie
       if (!grant || typeof grant !== "object" || Array.isArray(grant)) throw new TypeError("root grant value is required");
       const grantValue = grant as Record<string, unknown>;
       if (grantValue.tenant !== context.tenant || grantValue.sponsor !== context.requester || grantValue.parentDigest !== null) throw new TypeError("root grant identity is outside host context");
+      if (!deps.verifyRootGrant) throw new TypeError("root grant verification unavailable");
+      deps.verifyRootGrant(raw.rootGrant as never, context.tenant);
       await deps.delegation!.registerRoot({ taskId: String(raw.taskId), rootGrant: raw.rootGrant as never, effects: Number(raw.effects) });
       return Object.freeze({ taskId: String(raw.taskId), verdict: "accepted", reasonCode: "task-created", lifecycleState: "active" });
     } catch (error) { return Object.freeze({ taskId: input && typeof input === "object" && typeof (input as Record<string, unknown>).taskId === "string" ? String((input as Record<string, unknown>).taskId) : "", verdict: "refused", reasonCode: error instanceof Error ? error.message : "task-refused", lifecycleState: "refused" }); }

@@ -5,6 +5,7 @@ import { authorityDigest } from "../wire.js";
 import { signAuthorityDigest } from "../crypto.js";
 import { createAuthorityGate } from "../gate.js";
 import { createTrustRoots } from "../trust.js";
+import { verifyTrustedAuthority } from "../trust.js";
 import { createConnectorRegistry } from "../connector.js";
 import { createAuthorityStatePort } from "../state.js";
 import { createStaticPackRegistry } from "../pack.js";
@@ -43,7 +44,7 @@ export async function createLocalAuthorityRuntime(config: AuthorityHostConfig, o
   const { privateKey, publicKey } = gateSigner;
   const deploymentGate = deployment?.trustEntries.find(entry => entry.signerId === "local-gate");
   if (deploymentGate && !deploymentGate.publicKey.export({ type: "spki", format: "der" }).equals(publicKey.export({ type: "spki", format: "der" }))) throw new TypeError("deployment local gate key does not match host gate key");
-  const trustRoots = createTrustRoots([...(deployment?.trustEntries.filter(entry => entry.signerId !== "local-gate") ?? []), { tenant: config.tenant, signerId: "local-gate", principalId: config.requester, publicKey, purposes: ["gate-event", "principal"] }]);
+  const trustRoots = createTrustRoots([...(deployment?.trustEntries.filter(entry => entry.signerId !== "local-gate") ?? []), { tenant: config.tenant, signerId: "local-gate", principalId: config.requester, publicKey, purposes: ["gate-event", "principal", "delegation-grant"] }]);
   const packs = createStaticPackRegistry(firstPartyPacks.map(pack => pack.definition));
   const sources = createFirstPartySourceRegistry(config.tenant);
   const snapshot = deployment?.state;
@@ -64,7 +65,7 @@ export async function createLocalAuthorityRuntime(config: AuthorityHostConfig, o
   const publication = createFileReceiptPublication({ rootDir: config.receiptDir });
   const adapter = options.dispatchAdapter ?? createJsonHttpsDispatchAdapter({ endpoints: config.endpoints, secrets: createSecretResolver() });
   const dispatch = createDispatchCoordinator(ledger, adapter, undefined, publication);
-  const runtime = createAuthorityHostRuntime({ gate, dispatch, ledger, decisions, delegation: options.delegation });
+  const runtime = createAuthorityHostRuntime({ gate, dispatch, ledger, decisions, delegation: options.delegation, ...(options.delegation ? { verifyRootGrant: (grant, tenant) => { verifyTrustedAuthority(trustRoots, { tenant, signerId: grant.signerId, purpose: "delegation-grant", advertisedDigest: grant.digest, value: grant.grant, signature: grant.signature }); } } : {}) });
   const jobs = Object.freeze(config.definitions.map(alias => Object.freeze({ jobId: alias, alias })));
   return Object.freeze({
     ...runtime,
