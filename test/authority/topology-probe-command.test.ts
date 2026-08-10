@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { runTopologyProbeCommand } from "../../src/authority/host/topology-probe-command.js";
+import { parseTopologyProbeMachineConfig, runTopologyProbeCommand } from "../../src/authority/host/topology-probe-command.js";
 
 const base = {
   v: "reelier.topology-probe-config/v1" as const,
@@ -50,4 +50,11 @@ test("egress probe accepts only a declared endpoint and returns a boolean", asyn
 test("probe configuration is closed and validates all identifiers", async () => {
   await assert.rejects(() => runTopologyProbeCommand({ action: "snapshot", argument: "challenge-3", config: { ...base, extra: true } as never, env: {} }), /closed/);
   await assert.rejects(() => runTopologyProbeCommand({ action: "snapshot", argument: "bad nonce!", config: base, env: {} }), /nonce/);
+});
+
+test("Cell topology resolves its project-specific internal gateway from a non-secret environment reference", () => {
+  const config = { ...base, role: "cell" as const, egressProxy: { baseUrl: "env:REELIER_EGRESS_PROXY_BASE_URL", bearerEnvName: "REELIER_EGRESS_GATEWAY_BEARER" } };
+  const parsed = parseTopologyProbeMachineConfig(config, { REELIER_EGRESS_PROXY_BASE_URL: "http://reelier-cert-egress.internal:8443" });
+  assert.deepEqual(parsed.egressProxy, { baseUrl: "http://reelier-cert-egress.internal:8443", bearerEnvName: "REELIER_EGRESS_GATEWAY_BEARER" });
+  assert.throws(() => parseTopologyProbeMachineConfig(config, {}), /environment reference is unavailable/);
 });
