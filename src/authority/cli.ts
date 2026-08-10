@@ -13,6 +13,7 @@ import { runFirstPartyPackConformance } from "../packs/conformance.js";
 import { createLocalAuthorityRuntime } from "./host/local.js";
 import { createCertificationPreflight } from "./host/certification.js";
 import { verifyReleaseEvidenceManifest } from "./host/release-evidence.js";
+import { inspectCertificationSecretReferences, parseCertificationOperatorConfig, probePinnedCodexBinary } from "./host/certification-config.js";
 
 export async function runAuthorityCommand(args: Readonly<{ positional: string[]; flags: Set<string>; opts: Record<string, string> }>): Promise<number> {
   const subcommand = args.positional[0] ?? "doctor";
@@ -168,6 +169,34 @@ async function authorityServe(args: Readonly<{ opts: Record<string, string> }>):
 async function authorityCertify(args: Readonly<{ positional: string[]; flags: Set<string>; opts: Record<string, string> }>): Promise<number> {
   const action = args.positional[1] ?? "preflight";
   if (action === "preflight") {
+    if (args.opts.config) {
+      try {
+        const config = parseCertificationOperatorConfig(JSON.parse(await readFile(path.resolve(args.opts.config), "utf8")));
+        const secretStatuses = await inspectCertificationSecretReferences(config);
+        const secretStatus = (owner: string, slot = "credential") => secretStatuses.find(item => item.owner === owner && item.slot === slot)?.status === "configured";
+        const codex = await probePinnedCodexBinary(config.codex.binaryPath, config.codex.version);
+        const packageVersion = process.env.npm_package_version ?? "0.32.0";
+        const base = createCertificationPreflight({
+          packageVersion,
+          expectedPackageVersion: "0.32.0",
+          cloud: { deploymentId: process.env.REELIER_CLOUD_DEPLOYMENT_ID ?? "", status: process.env.REELIER_CLOUD_DEPLOYMENT_STATUS === "ready" ? "ready" : "unknown" },
+          migrations: { status: process.env.REELIER_MIGRATIONS_DIGEST ? "applied" : "unknown", digest: process.env.REELIER_MIGRATIONS_DIGEST ?? "sha256:" + "0".repeat(64) },
+          runtime: { codex, fly: secretStatus("fly", "api") ? "available" : "missing" },
+          resources: Object.entries(config.providers).map(([provider, resource]) => ({ provider, accountId: resource.accountId, credentialRef: secretStatus(provider) ? "configured" : undefined, cleanupRef: resource.cleanupRef })),
+        });
+        const extraMissing = secretStatuses.filter(item => item.status === "missing").map(item => `secret:${item.owner}:${item.slot}`);
+        const missing = Object.freeze([...new Set([...base.missing, ...extraMissing])].sort());
+        const { digest: _baseDigest, ...baseBody } = base;
+        void _baseDigest;
+        const body = { ...baseBody, ok: missing.length === 0, missing, nextActions: Object.freeze(missing.map(item => `provide ${item}`)) };
+        const report = Object.freeze({ ...body, digest: authorityDigest(body) });
+        console.log(JSON.stringify(report, null, 2));
+        return report.ok ? 0 : 1;
+      } catch (error) {
+        console.error(JSON.stringify({ ok: false, reasonCode: "invalid-certification-config", message: error instanceof Error ? error.message : String(error) }));
+        return 1;
+      }
+    }
     const packageVersion = process.env.npm_package_version ?? "0.32.0";
     const providers = ["github", "vercel", "neon", "cloudflare", "hubspot", "slack", "codex", "fly"] as const;
     const resources = providers.map(provider => {

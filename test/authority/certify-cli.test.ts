@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { runAuthorityCommand } from "../../src/authority/cli.js";
 
 test("authority certify preflight reports missing live references without secrets", async () => {
@@ -35,5 +38,41 @@ test("authority certify run refuses until a live adapter is explicitly configure
     assert.match(output, /adapter-runner-not-configured/);
   } finally {
     if (previous === undefined) delete process.env.REELIER_LIVE_CERTIFY; else process.env.REELIER_LIVE_CERTIFY = previous;
+  }
+});
+
+test("authority certify preflight reads a closed operator file and never prints secret values", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "reelier-certify-cli-"));
+  const file = path.join(root, "certification.json");
+  await writeFile(file, JSON.stringify({
+    v: "reelier.certification-operator-config/v1",
+    authorityConfigPath: "authority/authority.yml",
+    evidenceDirectory: "authority/receipts/certification",
+    providers: {
+      github: { apiBaseUrl: "https://api.github.com", accountId: "owner", credentialRef: "env:REELIER_TEST_GITHUB", cleanupRef: "github-cleanup", repository: "certification", issueNumber: 1 },
+      vercel: { apiBaseUrl: "https://api.vercel.com", accountId: "team", credentialRef: "env:REELIER_TEST_VERCEL", cleanupRef: "vercel-cleanup", projectId: "project", deploymentId: "deployment", domains: ["certification.example.com"] },
+      neon: { apiBaseUrl: "https://console.neon.tech/api/v2", accountId: "org", credentialRef: "env:REELIER_TEST_NEON", cleanupRef: "neon-cleanup", projectId: "project", branchId: "branch", database: "neondb", role: "owner", databaseUrlRef: "env:REELIER_TEST_NEON_DATABASE" },
+      cloudflare: { apiBaseUrl: "https://api.cloudflare.com", accountId: "account", credentialRef: "env:REELIER_TEST_CLOUDFLARE", cleanupRef: "cloudflare-cleanup", zoneId: "zone", recordId: "record", recordName: "certification.example.com", tokenName: "certification-token" },
+      hubspot: { apiBaseUrl: "https://api.hubapi.com", accountId: "portal", credentialRef: "env:REELIER_TEST_HUBSPOT", cleanupRef: "hubspot-cleanup", ticketId: "ticket", contactId: "contact", approvedProperties: ["subject"] },
+      slack: { apiBaseUrl: "https://slack.com", accountId: "team", credentialRef: "env:REELIER_TEST_SLACK", cleanupRef: "slack-cleanup", channelId: "C0123456789" },
+    },
+    fly: { appName: "cell", agentAppName: "agent", orgSlug: "personal", region: "yyz", apiCredentialRef: "env:REELIER_TEST_FLY", authorityImageDigest: "sha256:" + "a".repeat(64), networkPolicyDigest: "sha256:" + "b".repeat(64), schemaDigest: "sha256:" + "c".repeat(64) },
+    codex: { binaryPath: "missing-codex-for-test", version: "0.134.0", authorityEndpoint: "https://cell.example.com/mcp", taskId: "task_1" },
+  }), "utf8");
+  const prior = process.env.REELIER_TEST_GITHUB;
+  process.env.REELIER_TEST_GITHUB = "private-github-value";
+  let output = "";
+  const original = console.log;
+  try {
+    console.log = (...args: unknown[]) => { output += args.join(" "); };
+    const code = await runAuthorityCommand({ positional: ["certify", "preflight"], flags: new Set(), opts: { config: file } });
+    assert.equal(code, 1);
+    assert.match(output, /secret:vercel:credential/);
+    assert.match(output, /runtime:codex/);
+    assert.doesNotMatch(output, /private-github-value/);
+    assert.doesNotMatch(output, /REELIER_TEST_GITHUB/);
+  } finally {
+    console.log = original;
+    if (prior === undefined) delete process.env.REELIER_TEST_GITHUB; else process.env.REELIER_TEST_GITHUB = prior;
   }
 });
