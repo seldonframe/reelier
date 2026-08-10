@@ -35,6 +35,7 @@ export { createSecretHandle, isSecretHandle, redactSecretValue, type SecretHandl
 export { createCloudflareTokenCreateDispatchAdapter, createVercelProjectEnvironmentSecretDispatchAdapter, createCloudflareTokenCreateAdapter, createVercelProjectEnvironmentSecretAdapter, type CloudflareTokenCreateProvider, type VercelProjectEnvironmentSecretProvider } from "./secret-adapters.js";
 export { assertCodexDogfoodPlan, createCodexDogfoodPlan, CODEX_DOGFOOD_PROFILES, type CodexDogfoodPlan, type CodexDogfoodProfile, type CodexDogfoodProfileConfig } from "./codex-dogfood.js";
 export { readGuardedLiveProviderConfig, runGuardedLiveProviderCertification, type GuardedLiveProviderConfig, type LiveCertificationExecutionResult, type LiveCertificationResult } from "./live-certification.js";
+export { CERTIFICATION_PROVIDER_IDS, createCertificationPreflight, createReleaseEvidenceManifest, type CertificationClaim, type CertificationEvidence, type CertificationPreflightInput, type CertificationPreflightReport, type CertificationProviderId, type CertificationResourceInput, type CertificationResourceReport, type ReleaseEvidenceManifest } from "./certification.js";
 export { createArtifactStore } from "./artifacts.js";
 export type { ArtifactStore, StagedArtifactCommitmentV1 } from "./artifacts.js";
 export { createFileReceiptPublication } from "./receipts.js";
