@@ -1,10 +1,11 @@
 # Reelier — what it actually does
 
-**Pinned to `origin/main` @ `315b896`, verified 2026-08-06.** npm serves **v0.30.0**; `main` carries
-unreleased work on top of it (`coverage`, plugin packages — §3, §7.6), so "on main" and "what users
-have" are different answers and this file says which. Every claim below was read out of code or a
-live-verified example on that commit, not from memory. If the pin is stale, treat this file as a
-hypothesis and re-verify (see §10) before telling anyone Reelier can or cannot do something.
+**Release snapshot: `reelier@0.32.0`, verified 2026-08-10.** npm serves **v0.32.0**. The
+authority-cell implementation is currently on `codex/outcomes-delegation-infra`; the Cloud branch is
+`codex/outcomes-cloud`. Production Cloud is deployed and database migrations are applied, but live
+provider certification and the real ten-agent Codex run remain gated on isolated resources and
+credentials. Every claim below must be re-verified against code and live evidence before saying a
+capability is production-certified.
 
 > **What the 2026-08-06 pass found, as a warning about this file's own failure mode.** The previous
 > pin (`62cd841`, 2026-08-01) claimed policy attestation was "fixed on main, NOT yet released" and
@@ -47,7 +48,7 @@ config — lives in the research topic).
 
 **Path A is also where the fail-open gap lives.** See §7.
 
-## 3. OSS command surface (28 on `main`; 27 in published v0.30.0)
+## 3. OSS command surface (authority certification is available in v0.32.0)
 
 Counted from the dispatch switch in `src/cli.ts`, not from a bare `case "` grep — see §10.1 for
 why that distinction matters.
@@ -70,7 +71,9 @@ and every npm user has 27. Say which one you mean.
 - **Prove:** `verify`, `push`, `get`, `serve` (exposes Reelier's own commands as MCP tools — the
   OPPOSITE of `mcp`; takes no `--wrap`), `resolve` (walks the ledger for a deferred probe and
   appends the answer — a **polling** command an operator or CI runs, never a listener; the CLI has
-  no inbound HTTP)
+  no inbound HTTP), `authority certify preflight|run|verify` (preflight is live-resource aware and
+  redacts credentials; run remains refused until a registered live adapter is present; verify checks
+  signed release evidence offline)
 - **Account/meta:** `login`, `logout`, `whoami`, `cost`, `prices`
 
 ## 4. Skill grammar (what a step can express)
@@ -138,6 +141,12 @@ who trusts their own disk. Never claim "orders of magnitude better" without nami
 Ops note: **no auto-migrate wiring** — migrations are applied by hand after merge.
 
 ## 7. Known limits — state these, do not paper over them
+
+0. **Authority certification is partially shipped.** v0.32.0 includes closed preflight contracts,
+guarded runner contracts, Fly probe orchestration, Codex ten-profile graph orchestration, and signed
+release-evidence verification. The command does not invent provider adapters, Fly infrastructure, or
+Codex processes. A hermetic fixture pass is not live certification; live claims remain `unchecked`
+until the Authority Cell and guarded provider resources produce signed evidence.
 
 1. **Probe-less writes degrade — but as of 0.30.0, "later" counts.** `attest` still needs a
    read-back tool. What changed (§10.4 move, shipped 0.30.0): **most sends DO produce a post-state,
