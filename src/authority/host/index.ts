@@ -37,6 +37,7 @@ export { assertCodexDogfoodPlan, createCodexDogfoodPlan, CODEX_DOGFOOD_PROFILES,
 export { readGuardedLiveProviderConfig, runGuardedLiveProviderCertification, type GuardedLiveProviderConfig, type LiveCertificationExecutionResult, type LiveCertificationResult } from "./live-certification.js";
 export { CERTIFICATION_PROVIDER_IDS, createCertificationPreflight, createReleaseEvidenceManifest, type CertificationClaim, type CertificationEvidence, type CertificationPreflightInput, type CertificationPreflightReport, type CertificationProviderId, type CertificationResourceInput, type CertificationResourceReport, type ReleaseEvidenceManifest } from "./certification.js";
 export { certificationPreflightForAdapter, runCertification, type CertificationAdapter, type CertificationAdapterRunResult } from "./certification-runner.js";
+export { runFlyCertification, type FlyCertificationInput, type FlyCertificationResult } from "./fly-certification.js";
 export { createArtifactStore } from "./artifacts.js";
 export type { ArtifactStore, StagedArtifactCommitmentV1 } from "./artifacts.js";
 export { createFileReceiptPublication } from "./receipts.js";
