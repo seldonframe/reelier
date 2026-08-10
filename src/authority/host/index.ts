@@ -40,6 +40,7 @@ export { certificationPreflightForAdapter, runCertification, type CertificationA
 export { runFlyCertification, type FlyCertificationInput, type FlyCertificationResult } from "./fly-certification.js";
 export { runCodexCertification, type CodexCertificationEvent, type CodexCertificationOperations, type CodexCertificationResult } from "./codex-certification.js";
 export { signReleaseEvidenceManifest, verifyReleaseEvidenceManifest, type SignedReleaseEvidenceManifest } from "./release-evidence.js";
+export { CERTIFICATION_SCENARIO_IDS, createProviderCertificationAdapters, runCertificationSuite, type CertificationScenarioId, type ProviderCertificationOperations } from "./provider-certification.js";
 export { createArtifactStore } from "./artifacts.js";
 export type { ArtifactStore, StagedArtifactCommitmentV1 } from "./artifacts.js";
 export { createFileReceiptPublication } from "./receipts.js";
