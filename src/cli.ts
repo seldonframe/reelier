@@ -121,6 +121,7 @@ import { collectClaudeCodeCoverage, collectCodexCoverage, renderCoverageReport, 
 import { uploadDiscoveryBundle } from "./discovery-client.js";
 import { createBridgeServer } from "./bridge.js";
 import { runAuthorityCommand } from "./authority/cli.js";
+import { buildAuthorityDeployment } from "./authority/host/deploy.js";
 
 // Exported (alongside cmdPush below) so test/push-cli.test.ts can drive
 // cmdPush's console output directly with a fake ParsedArgs + monkeypatched
@@ -4562,12 +4563,19 @@ async function cmdDeploy(args: ParsedArgs): Promise<number> {
   const candidate = args.positional[0];
   if (!candidate) { console.error("deploy requires a candidate alias or file"); return 1; }
   const root = path.resolve(args.opts.path ?? "authority");
-  await mkdir(path.join(root, "deployments"), { recursive: true });
-  const alias = path.basename(candidate).replace(/\.json$/i, "");
-  const file = path.join(root, "deployments", `${alias}.json`);
-  await writeFile(file, `${JSON.stringify({ v: "reelier.deployment-intent/v1", alias, status: "review-required", createdAt: new Date().toISOString(), note: "Human signature and provider account review are required before dispatch." }, null, 2)}\n`, "utf8");
-  console.log(JSON.stringify({ alias, status: "review-required", file }));
-  return 0;
+  const candidateFile = path.isAbsolute(candidate) ? candidate : path.resolve(process.cwd(), candidate);
+  try {
+    const raw = JSON.parse(await readFile(candidateFile, "utf8")) as Record<string, unknown>;
+    const job = raw.job as Record<string, unknown> | undefined;
+    const alias = typeof job?.jobId === "string" ? job.jobId : path.basename(candidate).replace(/\.json$/i, "");
+    const output = path.join(root, "deployments", alias);
+    const built = await buildAuthorityDeployment(candidateFile, output, path.join(root, "keys", "local-gate.pem"));
+    console.log(JSON.stringify({ alias, status: "deployed", deploymentFile: built.deploymentFile, jobCardFile: built.jobCardFile, jobId: built.jobCard.jobId }));
+    return 0;
+  } catch (error) {
+    console.error(JSON.stringify({ status: "refused", reasonCode: "deployment-invalid", message: error instanceof Error ? error.message : String(error) }));
+    return 1;
+  }
 }
 
 async function cmdDoctor(args: ParsedArgs): Promise<number> {

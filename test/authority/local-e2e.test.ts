@@ -1,0 +1,72 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { generateKeyPairSync } from "node:crypto";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { authorityCanonicalBytes, authorityDigest, signAuthorityDigest } from "../../src/authority/index.js";
+import { buildAuthorityDeployment } from "../../src/authority/host/deploy.js";
+import { createLocalAuthorityRuntime } from "../../src/authority/host/local.js";
+import type { DispatchAdapter } from "../../src/authority/host/dispatch.js";
+import { gmailPackDigest, gmailReplyDefinitionDigest, gmailResolverId, gmailProjectionSchemaId, gmailReadEndpointId, gmailReplyWriteEndpointId, gmailPolicySchemaId } from "../../src/packs/gmail/index.js";
+
+const sha = (seed: string) => `sha256:${seed.repeat(64).slice(0, 64)}`;
+
+test("local deployment dispatches once, reconciles, publishes a receipt, and survives restart", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-local-e2e-"));
+  let dispatches = 0;
+  let reconciliations = 0;
+  try {
+    const candidateRoot = path.join(root, "candidate");
+    await mkdir(path.join(candidateRoot, "keys"), { recursive: true });
+    await mkdir(path.join(candidateRoot, "sources"), { recursive: true });
+    const operator = generateKeyPairSync("ed25519");
+    const contractSigner = generateKeyPairSync("ed25519");
+    await writeFile(path.join(candidateRoot, "keys", "operator.pem"), operator.publicKey.export({ type: "spki", format: "pem" }));
+    await writeFile(path.join(candidateRoot, "keys", "contract.pem"), contractSigner.publicKey.export({ type: "spki", format: "pem" }));
+    await writeFile(path.join(candidateRoot, "sources", "thread_1.json"), `${JSON.stringify({ threadId: "thread_1", messageId: "message_1", recipient: "customer@example.test", subject: "Question", labelIds: ["INBOX"] })}\n`);
+
+    const limits = { maxEffectsPerWindow: 2, windowSeconds: 3600, maxEffectsPerSourceTrigger: 1, maxBodyBytes: 4096 };
+    const grant = { v: "reelier.delegation-grant/v1", tenant: "tenant_1", grantId: "grant_1", parentDigest: null, sponsor: "operator", grantor: "operator", grantee: "contract-signer", issuedAt: "2026-01-01T00:00:00.000Z", expiresAt: "2027-01-01T00:00:00.000Z", constraints: { definitionAliases: ["gmail_reply_send_v1"], audiences: ["operator"], connectorAccounts: [{ connectorId: "gmail", accountId: "account_1" }], projectionPointers: ["/threadId", "/messageId", "/recipient", "/subject", "/labelIds"], riskClasses: ["gmail_send"], limits } };
+    const grantDigest = authorityDigest(grant);
+    const policy = { text: "Thanks for reaching out." };
+    const contract = { v: "reelier.outcome-contract/v1", tenant: "tenant_1", alias: "gmail_reply_send_v1", contractId: "contract_1", validFrom: "2026-01-01T00:00:00.000Z", validUntil: "2027-01-01T00:00:00.000Z", packDigest: gmailPackDigest, definitionDigest: gmailReplyDefinitionDigest, sponsor: "operator", audiences: ["operator"], delegationGrantDigest: grantDigest, connectorId: "gmail", accountId: "account_1", sourceAuthority: { resolverId: gmailResolverId, projectionSchemaId: gmailProjectionSchemaId, allowedReadEndpointIds: [gmailReadEndpointId], authorizedProjectionPointers: ["/threadId", "/messageId", "/recipient", "/subject", "/labelIds"], maxFreshnessSeconds: 60 }, riskClasses: ["gmail_send"], limits, policyCommitment: { schemaId: gmailPolicySchemaId, jcsBase64: authorityCanonicalBytes(policy).toString("base64"), digest: authorityDigest(policy) } };
+    const contractDigest = authorityDigest(contract);
+    const grantBytes = authorityCanonicalBytes(grant);
+    const contractBytes = authorityCanonicalBytes(contract);
+    const candidate = {
+      v: "reelier.authority-deployment-candidate/v1",
+      approved: true,
+      job: { v: "reelier.signed-job-card/v1", jobId: "customer_reply", title: "Reply to a customer", taskShapeDigest: sha("a"), semanticClasses: ["communication_commit_v1"], definitionAliases: ["gmail_reply_send_v1"], connectorIds: ["gmail"], accountIdentities: ["gmail:account_1"], sourceRefs: ["thread"], audiences: ["operator"], limitsDigest: authorityDigest(limits), instructionsDigest: sha("b"), packDigests: [gmailPackDigest], exceptionPolicy: ["ambiguous-reconcile"], coverage: "declared-surface" },
+      state: { tenant: "tenant_1", definitionAlias: "gmail_reply_send_v1", stateVersion: 1, candidates: [{ contractEnvelope: { canonicalBase64: contractBytes.toString("base64"), advertisedDigest: contractDigest, signerId: "contract-signer", signature: signAuthorityDigest(contractSigner.privateKey, "outcome-contract", contractDigest) }, delegationEnvelopes: [{ index: 0, canonicalBase64: grantBytes.toString("base64"), advertisedDigest: grantDigest, signerId: "operator", signature: signAuthorityDigest(operator.privateKey, "delegation-grant", grantDigest) }], stateEvents: [{ index: 0, kind: "activated" as const, contractDigest, at: "2026-01-01T00:00:00.000Z" }] }] },
+      connectors: [{ tenant: "tenant_1", connectorId: "gmail", accountId: "account_1", providerAccountIdentity: "gmail-owner-example-test", allowedReadEndpointIds: [gmailReadEndpointId], allowedWriteEndpointIds: [gmailReplyWriteEndpointId], riskClasses: ["gmail_send"], operatorConfigurationDigest: sha("c") }],
+      trust: [{ signerId: "operator", principalId: "operator", publicKeyFile: "keys/operator.pem", purposes: ["delegation-grant"] }, { signerId: "contract-signer", principalId: "contract-signer", publicKeyFile: "keys/contract.pem", purposes: ["outcome-contract"] }],
+      sourceDirectory: "sources",
+    };
+    const candidateFile = path.join(candidateRoot, "candidate.json");
+    await writeFile(candidateFile, `${JSON.stringify(candidate)}\n`);
+    const authorityRoot = path.join(root, "authority");
+    const built = await buildAuthorityDeployment(candidateFile, path.join(authorityRoot, "deployments", "customer_reply"), path.join(authorityRoot, "keys", "local-gate.pem"));
+
+    const adapter: DispatchAdapter = {
+      async dispatch() { dispatches++; return { kind: "acknowledged", resultDigest: authorityDigest({ v: "fake-provider-response/v1", messageId: "provider-message-1" }) }; },
+      async reconcile() { reconciliations++; return { kind: "acknowledged", resultDigest: authorityDigest({ v: "fake-read-back/v1", messageId: "provider-message-1" }), reconciliationStatus: "matched", normalizedProjectionDigest: authorityDigest({ v: "fake-message/v1", messageId: "provider-message-1" }) }; },
+    };
+    const config = { version: 1 as const, tenant: "tenant_1", requester: "operator", definitions: ["gmail_reply_send_v1"], ledgerDir: path.join(authorityRoot, "ledger"), decisionDir: path.join(authorityRoot, "decisions"), receiptDir: path.join(authorityRoot, "receipts"), gateKeyFile: path.join(authorityRoot, "keys", "local-gate.pem"), endpoints: [], deploymentPath: built.deploymentFile };
+    const runtime = await createLocalAuthorityRuntime(config, { dispatchAdapter: adapter });
+    const request = { v: "reelier.outcome-request/v1", requestId: "customer-request-1", sourceRefs: { thread: "thread_1" }, choices: {} };
+    const first = await runtime.outcome("gmail_reply_send_v1", request, { tenant: "tenant_1", requester: "operator" });
+    assert.equal(first.verdict, "accepted", JSON.stringify(first));
+    assert.equal(first.lifecycleState, "reconciled");
+    assert.ok(first.receiptRef);
+    assert.equal(dispatches, 1);
+    assert.equal(reconciliations, 1);
+    const duplicate = await runtime.outcome("gmail_reply_send_v1", request, { tenant: "tenant_1", requester: "operator" });
+    assert.equal(duplicate.verdict, "accepted");
+    assert.equal(dispatches, 1);
+    const restarted = await createLocalAuthorityRuntime(config, { dispatchAdapter: adapter });
+    const status = await restarted.status({ requestId: request.requestId }, { tenant: "tenant_1", requester: "operator" });
+    assert.equal(status.lifecycleState, "reconciled");
+    assert.equal(dispatches, 1);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

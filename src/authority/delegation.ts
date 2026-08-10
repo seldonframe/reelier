@@ -1,4 +1,4 @@
-import type { AuthoritySignature, DelegationConstraints, DelegationGrant, OutcomeContract } from "./types.js";
+import type { AuthoritySignature, DelegationConstraints, DelegationGrant, DelegationPolicy, OutcomeContract } from "./types.js";
 import type { TrustRoots } from "./trust.js";
 import { verifyTrustedAuthority } from "./trust.js";
 
@@ -48,6 +48,7 @@ export function validateDelegationChain(input: Readonly<{ tenant: string; sponso
       if (previous.grantee !== grant.grantor) throw new TypeError("previous grantee must equal child grantor");
       if (issued < Date.parse(previous.issuedAt) || expires > Date.parse(previous.expiresAt)) throw new TypeError("child validity must be contained by parent validity");
       assertAttenuated(previous.constraints, grant.constraints);
+      assertDelegationPolicyAttenuated(previous.delegationPolicy, grant.delegationPolicy);
     }
     grants.push(grant);
     digests.push(verified.digest);
@@ -73,6 +74,23 @@ function assertAttenuated(parent: DelegationConstraints, child: DelegationConstr
   for (const field of ["maxEffectsPerWindow", "maxEffectsPerSourceTrigger", "maxBodyBytes"] as const) {
     if (child.limits[field] > parent.limits[field]) throw new TypeError(`delegation ${field} widening`);
   }
+}
+
+function assertDelegationPolicyAttenuated(parent: DelegationPolicy | undefined, child: DelegationPolicy | undefined): void {
+  if (!parent) {
+    if (child?.mayDelegate) throw new TypeError("delegation mayDelegate widening");
+    return;
+  }
+  if (!parent.mayDelegate) {
+    if (child?.mayDelegate) throw new TypeError("delegation mayDelegate widening");
+    return;
+  }
+  if (!child) return;
+  if (child.mayDelegate && !parent.mayDelegate) throw new TypeError("delegation mayDelegate widening");
+  if (child.maxDepth >= parent.maxDepth) throw new TypeError("delegation depth widening");
+  if (child.maxFanOut > parent.maxFanOut) throw new TypeError("delegation fan-out widening");
+  if (child.maxChildDurationSeconds > parent.maxChildDurationSeconds) throw new TypeError("delegation duration widening");
+  if (child.maxDelegatedEffects > parent.maxDelegatedEffects) throw new TypeError("delegation budget widening");
 }
 
 function assertSubset(parent: readonly string[], child: readonly string[], message: string): void {

@@ -5,6 +5,7 @@ import { authorityKinds, type AuthorityKind } from "../types.js";
 import { createTrustRoots, type TrustRoots } from "../trust.js";
 import { createConnectorRegistry, type ConnectorRegistration, type ConnectorRegistry } from "../connector.js";
 import type { AuthorityStateSnapshot } from "../state.js";
+import { normalizeSignedJobCard, type SignedJobCardV1 } from "../job.js";
 
 export interface AuthorityDeploymentTrustEntry {
   readonly signerId: string;
@@ -20,6 +21,7 @@ export interface AuthorityDeploymentManifest {
   readonly connectors: readonly ConnectorRegistration[];
   readonly trust: readonly AuthorityDeploymentTrustEntry[];
   readonly sourceDirectory: string;
+  readonly jobCard?: SignedJobCardV1;
 }
 
 export interface LoadedAuthorityDeployment extends AuthorityDeploymentManifest {
@@ -30,7 +32,8 @@ export interface LoadedAuthorityDeployment extends AuthorityDeploymentManifest {
 }
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._~:-]{0,127}$/;
-const TOP_LEVEL = new Set(["connectors", "sourceDirectory", "state", "tenant", "trust", "v"]);
+const TOP_LEVEL = new Set(["connectors", "jobCard", "sourceDirectory", "state", "tenant", "trust", "v"]);
+const REQUIRED_TOP_LEVEL = new Set(["connectors", "sourceDirectory", "state", "tenant", "trust", "v"]);
 const TRUST_FIELDS = new Set(["principalId", "publicKeyFile", "purposes", "signerId"]);
 
 export async function loadAuthorityDeployment(file: string): Promise<LoadedAuthorityDeployment> {
@@ -53,13 +56,14 @@ export async function loadAuthorityDeployment(file: string): Promise<LoadedAutho
 function parseManifest(value: unknown): AuthorityDeploymentManifest {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("authority deployment must be an object");
   const raw = value as Record<string, unknown>;
-  if (Object.keys(raw).some(key => !TOP_LEVEL.has(key)) || ![...TOP_LEVEL].every(key => key in raw)) throw new TypeError("authority deployment has an unknown or missing field");
+  if (Object.keys(raw).some(key => !TOP_LEVEL.has(key)) || ![...REQUIRED_TOP_LEVEL].every(key => key in raw)) throw new TypeError("authority deployment has an unknown or missing field");
   if (raw.v !== "reelier.authority-deployment/v1" || typeof raw.tenant !== "string" || !ID.test(raw.tenant) || typeof raw.sourceDirectory !== "string" || !raw.sourceDirectory || path.isAbsolute(raw.sourceDirectory)) throw new TypeError("authority deployment identity or source directory is invalid");
   const state = parseState(raw.state, raw.tenant);
   if (!Array.isArray(raw.connectors)) throw new TypeError("authority deployment connectors must be an array");
   if (!Array.isArray(raw.trust) || raw.trust.length === 0) throw new TypeError("authority deployment trust roots are required");
   const trust = raw.trust.map(parseTrustEntry);
-  return Object.freeze({ v: raw.v, tenant: raw.tenant, state, connectors: Object.freeze(raw.connectors.map(item => item as ConnectorRegistration)), trust: Object.freeze(trust), sourceDirectory: raw.sourceDirectory });
+  const jobCard = raw.jobCard === undefined ? undefined : normalizeSignedJobCard(raw.jobCard);
+  return Object.freeze({ v: raw.v, tenant: raw.tenant, state, connectors: Object.freeze(raw.connectors.map(item => item as ConnectorRegistration)), trust: Object.freeze(trust), sourceDirectory: raw.sourceDirectory, ...(jobCard ? { jobCard } : {}) });
 }
 
 function parseState(value: unknown, tenant: string): AuthorityStateSnapshot {

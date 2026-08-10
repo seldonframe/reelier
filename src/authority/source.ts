@@ -83,7 +83,12 @@ export function materializeSourceBundle(registry:SourceRegistry,input:Readonly<S
   const evidence=resolverObservations.map(({index,planDigest,endpointId,rawDigest})=>({index,planDigest,endpointId,rawDigest}));
   const readSetDigest=authorityDigest({v:"reelier.source-read-set/internal-v1",sourceRefsDigest,observations:evidence});
   const freshness=Math.min(input.maxFreshnessSeconds,resolver.maxFreshnessSeconds);const until=input.observedAt.getTime()+freshness*1000;if(!Number.isSafeInteger(until)) throw new TypeError("source freshness overflow");if(input.observedAt.getTime()>input.validationNow.getTime()||input.validationNow.getTime()>=until)throw new AuthorityBoundaryError("source","source-stale","source observation is outside its freshness interval");
-  const bundle=deepFreeze(parseAuthorityWire("source-bundle",{v:"reelier.source-bundle/v1",tenant:input.tenant,definitionDigest:input.definitionDigest,projectionSchemaId:input.projectionSchemaId,sourceRefsDigest,readSetDigest,sourceIdentity:projected.sourceIdentity,triggerIdentity:projected.triggerIdentity,observedAt,freshUntil:new Date(until).toISOString(),provenance:{resolverId:input.resolverId,observations:evidence},claims,projection:projected.projection}));
+  // Source resolvers may use a digest as a trigger identity. Wire IDs intentionally
+  // exclude the digest separator (`:`), so normalize that one portable representation
+  // at the authority boundary.
+  const sourceIdentity = normalizeWireIdentity(projected.sourceIdentity, "source identity");
+  const triggerIdentity = normalizeWireIdentity(projected.triggerIdentity, "trigger identity");
+  const bundle=deepFreeze(parseAuthorityWire("source-bundle",{v:"reelier.source-bundle/v1",tenant:input.tenant,definitionDigest:input.definitionDigest,projectionSchemaId:input.projectionSchemaId,sourceRefsDigest,readSetDigest,sourceIdentity,triggerIdentity,observedAt,freshUntil:new Date(until).toISOString(),provenance:{resolverId:input.resolverId,observations:evidence},claims,projection:projected.projection}));
   const digest=authorityDigest(bundle);const sourceSnapshotDigest=authorityDigest({v:"reelier.source-snapshot/internal-v1",bundleDigest:digest,sourceRefsDigest,readSetDigest,resolverId:input.resolverId,observations:evidence});
   const result=Object.freeze({bundle,digest,validationInstant,sourceSnapshotDigest}) as ValidatedSourceBundle;validated.add(result);return result;
 }
@@ -98,3 +103,4 @@ function compareText(left:string,right:string):number{return left<right?-1:left>
 function projectionLeafPointers(value:unknown,prefix=""):string[]{if(value!==null&&typeof value==="object"&&!Array.isArray(value)){const entries=Object.entries(value as Record<string,unknown>);if(entries.length)return entries.flatMap(([k,v])=>projectionLeafPointers(v,`${prefix}/${k.replace(/~/g,"~0").replace(/\//g,"~1")}`));}return[prefix];}
 function sha(bytes:Uint8Array){return`sha256:${createHash("sha256").update(bytes).digest("hex")}`;}
 function deepFreeze<T>(value:T):T{if(value&&typeof value==="object"&&!Object.isFrozen(value)){for(const child of Object.values(value as Record<string,unknown>))deepFreeze(child);Object.freeze(value);}return value;}
+function normalizeWireIdentity(value:string,label:string):string{if(typeof value!=="string")throw new TypeError(`${label} must be a string`);const normalized=value.startsWith("sha256:")?value.replace(":","."):value;if(!/^[A-Za-z0-9._~-]{1,256}$/.test(normalized))throw new TypeError(`${label} is not a portable wire identifier`);return normalized;}
