@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
+import path from "node:path";
 import type { DownstreamConnection, McpCallResult } from "../src/mcp-client.js";
 import {
   digestNormalizedMcpToolSchemas,
@@ -127,4 +130,22 @@ test("inspection failures never disclose provider response secrets", async () =>
   const entry = await inspectCallableConnection(candidate(), throwingAdapter, async () => connection);
   assert.equal(entry.status, "discovered-unverified");
   assert.doesNotMatch(JSON.stringify(entry), new RegExp(providerSecret));
+});
+
+test("connection ABI schemas accept closed contracts and refuse unknown keys", async () => {
+  const Ajv2020 = createRequire(import.meta.url)("ajv/dist/2020").default;
+  const ajv = new Ajv2020({ strict: true });
+  const load = async (name: string) => JSON.parse(await readFile(path.join(process.cwd(), "contract", "authority", "v1", name), "utf8"));
+  const descriptorSchema = await load("connection-descriptor.schema.json");
+  const adoptionSchema = await load("connection-adoption.schema.json");
+  const inventorySchema = await load("connection-inventory.schema.json");
+  const connection = fakeConnection({ content: [] });
+  const digests = digestNormalizedMcpToolSchemas(connection.tools).map(item => item.digest);
+  const usable = await inspectCallableConnection(candidate(), adapter(digests), async () => connection);
+  assert.equal(ajv.validate(descriptorSchema, usable.descriptor), true, JSON.stringify(ajv.errors));
+  const adoption = { v: "reelier.connection-adoption/v1", adoptionId: "adoption_1", descriptorDigest: digestA, selectedAccountIdentity: "google:user:123", mode: "existing", sidecarRouteId: "sidecar.gmail", rawWriteReachability: "unknown", activationState: "inactive", signedDeploymentBinding: null };
+  assert.equal(ajv.validate(adoptionSchema, adoption), true, JSON.stringify(ajv.errors));
+  const report = { v: "reelier.connection-inventory/v1", root: "authority", entries: [usable], issues: [] };
+  assert.equal(ajv.validate(inventorySchema, report), true, JSON.stringify(ajv.errors));
+  assert.equal(ajv.validate(inventorySchema, { ...report, credential: "forbidden" }), false);
 });

@@ -16,18 +16,64 @@ export interface HostCoverageV1 {
 }
 
 export type ConnectionKind = "adopted-mcp-stdio" | "adopted-mcp-http" | "composio-managed" | "native-https" | "host-private";
+export type CallableRouteKind = "mcp-stdio" | "mcp-http" | "opaque-host";
+
+export interface ConnectionToolSchemaV1 {
+  readonly toolName: string;
+  readonly digest: string;
+}
 
 export interface ConnectionDescriptorV1 {
   readonly v: "reelier.connection-descriptor/v1";
   readonly connectionId: string;
   readonly kind: ConnectionKind;
-  readonly provider: string;
-  readonly accountIdentity: string;
-  readonly toolSchemaDigests: readonly string[];
-  readonly sourceEndpointIds: readonly string[];
-  readonly writeEndpointIds: readonly string[];
-  readonly secretOwner: "host" | "worker";
+  readonly provider: { readonly id: string; readonly toolServerName: string };
+  readonly callableRoute: { readonly kind: CallableRouteKind; readonly routeId: string; readonly endpointIds: readonly string[] };
+  readonly account: { readonly status: "verified"; readonly identity: string };
+  readonly toolSchemas: readonly ConnectionToolSchemaV1[];
+  readonly secretOwner: "host" | "provider" | "worker";
   readonly coverage: HostCoverageV1;
+}
+
+export interface ConnectionAdoptionV1 {
+  readonly v: "reelier.connection-adoption/v1";
+  readonly adoptionId: string;
+  readonly descriptorDigest: string;
+  readonly selectedAccountIdentity: string;
+  readonly mode: "existing" | "managed";
+  readonly sidecarRouteId: string;
+  readonly rawWriteReachability: "reachable" | "refused" | "unknown";
+  readonly activationState: "inactive" | "active" | "refused";
+  readonly signedDeploymentBinding: string | null;
+}
+
+export type ConnectionInventoryStatus = "usable" | "discovered-unverified" | "schema-drifted" | "account-mismatched" | "shadow-only" | "unsupported";
+export type AccountVerificationStatus = "verified" | "unverified" | "mismatched" | "unsupported";
+export type SchemaVerificationStatus = "verified" | "unverified" | "drifted" | "unsupported";
+
+export interface ConnectionInventoryEntryV1 {
+  readonly v: "reelier.connection-inventory-entry/v1";
+  readonly discoveryId: string;
+  readonly provider: string;
+  readonly connectionKind: ConnectionKind;
+  readonly status: ConnectionInventoryStatus;
+  readonly routeStatus: "callable" | "host-private" | "unsupported";
+  readonly accountVerification: { readonly status: AccountVerificationStatus; readonly identity?: string; readonly expectedIdentity?: string };
+  readonly schemaVerification: { readonly status: SchemaVerificationStatus; readonly expectedDigests: readonly string[]; readonly observedDigests: readonly string[] };
+  readonly reasonCodes: readonly string[];
+  readonly descriptor?: ConnectionDescriptorV1;
+}
+
+export interface ConnectionInventoryIssueV1 {
+  readonly file: string;
+  readonly reasonCode: "malformed-inventory-entry";
+}
+
+export interface ConnectionInventoryReportV1 {
+  readonly v: "reelier.connection-inventory/v1";
+  readonly root: string;
+  readonly entries: readonly ConnectionInventoryEntryV1[];
+  readonly issues: readonly ConnectionInventoryIssueV1[];
 }
 
 export interface InstalledPackManifestV1 {
@@ -121,11 +167,57 @@ export function normalizeHostCoverage(value: unknown): HostCoverageV1 {
 export function normalizeConnectionDescriptor(value: unknown): ConnectionDescriptorV1 {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("connection descriptor must be an object");
   const raw = value as Record<string, unknown>;
-  const keys = new Set(["v", "connectionId", "kind", "provider", "accountIdentity", "toolSchemaDigests", "sourceEndpointIds", "writeEndpointIds", "secretOwner", "coverage"]);
-  if (Object.keys(raw).some(key => !keys.has(key)) || raw.v !== "reelier.connection-descriptor/v1" || typeof raw.connectionId !== "string" || !raw.connectionId || typeof raw.provider !== "string" || !raw.provider || typeof raw.accountIdentity !== "string" || !raw.accountIdentity || !["adopted-mcp-stdio", "adopted-mcp-http", "composio-managed", "native-https", "host-private"].includes(String(raw.kind)) || !["host", "worker"].includes(String(raw.secretOwner))) throw new TypeError("invalid connection descriptor");
-  const strings = (name: string): readonly string[] => { const list = raw[name]; if (!Array.isArray(list) || list.some(item => typeof item !== "string" || !item)) throw new TypeError(`${name} must be a string array`); return Object.freeze([...new Set(list)].sort()); };
+  const keys = new Set(["v", "connectionId", "kind", "provider", "callableRoute", "account", "toolSchemas", "secretOwner", "coverage"]);
+  if (Object.keys(raw).some(key => !keys.has(key)) || raw.v !== "reelier.connection-descriptor/v1" || !nonEmpty(raw.connectionId) || !isConnectionKind(raw.kind) || !["host", "provider", "worker"].includes(String(raw.secretOwner))) throw new TypeError("invalid connection descriptor");
+  const provider = closedRecord(raw.provider, ["id", "toolServerName"], "connection provider");
+  if (!nonEmpty(provider.id) || !nonEmpty(provider.toolServerName)) throw new TypeError("invalid connection provider");
+  const route = closedRecord(raw.callableRoute, ["kind", "routeId", "endpointIds"], "callable route");
+  if (!["mcp-stdio", "mcp-http", "opaque-host"].includes(String(route.kind)) || !nonEmpty(route.routeId)) throw new TypeError("invalid callable route");
+  const account = closedRecord(raw.account, ["status", "identity"], "connection account");
+  if (account.status !== "verified" || !nonEmpty(account.identity)) throw new TypeError("connection account must be verified");
+  if (!Array.isArray(raw.toolSchemas) || raw.toolSchemas.length === 0) throw new TypeError("toolSchemas must be a non-empty array");
+  const toolSchemas = raw.toolSchemas.map(item => {
+    const schema = closedRecord(item, ["toolName", "digest"], "connection tool schema");
+    if (!nonEmpty(schema.toolName) || !isDigest(schema.digest)) throw new TypeError("invalid connection tool schema");
+    return Object.freeze({ toolName: schema.toolName, digest: schema.digest });
+  }).sort((a, b) => a.toolName.localeCompare(b.toolName));
+  if (new Set(toolSchemas.map(item => item.toolName)).size !== toolSchemas.length) throw new TypeError("connection tool schema names must be unique");
   if (!raw.coverage || typeof raw.coverage !== "object") throw new TypeError("connection coverage is required");
-  return Object.freeze({ v: raw.v, connectionId: raw.connectionId, kind: raw.kind as ConnectionKind, provider: raw.provider, accountIdentity: raw.accountIdentity, toolSchemaDigests: strings("toolSchemaDigests"), sourceEndpointIds: strings("sourceEndpointIds"), writeEndpointIds: strings("writeEndpointIds"), secretOwner: raw.secretOwner as "host" | "worker", coverage: normalizeHostCoverage(raw.coverage) });
+  return Object.freeze({ v: raw.v, connectionId: raw.connectionId as string, kind: raw.kind, provider: Object.freeze({ id: provider.id, toolServerName: provider.toolServerName }), callableRoute: Object.freeze({ kind: route.kind as CallableRouteKind, routeId: route.routeId as string, endpointIds: stringArray(route.endpointIds, "endpointIds") }), account: Object.freeze({ status: "verified", identity: account.identity as string }), toolSchemas: Object.freeze(toolSchemas), secretOwner: raw.secretOwner as ConnectionDescriptorV1["secretOwner"], coverage: normalizeHostCoverage(raw.coverage) });
+}
+
+export function normalizeConnectionAdoption(value: unknown): ConnectionAdoptionV1 {
+  const raw = closedRecord(value, ["v", "adoptionId", "descriptorDigest", "selectedAccountIdentity", "mode", "sidecarRouteId", "rawWriteReachability", "activationState", "signedDeploymentBinding"], "connection adoption");
+  if (raw.v !== "reelier.connection-adoption/v1" || !nonEmpty(raw.adoptionId) || !isDigest(raw.descriptorDigest) || !nonEmpty(raw.selectedAccountIdentity) || !["existing", "managed"].includes(String(raw.mode)) || !nonEmpty(raw.sidecarRouteId) || !["reachable", "refused", "unknown"].includes(String(raw.rawWriteReachability)) || !["inactive", "active", "refused"].includes(String(raw.activationState)) || (raw.signedDeploymentBinding !== null && !isDigest(raw.signedDeploymentBinding))) throw new TypeError("invalid connection adoption");
+  return Object.freeze({ ...raw }) as unknown as ConnectionAdoptionV1;
+}
+
+export function normalizeConnectionInventoryEntry(value: unknown): ConnectionInventoryEntryV1 {
+  const raw = closedRecord(value, ["v", "discoveryId", "provider", "connectionKind", "status", "routeStatus", "accountVerification", "schemaVerification", "reasonCodes", "descriptor"], "connection inventory entry");
+  if (raw.v !== "reelier.connection-inventory-entry/v1" || !nonEmpty(raw.discoveryId) || !nonEmpty(raw.provider) || !isConnectionKind(raw.connectionKind) || !["usable", "discovered-unverified", "schema-drifted", "account-mismatched", "shadow-only", "unsupported"].includes(String(raw.status)) || !["callable", "host-private", "unsupported"].includes(String(raw.routeStatus))) throw new TypeError("invalid connection inventory entry");
+  const account = closedRecord(raw.accountVerification, ["status", "identity", "expectedIdentity"], "account verification");
+  if (!["verified", "unverified", "mismatched", "unsupported"].includes(String(account.status)) || (account.identity !== undefined && !nonEmpty(account.identity)) || (account.expectedIdentity !== undefined && !nonEmpty(account.expectedIdentity))) throw new TypeError("invalid account verification");
+  if (account.status === "verified" && !nonEmpty(account.identity)) throw new TypeError("verified account identity is required");
+  if (account.status === "mismatched" && (!nonEmpty(account.identity) || !nonEmpty(account.expectedIdentity))) throw new TypeError("mismatched account identities are required");
+  const schema = closedRecord(raw.schemaVerification, ["status", "expectedDigests", "observedDigests"], "schema verification");
+  if (!["verified", "unverified", "drifted", "unsupported"].includes(String(schema.status))) throw new TypeError("invalid schema verification");
+  const expectedDigests = digestArray(schema.expectedDigests, "expectedDigests");
+  const observedDigests = digestArray(schema.observedDigests, "observedDigests");
+  const descriptor = raw.descriptor === undefined ? undefined : normalizeConnectionDescriptor(raw.descriptor);
+  if ((raw.status === "usable") !== (descriptor !== undefined)) throw new TypeError("usable inventory entries require a descriptor and non-usable entries prohibit one");
+  return Object.freeze({ v: raw.v, discoveryId: raw.discoveryId, provider: raw.provider, connectionKind: raw.connectionKind, status: raw.status, routeStatus: raw.routeStatus, accountVerification: Object.freeze({ status: account.status, ...(account.identity === undefined ? {} : { identity: account.identity }), ...(account.expectedIdentity === undefined ? {} : { expectedIdentity: account.expectedIdentity }) }), schemaVerification: Object.freeze({ status: schema.status, expectedDigests, observedDigests }), reasonCodes: stringArray(raw.reasonCodes, "reasonCodes"), ...(descriptor === undefined ? {} : { descriptor }) }) as ConnectionInventoryEntryV1;
+}
+
+export function normalizeConnectionInventoryReport(value: unknown): ConnectionInventoryReportV1 {
+  const raw = closedRecord(value, ["v", "root", "entries", "issues"], "connection inventory report");
+  if (raw.v !== "reelier.connection-inventory/v1" || typeof raw.root !== "string" || !Array.isArray(raw.entries) || !Array.isArray(raw.issues)) throw new TypeError("invalid connection inventory report");
+  const entries = raw.entries.map(normalizeConnectionInventoryEntry);
+  const issues = raw.issues.map(value => {
+    const issue = closedRecord(value, ["file", "reasonCode"], "connection inventory issue");
+    if (!nonEmpty(issue.file) || issue.reasonCode !== "malformed-inventory-entry") throw new TypeError("invalid connection inventory issue");
+    return Object.freeze({ file: issue.file as string, reasonCode: issue.reasonCode });
+  });
+  return Object.freeze({ v: raw.v, root: raw.root, entries: Object.freeze(entries), issues: Object.freeze(issues) });
 }
 
 export function clusterObservedActions(actions: readonly ObservedActionV1[], candidateId: string, occurrences = 1, compatiblePacks: readonly string[] = []): BoundableTaskCandidateV1 {
@@ -158,6 +250,32 @@ export function createShadowReport(candidate: BoundableTaskCandidateV1, proposed
 }
 
 function isDigest(value: unknown): value is string { return typeof value === "string" && /^sha256:[0-9a-f]{64}$/.test(value); }
+function nonEmpty(value: unknown): value is string { return typeof value === "string" && value.length > 0; }
+function isConnectionKind(value: unknown): value is ConnectionKind { return ["adopted-mcp-stdio", "adopted-mcp-http", "composio-managed", "native-https", "host-private"].includes(String(value)); }
+function closedRecord(value: unknown, keys: readonly string[], name: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError(`${name} must be an object`);
+  const raw = value as Record<string, unknown>;
+  const allowed = new Set(keys);
+  if (Object.keys(raw).some(key => !allowed.has(key))) throw new TypeError(`${name} must be a closed object`);
+  return raw;
+}
+function stringArray(value: unknown, name: string): readonly string[] {
+  if (!Array.isArray(value) || value.some(item => !nonEmpty(item))) throw new TypeError(`${name} must be a string array`);
+  return Object.freeze([...new Set(value as string[])].sort());
+}
+function digestArray(value: unknown, name: string): readonly string[] {
+  if (!Array.isArray(value) || value.some(item => !isDigest(item))) throw new TypeError(`${name} must be a digest array`);
+  return Object.freeze([...new Set(value as string[])].sort());
+}
 
 export type { ObservationHost, ObservationEnvelopeV1, ObservationService } from "./live.js";
 export { createObservationAdapter, createObservationService, matchInstalledPacks, parseObservationEnvelope } from "./live.js";
+export {
+  digestNormalizedMcpToolSchemas,
+  inspectCallableConnection,
+  inventoryConnections,
+  loadConnectionInventory,
+  verifyConnectionAccount,
+  type ConnectionInspectionCandidate,
+  type ReviewedConnectionInspectionAdapter,
+} from "../connections.js";
