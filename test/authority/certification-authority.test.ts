@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createPrivateKey, createPublicKey, generateKeyPairSync } from "node:crypto";
 import { createRequire } from "node:module";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { link, mkdir, mkdtemp, readFile, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { authorityDigest } from "../../src/authority/wire.js";
@@ -13,6 +13,7 @@ import {
   signCertificationReadinessArtifact,
   verifySignedCertificationReadiness,
 } from "../../src/authority/certification/authority.js";
+import { parseCertificationReadinessCandidate } from "../../src/authority/certification/readiness.js";
 
 const at = "2026-08-11T20:00:00.000Z";
 const later = "2026-08-11T20:01:00.000Z";
@@ -29,7 +30,7 @@ function keyDescriptor(keyId: string, role: "human-sponsor" | "authority-cell", 
 }
 
 function candidate(): any {
-  return {
+  const base = {
     v: "reelier.certification-readiness-candidate/v1",
     status: "awaiting-human-signature",
     preparationReady: true,
@@ -39,7 +40,7 @@ function candidate(): any {
     completeness: "unchecked",
     configDigest: `sha256:${"1".repeat(64)}`,
     selectionDigest: `sha256:${"2".repeat(64)}`,
-    preflightDigest: `sha256:${"3".repeat(64)}`,
+    preflightDigest: "",
     scenarios: ["github-issue-labels"],
     identifiers: {
       taskId: `task_${"a".repeat(24)}`,
@@ -50,6 +51,18 @@ function candidate(): any {
     },
     commitments: { resources: [], cleanup: [], credentials: [], runners: { status: "configured", artifacts: [] }, tests: { status: "configured", artifacts: [] }, topology: "absent", signatureStatus: "absent" },
   };
+  return { ...base, preflightDigest: preflightForCandidate(base).digest };
+}
+
+function preflightForCandidate(value: any): any {
+  const body = {
+    v: "reelier.certification-preflight/v2", configDigest: value.configDigest, selectionDigest: value.selectionDigest,
+    identifiers: value.identifiers, scenarios: value.scenarios, resources: value.commitments.resources, cleanup: value.commitments.cleanup,
+    credentialReferences: value.commitments.credentials, inputs: { runners: value.commitments.runners, tests: value.commitments.tests },
+    topology: value.commitments.topology, trust: "unchecked", signatureStatus: "absent", authorization: "absent", completeness: "unchecked",
+    missing: [], ok: true, preparationReady: true,
+  };
+  return { ...body, digest: authorityDigest(body) };
 }
 
 function trustEvent(sequence: number, action: "activate" | "revoke", descriptorDigest: string, previousEventDigest: string | null, occurredAt = at): any {
@@ -72,7 +85,7 @@ test("human-signed readiness binds the candidate root, selection, generated IDs,
   const signed = createSignedCertificationReadiness({
     readinessCandidate: fixture.readiness,
     readinessCandidateDigest: authorityDigest(fixture.readiness),
-    humanKeyDescriptor: fixture.humanDescriptor,
+    preflight: preflightForCandidate(fixture.readiness), humanKeyDescriptor: fixture.humanDescriptor,
     cellKeyDescriptors: [fixture.cellDescriptor],
     trustEvents: fixture.events,
     humanPrivateKey: fixture.human.privateKey,
@@ -80,7 +93,7 @@ test("human-signed readiness binds the candidate root, selection, generated IDs,
   });
   const verified = verifySignedCertificationReadiness({
     signed,
-    readinessCandidate: fixture.readiness,
+    readinessCandidate: fixture.readiness, preflight: preflightForCandidate(fixture.readiness),
     humanTrustRoot: fixture.humanDescriptor,
     keyDescriptors: [fixture.humanDescriptor, fixture.cellDescriptor],
     trustEvents: fixture.events,
@@ -106,8 +119,9 @@ test("key descriptors and trust events are closed and enforce the exact role-pur
 
 test("offline verification rejects purpose, role, candidate, config, selection, ID, scenario, Cell-key, and trust-history substitution", () => {
   const fixture = validFixture();
-  const signed = createSignedCertificationReadiness({ readinessCandidate: fixture.readiness, readinessCandidateDigest: authorityDigest(fixture.readiness), humanKeyDescriptor: fixture.humanDescriptor, cellKeyDescriptors: [fixture.cellDescriptor], trustEvents: fixture.events, humanPrivateKey: fixture.human.privateKey, authorizedAt: later });
-  const verify = (overrides: Record<string, unknown>) => verifySignedCertificationReadiness({ signed, readinessCandidate: fixture.readiness, humanTrustRoot: fixture.humanDescriptor, keyDescriptors: [fixture.humanDescriptor, fixture.cellDescriptor], trustEvents: fixture.events, ...overrides } as never);
+  const preflight = preflightForCandidate(fixture.readiness);
+  const signed = createSignedCertificationReadiness({ readinessCandidate: fixture.readiness, readinessCandidateDigest: authorityDigest(fixture.readiness), preflight, humanKeyDescriptor: fixture.humanDescriptor, cellKeyDescriptors: [fixture.cellDescriptor], trustEvents: fixture.events, humanPrivateKey: fixture.human.privateKey, authorizedAt: later });
+  const verify = (overrides: Record<string, unknown>) => verifySignedCertificationReadiness({ signed, readinessCandidate: fixture.readiness, preflight, humanTrustRoot: fixture.humanDescriptor, keyDescriptors: [fixture.humanDescriptor, fixture.cellDescriptor], trustEvents: fixture.events, ...overrides } as never);
   assert.throws(() => verify({ signed: { ...signed, purpose: "authority-receipt" } }), /purpose|signature/i);
   assert.throws(() => verify({ signed: { ...signed, signerRole: "authority-cell" } }), /role|signature/i);
   assert.throws(() => verify({ readinessCandidate: { ...fixture.readiness, preflightDigest: `sha256:${"4".repeat(64)}` } }), /candidate|digest|link/i);
@@ -123,8 +137,9 @@ test("offline verification rejects purpose, role, candidate, config, selection, 
 
 test("offline verification rejects inactive, revoked, late-activated, and malformed trust histories", () => {
   const fixture = validFixture();
-  const signed = createSignedCertificationReadiness({ readinessCandidate: fixture.readiness, readinessCandidateDigest: authorityDigest(fixture.readiness), humanKeyDescriptor: fixture.humanDescriptor, cellKeyDescriptors: [fixture.cellDescriptor], trustEvents: fixture.events, humanPrivateKey: fixture.human.privateKey, authorizedAt: later });
-  const verify = (events: readonly any[]) => verifySignedCertificationReadiness({ signed: { ...signed, trustHistoryDigest: authorityDigest(events) }, readinessCandidate: fixture.readiness, humanTrustRoot: fixture.humanDescriptor, keyDescriptors: [fixture.humanDescriptor, fixture.cellDescriptor], trustEvents: events });
+  const preflight = preflightForCandidate(fixture.readiness);
+  const signed = createSignedCertificationReadiness({ readinessCandidate: fixture.readiness, readinessCandidateDigest: authorityDigest(fixture.readiness), preflight, humanKeyDescriptor: fixture.humanDescriptor, cellKeyDescriptors: [fixture.cellDescriptor], trustEvents: fixture.events, humanPrivateKey: fixture.human.privateKey, authorizedAt: later });
+  const verify = (events: readonly any[]) => verifySignedCertificationReadiness({ signed: { ...signed, trustHistoryDigest: authorityDigest(events) }, readinessCandidate: fixture.readiness, preflight, humanTrustRoot: fixture.humanDescriptor, keyDescriptors: [fixture.humanDescriptor, fixture.cellDescriptor], trustEvents: events });
   assert.throws(() => verify([fixture.events[0]]), /cell.*active|descriptor.*active/i);
   const revoked = trustEvent(2, "revoke", authorityDigest(fixture.cellDescriptor), authorityDigest(fixture.events[1]), later);
   assert.throws(() => verify([...fixture.events, revoked]), /revoked|active/i);
@@ -136,14 +151,56 @@ test("offline verification rejects inactive, revoked, late-activated, and malfor
 
 test("offline verification refuses ambiguous or duplicate descriptor sets", () => {
   const fixture = validFixture();
-  const signed = createSignedCertificationReadiness({ readinessCandidate: fixture.readiness, readinessCandidateDigest: authorityDigest(fixture.readiness), humanKeyDescriptor: fixture.humanDescriptor, cellKeyDescriptors: [fixture.cellDescriptor], trustEvents: fixture.events, humanPrivateKey: fixture.human.privateKey, authorizedAt: later });
-  assert.throws(() => verifySignedCertificationReadiness({ signed, readinessCandidate: fixture.readiness, humanTrustRoot: fixture.humanDescriptor, keyDescriptors: [fixture.humanDescriptor, fixture.humanDescriptor, fixture.cellDescriptor], trustEvents: fixture.events }), /descriptor.*unique|human.*exactly one/i);
+  const preflight = preflightForCandidate(fixture.readiness);
+  const signed = createSignedCertificationReadiness({ readinessCandidate: fixture.readiness, readinessCandidateDigest: authorityDigest(fixture.readiness), preflight, humanKeyDescriptor: fixture.humanDescriptor, cellKeyDescriptors: [fixture.cellDescriptor], trustEvents: fixture.events, humanPrivateKey: fixture.human.privateKey, authorizedAt: later });
+  assert.throws(() => verifySignedCertificationReadiness({ signed, readinessCandidate: fixture.readiness, preflight, humanTrustRoot: fixture.humanDescriptor, keyDescriptors: [fixture.humanDescriptor, fixture.humanDescriptor, fixture.cellDescriptor], trustEvents: fixture.events }), /descriptor.*unique|human.*exactly one/i);
+});
+
+test("canonical signatures reject alternate text and byte encodings for the same or a different digest identity", () => {
+  const fixture = validFixture();
+  const preflight = preflightForCandidate(fixture.readiness);
+  const signed = createSignedCertificationReadiness({ readinessCandidate: fixture.readiness, readinessCandidateDigest: authorityDigest(fixture.readiness), preflight, humanKeyDescriptor: fixture.humanDescriptor, cellKeyDescriptors: [fixture.cellDescriptor], trustEvents: fixture.events, humanPrivateKey: fixture.human.privateKey, authorizedAt: later });
+  const verify = (sig: string) => verifySignedCertificationReadiness({ signed: { ...signed, signature: { alg: "ed25519", sig } }, readinessCandidate: fixture.readiness, preflight, humanTrustRoot: fixture.humanDescriptor, keyDescriptors: [fixture.humanDescriptor, fixture.cellDescriptor], trustEvents: fixture.events });
+  const bytes = Buffer.from(signed.signature.sig, "base64");
+  assert.equal(bytes.length, 64);
+  for (const mutation of [
+    `${signed.signature.sig}\n`,
+    `${signed.signature.sig}junk`,
+    signed.signature.sig.replace(/==$/, ""),
+    `${signed.signature.sig}=`,
+    Buffer.concat([bytes, Buffer.from([0])]).toString("base64"),
+  ]) assert.throws(() => verify(mutation), /canonical|signature|64 bytes/i);
+  const identities = new Set([signed.signature.sig, `${signed.signature.sig}\n`, `${signed.signature.sig}junk`, signed.signature.sig.replace(/==$/, "")].map(sig => authorityDigest({ ...signed, signature: { alg: "ed25519", sig } })));
+  assert.equal(identities.size, 4, "textually distinct signatures would create multiple artifact digests unless canonical form is enforced");
+});
+
+test("the shared readiness parser deeply validates commitments and their preflight link", () => {
+  const fixture = validFixture();
+  const preflight = preflightForCandidate(fixture.readiness);
+  assert.deepEqual(parseCertificationReadinessCandidate(fixture.readiness, preflight), fixture.readiness);
+  assert.throws(() => parseCertificationReadinessCandidate({ ...fixture.readiness, commitments: { malicious: true } }, preflight), /commitments.*closed|commitment/i);
+  const { topology: _omitted, ...omitted } = fixture.readiness.commitments;
+  assert.throws(() => parseCertificationReadinessCandidate({ ...fixture.readiness, commitments: omitted }, preflight), /commitments.*closed|commitment/i);
+  assert.throws(() => parseCertificationReadinessCandidate({ ...fixture.readiness, commitments: { ...fixture.readiness.commitments, extra: true } }, preflight), /commitments.*closed|commitment/i);
+  assert.throws(() => parseCertificationReadinessCandidate({ ...fixture.readiness, commitments: { ...fixture.readiness.commitments, topology: "configured" } }, preflight), /preflight.*link|commitment/i);
+  assert.throws(() => parseCertificationReadinessCandidate({ ...fixture.readiness, preflightDigest: `sha256:${"9".repeat(64)}` }, preflight), /preflight.*link|digest/i);
+  assert.throws(() => parseCertificationReadinessCandidate(fixture.readiness, { ...preflight, digest: `sha256:${"8".repeat(64)}` }), /preflight.*digest|link/i);
+});
+
+test("human and Cell roles and Cell purposes cannot reuse one canonical SPKI key", () => {
+  const fixture = validFixture();
+  const reused = keyDescriptor("cell_reused_key", "authority-cell", "authority-receipt", fixture.human.publicKey);
+  const first = trustEvent(0, "activate", authorityDigest(fixture.humanDescriptor), null);
+  const second = trustEvent(1, "activate", authorityDigest(reused), authorityDigest(first));
+  assert.throws(() => createSignedCertificationReadiness({ readinessCandidate: fixture.readiness, readinessCandidateDigest: authorityDigest(fixture.readiness), preflight: preflightForCandidate(fixture.readiness), humanKeyDescriptor: fixture.humanDescriptor, cellKeyDescriptors: [reused], trustEvents: [first, second], humanPrivateKey: fixture.human.privateKey, authorizedAt: later }), /SPKI|key material|fingerprint.*unique/i);
+  const sameCellKey = keyDescriptor("cell_evidence_key", "authority-cell", "authority-evidence", createPublicKey({ key: Buffer.from(fixture.cellDescriptor.publicKeySpkiBase64, "base64"), format: "der", type: "spki" }));
+  assert.throws(() => createSignedCertificationReadiness({ readinessCandidate: fixture.readiness, readinessCandidateDigest: authorityDigest(fixture.readiness), preflight: preflightForCandidate(fixture.readiness), humanKeyDescriptor: fixture.humanDescriptor, cellKeyDescriptors: [fixture.cellDescriptor, sameCellKey], trustEvents: fixture.events, humanPrivateKey: fixture.human.privateKey, authorizedAt: later }), /SPKI|key material|fingerprint.*unique/i);
 });
 
 test("signing refuses a private key that does not match the pre-existing human descriptor", () => {
   const fixture = validFixture();
   const wrong = generateKeyPairSync("ed25519");
-  assert.throws(() => createSignedCertificationReadiness({ readinessCandidate: fixture.readiness, readinessCandidateDigest: authorityDigest(fixture.readiness), humanKeyDescriptor: fixture.humanDescriptor, cellKeyDescriptors: [fixture.cellDescriptor], trustEvents: fixture.events, humanPrivateKey: createPrivateKey(wrong.privateKey.export({ type: "pkcs8", format: "pem" })), authorizedAt: later }), /private key.*descriptor|signer/i);
+  assert.throws(() => createSignedCertificationReadiness({ readinessCandidate: fixture.readiness, readinessCandidateDigest: authorityDigest(fixture.readiness), preflight: preflightForCandidate(fixture.readiness), humanKeyDescriptor: fixture.humanDescriptor, cellKeyDescriptors: [fixture.cellDescriptor], trustEvents: fixture.events, humanPrivateKey: createPrivateKey(wrong.privateKey.export({ type: "pkcs8", format: "pem" })), authorizedAt: later }), /private key.*descriptor|signer/i);
   assert.doesNotThrow(() => createPublicKey({ key: Buffer.from(fixture.humanDescriptor.publicKeySpkiBase64, "base64"), format: "der", type: "spki" }));
 });
 
@@ -151,7 +208,7 @@ test("portable authority key, trust event, and signed readiness schemas are clos
   const Ajv2020 = createRequire(import.meta.url)("ajv/dist/2020").default;
   const ajv = new Ajv2020({ strict: true });
   const fixture = validFixture();
-  const signed = createSignedCertificationReadiness({ readinessCandidate: fixture.readiness, readinessCandidateDigest: authorityDigest(fixture.readiness), humanKeyDescriptor: fixture.humanDescriptor, cellKeyDescriptors: [fixture.cellDescriptor], trustEvents: fixture.events, humanPrivateKey: fixture.human.privateKey, authorizedAt: later });
+  const signed = createSignedCertificationReadiness({ readinessCandidate: fixture.readiness, readinessCandidateDigest: authorityDigest(fixture.readiness), preflight: preflightForCandidate(fixture.readiness), humanKeyDescriptor: fixture.humanDescriptor, cellKeyDescriptors: [fixture.cellDescriptor], trustEvents: fixture.events, humanPrivateKey: fixture.human.privateKey, authorizedAt: later });
   const load = async (name: string) => JSON.parse(await readFile(path.join(process.cwd(), "contract", "authority", "v1", name), "utf8"));
   const descriptorSchema = await load("authority-key-descriptor.schema.json");
   const eventSchema = await load("trust-event.schema.json");
