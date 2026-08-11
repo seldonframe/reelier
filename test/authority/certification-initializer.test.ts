@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { access, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, readdir, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { initializeCertification } from "../../src/authority/certification/initializer.js";
@@ -56,10 +56,32 @@ test("concurrent identical certification init converges on one atomic workspace"
   const configPath = path.join(root, "certification.local.json");
   const workspace = path.join(root, "certification");
   await writeFile(configPath, JSON.stringify(config()), "utf8");
+  let arrivals = 0;
+  let release!: () => void;
+  const barrier = new Promise<void>(resolve => { release = resolve; });
+  const beforePublish = async (): Promise<void> => { arrivals += 1; if (arrivals === 2) release(); await barrier; };
   const results = await Promise.all([
-    initializeCertification({ configPath, workspace }),
-    initializeCertification({ configPath, workspace }),
+    initializeCertification({ configPath, workspace, hooks: { beforePublish } }),
+    initializeCertification({ configPath, workspace, hooks: { beforePublish } }),
   ]);
   assert.deepEqual(results.map(result => result.status).sort(), ["initialized", "resumed"]);
   assert.deepEqual(results[0].identifiers, results[1].identifiers);
+  assert.equal(arrivals, 2);
+  assert.deepEqual((await readdir(root)).filter(name => name.startsWith(".certification.staging-")), []);
+});
+
+test("certification init removes a stale interrupted sibling stage before publishing", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "reelier-cert-init-interrupted-"));
+  const configPath = path.join(root, "certification.local.json");
+  const workspace = path.join(root, "certification");
+  const interrupted = path.join(root, ".certification.staging-interrupted");
+  await writeFile(configPath, JSON.stringify(config()), "utf8");
+  await mkdir(interrupted);
+  await writeFile(path.join(interrupted, "partial.json"), "{", "utf8");
+  const stale = new Date(Date.now() - 10 * 60_000);
+  await utimes(interrupted, stale, stale);
+  const result = await initializeCertification({ configPath, workspace });
+  assert.equal(result.status, "initialized");
+  await assert.rejects(() => access(interrupted));
+  assert.deepEqual((await readdir(root)).filter(name => name.startsWith(".certification.staging-")), []);
 });
