@@ -75,11 +75,18 @@ test("subset preparation preserves the immutable two-scenario initialization roo
   assert.deepEqual(preflight.identifiers, initialization.identifiers);
   assert.deepEqual(sealed.candidate.identifiers, initialization.identifiers);
   assert.deepEqual(bundle.artifacts.initialization.identifiers, initialization.identifiers);
+  assert.deepEqual(bundle.artifacts.initialization.scenarios, ["github-issue-labels", "slack-topic"]);
   assert.equal(`${JSON.stringify(bundle.artifacts.initialization)}\n`, initializationBytes);
   assert.deepEqual(bundle.manifest.scenarios, ["github-issue-labels"]);
   assert.deepEqual(bundle.artifacts.preflight.inputs.runners.artifacts.map((item: any) => item.name), ["github-issue-labels.json"]);
   assert.deepEqual(bundle.artifacts.preflight.inputs.tests.artifacts.map((item: any) => item.name), ["github-issue-labels.json"]);
   assert.doesNotMatch(JSON.stringify(bundle.artifacts.config), /slack-topic/);
+
+  const incoherentSubset = structuredClone(bundle);
+  incoherentSubset.artifacts.initialization.scenarios = ["slack-topic"];
+  incoherentSubset.manifest.artifactDigests.initialization = authorityDigest(incoherentSubset.artifacts.initialization);
+  incoherentSubset.digest = authorityDigest({ v: incoherentSubset.v, manifest: incoherentSubset.manifest, artifacts: incoherentSubset.artifacts });
+  assert.throws(() => verifyCertificationExport(incoherentSubset), /selection.*initialization|subset/i);
 });
 
 test("offline verification recomputes generated IDs and semantic preflight fields after every digest is reforged", async () => {
