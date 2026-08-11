@@ -62,14 +62,16 @@ export async function publishPrivateContentAddressed(root: string, subdirectory:
   const temporary = path.join(directory, `.${filename}.${randomBytes(12).toString("hex")}.tmp`);
   const handle = await open(temporary, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600);
   try { await handle.writeFile(content, "utf8"); await handle.sync(); } finally { await handle.close(); }
+  let created = false;
   try {
     await link(temporary, output);
+    created = true;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
   } finally {
     await unlink(temporary).catch(() => undefined);
   }
-  await chmod(output, 0o600);
+  if (created) await chmod(output, 0o600);
   return output;
 }
 

@@ -221,6 +221,7 @@ export function parseArgv(argv: string[]): ParsedArgs {
       if (arg === "--scenario" && opts.scenario !== undefined) throw new Error("duplicate --scenario option");
       opts[arg.slice(2)] = val;
     } else if (arg.startsWith("--")) {
+      if (arg === "--all" && flags.has("all")) throw new Error("duplicate --all option");
       flags.add(arg.slice(2));
     } else {
       positional.push(arg);
