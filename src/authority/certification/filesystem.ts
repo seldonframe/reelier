@@ -1,19 +1,16 @@
-import { constants, link, lstat, mkdir, open, realpath, unlink } from "node:fs/promises";
+import { constants, link, lstat, mkdir, open, realpath, stat, unlink } from "node:fs/promises";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
 
-export async function certificationWorkspaceRoot(workspace: string): Promise<string> {
-  const resolved = path.resolve(workspace);
-  const info = await lstatUnlinkedAncestry(resolved);
-  if (!info.isDirectory()) throw new TypeError("certification workspace must be a confined real directory");
-  return realpath(resolved);
+interface DirectoryTrustHooks { readonly afterAncestry?: () => Promise<void> }
+
+export async function certificationWorkspaceRoot(workspace: string, internalHooks: DirectoryTrustHooks = {}): Promise<string> {
+  return trustExistingDirectory(path.resolve(workspace), "certification workspace must be a confined real directory", internalHooks);
 }
 
-export async function assertUnlinkedCreationParent(target: string): Promise<string> {
+export async function assertUnlinkedCreationParent(target: string, internalHooks: DirectoryTrustHooks = {}): Promise<string> {
   const parent = path.dirname(path.resolve(target));
-  const info = await lstatUnlinkedAncestry(parent);
-  if (!info.isDirectory()) throw new TypeError("certification creation parent is linked, reparse-pointed, or not a directory");
-  return realpath(parent);
+  return trustExistingDirectory(parent, "certification creation parent is linked, reparse-pointed, or not a directory", internalHooks);
 }
 
 export async function readUnlinkedFile(file: string): Promise<Buffer> {
@@ -93,6 +90,26 @@ export async function publishPrivateContentAddressed(root: string, subdirectory:
 
 function assertSegment(value: string): void { if (!value || value === "." || value === ".." || value.includes("/") || value.includes("\\") || value.includes("\0")) throw new TypeError("certification path segment is invalid"); }
 function assertContained(root: string, candidate: string): void { const relative = path.relative(root, candidate); if (relative.startsWith("..") || path.isAbsolute(relative)) throw new TypeError("certification path escapes its confined workspace"); }
+
+async function trustExistingDirectory(requested: string, invalidMessage: string, hooks: DirectoryTrustHooks): Promise<string> {
+  const before = await lstat(requested);
+  if (!before.isDirectory() || before.isSymbolicLink()) throw new TypeError(invalidMessage);
+  const walkedBefore = await lstatUnlinkedAncestry(requested);
+  assertSameDirectory(before, walkedBefore);
+  await hooks.afterAncestry?.();
+  const canonical = await realpath(requested);
+  const canonicalWalkedAfter = await lstatUnlinkedAncestry(canonical);
+  const requestedWalkedAfter = await lstatUnlinkedAncestry(requested);
+  const [requestedLstatAfter, requestedStatAfter, canonicalLstatAfter, canonicalStatAfter] = await Promise.all([
+    lstat(requested), stat(requested), lstat(canonical), stat(canonical),
+  ]);
+  for (const observed of [walkedBefore, canonicalWalkedAfter, requestedWalkedAfter, requestedLstatAfter, requestedStatAfter, canonicalLstatAfter, canonicalStatAfter]) assertSameDirectory(before, observed);
+  return canonical;
+}
+
+function assertSameDirectory(expected: Awaited<ReturnType<typeof lstat>>, observed: Awaited<ReturnType<typeof lstat>>): void {
+  if (!observed.isDirectory() || observed.isSymbolicLink() || expected.dev !== observed.dev || expected.ino !== observed.ino) throw new TypeError("certification trusted directory changed during confinement");
+}
 
 async function lstatUnlinkedAncestry(target: string): Promise<Awaited<ReturnType<typeof lstat>>> {
   const resolved = path.resolve(target);
