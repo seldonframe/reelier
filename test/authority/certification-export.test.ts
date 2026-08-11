@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { initializeCertification } from "../../src/authority/certification/initializer.js";
@@ -15,7 +15,12 @@ async function initializedWorkspace(): Promise<string> {
     scenarios: ["github-issue-labels"], resources: { "github-issue-labels": { apiBaseUrl: "https://api.github.com", owner: "fixlyai", repository: "reelier-certification", issueNumber: 1 } },
     cleanup: { "github-issue-labels": ["restore-github-labels"] }, metadata: {}, secretReferences: { githubCredential: "env:REELIER_GITHUB_TOKEN" },
   }), "utf8");
-  return (await initializeCertification({ configPath })).workspace;
+  const workspace = (await initializeCertification({ configPath })).workspace;
+  await mkdir(path.join(workspace, "inputs", "runners"), { recursive: true });
+  await mkdir(path.join(workspace, "inputs", "tests"), { recursive: true });
+  await writeFile(path.join(workspace, "inputs", "runners", "github-issue-labels.json"), "{}", "utf8");
+  await writeFile(path.join(workspace, "inputs", "tests", "github-issue-labels.json"), "[]", "utf8");
+  return workspace;
 }
 
 test("certification export is a closed linked package that verifies offline without authority claims", async () => {
