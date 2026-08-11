@@ -59,6 +59,13 @@ export async function initializeCertification(input: Readonly<{ configPath: stri
     if (path.dirname(staging) === path.dirname(workspace) && path.basename(staging).startsWith(`.${path.basename(workspace)}.staging-`)) {
       await rm(staging, { recursive: true, force: true });
     }
+    if (await exists(workspace)) {
+      const existingConfig = parseCertificationOperatorConfigV2(JSON.parse(await readFile(path.join(workspace, "config.json"), "utf8")));
+      const existing = parseCertificationInitialization(JSON.parse(await readFile(path.join(workspace, "initialization.json"), "utf8")));
+      if (authorityDigest(existingConfig) === configDigest && existing.configDigest === configDigest && authorityDigest(existing.identifiers) === authorityDigest(identifiers)) {
+        return Object.freeze({ status: "resumed", workspace, configDigest, identifiers: existing.identifiers });
+      }
+    }
     throw error;
   }
   return Object.freeze({ status: "initialized", workspace, configDigest, identifiers });
