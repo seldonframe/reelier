@@ -115,7 +115,7 @@ Create candidate and final signed release-evidence manifests. Test Cloud against
 Each task is constrained to the files or directories below. A task report must name its exact files and explain any deviation before review; unrelated working-tree changes remain untouched.
 
 - Task 1: `src/authority/decision.ts`, `src/authority/host/fs-ledger.ts`, `test/authority/decision.test.ts`, `test/authority/ledger.test.ts`, and Task 1 reports under `.superpowers/sdd/`.
-- Task 2: `src/cli.ts`, initialization/observation/connection modules under `src/`, closed schemas under `schemas/authority/`, certification modules under `src/authority/certification/`, matching tests under `test/`, `authority/certification.example.json`, and command documentation.
+- Task 2: `src/cli.ts`, initialization/observation/connection modules under `src/`, closed ABI schemas under `contract/authority/v1/` (the package source copied by `scripts/build-authority-contract.mjs`), certification modules under `src/authority/certification/`, matching tests under `test/`, `authority/certification.example.json`, and command documentation.
 - Task 3: authority host, signing, trust, principal, task, grant, budget, deployment, and registry modules under `src/authority/`; their closed schemas, fixtures, and tests; generated non-secret `authority/` scaffold files.
 - Task 4: certified pack sources under `src/authority/packs/`, pack build inputs under `packs/`, provider runner modules under `src/authority/certification/`, and provider/conformance tests and fixtures under `test/`.
 - Task 5: topology/lease modules under `src/authority/`, Fly manifests and probe executors under `deploy/` and `scripts/`, matching tests, and operator runbooks under `docs/`.
