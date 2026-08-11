@@ -26,6 +26,8 @@ import { assertFreshManagedTopologyEvidence, assertManagedTopologyEvidence, type
 import { verifyAuthorityLease } from "./lease.js";
 import type { SignedAuthorityLeaseV1 } from "../types.js";
 import type { SourceReadAdapter } from "./source-read-adapter.js";
+import type { DownstreamConnection } from "../../mcp-client.js";
+import type { OpaqueConnectionRouteRegistry } from "../../connections.js";
 
 /** Builds the local host from signed-artifact boundaries. An empty workspace is intentionally
  * usable for discovery and status, but every Outcome refuses until a signed contract is installed. */
@@ -40,9 +42,15 @@ export interface LocalAuthorityRuntimeOptions {
   /** Production hosts inject an account-bound live reader. Fixture-file reads remain the
    * explicit hermetic default for local conformance and offline tests. */
   readonly sourceReadAdapter?: SourceReadAdapter;
+  readonly connectionRoutes?: OpaqueConnectionRouteRegistry;
 }
 
-export async function createLocalAuthorityRuntime(config: AuthorityHostConfig, options: LocalAuthorityRuntimeOptions = {}): Promise<AuthorityHostRuntime> {
+export interface LocalAuthorityRuntime extends AuthorityHostRuntime {
+  /** Explicitly opens an adopted host-owned route. Loading the deployment never calls this. */
+  resolveAdoptedConnection(connectionId: string): Promise<DownstreamConnection>;
+}
+
+export async function createLocalAuthorityRuntime(config: AuthorityHostConfig, options: LocalAuthorityRuntimeOptions = {}): Promise<LocalAuthorityRuntime> {
   if (config.cloud && config.topology !== "isolated") throw new TypeError("managed authority requires isolated topology");
   if (config.cloud) {
     if (!options.signedTopologyEvidence || !options.topologySigner) throw new TypeError("managed authority requires signed topology evidence");
@@ -86,6 +94,14 @@ export async function createLocalAuthorityRuntime(config: AuthorityHostConfig, o
   const jobs = Object.freeze(config.definitions.map(alias => Object.freeze({ jobId: alias, alias })));
   return Object.freeze({
     ...runtime,
+    async resolveAdoptedConnection(connectionId: string) {
+      if (!deployment || !options.connectionRoutes) throw new TypeError("adopted connection route is unavailable");
+      const descriptor = deployment.connectionDescriptors.find(item => item.connectionId === connectionId);
+      if (!descriptor) throw new TypeError("adopted connection descriptor is missing");
+      const adoption = deployment.connectionAdoptions.find(item => item.descriptorDigest === authorityDigest(descriptor));
+      if (!adoption) throw new TypeError("adopted connection binding is missing");
+      return options.connectionRoutes.resolve(descriptor, adoption);
+    },
     async jobsSearch(input: unknown) {
       const query = input && typeof input === "object" && !Array.isArray(input) && typeof (input as Record<string, unknown>).query === "string" ? String((input as Record<string, unknown>).query).toLowerCase() : "";
       return Object.freeze({ requestId: "", verdict: "accepted" as const, reasonCode: "jobs-found", lifecycleState: "catalog", jobs: Object.freeze(jobs.filter(job => !query || job.alias.toLowerCase().includes(query))) });

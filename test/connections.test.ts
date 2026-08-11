@@ -196,7 +196,7 @@ test("connection ABI schemas accept closed contracts and refuse unknown keys", a
   const digests = digestNormalizedMcpToolSchemas(connection.tools).map(item => item.digest);
   const usable = await inspectCallableConnection(candidate(), adapter(digests), async () => connection);
   assert.equal(ajv.validate(descriptorSchema, usable.descriptor), true, JSON.stringify(ajv.errors));
-  const adoption = { v: "reelier.connection-adoption/v1", adoptionId: "adoption_1", descriptorDigest: digestA, selectedAccountIdentity: "google:user:123", mode: "existing", sidecarRouteId: "sidecar.gmail", rawWriteReachability: "unknown", activationState: "inactive", signedDeploymentBinding: null };
+  const adoption = { v: "reelier.connection-adoption/v1", adoptionId: "adoption_1", descriptorDigest: digestA, selectedAccountIdentity: "google:user:123", mode: "existing", sidecarRouteId: "sidecar.gmail", rawWriteReachability: "unknown", activationState: "inactive", signedDeploymentBinding: null, secureConnectionCommitment: null };
   assert.equal(ajv.validate(adoptionSchema, adoption), true, JSON.stringify(ajv.errors));
   const report = { v: "reelier.connection-inventory/v1", root: "authority", entries: [usable], issues: [] };
   assert.equal(ajv.validate(inventorySchema, report), true, JSON.stringify(ajv.errors));

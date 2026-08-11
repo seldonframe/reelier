@@ -1,17 +1,21 @@
 import { createPublicKey, type KeyObject } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { authorityKinds, type AuthorityKind } from "../types.js";
+import { authorityKinds, type AuthorityKind, type AuthoritySignaturePurpose } from "../types.js";
 import { createTrustRoots, type TrustRoots } from "../trust.js";
 import { createConnectorRegistry, type ConnectorRegistration, type ConnectorRegistry } from "../connector.js";
 import type { AuthorityStateSnapshot } from "../state.js";
 import { normalizeSignedJobCard, type SignedJobCardV1 } from "../job.js";
+import { signedJobCardDigest, verifySignedJobCard } from "../job.js";
+import { connectionDescriptorDigest } from "../../connections.js";
+import { normalizeConnectionAdoption, normalizeConnectionDescriptor, type ConnectionAdoptionV1, type ConnectionDescriptorV1 } from "../../observation/index.js";
 
 export interface AuthorityDeploymentTrustEntry {
   readonly signerId: string;
   readonly principalId: string;
   readonly publicKeyFile: string;
-  readonly purposes: readonly AuthorityKind[];
+  readonly purposes: readonly AuthoritySignaturePurpose[];
+  readonly status?: "active" | "inactive" | "revoked";
 }
 
 export interface AuthorityDeploymentManifest {
@@ -22,6 +26,9 @@ export interface AuthorityDeploymentManifest {
   readonly trust: readonly AuthorityDeploymentTrustEntry[];
   readonly sourceDirectory: string;
   readonly jobCard?: SignedJobCardV1;
+  readonly connectionDescriptors: readonly ConnectionDescriptorV1[];
+  readonly connectionAdoptions: readonly ConnectionAdoptionV1[];
+  readonly enforcement: Readonly<{ completeness: "unchecked"; declaredSurfaceExclusiveEnforcement: "unchecked" | "verified"; bypasses: readonly string[] }>;
 }
 
 export interface LoadedAuthorityDeployment extends AuthorityDeploymentManifest {
@@ -32,9 +39,9 @@ export interface LoadedAuthorityDeployment extends AuthorityDeploymentManifest {
 }
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._~:-]{0,127}$/;
-const TOP_LEVEL = new Set(["connectors", "jobCard", "sourceDirectory", "state", "states", "tenant", "trust", "v"]);
+const TOP_LEVEL = new Set(["connectionAdoptions", "connectionDescriptors", "connectors", "enforcement", "jobCard", "sourceDirectory", "state", "states", "tenant", "trust", "v"]);
 const REQUIRED_TOP_LEVEL = new Set(["connectors", "sourceDirectory", "tenant", "trust", "v"]);
-const TRUST_FIELDS = new Set(["principalId", "publicKeyFile", "purposes", "signerId"]);
+const TRUST_FIELDS = new Set(["principalId", "publicKeyFile", "purposes", "signerId", "status"]);
 
 export async function loadAuthorityDeployment(file: string): Promise<LoadedAuthorityDeployment> {
   const resolved = path.resolve(file);
@@ -48,9 +55,16 @@ export async function loadAuthorityDeployment(file: string): Promise<LoadedAutho
     const keyFile = resolveInside(root, entry.publicKeyFile, "trust key path");
     let publicKey: KeyObject;
     try { publicKey = createPublicKey(await readFile(keyFile)); } catch (error) { throw new TypeError(`trust key cannot be loaded: ${error instanceof Error ? error.message : String(error)}`); }
-    trustEntries.push({ tenant: manifest.tenant, signerId: entry.signerId, principalId: entry.principalId, publicKey, purposes: entry.purposes });
+    if (entry.status !== undefined && entry.status !== "active") throw new TypeError("deployment trust entry is not active");
+    trustEntries.push({ tenant: manifest.tenant, signerId: entry.signerId, principalId: entry.principalId, publicKey, purposes: entry.purposes.filter((purpose): purpose is AuthorityKind => authorityKinds.includes(purpose as AuthorityKind)) });
   }
-  return Object.freeze({ ...manifest, root, sourceDirectory: resolveInside(root, manifest.sourceDirectory, "source directory"), trustRoots: createTrustRoots(trustEntries), trustEntries: Object.freeze(trustEntries), connectorRegistry: createConnectorRegistry(manifest.connectors) });
+  if (manifest.jobCard) {
+    const signer = manifest.trust.findIndex(entry => entry.signerId === manifest.jobCard!.signerId && entry.purposes.includes("signed-job-card"));
+    if (signer < 0 || manifest.trust[signer]!.status === "inactive" || manifest.trust[signer]!.status === "revoked" || !manifest.jobCard.audiences.includes(manifest.trust[signer]!.principalId) || !verifySignedJobCard(manifest.jobCard, trustEntries[signer]!.publicKey)) throw new TypeError("signed job card trust verification failed");
+    verifyAdoptions(manifest);
+  } else if (manifest.connectionDescriptors.length || manifest.connectionAdoptions.length) throw new TypeError("connection adoption requires a signed job card");
+  const authorityRoots = trustEntries.filter(entry => entry.purposes.length > 0);
+  return Object.freeze({ ...manifest, root, sourceDirectory: resolveInside(root, manifest.sourceDirectory, "source directory"), trustRoots: createTrustRoots(authorityRoots), trustEntries: Object.freeze(trustEntries), connectorRegistry: createConnectorRegistry(manifest.connectors) });
 }
 
 function parseManifest(value: unknown): AuthorityDeploymentManifest {
@@ -65,7 +79,10 @@ function parseManifest(value: unknown): AuthorityDeploymentManifest {
   if (!Array.isArray(raw.trust) || raw.trust.length === 0) throw new TypeError("authority deployment trust roots are required");
   const trust = raw.trust.map(parseTrustEntry);
   const jobCard = raw.jobCard === undefined ? undefined : normalizeSignedJobCard(raw.jobCard);
-  return Object.freeze({ v: raw.v, tenant: raw.tenant, states, connectors: Object.freeze(raw.connectors.map(item => item as ConnectorRegistration)), trust: Object.freeze(trust), sourceDirectory: raw.sourceDirectory, ...(jobCard ? { jobCard } : {}) });
+  const connectionDescriptors = raw.connectionDescriptors === undefined ? [] : parseUnique(raw.connectionDescriptors, normalizeConnectionDescriptor, item => item.connectionId, "connection descriptor");
+  const connectionAdoptions = raw.connectionAdoptions === undefined ? [] : parseUnique(raw.connectionAdoptions, normalizeConnectionAdoption, item => item.adoptionId, "connection adoption");
+  const enforcement = parseEnforcement(raw.enforcement, connectionAdoptions);
+  return Object.freeze({ v: raw.v, tenant: raw.tenant, states, connectors: Object.freeze(raw.connectors.map(item => item as ConnectorRegistration)), trust: Object.freeze(trust), sourceDirectory: raw.sourceDirectory, connectionDescriptors, connectionAdoptions, enforcement, ...(jobCard ? { jobCard } : {}) });
 }
 
 function parseStates(value: unknown, tenant: string): readonly AuthorityStateSnapshot[] {
@@ -85,8 +102,38 @@ function parseState(value: unknown, tenant: string): AuthorityStateSnapshot {
 function parseTrustEntry(value: unknown): AuthorityDeploymentTrustEntry {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("authority deployment trust entry must be an object");
   const raw = value as Record<string, unknown>;
-  if (Object.keys(raw).some(key => !TRUST_FIELDS.has(key)) || Object.keys(raw).length !== TRUST_FIELDS.size || typeof raw.signerId !== "string" || !ID.test(raw.signerId) || typeof raw.principalId !== "string" || !ID.test(raw.principalId) || typeof raw.publicKeyFile !== "string" || !raw.publicKeyFile || path.isAbsolute(raw.publicKeyFile) || !Array.isArray(raw.purposes) || raw.purposes.length === 0 || raw.purposes.some(item => !authorityKinds.includes(item as AuthorityKind)) || new Set(raw.purposes).size !== raw.purposes.length) throw new TypeError("authority deployment trust entry is invalid");
-  return Object.freeze({ signerId: raw.signerId, principalId: raw.principalId, publicKeyFile: raw.publicKeyFile, purposes: Object.freeze([...(raw.purposes as AuthorityKind[])]) });
+  const purposes = [...authorityKinds, "signed-job-card"];
+  if (Object.keys(raw).some(key => !TRUST_FIELDS.has(key)) || !["signerId", "principalId", "publicKeyFile", "purposes"].every(key => key in raw) || typeof raw.signerId !== "string" || !ID.test(raw.signerId) || typeof raw.principalId !== "string" || !ID.test(raw.principalId) || typeof raw.publicKeyFile !== "string" || !raw.publicKeyFile || path.isAbsolute(raw.publicKeyFile) || !Array.isArray(raw.purposes) || raw.purposes.length === 0 || raw.purposes.some(item => !purposes.includes(item as AuthorityKind | "signed-job-card")) || new Set(raw.purposes).size !== raw.purposes.length || (raw.status !== undefined && !["active", "inactive", "revoked"].includes(String(raw.status)))) throw new TypeError("authority deployment trust entry is invalid");
+  return Object.freeze({ signerId: raw.signerId, principalId: raw.principalId, publicKeyFile: raw.publicKeyFile, purposes: Object.freeze([...(raw.purposes as AuthoritySignaturePurpose[])]), ...(raw.status === undefined ? {} : { status: raw.status as "active" | "inactive" | "revoked" }) });
+}
+
+function parseUnique<T>(value: unknown, parse: (item: unknown) => T, identity: (item: T) => string, label: string): readonly T[] {
+  if (!Array.isArray(value)) throw new TypeError(`${label}s must be an array`);
+  const parsed = value.map(parse).sort((a, b) => identity(a).localeCompare(identity(b)));
+  if (new Set(parsed.map(identity)).size !== parsed.length) throw new TypeError(`duplicate ${label}`);
+  return Object.freeze(parsed);
+}
+
+function parseEnforcement(value: unknown, adoptions: readonly ConnectionAdoptionV1[]): AuthorityDeploymentManifest["enforcement"] {
+  if (value === undefined && adoptions.length === 0) return Object.freeze({ completeness: "unchecked", declaredSurfaceExclusiveEnforcement: "unchecked", bypasses: Object.freeze([]) });
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("deployment enforcement is required");
+  const raw = value as Record<string, unknown>;
+  if (Object.keys(raw).sort().join("\0") !== ["bypasses", "completeness", "declaredSurfaceExclusiveEnforcement"].sort().join("\0") || raw.completeness !== "unchecked" || !["unchecked", "verified"].includes(String(raw.declaredSurfaceExclusiveEnforcement)) || !Array.isArray(raw.bypasses) || raw.bypasses.some(item => typeof item !== "string")) throw new TypeError("deployment enforcement is invalid");
+  return Object.freeze({ completeness: "unchecked", declaredSurfaceExclusiveEnforcement: raw.declaredSurfaceExclusiveEnforcement as "unchecked" | "verified", bypasses: Object.freeze([...new Set(raw.bypasses as string[])].sort()) });
+}
+
+function verifyAdoptions(manifest: AuthorityDeploymentManifest): void {
+  const card = manifest.jobCard!;
+  const expectedBinding = signedJobCardDigest(card);
+  const descriptors = new Map(manifest.connectionDescriptors.map(descriptor => [connectionDescriptorDigest(descriptor), descriptor]));
+  if (descriptors.size !== manifest.connectionDescriptors.length || card.connectionDescriptorDigests.length !== descriptors.size || card.connectionDescriptorDigests.some(digest => !descriptors.has(digest))) throw new TypeError("signed job card descriptor commitment mismatch");
+  if (manifest.connectionAdoptions.length !== descriptors.size) throw new TypeError("connection adoption set mismatch");
+  for (const adoption of manifest.connectionAdoptions) {
+    const descriptor = descriptors.get(adoption.descriptorDigest);
+    if (!descriptor || adoption.activationState !== "active" || adoption.signedDeploymentBinding !== expectedBinding || adoption.selectedAccountIdentity !== descriptor.account.identity || adoption.sidecarRouteId !== descriptor.callableRoute.routeId || !card.connectorIds.includes(descriptor.connectionId) || !card.accountIdentities.includes(descriptor.account.identity)) throw new TypeError("connection adoption binding mismatch");
+    if (adoption.mode === "managed") throw new TypeError("managed connection adoption requires measured topology evidence");
+  }
+  if (manifest.enforcement.completeness !== "unchecked" || manifest.enforcement.declaredSurfaceExclusiveEnforcement !== "unchecked") throw new TypeError("local adopted deployment must report unchecked enforcement");
 }
 
 function resolveInside(root: string, relative: string, label: string): string {
