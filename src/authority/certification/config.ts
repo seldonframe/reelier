@@ -235,7 +235,9 @@ function flyTopology(value: unknown): FlyTopologyCertificationMetadataV2 {
   closed(raw, ["appName", "authorityMachineId", "agentAppName", "agentMachineId", "egressAppName", "egressMachineId", "orgSlug", "region", "flyctlPath", "flyctlVersion", "egressProxyBaseUrl", "authorityImageDigest", "agentImageDigest", "gatewayImageDigest", "networkPolicyDigest", "schemaDigest"], "fly topology metadata");
   const egressAppName = id(raw.egressAppName, "fly egressAppName");
   const egressProxyBaseUrl = internalHttpOrigin(raw.egressProxyBaseUrl, "fly egressProxyBaseUrl");
-  if (new URL(egressProxyBaseUrl).hostname !== `${egressAppName}.internal`) throw new TypeError("fly egress proxy does not match egress app");
+  const egressProxyUrl = new URL(egressProxyBaseUrl);
+  if (egressProxyUrl.hostname !== `${egressAppName}.internal`) throw new TypeError("fly egress proxy does not match egress app");
+  if (egressProxyUrl.port !== "8443") throw new TypeError("fly egress proxy must use port 8443");
   if (typeof raw.flyctlVersion !== "string" || !SEMVER.test(raw.flyctlVersion)) throw new TypeError("fly flyctlVersion is invalid");
   const appName = id(raw.appName, "fly appName");
   const agentAppName = id(raw.agentAppName, "fly agentAppName");
@@ -301,7 +303,7 @@ function assertSharedScope(
   const codex = metadata.codexTenPrincipal as CodexTenPrincipalCertificationMetadataV2 | undefined;
   if (fly && codex) {
     const endpoint = new URL(codex.authorityEndpoint);
-    if (endpoint.hostname !== `${fly.appName}.fly.dev` || endpoint.pathname !== "/mcp") throw new TypeError("Codex authority endpoint must match Fly authority app");
+    if (endpoint.origin !== `https://${fly.appName}.fly.dev` || endpoint.pathname !== "/mcp") throw new TypeError("Codex authority endpoint must match Fly authority app");
   }
 }
 
