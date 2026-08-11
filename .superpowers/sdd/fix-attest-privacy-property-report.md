@@ -5,7 +5,7 @@ Files changed
 
 What changed per file
 
-- `test/attest-hardening.test.ts`: Replaced the serialized-substring privacy oracle with a semantic string-leaf oracle that excludes intended hash values. Added a deterministic regression for the CI digest collision and a negative control proving that an actual raw projected value retained in an attestation still fails.
+- `test/attest-hardening.test.ts`: Replaced the serialized-substring privacy oracle with a recursive semantic-primitive oracle. It normalizes strings (including short strings), finite numbers, and booleans; explicitly ignores null because `projectObservation` drops it; and exempts only valid lowercase SHA-256 commitments at root `pre.hash` and `post.hash`. Added deterministic controls for the CI collision and actual leaks through primitive, nested, array, metadata-hash, and malformed-commitment shapes.
 - `.superpowers/sdd/fix-attest-privacy-property-report.md`: Recorded scope, evidence, verification, and remaining risk.
 
 Root cause evidence
@@ -77,6 +77,52 @@ Full repository suite tail (`npm test`; a first attempt hit the 120-second comma
 ℹ duration_ms 276134.6858
 ```
 
+Reviewer-follow-up RED state under the first semantic-string implementation:
+
+```text
+ℹ tests 11
+ℹ suites 0
+ℹ pass 3
+ℹ fail 8
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+```
+
+The eight failures covered short string, number, boolean, nested object, array, non-commitment `metadata.hash`, malformed `post.hash`, and explicit null behavior. An uppercase-hash boundary was added during GREEN verification.
+
+Reviewer-follow-up randomized Windows stress:
+
+```text
+Windows randomized stress: 100/100 focused review-fix runs passed
+```
+
+Reviewer-follow-up full focused spec tail:
+
+```text
+ℹ tests 27
+ℹ suites 0
+ℹ pass 27
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 479.0737
+```
+
+`npx tsc -p tsconfig.test.json` again completed with exit code 0 and no output. `npm run build` again completed with exit code 0 and the same build tail recorded above. Final full repository suite tail:
+
+```text
+ℹ tests 2728
+ℹ suites 0
+ℹ pass 2727
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 1
+ℹ todo 0
+ℹ duration_ms 233964.6769
+```
+
 Open risks
 
-- The oracle intentionally treats fields named `hash` as commitments rather than raw values. The response-derived attestation schema places projected data only in the salted hash, so this matches the production contract; schema-shape tests remain responsible for rejecting unexpected attestation fields.
+- None identified within this test-only scope. The exemption is derived from the actual `StepAttest` / `AttestState` types, but the oracle still traverses adversarial shapes rather than assuming runtime schema validation.
