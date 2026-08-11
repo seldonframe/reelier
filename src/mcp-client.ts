@@ -31,6 +31,8 @@ export interface McpCallResult {
 export interface DownstreamConnection {
   /** The downstream server's advertised name (falls back to the spec if unavailable). */
   name: string;
+  /** Server-advertised identity only. Undefined when `name` is the opaque connection spec fallback. */
+  advertisedName?: string;
   tools: DownstreamTool[];
   call(toolName: string, args: unknown): Promise<McpCallResult>;
   close(): Promise<void>;
@@ -99,6 +101,7 @@ async function connectDownstreamTransport(transport: Transport, fallbackName: st
 
   return {
     name,
+    ...(serverInfo?.name === undefined ? {} : { advertisedName: serverInfo.name }),
     tools,
     async call(toolName, args) {
       const result = await client.callTool({

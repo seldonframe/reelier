@@ -40,7 +40,15 @@
       },
       "allOf": [{
         "if": { "properties": { "status": { "const": "usable" } }, "required": ["status"] },
-        "then": { "properties": { "descriptor": {} }, "required": ["descriptor"] },
+        "then": {
+          "properties": {
+            "descriptor": {},
+            "routeStatus": { "const": "callable" },
+            "accountVerification": { "type": "object", "properties": { "status": { "const": "verified" } }, "required": ["status"] },
+            "schemaVerification": { "type": "object", "properties": { "status": { "const": "verified" } }, "required": ["status"] }
+          },
+          "required": ["descriptor"]
+        },
         "else": { "not": { "properties": { "descriptor": {} }, "required": ["descriptor"] } }
       }]
     },
