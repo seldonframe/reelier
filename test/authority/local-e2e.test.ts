@@ -1,12 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { authorityCanonicalBytes, authorityDigest, signAuthorityDigest, signJobCard, signedJobCardDigest } from "../../src/authority/index.js";
 import { connectionAdoptionCommitmentDigest, connectionDescriptorDigest, createOpaqueConnectionRouteRegistry, digestNormalizedMcpToolSchemas } from "../../src/connections.js";
 import { buildAuthorityDeployment } from "../../src/authority/host/deploy.js";
 import { createLocalAuthorityRuntime } from "../../src/authority/host/local.js";
+import { parseAuthorityKeyDescriptor } from "../../src/authority/certification/authority.js";
 import type { DispatchAdapter } from "../../src/authority/host/dispatch.js";
 import { gmailPackDigest, gmailReplyDefinitionDigest, gmailResolverId, gmailProjectionSchemaId, gmailReadEndpointId, gmailReplyWriteEndpointId, gmailPolicySchemaId } from "../../src/packs/gmail/index.js";
 import { bindableTempRoot } from "./bindable-root.js";
@@ -23,6 +24,7 @@ test("local deployment dispatches once, reconciles, publishes a receipt, and sur
     await mkdir(path.join(candidateRoot, "keys"), { recursive: true });
     await mkdir(path.join(candidateRoot, "sources"), { recursive: true });
     const operator = generateKeyPairSync("ed25519");
+    const jobSponsor = generateKeyPairSync("ed25519");
     const contractSigner = generateKeyPairSync("ed25519");
     await writeFile(path.join(candidateRoot, "keys", "operator.pem"), operator.publicKey.export({ type: "spki", format: "pem" }));
     await writeFile(path.join(candidateRoot, "keys", "contract.pem"), contractSigner.publicKey.export({ type: "spki", format: "pem" }));
@@ -39,10 +41,14 @@ test("local deployment dispatches once, reconciles, publishes a receipt, and sur
     const liveTools = [{ name: gmailReadEndpointId, inputSchema: {} }, { name: gmailReplyWriteEndpointId, inputSchema: {} }];
     const descriptor = { v: "reelier.connection-descriptor/v1" as const, connectionId: "gmail", kind: "adopted-mcp-stdio" as const, provider: { id: "gmail", toolServerName: "gmail-mcp" }, callableRoute: { kind: "mcp-stdio" as const, routeId: "route.gmail", endpointIds: [gmailReadEndpointId, gmailReplyWriteEndpointId] }, account: { status: "verified" as const, identity: "gmail-owner-example-test" }, toolSchemas: digestNormalizedMcpToolSchemas(liveTools), secretOwner: "host" as const, coverage: { v: "reelier.host-coverage/v1" as const, host: "codex", observation: "observed" as const, outcomeInvocation: "supported" as const, exclusiveEnforcement: "unknown" as const, limitations: ["raw-write-reachability-unmeasured"] } };
     const adoptionBody = { v: "reelier.connection-adoption/v1" as const, adoptionId: "adopt_gmail", descriptorDigest: connectionDescriptorDigest(descriptor), selectedAccountIdentity: descriptor.account.identity, mode: "existing" as const, sidecarRouteId: descriptor.callableRoute.routeId, rawWriteReachability: "reachable" as const, activationState: "active" as const, secureConnectionCommitment: null };
-    const jobCard = signJobCard({ v: "reelier.signed-job-card/v1", jobId: "customer_reply", title: "Reply to a customer", taskShapeDigest: sha("a"), semanticClasses: ["communication_commit_v1"], definitionAliases: ["gmail_reply_send_v1"], connectorIds: ["gmail"], accountIdentities: [descriptor.account.identity], connectionDescriptorDigests: [connectionDescriptorDigest(descriptor)], adoptionCommitmentDigests: [connectionAdoptionCommitmentDigest(adoptionBody)], sourceRefs: ["thread"], audiences: ["operator"], limitsDigest: authorityDigest(limits), instructionsDigest: sha("b"), packDigests: [gmailPackDigest], exceptionPolicy: ["ambiguous-reconcile"], coverage: "declared-surface" }, "operator", operator.privateKey);
+    const jobCard = signJobCard({ v: "reelier.signed-job-card/v1", jobId: "customer_reply", title: "Reply to a customer", taskShapeDigest: sha("a"), semanticClasses: ["communication_commit_v1"], definitionAliases: ["gmail_reply_send_v1"], connectorIds: ["gmail"], accountIdentities: [descriptor.account.identity], connectionDescriptorDigests: [connectionDescriptorDigest(descriptor)], adoptionCommitmentDigests: [connectionAdoptionCommitmentDigest(adoptionBody)], sourceRefs: ["thread"], audiences: ["operator"], limitsDigest: authorityDigest(limits), instructionsDigest: sha("b"), packDigests: [gmailPackDigest], exceptionPolicy: ["ambiguous-reconcile"], coverage: "declared-surface" }, "job_sponsor", jobSponsor.privateKey);
+    const jobDescriptor = parseAuthorityKeyDescriptor({ v: "reelier.authority-key-descriptor/v1", keyId: "job_sponsor", role: "human-sponsor", purpose: "signed-job-card", algorithm: "ed25519", publicKeySpkiBase64: jobSponsor.publicKey.export({ type: "spki", format: "der" }).toString("base64") });
+    const jobActivation = { v: "reelier.authority-trust-event/v1" as const, eventId: "trust_job_sponsor", sequence: 0, action: "activate" as const, keyDescriptorDigest: authorityDigest(jobDescriptor), occurredAt: "2026-01-01T00:00:00.000Z", previousEventDigest: null };
+    const jobCardAuthority = { signedReadinessDigest: sha("d"), signerKeyDescriptorDigest: authorityDigest(jobDescriptor), keyDescriptors: [jobDescriptor], trustEvents: [jobActivation], trustHistoryDigest: authorityDigest([jobActivation]), trustHeadDigest: authorityDigest(jobActivation) };
     const candidate = {
       v: "reelier.authority-deployment-candidate/v1",
       jobCard,
+      jobCardAuthority,
       connectionDescriptors: [descriptor],
       connectionAdoptions: [{ ...adoptionBody, signedDeploymentBinding: signedJobCardDigest(jobCard) }],
       state: { tenant: "tenant_1", definitionAlias: "gmail_reply_send_v1", stateVersion: 1, candidates: [{ contractEnvelope: { canonicalBase64: contractBytes.toString("base64"), advertisedDigest: contractDigest, signerId: "contract-signer", signature: signAuthorityDigest(contractSigner.privateKey, "outcome-contract", contractDigest) }, delegationEnvelopes: [{ index: 0, canonicalBase64: grantBytes.toString("base64"), advertisedDigest: grantDigest, signerId: "operator", signature: signAuthorityDigest(operator.privateKey, "delegation-grant", grantDigest) }], stateEvents: [{ index: 0, kind: "activated" as const, contractDigest, at: "2026-01-01T00:00:00.000Z" }] }] },
@@ -53,16 +59,23 @@ test("local deployment dispatches once, reconciles, publishes a receipt, and sur
     const candidateFile = path.join(candidateRoot, "candidate.json");
     await writeFile(candidateFile, `${JSON.stringify(candidate)}\n`);
     const authorityRoot = path.join(root, "authority");
-    const built = await buildAuthorityDeployment(candidateFile, path.join(authorityRoot, "deployments", "customer_reply"), path.join(authorityRoot, "keys", "local-gate.pem"));
+    const built = await buildAuthorityDeployment(candidateFile, path.join(authorityRoot, "deployments", "customer_reply"));
 
     const adapter: DispatchAdapter = {
       async dispatch() { dispatches++; return { kind: "acknowledged", resultDigest: authorityDigest({ v: "fake-provider-response/v1", messageId: "provider-message-1" }) }; },
       async reconcile() { reconciliations++; return { kind: "acknowledged", resultDigest: authorityDigest({ v: "fake-read-back/v1", messageId: "provider-message-1" }), reconciliationStatus: "matched", normalizedProjectionDigest: authorityDigest({ v: "fake-message/v1", messageId: "provider-message-1" }) }; },
     };
     const config = { version: 1 as const, tenant: "tenant_1", requester: "operator", definitions: ["gmail_reply_send_v1"], ledgerDir: path.join(authorityRoot, "ledger"), decisionDir: path.join(authorityRoot, "decisions"), receiptDir: path.join(authorityRoot, "receipts"), gateKeyFile: path.join(authorityRoot, "keys", "local-gate.pem"), endpoints: [], deploymentPath: built.deploymentFile };
+    await assert.rejects(() => createLocalAuthorityRuntime({ ...config, definitions: ["slack_channel_topic_set_v1"] }, { dispatchAdapter: adapter, jobCardTrustPin: built.jobCardTrustPin }), /definitions.*signed Job Card/i);
+    const deploymentBytes = await readFile(built.deploymentFile, "utf8");
+    const stripped = JSON.parse(deploymentBytes) as Record<string, unknown>;
+    delete stripped.jobCard; delete stripped.jobCardAuthority; stripped.connectionDescriptors = []; stripped.connectionAdoptions = [];
+    await writeFile(built.deploymentFile, JSON.stringify(stripped));
+    await assert.rejects(() => createLocalAuthorityRuntime(config, { dispatchAdapter: adapter }), /requires a signed Job Card/i);
+    await writeFile(built.deploymentFile, deploymentBytes);
     const connectionRoutes = createOpaqueConnectionRouteRegistry();
     connectionRoutes.register({ sidecarRouteId: descriptor.callableRoute.routeId, descriptor, verifier: { provider: "gmail", sourceEndpointIds: [gmailReadEndpointId], writeEndpointIds: [gmailReplyWriteEndpointId], expectedToolSchemaDigests: descriptor.toolSchemas.map(item => item.digest), accountProbe: { toolName: gmailReadEndpointId, args: {}, reviewedReadOnly: true, extractAccountIdentity: () => descriptor.account.identity } }, resolve: async () => { adoptedRouteOpens++; return { name: "gmail-mcp", advertisedName: "gmail-mcp", tools: liveTools, async call() { return { content: [] }; }, async close() {} }; } });
-    const runtime = await createLocalAuthorityRuntime(config, { dispatchAdapter: adapter, connectionRoutes });
+    const runtime = await createLocalAuthorityRuntime(config, { dispatchAdapter: adapter, connectionRoutes, jobCardTrustPin: built.jobCardTrustPin });
     assert.equal(adoptedRouteOpens, 0, "deployment loading must not open adopted provider routes");
     await runtime.resolveAdoptedConnection("gmail");
     assert.equal(adoptedRouteOpens, 1);
@@ -73,10 +86,13 @@ test("local deployment dispatches once, reconciles, publishes a receipt, and sur
     assert.ok(first.receiptRef);
     assert.equal(dispatches, 1);
     assert.equal(reconciliations, 1);
+    const unauthorized = await runtime.outcome("gmail_reply_send_v1", { ...request, requestId: "unauthorized-request-1" }, { tenant: "tenant_1", requester: "intruder" });
+    assert.equal(unauthorized.verdict, "refused");
+    assert.equal(dispatches, 1);
     const duplicate = await runtime.outcome("gmail_reply_send_v1", request, { tenant: "tenant_1", requester: "operator" });
     assert.equal(duplicate.verdict, "accepted");
     assert.equal(dispatches, 1);
-    const restarted = await createLocalAuthorityRuntime(config, { dispatchAdapter: adapter });
+    const restarted = await createLocalAuthorityRuntime(config, { dispatchAdapter: adapter, jobCardTrustPin: built.jobCardTrustPin });
     const status = await restarted.status({ requestId: request.requestId }, { tenant: "tenant_1", requester: "operator" });
     assert.equal(status.lifecycleState, "reconciled");
     assert.equal(dispatches, 1);

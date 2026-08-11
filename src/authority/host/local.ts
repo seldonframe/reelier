@@ -19,7 +19,7 @@ import type { AuthorityHostConfig } from "./config.js";
 import type { AuthorityHostRuntime } from "./server.js";
 import { createSecretResolver } from "./secret-resolver.js";
 import { firstPartyPacks, createFirstPartySourceRegistry } from "../../packs/index.js";
-import { loadAuthorityDeployment } from "./deployment.js";
+import { loadAuthorityDeployment, type JobCardTrustPinV1 } from "./deployment.js";
 import { loadOrCreateLocalGateSigner } from "./gate-signer.js";
 import type { DelegationAuthority } from "./delegation-service.js";
 import { assertFreshManagedTopologyEvidence, assertManagedTopologyEvidence, type SignedTopologyEvidenceV1, type TopologyEvidenceV1 } from "./topology.js";
@@ -43,6 +43,9 @@ export interface LocalAuthorityRuntimeOptions {
    * explicit hermetic default for local conformance and offline tests. */
   readonly sourceReadAdapter?: SourceReadAdapter;
   readonly connectionRoutes?: OpaqueConnectionRouteRegistry;
+  /** Host-pinned, currently authoritative trust state. It must not be loaded
+   * from the deployment being verified. */
+  readonly jobCardTrustPin?: JobCardTrustPinV1;
 }
 
 export interface LocalAuthorityRuntime extends AuthorityHostRuntime {
@@ -60,8 +63,13 @@ export async function createLocalAuthorityRuntime(config: AuthorityHostConfig, o
     verifyAuthorityLease(options.signedLease, { tenant: config.tenant, now: new Date(), signerId: options.leaseSigner.signerId, publicKey: options.leaseSigner.publicKey, topologyEvidenceDigest: options.signedTopologyEvidence.digest });
   }
   await mkdir(config.ledgerDir, { recursive: true }); await mkdir(config.decisionDir, { recursive: true }); await mkdir(config.receiptDir, { recursive: true });
-  const deployment = config.deploymentPath ? await loadAuthorityDeployment(config.deploymentPath) : undefined;
+  const deployment = config.deploymentPath ? await loadAuthorityDeployment(config.deploymentPath, { jobCardTrustPin: options.jobCardTrustPin }) : undefined;
   if (deployment && deployment.tenant !== config.tenant) throw new TypeError("authority deployment tenant does not match host config");
+  if (deployment && !deployment.jobCard) throw new TypeError("production authority deployment requires a signed Job Card");
+  if (deployment?.jobCard) {
+    const configured = [...config.definitions].sort();
+    if (authorityDigest(configured) !== authorityDigest(deployment.jobCard.definitionAliases)) throw new TypeError("host definitions do not match the signed Job Card");
+  }
   const ledger = new FsAuthorityLedger(config.ledgerDir);
   const decisions = createFileGateDecisionSink(config.decisionDir);
   const gateSigner = await loadOrCreateLocalGateSigner(config.gateKeyFile ?? path.join(config.receiptDir, "..", "keys", "local-gate.pem"));
@@ -91,9 +99,14 @@ export async function createLocalAuthorityRuntime(config: AuthorityHostConfig, o
   const adapter = options.dispatchAdapter ?? createJsonHttpsDispatchAdapter({ endpoints: config.endpoints, secrets: createSecretResolver() });
   const dispatch = createDispatchCoordinator(ledger, adapter, undefined, publication, options.delegation?.budget);
   const runtime = createAuthorityHostRuntime({ gate, dispatch, ledger, decisions, delegation: options.delegation, ...(options.delegation ? { verifyRootGrant: (grant, tenant) => { verifyTrustedAuthority(trustRoots, { tenant, signerId: grant.signerId, purpose: "delegation-grant", advertisedDigest: grant.digest, value: grant.grant, signature: grant.signature }); } } : {}) });
-  const jobs = Object.freeze(config.definitions.map(alias => Object.freeze({ jobId: alias, alias })));
+  const jobs = Object.freeze((deployment?.jobCard?.definitionAliases ?? []).map(alias => Object.freeze({ jobId: alias, alias })));
+  const authorizedRequester = (context: { readonly tenant: string; readonly requester: string }): boolean => context.tenant === config.tenant && (deployment?.jobCard?.audiences.includes(context.requester) ?? false);
   return Object.freeze({
     ...runtime,
+    async outcome(alias: string, input: unknown, context: { readonly tenant: string; readonly requester: string }) {
+      if (!deployment?.jobCard || !deployment.jobCard.definitionAliases.includes(alias) || !authorizedRequester(context)) return Object.freeze({ requestId: input && typeof input === "object" && !Array.isArray(input) && typeof (input as Record<string, unknown>).requestId === "string" ? String((input as Record<string, unknown>).requestId) : "", verdict: "refused" as const, reasonCode: "job-authority-refused", lifecycleState: "refused" });
+      return runtime.outcome(alias, input, context);
+    },
     async resolveAdoptedConnection(connectionId: string) {
       if (!deployment || !options.connectionRoutes) throw new TypeError("adopted connection route is unavailable");
       const descriptor = deployment.connectionDescriptors.find(item => item.connectionId === connectionId);
@@ -117,6 +130,7 @@ export async function createLocalAuthorityRuntime(config: AuthorityHostConfig, o
       const jobRef = typeof raw.jobRef === "string" ? raw.jobRef : "";
       if (!jobs.some(job => job.jobId === jobRef)) return Object.freeze({ requestId: typeof raw.requestId === "string" ? raw.requestId : "", verdict: "refused" as const, reasonCode: "job-not-found", lifecycleState: "unknown" });
       const request = { ...raw }; delete request.jobRef;
+      if (!authorizedRequester(context)) return Object.freeze({ requestId: typeof raw.requestId === "string" ? raw.requestId : "", verdict: "refused" as const, reasonCode: "job-authority-refused", lifecycleState: "refused" });
       return runtime.outcome(jobRef, request, context);
     },
   });

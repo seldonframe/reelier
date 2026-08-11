@@ -26,10 +26,11 @@ export { createFlyTopologyProbe, runFlyTopologyProbe, type FlyDeclaredTopologySu
 export { parseFlyNetworkPolicies, digestFlyNetworkPolicies, type FlyNetworkPolicyPortV1, type FlyNetworkPolicyRuleV1, type FlyNetworkPolicyV1 } from "./fly-network-policy.js";
 export { provisionFlyNetworkPolicy, readFlyNetworkPolicyDigest, type FlyNetworkPolicyApiRequest, type FlyNetworkPolicyApiResponse, type FlyNetworkPolicyClientInput, type ProvisionFlyNetworkPolicyInput } from "./fly-network-policy-client.js";
 export { signAuthorityLease, verifyAuthorityLease } from "./lease.js";
-export type { AuthorityDeploymentManifest, AuthorityDeploymentTrustEntry, LoadedAuthorityDeployment } from "./deployment.js";
+export type { AuthorityDeploymentManifest, AuthorityDeploymentTrustEntry, LoadedAuthorityDeployment, JobCardTrustMaterialV1, JobCardTrustPinV1 } from "./deployment.js";
 export { loadAuthorityDeployment } from "./deployment.js";
 export { loadOrCreateLocalGateSigner, type LocalGateSigner } from "./gate-signer.js";
 export { buildAuthorityDeployment, type AuthorityDeploymentCandidateV1, type BuiltAuthorityDeployment } from "./deploy.js";
+export { createOpaqueConnectionRouteRegistry, type OpaqueConnectionRouteRegistry, type OpaqueConnectionRouteRegistration, type ReviewedConnectionInspectionAdapter } from "../../connections.js";
 export { FsDelegationBudgetLedger, type BudgetAllocation } from "./delegation-budget.js";
 export { createDelegationAuthority, type DelegationAuthority, type DelegationAuthoritySigner } from "./delegation-service.js";
 export { createPrincipalRegistry, type PrincipalRegistry, type PrincipalCredential, type PrincipalCredentialIssue, type PrincipalSessionContext } from "./principal-registry.js";
