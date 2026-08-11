@@ -265,8 +265,11 @@ test("aborting a reserve child waits until the process is reaped",async()=>{
 test("100 real processes converge on one committed reservation and one dispatch eligibility", { timeout: 120_000 }, async t => {
   setMaxListeners(100,t.signal);
   await withRoot(async root => {
-    const results = await Promise.all(Array.from({ length: 100 }, () => spawnReserve(root, intent(),{signal:t.signal})));
+    let outstanding=0,peakOutstanding=0;
+    const run=()=>{outstanding++;peakOutstanding=Math.max(peakOutstanding,outstanding);return spawnReserve(root,intent(),{signal:t.signal}).finally(()=>{outstanding--;});};
+    const results = await Promise.all(Array.from({ length: 100 }, run));
     const successes = results as Array<{ ok: boolean; status: string; dispatchEligible: boolean; reservation: { reservationId: string } }>;
+    assert.equal(peakOutstanding<=25,true,`the convergence harness started ${peakOutstanding} simultaneous reserve children`);
     assert.equal(successes.every(result => result.ok), true, JSON.stringify(successes.filter(result => !result.ok)));
     assert.equal(new Set(successes.map(result => result.reservation.reservationId)).size, 1);
     assert.equal(successes.filter(result => result.dispatchEligible).length, 1);
