@@ -122,12 +122,16 @@ test("certification init, selected preflight, seal, export, and offline verify e
 test("selection-requiring certification commands reject unknown flags, IDs, conflicts, and extra positionals", async () => {
   const { configPath, workspace } = await fixture();
   assert.equal((await capture({ positional: ["certify", "init"], flags: new Set(), opts: { config: configPath } })).code, 0);
-  const cases: Parameters<typeof runAuthorityCommand>[0][] = [
-    { positional: ["certify", "preflight", "extra"], flags: new Set(["all"]), opts: { workspace } },
-    { positional: ["certify", "preflight"], flags: new Set(["unknown"]), opts: { workspace, scenario: "github-issue-labels" } },
-    { positional: ["certify", "preflight"], flags: new Set(["all"]), opts: { workspace, scenario: "github-issue-labels" } },
-    { positional: ["certify", "preflight"], flags: new Set(), opts: { workspace, scenario: "unknown-scenario" } },
-  ];
+  const cases: (Parameters<typeof runAuthorityCommand>[0])[] = [];
+  for (const action of ["preflight", "seal-readiness", "export"]) {
+    cases.push(
+      { positional: ["certify", action, "extra"], flags: new Set(["all"]), opts: { workspace } },
+      { positional: ["certify", action], flags: new Set(["unknown"]), opts: { workspace, scenario: "github-issue-labels" } },
+      { positional: ["certify", action], flags: new Set(["all"]), opts: { workspace, scenario: "github-issue-labels" } },
+      { positional: ["certify", action], flags: new Set(), opts: { workspace, scenario: "unknown-scenario" } },
+      { positional: ["certify", action], flags: new Set(), opts: { workspace } },
+    );
+  }
   for (const command of cases) {
     const result = await capture(command);
     assert.equal(result.code, 1);

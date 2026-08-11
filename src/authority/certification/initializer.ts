@@ -1,5 +1,6 @@
-import { lstat, mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, rename, rm, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { randomBytes } from "node:crypto";
 import { authorityDigest } from "../wire.js";
 import { canonicalizeCertificationOperatorConfigV2, parseCertificationOperatorConfigV2 } from "./config.js";
 import { createCertificationConfigCommitment, recomputeCertificationConfigCommitment } from "./commitment.js";
@@ -59,18 +60,18 @@ export async function initializeCertification(input: Readonly<{ configPath: stri
     return Object.freeze({ status: "resumed", workspace, configDigest, identifiers: existing.identifiers });
   }
 
-  await mkdir(path.dirname(workspace), { recursive: true });
   const creationParent = await assertUnlinkedCreationParent(workspace);
   const staging = await mkdtemp(path.join(creationParent, `.${path.basename(workspace)}.staging-`));
+  const stageOwner = randomBytes(32).toString("hex");
   try {
+    await writeFile(path.join(staging, ".stage-owner"), stageOwner, { encoding: "utf8", flag: "wx", mode: 0o600 });
     await writeFile(path.join(staging, "config.json"), `${canonicalConfig}\n`, { encoding: "utf8", flag: "wx", mode: 0o600 });
     await writeFile(path.join(staging, "initialization.json"), `${JSON.stringify(initialization)}\n`, { encoding: "utf8", flag: "wx", mode: 0o600 });
     await input.hooks?.beforePublish?.();
     await rename(staging, workspace);
+    await unlink(path.join(workspace, ".stage-owner"));
   } catch (error) {
-    if (path.dirname(staging) === path.dirname(workspace) && path.basename(staging).startsWith(`.${path.basename(workspace)}.staging-`)) {
-      await rm(staging, { recursive: true, force: true });
-    }
+    await removeOwnedStage(staging, workspace, stageOwner);
     const winnerInfo = await lstat(workspace).catch(inner => (inner as NodeJS.ErrnoException).code === "ENOENT" ? undefined : Promise.reject(inner));
     if (winnerInfo) {
       const root = await certificationWorkspaceRoot(workspace);
@@ -84,6 +85,16 @@ export async function initializeCertification(input: Readonly<{ configPath: stri
     throw error;
   }
   return Object.freeze({ status: "initialized", workspace, configDigest, identifiers });
+}
+
+async function removeOwnedStage(staging: string, workspace: string, owner: string): Promise<void> {
+  if (path.dirname(staging) !== path.dirname(workspace) || !path.basename(staging).startsWith(`.${path.basename(workspace)}.staging-`)) return;
+  const info = await lstat(staging).catch(error => (error as NodeJS.ErrnoException).code === "ENOENT" ? undefined : Promise.reject(error));
+  if (!info || !info.isDirectory() || info.isSymbolicLink()) return;
+  let observed: string;
+  try { observed = (await readUnlinkedFile(path.join(staging, ".stage-owner"))).toString("utf8"); } catch { return; }
+  if (observed !== owner) return;
+  await rm(staging, { recursive: true, force: true });
 }
 
 export function parseCertificationInitialization(value: unknown): CertificationInitialization {
