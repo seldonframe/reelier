@@ -50,3 +50,16 @@ test("certification init generates deterministic internal identifiers and resume
   const snapshot = await readFile(path.join(workspace, "config.json"), "utf8");
   assert.doesNotMatch(snapshot, /taskId|jobCardId|rootGrantId|authorityCellId|signerId/);
 });
+
+test("concurrent identical certification init converges on one atomic workspace", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "reelier-cert-init-concurrent-"));
+  const configPath = path.join(root, "certification.local.json");
+  const workspace = path.join(root, "certification");
+  await writeFile(configPath, JSON.stringify(config()), "utf8");
+  const results = await Promise.all([
+    initializeCertification({ configPath, workspace }),
+    initializeCertification({ configPath, workspace }),
+  ]);
+  assert.deepEqual(results.map(result => result.status).sort(), ["initialized", "resumed"]);
+  assert.deepEqual(results[0].identifiers, results[1].identifiers);
+});
