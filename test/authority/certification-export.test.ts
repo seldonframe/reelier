@@ -1,11 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { initializeCertification } from "../../src/authority/certification/initializer.js";
 import { sealCertificationReadiness } from "../../src/authority/certification/readiness.js";
 import { exportCertificationEvidence, verifyCertificationExport } from "../../src/authority/certification/export.js";
+import { authorityDigest } from "../../src/authority/wire.js";
 
 async function initializedWorkspace(): Promise<string> {
   const root = await mkdtemp(path.join(tmpdir(), "reelier-cert-export-"));
@@ -32,6 +33,35 @@ test("certification export is a closed linked package that verifies offline with
   assert.deepEqual(verified.claims, { providerCertification: "unchecked", signatureVerification: "unchecked", completion: "unchecked", completeness: "unchecked" });
   assert.equal(verified.authorization, "absent");
   assert.equal(verified.dispatchable, false);
+  assert.equal((await stat(exported.path)).mode & 0o077, 0);
+  const serialized = JSON.stringify(fromDisk);
+  assert.doesNotMatch(serialized, /REELIER_GITHUB_TOKEN|authority\/authority\.yml|authority\/receipts\/certification/);
+});
+
+test("offline verification recomputes generated IDs and semantic preflight fields after every digest is reforged", async () => {
+  const workspace = await initializedWorkspace();
+  const exported = await exportCertificationEvidence({ workspace, scenario: "github-issue-labels" });
+  const original = JSON.parse(await readFile(exported.path, "utf8"));
+  const rehash = (bundle: any): any => {
+    bundle.artifacts.preflight.digest = authorityDigest(Object.fromEntries(Object.entries(bundle.artifacts.preflight).filter(([key]) => key !== "digest")));
+    bundle.artifacts.readiness.preflightDigest = bundle.artifacts.preflight.digest;
+    bundle.manifest.artifactDigests.config = authorityDigest(bundle.artifacts.config);
+    bundle.manifest.artifactDigests.initialization = authorityDigest(bundle.artifacts.initialization);
+    bundle.manifest.artifactDigests.preflight = authorityDigest(bundle.artifacts.preflight);
+    bundle.manifest.artifactDigests.readiness = authorityDigest(bundle.artifacts.readiness);
+    bundle.digest = authorityDigest({ v: bundle.v, manifest: bundle.manifest, artifacts: bundle.artifacts });
+    return bundle;
+  };
+  const forgedId = JSON.parse(JSON.stringify(original));
+  forgedId.artifacts.initialization.identifiers.taskId = "task_" + "0".repeat(24);
+  forgedId.artifacts.readiness.identifiers.taskId = "task_" + "0".repeat(24);
+  assert.throws(() => verifyCertificationExport(rehash(forgedId)), /identifier.*derivation|generated identifier/i);
+
+  const forgedPreflight = JSON.parse(JSON.stringify(original));
+  forgedPreflight.artifacts.preflight.missing = ["resource:github-issue-labels"];
+  forgedPreflight.artifacts.preflight.ok = true;
+  forgedPreflight.artifacts.preflight.preparationReady = true;
+  assert.throws(() => verifyCertificationExport(rehash(forgedPreflight)), /preflight.*semantic|missing.*mismatch/i);
 });
 
 test("offline verification rejects deep tampering, substitution, missing links, and open schemas", async () => {
