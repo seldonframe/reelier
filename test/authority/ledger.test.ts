@@ -159,7 +159,7 @@ async function withRoot(run: (root: string) => Promise<void>): Promise<void> {
   try { await run(root); } finally { await rm(root, { recursive: true, force: true }); }
 }
 
-async function spawnReserve(root: string, candidate: ReservationIntent): Promise<unknown> {
+async function spawnReserve(root: string, candidate: ReservationIntent, options:Readonly<{signal?:AbortSignal;onSpawn?:(pid:number)=>void}>={}): Promise<unknown> {
   const moduleUrl = pathToFileURL(path.join(process.cwd(), "dist-test/src/authority/host/fs-ledger.js")).href;
   const encoded = Buffer.from(JSON.stringify({
     ...candidate,
@@ -179,13 +179,18 @@ async function spawnReserve(root: string, candidate: ReservationIntent): Promise
     process.stdout.write(JSON.stringify(result));
   `;
   return new Promise((resolve, reject) => {
+    if(options.signal?.aborted){reject(options.signal.reason);return;}
     const child = spawn(process.execPath, ["--input-type=module", "-e", source, encoded, root], { stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
+    const abort=()=>{child.kill();};
+    options.signal?.addEventListener("abort",abort,{once:true});
+    if(child.pid!==undefined)options.onSpawn?.(child.pid);
+    if(options.signal?.aborted)abort();
     child.stdout.setEncoding("utf8").on("data", chunk => { stdout += chunk; });
     child.stderr.setEncoding("utf8").on("data", chunk => { stderr += chunk; });
     child.on("error", reject);
-    child.on("close", code => code === 0 ? resolve(JSON.parse(stdout)) : reject(new Error(`child ${code}: ${stderr}`)));
+    child.on("close", code => {options.signal?.removeEventListener("abort",abort);if(options.signal?.aborted)reject(options.signal.reason);else if(code===0)resolve(JSON.parse(stdout));else reject(new Error(`child ${code}: ${stderr}`));});
   });
 }
 
@@ -256,9 +261,9 @@ test("aborting a reserve child waits until the process is reaped",async()=>{
   });
 });
 
-test("100 real processes converge on one committed reservation and one dispatch eligibility", { timeout: 120_000 }, async () => {
+test("100 real processes converge on one committed reservation and one dispatch eligibility", { timeout: 120_000 }, async t => {
   await withRoot(async root => {
-    const results = await Promise.all(Array.from({ length: 100 }, () => spawnReserve(root, intent())));
+    const results = await Promise.all(Array.from({ length: 100 }, () => spawnReserve(root, intent(),{signal:t.signal})));
     const successes = results as Array<{ ok: boolean; status: string; dispatchEligible: boolean; reservation: { reservationId: string } }>;
     assert.equal(successes.every(result => result.ok), true, JSON.stringify(successes.filter(result => !result.ok)));
     assert.equal(new Set(successes.map(result => result.reservation.reservationId)).size, 1);
