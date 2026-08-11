@@ -183,6 +183,12 @@ async function collectSpawnBatch<T>(pending:readonly Promise<T>[]):Promise<T[]>{
   return values;
 }
 
+async function collectN100Waves<T>(factories:readonly (()=>Promise<T>)[]):Promise<T[]>{
+  const values:T[]=[];
+  for(let offset=0;offset<factories.length;offset+=10)values.push(...await collectSpawnBatch(factories.slice(offset,offset+10).map(start=>start())));
+  return values;
+}
+
 async function spawnReserve(root: string, candidate: ReservationIntent, options:Readonly<{signal?:AbortSignal;onSpawn?:(pid:number)=>void}>={}): Promise<unknown> {
   const moduleUrl = pathToFileURL(path.join(process.cwd(), "dist-test/src/authority/host/fs-ledger.js")).href;
   const encoded = Buffer.from(JSON.stringify({
@@ -314,10 +320,7 @@ test("100 real processes converge on one committed reservation and one dispatch 
   await withRoot(async root => {
     let outstanding=0,peakOutstanding=0;
     const run=()=>{outstanding++;peakOutstanding=Math.max(peakOutstanding,outstanding);return spawnReserve(root,intent(),{signal:t.signal}).finally(()=>{outstanding--;});};
-    const results:unknown[]=[];
-    for(let offset=0;offset<100;offset+=25){
-      results.push(...await collectSpawnBatch(Array.from({length:Math.min(25,100-offset)},run)));
-    }
+    const results=await collectN100Waves(Array.from({length:100},()=>run));
     const successes = results as Array<{ ok: boolean; status: string; dispatchEligible: boolean; reservation: { reservationId: string } }>;
     assert.equal(peakOutstanding<=10,true,`the convergence harness started ${peakOutstanding} simultaneous reserve children`);
     assert.equal(successes.every(result => result.ok), true, JSON.stringify(successes.filter(result => !result.ok)));
