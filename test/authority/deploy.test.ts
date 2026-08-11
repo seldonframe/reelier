@@ -5,16 +5,27 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { authorityDigest, authorityCanonicalBytes, signJobCard, signedJobCardDigest, verifySignedJobCard, verifyAuthoritySignature } from "../../src/authority/index.js";
-import { parseAuthorityKeyDescriptor } from "../../src/authority/certification/authority.js";
+import { createSignedCertificationReadiness, parseAuthorityKeyDescriptor } from "../../src/authority/certification/authority.js";
+import { gmailPackDigest } from "../../src/packs/gmail/index.js";
 import { buildAuthorityDeployment } from "../../src/authority/host/deploy.js";
 import { loadAuthorityDeployment } from "../../src/authority/host/deployment.js";
 import { connectionAdoptionCommitmentDigest, connectionDescriptorDigest } from "../../src/connections.js";
 
 const sha = (seed: string) => `sha256:${seed.repeat(64).slice(0, 64)}`;
-const jobCardAuthority = (publicKey: ReturnType<typeof generateKeyPairSync>["publicKey"]) => {
+const jobCardTrustPin = (publicKey: ReturnType<typeof generateKeyPairSync>["publicKey"]) => {
+  const readinessSigner = generateKeyPairSync("ed25519");
+  const cell = generateKeyPairSync("ed25519");
   const descriptor = parseAuthorityKeyDescriptor({ v: "reelier.authority-key-descriptor/v1", keyId: "human_sponsor", role: "human-sponsor", purpose: "signed-job-card", algorithm: "ed25519", publicKeySpkiBase64: publicKey.export({ type: "spki", format: "der" }).toString("base64") });
-  const event = { v: "reelier.authority-trust-event/v1" as const, eventId: "trust_job_card_1", sequence: 0, action: "activate" as const, keyDescriptorDigest: authorityDigest(descriptor), occurredAt: "2026-01-01T00:00:00.000Z", previousEventDigest: null };
-  return { signedReadinessDigest: sha("2"), signerKeyDescriptorDigest: authorityDigest(descriptor), keyDescriptors: [descriptor], trustEvents: [event], trustHistoryDigest: authorityDigest([event]), trustHeadDigest: authorityDigest(event) };
+  const human = parseAuthorityKeyDescriptor({ v: "reelier.authority-key-descriptor/v1", keyId: `signer_${"e".repeat(24)}`, role: "human-sponsor", purpose: "certification-readiness", algorithm: "ed25519", publicKeySpkiBase64: readinessSigner.publicKey.export({ type: "spki", format: "der" }).toString("base64") });
+  const cellDescriptor = parseAuthorityKeyDescriptor({ v: "reelier.authority-key-descriptor/v1", keyId: "cell_receipt_key", role: "authority-cell", purpose: "authority-receipt", algorithm: "ed25519", publicKeySpkiBase64: cell.publicKey.export({ type: "spki", format: "der" }).toString("base64") });
+  const event = (sequence: number, item: any, previousEventDigest: string | null) => ({ v: "reelier.authority-trust-event/v1" as const, eventId: `trust_${sequence}_${"f".repeat(12)}`, sequence, action: "activate" as const, keyDescriptorDigest: authorityDigest(item), occurredAt: "2026-01-01T00:00:00.000Z", previousEventDigest });
+  const first = event(0, human, null); const second = event(1, cellDescriptor, authorityDigest(first)); const third = event(2, descriptor, authorityDigest(second));
+  const readiness: any = { v: "reelier.certification-readiness-candidate/v1", status: "awaiting-human-signature", preparationReady: true, signatureStatus: "absent", authorization: "absent", dispatchable: false, completeness: "unchecked", configDigest: sha("1"), selectionDigest: sha("2"), preflightDigest: "", scenarios: ["github-issue-labels"], identifiers: { taskId: `task_${"a".repeat(24)}`, jobCardId: `job_${"b".repeat(24)}`, rootGrantId: `grant_${"c".repeat(24)}`, authorityCellId: `cell_${"d".repeat(24)}`, signerId: human.keyId }, commitments: { resources: [], cleanup: [], credentials: [], runners: { status: "configured", artifacts: [] }, tests: { status: "configured", artifacts: [] }, topology: "absent", signatureStatus: "absent" } };
+  const preflightBody: any = { v: "reelier.certification-preflight/v2", configDigest: readiness.configDigest, selectionDigest: readiness.selectionDigest, identifiers: readiness.identifiers, scenarios: readiness.scenarios, resources: [], cleanup: [], credentialReferences: [], inputs: { runners: readiness.commitments.runners, tests: readiness.commitments.tests }, topology: "absent", trust: "unchecked", signatureStatus: "absent", authorization: "absent", completeness: "unchecked", missing: [], ok: true, preparationReady: true };
+  const preflight = { ...preflightBody, digest: authorityDigest(preflightBody) }; readiness.preflightDigest = preflight.digest;
+  const keyDescriptors = [human, cellDescriptor, descriptor]; const readinessTrustEvents = [first, second, third];
+  const signedReadiness = createSignedCertificationReadiness({ readinessCandidate: readiness, readinessCandidateDigest: authorityDigest(readiness), preflight, humanKeyDescriptor: human, cellKeyDescriptors: [cellDescriptor], jobCardKeyDescriptors: [descriptor], trustEvents: readinessTrustEvents, humanPrivateKey: readinessSigner.privateKey, authorizedAt: "2026-01-02T00:00:00.000Z" });
+  return { v: "reelier.job-card-trust-pin/v1" as const, signedReadiness, readinessCandidate: readiness, preflight, humanTrustRoot: human, keyDescriptors, readinessTrustEvents, currentTrustEvents: readinessTrustEvents };
 };
 const unsignedJob = {
   v: "reelier.signed-job-card/v1" as const,
@@ -31,7 +42,7 @@ const unsignedJob = {
   audiences: ["agent_operator"],
   limitsDigest: sha("b"),
   instructionsDigest: sha("c"),
-  packDigests: [sha("d")],
+  packDigests: [gmailPackDigest],
   exceptionPolicy: ["ambiguous-reconcile"],
   coverage: "declared-surface" as const,
 };
@@ -54,7 +65,7 @@ test("deploy requires a pre-existing human-signed job card bound to an adopted d
     await mkdir(candidateKeys, { recursive: true });
     await mkdir(sourceDirectory, { recursive: true });
     const { privateKey, publicKey } = generateKeyPairSync("ed25519");
-    const authority = jobCardAuthority(publicKey);
+    const trustPin = jobCardTrustPin(publicKey);
     await writeFile(path.join(candidateKeys, "operator.pem"), publicKey.export({ type: "spki", format: "pem" }));
     await writeFile(path.join(sourceDirectory, "thread.json"), '{"message":"hello"}\n');
     const contract = { v: "reelier.outcome-contract/v1", tenant: "tenant_1", alias: "gmail_reply_send_v1", contractId: "contract_1", validFrom: "2026-01-01T00:00:00.000Z", validUntil: "2027-01-01T00:00:00.000Z", packDigest: sha("e"), definitionDigest: sha("f"), sponsor: "operator", audiences: ["operator"], delegationGrantDigest: sha("1"), connectorId: "gmail", accountId: "gmail:owner@example.test", sourceAuthority: { resolverId: "gmail_thread", projectionSchemaId: "gmail.thread/v1", allowedReadEndpointIds: ["gmail.read"], authorizedProjectionPointers: ["/message"], maxFreshnessSeconds: 60 }, riskClasses: ["message"], limits: { maxEffectsPerWindow: 1, windowSeconds: 3600, maxEffectsPerSourceTrigger: 1, maxBodyBytes: 4096 }, policyCommitment: { schemaId: "policy/v1", jcsBase64: Buffer.from("{}\n").toString("base64"), digest: authorityDigest({}) } };
@@ -63,10 +74,11 @@ test("deploy requires a pre-existing human-signed job card bound to an adopted d
     const adoptionBody = { v: "reelier.connection-adoption/v1" as const, adoptionId: "adopt_gmail", descriptorDigest: connectionDescriptorDigest(descriptor), selectedAccountIdentity: descriptor.account.identity, mode: "existing" as const, sidecarRouteId: descriptor.callableRoute.routeId, rawWriteReachability: "reachable" as const, activationState: "active" as const, secureConnectionCommitment: null };
     const jobCard = signJobCard({ ...unsignedJob, connectionDescriptorDigests: [connectionDescriptorDigest(descriptor)], adoptionCommitmentDigests: [connectionAdoptionCommitmentDigest(adoptionBody)] }, "human_sponsor", privateKey);
     const adoption = { ...adoptionBody, signedDeploymentBinding: signedJobCardDigest(jobCard) };
-    const candidate = { v: "reelier.authority-deployment-candidate/v1", jobCard, jobCardAuthority: authority, connectionDescriptors: [descriptor], connectionAdoptions: [adoption], state: { tenant: "tenant_1", definitionAlias: "gmail_reply_send_v1", stateVersion: 1, candidates: [{ contractEnvelope: { canonicalBase64: contractBytes.toString("base64"), advertisedDigest: authorityDigest(contract), signerId: "operator", signature: { alg: "ed25519", sig: Buffer.alloc(64, 1).toString("base64") } }, delegationEnvelopes: [], stateEvents: [{ index: 0, kind: "activated", contractDigest: authorityDigest(contract), at: "2026-01-01T00:00:00.000Z" }] }] }, connectors: [{ tenant: "tenant_1", connectorId: "gmail", accountId: "acct_1", providerAccountIdentity: descriptor.account.identity, allowedReadEndpointIds: ["gmail.read"], allowedWriteEndpointIds: ["gmail.send"], riskClasses: ["message"], operatorConfigurationDigest: sha("5") }], trust: [{ signerId: "operator", principalId: "operator", publicKeyFile: "keys/operator.pem", purposes: ["outcome-contract"] }], sourceDirectory: "sources" };
+    const candidate = { v: "reelier.authority-deployment-candidate/v1", jobCard, connectionDescriptors: [descriptor], connectionAdoptions: [adoption], state: { tenant: "tenant_1", definitionAlias: "gmail_reply_send_v1", stateVersion: 1, candidates: [{ contractEnvelope: { canonicalBase64: contractBytes.toString("base64"), advertisedDigest: authorityDigest(contract), signerId: "operator", signature: { alg: "ed25519", sig: Buffer.alloc(64, 1).toString("base64") } }, delegationEnvelopes: [], stateEvents: [{ index: 0, kind: "activated", contractDigest: authorityDigest(contract), at: "2026-01-01T00:00:00.000Z" }] }] }, connectors: [{ tenant: "tenant_1", connectorId: "gmail", accountId: "acct_1", providerAccountIdentity: descriptor.account.identity, allowedReadEndpointIds: ["gmail.read"], allowedWriteEndpointIds: ["gmail.send"], riskClasses: ["message"], operatorConfigurationDigest: sha("5") }], trust: [{ signerId: "operator", principalId: "operator", publicKeyFile: "keys/operator.pem", purposes: ["outcome-contract"] }], sourceDirectory: "sources" };
     const candidateFile = path.join(candidateRoot, "candidate.json");
     await writeFile(candidateFile, `${JSON.stringify(candidate)}\n`);
-    const built = await buildAuthorityDeployment(candidateFile, path.join(root, "deployments", "customer_reply"));
+    await assert.rejects(() => buildAuthorityDeployment(candidateFile, path.join(root, "deployments", "missing-pin")), /host.pinned|trust pin/i);
+    const built = await buildAuthorityDeployment(candidateFile, path.join(root, "deployments", "customer_reply"), trustPin);
     await assert.rejects(() => loadAuthorityDeployment(built.deploymentFile), /host.pinned|job.card.*trust/i);
     const manifest = JSON.parse(await readFile(built.deploymentFile, "utf8")) as Record<string, unknown>;
     assert.equal(manifest.v, "reelier.authority-deployment/v1");
@@ -113,8 +125,10 @@ test("deploy requires a pre-existing human-signed job card bound to an adopted d
       item.signedDeploymentBinding = signedJobCardDigest(rebound);
     }, /managed.*topology/i);
     await writeFile(built.deploymentFile, JSON.stringify(original));
-    const revoke = { v: "reelier.authority-trust-event/v1" as const, eventId: "trust_job_card_revoke", sequence: 1, action: "revoke" as const, keyDescriptorDigest: authority.signerKeyDescriptorDigest, occurredAt: "2026-01-02T00:00:00.000Z", previousEventDigest: authority.trustHeadDigest };
-    const revokedPin = { ...built.jobCardTrustPin, trustEvents: [...built.jobCardTrustPin.trustEvents, revoke], trustHistoryDigest: authorityDigest([...built.jobCardTrustPin.trustEvents, revoke]), trustHeadDigest: authorityDigest(revoke) };
+    const signerDigest = authorityDigest(trustPin.keyDescriptors.find(item => item.keyId === "human_sponsor")!);
+    const previous = trustPin.currentTrustEvents[trustPin.currentTrustEvents.length - 1]!;
+    const revoke = { v: "reelier.authority-trust-event/v1" as const, eventId: "trust_job_card_revoke", sequence: trustPin.currentTrustEvents.length, action: "revoke" as const, keyDescriptorDigest: signerDigest, occurredAt: "2026-01-03T00:00:00.000Z", previousEventDigest: authorityDigest(previous) };
+    const revokedPin = { ...built.jobCardTrustPin, currentTrustEvents: [...built.jobCardTrustPin.currentTrustEvents, revoke] };
     await assert.rejects(() => loadAuthorityDeployment(built.deploymentFile, { jobCardTrustPin: revokedPin }), /revoked|currently active/i);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
