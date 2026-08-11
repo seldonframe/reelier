@@ -208,7 +208,61 @@ test("property: changing any single projected value always changes the hash (~10
 // 3. No-raw-values property: seeded random bodies.
 // ---------------------------------------------------------------------------
 
-test("property: JSON.stringify(projection) never contains a projected value string longer than 3 chars, only its hash (~100 seeds)", () => {
+/** Assert on semantic string values, not serialized bytes. Hashes are the
+ * intended representation of projected values; JSON keys, numeric syntax,
+ * and coincidental substrings inside a digest are not raw-value leakage. */
+function assertNoRawProjectedValues(projected: Record<string, string>, attest: unknown): void {
+  const semanticStrings: string[] = [];
+  const visit = (value: unknown, key?: string): void => {
+    if (typeof value === "string") {
+      if (key !== "hash") semanticStrings.push(value);
+      return;
+    }
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item);
+      return;
+    }
+    if (value !== null && typeof value === "object") {
+      for (const [childKey, child] of Object.entries(value)) visit(child, childKey);
+    }
+  };
+  visit(attest);
+
+  for (const raw of Object.values(projected)) {
+    if (raw.length > 3) {
+      assert.ok(!semanticStrings.includes(raw), `raw projected value '${raw}' survived as an attest value`);
+    }
+  }
+}
+
+test("privacy oracle does not treat projected digits inside a SHA-256 digest as raw-value leakage", () => {
+  const projected = { "body.sha": "10003" };
+  const attest = {
+    method: "response-derived",
+    post: {
+      hash: "sha256:c94c19f4dc439831861146b61000306b44f05d045b9b3c98ee3acb140044be79",
+      at: "2026-08-11T14:18:41.701Z",
+    },
+    confidence: "partial",
+  };
+  assertNoRawProjectedValues(projected, attest);
+});
+
+test("privacy oracle rejects a raw projected string retained as an attest value", () => {
+  const projected = { "body.version": "private-version-token" };
+  const attestWithLeak = {
+    method: "response-derived",
+    confidence: "absent",
+    reason: "private-version-token",
+  };
+
+  assert.throws(
+    () => assertNoRawProjectedValues(projected, attestWithLeak),
+    /raw projected value 'private-version-token' survived as an attest value/
+  );
+});
+
+test("property: projected value strings longer than 3 chars never survive as semantic attest values, only as hashes (~100 seeds)", () => {
   fc.assert(
     fc.property(
       fc.dictionary(
@@ -219,12 +273,7 @@ test("property: JSON.stringify(projection) never contains a projected value stri
       (body) => {
         const proj = projectObservation(obsOf(body));
         const attest = buildResponseDerivedAttest(obsOf(body));
-        const flat = JSON.stringify(attest);
-        for (const raw of Object.values(proj)) {
-          if (raw.length > 3) {
-            assert.ok(!flat.includes(raw), `raw projected value '${raw}' leaked into the serialized attest`);
-          }
-        }
+        assertNoRawProjectedValues(proj, attest);
       }
     ),
     { numRuns: 100 }
