@@ -296,6 +296,13 @@ function validateArtifact(id: InitCheckpointId, value: unknown): void {
       validateArtifact("path-a-coverage", value.pathA);
       validateArtifact("path-b-candidates", value.pathB);
       validateArtifact("path-c-candidates", value.pathC);
+      const connections = (value.pathC as Record<string, unknown>).connections as Array<Record<string, unknown>>;
+      const expectedExclusive = connections.some(connection => connection.exclusiveEnforcement === "not-declared")
+        ? "not-declared"
+        : connections.length > 0 && connections.every(connection => connection.exclusiveEnforcement === "declared-surface")
+          ? "declared-surface"
+          : "unknown";
+      valid = (value.exclusiveEnforcement as Record<string, unknown>).status === expectedExclusive;
     }
   }
   if (!valid) throw new Error("checkpoint state refused: malformed artifact");
