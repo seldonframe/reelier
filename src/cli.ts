@@ -4434,7 +4434,7 @@ async function cmdDeploy(args: ParsedArgs): Promise<number> {
     const job = raw.job as Record<string, unknown> | undefined;
     const alias = typeof job?.jobId === "string" ? job.jobId : path.basename(candidate).replace(/\.json$/i, "");
     const output = path.join(root, "deployments", alias);
-    const built = await buildAuthorityDeployment(candidateFile, output, path.join(root, "keys", "local-gate.pem"));
+    const built = await buildAuthorityDeployment(candidateFile, output);
     console.log(JSON.stringify({ alias, status: "deployed", deploymentFile: built.deploymentFile, jobCardFile: built.jobCardFile, jobId: built.jobCard.jobId }));
     return 0;
   } catch (error) {

@@ -2,7 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
 import type { DownstreamConnection, McpCallResult } from "../../src/mcp-client.js";
-import { connectionAdoptionCommitmentDigest, connectionDescriptorDigest, createOpaqueConnectionRouteRegistry, digestNormalizedMcpToolSchemas } from "../../src/connections.js";
+import { connectionAdoptionCommitmentDigest, connectionDescriptorDigest, digestNormalizedMcpToolSchemas } from "../../src/connections.js";
+import { createOpaqueConnectionRouteRegistry } from "reelier/authority/host";
 import { normalizeConnectionAdoption, normalizeConnectionDescriptor } from "../../src/observation/index.js";
 import { signJobCard, signedJobCardDigest } from "../../src/authority/job.js";
 

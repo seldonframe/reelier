@@ -1,6 +1,6 @@
 import { copyFile, cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { loadAuthorityDeployment, type AuthorityDeploymentManifest, type AuthorityDeploymentTrustEntry } from "./deployment.js";
+import { expectedBypassReasons, loadAuthorityDeployment, type AuthorityDeploymentManifest, type AuthorityDeploymentTrustEntry, type JobCardTrustMaterialV1, type JobCardTrustPinV1 } from "./deployment.js";
 import { normalizeSignedJobCard, type SignedJobCardV1 } from "../job.js";
 import type { AuthorityStateSnapshot } from "../state.js";
 import type { ConnectorRegistration } from "../connector.js";
@@ -9,6 +9,7 @@ import { normalizeConnectionAdoption, normalizeConnectionDescriptor, type Connec
 export interface AuthorityDeploymentCandidateV1 {
   readonly v: "reelier.authority-deployment-candidate/v1";
   readonly jobCard: SignedJobCardV1;
+  readonly jobCardAuthority: JobCardTrustMaterialV1;
   readonly connectionDescriptors: readonly ConnectionDescriptorV1[];
   readonly connectionAdoptions: readonly ConnectionAdoptionV1[];
   readonly state: AuthorityStateSnapshot;
@@ -23,12 +24,13 @@ export interface BuiltAuthorityDeployment {
   readonly jobCardFile: string;
   readonly jobCard: SignedJobCardV1;
   readonly manifest: AuthorityDeploymentManifest;
+  readonly jobCardTrustPin: JobCardTrustPinV1;
 }
 
-const CANDIDATE_FIELDS = new Set(["connectionAdoptions", "connectionDescriptors", "connectors", "jobCard", "sourceDirectory", "state", "trust", "v"]);
+const CANDIDATE_FIELDS = new Set(["connectionAdoptions", "connectionDescriptors", "connectors", "jobCard", "jobCardAuthority", "sourceDirectory", "state", "trust", "v"]);
 
 /** Materialize a reviewed candidate into an immutable, self-contained deployment directory. */
-export async function buildAuthorityDeployment(inputFile: string, outputDirectory: string, _legacySignerFile?: string): Promise<BuiltAuthorityDeployment> {
+export async function buildAuthorityDeployment(inputFile: string, outputDirectory: string): Promise<BuiltAuthorityDeployment> {
   const candidateFile = path.resolve(inputFile);
   const candidateRoot = path.dirname(candidateFile);
   const candidate = parseCandidate(JSON.parse(await readFile(candidateFile, "utf8")));
@@ -59,16 +61,18 @@ export async function buildAuthorityDeployment(inputFile: string, outputDirector
       trust,
       sourceDirectory: "sources",
       jobCard,
+      jobCardAuthority: candidate.jobCardAuthority,
       connectionDescriptors: candidate.connectionDescriptors,
       connectionAdoptions: candidate.connectionAdoptions,
-      enforcement: { completeness: "unchecked", declaredSurfaceExclusiveEnforcement: "unchecked", bypasses: [...new Set(candidate.connectionAdoptions.filter(adoption => adoption.rawWriteReachability !== "refused").map(() => "equivalent-raw-write-route-unmeasured-or-reachable"))] },
+      enforcement: { completeness: "unchecked", declaredSurfaceExclusiveEnforcement: "unchecked", bypasses: expectedBypassReasons(candidate.connectionAdoptions) },
     };
     const deploymentFile = path.join(output, "deployment.json");
     const jobCardFile = path.join(output, "job.json");
     await writeFile(deploymentFile, `${JSON.stringify(manifest, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
     await writeFile(jobCardFile, `${JSON.stringify(jobCard, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
-    const loaded = await loadAuthorityDeployment(deploymentFile);
-    return Object.freeze({ directory: output, deploymentFile, jobCardFile, jobCard, manifest: loaded });
+    const jobCardTrustPin = candidate.jobCardAuthority;
+    const loaded = await loadAuthorityDeployment(deploymentFile, { jobCardTrustPin });
+    return Object.freeze({ directory: output, deploymentFile, jobCardFile, jobCard, manifest: loaded, jobCardTrustPin });
   } catch (error) {
     await rm(output, { recursive: true, force: true }).catch(() => undefined);
     throw new TypeError(`deployment could not be built: ${error instanceof Error ? error.message : String(error)}`);
@@ -78,10 +82,10 @@ export async function buildAuthorityDeployment(inputFile: string, outputDirector
 function parseCandidate(value: unknown): AuthorityDeploymentCandidateV1 {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("deployment candidate must be an object");
   const raw = value as Record<string, unknown>;
-  if (Object.keys(raw).some(key => !CANDIDATE_FIELDS.has(key)) || Object.keys(raw).length !== CANDIDATE_FIELDS.size || raw.v !== "reelier.authority-deployment-candidate/v1" || !raw.jobCard || !raw.state || !Array.isArray(raw.connectors) || !Array.isArray(raw.trust) || !Array.isArray(raw.connectionDescriptors) || !Array.isArray(raw.connectionAdoptions) || typeof raw.sourceDirectory !== "string" || !raw.sourceDirectory || path.isAbsolute(raw.sourceDirectory)) throw new TypeError("deployment candidate must contain a pre-existing signed job card and be closed");
+  if (Object.keys(raw).some(key => !CANDIDATE_FIELDS.has(key)) || Object.keys(raw).length !== CANDIDATE_FIELDS.size || raw.v !== "reelier.authority-deployment-candidate/v1" || !raw.jobCard || !raw.jobCardAuthority || !raw.state || !Array.isArray(raw.connectors) || !Array.isArray(raw.trust) || !Array.isArray(raw.connectionDescriptors) || !Array.isArray(raw.connectionAdoptions) || typeof raw.sourceDirectory !== "string" || !raw.sourceDirectory || path.isAbsolute(raw.sourceDirectory)) throw new TypeError("deployment candidate must contain a pre-existing signed job card, authority, and be closed");
   if (!Array.isArray((raw.state as Record<string, unknown>).candidates)) throw new TypeError("deployment candidate state is invalid");
   for (const entry of raw.trust) if (!entry || typeof entry !== "object" || typeof (entry as Record<string, unknown>).publicKeyFile !== "string") throw new TypeError("deployment candidate trust is invalid");
-  return Object.freeze({ v: raw.v, jobCard: normalizeSignedJobCard(raw.jobCard), connectionDescriptors: Object.freeze(raw.connectionDescriptors.map(normalizeConnectionDescriptor)), connectionAdoptions: Object.freeze(raw.connectionAdoptions.map(normalizeConnectionAdoption)), state: raw.state as AuthorityStateSnapshot, connectors: Object.freeze(raw.connectors as ConnectorRegistration[]), trust: Object.freeze(raw.trust as AuthorityDeploymentTrustEntry[]), sourceDirectory: raw.sourceDirectory });
+  return Object.freeze({ v: raw.v, jobCard: normalizeSignedJobCard(raw.jobCard), jobCardAuthority: raw.jobCardAuthority as JobCardTrustMaterialV1, connectionDescriptors: Object.freeze(raw.connectionDescriptors.map(normalizeConnectionDescriptor)), connectionAdoptions: Object.freeze(raw.connectionAdoptions.map(normalizeConnectionAdoption)), state: raw.state as AuthorityStateSnapshot, connectors: Object.freeze(raw.connectors as ConnectorRegistration[]), trust: Object.freeze(raw.trust as AuthorityDeploymentTrustEntry[]), sourceDirectory: raw.sourceDirectory });
 }
 
 function normalizeRelative(value: string): string {
