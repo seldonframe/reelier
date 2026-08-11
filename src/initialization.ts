@@ -36,6 +36,7 @@ const ARTIFACTS: Readonly<Record<InitCheckpointId, string>> = Object.freeze({
 
 const STATE_FILE = "state.json";
 const LOCK_FILE = ".lock";
+const RECOVERY_FILE = ".recovery";
 const PLAN_DIGEST = digest({ v: "reelier.init-plan/v1", checkpoints: INIT_CHECKPOINT_IDS.map(id => ({ id, artifact: ARTIFACTS[id] })) });
 
 interface ConfigSurfaceArtifact {
@@ -155,6 +156,7 @@ export interface InitializeInspectionOptions {
   readonly dryRun?: boolean;
   readonly authorityRoot?: string;
   readonly dependencies?: InitializationDependencies;
+  readonly duringRecoveryCleanup?: () => void | Promise<void>;
   readonly afterArtifactWrite?: (id: InitCheckpointId) => void | Promise<void>;
   readonly afterCheckpoint?: (id: InitCheckpointId) => void | Promise<void>;
 }
@@ -273,18 +275,22 @@ function validateArtifact(id: InitCheckpointId, value: unknown): void {
   };
   if (!isRecord(value) || value.v !== expectedVersion[id]) throw new Error("checkpoint state refused: malformed artifact");
   const closed = (candidate: unknown, keys: readonly string[]): candidate is Record<string, unknown> => isRecord(candidate) && hasExactKeys(candidate, keys);
-  const closedArray = (candidate: unknown, keys: readonly string[]): boolean => Array.isArray(candidate) && candidate.every(item => closed(item, keys));
+  const strings = (candidate: unknown, allowEmpty = false): candidate is string[] => Array.isArray(candidate) && candidate.every(item => typeof item === "string" && (allowEmpty || item.length > 0));
+  const integer = (candidate: unknown, minimum = 0): candidate is number => Number.isSafeInteger(candidate) && Number(candidate) >= minimum;
+  const oneOf = (candidate: unknown, values: readonly string[]): boolean => typeof candidate === "string" && values.includes(candidate);
+  const isSha = (candidate: unknown): candidate is string => typeof candidate === "string" && /^sha256:[0-9a-f]{64}$/.test(candidate);
+  const counts = (candidate: unknown, keys: readonly string[]): boolean => closed(candidate, keys) && keys.every(key => integer(candidate[key]));
   let valid = false;
   if (id === "config-surfaces") {
-    valid = closed(value, ["v", "harnesses", "configs"]) && Array.isArray(value.harnesses) && closedArray(value.configs, ["id", "label", "detected", "futureMutationBackup"]);
+    valid = closed(value, ["v", "harnesses", "configs"]) && strings(value.harnesses) && Array.isArray(value.configs) && value.configs.every(config => closed(config, ["id", "label", "detected", "futureMutationBackup"]) && typeof config.id === "string" && /^config-[1-9][0-9]*$/.test(config.id) && typeof config.label === "string" && config.label.length > 0 && typeof config.detected === "boolean" && oneOf(config.futureMutationBackup, ["prospective-reversible-backup", "not-applicable"]) && (config.detected === (config.futureMutationBackup === "prospective-reversible-backup")));
   } else if (id === "path-a-coverage") {
-    valid = closed(value, ["v", "hosts", "limitations"]) && Array.isArray(value.limitations) && Array.isArray(value.hosts) && value.hosts.every(host => closed(host, ["host", "observation", "configLocation", "servers", "pluginSurfaces"]) && closed(host.servers, ["wrapped", "unwrapped", "unreadable"]) && closed(host.pluginSurfaces, ["parsed", "unreadable", "absent"]));
+    valid = closed(value, ["v", "hosts", "limitations"]) && strings(value.limitations) && Array.isArray(value.hosts) && value.hosts.every(host => closed(host, ["host", "observation", "configLocation", "servers", "pluginSurfaces"]) && oneOf(host.host, ["codex", "claude-code"]) && oneOf(host.observation, ["observed", "partially-observed", "unknown"]) && oneOf(host.configLocation, ["parsed", "unreadable", "absent", "mixed"]) && counts(host.servers, ["wrapped", "unwrapped", "unreadable"]) && counts(host.pluginSurfaces, ["parsed", "unreadable", "absent"]));
   } else if (id === "path-b-candidates") {
-    valid = closed(value, ["v", "candidates", "limitations"]) && Array.isArray(value.limitations) && Array.isArray(value.candidates) && value.candidates.every(candidate => closed(candidate, ["candidateId", "fingerprintDigest", "sourceAgents", "occurrences", "effectCounts", "evaluationPotential", "freezeStatus", "steps", "observedAt"]) && closed(candidate.effectCounts, ["read", "idempotent-write", "destructive"]) && closedArray(candidate.steps, ["tool", "fieldNames", "effect", "readBackTools"]));
+    valid = closed(value, ["v", "candidates", "limitations"]) && strings(value.limitations) && Array.isArray(value.candidates) && value.candidates.every(candidate => closed(candidate, ["candidateId", "fingerprintDigest", "sourceAgents", "occurrences", "effectCounts", "evaluationPotential", "freezeStatus", "steps", "observedAt"]) && typeof candidate.candidateId === "string" && candidate.candidateId.length > 0 && isSha(candidate.fingerprintDigest) && strings(candidate.sourceAgents) && integer(candidate.occurrences, 1) && counts(candidate.effectCounts, ["read", "idempotent-write", "destructive"]) && oneOf(candidate.evaluationPotential, ["strong", "partial", "none"]) && candidate.freezeStatus === "candidate" && typeof candidate.observedAt === "string" && Number.isFinite(Date.parse(candidate.observedAt)) && Array.isArray(candidate.steps) && candidate.steps.every(step => closed(step, ["tool", "fieldNames", "effect", "readBackTools"]) && typeof step.tool === "string" && step.tool.length > 0 && Array.isArray(step.fieldNames) && step.fieldNames.every(isSha) && oneOf(step.effect, ["read", "idempotent-write", "destructive"]) && strings(step.readBackTools, true)));
   } else if (id === "path-c-candidates") {
-    valid = closed(value, ["v", "connections", "candidates", "inventoryIssues", "limitations"]) && Array.isArray(value.limitations) && closedArray(value.connections, ["connectionDigest", "provider", "connectionKind", "status", "classification", "observation", "outcomeInvocation", "exclusiveEnforcement", "reasonCodes"]) && closedArray(value.candidates, ["candidateId", "shapeDigest", "classification", "shadowStatus", "observedCoverage", "compatiblePacks", "reasonCodes"]) && closedArray(value.inventoryIssues, ["fileDigest", "reasonCode"]);
+    valid = closed(value, ["v", "connections", "candidates", "inventoryIssues", "limitations"]) && strings(value.limitations) && Array.isArray(value.connections) && value.connections.every(connection => closed(connection, ["connectionDigest", "provider", "connectionKind", "status", "classification", "observation", "outcomeInvocation", "exclusiveEnforcement", "reasonCodes"]) && isSha(connection.connectionDigest) && typeof connection.provider === "string" && connection.provider.length > 0 && oneOf(connection.connectionKind, ["adopted-mcp-stdio", "adopted-mcp-http", "composio-managed", "native-https", "host-private"]) && oneOf(connection.status, ["usable", "discovered-unverified", "schema-drifted", "account-mismatched", "shadow-only", "unsupported"]) && oneOf(connection.classification, ["boundable", "outcome-capable", "shadow-only", "unsupported"]) && oneOf(connection.observation, ["observed", "partially_observed", "uncovered", "unknown"]) && oneOf(connection.outcomeInvocation, ["supported", "unsupported", "unknown"]) && oneOf(connection.exclusiveEnforcement, ["declared-surface", "not-declared", "unknown"]) && strings(connection.reasonCodes, true)) && Array.isArray(value.candidates) && value.candidates.every(candidate => closed(candidate, ["candidateId", "shapeDigest", "classification", "shadowStatus", "observedCoverage", "compatiblePacks", "reasonCodes"]) && typeof candidate.candidateId === "string" && candidate.candidateId.length > 0 && isSha(candidate.shapeDigest) && oneOf(candidate.classification, ["outcome-capable", "shadow-only", "unsupported"]) && oneOf(candidate.shadowStatus, ["ready", "needs_human_definition", "unsupported"]) && ((candidate.shadowStatus === "ready") === (candidate.classification === "outcome-capable")) && oneOf(candidate.observedCoverage, ["observed", "partially_observed", "uncovered", "unknown"]) && strings(candidate.compatiblePacks, true) && strings(candidate.reasonCodes, true)) && Array.isArray(value.inventoryIssues) && value.inventoryIssues.every(issue => closed(issue, ["fileDigest", "reasonCode"]) && isSha(issue.fileDigest) && issue.reasonCode === "malformed-inventory-entry");
   } else {
-    valid = closed(value, ["v", "answer", "surfaces", "pathA", "pathB", "pathC", "exclusiveEnforcement", "actions"]) && closed(value.exclusiveEnforcement, ["status", "limitation"]) && closed(value.actions, ["deployed", "gated", "configsModified", "cloudUpload"]);
+    valid = closed(value, ["v", "answer", "surfaces", "pathA", "pathB", "pathC", "exclusiveEnforcement", "actions"]) && value.answer === "inspection-complete-no-deployment" && closed(value.exclusiveEnforcement, ["status", "limitation"]) && oneOf(value.exclusiveEnforcement.status, ["declared-surface", "not-declared", "unknown"]) && value.exclusiveEnforcement.limitation === "declared-surfaces-only-never-universal-completeness" && closed(value.actions, ["deployed", "gated", "configsModified", "cloudUpload"]) && Object.values(value.actions).every(action => action === false);
     if (valid) {
       validateArtifact("config-surfaces", value.surfaces);
       validateArtifact("path-a-coverage", value.pathA);
@@ -301,11 +307,11 @@ async function inspectExistingState(initDir: string, lockOwned = false, allowOrp
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return { state: { v: "reelier.init-state/v1", planDigest: PLAN_DIGEST, completed: [] }, artifacts: new Map(), lockPresent: false };
     throw new Error("checkpoint state refused: unreadable");
   }
-  const allowed = new Set([STATE_FILE, LOCK_FILE, ...Object.values(ARTIFACTS)]);
-  if (names.some(name => !allowed.has(name))) throw new Error("checkpoint state refused: unknown artifact");
   if (names.includes(LOCK_FILE) && !lockOwned) {
     return { state: { v: "reelier.init-state/v1", planDigest: PLAN_DIGEST, completed: [] }, artifacts: new Map(), lockPresent: true };
   }
+  const allowed = new Set([STATE_FILE, LOCK_FILE, ...Object.values(ARTIFACTS)]);
+  if (names.some(name => !allowed.has(name))) throw new Error("checkpoint state refused: unknown artifact");
   let stateRaw: string | undefined;
   try { stateRaw = await readFile(path.join(initDir, STATE_FILE), "utf8"); } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new Error("checkpoint state refused: unreadable");
@@ -365,10 +371,9 @@ async function acquireLock(initDir: string): Promise<(() => Promise<void>) | und
   };
 }
 
-async function recoverDeadLock(initDir: string): Promise<"absent" | "active" | "recovered"> {
-  const lockPath = path.join(initDir, LOCK_FILE);
+async function lockOwnerStatus(filePath: string): Promise<"absent" | "active" | "dead"> {
   let raw: string;
-  try { raw = await readFile(lockPath, "utf8"); } catch (error) {
+  try { raw = await readFile(filePath, "utf8"); } catch (error) {
     return (error as NodeJS.ErrnoException).code === "ENOENT" ? "absent" : "active";
   }
   let parsed: unknown;
@@ -378,17 +383,45 @@ async function recoverDeadLock(initDir: string): Promise<"absent" | "active" | "
     process.kill(Number(parsed.pid), 0);
     return "active";
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ESRCH") return "active";
+    return (error as NodeJS.ErrnoException).code === "ESRCH" ? "dead" : "active";
   }
-  await unlink(lockPath).catch(() => {});
-  let names: string[] = [];
-  try { names = await readdir(initDir); } catch { /* the next state inspection reports unreadable state */ }
-  const owned = new Set([STATE_FILE, ...Object.values(ARTIFACTS)]);
-  for (const name of names) {
-    const match = /^(.*)\.tmp-[0-9a-f]{12}$/.exec(name);
-    if (match && owned.has(match[1])) await unlink(path.join(initDir, name)).catch(() => {});
+}
+
+async function recoverDeadLock(initDir: string, duringCleanup?: () => void | Promise<void>): Promise<"absent" | "active" | "recovered"> {
+  const lockPath = path.join(initDir, LOCK_FILE);
+  const recoveryPath = path.join(initDir, RECOVERY_FILE);
+  const recoveryStatus = await lockOwnerStatus(recoveryPath);
+  if (recoveryStatus === "active") return "active";
+  if (recoveryStatus === "dead") await unlink(recoveryPath).catch(() => {});
+  const lockStatus = await lockOwnerStatus(lockPath);
+  if (lockStatus !== "dead") return lockStatus;
+
+  let recoveryHandle;
+  try {
+    recoveryHandle = await open(recoveryPath, "wx");
+    await recoveryHandle.writeFile(`${canonicalJson({ v: "reelier.init-lock/v1", pid: process.pid })}\n`, "utf8");
+    await recoveryHandle.sync();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") return "active";
+    throw error;
+  } finally {
+    if (recoveryHandle) await recoveryHandle.close().catch(() => {});
   }
-  return "recovered";
+  try {
+    if (await lockOwnerStatus(lockPath) !== "dead") return "active";
+    await duringCleanup?.();
+    let names: string[] = [];
+    try { names = await readdir(initDir); } catch { /* the next state inspection reports unreadable state */ }
+    const owned = new Set([STATE_FILE, ...Object.values(ARTIFACTS)]);
+    for (const name of names) {
+      const match = /^(.*)\.tmp-[0-9a-f]{12}$/.exec(name);
+      if (match && owned.has(match[1])) await unlink(path.join(initDir, name)).catch(() => {});
+    }
+    await unlink(lockPath);
+    return "recovered";
+  } finally {
+    await unlink(recoveryPath).catch(() => {});
+  }
 }
 
 function summarizeServers(servers: readonly CoverageServer[]): { wrapped: number; unwrapped: number; unreadable: number } {
@@ -585,10 +618,14 @@ export async function initializeInspection(options: InitializeInspectionOptions)
   validateOptions(options);
   const dependencies = options.dependencies ?? defaultDependencies;
   const initDir = path.join(options.cwd, ".reelier", "init");
-  const recovery = await recoverDeadLock(initDir);
+  if (options.dryRun) {
+    const dryState = await inspectExistingState(initDir);
+    if (dryState.lockPresent) return { status: "busy" };
+    return runDry(options, dependencies);
+  }
+  const recovery = await recoverDeadLock(initDir, options.duringRecoveryCleanup);
   if (recovery === "active") return { status: "busy" };
   const initial = await inspectExistingState(initDir, false, recovery === "recovered");
-  if (options.dryRun) return runDry(options, dependencies);
 
   if (initial.state.completed.length === INIT_CHECKPOINT_IDS.length) {
     return { status: "complete", report: initial.artifacts.get("inspection-report") as InitializationReportV1, resumedFrom: null };
