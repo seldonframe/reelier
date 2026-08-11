@@ -245,6 +245,17 @@ test("deferred recovery leaves orphaned reservations for publication before tran
   });
 });
 
+test("aborting a reserve child waits until the process is reaped",async()=>{
+  await withRoot(async root=>{
+    const lock=path.join(root,"lock");await mkdir(lock);await writeFile(path.join(lock,"owner.json"),authorityCanonicalBytes({host:hostname(),nonce:"e".repeat(64),pid:process.pid,v:1}));
+    const controller=new AbortController();let childPid:number|undefined;
+    const pending=spawnReserve(root,intent(),{signal:controller.signal,onSpawn(pid){childPid=pid;setTimeout(()=>controller.abort(new Error("test reserve abort")),20);}});
+    await assert.rejects(pending,/test reserve abort|aborted/i);
+    assert.ok(childPid);
+    assert.equal(pidReportsDead(childPid),true,"the aborted reserve child is closed and reaped before its promise rejects");
+  });
+});
+
 test("100 real processes converge on one committed reservation and one dispatch eligibility", { timeout: 120_000 }, async () => {
   await withRoot(async root => {
     const results = await Promise.all(Array.from({ length: 100 }, () => spawnReserve(root, intent())));
