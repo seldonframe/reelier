@@ -27,6 +27,10 @@ import { runFlyCertification } from "./host/fly-certification.js";
 import { loadOrCreateLocalGateSigner } from "./host/gate-signer.js";
 import { createAuthorityEgressGateway } from "./host/egress-gateway.js";
 import { createSecretResolver } from "./host/secret-resolver.js";
+import { initializeCertification } from "./certification/initializer.js";
+import { preflightCertification } from "./certification/preflight.js";
+import { sealCertificationReadiness } from "./certification/readiness.js";
+import { exportCertificationEvidence, verifyCertificationExport } from "./certification/export.js";
 
 export async function runAuthorityCommand(args: Readonly<{ positional: string[]; flags: Set<string>; opts: Record<string, string> }>): Promise<number> {
   const subcommand = args.positional[0] ?? "doctor";
@@ -286,6 +290,43 @@ async function authorityServe(args: Readonly<{ opts: Record<string, string> }>):
 
 async function authorityCertify(args: Readonly<{ positional: string[]; flags: Set<string>; opts: Record<string, string> }>): Promise<number> {
   const action = args.positional[1] ?? "preflight";
+  if (action === "init") {
+    if (!args.opts.config) { console.error(JSON.stringify({ status: "refused", reasonCode: "certification-config-required" })); return 1; }
+    try {
+      const result = await initializeCertification({ configPath: args.opts.config, workspace: certificationWorkspace(args) });
+      console.log(JSON.stringify({ status: result.status, workspace: result.workspace, configDigest: result.configDigest, identifiers: result.identifiers }));
+      return 0;
+    } catch { console.error(JSON.stringify({ status: "refused", reasonCode: "certification-initialization-refused" })); return 1; }
+  }
+  if (action === "preflight") {
+    try {
+      const report = await preflightCertification({ workspace: certificationWorkspace(args), ...certificationSelection(args) });
+      console.log(JSON.stringify(report));
+      return report.ok ? 0 : 1;
+    } catch { console.error(JSON.stringify({ status: "refused", reasonCode: "certification-not-initialized" })); return 1; }
+  }
+  if (action === "seal-readiness") {
+    try {
+      const result = await sealCertificationReadiness({ workspace: certificationWorkspace(args), ...certificationSelection(args) });
+      console.log(JSON.stringify({ status: result.candidate.status, authorization: result.candidate.authorization, dispatchable: result.candidate.dispatchable, digest: result.digest, path: result.path }));
+      return 0;
+    } catch { console.error(JSON.stringify({ status: "refused", reasonCode: "certification-readiness-refused" })); return 1; }
+  }
+  if (action === "export") {
+    try {
+      const result = await exportCertificationEvidence({ workspace: certificationWorkspace(args), ...certificationSelection(args) });
+      console.log(JSON.stringify({ status: "exported", digest: result.digest, path: result.path }));
+      return 0;
+    } catch { console.error(JSON.stringify({ status: "refused", reasonCode: "certification-export-refused" })); return 1; }
+  }
+  if (action === "verify" && !args.opts.key) {
+    if (!args.opts.input) { console.error(JSON.stringify({ status: "refused", reasonCode: "certification-export-input-required" })); return 1; }
+    try {
+      const verified = verifyCertificationExport(JSON.parse(await readFile(path.resolve(args.opts.input), "utf8")));
+      console.log(JSON.stringify({ status: "verified", digest: verified.digest, claims: verified.claims, authorization: verified.authorization, dispatchable: verified.dispatchable }));
+      return 0;
+    } catch { console.error(JSON.stringify({ status: "refused", reasonCode: "certification-export-invalid" })); return 1; }
+  }
   if (action === "activate-codex") {
     if (!args.opts.config) { console.error(JSON.stringify({ status: "refused", reasonCode: "certification-config-required" })); return 1; }
     try {
@@ -432,6 +473,17 @@ async function authorityCertify(args: Readonly<{ positional: string[]; flags: Se
   }
   console.error(`unknown authority certify action: ${action}`);
   return 1;
+}
+
+function certificationWorkspace(args: Readonly<{ opts: Record<string, string> }>): string {
+  if (args.opts.workspace) return path.resolve(args.opts.workspace);
+  if (args.opts.config) return path.resolve(path.dirname(args.opts.config), "certification");
+  return path.resolve("authority", "certification");
+}
+
+function certificationSelection(args: Readonly<{ flags: Set<string>; opts: Record<string, string> }>): Readonly<{ scenario?: string; all?: boolean }> {
+  if (args.opts.scenario && args.flags.has("all")) throw new TypeError("certification scenario and all selection are mutually exclusive");
+  return Object.freeze({ ...(args.opts.scenario ? { scenario: args.opts.scenario } : {}), ...(args.flags.has("all") ? { all: true } : {}) });
 }
 
 function delegationRoot(ledgerDir: string): string {
