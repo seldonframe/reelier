@@ -110,6 +110,19 @@ Generate ten distinct Codex profiles and scoped sessions. Mint narrower child gr
 
 Create candidate and final signed release-evidence manifests. Test Cloud against the exact packed `reelier@0.32.1` tarball. Merge the OSS stack only after evidence is green, publish once, update Cloud to the exact package, apply migrations manually, deploy Cloud, run Cloud E2E, and publish the final manifest.
 
+## Files touched — planned scope
+
+Each task is constrained to the files or directories below. A task report must name its exact files and explain any deviation before review; unrelated working-tree changes remain untouched.
+
+- Task 1: `src/authority/decision.ts`, `src/authority/host/fs-ledger.ts`, `test/authority/decision.test.ts`, `test/authority/ledger.test.ts`, and Task 1 reports under `.superpowers/sdd/`.
+- Task 2: `src/cli.ts`, initialization/observation/connection modules under `src/`, closed schemas under `schemas/authority/`, certification modules under `src/authority/certification/`, matching tests under `test/`, `authority/certification.example.json`, and command documentation.
+- Task 3: authority host, signing, trust, principal, task, grant, budget, deployment, and registry modules under `src/authority/`; their closed schemas, fixtures, and tests; generated non-secret `authority/` scaffold files.
+- Task 4: certified pack sources under `src/authority/packs/`, pack build inputs under `packs/`, provider runner modules under `src/authority/certification/`, and provider/conformance tests and fixtures under `test/`.
+- Task 5: topology/lease modules under `src/authority/`, Fly manifests and probe executors under `deploy/` and `scripts/`, matching tests, and operator runbooks under `docs/`.
+- Task 6: dogfood launcher/profile/session modules under `src/authority/certification/` and `scripts/`, generated non-secret templates under `authority/`, matching tests, and the dogfood runbook.
+- Task 7: package/release metadata, release-evidence schemas and generators, compatibility tests, release notes, migration/cleanup/merge runbooks, and the exact Cloud dependency update in the separate Cloud worktree.
+- Compass/curriculum work: `reelier-cloud/docs/company/BUILDING-COMPASS.md` plus the private knowledge index, evidence register, and their validation tests in the Cloud worktree.
+
 ## Private certification estate
 
 The following setup exists only to certify every selected adapter. It is not the customer onboarding flow, and no user is asked to connect every provider merely to start Reelier.
