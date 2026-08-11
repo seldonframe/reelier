@@ -43,6 +43,7 @@ npm run check:authority-contract
 npm run build
 npx tsc -p tsconfig.test.json --pretty false
 node --test dist-test/test/authority/certification-authority.test.js dist-test/test/authority/certify-cli.test.js dist-test/test/authority/certification-readiness.test.js dist-test/test/authority/certification-export.test.js dist-test/test/authority/crypto.test.js dist-test/test/authority/package.test.js
+npm test
 ```
 
 Verbatim tail:
@@ -63,9 +64,12 @@ Verbatim tail:
 ℹ duration_ms 1841.9628
 ```
 
+The additional full `npm test` run produced no test output and was terminated by the bounded command timeout after 184 seconds (exit 124). No unrelated test behavior was changed in Task 3A.
+
 # Open risks
 
 - Signed readiness is intentionally not a signed Job Card, root task, grant, lease, topology proof, or dispatch authorization. Those remain later Task 3/5 gates.
 - Portable Node filesystem checks can reject links and observed identity changes but cannot prove absence of hostile concurrent same-user mutation. Managed autonomy still requires the isolated Authority Cell topology.
 - The successful interactive TTY ceremony is exercised through its exact file-signing/review function; automated CLI coverage verifies fail-closed noninteractive behavior because CI has no trusted human TTY.
 - Revocation is final in this v1 trust history. Re-activation would require a new descriptor/key rather than reusing a revoked descriptor.
+- The repository-wide Windows `npm test` command still hangs beyond the 184-second bounded run. Task 3A's compiler, contract, build, and six-file focused verification are green; the separate Windows-suite stabilization track remains responsible for the global hang.
