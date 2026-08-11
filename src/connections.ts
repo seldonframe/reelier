@@ -77,6 +77,7 @@ export async function verifyConnectionAccount(connection: DownstreamConnection, 
   } catch {
     throw new Error("reviewed account probe failed");
   }
+  if (result.isError === true) throw new Error("reviewed account probe failed");
   let identity: string;
   try {
     identity = probe.extractAccountIdentity(result);
@@ -97,7 +98,7 @@ export async function inspectCallableConnection(candidate: ConnectionInspectionC
     const schemas = digestNormalizedMcpToolSchemas(connection.tools);
     const observedDigests = schemas.map(item => item.digest).sort();
     const expectedDigests = normalizedDigests(adapter.expectedToolSchemaDigests);
-    if (expectedDigests.length === 0) return unverifiedEntry(candidate, expectedDigests, observedDigests, "schema-pin-absent");
+    if (expectedDigests.length === 0) return unverifiedEntry(candidate, expectedDigests, observedDigests, "schema-pin-absent", false);
     if (!sameStrings(expectedDigests, observedDigests)) {
       return entry(candidate, {
         status: "schema-drifted",
@@ -106,6 +107,17 @@ export async function inspectCallableConnection(candidate: ConnectionInspectionC
         reasonCodes: ["tool-schema-drift"],
       });
     }
+    const declaredEndpointIds = [...new Set([...adapter.sourceEndpointIds, ...adapter.writeEndpointIds])].sort();
+    const toolNames = new Set(connection.tools.map(tool => tool.name));
+    if (declaredEndpointIds.some(endpointId => !toolNames.has(endpointId))) {
+      return entry(candidate, {
+        status: "schema-drifted",
+        accountVerification: { status: "unverified" },
+        schemaVerification: { status: "drifted", expectedDigests, observedDigests },
+        reasonCodes: ["declared-endpoint-missing"],
+      });
+    }
+    if (typeof connection.advertisedName !== "string" || !connection.advertisedName) return unverifiedEntry(candidate, expectedDigests, observedDigests, "server-identity-unverified", true);
     let identity: string;
     try {
       identity = await verifyConnectionAccount(connection, adapter, candidate.expectedAccountIdentity);
@@ -118,15 +130,14 @@ export async function inspectCallableConnection(candidate: ConnectionInspectionC
           reasonCodes: ["account-identity-mismatch"],
         });
       }
-      return unverifiedEntry(candidate, expectedDigests, observedDigests, error instanceof ReviewedProbeAbsentError ? "reviewed-account-probe-absent" : "account-verification-failed");
+      return unverifiedEntry(candidate, expectedDigests, observedDigests, error instanceof ReviewedProbeAbsentError ? "reviewed-account-probe-absent" : "account-verification-failed", true);
     }
-    const endpointIds = [...new Set([...adapter.sourceEndpointIds, ...adapter.writeEndpointIds])].sort();
     const descriptor = {
       v: "reelier.connection-descriptor/v1" as const,
       connectionId: candidate.connectionId,
       kind: candidate.kind,
-      provider: { id: candidate.provider, toolServerName: connection.name },
-      callableRoute: { kind: routeKind(candidate.kind), routeId: candidate.routeId, endpointIds },
+      provider: { id: candidate.provider, toolServerName: connection.advertisedName },
+      callableRoute: { kind: routeKind(candidate.kind), routeId: candidate.routeId, endpointIds: declaredEndpointIds },
       account: { status: "verified" as const, identity },
       toolSchemas: schemas,
       secretOwner: candidate.secretOwner,
@@ -140,7 +151,7 @@ export async function inspectCallableConnection(candidate: ConnectionInspectionC
       descriptor,
     });
   } catch {
-    return unverifiedEntry(candidate, normalizedDigests(adapter.expectedToolSchemaDigests), [], "connection-inspection-failed");
+    return unverifiedEntry(candidate, normalizedDigests(adapter.expectedToolSchemaDigests), [], "connection-inspection-failed", false);
   } finally {
     if (connection) {
       try { await connection.close(); } catch { /* inspection result remains non-usable if close itself is the only failure */ }
@@ -177,7 +188,7 @@ export async function loadConnectionInventory(root: string): Promise<ConnectionI
   for (const name of names) {
     try {
       const parsed = JSON.parse(await readFile(path.join(connectorDirectory, name), "utf8"));
-      entries.push(normalizeConnectionInventoryEntry(parsed));
+      entries.push(isLegacyConnectorIntent(parsed) ? legacyConnectorIntentEntry(name, parsed) : normalizeConnectionInventoryEntry(parsed));
     } catch {
       issues.push({ file: name, reasonCode: "malformed-inventory-entry" });
     }
@@ -189,8 +200,8 @@ function entry(candidate: ConnectionInspectionCandidate, values: Omit<Connection
   return normalizeConnectionInventoryEntry({ v: "reelier.connection-inventory-entry/v1", discoveryId: candidate.discoveryId, provider: candidate.provider, connectionKind: candidate.kind, routeStatus: candidate.routeStatus, ...values });
 }
 
-function unverifiedEntry(candidate: ConnectionInspectionCandidate, expectedDigests: readonly string[], observedDigests: readonly string[], reasonCode: string): ConnectionInventoryEntryV1 {
-  return entry(candidate, { status: "discovered-unverified", accountVerification: { status: "unverified" }, schemaVerification: { status: observedDigests.length ? "verified" : "unverified", expectedDigests, observedDigests }, reasonCodes: [reasonCode] });
+function unverifiedEntry(candidate: ConnectionInspectionCandidate, expectedDigests: readonly string[], observedDigests: readonly string[], reasonCode: string, schemaVerified: boolean): ConnectionInventoryEntryV1 {
+  return entry(candidate, { status: "discovered-unverified", accountVerification: { status: "unverified" }, schemaVerification: { status: schemaVerified ? "verified" : "unverified", expectedDigests, observedDigests }, reasonCodes: [reasonCode] });
 }
 
 function shadowEntry(candidate: ConnectionInspectionCandidate): ConnectionInventoryEntryV1 {
@@ -199,6 +210,26 @@ function shadowEntry(candidate: ConnectionInspectionCandidate): ConnectionInvent
 
 function unsupportedEntry(candidate: ConnectionInspectionCandidate, reasonCode: string): ConnectionInventoryEntryV1 {
   return entry(candidate, { status: "unsupported", accountVerification: { status: "unsupported" }, schemaVerification: { status: "unsupported", expectedDigests: [], observedDigests: [] }, reasonCodes: [reasonCode] });
+}
+
+function isLegacyConnectorIntent(value: unknown): value is { v: "reelier.connector-intent/v1"; provider: string; status: "oauth-required"; createdAt: string } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const raw = value as Record<string, unknown>;
+  return Object.keys(raw).every(key => ["v", "provider", "status", "createdAt"].includes(key)) && raw.v === "reelier.connector-intent/v1" && typeof raw.provider === "string" && raw.provider.length > 0 && raw.status === "oauth-required" && typeof raw.createdAt === "string" && raw.createdAt.length > 0;
+}
+
+function legacyConnectorIntentEntry(file: string, intent: { provider: string }): ConnectionInventoryEntryV1 {
+  return normalizeConnectionInventoryEntry({
+    v: "reelier.connection-inventory-entry/v1",
+    discoveryId: `connector-intent:${path.basename(file, ".json")}`,
+    provider: intent.provider,
+    connectionKind: "native-https",
+    status: "unsupported",
+    routeStatus: "unsupported",
+    accountVerification: { status: "unverified" },
+    schemaVerification: { status: "unverified", expectedDigests: [], observedDigests: [] },
+    reasonCodes: ["connection-authorization-required"],
+  });
 }
 
 function normalizedDigests(values: readonly string[]): readonly string[] {

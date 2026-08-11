@@ -1,1 +1,30 @@
-{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"reelier.connection-adoption/v1","type":"object","additionalProperties":false,"required":["v","adoptionId","descriptorDigest","selectedAccountIdentity","mode","sidecarRouteId","rawWriteReachability","activationState","signedDeploymentBinding"],"properties":{"v":{"const":"reelier.connection-adoption/v1"},"adoptionId":{"type":"string","minLength":1},"descriptorDigest":{"type":"string","pattern":"^sha256:[0-9a-f]{64}$"},"selectedAccountIdentity":{"type":"string","minLength":1},"mode":{"enum":["existing","managed"]},"sidecarRouteId":{"type":"string","minLength":1},"rawWriteReachability":{"enum":["reachable","refused","unknown"]},"activationState":{"enum":["inactive","active","refused"]},"signedDeploymentBinding":{"oneOf":[{"type":"string","pattern":"^sha256:[0-9a-f]{64}$"},{"type":"null"}]}}}
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "reelier.connection-adoption/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["v", "adoptionId", "descriptorDigest", "selectedAccountIdentity", "mode", "sidecarRouteId", "rawWriteReachability", "activationState", "signedDeploymentBinding"],
+  "properties": {
+    "v": { "const": "reelier.connection-adoption/v1" },
+    "adoptionId": { "type": "string", "minLength": 1 },
+    "descriptorDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "selectedAccountIdentity": { "type": "string", "minLength": 1 },
+    "mode": { "enum": ["existing", "managed"] },
+    "sidecarRouteId": { "type": "string", "minLength": 1 },
+    "rawWriteReachability": { "enum": ["reachable", "refused", "unknown"] },
+    "activationState": { "enum": ["inactive", "active", "refused"] },
+    "signedDeploymentBinding": { "oneOf": [{ "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }, { "type": "null" }] }
+  },
+  "allOf": [{
+    "if": {
+      "properties": { "mode": { "const": "managed" }, "activationState": { "const": "active" } },
+      "required": ["mode", "activationState"]
+    },
+    "then": {
+      "properties": {
+        "rawWriteReachability": { "const": "refused" },
+        "signedDeploymentBinding": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+      }
+    }
+  }]
+}
