@@ -17,6 +17,14 @@
   },
   "allOf": [{
     "if": {
+      "properties": { "activationState": { "const": "active" } },
+      "required": ["activationState"]
+    },
+    "then": {
+      "properties": { "signedDeploymentBinding": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" } }
+    }
+  }, {
+    "if": {
       "properties": { "mode": { "const": "managed" }, "activationState": { "const": "active" } },
       "required": ["mode", "activationState"]
     },

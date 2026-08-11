@@ -50,6 +50,12 @@
           "required": ["descriptor"]
         },
         "else": { "not": { "properties": { "descriptor": {} }, "required": ["descriptor"] } }
+      }, {
+        "if": { "properties": { "connectionKind": { "const": "adopted-mcp-stdio" } }, "required": ["connectionKind"] },
+        "then": { "properties": { "descriptor": { "type": "object", "properties": { "callableRoute": { "type": "object", "properties": { "kind": { "const": "mcp-stdio" } }, "required": ["kind"] } }, "required": ["callableRoute"] } } }
+      }, {
+        "if": { "properties": { "connectionKind": { "const": "adopted-mcp-http" } }, "required": ["connectionKind"] },
+        "then": { "properties": { "descriptor": { "type": "object", "properties": { "callableRoute": { "type": "object", "properties": { "kind": { "const": "mcp-http" } }, "required": ["kind"] } }, "required": ["callableRoute"] } } }
       }]
     },
     "accountVerification": {
