@@ -267,7 +267,8 @@ test("100 real processes converge on one committed reservation and one dispatch 
   await withRoot(async root => {
     let outstanding=0,peakOutstanding=0;
     const run=()=>{outstanding++;peakOutstanding=Math.max(peakOutstanding,outstanding);return spawnReserve(root,intent(),{signal:t.signal}).finally(()=>{outstanding--;});};
-    const results = await Promise.all(Array.from({ length: 100 }, run));
+    const results:unknown[]=[];
+    for(let offset=0;offset<100;offset+=25)results.push(...await Promise.all(Array.from({length:Math.min(25,100-offset)},run)));
     const successes = results as Array<{ ok: boolean; status: string; dispatchEligible: boolean; reservation: { reservationId: string } }>;
     assert.equal(peakOutstanding<=25,true,`the convergence harness started ${peakOutstanding} simultaneous reserve children`);
     assert.equal(successes.every(result => result.ok), true, JSON.stringify(successes.filter(result => !result.ok)));
