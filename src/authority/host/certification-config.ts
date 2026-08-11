@@ -238,3 +238,23 @@ function resourceValueIsConfigured(value: unknown): boolean {
   const digest = /^sha256:([0-9a-f])\1{63}$/.exec(normalized);
   return !digest;
 }
+
+// V1 remains the host-adapter ABI until the certify command migrates in its own
+// slice. New callers can opt into the scenario-scoped, declarative v2 parser.
+export {
+  CERTIFICATION_SECRET_SLOTS,
+  CODEX_CERTIFICATION_PROFILES,
+  canonicalizeCertificationOperatorConfigV2,
+  migrateCertificationOperatorConfig,
+  parseCertificationOperatorConfigV2,
+  type CertificationOperatorConfigV2,
+  type CertificationResourceV2,
+  type GitHubIssueLabelsCertificationResourceV2,
+  type CloudflareDnsCertificationResourceV2,
+  type SlackTopicCertificationResourceV2,
+  type CloudflareVercelSecretCertificationResourceV2,
+  type VercelPromotionCertificationResourceV2,
+  type NeonMigrationCertificationResourceV2,
+  type FlyTopologyCertificationMetadataV2,
+  type CodexTenPrincipalCertificationMetadataV2,
+} from "../certification/config.js";
