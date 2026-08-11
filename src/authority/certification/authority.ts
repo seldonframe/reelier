@@ -72,13 +72,15 @@ export function parseTrustEvents(value: unknown, descriptors: readonly Authority
   if (!Array.isArray(value) || value.length === 0) throw new TypeError("authority trust history must be a non-empty array");
   const known = new Set(descriptors.map(descriptor => authorityDigest(parseAuthorityKeyDescriptor(descriptor))));
   const states = new Map<string, "active" | "revoked">();
+  const eventIds = new Set<string>();
   const events: TrustEventV1[] = [];
   let previousDigest: string | null = null;
   let previousTime = -Infinity;
   for (let index = 0; index < value.length; index += 1) {
     const raw = object(value[index], "authority trust event");
     closed(raw, ["v", "eventId", "sequence", "action", "keyDescriptorDigest", "occurredAt", "previousEventDigest"], "authority trust event");
-    if (raw.v !== "reelier.authority-trust-event/v1" || typeof raw.eventId !== "string" || !EVENT_ID.test(raw.eventId) || raw.sequence !== index || (raw.action !== "activate" && raw.action !== "revoke") || typeof raw.keyDescriptorDigest !== "string" || !DIGEST.test(raw.keyDescriptorDigest) || !known.has(raw.keyDescriptorDigest) || raw.previousEventDigest !== previousDigest) throw new TypeError("authority trust event sequence, descriptor, or previous-event chain is invalid");
+    if (raw.v !== "reelier.authority-trust-event/v1" || typeof raw.eventId !== "string" || !EVENT_ID.test(raw.eventId) || eventIds.has(raw.eventId) || raw.sequence !== index || (raw.action !== "activate" && raw.action !== "revoke") || typeof raw.keyDescriptorDigest !== "string" || !DIGEST.test(raw.keyDescriptorDigest) || !known.has(raw.keyDescriptorDigest) || raw.previousEventDigest !== previousDigest) throw new TypeError("authority trust event IDs must be unique and its sequence, descriptor, and previous-event chain must be valid");
+    eventIds.add(raw.eventId);
     const occurredAt = timestamp(raw.occurredAt, "authority trust event occurredAt");
     const time = Date.parse(occurredAt);
     if (time < previousTime) throw new TypeError("authority trust event ordering is invalid");
@@ -147,6 +149,9 @@ export function verifySignedCertificationReadiness(input: Readonly<{
   const candidate = parseReadinessCandidate(input.readinessCandidate);
   const humanRoot = parseAuthorityKeyDescriptor(input.humanTrustRoot);
   const descriptors = Object.freeze(input.keyDescriptors.map(parseAuthorityKeyDescriptor));
+  const descriptorIds = descriptors.map(descriptor => descriptor.keyId);
+  const descriptorDigests = descriptors.map(authorityDigest);
+  if (new Set(descriptorIds).size !== descriptorIds.length || new Set(descriptorDigests).size !== descriptorDigests.length || descriptors.filter(descriptor => descriptor.role === "human-sponsor").length !== 1) throw new TypeError("authority key descriptors must be unique and contain exactly one human signer");
   const human = descriptors.find(descriptor => descriptor.keyId === humanRoot.keyId);
   if (!human || authorityDigest(human) !== authorityDigest(humanRoot) || human.role !== "human-sponsor" || human.purpose !== HUMAN_PURPOSE) throw new TypeError("human trust root or signer role is invalid");
   const cells = parseCellDescriptors(descriptors.filter(descriptor => descriptor.role === "authority-cell"));
@@ -195,6 +200,9 @@ export async function signCertificationReadinessArtifact(input: Readonly<{
   const descriptorsValue = JSON.parse((await readUnlinkedFile(input.descriptorsPath)).toString("utf8"));
   if (!Array.isArray(descriptorsValue)) throw new TypeError("authority key descriptors file must contain an array");
   const descriptors = descriptorsValue.map(parseAuthorityKeyDescriptor);
+  const descriptorIds = descriptors.map(descriptor => descriptor.keyId);
+  const descriptorDigests = descriptors.map(authorityDigest);
+  if (new Set(descriptorIds).size !== descriptorIds.length || new Set(descriptorDigests).size !== descriptorDigests.length || descriptors.filter(descriptor => descriptor.role === "human-sponsor").length !== 1) throw new TypeError("authority key descriptors must be unique and contain exactly one human signer");
   const human = descriptors.find(descriptor => descriptor.role === "human-sponsor" && descriptor.keyId === candidate.identifiers.signerId);
   if (!human) throw new TypeError("pre-existing human signer descriptor is absent");
   const cells = descriptors.filter(descriptor => descriptor.role === "authority-cell");

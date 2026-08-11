@@ -131,6 +131,13 @@ test("offline verification rejects inactive, revoked, late-activated, and malfor
   const late = trustEvent(1, "activate", authorityDigest(fixture.cellDescriptor), authorityDigest(fixture.events[0]), "2026-08-11T20:02:00.000Z");
   assert.throws(() => verify([fixture.events[0], late]), /activated after|late|authorized|active/i);
   assert.throws(() => verify([{ ...fixture.events[0], sequence: 1 }, fixture.events[1]]), /sequence/i);
+  assert.throws(() => verify([fixture.events[0], { ...fixture.events[1], eventId: fixture.events[0].eventId }]), /event.*unique|duplicate/i);
+});
+
+test("offline verification refuses ambiguous or duplicate descriptor sets", () => {
+  const fixture = validFixture();
+  const signed = createSignedCertificationReadiness({ readinessCandidate: fixture.readiness, readinessCandidateDigest: authorityDigest(fixture.readiness), humanKeyDescriptor: fixture.humanDescriptor, cellKeyDescriptors: [fixture.cellDescriptor], trustEvents: fixture.events, humanPrivateKey: fixture.human.privateKey, authorizedAt: later });
+  assert.throws(() => verifySignedCertificationReadiness({ signed, readinessCandidate: fixture.readiness, humanTrustRoot: fixture.humanDescriptor, keyDescriptors: [fixture.humanDescriptor, fixture.humanDescriptor, fixture.cellDescriptor], trustEvents: fixture.events }), /descriptor.*unique|human.*exactly one/i);
 });
 
 test("signing refuses a private key that does not match the pre-existing human descriptor", () => {
