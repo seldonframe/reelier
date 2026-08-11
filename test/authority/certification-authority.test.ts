@@ -124,7 +124,7 @@ test("offline verification rejects inactive, revoked, late-activated, and malfor
   const revoked = trustEvent(2, "revoke", authorityDigest(fixture.cellDescriptor), authorityDigest(fixture.events[1]), later);
   assert.throws(() => verify([...fixture.events, revoked]), /revoked|active/i);
   const late = trustEvent(1, "activate", authorityDigest(fixture.cellDescriptor), authorityDigest(fixture.events[0]), "2026-08-11T20:02:00.000Z");
-  assert.throws(() => verify([fixture.events[0], late]), /late|authorized|active/i);
+  assert.throws(() => verify([fixture.events[0], late]), /activated after|late|authorized|active/i);
   assert.throws(() => verify([{ ...fixture.events[0], sequence: 1 }, fixture.events[1]]), /sequence/i);
 });
 
@@ -132,5 +132,5 @@ test("signing refuses a private key that does not match the pre-existing human d
   const fixture = validFixture();
   const wrong = generateKeyPairSync("ed25519");
   assert.throws(() => createSignedCertificationReadiness({ readinessCandidate: fixture.readiness, readinessCandidateDigest: authorityDigest(fixture.readiness), humanKeyDescriptor: fixture.humanDescriptor, cellKeyDescriptors: [fixture.cellDescriptor], trustEvents: fixture.events, humanPrivateKey: createPrivateKey(wrong.privateKey.export({ type: "pkcs8", format: "pem" })), authorizedAt: later }), /private key.*descriptor|signer/i);
-  assert.doesNotThrow(() => createPublicKey(Buffer.from(fixture.humanDescriptor.publicKeySpkiBase64, "base64")));
+  assert.doesNotThrow(() => createPublicKey({ key: Buffer.from(fixture.humanDescriptor.publicKeySpkiBase64, "base64"), format: "der", type: "spki" }));
 });
