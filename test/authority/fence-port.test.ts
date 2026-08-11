@@ -151,3 +151,41 @@ test("a fence identity response completes without resetting its probing client",
     await new Promise<void>(resolve => server.close(() => resolve()));
   }
 });
+
+test("a fence identity server reclaims a half-open client after delivering data and EOF", { timeout: 2_000 }, async () => {
+  const { createConnection, createServer } = await import("node:net");
+  const hostModule = await import("../../src/authority/host/fs-ledger.js") as unknown as {
+    __testServeK1OperationFenceIdentity?: (socket: import("node:net").Socket, materialDigest: string) => void;
+  };
+  const serve = hostModule.__testServeK1OperationFenceIdentity;
+  assert.equal(typeof serve, "function");
+  const materialDigest = `sha256:${"2".repeat(64)}`;
+  let reclaimServerSocket!:()=>void;
+  const serverSocketReclaimed=new Promise<void>(resolve=>{reclaimServerSocket=resolve;});
+  const server = createServer({ allowHalfOpen: true }, socket => { socket.once("close",reclaimServerSocket);serve!(socket, materialDigest); });
+  let client:import("node:net").Socket|undefined;
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen({ host: "127.0.0.1", port: 0, exclusive: true }, resolve);
+  });
+  try {
+    const address = server.address();
+    assert.ok(address !== null && typeof address !== "string");
+    const observed = await new Promise<{ text: string; writableEndedAtEof: boolean }>((resolve, reject) => {
+      let text = "";
+      client = createConnection({ host: "127.0.0.1", port: address.port, allowHalfOpen: true });
+      client.setEncoding("utf8");
+      client.on("data", chunk => { text += chunk; });
+      client.once("end", () => resolve({ text, writableEndedAtEof:client!.writableEnded }));
+      client.once("error", reject);
+    });
+    assert.deepEqual(observed,{text:`reelier-k1-operation-fence/v1 ${materialDigest}\n`,writableEndedAtEof:false});
+    const reclaimed=await new Promise<boolean>(resolve=>{const watchdog=setTimeout(()=>resolve(false),1_000);watchdog.unref();void serverSocketReclaimed.then(()=>{clearTimeout(watchdog);resolve(true);});});
+    assert.equal(reclaimed,true,"the server socket closes within the responder's bounded reclamation window");
+    const openConnections=await new Promise<number>((resolve,reject)=>server.getConnections((error,count)=>error?reject(error):resolve(count)));
+    assert.equal(openConnections,0,"the server reclaims the client even though its write side remains open");
+  } finally {
+    client?.destroy();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+});
