@@ -4,28 +4,23 @@ import { randomBytes } from "node:crypto";
 
 export async function certificationWorkspaceRoot(workspace: string): Promise<string> {
   const resolved = path.resolve(workspace);
-  const info = await lstat(resolved);
-  if (!info.isDirectory() || info.isSymbolicLink()) throw new TypeError("certification workspace must be a confined real directory");
-  const actual = await realpath(resolved);
-  if (!samePath(actual, resolved)) throw new TypeError("certification workspace traverses a linked or reparse-pointed path");
-  return actual;
+  const info = await lstatUnlinkedAncestry(resolved);
+  if (!info.isDirectory()) throw new TypeError("certification workspace must be a confined real directory");
+  return realpath(resolved);
 }
 
 export async function assertUnlinkedCreationParent(target: string): Promise<string> {
   const parent = path.dirname(path.resolve(target));
-  const info = await lstat(parent);
-  if (!info.isDirectory() || info.isSymbolicLink()) throw new TypeError("certification creation parent is linked, reparse-pointed, or not a directory");
-  const actual = await realpath(parent);
-  if (!samePath(actual, parent)) throw new TypeError("certification creation parent traverses a linked or reparse-pointed path");
-  return actual;
+  const info = await lstatUnlinkedAncestry(parent);
+  if (!info.isDirectory()) throw new TypeError("certification creation parent is linked, reparse-pointed, or not a directory");
+  return realpath(parent);
 }
 
 export async function readUnlinkedFile(file: string): Promise<Buffer> {
   const resolved = path.resolve(file);
-  const before = await lstat(resolved);
-  if (!before.isFile() || before.isSymbolicLink()) throw new TypeError("certification file is linked, reparse-pointed, or not a regular file");
+  const before = await lstatUnlinkedAncestry(resolved);
+  if (!before.isFile()) throw new TypeError("certification file is linked, reparse-pointed, or not a regular file");
   const actual = await realpath(resolved);
-  if (!samePath(actual, resolved)) throw new TypeError("certification file traverses a linked or reparse-pointed path");
   const handle = await open(actual, constants.O_RDONLY);
   try { const after = await handle.stat(); if (!after.isFile() || before.dev !== after.dev || before.ino !== after.ino) throw new TypeError("certification file changed during confined read"); return await handle.readFile(); }
   finally { await handle.close(); }
@@ -98,4 +93,17 @@ export async function publishPrivateContentAddressed(root: string, subdirectory:
 
 function assertSegment(value: string): void { if (!value || value === "." || value === ".." || value.includes("/") || value.includes("\\") || value.includes("\0")) throw new TypeError("certification path segment is invalid"); }
 function assertContained(root: string, candidate: string): void { const relative = path.relative(root, candidate); if (relative.startsWith("..") || path.isAbsolute(relative)) throw new TypeError("certification path escapes its confined workspace"); }
-function samePath(left: string, right: string): boolean { return process.platform === "win32" ? left.toLowerCase() === right.toLowerCase() : left === right; }
+
+async function lstatUnlinkedAncestry(target: string): Promise<Awaited<ReturnType<typeof lstat>>> {
+  const resolved = path.resolve(target);
+  const parsed = path.parse(resolved);
+  let current = parsed.root;
+  let info = await lstat(current);
+  if (info.isSymbolicLink()) throw new TypeError("certification path ancestry is linked or reparse-pointed");
+  for (const segment of resolved.slice(parsed.root.length).split(path.sep).filter(Boolean)) {
+    current = path.join(current, segment);
+    info = await lstat(current);
+    if (info.isSymbolicLink()) throw new TypeError("certification path ancestry is linked or reparse-pointed");
+  }
+  return info;
+}
