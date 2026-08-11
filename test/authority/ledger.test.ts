@@ -303,6 +303,12 @@ test("a child batch waits for every started process to close before surfacing on
   });
 });
 
+test("the N100 wave scheduler starts all work while capping live children at ten",async()=>{
+  let started=0,active=0,peak=0;
+  const results=await collectN100Waves(Array.from({length:100},(_,index)=>async()=>{started++;active++;peak=Math.max(peak,active);await new Promise(resolve=>setImmediate(resolve));active--;return index;}));
+  assert.deepEqual(results,Array.from({length:100},(_,index)=>index));assert.deepEqual({started,peak},{started:100,peak:10});
+});
+
 test("100 real processes converge on one committed reservation and one dispatch eligibility", { timeout: 120_000 }, async t => {
   setMaxListeners(100,t.signal);
   await withRoot(async root => {
@@ -313,7 +319,7 @@ test("100 real processes converge on one committed reservation and one dispatch 
       results.push(...await collectSpawnBatch(Array.from({length:Math.min(25,100-offset)},run)));
     }
     const successes = results as Array<{ ok: boolean; status: string; dispatchEligible: boolean; reservation: { reservationId: string } }>;
-    assert.equal(peakOutstanding<=25,true,`the convergence harness started ${peakOutstanding} simultaneous reserve children`);
+    assert.equal(peakOutstanding<=10,true,`the convergence harness started ${peakOutstanding} simultaneous reserve children`);
     assert.equal(successes.every(result => result.ok), true, JSON.stringify(successes.filter(result => !result.ok)));
     assert.equal(new Set(successes.map(result => result.reservation.reservationId)).size, 1);
     assert.equal(successes.filter(result => result.dispatchEligible).length, 1);
