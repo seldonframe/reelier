@@ -9,6 +9,7 @@ import { certificationWorkspaceRoot, confinedExistingDirectory, publishPrivateCo
 import { createCertificationSelectionCommitment, recomputeCertificationSelectionCommitment } from "./commitment.js";
 
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
+// Local filesystem checks are preparation evidence only; no export claim verifies exclusive confinement.
 const CLAIMS = Object.freeze({ providerCertification: "unchecked" as const, signatureVerification: "unchecked" as const, completion: "unchecked" as const, completeness: "unchecked" as const });
 const RESOURCE_KEYS: Readonly<Record<string, readonly string[]>> = Object.freeze({
   "cloudflare-dns": ["apiBaseUrl", "accountId", "zoneId", "recordId", "recordName"],

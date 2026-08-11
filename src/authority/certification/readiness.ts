@@ -47,6 +47,7 @@ export async function sealCertificationReadiness(input: Readonly<{ workspace: st
 
 export function createCertificationReadinessCandidate(preflight: CertificationPreflightV2): Readonly<{ candidate: CertificationReadinessCandidate; digest: string }> {
   if (!preflight.preparationReady) throw new TypeError("certification preparation is incomplete and cannot be sealed");
+  // This local candidate never upgrades preflight's unchecked trust into an authority claim.
   const candidate: CertificationReadinessCandidate = Object.freeze({
     v: "reelier.certification-readiness-candidate/v1",
     status: "awaiting-human-signature",
