@@ -292,8 +292,9 @@ async function inspectExistingState(initDir: string): Promise<{ state: Checkpoin
   for (const completed of state.completed) {
     let raw: string;
     try { raw = await readFile(path.join(initDir, completed.artifact), "utf8"); } catch { throw new Error("checkpoint state refused: missing artifact"); }
-    if (digest(JSON.parse(raw)) !== completed.digest) throw new Error("checkpoint state refused: stale artifact");
-    const parsed = JSON.parse(raw) as unknown;
+    let parsed: unknown;
+    try { parsed = JSON.parse(raw) as unknown; } catch { throw new Error("checkpoint state refused: malformed artifact"); }
+    if (digest(parsed) !== completed.digest) throw new Error("checkpoint state refused: stale artifact");
     validateArtifact(completed.id, parsed);
     artifacts.set(completed.id, parsed);
   }
