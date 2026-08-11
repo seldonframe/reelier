@@ -210,6 +210,20 @@ test("a completed rerun is byte-stable and does not repeat inspection", async ()
   });
 });
 
+test("a malformed completed artifact is refused without rewriting checkpoint files", async () => {
+  await withTempDir(async root => {
+    await initializeInspection({ cwd: root, homedir: root, dependencies: dependencies() });
+    const artifact = path.join(root, ".reelier", "init", "path-a-coverage.json");
+    await writeFile(artifact, "raw-provider-response=must-not-escape", "utf8");
+    const before = await filesBelow(root);
+    await assert.rejects(
+      initializeInspection({ cwd: root, homedir: root, dependencies: dependencies() }),
+      /checkpoint state refused/,
+    );
+    assert.deepEqual(await filesBelow(root), before);
+  });
+});
+
 test("checkpoint and report artifacts contain sanitized shapes only", async () => {
   await withTempDir(async root => {
     const result = await initializeInspection({ cwd: root, homedir: root, dependencies: dependencies() });
