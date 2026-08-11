@@ -16,7 +16,7 @@ const DNS = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63
 const SEMVER = /^\d+\.\d+\.\d+$/;
 const SCENARIO_SET = new Set<string>(CERTIFICATION_SCENARIO_IDS);
 
-export const CERTIFICATION_SECRET_SLOTS = [
+export const CERTIFICATION_SECRET_SLOTS = Object.freeze([
   "cloudflareCredential",
   "flyApiCredential",
   "githubCredential",
@@ -24,9 +24,9 @@ export const CERTIFICATION_SECRET_SLOTS = [
   "neonDatabaseUrl",
   "slackCredential",
   "vercelCredential",
-] as const satisfies readonly CertificationSecretSlot[];
+] as const satisfies readonly CertificationSecretSlot[]);
 
-export const CODEX_CERTIFICATION_PROFILES = [
+export const CODEX_CERTIFICATION_PROFILES = Object.freeze([
   "code_implementer",
   "communication",
   "coordinator",
@@ -37,7 +37,7 @@ export const CODEX_CERTIFICATION_PROFILES = [
   "secret_lifecycle",
   "security_reviewer",
   "test_agent",
-] as const;
+] as const);
 
 export interface GitHubIssueLabelsCertificationResourceV2 { readonly apiBaseUrl: string; readonly owner: string; readonly repository: string; readonly issueNumber: number }
 export interface CloudflareDnsCertificationResourceV2 { readonly apiBaseUrl: string; readonly accountId: string; readonly zoneId: string; readonly recordId: string; readonly recordName: string }
@@ -116,6 +116,7 @@ export function parseCertificationOperatorConfigV2(value: unknown): Certificatio
   for (const section of requirements.metadata) metadata[section] = section === "flyTopology" ? flyTopology(metadataRaw[section]) : codexTenPrincipal(metadataRaw[section]);
   const secretReferences: Partial<Record<CertificationSecretSlot, string>> = {};
   for (const slot of requirements.secrets) secretReferences[slot] = secretRef(secretsRaw[slot], slot);
+  assertSharedScope(resources, metadata);
 
   return Object.freeze({
     v: "reelier.certification-operator-config/v2" as const,
@@ -236,7 +237,14 @@ function flyTopology(value: unknown): FlyTopologyCertificationMetadataV2 {
   const egressProxyBaseUrl = internalHttpOrigin(raw.egressProxyBaseUrl, "fly egressProxyBaseUrl");
   if (new URL(egressProxyBaseUrl).hostname !== `${egressAppName}.internal`) throw new TypeError("fly egress proxy does not match egress app");
   if (typeof raw.flyctlVersion !== "string" || !SEMVER.test(raw.flyctlVersion)) throw new TypeError("fly flyctlVersion is invalid");
-  return Object.freeze({ appName: id(raw.appName, "fly appName"), authorityMachineId: id(raw.authorityMachineId, "fly authorityMachineId"), agentAppName: id(raw.agentAppName, "fly agentAppName"), agentMachineId: id(raw.agentMachineId, "fly agentMachineId"), egressAppName, egressMachineId: id(raw.egressMachineId, "fly egressMachineId"), orgSlug: id(raw.orgSlug, "fly orgSlug"), region: id(raw.region, "fly region"), flyctlPath: safePath(raw.flyctlPath, "flyctlPath"), flyctlVersion: raw.flyctlVersion, egressProxyBaseUrl, authorityImageDigest: digest(raw.authorityImageDigest, "fly authority image digest"), agentImageDigest: digest(raw.agentImageDigest, "fly agent image digest"), gatewayImageDigest: digest(raw.gatewayImageDigest, "fly gateway image digest"), networkPolicyDigest: digest(raw.networkPolicyDigest, "fly network policy digest"), schemaDigest: digest(raw.schemaDigest, "fly schema digest") });
+  const appName = id(raw.appName, "fly appName");
+  const agentAppName = id(raw.agentAppName, "fly agentAppName");
+  const authorityMachineId = id(raw.authorityMachineId, "fly authorityMachineId");
+  const agentMachineId = id(raw.agentMachineId, "fly agentMachineId");
+  const egressMachineId = id(raw.egressMachineId, "fly egressMachineId");
+  if (new Set([appName, agentAppName, egressAppName]).size !== 3) throw new TypeError("Fly app identities must be unique");
+  if (new Set([authorityMachineId, agentMachineId, egressMachineId]).size !== 3) throw new TypeError("Fly machine identities must be unique");
+  return Object.freeze({ appName, authorityMachineId, agentAppName, agentMachineId, egressAppName, egressMachineId, orgSlug: id(raw.orgSlug, "fly orgSlug"), region: id(raw.region, "fly region"), flyctlPath: safePath(raw.flyctlPath, "flyctlPath"), flyctlVersion: raw.flyctlVersion, egressProxyBaseUrl, authorityImageDigest: digest(raw.authorityImageDigest, "fly authority image digest"), agentImageDigest: digest(raw.agentImageDigest, "fly agent image digest"), gatewayImageDigest: digest(raw.gatewayImageDigest, "fly gateway image digest"), networkPolicyDigest: digest(raw.networkPolicyDigest, "fly network policy digest"), schemaDigest: digest(raw.schemaDigest, "fly schema digest") });
 }
 
 function codexTenPrincipal(value: unknown): CodexTenPrincipalCertificationMetadataV2 {
@@ -278,6 +286,23 @@ function legacyV1(root: Record<string, unknown>): any {
   closed(codex, ["binaryPath", "version", "authorityEndpoint", "taskId", "jobId", "authorityCellId", "codexHomePath", "workspacePath", "sessionCredentialDirectory"], "legacy Codex metadata");
   if (typeof codex.version !== "string" || !SEMVER.test(codex.version)) throw new TypeError("legacy Codex version is invalid"); for (const key of ["taskId", "jobId", "authorityCellId"]) id(codex[key], `legacy Codex ${key}`); httpsUrl(codex.authorityEndpoint, "Codex authorityEndpoint"); for (const key of ["binaryPath", "codexHomePath", "workspacePath", "sessionCredentialDirectory"]) safePath(codex[key], `Codex ${key}`);
   return { authorityConfigPath: safePath(root.authorityConfigPath, "authorityConfigPath"), evidenceDirectory: safePath(root.evidenceDirectory, "evidenceDirectory"), github, vercel, neon, cloudflare, slack, fly, codex };
+}
+
+function assertSharedScope(
+  resources: Readonly<Record<string, CertificationResourceV2>>,
+  metadata: Readonly<Record<string, FlyTopologyCertificationMetadataV2 | CodexTenPrincipalCertificationMetadataV2>>,
+): void {
+  const cloudflareDns = resources["cloudflare-dns"] as CloudflareDnsCertificationResourceV2 | undefined;
+  const secret = resources["cloudflare-vercel-secret"] as CloudflareVercelSecretCertificationResourceV2 | undefined;
+  const promotion = resources["vercel-promotion"] as VercelPromotionCertificationResourceV2 | undefined;
+  if (cloudflareDns && secret && cloudflareDns.accountId !== secret.cloudflareAccountId) throw new TypeError("Cloudflare account scope must match across selected scenarios");
+  if (promotion && secret && (promotion.accountId !== secret.vercelAccountId || promotion.projectId !== secret.projectId)) throw new TypeError("Vercel account and project scope must match across selected scenarios");
+  const fly = metadata.flyTopology as FlyTopologyCertificationMetadataV2 | undefined;
+  const codex = metadata.codexTenPrincipal as CodexTenPrincipalCertificationMetadataV2 | undefined;
+  if (fly && codex) {
+    const endpoint = new URL(codex.authorityEndpoint);
+    if (endpoint.hostname !== `${fly.appName}.fly.dev` || endpoint.pathname !== "/mcp") throw new TypeError("Codex authority endpoint must match Fly authority app");
+  }
 }
 
 function object(value: unknown, label: string): Record<string, unknown> { if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError(`${label} must be an object`); return value as Record<string, unknown>; }

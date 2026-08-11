@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { CERTIFICATION_SCENARIO_IDS, CERTIFICATION_SCENARIOS } from "../../src/authority/certification/scenarios.js";
 
 test("the closed certification scenario registry contains eight unique sorted declarative scenarios", () => {
+  assert.equal(Object.isFrozen(CERTIFICATION_SCENARIO_IDS), true);
   assert.deepEqual(CERTIFICATION_SCENARIO_IDS, ["cloudflare-dns", "cloudflare-vercel-secret", "codex-ten-principal", "fly-topology", "github-issue-labels", "neon-migration", "slack-topic", "vercel-promotion"]);
   assert.equal(new Set(CERTIFICATION_SCENARIO_IDS).size, 8);
   assert.deepEqual(Object.keys(CERTIFICATION_SCENARIOS), CERTIFICATION_SCENARIO_IDS);
