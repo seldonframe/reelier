@@ -16,7 +16,7 @@ What changed per file
   - Captures child `error` events without settling while a PID-backed child remains live. A normal spawn failure with no PID rejects directly from `error`, removes abort ownership, and does not depend on a `close` event.
   - Collects every started child in an N100 wave with `Promise.allSettled` semantics before surfacing one failure, so a failed sibling cannot be abandoned.
   - Bound every N100 reserve child to the `node:test` timeout signal so a timed-out stress test cannot leave child processes holding the file worker open.
-  - Raised the listener warning threshold only on that known 100-subscriber test signal. This does not change timeouts or suppress process/test failures.
+  - Caps the N100 scheduler at ten simultaneous real child processes while still starting all 100. The deterministic scheduler pin asserts both facts, and the original convergence, reservation, dispatch, timeout, and failure assertions remain exact.
 - `.superpowers/sdd/linux-post-ledger-hang-report.md`
   - Records the diagnosis, scoped change, verification evidence, and remaining risks.
 
@@ -25,11 +25,14 @@ Root cause and evidence
 - Run `31489093447`, Ubuntu job `93771112968`, did not first become stuck after ledger test 598. Earlier in the same log, top-level test 414 (`100 real processes converge on one committed reservation and one dispatch eligibility`) timed out at 120,054 ms.
 - `node:test` correctly continued running later tests, but its timeout did not cancel the timed-out async body. `spawnReserve` had no cancellation input, so roughly 30 reserve children were still live at job cleanup. Test 598 was merely the last output before the worker waited forever for its still-owned child handles.
 - An unmodified Node 20 Linux container reproduced the N100 timeout and the listener/process shape. After the initial lifecycle fix, the same forced timeout remained a `testTimeoutFailure`, but the complete targeted worker exited nonzero at 123,460 ms instead of hanging. This measurement preceded Task 1B's bounded-concurrency N100 harness; it is retained as the direct regression evidence for the timeout cleanup path, not a claim about current N100 convergence.
+- Run `31497285999`, Ubuntu job `93798088208`, proved the 25-wide harness could still consume the full budget: test 418 timed out at 120,079 ms, then cleanup worked and the next test completed 1.42 seconds later.
+- A deterministic CPU-constrained Node 20 Linux reproduction isolated runnable-load contention. At 25-wide with `--cpus=0.5`, the container saturated its allocation, exposed 293 task/thread PIDs, and timed out at 120,057.7 ms. At ten-wide it exposed about 128 task/thread PIDs and the same 100-process convergence passed in 76,971.3 ms (81,092.1 ms for the worker). No production ledger behavior changed.
 
 Deviations from the plan and why
 
 - None. This fixes only the Linux post-timeout lifecycle hang. It does not increase a timeout, force process exit, weaken crash semantics, or turn the underlying N100 convergence failure into a pass.
 - The initial full ledger file was not rerun to natural completion in Linux because the then-unbounded N100 stress case deterministically consumed its full 120-second timeout in the available Docker harness. Its exact failure path and worker exit were exercised instead. Task 1B subsequently bounded the N100 harness in commit `1ba1492`; Task 1C preserves its peak-load oracle, all 100 executions, timeout signal, and original convergence assertions.
+- The follow-up CI failure required tightening only the test scheduler from 25-wide to ten-wide. This is not a process-count reduction: every one of the 100 real Node children still runs and must return the exact successful convergence result.
 
 Test results (verbatim tails)
 
@@ -124,6 +127,55 @@ ok 9 - 100 real processes converge on one committed reservation and one dispatch
 # skipped 193
 # todo 0
 # duration_ms 37975.478791
+```
+
+Follow-up scheduler RED and constrained Linux measurement:
+
+```text
+test/authority/ledger.test.ts(308,23): error TS2304: Cannot find name 'collectN100Waves'.
+
+# 25-wide, Node 20 Linux --cpus=0.5
+not ok 9 - 100 real processes converge on one committed reservation and one dispatch eligibility
+  ---
+  duration_ms: 120057.735044
+  failureType: 'testTimeoutFailure'
+  error: 'test timed out after 120000ms'
+
+# ten-wide, Node 20 Linux --cpus=0.5
+ok 10 - 100 real processes converge on one committed reservation and one dispatch eligibility
+  ---
+  duration_ms: 76971.31203
+1..195
+# pass 1
+# fail 0
+# cancelled 0
+# duration_ms 81092.084202
+```
+
+Follow-up focused verification, Windows host:
+
+```text
+âœ” the N100 wave scheduler starts all work while capping live children at ten (5.0928ms)
+âœ” 100 real processes converge on one committed reservation and one dispatch eligibility (14727.6325ms)
+â„¹ tests 2
+â„¹ pass 2
+â„¹ fail 0
+â„¹ cancelled 0
+â„¹ duration_ms 14876.9462
+```
+
+Follow-up focused verification, Node 20 Linux:
+
+```text
+1..195
+# tests 195
+# suites 0
+# pass 2
+# fail 0
+# cancelled 0
+# skipped 193
+# todo 0
+# duration_ms 28106.68123
 ```
 
 Forced Linux N100 timeout after lifecycle fix:
