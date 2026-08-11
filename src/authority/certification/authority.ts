@@ -15,6 +15,7 @@ const DIGEST = /^sha256:[0-9a-f]{64}$/;
 const KEY_ID = /^[a-z][a-z0-9_-]{2,127}$/;
 const EVENT_ID = /^[a-z][a-z0-9_-]{2,127}$/;
 const HUMAN_PURPOSE = "certification-readiness" as const;
+const JOB_CARD_PURPOSE = "signed-job-card" as const;
 const CELL_PURPOSES = ["authority-evidence", "authority-lease", "authority-receipt", "gate-event", "topology-evidence"] as const;
 type CellPurpose = (typeof CELL_PURPOSES)[number];
 
@@ -22,7 +23,7 @@ export type AuthorityKeyDescriptorV1 = Readonly<{
   v: "reelier.authority-key-descriptor/v1";
   keyId: string;
   role: "human-sponsor" | "authority-cell";
-  purpose: typeof HUMAN_PURPOSE | CellPurpose;
+  purpose: typeof HUMAN_PURPOSE | typeof JOB_CARD_PURPOSE | CellPurpose;
   algorithm: "ed25519";
   publicKeySpkiBase64: string;
 }>;
@@ -49,6 +50,7 @@ export type SignedCertificationReadinessV1 = Readonly<{
   identifiers: CertificationIdentifiers;
   scenarios: readonly CertificationScenarioId[];
   activatedCellKeyDescriptorDigests: readonly string[];
+  activatedJobCardKeyDescriptorDigests: readonly string[];
   trustHistoryDigest: string;
   authorizedAt: string;
   authorization: "human-signed";
@@ -62,7 +64,7 @@ export function parseAuthorityKeyDescriptor(value: unknown): AuthorityKeyDescrip
   closed(raw, ["v", "keyId", "role", "purpose", "algorithm", "publicKeySpkiBase64"], "authority key descriptor");
   if (raw.v !== "reelier.authority-key-descriptor/v1" || typeof raw.keyId !== "string" || !KEY_ID.test(raw.keyId) || raw.algorithm !== "ed25519" || typeof raw.publicKeySpkiBase64 !== "string") throw new TypeError("authority key descriptor is invalid");
   if (raw.role === "human-sponsor") {
-    if (raw.purpose !== HUMAN_PURPOSE) throw new TypeError("human-sponsor role and purpose are incompatible");
+    if (raw.purpose !== HUMAN_PURPOSE && raw.purpose !== JOB_CARD_PURPOSE) throw new TypeError("human-sponsor role and purpose are incompatible");
   } else if (raw.role === "authority-cell") {
     if (typeof raw.purpose !== "string" || !(CELL_PURPOSES as readonly string[]).includes(raw.purpose)) throw new TypeError("authority-cell role and purpose are incompatible");
   } else throw new TypeError("authority key descriptor role is invalid");
@@ -104,6 +106,7 @@ export function createSignedCertificationReadiness(input: Readonly<{
   preflight: CertificationPreflightV2;
   humanKeyDescriptor: AuthorityKeyDescriptorV1;
   cellKeyDescriptors: readonly AuthorityKeyDescriptorV1[];
+  jobCardKeyDescriptors?: readonly AuthorityKeyDescriptorV1[];
   trustEvents: readonly TrustEventV1[];
   humanPrivateKey: KeyObject;
   authorizedAt: string;
@@ -114,11 +117,12 @@ export function createSignedCertificationReadiness(input: Readonly<{
   const human = parseAuthorityKeyDescriptor(input.humanKeyDescriptor);
   if (human.role !== "human-sponsor" || human.purpose !== HUMAN_PURPOSE || human.keyId !== candidate.identifiers.signerId) throw new TypeError("human signer descriptor does not match the readiness signer");
   const cells = parseCellDescriptors(input.cellKeyDescriptors);
-  const descriptors = Object.freeze([human, ...cells]);
+  const jobCards = parseJobCardDescriptors(input.jobCardKeyDescriptors ?? []);
+  const descriptors = Object.freeze([human, ...jobCards, ...cells]);
   assertUniqueDescriptorKeys(descriptors);
   const events = parseTrustEvents(input.trustEvents, descriptors);
   const authorizedAt = timestamp(input.authorizedAt, "certification authorization time");
-  assertActiveAtAuthorization(human, cells, events, authorizedAt);
+  assertActiveAtAuthorization([human, ...jobCards, ...cells], events, authorizedAt);
   const body = Object.freeze({
     v: "reelier.signed-certification-readiness/v1" as const,
     purpose: HUMAN_PURPOSE,
@@ -131,6 +135,7 @@ export function createSignedCertificationReadiness(input: Readonly<{
     identifiers: candidate.identifiers,
     scenarios: candidate.scenarios,
     activatedCellKeyDescriptorDigests: Object.freeze(cells.map(authorityDigest).sort()),
+    activatedJobCardKeyDescriptorDigests: Object.freeze(jobCards.map(authorityDigest).sort()),
     trustHistoryDigest: authorityDigest(events),
     authorizedAt,
     authorization: "human-signed" as const,
@@ -156,17 +161,19 @@ export function verifySignedCertificationReadiness(input: Readonly<{
   const descriptors = Object.freeze(input.keyDescriptors.map(parseAuthorityKeyDescriptor));
   const descriptorIds = descriptors.map(descriptor => descriptor.keyId);
   const descriptorDigests = descriptors.map(authorityDigest);
-  if (new Set(descriptorIds).size !== descriptorIds.length || new Set(descriptorDigests).size !== descriptorDigests.length || descriptors.filter(descriptor => descriptor.role === "human-sponsor").length !== 1) throw new TypeError("authority key descriptors must be unique and contain exactly one human signer");
+  if (new Set(descriptorIds).size !== descriptorIds.length || new Set(descriptorDigests).size !== descriptorDigests.length || descriptors.filter(descriptor => descriptor.role === "human-sponsor" && descriptor.purpose === HUMAN_PURPOSE).length !== 1) throw new TypeError("authority key descriptors must be unique and contain exactly one readiness human signer");
   assertUniqueDescriptorKeys(descriptors);
   const human = descriptors.find(descriptor => descriptor.keyId === humanRoot.keyId);
   if (!human || authorityDigest(human) !== authorityDigest(humanRoot) || human.role !== "human-sponsor" || human.purpose !== HUMAN_PURPOSE) throw new TypeError("human trust root or signer role is invalid");
   const cells = parseCellDescriptors(descriptors.filter(descriptor => descriptor.role === "authority-cell"));
+  const jobCards = parseJobCardDescriptors(descriptors.filter(descriptor => descriptor.role === "human-sponsor" && descriptor.purpose === JOB_CARD_PURPOSE));
   const events = parseTrustEvents(input.trustEvents, descriptors);
   const signed = parseSignedCertificationReadiness(input.signed);
-  assertActiveAtAuthorization(human, cells, events, signed.authorizedAt);
+  assertActiveAtAuthorization([human, ...jobCards, ...cells], events, signed.authorizedAt);
   if (signed.purpose !== HUMAN_PURPOSE || signed.signerRole !== "human-sponsor" || signed.signerKeyId !== human.keyId || signed.signerKeyDescriptorDigest !== authorityDigest(human)) throw new TypeError("signed readiness signer purpose or role link is invalid");
   if (signed.readinessCandidateDigest !== authorityDigest(candidate) || signed.configurationRoot !== candidate.configDigest || signed.selectionDigest !== candidate.selectionDigest || authorityDigest(signed.identifiers) !== authorityDigest(candidate.identifiers) || authorityDigest(signed.scenarios) !== authorityDigest(candidate.scenarios)) throw new TypeError("signed readiness candidate, configuration, selection, identifier, or scenario link is invalid");
   if (authorityDigest(signed.activatedCellKeyDescriptorDigests) !== authorityDigest(cells.map(authorityDigest).sort())) throw new TypeError("signed readiness activated Cell key link is invalid");
+  if (authorityDigest(signed.activatedJobCardKeyDescriptorDigests) !== authorityDigest(jobCards.map(authorityDigest).sort())) throw new TypeError("signed readiness activated Job Card key descriptor link is invalid");
   if (signed.trustHistoryDigest !== authorityDigest(events)) throw new TypeError("signed readiness trust history link is invalid");
   const { signature, ...body } = signed;
   const bodyDigest = authorityDigest(body);
@@ -176,7 +183,7 @@ export function verifySignedCertificationReadiness(input: Readonly<{
 
 export function parseSignedCertificationReadiness(value: unknown): SignedCertificationReadinessV1 {
   const raw = object(value, "signed certification readiness");
-  closed(raw, ["v", "purpose", "signerRole", "signerKeyId", "signerKeyDescriptorDigest", "readinessCandidateDigest", "configurationRoot", "selectionDigest", "identifiers", "scenarios", "activatedCellKeyDescriptorDigests", "trustHistoryDigest", "authorizedAt", "authorization", "dispatchable", "completeness", "signature"], "signed certification readiness");
+  closed(raw, ["v", "purpose", "signerRole", "signerKeyId", "signerKeyDescriptorDigest", "readinessCandidateDigest", "configurationRoot", "selectionDigest", "identifiers", "scenarios", "activatedCellKeyDescriptorDigests", "activatedJobCardKeyDescriptorDigests", "trustHistoryDigest", "authorizedAt", "authorization", "dispatchable", "completeness", "signature"], "signed certification readiness");
   if (raw.v !== "reelier.signed-certification-readiness/v1" || raw.purpose !== HUMAN_PURPOSE || raw.signerRole !== "human-sponsor" || typeof raw.signerKeyId !== "string" || !KEY_ID.test(raw.signerKeyId) || raw.authorization !== "human-signed" || raw.dispatchable !== false || raw.completeness !== "unchecked") throw new TypeError("signed certification readiness purpose, role, or claims are invalid");
   const signatureRaw = object(raw.signature, "signed certification readiness signature");
   closed(signatureRaw, ["alg", "sig"], "signed certification readiness signature");
@@ -184,7 +191,7 @@ export function parseSignedCertificationReadiness(value: unknown): SignedCertifi
   const canonicalSignature = parseCanonicalSignature(signatureRaw.sig);
   return Object.freeze({
     v: raw.v, purpose: raw.purpose, signerRole: raw.signerRole, signerKeyId: raw.signerKeyId,
-    signerKeyDescriptorDigest: digest(raw.signerKeyDescriptorDigest, "signer descriptor digest"), readinessCandidateDigest: digest(raw.readinessCandidateDigest, "readiness candidate digest"), configurationRoot: digest(raw.configurationRoot, "configuration root"), selectionDigest: digest(raw.selectionDigest, "selection digest"), identifiers: parseIdentifiers(raw.identifiers), scenarios: scenarioList(raw.scenarios), activatedCellKeyDescriptorDigests: digestList(raw.activatedCellKeyDescriptorDigests, "activated Cell key descriptors"), trustHistoryDigest: digest(raw.trustHistoryDigest, "trust history digest"), authorizedAt: timestamp(raw.authorizedAt, "certification authorization time"), authorization: raw.authorization, dispatchable: false, completeness: raw.completeness, signature: Object.freeze({ alg: signatureRaw.alg, sig: canonicalSignature }),
+    signerKeyDescriptorDigest: digest(raw.signerKeyDescriptorDigest, "signer descriptor digest"), readinessCandidateDigest: digest(raw.readinessCandidateDigest, "readiness candidate digest"), configurationRoot: digest(raw.configurationRoot, "configuration root"), selectionDigest: digest(raw.selectionDigest, "selection digest"), identifiers: parseIdentifiers(raw.identifiers), scenarios: scenarioList(raw.scenarios), activatedCellKeyDescriptorDigests: digestList(raw.activatedCellKeyDescriptorDigests, "activated Cell key descriptors"), activatedJobCardKeyDescriptorDigests: digestList(raw.activatedJobCardKeyDescriptorDigests, "activated Job Card key descriptors", true), trustHistoryDigest: digest(raw.trustHistoryDigest, "trust history digest"), authorizedAt: timestamp(raw.authorizedAt, "certification authorization time"), authorization: raw.authorization, dispatchable: false, completeness: raw.completeness, signature: Object.freeze({ alg: signatureRaw.alg, sig: canonicalSignature }),
   });
 }
 
@@ -203,6 +210,7 @@ export async function signCertificationReadinessArtifact(input: Readonly<{
     scenarios: readonly CertificationScenarioId[];
     commitments: CertificationReadinessCandidate["commitments"];
     cellKeys: readonly Readonly<{ keyId: string; purpose: CellPurpose; descriptorDigest: string }>[];
+    jobCardKeys: readonly Readonly<{ keyId: string; purpose: typeof JOB_CARD_PURPOSE; descriptorDigest: string }>[];
     trustHistoryDigest: string;
     dispatchable: false;
   }>) => Promise<boolean>;
@@ -225,11 +233,12 @@ export async function signCertificationReadinessArtifact(input: Readonly<{
   const descriptors = descriptorsValue.map(parseAuthorityKeyDescriptor);
   const descriptorIds = descriptors.map(descriptor => descriptor.keyId);
   const descriptorDigests = descriptors.map(authorityDigest);
-  if (new Set(descriptorIds).size !== descriptorIds.length || new Set(descriptorDigests).size !== descriptorDigests.length || descriptors.filter(descriptor => descriptor.role === "human-sponsor").length !== 1) throw new TypeError("authority key descriptors must be unique and contain exactly one human signer");
+  if (new Set(descriptorIds).size !== descriptorIds.length || new Set(descriptorDigests).size !== descriptorDigests.length || descriptors.filter(descriptor => descriptor.role === "human-sponsor" && descriptor.purpose === HUMAN_PURPOSE).length !== 1) throw new TypeError("authority key descriptors must be unique and contain exactly one readiness human signer");
   assertUniqueDescriptorKeys(descriptors);
   const human = descriptors.find(descriptor => descriptor.role === "human-sponsor" && descriptor.keyId === candidate.identifiers.signerId);
   if (!human) throw new TypeError("pre-existing human signer descriptor is absent");
   const cells = descriptors.filter(descriptor => descriptor.role === "authority-cell");
+  const jobCards = parseJobCardDescriptors(descriptors.filter(descriptor => descriptor.role === "human-sponsor" && descriptor.purpose === JOB_CARD_PURPOSE));
   const trustEvents = parseTrustEvents(JSON.parse((await readUnlinkedFile(input.trustEventsPath)).toString("utf8")), descriptors);
   const parsedCells = parseCellDescriptors(cells);
   const review = Object.freeze({
@@ -240,13 +249,14 @@ export async function signCertificationReadinessArtifact(input: Readonly<{
     scenarios: candidate.scenarios,
     commitments: candidate.commitments,
     cellKeys: Object.freeze(parsedCells.map(descriptor => Object.freeze({ keyId: descriptor.keyId, purpose: descriptor.purpose as CellPurpose, descriptorDigest: authorityDigest(descriptor) })).sort((left, right) => left.descriptorDigest.localeCompare(right.descriptorDigest))),
+    jobCardKeys: Object.freeze(jobCards.map(descriptor => Object.freeze({ keyId: descriptor.keyId, purpose: JOB_CARD_PURPOSE, descriptorDigest: authorityDigest(descriptor) })).sort((left, right) => left.descriptorDigest.localeCompare(right.descriptorDigest))),
     trustHistoryDigest: authorityDigest(trustEvents),
     dispatchable: false as const,
   });
   if (await input.confirm(review) !== true) throw new TypeError("human confirmation refused readiness signing");
   const privateKey = createPrivateKey(await readUnlinkedFile(input.privateKeyPath));
   if (privateKey.asymmetricKeyType !== "ed25519") throw new TypeError("human signing key must be Ed25519");
-  const signed = createSignedCertificationReadiness({ readinessCandidate: candidate, readinessCandidateDigest: candidateDigest, preflight, humanKeyDescriptor: human, cellKeyDescriptors: parsedCells, trustEvents, humanPrivateKey: privateKey, authorizedAt: input.authorizedAt });
+  const signed = createSignedCertificationReadiness({ readinessCandidate: candidate, readinessCandidateDigest: candidateDigest, preflight, humanKeyDescriptor: human, cellKeyDescriptors: parsedCells, jobCardKeyDescriptors: jobCards, trustEvents, humanPrivateKey: privateKey, authorizedAt: input.authorizedAt });
   const signedDigest = authorityDigest(signed);
   const filename = `signed-readiness-${signedDigest.replace(":", "-")}.json`;
   const content = `${JSON.stringify(signed)}\n`;
@@ -272,9 +282,17 @@ function parseCellDescriptors(values: readonly unknown[]): readonly AuthorityKey
   return Object.freeze([...cells].sort((left, right) => authorityDigest(left).localeCompare(authorityDigest(right))));
 }
 
-function assertActiveAtAuthorization(human: AuthorityKeyDescriptorV1, cells: readonly AuthorityKeyDescriptorV1[], events: readonly TrustEventV1[], authorizedAt: string): void {
+function parseJobCardDescriptors(values: readonly unknown[]): readonly AuthorityKeyDescriptorV1[] {
+  const descriptors = values.map(parseAuthorityKeyDescriptor);
+  if (descriptors.some(descriptor => descriptor.role !== "human-sponsor" || descriptor.purpose !== JOB_CARD_PURPOSE)) throw new TypeError("Job Card key descriptor role or purpose is invalid");
+  const ids = descriptors.map(descriptor => descriptor.keyId);
+  if (new Set(ids).size !== ids.length) throw new TypeError("Job Card key descriptor IDs must be unique");
+  return Object.freeze([...descriptors].sort((left, right) => authorityDigest(left).localeCompare(authorityDigest(right))));
+}
+
+function assertActiveAtAuthorization(descriptors: readonly AuthorityKeyDescriptorV1[], events: readonly TrustEventV1[], authorizedAt: string): void {
   const authorizationTime = Date.parse(authorizedAt);
-  for (const descriptor of [human, ...cells]) {
+  for (const descriptor of descriptors) {
     const descriptorDigest = authorityDigest(descriptor);
     const lifecycle = events.filter(event => event.keyDescriptorDigest === descriptorDigest);
     const activation = lifecycle.find(event => event.action === "activate");
@@ -299,8 +317,8 @@ function scenarioList(value: unknown): readonly CertificationScenarioId[] {
   return Object.freeze([...result]);
 }
 
-function digestList(value: unknown, label: string): readonly string[] {
-  if (!Array.isArray(value) || value.length === 0) throw new TypeError(`${label} are invalid`);
+function digestList(value: unknown, label: string, allowEmpty = false): readonly string[] {
+  if (!Array.isArray(value) || (!allowEmpty && value.length === 0)) throw new TypeError(`${label} are invalid`);
   const values = value.map(item => digest(item, label));
   if (new Set(values).size !== values.length || values.some((item, index) => index > 0 && values[index - 1] >= item)) throw new TypeError(`${label} must be unique and sorted`);
   return Object.freeze(values);

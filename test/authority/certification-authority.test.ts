@@ -118,6 +118,43 @@ test("key descriptors and trust events are closed and enforce the exact role-pur
   assert.throws(() => parseTrustEvents([fixture.events[0], { ...fixture.events[1], previousEventDigest: null }], [fixture.humanDescriptor, fixture.cellDescriptor]), /chain|previous/i);
 });
 
+test("readiness separately activates a purpose-bound human Job Card signer", () => {
+  const fixture = validFixture();
+  const jobSigner = generateKeyPairSync("ed25519");
+  const jobDescriptor = keyDescriptor("human_job_card_signer", "human-sponsor", "signed-job-card", jobSigner.publicKey);
+  const jobActivation = trustEvent(2, "activate", authorityDigest(jobDescriptor), authorityDigest(fixture.events[1]));
+  const events = [...fixture.events, jobActivation];
+  assert.equal(parseAuthorityKeyDescriptor(jobDescriptor).purpose, "signed-job-card");
+  const signed = createSignedCertificationReadiness({
+    readinessCandidate: fixture.readiness,
+    readinessCandidateDigest: authorityDigest(fixture.readiness),
+    preflight: preflightForCandidate(fixture.readiness),
+    humanKeyDescriptor: fixture.humanDescriptor,
+    cellKeyDescriptors: [fixture.cellDescriptor],
+    jobCardKeyDescriptors: [jobDescriptor],
+    trustEvents: events,
+    humanPrivateKey: fixture.human.privateKey,
+    authorizedAt: later,
+  } as never) as any;
+  assert.deepEqual(signed.activatedJobCardKeyDescriptorDigests, [authorityDigest(jobDescriptor)]);
+  assert.equal(verifySignedCertificationReadiness({
+    signed,
+    readinessCandidate: fixture.readiness,
+    preflight: preflightForCandidate(fixture.readiness),
+    humanTrustRoot: fixture.humanDescriptor,
+    keyDescriptors: [fixture.humanDescriptor, jobDescriptor, fixture.cellDescriptor],
+    trustEvents: events,
+  }).authorization, "verified");
+  assert.throws(() => verifySignedCertificationReadiness({
+    signed: { ...signed, activatedJobCardKeyDescriptorDigests: [] },
+    readinessCandidate: fixture.readiness,
+    preflight: preflightForCandidate(fixture.readiness),
+    humanTrustRoot: fixture.humanDescriptor,
+    keyDescriptors: [fixture.humanDescriptor, jobDescriptor, fixture.cellDescriptor],
+    trustEvents: events,
+  }), /job.card|signature|descriptor.*link/i);
+});
+
 test("offline verification rejects purpose, role, candidate, config, selection, ID, scenario, Cell-key, and trust-history substitution", () => {
   const fixture = validFixture();
   const preflight = preflightForCandidate(fixture.readiness);
