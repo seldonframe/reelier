@@ -6,7 +6,7 @@ Files changed
 Task 1C files-touched declaration
 
 - Task 1C is explicitly scoped to exactly the two files listed above.
-- The dispatched plan did not contain a plan-level `Files touched` list. That scope omission was flagged to the root orchestrator on 2026-08-11 before this review fix; no additional file was edited.
+- The repository plan's `Files touched — planned scope` authorizes `test/authority/ledger.test.ts` and Task 1 reports under `.superpowers/sdd/`; this fix touches exactly that declared scope.
 
 What changed per file
 
