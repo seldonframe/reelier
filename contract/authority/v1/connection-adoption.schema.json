@@ -3,7 +3,7 @@
   "$id": "reelier.connection-adoption/v1",
   "type": "object",
   "additionalProperties": false,
-  "required": ["v", "adoptionId", "descriptorDigest", "selectedAccountIdentity", "mode", "sidecarRouteId", "rawWriteReachability", "activationState", "signedDeploymentBinding"],
+  "required": ["v", "adoptionId", "descriptorDigest", "selectedAccountIdentity", "mode", "sidecarRouteId", "rawWriteReachability", "activationState", "signedDeploymentBinding", "secureConnectionCommitment"],
   "properties": {
     "v": { "const": "reelier.connection-adoption/v1" },
     "adoptionId": { "type": "string", "minLength": 1 },
@@ -13,7 +13,8 @@
     "sidecarRouteId": { "type": "string", "minLength": 1 },
     "rawWriteReachability": { "enum": ["reachable", "refused", "unknown"] },
     "activationState": { "enum": ["inactive", "active", "refused"] },
-    "signedDeploymentBinding": { "oneOf": [{ "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }, { "type": "null" }] }
+    "signedDeploymentBinding": { "oneOf": [{ "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }, { "type": "null" }] },
+    "secureConnectionCommitment": { "oneOf": [{ "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }, { "type": "null" }] }
   },
   "allOf": [{
     "if": {
@@ -31,7 +32,8 @@
     "then": {
       "properties": {
         "rawWriteReachability": { "const": "refused" },
-        "signedDeploymentBinding": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+        "signedDeploymentBinding": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "secureConnectionCommitment": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
       }
     }
   }]

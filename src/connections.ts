@@ -11,6 +11,9 @@ import {
   type ConnectionInventoryReportV1,
   type ConnectionKind,
   type HostCoverageV1,
+  normalizeConnectionDescriptor,
+  normalizeConnectionAdoption,
+  type ConnectionAdoptionV1,
 } from "./observation/index.js";
 
 export interface ConnectionInspectionCandidate {
@@ -41,6 +44,42 @@ export interface ReviewedConnectionInspectionAdapter {
 }
 
 export type ConnectionFactory = (routeSpec: string) => Promise<DownstreamConnection>;
+
+export function connectionDescriptorDigest(value: ConnectionDescriptorV1): string {
+  return authorityDigest(normalizeConnectionDescriptor(value));
+}
+
+export interface OpaqueConnectionRouteRegistration {
+  readonly sidecarRouteId: string;
+  readonly descriptor: ConnectionDescriptorV1;
+  readonly resolve: () => Promise<DownstreamConnection>;
+}
+
+export interface OpaqueConnectionRouteRegistry {
+  register(input: OpaqueConnectionRouteRegistration): void;
+  resolve(descriptor: ConnectionDescriptorV1, adoption: ConnectionAdoptionV1): Promise<DownstreamConnection>;
+}
+
+/** Host-owned route handles. Private factories and route specifications never enter deployment wire data. */
+export function createOpaqueConnectionRouteRegistry(): OpaqueConnectionRouteRegistry {
+  const entries = new Map<string, Readonly<{ descriptorDigest: string; account: string; resolve: () => Promise<DownstreamConnection> }>>();
+  return Object.freeze({
+    register(input: OpaqueConnectionRouteRegistration): void {
+      const descriptor = normalizeConnectionDescriptor(input.descriptor);
+      if (input.sidecarRouteId !== descriptor.callableRoute.routeId || entries.has(input.sidecarRouteId)) throw new TypeError("opaque route registration mismatch or duplicate");
+      entries.set(input.sidecarRouteId, Object.freeze({ descriptorDigest: connectionDescriptorDigest(descriptor), account: descriptor.account.identity, resolve: input.resolve }));
+    },
+    async resolve(descriptorInput: ConnectionDescriptorV1, adoptionInput: ConnectionAdoptionV1): Promise<DownstreamConnection> {
+      const descriptor = normalizeConnectionDescriptor(descriptorInput);
+      const adoption = normalizeConnectionAdoption(adoptionInput);
+      const entry = entries.get(adoption.sidecarRouteId);
+      if (!entry) throw new TypeError("opaque route is missing");
+      const digest = connectionDescriptorDigest(descriptor);
+      if (adoption.activationState !== "active" || adoption.descriptorDigest !== digest || entry.descriptorDigest !== digest || adoption.selectedAccountIdentity !== descriptor.account.identity || entry.account !== descriptor.account.identity || adoption.sidecarRouteId !== descriptor.callableRoute.routeId) throw new TypeError("opaque route descriptor or account mismatch");
+      return entry.resolve();
+    },
+  });
+}
 
 export interface DigestedMcpToolSchema {
   readonly toolName: string;

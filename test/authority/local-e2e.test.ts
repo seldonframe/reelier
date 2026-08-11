@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { authorityCanonicalBytes, authorityDigest, signAuthorityDigest } from "../../src/authority/index.js";
+import { authorityCanonicalBytes, authorityDigest, signAuthorityDigest, signJobCard, signedJobCardDigest } from "../../src/authority/index.js";
+import { connectionDescriptorDigest, createOpaqueConnectionRouteRegistry } from "../../src/connections.js";
 import { buildAuthorityDeployment } from "../../src/authority/host/deploy.js";
 import { createLocalAuthorityRuntime } from "../../src/authority/host/local.js";
 import type { DispatchAdapter } from "../../src/authority/host/dispatch.js";
@@ -16,6 +17,7 @@ test("local deployment dispatches once, reconciles, publishes a receipt, and sur
   const root = await bindableTempRoot("reelier-local-e2e-");
   let dispatches = 0;
   let reconciliations = 0;
+  let adoptedRouteOpens = 0;
   try {
     const candidateRoot = path.join(root, "candidate");
     await mkdir(path.join(candidateRoot, "keys"), { recursive: true });
@@ -34,13 +36,16 @@ test("local deployment dispatches once, reconciles, publishes a receipt, and sur
     const contractDigest = authorityDigest(contract);
     const grantBytes = authorityCanonicalBytes(grant);
     const contractBytes = authorityCanonicalBytes(contract);
+    const descriptor = { v: "reelier.connection-descriptor/v1" as const, connectionId: "gmail", kind: "adopted-mcp-stdio" as const, provider: { id: "gmail", toolServerName: "gmail-mcp" }, callableRoute: { kind: "mcp-stdio" as const, routeId: "route.gmail", endpointIds: [gmailReadEndpointId, gmailReplyWriteEndpointId] }, account: { status: "verified" as const, identity: "gmail-owner-example-test" }, toolSchemas: [{ toolName: "gmail.read", digest: sha("7") }, { toolName: "gmail.send", digest: sha("8") }], secretOwner: "host" as const, coverage: { v: "reelier.host-coverage/v1" as const, host: "codex", observation: "observed" as const, outcomeInvocation: "supported" as const, exclusiveEnforcement: "unknown" as const, limitations: ["raw-write-reachability-unmeasured"] } };
+    const jobCard = signJobCard({ v: "reelier.signed-job-card/v1", jobId: "customer_reply", title: "Reply to a customer", taskShapeDigest: sha("a"), semanticClasses: ["communication_commit_v1"], definitionAliases: ["gmail_reply_send_v1"], connectorIds: ["gmail"], accountIdentities: [descriptor.account.identity], connectionDescriptorDigests: [connectionDescriptorDigest(descriptor)], sourceRefs: ["thread"], audiences: ["operator"], limitsDigest: authorityDigest(limits), instructionsDigest: sha("b"), packDigests: [gmailPackDigest], exceptionPolicy: ["ambiguous-reconcile"], coverage: "declared-surface" }, "operator", operator.privateKey);
     const candidate = {
       v: "reelier.authority-deployment-candidate/v1",
-      approved: true,
-      job: { v: "reelier.signed-job-card/v1", jobId: "customer_reply", title: "Reply to a customer", taskShapeDigest: sha("a"), semanticClasses: ["communication_commit_v1"], definitionAliases: ["gmail_reply_send_v1"], connectorIds: ["gmail"], accountIdentities: ["gmail:account_1"], sourceRefs: ["thread"], audiences: ["operator"], limitsDigest: authorityDigest(limits), instructionsDigest: sha("b"), packDigests: [gmailPackDigest], exceptionPolicy: ["ambiguous-reconcile"], coverage: "declared-surface" },
+      jobCard,
+      connectionDescriptors: [descriptor],
+      connectionAdoptions: [{ v: "reelier.connection-adoption/v1", adoptionId: "adopt_gmail", descriptorDigest: connectionDescriptorDigest(descriptor), selectedAccountIdentity: descriptor.account.identity, mode: "existing", sidecarRouteId: descriptor.callableRoute.routeId, rawWriteReachability: "reachable", activationState: "active", signedDeploymentBinding: signedJobCardDigest(jobCard), secureConnectionCommitment: null }],
       state: { tenant: "tenant_1", definitionAlias: "gmail_reply_send_v1", stateVersion: 1, candidates: [{ contractEnvelope: { canonicalBase64: contractBytes.toString("base64"), advertisedDigest: contractDigest, signerId: "contract-signer", signature: signAuthorityDigest(contractSigner.privateKey, "outcome-contract", contractDigest) }, delegationEnvelopes: [{ index: 0, canonicalBase64: grantBytes.toString("base64"), advertisedDigest: grantDigest, signerId: "operator", signature: signAuthorityDigest(operator.privateKey, "delegation-grant", grantDigest) }], stateEvents: [{ index: 0, kind: "activated" as const, contractDigest, at: "2026-01-01T00:00:00.000Z" }] }] },
       connectors: [{ tenant: "tenant_1", connectorId: "gmail", accountId: "account_1", providerAccountIdentity: "gmail-owner-example-test", allowedReadEndpointIds: [gmailReadEndpointId], allowedWriteEndpointIds: [gmailReplyWriteEndpointId], riskClasses: ["gmail_send"], operatorConfigurationDigest: sha("c") }],
-      trust: [{ signerId: "operator", principalId: "operator", publicKeyFile: "keys/operator.pem", purposes: ["delegation-grant"] }, { signerId: "contract-signer", principalId: "contract-signer", publicKeyFile: "keys/contract.pem", purposes: ["outcome-contract"] }],
+      trust: [{ signerId: "operator", principalId: "operator", publicKeyFile: "keys/operator.pem", purposes: ["delegation-grant", "signed-job-card"] }, { signerId: "contract-signer", principalId: "contract-signer", publicKeyFile: "keys/contract.pem", purposes: ["outcome-contract"] }],
       sourceDirectory: "sources",
     };
     const candidateFile = path.join(candidateRoot, "candidate.json");
@@ -53,7 +58,12 @@ test("local deployment dispatches once, reconciles, publishes a receipt, and sur
       async reconcile() { reconciliations++; return { kind: "acknowledged", resultDigest: authorityDigest({ v: "fake-read-back/v1", messageId: "provider-message-1" }), reconciliationStatus: "matched", normalizedProjectionDigest: authorityDigest({ v: "fake-message/v1", messageId: "provider-message-1" }) }; },
     };
     const config = { version: 1 as const, tenant: "tenant_1", requester: "operator", definitions: ["gmail_reply_send_v1"], ledgerDir: path.join(authorityRoot, "ledger"), decisionDir: path.join(authorityRoot, "decisions"), receiptDir: path.join(authorityRoot, "receipts"), gateKeyFile: path.join(authorityRoot, "keys", "local-gate.pem"), endpoints: [], deploymentPath: built.deploymentFile };
-    const runtime = await createLocalAuthorityRuntime(config, { dispatchAdapter: adapter });
+    const connectionRoutes = createOpaqueConnectionRouteRegistry();
+    connectionRoutes.register({ sidecarRouteId: descriptor.callableRoute.routeId, descriptor, resolve: async () => { adoptedRouteOpens++; return { name: "gmail", tools: [], async call() { return { content: [] }; }, async close() {} }; } });
+    const runtime = await createLocalAuthorityRuntime(config, { dispatchAdapter: adapter, connectionRoutes });
+    assert.equal(adoptedRouteOpens, 0, "deployment loading must not open adopted provider routes");
+    await runtime.resolveAdoptedConnection("gmail");
+    assert.equal(adoptedRouteOpens, 1);
     const request = { v: "reelier.outcome-request/v1", requestId: "customer-request-1", sourceRefs: { thread: "thread_1" }, choices: {} };
     const first = await runtime.outcome("gmail_reply_send_v1", request, { tenant: "tenant_1", requester: "operator" });
     assert.equal(first.verdict, "accepted", JSON.stringify(first));

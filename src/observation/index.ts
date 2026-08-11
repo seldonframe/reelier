@@ -45,6 +45,7 @@ export interface ConnectionAdoptionV1 {
   readonly rawWriteReachability: "reachable" | "refused" | "unknown";
   readonly activationState: "inactive" | "active" | "refused";
   readonly signedDeploymentBinding: string | null;
+  readonly secureConnectionCommitment: string | null;
 }
 
 export type ConnectionInventoryStatus = "usable" | "discovered-unverified" | "schema-drifted" | "account-mismatched" | "shadow-only" | "unsupported";
@@ -187,10 +188,10 @@ export function normalizeConnectionDescriptor(value: unknown): ConnectionDescrip
 }
 
 export function normalizeConnectionAdoption(value: unknown): ConnectionAdoptionV1 {
-  const raw = closedRecord(value, ["v", "adoptionId", "descriptorDigest", "selectedAccountIdentity", "mode", "sidecarRouteId", "rawWriteReachability", "activationState", "signedDeploymentBinding"], "connection adoption");
-  if (raw.v !== "reelier.connection-adoption/v1" || !nonEmpty(raw.adoptionId) || !isDigest(raw.descriptorDigest) || !nonEmpty(raw.selectedAccountIdentity) || !["existing", "managed"].includes(String(raw.mode)) || !nonEmpty(raw.sidecarRouteId) || !["reachable", "refused", "unknown"].includes(String(raw.rawWriteReachability)) || !["inactive", "active", "refused"].includes(String(raw.activationState)) || (raw.signedDeploymentBinding !== null && !isDigest(raw.signedDeploymentBinding))) throw new TypeError("invalid connection adoption");
+  const raw = closedRecord(value, ["v", "adoptionId", "descriptorDigest", "selectedAccountIdentity", "mode", "sidecarRouteId", "rawWriteReachability", "activationState", "signedDeploymentBinding", "secureConnectionCommitment"], "connection adoption");
+  if (raw.v !== "reelier.connection-adoption/v1" || !nonEmpty(raw.adoptionId) || !isDigest(raw.descriptorDigest) || !nonEmpty(raw.selectedAccountIdentity) || !["existing", "managed"].includes(String(raw.mode)) || !nonEmpty(raw.sidecarRouteId) || !["reachable", "refused", "unknown"].includes(String(raw.rawWriteReachability)) || !["inactive", "active", "refused"].includes(String(raw.activationState)) || (raw.signedDeploymentBinding !== null && !isDigest(raw.signedDeploymentBinding)) || (raw.secureConnectionCommitment !== null && !isDigest(raw.secureConnectionCommitment))) throw new TypeError("invalid connection adoption");
   if (raw.activationState === "active" && raw.signedDeploymentBinding === null) throw new TypeError("invalid active connection adoption");
-  if (raw.mode === "managed" && raw.activationState === "active" && (raw.rawWriteReachability !== "refused" || raw.signedDeploymentBinding === null)) throw new TypeError("invalid managed connection adoption");
+  if (raw.mode === "managed" && raw.activationState === "active" && (raw.rawWriteReachability !== "refused" || raw.signedDeploymentBinding === null || raw.secureConnectionCommitment === null)) throw new TypeError("invalid managed connection adoption");
   return Object.freeze({ ...raw }) as unknown as ConnectionAdoptionV1;
 }
 

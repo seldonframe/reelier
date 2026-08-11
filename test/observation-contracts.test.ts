@@ -63,6 +63,7 @@ test("connection adoption is closed and round-trips without credential material"
     rawWriteReachability: "unknown",
     activationState: "inactive",
     signedDeploymentBinding: null,
+    secureConnectionCommitment: null,
   });
   assert.deepEqual(normalizeConnectionAdoption(JSON.parse(JSON.stringify(adoption))), adoption);
   assert.throws(() => normalizeConnectionAdoption({ ...adoption, refreshToken: "secret" }), /closed|invalid|unrecognized|unknown/i);
@@ -120,6 +121,7 @@ test("signed job cards reject unreviewed authority fields", () => {
     definitionAliases: ["gmail_reply_send_v1"],
     connectorIds: ["conn_1"],
     accountIdentities: ["google:user:123"],
+    connectionDescriptorDigests: ["sha256:" + "e".repeat(64)],
     sourceRefs: ["source_1"],
     audiences: ["agent_1"],
     limitsDigest: "sha256:" + "b".repeat(64),
