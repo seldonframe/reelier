@@ -33,7 +33,9 @@ test("certification export is a closed linked package that verifies offline with
   assert.deepEqual(verified.claims, { providerCertification: "unchecked", signatureVerification: "unchecked", completion: "unchecked", completeness: "unchecked" });
   assert.equal(verified.authorization, "absent");
   assert.equal(verified.dispatchable, false);
-  assert.equal((await stat(exported.path)).mode & 0o077, 0);
+  const permissions = (await stat(exported.path)).mode & 0o777;
+  if (process.platform === "win32") assert.notEqual(permissions & 0o200, 0);
+  else assert.equal(permissions & 0o077, 0);
   const serialized = JSON.stringify(fromDisk);
   assert.doesNotMatch(serialized, /REELIER_GITHUB_TOKEN|authority\/authority\.yml|authority\/receipts\/certification/);
 });

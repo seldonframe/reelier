@@ -32,7 +32,7 @@ export async function initializeCertification(input: Readonly<{ configPath: stri
   const parsed = parseCertificationOperatorConfigV2(JSON.parse(await readFile(configPath, "utf8")));
   const canonicalConfig = canonicalizeCertificationOperatorConfigV2(parsed);
   const configDigest = authorityDigest(parsed);
-  const identifiers = identifiersFor(configDigest);
+  const identifiers = deriveCertificationIdentifiers(configDigest);
   const initialization: CertificationInitialization = Object.freeze({
     v: "reelier.certification-initialization/v1",
     configDigest,
@@ -87,7 +87,8 @@ export function parseCertificationInitialization(value: unknown): CertificationI
   return Object.freeze({ v: "reelier.certification-initialization/v1", configDigest: root.configDigest, identifiers, completeness: "unchecked" });
 }
 
-function identifiersFor(configDigest: string): CertificationIdentifiers {
+export function deriveCertificationIdentifiers(configDigest: string): CertificationIdentifiers {
+  if (!DIGEST.test(configDigest)) throw new TypeError("certification config digest is invalid");
   const id = (prefix: string, kind: string) => `${prefix}${authorityDigest({ v: "reelier.certification-id/v1", configDigest, kind }).slice(7, 31)}`;
   return Object.freeze({ taskId: id("task_", "task"), jobCardId: id("job_", "job-card"), rootGrantId: id("grant_", "root-grant"), authorityCellId: id("cell_", "authority-cell"), signerId: id("signer_", "signer") });
 }
