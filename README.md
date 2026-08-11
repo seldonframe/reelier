@@ -68,7 +68,7 @@ npm i -g reelier && reelier init
 docker run --rm ghcr.io/seldonframe/reelier --help
 ```
 
-`reelier init` scans work you've already done (Claude Code, Codex, OpenClaw) into a real skill, or falls back to a zero-setup demo with a real receipt in under 60 seconds.
+`reelier init [--dry-run]` performs one checkpointed local inspection across all three Reelier paths: Path A observation coverage, Path B replay/freeze candidates, and Path C boundable/outcome-capable/shadow-only/unsupported connections and candidates. It does not deploy, gate, dispatch, upload, copy credentials, or rewrite host configuration. `--dry-run` writes nothing; the normal command writes only sanitized artifacts below `.reelier/init/`.
 
 ### As an agent plugin
 
@@ -95,14 +95,15 @@ Verified end to end on `codex-cli 0.147.0-alpha.1.2`: both formats install, enab
 ## How to use it
 
 ```sh
-reelier init                        # 60s: record → compile → replay → your receipt
+reelier init --dry-run              # inspect Path A/B/C locally; write nothing
+reelier init                        # persist resumable sanitized inspection artifacts
 reelier run  <name>.skill.md        # replay deterministically — 0 tokens (read-only by default)
 reelier diff <name>                 # SAME or DRIFTED, per step — exit 1 on drift
 reelier push <name>.skill.md        # sync receipts to your ledger (opt-in)
 reelier ci                          # write a workflow: drift-CI + PR receipts, one command
 ```
 
-1. **Record.** `reelier mcp --wrap "<mcp server>"` proxies your tools live, or pull a session via `reelier scan`/`from-session`, or run the guided `reelier init`.
+1. **Inspect, then record or freeze.** `reelier init` reveals observed coverage and local candidates without changing routes. `reelier mcp --wrap "<mcp server>"` proxies live tools; `reelier scan`/`from-session` freezes supported history.
 2. **Compile.** `reelier compile` turns a trace into a `SKILL.md` — 0 LLM calls, minimal assertions, honest gaps printed as **Open questions**.
 3. **Replay.** `reelier run` replays it at Level 0 — no LLM, byte-identical, read-only by default (writes need `--allow-writes`).
 4. **Diff.** `reelier diff` reports SAME or DRIFTED per step, with the failing assertion as the *why* — exit 1 on drift.

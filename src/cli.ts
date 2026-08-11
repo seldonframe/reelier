@@ -4460,6 +4460,9 @@ const USAGE =
   "           An explicit per-call cwd/out argument always wins over the workspace.\n" +
   "  get    — fetch a public registry skill to ./skills/<skill>.skill.md; never executes it.\n" +
   "           reelier get --mine <name> fetches YOUR OWN private skill (authenticated) instead.\n" +
+  "  init   - reelier init [--dry-run]: checkpointed local inspection of Path A observation, Path B replay/freeze\n" +
+  "           candidates, and Path C connections/candidates. It does not deploy, gate, dispatch, upload, or rewrite configs.\n" +
+  "           --dry-run performs the same local inspection without writing .reelier/init artifacts.\n" +
   "  init --signing — generate (or print the existing) Ed25519 signing key at ~/.reelier/signing/; idempotent.\n" +
   "  verify <permalink|file> [--key <pub.pem>] — recompute the record digest and check signature/timestamp claims.\n" +
   "  diff   — compare the last two runs of a skill; exit 1 on drift (gate a scheduled replay).\n" +
