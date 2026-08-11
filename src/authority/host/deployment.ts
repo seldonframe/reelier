@@ -11,7 +11,7 @@ import { authorityDigest } from "../wire.js";
 import { connectionDescriptorDigest } from "../../connections.js";
 import { connectionAdoptionCommitmentDigest } from "../../connections.js";
 import { normalizeConnectionAdoption, normalizeConnectionDescriptor, type ConnectionAdoptionV1, type ConnectionDescriptorV1 } from "../../observation/index.js";
-import { parseAuthorityKeyDescriptor, parseTrustEvents, type AuthorityKeyDescriptorV1, type TrustEventV1 } from "../certification/authority.js";
+import { parseAuthorityKeyDescriptor, parseTrustEvents, verifySignedCertificationReadiness, type AuthorityKeyDescriptorV1, type SignedCertificationReadinessV1, type TrustEventV1 } from "../certification/authority.js";
 
 export interface JobCardTrustMaterialV1 {
   readonly signedReadinessDigest: string;
@@ -22,7 +22,16 @@ export interface JobCardTrustMaterialV1 {
   readonly trustHeadDigest: string;
 }
 
-export interface JobCardTrustPinV1 extends JobCardTrustMaterialV1 {}
+export interface JobCardTrustPinV1 {
+  readonly v: "reelier.job-card-trust-pin/v1";
+  readonly signedReadiness: SignedCertificationReadinessV1;
+  readonly readinessCandidate: unknown;
+  readonly preflight: unknown;
+  readonly humanTrustRoot: AuthorityKeyDescriptorV1;
+  readonly keyDescriptors: readonly AuthorityKeyDescriptorV1[];
+  readonly readinessTrustEvents: readonly TrustEventV1[];
+  readonly currentTrustEvents: readonly TrustEventV1[];
+}
 
 export interface AuthorityDeploymentTrustEntry {
   readonly signerId: string;
@@ -120,15 +129,33 @@ function parseJobCardTrustMaterial(value: unknown, label: string): JobCardTrustM
 }
 
 function verifyJobCardTrust(card: SignedJobCardV1, snapshot: JobCardTrustMaterialV1, pinInput: JobCardTrustPinV1): void {
-  const pin = parseJobCardTrustMaterial(pinInput, "host-pinned Job Card trust");
-  if (snapshot.signedReadinessDigest !== pin.signedReadinessDigest || snapshot.signerKeyDescriptorDigest !== pin.signerKeyDescriptorDigest || authorityDigest(snapshot.keyDescriptors) !== authorityDigest(pin.keyDescriptors)) throw new TypeError("host-pinned Job Card trust root mismatch");
-  if (snapshot.trustEvents.length > pin.trustEvents.length || snapshot.trustEvents.some((event, index) => authorityDigest(event) !== authorityDigest(pin.trustEvents[index]))) throw new TypeError("deployment Job Card trust history is not an authoritative prefix");
-  const signer = pin.keyDescriptors.find(item => authorityDigest(item) === pin.signerKeyDescriptorDigest)!;
+  const { material: pin, currentTrustEvents, signer } = jobCardTrustMaterialFromPin(card, pinInput);
+  if (authorityDigest(snapshot) !== authorityDigest(pin)) throw new TypeError("host-pinned Job Card trust root mismatch");
   if (card.audiences.includes(card.signerId)) throw new TypeError("human Job Card signer must be distinct from agent audiences");
-  if (card.signerId !== signer.keyId || !isActiveAtHead(snapshot.trustEvents, pin.signerKeyDescriptorDigest)) throw new TypeError("signed Job Card signer was not active at authorization");
-  if (!isActiveAtHead(pin.trustEvents, pin.signerKeyDescriptorDigest)) throw new TypeError("signed Job Card signer is revoked or not currently active");
+  if (!isActiveAtHead(snapshot.trustEvents, pin.signerKeyDescriptorDigest)) throw new TypeError("signed Job Card signer was not active at authorization");
+  if (!isActiveAtHead(currentTrustEvents, pin.signerKeyDescriptorDigest)) throw new TypeError("signed Job Card signer is revoked or not currently active");
   const publicKey = createPublicKey({ key: Buffer.from(signer.publicKeySpkiBase64, "base64"), format: "der", type: "spki" });
   if (!verifySignedJobCard(card, publicKey)) throw new TypeError("signed Job Card trust verification failed");
+}
+
+export function jobCardTrustMaterialFromPin(card: SignedJobCardV1, value: JobCardTrustPinV1): Readonly<{ material: JobCardTrustMaterialV1; currentTrustEvents: readonly TrustEventV1[]; signer: AuthorityKeyDescriptorV1 }> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("host-pinned Job Card trust must be an object");
+  const raw = value as unknown as Record<string, unknown>;
+  const fields = ["currentTrustEvents", "humanTrustRoot", "keyDescriptors", "preflight", "readinessCandidate", "readinessTrustEvents", "signedReadiness", "v"];
+  if (raw.v !== "reelier.job-card-trust-pin/v1" || Object.keys(raw).sort().join("\0") !== fields.sort().join("\0") || !Array.isArray(raw.keyDescriptors)) throw new TypeError("host-pinned Job Card trust is closed and complete");
+  const keyDescriptors = Object.freeze(raw.keyDescriptors.map(parseAuthorityKeyDescriptor));
+  const readinessTrustEvents = parseTrustEvents(raw.readinessTrustEvents, keyDescriptors);
+  const currentTrustEvents = parseTrustEvents(raw.currentTrustEvents, keyDescriptors);
+  verifySignedCertificationReadiness({ signed: raw.signedReadiness, readinessCandidate: raw.readinessCandidate, preflight: raw.preflight, humanTrustRoot: raw.humanTrustRoot, keyDescriptors, trustEvents: readinessTrustEvents });
+  if (readinessTrustEvents.length > currentTrustEvents.length || readinessTrustEvents.some((event, index) => authorityDigest(event) !== authorityDigest(currentTrustEvents[index]))) throw new TypeError("current Job Card trust history does not extend signed readiness");
+  const signer = keyDescriptors.find(item => item.keyId === card.signerId && item.role === "human-sponsor" && item.purpose === "signed-job-card");
+  if (!signer) throw new TypeError("signed Job Card signer is not in host-pinned trust");
+  const signerKeyDescriptorDigest = authorityDigest(signer);
+  const signedReadiness = raw.signedReadiness as SignedCertificationReadinessV1;
+  if (!signedReadiness.activatedJobCardKeyDescriptorDigests.includes(signerKeyDescriptorDigest)) throw new TypeError("signed Job Card signer was not activated by readiness");
+  if (!isActiveAtHead(currentTrustEvents, signerKeyDescriptorDigest)) throw new TypeError("signed Job Card signer is revoked or not currently active");
+  const material = Object.freeze({ signedReadinessDigest: authorityDigest(signedReadiness), signerKeyDescriptorDigest, keyDescriptors, trustEvents: readinessTrustEvents, trustHistoryDigest: authorityDigest(readinessTrustEvents), trustHeadDigest: authorityDigest(readinessTrustEvents[readinessTrustEvents.length - 1]!) });
+  return Object.freeze({ material, currentTrustEvents, signer });
 }
 
 function isActiveAtHead(events: readonly TrustEventV1[], descriptorDigest: string): boolean {
