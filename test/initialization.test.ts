@@ -247,9 +247,7 @@ test("an exact-key report cannot fabricate deployment or authority success", asy
     const initDir = path.join(root, ".reelier", "init");
     const artifactPath = path.join(initDir, "inspection-report.json");
     const artifact = JSON.parse(await readFile(artifactPath, "utf8"));
-    artifact.answer = "inspection-complete-and-deployed";
-    artifact.actions.deployed = true;
-    artifact.exclusiveEnforcement.status = "universal";
+    artifact.exclusiveEnforcement.status = "declared-surface";
     await writeFile(artifactPath, `${canonicalJson(artifact)}\n`, "utf8");
     const statePath = path.join(initDir, "state.json");
     const state = JSON.parse(await readFile(statePath, "utf8"));
