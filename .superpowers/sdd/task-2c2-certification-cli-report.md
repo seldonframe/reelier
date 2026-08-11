@@ -22,7 +22,7 @@ Files changed
 - `.superpowers/sdd/task-2c2-certification-cli-report.md`: records the exact review scope, implementation, deviations, fix commits, verification output, and remaining risks.
 - `docs/runbooks/live-certification.md`: documents strict selection, the immutable initialization authority root versus subordinate selection digests, snapshot-consistent export, preparation versus signing phases, private publication, path/stage confinement, and later signing/live-run boundaries.
 - `src/authority/certification/commitment.ts`: defines the full initialization commitment and a distinct selected-projection commitment bound beneath the stable initialization root.
-- `src/authority/certification/initializer.ts`: validates before writing, records the complete initialized scenario set, refuses linked config/workspace/snapshot/staging paths, never creates through a linked parent, atomically publishes a complete sibling workspace, derives one permanent ID set from the initialization root, validates resume, converges concurrent publication, and removes only the exact stage carrying its per-attempt unguessable owner marker.
+- `src/authority/certification/initializer.ts`: validates before writing, records initialized scenarios, refuses linked paths, atomically publishes a complete sibling workspace, derives permanent IDs, converges concurrent publication, and scopes loser cleanup to the verified canonical creation parent, exact workspace-derived stage prefix, and per-attempt cryptographic owner marker.
 - `src/authority/certification/filesystem.ts`: performs bounded local checks that reject links and directory identity changes observed across requested/canonical ancestry and `stat`/`lstat`; allows ordinary Windows case and 8.3 aliases; retains file-handle identity, containment, and private atomic publication; and explicitly does not claim exclusive confinement against hostile concurrent same-user mutation.
 - `src/authority/certification/preflight.ts`: validates the actual immutable initialization artifact, preserves its stable root and IDs, binds selection, inventories selected artifacts, performs no secret resolution/network I/O, and keeps local filesystem trust explicitly `unchecked`.
 - `src/authority/certification/readiness.ts`: copies the stable initialization root and IDs, binds selection, refuses incomplete preparation, and never upgrades the preflight's unchecked local trust into authority.
@@ -31,7 +31,7 @@ Files changed
 - `src/cli.ts`: parses exact scenario values, rejects duplicate or missing scenario arguments and duplicate `--all`, and documents the expert surface.
 - `test/authority/certification-export.test.ts`: covers two-scenario initialization through one-scenario preflight/seal/export/verify with identical root and all five IDs, actual initialization equality, selected-only evidence, subset coherence, deterministic drift, deep tampering, fully rehashed substitution, missing links, open schemas, and unsigned-authority refusal.
 - `test/authority/certification-filesystem.test.ts`: covers static linked runner directories/artifacts/output paths, absence of external writes, real Windows 8.3/case aliases for file/workspace/creation-parent paths, one-argument production ABI, and honest `trust: unchecked`/no-`verified` output.
-- `test/authority/certification-initializer.test.ts`: covers invalid/no-partial initialization, deterministic resume/IDs, barrier-synchronized concurrent publication, foreign-stage preservation, workspace/config/snapshot links, no external parent creation through junctions, and refusal to resume a real workspace reached through a junction parent.
+- `test/authority/certification-initializer.test.ts`: covers invalid/no-partial initialization, deterministic resume/IDs, barrier-synchronized concurrent publication through canonical and real Windows short-name paths, owned-loser cleanup, foreign-stage preservation, workspace/config/snapshot links, and junction-parent refusal.
 - `test/authority/certification-preflight.test.ts`: covers explicit exact selection, cross-scenario non-disclosure, secret non-resolution, phase-specific readiness, input digests/absence, and substitution refusal.
 - `test/authority/certification-readiness.test.ts`: covers complete-preparation sealing, incomplete-preparation refusal, private content addressing, idempotence, generated IDs, unsigned/non-dispatchable semantics, and tamper refusal.
 - `test/authority/certify-cli.test.ts`: exhaustively closes init/preflight/seal/export/verify command shapes, duplicate/missing options, conflicts, extra positionals, closed output, phase-correct exits, redaction, sealing, export, offline verification, and tamper refusal.
@@ -44,6 +44,7 @@ Files changed
 - Runner/test evidence uses `<scenario>.json` or `<scenario>--<name>.json` under `inputs/runners/` and `inputs/tests/`. Missing selected evidence blocks sealing; unselected files are never inventoried.
 - Hosted run `31531461819` exposed a Windows-only false positive: GitHub's ordinary `C:\Users\RUNNER~1\...` short-name path was expanded by `realpath`, so lexical path equality incorrectly treated it as a reparse traversal. A local ordinary `SQUIRR~1` alias reproduced the same failure with `lstat().isSymbolicLink() === false`; component inspection now distinguishes aliases from actual links.
 - Portable Node has no handle-relative no-follow traversal, so no finite sequence of walks and `stat` calls can prove exclusive confinement against hostile concurrent same-user replacement. The local check rejects only links and identity changes it observes; this boundary remains `unchecked`, and later managed dispatch requires the isolated Authority Cell/certified topology.
+- Hosted Windows run `31536093711` left one owned `.certification.staging-*` after concurrent initialization. Local short-name reproduction confirmed the canonical staging parent failed a lexical comparison against the original alias parent before owner validation. Cleanup now uses the already verified canonical creation parent; the exact prefix and owner-token gates remain unchanged.
 
 ## Review-fix commits
 
@@ -65,20 +66,28 @@ Files changed
 - `5135cd7`, `d41d5d9`, `b634f6e`: earlier finite-check race hardening and documentation; the reviewer identified its irreducible post-check boundary, so its production hook and universal wording were superseded below.
 - `5890448`, `12770df`: RED/GREEN removing the race hook from production ABI, preserving static/alias defenses, and pinning local filesystem trust to `unchecked` without a `verified` rendering.
 - `a1dc127`: documents the bounded local check and isolated Authority Cell/topology requirement for managed dispatch.
+- `3e02715`, `ae32a52`: RED/GREEN for deterministic concurrent initialization through a real Windows short-name alias and cleanup scoped to the canonical creation parent without weakening owner matching.
+- `80b8e1a`: documents canonical owned-stage cleanup and foreign-stage preservation.
 
 ## Test results
 
 Focused certification and adjacent runner suite after the final production change (`npx tsc -p tsconfig.test.json` followed by the ten selected compiled specs):
 
 ```text
-ℹ tests 60
+ℹ tests 61
 ℹ suites 0
-ℹ pass 60
+ℹ pass 61
 ℹ fail 0
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 2235.5147
+ℹ duration_ms 2543.1582
+```
+
+No-sleep initializer stress after the final production change:
+
+```text
+initializer stress iterations passed: 20/20
 ```
 
 Build:
@@ -93,14 +102,14 @@ built cloudflare_api_token, cloudflare_dns, github_issue_labels, gmail, gmail_la
 Fresh full Windows suite after the final production change:
 
 ```text
-ℹ tests 2808
+ℹ tests 2809
 ℹ suites 0
-ℹ pass 2807
+ℹ pass 2808
 ℹ fail 0
 ℹ cancelled 0
 ℹ skipped 1
 ℹ todo 0
-ℹ duration_ms 417574.0855
+ℹ duration_ms 313734.1126
 ```
 
 ## Open risks
