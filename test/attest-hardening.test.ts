@@ -208,30 +208,46 @@ test("property: changing any single projected value always changes the hash (~10
 // 3. No-raw-values property: seeded random bodies.
 // ---------------------------------------------------------------------------
 
-/** Assert on semantic string values, not serialized bytes. Hashes are the
- * intended representation of projected values; JSON keys, numeric syntax,
- * and coincidental substrings inside a digest are not raw-value leakage. */
-function assertNoRawProjectedValues(projected: Record<string, string>, attest: unknown): void {
-  const semanticStrings: string[] = [];
-  const visit = (value: unknown, key?: string): void => {
-    if (typeof value === "string") {
-      if (key !== "hash") semanticStrings.push(value);
-      return;
-    }
-    if (Array.isArray(value)) {
-      for (const item of value) visit(item);
-      return;
-    }
-    if (value !== null && typeof value === "object") {
-      for (const [childKey, child] of Object.entries(value)) visit(child, childKey);
-    }
-  };
-  visit(attest);
+/** Normalize every JSON primitive projectObservation can retain. Null is not
+ * a projected value (runner.ts deliberately drops it), so it contributes no
+ * privacy candidate. Objects and arrays are walked recursively so this oracle
+ * remains sound for adversarial/synthetic shapes as well as today's flat map. */
+function normalizedProjectedPrimitive(value: unknown): string | undefined {
+  if (typeof value === "string" || typeof value === "boolean") return String(value);
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return undefined;
+}
 
-  for (const raw of Object.values(projected)) {
-    if (raw.length > 3) {
-      assert.ok(!semanticStrings.includes(raw), `raw projected value '${raw}' survived as an attest value`);
-    }
+const SHA256_COMMITMENT = /^sha256:[0-9a-f]{64}$/;
+
+function collectNormalizedPrimitives(value: unknown, omitValidCommitments: boolean, path: string[] = []): string[] {
+  const primitive = normalizedProjectedPrimitive(value);
+  if (primitive !== undefined) {
+    const isCommitmentPath = path.length === 2
+      && (path[0] === "pre" || path[0] === "post")
+      && path[1] === "hash";
+    if (omitValidCommitments && isCommitmentPath && SHA256_COMMITMENT.test(primitive)) return [];
+    return [primitive];
+  }
+  if (Array.isArray(value)) {
+    return value.flatMap((item, index) => collectNormalizedPrimitives(item, omitValidCommitments, [...path, String(index)]));
+  }
+  if (value !== null && typeof value === "object") {
+    return Object.entries(value).flatMap(([key, child]) =>
+      collectNormalizedPrimitives(child, omitValidCommitments, [...path, key])
+    );
+  }
+  return [];
+}
+
+/** Assert on semantic primitive leaves, not serialized bytes. Only valid
+ * top-level pre/post SHA-256 commitments may contain projected text without
+ * being treated as retained raw state. */
+function assertNoRawProjectedValues(projected: unknown, attest: unknown): void {
+  const rawValues = collectNormalizedPrimitives(projected, false);
+  const attestValues = new Set(collectNormalizedPrimitives(attest, true));
+  for (const raw of rawValues) {
+    assert.ok(!attestValues.has(raw), `raw projected value '${raw}' survived as an attest value`);
   }
 }
 
@@ -262,12 +278,65 @@ test("privacy oracle rejects a raw projected string retained as an attest value"
   );
 });
 
-test("property: projected value strings longer than 3 chars never survive as semantic attest values, only as hashes (~100 seeds)", () => {
+const PRIVACY_ORACLE_LEAK_CASES: Array<{ name: string; projected: unknown; attest: unknown }> = [
+  { name: "short string", projected: { "body.version": "x" }, attest: { reason: "x" } },
+  { name: "number", projected: { "body.id": 7 }, attest: { metadata: 7 } },
+  { name: "boolean", projected: { "body.flag": true }, attest: { metadata: true } },
+  {
+    name: "nested object",
+    projected: { body: { version: "nested-private" } },
+    attest: { metadata: { retained: "nested-private" } },
+  },
+  {
+    name: "array",
+    projected: { body: ["array-private"] },
+    attest: { metadata: ["array-private"] },
+  },
+  {
+    name: "non-commitment metadata.hash",
+    projected: { "body.sha": "metadata-private" },
+    attest: { metadata: { hash: "metadata-private" } },
+  },
+  {
+    name: "malformed post.hash",
+    projected: { "body.sha": "not-a-valid-commitment" },
+    attest: { post: { hash: "not-a-valid-commitment" } },
+  },
+  {
+    name: "uppercase post.hash",
+    projected: { "body.sha": `sha256:${"A".repeat(64)}` },
+    attest: { post: { hash: `sha256:${"A".repeat(64)}` } },
+  },
+];
+
+for (const c of PRIVACY_ORACLE_LEAK_CASES) {
+  test(`privacy oracle rejects retained ${c.name} projected values`, () => {
+    assert.throws(
+      () => assertNoRawProjectedValues(c.projected, c.attest),
+      /raw projected value/
+    );
+  });
+}
+
+test("privacy oracle ignores null because projectObservation does not project null", () => {
+  assertNoRawProjectedValues({ "body.version": null }, { metadata: null });
+});
+
+test("privacy oracle exempts only valid pre.hash and post.hash commitments", () => {
+  const preHash = `sha256:${"a".repeat(64)}`;
+  const postHash = `sha256:${"b".repeat(64)}`;
+  assertNoRawProjectedValues(
+    { preHash, postHash },
+    { pre: { hash: preHash }, post: { hash: postHash } }
+  );
+});
+
+test("property: projected primitive values never survive as semantic attest values, only as hashes (~100 seeds)", () => {
   fc.assert(
     fc.property(
       fc.dictionary(
         fc.constantFrom(...ATTEST_BODY_FIELDS),
-        fc.oneof(fc.string({ minLength: 4, maxLength: 40 }), fc.integer({ min: 10000, max: 999999999 })),
+        fc.oneof(fc.string({ maxLength: 40 }), fc.integer(), fc.boolean(), fc.constant(null)),
         { minKeys: 1, maxKeys: 8 }
       ),
       (body) => {
