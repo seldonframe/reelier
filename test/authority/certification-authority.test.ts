@@ -2,13 +2,15 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createPrivateKey, createPublicKey, generateKeyPairSync } from "node:crypto";
 import { createRequire } from "node:module";
-import { readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { authorityDigest } from "../../src/authority/wire.js";
 import {
   createSignedCertificationReadiness,
   parseAuthorityKeyDescriptor,
   parseTrustEvents,
+  signCertificationReadinessArtifact,
   verifySignedCertificationReadiness,
 } from "../../src/authority/certification/authority.js";
 
@@ -154,4 +156,26 @@ test("portable authority key, trust event, and signed readiness schemas are clos
   assert.equal(ajv.validate(eventSchema, { ...fixture.events[0], extra: true }), false);
   assert.equal(ajv.validate(readinessSchema, { ...signed, dispatchable: true }), false);
   assert.equal(ajv.validate(readinessSchema, { ...signed, extra: true }), false);
+});
+
+test("file signing consumes an existing human key and confined Task2C2 candidate without persisting private material", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "reelier-cert-authorize-"));
+  const workspace = path.join(root, "certification");
+  const readinessDirectory = path.join(workspace, "readiness");
+  await mkdir(readinessDirectory, { recursive: true });
+  const fixture = validFixture();
+  const candidateDigest = authorityDigest(fixture.readiness);
+  const candidatePath = path.join(readinessDirectory, `readiness-${candidateDigest.replace(":", "-")}.json`);
+  const descriptorsPath = path.join(root, "descriptors.json");
+  const eventsPath = path.join(root, "events.json");
+  const keyPath = path.join(root, "human.pem");
+  await writeFile(candidatePath, JSON.stringify(fixture.readiness));
+  await writeFile(descriptorsPath, JSON.stringify([fixture.humanDescriptor, fixture.cellDescriptor]));
+  await writeFile(eventsPath, JSON.stringify(fixture.events));
+  await writeFile(keyPath, fixture.human.privateKey.export({ type: "pkcs8", format: "pem" }));
+  const result = await signCertificationReadinessArtifact({ workspace, candidatePath, privateKeyPath: keyPath, descriptorsPath, trustEventsPath: eventsPath, authorizedAt: later });
+  assert.equal(result.signed.dispatchable, false);
+  assert.match(path.basename(result.path), /^signed-readiness-sha256-[0-9a-f]{64}\.json$/);
+  const persisted = await readFile(result.path, "utf8");
+  assert.doesNotMatch(persisted, /PRIVATE KEY|BEGIN PRIVATE|MC4CAQ/);
 });
