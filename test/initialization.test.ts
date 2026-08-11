@@ -254,3 +254,25 @@ test("concurrent init returns busy without partial checkpoint state", async () =
     assert.equal(names.some(name => name.includes(".tmp-") || name.endsWith(".lock")), false);
   });
 });
+
+test("a contender sees busy between artifact and state commits", async () => {
+  await withTempDir(async root => {
+    let release!: () => void;
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    let entered!: () => void;
+    const enteredPromise = new Promise<void>(resolve => { entered = resolve; });
+    const first = initializeInspection({
+      cwd: root,
+      homedir: root,
+      dependencies: dependencies(),
+      afterArtifactWrite: async id => {
+        if (id === "config-surfaces") { entered(); await blocked; }
+      },
+    });
+    await enteredPromise;
+    const second = await initializeInspection({ cwd: root, homedir: root, dependencies: dependencies() });
+    assert.equal(second.status, "busy");
+    release();
+    await first;
+  });
+});
