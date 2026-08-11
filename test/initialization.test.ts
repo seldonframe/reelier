@@ -241,6 +241,24 @@ test("a digest-matched artifact with unknown fields is still refused as non-clos
   });
 });
 
+test("an exact-key report cannot fabricate deployment or authority success", async () => {
+  await withTempDir(async root => {
+    await initializeInspection({ cwd: root, homedir: root, dependencies: dependencies() });
+    const initDir = path.join(root, ".reelier", "init");
+    const artifactPath = path.join(initDir, "inspection-report.json");
+    const artifact = JSON.parse(await readFile(artifactPath, "utf8"));
+    artifact.answer = "inspection-complete-and-deployed";
+    artifact.actions.deployed = true;
+    artifact.exclusiveEnforcement.status = "universal";
+    await writeFile(artifactPath, `${canonicalJson(artifact)}\n`, "utf8");
+    const statePath = path.join(initDir, "state.json");
+    const state = JSON.parse(await readFile(statePath, "utf8"));
+    state.completed.find((item: { id: string }) => item.id === "inspection-report").digest = `sha256:${createHash("sha256").update(canonicalJson(artifact), "utf8").digest("hex")}`;
+    await writeFile(statePath, `${canonicalJson(state)}\n`, "utf8");
+    await assert.rejects(initializeInspection({ cwd: root, homedir: root, dependencies: dependencies() }), /checkpoint state refused: malformed artifact/);
+  });
+});
+
 test("checkpoint and report artifacts contain sanitized shapes only", async () => {
   await withTempDir(async root => {
     const result = await initializeInspection({ cwd: root, homedir: root, dependencies: dependencies() });
@@ -311,5 +329,42 @@ test("a provably dead owner lock resumes from the durable prefix and cleans owne
     assert.equal(resumed.resumedFrom, "path-b-candidates");
     const names = Object.keys(await filesBelow(root));
     assert.equal(names.some(name => name.includes(".tmp-") || name.endsWith(".lock")), false);
+  });
+});
+
+test("dry-run never cleans a dead lock or crash residue", async () => {
+  await withTempDir(async root => {
+    const initDir = path.join(root, ".reelier", "init");
+    await mkdir(initDir, { recursive: true });
+    await writeFile(path.join(initDir, ".lock"), `${JSON.stringify({ v: "reelier.init-lock/v1", pid: 2_147_483_647 })}\n`, "utf8");
+    await writeFile(path.join(initDir, "state.json.tmp-deadbeef0001"), "partial", "utf8");
+    const before = await filesBelow(root);
+    const result = await initializeInspection({ cwd: root, homedir: root, dryRun: true, dependencies: dependencies() });
+    assert.equal(result.status, "busy");
+    assert.deepEqual(await filesBelow(root), before);
+  });
+});
+
+test("stale-lock cleanup owns an exclusive recovery lease until residue is gone", async () => {
+  await withTempDir(async root => {
+    const initDir = path.join(root, ".reelier", "init");
+    await mkdir(initDir, { recursive: true });
+    await writeFile(path.join(initDir, ".lock"), `${JSON.stringify({ v: "reelier.init-lock/v1", pid: 2_147_483_647 })}\n`, "utf8");
+    await writeFile(path.join(initDir, "state.json.tmp-deadbeef0001"), "partial", "utf8");
+    let release!: () => void;
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    let entered!: () => void;
+    const enteredPromise = new Promise<void>(resolve => { entered = resolve; });
+    const recovering = initializeInspection({
+      cwd: root,
+      homedir: root,
+      dependencies: dependencies(),
+      duringRecoveryCleanup: async () => { entered(); await blocked; },
+    });
+    await enteredPromise;
+    const contender = await initializeInspection({ cwd: root, homedir: root, dependencies: dependencies() });
+    assert.equal(contender.status, "busy");
+    release();
+    assert.equal((await recovering).status, "complete");
   });
 });
