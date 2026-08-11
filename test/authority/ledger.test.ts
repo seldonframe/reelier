@@ -8,7 +8,7 @@ import { pathToFileURL } from "node:url";
 import { execFile,spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash } from "node:crypto";
-import { setMaxListeners } from "node:events";
+import { getEventListeners, setMaxListeners } from "node:events";
 import { connect, createServer } from "node:net";
 import { authorityCanonicalBytes, authorityDigest } from "../../src/authority/wire.js";
 import { authenticateOutcomeRequest, authenticatedOutcomeRequestState } from "../../src/authority/keys.js";
@@ -259,6 +259,25 @@ test("aborting a reserve child waits until the process is reaped",async()=>{
     await assert.rejects(pending,/test reserve abort|aborted/i);
     assert.ok(childPid);
     assert.equal(pidReportsDead(childPid),true,"the aborted reserve child is closed and reaped before its promise rejects");
+  });
+});
+
+test("an abort-time kill error settles only after the live child closes",async()=>{
+  const controller=new AbortController(),before=getEventListeners(controller.signal,"abort").length,child=spawn(process.execPath,["-e","setInterval(()=>{},1000)"],{stdio:["ignore","pipe","pipe"]});
+  assert.ok(child.pid);const childPid=child.pid,killError=Object.assign(new Error("synthetic kill refusal"),{code:"EPERM"}),originalKill=child.kill.bind(child);
+  Object.defineProperty(child,"kill",{configurable:true,value:()=>{child.emit("error",killError);return false;}});
+  const pending=collectSpawnedJson(child,controller.signal);let settled=false;void pending.then(()=>{settled=true;},()=>{settled=true;});
+  controller.abort(new Error("test abort"));await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(settled,false,"a kill error cannot reject while its child is still live");
+  Object.defineProperty(child,"kill",{configurable:true,value:originalKill});assert.equal(originalKill("SIGKILL"),true);
+  await assert.rejects(pending,error=>error===killError);assert.equal(pidReportsDead(childPid),true);assert.equal(getEventListeners(controller.signal,"abort").length,before);
+});
+
+test("a failed spawn rejects and removes abort ownership without waiting for a nonexistent process",async()=>{
+  await withRoot(async root=>{
+    const controller=new AbortController(),before=getEventListeners(controller.signal,"abort").length,child=spawn(path.join(root,"missing-node-binary"),[],{stdio:["ignore","pipe","pipe"]});
+    const pending=collectSpawnedJson(child,controller.signal);controller.abort(new Error("abort failed spawn"));
+    await assert.rejects(pending,error=>(error as NodeJS.ErrnoException).code==="ENOENT");assert.equal(child.pid,undefined);assert.equal(getEventListeners(controller.signal,"abort").length,before);
   });
 });
 
