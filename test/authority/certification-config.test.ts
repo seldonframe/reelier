@@ -271,4 +271,12 @@ test("v2 refuses collapsed Fly identities and inconsistent shared provider scope
   const codexEndpointMismatch = structuredClone(migrateCertificationOperatorConfig(completeConfig())) as any;
   codexEndpointMismatch.metadata.codexTenPrincipal.authorityEndpoint = "https://different-cell.fly.dev/mcp";
   assert.throws(() => parseCertificationOperatorConfigV2(codexEndpointMismatch), /Codex authority endpoint must match Fly authority app/);
+
+  const codexPortMismatch = structuredClone(migrateCertificationOperatorConfig(completeConfig())) as any;
+  codexPortMismatch.metadata.codexTenPrincipal.authorityEndpoint = "https://reelier-cell-demo.fly.dev:444/mcp";
+  assert.throws(() => parseCertificationOperatorConfigV2(codexPortMismatch), /Codex authority endpoint must match Fly authority app/);
+
+  const egressPortMismatch = structuredClone(migrateCertificationOperatorConfig(completeConfig())) as any;
+  egressPortMismatch.metadata.flyTopology.egressProxyBaseUrl = "http://reelier-egress-demo.internal:80";
+  assert.throws(() => parseCertificationOperatorConfigV2(egressPortMismatch), /port 8443/);
 });
