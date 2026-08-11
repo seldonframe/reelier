@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { runAuthorityCommand } from "../../src/authority/cli.js";
@@ -33,6 +33,12 @@ test("root CLI parses exact certification scenario selection", () => {
   assert.deepEqual(parsed.positional, ["certify", "preflight"]);
 });
 
+test("root CLI rejects missing and duplicate scenario option values", () => {
+  assert.throws(() => parseArgv(["certify", "preflight", "--scenario"]), /requires a value/);
+  assert.throws(() => parseArgv(["certify", "preflight", "--scenario", "--all"]), /requires a value/);
+  assert.throws(() => parseArgv(["certify", "preflight", "--scenario", "github-issue-labels", "--scenario", "slack-topic"]), /duplicate/);
+});
+
 test("certification preflight has no legacy no-config environment fallback", async () => {
   process.env.REELIER_LIVE_CREDENTIAL_REF = "private-value";
   try {
@@ -40,7 +46,7 @@ test("certification preflight has no legacy no-config environment fallback", asy
     assert.equal(result.code, 1);
     const output = JSON.parse(result.stderr);
     assert.deepEqual(Object.keys(output).sort(), ["reasonCode", "status"]);
-    assert.equal(output.reasonCode, "certification-not-initialized");
+    assert.equal(output.reasonCode, "certification-selection-invalid");
     assert.doesNotMatch(result.stderr, /private-value|REELIER_LIVE_CREDENTIAL_REF/);
   } finally { delete process.env.REELIER_LIVE_CREDENTIAL_REF; }
 });
@@ -52,12 +58,17 @@ test("certification init, selected preflight, seal, export, and offline verify e
   const initialized = JSON.parse(init.stdout);
   assert.deepEqual(Object.keys(initialized).sort(), ["configDigest", "identifiers", "status", "workspace"]);
   assert.doesNotMatch(init.stdout, /REELIER_GITHUB_TOKEN/);
+  await mkdir(path.join(workspace, "inputs", "runners"), { recursive: true });
+  await mkdir(path.join(workspace, "inputs", "tests"), { recursive: true });
+  await writeFile(path.join(workspace, "inputs", "runners", "github-issue-labels.json"), "{}", "utf8");
+  await writeFile(path.join(workspace, "inputs", "tests", "github-issue-labels.json"), "[]", "utf8");
 
   const preflight = await capture({ positional: ["certify", "preflight"], flags: new Set(), opts: { workspace, scenario: "github-issue-labels" } });
-  assert.equal(preflight.code, 1);
+  assert.equal(preflight.code, 0);
   const report = JSON.parse(preflight.stdout);
   assert.deepEqual(report.scenarios, ["github-issue-labels"]);
   assert.equal(report.completeness, "unchecked");
+  assert.equal(report.preparationReady, true);
 
   const seal = await capture({ positional: ["certify", "seal-readiness"], flags: new Set(), opts: { workspace, scenario: "github-issue-labels" } });
   assert.equal(seal.code, 0);
@@ -83,4 +94,20 @@ test("certification init, selected preflight, seal, export, and offline verify e
   const tampered = await capture({ positional: ["certify", "verify"], flags: new Set(), opts: { input: exported.path } });
   assert.equal(tampered.code, 1);
   assert.deepEqual(Object.keys(JSON.parse(tampered.stderr)).sort(), ["reasonCode", "status"]);
+});
+
+test("selection-requiring certification commands reject unknown flags, IDs, conflicts, and extra positionals", async () => {
+  const { configPath, workspace } = await fixture();
+  assert.equal((await capture({ positional: ["certify", "init"], flags: new Set(), opts: { config: configPath } })).code, 0);
+  const cases: Parameters<typeof runAuthorityCommand>[0][] = [
+    { positional: ["certify", "preflight", "extra"], flags: new Set(["all"]), opts: { workspace } },
+    { positional: ["certify", "preflight"], flags: new Set(["unknown"]), opts: { workspace, scenario: "github-issue-labels" } },
+    { positional: ["certify", "preflight"], flags: new Set(["all"]), opts: { workspace, scenario: "github-issue-labels" } },
+    { positional: ["certify", "preflight"], flags: new Set(), opts: { workspace, scenario: "unknown-scenario" } },
+  ];
+  for (const command of cases) {
+    const result = await capture(command);
+    assert.equal(result.code, 1);
+    assert.equal(JSON.parse(result.stderr).reasonCode, "certification-selection-invalid");
+  }
 });

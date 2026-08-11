@@ -46,11 +46,31 @@ test("preflight records local runner and test inputs by digest or honest absence
   await mkdir(path.join(root, "inputs", "runners"), { recursive: true });
   await mkdir(path.join(root, "inputs", "tests"), { recursive: true });
   await writeFile(path.join(root, "inputs", "runners", "github-issue-labels.json"), "{}", "utf8");
-  await writeFile(path.join(root, "inputs", "tests", "conformance.json"), "[]", "utf8");
+  await writeFile(path.join(root, "inputs", "tests", "github-issue-labels.json"), "[]", "utf8");
   const present = await preflightCertification({ workspace: root, scenario: "github-issue-labels" });
   assert.equal(present.inputs.runners.status, "configured");
   assert.match(present.inputs.runners.artifacts[0].digest, /^sha256:[0-9a-f]{64}$/);
   assert.equal(present.inputs.tests.status, "configured");
+});
+
+test("preflight never inventories artifacts mapped to an unselected scenario", async () => {
+  const root = await workspace();
+  await mkdir(path.join(root, "inputs", "runners"), { recursive: true });
+  await mkdir(path.join(root, "inputs", "tests"), { recursive: true });
+  for (const scenario of ["github-issue-labels", "slack-topic"]) {
+    await writeFile(path.join(root, "inputs", "runners", `${scenario}.json`), JSON.stringify({ scenario }), "utf8");
+    await writeFile(path.join(root, "inputs", "tests", `${scenario}--conformance.json`), JSON.stringify({ scenario }), "utf8");
+  }
+  const report = await preflightCertification({ workspace: root, scenario: "github-issue-labels" });
+  assert.deepEqual(report.inputs.runners.artifacts.map(item => item.name), ["github-issue-labels.json"]);
+  assert.deepEqual(report.inputs.tests.artifacts.map(item => item.name), ["github-issue-labels--conformance.json"]);
+  assert.doesNotMatch(JSON.stringify(report), /slack-topic/);
+});
+
+test("preflight requires an explicit exact scenario or all selection", async () => {
+  const root = await workspace();
+  await assert.rejects(() => preflightCertification({ workspace: root }), /exactly one.*scenario.*all/i);
+  await assert.rejects(() => preflightCertification({ workspace: root, scenario: "github-issue-labels", all: true }), /exactly one.*scenario.*all/i);
 });
 
 test("preflight refuses scenario substitution", async () => {
