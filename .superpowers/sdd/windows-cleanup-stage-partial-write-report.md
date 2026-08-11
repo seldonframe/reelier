@@ -51,6 +51,16 @@ Commands run
 ```powershell
 npx tsc -p tsconfig.test.json
 
+for($attempt=1;$attempt -le 25;$attempt++){
+  node --test --test-concurrency=1 --test-name-pattern="coordination cleanup stage write hooks are live" dist-test/test/authority/ledger.test.js *> $null
+  if($LASTEXITCODE -ne 0){
+    Write-Output "FAILED ATTEMPT $attempt"
+    exit $LASTEXITCODE
+  }
+  Write-Output "PASS ATTEMPT $attempt"
+}
+node --test --test-concurrency=1 --test-name-pattern="coordination cleanup stage write hooks are live" dist-test/test/authority/ledger.test.js
+
 $self=[System.Diagnostics.Process]::GetCurrentProcess()
 $originalAffinity=$self.ProcessorAffinity
 $hog=Start-Process powershell -WindowStyle Hidden -PassThru -ArgumentList '-NoProfile','-Command','while($true){}'
