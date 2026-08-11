@@ -73,7 +73,7 @@ test("certification init, selected preflight, seal, export, and offline verify e
   const seal = await capture({ positional: ["certify", "seal-readiness"], flags: new Set(), opts: { workspace, scenario: "github-issue-labels" } });
   assert.equal(seal.code, 0);
   const sealed = JSON.parse(seal.stdout);
-  assert.deepEqual(Object.keys(sealed).sort(), ["authorization", "digest", "dispatchable", "path", "status"]);
+  assert.deepEqual(Object.keys(sealed).sort(), ["authorization", "digest", "dispatchable", "path", "preparationReady", "signatureStatus", "status"]);
   assert.equal(sealed.status, "awaiting-human-signature");
   assert.equal(sealed.dispatchable, false);
 

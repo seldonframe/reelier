@@ -215,9 +215,10 @@ export function parseArgv(argv: string[]): ParsedArgs {
       || arg === "--scenario"
     ) {
       const val = argv[++i];
-      if (!val) {
+      if (!val || (arg === "--scenario" && val.startsWith("--"))) {
         throw new Error(`${arg} requires a value`);
       }
+      if (arg === "--scenario" && opts.scenario !== undefined) throw new Error("duplicate --scenario option");
       opts[arg.slice(2)] = val;
     } else if (arg.startsWith("--")) {
       flags.add(arg.slice(2));

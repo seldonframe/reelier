@@ -31,6 +31,7 @@ import { initializeCertification } from "./certification/initializer.js";
 import { preflightCertification } from "./certification/preflight.js";
 import { sealCertificationReadiness } from "./certification/readiness.js";
 import { exportCertificationEvidence, verifyCertificationExport } from "./certification/export.js";
+import { CERTIFICATION_SCENARIO_IDS } from "./certification/scenarios.js";
 
 export async function runAuthorityCommand(args: Readonly<{ positional: string[]; flags: Set<string>; opts: Record<string, string> }>): Promise<number> {
   const subcommand = args.positional[0] ?? "doctor";
@@ -290,6 +291,13 @@ async function authorityServe(args: Readonly<{ opts: Record<string, string> }>):
 
 async function authorityCertify(args: Readonly<{ positional: string[]; flags: Set<string>; opts: Record<string, string> }>): Promise<number> {
   const action = args.positional[1] ?? "preflight";
+  let selection: Readonly<{ scenario?: string; all?: boolean }> | undefined;
+  if (["preflight", "seal-readiness", "export"].includes(action)) {
+    try {
+      if (args.positional.length !== 2 || [...args.flags].some(flag => flag !== "all") || Object.keys(args.opts).some(option => option !== "workspace" && option !== "scenario")) throw new TypeError("certification selection command shape is invalid");
+      selection = certificationSelection(args);
+    } catch { console.error(JSON.stringify({ status: "refused", reasonCode: "certification-selection-invalid" })); return 1; }
+  }
   if (action === "init") {
     if (!args.opts.config) { console.error(JSON.stringify({ status: "refused", reasonCode: "certification-config-required" })); return 1; }
     try {
@@ -300,21 +308,21 @@ async function authorityCertify(args: Readonly<{ positional: string[]; flags: Se
   }
   if (action === "preflight") {
     try {
-      const report = await preflightCertification({ workspace: certificationWorkspace(args), ...certificationSelection(args) });
+      const report = await preflightCertification({ workspace: certificationWorkspace(args), ...selection });
       console.log(JSON.stringify(report));
       return report.ok ? 0 : 1;
     } catch { console.error(JSON.stringify({ status: "refused", reasonCode: "certification-not-initialized" })); return 1; }
   }
   if (action === "seal-readiness") {
     try {
-      const result = await sealCertificationReadiness({ workspace: certificationWorkspace(args), ...certificationSelection(args) });
-      console.log(JSON.stringify({ status: result.candidate.status, authorization: result.candidate.authorization, dispatchable: result.candidate.dispatchable, digest: result.digest, path: result.path }));
+      const result = await sealCertificationReadiness({ workspace: certificationWorkspace(args), ...selection });
+      console.log(JSON.stringify({ status: result.candidate.status, preparationReady: result.candidate.preparationReady, signatureStatus: result.candidate.signatureStatus, authorization: result.candidate.authorization, dispatchable: result.candidate.dispatchable, digest: result.digest, path: result.path }));
       return 0;
     } catch { console.error(JSON.stringify({ status: "refused", reasonCode: "certification-readiness-refused" })); return 1; }
   }
   if (action === "export") {
     try {
-      const result = await exportCertificationEvidence({ workspace: certificationWorkspace(args), ...certificationSelection(args) });
+      const result = await exportCertificationEvidence({ workspace: certificationWorkspace(args), ...selection });
       console.log(JSON.stringify({ status: "exported", digest: result.digest, path: result.path }));
       return 0;
     } catch { console.error(JSON.stringify({ status: "refused", reasonCode: "certification-export-refused" })); return 1; }
@@ -482,7 +490,8 @@ function certificationWorkspace(args: Readonly<{ opts: Record<string, string> }>
 }
 
 function certificationSelection(args: Readonly<{ flags: Set<string>; opts: Record<string, string> }>): Readonly<{ scenario?: string; all?: boolean }> {
-  if (args.opts.scenario && args.flags.has("all")) throw new TypeError("certification scenario and all selection are mutually exclusive");
+  if (Boolean(args.opts.scenario) === args.flags.has("all")) throw new TypeError("certification requires exactly one of scenario or all selection");
+  if (args.opts.scenario && !(CERTIFICATION_SCENARIO_IDS as readonly string[]).includes(args.opts.scenario)) throw new TypeError("certification scenario is unknown");
   return Object.freeze({ ...(args.opts.scenario ? { scenario: args.opts.scenario } : {}), ...(args.flags.has("all") ? { all: true } : {}) });
 }
 

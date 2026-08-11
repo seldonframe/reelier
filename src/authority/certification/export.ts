@@ -1,14 +1,23 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { authorityDigest } from "../wire.js";
-import { parseCertificationOperatorConfigV2 } from "./config.js";
-import { parseCertificationInitialization } from "./initializer.js";
+import { parseCertificationOperatorConfigV2, type CertificationOperatorConfigV2 } from "./config.js";
+import { deriveCertificationIdentifiers, parseCertificationInitialization } from "./initializer.js";
 import { preflightCertification } from "./preflight.js";
 import { sealCertificationReadiness } from "./readiness.js";
 import { CERTIFICATION_SCENARIOS, CERTIFICATION_SCENARIO_IDS, type CertificationScenarioId } from "./scenarios.js";
+import { certificationWorkspaceRoot, confinedExistingDirectory, publishPrivateContentAddressed, readConfinedFile } from "./filesystem.js";
 
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
 const CLAIMS = Object.freeze({ providerCertification: "unchecked" as const, signatureVerification: "unchecked" as const, completion: "unchecked" as const, completeness: "unchecked" as const });
+const RESOURCE_KEYS: Readonly<Record<string, readonly string[]>> = Object.freeze({
+  "cloudflare-dns": ["apiBaseUrl", "accountId", "zoneId", "recordId", "recordName"],
+  "cloudflare-vercel-secret": ["cloudflareApiBaseUrl", "cloudflareAccountId", "tokenName", "vercelApiBaseUrl", "vercelAccountId", "projectId"],
+  "github-issue-labels": ["apiBaseUrl", "owner", "repository", "issueNumber"],
+  "neon-migration": ["apiBaseUrl", "accountId", "projectId", "branchId", "database", "role"],
+  "slack-topic": ["apiBaseUrl", "teamId", "channelId"],
+  "vercel-promotion": ["apiBaseUrl", "accountId", "projectId", "deploymentId", "domains"],
+});
 
 export async function exportCertificationEvidence(input: Readonly<{ workspace: string; scenario?: string; all?: boolean }>): Promise<Readonly<{ digest: string; path: string }>> {
   const workspace = path.resolve(input.workspace);
@@ -16,30 +25,24 @@ export async function exportCertificationEvidence(input: Readonly<{ workspace: s
   const initialization = parseCertificationInitialization(JSON.parse(await readFile(path.join(workspace, "initialization.json"), "utf8")));
   const preflight = await preflightCertification(input);
   const readiness = (await sealCertificationReadiness(input)).candidate;
-  const artifacts = Object.freeze({ config, initialization, preflight, readiness });
-  const artifactDigests = Object.freeze({ config: authorityDigest(config), initialization: authorityDigest(initialization), preflight: authorityDigest(preflight), readiness: authorityDigest(readiness) });
+  const projectedConfig = projectConfig(config, preflight.scenarios, preflight.credentialReferences);
+  const artifacts = Object.freeze({ config: projectedConfig, initialization, preflight, readiness });
+  const artifactDigests = Object.freeze({ config: authorityDigest(projectedConfig), initialization: authorityDigest(initialization), preflight: authorityDigest(preflight), readiness: authorityDigest(readiness) });
   const manifest = Object.freeze({ v: "reelier.certification-export-manifest/v1" as const, artifactDigests, scenarios: preflight.scenarios, claims: CLAIMS });
   const body = Object.freeze({ v: "reelier.certification-export/v1" as const, manifest, artifacts });
   const digest = authorityDigest(body);
   const bundle = Object.freeze({ ...body, digest });
-  const directory = path.join(workspace, "exports");
-  const output = path.join(directory, `certification-export-${digest.replace(":", "-")}.json`);
-  await mkdir(directory, { recursive: true });
-  try { await writeFile(output, `${JSON.stringify(bundle)}\n`, { encoding: "utf8", flag: "wx", mode: 0o444 }); }
-  catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    const existing = JSON.parse(await readFile(output, "utf8"));
-    if (authorityDigest(stripDigest(existing)) !== digest || JSON.stringify(existing) !== JSON.stringify(bundle)) throw new TypeError("immutable certification export mismatch");
-  }
+  const root = await certificationWorkspaceRoot(workspace);
+  const filename = `certification-export-${digest.replace(":", "-")}.json`;
+  const output = await publishPrivateContentAddressed(root, "exports", filename, `${JSON.stringify(bundle)}\n`);
+  const directory = await confinedExistingDirectory(root, ["exports"]);
+  if (!directory) throw new TypeError("certification export directory is absent after publication");
+  const existing = JSON.parse((await readConfinedFile(root, directory, filename)).toString("utf8"));
+  if (JSON.stringify(existing) !== JSON.stringify(bundle)) throw new TypeError("immutable certification export mismatch");
   return Object.freeze({ digest, path: output });
 }
 
-export function verifyCertificationExport(value: unknown): Readonly<{
-  digest: string;
-  claims: typeof CLAIMS;
-  authorization: "absent";
-  dispatchable: false;
-}> {
+export function verifyCertificationExport(value: unknown): Readonly<{ digest: string; claims: typeof CLAIMS; authorization: "absent"; dispatchable: false }> {
   const root = object(value, "certification export");
   closed(root, ["v", "manifest", "artifacts", "digest"], "certification export");
   if (root.v !== "reelier.certification-export/v1") throw new TypeError("certification export version is invalid");
@@ -55,70 +58,116 @@ export function verifyCertificationExport(value: unknown): Readonly<{
   const scenarios = scenarioList(manifest.scenarios);
   const artifacts = object(root.artifacts, "certification export artifacts");
   closed(artifacts, ["config", "initialization", "preflight", "readiness"], "certification export artifacts");
-  const config = parseCertificationOperatorConfigV2(artifacts.config);
+  const config = parseProjectedConfig(artifacts.config, scenarios);
   const initialization = parseCertificationInitialization(artifacts.initialization);
   const preflight = parsePreflight(artifacts.preflight);
   const readiness = parseReadiness(artifacts.readiness);
   const parsedArtifacts = { config, initialization, preflight, readiness };
-  for (const name of ["config", "initialization", "preflight", "readiness"] as const) {
-    if (digests[name] !== authorityDigest(parsedArtifacts[name])) throw new TypeError(`certification export ${name} digest link mismatch`);
-  }
-  if (authorityDigest(config) !== initialization.configDigest || preflight.configDigest !== initialization.configDigest || readiness.configDigest !== initialization.configDigest) throw new TypeError("certification export config link mismatch");
+  for (const name of ["config", "initialization", "preflight", "readiness"] as const) if (digests[name] !== authorityDigest(parsedArtifacts[name])) throw new TypeError(`certification export ${name} digest link mismatch`);
+  if (initialization.configDigest !== config.configDigest || preflight.configDigest !== config.configDigest || readiness.configDigest !== config.configDigest) throw new TypeError("certification export config link mismatch");
+  const derived = deriveCertificationIdentifiers(config.configDigest);
+  if (authorityDigest(initialization.identifiers) !== authorityDigest(derived) || authorityDigest(readiness.identifiers) !== authorityDigest(derived)) throw new TypeError("certification generated identifier derivation mismatch");
   if (readiness.preflightDigest !== preflight.digest) throw new TypeError("certification export preflight link mismatch");
-  if (authorityDigest(readiness.identifiers) !== authorityDigest(initialization.identifiers)) throw new TypeError("certification export identifier substitution");
-  if (!same(scenarios, preflight.scenarios) || !same(scenarios, readiness.scenarios) || scenarios.some(scenario => !config.scenarios.includes(scenario))) throw new TypeError("certification export scenario link mismatch");
-  const definitions = scenarios.map(scenario => CERTIFICATION_SCENARIOS[scenario]);
-  const expectedResources = [...new Set(definitions.flatMap(definition => definition.resourceSections))].sort();
-  const expectedCleanup = [...new Set(definitions.flatMap(definition => definition.cleanupCommitments))].sort();
-  const expectedCredentials = [...new Set(definitions.flatMap(definition => definition.secretSlots))].sort();
-  if (!same(expectedResources, preflight.resources.map((item: any) => item.scenario)) || !same(expectedCleanup, preflight.cleanup.map((item: any) => item.scenario)) || !same(expectedCredentials, preflight.credentialReferences.map((item: any) => item.slot))) throw new TypeError("certification export selected-scenario commitment substitution");
-  if (JSON.stringify(readiness.commitments.resources) !== JSON.stringify(preflight.resources) || JSON.stringify(readiness.commitments.cleanup) !== JSON.stringify(preflight.cleanup) || JSON.stringify(readiness.commitments.credentials) !== JSON.stringify(preflight.credentialReferences) || JSON.stringify(readiness.commitments.runners) !== JSON.stringify(preflight.inputs.runners) || JSON.stringify(readiness.commitments.tests) !== JSON.stringify(preflight.inputs.tests) || readiness.commitments.topology !== preflight.topology) throw new TypeError("certification export readiness commitment link mismatch");
-  for (const item of preflight.resources) if (item.digest !== authorityDigest(config.resources[item.scenario])) throw new TypeError("certification export resource substitution");
-  for (const item of preflight.cleanup) if (item.digest !== authorityDigest(config.cleanup[item.scenario])) throw new TypeError("certification export cleanup substitution");
-  for (const item of preflight.credentialReferences) if (item.status !== (config.secretReferences[item.slot as keyof typeof config.secretReferences] ? "configured" : "missing")) throw new TypeError("certification export credential-reference substitution");
+  if (!same(scenarios, preflight.scenarios) || !same(scenarios, readiness.scenarios)) throw new TypeError("certification export scenario link mismatch");
+  verifyPreflightSemantics(config, preflight);
+  if (JSON.stringify(readiness.commitments.resources) !== JSON.stringify(preflight.resources) || JSON.stringify(readiness.commitments.cleanup) !== JSON.stringify(preflight.cleanup) || JSON.stringify(readiness.commitments.credentials) !== JSON.stringify(preflight.credentialReferences) || JSON.stringify(readiness.commitments.runners) !== JSON.stringify(preflight.inputs.runners) || JSON.stringify(readiness.commitments.tests) !== JSON.stringify(preflight.inputs.tests) || readiness.commitments.topology !== preflight.topology || readiness.commitments.signatureStatus !== preflight.signatureStatus) throw new TypeError("certification export readiness commitment link mismatch");
   const rootDigest = assertDigest(root.digest, "certification export digest");
   if (rootDigest !== authorityDigest({ v: root.v, manifest, artifacts: parsedArtifacts })) throw new TypeError("certification export digest mismatch");
   return Object.freeze({ digest: rootDigest, claims: CLAIMS, authorization: "absent", dispatchable: false });
 }
 
+function projectConfig(config: CertificationOperatorConfigV2, scenarios: readonly CertificationScenarioId[], credentialReferences: readonly { slot: string; status: "configured" | "missing" }[]): unknown {
+  const definitions = scenarios.map(scenario => CERTIFICATION_SCENARIOS[scenario]);
+  const resources = unique(definitions.flatMap(definition => definition.resourceSections));
+  const cleanup = unique(definitions.flatMap(definition => definition.cleanupCommitments));
+  const metadata = unique(definitions.flatMap(definition => definition.metadataSections)).map(section => Object.freeze({ section, digest: authorityDigest(config.metadata[section]), status: "configured" as const }));
+  return Object.freeze({
+    v: "reelier.certification-export-config/v1" as const,
+    configDigest: authorityDigest(config),
+    scenarios,
+    resources: Object.freeze(Object.fromEntries(resources.map(section => [section, config.resources[section]]))),
+    cleanup: Object.freeze(Object.fromEntries(cleanup.map(section => [section, config.cleanup[section]]))),
+    metadata: Object.freeze(metadata),
+    credentialReferences: Object.freeze(credentialReferences.map(item => Object.freeze({ ...item }))),
+  });
+}
+
+function parseProjectedConfig(value: unknown, manifestScenarios: readonly CertificationScenarioId[]): any {
+  const raw = object(value, "certification export config");
+  closed(raw, ["v", "configDigest", "scenarios", "resources", "cleanup", "metadata", "credentialReferences"], "certification export config");
+  if (raw.v !== "reelier.certification-export-config/v1") throw new TypeError("certification export config version is invalid");
+  const configDigest = assertDigest(raw.configDigest, "certification export source config digest");
+  const scenarios = scenarioList(raw.scenarios); if (!same(scenarios, manifestScenarios)) throw new TypeError("certification export config scenario link mismatch");
+  const definitions = scenarios.map(scenario => CERTIFICATION_SCENARIOS[scenario]);
+  const expectedResources = unique(definitions.flatMap(definition => definition.resourceSections));
+  const expectedCleanup = unique(definitions.flatMap(definition => definition.cleanupCommitments));
+  const expectedMetadata = unique(definitions.flatMap(definition => definition.metadataSections));
+  const expectedCredentials = unique(definitions.flatMap(definition => definition.secretSlots));
+  const resourcesRaw = object(raw.resources, "certification export resources"); closed(resourcesRaw, expectedResources, "certification export resources");
+  const resources: Record<string, unknown> = {};
+  for (const section of expectedResources) resources[section] = projectedResource(section, resourcesRaw[section]);
+  const cleanupRaw = object(raw.cleanup, "certification export cleanup"); closed(cleanupRaw, expectedCleanup, "certification export cleanup");
+  const cleanup: Record<string, readonly string[]> = {};
+  for (const section of expectedCleanup) cleanup[section] = stringList(cleanupRaw[section], `certification ${section} cleanup`);
+  if (!Array.isArray(raw.metadata)) throw new TypeError("certification export metadata must be an array");
+  const metadata = Object.freeze(raw.metadata.map((item: unknown) => { const entry = object(item, "certification export metadata item"); closed(entry, ["section", "digest", "status"], "certification export metadata item"); if (typeof entry.section !== "string" || entry.status !== "configured") throw new TypeError("certification export metadata item is invalid"); return Object.freeze({ section: entry.section, digest: assertDigest(entry.digest, "certification export metadata digest"), status: "configured" as const }); }));
+  if (!same(metadata.map((item: any) => item.section), expectedMetadata)) throw new TypeError("certification export metadata selection mismatch");
+  const credentialReferences = credentialList(raw.credentialReferences);
+  if (!same(credentialReferences.map((item: any) => item.slot), expectedCredentials)) throw new TypeError("certification export credential selection mismatch");
+  return Object.freeze({ v: raw.v, configDigest, scenarios, resources: Object.freeze(resources), cleanup: Object.freeze(cleanup), metadata, credentialReferences });
+}
+
+function verifyPreflightSemantics(config: any, preflight: any): void {
+  const resources = Object.entries(config.resources).map(([scenario, value]) => ({ scenario, digest: authorityDigest(value), status: configured(value) ? "configured" : "missing" })).sort(byScenario);
+  const cleanup = Object.entries(config.cleanup).map(([scenario, value]) => ({ scenario, digest: authorityDigest(value), status: configured(value) ? "configured" : "missing" })).sort(byScenario);
+  const credentialReferences = config.credentialReferences;
+  const topology = config.scenarios.includes("fly-topology") ? (config.metadata.some((item: any) => item.section === "flyTopology") ? "configured" : "absent") : "absent";
+  const missing = [
+    ...resources.filter(item => item.status === "missing").map(item => `resource:${item.scenario}`),
+    ...cleanup.filter(item => item.status === "missing").map(item => `cleanup:${item.scenario}`),
+    ...credentialReferences.filter((item: any) => item.status === "missing").map((item: any) => `credential-reference:${item.slot}`),
+    ...config.scenarios.filter((scenario: string) => !preflight.inputs.runners.artifacts.some((item: any) => item.scenario === scenario)).map((scenario: string) => `inputs:runners:${scenario}`),
+    ...config.scenarios.filter((scenario: string) => !preflight.inputs.tests.artifacts.some((item: any) => item.scenario === scenario)).map((scenario: string) => `inputs:tests:${scenario}`),
+    ...(config.scenarios.includes("fly-topology") && topology === "absent" ? ["topology:metadata"] : []),
+  ].sort();
+  if (JSON.stringify(preflight.resources) !== JSON.stringify(resources) || JSON.stringify(preflight.cleanup) !== JSON.stringify(cleanup) || JSON.stringify(preflight.credentialReferences) !== JSON.stringify(credentialReferences) || preflight.topology !== topology || JSON.stringify(preflight.missing) !== JSON.stringify(missing) || preflight.ok !== (missing.length === 0) || preflight.preparationReady !== (missing.length === 0)) throw new TypeError("certification preflight semantic mismatch");
+}
+
 function parsePreflight(value: unknown): any {
   const raw = object(value, "certification preflight");
-  closed(raw, ["v", "configDigest", "scenarios", "resources", "cleanup", "credentialReferences", "inputs", "topology", "trust", "authorization", "completeness", "missing", "ok", "digest"], "certification preflight");
-  if (raw.v !== "reelier.certification-preflight/v2" || raw.trust !== "unchecked" || raw.authorization !== "absent" || raw.completeness !== "unchecked" || typeof raw.ok !== "boolean") throw new TypeError("certification preflight is invalid");
+  closed(raw, ["v", "configDigest", "scenarios", "resources", "cleanup", "credentialReferences", "inputs", "topology", "trust", "signatureStatus", "authorization", "completeness", "missing", "ok", "preparationReady", "digest"], "certification preflight");
+  if (raw.v !== "reelier.certification-preflight/v2" || raw.trust !== "unchecked" || raw.signatureStatus !== "absent" || raw.authorization !== "absent" || raw.completeness !== "unchecked" || typeof raw.ok !== "boolean" || typeof raw.preparationReady !== "boolean") throw new TypeError("certification preflight is invalid");
   assertDigest(raw.configDigest, "certification preflight config digest");
-  const scenarios = scenarioList(raw.scenarios);
-  const resources = commitmentList(raw.resources, "resources");
-  const cleanup = commitmentList(raw.cleanup, "cleanup");
-  const credentialReferences = credentialList(raw.credentialReferences);
-  const inputs = object(raw.inputs, "certification preflight inputs"); closed(inputs, ["runners", "tests"], "certification preflight inputs");
-  const parsedInputs = { runners: inputSet(inputs.runners), tests: inputSet(inputs.tests) };
-  if (raw.topology !== "configured" && raw.topology !== "absent") throw new TypeError("certification preflight topology is invalid");
-  const missing = stringList(raw.missing, "certification preflight missing");
-  const body = { v: raw.v, configDigest: raw.configDigest, scenarios, resources, cleanup, credentialReferences, inputs: parsedInputs, topology: raw.topology, trust: raw.trust, authorization: raw.authorization, completeness: raw.completeness, missing, ok: raw.ok };
+  const inputsRaw = object(raw.inputs, "certification preflight inputs"); closed(inputsRaw, ["runners", "tests"], "certification preflight inputs");
+  const body = { v: raw.v, configDigest: raw.configDigest, scenarios: scenarioList(raw.scenarios), resources: commitmentList(raw.resources, "resources"), cleanup: commitmentList(raw.cleanup, "cleanup"), credentialReferences: credentialList(raw.credentialReferences), inputs: { runners: inputSet(inputsRaw.runners), tests: inputSet(inputsRaw.tests) }, topology: enumValue(raw.topology, ["configured", "absent"], "preflight topology"), trust: raw.trust, signatureStatus: raw.signatureStatus, authorization: raw.authorization, completeness: raw.completeness, missing: stringList(raw.missing, "certification preflight missing"), ok: raw.ok, preparationReady: raw.preparationReady };
   if (assertDigest(raw.digest, "certification preflight digest") !== authorityDigest(body)) throw new TypeError("certification preflight digest mismatch");
   return Object.freeze({ ...body, digest: raw.digest });
 }
 
 function parseReadiness(value: unknown): any {
   const raw = object(value, "certification readiness candidate");
-  closed(raw, ["v", "status", "authorization", "dispatchable", "completeness", "configDigest", "preflightDigest", "scenarios", "identifiers", "commitments"], "certification readiness candidate");
-  if (raw.v !== "reelier.certification-readiness-candidate/v1" || raw.status !== "awaiting-human-signature" || raw.authorization !== "absent" || raw.dispatchable !== false || raw.completeness !== "unchecked") throw new TypeError("certification readiness candidate cannot confer authority");
+  closed(raw, ["v", "status", "preparationReady", "signatureStatus", "authorization", "dispatchable", "completeness", "configDigest", "preflightDigest", "scenarios", "identifiers", "commitments"], "certification readiness candidate");
+  if (raw.v !== "reelier.certification-readiness-candidate/v1" || raw.status !== "awaiting-human-signature" || raw.preparationReady !== true || raw.signatureStatus !== "absent" || raw.authorization !== "absent" || raw.dispatchable !== false || raw.completeness !== "unchecked") throw new TypeError("certification readiness candidate cannot confer authority");
   assertDigest(raw.configDigest, "readiness config digest"); assertDigest(raw.preflightDigest, "readiness preflight digest");
   const initialization = parseCertificationInitialization({ v: "reelier.certification-initialization/v1", configDigest: raw.configDigest, identifiers: raw.identifiers, completeness: "unchecked" });
   const commitments = object(raw.commitments, "readiness commitments");
-  closed(commitments, ["resources", "cleanup", "credentials", "runners", "tests", "topology", "trust"], "readiness commitments");
-  if (commitments.trust !== "unchecked" || (commitments.topology !== "configured" && commitments.topology !== "absent")) throw new TypeError("readiness commitments are invalid");
-  return Object.freeze({ v: raw.v, status: raw.status, authorization: raw.authorization, dispatchable: raw.dispatchable, completeness: raw.completeness, configDigest: raw.configDigest, preflightDigest: raw.preflightDigest, scenarios: scenarioList(raw.scenarios), identifiers: initialization.identifiers, commitments: Object.freeze({ resources: commitmentList(commitments.resources, "resources"), cleanup: commitmentList(commitments.cleanup, "cleanup"), credentials: credentialList(commitments.credentials), runners: inputSet(commitments.runners), tests: inputSet(commitments.tests), topology: commitments.topology, trust: commitments.trust }) });
+  closed(commitments, ["resources", "cleanup", "credentials", "runners", "tests", "topology", "signatureStatus"], "readiness commitments");
+  if (commitments.signatureStatus !== "absent") throw new TypeError("readiness signature status is invalid");
+  return Object.freeze({ v: raw.v, status: raw.status, preparationReady: raw.preparationReady, signatureStatus: raw.signatureStatus, authorization: raw.authorization, dispatchable: raw.dispatchable, completeness: raw.completeness, configDigest: raw.configDigest, preflightDigest: raw.preflightDigest, scenarios: scenarioList(raw.scenarios), identifiers: initialization.identifiers, commitments: Object.freeze({ resources: commitmentList(commitments.resources, "resources"), cleanup: commitmentList(commitments.cleanup, "cleanup"), credentials: credentialList(commitments.credentials), runners: inputSet(commitments.runners), tests: inputSet(commitments.tests), topology: enumValue(commitments.topology, ["configured", "absent"], "readiness topology"), signatureStatus: commitments.signatureStatus }) });
 }
 
-function commitmentList(value: unknown, label: string): readonly any[] { if (!Array.isArray(value)) throw new TypeError(`certification ${label} must be an array`); return Object.freeze(value.map(item => { const raw = object(item, `certification ${label} item`); closed(raw, ["scenario", "digest", "status"], `certification ${label} item`); const scenario = scenarioId(raw.scenario); assertDigest(raw.digest, `certification ${label} digest`); if (raw.status !== "configured" && raw.status !== "missing") throw new TypeError(`certification ${label} status is invalid`); return Object.freeze({ scenario, digest: raw.digest, status: raw.status }); })); }
-function credentialList(value: unknown): readonly any[] { if (!Array.isArray(value)) throw new TypeError("certification credentials must be an array"); return Object.freeze(value.map(item => { const raw = object(item, "certification credential item"); closed(raw, ["slot", "status"], "certification credential item"); if (typeof raw.slot !== "string" || (raw.status !== "configured" && raw.status !== "missing")) throw new TypeError("certification credential item is invalid"); return Object.freeze({ slot: raw.slot, status: raw.status }); })); }
-function inputSet(value: unknown): any { const raw = object(value, "certification input set"); closed(raw, ["status", "artifacts"], "certification input set"); if (raw.status !== "configured" && raw.status !== "absent" || !Array.isArray(raw.artifacts)) throw new TypeError("certification input set is invalid"); const artifacts = raw.artifacts.map(item => { const artifact = object(item, "certification input artifact"); closed(artifact, ["name", "digest"], "certification input artifact"); if (typeof artifact.name !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}\.json$/.test(artifact.name)) throw new TypeError("certification input artifact name is invalid"); assertDigest(artifact.digest, "certification input artifact digest"); return Object.freeze({ name: artifact.name, digest: artifact.digest }); }); if ((raw.status === "absent") !== (artifacts.length === 0)) throw new TypeError("certification input set status mismatch"); return Object.freeze({ status: raw.status, artifacts: Object.freeze(artifacts) }); }
+function projectedResource(section: string, value: unknown): unknown { const raw = object(value, `certification ${section} resource`); const keys = RESOURCE_KEYS[section]; if (!keys) throw new TypeError("certification resource section is invalid"); closed(raw, keys, `certification ${section} resource`); return JSON.parse(JSON.stringify(raw)); }
+function commitmentList(value: unknown, label: string): readonly any[] { if (!Array.isArray(value)) throw new TypeError(`certification ${label} must be an array`); return Object.freeze(value.map(item => { const raw = object(item, `certification ${label} item`); closed(raw, ["scenario", "digest", "status"], `certification ${label} item`); return Object.freeze({ scenario: scenarioId(raw.scenario), digest: assertDigest(raw.digest, `certification ${label} digest`), status: enumValue(raw.status, ["configured", "missing"], `${label} status`) }); })); }
+function credentialList(value: unknown): readonly any[] { if (!Array.isArray(value)) throw new TypeError("certification credentials must be an array"); return Object.freeze(value.map(item => { const raw = object(item, "certification credential item"); closed(raw, ["slot", "status"], "certification credential item"); if (typeof raw.slot !== "string") throw new TypeError("certification credential slot is invalid"); return Object.freeze({ slot: raw.slot, status: enumValue(raw.status, ["configured", "missing"], "credential status") }); })); }
+function inputSet(value: unknown): any { const raw = object(value, "certification input set"); closed(raw, ["status", "artifacts"], "certification input set"); if (!Array.isArray(raw.artifacts)) throw new TypeError("certification input artifacts are invalid"); const artifacts = raw.artifacts.map((item: unknown) => { const artifact = object(item, "certification input artifact"); closed(artifact, ["scenario", "name", "digest"], "certification input artifact"); const scenario = scenarioId(artifact.scenario); if (typeof artifact.name !== "string" || !(artifact.name === `${scenario}.json` || artifact.name.startsWith(`${scenario}--`)) || !artifact.name.endsWith(".json")) throw new TypeError("certification input artifact name is invalid"); return Object.freeze({ scenario, name: artifact.name, digest: assertDigest(artifact.digest, "certification input artifact digest") }); }); const status = enumValue(raw.status, ["configured", "absent"], "input status"); return Object.freeze({ status, artifacts: Object.freeze(artifacts) }); }
 function scenarioList(value: unknown): readonly CertificationScenarioId[] { if (!Array.isArray(value) || value.length === 0) throw new TypeError("certification export scenarios are invalid"); const result = value.map(scenarioId); if (new Set(result).size !== result.length || result.some((item, index) => index > 0 && result[index - 1] >= item)) throw new TypeError("certification export scenarios must be unique and sorted"); return Object.freeze(result); }
 function scenarioId(value: unknown): CertificationScenarioId { if (typeof value !== "string" || !(CERTIFICATION_SCENARIO_IDS as readonly string[]).includes(value)) throw new TypeError("certification scenario is invalid"); return value as CertificationScenarioId; }
 function stringList(value: unknown, label: string): readonly string[] { if (!Array.isArray(value) || value.some(item => typeof item !== "string")) throw new TypeError(`${label} is invalid`); return Object.freeze([...value] as string[]); }
+function configured(value: unknown): boolean { if (Array.isArray(value)) return value.length > 0 && value.every(configured); if (value && typeof value === "object") return Object.values(value as Record<string, unknown>).every(configured); if (typeof value === "number") return Number.isSafeInteger(value) && value > 0; if (typeof value !== "string" || !value) return false; const normalized = value.toLowerCase(); return !normalized.startsWith("replace-") && !normalized.includes("_example") && !normalized.endsWith(".example.com") && !/^sha256:([0-9a-f])\1{63}$/.test(normalized); }
+function enumValue<T extends string>(value: unknown, values: readonly T[], label: string): T { if (typeof value !== "string" || !values.includes(value as T)) throw new TypeError(`certification ${label} is invalid`); return value as T; }
+function unique<T extends string>(values: readonly T[]): readonly T[] { return Object.freeze([...new Set(values)].sort() as T[]); }
+function byScenario(left: any, right: any): number { return left.scenario.localeCompare(right.scenario); }
 function assertDigest(value: unknown, label: string): string { if (typeof value !== "string" || !DIGEST.test(value)) throw new TypeError(`${label} is invalid`); return value; }
 function same(left: readonly string[], right: readonly string[]): boolean { return left.length === right.length && left.every((item, index) => item === right[index]); }
-function stripDigest(value: any): unknown { const { digest: _digest, ...body } = value; return body; }
 function object(value: unknown, label: string): Record<string, any> { if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError(`${label} must be an object`); return value as Record<string, any>; }
 function closed(raw: Record<string, unknown>, keys: readonly string[], label: string): void { if (Object.keys(raw).length !== keys.length || Object.keys(raw).some(key => !keys.includes(key))) throw new TypeError(`${label} is closed`); }
