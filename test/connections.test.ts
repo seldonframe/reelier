@@ -8,6 +8,7 @@ import {
   digestNormalizedMcpToolSchemas,
   inspectCallableConnection,
   inventoryConnections,
+  loadConnectionInventory,
   type ConnectionInspectionCandidate,
   type ReviewedConnectionInspectionAdapter,
 } from "../src/connections.js";
@@ -26,6 +27,7 @@ const coverage = normalizeHostCoverage({
 function fakeConnection(result: McpCallResult): DownstreamConnection & { calls: string[]; closed: boolean } {
   const state = {
     name: "gmail-mcp",
+    advertisedName: "gmail-mcp",
     tools: [
       { name: "gmail.send", inputSchema: { required: ["to"], type: "object", properties: { to: { type: "string" } } }, annotations: { destructiveHint: true } },
       { name: "gmail.get_profile", inputSchema: { type: "object", additionalProperties: false }, annotations: { readOnlyHint: true } },
@@ -132,6 +134,57 @@ test("inspection failures never disclose provider response secrets", async () =>
   assert.doesNotMatch(JSON.stringify(entry), new RegExp(providerSecret));
 });
 
+test("opaque fallback connection names are never copied into descriptors", async () => {
+  const routeSecret = "npx gmail-mcp --token route-secret-value";
+  const connection = fakeConnection({ content: [] });
+  connection.name = routeSecret;
+  connection.advertisedName = undefined;
+  const digests = digestNormalizedMcpToolSchemas(connection.tools).map(item => item.digest);
+  const inspected = await inspectCallableConnection(candidate({ routeSpec: routeSecret }), adapter(digests), async () => connection);
+  assert.equal(inspected.status, "discovered-unverified");
+  assert.equal(inspected.descriptor, undefined);
+  assert.doesNotMatch(JSON.stringify(inspected), /route-secret-value/);
+});
+
+test("MCP error account-probe responses cannot produce usable descriptors", async () => {
+  const connection = fakeConnection({ content: [{ type: "text", text: "google:user:123" }], isError: true });
+  const digests = digestNormalizedMcpToolSchemas(connection.tools).map(item => item.digest);
+  const inspected = await inspectCallableConnection(candidate(), adapter(digests), async () => connection);
+  assert.equal(inspected.status, "discovered-unverified");
+  assert.equal(inspected.descriptor, undefined);
+});
+
+test("declared endpoints must exist before account verification", async () => {
+  const connection = fakeConnection({ content: [] });
+  const digests = digestNormalizedMcpToolSchemas(connection.tools).map(item => item.digest);
+  const missingEndpoint = { ...adapter(digests), writeEndpointIds: ["gmail.missing"] };
+  const inspected = await inspectCallableConnection(candidate(), missingEndpoint, async () => connection);
+  assert.equal(inspected.status, "schema-drifted");
+  assert.deepEqual(connection.calls, []);
+  assert.equal(inspected.descriptor, undefined);
+});
+
+test("observed schemas without a reviewed pin remain unverified", async () => {
+  const connection = fakeConnection({ content: [] });
+  const inspected = await inspectCallableConnection(candidate(), adapter([]), async () => connection);
+  assert.equal(inspected.status, "discovered-unverified");
+  assert.equal(inspected.schemaVerification.status, "unverified");
+});
+
+test("legacy connector intents load as unsupported instead of malformed", async () => {
+  const { mkdtemp, mkdir, writeFile, rm } = await import("node:fs/promises");
+  const os = await import("node:os");
+  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-connector-intent-"));
+  try {
+    await mkdir(path.join(root, "connectors"));
+    await writeFile(path.join(root, "connectors", "gmail.json"), JSON.stringify({ v: "reelier.connector-intent/v1", provider: "gmail", status: "oauth-required", createdAt: "2026-08-11T00:00:00.000Z" }));
+    const report = await loadConnectionInventory(root);
+    assert.deepEqual(report.issues, []);
+    assert.equal(report.entries[0]?.status, "unsupported");
+    assert.equal(report.entries[0]?.descriptor, undefined);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("connection ABI schemas accept closed contracts and refuse unknown keys", async () => {
   const Ajv2020 = createRequire(import.meta.url)("ajv/dist/2020").default;
   const ajv = new Ajv2020({ strict: true });
@@ -148,4 +201,6 @@ test("connection ABI schemas accept closed contracts and refuse unknown keys", a
   const report = { v: "reelier.connection-inventory/v1", root: "authority", entries: [usable], issues: [] };
   assert.equal(ajv.validate(inventorySchema, report), true, JSON.stringify(ajv.errors));
   assert.equal(ajv.validate(inventorySchema, { ...report, credential: "forbidden" }), false);
+  assert.equal(ajv.validate(inventorySchema, { ...report, entries: [{ ...usable, routeStatus: "unsupported" }] }), false);
+  assert.equal(ajv.validate(adoptionSchema, { ...adoption, mode: "managed", activationState: "active", rawWriteReachability: "reachable" }), false);
 });

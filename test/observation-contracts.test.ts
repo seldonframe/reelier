@@ -66,6 +66,7 @@ test("connection adoption is closed and round-trips without credential material"
   });
   assert.deepEqual(normalizeConnectionAdoption(JSON.parse(JSON.stringify(adoption))), adoption);
   assert.throws(() => normalizeConnectionAdoption({ ...adoption, refreshToken: "secret" }), /closed|invalid|unrecognized|unknown/i);
+  assert.throws(() => normalizeConnectionAdoption({ ...adoption, mode: "managed", activationState: "active", rawWriteReachability: "reachable" }), /invalid/i);
 });
 
 test("unverified inventory entries cannot fabricate a usable descriptor", () => {
@@ -82,6 +83,25 @@ test("unverified inventory entries cannot fabricate a usable descriptor", () => 
   });
   assert.equal(entry.descriptor, undefined);
   assert.throws(() => normalizeConnectionInventoryEntry({ ...entry, descriptor: { v: "reelier.connection-descriptor/v1" } }), /descriptor|invalid/i);
+});
+
+test("usable inventory entries require coherent callable verification", () => {
+  const descriptor = normalizeConnectionDescriptor({
+    v: "reelier.connection-descriptor/v1",
+    connectionId: "conn_1",
+    kind: "adopted-mcp-stdio",
+    provider: { id: "gmail", toolServerName: "gmail-mcp" },
+    callableRoute: { kind: "mcp-stdio", routeId: "claude.gmail", endpointIds: ["gmail.get_profile"] },
+    account: { status: "verified", identity: "google:user:123" },
+    toolSchemas: [{ toolName: "gmail.get_profile", digest: "sha256:" + "a".repeat(64) }],
+    secretOwner: "host",
+    coverage: normalizeHostCoverage({ v: "reelier.host-coverage/v1", host: "claude-code", observation: "unknown", outcomeInvocation: "supported", exclusiveEnforcement: "unknown", limitations: [] }),
+  });
+  const usable = { v: "reelier.connection-inventory-entry/v1", discoveryId: "discovery_1", provider: "gmail", connectionKind: "adopted-mcp-stdio", status: "usable", routeStatus: "callable", accountVerification: { status: "verified", identity: "google:user:123" }, schemaVerification: { status: "verified", expectedDigests: ["sha256:" + "a".repeat(64)], observedDigests: ["sha256:" + "a".repeat(64)] }, reasonCodes: [], descriptor };
+  assert.equal(normalizeConnectionInventoryEntry(usable).status, "usable");
+  assert.throws(() => normalizeConnectionInventoryEntry({ ...usable, routeStatus: "unsupported" }), /usable|coherent|invalid/i);
+  assert.throws(() => normalizeConnectionInventoryEntry({ ...usable, provider: "slack" }), /usable|coherent|invalid/i);
+  assert.throws(() => normalizeConnectionInventoryEntry({ ...usable, accountVerification: { status: "unverified" } }), /usable|coherent|invalid/i);
 });
 
 test("signed job cards reject unreviewed authority fields", () => {
