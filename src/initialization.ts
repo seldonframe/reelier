@@ -272,9 +272,30 @@ function validateArtifact(id: InitCheckpointId, value: unknown): void {
     "inspection-report": "reelier.initialization-report/v1",
   };
   if (!isRecord(value) || value.v !== expectedVersion[id]) throw new Error("checkpoint state refused: malformed artifact");
+  const closed = (candidate: unknown, keys: readonly string[]): candidate is Record<string, unknown> => isRecord(candidate) && hasExactKeys(candidate, keys);
+  const closedArray = (candidate: unknown, keys: readonly string[]): boolean => Array.isArray(candidate) && candidate.every(item => closed(item, keys));
+  let valid = false;
+  if (id === "config-surfaces") {
+    valid = closed(value, ["v", "harnesses", "configs"]) && Array.isArray(value.harnesses) && closedArray(value.configs, ["id", "label", "detected", "futureMutationBackup"]);
+  } else if (id === "path-a-coverage") {
+    valid = closed(value, ["v", "hosts", "limitations"]) && Array.isArray(value.limitations) && Array.isArray(value.hosts) && value.hosts.every(host => closed(host, ["host", "observation", "configLocation", "servers", "pluginSurfaces"]) && closed(host.servers, ["wrapped", "unwrapped", "unreadable"]) && closed(host.pluginSurfaces, ["parsed", "unreadable", "absent"]));
+  } else if (id === "path-b-candidates") {
+    valid = closed(value, ["v", "candidates", "limitations"]) && Array.isArray(value.limitations) && Array.isArray(value.candidates) && value.candidates.every(candidate => closed(candidate, ["candidateId", "fingerprintDigest", "sourceAgents", "occurrences", "effectCounts", "evaluationPotential", "freezeStatus", "steps", "observedAt"]) && closed(candidate.effectCounts, ["read", "idempotent-write", "destructive"]) && closedArray(candidate.steps, ["tool", "fieldNames", "effect", "readBackTools"]));
+  } else if (id === "path-c-candidates") {
+    valid = closed(value, ["v", "connections", "candidates", "inventoryIssues", "limitations"]) && Array.isArray(value.limitations) && closedArray(value.connections, ["connectionDigest", "provider", "connectionKind", "status", "classification", "observation", "outcomeInvocation", "exclusiveEnforcement", "reasonCodes"]) && closedArray(value.candidates, ["candidateId", "shapeDigest", "classification", "shadowStatus", "observedCoverage", "compatiblePacks", "reasonCodes"]) && closedArray(value.inventoryIssues, ["fileDigest", "reasonCode"]);
+  } else {
+    valid = closed(value, ["v", "answer", "surfaces", "pathA", "pathB", "pathC", "exclusiveEnforcement", "actions"]) && closed(value.exclusiveEnforcement, ["status", "limitation"]) && closed(value.actions, ["deployed", "gated", "configsModified", "cloudUpload"]);
+    if (valid) {
+      validateArtifact("config-surfaces", value.surfaces);
+      validateArtifact("path-a-coverage", value.pathA);
+      validateArtifact("path-b-candidates", value.pathB);
+      validateArtifact("path-c-candidates", value.pathC);
+    }
+  }
+  if (!valid) throw new Error("checkpoint state refused: malformed artifact");
 }
 
-async function inspectExistingState(initDir: string, lockOwned = false): Promise<{ state: CheckpointState; artifacts: Map<InitCheckpointId, unknown>; lockPresent: boolean }> {
+async function inspectExistingState(initDir: string, lockOwned = false, allowOrphans = false): Promise<{ state: CheckpointState; artifacts: Map<InitCheckpointId, unknown>; lockPresent: boolean }> {
   let names: string[];
   try { names = await readdir(initDir); } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return { state: { v: "reelier.init-state/v1", planDigest: PLAN_DIGEST, completed: [] }, artifacts: new Map(), lockPresent: false };
@@ -290,7 +311,7 @@ async function inspectExistingState(initDir: string, lockOwned = false): Promise
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new Error("checkpoint state refused: unreadable");
   }
   const plannedArtifacts = names.filter(name => Object.values(ARTIFACTS).includes(name));
-  if (stateRaw === undefined && plannedArtifacts.length > 0) throw new Error("checkpoint state refused: stale artifacts");
+  if (stateRaw === undefined && plannedArtifacts.length > 0 && !allowOrphans) throw new Error("checkpoint state refused: stale artifacts");
   const state = stateRaw === undefined ? { v: "reelier.init-state/v1" as const, planDigest: PLAN_DIGEST, completed: [] } : parseState(stateRaw);
   const artifacts = new Map<InitCheckpointId, unknown>();
   for (const completed of state.completed) {
@@ -332,7 +353,7 @@ async function acquireLock(initDir: string): Promise<(() => Promise<void>) | und
   let handle;
   try {
     handle = await open(lockPath, "wx");
-    await handle.writeFile("inspection-in-progress\n", "utf8");
+    await handle.writeFile(`${canonicalJson({ v: "reelier.init-lock/v1", pid: process.pid })}\n`, "utf8");
     await handle.sync();
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "EEXIST") return undefined;
@@ -342,6 +363,32 @@ async function acquireLock(initDir: string): Promise<(() => Promise<void>) | und
     await handle.close().catch(() => {});
     await unlink(lockPath).catch(() => {});
   };
+}
+
+async function recoverDeadLock(initDir: string): Promise<"absent" | "active" | "recovered"> {
+  const lockPath = path.join(initDir, LOCK_FILE);
+  let raw: string;
+  try { raw = await readFile(lockPath, "utf8"); } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT" ? "absent" : "active";
+  }
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw); } catch { return "active"; }
+  if (!isRecord(parsed) || !hasExactKeys(parsed, ["v", "pid"]) || parsed.v !== "reelier.init-lock/v1" || !Number.isSafeInteger(parsed.pid) || Number(parsed.pid) < 1) return "active";
+  try {
+    process.kill(Number(parsed.pid), 0);
+    return "active";
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ESRCH") return "active";
+  }
+  await unlink(lockPath).catch(() => {});
+  let names: string[] = [];
+  try { names = await readdir(initDir); } catch { /* the next state inspection reports unreadable state */ }
+  const owned = new Set([STATE_FILE, ...Object.values(ARTIFACTS)]);
+  for (const name of names) {
+    const match = /^(.*)\.tmp-[0-9a-f]{12}$/.exec(name);
+    if (match && owned.has(match[1])) await unlink(path.join(initDir, name)).catch(() => {});
+  }
+  return "recovered";
 }
 
 function summarizeServers(servers: readonly CoverageServer[]): { wrapped: number; unwrapped: number; unreadable: number } {
@@ -412,7 +459,7 @@ function buildPathB(opportunities: readonly AgentOpportunity[]): PathBArtifact {
       effectCounts: Object.freeze({ ...opportunity.effectCounts }),
       evaluationPotential: opportunity.evaluationPotential,
       freezeStatus: "candidate" as const,
-      steps: Object.freeze(opportunity.fingerprint.steps.map((step, index) => Object.freeze({ tool: step.tool, fieldNames: Object.freeze([...step.argKeys].sort()), effect: step.effect, readBackTools: Object.freeze([...(readBack.get(index) ?? [])].sort()) }))),
+      steps: Object.freeze(opportunity.fingerprint.steps.map((step, index) => Object.freeze({ tool: step.tool, fieldNames: Object.freeze([...step.argKeys].map(field => digest({ field })).sort()), effect: step.effect, readBackTools: Object.freeze([...(readBack.get(index) ?? [])].sort()) }))),
       observedAt: opportunity.lastUsedAt,
     });
   });
@@ -463,7 +510,7 @@ function buildPathC(pathB: PathBArtifact, inventory: ConnectionInventoryReportV1
     // absence of compatibility evidence, never a fabricated pack match.
     const candidate = clusterObservedActionsWithManifests(actions, workflow.candidateId, workflow.occurrences, []);
     const shadow = createShadowReport(candidate);
-    const classification: PathCClassification = candidate.unresolvedActions.length > 0 ? "shadow-only" : shadow.status === "ready" ? "outcome-capable" : "boundable";
+    const classification: PathCClassification = shadow.status === "ready" ? "outcome-capable" : shadow.status === "needs_human_definition" ? "shadow-only" : "unsupported";
     candidates.push(Object.freeze({ candidateId: candidate.candidateId, shapeDigest: candidate.shapeDigest, classification, shadowStatus: shadow.status, observedCoverage: shadow.observedCoverage, compatiblePacks: candidate.compatiblePacks, reasonCodes: shadow.reasonCodes }));
   }
   return {
@@ -538,8 +585,9 @@ export async function initializeInspection(options: InitializeInspectionOptions)
   validateOptions(options);
   const dependencies = options.dependencies ?? defaultDependencies;
   const initDir = path.join(options.cwd, ".reelier", "init");
-  const initial = await inspectExistingState(initDir);
-  if (initial.lockPresent) return { status: "busy" };
+  const recovery = await recoverDeadLock(initDir);
+  if (recovery === "active") return { status: "busy" };
+  const initial = await inspectExistingState(initDir, false, recovery === "recovered");
   if (options.dryRun) return runDry(options, dependencies);
 
   if (initial.state.completed.length === INIT_CHECKPOINT_IDS.length) {
@@ -550,7 +598,7 @@ export async function initializeInspection(options: InitializeInspectionOptions)
   const release = await acquireLock(initDir);
   if (!release) return { status: "busy" };
   try {
-    const { state: checkedState, artifacts } = await inspectExistingState(initDir, true);
+    const { state: checkedState, artifacts } = await inspectExistingState(initDir, true, recovery === "recovered");
     if (checkedState.completed.length === INIT_CHECKPOINT_IDS.length) {
       return { status: "complete", report: artifacts.get("inspection-report") as InitializationReportV1, resumedFrom: null };
     }
