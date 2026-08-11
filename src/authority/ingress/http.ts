@@ -3,12 +3,12 @@ import { authenticateOutcomeRequest } from "../keys.js";
 import type { AuthorityMcpHandler } from "./mcp.js";
 import type { AuthorityExecutionContextV1 } from "../types.js";
 
-export async function handleAuthorityHttp(request: IncomingMessage, response: ServerResponse, handler: AuthorityMcpHandler, context: { readonly tenant: string; readonly requester: string; readonly executionContext?: AuthorityExecutionContextV1; readonly requireBearer?: boolean; readonly authenticate?: (header: string | undefined) => Promise<boolean>; readonly resolvePrincipal?: (header: string | undefined) => Promise<{ readonly tenant: string; readonly requester: string; readonly executionContext: AuthorityExecutionContextV1 } | undefined> }, artifactStage?: (input: unknown, context: { readonly tenant: string; readonly requester: string; readonly executionContext?: AuthorityExecutionContextV1 }) => Promise<unknown>): Promise<void> {
+export async function handleAuthorityHttp(request: IncomingMessage, response: ServerResponse, handler: AuthorityMcpHandler, context: { readonly tenant: string; readonly requester: string; readonly resolvePrincipal?: (header: string | undefined) => Promise<{ readonly tenant: string; readonly requester: string; readonly executionContext: AuthorityExecutionContextV1 } | undefined> }, artifactStage?: (input: unknown, context: { readonly tenant: string; readonly requester: string; readonly executionContext?: AuthorityExecutionContextV1 }) => Promise<unknown>): Promise<void> {
+  let resolved: Awaited<ReturnType<NonNullable<typeof context.resolvePrincipal>>>;
+  try { resolved = context.resolvePrincipal ? await context.resolvePrincipal(request.headers.authorization) : undefined; } catch { resolved = undefined; }
+  if (!resolved) { write(response, 401, { verdict: "refused", reasonCode: "authentication-required", lifecycleState: "refused", requestId: "" }); return; }
   try {
-    const resolved = context.resolvePrincipal ? await context.resolvePrincipal(request.headers.authorization) : undefined;
-    if (context.resolvePrincipal && !resolved) return write(response, 401, { verdict: "refused", reasonCode: "authentication-required", lifecycleState: "refused", requestId: "" });
-    if (!context.resolvePrincipal && (context.authenticate ? !await context.authenticate(request.headers.authorization) : context.requireBearer && !/^Bearer\s+\S+$/.test(String(request.headers.authorization ?? "")))) return write(response, 401, { verdict: "refused", reasonCode: "authentication-required", lifecycleState: "refused", requestId: "" });
-    const requestContext = resolved ?? context;
+    const requestContext = resolved;
     if (request.method !== "POST" && request.method !== "GET") return write(response, 405, { verdict: "refused", reasonCode: "method-not-allowed" });
     const url = new URL(request.url ?? "/", "http://authority.invalid");
     if (url.pathname === "/v1/jobs" && request.method === "GET") {
