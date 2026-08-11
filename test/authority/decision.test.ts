@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import path from "node:path";
@@ -247,6 +247,30 @@ test("a concurrent held decision lock returns the durable terminal classificatio
     await mkdir(lock);
     await writeFile(path.join(lock,"owner.json"),authorityCanonicalBytes({host:hostname(),nonce:"c".repeat(64),pid:process.pid,v:"reelier.gate-decision-lock/internal-v1"}));
     assert.deepEqual(await createFileGateDecisionSink(root,{lockTimeoutMs:20}).append(record),{ok:true,status:"idempotent",recordDigest:authorityDigest(record)});
+  }finally{await rm(root,{recursive:true,force:true});}
+});
+
+test("a pre-persistence contender classifies after the winner commits beyond its first lock timeout",async()=>{
+  const root=await mkdtemp(path.join(tmpdir(),"reelier-decision-late-winner-"));
+  try{
+    const record=primary(),lock=path.join(root,".gate-decisions.lock");
+    await mkdir(lock);
+    await writeFile(path.join(lock,"owner.json"),authorityCanonicalBytes({host:hostname(),nonce:"d".repeat(64),pid:process.pid,v:"reelier.gate-decision-lock/internal-v1"}));
+    let initialReadBoundary=false,classificationLock=false;
+    const result=await createFileGateDecisionSink(root,{lockTimeoutMs:20,lockFaultInjector:(point:string)=>{
+      if(point==="after-contention-read"&&!initialReadBoundary){
+        initialReadBoundary=true;
+        writeFileSync(path.join(root,"gate-decisions.json"),authorityCanonicalBytes({records:[record],v:"reelier.gate-decision-store/internal-v1"}));
+        rmSync(lock,{recursive:true});
+      }
+      if(point==="after-contention-classification-lock-acquired"){
+        const owner=JSON.parse(readFileSync(path.join(lock,"owner.json"),"utf8")) as {nonce?:unknown;pid?:unknown};
+        classificationLock=owner.pid===process.pid&&owner.nonce!=="d".repeat(64);
+      }
+    }} as never).append(record);
+    assert.deepEqual(result,{ok:true,status:"idempotent",recordDigest:authorityDigest(record)});
+    assert.equal(initialReadBoundary,true,"the winner commits only after the contender's initial timeout and store-read boundary");
+    assert.equal(classificationLock,true,"the contender classifies the winner while holding a new decision lock");
   }finally{await rm(root,{recursive:true,force:true});}
 });
 

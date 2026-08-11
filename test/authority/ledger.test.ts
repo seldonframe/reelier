@@ -1370,6 +1370,49 @@ test("prep-only progress respects the original deadline before another transitio
   const ack=incompleteCoordinationAck(owner,"prep-retired",markerName,admissionPrepName(owner),"complete",marker);assert.equal(existsSync(path.join(root,coordinationStageName(ack,"prep-retired"))),false);assert.equal(existsSync(path.join(root,coordinationAckName(ack))),false);assert.deepEqual({semanticNow,callbacks,delays},{semanticNow:0,callbacks:0,delays:0});
 }));
 
+test("prep-only over-budget continuation stays bound to the initiated file identity and operation lifetime",async t=>{
+  const cleanupPoint="prep-only-prep-retired-cleanup-authority",beforePoint="prep-only-before-transition",afterFinalPoint="prep-only-after-final-revalidation",refusedPoint="prep-only-transition-refused",zeroPoint="prep-only-cleanup-stage-zero",ackRootPoint="prep-only-cleanup-ack-root-synced",markerRootPoint="prep-only-cleanup-marker-root-synced";
+  await t.test("exact initiated file completes within its initiating operation",()=>withRoot(async root=>{
+    const owner={host:hostname(),nonce:"8".repeat(64),pid:await exitedProcessPid(),v:1 as const},markerName=admissionPrepRetiredName(owner,"complete"),marker=path.join(root,markerName),markerOwner=path.join(marker,"owner.json");await mkdir(marker);await writeFile(markerOwner,publicationOwnerBytes(owner));
+    const ack=incompleteCoordinationAck(owner,"prep-retired",markerName,admissionPrepName(owner),"complete",marker),stage=path.join(root,coordinationStageName(ack,"prep-retired")),finalAck=path.join(root,coordinationAckName(ack));let monotonic=0,callbacks=0;
+    const runtime={monotonicNow:()=>monotonic,delay:async()=>{},observeBoundary:(point:string)=>{if(point===zeroPoint)monotonic=21;}};
+    const result=await new RawFsAuthorityLedger(root,{[__testPrepHousekeeperRuntimeOption]:runtime,now:()=>t0,lockTimeoutMs:20,faultInjector:(point:string)=>{if(point==="before-ledger-operation-callback")callbacks++;}} as never).observeClock();
+    assert.deepEqual(result,{ok:true,status:"advanced",observedAt:new Date(t0).toISOString()});assert.equal(callbacks,1);assert.equal(existsSync(marker),false);assert.equal(existsSync(stage),false);assert.equal(existsSync(finalAck),false);
+  }));
+  await t.test("a later operation cannot inherit the initiated file capability",()=>withRoot(async root=>{
+    const owner={host:hostname(),nonce:"9".repeat(64),pid:await exitedProcessPid(),v:1 as const},markerName=admissionPrepRetiredName(owner,"complete"),marker=path.join(root,markerName),markerOwner=path.join(marker,"owner.json");await mkdir(marker);await writeFile(markerOwner,publicationOwnerBytes(owner));
+    const ack=incompleteCoordinationAck(owner,"prep-retired",markerName,admissionPrepName(owner),"complete",marker),ackBytes=authorityCanonicalBytes(ack),stage=path.join(root,coordinationStageName(ack,"prep-retired")),finalAck=path.join(root,coordinationAckName(ack)),firstStop={kind:"end-initiating-operation"};let phase=1,monotonic=0,callbacks=0;
+    const runtime={monotonicNow:()=>monotonic,delay:async()=>{},observeBoundary:(point:string)=>{if(phase===1&&point===zeroPoint)throw firstStop;if(phase===2&&point==="prep-only-cleanup-stage-prefix")monotonic=21;}};
+    const ledger=new RawFsAuthorityLedger(root,{[__testPrepHousekeeperRuntimeOption]:runtime,now:()=>t0,lockTimeoutMs:20,faultInjector:(point:string)=>{if(point==="before-ledger-operation-callback")callbacks++;}} as never);
+    let thrown:unknown;try{await ledger.observeClock();}catch(error){thrown=error;}assert.equal(thrown,firstStop);assert.deepEqual(await readFile(stage),Buffer.alloc(0));
+    phase=2;const result=await ledger.observeClock(),prefix=await readFile(stage);
+    assert.deepEqual(result,{ok:false,reason:"busy"});assert.equal(callbacks,0);assert.ok(prefix.length>0&&prefix.length<ackBytes.length);assert.deepEqual(prefix,ackBytes.subarray(0,prefix.length));assert.equal(existsSync(marker),true);assert.equal(existsSync(finalAck),false);
+  }));
+  for(const handoff of ["stage","ack"] as const)await t.test(handoff,()=>withRoot(async root=>{
+    const owner={host:hostname(),nonce:(handoff==="stage"?"6":"7").repeat(64),pid:await exitedProcessPid(),v:1 as const},markerName=admissionPrepRetiredName(owner,"complete"),marker=path.join(root,markerName),markerOwner=path.join(marker,"owner.json");
+    await mkdir(marker);await writeFile(markerOwner,publicationOwnerBytes(owner));
+    const ack=incompleteCoordinationAck(owner,"prep-retired",markerName,admissionPrepName(owner),"complete",marker),ackBytes=authorityCanonicalBytes(ack),stage=path.join(root,coordinationStageName(ack,"prep-retired")),finalAck=path.join(root,coordinationAckName(ack)),displaced=path.join(root,`peer-displaced-${handoff}`),events:string[]=[];
+    let monotonic=0,replaced=false,originalIdentity:ExactFsIdentity|undefined,replacementIdentity:ExactFsIdentity|undefined,callbacks=0;
+    const runtime={monotonicNow:()=>monotonic,delay:async()=>{},observeBoundary:(point:string)=>{
+      events.push(point);
+      if(!replaced&&point===(handoff==="stage"?zeroPoint:ackRootPoint)){
+        const target=handoff==="stage"?stage:finalAck,bytes=handoff==="stage"?Buffer.alloc(0):ackBytes;
+        originalIdentity=exactFsIdentity(target);renameSync(target,displaced);writeFileSync(target,bytes,{flag:"wx",mode:0o600});replacementIdentity=exactFsIdentity(target);
+        assert.notDeepEqual(replacementIdentity,originalIdentity,`${handoff}: the peer installed a distinct file at the deterministic lifecycle name`);
+        replaced=true;monotonic=21;
+      }
+    }};
+    const result=await new RawFsAuthorityLedger(root,{[__testPrepHousekeeperRuntimeOption]:runtime,now:()=>t0,lockTimeoutMs:20,faultInjector:(point:string)=>{if(point==="before-ledger-operation-callback")callbacks++;}} as never).observeClock();
+    assert.deepEqual(result,{ok:false,reason:"busy"},handoff);assert.equal(replaced,true,handoff);assert.equal(callbacks,0,handoff);
+    assert.equal(existsSync(marker),true,`${handoff}: replacement continuation cannot remove the marker`);assert.equal(existsSync(stage),handoff==="stage",handoff);assert.equal(existsSync(finalAck),handoff==="ack",handoff);
+    assert.deepEqual(exactFsIdentity(displaced),originalIdentity,`${handoff}: the displaced initiated file remains distinct and proves identity replacement`);
+    assert.deepEqual(exactFsIdentity(handoff==="stage"?stage:finalAck),replacementIdentity,`${handoff}: replacement is preserved byte-identically`);
+    assert.deepEqual(await readFile(handoff==="stage"?stage:finalAck),handoff==="stage"?Buffer.alloc(0):ackBytes,handoff);
+    const expectedPrefix=handoff==="stage"?[cleanupPoint,beforePoint,afterFinalPoint,zeroPoint,cleanupPoint,beforePoint,refusedPoint]:[cleanupPoint,beforePoint,afterFinalPoint,zeroPoint,cleanupPoint,beforePoint,afterFinalPoint,"prep-only-cleanup-stage-prefix",cleanupPoint,beforePoint,afterFinalPoint,"prep-only-cleanup-stage-complete",cleanupPoint,beforePoint,afterFinalPoint,ackRootPoint,cleanupPoint,beforePoint,refusedPoint];
+    assert.deepEqual(events,expectedPrefix,handoff);assert.equal(events.includes(markerRootPoint),false,handoff);
+  }));
+});
+
 test("prep-only cleanup finalization renames a complete stage to its exact synced ack",()=>withRoot(async root=>{
   const cleanupPoint="prep-only-prep-retired-cleanup-authority",beforePoint="prep-only-before-transition",afterFinalPoint="prep-only-after-final-revalidation",ackRootPoint="prep-only-cleanup-ack-root-synced",owner={host:hostname(),nonce:"1".repeat(64),pid:await exitedProcessPid(),v:1 as const},markerName=admissionPrepRetiredName(owner,"complete"),marker=path.join(root,markerName),markerOwner=path.join(marker,"owner.json"),original=path.join(root,admissionPrepName(owner));await mkdir(marker);await writeFile(markerOwner,publicationOwnerBytes(owner));
   const markerIdentity=exactFsIdentity(marker),ownerIdentity=exactFsIdentity(markerOwner),ownerBytes=await readFile(markerOwner),ack=incompleteCoordinationAck(owner,"prep-retired",markerName,admissionPrepName(owner),"complete",marker),ackBytes=authorityCanonicalBytes(ack),stage=path.join(root,coordinationStageName(ack,"prep-retired")),finalAck=path.join(root,coordinationAckName(ack));await writeFile(stage,ackBytes);const stageIdentity=exactFsIdentity(stage),sentinel={kind:"prep-cleanup-ack-root-synced"},events:string[]=[];let semanticNow=0,callbacks=0,delays=0,thrown:unknown;
