@@ -120,3 +120,34 @@ test("an unrelated listener on the primary fence port cannot disable a fresh led
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("a fence identity response completes without resetting its probing client", async () => {
+  const { createConnection, createServer } = await import("node:net");
+  const hostModule = await import("../../src/authority/host/fs-ledger.js") as unknown as {
+    __testServeK1OperationFenceIdentity?: (socket: import("node:net").Socket, materialDigest: string) => void;
+  };
+  const serve = hostModule.__testServeK1OperationFenceIdentity;
+  assert.equal(typeof serve, "function", "the host-private identity responder is available to exercise its socket lifecycle");
+  const materialDigest = `sha256:${"1".repeat(64)}`;
+  const server = createServer(socket => serve!(socket, materialDigest));
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen({ host: "127.0.0.1", port: 0, exclusive: true }, resolve);
+  });
+  try {
+    const address = server.address();
+    assert.ok(address !== null && typeof address !== "string", "the test server reports its ephemeral port");
+    const observed = await new Promise<{ text: string; error: NodeJS.ErrnoException | null }>(resolve => {
+      let text = "";
+      const client = createConnection({ host: "127.0.0.1", port: address.port });
+      client.setEncoding("utf8");
+      client.on("data", chunk => { text += chunk; });
+      client.once("error", error => resolve({ text, error }));
+      client.once("end", () => resolve({ text, error: null }));
+    });
+    assert.equal(observed.text, `reelier-k1-operation-fence/v1 ${materialDigest}\n`);
+    assert.equal(observed.error, null, "a complete identity response ends cleanly instead of reporting ECONNRESET");
+  } finally {
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+});

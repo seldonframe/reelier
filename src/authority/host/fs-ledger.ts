@@ -3801,8 +3801,8 @@ function createTrackedK1OperationFenceServer(accept:(socket:Socket)=>void):Serve
 }
 function serveK1OperationFenceIdentity(socket:Socket,materialDigest:string):void{
   socket.on("error",()=>{});
-  const cutoff=setTimeout(()=>resetK1OperationFenceSocket(socket),100);cutoff.unref();
-  socket.write(k1OperationFenceIdentity(materialDigest),"utf8",()=>{clearTimeout(cutoff);resetK1OperationFenceSocket(socket);});
+  const cutoff=setTimeout(()=>socket.end(),100);cutoff.unref();
+  socket.end(k1OperationFenceIdentity(materialDigest),"utf8",()=>{clearTimeout(cutoff);});
 }
 function resetK1OperationFenceSocket(socket:Socket):void{if(typeof socket.resetAndDestroy==="function")socket.resetAndDestroy();else socket.destroy();}
 async function probeK1OperationFenceIdentity(port:number,materialDigest:string,timeoutMs:number):Promise<"same"|"foreign"|"vacant"|"unknown">{
@@ -3893,6 +3893,7 @@ export function __testEncodeCoordinationIdentityWire(raw:Readonly<{dev:bigint;in
 export function __testParseCoordinationIdentityWire(wire:unknown):CoordinationFileIdentity{return parseCoordinationIdentityWire(wire);}
 export function __testCoordinationIdentityMatches(wire:CoordinationIdentityWire,raw:Readonly<{dev:bigint;ino:bigint;mode:bigint;nlink:bigint}>):boolean{return coordinationIdentityMatches(wire,raw);}
 export function __testSamePublicationFileIdentity(left:Readonly<{dev:bigint;ino:bigint;mode:bigint;nlink:bigint}>,right:Readonly<{dev:bigint;ino:bigint;mode:bigint;nlink:bigint}>):boolean{return left.dev===right.dev&&left.ino===right.ino&&left.mode===right.mode&&left.nlink===right.nlink;}
+export function __testServeK1OperationFenceIdentity(socket:Socket,materialDigest:string):void{serveK1OperationFenceIdentity(socket,materialDigest);}
 function sameFileIdentity(left:FileIdentity,right:FileIdentity):boolean{return __testSamePublicationFileIdentity(left,right);}
 export function __testSamePublicationStageSnapshot(
   left:Readonly<{name:string;state:string;directoryIdentity:FileIdentity;ownerIdentity?:FileIdentity;ownerBytes?:Buffer}>,
