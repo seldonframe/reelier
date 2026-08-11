@@ -1548,6 +1548,21 @@ test("k1-operation-fence-only topology declaration is closed host-private and pu
   await withFenceRoot(async(root,binding)=>{let accepted=0,bound=0;const result=await new RawFsAuthorityLedger(root,{[option]:fenceRuntime(binding,point=>{if(point==="k1-operation-fence-only-topology-accepted")accepted++;if(point==="k1-operation-fence-only-endpoint-bound")bound++;}),now:()=>t0,lockTimeoutMs:200} as never).recover();assert.equal(result.ok,true);assert.deepEqual({accepted,bound},{accepted:1,bound:1});assert.equal(hasLegacyWriterArtifact(root),false);});
 });
 
+test("a timed-out Windows root-mutex contender never classifies the active owner's filesystem epoch",{skip:process.platform!=="win32"},async()=>withRoot(async root=>{
+  await mkdir(path.join(root,".authority-ledger-admission-0"));
+  const binding=await derivedFenceBinding(root),mutex=createServer(),pipe=`\\\\.\\pipe\\reelier-k1-${binding.materialDigest.slice(7)}`,before=await snapshotRootArtifacts(root);let semanticNow=0,hooks=0;
+  await new Promise<void>((resolve,reject)=>{mutex.once("error",reject);mutex.listen(pipe,resolve);});
+  try{
+    const blocked=await new RawFsAuthorityLedger(root,{now:()=>{semanticNow++;return t0;},lockTimeoutMs:20,faultInjector:()=>{hooks++;}}).observeClock();
+    assert.deepEqual(blocked,{ok:false,reason:"busy"},"without the root mutex, an observed graph may be the active owner's transient epoch");
+    assert.deepEqual({semanticNow,hooks},{semanticNow:0,hooks:0});
+    assert.deepEqual(await snapshotRootArtifacts(root),before);
+  }finally{await closeServer(mutex);}
+  const owned=await new RawFsAuthorityLedger(root,{now:()=>{semanticNow++;return t0;},lockTimeoutMs:20,faultInjector:()=>{hooks++;}}).observeClock();
+  assert.deepEqual(owned,{ok:false,reason:"corruption"},"once the mutex is owned, the same stable malformed graph is still corruption");
+  assert.deepEqual(await snapshotRootArtifacts(root),before);
+}));
+
 test("k1-operation-fence-only externally held endpoint keeps refusal-only corruption precedence",async()=>{
   await withRoot(async root=>{
     const owner={host:hostname(),nonce:"e".repeat(64),pid:process.pid,v:1 as const},withdrawal=await writeCreatorWithdrawal(root,owner,"partial"),binding=await derivedFenceBinding(root),squatter=await bindFenceEndpoint(binding),before=await snapshotRootArtifacts(root);let semanticNow=0,callbacks=0,prepCreates=0;
