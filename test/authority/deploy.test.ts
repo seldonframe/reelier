@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { authorityDigest, authorityCanonicalBytes, signJobCard, signedJobCardDigest, verifySignedJobCard, verifyAuthoritySignature } from "../../src/authority/index.js";
 import { buildAuthorityDeployment } from "../../src/authority/host/deploy.js";
+import { loadAuthorityDeployment } from "../../src/authority/host/deployment.js";
 import { connectionDescriptorDigest } from "../../src/connections.js";
 
 const sha = (seed: string) => `sha256:${seed.repeat(64).slice(0, 64)}`;
@@ -65,6 +66,16 @@ test("deploy requires a pre-existing human-signed job card bound to an adopted d
     assert.equal(built.manifest.connectionAdoptions[0]?.rawWriteReachability, "reachable");
     assert.equal(built.manifest.enforcement.completeness, "unchecked");
     assert.equal((await readFile(path.join(built.directory, "sources", "thread.json"), "utf8")).trim(), '{"message":"hello"}');
+    const original = JSON.parse(await readFile(built.deploymentFile, "utf8")) as Record<string, unknown>;
+    const expectRefusal = async (mutate: (copy: Record<string, unknown>) => void, pattern: RegExp) => {
+      const copy = structuredClone(original); mutate(copy); await writeFile(built.deploymentFile, JSON.stringify(copy));
+      await assert.rejects(() => loadAuthorityDeployment(built.deploymentFile), pattern);
+    };
+    await expectRefusal(copy => { ((copy.connectionAdoptions as Array<Record<string, unknown>>)[0]!).sidecarRouteId = "route.other"; }, /adoption.*binding/i);
+    await expectRefusal(copy => { ((copy.connectionDescriptors as Array<Record<string, unknown>>)[0]!).account = { status: "verified", identity: "gmail:other@example.test" }; }, /descriptor.*commitment|adoption.*binding/i);
+    await expectRefusal(copy => { ((copy.trust as Array<Record<string, unknown>>)[0]!).purposes = ["outcome-contract"]; }, /signed job.*trust/i);
+    await expectRefusal(copy => { ((copy.trust as Array<Record<string, unknown>>)[0]!).status = "inactive"; }, /not active|trust/i);
+    await expectRefusal(copy => { const item = (copy.connectionAdoptions as Array<Record<string, unknown>>)[0]!; item.mode = "managed"; item.rawWriteReachability = "refused"; item.secureConnectionCommitment = sha("6"); }, /managed.*topology/i);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
