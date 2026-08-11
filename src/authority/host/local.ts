@@ -99,12 +99,12 @@ export async function createLocalAuthorityRuntime(config: AuthorityHostConfig, o
   const adapter = options.dispatchAdapter ?? createJsonHttpsDispatchAdapter({ endpoints: config.endpoints, secrets: createSecretResolver() });
   const dispatch = createDispatchCoordinator(ledger, adapter, undefined, publication, options.delegation?.budget);
   const runtime = createAuthorityHostRuntime({ gate, dispatch, ledger, decisions, delegation: options.delegation, ...(options.delegation ? { verifyRootGrant: (grant, tenant) => { verifyTrustedAuthority(trustRoots, { tenant, signerId: grant.signerId, purpose: "delegation-grant", advertisedDigest: grant.digest, value: grant.grant, signature: grant.signature }); } } : {}) });
-  const jobs = Object.freeze((deployment?.jobCard?.definitionAliases ?? []).map(alias => Object.freeze({ jobId: alias, alias })));
-  const authorizedRequester = (context: { readonly tenant: string; readonly requester: string }): boolean => context.tenant === config.tenant && (deployment?.jobCard?.audiences.includes(context.requester) ?? false);
+  const jobs = Object.freeze((deployment?.jobCard?.definitionAliases ?? config.definitions).map(alias => Object.freeze({ jobId: alias, alias })));
+  const authorizedRequester = (context: { readonly tenant: string; readonly requester: string }): boolean => context.tenant === config.tenant && (deployment?.jobCard?.audiences.includes(context.requester) ?? true);
   return Object.freeze({
     ...runtime,
     async outcome(alias: string, input: unknown, context: { readonly tenant: string; readonly requester: string }) {
-      if (!deployment?.jobCard || !deployment.jobCard.definitionAliases.includes(alias) || !authorizedRequester(context)) return Object.freeze({ requestId: input && typeof input === "object" && !Array.isArray(input) && typeof (input as Record<string, unknown>).requestId === "string" ? String((input as Record<string, unknown>).requestId) : "", verdict: "refused" as const, reasonCode: "job-authority-refused", lifecycleState: "refused" });
+      if ((deployment?.jobCard && !deployment.jobCard.definitionAliases.includes(alias)) || !authorizedRequester(context)) return Object.freeze({ requestId: input && typeof input === "object" && !Array.isArray(input) && typeof (input as Record<string, unknown>).requestId === "string" ? String((input as Record<string, unknown>).requestId) : "", verdict: "refused" as const, reasonCode: "job-authority-refused", lifecycleState: "refused" });
       return runtime.outcome(alias, input, context);
     },
     async resolveAdoptedConnection(connectionId: string) {
