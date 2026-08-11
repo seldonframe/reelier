@@ -3,7 +3,7 @@
   "$id": "reelier.signed-certification-readiness/v1",
   "type": "object",
   "additionalProperties": false,
-  "required": ["v", "purpose", "signerRole", "signerKeyId", "signerKeyDescriptorDigest", "readinessCandidateDigest", "configurationRoot", "selectionDigest", "identifiers", "scenarios", "activatedCellKeyDescriptorDigests", "trustHistoryDigest", "authorizedAt", "authorization", "dispatchable", "completeness", "signature"],
+  "required": ["v", "purpose", "signerRole", "signerKeyId", "signerKeyDescriptorDigest", "readinessCandidateDigest", "configurationRoot", "selectionDigest", "identifiers", "scenarios", "activatedCellKeyDescriptorDigests", "activatedJobCardKeyDescriptorDigests", "trustHistoryDigest", "authorizedAt", "authorization", "dispatchable", "completeness", "signature"],
   "properties": {
     "v": { "const": "reelier.signed-certification-readiness/v1" },
     "purpose": { "const": "certification-readiness" },
@@ -16,6 +16,7 @@
     "identifiers": { "$ref": "#/$defs/identifiers" },
     "scenarios": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/scenario" } },
     "activatedCellKeyDescriptorDigests": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/digest" } },
+    "activatedJobCardKeyDescriptorDigests": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/digest" } },
     "trustHistoryDigest": { "$ref": "#/$defs/digest" },
     "authorizedAt": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$" },
     "authorization": { "const": "human-signed" },
