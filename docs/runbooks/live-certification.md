@@ -6,20 +6,30 @@
 2. Provision disposable provider resources and cleanup approvals.
 3. Add only opaque secret references to the Authority Cell environment.
 4. Confirm Cloud is tested against the exact next-release tarball. The published `0.32.0` tarball is immutable and does not contain the post-release certification work.
-5. Run `reelier authority certify preflight` and resolve every reported missing item.
+5. Initialize the local certification workspace, run selected-only preflight, and resolve every reported missing item.
 
-Use a strict operator file rather than putting credentials in command arguments:
+Use the closed scenario-scoped v2 operator file. It contains resource identifiers and named secret references, never secret values:
 
 ```text
-reelier authority certify preflight --config authority/certification.json
-reelier authority serve --path authority/authority.yml --certification-config authority/certification.json
+copy authority/certification.example.json authority/certification.local.json
+reelier authority certify init --config authority/certification.local.json
+reelier authority certify preflight --scenario github-issue-labels
+reelier authority certify seal-readiness --scenario github-issue-labels
+reelier authority certify export --scenario github-issue-labels
+reelier authority certify verify --input authority/certification/exports/<content-addressed-export>.json
 ```
 
-The scenario-scoped v2 format is tracked at `authority/certification.example.json`. It selects only the scenarios being certified and accepts only their exact resource, cleanup, metadata, and named secret-reference sections. It is private certification-estate configuration, not a customer onboarding requirement. The v2 parser and v1 migration are available now; the existing live certify commands continue to use the v1 compatibility path until their init/preflight slice lands. Do not pass the v2 example to those commands yet.
+`init` validates before publishing anything, writes a complete sibling workspace through atomic rename, and deterministically resumes an identical initialization. It generates the task, Job Card, root-grant, Authority Cell, and signer identifiers internally. Operators must not add those identifiers to `certification.local.json`.
+
+`preflight` reads only the initialized local snapshot. It never resolves an `env:` or `file:` reference, invokes a provider, probes a runtime, or makes a network request. Its redacted report covers only the requested `--scenario <exact-id>` (or all initialized scenarios with `--all`), local runner/test digests or honest absence, non-secret resource and cleanup commitments, topology metadata, credential-reference presence, and trust state. The legacy environment-only fallback is disabled.
+
+`seal-readiness` writes an immutable content-addressed candidate marked `awaiting-human-signature`, `authorization=absent`, `dispatchable=false`, and `completeness=unchecked`. It does not sign, grant authority, or unlock `run`; interactive human signing belongs to the later Authority Cell signing gate. `export` links the config, generated identifiers, preflight, and candidate into a closed content-addressed package. Offline `verify` recomputes every artifact and link digest. A valid package still reports provider certification, signature verification, completion, and universal completeness as `unchecked`.
+
+The scenario-scoped v2 format is tracked at `authority/certification.example.json`. It selects only the scenarios being certified and accepts only their exact resource, cleanup, metadata, and named secret-reference sections. It is private certification-estate configuration, not a customer onboarding requirement.
 
 V2 has exactly seven possible operator secret-reference slots: `githubCredential`, `vercelCredential`, `neonApiCredential`, `neonDatabaseUrl`, `cloudflareCredential`, `slackCredential`, and `flyApiCredential`. Only slots required by selected scenarios are allowed. Egress-gateway bearer material and the ten Codex session credentials are generated later and are never operator-config fields. HubSpot is not a v2 provider.
 
-For the current legacy live commands only, copy `docs/runbooks/certification.operator.example.json` to the ignored file `authority/certification.local.json`. Replace only resource identifiers, cleanup names, the pinned Codex path/version, and secret references. Managed provider references must keep the documented `env:REELIER_*` names because those names identify secrets staged in the Authority Cell. Keep the local Fly API credential in a local environment variable or ignored file. Never place values in the JSON file, command line, issue, pull request, chat, receipt, or evidence directory. Its HubSpot entry and staging command are legacy-v1 requirements and are not retained by v2 migration.
+The older v1 file under `docs/runbooks/` remains only for the pre-existing live adapter commands until their runner slice migrates. It is not accepted by the initialized preflight flow. HubSpot and manually entered task/Job/Cell identifiers are not retained by v2.
 
 On Windows, stage each provider credential directly into the Fly Authority Cell with the repository helper. It prompts with masked input and sends the value to `flyctl secrets import` over standard input; the value is not placed in a process argument or file. Run only the names for which the disposable resource is ready:
 
@@ -35,7 +45,7 @@ On Windows, stage each provider credential directly into the Fly Authority Cell 
 
 The helper stages secrets without restarting the bootstrap Cell. After all required names exist, deploy the serving manifest once; do not repeatedly restart the Cell while entering values. The values still exist transiently in the local PowerShell and `flyctl` process memory, so use a trusted operator machine and close the shell afterward.
 
-`authority certify preflight --config ...` asks Fly only for secret metadata and retains only the secret names. A provider credential present on the operator laptop does not satisfy managed preflight unless the corresponding name exists in the Authority Cell. Secret values and Fly secret digests are never included in the report.
+Initialized `authority certify preflight` checks reference presence only. It deliberately does not ask Fly for secret metadata and does not treat a value present on the operator laptop as certification readiness. Later managed readiness must bind Authority Cell inventory without exposing values or secret digests.
 
 The Codex certification uses a dedicated `CODEX_HOME`, workspace, and session-credential directory. The session-credential directory must be outside the agent workspace. Authenticate that dedicated home once with the pinned standalone Codex binary:
 
@@ -89,4 +99,4 @@ The launcher pins the binary version, verifies login, generates the coordinator 
 
 ## Offline verification
 
-Run `reelier authority certify verify --input <signed-manifest> --key <authority-cell-public-key> --signer <signer-id>`. Store the signed manifest and complete graph in the operator-controlled receipt directory. Never store provider secret values in the evidence directory.
+Before interactive signing exists, run `reelier authority certify verify --input <content-addressed-export>`. This validates the closed unsigned preparation package and cannot confer authority. The legacy signed release-evidence verifier remains available only when `--key` is explicitly supplied. Store evidence in the operator-controlled receipt directory and never store provider secret values there.

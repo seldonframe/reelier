@@ -4465,6 +4465,8 @@ const USAGE =
   "           candidates, and Path C connections/candidates. It does not deploy, gate, dispatch, upload, or rewrite configs.\n" +
   "           --dry-run performs the same local inspection without writing .reelier/init artifacts.\n" +
   "  init --signing — generate (or print the existing) Ed25519 signing key at ~/.reelier/signing/; idempotent.\n" +
+  "  authority certify — private expert workflow: init --config <v2>, preflight [--scenario <id>|--all],\n" +
+  "           seal-readiness, export, and offline verify --input <export>. Readiness remains unsigned and non-dispatchable.\n" +
   "  verify <permalink|file> [--key <pub.pem>] — recompute the record digest and check signature/timestamp claims.\n" +
   "  diff   — compare the last two runs of a skill; exit 1 on drift (gate a scheduled replay).\n" +
   "  baseline — reelier baseline <skill.md>: the latest run against a median/MAD baseline of this skill's OWN previous runs,\n" +
