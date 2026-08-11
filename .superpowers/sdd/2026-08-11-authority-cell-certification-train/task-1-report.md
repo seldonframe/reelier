@@ -137,3 +137,43 @@ Review and remaining gates
 - The task brief does not contain a formal files-touched list; this round stayed within the parent-assigned ownership (`decision.ts`, `fs-ledger.ts`, their focused tests, and this report) and did not alter the brief.
 - Complete Ubuntu and Windows stress-suite evidence remains a CI gate. This round ran the requested focused suites on Windows; it does not claim Ubuntu verification.
 - `.tmp-pack/` remains pre-existing/unrelated and intentionally unmodified.
+
+## Fix round 3 — one deadline and terminal decision classification
+
+What changed
+
+- Decision contention, durable-result classification, and any retry now share one absolute monotonic deadline. A bounded delay uses only the remaining budget, so an odd-sized timeout cannot cross its deadline by a final polling interval.
+- Decision append is one bounded state machine. Every failed append attempt performs a durable terminal classification before deciding whether contention can retry or whether corruption/failure must be returned. A post-publication persistence failure therefore returns the visible terminal decision, while a genuinely pre-publication failure remains `unavailable`.
+- The contention-boundary test seam may pause asynchronously. If that observer fails, the sink performs one final durable classification before returning `unavailable` rather than leaking the observer exception.
+- The late-winner regression now launches a competing process that runs the full `FileGateDecisionSink` protocol, pauses immediately before atomic publication without sleeps, and resumes at the contender's timeout-read boundary.
+
+Deterministic regressions
+
+- A synthetic 21 ms monotonic budget is consumed exactly once while a real competing sink remains paused before publication; the previous retry implementation consumed 40 ms for a 20 ms budget.
+- A real competing sink publishes at the contender's timeout-read boundary and both callers observe terminal `appended`/`idempotent` results.
+- A failing contention-boundary observer cannot skip the final durable read.
+- Every injected crash boundary now asserts the append result as well as the durable file: pre-publication failures are `unavailable`, while failures after rename are terminal `idempotent` results with the durable digest.
+
+Final focused verification
+
+`npx tsc -p tsconfig.test.json`
+
+```text
+exit 0
+```
+
+`node --test --test-concurrency=1 dist-test/test/authority/decision.test.js`
+
+```text
+ℹ tests 24
+ℹ pass 24
+ℹ fail 0
+ℹ duration_ms 18454.8571
+```
+
+Review and remaining gates
+
+- `git diff --check` passed.
+- This round changed only `src/authority/decision.ts`, `test/authority/decision.test.ts`, and this report. It did not alter continuation or fence behavior.
+- Complete Ubuntu and Windows stress-suite evidence remains a CI gate. This round ran the requested affected decision suite on Windows; it does not claim Ubuntu verification.
+- `.tmp-pack/` remains pre-existing/unrelated and intentionally unmodified.
