@@ -3,11 +3,18 @@ Files changed
 - `test/authority/ledger.test.ts`
 - `.superpowers/sdd/linux-post-ledger-hang-report.md`
 
+Task 1C files-touched declaration
+
+- Task 1C is explicitly scoped to exactly the two files listed above.
+- The dispatched plan did not contain a plan-level `Files touched` list. That scope omission was flagged to the root orchestrator on 2026-08-11 before this review fix; no additional file was edited.
+
 What changed per file
 
 - `test/authority/ledger.test.ts`
   - Added a regression proving that aborting a spawned reserve process rejects only after the child has closed and its PID reports dead.
   - Added optional `AbortSignal` ownership to `spawnReserve`; abort sends the child its normal termination signal, and the promise settles from `close`, preserving child reaping.
+  - Captures child `error` events without settling while a PID-backed child remains live. A normal spawn failure with no PID rejects directly from `error`, removes abort ownership, and does not depend on a `close` event.
+  - Collects every started child in an N100 wave with `Promise.allSettled` semantics before surfacing one failure, so a failed sibling cannot be abandoned.
   - Bound every N100 reserve child to the `node:test` timeout signal so a timed-out stress test cannot leave child processes holding the file worker open.
   - Raised the listener warning threshold only on that known 100-subscriber test signal. This does not change timeouts or suppress process/test failures.
 - `.superpowers/sdd/linux-post-ledger-hang-report.md`
@@ -17,12 +24,12 @@ Root cause and evidence
 
 - Run `31489093447`, Ubuntu job `93771112968`, did not first become stuck after ledger test 598. Earlier in the same log, top-level test 414 (`100 real processes converge on one committed reservation and one dispatch eligibility`) timed out at 120,054 ms.
 - `node:test` correctly continued running later tests, but its timeout did not cancel the timed-out async body. `spawnReserve` had no cancellation input, so roughly 30 reserve children were still live at job cleanup. Test 598 was merely the last output before the worker waited forever for its still-owned child handles.
-- An unmodified Node 20 Linux container reproduced the N100 timeout and the listener/process shape. After the fix, the same forced timeout remained a `testTimeoutFailure`, but the complete targeted worker exited nonzero at 123,460 ms instead of hanging.
+- An unmodified Node 20 Linux container reproduced the N100 timeout and the listener/process shape. After the initial lifecycle fix, the same forced timeout remained a `testTimeoutFailure`, but the complete targeted worker exited nonzero at 123,460 ms instead of hanging. This measurement preceded Task 1B's bounded-concurrency N100 harness; it is retained as the direct regression evidence for the timeout cleanup path, not a claim about current N100 convergence.
 
 Deviations from the plan and why
 
 - None. This fixes only the Linux post-timeout lifecycle hang. It does not increase a timeout, force process exit, weaken crash semantics, or turn the underlying N100 convergence failure into a pass.
-- The full ledger file was not rerun to natural completion in Linux because the unbounded N100 stress case deterministically consumed its full 120-second timeout in the available Docker harness. Its exact failure path and worker exit were exercised instead. A separate assigned task owns N100 convergence.
+- The initial full ledger file was not rerun to natural completion in Linux because the then-unbounded N100 stress case deterministically consumed its full 120-second timeout in the available Docker harness. Its exact failure path and worker exit were exercised instead. Task 1B subsequently bounded the N100 harness in commit `1ba1492`; Task 1C preserves its peak-load oracle, all 100 executions, timeout signal, and original convergence assertions.
 
 Test results (verbatim tails)
 
@@ -31,6 +38,14 @@ RED (`npx tsc -p tsconfig.test.json --pretty false` before implementation):
 ```text
 test/authority/ledger.test.ts(252,46): error TS2554: Expected 2 arguments, but got 3.
 test/authority/ledger.test.ts(252,80): error TS7006: Parameter 'pid' implicitly has an 'any' type.
+```
+
+Review RED lifecycle pins:
+
+```text
+test/authority/ledger.test.ts(269,17): error TS2304: Cannot find name 'collectSpawnedJson'.
+test/authority/ledger.test.ts(279,19): error TS2304: Cannot find name 'collectSpawnedJson'.
+test/authority/ledger.test.ts(293,19): error TS2304: Cannot find name 'collectSpawnBatch'.
 ```
 
 Focused regression, Windows host:
@@ -59,6 +74,56 @@ Focused regression, Node 20 Linux container:
 # skipped 190
 # todo 0
 # duration_ms 2536.012062
+```
+
+Review lifecycle regressions, Windows host:
+
+```text
+âœ” aborting a reserve child waits until the process is reaped (95.5458ms)
+âœ” an abort-time kill error settles only after the live child closes (9.9434ms)
+âœ” a failed spawn rejects and removes abort ownership without waiting for a nonexistent process (4.3981ms)
+âœ” a child batch waits for every started process to close before surfacing one failure (13.8869ms)
+â„¹ tests 4
+â„¹ suites 0
+â„¹ pass 4
+â„¹ fail 0
+â„¹ cancelled 0
+â„¹ skipped 0
+â„¹ todo 0
+â„¹ duration_ms 267.0982
+```
+
+Review lifecycle regressions, Node 20 Linux container:
+
+```text
+1..194
+# tests 194
+# suites 0
+# pass 4
+# fail 0
+# cancelled 0
+# skipped 190
+# todo 0
+# duration_ms 2634.612879
+```
+
+Combined bounded N100 regression, Node 20 Linux container:
+
+```text
+# Subtest: 100 real processes converge on one committed reservation and one dispatch eligibility
+ok 9 - 100 real processes converge on one committed reservation and one dispatch eligibility
+  ---
+  duration_ms: 35365.051877
+  ...
+1..194
+# tests 194
+# suites 0
+# pass 1
+# fail 0
+# cancelled 0
+# skipped 193
+# todo 0
+# duration_ms 37975.478791
 ```
 
 Forced Linux N100 timeout after lifecycle fix:
@@ -95,5 +160,5 @@ built cloudflare_api_token, cloudflare_dns, github_issue_labels, gmail, gmail_la
 
 Open risks
 
-- The original N100 all-success convergence test still times out under the unbounded Linux Docker stress harness. This change ensures that failure terminates cleanly and remains visible; the separately assigned bounded-concurrency work must make the assertion itself pass.
-- Cancellation uses the normal `ChildProcess.kill()` signal. The reserve children install no signal handler, and the regression verifies close plus dead-PID evidence before rejection.
+- Cancellation uses the normal `ChildProcess.kill()` signal. The reserve children install no signal handler; regressions now cover successful abort/reap, abort-time kill error ordering, no-PID spawn failure, abort-listener removal, and sibling cleanup before batch rejection.
+- A PID-backed child that cannot be signalled remains owned rather than being falsely reported as reaped. This is deliberate: no timeout or force-exit fallback can honestly prove OS-level child cleanup.
