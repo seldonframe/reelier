@@ -25,6 +25,7 @@
 - Required distinct canonical SPKI key material across the human signer and every Authority Cell role/purpose, even when key IDs and descriptor digests differ.
 - Added content-addressed signing of the existing Task2C2 readiness candidate using a pre-existing Ed25519 private key. The private key is read only after a mandatory review callback approves the exact loaded snapshot and is never persisted in the result.
 - The file-signing path reruns live preflight immediately before review, displays the bound sanitized commitments, and reads the published authorization back to verify exact bytes, artifact digest, object identity, and absence of linked-file replacement. Identical publication remains idempotent; conflicting or linked replacement refuses.
+- Fixed hosted-Windows alias handling at the source: readiness sealing now returns the canonical confined path produced by the publisher instead of reconstructing a path from the caller's spelling. An uppercase Windows workspace alias reproduces the former signer mismatch and now passes without weakening junction, symlink, or arbitrary same-basename refusal.
 - Added `authority certify sign-readiness`. It refuses non-TTY invocation, has no confirmation-bypass flag, prints the exact sanitized review summary, and requires the operator to type the full readiness digest. Its result remains `dispatchable:false` and does not alter any runtime dispatch barrier.
 - Added the portable parsing and offline verification functions to the narrow `reelier/authority` export; signing and file-system helpers remain internal.
 - Added schema packaging assertions and focused positive/negative tests for purpose confusion, role confusion, inactive/revoked/late-activated keys, malformed/ambiguous trust history, all required substitutions, wrong private key, noninteractive refusal, private-key redaction, and immutable Task2C2 candidate linkage.
@@ -46,14 +47,16 @@ node --test dist-test/test/authority/certification-authority.test.js dist-test/t
 npm test
 ```
 
+The canonical-path regression passed 20 consecutive Windows runs. The focused filesystem, initializer, readiness, and authority confinement suite passed 27/27, including ordinary Windows 8.3/case aliases and hostile linked-output refusal.
+
 Verbatim tail:
 
 ```text
-✔ sign-readiness refuses noninteractive invocation and has no auto-sign path (0.2978ms)
-✔ authority signatures are purpose-bound and refuse tampering (2.6603ms)
-✔ frozen vectors carry deterministic Ed25519 signatures (2.223ms)
-✔ standing-authority signatures bind sponsor, audience, target, projection, limits, and policy bytes (1.4152ms)
-✔ public production export parses DecisionContext and its portable evidence against packaged schemas (289.4794ms)
+✔ sign-readiness refuses noninteractive invocation and has no auto-sign path (0.38ms)
+✔ authority signatures are purpose-bound and refuse tampering (2.1792ms)
+✔ frozen vectors carry deterministic Ed25519 signatures (2.5469ms)
+✔ standing-authority signatures bind sponsor, audience, target, projection, limits, and policy bytes (1.5542ms)
+✔ public production export parses DecisionContext and its portable evidence against packaged schemas (285.8087ms)
 ℹ tests 30
 ℹ suites 0
 ℹ pass 30
@@ -61,7 +64,7 @@ Verbatim tail:
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 1841.9628
+ℹ duration_ms 2048.5313
 ```
 
 The additional full `npm test` run produced no test output and was terminated by the bounded command timeout after 184 seconds (exit 124). No unrelated test behavior was changed in Task 3A.
