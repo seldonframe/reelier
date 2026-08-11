@@ -419,6 +419,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
   private readonly k1OperationFenceConfigurationValid:boolean;
   private readonly k1AdmissionPreparationEnabled:boolean;
   private activeK1OperationCapability:K1OperationFenceCapability|null=null;
+  private readonly initiatedPrepCleanupLifecycles=new Set<string>();
   private refusalOnlyK1ClassificationActive=false;
   private lockTail:Promise<void>=Promise.resolve();
 
@@ -1539,7 +1540,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
     // recover()-only drain would leave observeClock refusing a root HEAD healed. Initiating an
     // abandoned-family retirement stays reserved to recover(); committed dead-owner slot-orphan
     // tests pin a lock-seeking operation to leave those byte-identical.
-    const continuingDeadPrepCleanup=binding.descriptor.kind==="prep-retired-cleanup"&&binding.descriptor.lifecycleName!==null&&this.mayAdvanceDeadPrepCleanup(binding);
+    const continuingDeadPrepCleanup=binding.descriptor.kind==="prep-retired-cleanup"&&binding.descriptor.lifecycleName!==null&&this.initiatedPrepCleanupLifecycles.has(binding.descriptor.lifecycleName)&&this.mayAdvanceDeadPrepCleanup(binding);
     if(!permitWrite&&!(continuingDeadPrepCleanup||budgetLive&&(this.mayAdvanceDeadPrepCleanup(binding)||this.mayDrainPublishedSlot(binding)||this.mayProgressWithdrawalChain(binding)))){this.prepHousekeeperRuntime.observeBoundary?.(`${prefix}-transition-refused`);return "busy";}
     if(binding.descriptor.kind==="dead-slot"&&processLiveness(binding.descriptor.pid)!=="dead"){this.prepHousekeeperRuntime.observeBoundary?.("slot-only-transition-refused");return "busy";}
     if((binding.descriptor.kind==="lone-withdrawal"||binding.descriptor.kind==="withdrawal-cleanup"||binding.descriptor.kind==="dead-stage-withdrawal")&&processLiveness(binding.descriptor.pid)!=="dead"){this.prepHousekeeperRuntime.observeBoundary?.("withdrawal-only-transition-refused");return "busy";}
@@ -1638,7 +1639,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
     }
     const cleanup=this.boundPrepCleanup(binding);
     const stagePath=this.absolute(cleanup.stageName);
-    if(lifecycle===null){let handle:FileHandle|undefined;try{handle=await open(stagePath,"wx",0o600);const created=await handle.stat({bigint:true});if(!created.isFile()||created.isSymbolicLink()||created.nlink!==1n)throw new LedgerCorruption("invalid new prep cleanup stage");}catch(error){if(hasCode(error,"EEXIST")||isSnapshotSharingError(error))return "reclassify";throw error;}finally{if(handle)await handle.close();}this.prepHousekeeperRuntime.observeBoundary?.("prep-only-cleanup-stage-zero");this.fault("after-coordination-cleanup-stage-create");return "progress";}
+    if(lifecycle===null){let handle:FileHandle|undefined;try{handle=await open(stagePath,"wx",0o600);const created=await handle.stat({bigint:true});if(!created.isFile()||created.isSymbolicLink()||created.nlink!==1n)throw new LedgerCorruption("invalid new prep cleanup stage");}catch(error){if(hasCode(error,"EEXIST")||isSnapshotSharingError(error))return "reclassify";throw error;}finally{if(handle)await handle.close();}this.initiatedPrepCleanupLifecycles.add(cleanup.stageName);this.prepHousekeeperRuntime.observeBoundary?.("prep-only-cleanup-stage-zero");this.fault("after-coordination-cleanup-stage-create");return "progress";}
     const entry=binding.snapshot.entries.find(value=>value.name===lifecycle),parsed=parseK1Name(lifecycle);if(entry?.kind!=="file"||entry.bytes===undefined||entry.identity.nlink!==1n)return "busy";
     if(parsed?.kind==="coordination-ack"){
       if(lifecycle!==`.authority-ledger-coordination-cleanup-${coordinationRawDigest(cleanup.bytes).slice(7)}.ack`||!entry.bytes.equals(cleanup.bytes))return "busy";
@@ -1666,6 +1667,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
       if(!await this.revalidatePrepCleanupMarker(cleanup.artifact)||!await this.revalidatePrepCleanupFile(lifecycle,entry,cleanup.bytes))return "reclassify";
       try{await rename(stagePath,finalPath);}catch(error){if(hasCode(error,"EEXIST")||hasCode(error,"ENOTEMPTY")||hasCode(error,"ENOENT")||isSnapshotSharingError(error))return "reclassify";throw error;}
       let movedEntry:{identity:FileIdentity;bytes:Buffer};try{movedEntry=await this.readExactPrepCleanupFile(finalPath,"renamed prep cleanup acknowledgment");}catch(error){if(hasCode(error,"ENOENT")||isSnapshotSharingError(error))return "reclassify";throw error;}if(!sameFileIdentity(entry.identity,movedEntry.identity)||!movedEntry.bytes.equals(cleanup.bytes))throw new LedgerCorruption("prep cleanup acknowledgment changed during rename");
+      this.initiatedPrepCleanupLifecycles.delete(cleanup.stageName);this.initiatedPrepCleanupLifecycles.add(finalName);
       this.fault("after-coordination-cleanup-ack-rename");
       await this.syncDirectory(this.root);
       this.prepHousekeeperRuntime.observeBoundary?.("prep-only-cleanup-ack-root-synced");
@@ -3803,7 +3805,7 @@ function createTrackedK1OperationFenceServer(accept:(socket:Socket)=>void):Serve
 function serveK1OperationFenceIdentity(socket:Socket,materialDigest:string):void{
   socket.on("error",()=>{});
   const cutoff=setTimeout(()=>socket.end(),100);cutoff.unref();
-  socket.end(k1OperationFenceIdentity(materialDigest),"utf8",()=>{clearTimeout(cutoff);});
+  socket.end(k1OperationFenceIdentity(materialDigest),"utf8",()=>{clearTimeout(cutoff);const linger=setTimeout(()=>resetK1OperationFenceSocket(socket),100);linger.unref();socket.once("close",()=>clearTimeout(linger));});
 }
 function resetK1OperationFenceSocket(socket:Socket):void{if(typeof socket.resetAndDestroy==="function")socket.resetAndDestroy();else socket.destroy();}
 async function probeK1OperationFenceIdentity(port:number,materialDigest:string,timeoutMs:number):Promise<"same"|"foreign"|"vacant"|"unknown">{
