@@ -123,6 +123,11 @@ import { uploadDiscoveryBundle } from "./discovery-client.js";
 import { createBridgeServer } from "./bridge.js";
 import { runAuthorityCommand } from "./authority/cli.js";
 import { buildAuthorityDeployment } from "./authority/host/deploy.js";
+import {
+  initializeInspection,
+  renderInitializationReport,
+  type InitializationDependencies,
+} from "./initialization.js";
 
 // Exported (alongside cmdPush below) so test/push-cli.test.ts can drive
 // cmdPush's console output directly with a fake ParsedArgs + monkeypatched
@@ -4229,186 +4234,45 @@ async function cmdInitSigning(homedir: string): Promise<number> {
 
 // Exported so test/init-signing-cli.test.ts can drive the `--signing` path
 // directly (same reasoning as cmdPush's export note above).
-export async function cmdInit(args: ParsedArgs): Promise<number> {
-  const yes = args.flags.has("yes");
-  const cwd = process.cwd();
-  const homedir = os.homedir();
+export interface CmdInitOverrides {
+  readonly cwd?: string;
+  readonly homedir?: string;
+  readonly authorityRoot?: string;
+  readonly dependencies?: InitializationDependencies;
+}
+
+export async function cmdInit(args: ParsedArgs, overrides: CmdInitOverrides = {}): Promise<number> {
+  const cwd = overrides.cwd ?? process.cwd();
+  const homedir = overrides.homedir ?? os.homedir();
 
   if (args.flags.has("signing")) {
     return cmdInitSigning(homedir);
   }
 
-  console.log("Reelier init — record once, replay forever. Let's get your first receipt in under 60 seconds.");
-  console.log("");
-
-  // Step 0 — meet the user where they are: before recording anything NEW,
-  // look at the agent work they've ALREADY done and offer to compile a
-  // replayable skill straight from history. Read-only sessions only (safe
-  // to replay); any scan failure degrades honestly to the normal init flow —
-  // never a crash, never a fabricated candidate.
   try {
-    const discovered = discoverOpportunities(await discoveryInputs(homedir));
-    if (discovered.length > 0) {
-      console.log("Agent opportunities found");
-      for (let i = 0; i < Math.min(3, discovered.length); i++) {
-        console.log(formatDiscoveryOpportunity(i + 1, discovered[i]).join("\n"));
-      }
-      console.log("  To inspect the exact sanitized bundle before sharing: reelier discover --upload");
-      console.log("");
+    const result = await initializeInspection({
+      cwd,
+      homedir,
+      dryRun: args.flags.has("dry-run"),
+      ...(overrides.authorityRoot === undefined ? {} : { authorityRoot: overrides.authorityRoot }),
+      ...(overrides.dependencies === undefined ? {} : { dependencies: overrides.dependencies }),
+    });
+    if (result.status === "busy") {
+      console.error("Initialization busy: another local inspection is in progress.");
+      return 2;
     }
-    const sessions = await scanAgentSessions(homedir);
-    const candidates = rankByReplayWorthiness(
-      sessions.filter((s) => s.replayableCount > 0 && s.readOnly)
-    ).slice(0, 3);
-
-    if (candidates.length > 0) {
-      console.log("Step 0 — you already have replayable work");
-      console.log(
-        `  Scanned your agent history (${agentSources().map((s) => s.label).join(", ")}): ${candidates.length} read-only session(s) Reelier can replay as-is:`
-      );
-      for (let i = 0; i < candidates.length; i++) {
-        console.log(fmtSessionLine(i + 1, candidates[i]));
-      }
-
-      if (yes) {
-        console.log("  (--yes: skipping the offer — compile any of these later with `reelier scan`.)");
-      } else {
-        const rl0 = createInterface({ input: process.stdin, output: process.stdout });
-        let pick: string;
-        try {
-          pick = (
-            await rl0.question("\n  Compile one into a skill now? (number, or Enter to skip): ")
-          ).trim();
-        } finally {
-          rl0.close();
-        }
-        const n = parseInt(pick, 10);
-        if (Number.isInteger(n) && n >= 1 && n <= candidates.length) {
-          const session = candidates[n - 1];
-          const source = await readFile(session.path, "utf8");
-          const traceFileName = path.basename(session.path);
-          const name = `${session.project}-${traceFileName.replace(/\.jsonl$/i, "")}`;
-          const result = compileSessionTranscript(source, { name, traceFileName });
-          if (result.ok) {
-            const outPath = path.join(cwd, `${result.compileResult.name}.skill.md`);
-            await writeFile(outPath, result.skillSource, "utf8");
-            console.log(
-              `  Wrote ${outPath} (${result.compileResult.stats.steps} steps, ${result.compileResult.stats.asserts} asserts).`
-            );
-            console.log("  Replay it (MCP-tool steps need their server wrapped):");
-            console.log(`    reelier run ${outPath}`);
-          } else {
-            // Shouldn't happen (scan pre-filtered), but never fabricate.
-            console.log(`  ${session.path}: ${result.reason}`);
-          }
-        }
-      }
-      console.log("");
+    for (const line of renderInitializationReport(result.report, result.status === "dry-run")) console.log(line);
+    return 0;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "";
+    if (message.startsWith("checkpoint state refused")) {
+      console.error("Initialization refused: checkpoint state is malformed, unknown, or stale.");
+    } else {
+      console.error("Initialization refused: local inspection failed.");
     }
-  } catch {
-    // Scan is a best-effort bonus — a missing/unreadable ~/.claude/projects
-    // must never block first-run init.
+    return 1;
   }
 
-  const detection = await detectAgentConfig(cwd, homedir);
-  console.log("Step 1 — agent config");
-  console.log(
-    `  project MCP config (${detection.projectConfigPath}): ${detection.projectConfigExists ? "found" : "not found"}`
-  );
-  console.log(
-    `  user Claude config (${detection.userConfigPath}): ${detection.userConfigExists ? "found" : "not found"}`
-  );
-  console.log("");
-  console.log("  To record a real agent session later, front an existing MCP server with reelier:");
-  console.log(`    ${reelierProxyCommandLine("<your-mcp-server-command>")}`);
-  console.log(
-    "  Recording needs at least one --wrap'd downstream server — since we don't know yours yet, the default"
-  );
-  console.log("  below is the zero-setup demo path instead.");
-
-  let wrapCommand: string | undefined;
-
-  if (!yes) {
-    const rl = createInterface({ input: process.stdin, output: process.stdout });
-    try {
-      const choice = (
-        await rl.question("\nRecord a REAL session against your own MCP server instead of the demo? [y/N] ")
-      )
-        .trim()
-        .toLowerCase();
-
-      if (choice === "y" || choice === "yes") {
-        const raw = (
-          await rl.question("Paste the command line for your downstream MCP server (e.g. npx -y @your/mcp-server): ")
-        ).trim();
-
-        if (raw) {
-          wrapCommand = raw;
-
-          const writeChoice = (await rl.question(`Write/merge this into ${detection.projectConfigPath}? [y/N] `))
-            .trim()
-            .toLowerCase();
-          if (writeChoice === "y" || writeChoice === "yes") {
-            // A malformed existing .mcp.json (or any other read/write
-            // failure here) must never abort the whole init — the file is
-            // already left untouched by construction (planMcpConfigWrite
-            // only reads+parses; applyMcpConfigWrite is never reached until
-            // an explicit confirm below), so the honest recovery is to say
-            // so and fall through to the zero-setup demo path rather than
-            // crash with a raw SyntaxError.
-            try {
-              const plan = await planMcpConfigWrite(detection.projectConfigPath, wrapCommand);
-              if (!plan.result.added) {
-                console.log(
-                  `  A "reelier" server is already configured in ${detection.projectConfigPath} — left untouched.`
-                );
-              } else {
-                console.log("  Resulting .mcp.json:");
-                console.log(
-                  plan.after
-                    .split("\n")
-                    .map((l) => `    ${l}`)
-                    .join("\n")
-                );
-                const confirm = (await rl.question("  Write this? [y/N] ")).trim().toLowerCase();
-                if (confirm === "y" || confirm === "yes") {
-                  await applyMcpConfigWrite(detection.projectConfigPath, plan.result.config);
-                  console.log(
-                    `  Wrote ${detection.projectConfigPath} (preserved ${plan.result.preservedServerNames.length} existing server(s)).`
-                  );
-                } else {
-                  console.log("  Skipped — nothing written.");
-                }
-              }
-            } catch (err) {
-              console.log(
-                `  Your existing ${detection.projectConfigPath} isn't valid JSON — leaving it untouched; ` +
-                  `continuing with the demo path. (${(err as Error).message})`
-              );
-              wrapCommand = undefined;
-            }
-          }
-
-          if (wrapCommand) {
-            console.log("");
-            console.log("  Restart your agent so it picks up the new MCP server, then tell it:");
-            console.log('    "record yourself doing <the task you want to teach me>"');
-            await rl.question("\n  Press Enter once you've finished recording and stopped the recording... ");
-          }
-        }
-      }
-    } finally {
-      rl.close();
-    }
-  }
-
-  const initCode = wrapCommand ? await runRealPath(wrapCommand, cwd) : await runDemoPath(cwd);
-
-  // Closing offer — make lossless capture the default happy path. Runs even
-  // when the demo/replay above failed (the offer is independent of it), but
-  // an init failure keeps its exit code either way.
-  const offerCode = await offerWrapInstall(cwd, homedir, !yes && process.stdin.isTTY === true);
-  return initCode !== 0 ? initCode : offerCode;
 }
 
 /** env -> config file -> DEFAULT_CLOUD_URL — same chain resolvePushConfig uses to resolve a base URL. */
