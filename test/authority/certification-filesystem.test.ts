@@ -1,11 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { access, mkdir, mkdtemp, readdir, symlink, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readdir, realpath, symlink, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { initializeCertification } from "../../src/authority/certification/initializer.js";
 import { preflightCertification } from "../../src/authority/certification/preflight.js";
 import { sealCertificationReadiness } from "../../src/authority/certification/readiness.js";
+import { readUnlinkedFile } from "../../src/authority/certification/filesystem.js";
 
 async function initialized(): Promise<string> {
   const root = await mkdtemp(path.join(tmpdir(), "reelier-cert-fs-"));
@@ -54,3 +56,28 @@ test("readiness refuses a linked output directory and performs no external write
   assert.deepEqual(await readdir(external), []);
   await assert.doesNotReject(() => access(external));
 });
+
+test("confined reads allow an ordinary Windows 8.3 ancestor alias", async t => {
+  if (process.platform !== "win32") { t.skip("Windows short-name behavior"); return; }
+  const aliasRoot = await findWindowsShortAliasRoot();
+  if (!aliasRoot) { t.skip("no writable short-name alias is available on this volume"); return; }
+  const root = await mkdtemp(path.join(aliasRoot, "reelier-cert-short-alias-"));
+  const file = path.join(root, "config.json");
+  await writeFile(file, "SHORT_ALIAS_CANARY", "utf8");
+  assert.equal((await readUnlinkedFile(file)).toString("utf8"), "SHORT_ALIAS_CANARY");
+});
+
+async function findWindowsShortAliasRoot(): Promise<string | undefined> {
+  const requestedTemp = path.resolve(tmpdir());
+  const candidates = [requestedTemp];
+  const parent = path.dirname(requestedTemp);
+  for (const entry of await readdir(parent, { withFileTypes: true })) if (entry.isDirectory()) candidates.push(path.join(parent, entry.name));
+  for (const candidate of candidates) {
+    try {
+      if (/\s/.test(candidate)) continue;
+      const short = execFileSync(process.env.ComSpec ?? "cmd.exe", ["/d", "/c", `for %I in (${candidate}) do @echo %~sI`], { encoding: "utf8" }).trim();
+      if (short && short.toLowerCase() !== (await realpath(short)).toLowerCase()) return short;
+    } catch { /* This candidate has no accessible short spelling. */ }
+  }
+  return undefined;
+}
