@@ -37,6 +37,7 @@ import { startLogin, pollForToken, openBrowser } from "./login.js";
 import type { spawn } from "node:child_process";
 import { builtinTools, type Tool, type ToolContext } from "./tools.js";
 import { connectDownstream, type DownstreamConnection } from "./mcp-client.js";
+import { loadConnectionInventory } from "./connections.js";
 import { buildMcpTools } from "./mcp-tool.js";
 import { buildProxyServer, Recorder } from "./recorder.js";
 import { parseTraceLines, formatTrace } from "./trace.js";
@@ -4542,26 +4543,14 @@ async function cmdConnect(args: ParsedArgs): Promise<number> {
 
 export async function cmdConnections(args: ParsedArgs): Promise<number> {
   const root = path.resolve(args.opts.path ?? "authority");
-  const dir = path.join(root, "connectors");
-  const connections: Record<string, unknown>[] = [];
   try {
-    for (const name of (await readdir(dir)).filter(entry => entry.endsWith(".json")).sort()) {
-      try {
-        const value = JSON.parse(await readFile(path.join(dir, name), "utf8")) as Record<string, unknown>;
-        if (!value || typeof value !== "object" || Array.isArray(value) || typeof value.provider !== "string") continue;
-        connections.push({
-          provider: value.provider,
-          status: typeof value.status === "string" ? value.status : "unknown",
-          ...(typeof value.accountId === "string" ? { accountId: value.accountId } : {}),
-          ...(Array.isArray(value.callableTools) ? { callableTools: value.callableTools.filter(item => typeof item === "string").sort() } : {}),
-          ...(typeof value.schemaDigest === "string" ? { schemaDigest: value.schemaDigest } : {}),
-          enforcement: typeof value.enforcement === "string" ? value.enforcement : "unchecked",
-        });
-      } catch { /* malformed connector metadata is omitted, never surfaced as verified */ }
-    }
-  } catch { /* an absent connectors directory is an empty inventory */ }
-  console.log(JSON.stringify({ v: "reelier.connection-inventory/v1", root, connections }));
-  return 0;
+    const report = await loadConnectionInventory(root);
+    console.log(JSON.stringify(report));
+    return report.issues.length === 0 ? 0 : 1;
+  } catch {
+    console.error(JSON.stringify({ v: "reelier.connection-inventory-refusal/v1", reasonCode: "inventory-unreadable" }));
+    return 1;
+  }
 }
 
 async function cmdDeploy(args: ParsedArgs): Promise<number> {
