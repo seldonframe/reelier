@@ -1,4 +1,4 @@
-export const CERTIFICATION_SCENARIO_IDS = [
+export const CERTIFICATION_SCENARIO_IDS = Object.freeze([
   "cloudflare-dns",
   "cloudflare-vercel-secret",
   "codex-ten-principal",
@@ -7,7 +7,7 @@ export const CERTIFICATION_SCENARIO_IDS = [
   "neon-migration",
   "slack-topic",
   "vercel-promotion",
-] as const;
+] as const);
 
 export type CertificationScenarioId = typeof CERTIFICATION_SCENARIO_IDS[number];
 export type CertificationResourceSection = Exclude<CertificationScenarioId, "codex-ten-principal" | "fly-topology">;

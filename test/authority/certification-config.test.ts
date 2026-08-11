@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { canonicalizeCertificationOperatorConfigV2, inspectCertificationResourceIdentifiers, migrateCertificationOperatorConfig, parseCertificationOperatorConfig, parseCertificationOperatorConfigV2, inspectCertificationSecretReferences } from "../../src/authority/host/certification-config.js";
+import { CERTIFICATION_SECRET_SLOTS, CODEX_CERTIFICATION_PROFILES, canonicalizeCertificationOperatorConfigV2, inspectCertificationResourceIdentifiers, migrateCertificationOperatorConfig, parseCertificationOperatorConfig, parseCertificationOperatorConfigV2, inspectCertificationSecretReferences } from "../../src/authority/host/certification-config.js";
 
 function completeConfig(): unknown {
   return {
@@ -242,4 +242,33 @@ test("v2 pins provider API bases so a resource cannot redirect later credential 
     raw.resources["github-issue-labels"].apiBaseUrl = apiBaseUrl;
     assert.throws(() => parseCertificationOperatorConfigV2(raw), /github apiBaseUrl/i);
   }
+});
+
+test("v2 exported closed lists are runtime immutable", () => {
+  assert.equal(Object.isFrozen(CERTIFICATION_SECRET_SLOTS), true);
+  assert.equal(Object.isFrozen(CODEX_CERTIFICATION_PROFILES), true);
+});
+
+test("v2 refuses collapsed Fly identities and inconsistent shared provider scope", () => {
+  const collapsedApp = structuredClone(migrateCertificationOperatorConfig(completeConfig())) as any;
+  collapsedApp.metadata.flyTopology.agentAppName = collapsedApp.metadata.flyTopology.appName;
+  assert.throws(() => parseCertificationOperatorConfigV2(collapsedApp), /Fly app identities must be unique/);
+
+  const collapsedMachine = structuredClone(migrateCertificationOperatorConfig(completeConfig())) as any;
+  collapsedMachine.metadata.flyTopology.agentMachineId = collapsedMachine.metadata.flyTopology.authorityMachineId;
+  assert.throws(() => parseCertificationOperatorConfigV2(collapsedMachine), /Fly machine identities must be unique/);
+
+  const cloudflareMismatch = structuredClone(migrateCertificationOperatorConfig(completeConfig())) as any;
+  cloudflareMismatch.resources["cloudflare-vercel-secret"].cloudflareAccountId = "other-account";
+  assert.throws(() => parseCertificationOperatorConfigV2(cloudflareMismatch), /Cloudflare account scope must match/);
+
+  for (const field of ["vercelAccountId", "projectId"] as const) {
+    const vercelMismatch = structuredClone(migrateCertificationOperatorConfig(completeConfig())) as any;
+    vercelMismatch.resources["cloudflare-vercel-secret"][field] = "other-vercel-scope";
+    assert.throws(() => parseCertificationOperatorConfigV2(vercelMismatch), /Vercel account and project scope must match/);
+  }
+
+  const codexEndpointMismatch = structuredClone(migrateCertificationOperatorConfig(completeConfig())) as any;
+  codexEndpointMismatch.metadata.codexTenPrincipal.authorityEndpoint = "https://different-cell.fly.dev/mcp";
+  assert.throws(() => parseCertificationOperatorConfigV2(codexEndpointMismatch), /Codex authority endpoint must match Fly authority app/);
 });
