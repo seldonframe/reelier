@@ -188,7 +188,18 @@ export async function signCertificationReadinessArtifact(input: Readonly<{
   descriptorsPath: string;
   trustEventsPath: string;
   authorizedAt: string;
+  confirm: (summary: Readonly<{
+    readinessCandidateDigest: string;
+    configurationRoot: string;
+    selectionDigest: string;
+    identifiers: CertificationIdentifiers;
+    scenarios: readonly CertificationScenarioId[];
+    cellKeys: readonly Readonly<{ keyId: string; purpose: CellPurpose; descriptorDigest: string }>[];
+    trustHistoryDigest: string;
+    dispatchable: false;
+  }>) => Promise<boolean>;
 }>): Promise<Readonly<{ signed: SignedCertificationReadinessV1; digest: string; path: string }>> {
+  if (typeof input.confirm !== "function") throw new TypeError("interactive human confirmation is required before readiness signing");
   const root = await certificationWorkspaceRoot(path.resolve(input.workspace));
   const readinessDirectory = await confinedExistingDirectory(root, ["readiness"]);
   if (!readinessDirectory) throw new TypeError("certification readiness candidate directory is absent");
@@ -207,9 +218,21 @@ export async function signCertificationReadinessArtifact(input: Readonly<{
   if (!human) throw new TypeError("pre-existing human signer descriptor is absent");
   const cells = descriptors.filter(descriptor => descriptor.role === "authority-cell");
   const trustEvents = parseTrustEvents(JSON.parse((await readUnlinkedFile(input.trustEventsPath)).toString("utf8")), descriptors);
+  const parsedCells = parseCellDescriptors(cells);
+  const review = Object.freeze({
+    readinessCandidateDigest: candidateDigest,
+    configurationRoot: candidate.configDigest,
+    selectionDigest: candidate.selectionDigest,
+    identifiers: candidate.identifiers,
+    scenarios: candidate.scenarios,
+    cellKeys: Object.freeze(parsedCells.map(descriptor => Object.freeze({ keyId: descriptor.keyId, purpose: descriptor.purpose as CellPurpose, descriptorDigest: authorityDigest(descriptor) })).sort((left, right) => left.descriptorDigest.localeCompare(right.descriptorDigest))),
+    trustHistoryDigest: authorityDigest(trustEvents),
+    dispatchable: false as const,
+  });
+  if (await input.confirm(review) !== true) throw new TypeError("human confirmation refused readiness signing");
   const privateKey = createPrivateKey(await readUnlinkedFile(input.privateKeyPath));
   if (privateKey.asymmetricKeyType !== "ed25519") throw new TypeError("human signing key must be Ed25519");
-  const signed = createSignedCertificationReadiness({ readinessCandidate: candidate, readinessCandidateDigest: candidateDigest, humanKeyDescriptor: human, cellKeyDescriptors: cells, trustEvents, humanPrivateKey: privateKey, authorizedAt: input.authorizedAt });
+  const signed = createSignedCertificationReadiness({ readinessCandidate: candidate, readinessCandidateDigest: candidateDigest, humanKeyDescriptor: human, cellKeyDescriptors: parsedCells, trustEvents, humanPrivateKey: privateKey, authorizedAt: input.authorizedAt });
   const signedDigest = authorityDigest(signed);
   const filename = `signed-readiness-${signedDigest.replace(":", "-")}.json`;
   const output = await publishPrivateContentAddressed(root, "authorizations", filename, `${JSON.stringify(signed)}\n`);

@@ -304,16 +304,16 @@ async function authorityCertify(args: Readonly<{ positional: string[]; flags: Se
     const allowed = ["workspace", "candidate", "key", "descriptors", "trust-events"];
     if (args.positional.length !== 2 || args.flags.size !== 0 || Object.keys(args.opts).some(option => !allowed.includes(option)) || allowed.some(option => !args.opts[option])) { console.error(JSON.stringify({ status: "refused", reasonCode: "certification-command-invalid" })); return 1; }
     if (process.stdin.isTTY !== true || process.stderr.isTTY !== true) { console.error(JSON.stringify({ status: "refused", reasonCode: "certification-interactive-confirmation-required" })); return 1; }
-    const candidate = path.resolve(args.opts.candidate);
-    const expected = path.basename(candidate).match(/^readiness-(sha256-[0-9a-f]{64})\.json$/)?.[1]?.replace("-", ":");
-    if (!expected) { console.error(JSON.stringify({ status: "refused", reasonCode: "certification-readiness-refused" })); return 1; }
-    const prompt = createInterface({ input: process.stdin, output: process.stderr });
-    let confirmation: string;
-    try { confirmation = await prompt.question(`Type SIGN ${expected} to authorize this non-dispatchable readiness candidate: `); }
-    finally { prompt.close(); }
-    if (confirmation !== `SIGN ${expected}`) { console.error(JSON.stringify({ status: "refused", reasonCode: "certification-human-confirmation-refused" })); return 1; }
     try {
-      const result = await signCertificationReadinessArtifact({ workspace: args.opts.workspace, candidatePath: candidate, privateKeyPath: args.opts.key, descriptorsPath: args.opts.descriptors, trustEventsPath: args.opts["trust-events"], authorizedAt: new Date().toISOString() });
+      const result = await signCertificationReadinessArtifact({
+        workspace: args.opts.workspace, candidatePath: path.resolve(args.opts.candidate), privateKeyPath: args.opts.key, descriptorsPath: args.opts.descriptors, trustEventsPath: args.opts["trust-events"], authorizedAt: new Date().toISOString(),
+        confirm: async summary => {
+          console.error(JSON.stringify({ status: "review-required", ...summary }));
+          const prompt = createInterface({ input: process.stdin, output: process.stderr });
+          try { return await prompt.question(`Type SIGN ${summary.readinessCandidateDigest} to authorize this non-dispatchable readiness candidate: `) === `SIGN ${summary.readinessCandidateDigest}`; }
+          finally { prompt.close(); }
+        },
+      });
       console.log(JSON.stringify({ status: "human-signed", authorization: "human-signed", dispatchable: false, completeness: "unchecked", digest: result.digest, path: result.path }));
       return 0;
     } catch { console.error(JSON.stringify({ status: "refused", reasonCode: "certification-readiness-signing-refused" })); return 1; }
