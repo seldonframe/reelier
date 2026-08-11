@@ -1539,7 +1539,8 @@ export class FsAuthorityLedger implements AuthorityLedger {
     // recover()-only drain would leave observeClock refusing a root HEAD healed. Initiating an
     // abandoned-family retirement stays reserved to recover(); committed dead-owner slot-orphan
     // tests pin a lock-seeking operation to leave those byte-identical.
-    if(!permitWrite&&!(budgetLive&&(this.mayAdvanceDeadPrepCleanup(binding)||this.mayDrainPublishedSlot(binding)||this.mayProgressWithdrawalChain(binding)))){this.prepHousekeeperRuntime.observeBoundary?.(`${prefix}-transition-refused`);return "busy";}
+    const continuingDeadPrepCleanup=binding.descriptor.kind==="prep-retired-cleanup"&&binding.descriptor.lifecycleName!==null&&this.mayAdvanceDeadPrepCleanup(binding);
+    if(!permitWrite&&!(continuingDeadPrepCleanup||budgetLive&&(this.mayAdvanceDeadPrepCleanup(binding)||this.mayDrainPublishedSlot(binding)||this.mayProgressWithdrawalChain(binding)))){this.prepHousekeeperRuntime.observeBoundary?.(`${prefix}-transition-refused`);return "busy";}
     if(binding.descriptor.kind==="dead-slot"&&processLiveness(binding.descriptor.pid)!=="dead"){this.prepHousekeeperRuntime.observeBoundary?.("slot-only-transition-refused");return "busy";}
     if((binding.descriptor.kind==="lone-withdrawal"||binding.descriptor.kind==="withdrawal-cleanup"||binding.descriptor.kind==="dead-stage-withdrawal")&&processLiveness(binding.descriptor.pid)!=="dead"){this.prepHousekeeperRuntime.observeBoundary?.("withdrawal-only-transition-refused");return "busy";}
     const capability=this.activeK1OperationCapability,generation=capability===null?undefined:k1OperationFenceBindings.get(capability);if(capability===null||generation?.status!=="acting"){this.prepHousekeeperRuntime.observeBoundary?.(`${prefix}-transition-refused`);return "refuse";}
