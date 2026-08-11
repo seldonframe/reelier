@@ -160,6 +160,29 @@ async function withRoot(run: (root: string) => Promise<void>): Promise<void> {
   try { await run(root); } finally { await rm(root, { recursive: true, force: true }); }
 }
 
+function collectSpawnedJson(child:ReturnType<typeof spawn>,signal?:AbortSignal):Promise<unknown>{
+  return new Promise((resolve,reject)=>{
+    let stdout="",stderr="",childError:Error|undefined,settled=false;
+    const cleanup=()=>signal?.removeEventListener("abort",abort);
+    const rejectOnce=(error:unknown)=>{if(settled)return;settled=true;cleanup();reject(error);};
+    const resolveOnce=(value:unknown)=>{if(settled)return;settled=true;cleanup();resolve(value);};
+    const abort=()=>{try{child.kill();}catch(error){childError=error as Error;}};
+    child.stdout?.setEncoding("utf8").on("data",chunk=>{stdout+=chunk;});
+    child.stderr?.setEncoding("utf8").on("data",chunk=>{stderr+=chunk;});
+    child.once("error",error=>{childError=error;if(child.pid===undefined)rejectOnce(error);});
+    child.once("close",code=>{if(childError){rejectOnce(childError);return;}if(signal?.aborted){rejectOnce(signal.reason);return;}if(code!==0){rejectOnce(new Error(`child ${code}: ${stderr}`));return;}try{resolveOnce(JSON.parse(stdout));}catch(error){rejectOnce(error);}});
+    signal?.addEventListener("abort",abort,{once:true});
+    if(signal?.aborted)abort();
+  });
+}
+
+async function collectSpawnBatch<T>(pending:readonly Promise<T>[]):Promise<T[]>{
+  const settled=await Promise.allSettled(pending),values:T[]=[];let failed=false,reason:unknown;
+  for(const entry of settled)if(entry.status==="fulfilled")values.push(entry.value);else if(!failed){failed=true;reason=entry.reason;}
+  if(failed)throw reason;
+  return values;
+}
+
 async function spawnReserve(root: string, candidate: ReservationIntent, options:Readonly<{signal?:AbortSignal;onSpawn?:(pid:number)=>void}>={}): Promise<unknown> {
   const moduleUrl = pathToFileURL(path.join(process.cwd(), "dist-test/src/authority/host/fs-ledger.js")).href;
   const encoded = Buffer.from(JSON.stringify({
@@ -179,20 +202,10 @@ async function spawnReserve(root: string, candidate: ReservationIntent, options:
     const result = await ledger.reserve(value);
     process.stdout.write(JSON.stringify(result));
   `;
-  return new Promise((resolve, reject) => {
-    if(options.signal?.aborted){reject(options.signal.reason);return;}
-    const child = spawn(process.execPath, ["--input-type=module", "-e", source, encoded, root], { stdio: ["ignore", "pipe", "pipe"] });
-    let stdout = "";
-    let stderr = "";
-    const abort=()=>{child.kill();};
-    options.signal?.addEventListener("abort",abort,{once:true});
-    if(child.pid!==undefined)options.onSpawn?.(child.pid);
-    if(options.signal?.aborted)abort();
-    child.stdout.setEncoding("utf8").on("data", chunk => { stdout += chunk; });
-    child.stderr.setEncoding("utf8").on("data", chunk => { stderr += chunk; });
-    child.on("error", reject);
-    child.on("close", code => {options.signal?.removeEventListener("abort",abort);if(options.signal?.aborted)reject(options.signal.reason);else if(code===0)resolve(JSON.parse(stdout));else reject(new Error(`child ${code}: ${stderr}`));});
-  });
+  if(options.signal?.aborted)return Promise.reject(options.signal.reason);
+  const child=spawn(process.execPath,["--input-type=module","-e",source,encoded,root],{stdio:["ignore","pipe","pipe"]}),pending=collectSpawnedJson(child,options.signal);
+  if(child.pid!==undefined)options.onSpawn?.(child.pid);
+  return pending;
 }
 
 async function rewriteJournal(root: string, mutate: (event: Record<string, unknown>) => Record<string, unknown>): Promise<void> {
@@ -281,13 +294,24 @@ test("a failed spawn rejects and removes abort ownership without waiting for a n
   });
 });
 
+test("a child batch waits for every started process to close before surfacing one failure",async()=>{
+  await withRoot(async root=>{
+    const controller=new AbortController(),failed=spawn(path.join(root,"missing-node-binary"),[],{stdio:["ignore","pipe","pipe"]}),live=spawn(process.execPath,["-e","setInterval(()=>{},1000)"],{stdio:["ignore","pipe","pipe"]});assert.ok(live.pid);const livePid=live.pid;
+    const pending=collectSpawnBatch([collectSpawnedJson(failed),collectSpawnedJson(live,controller.signal)]);let settled=false;void pending.then(()=>{settled=true;},()=>{settled=true;});
+    await new Promise(resolve=>setImmediate(resolve));assert.equal(settled,false,"one failed spawn cannot abandon its live batch sibling");
+    controller.abort(new Error("close live batch sibling"));await assert.rejects(pending,error=>(error as NodeJS.ErrnoException).code==="ENOENT");assert.equal(pidReportsDead(livePid),true);
+  });
+});
+
 test("100 real processes converge on one committed reservation and one dispatch eligibility", { timeout: 120_000 }, async t => {
   setMaxListeners(100,t.signal);
   await withRoot(async root => {
     let outstanding=0,peakOutstanding=0;
     const run=()=>{outstanding++;peakOutstanding=Math.max(peakOutstanding,outstanding);return spawnReserve(root,intent(),{signal:t.signal}).finally(()=>{outstanding--;});};
     const results:unknown[]=[];
-    for(let offset=0;offset<100;offset+=25)results.push(...await Promise.all(Array.from({length:Math.min(25,100-offset)},run)));
+    for(let offset=0;offset<100;offset+=25){
+      results.push(...await collectSpawnBatch(Array.from({length:Math.min(25,100-offset)},run)));
+    }
     const successes = results as Array<{ ok: boolean; status: string; dispatchEligible: boolean; reservation: { reservationId: string } }>;
     assert.equal(peakOutstanding<=25,true,`the convergence harness started ${peakOutstanding} simultaneous reserve children`);
     assert.equal(successes.every(result => result.ok), true, JSON.stringify(successes.filter(result => !result.ok)));
