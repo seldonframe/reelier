@@ -180,9 +180,14 @@ test("file signing consumes an existing human key and confined Task2C2 candidate
   await writeFile(descriptorsPath, JSON.stringify([fixture.humanDescriptor, fixture.cellDescriptor]));
   await writeFile(eventsPath, JSON.stringify(fixture.events));
   await writeFile(keyPath, fixture.human.privateKey.export({ type: "pkcs8", format: "pem" }));
-  const result = await signCertificationReadinessArtifact({ workspace, candidatePath, privateKeyPath: keyPath, descriptorsPath, trustEventsPath: eventsPath, authorizedAt: later });
+  let reviewed: any;
+  const result = await signCertificationReadinessArtifact({ workspace, candidatePath, privateKeyPath: keyPath, descriptorsPath, trustEventsPath: eventsPath, authorizedAt: later, confirm: async summary => { reviewed = summary; return true; } });
   assert.equal(result.signed.dispatchable, false);
+  assert.equal(reviewed.readinessCandidateDigest, candidateDigest);
+  assert.deepEqual(reviewed.scenarios, fixture.readiness.scenarios);
+  assert.deepEqual(reviewed.cellKeys, [{ keyId: fixture.cellDescriptor.keyId, purpose: fixture.cellDescriptor.purpose, descriptorDigest: authorityDigest(fixture.cellDescriptor) }]);
   assert.match(path.basename(result.path), /^signed-readiness-sha256-[0-9a-f]{64}\.json$/);
   const persisted = await readFile(result.path, "utf8");
   assert.doesNotMatch(persisted, /PRIVATE KEY|BEGIN PRIVATE|MC4CAQ/);
+  await assert.rejects(() => signCertificationReadinessArtifact({ workspace, candidatePath, privateKeyPath: keyPath, descriptorsPath, trustEventsPath: eventsPath, authorizedAt: later, confirm: undefined as never }), /interactive.*confirmation|required/i);
 });
