@@ -35,12 +35,11 @@ export async function sealCertificationReadiness(input: Readonly<{ workspace: st
   const preflight = await preflightCertification(input);
   const created = createCertificationReadinessCandidate(preflight);
   const { candidate, digest } = created;
-  const directory = path.join(workspace, "readiness");
-  const output = path.join(directory, `readiness-${digest.replace(":", "-")}.json`);
-  await publishPrivateContentAddressed(root, "readiness", path.basename(output), `${JSON.stringify(candidate)}\n`);
+  const filename = `readiness-${digest.replace(":", "-")}.json`;
+  const output = await publishPrivateContentAddressed(root, "readiness", filename, `${JSON.stringify(candidate)}\n`);
   const safeDirectory = await confinedExistingDirectory(root, ["readiness"]);
   if (!safeDirectory) throw new TypeError("certification readiness directory is absent after publication");
-  const existing = JSON.parse((await readConfinedFile(root, safeDirectory, path.basename(output))).toString("utf8"));
+  const existing = JSON.parse((await readConfinedFile(root, safeDirectory, filename)).toString("utf8"));
   if (authorityDigest(existing) !== digest || JSON.stringify(existing) !== JSON.stringify(candidate)) throw new TypeError("immutable readiness candidate mismatch");
   return Object.freeze({ candidate, digest, path: output });
 }
