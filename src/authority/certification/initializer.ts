@@ -1,8 +1,9 @@
-import { access, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { authorityDigest } from "../wire.js";
 import { canonicalizeCertificationOperatorConfigV2, parseCertificationOperatorConfigV2 } from "./config.js";
 import { createCertificationConfigCommitment, recomputeCertificationConfigCommitment } from "./commitment.js";
+import { assertUnlinkedCreationParent, certificationWorkspaceRoot, readConfinedFile, readUnlinkedFile } from "./filesystem.js";
 
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
 const ID = /^(?:task|job|grant|cell|signer)_[0-9a-f]{24}$/;
@@ -32,7 +33,7 @@ export async function initializeCertification(input: Readonly<{ configPath: stri
 }>> {
   const configPath = path.resolve(input.configPath);
   const workspace = path.resolve(input.workspace ?? path.join(path.dirname(configPath), "certification"));
-  const parsed = parseCertificationOperatorConfigV2(JSON.parse(await readFile(configPath, "utf8")));
+  const parsed = parseCertificationOperatorConfigV2(JSON.parse((await readUnlinkedFile(configPath)).toString("utf8")));
   const canonicalConfig = canonicalizeCertificationOperatorConfigV2(parsed);
   const commitment = createCertificationConfigCommitment(parsed, parsed.scenarios);
   const configDigest = commitment.configCommitmentDigest;
@@ -46,9 +47,11 @@ export async function initializeCertification(input: Readonly<{ configPath: stri
     completeness: "unchecked",
   });
 
-  if (await exists(workspace)) {
-    const existingConfig = parseCertificationOperatorConfigV2(JSON.parse(await readFile(path.join(workspace, "config.json"), "utf8")));
-    const existing = parseCertificationInitialization(JSON.parse(await readFile(path.join(workspace, "initialization.json"), "utf8")));
+  const workspaceInfo = await lstat(workspace).catch(error => (error as NodeJS.ErrnoException).code === "ENOENT" ? undefined : Promise.reject(error));
+  if (workspaceInfo) {
+    const root = await certificationWorkspaceRoot(workspace);
+    const existingConfig = parseCertificationOperatorConfigV2(JSON.parse((await readConfinedFile(root, root, "config.json")).toString("utf8")));
+    const existing = parseCertificationInitialization(JSON.parse((await readConfinedFile(root, root, "initialization.json")).toString("utf8")));
     const existingCommitment = createCertificationConfigCommitment(existingConfig, existingConfig.scenarios);
     if (existingCommitment.configCommitmentDigest !== configDigest || existing.configDigest !== configDigest || existing.privateConfigDigest !== commitment.privateConfigDigest || existing.sanitizedProjectionDigest !== commitment.sanitizedProjectionDigest || authorityDigest(existing.identifiers) !== authorityDigest(identifiers)) {
       throw new TypeError("certification initialization cannot resume with substituted configuration or identifiers");
@@ -57,8 +60,8 @@ export async function initializeCertification(input: Readonly<{ configPath: stri
   }
 
   await mkdir(path.dirname(workspace), { recursive: true });
-  await removeInterruptedStages(path.dirname(workspace), `.${path.basename(workspace)}.staging-`);
-  const staging = await mkdtemp(path.join(path.dirname(workspace), `.${path.basename(workspace)}.staging-`));
+  const creationParent = await assertUnlinkedCreationParent(workspace);
+  const staging = await mkdtemp(path.join(creationParent, `.${path.basename(workspace)}.staging-`));
   try {
     await writeFile(path.join(staging, "config.json"), `${canonicalConfig}\n`, { encoding: "utf8", flag: "wx", mode: 0o600 });
     await writeFile(path.join(staging, "initialization.json"), `${JSON.stringify(initialization)}\n`, { encoding: "utf8", flag: "wx", mode: 0o600 });
@@ -68,9 +71,11 @@ export async function initializeCertification(input: Readonly<{ configPath: stri
     if (path.dirname(staging) === path.dirname(workspace) && path.basename(staging).startsWith(`.${path.basename(workspace)}.staging-`)) {
       await rm(staging, { recursive: true, force: true });
     }
-    if (await exists(workspace)) {
-      const existingConfig = parseCertificationOperatorConfigV2(JSON.parse(await readFile(path.join(workspace, "config.json"), "utf8")));
-      const existing = parseCertificationInitialization(JSON.parse(await readFile(path.join(workspace, "initialization.json"), "utf8")));
+    const winnerInfo = await lstat(workspace).catch(inner => (inner as NodeJS.ErrnoException).code === "ENOENT" ? undefined : Promise.reject(inner));
+    if (winnerInfo) {
+      const root = await certificationWorkspaceRoot(workspace);
+      const existingConfig = parseCertificationOperatorConfigV2(JSON.parse((await readConfinedFile(root, root, "config.json")).toString("utf8")));
+      const existing = parseCertificationInitialization(JSON.parse((await readConfinedFile(root, root, "initialization.json")).toString("utf8")));
       const existingCommitment = createCertificationConfigCommitment(existingConfig, existingConfig.scenarios);
       if (existingCommitment.configCommitmentDigest === configDigest && existing.configDigest === configDigest && existing.privateConfigDigest === commitment.privateConfigDigest && existing.sanitizedProjectionDigest === commitment.sanitizedProjectionDigest && authorityDigest(existing.identifiers) === authorityDigest(identifiers)) {
         return Object.freeze({ status: "resumed", workspace, configDigest, identifiers: existing.identifiers });
@@ -109,15 +114,3 @@ function internalId(value: unknown, prefix: string): string {
 }
 function object(value: unknown, label: string): Record<string, unknown> { if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError(`${label} must be an object`); return value as Record<string, unknown>; }
 function closed(raw: Record<string, unknown>, keys: readonly string[], label: string): void { if (Object.keys(raw).length !== keys.length || Object.keys(raw).some(key => !keys.includes(key))) throw new TypeError(`${label} is closed`); }
-async function exists(file: string): Promise<boolean> { try { await access(file); return true; } catch { return false; } }
-async function removeInterruptedStages(parent: string, prefix: string): Promise<void> {
-  const cutoff = Date.now() - 5 * 60_000;
-  for (const entry of await readdir(parent, { withFileTypes: true })) {
-    if (!entry.name.startsWith(prefix) || !entry.isDirectory() || entry.isSymbolicLink()) continue;
-    const candidate = path.resolve(parent, entry.name);
-    if (path.dirname(candidate) !== path.resolve(parent) || !path.basename(candidate).startsWith(prefix)) continue;
-    const info = await lstat(candidate);
-    if (!info.isDirectory() || info.isSymbolicLink() || info.mtimeMs > cutoff) continue;
-    await rm(candidate, { recursive: true, force: true });
-  }
-}

@@ -1,4 +1,4 @@
-import { chmod, constants, link, lstat, mkdir, open, realpath, unlink } from "node:fs/promises";
+import { constants, link, lstat, mkdir, open, realpath, unlink } from "node:fs/promises";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
 
@@ -7,6 +7,26 @@ export async function certificationWorkspaceRoot(workspace: string): Promise<str
   const info = await lstat(resolved);
   if (!info.isDirectory() || info.isSymbolicLink()) throw new TypeError("certification workspace must be a confined real directory");
   return realpath(resolved);
+}
+
+export async function assertUnlinkedCreationParent(target: string): Promise<string> {
+  const parent = path.dirname(path.resolve(target));
+  const info = await lstat(parent);
+  if (!info.isDirectory() || info.isSymbolicLink()) throw new TypeError("certification creation parent is linked, reparse-pointed, or not a directory");
+  const actual = await realpath(parent);
+  if (!samePath(actual, parent)) throw new TypeError("certification creation parent traverses a linked or reparse-pointed path");
+  return actual;
+}
+
+export async function readUnlinkedFile(file: string): Promise<Buffer> {
+  const resolved = path.resolve(file);
+  const before = await lstat(resolved);
+  if (!before.isFile() || before.isSymbolicLink()) throw new TypeError("certification file is linked, reparse-pointed, or not a regular file");
+  const actual = await realpath(resolved);
+  if (!samePath(actual, resolved)) throw new TypeError("certification file traverses a linked or reparse-pointed path");
+  const handle = await open(actual, constants.O_RDONLY);
+  try { const after = await handle.stat(); if (!after.isFile() || before.dev !== after.dev || before.ino !== after.ino) throw new TypeError("certification file changed during confined read"); return await handle.readFile(); }
+  finally { await handle.close(); }
 }
 
 export async function confinedExistingDirectory(root: string, relative: readonly string[]): Promise<string | undefined> {
@@ -71,9 +91,9 @@ export async function publishPrivateContentAddressed(root: string, subdirectory:
   } finally {
     await unlink(temporary).catch(() => undefined);
   }
-  if (created) await chmod(output, 0o600);
   return output;
 }
 
 function assertSegment(value: string): void { if (!value || value === "." || value === ".." || value.includes("/") || value.includes("\\") || value.includes("\0")) throw new TypeError("certification path segment is invalid"); }
 function assertContained(root: string, candidate: string): void { const relative = path.relative(root, candidate); if (relative.startsWith("..") || path.isAbsolute(relative)) throw new TypeError("certification path escapes its confined workspace"); }
+function samePath(left: string, right: string): boolean { return process.platform === "win32" ? left.toLowerCase() === right.toLowerCase() : left === right; }
