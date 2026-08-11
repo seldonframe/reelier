@@ -23,14 +23,14 @@ Files changed
 - `docs/runbooks/live-certification.md`: documents strict selection, the immutable initialization authority root versus subordinate selection digests, snapshot-consistent export, preparation versus signing phases, private publication, path/stage confinement, and later signing/live-run boundaries.
 - `src/authority/certification/commitment.ts`: defines the full initialization commitment and a distinct selected-projection commitment bound beneath the stable initialization root.
 - `src/authority/certification/initializer.ts`: validates before writing, records the complete initialized scenario set, refuses linked config/workspace/snapshot/staging paths, never creates through a linked parent, atomically publishes a complete sibling workspace, derives one permanent ID set from the initialization root, validates resume, converges concurrent publication, and removes only the exact stage carrying its per-attempt unguessable owner marker.
-- `src/authority/certification/filesystem.ts`: requires the normalized requested workspace path to equal its canonical real path, thereby rejecting linked parent components as well as linked leaves; confines reads/writes with containment and inode checks; and atomically publishes from a `0600` temporary file without pathname chmod after publication.
+- `src/authority/certification/filesystem.ts`: inspects every requested path component with `lstat`, rejecting actual linked/junction ancestry and leaves while allowing ordinary Windows case and 8.3 aliases; retains canonical containment plus before/after file identity checks; and atomically publishes from a `0600` temporary file without pathname chmod after publication.
 - `src/authority/certification/preflight.ts`: validates the actual immutable initialization artifact, preserves its stable root and five IDs, binds a separate selected-scenarios digest, inventories only regular selected artifacts, and performs no secret resolution, runtime/provider calls, or network I/O.
 - `src/authority/certification/readiness.ts`: copies the stable initialization root and actual five IDs from an exact preflight snapshot, binds its selection digest, refuses incomplete preparation, and writes a private unsigned non-dispatchable candidate.
 - `src/authority/certification/export.ts`: exports the actual initialization artifact, preserves initialization-root/ID continuity, binds and verifies a subordinate selected projection, enforces selected-subset coherence offline, re-observes inputs and refuses drift, self-verifies before publication, and excludes private path/reference payloads.
 - `src/authority/cli.ts`: exposes the initialized workflow with closed redacted JSON and deterministic exits; selection commands reject missing/conflicting/unknown selection, unknown flags, and extra positionals. Explicit `--key` preserves the pre-existing signed release-evidence verifier.
 - `src/cli.ts`: parses exact scenario values, rejects duplicate or missing scenario arguments and duplicate `--all`, and documents the expert surface.
 - `test/authority/certification-export.test.ts`: covers two-scenario initialization through one-scenario preflight/seal/export/verify with identical root and all five IDs, actual initialization equality, selected-only evidence, subset coherence, deterministic drift, deep tampering, fully rehashed substitution, missing links, open schemas, and unsigned-authority refusal.
-- `test/authority/certification-filesystem.test.ts`: covers linked runner directories, selected artifact symlinks where supported, linked readiness output directories, and absence of external writes.
+- `test/authority/certification-filesystem.test.ts`: covers linked runner directories, selected artifact symlinks, linked readiness output directories, absence of external writes, and a real ordinary Windows 8.3 ancestor alias.
 - `test/authority/certification-initializer.test.ts`: covers invalid/no-partial initialization, deterministic resume/IDs, barrier-synchronized concurrent publication, foreign-stage preservation, workspace/config/snapshot links, no external parent creation through junctions, and refusal to resume a real workspace reached through a junction parent.
 - `test/authority/certification-preflight.test.ts`: covers explicit exact selection, cross-scenario non-disclosure, secret non-resolution, phase-specific readiness, input digests/absence, and substitution refusal.
 - `test/authority/certification-readiness.test.ts`: covers complete-preparation sealing, incomplete-preparation refusal, private content addressing, idempotence, generated IDs, unsigned/non-dispatchable semantics, and tamper refusal.
@@ -42,6 +42,7 @@ Files changed
 - The initialized workspace convention is the deterministic sibling `<config-directory>/certification`; `--workspace` remains available for isolated/test operation.
 - Existing Task 3+ live `run`, `activate-codex`, and explicitly keyed signed-manifest verification paths were preserved. They do not accept the unsigned readiness candidate as authority.
 - Runner/test evidence uses `<scenario>.json` or `<scenario>--<name>.json` under `inputs/runners/` and `inputs/tests/`. Missing selected evidence blocks sealing; unselected files are never inventoried.
+- Hosted run `31531461819` exposed a Windows-only false positive: GitHub's ordinary `C:\Users\RUNNER~1\...` short-name path was expanded by `realpath`, so lexical path equality incorrectly treated it as a reparse traversal. A local ordinary `SQUIRR~1` alias reproduced the same failure with `lstat().isSymbolicLink() === false`; component inspection now distinguishes aliases from actual links.
 
 ## Review-fix commits
 
@@ -58,20 +59,22 @@ Files changed
 - `822c7ae`, `7956d34`: RED coverage for stable two-scenario initialization authority across a one-scenario subset, offline subset coherence, and real-workspace resume through a junction parent.
 - `32e407f`: preserves the immutable initialization root and IDs, adds subordinate selection commitments, exports the actual initialization artifact, enforces offline continuity/subset coherence, and rejects canonical workspace mismatch.
 - `43f39b4`: documents stable initialization authority versus selected preparation scope.
+- `3c13f42`, `133f24a`: RED/GREEN for ordinary Windows short-name ancestry while preserving linked-leaf and junction-parent refusal.
+- `a3092b4`: corrects the runbook to describe component inspection and legitimate Windows aliases.
 
 ## Test results
 
 Focused certification and adjacent runner suite after the final production change (`npx tsc -p tsconfig.test.json` followed by the ten selected compiled specs):
 
 ```text
-ℹ tests 58
+ℹ tests 59
 ℹ suites 0
-ℹ pass 58
+ℹ pass 59
 ℹ fail 0
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 2269.2616
+ℹ duration_ms 2056.1104
 ```
 
 Build:
@@ -83,17 +86,17 @@ Build:
 built cloudflare_api_token, cloudflare_dns, github_issue_labels, gmail, gmail_labels, hubspot_slack_information_flow, neon_database, slack_channel_topic, stripe, vercel_deployment
 ```
 
-Fresh full suite after the final production change:
+Fresh full Windows suite after the final production change:
 
 ```text
-ℹ tests 2806
+ℹ tests 2807
 ℹ suites 0
-ℹ pass 2805
+ℹ pass 2806
 ℹ fail 0
 ℹ cancelled 0
 ℹ skipped 1
 ℹ todo 0
-ℹ duration_ms 288566.6958
+ℹ duration_ms 308512.1304
 ```
 
 ## Open risks
