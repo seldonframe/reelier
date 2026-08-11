@@ -189,6 +189,7 @@ export function normalizeConnectionDescriptor(value: unknown): ConnectionDescrip
 export function normalizeConnectionAdoption(value: unknown): ConnectionAdoptionV1 {
   const raw = closedRecord(value, ["v", "adoptionId", "descriptorDigest", "selectedAccountIdentity", "mode", "sidecarRouteId", "rawWriteReachability", "activationState", "signedDeploymentBinding"], "connection adoption");
   if (raw.v !== "reelier.connection-adoption/v1" || !nonEmpty(raw.adoptionId) || !isDigest(raw.descriptorDigest) || !nonEmpty(raw.selectedAccountIdentity) || !["existing", "managed"].includes(String(raw.mode)) || !nonEmpty(raw.sidecarRouteId) || !["reachable", "refused", "unknown"].includes(String(raw.rawWriteReachability)) || !["inactive", "active", "refused"].includes(String(raw.activationState)) || (raw.signedDeploymentBinding !== null && !isDigest(raw.signedDeploymentBinding))) throw new TypeError("invalid connection adoption");
+  if (raw.activationState === "active" && raw.signedDeploymentBinding === null) throw new TypeError("invalid active connection adoption");
   if (raw.mode === "managed" && raw.activationState === "active" && (raw.rawWriteReachability !== "refused" || raw.signedDeploymentBinding === null)) throw new TypeError("invalid managed connection adoption");
   return Object.freeze({ ...raw }) as unknown as ConnectionAdoptionV1;
 }
@@ -206,7 +207,7 @@ export function normalizeConnectionInventoryEntry(value: unknown): ConnectionInv
   const observedDigests = digestArray(schema.observedDigests, "observedDigests");
   const descriptor = raw.descriptor === undefined ? undefined : normalizeConnectionDescriptor(raw.descriptor);
   if ((raw.status === "usable") !== (descriptor !== undefined)) throw new TypeError("usable inventory entries require a descriptor and non-usable entries prohibit one");
-  if (raw.status === "usable" && (raw.routeStatus !== "callable" || account.status !== "verified" || schema.status !== "verified" || descriptor?.provider.id !== raw.provider || descriptor.kind !== raw.connectionKind || descriptor.account.identity !== account.identity || !sameStringArrays(observedDigests, descriptor.toolSchemas.map(item => item.digest).sort()))) throw new TypeError("usable inventory entry must be coherent");
+  if (raw.status === "usable" && (raw.routeStatus !== "callable" || account.status !== "verified" || schema.status !== "verified" || descriptor?.provider.id !== raw.provider || descriptor.kind !== raw.connectionKind || descriptor.account.identity !== account.identity || (account.expectedIdentity !== undefined && account.expectedIdentity !== account.identity) || !sameStringArrays(expectedDigests, observedDigests) || !sameStringArrays(observedDigests, descriptor.toolSchemas.map(item => item.digest).sort()) || !connectionRouteMatchesKind(descriptor.kind, descriptor.callableRoute.kind))) throw new TypeError("usable inventory entry must be coherent");
   return Object.freeze({ v: raw.v, discoveryId: raw.discoveryId, provider: raw.provider, connectionKind: raw.connectionKind, status: raw.status, routeStatus: raw.routeStatus, accountVerification: Object.freeze({ status: account.status, ...(account.identity === undefined ? {} : { identity: account.identity }), ...(account.expectedIdentity === undefined ? {} : { expectedIdentity: account.expectedIdentity }) }), schemaVerification: Object.freeze({ status: schema.status, expectedDigests, observedDigests }), reasonCodes: stringArray(raw.reasonCodes, "reasonCodes"), ...(descriptor === undefined ? {} : { descriptor }) }) as ConnectionInventoryEntryV1;
 }
 
@@ -270,6 +271,11 @@ function digestArray(value: unknown, name: string): readonly string[] {
   return Object.freeze([...new Set(value as string[])].sort());
 }
 function sameStringArrays(a: readonly string[], b: readonly string[]): boolean { return a.length === b.length && a.every((value, index) => value === b[index]); }
+function connectionRouteMatchesKind(kind: ConnectionKind, routeKind: CallableRouteKind): boolean {
+  if (kind === "adopted-mcp-stdio") return routeKind === "mcp-stdio";
+  if (kind === "adopted-mcp-http") return routeKind === "mcp-http";
+  return routeKind === "opaque-host";
+}
 
 export type { ObservationHost, ObservationEnvelopeV1, ObservationService } from "./live.js";
 export { createObservationAdapter, createObservationService, matchInstalledPacks, parseObservationEnvelope } from "./live.js";
