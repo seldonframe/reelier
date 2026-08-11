@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { createHash } from "node:crypto";
+import { canonicalJson } from "../src/canonical-json.js";
 import {
   INIT_CHECKPOINT_IDS,
   initializeInspection,
@@ -41,7 +43,7 @@ function opportunity() {
       sourceAgent: "codex",
       digest: `sha256:${"a".repeat(64)}`,
       steps: [
-        { server: "gmail", tool: "gmail.send", argKeys: ["to", "subject"], effect: "destructive" as const, ok: true, approvalLike: false },
+        { server: "gmail", tool: "gmail.send", argKeys: ["to", `recipients.${secret}`], effect: "destructive" as const, ok: true, approvalLike: false },
         { server: "gmail", tool: "gmail.get", argKeys: ["id"], effect: "read" as const, ok: true, approvalLike: false },
       ],
       dataflow: [{ fromStep: 0, toStep: 1, relation: "write_then_read_back" as const }],
@@ -152,7 +154,7 @@ test("dry-run inspects Path A, B, and C independently without filesystem writes"
     assert.equal(result.report.pathB.candidates[0]?.freezeStatus, "candidate");
     assert.equal(result.report.pathC.connections.find(item => item.provider === "gmail")?.classification, "shadow-only");
     assert.equal(result.report.pathC.connections.find(item => item.provider === "calendar")?.classification, "unsupported");
-    assert.equal(result.report.pathC.candidates[0]?.classification, "boundable");
+    assert.equal(result.report.pathC.candidates[0]?.classification, "unsupported");
     await assert.rejects(readFile(path.join(root, ".reelier", "init", "state.json"), "utf8"), { code: "ENOENT" });
   });
 });
@@ -224,6 +226,21 @@ test("a malformed completed artifact is refused without rewriting checkpoint fil
   });
 });
 
+test("a digest-matched artifact with unknown fields is still refused as non-closed", async () => {
+  await withTempDir(async root => {
+    await initializeInspection({ cwd: root, homedir: root, dependencies: dependencies() });
+    const initDir = path.join(root, ".reelier", "init");
+    const artifactPath = path.join(initDir, "path-a-coverage.json");
+    const artifact = { ...JSON.parse(await readFile(artifactPath, "utf8")), credential: "forbidden" };
+    await writeFile(artifactPath, `${canonicalJson(artifact)}\n`, "utf8");
+    const statePath = path.join(initDir, "state.json");
+    const state = JSON.parse(await readFile(statePath, "utf8"));
+    state.completed.find((item: { id: string }) => item.id === "path-a-coverage").digest = `sha256:${createHash("sha256").update(canonicalJson(artifact), "utf8").digest("hex")}`;
+    await writeFile(statePath, `${canonicalJson(state)}\n`, "utf8");
+    await assert.rejects(initializeInspection({ cwd: root, homedir: root, dependencies: dependencies() }), /checkpoint state refused: malformed artifact/);
+  });
+});
+
 test("checkpoint and report artifacts contain sanitized shapes only", async () => {
   await withTempDir(async root => {
     const result = await initializeInspection({ cwd: root, homedir: root, dependencies: dependencies() });
@@ -274,5 +291,25 @@ test("a contender sees busy between artifact and state commits", async () => {
     assert.equal(second.status, "busy");
     release();
     await first;
+  });
+});
+
+test("a provably dead owner lock resumes from the durable prefix and cleans owned crash residue", async () => {
+  await withTempDir(async root => {
+    await assert.rejects(initializeInspection({
+      cwd: root,
+      homedir: root,
+      dependencies: dependencies(),
+      afterCheckpoint: id => { if (id === "path-a-coverage") throw new Error("stop after durable prefix"); },
+    }));
+    const initDir = path.join(root, ".reelier", "init");
+    await writeFile(path.join(initDir, ".lock"), `${JSON.stringify({ v: "reelier.init-lock/v1", pid: 2_147_483_647 })}\n`, "utf8");
+    await writeFile(path.join(initDir, "path-b-candidates.json.tmp-deadbeef0001"), "partial", "utf8");
+    await writeFile(path.join(initDir, "path-b-candidates.json"), "partial", "utf8");
+    const resumed = await initializeInspection({ cwd: root, homedir: root, dependencies: dependencies() });
+    assert.equal(resumed.status, "complete");
+    assert.equal(resumed.resumedFrom, "path-b-candidates");
+    const names = Object.keys(await filesBelow(root));
+    assert.equal(names.some(name => name.includes(".tmp-") || name.endsWith(".lock")), false);
   });
 });
