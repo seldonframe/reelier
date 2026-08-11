@@ -8,7 +8,7 @@ import { pathToFileURL } from "node:url";
 import { execFile,spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash } from "node:crypto";
-import { getEventListeners, setMaxListeners } from "node:events";
+import { getEventListeners } from "node:events";
 import { connect, createServer } from "node:net";
 import { authorityCanonicalBytes, authorityDigest } from "../../src/authority/wire.js";
 import { authenticateOutcomeRequest, authenticatedOutcomeRequestState } from "../../src/authority/keys.js";
@@ -316,7 +316,6 @@ test("the N100 wave scheduler starts all work while capping live children at ten
 });
 
 test("100 real processes converge on one committed reservation and one dispatch eligibility", { timeout: 120_000 }, async t => {
-  setMaxListeners(100,t.signal);
   await withRoot(async root => {
     let outstanding=0,peakOutstanding=0;
     const run=()=>{outstanding++;peakOutstanding=Math.max(peakOutstanding,outstanding);return spawnReserve(root,intent(),{signal:t.signal}).finally(()=>{outstanding--;});};
