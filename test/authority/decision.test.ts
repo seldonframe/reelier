@@ -233,7 +233,7 @@ test("a failed atomic decision-lock retirement leaves the complete verified owne
     const preserved=await readFile(ownerFile),parsed=JSON.parse(preserved.toString("utf8"));
     assert.deepEqual(Object.keys(parsed).sort(),["host","nonce","pid","v"]);
     assert.equal(parsed.v,"reelier.gate-decision-lock/internal-v1");
-    assert.deepEqual(await createFileGateDecisionSink(root,{lockTimeoutMs:20}).append(primary({gateEvent:{...event,eventId:"event_after_failed_release"},gateEventDigest:authorityDigest({...event,eventId:"event_after_failed_release"})})),{ok:false,reason:"unavailable"});
+    assert.deepEqual(await createFileGateDecisionSink(root,{lockTimeoutMs:20}).append(primary({gateEvent:{...event,eventId:"event_after_failed_release"},gateEventDigest:authorityDigest({...event,eventId:"event_after_failed_release"})})),{ok:false,reason:"primary-ingress-conflict"});
     assert.deepEqual(await readFile(ownerFile),preserved);
   }finally{await rm(root,{recursive:true,force:true});}
 });
