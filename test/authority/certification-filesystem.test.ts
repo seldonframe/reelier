@@ -1,13 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { access, mkdir, mkdtemp, readdir, realpath, symlink, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readdir, realpath, rename, symlink, writeFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { initializeCertification } from "../../src/authority/certification/initializer.js";
 import { preflightCertification } from "../../src/authority/certification/preflight.js";
 import { sealCertificationReadiness } from "../../src/authority/certification/readiness.js";
-import { readUnlinkedFile } from "../../src/authority/certification/filesystem.js";
+import { assertUnlinkedCreationParent, certificationWorkspaceRoot, readUnlinkedFile } from "../../src/authority/certification/filesystem.js";
 
 async function initialized(): Promise<string> {
   const root = await mkdtemp(path.join(tmpdir(), "reelier-cert-fs-"));
@@ -57,7 +57,7 @@ test("readiness refuses a linked output directory and performs no external write
   await assert.doesNotReject(() => access(external));
 });
 
-test("confined reads allow an ordinary Windows 8.3 ancestor alias", async t => {
+test("directory trust and confined reads allow ordinary Windows 8.3 and case aliases", async t => {
   if (process.platform !== "win32") { t.skip("Windows short-name behavior"); return; }
   const aliasRoot = await findWindowsShortAliasRoot();
   if (!aliasRoot) { t.skip("no writable short-name alias is available on this volume"); return; }
@@ -65,6 +65,31 @@ test("confined reads allow an ordinary Windows 8.3 ancestor alias", async t => {
   const file = path.join(root, "config.json");
   await writeFile(file, "SHORT_ALIAS_CANARY", "utf8");
   assert.equal((await readUnlinkedFile(file)).toString("utf8"), "SHORT_ALIAS_CANARY");
+  const workspace = path.join(root, "workspace");
+  await mkdir(workspace);
+  assert.equal((await certificationWorkspaceRoot(workspace.toUpperCase())).toLowerCase(), (await realpath(workspace)).toLowerCase());
+  assert.equal((await assertUnlinkedCreationParent(path.join(root.toUpperCase(), "future-workspace"))).toLowerCase(), (await realpath(root)).toLowerCase());
+});
+
+test("directory trust refuses an ancestor swapped to a junction after its first walk", async () => {
+  for (const operation of ["workspace-root", "creation-parent"] as const) {
+    const root = await mkdtemp(path.join(tmpdir(), `reelier-cert-ancestry-race-${operation}-`));
+    const requestedParent = path.join(root, "requested-parent");
+    const movedParent = path.join(root, "moved-parent");
+    const workspace = path.join(requestedParent, "workspace");
+    await mkdir(requestedParent);
+    if (operation === "workspace-root") await mkdir(workspace);
+    const afterAncestry = async (): Promise<void> => {
+      await rename(requestedParent, movedParent);
+      await symlink(movedParent, requestedParent, process.platform === "win32" ? "junction" : "dir");
+    };
+    await assert.rejects(
+      () => operation === "workspace-root"
+        ? certificationWorkspaceRoot(workspace, { afterAncestry })
+        : assertUnlinkedCreationParent(workspace, { afterAncestry }),
+      /changed|identity|linked|junction|reparse|confined/i,
+    );
+  }
 });
 
 async function findWindowsShortAliasRoot(): Promise<string | undefined> {
