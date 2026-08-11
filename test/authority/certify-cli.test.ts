@@ -1,98 +1,86 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { runAuthorityCommand } from "../../src/authority/cli.js";
+import { parseArgv } from "../../src/cli.js";
 
-test("authority certify preflight reports missing live references without secrets", async () => {
-  const previous = { certify: process.env.REELIER_LIVE_CERTIFY, provider: process.env.REELIER_LIVE_PROVIDER, account: process.env.REELIER_LIVE_ACCOUNT, credential: process.env.REELIER_LIVE_CREDENTIAL_REF, cleanup: process.env.REELIER_LIVE_CLEANUP_REF };
-  try {
-    delete process.env.REELIER_LIVE_CERTIFY;
-    delete process.env.REELIER_LIVE_PROVIDER;
-    delete process.env.REELIER_LIVE_ACCOUNT;
-    delete process.env.REELIER_LIVE_CREDENTIAL_REF;
-    delete process.env.REELIER_LIVE_CLEANUP_REF;
-    let output = "";
-    const original = console.log;
-    console.log = (...args: unknown[]) => { output += args.join(" "); };
-    const code = await runAuthorityCommand({ positional: ["certify", "preflight"], flags: new Set(), opts: {} });
-    console.log = original;
-    assert.equal(code, 1);
-    assert.match(output, /reelier\.certification-preflight\/v1/);
-  } finally {
-    for (const [key, value] of Object.entries({ REELIER_LIVE_CERTIFY: previous.certify, REELIER_LIVE_PROVIDER: previous.provider, REELIER_LIVE_ACCOUNT: previous.account, REELIER_LIVE_CREDENTIAL_REF: previous.credential, REELIER_LIVE_CLEANUP_REF: previous.cleanup })) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
-  }
-});
-
-test("authority certify run refuses until a live adapter is explicitly configured", async () => {
-  const previous = process.env.REELIER_LIVE_CERTIFY;
-  try {
-    process.env.REELIER_LIVE_CERTIFY = "1";
-    let output = "";
-    const original = console.error;
-    console.error = (...args: unknown[]) => { output += args.join(" "); };
-    const code = await runAuthorityCommand({ positional: ["certify", "run"], flags: new Set(), opts: { adapter: "github-labels" } });
-    console.error = original;
-    assert.equal(code, 1);
-    assert.match(output, /adapter-runner-not-configured/);
-  } finally {
-    if (previous === undefined) delete process.env.REELIER_LIVE_CERTIFY; else process.env.REELIER_LIVE_CERTIFY = previous;
-  }
-});
-
-test("authority certify preflight reads a closed operator file and never prints secret values", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "reelier-certify-cli-"));
-  const file = path.join(root, "certification.json");
-  await writeFile(file, JSON.stringify({
-    v: "reelier.certification-operator-config/v1",
-    authorityConfigPath: "authority/authority.yml",
-    evidenceDirectory: "authority/receipts/certification",
-    providers: {
-      github: { apiBaseUrl: "https://api.github.com", accountId: "owner", credentialRef: "env:REELIER_TEST_GITHUB", cleanupRef: "github-cleanup", repository: "certification", issueNumber: 1 },
-      vercel: { apiBaseUrl: "https://api.vercel.com", accountId: "team", credentialRef: "env:REELIER_TEST_VERCEL", cleanupRef: "vercel-cleanup", projectId: "project", deploymentId: "deployment", domains: ["certification.example.com"] },
-      neon: { apiBaseUrl: "https://console.neon.tech/api/v2", accountId: "org", credentialRef: "env:REELIER_TEST_NEON", cleanupRef: "neon-cleanup", projectId: "project", branchId: "branch", database: "neondb", role: "owner", databaseUrlRef: "env:REELIER_TEST_NEON_DATABASE" },
-      cloudflare: { apiBaseUrl: "https://api.cloudflare.com", accountId: "account", credentialRef: "env:REELIER_TEST_CLOUDFLARE", cleanupRef: "cloudflare-cleanup", zoneId: "zone", recordId: "record", recordName: "certification.example.com", tokenName: "certification-token" },
-      hubspot: { apiBaseUrl: "https://api.hubapi.com", accountId: "portal", credentialRef: "env:REELIER_TEST_HUBSPOT", cleanupRef: "hubspot-cleanup", ticketId: "ticket", contactId: "contact", approvedProperties: ["subject"] },
-      slack: { apiBaseUrl: "https://slack.com", accountId: "team", credentialRef: "env:REELIER_TEST_SLACK", cleanupRef: "slack-cleanup", channelId: "C0123456789" },
-    },
-    fly: { appName: "cell", authorityMachineId: "cellmachine", agentAppName: "agent", agentMachineId: "agentmachine", egressAppName: "egress", egressMachineId: "egressmachine", orgSlug: "personal", region: "yyz", apiCredentialRef: "env:REELIER_TEST_FLY", flyctlPath: "missing-flyctl-for-test", flyctlVersion: "0.3.200", egressProxyBaseUrl: "http://egress.internal:8443", egressProxyBearerRef: "env:REELIER_TEST_EGRESS", authorityImageDigest: "sha256:" + "a".repeat(64), agentImageDigest: "sha256:" + "d".repeat(64), gatewayImageDigest: "sha256:" + "e".repeat(64), networkPolicyDigest: "sha256:" + "b".repeat(64), schemaDigest: "sha256:" + "c".repeat(64) },
-    codex: { binaryPath: "missing-codex-for-test", version: "0.134.0", authorityEndpoint: "https://cell.example.com/mcp", taskId: "task_1", jobId: "job_1", authorityCellId: "cell_1", codexHomePath: "C:/reelier-private/codex-home", workspacePath: "C:/work/reelier-certification", sessionCredentialDirectory: "C:/reelier-private/codex-sessions" },
+async function fixture(): Promise<{ configPath: string; workspace: string }> {
+  const root = await mkdtemp(path.join(tmpdir(), "reelier-cert-cli-"));
+  const configPath = path.join(root, "certification.local.json");
+  await writeFile(configPath, JSON.stringify({
+    v: "reelier.certification-operator-config/v2", authorityConfigPath: "authority/authority.yml", evidenceDirectory: "authority/receipts/certification",
+    scenarios: ["github-issue-labels"], resources: { "github-issue-labels": { apiBaseUrl: "https://api.github.com", owner: "fixlyai", repository: "reelier-certification", issueNumber: 1 } },
+    cleanup: { "github-issue-labels": ["restore-github-labels"] }, metadata: {}, secretReferences: { githubCredential: "env:REELIER_GITHUB_TOKEN" },
   }), "utf8");
-  const prior = process.env.REELIER_TEST_GITHUB;
-  process.env.REELIER_TEST_GITHUB = "private-github-value";
-  let output = "";
-  const original = console.log;
+  return { configPath, workspace: path.join(root, "certification") };
+}
+
+async function capture(command: Parameters<typeof runAuthorityCommand>[0]): Promise<{ code: number; stdout: string; stderr: string }> {
+  let stdout = ""; let stderr = "";
+  const log = console.log; const error = console.error;
   try {
-    console.log = (...args: unknown[]) => { output += args.join(" "); };
-    const code = await runAuthorityCommand({ positional: ["certify", "preflight"], flags: new Set(), opts: { config: file } });
-    assert.equal(code, 1);
-    assert.match(output, /secret:vercel:credential/);
-    assert.match(output, /runtime:codex/);
-    assert.doesNotMatch(output, /private-github-value/);
-    assert.doesNotMatch(output, /REELIER_TEST_GITHUB/);
-  } finally {
-    console.log = original;
-    if (prior === undefined) delete process.env.REELIER_TEST_GITHUB; else process.env.REELIER_TEST_GITHUB = prior;
-  }
+    console.log = (...args: unknown[]) => { stdout += args.join(" "); };
+    console.error = (...args: unknown[]) => { stderr += args.join(" "); };
+    return { code: await runAuthorityCommand(command), stdout, stderr };
+  } finally { console.log = log; console.error = error; }
+}
+
+test("root CLI parses exact certification scenario selection", () => {
+  const parsed = parseArgv(["certify", "preflight", "--scenario", "github-issue-labels"]);
+  assert.equal(parsed.opts.scenario, "github-issue-labels");
+  assert.deepEqual(parsed.positional, ["certify", "preflight"]);
 });
 
-test("authority certify preflight reports placeholder resource fields", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "reelier-certify-placeholder-"));
-  const file = path.join(root, "certification.json");
-  const source = JSON.parse(await import("node:fs/promises").then(fs => fs.readFile(path.resolve("docs/runbooks/certification.operator.example.json"), "utf8")));
-  source.fly.flyctlPath = "missing-flyctl-for-test";
-  source.codex.binaryPath = "missing-codex-for-test";
-  await writeFile(file, JSON.stringify(source), "utf8");
-  let output = "";
-  const original = console.log;
+test("certification preflight has no legacy no-config environment fallback", async () => {
+  process.env.REELIER_LIVE_CREDENTIAL_REF = "private-value";
   try {
-    console.log = (...args: unknown[]) => { output += args.join(" "); };
-    const code = await runAuthorityCommand({ positional: ["certify", "preflight"], flags: new Set(), opts: { config: file } });
-    assert.equal(code, 1);
-    assert.match(output, /resource:github:accountId/);
-    assert.match(output, /resource:github:repository/);
-    assert.match(output, /resource:vercel:deploymentId/);
-    assert.doesNotMatch(output, /github-owner|prj_example|dpl_example/);
-  } finally { console.log = original; }
+    const result = await capture({ positional: ["certify", "preflight"], flags: new Set(), opts: { workspace: path.join(tmpdir(), "missing-certification-workspace") } });
+    assert.equal(result.code, 1);
+    const output = JSON.parse(result.stderr);
+    assert.deepEqual(Object.keys(output).sort(), ["reasonCode", "status"]);
+    assert.equal(output.reasonCode, "certification-not-initialized");
+    assert.doesNotMatch(result.stderr, /private-value|REELIER_LIVE_CREDENTIAL_REF/);
+  } finally { delete process.env.REELIER_LIVE_CREDENTIAL_REF; }
+});
+
+test("certification init, selected preflight, seal, export, and offline verify emit closed honest JSON", async () => {
+  const { configPath, workspace } = await fixture();
+  const init = await capture({ positional: ["certify", "init"], flags: new Set(), opts: { config: configPath } });
+  assert.equal(init.code, 0);
+  const initialized = JSON.parse(init.stdout);
+  assert.deepEqual(Object.keys(initialized).sort(), ["configDigest", "identifiers", "status", "workspace"]);
+  assert.doesNotMatch(init.stdout, /REELIER_GITHUB_TOKEN/);
+
+  const preflight = await capture({ positional: ["certify", "preflight"], flags: new Set(), opts: { workspace, scenario: "github-issue-labels" } });
+  assert.equal(preflight.code, 1);
+  const report = JSON.parse(preflight.stdout);
+  assert.deepEqual(report.scenarios, ["github-issue-labels"]);
+  assert.equal(report.completeness, "unchecked");
+
+  const seal = await capture({ positional: ["certify", "seal-readiness"], flags: new Set(), opts: { workspace, scenario: "github-issue-labels" } });
+  assert.equal(seal.code, 0);
+  const sealed = JSON.parse(seal.stdout);
+  assert.deepEqual(Object.keys(sealed).sort(), ["authorization", "digest", "dispatchable", "path", "status"]);
+  assert.equal(sealed.status, "awaiting-human-signature");
+  assert.equal(sealed.dispatchable, false);
+
+  const exportedResult = await capture({ positional: ["certify", "export"], flags: new Set(), opts: { workspace, scenario: "github-issue-labels" } });
+  assert.equal(exportedResult.code, 0);
+  const exported = JSON.parse(exportedResult.stdout);
+  const verifiedResult = await capture({ positional: ["certify", "verify"], flags: new Set(), opts: { input: exported.path } });
+  assert.equal(verifiedResult.code, 0);
+  const verified = JSON.parse(verifiedResult.stdout);
+  assert.deepEqual(verified.claims, { providerCertification: "unchecked", signatureVerification: "unchecked", completion: "unchecked", completeness: "unchecked" });
+  assert.equal(verified.authorization, "absent");
+  assert.equal(verified.dispatchable, false);
+
+  const bundle = JSON.parse(await readFile(exported.path, "utf8"));
+  bundle.artifacts.readiness.dispatchable = true;
+  await chmod(exported.path, 0o600);
+  await writeFile(exported.path, JSON.stringify(bundle), "utf8");
+  const tampered = await capture({ positional: ["certify", "verify"], flags: new Set(), opts: { input: exported.path } });
+  assert.equal(tampered.code, 1);
+  assert.deepEqual(Object.keys(JSON.parse(tampered.stderr)).sort(), ["reasonCode", "status"]);
 });
