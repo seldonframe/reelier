@@ -2,6 +2,7 @@ import { access, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile
 import path from "node:path";
 import { authorityDigest } from "../wire.js";
 import { canonicalizeCertificationOperatorConfigV2, parseCertificationOperatorConfigV2 } from "./config.js";
+import { createCertificationConfigCommitment, recomputeCertificationConfigCommitment } from "./commitment.js";
 
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
 const ID = /^(?:task|job|grant|cell|signer)_[0-9a-f]{24}$/;
@@ -17,6 +18,8 @@ export interface CertificationIdentifiers {
 export interface CertificationInitialization {
   readonly v: "reelier.certification-initialization/v1";
   readonly configDigest: string;
+  readonly privateConfigDigest: string;
+  readonly sanitizedProjectionDigest: string;
   readonly identifiers: CertificationIdentifiers;
   readonly completeness: "unchecked";
 }
@@ -31,11 +34,14 @@ export async function initializeCertification(input: Readonly<{ configPath: stri
   const workspace = path.resolve(input.workspace ?? path.join(path.dirname(configPath), "certification"));
   const parsed = parseCertificationOperatorConfigV2(JSON.parse(await readFile(configPath, "utf8")));
   const canonicalConfig = canonicalizeCertificationOperatorConfigV2(parsed);
-  const configDigest = authorityDigest(parsed);
+  const commitment = createCertificationConfigCommitment(parsed, parsed.scenarios);
+  const configDigest = commitment.configCommitmentDigest;
   const identifiers = deriveCertificationIdentifiers(configDigest);
   const initialization: CertificationInitialization = Object.freeze({
     v: "reelier.certification-initialization/v1",
     configDigest,
+    privateConfigDigest: commitment.privateConfigDigest,
+    sanitizedProjectionDigest: commitment.sanitizedProjectionDigest,
     identifiers,
     completeness: "unchecked",
   });
@@ -43,7 +49,8 @@ export async function initializeCertification(input: Readonly<{ configPath: stri
   if (await exists(workspace)) {
     const existingConfig = parseCertificationOperatorConfigV2(JSON.parse(await readFile(path.join(workspace, "config.json"), "utf8")));
     const existing = parseCertificationInitialization(JSON.parse(await readFile(path.join(workspace, "initialization.json"), "utf8")));
-    if (authorityDigest(existingConfig) !== configDigest || existing.configDigest !== configDigest || authorityDigest(existing.identifiers) !== authorityDigest(identifiers)) {
+    const existingCommitment = createCertificationConfigCommitment(existingConfig, existingConfig.scenarios);
+    if (existingCommitment.configCommitmentDigest !== configDigest || existing.configDigest !== configDigest || existing.privateConfigDigest !== commitment.privateConfigDigest || existing.sanitizedProjectionDigest !== commitment.sanitizedProjectionDigest || authorityDigest(existing.identifiers) !== authorityDigest(identifiers)) {
       throw new TypeError("certification initialization cannot resume with substituted configuration or identifiers");
     }
     return Object.freeze({ status: "resumed", workspace, configDigest, identifiers: existing.identifiers });
@@ -64,7 +71,8 @@ export async function initializeCertification(input: Readonly<{ configPath: stri
     if (await exists(workspace)) {
       const existingConfig = parseCertificationOperatorConfigV2(JSON.parse(await readFile(path.join(workspace, "config.json"), "utf8")));
       const existing = parseCertificationInitialization(JSON.parse(await readFile(path.join(workspace, "initialization.json"), "utf8")));
-      if (authorityDigest(existingConfig) === configDigest && existing.configDigest === configDigest && authorityDigest(existing.identifiers) === authorityDigest(identifiers)) {
+      const existingCommitment = createCertificationConfigCommitment(existingConfig, existingConfig.scenarios);
+      if (existingCommitment.configCommitmentDigest === configDigest && existing.configDigest === configDigest && existing.privateConfigDigest === commitment.privateConfigDigest && existing.sanitizedProjectionDigest === commitment.sanitizedProjectionDigest && authorityDigest(existing.identifiers) === authorityDigest(identifiers)) {
         return Object.freeze({ status: "resumed", workspace, configDigest, identifiers: existing.identifiers });
       }
     }
@@ -75,8 +83,8 @@ export async function initializeCertification(input: Readonly<{ configPath: stri
 
 export function parseCertificationInitialization(value: unknown): CertificationInitialization {
   const root = object(value, "certification initialization");
-  closed(root, ["v", "configDigest", "identifiers", "completeness"], "certification initialization");
-  if (root.v !== "reelier.certification-initialization/v1" || root.completeness !== "unchecked" || typeof root.configDigest !== "string" || !DIGEST.test(root.configDigest)) throw new TypeError("certification initialization is invalid");
+  closed(root, ["v", "configDigest", "privateConfigDigest", "sanitizedProjectionDigest", "identifiers", "completeness"], "certification initialization");
+  if (root.v !== "reelier.certification-initialization/v1" || root.completeness !== "unchecked" || typeof root.configDigest !== "string" || !DIGEST.test(root.configDigest) || typeof root.privateConfigDigest !== "string" || !DIGEST.test(root.privateConfigDigest) || typeof root.sanitizedProjectionDigest !== "string" || !DIGEST.test(root.sanitizedProjectionDigest) || recomputeCertificationConfigCommitment(root.privateConfigDigest, root.sanitizedProjectionDigest) !== root.configDigest) throw new TypeError("certification initialization is invalid");
   const rawIdentifiers = object(root.identifiers, "certification identifiers");
   closed(rawIdentifiers, ["taskId", "jobCardId", "rootGrantId", "authorityCellId", "signerId"], "certification identifiers");
   const identifiers = Object.freeze({
@@ -86,7 +94,7 @@ export function parseCertificationInitialization(value: unknown): CertificationI
     authorityCellId: internalId(rawIdentifiers.authorityCellId, "cell_"),
     signerId: internalId(rawIdentifiers.signerId, "signer_"),
   });
-  return Object.freeze({ v: "reelier.certification-initialization/v1", configDigest: root.configDigest, identifiers, completeness: "unchecked" });
+  return Object.freeze({ v: "reelier.certification-initialization/v1", configDigest: root.configDigest, privateConfigDigest: root.privateConfigDigest, sanitizedProjectionDigest: root.sanitizedProjectionDigest, identifiers, completeness: "unchecked" });
 }
 
 export function deriveCertificationIdentifiers(configDigest: string): CertificationIdentifiers {

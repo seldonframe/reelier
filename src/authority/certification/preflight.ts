@@ -6,6 +6,7 @@ import { parseCertificationOperatorConfigV2, type CertificationOperatorConfigV2 
 import { parseCertificationInitialization } from "./initializer.js";
 import { CERTIFICATION_SCENARIOS, CERTIFICATION_SCENARIO_IDS, type CertificationScenarioId, type CertificationSecretSlot } from "./scenarios.js";
 import { certificationWorkspaceRoot, confinedExistingDirectory, readConfinedFile } from "./filesystem.js";
+import { createCertificationConfigCommitment } from "./commitment.js";
 
 export interface CertificationInputArtifact { readonly scenario: CertificationScenarioId; readonly name: string; readonly digest: string }
 export interface CertificationInputSet { readonly status: "configured" | "absent"; readonly artifacts: readonly CertificationInputArtifact[] }
@@ -33,8 +34,10 @@ export async function preflightCertification(input: Readonly<{ workspace: string
   const workspaceRoot = await certificationWorkspaceRoot(workspace);
   const config = parseCertificationOperatorConfigV2(JSON.parse((await readConfinedFile(workspaceRoot, workspaceRoot, "config.json")).toString("utf8")));
   const initialization = parseCertificationInitialization(JSON.parse((await readConfinedFile(workspaceRoot, workspaceRoot, "initialization.json")).toString("utf8")));
-  if (authorityDigest(config) !== initialization.configDigest) throw new TypeError("certification workspace config digest mismatch");
   const scenarios = selectScenarios(config, input.scenario, input.all);
+  const fullCommitment = createCertificationConfigCommitment(config, config.scenarios);
+  if (fullCommitment.configCommitmentDigest !== initialization.configDigest || fullCommitment.privateConfigDigest !== initialization.privateConfigDigest || fullCommitment.sanitizedProjectionDigest !== initialization.sanitizedProjectionDigest) throw new TypeError("certification workspace config commitment mismatch");
+  const selectedCommitment = createCertificationConfigCommitment(config, scenarios);
   const definitions = scenarios.map(scenario => CERTIFICATION_SCENARIOS[scenario]);
   const resourceSections = unique(definitions.flatMap(definition => definition.resourceSections));
   const cleanupSections = unique(definitions.flatMap(definition => definition.cleanupCommitments));
@@ -60,7 +63,7 @@ export async function preflightCertification(input: Readonly<{ workspace: string
   ].sort();
   const body = {
     v: "reelier.certification-preflight/v2" as const,
-    configDigest: initialization.configDigest,
+    configDigest: selectedCommitment.configCommitmentDigest,
     scenarios,
     resources,
     cleanup,
