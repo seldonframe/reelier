@@ -72,7 +72,7 @@ export async function initializeCertification(input: Readonly<{ configPath: stri
     await rename(staging, workspace);
     await unlink(path.join(workspace, ".stage-owner"));
   } catch (error) {
-    await removeOwnedStage(staging, workspace, stageOwner);
+    await removeOwnedStage(staging, creationParent, path.basename(workspace), stageOwner);
     const winnerInfo = await lstat(workspace).catch(inner => (inner as NodeJS.ErrnoException).code === "ENOENT" ? undefined : Promise.reject(inner));
     if (winnerInfo) {
       const root = await certificationWorkspaceRoot(workspace);
@@ -88,8 +88,8 @@ export async function initializeCertification(input: Readonly<{ configPath: stri
   return Object.freeze({ status: "initialized", workspace, configDigest, identifiers });
 }
 
-async function removeOwnedStage(staging: string, workspace: string, owner: string): Promise<void> {
-  if (path.dirname(staging) !== path.dirname(workspace) || !path.basename(staging).startsWith(`.${path.basename(workspace)}.staging-`)) return;
+async function removeOwnedStage(staging: string, creationParent: string, workspaceBasename: string, owner: string): Promise<void> {
+  if (path.dirname(staging) !== creationParent || !path.basename(staging).startsWith(`.${workspaceBasename}.staging-`)) return;
   const info = await lstat(staging).catch(error => (error as NodeJS.ErrnoException).code === "ENOENT" ? undefined : Promise.reject(error));
   if (!info || !info.isDirectory() || info.isSymbolicLink()) return;
   let observed: string;
