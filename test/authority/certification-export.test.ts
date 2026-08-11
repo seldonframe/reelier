@@ -64,6 +64,11 @@ test("offline verification recomputes generated IDs and semantic preflight field
   forgedPreflight.artifacts.preflight.ok = true;
   forgedPreflight.artifacts.preflight.preparationReady = true;
   assert.throws(() => verifyCertificationExport(rehash(forgedPreflight)), /preflight.*semantic|missing.*mismatch/i);
+
+  const forgedInputStatus = JSON.parse(JSON.stringify(original));
+  forgedInputStatus.artifacts.preflight.inputs.runners.status = "absent";
+  forgedInputStatus.artifacts.readiness.commitments.runners.status = "absent";
+  assert.throws(() => verifyCertificationExport(rehash(forgedInputStatus)), /preflight.*semantic|input.*status/i);
 });
 
 test("offline verification rejects deep tampering, substitution, missing links, and open schemas", async () => {

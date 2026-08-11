@@ -37,6 +37,7 @@ test("root CLI rejects missing and duplicate scenario option values", () => {
   assert.throws(() => parseArgv(["certify", "preflight", "--scenario"]), /requires a value/);
   assert.throws(() => parseArgv(["certify", "preflight", "--scenario", "--all"]), /requires a value/);
   assert.throws(() => parseArgv(["certify", "preflight", "--scenario", "github-issue-labels", "--scenario", "slack-topic"]), /duplicate/);
+  assert.throws(() => parseArgv(["certify", "preflight", "--all", "--all"]), /duplicate/);
 });
 
 test("certification preflight has no legacy no-config environment fallback", async () => {
