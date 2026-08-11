@@ -3,8 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { inspectCertificationResourceIdentifiers, parseCertificationOperatorConfig, inspectCertificationSecretReferences } from "../../src/authority/host/certification-config.js";
-import { canonicalizeCertificationOperatorConfigV2, migrateCertificationOperatorConfig, parseCertificationOperatorConfigV2 } from "../../src/authority/certification/config.js";
+import { canonicalizeCertificationOperatorConfigV2, inspectCertificationResourceIdentifiers, migrateCertificationOperatorConfig, parseCertificationOperatorConfig, parseCertificationOperatorConfigV2, inspectCertificationSecretReferences } from "../../src/authority/host/certification-config.js";
 
 function completeConfig(): unknown {
   return {
@@ -187,7 +186,7 @@ test("v2 parsing is deeply closed, immutable, and canonically byte-stable", () =
   assert.equal(Object.isFrozen(parsed.resources["github-issue-labels"]), true);
   assert.equal(Object.isFrozen(parsed.cleanup["github-issue-labels"]), true);
   (input.resources as Record<string, Record<string, unknown>>)["github-issue-labels"].owner = "attacker";
-  assert.equal(parsed.resources["github-issue-labels"].owner, "seldonframe");
+  assert.equal((parsed.resources["github-issue-labels"] as { readonly owner: string }).owner, "seldonframe");
   const first = canonicalizeCertificationOperatorConfigV2(parsed);
   const second = canonicalizeCertificationOperatorConfigV2(parseCertificationOperatorConfigV2(JSON.parse(first)));
   assert.equal(second, first);
@@ -219,4 +218,20 @@ test("migration refuses ambiguous legacy input without inventing required fields
 test("all seven named secret slots are accepted only when their scenarios require them", () => {
   const legacy = migrateCertificationOperatorConfig(completeConfig());
   assert.deepEqual(Object.keys(legacy.secretReferences).sort(), ["cloudflareCredential", "flyApiCredential", "githubCredential", "neonApiCredential", "neonDatabaseUrl", "slackCredential", "vercelCredential"]);
+});
+
+test("v2 keeps Codex home and generated session state outside the agent workspace", () => {
+  for (const field of ["codexHomePath", "sessionDirectory"] as const) {
+    const raw = structuredClone(migrateCertificationOperatorConfig(completeConfig())) as unknown as { metadata: { codexTenPrincipal: Record<string, unknown> } };
+    raw.metadata.codexTenPrincipal[field] = `C:/work/reelier-certification/${field}`;
+    assert.throws(() => parseCertificationOperatorConfigV2(raw), /outside the workspace/);
+  }
+});
+
+test("the v2 authority example is a minimal scenario-scoped non-secret template", async () => {
+  const raw = await readFile(path.resolve("authority/certification.example.json"), "utf8");
+  const parsed = parseCertificationOperatorConfigV2(JSON.parse(raw));
+  assert.deepEqual(parsed.scenarios, ["github-issue-labels"]);
+  assert.deepEqual(Object.keys(parsed.secretReferences), ["githubCredential"]);
+  assert.doesNotMatch(raw, /hubspot|taskId|jobId|authorityCellId|signer|grant|ghp_|Bearer\s/i);
 });

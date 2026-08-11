@@ -15,6 +15,10 @@ reelier authority certify preflight --config authority/certification.json
 reelier authority serve --path authority/authority.yml --certification-config authority/certification.json
 ```
 
+The scenario-scoped v2 format is tracked at `authority/certification.example.json`. It selects only the scenarios being certified and accepts only their exact resource, cleanup, metadata, and named secret-reference sections. It is private certification-estate configuration, not a customer onboarding requirement. The v2 parser and v1 migration are available now; the existing live certify commands continue to use the v1 compatibility path until their init/preflight slice lands.
+
+V2 has exactly seven possible operator secret-reference slots: `githubCredential`, `vercelCredential`, `neonApiCredential`, `neonDatabaseUrl`, `cloudflareCredential`, `slackCredential`, and `flyApiCredential`. Only slots required by selected scenarios are allowed. Egress-gateway bearer material and the ten Codex session credentials are generated later and are never operator-config fields. HubSpot is not a v2 provider.
+
 Start by copying `docs/runbooks/certification.operator.example.json` to the ignored file `authority/certification.local.json`. Replace only resource identifiers, cleanup names, the pinned Codex path/version, and secret references. Managed provider references must keep the documented `env:REELIER_*` names because those names identify secrets staged in the Authority Cell. Keep the local Fly API credential in a local environment variable or ignored file. Never place values in the JSON file, command line, issue, pull request, chat, receipt, or evidence directory.
 
 On Windows, stage each provider credential directly into the Fly Authority Cell with the repository helper. It prompts with masked input and sends the value to `flyctl secrets import` over standard input; the value is not placed in a process argument or file. Run only the names for which the disposable resource is ready:

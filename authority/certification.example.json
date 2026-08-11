@@ -1,0 +1,25 @@
+{
+  "v": "reelier.certification-operator-config/v2",
+  "authorityConfigPath": "authority/authority.yml",
+  "evidenceDirectory": "authority/receipts/certification",
+  "scenarios": [
+    "github-issue-labels"
+  ],
+  "resources": {
+    "github-issue-labels": {
+      "apiBaseUrl": "https://api.github.com",
+      "owner": "replace-github-owner",
+      "repository": "replace-github-repository",
+      "issueNumber": 1
+    }
+  },
+  "cleanup": {
+    "github-issue-labels": [
+      "restore-github-issue-labels"
+    ]
+  },
+  "metadata": {},
+  "secretReferences": {
+    "githubCredential": "env:REELIER_GITHUB_TOKEN"
+  }
+}
