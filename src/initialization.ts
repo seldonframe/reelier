@@ -162,6 +162,23 @@ export type InitializeInspectionResult =
   | { readonly status: "complete" | "dry-run"; readonly report: InitializationReportV1; readonly resumedFrom: InitCheckpointId | null }
   | { readonly status: "busy" };
 
+/** Compact, answer-first CLI rendering. It intentionally contains no absolute paths or raw evidence. */
+export function renderInitializationReport(report: InitializationReportV1, dryRun: boolean): string[] {
+  const detectedConfigs = report.surfaces.configs.filter(config => config.detected).length;
+  const pathA = report.pathA.hosts.map(host => `${host.host}=${host.observation}`).join(", ");
+  const classifications = [...report.pathC.connections, ...report.pathC.candidates].map(item => item.classification);
+  const count = (classification: PathCClassification): number => classifications.filter(value => value === classification).length;
+  return [
+    "Reelier init: local inspection only; nothing deployed or gated.",
+    `Detected surfaces: ${detectedConfigs}/${report.surfaces.configs.length} known config(s); ${report.surfaces.harnesses.length} harness identifiers inspected.`,
+    `Path A observation: ${pathA || "no observed host evidence"}.`,
+    `Path B replay/freeze candidates: ${report.pathB.candidates.length}.`,
+    `Path C connections/candidates: boundable=${count("boundable")}, outcome-capable=${count("outcome-capable")}, shadow-only=${count("shadow-only")}, unsupported=${count("unsupported")}.`,
+    `Exclusive enforcement: ${report.exclusiveEnforcement.status} (${report.exclusiveEnforcement.limitation}).`,
+    dryRun ? "Dry run: no files written." : "Local artifacts: .reelier/init/inspection-report.json",
+  ];
+}
+
 interface CheckpointState {
   readonly v: "reelier.init-state/v1";
   readonly planDigest: string;
