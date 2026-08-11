@@ -96,6 +96,22 @@ test("certification init refuses a workspace junction instead of resuming throug
   await assert.rejects(() => initializeCertification({ configPath, workspace }), /linked|junction|reparse|confined/i);
 });
 
+test("certification init refuses a real workspace reached through a junction parent", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "reelier-cert-init-parent-resume-"));
+  const actualParent = await mkdtemp(path.join(tmpdir(), "reelier-cert-init-parent-actual-"));
+  const configPath = path.join(root, "certification.local.json");
+  const actualWorkspace = path.join(actualParent, "certification");
+  const linkedParent = path.join(root, "linked-parent");
+  await writeFile(configPath, JSON.stringify(config()), "utf8");
+  await initializeCertification({ configPath, workspace: actualWorkspace });
+  try { await symlink(actualParent, linkedParent, process.platform === "win32" ? "junction" : "dir"); }
+  catch (error) { t.skip(`directory link unavailable: ${(error as NodeJS.ErrnoException).code ?? "unknown"}`); return; }
+  await assert.rejects(
+    () => initializeCertification({ configPath, workspace: path.join(linkedParent, "certification") }),
+    /linked|junction|reparse|confined/i,
+  );
+});
+
 test("certification init does not create workspace parents through a junction", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "reelier-cert-init-parent-junction-"));
   const configPath = path.join(root, "certification.local.json");
