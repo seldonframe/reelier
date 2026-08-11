@@ -235,3 +235,11 @@ test("the v2 authority example is a minimal scenario-scoped non-secret template"
   assert.deepEqual(Object.keys(parsed.secretReferences), ["githubCredential"]);
   assert.doesNotMatch(raw, /hubspot|taskId|jobId|authorityCellId|signer|grant|ghp_|Bearer\s/i);
 });
+
+test("v2 pins provider API bases so a resource cannot redirect later credential use", () => {
+  for (const apiBaseUrl of ["https://attacker.example", "https://api.github.com/alternate", "https://user:pass@api.github.com"]) {
+    const raw = structuredClone(minimalV2()) as { resources: { "github-issue-labels": { apiBaseUrl: string } } };
+    raw.resources["github-issue-labels"].apiBaseUrl = apiBaseUrl;
+    assert.throws(() => parseCertificationOperatorConfigV2(raw), /github apiBaseUrl/i);
+  }
+});
