@@ -3,7 +3,7 @@ import { authorityDigest } from "../wire.js";
 import { parseCertificationOperatorConfigV2, type CertificationOperatorConfigV2 } from "./config.js";
 import { deriveCertificationIdentifiers, parseCertificationInitialization, validateCertificationInitialization } from "./initializer.js";
 import { preflightCertification } from "./preflight.js";
-import { createCertificationReadinessCandidate } from "./readiness.js";
+import { createCertificationReadinessCandidate, parseCertificationReadinessCandidate } from "./readiness.js";
 import { CERTIFICATION_SCENARIOS, CERTIFICATION_SCENARIO_IDS, type CertificationScenarioId } from "./scenarios.js";
 import { certificationWorkspaceRoot, confinedExistingDirectory, publishPrivateContentAddressed, readConfinedFile } from "./filesystem.js";
 import { createCertificationSelectionCommitment, recomputeCertificationSelectionCommitment } from "./commitment.js";
@@ -80,7 +80,7 @@ export function verifyCertificationExport(value: unknown): Readonly<{ digest: st
   const config = parseProjectedConfig(artifacts.config, scenarios);
   const initialization = parseCertificationInitialization(artifacts.initialization);
   const preflight = parsePreflight(artifacts.preflight);
-  const readiness = parseReadiness(artifacts.readiness);
+  const readiness = parseCertificationReadinessCandidate(artifacts.readiness, preflight);
   const parsedArtifacts = { config, initialization, preflight, readiness };
   for (const name of ["config", "initialization", "preflight", "readiness"] as const) if (digests[name] !== authorityDigest(parsedArtifacts[name])) throw new TypeError(`certification export ${name} digest link mismatch`);
   if (initialization.configDigest !== config.configDigest || preflight.configDigest !== config.configDigest || readiness.configDigest !== config.configDigest) throw new TypeError("certification export initialization root link mismatch");
@@ -153,18 +153,6 @@ function parsePreflight(value: unknown): any {
   const body = { v: raw.v, configDigest: raw.configDigest, selectionDigest: raw.selectionDigest, identifiers: parseIdentifiers(raw.identifiers), scenarios: scenarioList(raw.scenarios), resources: commitmentList(raw.resources, "resources"), cleanup: commitmentList(raw.cleanup, "cleanup"), credentialReferences: credentialList(raw.credentialReferences), inputs: { runners: inputSet(inputsRaw.runners), tests: inputSet(inputsRaw.tests) }, topology: enumValue(raw.topology, ["configured", "absent"], "preflight topology"), trust: raw.trust, signatureStatus: raw.signatureStatus, authorization: raw.authorization, completeness: raw.completeness, missing: stringList(raw.missing, "certification preflight missing"), ok: raw.ok, preparationReady: raw.preparationReady };
   if (assertDigest(raw.digest, "certification preflight digest") !== authorityDigest(body)) throw new TypeError("certification preflight digest mismatch");
   return Object.freeze({ ...body, digest: raw.digest });
-}
-
-function parseReadiness(value: unknown): any {
-  const raw = object(value, "certification readiness candidate");
-  closed(raw, ["v", "status", "preparationReady", "signatureStatus", "authorization", "dispatchable", "completeness", "configDigest", "selectionDigest", "preflightDigest", "scenarios", "identifiers", "commitments"], "certification readiness candidate");
-  if (raw.v !== "reelier.certification-readiness-candidate/v1" || raw.status !== "awaiting-human-signature" || raw.preparationReady !== true || raw.signatureStatus !== "absent" || raw.authorization !== "absent" || raw.dispatchable !== false || raw.completeness !== "unchecked") throw new TypeError("certification readiness candidate cannot confer authority");
-  assertDigest(raw.configDigest, "readiness config digest"); assertDigest(raw.selectionDigest, "readiness selection digest"); assertDigest(raw.preflightDigest, "readiness preflight digest");
-  const identifiers = parseIdentifiers(raw.identifiers);
-  const commitments = object(raw.commitments, "readiness commitments");
-  closed(commitments, ["resources", "cleanup", "credentials", "runners", "tests", "topology", "signatureStatus"], "readiness commitments");
-  if (commitments.signatureStatus !== "absent") throw new TypeError("readiness signature status is invalid");
-  return Object.freeze({ v: raw.v, status: raw.status, preparationReady: raw.preparationReady, signatureStatus: raw.signatureStatus, authorization: raw.authorization, dispatchable: raw.dispatchable, completeness: raw.completeness, configDigest: raw.configDigest, selectionDigest: raw.selectionDigest, preflightDigest: raw.preflightDigest, scenarios: scenarioList(raw.scenarios), identifiers, commitments: Object.freeze({ resources: commitmentList(commitments.resources, "resources"), cleanup: commitmentList(commitments.cleanup, "cleanup"), credentials: credentialList(commitments.credentials), runners: inputSet(commitments.runners), tests: inputSet(commitments.tests), topology: enumValue(commitments.topology, ["configured", "absent"], "readiness topology"), signatureStatus: commitments.signatureStatus }) });
 }
 
 function parseIdentifiers(value: unknown): any { const raw = object(value, "certification identifiers"); closed(raw, ["taskId", "jobCardId", "rootGrantId", "authorityCellId", "signerId"], "certification identifiers"); const patterns: Record<string, RegExp> = { taskId: /^task_[0-9a-f]{24}$/, jobCardId: /^job_[0-9a-f]{24}$/, rootGrantId: /^grant_[0-9a-f]{24}$/, authorityCellId: /^cell_[0-9a-f]{24}$/, signerId: /^signer_[0-9a-f]{24}$/ }; for (const [key, pattern] of Object.entries(patterns)) if (typeof raw[key] !== "string" || !pattern.test(raw[key])) throw new TypeError("certification generated identifier is invalid"); return Object.freeze({ taskId: raw.taskId, jobCardId: raw.jobCardId, rootGrantId: raw.rootGrantId, authorityCellId: raw.authorityCellId, signerId: raw.signerId }); }
