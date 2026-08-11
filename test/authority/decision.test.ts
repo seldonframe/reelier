@@ -238,6 +238,18 @@ test("a failed atomic decision-lock retirement leaves the complete verified owne
   }finally{await rm(root,{recursive:true,force:true});}
 });
 
+test("a concurrent held decision lock returns the durable terminal classification",async()=>{
+  const root=await mkdtemp(path.join(tmpdir(),"reelier-decision-held-lock-"));
+  try{
+    const record=primary(),sink=createFileGateDecisionSink(root,{lockTimeoutMs:20});
+    assert.deepEqual(await sink.append(record),{ok:true,status:"appended",recordDigest:authorityDigest(record)});
+    const lock=path.join(root,".gate-decisions.lock");
+    await mkdir(lock);
+    await writeFile(path.join(lock,"owner.json"),authorityCanonicalBytes({host:hostname(),nonce:"c".repeat(64),pid:process.pid,v:"reelier.gate-decision-lock/internal-v1"}));
+    assert.deepEqual(await createFileGateDecisionSink(root,{lockTimeoutMs:20}).append(record),{ok:true,status:"idempotent",recordDigest:authorityDigest(record)});
+  }finally{await rm(root,{recursive:true,force:true});}
+});
+
 test("accepted reservation and non-primary conflict indexes have exact distinct occupancy",async()=>{
   const root=await mkdtemp(path.join(tmpdir(),"reelier-decision-index-"));try{const sink=createFileGateDecisionSink(root);const acceptedContext={...context,contractDigest:sha("5"),capabilityId:"capability_1",capabilityDigest:sha("6"),outcomeKey:sha("7"),effectDigest:sha("8"),snapshots:{sourceBundleDigest:sha("9"),authorityStateDigest:sha("3")}};const acceptedEvent={...event,verdict:"accepted" as const,reasonCode:"accepted",decisionContextDigest:authorityDigest(acceptedContext)};const accepted=primary({reservationId:"reservation_1",decisionContext:acceptedContext,decisionContextDigest:authorityDigest(acceptedContext),gateEvent:acceptedEvent,gateEventDigest:authorityDigest(acceptedEvent)});assert.equal((await sink.append(accepted)).ok,true);assert.equal((await sink.lookupAcceptedByReservation("reservation_1")).ok,true);const collision={...accepted,gateEvent:{...acceptedEvent,eventId:"event_2"},gateEventDigest:authorityDigest({...acceptedEvent,eventId:"event_2"}),ingressClaimDigest:sha("a")};assert.deepEqual(await sink.append(collision),{ok:false,reason:"reservation-conflict"});const conflictContext={...context,definitionAlias:"definition_2"};const conflictEvent={...event,eventId:"event_3",reasonCode:"request-id-conflict",decisionContextDigest:authorityDigest(conflictContext)};const conflict=primary({role:"conflict",ingressClaimDigest:sha("4"),decisionContext:conflictContext,decisionContextDigest:authorityDigest(conflictContext),gateEvent:conflictEvent,gateEventDigest:authorityDigest(conflictEvent)});assert.equal((await sink.append(conflict)).ok,true);const owner=await sink.lookupPrimaryByIngress(sha("4"));assert.equal(owner.ok,true);if(owner.ok)assert.equal(owner.status,"found");}finally{await rm(root,{recursive:true,force:true});}
 });
@@ -259,12 +271,12 @@ test("concurrent appends and every crash boundary expose a complete transaction 
   const script='const {createFileGateDecisionSink}=await import(process.argv[1]);const result=await createFileGateDecisionSink(process.argv[2]).append(JSON.parse(process.argv[3]));process.stdout.write(JSON.stringify(result));';
   const run=promisify(execFile);
   for(const [label,records,conflictReason] of [
-    ["event",Array.from({length:20},(_,index)=>primary({signerId:`child_signer_${index}`})),"event-id-conflict"],
-    ["primary",Array.from({length:20},(_,index)=>{const gateEvent={...event,eventId:`event_child_primary_${index}`};return primary({gateEvent,gateEventDigest:authorityDigest(gateEvent)});}),"primary-ingress-conflict"],
-    ["reservation",Array.from({length:20},(_,index)=>accepted(`event_child_reservation_${index}`,`sha256:${(index+200).toString(16).padStart(64,"0")}`)),"reservation-conflict"],
+    ["event",Array.from({length:80},(_,index)=>primary({signerId:`child_signer_${index}`})),"event-id-conflict"],
+    ["primary",Array.from({length:80},(_,index)=>{const gateEvent={...event,eventId:`event_child_primary_${index}`};return primary({gateEvent,gateEventDigest:authorityDigest(gateEvent)});}),"primary-ingress-conflict"],
+    ["reservation",Array.from({length:80},(_,index)=>accepted(`event_child_reservation_${index}`,`sha256:${(index+200).toString(16).padStart(64,"0")}`)),"reservation-conflict"],
   ] as const){
     const childRoot=await mkdtemp(path.join(tmpdir(),`reelier-decision-child-${label}-race-`));
-    try{const outputs=await Promise.all(records.map(record=>run(process.execPath,["--input-type=module","-e",script,moduleUrl,childRoot,JSON.stringify(record)])));const results=outputs.map(output=>JSON.parse(output.stdout) as {ok:boolean;status?:string;reason?:string});assert.equal(results.filter(result=>result.ok&&result.status==="appended").length,1,label);assert.equal(results.filter(result=>!result.ok&&result.reason===conflictReason).length,19,label);}finally{await rm(childRoot,{recursive:true,force:true});}
+    try{const outputs=await Promise.all(records.map(record=>run(process.execPath,["--input-type=module","-e",script,moduleUrl,childRoot,JSON.stringify(record)])));const results=outputs.map(output=>JSON.parse(output.stdout) as {ok:boolean;status?:string;reason?:string});assert.equal(results.filter(result=>result.ok&&result.status==="appended").length,1,label);assert.equal(results.filter(result=>!result.ok&&result.reason===conflictReason).length,records.length-1,label);}finally{await rm(childRoot,{recursive:true,force:true});}
   }
 
   const expectedFaultPoints=["before-write","after-write","before-file-sync","after-file-sync","before-rename","after-rename","before-directory-sync","after-directory-sync"] as const;
