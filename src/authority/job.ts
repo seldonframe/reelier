@@ -17,6 +17,7 @@ export interface SignedJobCardV1 {
   readonly connectorIds: readonly string[];
   readonly accountIdentities: readonly string[];
   readonly connectionDescriptorDigests: readonly string[];
+  readonly adoptionCommitmentDigests: readonly string[];
   readonly sourceRefs: readonly string[];
   readonly audiences: readonly string[];
   readonly limitsDigest: string;
@@ -49,7 +50,7 @@ export function verifySignedJobCard(value: SignedJobCardV1, publicKey: KeyObject
 export function normalizeSignedJobCard(value: unknown): SignedJobCardV1 {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("job card must be an object");
   const raw = value as Record<string, unknown>;
-  const allowed = new Set(["v", "signerId", "signature", "jobId", "title", "taskShapeDigest", "semanticClasses", "definitionAliases", "connectorIds", "accountIdentities", "connectionDescriptorDigests", "sourceRefs", "audiences", "limitsDigest", "instructionsDigest", "packDigests", "exceptionPolicy", "coverage", "pathBSkillDigest"]);
+  const allowed = new Set(["v", "signerId", "signature", "jobId", "title", "taskShapeDigest", "semanticClasses", "definitionAliases", "connectorIds", "accountIdentities", "connectionDescriptorDigests", "adoptionCommitmentDigests", "sourceRefs", "audiences", "limitsDigest", "instructionsDigest", "packDigests", "exceptionPolicy", "coverage", "pathBSkillDigest"]);
   if (Object.keys(raw).some(key => !allowed.has(key)) || raw.v !== "reelier.signed-job-card/v1" || typeof raw.signerId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._~:-]{0,127}$/.test(raw.signerId) || typeof raw.jobId !== "string" || !raw.jobId || typeof raw.title !== "string" || !raw.title || !digest(raw.taskShapeDigest) || !digest(raw.limitsDigest) || !digest(raw.instructionsDigest) || !["declared-surface", "not-declared", "unknown"].includes(String(raw.coverage))) throw new TypeError("invalid signed job card");
   const signature = raw.signature;
   if (!signature || typeof signature !== "object" || Array.isArray(signature) || Object.keys(signature).length !== 2 || (signature as Record<string, unknown>).alg !== "ed25519" || typeof (signature as Record<string, unknown>).sig !== "string") throw new TypeError("invalid signed job card signature");
@@ -61,7 +62,9 @@ export function normalizeSignedJobCard(value: unknown): SignedJobCardV1 {
   if (raw.pathBSkillDigest !== undefined && !digest(raw.pathBSkillDigest)) throw new TypeError("invalid Path B skill digest");
   const connectionDescriptorDigests = list("connectionDescriptorDigests");
   if (connectionDescriptorDigests.some(value => !digest(value))) throw new TypeError("connectionDescriptorDigests must contain digests");
-  return Object.freeze({ v: raw.v, signerId: raw.signerId, signature: Object.freeze({ alg: "ed25519" as const, sig: (signature as Record<string, unknown>).sig as string }), jobId: raw.jobId, title: raw.title, taskShapeDigest: raw.taskShapeDigest, semanticClasses: Object.freeze([...new Set(classes)] as OutcomeSemanticClass[]), definitionAliases: list("definitionAliases"), connectorIds: list("connectorIds"), accountIdentities: list("accountIdentities"), connectionDescriptorDigests, sourceRefs: list("sourceRefs"), audiences: list("audiences"), limitsDigest: raw.limitsDigest, instructionsDigest: raw.instructionsDigest, packDigests: list("packDigests"), exceptionPolicy: list("exceptionPolicy"), coverage: raw.coverage as SignedJobCardV1["coverage"], ...(raw.pathBSkillDigest === undefined ? {} : { pathBSkillDigest: raw.pathBSkillDigest }) });
+  const adoptionCommitmentDigests = list("adoptionCommitmentDigests");
+  if (adoptionCommitmentDigests.some(value => !digest(value))) throw new TypeError("adoptionCommitmentDigests must contain digests");
+  return Object.freeze({ v: raw.v, signerId: raw.signerId, signature: Object.freeze({ alg: "ed25519" as const, sig: (signature as Record<string, unknown>).sig as string }), jobId: raw.jobId, title: raw.title, taskShapeDigest: raw.taskShapeDigest, semanticClasses: Object.freeze([...new Set(classes)] as OutcomeSemanticClass[]), definitionAliases: list("definitionAliases"), connectorIds: list("connectorIds"), accountIdentities: list("accountIdentities"), connectionDescriptorDigests, adoptionCommitmentDigests, sourceRefs: list("sourceRefs"), audiences: list("audiences"), limitsDigest: raw.limitsDigest, instructionsDigest: raw.instructionsDigest, packDigests: list("packDigests"), exceptionPolicy: list("exceptionPolicy"), coverage: raw.coverage as SignedJobCardV1["coverage"], ...(raw.pathBSkillDigest === undefined ? {} : { pathBSkillDigest: raw.pathBSkillDigest }) });
 }
 
 function digest(value: unknown): value is string { return typeof value === "string" && /^sha256:[0-9a-f]{64}$/.test(value); }

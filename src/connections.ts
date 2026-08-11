@@ -49,9 +49,19 @@ export function connectionDescriptorDigest(value: ConnectionDescriptorV1): strin
   return authorityDigest(normalizeConnectionDescriptor(value));
 }
 
+export function connectionAdoptionCommitmentDigest(value: Omit<ConnectionAdoptionV1, "signedDeploymentBinding">): string {
+  // The reverse deployment pointer is deliberately excluded from this
+  // commitment. Supply a syntactically valid placeholder only while the
+  // closed adoption parser validates the remaining authority fields.
+  const normalized = normalizeConnectionAdoption({ ...value, signedDeploymentBinding: `sha256:${"0".repeat(64)}` });
+  const { v: _v, signedDeploymentBinding: _binding, ...commitment } = normalized;
+  return authorityDigest({ v: "reelier.connection-adoption-commitment/v1", ...commitment });
+}
+
 export interface OpaqueConnectionRouteRegistration {
   readonly sidecarRouteId: string;
   readonly descriptor: ConnectionDescriptorV1;
+  readonly verifier: ReviewedConnectionInspectionAdapter;
   readonly resolve: () => Promise<DownstreamConnection>;
 }
 
@@ -62,12 +72,15 @@ export interface OpaqueConnectionRouteRegistry {
 
 /** Host-owned route handles. Private factories and route specifications never enter deployment wire data. */
 export function createOpaqueConnectionRouteRegistry(): OpaqueConnectionRouteRegistry {
-  const entries = new Map<string, Readonly<{ descriptorDigest: string; account: string; resolve: () => Promise<DownstreamConnection> }>>();
+  const entries = new Map<string, Readonly<{ descriptorDigest: string; account: string; descriptor: ConnectionDescriptorV1; verifier: ReviewedConnectionInspectionAdapter; resolve: () => Promise<DownstreamConnection> }>>();
   return Object.freeze({
     register(input: OpaqueConnectionRouteRegistration): void {
       const descriptor = normalizeConnectionDescriptor(input.descriptor);
-      if (input.sidecarRouteId !== descriptor.callableRoute.routeId || entries.has(input.sidecarRouteId)) throw new TypeError("opaque route registration mismatch or duplicate");
-      entries.set(input.sidecarRouteId, Object.freeze({ descriptorDigest: connectionDescriptorDigest(descriptor), account: descriptor.account.identity, resolve: input.resolve }));
+      const verifierDigests = [...input.verifier.expectedToolSchemaDigests].sort();
+      const descriptorDigests = descriptor.toolSchemas.map(item => item.digest).sort();
+      const verifierEndpoints = [...input.verifier.sourceEndpointIds, ...input.verifier.writeEndpointIds].sort();
+      if (input.sidecarRouteId !== descriptor.callableRoute.routeId || entries.has(input.sidecarRouteId) || input.verifier.provider !== descriptor.provider.id || !sameStringArrays(verifierDigests, descriptorDigests) || !sameStringArrays(verifierEndpoints, descriptor.callableRoute.endpointIds)) throw new TypeError("opaque route registration mismatch or duplicate");
+      entries.set(input.sidecarRouteId, Object.freeze({ descriptorDigest: connectionDescriptorDigest(descriptor), account: descriptor.account.identity, descriptor, verifier: input.verifier, resolve: input.resolve }));
     },
     async resolve(descriptorInput: ConnectionDescriptorV1, adoptionInput: ConnectionAdoptionV1): Promise<DownstreamConnection> {
       const descriptor = normalizeConnectionDescriptor(descriptorInput);
@@ -76,7 +89,21 @@ export function createOpaqueConnectionRouteRegistry(): OpaqueConnectionRouteRegi
       if (!entry) throw new TypeError("opaque route is missing");
       const digest = connectionDescriptorDigest(descriptor);
       if (adoption.activationState !== "active" || adoption.descriptorDigest !== digest || entry.descriptorDigest !== digest || adoption.selectedAccountIdentity !== descriptor.account.identity || entry.account !== descriptor.account.identity || adoption.sidecarRouteId !== descriptor.callableRoute.routeId) throw new TypeError("opaque route descriptor or account mismatch");
-      return entry.resolve();
+      const connection = await entry.resolve();
+      try {
+        const serverIdentity = connection.advertisedName ?? connection.name;
+        if (serverIdentity !== descriptor.provider.toolServerName) throw new TypeError("opaque route server identity mismatch");
+        const observedSchemas = digestNormalizedMcpToolSchemas(connection.tools);
+        if (!sameStringArrays(observedSchemas.map(item => item.digest), descriptor.toolSchemas.map(item => item.digest))) throw new TypeError("opaque route schema mismatch");
+        const tools = new Set(connection.tools.map(tool => tool.name));
+        if (descriptor.callableRoute.endpointIds.some(endpoint => !tools.has(endpoint))) throw new TypeError("opaque route endpoint mismatch");
+        const account = await verifyConnectionAccount(connection, entry.verifier, descriptor.account.identity);
+        if (account !== descriptor.account.identity) throw new TypeError("opaque route account mismatch");
+        return connection;
+      } catch (error) {
+        await connection.close().catch(() => undefined);
+        throw new TypeError(`opaque route verification failed: ${error instanceof Error ? error.message : "unavailable"}`);
+      }
     },
   });
 }
@@ -126,6 +153,10 @@ export async function verifyConnectionAccount(connection: DownstreamConnection, 
   if (typeof identity !== "string" || !identity) throw new Error("reviewed account probe response was invalid");
   if (expectedIdentity !== undefined && identity !== expectedIdentity) throw new AccountMismatchError(identity, expectedIdentity);
   return identity;
+}
+
+function sameStringArrays(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 export async function inspectCallableConnection(candidate: ConnectionInspectionCandidate, adapter: ReviewedConnectionInspectionAdapter, connect: ConnectionFactory): Promise<ConnectionInventoryEntryV1> {

@@ -122,6 +122,7 @@ test("signed job cards reject unreviewed authority fields", () => {
     connectorIds: ["conn_1"],
     accountIdentities: ["google:user:123"],
     connectionDescriptorDigests: ["sha256:" + "e".repeat(64)],
+    adoptionCommitmentDigests: ["sha256:" + "f".repeat(64)],
     sourceRefs: ["source_1"],
     audiences: ["agent_1"],
     limitsDigest: "sha256:" + "b".repeat(64),
