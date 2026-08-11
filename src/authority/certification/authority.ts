@@ -1,10 +1,13 @@
 import { createPublicKey, type KeyObject } from "node:crypto";
+import { createPrivateKey } from "node:crypto";
+import path from "node:path";
 import { signAuthorityDigest, verifyAuthoritySignature } from "../crypto.js";
 import type { AuthoritySignature } from "../types.js";
 import { authorityDigest } from "../wire.js";
 import type { CertificationIdentifiers } from "./initializer.js";
 import type { CertificationReadinessCandidate } from "./readiness.js";
 import { CERTIFICATION_SCENARIO_IDS, type CertificationScenarioId } from "./scenarios.js";
+import { certificationWorkspaceRoot, confinedExistingDirectory, publishPrivateContentAddressed, readConfinedFile, readUnlinkedFile } from "./filesystem.js";
 
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
 const KEY_ID = /^[a-z][a-z0-9_-]{2,127}$/;
@@ -171,6 +174,38 @@ export function parseSignedCertificationReadiness(value: unknown): SignedCertifi
     v: raw.v, purpose: raw.purpose, signerRole: raw.signerRole, signerKeyId: raw.signerKeyId,
     signerKeyDescriptorDigest: digest(raw.signerKeyDescriptorDigest, "signer descriptor digest"), readinessCandidateDigest: digest(raw.readinessCandidateDigest, "readiness candidate digest"), configurationRoot: digest(raw.configurationRoot, "configuration root"), selectionDigest: digest(raw.selectionDigest, "selection digest"), identifiers: parseIdentifiers(raw.identifiers), scenarios: scenarioList(raw.scenarios), activatedCellKeyDescriptorDigests: digestList(raw.activatedCellKeyDescriptorDigests, "activated Cell key descriptors"), trustHistoryDigest: digest(raw.trustHistoryDigest, "trust history digest"), authorizedAt: timestamp(raw.authorizedAt, "certification authorization time"), authorization: raw.authorization, dispatchable: false, completeness: raw.completeness, signature: Object.freeze({ alg: signatureRaw.alg, sig: signatureRaw.sig }),
   });
+}
+
+export async function signCertificationReadinessArtifact(input: Readonly<{
+  workspace: string;
+  candidatePath: string;
+  privateKeyPath: string;
+  descriptorsPath: string;
+  trustEventsPath: string;
+  authorizedAt: string;
+}>): Promise<Readonly<{ signed: SignedCertificationReadinessV1; digest: string; path: string }>> {
+  const root = await certificationWorkspaceRoot(path.resolve(input.workspace));
+  const readinessDirectory = await confinedExistingDirectory(root, ["readiness"]);
+  if (!readinessDirectory) throw new TypeError("certification readiness candidate directory is absent");
+  const candidatePath = path.resolve(input.candidatePath);
+  if (path.dirname(candidatePath) !== readinessDirectory || !/^readiness-sha256-[0-9a-f]{64}\.json$/.test(path.basename(candidatePath))) throw new TypeError("certification readiness candidate is not a confined Task2C2 artifact");
+  const candidate = JSON.parse((await readConfinedFile(root, readinessDirectory, path.basename(candidatePath))).toString("utf8"));
+  const candidateDigest = authorityDigest(parseReadinessCandidate(candidate));
+  if (path.basename(candidatePath) !== `readiness-${candidateDigest.replace(":", "-")}.json`) throw new TypeError("certification readiness candidate filename digest is invalid");
+  const descriptorsValue = JSON.parse((await readUnlinkedFile(input.descriptorsPath)).toString("utf8"));
+  if (!Array.isArray(descriptorsValue)) throw new TypeError("authority key descriptors file must contain an array");
+  const descriptors = descriptorsValue.map(parseAuthorityKeyDescriptor);
+  const human = descriptors.find(descriptor => descriptor.role === "human-sponsor" && descriptor.keyId === candidate.identifiers.signerId);
+  if (!human) throw new TypeError("pre-existing human signer descriptor is absent");
+  const cells = descriptors.filter(descriptor => descriptor.role === "authority-cell");
+  const trustEvents = parseTrustEvents(JSON.parse((await readUnlinkedFile(input.trustEventsPath)).toString("utf8")), descriptors);
+  const privateKey = createPrivateKey(await readUnlinkedFile(input.privateKeyPath));
+  if (privateKey.asymmetricKeyType !== "ed25519") throw new TypeError("human signing key must be Ed25519");
+  const signed = createSignedCertificationReadiness({ readinessCandidate: candidate, readinessCandidateDigest: candidateDigest, humanKeyDescriptor: human, cellKeyDescriptors: cells, trustEvents, humanPrivateKey: privateKey, authorizedAt: input.authorizedAt });
+  const signedDigest = authorityDigest(signed);
+  const filename = `signed-readiness-${signedDigest.replace(":", "-")}.json`;
+  const output = await publishPrivateContentAddressed(root, "authorizations", filename, `${JSON.stringify(signed)}\n`);
+  return Object.freeze({ signed, digest: signedDigest, path: output });
 }
 
 function parseCellDescriptors(values: readonly unknown[]): readonly AuthorityKeyDescriptorV1[] {

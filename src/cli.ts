@@ -213,6 +213,9 @@ export function parseArgv(argv: string[]): ParsedArgs {
       || arg === "--certification-config"
       || arg === "--config"
       || arg === "--scenario"
+      || arg === "--candidate"
+      || arg === "--descriptors"
+      || arg === "--trust-events"
     ) {
       const val = argv[++i];
       if (!val || val.startsWith("--")) {
