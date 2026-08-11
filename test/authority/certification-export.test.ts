@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { initializeCertification } from "../../src/authority/certification/initializer.js";
+import { preflightCertification } from "../../src/authority/certification/preflight.js";
 import { sealCertificationReadiness } from "../../src/authority/certification/readiness.js";
 import { exportCertificationEvidence, verifyCertificationExport } from "../../src/authority/certification/export.js";
 import { authorityDigest } from "../../src/authority/wire.js";
@@ -38,6 +39,47 @@ test("certification export is a closed linked package that verifies offline with
   else assert.equal(permissions & 0o077, 0);
   const serialized = JSON.stringify(fromDisk);
   assert.doesNotMatch(serialized, /REELIER_GITHUB_TOKEN|authority\/authority\.yml|authority\/receipts\/certification/);
+});
+
+test("subset preparation preserves the immutable two-scenario initialization root and identifiers", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "reelier-cert-export-subset-"));
+  const configPath = path.join(root, "certification.local.json");
+  await writeFile(configPath, JSON.stringify({
+    v: "reelier.certification-operator-config/v2", authorityConfigPath: "authority/authority.yml", evidenceDirectory: "authority/receipts/certification",
+    scenarios: ["github-issue-labels", "slack-topic"],
+    resources: {
+      "github-issue-labels": { apiBaseUrl: "https://api.github.com", owner: "fixlyai", repository: "reelier-certification", issueNumber: 1 },
+      "slack-topic": { apiBaseUrl: "https://slack.com", teamId: "T012345", channelId: "C012345" },
+    },
+    cleanup: { "github-issue-labels": ["restore-github-labels"], "slack-topic": ["restore-slack-topic"] }, metadata: {},
+    secretReferences: { githubCredential: "env:REELIER_GITHUB_TOKEN", slackCredential: "env:REELIER_SLACK_TOKEN" },
+  }), "utf8");
+  const initialized = await initializeCertification({ configPath });
+  const initializationBytes = await readFile(path.join(initialized.workspace, "initialization.json"), "utf8");
+  const initialization = JSON.parse(initializationBytes);
+  await mkdir(path.join(initialized.workspace, "inputs", "runners"), { recursive: true });
+  await mkdir(path.join(initialized.workspace, "inputs", "tests"), { recursive: true });
+  for (const scenario of ["github-issue-labels", "slack-topic"]) {
+    await writeFile(path.join(initialized.workspace, "inputs", "runners", `${scenario}.json`), JSON.stringify({ scenario }), "utf8");
+    await writeFile(path.join(initialized.workspace, "inputs", "tests", `${scenario}.json`), JSON.stringify({ scenario }), "utf8");
+  }
+
+  const preflight = await preflightCertification({ workspace: initialized.workspace, scenario: "github-issue-labels" });
+  const sealed = await sealCertificationReadiness({ workspace: initialized.workspace, scenario: "github-issue-labels" });
+  const exported = await exportCertificationEvidence({ workspace: initialized.workspace, scenario: "github-issue-labels" });
+  const bundle = JSON.parse(await readFile(exported.path, "utf8"));
+  assert.doesNotThrow(() => verifyCertificationExport(bundle));
+  assert.equal(preflight.configDigest, initialization.configDigest);
+  assert.equal(sealed.candidate.configDigest, initialization.configDigest);
+  assert.equal(bundle.artifacts.initialization.configDigest, initialization.configDigest);
+  assert.deepEqual(preflight.identifiers, initialization.identifiers);
+  assert.deepEqual(sealed.candidate.identifiers, initialization.identifiers);
+  assert.deepEqual(bundle.artifacts.initialization.identifiers, initialization.identifiers);
+  assert.equal(`${JSON.stringify(bundle.artifacts.initialization)}\n`, initializationBytes);
+  assert.deepEqual(bundle.manifest.scenarios, ["github-issue-labels"]);
+  assert.deepEqual(bundle.artifacts.preflight.inputs.runners.artifacts.map((item: any) => item.name), ["github-issue-labels.json"]);
+  assert.deepEqual(bundle.artifacts.preflight.inputs.tests.artifacts.map((item: any) => item.name), ["github-issue-labels.json"]);
+  assert.doesNotMatch(JSON.stringify(bundle.artifacts.config), /slack-topic/);
 });
 
 test("offline verification recomputes generated IDs and semantic preflight fields after every digest is reforged", async () => {
