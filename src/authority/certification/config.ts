@@ -209,23 +209,23 @@ function parseResource(section: CertificationResourceSection, value: unknown): C
     case "github-issue-labels": {
       closed(raw, ["apiBaseUrl", "owner", "repository", "issueNumber"], `${section} resource`);
       if (!Number.isSafeInteger(raw.issueNumber) || (raw.issueNumber as number) < 1) throw new TypeError("github issue number is invalid");
-      return Object.freeze({ apiBaseUrl: httpsUrl(raw.apiBaseUrl, "github apiBaseUrl"), owner: id(raw.owner, "github owner"), repository: id(raw.repository, "github repository"), issueNumber: raw.issueNumber as number });
+      return Object.freeze({ apiBaseUrl: providerUrl(raw.apiBaseUrl, "https://api.github.com", "github apiBaseUrl"), owner: id(raw.owner, "github owner"), repository: id(raw.repository, "github repository"), issueNumber: raw.issueNumber as number });
     }
     case "cloudflare-dns":
       closed(raw, ["apiBaseUrl", "accountId", "zoneId", "recordId", "recordName"], `${section} resource`);
-      return Object.freeze({ apiBaseUrl: httpsUrl(raw.apiBaseUrl, "cloudflare apiBaseUrl"), accountId: id(raw.accountId, "cloudflare accountId"), zoneId: id(raw.zoneId, "cloudflare zoneId"), recordId: id(raw.recordId, "cloudflare recordId"), recordName: dns(raw.recordName, "cloudflare recordName") });
+      return Object.freeze({ apiBaseUrl: providerUrl(raw.apiBaseUrl, "https://api.cloudflare.com", "cloudflare apiBaseUrl"), accountId: id(raw.accountId, "cloudflare accountId"), zoneId: id(raw.zoneId, "cloudflare zoneId"), recordId: id(raw.recordId, "cloudflare recordId"), recordName: dns(raw.recordName, "cloudflare recordName") });
     case "slack-topic":
       closed(raw, ["apiBaseUrl", "teamId", "channelId"], `${section} resource`);
-      return Object.freeze({ apiBaseUrl: httpsUrl(raw.apiBaseUrl, "slack apiBaseUrl"), teamId: id(raw.teamId, "slack teamId"), channelId: id(raw.channelId, "slack channelId") });
+      return Object.freeze({ apiBaseUrl: providerUrl(raw.apiBaseUrl, "https://slack.com", "slack apiBaseUrl"), teamId: id(raw.teamId, "slack teamId"), channelId: id(raw.channelId, "slack channelId") });
     case "cloudflare-vercel-secret":
       closed(raw, ["cloudflareApiBaseUrl", "cloudflareAccountId", "tokenName", "vercelApiBaseUrl", "vercelAccountId", "projectId"], `${section} resource`);
-      return Object.freeze({ cloudflareApiBaseUrl: httpsUrl(raw.cloudflareApiBaseUrl, "cloudflare apiBaseUrl"), cloudflareAccountId: id(raw.cloudflareAccountId, "cloudflare accountId"), tokenName: id(raw.tokenName, "cloudflare tokenName"), vercelApiBaseUrl: httpsUrl(raw.vercelApiBaseUrl, "vercel apiBaseUrl"), vercelAccountId: id(raw.vercelAccountId, "vercel accountId"), projectId: id(raw.projectId, "vercel projectId") });
+      return Object.freeze({ cloudflareApiBaseUrl: providerUrl(raw.cloudflareApiBaseUrl, "https://api.cloudflare.com", "cloudflare apiBaseUrl"), cloudflareAccountId: id(raw.cloudflareAccountId, "cloudflare accountId"), tokenName: id(raw.tokenName, "cloudflare tokenName"), vercelApiBaseUrl: providerUrl(raw.vercelApiBaseUrl, "https://api.vercel.com", "vercel apiBaseUrl"), vercelAccountId: id(raw.vercelAccountId, "vercel accountId"), projectId: id(raw.projectId, "vercel projectId") });
     case "vercel-promotion":
       closed(raw, ["apiBaseUrl", "accountId", "projectId", "deploymentId", "domains"], `${section} resource`);
-      return Object.freeze({ apiBaseUrl: httpsUrl(raw.apiBaseUrl, "vercel apiBaseUrl"), accountId: id(raw.accountId, "vercel accountId"), projectId: id(raw.projectId, "vercel projectId"), deploymentId: id(raw.deploymentId, "vercel deploymentId"), domains: dnsList(raw.domains, "vercel domains") });
+      return Object.freeze({ apiBaseUrl: providerUrl(raw.apiBaseUrl, "https://api.vercel.com", "vercel apiBaseUrl"), accountId: id(raw.accountId, "vercel accountId"), projectId: id(raw.projectId, "vercel projectId"), deploymentId: id(raw.deploymentId, "vercel deploymentId"), domains: dnsList(raw.domains, "vercel domains") });
     case "neon-migration":
       closed(raw, ["apiBaseUrl", "accountId", "projectId", "branchId", "database", "role"], `${section} resource`);
-      return Object.freeze({ apiBaseUrl: httpsUrl(raw.apiBaseUrl, "neon apiBaseUrl"), accountId: id(raw.accountId, "neon accountId"), projectId: id(raw.projectId, "neon projectId"), branchId: id(raw.branchId, "neon branchId"), database: id(raw.database, "neon database"), role: id(raw.role, "neon role") });
+      return Object.freeze({ apiBaseUrl: providerUrl(raw.apiBaseUrl, "https://console.neon.tech/api/v2", "neon apiBaseUrl"), accountId: id(raw.accountId, "neon accountId"), projectId: id(raw.projectId, "neon projectId"), branchId: id(raw.branchId, "neon branchId"), database: id(raw.database, "neon database"), role: id(raw.role, "neon role") });
   }
 }
 
@@ -289,6 +289,7 @@ function safePath(value: unknown, label: string): string { const result = text(v
 function secretRef(value: unknown, slot: string): string { if (typeof value !== "string" || /[\0\r\n]/.test(value)) throw new TypeError(`${slot} secret reference is invalid`); if (value.startsWith("env:")) { if (!/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(value.slice(4))) throw new TypeError(`${slot} secret reference is invalid`); } else if (value.startsWith("file:")) { try { safePath(value.slice(5), `${slot} file reference`); } catch { throw new TypeError(`${slot} secret reference is invalid`); } } else throw new TypeError(`${slot} secret reference is invalid`); return value; }
 function digest(value: unknown, label: string): string { if (typeof value !== "string" || !DIGEST.test(value)) throw new TypeError(`${label} is invalid`); return value; }
 function httpsUrl(value: unknown, label: string): string { const raw = text(value, label); let url: URL; try { url = new URL(raw); } catch { throw new TypeError(`${label} is invalid`); } if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash) throw new TypeError(`${label} must be a credential-free HTTPS URL`); return url.toString().replace(/\/$/, ""); }
+function providerUrl(value: unknown, expected: string, label: string): string { const parsed = httpsUrl(value, label); if (parsed !== expected) throw new TypeError(`${label} is not the pinned certification API`); return parsed; }
 function internalHttpOrigin(value: unknown, label: string): string { const raw = text(value, label); let url: URL; try { url = new URL(raw); } catch { throw new TypeError(`${label} is invalid`); } if (url.protocol !== "http:" || !url.hostname.endsWith(".internal") || url.username || url.password || url.pathname !== "/" || url.search || url.hash) throw new TypeError(`${label} must be a Fly internal HTTP origin`); return url.toString().replace(/\/$/, ""); }
 function dns(value: unknown, label: string): string { const result = text(value, label, 253).toLowerCase(); if (!DNS.test(result)) throw new TypeError(`${label} is invalid`); return result; }
 function dnsList(value: unknown, label: string): readonly string[] { if (!Array.isArray(value) || value.length === 0 || value.length > 64) throw new TypeError(`${label} is invalid`); const values = value.map(item => dns(item, label)); if (new Set(values).size !== values.length) throw new TypeError(`${label} must be unique`); values.sort(); return Object.freeze(values); }
