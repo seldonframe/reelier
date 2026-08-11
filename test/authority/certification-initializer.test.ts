@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { access, mkdir, mkdtemp, readFile, readdir, utimes, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, readdir, symlink, unlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { initializeCertification } from "../../src/authority/certification/initializer.js";
@@ -70,7 +70,7 @@ test("concurrent identical certification init converges on one atomic workspace"
   assert.deepEqual((await readdir(root)).filter(name => name.startsWith(".certification.staging-")), []);
 });
 
-test("certification init removes a stale interrupted sibling stage before publishing", async () => {
+test("certification init leaves an old foreign name-matching stage untouched and publishes beside it", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "reelier-cert-init-interrupted-"));
   const configPath = path.join(root, "certification.local.json");
   const workspace = path.join(root, "certification");
@@ -82,6 +82,34 @@ test("certification init removes a stale interrupted sibling stage before publis
   await utimes(interrupted, stale, stale);
   const result = await initializeCertification({ configPath, workspace });
   assert.equal(result.status, "initialized");
-  await assert.rejects(() => access(interrupted));
-  assert.deepEqual((await readdir(root)).filter(name => name.startsWith(".certification.staging-")), []);
+  assert.equal(await readFile(path.join(interrupted, "partial.json"), "utf8"), "{");
+  assert.deepEqual((await readdir(root)).filter(name => name.startsWith(".certification.staging-")), [".certification.staging-interrupted"]);
+});
+
+test("certification init refuses a workspace junction instead of resuming through it", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "reelier-cert-init-junction-"));
+  const configPath = path.join(root, "certification.local.json");
+  const external = await mkdtemp(path.join(tmpdir(), "reelier-cert-init-external-"));
+  const workspace = path.join(root, "certification");
+  await writeFile(configPath, JSON.stringify(config()), "utf8");
+  await symlink(external, workspace, process.platform === "win32" ? "junction" : "dir");
+  await assert.rejects(() => initializeCertification({ configPath, workspace }), /linked|junction|reparse|confined/i);
+});
+
+test("certification init refuses linked config input and linked resume snapshots where file links are supported", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "reelier-cert-init-links-"));
+  const actualConfig = path.join(root, "actual.json");
+  const linkedConfig = path.join(root, "linked.json");
+  await writeFile(actualConfig, JSON.stringify(config()), "utf8");
+  try { await symlink(actualConfig, linkedConfig, "file"); }
+  catch (error) { assert.equal(process.platform, "win32"); assert.match(String((error as NodeJS.ErrnoException).code), /EPERM|EACCES/); return; }
+  await assert.rejects(() => initializeCertification({ configPath: linkedConfig, workspace: path.join(root, "linked-workspace") }), /linked|symlink|reparse|confined/i);
+
+  const workspace = path.join(root, "certification");
+  await initializeCertification({ configPath: actualConfig, workspace });
+  const externalSnapshot = path.join(root, "external-snapshot.json");
+  await writeFile(externalSnapshot, await readFile(path.join(workspace, "config.json"), "utf8"), "utf8");
+  await unlink(path.join(workspace, "config.json"));
+  await symlink(externalSnapshot, path.join(workspace, "config.json"), "file");
+  await assert.rejects(() => initializeCertification({ configPath: actualConfig, workspace }), /linked|symlink|reparse|confined/i);
 });
