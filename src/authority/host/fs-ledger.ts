@@ -658,7 +658,10 @@ export class FsAuthorityLedger implements AuthorityLedger {
         await runtime.observeK1OperationFenceBoundary?.("k1-operation-fence-only-root-captured");
         if(process.platform==="win32"){
           windowsRootMutex=await acquireWindowsK1RootMutex(binding,runtime,deadline);
-          if(windowsRootMutex===null)return await this.refuseOnlyK1FenceClassification();
+          // The named pipe is the Windows root-epoch mutex. Without it, the filesystem may be
+          // between another owner's authenticated transition steps, so no snapshot can establish
+          // durable corruption. Endpoint refusal is classified below only after this mutex is held.
+          if(windowsRootMutex===null)return frozen({ok:false,reason:"busy"});
         }
         let retryDelayMs=5,candidateIndex=0;
         while(server===null){
