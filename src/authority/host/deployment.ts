@@ -131,6 +131,9 @@ function verifyAdoptions(manifest: AuthorityDeploymentManifest): void {
   for (const adoption of manifest.connectionAdoptions) {
     const descriptor = descriptors.get(adoption.descriptorDigest);
     if (!descriptor || adoption.activationState !== "active" || adoption.signedDeploymentBinding !== expectedBinding || adoption.selectedAccountIdentity !== descriptor.account.identity || adoption.sidecarRouteId !== descriptor.callableRoute.routeId || !card.connectorIds.includes(descriptor.connectionId) || !card.accountIdentities.includes(descriptor.account.identity)) throw new TypeError("connection adoption binding mismatch");
+    const registrations = manifest.connectors.filter(item => item.connectorId === descriptor.connectionId);
+    const endpoints = registrations.length === 1 ? [...registrations[0]!.allowedReadEndpointIds, ...registrations[0]!.allowedWriteEndpointIds].sort() : [];
+    if (registrations.length !== 1 || registrations[0]!.providerAccountIdentity !== descriptor.account.identity || endpoints.length !== descriptor.callableRoute.endpointIds.length || endpoints.some((endpoint, index) => endpoint !== descriptor.callableRoute.endpointIds[index])) throw new TypeError("connector account or endpoint binding mismatch");
     if (adoption.mode === "managed") throw new TypeError("managed connection adoption requires measured topology evidence");
   }
   if (manifest.enforcement.completeness !== "unchecked" || manifest.enforcement.declaredSurfaceExclusiveEnforcement !== "unchecked") throw new TypeError("local adopted deployment must report unchecked enforcement");
