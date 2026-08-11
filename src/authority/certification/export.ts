@@ -1,12 +1,12 @@
 import path from "node:path";
 import { authorityDigest } from "../wire.js";
 import { parseCertificationOperatorConfigV2, type CertificationOperatorConfigV2 } from "./config.js";
-import { deriveCertificationIdentifiers, parseCertificationInitialization } from "./initializer.js";
+import { deriveCertificationIdentifiers, parseCertificationInitialization, validateCertificationInitialization } from "./initializer.js";
 import { preflightCertification } from "./preflight.js";
 import { createCertificationReadinessCandidate } from "./readiness.js";
 import { CERTIFICATION_SCENARIOS, CERTIFICATION_SCENARIO_IDS, type CertificationScenarioId } from "./scenarios.js";
 import { certificationWorkspaceRoot, confinedExistingDirectory, publishPrivateContentAddressed, readConfinedFile } from "./filesystem.js";
-import { createCertificationConfigCommitment, recomputeCertificationConfigCommitment } from "./commitment.js";
+import { createCertificationSelectionCommitment, recomputeCertificationSelectionCommitment } from "./commitment.js";
 
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
 const CLAIMS = Object.freeze({ providerCertification: "unchecked" as const, signatureVerification: "unchecked" as const, completion: "unchecked" as const, completeness: "unchecked" as const });
@@ -23,25 +23,26 @@ export async function exportCertificationEvidence(input: Readonly<{ workspace: s
   const workspace = path.resolve(input.workspace);
   const workspaceRoot = await certificationWorkspaceRoot(workspace);
   const config = parseCertificationOperatorConfigV2(JSON.parse((await readConfinedFile(workspaceRoot, workspaceRoot, "config.json")).toString("utf8")));
+  const initialization = parseCertificationInitialization(JSON.parse((await readConfinedFile(workspaceRoot, workspaceRoot, "initialization.json")).toString("utf8")));
+  validateCertificationInitialization(config, initialization);
   const preflight = await preflightCertification(input);
   await input.hooks?.afterPreflight?.();
   const readiness = createCertificationReadinessCandidate(preflight).candidate;
   const confirmation = await preflightCertification(input);
   if (confirmation.digest !== preflight.digest) throw new TypeError("certification input drift changed the bound snapshot before publication");
-  const commitment = createCertificationConfigCommitment(config, preflight.scenarios);
-  if (commitment.configCommitmentDigest !== preflight.configDigest) throw new TypeError("certification config commitment changed before export");
+  const commitment = createCertificationSelectionCommitment(config, preflight.scenarios, initialization.configDigest);
+  if (commitment.selectionDigest !== preflight.selectionDigest || preflight.configDigest !== initialization.configDigest || authorityDigest(preflight.identifiers) !== authorityDigest(initialization.identifiers)) throw new TypeError("certification selection or initialization commitment changed before export");
   const projectedConfig = Object.freeze({
-    v: "reelier.certification-export-config/v2" as const,
-    privateConfigDigest: commitment.privateConfigDigest,
+    v: "reelier.certification-export-config/v3" as const,
+    configDigest: initialization.configDigest,
     sanitizedProjectionDigest: commitment.sanitizedProjectionDigest,
-    configCommitmentDigest: commitment.configCommitmentDigest,
+    selectionDigest: commitment.selectionDigest,
     scenarios: commitment.projection.scenarios,
     resources: commitment.projection.resources,
     cleanup: commitment.projection.cleanup,
     metadata: commitment.projection.metadata,
     credentialReferences: commitment.projection.credentialReferences,
   });
-  const initialization = Object.freeze({ v: "reelier.certification-initialization/v1" as const, configDigest: commitment.configCommitmentDigest, privateConfigDigest: commitment.privateConfigDigest, sanitizedProjectionDigest: commitment.sanitizedProjectionDigest, identifiers: deriveCertificationIdentifiers(commitment.configCommitmentDigest), completeness: "unchecked" as const });
   const artifacts = Object.freeze({ config: projectedConfig, initialization, preflight, readiness });
   const artifactDigests = Object.freeze({ config: authorityDigest(projectedConfig), initialization: authorityDigest(initialization), preflight: authorityDigest(preflight), readiness: authorityDigest(readiness) });
   const manifest = Object.freeze({ v: "reelier.certification-export-manifest/v1" as const, artifactDigests, scenarios: preflight.scenarios, claims: CLAIMS });
@@ -81,11 +82,13 @@ export function verifyCertificationExport(value: unknown): Readonly<{ digest: st
   const readiness = parseReadiness(artifacts.readiness);
   const parsedArtifacts = { config, initialization, preflight, readiness };
   for (const name of ["config", "initialization", "preflight", "readiness"] as const) if (digests[name] !== authorityDigest(parsedArtifacts[name])) throw new TypeError(`certification export ${name} digest link mismatch`);
-  if (initialization.configDigest !== config.configCommitmentDigest || preflight.configDigest !== config.configCommitmentDigest || readiness.configDigest !== config.configCommitmentDigest) throw new TypeError("certification export config link mismatch");
-  const derived = deriveCertificationIdentifiers(config.configCommitmentDigest);
-  if (authorityDigest(initialization.identifiers) !== authorityDigest(derived) || authorityDigest(readiness.identifiers) !== authorityDigest(derived)) throw new TypeError("certification generated identifier derivation mismatch");
+  if (initialization.configDigest !== config.configDigest || preflight.configDigest !== config.configDigest || readiness.configDigest !== config.configDigest) throw new TypeError("certification export initialization root link mismatch");
+  if (preflight.selectionDigest !== config.selectionDigest || readiness.selectionDigest !== config.selectionDigest) throw new TypeError("certification export selection commitment link mismatch");
+  const derived = deriveCertificationIdentifiers(initialization.configDigest);
+  if (authorityDigest(initialization.identifiers) !== authorityDigest(derived) || authorityDigest(preflight.identifiers) !== authorityDigest(initialization.identifiers) || authorityDigest(readiness.identifiers) !== authorityDigest(initialization.identifiers)) throw new TypeError("certification generated identifier continuity mismatch");
   if (readiness.preflightDigest !== preflight.digest) throw new TypeError("certification export preflight link mismatch");
   if (!same(scenarios, preflight.scenarios) || !same(scenarios, readiness.scenarios)) throw new TypeError("certification export scenario link mismatch");
+  if (scenarios.some(scenario => !initialization.scenarios.includes(scenario))) throw new TypeError("certification export selection is not a subset of initialization scenarios");
   verifyPreflightSemantics(config, preflight);
   if (JSON.stringify(readiness.commitments.resources) !== JSON.stringify(preflight.resources) || JSON.stringify(readiness.commitments.cleanup) !== JSON.stringify(preflight.cleanup) || JSON.stringify(readiness.commitments.credentials) !== JSON.stringify(preflight.credentialReferences) || JSON.stringify(readiness.commitments.runners) !== JSON.stringify(preflight.inputs.runners) || JSON.stringify(readiness.commitments.tests) !== JSON.stringify(preflight.inputs.tests) || readiness.commitments.topology !== preflight.topology || readiness.commitments.signatureStatus !== preflight.signatureStatus) throw new TypeError("certification export readiness commitment link mismatch");
   const rootDigest = assertDigest(root.digest, "certification export digest");
@@ -95,11 +98,11 @@ export function verifyCertificationExport(value: unknown): Readonly<{ digest: st
 
 function parseProjectedConfig(value: unknown, manifestScenarios: readonly CertificationScenarioId[]): any {
   const raw = object(value, "certification export config");
-  closed(raw, ["v", "privateConfigDigest", "sanitizedProjectionDigest", "configCommitmentDigest", "scenarios", "resources", "cleanup", "metadata", "credentialReferences"], "certification export config");
-  if (raw.v !== "reelier.certification-export-config/v2") throw new TypeError("certification export config version is invalid");
-  const privateConfigDigest = assertDigest(raw.privateConfigDigest, "certification private config digest");
+  closed(raw, ["v", "configDigest", "sanitizedProjectionDigest", "selectionDigest", "scenarios", "resources", "cleanup", "metadata", "credentialReferences"], "certification export config");
+  if (raw.v !== "reelier.certification-export-config/v3") throw new TypeError("certification export config version is invalid");
+  const configDigest = assertDigest(raw.configDigest, "certification initialization config digest");
   const sanitizedProjectionDigest = assertDigest(raw.sanitizedProjectionDigest, "certification sanitized projection digest");
-  const configCommitmentDigest = assertDigest(raw.configCommitmentDigest, "certification config commitment digest");
+  const selectionDigest = assertDigest(raw.selectionDigest, "certification selection commitment digest");
   const scenarios = scenarioList(raw.scenarios); if (!same(scenarios, manifestScenarios)) throw new TypeError("certification export config scenario link mismatch");
   const definitions = scenarios.map(scenario => CERTIFICATION_SCENARIOS[scenario]);
   const expectedResources = unique(definitions.flatMap(definition => definition.resourceSections));
@@ -118,8 +121,8 @@ function parseProjectedConfig(value: unknown, manifestScenarios: readonly Certif
   const credentialReferences = credentialList(raw.credentialReferences);
   if (!same(credentialReferences.map((item: any) => item.slot), expectedCredentials)) throw new TypeError("certification export credential selection mismatch");
   const projection = { v: "reelier.certification-sanitized-config/v1", scenarios, resources: Object.freeze(resources), cleanup: Object.freeze(cleanup), metadata, credentialReferences };
-  if (authorityDigest(projection) !== sanitizedProjectionDigest || recomputeCertificationConfigCommitment(privateConfigDigest, sanitizedProjectionDigest) !== configCommitmentDigest) throw new TypeError("certification sanitized projection digest or config commitment mismatch");
-  return Object.freeze({ v: raw.v, privateConfigDigest, sanitizedProjectionDigest, configCommitmentDigest, scenarios, resources: projection.resources, cleanup: projection.cleanup, metadata, credentialReferences });
+  if (authorityDigest(projection) !== sanitizedProjectionDigest || recomputeCertificationSelectionCommitment(configDigest, sanitizedProjectionDigest) !== selectionDigest) throw new TypeError("certification sanitized projection digest or selection commitment mismatch");
+  return Object.freeze({ v: raw.v, configDigest, sanitizedProjectionDigest, selectionDigest, scenarios, resources: projection.resources, cleanup: projection.cleanup, metadata, credentialReferences });
 }
 
 function verifyPreflightSemantics(config: any, preflight: any): void {
@@ -142,25 +145,25 @@ function verifyPreflightSemantics(config: any, preflight: any): void {
 
 function parsePreflight(value: unknown): any {
   const raw = object(value, "certification preflight");
-  closed(raw, ["v", "configDigest", "scenarios", "resources", "cleanup", "credentialReferences", "inputs", "topology", "trust", "signatureStatus", "authorization", "completeness", "missing", "ok", "preparationReady", "digest"], "certification preflight");
+  closed(raw, ["v", "configDigest", "selectionDigest", "identifiers", "scenarios", "resources", "cleanup", "credentialReferences", "inputs", "topology", "trust", "signatureStatus", "authorization", "completeness", "missing", "ok", "preparationReady", "digest"], "certification preflight");
   if (raw.v !== "reelier.certification-preflight/v2" || raw.trust !== "unchecked" || raw.signatureStatus !== "absent" || raw.authorization !== "absent" || raw.completeness !== "unchecked" || typeof raw.ok !== "boolean" || typeof raw.preparationReady !== "boolean") throw new TypeError("certification preflight is invalid");
-  assertDigest(raw.configDigest, "certification preflight config digest");
+  assertDigest(raw.configDigest, "certification preflight config digest"); assertDigest(raw.selectionDigest, "certification preflight selection digest");
   const inputsRaw = object(raw.inputs, "certification preflight inputs"); closed(inputsRaw, ["runners", "tests"], "certification preflight inputs");
-  const body = { v: raw.v, configDigest: raw.configDigest, scenarios: scenarioList(raw.scenarios), resources: commitmentList(raw.resources, "resources"), cleanup: commitmentList(raw.cleanup, "cleanup"), credentialReferences: credentialList(raw.credentialReferences), inputs: { runners: inputSet(inputsRaw.runners), tests: inputSet(inputsRaw.tests) }, topology: enumValue(raw.topology, ["configured", "absent"], "preflight topology"), trust: raw.trust, signatureStatus: raw.signatureStatus, authorization: raw.authorization, completeness: raw.completeness, missing: stringList(raw.missing, "certification preflight missing"), ok: raw.ok, preparationReady: raw.preparationReady };
+  const body = { v: raw.v, configDigest: raw.configDigest, selectionDigest: raw.selectionDigest, identifiers: parseIdentifiers(raw.identifiers), scenarios: scenarioList(raw.scenarios), resources: commitmentList(raw.resources, "resources"), cleanup: commitmentList(raw.cleanup, "cleanup"), credentialReferences: credentialList(raw.credentialReferences), inputs: { runners: inputSet(inputsRaw.runners), tests: inputSet(inputsRaw.tests) }, topology: enumValue(raw.topology, ["configured", "absent"], "preflight topology"), trust: raw.trust, signatureStatus: raw.signatureStatus, authorization: raw.authorization, completeness: raw.completeness, missing: stringList(raw.missing, "certification preflight missing"), ok: raw.ok, preparationReady: raw.preparationReady };
   if (assertDigest(raw.digest, "certification preflight digest") !== authorityDigest(body)) throw new TypeError("certification preflight digest mismatch");
   return Object.freeze({ ...body, digest: raw.digest });
 }
 
 function parseReadiness(value: unknown): any {
   const raw = object(value, "certification readiness candidate");
-  closed(raw, ["v", "status", "preparationReady", "signatureStatus", "authorization", "dispatchable", "completeness", "configDigest", "preflightDigest", "scenarios", "identifiers", "commitments"], "certification readiness candidate");
+  closed(raw, ["v", "status", "preparationReady", "signatureStatus", "authorization", "dispatchable", "completeness", "configDigest", "selectionDigest", "preflightDigest", "scenarios", "identifiers", "commitments"], "certification readiness candidate");
   if (raw.v !== "reelier.certification-readiness-candidate/v1" || raw.status !== "awaiting-human-signature" || raw.preparationReady !== true || raw.signatureStatus !== "absent" || raw.authorization !== "absent" || raw.dispatchable !== false || raw.completeness !== "unchecked") throw new TypeError("certification readiness candidate cannot confer authority");
-  assertDigest(raw.configDigest, "readiness config digest"); assertDigest(raw.preflightDigest, "readiness preflight digest");
+  assertDigest(raw.configDigest, "readiness config digest"); assertDigest(raw.selectionDigest, "readiness selection digest"); assertDigest(raw.preflightDigest, "readiness preflight digest");
   const identifiers = parseIdentifiers(raw.identifiers);
   const commitments = object(raw.commitments, "readiness commitments");
   closed(commitments, ["resources", "cleanup", "credentials", "runners", "tests", "topology", "signatureStatus"], "readiness commitments");
   if (commitments.signatureStatus !== "absent") throw new TypeError("readiness signature status is invalid");
-  return Object.freeze({ v: raw.v, status: raw.status, preparationReady: raw.preparationReady, signatureStatus: raw.signatureStatus, authorization: raw.authorization, dispatchable: raw.dispatchable, completeness: raw.completeness, configDigest: raw.configDigest, preflightDigest: raw.preflightDigest, scenarios: scenarioList(raw.scenarios), identifiers, commitments: Object.freeze({ resources: commitmentList(commitments.resources, "resources"), cleanup: commitmentList(commitments.cleanup, "cleanup"), credentials: credentialList(commitments.credentials), runners: inputSet(commitments.runners), tests: inputSet(commitments.tests), topology: enumValue(commitments.topology, ["configured", "absent"], "readiness topology"), signatureStatus: commitments.signatureStatus }) });
+  return Object.freeze({ v: raw.v, status: raw.status, preparationReady: raw.preparationReady, signatureStatus: raw.signatureStatus, authorization: raw.authorization, dispatchable: raw.dispatchable, completeness: raw.completeness, configDigest: raw.configDigest, selectionDigest: raw.selectionDigest, preflightDigest: raw.preflightDigest, scenarios: scenarioList(raw.scenarios), identifiers, commitments: Object.freeze({ resources: commitmentList(commitments.resources, "resources"), cleanup: commitmentList(commitments.cleanup, "cleanup"), credentials: credentialList(commitments.credentials), runners: inputSet(commitments.runners), tests: inputSet(commitments.tests), topology: enumValue(commitments.topology, ["configured", "absent"], "readiness topology"), signatureStatus: commitments.signatureStatus }) });
 }
 
 function parseIdentifiers(value: unknown): any { const raw = object(value, "certification identifiers"); closed(raw, ["taskId", "jobCardId", "rootGrantId", "authorityCellId", "signerId"], "certification identifiers"); const patterns: Record<string, RegExp> = { taskId: /^task_[0-9a-f]{24}$/, jobCardId: /^job_[0-9a-f]{24}$/, rootGrantId: /^grant_[0-9a-f]{24}$/, authorityCellId: /^cell_[0-9a-f]{24}$/, signerId: /^signer_[0-9a-f]{24}$/ }; for (const [key, pattern] of Object.entries(patterns)) if (typeof raw[key] !== "string" || !pattern.test(raw[key])) throw new TypeError("certification generated identifier is invalid"); return Object.freeze({ taskId: raw.taskId, jobCardId: raw.jobCardId, rootGrantId: raw.rootGrantId, authorityCellId: raw.authorityCellId, signerId: raw.signerId }); }

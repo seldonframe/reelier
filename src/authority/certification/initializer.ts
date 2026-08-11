@@ -5,6 +5,7 @@ import { authorityDigest } from "../wire.js";
 import { canonicalizeCertificationOperatorConfigV2, parseCertificationOperatorConfigV2 } from "./config.js";
 import { createCertificationConfigCommitment, recomputeCertificationConfigCommitment } from "./commitment.js";
 import { assertUnlinkedCreationParent, certificationWorkspaceRoot, readConfinedFile, readUnlinkedFile } from "./filesystem.js";
+import { CERTIFICATION_SCENARIO_IDS, type CertificationScenarioId } from "./scenarios.js";
 
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
 const ID = /^(?:task|job|grant|cell|signer)_[0-9a-f]{24}$/;
@@ -22,6 +23,7 @@ export interface CertificationInitialization {
   readonly configDigest: string;
   readonly privateConfigDigest: string;
   readonly sanitizedProjectionDigest: string;
+  readonly scenarios: readonly CertificationScenarioId[];
   readonly identifiers: CertificationIdentifiers;
   readonly completeness: "unchecked";
 }
@@ -44,6 +46,7 @@ export async function initializeCertification(input: Readonly<{ configPath: stri
     configDigest,
     privateConfigDigest: commitment.privateConfigDigest,
     sanitizedProjectionDigest: commitment.sanitizedProjectionDigest,
+    scenarios: parsed.scenarios,
     identifiers,
     completeness: "unchecked",
   });
@@ -53,10 +56,8 @@ export async function initializeCertification(input: Readonly<{ configPath: stri
     const root = await certificationWorkspaceRoot(workspace);
     const existingConfig = parseCertificationOperatorConfigV2(JSON.parse((await readConfinedFile(root, root, "config.json")).toString("utf8")));
     const existing = parseCertificationInitialization(JSON.parse((await readConfinedFile(root, root, "initialization.json")).toString("utf8")));
-    const existingCommitment = createCertificationConfigCommitment(existingConfig, existingConfig.scenarios);
-    if (existingCommitment.configCommitmentDigest !== configDigest || existing.configDigest !== configDigest || existing.privateConfigDigest !== commitment.privateConfigDigest || existing.sanitizedProjectionDigest !== commitment.sanitizedProjectionDigest || authorityDigest(existing.identifiers) !== authorityDigest(identifiers)) {
-      throw new TypeError("certification initialization cannot resume with substituted configuration or identifiers");
-    }
+    validateCertificationInitialization(existingConfig, existing);
+    if (existing.configDigest !== configDigest) throw new TypeError("certification initialization cannot resume with substituted configuration or identifiers");
     return Object.freeze({ status: "resumed", workspace, configDigest, identifiers: existing.identifiers });
   }
 
@@ -77,8 +78,8 @@ export async function initializeCertification(input: Readonly<{ configPath: stri
       const root = await certificationWorkspaceRoot(workspace);
       const existingConfig = parseCertificationOperatorConfigV2(JSON.parse((await readConfinedFile(root, root, "config.json")).toString("utf8")));
       const existing = parseCertificationInitialization(JSON.parse((await readConfinedFile(root, root, "initialization.json")).toString("utf8")));
-      const existingCommitment = createCertificationConfigCommitment(existingConfig, existingConfig.scenarios);
-      if (existingCommitment.configCommitmentDigest === configDigest && existing.configDigest === configDigest && existing.privateConfigDigest === commitment.privateConfigDigest && existing.sanitizedProjectionDigest === commitment.sanitizedProjectionDigest && authorityDigest(existing.identifiers) === authorityDigest(identifiers)) {
+      validateCertificationInitialization(existingConfig, existing);
+      if (existing.configDigest === configDigest) {
         return Object.freeze({ status: "resumed", workspace, configDigest, identifiers: existing.identifiers });
       }
     }
@@ -99,7 +100,7 @@ async function removeOwnedStage(staging: string, workspace: string, owner: strin
 
 export function parseCertificationInitialization(value: unknown): CertificationInitialization {
   const root = object(value, "certification initialization");
-  closed(root, ["v", "configDigest", "privateConfigDigest", "sanitizedProjectionDigest", "identifiers", "completeness"], "certification initialization");
+  closed(root, ["v", "configDigest", "privateConfigDigest", "sanitizedProjectionDigest", "scenarios", "identifiers", "completeness"], "certification initialization");
   if (root.v !== "reelier.certification-initialization/v1" || root.completeness !== "unchecked" || typeof root.configDigest !== "string" || !DIGEST.test(root.configDigest) || typeof root.privateConfigDigest !== "string" || !DIGEST.test(root.privateConfigDigest) || typeof root.sanitizedProjectionDigest !== "string" || !DIGEST.test(root.sanitizedProjectionDigest) || recomputeCertificationConfigCommitment(root.privateConfigDigest, root.sanitizedProjectionDigest) !== root.configDigest) throw new TypeError("certification initialization is invalid");
   const rawIdentifiers = object(root.identifiers, "certification identifiers");
   closed(rawIdentifiers, ["taskId", "jobCardId", "rootGrantId", "authorityCellId", "signerId"], "certification identifiers");
@@ -110,7 +111,8 @@ export function parseCertificationInitialization(value: unknown): CertificationI
     authorityCellId: internalId(rawIdentifiers.authorityCellId, "cell_"),
     signerId: internalId(rawIdentifiers.signerId, "signer_"),
   });
-  return Object.freeze({ v: "reelier.certification-initialization/v1", configDigest: root.configDigest, privateConfigDigest: root.privateConfigDigest, sanitizedProjectionDigest: root.sanitizedProjectionDigest, identifiers, completeness: "unchecked" });
+  const scenarios = scenarioList(root.scenarios);
+  return Object.freeze({ v: "reelier.certification-initialization/v1", configDigest: root.configDigest, privateConfigDigest: root.privateConfigDigest, sanitizedProjectionDigest: root.sanitizedProjectionDigest, scenarios, identifiers, completeness: "unchecked" });
 }
 
 export function deriveCertificationIdentifiers(configDigest: string): CertificationIdentifiers {
@@ -119,9 +121,23 @@ export function deriveCertificationIdentifiers(configDigest: string): Certificat
   return Object.freeze({ taskId: id("task_", "task"), jobCardId: id("job_", "job-card"), rootGrantId: id("grant_", "root-grant"), authorityCellId: id("cell_", "authority-cell"), signerId: id("signer_", "signer") });
 }
 
+export function validateCertificationInitialization(config: ReturnType<typeof parseCertificationOperatorConfigV2>, initialization: CertificationInitialization): void {
+  const commitment = createCertificationConfigCommitment(config, config.scenarios);
+  const derived = deriveCertificationIdentifiers(commitment.configCommitmentDigest);
+  if (initialization.configDigest !== commitment.configCommitmentDigest || initialization.privateConfigDigest !== commitment.privateConfigDigest || initialization.sanitizedProjectionDigest !== commitment.sanitizedProjectionDigest || authorityDigest(initialization.scenarios) !== authorityDigest(config.scenarios) || authorityDigest(initialization.identifiers) !== authorityDigest(derived)) {
+    throw new TypeError("certification initialization cannot resume with substituted configuration or identifiers");
+  }
+}
+
 function internalId(value: unknown, prefix: string): string {
   if (typeof value !== "string" || !ID.test(value) || !value.startsWith(prefix)) throw new TypeError("certification identifier is invalid");
   return value;
+}
+function scenarioList(value: unknown): readonly CertificationScenarioId[] {
+  if (!Array.isArray(value) || value.length === 0 || value.some(item => typeof item !== "string" || !(CERTIFICATION_SCENARIO_IDS as readonly string[]).includes(item))) throw new TypeError("certification initialization scenarios are invalid");
+  const scenarios = value as CertificationScenarioId[];
+  if (new Set(scenarios).size !== scenarios.length || scenarios.some((item, index) => index > 0 && scenarios[index - 1] >= item)) throw new TypeError("certification initialization scenarios must be unique and sorted");
+  return Object.freeze([...scenarios]);
 }
 function object(value: unknown, label: string): Record<string, unknown> { if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError(`${label} must be an object`); return value as Record<string, unknown>; }
 function closed(raw: Record<string, unknown>, keys: readonly string[], label: string): void { if (Object.keys(raw).length !== keys.length || Object.keys(raw).some(key => !keys.includes(key))) throw new TypeError(`${label} is closed`); }

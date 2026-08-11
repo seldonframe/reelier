@@ -1,6 +1,6 @@
 import path from "node:path";
 import { authorityDigest } from "../wire.js";
-import { deriveCertificationIdentifiers, type CertificationIdentifiers } from "./initializer.js";
+import type { CertificationIdentifiers } from "./initializer.js";
 import { preflightCertification, type CertificationInputSet, type CertificationPreflightV2 } from "./preflight.js";
 import type { CertificationScenarioId } from "./scenarios.js";
 import { certificationWorkspaceRoot, publishPrivateContentAddressed, readConfinedFile, confinedExistingDirectory } from "./filesystem.js";
@@ -14,6 +14,7 @@ export interface CertificationReadinessCandidate {
   readonly dispatchable: false;
   readonly completeness: "unchecked";
   readonly configDigest: string;
+  readonly selectionDigest: string;
   readonly preflightDigest: string;
   readonly scenarios: readonly CertificationScenarioId[];
   readonly identifiers: CertificationIdentifiers;
@@ -55,9 +56,10 @@ export function createCertificationReadinessCandidate(preflight: CertificationPr
     dispatchable: false,
     completeness: "unchecked",
     configDigest: preflight.configDigest,
+    selectionDigest: preflight.selectionDigest,
     preflightDigest: preflight.digest,
     scenarios: preflight.scenarios,
-    identifiers: deriveCertificationIdentifiers(preflight.configDigest),
+    identifiers: preflight.identifiers,
     commitments: Object.freeze({ resources: preflight.resources, cleanup: preflight.cleanup, credentials: preflight.credentialReferences, runners: preflight.inputs.runners, tests: preflight.inputs.tests, topology: preflight.topology, signatureStatus: "absent" }),
   });
   const digest = authorityDigest(candidate);
