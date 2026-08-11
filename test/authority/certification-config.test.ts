@@ -4,6 +4,7 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { inspectCertificationResourceIdentifiers, parseCertificationOperatorConfig, inspectCertificationSecretReferences } from "../../src/authority/host/certification-config.js";
+import { canonicalizeCertificationOperatorConfigV2, migrateCertificationOperatorConfig, parseCertificationOperatorConfigV2 } from "../../src/authority/certification/config.js";
 
 function completeConfig(): unknown {
   return {
@@ -106,4 +107,116 @@ test("the tracked operator example remains a parseable non-secret template", asy
   assert.equal(parsed.v, "reelier.certification-operator-config/v1");
   assert.match(parsed.providers.github.credentialRef, /^(?:env:|file:)/);
   assert.doesNotMatch(serialized, /ghp_|xox[baprs]-|Bearer\s|postgres(?:ql)?:\/\/[^\"]+@/i);
+});
+
+function minimalV2(): Record<string, unknown> {
+  return {
+    v: "reelier.certification-operator-config/v2",
+    authorityConfigPath: "authority/authority.yml",
+    evidenceDirectory: "authority/receipts/certification",
+    scenarios: ["github-issue-labels"],
+    resources: {
+      "github-issue-labels": {
+        apiBaseUrl: "https://api.github.com",
+        owner: "seldonframe",
+        repository: "reelier-certification",
+        issueNumber: 1,
+      },
+    },
+    cleanup: { "github-issue-labels": ["restore-github-issue-labels"] },
+    metadata: {},
+    secretReferences: { githubCredential: "env:REELIER_GITHUB_TOKEN" },
+  };
+}
+
+test("v2 requires only the resources, cleanup, metadata, and secret slots selected by scenarios", () => {
+  const parsed = parseCertificationOperatorConfigV2(minimalV2());
+  assert.deepEqual(parsed.scenarios, ["github-issue-labels"]);
+  assert.deepEqual(Object.keys(parsed.resources), ["github-issue-labels"]);
+  assert.deepEqual(Object.keys(parsed.cleanup), ["github-issue-labels"]);
+  assert.deepEqual(Object.keys(parsed.metadata), []);
+  assert.deepEqual(Object.keys(parsed.secretReferences), ["githubCredential"]);
+  assert.equal("hubspot" in parsed.resources, false);
+});
+
+test("v2 refuses unknown, duplicate, unsorted, extra, and incomplete scenario authority", () => {
+  const unknown = structuredClone(minimalV2()); unknown.scenarios = ["unknown-scenario"];
+  assert.throws(() => parseCertificationOperatorConfigV2(unknown), /scenario/i);
+  const duplicate = structuredClone(minimalV2()); duplicate.scenarios = ["github-issue-labels", "github-issue-labels"];
+  assert.throws(() => parseCertificationOperatorConfigV2(duplicate), /unique|sorted/i);
+  const unsorted = structuredClone(minimalV2()); unsorted.scenarios = ["slack-topic", "github-issue-labels"];
+  assert.throws(() => parseCertificationOperatorConfigV2(unsorted), /sorted/i);
+  const extraSecret = structuredClone(minimalV2()); (extraSecret.secretReferences as Record<string, unknown>).slackCredential = "env:SLACK_PRIVATE_VALUE";
+  assert.throws(() => parseCertificationOperatorConfigV2(extraSecret), /secret.*closed|unexpected secret/i);
+  const extraResource = structuredClone(minimalV2()); (extraResource.resources as Record<string, unknown>)["slack-topic"] = { apiBaseUrl: "https://slack.com", teamId: "T1", channelId: "C1" };
+  assert.throws(() => parseCertificationOperatorConfigV2(extraResource), /resource.*closed|unexpected resource/i);
+  const missingCleanup = structuredClone(minimalV2()); delete (missingCleanup.cleanup as Record<string, unknown>)["github-issue-labels"];
+  assert.throws(() => parseCertificationOperatorConfigV2(missingCleanup), /cleanup/i);
+  const missingResource = structuredClone(minimalV2()); delete (missingResource.resources as Record<string, unknown>)["github-issue-labels"];
+  assert.throws(() => parseCertificationOperatorConfigV2(missingResource), /resource/i);
+  const missingSecret = structuredClone(minimalV2()); delete (missingSecret.secretReferences as Record<string, unknown>).githubCredential;
+  assert.throws(() => parseCertificationOperatorConfigV2(missingSecret), /secret/i);
+});
+
+test("v2 rejects HubSpot and manual generated identity fields", () => {
+  const hubspot = structuredClone(minimalV2()); (hubspot.resources as Record<string, unknown>).hubspot = {};
+  assert.throws(() => parseCertificationOperatorConfigV2(hubspot), /resource.*closed|hubspot/i);
+  for (const key of ["taskId", "jobId", "authorityCellId", "signer", "grant"] as const) {
+    const raw = structuredClone(minimalV2()); raw[key] = "operator-controlled";
+    assert.throws(() => parseCertificationOperatorConfigV2(raw), /closed/);
+  }
+});
+
+test("v2 errors never disclose invalid secret-reference values and parsing performs no ref I/O", () => {
+  const marker = "private-value-that-must-not-appear";
+  const raw = structuredClone(minimalV2()); (raw.secretReferences as Record<string, unknown>).githubCredential = marker;
+  assert.throws(() => parseCertificationOperatorConfigV2(raw), error => {
+    assert.equal(String(error).includes(marker), false);
+    return true;
+  });
+  const missingFile = structuredClone(minimalV2()); (missingFile.secretReferences as Record<string, unknown>).githubCredential = "file:Z:/definitely/not/read/by/parser";
+  assert.equal(parseCertificationOperatorConfigV2(missingFile).secretReferences.githubCredential, "file:Z:/definitely/not/read/by/parser");
+});
+
+test("v2 parsing is deeply closed, immutable, and canonically byte-stable", () => {
+  const input = minimalV2();
+  const parsed = parseCertificationOperatorConfigV2(input);
+  assert.equal(Object.isFrozen(parsed), true);
+  assert.equal(Object.isFrozen(parsed.scenarios), true);
+  assert.equal(Object.isFrozen(parsed.resources), true);
+  assert.equal(Object.isFrozen(parsed.resources["github-issue-labels"]), true);
+  assert.equal(Object.isFrozen(parsed.cleanup["github-issue-labels"]), true);
+  (input.resources as Record<string, Record<string, unknown>>)["github-issue-labels"].owner = "attacker";
+  assert.equal(parsed.resources["github-issue-labels"].owner, "seldonframe");
+  const first = canonicalizeCertificationOperatorConfigV2(parsed);
+  const second = canonicalizeCertificationOperatorConfigV2(parseCertificationOperatorConfigV2(JSON.parse(first)));
+  assert.equal(second, first);
+});
+
+test("migration maps v1 to v2, drops HubSpot and generated identity inputs, and is idempotent", () => {
+  const legacy = completeConfig() as Record<string, unknown>;
+  const migrated = migrateCertificationOperatorConfig(legacy);
+  assert.equal(migrated.v, "reelier.certification-operator-config/v2");
+  assert.deepEqual(migrated.scenarios, ["cloudflare-dns", "cloudflare-vercel-secret", "codex-ten-principal", "fly-topology", "github-issue-labels", "neon-migration", "slack-topic", "vercel-promotion"]);
+  const serialized = canonicalizeCertificationOperatorConfigV2(migrated);
+  assert.doesNotMatch(serialized, /hubspot|task_certification_1|job_founder_stack|cell_certification_1|REELIER_EGRESS_GATEWAY_BEARER/i);
+  assert.equal(migrated.secretReferences.githubCredential, "env:REELIER_GITHUB_TOKEN");
+  assert.equal(migrated.secretReferences.neonDatabaseUrl, "env:REELIER_NEON_DATABASE_URL");
+  assert.deepEqual(migrateCertificationOperatorConfig(migrated), migrated);
+  assert.equal(canonicalizeCertificationOperatorConfigV2(migrateCertificationOperatorConfig(migrated)), serialized);
+});
+
+test("migration refuses ambiguous legacy input without inventing required fields or revealing secrets", () => {
+  const legacy = completeConfig() as { providers: Record<string, unknown> };
+  delete legacy.providers.slack;
+  assert.throws(() => migrateCertificationOperatorConfig(legacy), error => {
+    assert.match(String(error), /slack.*required|legacy.*incomplete/i);
+    assert.doesNotMatch(String(error), /REELIER_|private/i);
+    return true;
+  });
+});
+
+test("all seven named secret slots are accepted only when their scenarios require them", () => {
+  const legacy = migrateCertificationOperatorConfig(completeConfig());
+  assert.deepEqual(Object.keys(legacy.secretReferences).sort(), ["cloudflareCredential", "flyApiCredential", "githubCredential", "neonApiCredential", "neonDatabaseUrl", "slackCredential", "vercelCredential"]);
 });
