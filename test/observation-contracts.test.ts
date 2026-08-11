@@ -2,7 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   clusterObservedActionsWithManifests,
+  normalizeConnectionAdoption,
   normalizeConnectionDescriptor,
+  normalizeConnectionInventoryEntry,
   normalizeHostCoverage,
   normalizeObservedAction,
 } from "reelier/observation";
@@ -31,11 +33,10 @@ test("connection descriptors preserve account identity without secrets", () => {
     v: "reelier.connection-descriptor/v1",
     connectionId: "conn_1",
     kind: "adopted-mcp-stdio",
-    provider: "gmail",
-    accountIdentity: "google:user:123",
-    toolSchemaDigests: ["sha256:" + "a".repeat(64)],
-    sourceEndpointIds: ["gmail.read"],
-    writeEndpointIds: ["gmail.send"],
+    provider: { id: "gmail", toolServerName: "gmail-mcp" },
+    callableRoute: { kind: "mcp-stdio", routeId: "claude.gmail", endpointIds: ["gmail.read", "gmail.send"] },
+    account: { status: "verified", identity: "google:user:123" },
+    toolSchemas: [{ toolName: "gmail.get_profile", digest: "sha256:" + "a".repeat(64) }],
     secretOwner: "host",
     coverage: normalizeHostCoverage({
       v: "reelier.host-coverage/v1",
@@ -46,9 +47,41 @@ test("connection descriptors preserve account identity without secrets", () => {
       limitations: [],
     }),
   });
-  assert.equal(descriptor.accountIdentity, "google:user:123");
+  assert.equal(descriptor.account.identity, "google:user:123");
   assert.equal("accessToken" in descriptor, false);
   assert.throws(() => normalizeConnectionDescriptor({ ...descriptor, accessToken: "secret" }), /closed|invalid|unrecognized|unknown/i);
+});
+
+test("connection adoption is closed and round-trips without credential material", () => {
+  const adoption = normalizeConnectionAdoption({
+    v: "reelier.connection-adoption/v1",
+    adoptionId: "adoption_1",
+    descriptorDigest: "sha256:" + "b".repeat(64),
+    selectedAccountIdentity: "google:user:123",
+    mode: "existing",
+    sidecarRouteId: "sidecar.gmail",
+    rawWriteReachability: "unknown",
+    activationState: "inactive",
+    signedDeploymentBinding: null,
+  });
+  assert.deepEqual(normalizeConnectionAdoption(JSON.parse(JSON.stringify(adoption))), adoption);
+  assert.throws(() => normalizeConnectionAdoption({ ...adoption, refreshToken: "secret" }), /closed|invalid|unrecognized|unknown/i);
+});
+
+test("unverified inventory entries cannot fabricate a usable descriptor", () => {
+  const entry = normalizeConnectionInventoryEntry({
+    v: "reelier.connection-inventory-entry/v1",
+    discoveryId: "discovery_1",
+    provider: "gmail",
+    connectionKind: "host-private",
+    status: "shadow-only",
+    routeStatus: "host-private",
+    accountVerification: { status: "unverified" },
+    schemaVerification: { status: "unverified", expectedDigests: [], observedDigests: [] },
+    reasonCodes: ["host-private-route"],
+  });
+  assert.equal(entry.descriptor, undefined);
+  assert.throws(() => normalizeConnectionInventoryEntry({ ...entry, descriptor: { v: "reelier.connection-descriptor/v1" } }), /descriptor|invalid/i);
 });
 
 test("signed job cards reject unreviewed authority fields", () => {
