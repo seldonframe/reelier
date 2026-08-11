@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createPrivateKey, createPublicKey, generateKeyPairSync } from "node:crypto";
+import { createRequire } from "node:module";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import { authorityDigest } from "../../src/authority/wire.js";
 import {
   createSignedCertificationReadiness,
@@ -133,4 +136,22 @@ test("signing refuses a private key that does not match the pre-existing human d
   const wrong = generateKeyPairSync("ed25519");
   assert.throws(() => createSignedCertificationReadiness({ readinessCandidate: fixture.readiness, readinessCandidateDigest: authorityDigest(fixture.readiness), humanKeyDescriptor: fixture.humanDescriptor, cellKeyDescriptors: [fixture.cellDescriptor], trustEvents: fixture.events, humanPrivateKey: createPrivateKey(wrong.privateKey.export({ type: "pkcs8", format: "pem" })), authorizedAt: later }), /private key.*descriptor|signer/i);
   assert.doesNotThrow(() => createPublicKey({ key: Buffer.from(fixture.humanDescriptor.publicKeySpkiBase64, "base64"), format: "der", type: "spki" }));
+});
+
+test("portable authority key, trust event, and signed readiness schemas are closed", async () => {
+  const Ajv2020 = createRequire(import.meta.url)("ajv/dist/2020").default;
+  const ajv = new Ajv2020({ strict: true });
+  const fixture = validFixture();
+  const signed = createSignedCertificationReadiness({ readinessCandidate: fixture.readiness, readinessCandidateDigest: authorityDigest(fixture.readiness), humanKeyDescriptor: fixture.humanDescriptor, cellKeyDescriptors: [fixture.cellDescriptor], trustEvents: fixture.events, humanPrivateKey: fixture.human.privateKey, authorizedAt: later });
+  const load = async (name: string) => JSON.parse(await readFile(path.join(process.cwd(), "contract", "authority", "v1", name), "utf8"));
+  const descriptorSchema = await load("authority-key-descriptor.schema.json");
+  const eventSchema = await load("trust-event.schema.json");
+  const readinessSchema = await load("signed-certification-readiness.schema.json");
+  assert.equal(ajv.validate(descriptorSchema, fixture.humanDescriptor), true, JSON.stringify(ajv.errors));
+  assert.equal(ajv.validate(eventSchema, fixture.events[0]), true, JSON.stringify(ajv.errors));
+  assert.equal(ajv.validate(readinessSchema, signed), true, JSON.stringify(ajv.errors));
+  assert.equal(ajv.validate(descriptorSchema, { ...fixture.humanDescriptor, extra: true }), false);
+  assert.equal(ajv.validate(eventSchema, { ...fixture.events[0], extra: true }), false);
+  assert.equal(ajv.validate(readinessSchema, { ...signed, dispatchable: true }), false);
+  assert.equal(ajv.validate(readinessSchema, { ...signed, extra: true }), false);
 });

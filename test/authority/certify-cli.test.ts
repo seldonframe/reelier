@@ -138,3 +138,13 @@ test("selection-requiring certification commands reject unknown flags, IDs, conf
     assert.equal(JSON.parse(result.stderr).reasonCode, "certification-selection-invalid");
   }
 });
+
+test("sign-readiness refuses noninteractive invocation and has no auto-sign path", async () => {
+  const result = await capture({
+    positional: ["certify", "sign-readiness"],
+    flags: new Set(),
+    opts: { workspace: "missing", candidate: "missing", key: "missing", descriptors: "missing", "trust-events": "missing" },
+  });
+  assert.equal(result.code, 1);
+  assert.deepEqual(JSON.parse(result.stderr), { status: "refused", reasonCode: "certification-interactive-confirmation-required" });
+});
