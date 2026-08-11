@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "reelier.signed-certification-readiness/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["v", "purpose", "signerRole", "signerKeyId", "signerKeyDescriptorDigest", "readinessCandidateDigest", "configurationRoot", "selectionDigest", "identifiers", "scenarios", "activatedCellKeyDescriptorDigests", "trustHistoryDigest", "authorizedAt", "authorization", "dispatchable", "completeness", "signature"],
+  "properties": {
+    "v": { "const": "reelier.signed-certification-readiness/v1" },
+    "purpose": { "const": "certification-readiness" },
+    "signerRole": { "const": "human-sponsor" },
+    "signerKeyId": { "type": "string", "pattern": "^[a-z][a-z0-9_-]{2,127}$" },
+    "signerKeyDescriptorDigest": { "$ref": "#/$defs/digest" },
+    "readinessCandidateDigest": { "$ref": "#/$defs/digest" },
+    "configurationRoot": { "$ref": "#/$defs/digest" },
+    "selectionDigest": { "$ref": "#/$defs/digest" },
+    "identifiers": { "$ref": "#/$defs/identifiers" },
+    "scenarios": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/scenario" } },
+    "activatedCellKeyDescriptorDigests": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/digest" } },
+    "trustHistoryDigest": { "$ref": "#/$defs/digest" },
+    "authorizedAt": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$" },
+    "authorization": { "const": "human-signed" },
+    "dispatchable": { "const": false },
+    "completeness": { "const": "unchecked" },
+    "signature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["alg", "sig"],
+      "properties": { "alg": { "const": "ed25519" }, "sig": { "type": "string", "minLength": 1 } }
+    }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "scenario": { "enum": ["cloudflare-dns", "cloudflare-vercel-secret", "codex-ten-principal", "fly-topology", "github-issue-labels", "neon-migration", "slack-topic", "vercel-promotion"] },
+    "identifiers": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["taskId", "jobCardId", "rootGrantId", "authorityCellId", "signerId"],
+      "properties": {
+        "taskId": { "type": "string", "pattern": "^task_[0-9a-f]{24}$" },
+        "jobCardId": { "type": "string", "pattern": "^job_[0-9a-f]{24}$" },
+        "rootGrantId": { "type": "string", "pattern": "^grant_[0-9a-f]{24}$" },
+        "authorityCellId": { "type": "string", "pattern": "^cell_[0-9a-f]{24}$" },
+        "signerId": { "type": "string", "pattern": "^signer_[0-9a-f]{24}$" }
+      }
+    }
+  }
+}

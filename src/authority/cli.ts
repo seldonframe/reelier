@@ -1,6 +1,7 @@
 import { access, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createPrivateKey, createPublicKey } from "node:crypto";
+import { createInterface } from "node:readline/promises";
 import { randomBytes } from "node:crypto";
 import { signAuthorityDigest, verifyAuthoritySignature } from "./crypto.js";
 import { authorityDigest } from "./wire.js";
@@ -32,6 +33,7 @@ import { preflightCertification } from "./certification/preflight.js";
 import { sealCertificationReadiness } from "./certification/readiness.js";
 import { exportCertificationEvidence, verifyCertificationExport } from "./certification/export.js";
 import { CERTIFICATION_SCENARIO_IDS } from "./certification/scenarios.js";
+import { signCertificationReadinessArtifact } from "./certification/authority.js";
 
 export async function runAuthorityCommand(args: Readonly<{ positional: string[]; flags: Set<string>; opts: Record<string, string> }>): Promise<number> {
   const subcommand = args.positional[0] ?? "doctor";
@@ -297,6 +299,24 @@ async function authorityCertify(args: Readonly<{ positional: string[]; flags: Se
   if (action === "verify") {
     const options = Object.keys(args.opts);
     if (args.positional.length !== 2 || args.flags.size !== 0 || options.some(option => !["input", "key", "signer"].includes(option)) || (args.opts.signer !== undefined && args.opts.key === undefined)) { console.error(JSON.stringify({ status: "refused", reasonCode: "certification-command-invalid" })); return 1; }
+  }
+  if (action === "sign-readiness") {
+    const allowed = ["workspace", "candidate", "key", "descriptors", "trust-events"];
+    if (args.positional.length !== 2 || args.flags.size !== 0 || Object.keys(args.opts).some(option => !allowed.includes(option)) || allowed.some(option => !args.opts[option])) { console.error(JSON.stringify({ status: "refused", reasonCode: "certification-command-invalid" })); return 1; }
+    if (process.stdin.isTTY !== true || process.stderr.isTTY !== true) { console.error(JSON.stringify({ status: "refused", reasonCode: "certification-interactive-confirmation-required" })); return 1; }
+    const candidate = path.resolve(args.opts.candidate);
+    const expected = path.basename(candidate).match(/^readiness-(sha256-[0-9a-f]{64})\.json$/)?.[1]?.replace("-", ":");
+    if (!expected) { console.error(JSON.stringify({ status: "refused", reasonCode: "certification-readiness-refused" })); return 1; }
+    const prompt = createInterface({ input: process.stdin, output: process.stderr });
+    let confirmation: string;
+    try { confirmation = await prompt.question(`Type SIGN ${expected} to authorize this non-dispatchable readiness candidate: `); }
+    finally { prompt.close(); }
+    if (confirmation !== `SIGN ${expected}`) { console.error(JSON.stringify({ status: "refused", reasonCode: "certification-human-confirmation-refused" })); return 1; }
+    try {
+      const result = await signCertificationReadinessArtifact({ workspace: args.opts.workspace, candidatePath: candidate, privateKeyPath: args.opts.key, descriptorsPath: args.opts.descriptors, trustEventsPath: args.opts["trust-events"], authorizedAt: new Date().toISOString() });
+      console.log(JSON.stringify({ status: "human-signed", authorization: "human-signed", dispatchable: false, completeness: "unchecked", digest: result.digest, path: result.path }));
+      return 0;
+    } catch { console.error(JSON.stringify({ status: "refused", reasonCode: "certification-readiness-signing-refused" })); return 1; }
   }
   let selection: Readonly<{ scenario?: string; all?: boolean }> | undefined;
   if (["preflight", "seal-readiness", "export"].includes(action)) {
