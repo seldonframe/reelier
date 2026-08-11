@@ -69,6 +69,24 @@ test("offline verification recomputes generated IDs and semantic preflight field
   forgedInputStatus.artifacts.preflight.inputs.runners.status = "absent";
   forgedInputStatus.artifacts.readiness.commitments.runners.status = "absent";
   assert.throws(() => verifyCertificationExport(rehash(forgedInputStatus)), /preflight.*semantic|input.*status/i);
+
+  const substitutedProjection = JSON.parse(JSON.stringify(original));
+  substitutedProjection.artifacts.config.resources["github-issue-labels"].owner = "substituted-owner";
+  const replacementResourceDigest = authorityDigest(substitutedProjection.artifacts.config.resources["github-issue-labels"]);
+  substitutedProjection.artifacts.preflight.resources[0].digest = replacementResourceDigest;
+  substitutedProjection.artifacts.readiness.commitments.resources[0].digest = replacementResourceDigest;
+  assert.throws(() => verifyCertificationExport(rehash(substitutedProjection)), /config.*commitment|projection.*digest/i);
+});
+
+test("export refuses deterministic input drift between its bound snapshot and publication", async () => {
+  const workspace = await initializedWorkspace();
+  const runner = path.join(workspace, "inputs", "runners", "github-issue-labels.json");
+  await assert.rejects(() => exportCertificationEvidence({
+    workspace,
+    scenario: "github-issue-labels",
+    hooks: { afterPreflight: async () => { await writeFile(runner, JSON.stringify({ changed: true }), "utf8"); } },
+  }), /input.*drift|snapshot.*changed/i);
+  await assert.rejects(() => import("node:fs/promises").then(fs => fs.access(path.join(workspace, "exports"))));
 });
 
 test("offline verification rejects deep tampering, substitution, missing links, and open schemas", async () => {
