@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { initializeCertification } from "../../src/authority/certification/initializer.js";
@@ -27,6 +27,7 @@ test("readiness sealing creates an immutable unsigned non-dispatchable content-a
   assert.match(path.basename(first.path), /^readiness-sha256-[0-9a-f]{64}\.json$/);
   const raw = JSON.parse(await readFile(first.path, "utf8"));
   raw.dispatchable = true;
+  await chmod(first.path, 0o600);
   await writeFile(first.path, JSON.stringify(raw), "utf8");
   await assert.rejects(() => sealCertificationReadiness({ workspace: initialized.workspace, scenario: "github-issue-labels" }), /candidate.*mismatch|immutable/i);
 });
