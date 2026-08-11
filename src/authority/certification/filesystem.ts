@@ -6,7 +6,9 @@ export async function certificationWorkspaceRoot(workspace: string): Promise<str
   const resolved = path.resolve(workspace);
   const info = await lstat(resolved);
   if (!info.isDirectory() || info.isSymbolicLink()) throw new TypeError("certification workspace must be a confined real directory");
-  return realpath(resolved);
+  const actual = await realpath(resolved);
+  if (!samePath(actual, resolved)) throw new TypeError("certification workspace traverses a linked or reparse-pointed path");
+  return actual;
 }
 
 export async function assertUnlinkedCreationParent(target: string): Promise<string> {

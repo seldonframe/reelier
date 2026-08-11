@@ -18,13 +18,38 @@ export interface CertificationConfigCommitment {
   readonly projection: SanitizedCertificationProjection;
 }
 
+export interface CertificationSelectionCommitment {
+  readonly sanitizedProjectionDigest: string;
+  readonly selectionDigest: string;
+  readonly projection: SanitizedCertificationProjection;
+}
+
 export function createCertificationConfigCommitment(config: CertificationOperatorConfigV2, scenarios: readonly CertificationScenarioId[]): CertificationConfigCommitment {
+  const projection = createSanitizedCertificationProjection(config, scenarios);
+  const privateConfigDigest = authorityDigest(config);
+  const sanitizedProjectionDigest = authorityDigest(projection);
+  const configCommitmentDigest = authorityDigest({ v: "reelier.certification-config-commitment/v1", privateConfigDigest, sanitizedProjectionDigest });
+  return Object.freeze({ privateConfigDigest, sanitizedProjectionDigest, configCommitmentDigest, projection });
+}
+
+export function createCertificationSelectionCommitment(config: CertificationOperatorConfigV2, scenarios: readonly CertificationScenarioId[], configDigest: string): CertificationSelectionCommitment {
+  const projection = createSanitizedCertificationProjection(config, scenarios);
+  const sanitizedProjectionDigest = authorityDigest(projection);
+  const selectionDigest = recomputeCertificationSelectionCommitment(configDigest, sanitizedProjectionDigest);
+  return Object.freeze({ sanitizedProjectionDigest, selectionDigest, projection });
+}
+
+export function recomputeCertificationSelectionCommitment(configDigest: string, sanitizedProjectionDigest: string): string {
+  return authorityDigest({ v: "reelier.certification-selection-commitment/v1", configDigest, sanitizedProjectionDigest });
+}
+
+function createSanitizedCertificationProjection(config: CertificationOperatorConfigV2, scenarios: readonly CertificationScenarioId[]): SanitizedCertificationProjection {
   const definitions = scenarios.map(scenario => CERTIFICATION_SCENARIOS[scenario]);
   const resourceSections = unique(definitions.flatMap(definition => definition.resourceSections));
   const cleanupSections = unique(definitions.flatMap(definition => definition.cleanupCommitments));
   const metadataSections = unique(definitions.flatMap(definition => definition.metadataSections));
   const secretSlots = unique(definitions.flatMap(definition => definition.secretSlots));
-  const projection: SanitizedCertificationProjection = Object.freeze({
+  return Object.freeze({
     v: "reelier.certification-sanitized-config/v1",
     scenarios: Object.freeze([...scenarios]),
     resources: Object.freeze(Object.fromEntries(resourceSections.map(section => [section, config.resources[section]]))),
@@ -32,10 +57,6 @@ export function createCertificationConfigCommitment(config: CertificationOperato
     metadata: Object.freeze(metadataSections.map(section => Object.freeze({ section, digest: authorityDigest(config.metadata[section]), status: "configured" as const }))),
     credentialReferences: Object.freeze(secretSlots.map(slot => Object.freeze({ slot, status: "configured" as const }))),
   });
-  const privateConfigDigest = authorityDigest(config);
-  const sanitizedProjectionDigest = authorityDigest(projection);
-  const configCommitmentDigest = authorityDigest({ v: "reelier.certification-config-commitment/v1", privateConfigDigest, sanitizedProjectionDigest });
-  return Object.freeze({ privateConfigDigest, sanitizedProjectionDigest, configCommitmentDigest, projection });
 }
 
 export function recomputeCertificationConfigCommitment(privateConfigDigest: string, sanitizedProjectionDigest: string): string {

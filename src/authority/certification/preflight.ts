@@ -3,16 +3,18 @@ import { readdir } from "node:fs/promises";
 import path from "node:path";
 import { authorityDigest } from "../wire.js";
 import { parseCertificationOperatorConfigV2, type CertificationOperatorConfigV2 } from "./config.js";
-import { parseCertificationInitialization } from "./initializer.js";
+import { parseCertificationInitialization, validateCertificationInitialization, type CertificationIdentifiers } from "./initializer.js";
 import { CERTIFICATION_SCENARIOS, CERTIFICATION_SCENARIO_IDS, type CertificationScenarioId, type CertificationSecretSlot } from "./scenarios.js";
 import { certificationWorkspaceRoot, confinedExistingDirectory, readConfinedFile } from "./filesystem.js";
-import { createCertificationConfigCommitment } from "./commitment.js";
+import { createCertificationSelectionCommitment } from "./commitment.js";
 
 export interface CertificationInputArtifact { readonly scenario: CertificationScenarioId; readonly name: string; readonly digest: string }
 export interface CertificationInputSet { readonly status: "configured" | "absent"; readonly artifacts: readonly CertificationInputArtifact[] }
 export interface CertificationPreflightV2 {
   readonly v: "reelier.certification-preflight/v2";
   readonly configDigest: string;
+  readonly selectionDigest: string;
+  readonly identifiers: CertificationIdentifiers;
   readonly scenarios: readonly CertificationScenarioId[];
   readonly resources: readonly { readonly scenario: CertificationScenarioId; readonly digest: string; readonly status: "configured" | "missing" }[];
   readonly cleanup: readonly { readonly scenario: CertificationScenarioId; readonly digest: string; readonly status: "configured" | "missing" }[];
@@ -35,9 +37,8 @@ export async function preflightCertification(input: Readonly<{ workspace: string
   const config = parseCertificationOperatorConfigV2(JSON.parse((await readConfinedFile(workspaceRoot, workspaceRoot, "config.json")).toString("utf8")));
   const initialization = parseCertificationInitialization(JSON.parse((await readConfinedFile(workspaceRoot, workspaceRoot, "initialization.json")).toString("utf8")));
   const scenarios = selectScenarios(config, input.scenario, input.all);
-  const fullCommitment = createCertificationConfigCommitment(config, config.scenarios);
-  if (fullCommitment.configCommitmentDigest !== initialization.configDigest || fullCommitment.privateConfigDigest !== initialization.privateConfigDigest || fullCommitment.sanitizedProjectionDigest !== initialization.sanitizedProjectionDigest) throw new TypeError("certification workspace config commitment mismatch");
-  const selectedCommitment = createCertificationConfigCommitment(config, scenarios);
+  validateCertificationInitialization(config, initialization);
+  const selectedCommitment = createCertificationSelectionCommitment(config, scenarios, initialization.configDigest);
   const definitions = scenarios.map(scenario => CERTIFICATION_SCENARIOS[scenario]);
   const resourceSections = unique(definitions.flatMap(definition => definition.resourceSections));
   const cleanupSections = unique(definitions.flatMap(definition => definition.cleanupCommitments));
@@ -63,7 +64,9 @@ export async function preflightCertification(input: Readonly<{ workspace: string
   ].sort();
   const body = {
     v: "reelier.certification-preflight/v2" as const,
-    configDigest: selectedCommitment.configCommitmentDigest,
+    configDigest: initialization.configDigest,
+    selectionDigest: selectedCommitment.selectionDigest,
+    identifiers: initialization.identifiers,
     scenarios,
     resources,
     cleanup,
