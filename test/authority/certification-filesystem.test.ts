@@ -27,6 +27,21 @@ test("preflight refuses a linked runner directory without reading its external c
   await assert.rejects(() => preflightCertification({ workspace, scenario: "github-issue-labels" }), /linked|symlink|reparse|confined/i);
 });
 
+test("preflight refuses a selected artifact symlink when file symlinks are supported", async () => {
+  const workspace = await initialized();
+  const external = path.join(await mkdtemp(path.join(tmpdir(), "reelier-cert-external-file-")), "canary.json");
+  await writeFile(external, "EXTERNAL_FILE_CANARY", "utf8");
+  await mkdir(path.join(workspace, "inputs", "runners"), { recursive: true });
+  try {
+    await symlink(external, path.join(workspace, "inputs", "runners", "github-issue-labels.json"), "file");
+  } catch (error) {
+    assert.equal(process.platform, "win32");
+    assert.match(String((error as NodeJS.ErrnoException).code), /EPERM|EACCES/);
+    return;
+  }
+  await assert.rejects(() => preflightCertification({ workspace, scenario: "github-issue-labels" }), /linked|symlink|reparse|confined/i);
+});
+
 test("readiness refuses a linked output directory and performs no external write", async () => {
   const workspace = await initialized();
   await mkdir(path.join(workspace, "inputs", "runners"), { recursive: true });
