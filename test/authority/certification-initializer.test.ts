@@ -96,6 +96,21 @@ test("certification init refuses a workspace junction instead of resuming throug
   await assert.rejects(() => initializeCertification({ configPath, workspace }), /linked|junction|reparse|confined/i);
 });
 
+test("certification init does not create workspace parents through a junction", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "reelier-cert-init-parent-junction-"));
+  const configPath = path.join(root, "certification.local.json");
+  const external = await mkdtemp(path.join(tmpdir(), "reelier-cert-init-parent-external-"));
+  const linkedParent = path.join(root, "linked-parent");
+  await writeFile(configPath, JSON.stringify(config()), "utf8");
+  await symlink(external, linkedParent, process.platform === "win32" ? "junction" : "dir");
+
+  await assert.rejects(
+    () => initializeCertification({ configPath, workspace: path.join(linkedParent, "created", "certification") }),
+    /linked|junction|reparse|confined|ENOENT/i,
+  );
+  await assert.rejects(() => access(path.join(external, "created")));
+});
+
 test("certification init refuses linked config input and linked resume snapshots where file links are supported", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "reelier-cert-init-links-"));
   const actualConfig = path.join(root, "actual.json");
