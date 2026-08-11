@@ -1,7 +1,7 @@
 import path from "node:path";
 import { authorityDigest } from "../wire.js";
-import { parseCertificationInitialization, type CertificationIdentifiers } from "./initializer.js";
-import { preflightCertification, type CertificationInputSet } from "./preflight.js";
+import { deriveCertificationIdentifiers, type CertificationIdentifiers } from "./initializer.js";
+import { preflightCertification, type CertificationInputSet, type CertificationPreflightV2 } from "./preflight.js";
 import type { CertificationScenarioId } from "./scenarios.js";
 import { certificationWorkspaceRoot, publishPrivateContentAddressed, readConfinedFile, confinedExistingDirectory } from "./filesystem.js";
 
@@ -31,8 +31,20 @@ export interface CertificationReadinessCandidate {
 export async function sealCertificationReadiness(input: Readonly<{ workspace: string; scenario?: string; all?: boolean }>): Promise<Readonly<{ candidate: CertificationReadinessCandidate; digest: string; path: string }>> {
   const workspace = path.resolve(input.workspace);
   const root = await certificationWorkspaceRoot(workspace);
-  const initialization = parseCertificationInitialization(JSON.parse((await readConfinedFile(root, root, "initialization.json")).toString("utf8")));
   const preflight = await preflightCertification(input);
+  const created = createCertificationReadinessCandidate(preflight);
+  const { candidate, digest } = created;
+  const directory = path.join(workspace, "readiness");
+  const output = path.join(directory, `readiness-${digest.replace(":", "-")}.json`);
+  await publishPrivateContentAddressed(root, "readiness", path.basename(output), `${JSON.stringify(candidate)}\n`);
+  const safeDirectory = await confinedExistingDirectory(root, ["readiness"]);
+  if (!safeDirectory) throw new TypeError("certification readiness directory is absent after publication");
+  const existing = JSON.parse((await readConfinedFile(root, safeDirectory, path.basename(output))).toString("utf8"));
+  if (authorityDigest(existing) !== digest || JSON.stringify(existing) !== JSON.stringify(candidate)) throw new TypeError("immutable readiness candidate mismatch");
+  return Object.freeze({ candidate, digest, path: output });
+}
+
+export function createCertificationReadinessCandidate(preflight: CertificationPreflightV2): Readonly<{ candidate: CertificationReadinessCandidate; digest: string }> {
   if (!preflight.preparationReady) throw new TypeError("certification preparation is incomplete and cannot be sealed");
   const candidate: CertificationReadinessCandidate = Object.freeze({
     v: "reelier.certification-readiness-candidate/v1",
@@ -42,21 +54,12 @@ export async function sealCertificationReadiness(input: Readonly<{ workspace: st
     authorization: "absent",
     dispatchable: false,
     completeness: "unchecked",
-    configDigest: initialization.configDigest,
+    configDigest: preflight.configDigest,
     preflightDigest: preflight.digest,
     scenarios: preflight.scenarios,
-    identifiers: initialization.identifiers,
+    identifiers: deriveCertificationIdentifiers(preflight.configDigest),
     commitments: Object.freeze({ resources: preflight.resources, cleanup: preflight.cleanup, credentials: preflight.credentialReferences, runners: preflight.inputs.runners, tests: preflight.inputs.tests, topology: preflight.topology, signatureStatus: "absent" }),
   });
   const digest = authorityDigest(candidate);
-  const directory = path.join(workspace, "readiness");
-  const output = path.join(directory, `readiness-${digest.replace(":", "-")}.json`);
-  await publishPrivateContentAddressed(root, "readiness", path.basename(output), `${JSON.stringify(candidate)}\n`);
-  const safeDirectory = await confinedExistingDirectory(root, ["readiness"]);
-  if (!safeDirectory) throw new TypeError("certification readiness directory is absent after publication");
-  const existing = JSON.parse((await readConfinedFile(root, safeDirectory, path.basename(output))).toString("utf8"));
-  if (authorityDigest(existing) !== digest || JSON.stringify(existing) !== JSON.stringify(candidate)) {
-    throw new TypeError("immutable readiness candidate mismatch");
-  }
-  return Object.freeze({ candidate, digest, path: output });
+  return Object.freeze({ candidate, digest });
 }
