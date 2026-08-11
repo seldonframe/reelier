@@ -257,6 +257,22 @@ test("an exact-key report cannot fabricate deployment or authority success", asy
   });
 });
 
+test("Path C checkpoint classifications must match their evidence status exactly", async () => {
+  await withTempDir(async root => {
+    await initializeInspection({ cwd: root, homedir: root, dependencies: dependencies() });
+    const initDir = path.join(root, ".reelier", "init");
+    const artifactPath = path.join(initDir, "path-c-candidates.json");
+    const artifact = JSON.parse(await readFile(artifactPath, "utf8"));
+    artifact.candidates[0].classification = "shadow-only";
+    await writeFile(artifactPath, `${canonicalJson(artifact)}\n`, "utf8");
+    const statePath = path.join(initDir, "state.json");
+    const state = JSON.parse(await readFile(statePath, "utf8"));
+    state.completed.find((item: { id: string }) => item.id === "path-c-candidates").digest = `sha256:${createHash("sha256").update(canonicalJson(artifact), "utf8").digest("hex")}`;
+    await writeFile(statePath, `${canonicalJson(state)}\n`, "utf8");
+    await assert.rejects(initializeInspection({ cwd: root, homedir: root, dependencies: dependencies() }), /checkpoint state refused: malformed artifact/);
+  });
+});
+
 test("checkpoint and report artifacts contain sanitized shapes only", async () => {
   await withTempDir(async root => {
     const result = await initializeInspection({ cwd: root, homedir: root, dependencies: dependencies() });
