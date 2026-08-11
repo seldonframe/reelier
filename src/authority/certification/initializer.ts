@@ -1,4 +1,4 @@
-import { access, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { access, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { authorityDigest } from "../wire.js";
 import { canonicalizeCertificationOperatorConfigV2, parseCertificationOperatorConfigV2 } from "./config.js";
@@ -21,7 +21,7 @@ export interface CertificationInitialization {
   readonly completeness: "unchecked";
 }
 
-export async function initializeCertification(input: Readonly<{ configPath: string; workspace?: string }>): Promise<Readonly<{
+export async function initializeCertification(input: Readonly<{ configPath: string; workspace?: string; hooks?: Readonly<{ beforePublish?: () => Promise<void> }> }>): Promise<Readonly<{
   status: "initialized" | "resumed";
   workspace: string;
   configDigest: string;
@@ -50,10 +50,12 @@ export async function initializeCertification(input: Readonly<{ configPath: stri
   }
 
   await mkdir(path.dirname(workspace), { recursive: true });
+  await removeInterruptedStages(path.dirname(workspace), `.${path.basename(workspace)}.staging-`);
   const staging = await mkdtemp(path.join(path.dirname(workspace), `.${path.basename(workspace)}.staging-`));
   try {
     await writeFile(path.join(staging, "config.json"), `${canonicalConfig}\n`, { encoding: "utf8", flag: "wx", mode: 0o600 });
     await writeFile(path.join(staging, "initialization.json"), `${JSON.stringify(initialization)}\n`, { encoding: "utf8", flag: "wx", mode: 0o600 });
+    await input.hooks?.beforePublish?.();
     await rename(staging, workspace);
   } catch (error) {
     if (path.dirname(staging) === path.dirname(workspace) && path.basename(staging).startsWith(`.${path.basename(workspace)}.staging-`)) {
@@ -100,3 +102,14 @@ function internalId(value: unknown, prefix: string): string {
 function object(value: unknown, label: string): Record<string, unknown> { if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError(`${label} must be an object`); return value as Record<string, unknown>; }
 function closed(raw: Record<string, unknown>, keys: readonly string[], label: string): void { if (Object.keys(raw).length !== keys.length || Object.keys(raw).some(key => !keys.includes(key))) throw new TypeError(`${label} is closed`); }
 async function exists(file: string): Promise<boolean> { try { await access(file); return true; } catch { return false; } }
+async function removeInterruptedStages(parent: string, prefix: string): Promise<void> {
+  const cutoff = Date.now() - 5 * 60_000;
+  for (const entry of await readdir(parent, { withFileTypes: true })) {
+    if (!entry.name.startsWith(prefix) || !entry.isDirectory() || entry.isSymbolicLink()) continue;
+    const candidate = path.resolve(parent, entry.name);
+    if (path.dirname(candidate) !== path.resolve(parent) || !path.basename(candidate).startsWith(prefix)) continue;
+    const info = await lstat(candidate);
+    if (!info.isDirectory() || info.isSymbolicLink() || info.mtimeMs > cutoff) continue;
+    await rm(candidate, { recursive: true, force: true });
+  }
+}
