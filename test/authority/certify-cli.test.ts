@@ -38,6 +38,28 @@ test("root CLI rejects missing and duplicate scenario option values", () => {
   assert.throws(() => parseArgv(["certify", "preflight", "--scenario", "--all"]), /requires a value/);
   assert.throws(() => parseArgv(["certify", "preflight", "--scenario", "github-issue-labels", "--scenario", "slack-topic"]), /duplicate/);
   assert.throws(() => parseArgv(["certify", "preflight", "--all", "--all"]), /duplicate/);
+  for (const option of ["config", "workspace", "input"]) {
+    assert.throws(() => parseArgv(["certify", "init", `--${option}`, "first", `--${option}`, "second"]), /duplicate/);
+    assert.throws(() => parseArgv(["certify", "init", `--${option}`, "--all"]), /requires a value/);
+  }
+});
+
+test("init and verify reject every irrelevant flag, option, and extra positional", async () => {
+  const { configPath, workspace } = await fixture();
+  const cases: Array<{ command: Parameters<typeof runAuthorityCommand>[0]; reason: string }> = [
+    { command: { positional: ["certify", "init", "extra"], flags: new Set(), opts: { config: configPath } }, reason: "certification-command-invalid" },
+    { command: { positional: ["certify", "init"], flags: new Set(["all"]), opts: { config: configPath } }, reason: "certification-command-invalid" },
+    { command: { positional: ["certify", "init"], flags: new Set(), opts: { config: configPath, workspace } }, reason: "certification-command-invalid" },
+    { command: { positional: ["certify", "verify", "extra"], flags: new Set(), opts: { input: "missing" } }, reason: "certification-command-invalid" },
+    { command: { positional: ["certify", "verify"], flags: new Set(["all"]), opts: { input: "missing" } }, reason: "certification-command-invalid" },
+    { command: { positional: ["certify", "verify"], flags: new Set(), opts: { input: "missing", scenario: "github-issue-labels" } }, reason: "certification-command-invalid" },
+    { command: { positional: ["certify", "verify"], flags: new Set(), opts: { input: "missing", signer: "cell" } }, reason: "certification-command-invalid" },
+  ];
+  for (const item of cases) {
+    const result = await capture(item.command);
+    assert.equal(result.code, 1);
+    assert.equal(JSON.parse(result.stderr).reasonCode, item.reason);
+  }
 });
 
 test("certification preflight has no legacy no-config environment fallback", async () => {
