@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { access, mkdir, mkdtemp, readFile, readdir, symlink, unlink, utimes, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, readdir, realpath, symlink, unlink, utimes, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { initializeCertification } from "../../src/authority/certification/initializer.js";
@@ -68,6 +69,27 @@ test("concurrent identical certification init converges on one atomic workspace"
   assert.deepEqual(results[0].identifiers, results[1].identifiers);
   assert.equal(arrivals, 2);
   assert.deepEqual((await readdir(root)).filter(name => name.startsWith(".certification.staging-")), []);
+});
+
+test("concurrent identical init through a Windows short alias removes the owned losing stage", async t => {
+  if (process.platform !== "win32") { t.skip("Windows short-name behavior"); return; }
+  const aliasRoot = await findWindowsShortAliasRoot();
+  if (!aliasRoot) { t.skip("no writable short-name alias is available on this volume"); return; }
+  const root = await mkdtemp(path.join(aliasRoot, "reelier-cert-init-short-race-"));
+  const configPath = path.join(root, "certification.local.json");
+  const workspace = path.join(root, "certification");
+  await writeFile(configPath, JSON.stringify(config()), "utf8");
+  let arrivals = 0;
+  let release!: () => void;
+  const barrier = new Promise<void>(resolve => { release = resolve; });
+  const beforePublish = async (): Promise<void> => { arrivals += 1; if (arrivals === 2) release(); await barrier; };
+  const results = await Promise.all([
+    initializeCertification({ configPath, workspace, hooks: { beforePublish } }),
+    initializeCertification({ configPath, workspace, hooks: { beforePublish } }),
+  ]);
+  assert.deepEqual(results.map(result => result.status).sort(), ["initialized", "resumed"]);
+  assert.equal(arrivals, 2);
+  assert.deepEqual((await readdir(await realpath(root))).filter(name => name.startsWith(".certification.staging-")), []);
 });
 
 test("certification init leaves an old foreign name-matching stage untouched and publishes beside it", async () => {
@@ -144,3 +166,18 @@ test("certification init refuses linked config input and linked resume snapshots
   await symlink(externalSnapshot, path.join(workspace, "config.json"), "file");
   await assert.rejects(() => initializeCertification({ configPath: actualConfig, workspace }), /linked|symlink|reparse|confined/i);
 });
+
+async function findWindowsShortAliasRoot(): Promise<string | undefined> {
+  const requestedTemp = path.resolve(tmpdir());
+  const candidates = [requestedTemp];
+  const parent = path.dirname(requestedTemp);
+  for (const entry of await readdir(parent, { withFileTypes: true })) if (entry.isDirectory()) candidates.push(path.join(parent, entry.name));
+  for (const candidate of candidates) {
+    try {
+      if (/\s/.test(candidate)) continue;
+      const short = execFileSync(process.env.ComSpec ?? "cmd.exe", ["/d", "/c", `for %I in (${candidate}) do @echo %~sI`], { encoding: "utf8" }).trim();
+      if (short && short.toLowerCase() !== (await realpath(short)).toLowerCase()) return short;
+    } catch { /* This candidate has no accessible short spelling. */ }
+  }
+  return undefined;
+}
