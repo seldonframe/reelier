@@ -73,6 +73,7 @@ export async function preflightCertification(input: Readonly<{ workspace: string
     credentialReferences,
     inputs,
     topology,
+    // Static local path checks do not prove exclusive confinement against concurrent same-user mutation.
     trust: "unchecked" as const,
     signatureStatus: "absent" as const,
     authorization: "absent" as const,
