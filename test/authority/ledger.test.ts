@@ -8,6 +8,7 @@ import { pathToFileURL } from "node:url";
 import { execFile,spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash } from "node:crypto";
+import { setMaxListeners } from "node:events";
 import { connect, createServer } from "node:net";
 import { authorityCanonicalBytes, authorityDigest } from "../../src/authority/wire.js";
 import { authenticateOutcomeRequest, authenticatedOutcomeRequestState } from "../../src/authority/keys.js";
@@ -262,6 +263,7 @@ test("aborting a reserve child waits until the process is reaped",async()=>{
 });
 
 test("100 real processes converge on one committed reservation and one dispatch eligibility", { timeout: 120_000 }, async t => {
+  setMaxListeners(100,t.signal);
   await withRoot(async root => {
     const results = await Promise.all(Array.from({ length: 100 }, () => spawnReserve(root, intent(),{signal:t.signal})));
     const successes = results as Array<{ ok: boolean; status: string; dispatchEligible: boolean; reservation: { reservationId: string } }>;
