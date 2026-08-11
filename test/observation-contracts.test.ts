@@ -67,6 +67,7 @@ test("connection adoption is closed and round-trips without credential material"
   assert.deepEqual(normalizeConnectionAdoption(JSON.parse(JSON.stringify(adoption))), adoption);
   assert.throws(() => normalizeConnectionAdoption({ ...adoption, refreshToken: "secret" }), /closed|invalid|unrecognized|unknown/i);
   assert.throws(() => normalizeConnectionAdoption({ ...adoption, mode: "managed", activationState: "active", rawWriteReachability: "reachable" }), /invalid/i);
+  assert.throws(() => normalizeConnectionAdoption({ ...adoption, activationState: "active", signedDeploymentBinding: null }), /invalid/i);
 });
 
 test("unverified inventory entries cannot fabricate a usable descriptor", () => {
@@ -102,6 +103,9 @@ test("usable inventory entries require coherent callable verification", () => {
   assert.throws(() => normalizeConnectionInventoryEntry({ ...usable, routeStatus: "unsupported" }), /usable|coherent|invalid/i);
   assert.throws(() => normalizeConnectionInventoryEntry({ ...usable, provider: "slack" }), /usable|coherent|invalid/i);
   assert.throws(() => normalizeConnectionInventoryEntry({ ...usable, accountVerification: { status: "unverified" } }), /usable|coherent|invalid/i);
+  assert.throws(() => normalizeConnectionInventoryEntry({ ...usable, accountVerification: { status: "verified", identity: "google:user:123", expectedIdentity: "google:user:999" } }), /usable|coherent|invalid/i);
+  assert.throws(() => normalizeConnectionInventoryEntry({ ...usable, schemaVerification: { status: "verified", expectedDigests: ["sha256:" + "b".repeat(64)], observedDigests: ["sha256:" + "a".repeat(64)] } }), /usable|coherent|invalid/i);
+  assert.throws(() => normalizeConnectionInventoryEntry({ ...usable, descriptor: { ...descriptor, callableRoute: { ...descriptor.callableRoute, kind: "mcp-http" } } }), /usable|coherent|invalid/i);
 });
 
 test("signed job cards reject unreviewed authority fields", () => {

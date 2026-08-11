@@ -203,4 +203,6 @@ test("connection ABI schemas accept closed contracts and refuse unknown keys", a
   assert.equal(ajv.validate(inventorySchema, { ...report, credential: "forbidden" }), false);
   assert.equal(ajv.validate(inventorySchema, { ...report, entries: [{ ...usable, routeStatus: "unsupported" }] }), false);
   assert.equal(ajv.validate(adoptionSchema, { ...adoption, mode: "managed", activationState: "active", rawWriteReachability: "reachable" }), false);
+  assert.equal(ajv.validate(adoptionSchema, { ...adoption, activationState: "active", signedDeploymentBinding: null }), false);
+  assert.equal(ajv.validate(inventorySchema, { ...report, entries: [{ ...usable, descriptor: { ...usable.descriptor, callableRoute: { ...usable.descriptor?.callableRoute, kind: "mcp-http" } } }] }), false);
 });
