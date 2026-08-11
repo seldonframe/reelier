@@ -1,11 +1,13 @@
-import { createPublicKey, type KeyObject } from "node:crypto";
+import { createHash, createPublicKey, type KeyObject } from "node:crypto";
 import { createPrivateKey } from "node:crypto";
+import { lstat } from "node:fs/promises";
 import path from "node:path";
 import { signAuthorityDigest, verifyAuthoritySignature } from "../crypto.js";
 import type { AuthoritySignature } from "../types.js";
 import { authorityDigest } from "../wire.js";
 import type { CertificationIdentifiers } from "./initializer.js";
-import type { CertificationReadinessCandidate } from "./readiness.js";
+import { parseCertificationReadinessCandidate, type CertificationReadinessCandidate } from "./readiness.js";
+import { preflightCertification, type CertificationPreflightV2 } from "./preflight.js";
 import { CERTIFICATION_SCENARIO_IDS, type CertificationScenarioId } from "./scenarios.js";
 import { certificationWorkspaceRoot, confinedExistingDirectory, publishPrivateContentAddressed, readConfinedFile, readUnlinkedFile } from "./filesystem.js";
 
@@ -99,19 +101,21 @@ export function parseTrustEvents(value: unknown, descriptors: readonly Authority
 export function createSignedCertificationReadiness(input: Readonly<{
   readinessCandidate: CertificationReadinessCandidate;
   readinessCandidateDigest: string;
+  preflight: CertificationPreflightV2;
   humanKeyDescriptor: AuthorityKeyDescriptorV1;
   cellKeyDescriptors: readonly AuthorityKeyDescriptorV1[];
   trustEvents: readonly TrustEventV1[];
   humanPrivateKey: KeyObject;
   authorizedAt: string;
 }>): SignedCertificationReadinessV1 {
-  const candidate = parseReadinessCandidate(input.readinessCandidate);
+  const candidate = parseCertificationReadinessCandidate(input.readinessCandidate, input.preflight);
   const candidateDigest = digest(input.readinessCandidateDigest, "readiness candidate digest");
   if (authorityDigest(candidate) !== candidateDigest) throw new TypeError("readiness candidate digest link is invalid");
   const human = parseAuthorityKeyDescriptor(input.humanKeyDescriptor);
   if (human.role !== "human-sponsor" || human.purpose !== HUMAN_PURPOSE || human.keyId !== candidate.identifiers.signerId) throw new TypeError("human signer descriptor does not match the readiness signer");
   const cells = parseCellDescriptors(input.cellKeyDescriptors);
   const descriptors = Object.freeze([human, ...cells]);
+  assertUniqueDescriptorKeys(descriptors);
   const events = parseTrustEvents(input.trustEvents, descriptors);
   const authorizedAt = timestamp(input.authorizedAt, "certification authorization time");
   assertActiveAtAuthorization(human, cells, events, authorizedAt);
@@ -142,16 +146,18 @@ export function createSignedCertificationReadiness(input: Readonly<{
 export function verifySignedCertificationReadiness(input: Readonly<{
   signed: unknown;
   readinessCandidate: unknown;
+  preflight: unknown;
   humanTrustRoot: unknown;
   keyDescriptors: readonly unknown[];
   trustEvents: readonly unknown[];
 }>): Readonly<{ authorization: "verified"; dispatchable: false; completeness: "unchecked"; digest: string }> {
-  const candidate = parseReadinessCandidate(input.readinessCandidate);
+  const candidate = parseCertificationReadinessCandidate(input.readinessCandidate, input.preflight);
   const humanRoot = parseAuthorityKeyDescriptor(input.humanTrustRoot);
   const descriptors = Object.freeze(input.keyDescriptors.map(parseAuthorityKeyDescriptor));
   const descriptorIds = descriptors.map(descriptor => descriptor.keyId);
   const descriptorDigests = descriptors.map(authorityDigest);
   if (new Set(descriptorIds).size !== descriptorIds.length || new Set(descriptorDigests).size !== descriptorDigests.length || descriptors.filter(descriptor => descriptor.role === "human-sponsor").length !== 1) throw new TypeError("authority key descriptors must be unique and contain exactly one human signer");
+  assertUniqueDescriptorKeys(descriptors);
   const human = descriptors.find(descriptor => descriptor.keyId === humanRoot.keyId);
   if (!human || authorityDigest(human) !== authorityDigest(humanRoot) || human.role !== "human-sponsor" || human.purpose !== HUMAN_PURPOSE) throw new TypeError("human trust root or signer role is invalid");
   const cells = parseCellDescriptors(descriptors.filter(descriptor => descriptor.role === "authority-cell"));
@@ -174,10 +180,11 @@ export function parseSignedCertificationReadiness(value: unknown): SignedCertifi
   if (raw.v !== "reelier.signed-certification-readiness/v1" || raw.purpose !== HUMAN_PURPOSE || raw.signerRole !== "human-sponsor" || typeof raw.signerKeyId !== "string" || !KEY_ID.test(raw.signerKeyId) || raw.authorization !== "human-signed" || raw.dispatchable !== false || raw.completeness !== "unchecked") throw new TypeError("signed certification readiness purpose, role, or claims are invalid");
   const signatureRaw = object(raw.signature, "signed certification readiness signature");
   closed(signatureRaw, ["alg", "sig"], "signed certification readiness signature");
-  if (signatureRaw.alg !== "ed25519" || typeof signatureRaw.sig !== "string" || !signatureRaw.sig) throw new TypeError("signed certification readiness signature is invalid");
+  if (signatureRaw.alg !== "ed25519" || typeof signatureRaw.sig !== "string") throw new TypeError("signed certification readiness signature is invalid");
+  const canonicalSignature = parseCanonicalSignature(signatureRaw.sig);
   return Object.freeze({
     v: raw.v, purpose: raw.purpose, signerRole: raw.signerRole, signerKeyId: raw.signerKeyId,
-    signerKeyDescriptorDigest: digest(raw.signerKeyDescriptorDigest, "signer descriptor digest"), readinessCandidateDigest: digest(raw.readinessCandidateDigest, "readiness candidate digest"), configurationRoot: digest(raw.configurationRoot, "configuration root"), selectionDigest: digest(raw.selectionDigest, "selection digest"), identifiers: parseIdentifiers(raw.identifiers), scenarios: scenarioList(raw.scenarios), activatedCellKeyDescriptorDigests: digestList(raw.activatedCellKeyDescriptorDigests, "activated Cell key descriptors"), trustHistoryDigest: digest(raw.trustHistoryDigest, "trust history digest"), authorizedAt: timestamp(raw.authorizedAt, "certification authorization time"), authorization: raw.authorization, dispatchable: false, completeness: raw.completeness, signature: Object.freeze({ alg: signatureRaw.alg, sig: signatureRaw.sig }),
+    signerKeyDescriptorDigest: digest(raw.signerKeyDescriptorDigest, "signer descriptor digest"), readinessCandidateDigest: digest(raw.readinessCandidateDigest, "readiness candidate digest"), configurationRoot: digest(raw.configurationRoot, "configuration root"), selectionDigest: digest(raw.selectionDigest, "selection digest"), identifiers: parseIdentifiers(raw.identifiers), scenarios: scenarioList(raw.scenarios), activatedCellKeyDescriptorDigests: digestList(raw.activatedCellKeyDescriptorDigests, "activated Cell key descriptors"), trustHistoryDigest: digest(raw.trustHistoryDigest, "trust history digest"), authorizedAt: timestamp(raw.authorizedAt, "certification authorization time"), authorization: raw.authorization, dispatchable: false, completeness: raw.completeness, signature: Object.freeze({ alg: signatureRaw.alg, sig: canonicalSignature }),
   });
 }
 
@@ -194,6 +201,7 @@ export async function signCertificationReadinessArtifact(input: Readonly<{
     selectionDigest: string;
     identifiers: CertificationIdentifiers;
     scenarios: readonly CertificationScenarioId[];
+    commitments: CertificationReadinessCandidate["commitments"];
     cellKeys: readonly Readonly<{ keyId: string; purpose: CellPurpose; descriptorDigest: string }>[];
     trustHistoryDigest: string;
     dispatchable: false;
@@ -205,8 +213,12 @@ export async function signCertificationReadinessArtifact(input: Readonly<{
   if (!readinessDirectory) throw new TypeError("certification readiness candidate directory is absent");
   const candidatePath = path.resolve(input.candidatePath);
   if (path.dirname(candidatePath) !== readinessDirectory || !/^readiness-sha256-[0-9a-f]{64}\.json$/.test(path.basename(candidatePath))) throw new TypeError("certification readiness candidate is not a confined Task2C2 artifact");
-  const candidate = JSON.parse((await readConfinedFile(root, readinessDirectory, path.basename(candidatePath))).toString("utf8"));
-  const candidateDigest = authorityDigest(parseReadinessCandidate(candidate));
+  const candidateValue = JSON.parse((await readConfinedFile(root, readinessDirectory, path.basename(candidatePath))).toString("utf8"));
+  const rawCandidate = object(candidateValue, "certification readiness candidate");
+  const selectedScenarios = scenarioList(rawCandidate.scenarios);
+  const preflight = await preflightCertification({ workspace: root, ...(selectedScenarios.length === 1 ? { scenario: selectedScenarios[0] } : { all: true }) });
+  const candidate = parseCertificationReadinessCandidate(candidateValue, preflight);
+  const candidateDigest = authorityDigest(candidate);
   if (path.basename(candidatePath) !== `readiness-${candidateDigest.replace(":", "-")}.json`) throw new TypeError("certification readiness candidate filename digest is invalid");
   const descriptorsValue = JSON.parse((await readUnlinkedFile(input.descriptorsPath)).toString("utf8"));
   if (!Array.isArray(descriptorsValue)) throw new TypeError("authority key descriptors file must contain an array");
@@ -214,6 +226,7 @@ export async function signCertificationReadinessArtifact(input: Readonly<{
   const descriptorIds = descriptors.map(descriptor => descriptor.keyId);
   const descriptorDigests = descriptors.map(authorityDigest);
   if (new Set(descriptorIds).size !== descriptorIds.length || new Set(descriptorDigests).size !== descriptorDigests.length || descriptors.filter(descriptor => descriptor.role === "human-sponsor").length !== 1) throw new TypeError("authority key descriptors must be unique and contain exactly one human signer");
+  assertUniqueDescriptorKeys(descriptors);
   const human = descriptors.find(descriptor => descriptor.role === "human-sponsor" && descriptor.keyId === candidate.identifiers.signerId);
   if (!human) throw new TypeError("pre-existing human signer descriptor is absent");
   const cells = descriptors.filter(descriptor => descriptor.role === "authority-cell");
@@ -225,6 +238,7 @@ export async function signCertificationReadinessArtifact(input: Readonly<{
     selectionDigest: candidate.selectionDigest,
     identifiers: candidate.identifiers,
     scenarios: candidate.scenarios,
+    commitments: candidate.commitments,
     cellKeys: Object.freeze(parsedCells.map(descriptor => Object.freeze({ keyId: descriptor.keyId, purpose: descriptor.purpose as CellPurpose, descriptorDigest: authorityDigest(descriptor) })).sort((left, right) => left.descriptorDigest.localeCompare(right.descriptorDigest))),
     trustHistoryDigest: authorityDigest(trustEvents),
     dispatchable: false as const,
@@ -232,10 +246,19 @@ export async function signCertificationReadinessArtifact(input: Readonly<{
   if (await input.confirm(review) !== true) throw new TypeError("human confirmation refused readiness signing");
   const privateKey = createPrivateKey(await readUnlinkedFile(input.privateKeyPath));
   if (privateKey.asymmetricKeyType !== "ed25519") throw new TypeError("human signing key must be Ed25519");
-  const signed = createSignedCertificationReadiness({ readinessCandidate: candidate, readinessCandidateDigest: candidateDigest, humanKeyDescriptor: human, cellKeyDescriptors: parsedCells, trustEvents, humanPrivateKey: privateKey, authorizedAt: input.authorizedAt });
+  const signed = createSignedCertificationReadiness({ readinessCandidate: candidate, readinessCandidateDigest: candidateDigest, preflight, humanKeyDescriptor: human, cellKeyDescriptors: parsedCells, trustEvents, humanPrivateKey: privateKey, authorizedAt: input.authorizedAt });
   const signedDigest = authorityDigest(signed);
   const filename = `signed-readiness-${signedDigest.replace(":", "-")}.json`;
-  const output = await publishPrivateContentAddressed(root, "authorizations", filename, `${JSON.stringify(signed)}\n`);
+  const content = `${JSON.stringify(signed)}\n`;
+  const output = await publishPrivateContentAddressed(root, "authorizations", filename, content);
+  const publishedInfo = await lstat(output);
+  if (!publishedInfo.isFile() || publishedInfo.isSymbolicLink() || publishedInfo.nlink !== 1) throw new TypeError("immutable signed readiness publication is linked or replaced");
+  const authorizationDirectory = await confinedExistingDirectory(root, ["authorizations"]);
+  if (!authorizationDirectory) throw new TypeError("certification authorization directory is absent after publication");
+  const persisted = await readConfinedFile(root, authorizationDirectory, filename);
+  if (!persisted.equals(Buffer.from(content, "utf8"))) throw new TypeError("immutable signed readiness publication conflicts with existing bytes");
+  const persistedSigned = parseSignedCertificationReadiness(JSON.parse(persisted.toString("utf8")));
+  if (authorityDigest(persistedSigned) !== signedDigest || JSON.stringify(persistedSigned) !== JSON.stringify(signed)) throw new TypeError("immutable signed readiness publication digest or identity mismatch");
   return Object.freeze({ signed, digest: signedDigest, path: output });
 }
 
@@ -259,14 +282,6 @@ function assertActiveAtAuthorization(human: AuthorityKeyDescriptorV1, cells: rea
     if (Date.parse(activation.occurredAt) > authorizationTime) throw new TypeError(`${descriptor.role} descriptor was activated after the authorization time`);
     if (lifecycle.some(event => event.action === "revoke")) throw new TypeError(`${descriptor.role} descriptor is revoked and not active`);
   }
-}
-
-function parseReadinessCandidate(value: unknown): CertificationReadinessCandidate {
-  const raw = object(value, "certification readiness candidate");
-  closed(raw, ["v", "status", "preparationReady", "signatureStatus", "authorization", "dispatchable", "completeness", "configDigest", "selectionDigest", "preflightDigest", "scenarios", "identifiers", "commitments"], "certification readiness candidate");
-  if (raw.v !== "reelier.certification-readiness-candidate/v1" || raw.status !== "awaiting-human-signature" || raw.preparationReady !== true || raw.signatureStatus !== "absent" || raw.authorization !== "absent" || raw.dispatchable !== false || raw.completeness !== "unchecked") throw new TypeError("certification readiness candidate cannot confer authority");
-  if (!raw.commitments || typeof raw.commitments !== "object" || Array.isArray(raw.commitments)) throw new TypeError("certification readiness commitments are invalid");
-  return Object.freeze({ ...raw, configDigest: digest(raw.configDigest, "readiness configuration root"), selectionDigest: digest(raw.selectionDigest, "readiness selection digest"), preflightDigest: digest(raw.preflightDigest, "readiness preflight digest"), scenarios: scenarioList(raw.scenarios), identifiers: parseIdentifiers(raw.identifiers), commitments: raw.commitments }) as unknown as CertificationReadinessCandidate;
 }
 
 function parseIdentifiers(value: unknown): CertificationIdentifiers {
@@ -297,6 +312,11 @@ function publicKey(base64: string): KeyObject {
   if (!bytes.length || bytes.toString("base64") !== base64) throw new TypeError("authority public key is invalid");
   try { const key = createPublicKey({ key: bytes, format: "der", type: "spki" }); if (key.asymmetricKeyType !== "ed25519") throw new TypeError(); return key; } catch { throw new TypeError("authority public key is not an Ed25519 SPKI key"); }
 }
+function assertUniqueDescriptorKeys(descriptors: readonly AuthorityKeyDescriptorV1[]): void {
+  const fingerprints = descriptors.map(descriptor => `sha256:${createHash("sha256").update(publicKey(descriptor.publicKeySpkiBase64).export({ type: "spki", format: "der" })).digest("hex")}`);
+  if (new Set(fingerprints).size !== fingerprints.length) throw new TypeError("authority descriptor SPKI key-material fingerprints must be unique across roles and purposes");
+}
+function parseCanonicalSignature(value: string): string { if (!/^[A-Za-z0-9+/]{86}==$/.test(value)) throw new TypeError("signed certification readiness signature must be canonical Base64"); const bytes = Buffer.from(value, "base64"); if (bytes.length !== 64 || bytes.toString("base64") !== value) throw new TypeError("signed certification readiness signature must decode to exactly 64 bytes"); return value; }
 function digest(value: unknown, label: string): string { if (typeof value !== "string" || !DIGEST.test(value)) throw new TypeError(`${label} is invalid`); return value; }
 function timestamp(value: unknown, label: string): string { if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value) || Number.isNaN(Date.parse(value)) || new Date(Date.parse(value)).toISOString() !== value) throw new TypeError(`${label} is invalid`); return value; }
 function object(value: unknown, label: string): Record<string, any> { if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError(`${label} must be an object`); return value as Record<string, any>; }

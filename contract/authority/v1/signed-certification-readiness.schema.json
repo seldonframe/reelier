@@ -25,7 +25,7 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["alg", "sig"],
-      "properties": { "alg": { "const": "ed25519" }, "sig": { "type": "string", "minLength": 1 } }
+      "properties": { "alg": { "const": "ed25519" }, "sig": { "type": "string", "pattern": "^[A-Za-z0-9+/]{86}==$" } }
     }
   },
   "$defs": {

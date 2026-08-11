@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createPrivateKey, createPublicKey, generateKeyPairSync } from "node:crypto";
 import { createRequire } from "node:module";
-import { link, mkdir, mkdtemp, readFile, unlink, writeFile } from "node:fs/promises";
+import { chmod, link, mkdir, mkdtemp, readFile, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { authorityDigest } from "../../src/authority/wire.js";
@@ -13,7 +13,8 @@ import {
   signCertificationReadinessArtifact,
   verifySignedCertificationReadiness,
 } from "../../src/authority/certification/authority.js";
-import { parseCertificationReadinessCandidate } from "../../src/authority/certification/readiness.js";
+import { initializeCertification } from "../../src/authority/certification/initializer.js";
+import { parseCertificationReadinessCandidate, sealCertificationReadiness } from "../../src/authority/certification/readiness.js";
 
 const at = "2026-08-11T20:00:00.000Z";
 const later = "2026-08-11T20:01:00.000Z";
@@ -224,27 +225,51 @@ test("portable authority key, trust event, and signed readiness schemas are clos
 
 test("file signing consumes an existing human key and confined Task2C2 candidate without persisting private material", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "reelier-cert-authorize-"));
-  const workspace = path.join(root, "certification");
-  const readinessDirectory = path.join(workspace, "readiness");
-  await mkdir(readinessDirectory, { recursive: true });
-  const fixture = validFixture();
-  const candidateDigest = authorityDigest(fixture.readiness);
-  const candidatePath = path.join(readinessDirectory, `readiness-${candidateDigest.replace(":", "-")}.json`);
+  const configPath = path.join(root, "certification.local.json");
+  await writeFile(configPath, JSON.stringify({
+    v: "reelier.certification-operator-config/v2", authorityConfigPath: "authority/authority.yml", evidenceDirectory: "authority/receipts/certification",
+    scenarios: ["github-issue-labels"], resources: { "github-issue-labels": { apiBaseUrl: "https://api.github.com", owner: "fixlyai", repository: "reelier-certification", issueNumber: 1 } },
+    cleanup: { "github-issue-labels": ["restore-github-labels"] }, metadata: {}, secretReferences: { githubCredential: "env:REELIER_GITHUB_TOKEN" },
+  }), "utf8");
+  const initialized = await initializeCertification({ configPath });
+  await mkdir(path.join(initialized.workspace, "inputs", "runners"), { recursive: true });
+  await mkdir(path.join(initialized.workspace, "inputs", "tests"), { recursive: true });
+  await writeFile(path.join(initialized.workspace, "inputs", "runners", "github-issue-labels.json"), "{}", "utf8");
+  await writeFile(path.join(initialized.workspace, "inputs", "tests", "github-issue-labels.json"), "[]", "utf8");
+  const sealed = await sealCertificationReadiness({ workspace: initialized.workspace, scenario: "github-issue-labels" });
+  const human = generateKeyPairSync("ed25519");
+  const cell = generateKeyPairSync("ed25519");
+  const humanDescriptor = keyDescriptor(sealed.candidate.identifiers.signerId, "human-sponsor", "certification-readiness", human.publicKey);
+  const cellDescriptor = keyDescriptor("cell_receipt_key", "authority-cell", "authority-receipt", cell.publicKey);
+  const first = trustEvent(0, "activate", authorityDigest(humanDescriptor), null);
+  const second = trustEvent(1, "activate", authorityDigest(cellDescriptor), authorityDigest(first));
+  const events = [first, second];
   const descriptorsPath = path.join(root, "descriptors.json");
   const eventsPath = path.join(root, "events.json");
   const keyPath = path.join(root, "human.pem");
-  await writeFile(candidatePath, JSON.stringify(fixture.readiness));
-  await writeFile(descriptorsPath, JSON.stringify([fixture.humanDescriptor, fixture.cellDescriptor]));
-  await writeFile(eventsPath, JSON.stringify(fixture.events));
-  await writeFile(keyPath, fixture.human.privateKey.export({ type: "pkcs8", format: "pem" }));
+  await writeFile(descriptorsPath, JSON.stringify([humanDescriptor, cellDescriptor]));
+  await writeFile(eventsPath, JSON.stringify(events));
+  await writeFile(keyPath, human.privateKey.export({ type: "pkcs8", format: "pem" }));
   let reviewed: any;
-  const result = await signCertificationReadinessArtifact({ workspace, candidatePath, privateKeyPath: keyPath, descriptorsPath, trustEventsPath: eventsPath, authorizedAt: later, confirm: async summary => { reviewed = summary; return true; } });
+  const sign = () => signCertificationReadinessArtifact({ workspace: initialized.workspace, candidatePath: sealed.path, privateKeyPath: keyPath, descriptorsPath, trustEventsPath: eventsPath, authorizedAt: later, confirm: async summary => { reviewed = summary; return true; } });
+  const result = await sign();
   assert.equal(result.signed.dispatchable, false);
-  assert.equal(reviewed.readinessCandidateDigest, candidateDigest);
-  assert.deepEqual(reviewed.scenarios, fixture.readiness.scenarios);
-  assert.deepEqual(reviewed.cellKeys, [{ keyId: fixture.cellDescriptor.keyId, purpose: fixture.cellDescriptor.purpose, descriptorDigest: authorityDigest(fixture.cellDescriptor) }]);
+  assert.equal(reviewed.readinessCandidateDigest, sealed.digest);
+  assert.deepEqual(reviewed.scenarios, sealed.candidate.scenarios);
+  assert.deepEqual(reviewed.commitments, sealed.candidate.commitments);
+  assert.deepEqual(reviewed.cellKeys, [{ keyId: cellDescriptor.keyId, purpose: cellDescriptor.purpose, descriptorDigest: authorityDigest(cellDescriptor) }]);
+  assert.doesNotMatch(JSON.stringify(reviewed), /REELIER_GITHUB_TOKEN|certification\.local\.json|PRIVATE KEY/i);
   assert.match(path.basename(result.path), /^signed-readiness-sha256-[0-9a-f]{64}\.json$/);
   const persisted = await readFile(result.path, "utf8");
   assert.doesNotMatch(persisted, /PRIVATE KEY|BEGIN PRIVATE|MC4CAQ/);
-  await assert.rejects(() => signCertificationReadinessArtifact({ workspace, candidatePath, privateKeyPath: keyPath, descriptorsPath, trustEventsPath: eventsPath, authorizedAt: later, confirm: undefined as never }), /interactive.*confirmation|required/i);
+  assert.equal((await sign()).digest, result.digest, "an identical existing publication remains idempotent");
+  await chmod(result.path, 0o600);
+  await writeFile(result.path, "conflicting publication\n", "utf8");
+  await assert.rejects(sign, /publication.*conflict|existing bytes|JSON/i);
+  await unlink(result.path);
+  const replacement = path.join(root, "replacement.json");
+  await writeFile(replacement, `${JSON.stringify(result.signed)}\n`, "utf8");
+  await link(replacement, result.path);
+  await assert.rejects(sign, /linked|replacement|publication.*conflict/i);
+  await assert.rejects(() => signCertificationReadinessArtifact({ workspace: initialized.workspace, candidatePath: sealed.path, privateKeyPath: keyPath, descriptorsPath, trustEventsPath: eventsPath, authorizedAt: later, confirm: undefined as never }), /interactive.*confirmation|required/i);
 });
