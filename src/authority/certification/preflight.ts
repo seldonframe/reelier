@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readdir, readFile } from "node:fs/promises";
+import { readdir } from "node:fs/promises";
 import path from "node:path";
 import { authorityDigest } from "../wire.js";
 import { parseCertificationOperatorConfigV2, type CertificationOperatorConfigV2 } from "./config.js";
@@ -31,8 +31,8 @@ export interface CertificationPreflightV2 {
 export async function preflightCertification(input: Readonly<{ workspace: string; scenario?: string; all?: boolean }>): Promise<CertificationPreflightV2> {
   const workspace = path.resolve(input.workspace);
   const workspaceRoot = await certificationWorkspaceRoot(workspace);
-  const config = parseCertificationOperatorConfigV2(JSON.parse(await readFile(path.join(workspace, "config.json"), "utf8")));
-  const initialization = parseCertificationInitialization(JSON.parse(await readFile(path.join(workspace, "initialization.json"), "utf8")));
+  const config = parseCertificationOperatorConfigV2(JSON.parse((await readConfinedFile(workspaceRoot, workspaceRoot, "config.json")).toString("utf8")));
+  const initialization = parseCertificationInitialization(JSON.parse((await readConfinedFile(workspaceRoot, workspaceRoot, "initialization.json")).toString("utf8")));
   if (authorityDigest(config) !== initialization.configDigest) throw new TypeError("certification workspace config digest mismatch");
   const scenarios = selectScenarios(config, input.scenario, input.all);
   const definitions = scenarios.map(scenario => CERTIFICATION_SCENARIOS[scenario]);

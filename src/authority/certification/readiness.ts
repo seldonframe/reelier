@@ -1,4 +1,3 @@
-import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { authorityDigest } from "../wire.js";
 import { parseCertificationInitialization, type CertificationIdentifiers } from "./initializer.js";
@@ -31,7 +30,8 @@ export interface CertificationReadinessCandidate {
 
 export async function sealCertificationReadiness(input: Readonly<{ workspace: string; scenario?: string; all?: boolean }>): Promise<Readonly<{ candidate: CertificationReadinessCandidate; digest: string; path: string }>> {
   const workspace = path.resolve(input.workspace);
-  const initialization = parseCertificationInitialization(JSON.parse(await readFile(path.join(workspace, "initialization.json"), "utf8")));
+  const root = await certificationWorkspaceRoot(workspace);
+  const initialization = parseCertificationInitialization(JSON.parse((await readConfinedFile(root, root, "initialization.json")).toString("utf8")));
   const preflight = await preflightCertification(input);
   if (!preflight.preparationReady) throw new TypeError("certification preparation is incomplete and cannot be sealed");
   const candidate: CertificationReadinessCandidate = Object.freeze({
@@ -51,7 +51,6 @@ export async function sealCertificationReadiness(input: Readonly<{ workspace: st
   const digest = authorityDigest(candidate);
   const directory = path.join(workspace, "readiness");
   const output = path.join(directory, `readiness-${digest.replace(":", "-")}.json`);
-  const root = await certificationWorkspaceRoot(workspace);
   await publishPrivateContentAddressed(root, "readiness", path.basename(output), `${JSON.stringify(candidate)}\n`);
   const safeDirectory = await confinedExistingDirectory(root, ["readiness"]);
   if (!safeDirectory) throw new TypeError("certification readiness directory is absent after publication");

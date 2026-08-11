@@ -1,4 +1,3 @@
-import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { authorityDigest } from "../wire.js";
 import { parseCertificationOperatorConfigV2, type CertificationOperatorConfigV2 } from "./config.js";
@@ -21,8 +20,9 @@ const RESOURCE_KEYS: Readonly<Record<string, readonly string[]>> = Object.freeze
 
 export async function exportCertificationEvidence(input: Readonly<{ workspace: string; scenario?: string; all?: boolean }>): Promise<Readonly<{ digest: string; path: string }>> {
   const workspace = path.resolve(input.workspace);
-  const config = parseCertificationOperatorConfigV2(JSON.parse(await readFile(path.join(workspace, "config.json"), "utf8")));
-  const initialization = parseCertificationInitialization(JSON.parse(await readFile(path.join(workspace, "initialization.json"), "utf8")));
+  const workspaceRoot = await certificationWorkspaceRoot(workspace);
+  const config = parseCertificationOperatorConfigV2(JSON.parse((await readConfinedFile(workspaceRoot, workspaceRoot, "config.json")).toString("utf8")));
+  const initialization = parseCertificationInitialization(JSON.parse((await readConfinedFile(workspaceRoot, workspaceRoot, "initialization.json")).toString("utf8")));
   const preflight = await preflightCertification(input);
   const readiness = (await sealCertificationReadiness(input)).candidate;
   const projectedConfig = projectConfig(config, preflight.scenarios, preflight.credentialReferences);
@@ -32,7 +32,7 @@ export async function exportCertificationEvidence(input: Readonly<{ workspace: s
   const body = Object.freeze({ v: "reelier.certification-export/v1" as const, manifest, artifacts });
   const digest = authorityDigest(body);
   const bundle = Object.freeze({ ...body, digest });
-  const root = await certificationWorkspaceRoot(workspace);
+  const root = workspaceRoot;
   const filename = `certification-export-${digest.replace(":", "-")}.json`;
   const output = await publishPrivateContentAddressed(root, "exports", filename, `${JSON.stringify(bundle)}\n`);
   const directory = await confinedExistingDirectory(root, ["exports"]);
@@ -130,7 +130,9 @@ function verifyPreflightSemantics(config: any, preflight: any): void {
     ...config.scenarios.filter((scenario: string) => !preflight.inputs.tests.artifacts.some((item: any) => item.scenario === scenario)).map((scenario: string) => `inputs:tests:${scenario}`),
     ...(config.scenarios.includes("fly-topology") && topology === "absent" ? ["topology:metadata"] : []),
   ].sort();
-  if (JSON.stringify(preflight.resources) !== JSON.stringify(resources) || JSON.stringify(preflight.cleanup) !== JSON.stringify(cleanup) || JSON.stringify(preflight.credentialReferences) !== JSON.stringify(credentialReferences) || preflight.topology !== topology || JSON.stringify(preflight.missing) !== JSON.stringify(missing) || preflight.ok !== (missing.length === 0) || preflight.preparationReady !== (missing.length === 0)) throw new TypeError("certification preflight semantic mismatch");
+  const runnerStatus = config.scenarios.every((scenario: string) => preflight.inputs.runners.artifacts.some((item: any) => item.scenario === scenario)) ? "configured" : "absent";
+  const testStatus = config.scenarios.every((scenario: string) => preflight.inputs.tests.artifacts.some((item: any) => item.scenario === scenario)) ? "configured" : "absent";
+  if (JSON.stringify(preflight.resources) !== JSON.stringify(resources) || JSON.stringify(preflight.cleanup) !== JSON.stringify(cleanup) || JSON.stringify(preflight.credentialReferences) !== JSON.stringify(credentialReferences) || preflight.inputs.runners.status !== runnerStatus || preflight.inputs.tests.status !== testStatus || preflight.topology !== topology || JSON.stringify(preflight.missing) !== JSON.stringify(missing) || preflight.ok !== (missing.length === 0) || preflight.preparationReady !== (missing.length === 0)) throw new TypeError("certification preflight semantic mismatch");
 }
 
 function parsePreflight(value: unknown): any {
