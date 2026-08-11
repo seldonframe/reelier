@@ -155,6 +155,7 @@ export interface InitializeInspectionOptions {
   readonly dryRun?: boolean;
   readonly authorityRoot?: string;
   readonly dependencies?: InitializationDependencies;
+  readonly afterArtifactWrite?: (id: InitCheckpointId) => void | Promise<void>;
   readonly afterCheckpoint?: (id: InitCheckpointId) => void | Promise<void>;
 }
 
@@ -273,14 +274,17 @@ function validateArtifact(id: InitCheckpointId, value: unknown): void {
   if (!isRecord(value) || value.v !== expectedVersion[id]) throw new Error("checkpoint state refused: malformed artifact");
 }
 
-async function inspectExistingState(initDir: string): Promise<{ state: CheckpointState; artifacts: Map<InitCheckpointId, unknown> }> {
+async function inspectExistingState(initDir: string, lockOwned = false): Promise<{ state: CheckpointState; artifacts: Map<InitCheckpointId, unknown>; lockPresent: boolean }> {
   let names: string[];
   try { names = await readdir(initDir); } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { state: { v: "reelier.init-state/v1", planDigest: PLAN_DIGEST, completed: [] }, artifacts: new Map() };
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { state: { v: "reelier.init-state/v1", planDigest: PLAN_DIGEST, completed: [] }, artifacts: new Map(), lockPresent: false };
     throw new Error("checkpoint state refused: unreadable");
   }
   const allowed = new Set([STATE_FILE, LOCK_FILE, ...Object.values(ARTIFACTS)]);
   if (names.some(name => !allowed.has(name))) throw new Error("checkpoint state refused: unknown artifact");
+  if (names.includes(LOCK_FILE) && !lockOwned) {
+    return { state: { v: "reelier.init-state/v1", planDigest: PLAN_DIGEST, completed: [] }, artifacts: new Map(), lockPresent: true };
+  }
   let stateRaw: string | undefined;
   try { stateRaw = await readFile(path.join(initDir, STATE_FILE), "utf8"); } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new Error("checkpoint state refused: unreadable");
@@ -298,7 +302,7 @@ async function inspectExistingState(initDir: string): Promise<{ state: Checkpoin
     validateArtifact(completed.id, parsed);
     artifacts.set(completed.id, parsed);
   }
-  return { state, artifacts };
+  return { state, artifacts, lockPresent: names.includes(LOCK_FILE) };
 }
 
 async function writeDurableAtomic(filePath: string, content: string): Promise<void> {
@@ -535,6 +539,7 @@ export async function initializeInspection(options: InitializeInspectionOptions)
   const dependencies = options.dependencies ?? defaultDependencies;
   const initDir = path.join(options.cwd, ".reelier", "init");
   const initial = await inspectExistingState(initDir);
+  if (initial.lockPresent) return { status: "busy" };
   if (options.dryRun) return runDry(options, dependencies);
 
   if (initial.state.completed.length === INIT_CHECKPOINT_IDS.length) {
@@ -545,7 +550,7 @@ export async function initializeInspection(options: InitializeInspectionOptions)
   const release = await acquireLock(initDir);
   if (!release) return { status: "busy" };
   try {
-    const { state: checkedState, artifacts } = await inspectExistingState(initDir);
+    const { state: checkedState, artifacts } = await inspectExistingState(initDir, true);
     if (checkedState.completed.length === INIT_CHECKPOINT_IDS.length) {
       return { status: "complete", report: artifacts.get("inspection-report") as InitializationReportV1, resumedFrom: null };
     }
@@ -557,6 +562,7 @@ export async function initializeInspection(options: InitializeInspectionOptions)
       validateArtifact(id, artifact);
       const artifactContent = canonicalFile(artifact);
       await writeDurableAtomic(path.join(initDir, ARTIFACTS[id]), artifactContent);
+      await options.afterArtifactWrite?.(id);
       artifacts.set(id, artifact);
       state = {
         v: "reelier.init-state/v1",
