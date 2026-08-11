@@ -93,7 +93,12 @@ async function inspectInputSet(workspace: string, kind: "runners" | "tests", sce
   const directory = await confinedExistingDirectory(workspace, ["inputs", kind]);
   if (!directory) return Object.freeze({ status: "absent", artifacts: Object.freeze([]) });
   let names: string[];
-  names = (await readdir(directory, { withFileTypes: true })).filter(entry => entry.isFile() && !entry.isSymbolicLink() && /^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}\.json$/.test(entry.name)).map(entry => entry.name).sort();
+  const entries = await readdir(directory, { withFileTypes: true });
+  for (const entry of entries) {
+    const selected = scenarios.some(scenario => entry.name === `${scenario}.json` || entry.name.startsWith(`${scenario}--`));
+    if (selected && (entry.isSymbolicLink() || !entry.isFile())) throw new TypeError("selected certification artifact is linked, reparse-pointed, or not a regular file");
+  }
+  names = entries.filter(entry => entry.isFile() && /^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}\.json$/.test(entry.name)).map(entry => entry.name).sort();
   const mapped = names.flatMap(name => {
     const scenario = scenarios.find(candidate => name === `${candidate}.json` || name.startsWith(`${candidate}--`));
     return scenario ? [{ scenario, name }] : [];

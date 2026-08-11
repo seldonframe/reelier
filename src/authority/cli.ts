@@ -291,6 +291,13 @@ async function authorityServe(args: Readonly<{ opts: Record<string, string> }>):
 
 async function authorityCertify(args: Readonly<{ positional: string[]; flags: Set<string>; opts: Record<string, string> }>): Promise<number> {
   const action = args.positional[1] ?? "preflight";
+  if (action === "init") {
+    if (args.positional.length !== 2 || args.flags.size !== 0 || Object.keys(args.opts).some(option => option !== "config")) { console.error(JSON.stringify({ status: "refused", reasonCode: "certification-command-invalid" })); return 1; }
+  }
+  if (action === "verify") {
+    const options = Object.keys(args.opts);
+    if (args.positional.length !== 2 || args.flags.size !== 0 || options.some(option => !["input", "key", "signer"].includes(option)) || (args.opts.signer !== undefined && args.opts.key === undefined)) { console.error(JSON.stringify({ status: "refused", reasonCode: "certification-command-invalid" })); return 1; }
+  }
   let selection: Readonly<{ scenario?: string; all?: boolean }> | undefined;
   if (["preflight", "seal-readiness", "export"].includes(action)) {
     try {
