@@ -1566,10 +1566,22 @@ test("k1-operation-fence-only inbound connections are severed and cannot wedge f
   await withFenceRoot(async(root,binding)=>{
     const events:string[]=[];let client:ReturnType<typeof connect>|undefined,clientClosed:Promise<void>|undefined,pending:Promise<unknown>|undefined;
     try{
-      pending=new RawFsAuthorityLedger(root,{[option]:fenceRuntime(binding,async point=>{events.push(point);if(point==="k1-operation-fence-only-endpoint-bound"){await new Promise<void>((resolve,reject)=>{client=connect({host:"127.0.0.1",port:binding.endpoint.port},resolve);client.once("error",reject);});client!.on("error",()=>{});clientClosed=new Promise<void>(resolve=>client!.once("close",resolve));client!.resume();}}),now:()=>t0,lockTimeoutMs:200} as never).recover();
+      pending=new RawFsAuthorityLedger(root,{[option]:fenceRuntime(binding,async point=>{
+        events.push(point);if(point!=="k1-operation-fence-only-endpoint-bound")return;
+        await new Promise<void>((resolve,reject)=>{client=connect({host:"127.0.0.1",port:binding.endpoint.port,allowHalfOpen:true},resolve);client.once("error",reject);});
+        client!.on("error",()=>{});clientClosed=new Promise<void>(resolve=>client!.once("close",resolve));client!.setEncoding("utf8");let text="";client!.on("data",chunk=>{text+=chunk;});
+        const eof=await new Promise<Readonly<{writableEndedAtEof:boolean;writableEndedAfterEofTurn:boolean}>>(resolve=>client!.once("end",()=>{const writableEndedAtEof=client!.writableEnded;setImmediate(()=>resolve({writableEndedAtEof,writableEndedAfterEofTurn:client!.writableEnded}));}));
+        assert.deepEqual({text,...eof},{text:`reelier-k1-operation-fence/v1 ${binding.materialDigest}\n`,writableEndedAtEof:false,writableEndedAfterEofTurn:false},"the peer consumes the identity and deliberately keeps its write side open after EOF");
+      }),now:()=>t0,lockTimeoutMs:200} as never).recover();
       const result=await Promise.race([pending,failAfter(2_000,"a held inbound connection wedged the fence close")]);
       assert.equal((result as Readonly<{ok:boolean}>).ok,true);
       assert.equal(events.at(-1),"k1-operation-fence-only-closed");
+      let writeFailure:Error|undefined;
+      for(let attempt=0;attempt<8&&writeFailure===undefined;attempt++){
+        writeFailure=await new Promise<Error|undefined>(resolve=>client!.write("held-write-side",error=>resolve(error??undefined)));
+        if(writeFailure===undefined)await new Promise<void>(resolve=>setImmediate(resolve));
+      }
+      assert.ok(writeFailure instanceof Error,"the closed fence rejects further writes from the deliberately half-open peer");
       await Promise.race([clientClosed!,failAfter(2_000,"the fence accepted and retained an inbound connection")]);
       assert.equal(client!.destroyed,true);
     }finally{client?.destroy();await pending?.catch(()=>{});}
