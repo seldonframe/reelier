@@ -201,10 +201,17 @@ test("semantic duplicate and conflicting bytes do not write or consume additiona
     const duplicate = await f.runner.run({ bearerToken: f.credential.token, requestId: "request_semantic_duplicate" });
     assert.equal(duplicate.status, "duplicate");
     assert.equal(duplicate.providerWrites, 1);
-    const conflict = await f.runner.conflict({ bearerToken: f.credential.token, requestId: "request_original" });
+    const exactBytes = Buffer.from('{"labels":["conflicting"]}', "utf8").toString("base64");
+    const conflict = await f.runner.conflict({ bearerToken: f.credential.token, requestId: "request_original", exactBytes });
     assert.equal(conflict.status, "conflict");
     assert.equal(conflict.providerWrites, 1);
+    assert.equal((conflict as any).exactBytesDigest, authorityDigest({ v: "reelier.exact-conflicting-bytes/v1", base64: exactBytes }));
+    assert.deepEqual(await f.runner.conflict({ bearerToken: f.credential.token, requestId: "request_original", exactBytes }), conflict);
+    await assert.rejects(() => f.runner.conflict({ bearerToken: f.credential.token, requestId: "request_original", exactBytes: Buffer.from("changed").toString("base64") }), /conflict.*bytes|changed.*bytes|exact/i);
     assert.equal((await f.delegation.budget.get(f.activation.allocationId))?.consumed, 1);
+    const graph = await f.runner.exportGraph({ bearerToken: f.credential.token });
+    assert.equal(graph.exceptions.some((item: any) => item.kind === "conflict" && item.exactBytesDigest === (conflict as any).exactBytesDigest), true);
+    assert.equal(verifyCertificationTaskReceiptGraph(graph, { trustPin: f.pin }).status, "verified");
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
