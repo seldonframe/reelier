@@ -342,7 +342,7 @@ test("getReservation classifies unexplained active-preparation deletion as corru
       assert.ok(prep,"the reader owns one active preparation at the validation seam");
       rmSync(path.join(root,prep),{recursive:true});removed=true;
     }} as never);
-    await assert.rejects(reader.getReservation(created.reservation.reservationId),error=>error instanceof Error&&error.name==="AuthorityLedgerReadError"&&error.message.includes("corruption"));
+    await assert.rejects(reader.getReservation(created.reservation.reservationId),/authority ledger read refused: corruption/);
     assert.equal(removed,true,"the exact admission-preparation deletion race was exercised");
   });
 });
