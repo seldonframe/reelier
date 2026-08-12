@@ -1,6 +1,6 @@
 # Governed HTTP and Browser Outcomes Design
 
-**Status:** Founder-approved design direction, pending amended written-spec review
+**Status:** Founder-approved amended design; implementation remains sequenced and evidence-gated
 **Date:** 2026-08-12
 **Depends on:** Portable Path C evidence closure, packed cross-platform certification, and the frozen Adapter Contract v1
 
