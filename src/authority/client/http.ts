@@ -51,9 +51,16 @@ function isIpAddress(address: string): boolean { return /^\d{1,3}(?:\.\d{1,3}){3
 function isLoopbackAddress(address: string): boolean { return address === "::1" || address.startsWith("127."); }
 function isPublicAddress(address: string): boolean {
   const value = address.toLowerCase().replace(/^::ffff:/, "");
+  const mapped = mappedIpv4(value); if (mapped) return isPublicAddress(mapped);
   if (value.includes(":")) return !(value === "::" || value === "::1" || value.startsWith("fc") || value.startsWith("fd") || value.startsWith("fe8") || value.startsWith("fe9") || value.startsWith("fea") || value.startsWith("feb") || value.startsWith("ff"));
   const parts = value.split(".").map(Number); const [a, b] = parts;
   return parts.length === 4 && parts.every(part => part >= 0 && part <= 255) && !(a === 0 || a === 10 || a === 127 || (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && (b === 0 || b === 168)) || a >= 224);
+}
+function mappedIpv4(value: string): string | undefined {
+  if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(value)) return undefined;
+  const parts = value.split(":"); if (parts.length !== 2 || !parts.every(part => /^[0-9a-f]{1,4}$/.test(part))) return undefined;
+  const high = Number.parseInt(parts[0]!, 16); const low = Number.parseInt(parts[1]!, 16);
+  return `${high >> 8}.${high & 255}.${low >> 8}.${low & 255}`;
 }
 async function pinnedIdentityRequest(endpoint: string, token: string, address: string): Promise<Response> {
   const url = new URL(`${endpoint}/v1/identity`);

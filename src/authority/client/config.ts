@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 export interface AuthorityCellConnectionV1 {
@@ -32,11 +32,20 @@ export async function loadAuthorityCellConnection(file = defaultAuthorityCellCon
 export async function writeAuthorityCellConnection(file: string, value: unknown): Promise<AuthorityCellConnectionV1> {
   const connection = parseAuthorityCellConnectionV1(value);
   const target = path.resolve(file);
-  await mkdir(path.dirname(target), { recursive: true });
+  await assertSafeParent(path.dirname(target));
   const temporary = `${target}.${process.pid}.${Date.now()}.tmp`;
   try { await writeFile(temporary, `${JSON.stringify(connection, null, 2)}\n`, { encoding: "utf8", flag: "wx" }); await rename(temporary, target); }
   finally { /* a failed write leaves no authority artifact; best-effort cleanup is intentionally omitted */ }
   return connection;
+}
+
+async function assertSafeParent(directory: string): Promise<void> {
+  const parsed = path.parse(directory); let current = parsed.root;
+  for (const part of directory.slice(parsed.root.length).split(path.sep).filter(Boolean)) {
+    current = path.join(current, part);
+    try { const stat = await lstat(current); if (stat.isSymbolicLink()) throw new TypeError("authority cell connection parent is unsafe"); }
+    catch (error) { if (error instanceof TypeError) throw error; await mkdir(current); const stat = await lstat(current); if (stat.isSymbolicLink() || !stat.isDirectory()) throw new TypeError("authority cell connection parent is unsafe"); }
+  }
 }
 
 export function defaultAuthorityCellConnectionFile(): string { return path.resolve(".reelier", "authority-cell-connection.json"); }
