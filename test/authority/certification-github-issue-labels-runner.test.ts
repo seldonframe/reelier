@@ -264,7 +264,11 @@ test("conflict receipt publication is recoverable and cannot verify ahead of its
     const replay = await restarted.conflict({ bearerToken: f.credential.token, requestId: "request_conflict_cut", exactBytes });
     assert.equal(replay.status, "conflict");
     await assert.rejects(() => restarted.conflict({ bearerToken: f.credential.token, requestId: "request_conflict_cut", exactBytes: Buffer.from("changed").toString("base64") }), /changed|terminal/i);
-    assert.equal(verifyCertificationTaskReceiptGraph(await restarted.exportGraph({ bearerToken: f.credential.token }), { trustPin: f.pin }).status, "verified");
+    const graph: any = await restarted.exportGraph({ bearerToken: f.credential.token }), exception = graph.exceptions.find((item: any) => item.requestId === "request_conflict_cut"), receipt = graph.receipts.find((item: any) => authorityDigest(item.receipt.value) === exception?.receiptDigest);
+    assert.ok(receipt);
+    assert.equal(receipt.evidence.value.reconciliation.verdict, "conflict");
+    assert.equal(receipt.evidence.value.reconciliation.normalizedProjectionDigest, exception.exactBytesDigest);
+    assert.equal(verifyCertificationTaskReceiptGraph(graph, { trustPin: f.pin }).status, "verified");
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 

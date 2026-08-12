@@ -150,6 +150,7 @@
             "provider-send-intent",
             "provider-applied",
             "acknowledged",
+            "conflict-publication-pending",
             "conflict",
             "cleanup-reserved",
             "cleanup-budget-consumed",
