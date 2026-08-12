@@ -1,5 +1,7 @@
 # Windows K1 Native Helper Implementation Plan
 
+> **SUPERSEDED 2026-08-12. Do not implement or resume this plan.** The founder explicitly rejected expanding the trusted computing base with a native Windows helper. The approved direction is Windows as a first-class client with the consequential Authority Cell hosted on Linux. See `2026-08-12-windows-client-linux-authority-cell.md`. Preserve existing experimental files as uncommitted evidence until their owner disposes of them; never ship them.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Ship x64 and ARM64 Rust Node-API binaries that give Reelier an anchored, reparse-rejecting Windows filesystem capability for K1 FIFO publication and lifecycle mutation.

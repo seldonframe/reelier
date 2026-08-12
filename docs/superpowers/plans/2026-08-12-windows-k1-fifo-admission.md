@@ -1,5 +1,7 @@
 # Windows K1 FIFO Admission Implementation Plan
 
+> **SUPERSEDED 2026-08-12. Do not implement or resume this plan.** The founder-approved direction is Windows as a first-class client with the consequential Authority Cell hosted on Linux. See `2026-08-12-windows-client-linux-authority-cell.md`. Existing commits remain historical evidence; they are not a release path.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace barging-prone Windows K1 named-pipe admission with a durable, crash-recoverable FIFO queue that gives every live contender an ordered opportunity to acquire the existing exclusive root mutex.
