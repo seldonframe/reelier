@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { runAuthorityCommand } from "../../src/authority/cli.js";
 
-test("authority init writes explicit unsigned contract templates rather than lossy executable definitions", async () => {
+test("authority init writes explicit unsigned contract templates rather than lossy executable definitions", { skip: process.platform === "win32" }, async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "reelier-authority-init-"));
   try {
     assert.equal(await runAuthorityCommand({ positional: ["init"], flags: new Set(), opts: { path: root } }), 0);

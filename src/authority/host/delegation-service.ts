@@ -5,6 +5,7 @@ import { FsDelegationBudgetLedger } from "./delegation-budget.js";
 import { lstat, mkdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { CodexSessionGrantBinding } from "./codex-session-activation.js";
+import { assertLinuxAuthorityCellHost } from "./platform.js";
 
 export interface DelegationAuthoritySigner {
   signGrant(value: DelegationGrant): Promise<StoredSignedGrant>;
@@ -30,6 +31,7 @@ interface RootRecord {
 }
 
 export function createDelegationAuthority(input: Readonly<{ root: string; signGrant: (value: DelegationGrant) => Promise<StoredSignedGrant>; now?: () => Date }>): DelegationAuthority {
+  assertLinuxAuthorityCellHost();
   const rootPath = path.resolve(input.root);
   const budgets = new FsDelegationBudgetLedger(rootPath);
   const roots = new Map<string, RootRecord>();
