@@ -3,36 +3,43 @@ import {
   githubIssueLabelsAlias,
   githubIssueLabelsReadEndpointId,
   githubIssueLabelsWriteEndpointId,
+  githubIssueLabelsPolicySchemaId,
 } from "../../packs/github/manifest.js";
 import {
   cloudflareDnsRecordSetAlias,
   cloudflareDnsRecordSetReadEndpointId,
   cloudflareDnsRecordSetWriteEndpointId,
+  cloudflareDnsRecordSetPolicySchemaId,
 } from "../../packs/cloudflare/manifest.js";
 import {
   slackChannelTopicAlias,
   slackChannelTopicReadEndpointId,
   slackChannelTopicWriteEndpointId,
+  slackChannelTopicPolicySchemaId,
 } from "../../packs/slack-topic/manifest.js";
 import {
   vercelDeploymentReleaseAlias,
   vercelDeploymentReleaseReadEndpointId,
   vercelDeploymentReleaseWriteEndpointId,
+  vercelDeploymentReleasePolicySchemaId,
 } from "../../packs/vercel/manifest.js";
 import {
   neonDatabaseMigrationAlias,
   neonDatabaseMigrationReadEndpointId,
   neonDatabaseMigrationWriteEndpointId,
+  neonDatabaseMigrationPolicySchemaId,
 } from "../../packs/neon/manifest.js";
 import {
   cloudflareTokenCreateAlias,
   cloudflareTokenCreateReadEndpointId,
   cloudflareTokenCreateWriteEndpointId,
+  cloudflareTokenCreatePolicySchemaId,
 } from "../../packs/cloudflare-token/create.js";
 import {
   vercelProjectEnvironmentSecretSetAlias,
   vercelProjectEnvironmentSecretSetReadEndpointId,
   vercelProjectEnvironmentSecretSetWriteEndpointId,
+  vercelProjectEnvironmentSecretSetPolicySchemaId,
 } from "../../packs/vercel-environment-secret/manifest.js";
 import type { CertificationScenarioId, CertificationSecretSlot } from "./scenarios.js";
 
@@ -55,16 +62,25 @@ export interface CertificationRunnerRegistryEntry {
   readonly definitionAliases: readonly string[];
   readonly endpoints: readonly CertificationRegistryEndpoint[];
   readonly operations: typeof CERTIFICATION_RUNNER_OPERATIONS;
+  readonly policySchemaIds: readonly string[];
   readonly executionReady: false;
   readonly dispatchable: false;
   readonly unavailableReason: string | null;
   readonly metadataDigest: string;
 }
 
-type EntrySeed = Omit<CertificationRunnerRegistryEntry, "metadataDigest" | "operations" | "executionReady" | "dispatchable">;
+type EntrySeed = Omit<CertificationRunnerRegistryEntry, "metadataDigest" | "operations" | "policySchemaIds" | "executionReady" | "dispatchable">;
 const endpoint = (endpointId: string, provider: CertificationProvider, credentialSlot: CertificationSecretSlot, direction: "read" | "write", method: "GET" | "POST" | "PUT"): CertificationRegistryEndpoint => Object.freeze({ endpointId, provider, credentialSlot, direction, method });
+const policySchemaIds = (scenarioId: EntrySeed["scenarioId"]): readonly string[] => Object.freeze(({
+  "cloudflare-dns": [cloudflareDnsRecordSetPolicySchemaId],
+  "cloudflare-vercel-secret": [cloudflareTokenCreatePolicySchemaId, vercelProjectEnvironmentSecretSetPolicySchemaId].sort(),
+  "github-issue-labels": [githubIssueLabelsPolicySchemaId],
+  "neon-migration": [neonDatabaseMigrationPolicySchemaId],
+  "slack-topic": [slackChannelTopicPolicySchemaId],
+  "vercel-promotion": [vercelDeploymentReleasePolicySchemaId],
+} satisfies Record<EntrySeed["scenarioId"], string[]>)[scenarioId]);
 const seed = (value: EntrySeed): CertificationRunnerRegistryEntry => {
-  const body = Object.freeze({ ...value, definitionAliases: Object.freeze([...value.definitionAliases]), endpoints: Object.freeze([...value.endpoints]), operations: CERTIFICATION_RUNNER_OPERATIONS });
+  const body = Object.freeze({ ...value, definitionAliases: Object.freeze([...value.definitionAliases]), endpoints: Object.freeze([...value.endpoints]), operations: CERTIFICATION_RUNNER_OPERATIONS, policySchemaIds: policySchemaIds(value.scenarioId) });
   return Object.freeze({ ...body, executionReady: false as const, dispatchable: false as const, metadataDigest: authorityDigest({ v: "reelier.certification-runner-metadata/v2", metadata: body }) });
 };
 

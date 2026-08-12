@@ -10,7 +10,7 @@
     "definitionAliases": { "type": "array", "minItems": 1, "maxItems": 2, "uniqueItems": true, "items": { "type": "string", "pattern": "^[a-z][a-z0-9_]{2,127}$" } },
     "endpoints": { "type": "array", "minItems": 2, "maxItems": 4, "items": { "$ref": "#/$defs/endpoint" } },
     "completeness": { "const": "unchecked" },
-    "dispatchable": { "type": "boolean" }
+    "dispatchable": { "const": false }
   },
   "$defs": {
     "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },

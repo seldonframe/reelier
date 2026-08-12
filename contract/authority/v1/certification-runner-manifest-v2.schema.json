@@ -3,16 +3,17 @@
   "$id": "reelier.authority/certification-runner-manifest/v2",
   "type": "object",
   "additionalProperties": false,
-  "required": ["v", "scenarioId", "runnerId", "endpointManifestDigest", "implementationDigest", "registryDigest", "operations", "dispatchable"],
+  "required": ["v", "scenarioId", "runnerId", "endpointManifestDigest", "metadataDigest", "registryDigest", "operations", "executionReady", "dispatchable"],
   "properties": {
     "v": { "const": "reelier.certification-runner-manifest/v2" },
     "scenarioId": { "enum": ["cloudflare-dns", "cloudflare-vercel-secret", "github-issue-labels", "neon-migration", "slack-topic", "vercel-promotion"] },
     "runnerId": { "type": "string", "pattern": "^[a-z][a-z0-9_]{2,127}$" },
     "endpointManifestDigest": { "$ref": "#/$defs/digest" },
-    "implementationDigest": { "$ref": "#/$defs/digest" },
+    "metadataDigest": { "$ref": "#/$defs/digest" },
     "registryDigest": { "$ref": "#/$defs/digest" },
     "operations": { "const": ["prepare", "authoritative-read", "compile", "reserve", "authoritative-reread", "recompile", "dispatch", "controlled-cut", "reconcile", "receipt", "cleanup", "export", "offline-verify"] },
-    "dispatchable": { "type": "boolean" }
+    "executionReady": { "const": false },
+    "dispatchable": { "const": false }
   },
   "$defs": { "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" } }
 }
