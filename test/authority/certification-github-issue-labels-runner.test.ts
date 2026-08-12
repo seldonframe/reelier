@@ -33,7 +33,7 @@ function compileTimeLifecycleActivationBoundary(): void {
 }
 void compileTimeLifecycleActivationBoundary;
 
-async function fixture(mode: "normal" | "source-drift" | "effect-drift" | "provider-503" | "accessor-response" | "cut-after-budget" | "cut-after-dispatched" | "cut-after-send-intent" | "pause-after-dispatched" = "normal", authorityMode: "valid" | "absent" | "substituted" = "valid") {
+async function fixture(mode: "normal" | "source-drift" | "effect-drift" | "provider-503" | "accessor-response" | "cut-after-budget" | "cut-after-dispatched" | "cut-after-send-intent" | "cut-after-cleanup-publication" | "pause-after-dispatched" = "normal", authorityMode: "valid" | "absent" | "substituted" = "valid") {
   const root = await mkdtemp(path.join(tmpdir(), "reelier-github-cell-"));
   const configPath = path.join(root, "certification.local.json");
   await writeFile(configPath, JSON.stringify({ v: "reelier.certification-operator-config/v3", authorityConfigPath: "authority/authority.yml", evidenceDirectory: "authority/receipts/certification", scenarios: ["github-issue-labels"], resources: { "github-issue-labels": { apiBaseUrl: "https://api.github.com", owner: "fixlyai", repository: "reelier-certification", issueNumber: 1 } }, cleanup: { "github-issue-labels": ["restore-github-labels"] }, desiredState: { "github-issue-labels": { labels: ["certification-after"] } }, metadata: {}, secretReferences: { githubCredential: "env:REELIER_GITHUB_TOKEN" } }), "utf8");
@@ -263,6 +263,26 @@ test("linked config, plan, and journal paths refuse before authority recovery or
   });
 });
 
+test("restart publishes a missing cleanup receipt after authoritative restore without resend or extra budget", async () => {
+  const f = await fixture("cut-after-cleanup-publication"); try {
+    await f.runner.run({ bearerToken: f.credential.token, requestId: "request_cleanup_publish" });
+    await assert.rejects(() => f.runner.cleanup({ bearerToken: f.credential.token, requestId: "request_cleanup_publish" }), /controlled cut/i);
+    const root = path.join(f.initialized.workspace, "authority", "github-label-runner");
+    const pending = JSON.parse(await readFile(path.join(root, "request_cleanup_publish.journal.json"), "utf8"));
+    assert.equal(pending.phase, "cleanup-publication-pending");
+    assert.equal(pending.providerWrites, 2);
+    assert.equal((await f.delegation.budget.get(f.activation.allocationId))?.consumed, 2);
+    const restarted = await createGitHubIssueLabelsHermeticComposition(f.cell);
+    assert.deepEqual(await restarted.recover(), ["request_cleanup_publish"]);
+    const cleaned = await restarted.status({ bearerToken: f.credential.token, requestId: "request_cleanup_publish" });
+    assert.equal(cleaned.status, "cleaned");
+    assert.equal(cleaned.providerWrites, 2);
+    assert.equal((await f.delegation.budget.get(f.activation.allocationId))?.consumed, 2);
+    const generations = await Promise.all((await readdir(root)).filter(name => name.startsWith("request_cleanup_publish.journal-generation.")).map(async name => JSON.parse(await readFile(path.join(root, name), "utf8"))));
+    assert.deepEqual(generations.map(item => item.phase).filter((phase: string) => phase.startsWith("cleanup-")), ["cleanup-reserved", "cleanup-budget-consumed", "cleanup-dispatched", "cleanup-send-intent", "cleanup-applied", "cleanup-publication-pending", "cleanup-receipted"]);
+  } finally { await rm(f.root, { recursive: true, force: true }); }
+});
+
 test("cleanup journal is append-only and refuses a valid old signed head rollback", async () => {
   const f = await fixture(); try {
     await f.runner.run({ bearerToken: f.credential.token, requestId: "request_cleanup_rollback" });
@@ -270,7 +290,7 @@ test("cleanup journal is append-only and refuses a valid old signed head rollbac
     const acknowledged = await readFile(head);
     await f.runner.cleanup({ bearerToken: f.credential.token, requestId: "request_cleanup_rollback" });
     const cleaned = JSON.parse(await readFile(head, "utf8"));
-    assert.equal(cleaned.phase, "cleaned");
+    assert.equal(cleaned.phase, "cleanup-receipted");
     assert.equal(cleaned.eventSequence > 0, true);
     assert.match(cleaned.priorJournalDigest, /^sha256:/);
     await writeFile(head, acknowledged);
