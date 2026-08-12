@@ -50,6 +50,26 @@ test("certification init generates deterministic internal identifiers and resume
   assert.match(initialized.identifiers.signerId, /^signer_[0-9a-f]{24}$/);
   const snapshot = await readFile(path.join(workspace, "config.json"), "utf8");
   assert.doesNotMatch(snapshot, /taskId|jobCardId|rootGrantId|authorityCellId|signerId/);
+  const authority = path.join(workspace, "authority");
+  assert.deepEqual((await readdir(authority)).sort(), ["authority.yml", "decisions", "delegation", "deployment", "endpoints", "ledger", "principals", "receipts", "trust"]);
+  const authorityConfig = JSON.parse(await readFile(path.join(authority, "authority.yml"), "utf8"));
+  assert.equal(authorityConfig.tenant, initialized.identifiers.authorityCellId);
+  assert.match(authorityConfig.requester, /^principal_[0-9a-f]{24}$/);
+  assert.equal(authorityConfig.ingress.principalRegistryFile, "principals/registry.jsonl");
+  assert.equal(authorityConfig.deploymentPath, "deployment/manifest.json");
+  assert.equal(authorityConfig.jobCardTrustPinPath, "trust/job-card-trust-pin.json");
+  assert.equal(authorityConfig.completeness, "unchecked");
+  assert.equal(authorityConfig.dispatchable, false);
+  const endpointNames = await readdir(path.join(authority, "endpoints"));
+  assert.deepEqual(endpointNames, ["github-issue-labels.json"]);
+  const endpoint = JSON.parse(await readFile(path.join(authority, "endpoints", endpointNames[0]), "utf8"));
+  assert.equal(endpoint.scenarioId, "github-issue-labels");
+  assert.deepEqual(endpoint.credentialSlots, ["githubCredential"]);
+  assert.ok(endpoint.endpoints.some((item: { direction: string }) => item.direction === "read"));
+  assert.ok(endpoint.endpoints.some((item: { direction: string }) => item.direction === "write"));
+  const scaffold = JSON.stringify({ authorityConfig, endpoint });
+  assert.doesNotMatch(scaffold, /rat_|bearer|token(?:Value)?|privateKey|providerBody|hubspot/i);
+  assert.equal(await readFile(path.join(authority, "principals", "registry.jsonl"), "utf8"), "");
 });
 
 test("concurrent identical certification init converges on one atomic workspace", async () => {
