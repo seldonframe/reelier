@@ -4,7 +4,7 @@ import { generateKeyPairSync } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { authorityDigest, authorityCanonicalBytes, signJobCard, signedJobCardDigest, verifySignedJobCard, verifyAuthoritySignature } from "../../src/authority/index.js";
+import { authorityDigest, authorityCanonicalBytes, normalizeSignedJobCard, signJobCard, signedJobCardDigest, verifySignedJobCard, verifyAuthoritySignature } from "../../src/authority/index.js";
 import { createSignedCertificationReadiness, parseAuthorityKeyDescriptor } from "../../src/authority/certification/authority.js";
 import { gmailPackDigest } from "../../src/packs/gmail/index.js";
 import { buildAuthorityDeployment } from "../../src/authority/host/deploy.js";
@@ -54,6 +54,7 @@ test("signed job cards bind their payload to the signing key", () => {
   assert.equal(verifyAuthoritySignature(publicKey, "principal", signedJobCardDigest(unsignedJob), card.signature), false);
   assert.notEqual(signedJobCardDigest(unsignedJob), authorityDigest({ ...unsignedJob, title: "changed" }));
   assert.equal(verifySignedJobCard({ ...card, title: "changed" }, publicKey), false);
+  assert.throws(() => normalizeSignedJobCard({ ...card, packDigests: [gmailPackDigest, gmailPackDigest] }), /unique|duplicate/i);
 });
 
 test("deploy requires a pre-existing human-signed job card bound to an adopted descriptor", async () => {
