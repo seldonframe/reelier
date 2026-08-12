@@ -39,7 +39,7 @@ test("preflight is selected-scenario-only and never resolves or discloses secret
   } finally { delete process.env.REELIER_GITHUB_TOKEN; }
 });
 
-test("preflight records local runner and test inputs by digest or honest absence", async () => {
+test("preflight refuses empty runner and test placeholders as semantically absent", async () => {
   const root = await workspace();
   const absent = await preflightCertification({ workspace: root, scenario: "github-issue-labels" });
   assert.deepEqual(absent.inputs, { runners: { status: "absent", artifacts: [] }, tests: { status: "absent", artifacts: [] } });
@@ -47,10 +47,13 @@ test("preflight records local runner and test inputs by digest or honest absence
   await mkdir(path.join(root, "inputs", "tests"), { recursive: true });
   await writeFile(path.join(root, "inputs", "runners", "github-issue-labels.json"), "{}", "utf8");
   await writeFile(path.join(root, "inputs", "tests", "github-issue-labels.json"), "[]", "utf8");
-  const present = await preflightCertification({ workspace: root, scenario: "github-issue-labels" });
-  assert.equal(present.inputs.runners.status, "configured");
-  assert.match(present.inputs.runners.artifacts[0].digest, /^sha256:[0-9a-f]{64}$/);
-  assert.equal(present.inputs.tests.status, "configured");
+  const placeholders = await preflightCertification({ workspace: root, scenario: "github-issue-labels" });
+  assert.deepEqual(placeholders.inputs, { runners: { status: "absent", artifacts: [] }, tests: { status: "absent", artifacts: [] } });
+  assert.equal(placeholders.preparationReady, false);
+  assert.deepEqual(placeholders.missing.filter(item => item.startsWith("inputs:")), [
+    "inputs:runners:github-issue-labels",
+    "inputs:tests:github-issue-labels",
+  ]);
 });
 
 test("preflight never inventories artifacts mapped to an unselected scenario", async () => {
