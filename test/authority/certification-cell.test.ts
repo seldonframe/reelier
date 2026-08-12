@@ -119,6 +119,16 @@ test("dispatch readiness permit is opaque, one-use, inert, and consumes no effec
     assert.equal((await f.delegation.budget.get(f.initialized.identifiers.rootGrantId))?.remaining, 2);
     await writeFile(endpointFile, endpointBytes);
 
+    const planPermit = await f.host.verifyDispatchReadiness(readiness);
+    const planFile = path.join(f.initialized.workspace, "inputs", "plans", "github-issue-labels.json");
+    const planBytes = await readFile(planFile, "utf8"), plan = JSON.parse(planBytes);
+    plan.choices = { desiredState: "operator-reviewed-drift" };
+    await writeFile(planFile, `${JSON.stringify(plan)}\n`);
+    await assert.rejects(() => f.host.revalidateDispatchPermit(planPermit), /readiness|preflight|stale|plan/i);
+    assert.equal(calls, 0);
+    assert.equal((await f.delegation.budget.get(f.initialized.identifiers.rootGrantId))?.remaining, 2);
+    await writeFile(planFile, planBytes);
+
     const valid = await f.host.verifyDispatchReadiness(readiness);
     await f.host.revalidateDispatchPermit(valid);
     assert.equal(calls, 0);

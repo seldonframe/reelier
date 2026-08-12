@@ -35,6 +35,7 @@ export interface CertificationPreflightV2 {
 }
 
 export async function preflightCertification(input: Readonly<{ workspace: string; scenario?: string; all?: boolean }>): Promise<CertificationPreflightV2> {
+  closedInput(input, ["workspace", ...(input.scenario === undefined ? [] : ["scenario"]), ...(input.all === undefined ? [] : ["all"])], "certification preflight request");
   const workspace = path.resolve(input.workspace);
   const workspaceRoot = await certificationWorkspaceRoot(workspace);
   const config = parseCertificationOperatorConfigV3(JSON.parse((await readConfinedFile(workspaceRoot, workspaceRoot, "config.json")).toString("utf8")));
@@ -93,6 +94,13 @@ export async function preflightCertification(input: Readonly<{ workspace: string
     preparationReady: missing.length === 0,
   };
   return Object.freeze({ ...body, digest: authorityDigest(body) });
+}
+
+function closedInput(value: unknown, allowed: readonly string[], label: string): void {
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype) throw new TypeError(`${label} must be a closed plain object`);
+  const keys = Reflect.ownKeys(value);
+  if (keys.some(key => typeof key !== "string") || keys.some(key => !allowed.includes(key as string))) throw new TypeError(`${label} is closed and accepts no callback or executable dependencies`);
+  for (const descriptor of Object.values(Object.getOwnPropertyDescriptors(value))) if (descriptor.get || descriptor.set) throw new TypeError(`${label} accepts no accessor callback`);
 }
 
 function selectScenarios(config: CertificationOperatorConfigV3, scenario?: string, all?: boolean): readonly CertificationScenarioId[] {

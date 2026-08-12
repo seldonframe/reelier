@@ -27,10 +27,11 @@ export async function exportCertificationEvidence(input: Readonly<{ workspace: s
   const config = parseCertificationOperatorConfigV3(JSON.parse((await readConfinedFile(workspaceRoot, workspaceRoot, "config.json")).toString("utf8")));
   const initialization = parseCertificationInitialization(JSON.parse((await readConfinedFile(workspaceRoot, workspaceRoot, "initialization.json")).toString("utf8")));
   validateCertificationInitialization(config, initialization);
-  const preflight = await preflightCertification(input);
+  const selection = { workspace, ...(input.scenario === undefined ? {} : { scenario: input.scenario }), ...(input.all === undefined ? {} : { all: input.all }) };
+  const preflight = await preflightCertification(selection);
   await input.hooks?.afterPreflight?.();
   const readiness = createCertificationReadinessCandidate(preflight).candidate;
-  const confirmation = await preflightCertification(input);
+  const confirmation = await preflightCertification(selection);
   if (confirmation.digest !== preflight.digest) throw new TypeError("certification input drift changed the bound snapshot before publication");
   const commitment = createCertificationSelectionCommitment(config, preflight.scenarios, initialization.configDigest);
   if (commitment.selectionDigest !== preflight.selectionDigest || preflight.configDigest !== initialization.configDigest || authorityDigest(preflight.identifiers) !== authorityDigest(initialization.identifiers)) throw new TypeError("certification selection or initialization commitment changed before export");
