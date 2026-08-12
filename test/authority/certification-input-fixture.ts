@@ -15,7 +15,7 @@ export async function writeCertificationInputManifests(workspace: string, scenar
     const endpoint = JSON.parse(await readFile(path.join(workspace, "authority", "endpoints", `${scenario}.json`), "utf8"));
     const stem = scenario.replaceAll("-", "_");
     const registry = getCertificationRunnerRegistryEntry(scenario as never);
-    const runner = { v: "reelier.certification-runner-manifest/v2", scenarioId: scenario, runnerId: registry.runnerId, endpointManifestDigest: authorityDigest(endpoint), implementationDigest: registry.implementationDigest, registryDigest: certificationRunnerRegistryDigest, operations: CERTIFICATION_RUNNER_OPERATIONS, dispatchable: registry.dispatchable };
+    const runner = { v: "reelier.certification-runner-manifest/v2", scenarioId: scenario, runnerId: registry.runnerId, endpointManifestDigest: authorityDigest(endpoint), metadataDigest: registry.metadataDigest, registryDigest: certificationRunnerRegistryDigest, operations: CERTIFICATION_RUNNER_OPERATIONS, executionReady: false, dispatchable: false };
     const runnerBytes = `${JSON.stringify(runner)}\n`;
     const runnerDigest = `sha256:${createHash("sha256").update(runnerBytes).digest("hex")}`;
     const tests = { v: "reelier.certification-test-manifest/v1", scenarioId: scenario, suiteId: `${stem}_v1`, runnerManifestDigest: runnerDigest, cases: ["account-binding", "ambiguity", "cleanup", "normal", "redaction", "stale-state"] };

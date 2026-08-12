@@ -112,6 +112,7 @@ test("runner v2 binds registry metadata but remains non-dispatchable without imp
     metadataDigest: registry.metadataDigest,
     registryDigest: certificationRunnerRegistryDigest,
     operations: ["prepare", "authoritative-read", "compile", "reserve", "authoritative-reread", "recompile", "dispatch", "controlled-cut", "reconcile", "receipt", "cleanup", "export", "offline-verify"],
+    executionReady: false,
     dispatchable: false,
   }, "github-issue-labels");
   assert.equal(runner.dispatchable, false);

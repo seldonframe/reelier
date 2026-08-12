@@ -21,7 +21,7 @@ export interface CertificationPreflightV2 {
   readonly resources: readonly { readonly scenario: CertificationScenarioId; readonly digest: string; readonly status: "configured" | "missing" }[];
   readonly cleanup: readonly { readonly scenario: CertificationScenarioId; readonly digest: string; readonly status: "configured" | "missing" }[];
   readonly credentialReferences: readonly { readonly slot: CertificationSecretSlot; readonly status: "configured" | "missing" }[];
-  readonly inputs: Readonly<{ runners: CertificationInputSet; tests: CertificationInputSet; plans: CertificationInputSet }>;
+  readonly inputs: Readonly<{ runners: CertificationInputSet; tests: CertificationInputSet; plans: CertificationInputSet; endpoints: CertificationInputSet }>;
   readonly runnerRegistryDigest: string;
   readonly topology: "configured" | "absent";
   readonly trust: "unchecked";
@@ -31,6 +31,8 @@ export interface CertificationPreflightV2 {
   readonly missing: readonly string[];
   readonly ok: boolean;
   readonly preparationReady: boolean;
+  readonly executionReady: false;
+  readonly dispatchable: false;
   readonly digest: string;
 }
 
@@ -61,15 +63,17 @@ export async function preflightCertification(input: Readonly<{ workspace: string
   const runnerDigests = new Map(runners.artifacts.map(item => [item.scenario, item.digest]));
   const tests = await inspectInputSet(workspaceRoot, "tests", runnerScenarios, runnerDigests);
   const testDigests = new Map(tests.artifacts.map(item => [item.scenario, item.digest]));
-  const inputs = Object.freeze({ runners, tests, plans: await inspectPlans(workspaceRoot, runnerScenarios, runnerDigests, testDigests) });
+  const endpoints = await inspectEndpoints(workspaceRoot, runnerScenarios);
+  const inputs = Object.freeze({ runners, tests, plans: await inspectPlans(workspaceRoot, runnerScenarios, runnerDigests, testDigests), endpoints });
   const topology = scenarios.includes("fly-topology") ? (config.metadata.flyTopology ? "configured" as const : "absent" as const) : "absent" as const;
   const missing = [
     ...resources.filter(item => item.status === "missing").map(item => `resource:${item.scenario}`),
     ...cleanup.filter(item => item.status === "missing").map(item => `cleanup:${item.scenario}`),
     ...credentialReferences.filter(item => item.status === "missing").map(item => `credential-reference:${item.slot}`),
-    ...runnerScenarios.filter(scenario => !inputs.runners.artifacts.some(item => item.scenario === scenario)).map(scenario => `inputs:runners:${scenario}`),
-    ...runnerScenarios.filter(scenario => !inputs.tests.artifacts.some(item => item.scenario === scenario)).map(scenario => `inputs:tests:${scenario}`),
-    ...runnerScenarios.filter(scenario => !inputs.plans.artifacts.some(item => item.scenario === scenario)).map(scenario => `inputs:plans:${scenario}`),
+    ...runnerScenarios.filter(scenario => inputs.runners.status !== "configured" || inputs.runners.artifacts.filter(item => item.scenario === scenario).length !== 1).map(scenario => `inputs:runners:${scenario}`),
+    ...runnerScenarios.filter(scenario => inputs.tests.status !== "configured" || inputs.tests.artifacts.filter(item => item.scenario === scenario).length !== 1).map(scenario => `inputs:tests:${scenario}`),
+    ...runnerScenarios.filter(scenario => inputs.plans.status !== "configured" || inputs.plans.artifacts.filter(item => item.scenario === scenario).length !== 1).map(scenario => `inputs:plans:${scenario}`),
+    ...runnerScenarios.filter(scenario => inputs.endpoints.status !== "configured" || inputs.endpoints.artifacts.filter(item => item.scenario === scenario).length !== 1).map(scenario => `inputs:endpoints:${scenario}`),
     ...(scenarios.includes("fly-topology") && topology === "absent" ? ["topology:metadata"] : []),
   ].sort();
   const body = {
@@ -92,6 +96,8 @@ export async function preflightCertification(input: Readonly<{ workspace: string
     missing: Object.freeze(missing),
     ok: missing.length === 0,
     preparationReady: missing.length === 0,
+    executionReady: false as const,
+    dispatchable: false as const,
   };
   return Object.freeze({ ...body, digest: authorityDigest(body) });
 }
@@ -130,12 +136,34 @@ async function inspectInputSet(workspace: string, kind: "runners" | "tests", sce
     let parsed: unknown;
     try { parsed = JSON.parse(bytes.toString("utf8")); } catch { return undefined; }
     try {
-      if (kind === "runners") { const runner = parseCertificationRunnerManifest(parsed, scenario); if (!runner.dispatchable || runner.v !== "reelier.certification-runner-manifest/v2") return undefined; }
+      if (kind === "runners") { const runner = parseCertificationRunnerManifest(parsed, scenario); if (runner.v !== "reelier.certification-runner-manifest/v2") return undefined; }
       else parseCertificationTestManifest(parsed, scenario, runnerDigests.get(scenario));
     } catch { return undefined; }
     return Object.freeze({ scenario, name, digest: `sha256:${createHash("sha256").update(bytes).digest("hex")}` });
   }));
   const artifacts = inspected.filter((item): item is NonNullable<typeof item> => item !== undefined);
+  const complete = scenarios.every(scenario => artifacts.filter(item => item.scenario === scenario).length === 1);
+  return Object.freeze({ status: complete ? "configured" : "absent", artifacts: Object.freeze(artifacts) });
+}
+
+async function inspectEndpoints(workspace: string, scenarios: readonly CertificationScenarioId[]): Promise<CertificationInputSet> {
+  const directory = await confinedExistingDirectory(workspace, ["authority", "endpoints"]);
+  if (!directory) return Object.freeze({ status: "absent", artifacts: Object.freeze([]) });
+  const entries = await readdir(directory, { withFileTypes: true });
+  const artifacts: CertificationInputArtifact[] = [];
+  for (const scenario of scenarios) {
+    const matching = entries.filter(entry => entry.name === `${scenario}.json` || entry.name.startsWith(`${scenario}--`));
+    for (const entry of matching) {
+      if (!entry.isFile() || entry.isSymbolicLink()) continue;
+      try {
+        const bytes = await readConfinedFile(workspace, directory, entry.name);
+        const endpoint = parseCertificationEndpointManifest(JSON.parse(bytes.toString("utf8")), scenario);
+        if (endpoint.v !== "reelier.certification-endpoint-manifest/v2") continue;
+        artifacts.push(Object.freeze({ scenario, name: entry.name, digest: authorityDigest(endpoint) }));
+      } catch { continue; }
+    }
+  }
+  artifacts.sort((left, right) => left.name.localeCompare(right.name));
   const complete = scenarios.every(scenario => artifacts.filter(item => item.scenario === scenario).length === 1);
   return Object.freeze({ status: complete ? "configured" : "absent", artifacts: Object.freeze(artifacts) });
 }
