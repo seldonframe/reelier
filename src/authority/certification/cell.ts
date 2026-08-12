@@ -1,5 +1,5 @@
 import { createPublicKey, randomUUID, type KeyObject } from "node:crypto";
-import { rename, writeFile } from "node:fs/promises";
+import { realpath, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { authorityDigest, parseAuthorityWire } from "../wire.js";
 import { signAuthorityDigest, verifyAuthoritySignature } from "../crypto.js";
@@ -36,6 +36,7 @@ export interface CertificationCellActivationV1 {
   readonly currentTrustEventCount: number;
   readonly currentTrustHistoryDigest: string;
   readonly currentTrustHeadDigest: string;
+  readonly currentTrustPinPath: string;
   readonly effects: number;
   readonly signedRootGrant: StoredSignedGrant;
   readonly completeness: "unchecked";
@@ -50,6 +51,7 @@ export async function activateCertificationRootTask(input: Readonly<{
   workspace: string;
   jobCard: unknown;
   jobCardTrustPin: JobCardTrustPinV1;
+  currentTrustPinPath: string;
   delegationKeyDescriptor: unknown;
   delegationPrivateKey: KeyObject;
   constraints: DelegationConstraints;
@@ -80,8 +82,11 @@ export async function activateCertificationRootTask(input: Readonly<{
   const publicKey = publicKeyFor(delegation);
   if (!verifyAuthoritySignature(publicKey, "delegation-grant", grantDigest, signature)) throw new TypeError("certification delegation private key does not match its descriptor");
   const signedRootGrant: StoredSignedGrant = Object.freeze({ grant, digest: grantDigest, signerId: delegation.keyId, signature });
-  const currentTrustEvents = parseTrustEvents(input.jobCardTrustPin.currentTrustEvents, input.jobCardTrustPin.keyDescriptors);
-  const activation: CertificationCellActivationV1 = Object.freeze({ v: "reelier.certification-cell-activation/v1", taskId: identifiers.taskId, jobId: identifiers.jobCardId, grantId: identifiers.rootGrantId, allocationId: identifiers.rootGrantId, authorityCellId: identifiers.authorityCellId, principalId, runtimeSessionId, signerKeyId: delegation.keyId, signerKeyDescriptorDigest: descriptorDigest, signedReadinessDigest: authorityDigest(readiness), signedJobCardDigest: signedJobCardDigest(jobCard), constraintsDigest: authorityDigest(constraints), currentTrustEventCount: currentTrustEvents.length, currentTrustHistoryDigest: authorityDigest(currentTrustEvents), currentTrustHeadDigest: authorityDigest(currentTrustEvents[currentTrustEvents.length - 1]), effects: input.effects, signedRootGrant, completeness: "unchecked", dispatchable: false });
+  const currentTrustPinPath = await canonicalExternalTrustPin(state.root, input.currentTrustPinPath);
+  const authoritativePin = JSON.parse((await readUnlinkedFile(currentTrustPinPath)).toString("utf8")) as JobCardTrustPinV1;
+  if (authorityDigest(authoritativePin) !== authorityDigest(input.jobCardTrustPin)) throw new TypeError("operator current trust pin does not match activation trust material");
+  const currentTrustEvents = parseTrustEvents(authoritativePin.currentTrustEvents, authoritativePin.keyDescriptors);
+  const activation: CertificationCellActivationV1 = Object.freeze({ v: "reelier.certification-cell-activation/v1", taskId: identifiers.taskId, jobId: identifiers.jobCardId, grantId: identifiers.rootGrantId, allocationId: identifiers.rootGrantId, authorityCellId: identifiers.authorityCellId, principalId, runtimeSessionId, signerKeyId: delegation.keyId, signerKeyDescriptorDigest: descriptorDigest, signedReadinessDigest: authorityDigest(readiness), signedJobCardDigest: signedJobCardDigest(jobCard), constraintsDigest: authorityDigest(constraints), currentTrustEventCount: currentTrustEvents.length, currentTrustHistoryDigest: authorityDigest(currentTrustEvents), currentTrustHeadDigest: authorityDigest(currentTrustEvents[currentTrustEvents.length - 1]), currentTrustPinPath, effects: input.effects, signedRootGrant, completeness: "unchecked", dispatchable: false });
   await input.delegationAuthority.registerRoot({ taskId: activation.taskId, allocationId: activation.allocationId, rootGrant: signedRootGrant, effects: input.effects });
   const authorityRoot = await requireAuthorityRoot(state.root);
   await publishExact(authorityRoot, "deployment", "job-card.json", jobCard);
@@ -100,62 +105,38 @@ export async function activateCertificationPrincipalSession(input: Readonly<{ wo
 
 export interface CertificationDispatchPermit { readonly kind: "certification-dispatch-permit" }
 type EndpointCapability = Readonly<{ endpointId: string; direction: "read" | "write"; method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE" }>;
-export interface CertifiedRunnerRegistration<T = unknown> { readonly scenarioId: CertificationScenarioId; readonly runnerId: string; readonly implementationDigest: string; readonly endpointManifestDigest: string; readonly dispatchMode: "hermetic-certification"; readonly capabilities: readonly EndpointCapability[]; readonly run: (context: Readonly<{ scenarioId: CertificationScenarioId; dispatchMode: "hermetic-certification"; capabilities: readonly EndpointCapability[] }>) => Promise<T> }
-export interface CertifiedRunnerRegistry { register(registration: CertifiedRunnerRegistration): void }
-const runnerRegistries = new WeakMap<object, Map<string, CertifiedRunnerRegistration>>();
-export function createCertifiedRunnerRegistry(): CertifiedRunnerRegistry {
-  const registry = Object.freeze({ register(registration: CertifiedRunnerRegistration): void {
-    if (!registration || registration.dispatchMode !== "hermetic-certification" || typeof registration.run !== "function" || !DIGEST.test(registration.implementationDigest) || !DIGEST.test(registration.endpointManifestDigest) || !(CERTIFICATION_SCENARIO_IDS as readonly string[]).includes(registration.scenarioId) || !Array.isArray(registration.capabilities)) throw new TypeError("certified runner registration requires hermetic dispatch mode and exact identities");
-    const normalized = normalizeCapabilities(registration.capabilities);
-    const key = runnerKey(registration.scenarioId, registration.runnerId, registration.implementationDigest, registration.endpointManifestDigest);
-    const entries = runnerRegistries.get(registry)!;
-    if (entries.has(key)) throw new TypeError("certified runner registration already exists");
-    entries.set(key, Object.freeze({ ...registration, capabilities: normalized }));
-  } });
-  runnerRegistries.set(registry, new Map());
-  return registry;
-}
 class OpaquePermit implements CertificationDispatchPermit {
   readonly kind = "certification-dispatch-permit" as const;
   toJSON(): never { throw new TypeError("certification dispatch permit is opaque and nonserializable"); }
 }
 interface DispatchSnapshot { readonly digest: string; readonly scenarioId: CertificationScenarioId; readonly runnerId: string; readonly implementationDigest: string; readonly endpointManifestDigest: string; readonly capabilities: readonly EndpointCapability[] }
-const permitState = new WeakMap<object, Readonly<{ snapshot: DispatchSnapshot; revalidate: () => Promise<DispatchSnapshot>; consume: () => Promise<void> }>>();
+const permitState = new WeakMap<object, Readonly<{ snapshot: DispatchSnapshot; revalidate: () => Promise<DispatchSnapshot> }>>();
 
 export async function verifyCertificationDispatchReadiness(input: Readonly<{
   workspace: string;
   scenario: CertificationScenarioId;
   bearerToken: string;
-  currentTrustPinPath: string;
   delegationAuthority: DelegationAuthority;
   principalRegistry: PrincipalRegistry;
-  credentialAvailable: (slot: string) => Promise<boolean>;
   now?: () => Date;
 }>): Promise<CertificationDispatchPermit> {
+  if ("currentTrustPinPath" in input || "credentialAvailable" in input) throw new TypeError("caller-selected trust pin or callback is forbidden");
   const revalidate = async () => dispatchSnapshot(input);
   const snapshot = await revalidate();
-  const activation = await loadActivation(input.workspace);
-  const reservationId = `certification_${randomUUID()}`;
   const permit = Object.freeze(new OpaquePermit());
-  permitState.set(permit, Object.freeze({ snapshot, revalidate, consume: async () => { await input.delegationAuthority.budget.consumeOnce({ allocationId: activation.allocationId, reservationId, effects: 1 }); } }));
+  permitState.set(permit, Object.freeze({ snapshot, revalidate }));
   return permit;
 }
 
-export async function runCertificationWithPermit<T>(permit: CertificationDispatchPermit, registry: CertifiedRunnerRegistry): Promise<T> {
+export async function revalidateCertificationDispatchPermit(permit: CertificationDispatchPermit): Promise<void> {
   const state = permitState.get(permit as object);
   if (!state) throw new TypeError("certification dispatch permit is invalid or already used");
   permitState.delete(permit as object);
   const current = await state.revalidate();
   if (current.digest !== state.snapshot.digest) throw new TypeError("certification dispatch state became stale");
-  const registrations = runnerRegistries.get(registry as object);
-  if (!registrations) throw new TypeError("certified runner registry is invalid");
-  const runner = registrations.get(runnerKey(current.scenarioId, current.runnerId, current.implementationDigest, current.endpointManifestDigest));
-  if (!runner || authorityDigest(runner.capabilities) !== authorityDigest(current.capabilities)) throw new TypeError("exact certified hermetic runner is unavailable or capability-substituted");
-  await state.consume();
-  return runner.run(Object.freeze({ scenarioId: current.scenarioId, dispatchMode: "hermetic-certification", capabilities: current.capabilities })) as Promise<T>;
 }
 
-async function dispatchSnapshot(input: Readonly<{ workspace: string; scenario: CertificationScenarioId; bearerToken: string; currentTrustPinPath: string; delegationAuthority: DelegationAuthority; principalRegistry: PrincipalRegistry; credentialAvailable: (slot: string) => Promise<boolean>; now?: () => Date }>): Promise<DispatchSnapshot> {
+async function dispatchSnapshot(input: Readonly<{ workspace: string; scenario: CertificationScenarioId; bearerToken: string; delegationAuthority: DelegationAuthority; principalRegistry: PrincipalRegistry; now?: () => Date }>): Promise<DispatchSnapshot> {
   if (!(CERTIFICATION_SCENARIO_IDS as readonly string[]).includes(input.scenario)) throw new TypeError("certification dispatch scenario is invalid");
   const state = await loadInitialization(input.workspace);
   if (!state.initialization.scenarios.includes(input.scenario)) throw new TypeError("certification dispatch scenario was not selected");
@@ -165,10 +146,7 @@ async function dispatchSnapshot(input: Readonly<{ workspace: string; scenario: C
   const trustDirectory = await requireDirectory(authorityRoot, ["trust"]);
   const jobCard = normalizeSignedJobCard(JSON.parse((await readConfinedFile(authorityRoot, deployment, "job-card.json")).toString("utf8")));
   const activationPin = JSON.parse((await readConfinedFile(authorityRoot, trustDirectory, "job-card-trust-pin.json")).toString("utf8")) as JobCardTrustPinV1;
-  const currentTrustPinPath = path.resolve(input.currentTrustPinPath);
-  const relativePin = path.relative(authorityRoot, currentTrustPinPath);
-  if (!relativePin.startsWith("..") && !path.isAbsolute(relativePin)) throw new TypeError("operator current trust pin must remain outside Authority Cell output");
-  const pin = JSON.parse((await readUnlinkedFile(currentTrustPinPath)).toString("utf8")) as JobCardTrustPinV1;
+  const pin = JSON.parse((await readUnlinkedFile(activation.currentTrustPinPath)).toString("utf8")) as JobCardTrustPinV1;
   if (authorityDigest(pin.signedReadiness) !== authorityDigest(activationPin.signedReadiness) || authorityDigest(pin.readinessCandidate) !== authorityDigest(activationPin.readinessCandidate) || authorityDigest(pin.preflight) !== authorityDigest(activationPin.preflight) || authorityDigest(pin.keyDescriptors) !== authorityDigest(activationPin.keyDescriptors)) throw new TypeError("operator current trust pin changed immutable readiness authority");
   const currentEvents = parseTrustEvents(pin.currentTrustEvents, pin.keyDescriptors);
   await observeCurrentTrust(authorityRoot, activation, currentEvents);
@@ -207,7 +185,6 @@ async function dispatchSnapshot(input: Readonly<{ workspace: string; scenario: C
   if (runner.endpointManifestDigest !== authorityDigest(endpoint)) throw new TypeError("certification runner endpoint manifest commitment mismatch");
   const tests = parseCertificationTestManifest(JSON.parse((await readConfinedFile(state.root, testDirectory, testArtifact.name)).toString("utf8")), input.scenario, runnerArtifact.digest);
   if (tests.runnerManifestDigest !== runnerArtifact.digest) throw new TypeError("certification tests do not bind the selected runner");
-  for (const slot of endpoint.credentialSlots) { let available = false; try { available = await input.credentialAvailable(slot); } catch { throw new TypeError("certification named credential is unavailable"); } if (!available) throw new TypeError("certification named credential is unavailable"); }
   const capabilities = normalizeCapabilities(endpoint.endpoints);
   const digest = authorityDigest({ v: "reelier.certification-dispatch-snapshot/v1", activation: authorityDigest(activation), jobCard: signedJobCardDigest(jobCard), readiness: authorityDigest(pin.signedReadiness), trustHead: authorityDigest(currentEvents[currentEvents.length - 1]), task: status.lifecycleState, principal: authorityDigest(principal), allocation: { effects: allocation.effects, consumed: allocation.consumed, remaining: allocation.remaining, revoked: allocation.revoked }, preflight: preflight.digest, endpoint: authorityDigest(endpoint), runner: runnerArtifact.digest, tests: testArtifact.digest, dispatchMode: "hermetic-certification", completeness: "unchecked" });
   return Object.freeze({ digest, scenarioId: input.scenario, runnerId: runner.runnerId, implementationDigest: runner.implementationDigest, endpointManifestDigest: runner.endpointManifestDigest, capabilities });
@@ -229,10 +206,11 @@ async function loadActivation(workspace: string): Promise<CertificationCellActiv
 function parseActivation(value: unknown, ids: CertificationIdentifiers): CertificationCellActivationV1 {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("certification Cell activation must be an object");
   const raw = value as Record<string, any>;
-  const fields = ["v", "taskId", "jobId", "grantId", "allocationId", "authorityCellId", "principalId", "runtimeSessionId", "signerKeyId", "signerKeyDescriptorDigest", "signedReadinessDigest", "signedJobCardDigest", "constraintsDigest", "currentTrustEventCount", "currentTrustHistoryDigest", "currentTrustHeadDigest", "effects", "signedRootGrant", "completeness", "dispatchable"];
+  const fields = ["v", "taskId", "jobId", "grantId", "allocationId", "authorityCellId", "principalId", "runtimeSessionId", "signerKeyId", "signerKeyDescriptorDigest", "signedReadinessDigest", "signedJobCardDigest", "constraintsDigest", "currentTrustEventCount", "currentTrustHistoryDigest", "currentTrustHeadDigest", "currentTrustPinPath", "effects", "signedRootGrant", "completeness", "dispatchable"];
   if (Object.keys(raw).sort().join("\0") !== fields.sort().join("\0") || raw.v !== "reelier.certification-cell-activation/v1" || raw.taskId !== ids.taskId || raw.jobId !== ids.jobCardId || raw.grantId !== ids.rootGrantId || raw.allocationId !== ids.rootGrantId || raw.authorityCellId !== ids.authorityCellId || raw.completeness !== "unchecked" || raw.dispatchable !== false || !Number.isSafeInteger(raw.effects) || raw.effects < 1) throw new TypeError("certification Cell activation is closed and bound to generated identities");
   for (const field of ["signerKeyDescriptorDigest", "signedReadinessDigest", "signedJobCardDigest", "constraintsDigest", "currentTrustHistoryDigest", "currentTrustHeadDigest"] as const) if (!DIGEST.test(raw[field])) throw new TypeError("certification Cell activation digest is invalid");
   if (!Number.isSafeInteger(raw.currentTrustEventCount) || raw.currentTrustEventCount < 1) throw new TypeError("certification Cell activation trust count is invalid");
+  if (typeof raw.currentTrustPinPath !== "string" || !path.isAbsolute(raw.currentTrustPinPath) || path.normalize(raw.currentTrustPinPath) !== raw.currentTrustPinPath) throw new TypeError("certification Cell activation trust pin path is invalid");
   const rootSignature = raw.signedRootGrant?.signature;
   const signatureBytes = rootSignature?.alg === "ed25519" && typeof rootSignature.sig === "string" ? Buffer.from(rootSignature.sig, "base64") : undefined;
   if (!raw.signedRootGrant || !signatureBytes || signatureBytes.length !== 64 || signatureBytes.toString("base64") !== rootSignature.sig || authorityDigest(raw.signedRootGrant.grant) !== raw.signedRootGrant.digest || raw.signedRootGrant.grant.grantId !== raw.grantId || raw.signedRootGrant.grant.grantee !== raw.principalId || raw.signedRootGrant.signerId !== raw.signerKeyId || authorityDigest(raw.signedRootGrant.grant.constraints) !== raw.constraintsDigest) throw new TypeError("certification Cell root grant link or canonical signature is invalid");
@@ -253,9 +231,13 @@ function normalizeCapabilities(values: readonly EndpointCapability[]): readonly 
   if (parsed.length === 0 || new Set(parsed.map(item => item.endpointId)).size !== parsed.length) throw new TypeError("certified runner capabilities must be nonempty and unique");
   return Object.freeze(parsed);
 }
-function runnerKey(scenarioId: CertificationScenarioId, runnerId: string, implementationDigest: string, endpointManifestDigest: string): string {
-  if (typeof runnerId !== "string" || !/^[a-z][a-z0-9_]{2,127}$/.test(runnerId)) throw new TypeError("certified runner identity is invalid");
-  return `${scenarioId}\0${runnerId}\0${implementationDigest}\0${endpointManifestDigest}`;
+async function canonicalExternalTrustPin(workspaceRoot: string, requested: string): Promise<string> {
+  const resolved = path.resolve(requested);
+  await readUnlinkedFile(resolved);
+  const canonical = await realpath(resolved);
+  const relative = path.relative(workspaceRoot, canonical);
+  if (!relative.startsWith("..") && !path.isAbsolute(relative)) throw new TypeError("operator current trust pin must remain outside certification workspace output");
+  return canonical;
 }
 async function observeCurrentTrust(authorityRoot: string, activation: CertificationCellActivationV1, events: ReturnType<typeof parseTrustEvents>): Promise<void> {
   if (events.length < activation.currentTrustEventCount || authorityDigest(events.slice(0, activation.currentTrustEventCount)) !== activation.currentTrustHistoryDigest || authorityDigest(events[activation.currentTrustEventCount - 1]) !== activation.currentTrustHeadDigest) throw new TypeError("operator current trust history rolled back or does not extend activation");

@@ -81,16 +81,15 @@ test("signed Job Card activates exact durable root state and a derived restart-s
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
-test("dispatch permit is opaque, nonserializable, one-use, and invokes the runner exactly once", async () => {
+test("dispatch readiness permit is opaque, one-use, inert, and consumes no effect", async () => {
   const f = await fixture();
   try {
     await cell.activateCertificationRootTask({ workspace: f.initialized.workspace, jobCard: f.jobCard, jobCardTrustPin: f.pin, currentTrustPinPath: f.currentTrustPinPath, delegationKeyDescriptor: f.delegationSigner, delegationPrivateKey: f.delegationKey.privateKey, constraints: f.constraints, effects: 2, issuedAt: at, expiresAt: expiry, delegationAuthority: f.delegation });
     const credential = await cell.activateCertificationPrincipalSession({ workspace: f.initialized.workspace, delegationAuthority: f.delegation, principalRegistry: f.principals, now: new Date("2026-08-11T20:10:00.000Z") });
-    const readiness = { workspace: f.initialized.workspace, scenario: "github-issue-labels" as const, bearerToken: credential.token, delegationAuthority: f.delegation, principalRegistry: f.principals, credentialAvailable: async (slot: string) => slot === "githubCredential", now: () => new Date("2026-08-11T20:10:00.000Z") };
+    const readiness = { workspace: f.initialized.workspace, scenario: "github-issue-labels" as const, bearerToken: credential.token, delegationAuthority: f.delegation, principalRegistry: f.principals, now: () => new Date("2026-08-11T20:10:00.000Z") };
     let calls = 0;
     assert.equal("createCertifiedRunnerRegistry" in cell, false);
     assert.equal("runCertificationWithPermit" in cell, false);
-    await assert.rejects(() => cell.verifyCertificationDispatchReadiness({ ...readiness, credentialAvailable: async () => false }), /credential.*unavailable/i);
     await assert.rejects(() => cell.verifyCertificationDispatchReadiness({ ...readiness, bearerToken: "rat_not-the-issued-token" }), /credential/i);
     assert.equal(calls, 0);
     assert.equal((await f.delegation.budget.get(f.initialized.identifiers.rootGrantId))?.remaining, 2);
@@ -142,19 +141,20 @@ test("task revocation invalidates an already-issued certification permit", async
   try {
     await cell.activateCertificationRootTask({ workspace: f.initialized.workspace, jobCard: f.jobCard, jobCardTrustPin: f.pin, currentTrustPinPath: f.currentTrustPinPath, delegationKeyDescriptor: f.delegationSigner, delegationPrivateKey: f.delegationKey.privateKey, constraints: f.constraints, effects: 1, issuedAt: at, expiresAt: expiry, delegationAuthority: f.delegation });
     const credential = await cell.activateCertificationPrincipalSession({ workspace: f.initialized.workspace, delegationAuthority: f.delegation, principalRegistry: f.principals, now: new Date("2026-08-11T20:10:00.000Z") });
-    const permit = await cell.verifyCertificationDispatchReadiness({ workspace: f.initialized.workspace, scenario: "github-issue-labels", bearerToken: credential.token, delegationAuthority: f.delegation, principalRegistry: f.principals, credentialAvailable: async () => true, now: () => new Date("2026-08-11T20:10:00.000Z") });
+    const permit = await cell.verifyCertificationDispatchReadiness({ workspace: f.initialized.workspace, scenario: "github-issue-labels", bearerToken: credential.token, delegationAuthority: f.delegation, principalRegistry: f.principals, now: () => new Date("2026-08-11T20:10:00.000Z") });
     await f.delegation.revoke(f.initialized.identifiers.authorityCellId, f.initialized.identifiers.taskId);
     await assert.rejects(() => cell.revalidateCertificationDispatchPermit(permit), /revoked|active|stale/i);
     await assert.rejects(() => cell.activateCertificationPrincipalSession({ workspace: f.initialized.workspace, delegationAuthority: f.delegation, principalRegistry: f.principals, now: new Date("2026-08-11T20:10:00.000Z") }), /active|revoked/i);
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
-test("credential availability errors are redacted and runner registrations are exact", async () => {
+test("readiness exposes no caller callback and callers cannot select the trust pin", async () => {
   const f = await fixture();
   try {
     await cell.activateCertificationRootTask({ workspace: f.initialized.workspace, jobCard: f.jobCard, jobCardTrustPin: f.pin, currentTrustPinPath: f.currentTrustPinPath, delegationKeyDescriptor: f.delegationSigner, delegationPrivateKey: f.delegationKey.privateKey, constraints: f.constraints, effects: 2, issuedAt: at, expiresAt: expiry, delegationAuthority: f.delegation });
     const credential = await cell.activateCertificationPrincipalSession({ workspace: f.initialized.workspace, delegationAuthority: f.delegation, principalRegistry: f.principals, now: new Date("2026-08-11T20:10:00.000Z") });
-    await assert.rejects(() => cell.verifyCertificationDispatchReadiness({ workspace: f.initialized.workspace, scenario: "github-issue-labels", bearerToken: credential.token, delegationAuthority: f.delegation, principalRegistry: f.principals, credentialAvailable: async () => { throw new Error("C:/private/TOKEN_CANARY provider body"); }, now: () => new Date("2026-08-11T20:10:00.000Z") }), error => !/TOKEN_CANARY|provider body/.test(String(error)) && /credential.*unavailable/i.test(String(error)));
+    await assert.rejects(() => cell.verifyCertificationDispatchReadiness({ workspace: f.initialized.workspace, scenario: "github-issue-labels", bearerToken: credential.token, currentTrustPinPath: path.join(f.root, "stale-copy.json"), delegationAuthority: f.delegation, principalRegistry: f.principals, now: () => new Date("2026-08-11T20:10:00.000Z") } as never), /caller-selected|trust pin/i);
+    await assert.rejects(() => cell.verifyCertificationDispatchReadiness({ workspace: f.initialized.workspace, scenario: "github-issue-labels", bearerToken: credential.token, credentialAvailable: async () => { throw new Error("CALLBACK_MUST_NOT_RUN"); }, delegationAuthority: f.delegation, principalRegistry: f.principals, now: () => new Date("2026-08-11T20:10:00.000Z") } as never), /callback|credentialAvailable|forbidden/i);
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
@@ -163,7 +163,7 @@ test("one scenario dispatches from a full multi-scenario signed preflight", asyn
   try {
     await cell.activateCertificationRootTask({ workspace: f.initialized.workspace, jobCard: f.jobCard, jobCardTrustPin: f.pin, currentTrustPinPath: f.currentTrustPinPath, delegationKeyDescriptor: f.delegationSigner, delegationPrivateKey: f.delegationKey.privateKey, constraints: f.constraints, effects: 2, issuedAt: at, expiresAt: expiry, delegationAuthority: f.delegation });
     const credential = await cell.activateCertificationPrincipalSession({ workspace: f.initialized.workspace, delegationAuthority: f.delegation, principalRegistry: f.principals, now: new Date("2026-08-11T20:10:00.000Z") });
-    const permit = await cell.verifyCertificationDispatchReadiness({ workspace: f.initialized.workspace, scenario: "github-issue-labels", bearerToken: credential.token, delegationAuthority: f.delegation, principalRegistry: f.principals, credentialAvailable: async slot => slot === "githubCredential", now: () => new Date("2026-08-11T20:10:00.000Z") });
+    const permit = await cell.verifyCertificationDispatchReadiness({ workspace: f.initialized.workspace, scenario: "github-issue-labels", bearerToken: credential.token, delegationAuthority: f.delegation, principalRegistry: f.principals, now: () => new Date("2026-08-11T20:10:00.000Z") });
     await cell.revalidateCertificationDispatchPermit(permit);
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
