@@ -91,4 +91,6 @@ The full `npm test` suite was intentionally not run, per Task 3C scope.
 
 ## Independent review
 
+Final release-train evidence: the later absent-directory integration regression was fixed in RED `3793a2e` / GREEN `0ad1455` and independently approved after 16/16 affected tests and 20/20 concurrent first-creation stress runs. Exact pushed head `123ae93` passed hosted Ubuntu and Windows CI in GitHub Actions run `31556549826`. Ubuntu confirmed 2,836 passing tests; local Windows passed 2,840 with 1 skip.
+
 The first fresh read-only review requested nine changes, converted into RED regressions in `58a838a`. Its same-reviewer re-review closed seven and identified two remaining trust-boundary gaps; RED `9690113` and GREEN `623fc7c` removed execution. The next pass found mutable activation still selected the trust path; RED `eda13a2` and GREEN `68bf302` moved that authority into the host constructor. The following pass caught runtime object-spread injection; RED `38abcea` and GREEN `c2b0c2c` close all host method inputs, including symbol and prototype-key cases. The same reviewer then approved `a668acf..4215fbf` with no blocking or non-blocking findings and independently reproduced 66/66 focused tests plus the authority contract check.
