@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -118,4 +118,30 @@ test("delegation authority derives active fan-out from its durable registry", as
     assert.equal(results.filter(result => result.status === "fulfilled").length, 1);
     assert.match(results.find(result => result.status === "rejected")?.reason?.message ?? "", /fan.?out/i);
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("root registration creates an absent confined delegation directory before locking", async () => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "reelier-delegation-absent-root-"));
+  const root = path.join(parent, "delegations");
+  try {
+    const value = grant({ grantId: "root_absent", grantee: "principal_absent" });
+    const stored = { grant: value, digest: authorityDigest(value), signerId: "cell", signature: { alg: "ed25519" as const, sig: "unused" } };
+    const service = createDelegationAuthority({ root, signGrant: async child => ({ grant: child, digest: authorityDigest(child), signerId: "cell", signature: { alg: "ed25519", sig: "unused" } }) });
+    await service.registerRoot({ taskId: "task_absent", allocationId: "root_absent", rootGrant: stored, effects: 1 });
+    assert.match(await readFile(path.join(root, "delegation-registry.json"), "utf8"), /task_absent/);
+  } finally { await rm(parent, { recursive: true, force: true }); }
+});
+
+test("root registration refuses a linked delegation directory", async t => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "reelier-delegation-linked-root-"));
+  const external = path.join(parent, "external"), linked = path.join(parent, "delegations");
+  await mkdir(external);
+  try {
+    try { await symlink(external, linked, process.platform === "win32" ? "junction" : "dir"); }
+    catch (error) { if (["EPERM", "EACCES", "UNKNOWN"].includes((error as NodeJS.ErrnoException).code ?? "")) { t.skip("directory links unavailable"); return; } throw error; }
+    const value = grant({ grantId: "root_linked", grantee: "principal_linked" });
+    const service = createDelegationAuthority({ root: linked, signGrant: async child => ({ grant: child, digest: authorityDigest(child), signerId: "cell", signature: { alg: "ed25519", sig: "unused" } }) });
+    await assert.rejects(() => service.registerRoot({ taskId: "task_linked", allocationId: "root_linked", rootGrant: { grant: value, digest: authorityDigest(value), signerId: "cell", signature: { alg: "ed25519", sig: "unused" } }, effects: 1 }), /linked|confined|directory/i);
+    await assert.rejects(() => readFile(path.join(external, "delegation-registry.json")), /ENOENT/);
+  } finally { await rm(parent, { recursive: true, force: true }); }
 });
