@@ -11,7 +11,7 @@ import { createSignedCertificationReadiness } from "../../src/authority/certific
 import { initializeCertification } from "../../src/authority/certification/initializer.js";
 import { preflightCertification } from "../../src/authority/certification/preflight.js";
 import { sealCertificationReadiness } from "../../src/authority/certification/readiness.js";
-import { createCertificationCellHost, certificationTaskShapeDigest } from "../../src/authority/certification/cell.js";
+import { createCertificationCellHost, certificationCellHostInternalState, certificationTaskShapeDigest } from "../../src/authority/certification/cell.js";
 import { createDelegationAuthority } from "../../src/authority/host/delegation-service.js";
 import { createFilePrincipalRegistry } from "../../src/authority/host/principal-registry.js";
 import { createGitHubIssueLabelsHermeticComposition } from "../../src/authority/certification/github-issue-labels-runner.js";
@@ -20,6 +20,7 @@ import { createCertificationArtifactKeyBinding, createCertificationLifecycleAuth
 import { verifyAuthorityReceiptBundle } from "../../src/authority/verify.js";
 import { verifyCertificationTaskReceiptGraph } from "../../src/authority/certification/task-receipt-graph.js";
 import { writeCertificationInputManifests } from "./certification-input-fixture.js";
+import { AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST } from "../../src/authority/adapter-contract.js";
 
 const at = "2026-08-11T20:00:00.000Z", expiry = "2026-08-11T21:00:00.000Z";
 const descriptor = (keyId: string, role: "human-sponsor" | "authority-cell", purpose: string, publicKey: ReturnType<typeof generateKeyPairSync>["publicKey"]) => ({ v: "reelier.authority-key-descriptor/v1", keyId, role, purpose, algorithm: "ed25519", publicKeySpkiBase64: publicKey.export({ type: "spki", format: "der" }).toString("base64") });
@@ -34,7 +35,7 @@ function compileTimeLifecycleActivationBoundary(): void {
 }
 void compileTimeLifecycleActivationBoundary;
 
-async function fixture(mode: "normal" | "source-drift" | "effect-drift" | "provider-503" | "accessor-response" | "cut-after-budget" | "cut-after-dispatched" | "cut-after-send-intent" | "cut-after-cleanup-publication" | "pause-after-dispatched" = "normal", authorityMode: "valid" | "absent" | "substituted" = "valid") {
+async function fixture(mode: "normal" | "source-drift" | "effect-drift" | "provider-503" | "accessor-response" | "cut-after-budget" | "cut-after-dispatched" | "cut-after-send-intent" | "cut-after-cleanup-publication" | "pause-after-dispatched" = "normal", authorityMode: "valid" | "absent" | "substituted" | "contract-substituted" = "valid") {
   const root = await mkdtemp(path.join(tmpdir(), "reelier-github-cell-"));
   const configPath = path.join(root, "certification.local.json");
   await writeFile(configPath, JSON.stringify({ v: "reelier.certification-operator-config/v3", authorityConfigPath: "authority/authority.yml", evidenceDirectory: "authority/receipts/certification", scenarios: ["github-issue-labels"], resources: { "github-issue-labels": { apiBaseUrl: "https://api.github.com", owner: "fixlyai", repository: "reelier-certification", issueNumber: 1 } }, cleanup: { "github-issue-labels": ["restore-github-labels"] }, desiredState: { "github-issue-labels": { labels: ["certification-after"] } }, metadata: {}, secretReferences: { githubCredential: "env:REELIER_GITHUB_TOKEN" } }), "utf8");
@@ -54,7 +55,7 @@ async function fixture(mode: "normal" | "source-drift" | "effect-drift" | "provi
   const principals = createFilePrincipalRegistry({ tenant: initialized.identifiers.authorityCellId, file: path.join(initialized.workspace, "authority", "principals", "registry.jsonl") });
   const trustPath = path.join(root, "operator-current-trust.json"); await writeFile(trustPath, `${JSON.stringify(pin)}\n`);
   const lifecycle = createCertificationArtifactKeyBinding(ceremony.opaqueHandle, { authorityCellId: initialized.identifiers.authorityCellId, taskId: initialized.identifiers.taskId, readinessDigest: authorityDigest(signedReadiness), humanDescriptor: human as any, humanPrivateKey: readinessKey.privateKey, issuedAt: at, expiresAt: expiry });
-  const lifecycleAuthority = { handle: ceremony.opaqueHandle, binding: authorityMode === "substituted" ? { ...lifecycle.binding, taskId: "task_substituted" } : lifecycle.binding, commitment: lifecycle.humanCommitment };
+  const lifecycleAuthority = { handle: ceremony.opaqueHandle, binding: authorityMode === "substituted" ? { ...lifecycle.binding, taskId: "task_substituted" } : authorityMode === "contract-substituted" ? { ...lifecycle.binding, adapterContractDigest: `sha256:${"0".repeat(64)}` } : lifecycle.binding, commitment: lifecycle.humanCommitment };
   const cell = await createCertificationCellHost({ workspace: initialized.workspace, currentTrustPinPath: trustPath, delegationAuthority: delegation, principalRegistry: principals, now: () => new Date("2026-08-11T20:10:00.000Z"), ...(authorityMode === "absent" ? {} : { lifecycleAuthority }) });
   const activation = await cell.activateRootTask({ jobCard, jobCardTrustPin: pin, constraints, effects: 2, issuedAt: at, expiresAt: expiry });
   const credential = await cell.activatePrincipalSession();
@@ -95,6 +96,25 @@ test("503 after apply is ambiguous, retains budget, and blocks cleanup until aut
     assert.equal(result.status, "pending-reconciliation");
     assert.equal((await f.delegation.budget.get(f.activation.allocationId))?.consumed, 1);
     await assert.rejects(() => f.runner.cleanup({ bearerToken: f.credential.token, requestId: "request_503_ambiguous" }), /reconciliation|acknowledged/i);
+  } finally { await rm(f.root, { recursive: true, force: true }); }
+});
+
+test("Adapter Contract digest is bound before dispatch and by every portable receipt extension", async () => {
+  await assert.rejects(() => fixture("normal", "contract-substituted"), /adapter|contract|binding|signature/i);
+  const f = await fixture(); try {
+    assert.equal((f.lifecycle.binding as any).adapterContractDigest, AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST);
+    assert.equal((f.lifecycle.humanCommitment as any).adapterContractDigest, AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST);
+    const internal: any = certificationCellHostInternalState(f.cell), permit = await internal.issueHermeticGitHubPermit(f.credential.token);
+    assert.deepEqual(internal.hermeticGitHubPermitSnapshot(permit), { digest: internal.hermeticGitHubPermitSnapshot(permit).digest, adapterContractDigest: AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST });
+    await internal.revalidateHermeticGitHubPermit(permit);
+    await f.runner.run({ bearerToken: f.credential.token, requestId: "request_contract_binding" });
+    const graph: any = await f.runner.exportGraph({ bearerToken: f.credential.token });
+    assert.equal(graph.receiptExtensions.length, graph.receipts.length);
+    assert.equal(graph.receiptExtensions.every((item: any) => item.adapterContractDigest === AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST), true);
+    assert.deepEqual(graph.receiptExtensions.map((item: any) => item.receiptDigest), graph.receipts.map((item: any) => authorityDigest(item.receipt.value)));
+    assert.equal(verifyCertificationTaskReceiptGraph(graph, { trustPin: f.pin }).status, "verified");
+    const changed = structuredClone(graph); changed.receiptExtensions[0].adapterContractDigest = `sha256:${"0".repeat(64)}`;
+    assert.throws(() => verifyCertificationTaskReceiptGraph(changed, { trustPin: f.pin }), /adapter|contract|extension|terminal|digest/i);
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
