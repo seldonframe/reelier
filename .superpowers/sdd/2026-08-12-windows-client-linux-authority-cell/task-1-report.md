@@ -15,7 +15,7 @@ What changed per file
 - `.gitattributes`: LF-pins all v1 authority contract inputs and generated adapter source.
 - `adapter-contract-v1.json`: generated closed v1 descriptor using normalized input bytes, sorted members, per-file SHA-256 values, the golden-vector digest, domain separation, and a nonzero aggregate digest.
 - `package.json`: makes normal build and prepublish paths run the non-mutating adapter-contract freshness gate before compiling or packing.
-- `build-authority-contract.mjs`: normalizes CRLF/LF before hashing/checking, checks generation of both descriptor and TypeScript export, and supports copied source/directory checks.
+- `build-authority-contract.mjs`: normalizes CRLF/LF before hashing/checking, checks generation of both descriptor and TypeScript export, supports copied source/directory checks, and removes the obsolete inline renderer.
 - `adapter-contract-template.ts`: template for the generated public adapter surface; it deep-freezes the descriptor, members, and member values and byte-correctly verifies caller-supplied normalized `Uint8Array` values.
 - `adapter-contract.ts`: generated frozen public descriptor/digest and narrow verifier.
 - `index.ts`: exports the frozen adapter contract surface without runner, credential, filesystem, or provider behavior.
