@@ -40,6 +40,39 @@ test("authority REST exposes job search and load with host identity", async () =
   }
 });
 
+test("authority identity is authenticated, closed, and server-derived", async () => {
+  const server = createServer((request, response) => {
+    void handleAuthorityHttp(request, response, {
+      async outcome() { throw new Error("not reached"); },
+      async status() { throw new Error("not reached"); },
+    }, {
+      tenant: "tenant_1",
+      requester: "unused",
+      resolvePrincipal: async (header: string | undefined) => header === "Bearer scoped" ? {
+        tenant: "tenant_1", requester: "agent_1",
+        executionContext: { v: "reelier.authority-execution-context/v1", taskId: "task_1", principalId: "agent_1", grantId: "grant_1", grantDigest: `sha256:${"a".repeat(64)}`, allocationId: "allocation_1", runtimeSessionId: "session_1", jobId: "job_1", authorityCellId: "cell_linux_1" },
+      } : undefined,
+      identity: { cellId: "cell_linux_1", adapterContractDigest: `sha256:${"b".repeat(64)}` },
+    } as never);
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  try {
+    const anonymous = await fetch(`http://127.0.0.1:${address.port}/v1/identity`);
+    assert.equal(anonymous.status, 401);
+    const response = await fetch(`http://127.0.0.1:${address.port}/v1/identity`, { headers: { authorization: "Bearer scoped" } });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      v: "reelier.authority-cell-identity/v1",
+      cellId: "cell_linux_1",
+      adapterContractDigest: `sha256:${"b".repeat(64)}`,
+    });
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
 async function getJson(url: string): Promise<Record<string, any>> {
   return new Promise((resolve, reject) => { const req = httpRequest(url, { method: "GET", headers: { authorization: "Bearer scoped" } }, response => { let body = ""; response.setEncoding("utf8"); response.on("data", chunk => body += chunk); response.on("end", () => resolve(JSON.parse(body))); }); req.on("error", reject); req.end(); });
 }
