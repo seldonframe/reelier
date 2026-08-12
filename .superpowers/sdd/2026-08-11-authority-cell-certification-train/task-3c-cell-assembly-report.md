@@ -62,7 +62,7 @@ Commands run at the implementation head:
 ```text
 npm run build
 npx tsc -p tsconfig.test.json --pretty false
-node --test <10 explicitly listed changed authority test files>
+node --test --test-concurrency=1 dist-test/test/authority/certification-authority.test.js dist-test/test/authority/certification-cell.test.js dist-test/test/authority/certification-export.test.js dist-test/test/authority/certification-filesystem.test.js dist-test/test/authority/certification-initializer.test.js dist-test/test/authority/certification-preflight.test.js dist-test/test/authority/certification-readiness.test.js dist-test/test/authority/certify-cli.test.js dist-test/test/authority/delegation-service.test.js dist-test/test/authority/principal-registry.test.js
 npm run check:authority-contract
 ```
 
