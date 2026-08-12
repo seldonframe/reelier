@@ -10,6 +10,7 @@ import { authorityCanonicalBytes, authorityDigest } from "../../src/authority/wi
 import { createTrustRoots } from "../../src/authority/trust.js";
 import { validateDelegationChain } from "../../src/authority/delegation.js";
 import { validateStoredContract, isValidatedContract, verifyStoredContract, validateVerifiedContractEligibility, type ContractStateEvent } from "../../src/authority/contract.js";
+import { verifyAuthorityAdapterContractV1 } from "../../src/authority/adapter-contract.js";
 
 function fixture() {
   const operator = generateKeyPairSync("ed25519");
@@ -111,6 +112,13 @@ test("adapter contract v1 is a closed, canonical manifest and refuses stale copi
   assert.deepEqual(output.members.map(member => member.path), [...output.members.map(member => member.path)].sort());
   assert.equal(new Set(output.members.map(member => member.path)).size, output.members.length);
   assert.equal(output.members.some(member => member.path === "adapter-contract-v1.json"), false);
+  const files = new Map(output.members.map(member => [member.path, readFileSync(join(contractDirectory, member.path))]));
+  assert.doesNotThrow(() => verifyAuthorityAdapterContractV1(output, files));
+  assert.throws(() => verifyAuthorityAdapterContractV1({ ...output, members: output.members.slice(1) }, files), /closed membership/i);
+  assert.throws(() => verifyAuthorityAdapterContractV1({ ...output, members: [...output.members, output.members[0]] }, files), /member paths/i);
+  assert.throws(() => verifyAuthorityAdapterContractV1({ ...output, members: [...output.members].reverse() }, files), /member paths/i);
+  assert.throws(() => verifyAuthorityAdapterContractV1({ ...output, members: [{ ...output.members[0], path: "../escape.json" }, ...output.members.slice(1)] }, files), /member paths/i);
+  assert.throws(() => verifyAuthorityAdapterContractV1({ ...output, members: [{ ...output.members[0], path: "adapter-contract-v1.json" }, ...output.members.slice(1)] }, files), /member paths/i);
 
   const copiedRoot = mkdtempSync(join(tmpdir(), "reelier-adapter-contract-"));
   try {
@@ -119,7 +127,7 @@ test("adapter contract v1 is a closed, canonical manifest and refuses stale copi
     writeFileSync(join(copiedDirectory, "golden-vectors.json"), "{}\n", "utf8");
     assert.throws(
       () => execFileSync(process.execPath, ["scripts/build-authority-contract.mjs", "--directory", copiedDirectory, "--check"], { cwd: process.cwd(), stdio: "pipe" }),
-      /authority adapter contract drift/i,
+      /authority (golden vectors|adapter contract) drift/i,
     );
   } finally {
     rmSync(copiedRoot, { recursive: true, force: true });
