@@ -35,17 +35,23 @@ import { exportCertificationEvidence, verifyCertificationExport } from "./certif
 import { CERTIFICATION_SCENARIO_IDS } from "./certification/scenarios.js";
 import { signCertificationReadinessArtifact } from "./certification/authority.js";
 import { assertLinuxAuthorityCellHost } from "./host/platform.js";
-import { defaultAuthorityCellConnectionFile, writeAuthorityCellConnection } from "./client/config.js";
+import { authorityCellConnectionPathnameConfinement, defaultAuthorityCellConnectionFile, writeAuthorityCellConnection } from "./client/config.js";
 import { loadAuthorityCellConnection } from "./client/config.js";
 import { checkAuthorityCellLive } from "./client/http.js";
 
-export async function runAuthorityCommand(args: Readonly<{ positional: string[]; flags: Set<string>; opts: Record<string, string> }>): Promise<number> {
+interface AuthorityClientRuntime {
+  readonly platform?: NodeJS.Platform;
+  readonly env?: NodeJS.ProcessEnv;
+  readonly homedir?: string;
+}
+
+export async function runAuthorityCommand(args: Readonly<{ positional: string[]; flags: Set<string>; opts: Record<string, string> }>, clientRuntime: AuthorityClientRuntime = {}): Promise<number> {
   const subcommand = args.positional[0] ?? "doctor";
   switch (subcommand) {
     case "init": return authorityInit(args);
     case "bootstrap": return authorityBootstrap(args);
-    case "doctor": return authorityDoctor(args);
-    case "connect": return authorityConnect(args);
+    case "doctor": return authorityDoctor(args, clientRuntime);
+    case "connect": return authorityConnect(args, clientRuntime);
     case "validate": return authorityValidate(args);
     case "sign": return authoritySign(args);
     case "verify": return authorityVerify(args);
@@ -58,15 +64,17 @@ export async function runAuthorityCommand(args: Readonly<{ positional: string[];
   }
 }
 
-async function authorityConnect(args: Readonly<{ opts: Record<string, string> }>): Promise<number> {
+async function authorityConnect(args: Readonly<{ opts: Record<string, string> }>, runtime: AuthorityClientRuntime): Promise<number> {
+  const pathnameConfinement = authorityCellConnectionPathnameConfinement(runtime);
   try {
     const endpoint = args.opts.endpoint; const bearerTokenRef = args.opts["token-ref"]; const expectedCellId = args.opts["cell-id"]; const adapterContractDigest = args.opts["adapter-contract-digest"];
     if (!endpoint || !bearerTokenRef || !expectedCellId || !adapterContractDigest) throw new TypeError("authority connect requires --endpoint, --token-ref, --cell-id, and --adapter-contract-digest");
-    const file = args.opts.path ?? defaultAuthorityCellConnectionFile();
+    if ((runtime.platform ?? process.platform) === "win32" && args.opts.path !== undefined) throw new TypeError("native Windows authority connect does not accept --path; use the canonical per-user connection location");
+    const file = args.opts.path ?? defaultAuthorityCellConnectionFile(runtime);
     const connection = await writeAuthorityCellConnection(file, { v: "reelier.authority-cell-connection/v1", endpoint, transport: "http", bearerTokenRef, expectedCellId, adapterContractDigest });
-    console.log(JSON.stringify({ status: "configured", file: path.resolve(file), endpoint: connection.endpoint, cellId: connection.expectedCellId, adapterContractDigest: connection.adapterContractDigest }));
+    console.log(JSON.stringify({ status: "configured", file: path.resolve(file), pathnameConfinement, endpoint: connection.endpoint, cellId: connection.expectedCellId, adapterContractDigest: connection.adapterContractDigest }));
     return 0;
-  } catch (error) { console.error(JSON.stringify({ status: "refused", reasonCode: "authority-cell-connection-invalid", message: error instanceof Error ? error.message : "invalid authority cell connection" })); return 1; }
+  } catch (error) { console.error(JSON.stringify({ status: "refused", reasonCode: "authority-cell-connection-invalid", pathnameConfinement, message: error instanceof Error ? error.message : "invalid authority cell connection" })); return 1; }
 }
 
 async function authorityBootstrap(args: Readonly<{ opts: Record<string, string> }>): Promise<number> {
@@ -184,10 +192,11 @@ async function authorityInit(args: Readonly<{ opts: Record<string, string> }>): 
   return 0;
 }
 
-async function authorityDoctor(args: Readonly<{ opts: Record<string, string>; flags: Set<string> }>): Promise<number> {
+async function authorityDoctor(args: Readonly<{ opts: Record<string, string>; flags: Set<string> }>, runtime: AuthorityClientRuntime): Promise<number> {
   if (args.flags.has("live") && (args.opts.connection || args.opts.path === undefined)) {
-    try { const result = await checkAuthorityCellLive(await loadAuthorityCellConnection(args.opts.connection ?? defaultAuthorityCellConnectionFile())); console.log(JSON.stringify({ ok: result.state === "verified", checks: { live: result.state }, reasonCode: result.reasonCode, cellId: result.cellId, adapterContractDigest: result.adapterContractDigest })); return result.state === "verified" ? 0 : 1; }
-    catch (error) { const absent = (error as NodeJS.ErrnoException).code === "ENOENT"; console.error(JSON.stringify({ ok: false, checks: { live: absent ? "absent" : "failed" }, reasonCode: absent ? "connection-unavailable" : "connection-invalid" })); return 1; }
+    const pathnameConfinement = authorityCellConnectionPathnameConfinement(runtime);
+    try { const result = await checkAuthorityCellLive(await loadAuthorityCellConnection(args.opts.connection ?? defaultAuthorityCellConnectionFile(runtime))); console.log(JSON.stringify({ ok: result.state === "verified", pathnameConfinement, checks: { live: result.state }, reasonCode: result.reasonCode, cellId: result.cellId, adapterContractDigest: result.adapterContractDigest })); return result.state === "verified" ? 0 : 1; }
+    catch (error) { const absent = (error as NodeJS.ErrnoException).code === "ENOENT"; console.error(JSON.stringify({ ok: false, pathnameConfinement, checks: { live: absent ? "absent" : "failed" }, reasonCode: absent ? "connection-unavailable" : "connection-invalid" })); return 1; }
   }
   const file = args.opts.path ?? "authority/authority.yml";
   try {
