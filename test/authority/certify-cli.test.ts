@@ -82,6 +82,8 @@ test("certification init, selected preflight, seal, export, and offline verify e
   const initialized = JSON.parse(init.stdout);
   assert.deepEqual(Object.keys(initialized).sort(), ["configDigest", "identifiers", "status", "workspace"]);
   assert.doesNotMatch(init.stdout, /REELIER_GITHUB_TOKEN/);
+  const persistedConfig = JSON.parse(await readFile(path.join(workspace, "config.json"), "utf8"));
+  assert.deepEqual(persistedConfig.desiredState, { "github-issue-labels": { labels: ["certification-after"] } });
   await writeCertificationInputManifests(workspace, ["github-issue-labels"]);
 
   const preflight = await capture({ positional: ["certify", "preflight"], flags: new Set(), opts: { workspace, scenario: "github-issue-labels" } });
