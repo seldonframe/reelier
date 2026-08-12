@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { initializeCertification } from "../../src/authority/certification/initializer.js";
 import { sealCertificationReadiness } from "../../src/authority/certification/readiness.js";
+import { writeCertificationInputManifests } from "./certification-input-fixture.js";
 
 test("readiness sealing creates an immutable unsigned non-dispatchable content-addressed candidate", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "reelier-cert-readiness-"));
@@ -15,10 +16,7 @@ test("readiness sealing creates an immutable unsigned non-dispatchable content-a
     cleanup: { "github-issue-labels": ["restore-github-labels"] }, metadata: {}, secretReferences: { githubCredential: "env:REELIER_GITHUB_TOKEN" },
   }), "utf8");
   const initialized = await initializeCertification({ configPath });
-  await mkdir(path.join(initialized.workspace, "inputs", "runners"), { recursive: true });
-  await mkdir(path.join(initialized.workspace, "inputs", "tests"), { recursive: true });
-  await writeFile(path.join(initialized.workspace, "inputs", "runners", "github-issue-labels.json"), "{}", "utf8");
-  await writeFile(path.join(initialized.workspace, "inputs", "tests", "github-issue-labels.json"), "[]", "utf8");
+  await writeCertificationInputManifests(initialized.workspace, ["github-issue-labels"]);
   const first = await sealCertificationReadiness({ workspace: initialized.workspace, scenario: "github-issue-labels" });
   const second = await sealCertificationReadiness({ workspace: initialized.workspace, scenario: "github-issue-labels" });
   assert.equal(second.path, first.path);

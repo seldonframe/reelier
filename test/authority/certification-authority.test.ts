@@ -15,6 +15,7 @@ import {
 } from "../../src/authority/certification/authority.js";
 import { initializeCertification } from "../../src/authority/certification/initializer.js";
 import { parseCertificationReadinessCandidate, sealCertificationReadiness } from "../../src/authority/certification/readiness.js";
+import { writeCertificationInputManifests } from "./certification-input-fixture.js";
 
 const at = "2026-08-11T20:00:00.000Z";
 const later = "2026-08-11T20:01:00.000Z";
@@ -282,10 +283,7 @@ test("file signing consumes an existing human key and confined Task2C2 candidate
     cleanup: { "github-issue-labels": ["restore-github-labels"] }, metadata: {}, secretReferences: { githubCredential: "env:REELIER_GITHUB_TOKEN" },
   }), "utf8");
   const initialized = await initializeCertification({ configPath });
-  await mkdir(path.join(initialized.workspace, "inputs", "runners"), { recursive: true });
-  await mkdir(path.join(initialized.workspace, "inputs", "tests"), { recursive: true });
-  await writeFile(path.join(initialized.workspace, "inputs", "runners", "github-issue-labels.json"), "{}", "utf8");
-  await writeFile(path.join(initialized.workspace, "inputs", "tests", "github-issue-labels.json"), "[]", "utf8");
+  await writeCertificationInputManifests(initialized.workspace, ["github-issue-labels"]);
   const aliasedWorkspace = process.platform === "win32" ? initialized.workspace.toUpperCase() : initialized.workspace;
   const sealed = await sealCertificationReadiness({ workspace: aliasedWorkspace, scenario: "github-issue-labels" });
   assert.equal(path.dirname(path.dirname(sealed.path)), await realpath(initialized.workspace), "sealed artifacts return the canonical confined workspace path");

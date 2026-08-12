@@ -8,6 +8,7 @@ import { initializeCertification } from "../../src/authority/certification/initi
 import { preflightCertification } from "../../src/authority/certification/preflight.js";
 import { sealCertificationReadiness } from "../../src/authority/certification/readiness.js";
 import { assertUnlinkedCreationParent, certificationWorkspaceRoot, readUnlinkedFile } from "../../src/authority/certification/filesystem.js";
+import { writeCertificationInputManifests } from "./certification-input-fixture.js";
 
 if (false) {
   // @ts-expect-error deterministic race hooks are test concerns, never production ABI
@@ -53,10 +54,7 @@ test("preflight refuses a selected artifact symlink when file symlinks are suppo
 
 test("readiness refuses a linked output directory and performs no external write", async () => {
   const workspace = await initialized();
-  await mkdir(path.join(workspace, "inputs", "runners"), { recursive: true });
-  await mkdir(path.join(workspace, "inputs", "tests"), { recursive: true });
-  await writeFile(path.join(workspace, "inputs", "runners", "github-issue-labels.json"), "{}", "utf8");
-  await writeFile(path.join(workspace, "inputs", "tests", "github-issue-labels.json"), "[]", "utf8");
+  await writeCertificationInputManifests(workspace, ["github-issue-labels"]);
   const external = await mkdtemp(path.join(tmpdir(), "reelier-cert-external-write-"));
   await symlink(external, path.join(workspace, "readiness"), process.platform === "win32" ? "junction" : "dir");
   await assert.rejects(() => sealCertificationReadiness({ workspace, scenario: "github-issue-labels" }), /linked|symlink|reparse|confined/i);

@@ -8,6 +8,7 @@ import { preflightCertification } from "../../src/authority/certification/prefli
 import { sealCertificationReadiness } from "../../src/authority/certification/readiness.js";
 import { exportCertificationEvidence, verifyCertificationExport } from "../../src/authority/certification/export.js";
 import { authorityDigest } from "../../src/authority/wire.js";
+import { writeCertificationInputManifests } from "./certification-input-fixture.js";
 
 async function initializedWorkspace(): Promise<string> {
   const root = await mkdtemp(path.join(tmpdir(), "reelier-cert-export-"));
@@ -18,10 +19,7 @@ async function initializedWorkspace(): Promise<string> {
     cleanup: { "github-issue-labels": ["restore-github-labels"] }, metadata: {}, secretReferences: { githubCredential: "env:REELIER_GITHUB_TOKEN" },
   }), "utf8");
   const workspace = (await initializeCertification({ configPath })).workspace;
-  await mkdir(path.join(workspace, "inputs", "runners"), { recursive: true });
-  await mkdir(path.join(workspace, "inputs", "tests"), { recursive: true });
-  await writeFile(path.join(workspace, "inputs", "runners", "github-issue-labels.json"), "{}", "utf8");
-  await writeFile(path.join(workspace, "inputs", "tests", "github-issue-labels.json"), "[]", "utf8");
+  await writeCertificationInputManifests(workspace, ["github-issue-labels"]);
   return workspace;
 }
 
@@ -57,12 +55,7 @@ test("subset preparation preserves the immutable two-scenario initialization roo
   const initialized = await initializeCertification({ configPath });
   const initializationBytes = await readFile(path.join(initialized.workspace, "initialization.json"), "utf8");
   const initialization = JSON.parse(initializationBytes);
-  await mkdir(path.join(initialized.workspace, "inputs", "runners"), { recursive: true });
-  await mkdir(path.join(initialized.workspace, "inputs", "tests"), { recursive: true });
-  for (const scenario of ["github-issue-labels", "slack-topic"]) {
-    await writeFile(path.join(initialized.workspace, "inputs", "runners", `${scenario}.json`), JSON.stringify({ scenario }), "utf8");
-    await writeFile(path.join(initialized.workspace, "inputs", "tests", `${scenario}.json`), JSON.stringify({ scenario }), "utf8");
-  }
+  await writeCertificationInputManifests(initialized.workspace, ["github-issue-labels", "slack-topic"]);
 
   const preflight = await preflightCertification({ workspace: initialized.workspace, scenario: "github-issue-labels" });
   const sealed = await sealCertificationReadiness({ workspace: initialized.workspace, scenario: "github-issue-labels" });

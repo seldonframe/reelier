@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { runAuthorityCommand } from "../../src/authority/cli.js";
 import { parseArgv } from "../../src/cli.js";
+import { writeCertificationInputManifests } from "./certification-input-fixture.js";
 
 async function fixture(): Promise<{ configPath: string; workspace: string }> {
   const root = await mkdtemp(path.join(tmpdir(), "reelier-cert-cli-"));
@@ -81,10 +82,7 @@ test("certification init, selected preflight, seal, export, and offline verify e
   const initialized = JSON.parse(init.stdout);
   assert.deepEqual(Object.keys(initialized).sort(), ["configDigest", "identifiers", "status", "workspace"]);
   assert.doesNotMatch(init.stdout, /REELIER_GITHUB_TOKEN/);
-  await mkdir(path.join(workspace, "inputs", "runners"), { recursive: true });
-  await mkdir(path.join(workspace, "inputs", "tests"), { recursive: true });
-  await writeFile(path.join(workspace, "inputs", "runners", "github-issue-labels.json"), "{}", "utf8");
-  await writeFile(path.join(workspace, "inputs", "tests", "github-issue-labels.json"), "[]", "utf8");
+  await writeCertificationInputManifests(workspace, ["github-issue-labels"]);
 
   const preflight = await capture({ positional: ["certify", "preflight"], flags: new Set(), opts: { workspace, scenario: "github-issue-labels" } });
   assert.equal(preflight.code, 0);
