@@ -117,13 +117,19 @@ export async function createCertificationCellHost(input: Readonly<{ workspace: s
   const configuredTrustPinPath = await canonicalExternalTrustPin(workspace, input.currentTrustPinPath);
   const currentTrustPinPathDigest = trustPinPathDigest(configuredTrustPinPath);
   const host: CertificationCellHost = {
-    activateRootTask: (values: Parameters<CertificationCellHost["activateRootTask"]>[0]) => activateCertificationRootTask({ workspace, currentTrustPinPath: configuredTrustPinPath, currentTrustPinPathDigest, delegationAuthority: input.delegationAuthority, ...values }),
-    activatePrincipalSession: () => activateCertificationPrincipalSession({ workspace, delegationAuthority: input.delegationAuthority, principalRegistry: input.principalRegistry, now: input.now?.() }),
-    verifyDispatchReadiness: (values: Parameters<CertificationCellHost["verifyDispatchReadiness"]>[0]) => {
-      if (!values || Object.keys(values).sort().join("\0") !== "bearerToken\0scenario") return Promise.reject(new TypeError("certification readiness request is closed"));
-      return verifyCertificationDispatchReadiness({ workspace, currentTrustPinPath: configuredTrustPinPath, currentTrustPinPathDigest, delegationAuthority: input.delegationAuthority, principalRegistry: input.principalRegistry, now: input.now, ...values });
+    activateRootTask: async (values: Parameters<CertificationCellHost["activateRootTask"]>[0]) => {
+      closedOwnKeys(values, ["jobCard", "jobCardTrustPin", "delegationKeyDescriptor", "delegationPrivateKey", "constraints", "effects", "issuedAt", "expiresAt"], "certification root activation input");
+      return activateCertificationRootTask({ jobCard: values.jobCard, jobCardTrustPin: values.jobCardTrustPin, delegationKeyDescriptor: values.delegationKeyDescriptor, delegationPrivateKey: values.delegationPrivateKey, constraints: values.constraints, effects: values.effects, issuedAt: values.issuedAt, expiresAt: values.expiresAt, workspace, currentTrustPinPath: configuredTrustPinPath, currentTrustPinPathDigest, delegationAuthority: input.delegationAuthority });
     },
-    revalidateDispatchPermit: (permit: CertificationDispatchPermit) => revalidateCertificationDispatchPermit(permit),
+    activatePrincipalSession: (...args: []) => {
+      if (args.length !== 0) return Promise.reject(new TypeError("certification principal activation accepts no arguments"));
+      return activateCertificationPrincipalSession({ workspace, delegationAuthority: input.delegationAuthority, principalRegistry: input.principalRegistry, now: input.now?.() });
+    },
+    verifyDispatchReadiness: (values: Parameters<CertificationCellHost["verifyDispatchReadiness"]>[0]) => {
+      try { closedOwnKeys(values, ["scenario", "bearerToken"], "certification readiness request"); } catch (error) { return Promise.reject(error); }
+      return verifyCertificationDispatchReadiness({ scenario: values.scenario, bearerToken: values.bearerToken, workspace, currentTrustPinPath: configuredTrustPinPath, currentTrustPinPathDigest, delegationAuthority: input.delegationAuthority, principalRegistry: input.principalRegistry, now: input.now });
+    },
+    revalidateDispatchPermit: (permit: CertificationDispatchPermit, ...args: []) => args.length === 0 ? revalidateCertificationDispatchPermit(permit) : Promise.reject(new TypeError("certification permit revalidation accepts one argument")),
   };
   return Object.freeze(host);
 }
@@ -266,6 +272,11 @@ async function canonicalExternalTrustPin(workspaceRoot: string, requested: strin
   return canonical;
 }
 function trustPinPathDigest(canonicalPath: string): string { return authorityDigest({ v: "reelier.certification-trust-pin-path/v1", canonicalPath }); }
+function closedOwnKeys(value: unknown, expected: readonly string[], label: string): asserts value is Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype) throw new TypeError(`${label} must be a closed plain object`);
+  const keys = Reflect.ownKeys(value);
+  if (keys.some(key => typeof key !== "string") || keys.length !== expected.length || keys.some(key => !expected.includes(key as string))) throw new TypeError(`${label} is closed`);
+}
 async function observeCurrentTrust(authorityRoot: string, activation: CertificationCellActivationV1, events: ReturnType<typeof parseTrustEvents>): Promise<void> {
   if (events.length < activation.currentTrustEventCount || authorityDigest(events.slice(0, activation.currentTrustEventCount)) !== activation.currentTrustHistoryDigest || authorityDigest(events[activation.currentTrustEventCount - 1]) !== activation.currentTrustHeadDigest) throw new TypeError("operator current trust history rolled back or does not extend activation");
   const directory = await requireDirectory(authorityRoot, ["trust"]);
