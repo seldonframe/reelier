@@ -324,8 +324,8 @@ test("task graph exports the complete canonical journal and budget chronology", 
     for (let index = 1; index < graph.budgetEvents.length; index += 1) assert.equal(graph.budgetEvents[index].priorBudgetEventDigest, authorityDigest(graph.budgetEvents[index - 1]));
     assert.deepEqual(graph.topology, { status: "unchecked" });
     assert.deepEqual(graph.leases, { status: "absent", entries: [] });
-    assert.deepEqual(graph.terminalCommitment.counts, { grants: 2, principals: 2, allocations: 2, budgetEvents: 4, outcomes: 14, exceptions: 0, topologyEvidence: 0, leases: 0, receipts: 6, priorReceiptLinks: 6, keyDescriptors: 8, bindingEntries: 4 });
-    for (const key of ["grants", "principals", "allocations", "budgetEvents", "outcomes", "exceptions", "receipts", "priorReceiptLinks", "keyDescriptors"] as const) assert.equal(graph.terminalCommitment.collectionDigests[key], authorityDigest(graph[key]));
+    assert.deepEqual(graph.terminalCommitment.counts, { grants: 2, principals: 2, allocations: 2, budgetEvents: 4, outcomes: 14, exceptions: 0, topologyEvidence: 0, leases: 0, receipts: 6, receiptExtensions: 6, priorReceiptLinks: 6, keyDescriptors: 8, bindingEntries: 4 });
+    for (const key of ["grants", "principals", "allocations", "budgetEvents", "outcomes", "exceptions", "receipts", "receiptExtensions", "priorReceiptLinks", "keyDescriptors"] as const) assert.equal(graph.terminalCommitment.collectionDigests[key], authorityDigest(graph[key]));
     assert.equal(verifyCertificationTaskReceiptGraph(graph, { trustPin: f.pin }).status, "verified");
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
