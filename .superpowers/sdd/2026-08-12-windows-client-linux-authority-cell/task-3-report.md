@@ -35,9 +35,10 @@ Test results (verbatim tail)
 ✔ connection parser rejects unsafe URLs and never invokes accessors (0.78ms)
 ✔ live cell check refuses redirect and redacts token resolver failures (2.1902ms)
 ✔ authority REST exposes job search and load with host identity (60.4299ms)
-✔ doctor refuses private DNS answers before bearer dispatch (0.3437ms)
-ℹ tests 7
-ℹ pass 7
+✔ doctor decodes every mapped IPv6 private form before bearer dispatch (0.4226ms)
+✔ connection writer refuses a symlinked parent before an outside write (3.5669ms)
+ℹ tests 9
+ℹ pass 9
 ℹ fail 0
 ```
 
@@ -49,4 +50,5 @@ Open risks
 - Fix round 1: token files are now confined to `.reelier/credentials` by default or an injected explicit credential root; each ancestry component and the final file are checked with `lstat`, then canonical containment is checked with `realpath`. Symlinks/junctions and non-regular files refuse as an `absent` token reference without revealing content.
 - Fix round 1: HTTPS endpoints resolve every address before bearer dispatch. Any non-public result refuses; the production connector pins the selected validated address through Node's request lookup callback and preserves TLS server name. Redirects are not followed.
 - Fix round 1: doctor states are now `absent` for unavailable config/token material, `unchecked` for transport/identity availability failures, `failed` for authentication/malformed/mismatch/refused endpoint evidence, and `verified` for exact identity/digest.
+- Fix round 2: IPv4-mapped IPv6 answers are decoded before the IPv4 public-address policy; config writer parent ancestry refuses symlinks/junctions before creating or writing its temporary file.
 - Consequential request construction is not introduced by this task; the server continues to derive requester/session context from authenticated ingress. Future client dispatch code must consume the verified live result before sending consequential requests.
