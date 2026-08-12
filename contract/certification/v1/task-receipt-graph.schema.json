@@ -447,8 +447,8 @@
     },
     "policyEvidence": {
       "type": "object", "additionalProperties": false,
-      "required": ["v","artifact","status","schemaId","jcsBase64","policyDigest","signerId","signature"],
-      "properties": { "v": { "const": "reelier.certification-policy-evidence/v1" }, "artifact": { "enum": ["outcome-contract","local-gate-policy"] }, "status": { "enum": ["verified","failed","unchecked","absent"] }, "schemaId": { "type": ["string","null"] }, "jcsBase64": { "type": ["string","null"] }, "policyDigest": { "$ref": "#/$defs/digest" }, "signerId": { "type": "string" }, "signature": { "$ref": "#/$defs/signature" } }
+      "required": ["v","artifact","status","schemaId","jcsBase64","policyDigest","authorityStatePreimage","authorityStateDigest","signerId","signature"],
+      "properties": { "v": { "const": "reelier.certification-policy-evidence/v1" }, "artifact": { "enum": ["outcome-contract","local-gate-policy"] }, "status": { "enum": ["verified","failed","unchecked","absent"] }, "schemaId": { "type": ["string","null"] }, "jcsBase64": { "type": ["string","null"] }, "policyDigest": { "$ref": "#/$defs/digest" }, "authorityStatePreimage": { "type": ["object","null"] }, "authorityStateDigest": { "$ref": "#/$defs/nullableDigest" }, "signerId": { "type": "string" }, "signature": { "$ref": "#/$defs/signature" } }
     },
     "taskStatusEvidence": {
       "type": "object", "additionalProperties": false,
@@ -459,6 +459,11 @@
       "type": "object", "additionalProperties": false,
       "required": ["v","attemptRequestId","originalRequestId","originalRequestDigest","originalEffectDigest","observedAuthorityState","observedAuthorityStateDigest","observedAt","budgetDelta","providerWriteDelta","signerId","signature"],
       "properties": { "v": { "const": "reelier.certification-duplicate-decision/v1" }, "attemptRequestId": { "type": "string" }, "originalRequestId": { "type": "string" }, "originalRequestDigest": { "$ref": "#/$defs/digest" }, "originalEffectDigest": { "$ref": "#/$defs/digest" }, "observedAuthorityState": { "type": "object" }, "observedAuthorityStateDigest": { "$ref": "#/$defs/digest" }, "observedAt": { "type": "string" }, "budgetDelta": { "const": 0 }, "providerWriteDelta": { "const": 0 }, "signerId": { "type": "string" }, "signature": { "$ref": "#/$defs/signature" } }
+    },
+    "duplicateAttempt": {
+      "type": "object", "additionalProperties": false,
+      "required": ["v","attemptId","attemptRequestId","originalRequestId","observedAuthorityStateDigest","observedAt","signerId","signature"],
+      "properties": { "v": { "const": "reelier.certification-duplicate-attempt/v1" }, "attemptId": { "type": "string" }, "attemptRequestId": { "type": "string" }, "originalRequestId": { "type": "string" }, "observedAuthorityStateDigest": { "$ref": "#/$defs/digest" }, "observedAt": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$" }, "signerId": { "type": "string" }, "signature": { "$ref": "#/$defs/signature" } }
     },
     "counts": {
       "type": "object",
@@ -478,6 +483,7 @@
         "postStateEvidence",
         "policyEvidence",
         "taskStatusEvidence",
+        "duplicateAttempts",
         "duplicateDecisions",
         "priorReceiptLinks",
         "keyDescriptors",
@@ -498,6 +504,7 @@
         "postStateEvidence": { "type": "integer", "minimum": 0 },
         "policyEvidence": { "type": "integer", "minimum": 0 },
         "taskStatusEvidence": { "type": "integer", "minimum": 0 },
+        "duplicateAttempts": { "type": "integer", "minimum": 0 },
         "duplicateDecisions": { "type": "integer", "minimum": 0 },
         "priorReceiptLinks": { "type": "integer", "minimum": 0 },
         "keyDescriptors": { "type": "integer", "minimum": 0 },
@@ -520,6 +527,7 @@
         "postStateEvidence",
         "policyEvidence",
         "taskStatusEvidence",
+        "duplicateAttempts",
         "duplicateDecisions",
         "priorReceiptLinks",
         "keyDescriptors"
@@ -537,6 +545,7 @@
         "postStateEvidence": { "$ref": "#/$defs/digest" },
         "policyEvidence": { "$ref": "#/$defs/digest" },
         "taskStatusEvidence": { "$ref": "#/$defs/digest" },
+        "duplicateAttempts": { "$ref": "#/$defs/digest" },
         "duplicateDecisions": { "$ref": "#/$defs/digest" },
         "priorReceiptLinks": { "$ref": "#/$defs/digest" },
         "keyDescriptors": { "$ref": "#/$defs/digest" }
@@ -585,6 +594,7 @@
     "postStateEvidence",
     "policyEvidence",
     "taskStatusEvidence",
+    "duplicateAttempts",
     "duplicateDecisions",
     "binding",
     "commitment",
@@ -641,9 +651,10 @@
       "items": { "$ref": "#/$defs/receiptExtension" }
     },
     "taskAuthorities": { "type": "array", "minItems": 1, "maxItems": 1, "items": { "$ref": "#/$defs/taskAuthority" } },
-    "postStateEvidence": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/postStateEvidence" } },
+    "postStateEvidence": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/postStateEvidence" } },
     "policyEvidence": { "type": "array", "minItems": 2, "maxItems": 2, "items": { "$ref": "#/$defs/policyEvidence" } },
     "taskStatusEvidence": { "type": "array", "minItems": 2, "maxItems": 2, "items": { "$ref": "#/$defs/taskStatusEvidence" } },
+    "duplicateAttempts": { "type": "array", "items": { "$ref": "#/$defs/duplicateAttempt" } },
     "duplicateDecisions": { "type": "array", "items": { "$ref": "#/$defs/duplicateDecision" } },
     "binding": { "$ref": "#/$defs/binding" },
     "commitment": { "$ref": "#/$defs/bindingCommitment" },
