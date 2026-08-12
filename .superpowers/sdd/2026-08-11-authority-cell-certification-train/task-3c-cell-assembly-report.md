@@ -35,7 +35,7 @@
 - A human-signed, currently trusted Job Card activates only the initialization-generated task/job/root-grant/Cell identities. Concrete limits and the complete constraints preimage are checked against Job Card commitments. The root grant uses a readiness-activated `authority-cell/delegation-grant` key whose SPKI is purpose-separated from all other human/Cell keys.
 - Root task/allocation registration is durable and exact-replay idempotent. A conflicting task, grant, allocation identity, signed grant, or effects budget refuses.
 - The single certification principal and runtime session identity are derived from durable activation state. The existing `PrincipalRegistry` returns a short-lived bearer once and persists only its digest; restart, duplicate-session, expiry, and task-revocation paths remain fail-closed.
-- Activation canonicalizes and binds one link-safe, operator-owned current-trust pin outside the entire certification workspace. `verifyCertificationDispatchReadiness` rejects caller-supplied trust paths and callback fields, returns a WeakMap-backed opaque permit, and rereads only that bound pin. Permit revalidation verifies monotonic current Job Card trust, signed full-selection readiness before selecting one scenario, root grant signature/constraints, task/grant/allocation/principal state, remaining effects, exact signed semantic runner/test preflight, and an endpoint manifest independently rederived from sanitized configuration.
+- `createCertificationCellHost` is the only public assembly surface. Its constructor canonicalizes one link-safe, operator-owned current-trust pin outside the entire certification workspace and retains that authority in an immutable host object. Activation records only a path digest, never the path. Every readiness/revalidation recanonicalizes the host path, rejects links/junctions or a move inside workspace-controlled output, matches the host and activation commitments, and then rereads current trust. Closed host methods accept neither a path nor a callback override.
 - Task 3C execution is structurally inert: the public/certification API exports no runner registry, runner callback, provider callback, or arbitrary-code execution transition. One-use permit revalidation deletes the permit before checking current state, invokes nothing, and consumes zero effects. The private Task 4 dispatch transition must introduce host-owned execution and consume the effect immediately before its provider write; live-provider readiness remains false here.
 - Root registration and durable principal issuance use serialized filesystem transactions. Conflicting root activations and duplicate live runtime-session credentials yield exactly one success even across independent service/registry instances.
 - Signed readiness remains `dispatchable:false`; every generated/scaffold/activation/snapshot artifact retains `completeness:"unchecked"`.
@@ -56,6 +56,8 @@
 - `0d46fac` GREEN review-finding closure
 - `9690113` RED require activation-bound trust and structurally inert Task 3C dispatch
 - `623fc7c` GREEN remove all public runner/callback execution and effect consumption
+- `eda13a2` RED require the host runtime, not mutable activation, to own current-trust path authority
+- `68bf302` GREEN expose one closed host object and bind only the path digest in activation
 
 ## Focused verification
 
@@ -68,7 +70,7 @@ node --test --test-concurrency=1 dist-test/test/authority/certification-authorit
 npm run check:authority-contract
 ```
 
-Results: build passed; test compilation passed; authority contract drift check passed; focused tests **65 passed, 0 failed, 0 skipped**.
+Results: build passed; test compilation passed; authority contract drift check passed; focused tests **66 passed, 0 failed, 0 skipped**.
 
 The full `npm test` suite was intentionally not run, per Task 3C scope.
 
@@ -87,4 +89,4 @@ The full `npm test` suite was intentionally not run, per Task 3C scope.
 
 ## Independent review
 
-The first fresh read-only review requested nine changes, converted into RED regressions in `58a838a`. Its same-reviewer re-review closed seven and identified two remaining trust-boundary gaps. Those became RED `9690113` and GREEN `623fc7c`. A final same-reviewer pass over `a668acf..HEAD` is pending.
+The first fresh read-only review requested nine changes, converted into RED regressions in `58a838a`. Its same-reviewer re-review closed seven and identified two remaining trust-boundary gaps; RED `9690113` and GREEN `623fc7c` removed execution. The next pass found mutable activation still selected the trust path; RED `eda13a2` and GREEN `68bf302` moved that authority into the host constructor. A final same-reviewer pass over `a668acf..HEAD` is pending.
