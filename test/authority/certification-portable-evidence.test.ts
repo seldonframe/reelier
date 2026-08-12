@@ -5,6 +5,7 @@ import { signAuthorityDigest } from "../../src/authority/crypto.js";
 import { authorityDigest } from "../../src/authority/wire.js";
 import {
   createCertificationTaskStatusEvidence,
+  createCertificationPostStateEvidence,
   verifyCertificationTaskStatusEvidence,
 } from "../../src/authority/certification/portable-evidence.js";
 
@@ -47,4 +48,8 @@ test("portable task status binds the signed observation time without claiming la
   assert.equal(verifyCertificationTaskStatusEvidence(revoked, verifier).status, "verified");
   const falseActive: any = { ...revoked, currentActiveClaim: true };
   assert.throws(() => verifyCertificationTaskStatusEvidence(falseActive, verifier), /signature|revoked|active/i);
+});
+
+test("partial post-state requires a reviewed observation with a real observed projection", () => {
+  assert.throws(() => createCertificationPostStateEvidence({ requestId: "request_1", dispatchRequestDigest: `sha256:${"1".repeat(64)}`, permitSnapshotDigest: `sha256:${"2".repeat(64)}`, expectedProjectionDigest: `sha256:${"3".repeat(64)}`, preSourceBundleDigest: `sha256:${"4".repeat(64)}`, projectionSchemaId: "github_issue_labels_projection_v1", projectionSchemaDigest: `sha256:${"5".repeat(64)}`, preProjectionDigest: `sha256:${"6".repeat(64)}`, observedProjectionDigest: null, observationMethod: "not-observed", observedAt: "2026-08-12T12:00:00.000Z", confidence: "partial" }, signer), /partial|observed|method/i);
 });
