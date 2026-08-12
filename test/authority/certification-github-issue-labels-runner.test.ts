@@ -35,7 +35,7 @@ function compileTimeLifecycleActivationBoundary(): void {
 }
 void compileTimeLifecycleActivationBoundary;
 
-async function fixture(mode: "normal" | "source-drift" | "effect-drift" | "provider-503" | "accessor-response" | "cut-after-budget" | "cut-after-dispatched" | "cut-after-send-intent" | "cut-after-cleanup-publication" | "pause-after-dispatched" = "normal", authorityMode: "valid" | "absent" | "substituted" | "contract-substituted" = "valid") {
+async function fixture(mode: "normal" | "source-drift" | "effect-drift" | "provider-503" | "accessor-response" | "cut-after-budget" | "cut-after-dispatched" | "cut-after-send-intent" | "cut-after-cleanup-publication" | "cut-after-conflict-publication" | "pause-after-dispatched" = "normal", authorityMode: "valid" | "absent" | "substituted" | "contract-substituted" = "valid") {
   const root = await mkdtemp(path.join(tmpdir(), "reelier-github-cell-"));
   const configPath = path.join(root, "certification.local.json");
   await writeFile(configPath, JSON.stringify({ v: "reelier.certification-operator-config/v3", authorityConfigPath: "authority/authority.yml", evidenceDirectory: "authority/receipts/certification", scenarios: ["github-issue-labels"], resources: { "github-issue-labels": { apiBaseUrl: "https://api.github.com", owner: "fixlyai", repository: "reelier-certification", issueNumber: 1 } }, cleanup: { "github-issue-labels": ["restore-github-labels"] }, desiredState: { "github-issue-labels": { labels: ["certification-after"] } }, metadata: {}, secretReferences: { githubCredential: "env:REELIER_GITHUB_TOKEN" } }), "utf8");
@@ -244,6 +244,27 @@ test("semantic duplicate and conflicting bytes do not write or consume additiona
     const graph = await f.runner.exportGraph({ bearerToken: f.credential.token });
     assert.equal(graph.exceptions.some((item: any) => item.kind === "conflict" && item.exactBytesDigest === (conflict as any).exactBytesDigest), true);
     assert.equal(verifyCertificationTaskReceiptGraph(graph, { trustPin: f.pin }).status, "verified");
+  } finally { await rm(f.root, { recursive: true, force: true }); }
+});
+
+test("conflict receipt publication is recoverable and cannot verify ahead of its journal", async () => {
+  const f = await fixture("cut-after-conflict-publication"); try {
+    await f.runner.run({ bearerToken: f.credential.token, requestId: "request_conflict_cut" });
+    const exactBytes = Buffer.from("provider returned irreconcilable bytes").toString("base64");
+    await assert.rejects(() => f.runner.conflict({ bearerToken: f.credential.token, requestId: "request_conflict_cut", exactBytes }), /controlled cut/i);
+    const journalRoot = path.join(f.initialized.workspace, "authority", "github-label-runner");
+    const pending = JSON.parse(await readFile(path.join(journalRoot, "request_conflict_cut.journal.json"), "utf8"));
+    assert.equal(pending.phase, "conflict-publication-pending");
+    assert.match(pending.exactBytesDigest, /^sha256:[0-9a-f]{64}$/);
+    assert.equal(pending.conflictReceiptDigest, null);
+    await assert.rejects(() => f.runner.exportGraph({ bearerToken: f.credential.token }), /receipt.*journal|lifecycle|pending/i);
+    const restarted = await createGitHubIssueLabelsHermeticComposition(f.cell);
+    assert.deepEqual(await restarted.recover(), ["request_conflict_cut"]);
+    assert.equal((await restarted.status({ bearerToken: f.credential.token, requestId: "request_conflict_cut" })).status, "conflict");
+    const replay = await restarted.conflict({ bearerToken: f.credential.token, requestId: "request_conflict_cut", exactBytes });
+    assert.equal(replay.status, "conflict");
+    await assert.rejects(() => restarted.conflict({ bearerToken: f.credential.token, requestId: "request_conflict_cut", exactBytes: Buffer.from("changed").toString("base64") }), /changed|terminal/i);
+    assert.equal(verifyCertificationTaskReceiptGraph(await restarted.exportGraph({ bearerToken: f.credential.token }), { trustPin: f.pin }).status, "verified");
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
