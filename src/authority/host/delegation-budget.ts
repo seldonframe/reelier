@@ -14,6 +14,17 @@ export interface BudgetAllocation {
   readonly revoked: boolean;
 }
 
+export interface DelegationBudgetLedgerEvent {
+  readonly v: "reelier.delegation-budget-event/v1";
+  readonly type: string;
+  readonly allocationId: string;
+  readonly taskId: string;
+  readonly effects: number;
+  readonly reservationId?: string;
+  readonly at: string;
+  readonly eventDigest: string;
+}
+
 interface PersistedAllocation {
   allocationId: string;
   taskId: string;
@@ -192,6 +203,12 @@ export class FsDelegationBudgetLedger {
     return allocation ? view(allocation) : undefined;
   }
 
+  async eventsForTask(taskId: string): Promise<readonly DelegationBudgetLedgerEvent[]> {
+    if (typeof taskId !== "string" || taskId.length === 0) throw new TypeError("budget task id is invalid");
+    const state = await this.readState();
+    return Object.freeze(state.events.filter(event => event.taskId === taskId).map(parseBudgetEvent));
+  }
+
   private async mutate<T>(operation: Mutation<T>): Promise<T> {
     await mkdir(this.root, { recursive: true });
     const release = await this.acquireLock();
@@ -310,6 +327,14 @@ function reserveInAncestors(state: PersistedState, allocation: PersistedAllocati
 function appendEvent(state: PersistedState, type: string, allocation: Readonly<{ allocationId: string; taskId: string }>, effects: number, reservationId?: string): void {
   const body = { v: "reelier.delegation-budget-event/v1", type, allocationId: allocation.allocationId, taskId: allocation.taskId, effects, ...(reservationId ? { reservationId } : {}), at: new Date().toISOString() };
   state.events = [...state.events, { ...body, eventDigest: authorityDigest(body) }];
+}
+
+function parseBudgetEvent(value: Record<string, unknown>): DelegationBudgetLedgerEvent {
+  const keys = ["v", "type", "allocationId", "taskId", "effects", ...(value.reservationId === undefined ? [] : ["reservationId"]), "at", "eventDigest"];
+  if (Object.keys(value).length !== keys.length || Object.keys(value).some(key => !keys.includes(key)) || value.v !== "reelier.delegation-budget-event/v1" || typeof value.type !== "string" || typeof value.allocationId !== "string" || typeof value.taskId !== "string" || !Number.isSafeInteger(value.effects) || (value.effects as number) < 0 || (value.reservationId !== undefined && typeof value.reservationId !== "string") || typeof value.at !== "string" || new Date(value.at).toISOString() !== value.at || typeof value.eventDigest !== "string") throw new TypeError("delegation budget event is invalid");
+  const { eventDigest, ...body } = value;
+  if (eventDigest !== authorityDigest(body)) throw new TypeError("delegation budget event digest is invalid");
+  return Object.freeze(value as unknown as DelegationBudgetLedgerEvent);
 }
 
 function view(allocation: PersistedAllocation): BudgetAllocation {
