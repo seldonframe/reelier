@@ -7,6 +7,7 @@ export interface AuthorityHostConfig {
   readonly version: 1;
   readonly tenant: string;
   readonly requester: string;
+  readonly authorityCellId?: string;
   readonly definitions: readonly string[];
   readonly ingress?: { readonly bearerRef?: string; readonly allowedRequester?: string; readonly principalRegistryFile?: string };
   readonly topology?: "isolated" | "same-user" | "unknown";
@@ -45,7 +46,8 @@ function validateConfig(value: unknown, baseDir: string): AuthorityHostConfig {
   const deploymentPath = raw.deploymentPath === undefined ? undefined : resolvePath(raw.deploymentPath, "deployment.json");
   const jobCardTrustPinPath = raw.jobCardTrustPinPath === undefined ? undefined : resolvePath(raw.jobCardTrustPinPath, "trust/job-card-trust-pin.json");
   const gateKeyFile = raw.gateKeyFile === undefined ? undefined : resolvePath(raw.gateKeyFile, "keys/local-gate.pem");
-  return Object.freeze({ version: 1, tenant: raw.tenant, requester: raw.requester, definitions, ingress, topology, ledgerDir: resolvePath(raw.ledgerDir, ".authority/ledger"), decisionDir: resolvePath(raw.decisionDir, ".authority/decisions"), receiptDir: resolvePath(raw.receiptDir, ".authority/receipts"), ...(gateKeyFile ? { gateKeyFile } : {}), endpoints, ...(deploymentPath ? { deploymentPath } : {}), ...(jobCardTrustPinPath ? { jobCardTrustPinPath } : {}), cloud });
+  if (raw.authorityCellId !== undefined && (typeof raw.authorityCellId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(raw.authorityCellId))) throw new TypeError("invalid authority cell id");
+  return Object.freeze({ version: 1, tenant: raw.tenant, requester: raw.requester, ...(raw.authorityCellId ? { authorityCellId: raw.authorityCellId } : {}), definitions, ingress, topology, ledgerDir: resolvePath(raw.ledgerDir, ".authority/ledger"), decisionDir: resolvePath(raw.decisionDir, ".authority/decisions"), receiptDir: resolvePath(raw.receiptDir, ".authority/receipts"), ...(gateKeyFile ? { gateKeyFile } : {}), endpoints, ...(deploymentPath ? { deploymentPath } : {}), ...(jobCardTrustPinPath ? { jobCardTrustPinPath } : {}), cloud });
 }
 
 function validateEndpoint(value: unknown): JsonHttpsEndpoint {

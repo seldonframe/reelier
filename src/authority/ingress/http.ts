@@ -3,7 +3,7 @@ import { authenticateOutcomeRequest } from "../keys.js";
 import type { AuthorityMcpHandler } from "./mcp.js";
 import type { AuthorityExecutionContextV1 } from "../types.js";
 
-export async function handleAuthorityHttp(request: IncomingMessage, response: ServerResponse, handler: AuthorityMcpHandler, context: { readonly tenant: string; readonly requester: string; readonly resolvePrincipal?: (header: string | undefined) => Promise<{ readonly tenant: string; readonly requester: string; readonly executionContext: AuthorityExecutionContextV1 } | undefined> }, artifactStage?: (input: unknown, context: { readonly tenant: string; readonly requester: string; readonly executionContext?: AuthorityExecutionContextV1 }) => Promise<unknown>): Promise<void> {
+export async function handleAuthorityHttp(request: IncomingMessage, response: ServerResponse, handler: AuthorityMcpHandler, context: { readonly tenant: string; readonly requester: string; readonly resolvePrincipal?: (header: string | undefined) => Promise<{ readonly tenant: string; readonly requester: string; readonly executionContext: AuthorityExecutionContextV1 } | undefined>; readonly identity?: { readonly cellId: string; readonly adapterContractDigest: string } }, artifactStage?: (input: unknown, context: { readonly tenant: string; readonly requester: string; readonly executionContext?: AuthorityExecutionContextV1 }) => Promise<unknown>): Promise<void> {
   let resolved: Awaited<ReturnType<NonNullable<typeof context.resolvePrincipal>>>;
   try { resolved = context.resolvePrincipal ? await context.resolvePrincipal(request.headers.authorization) : undefined; } catch { resolved = undefined; }
   if (!resolved) { write(response, 401, { verdict: "refused", reasonCode: "authentication-required", lifecycleState: "refused", requestId: "" }); return; }
@@ -11,6 +11,7 @@ export async function handleAuthorityHttp(request: IncomingMessage, response: Se
     const requestContext = resolved;
     if (request.method !== "POST" && request.method !== "GET") return write(response, 405, { verdict: "refused", reasonCode: "method-not-allowed" });
     const url = new URL(request.url ?? "/", "http://authority.invalid");
+    if (url.pathname === "/v1/identity" && request.method === "GET" && context.identity) return write(response, 200, { v: "reelier.authority-cell-identity/v1", cellId: context.identity.cellId, adapterContractDigest: context.identity.adapterContractDigest });
     if (url.pathname === "/v1/jobs" && request.method === "GET") {
       if (!handler.jobsSearch) return write(response, 503, { verdict: "refused", reasonCode: "job-catalog-unavailable", lifecycleState: "unavailable", requestId: "" });
       return write(response, 200, await handler.jobsSearch({ query: url.searchParams.get("query") ?? "" }, publicContext(requestContext)));
