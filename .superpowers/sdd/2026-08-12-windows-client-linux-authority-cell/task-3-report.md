@@ -46,5 +46,7 @@ Test results (verbatim tail)
 Open risks
 
 - The current process is Windows, so existing `host-server.test.ts` refuses at the intended Linux host gate; this task's focused ingress test uses the host-neutral ingress function and passes.
-- The token-file resolver rejects a final symlink and never returns token content, but component-directory symlink confinement is not separately enforced.
+- Fix round 1: token files are now confined to `.reelier/credentials` by default or an injected explicit credential root; each ancestry component and the final file are checked with `lstat`, then canonical containment is checked with `realpath`. Symlinks/junctions and non-regular files refuse as an `absent` token reference without revealing content.
+- Fix round 1: HTTPS endpoints resolve every address before bearer dispatch. Any non-public result refuses; the production connector pins the selected validated address through Node's request lookup callback and preserves TLS server name. Redirects are not followed.
+- Fix round 1: doctor states are now `absent` for unavailable config/token material, `unchecked` for transport/identity availability failures, `failed` for authentication/malformed/mismatch/refused endpoint evidence, and `verified` for exact identity/digest.
 - Consequential request construction is not introduced by this task; the server continues to derive requester/session context from authenticated ingress. Future client dispatch code must consume the verified live result before sending consequential requests.
