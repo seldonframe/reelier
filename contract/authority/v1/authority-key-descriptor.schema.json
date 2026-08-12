@@ -8,7 +8,7 @@
     "v": { "const": "reelier.authority-key-descriptor/v1" },
     "keyId": { "type": "string", "pattern": "^[a-z][a-z0-9_-]{2,127}$" },
     "role": { "enum": ["human-sponsor", "authority-cell"] },
-    "purpose": { "enum": ["certification-readiness", "signed-job-card", "authority-evidence", "authority-lease", "authority-receipt", "gate-event", "topology-evidence"] },
+    "purpose": { "enum": ["certification-readiness", "signed-job-card", "authority-evidence", "authority-lease", "authority-receipt", "delegation-grant", "gate-event", "topology-evidence"] },
     "algorithm": { "const": "ed25519" },
     "publicKeySpkiBase64": { "type": "string", "minLength": 1, "contentEncoding": "base64" }
   },
@@ -16,7 +16,7 @@
     {
       "if": { "properties": { "role": { "const": "human-sponsor" } }, "required": ["role"] },
       "then": { "properties": { "purpose": { "enum": ["certification-readiness", "signed-job-card"] } } },
-      "else": { "properties": { "purpose": { "enum": ["authority-evidence", "authority-lease", "authority-receipt", "gate-event", "topology-evidence"] } } }
+      "else": { "properties": { "purpose": { "enum": ["authority-evidence", "authority-lease", "authority-receipt", "delegation-grant", "gate-event", "topology-evidence"] } } }
     }
   ]
 }

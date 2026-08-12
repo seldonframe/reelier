@@ -16,7 +16,7 @@ const KEY_ID = /^[a-z][a-z0-9_-]{2,127}$/;
 const EVENT_ID = /^[a-z][a-z0-9_-]{2,127}$/;
 const HUMAN_PURPOSE = "certification-readiness" as const;
 const JOB_CARD_PURPOSE = "signed-job-card" as const;
-const CELL_PURPOSES = ["authority-evidence", "authority-lease", "authority-receipt", "gate-event", "topology-evidence"] as const;
+const CELL_PURPOSES = ["authority-evidence", "authority-lease", "authority-receipt", "delegation-grant", "gate-event", "topology-evidence"] as const;
 type CellPurpose = (typeof CELL_PURPOSES)[number];
 
 export type AuthorityKeyDescriptorV1 = Readonly<{
