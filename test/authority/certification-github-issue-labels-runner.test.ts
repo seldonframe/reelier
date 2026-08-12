@@ -504,6 +504,7 @@ test("portable evidence links the approved task, exact post-state, policy status
     assert.equal(graph.taskStatusEvidence.every((item: any) => item.freshness === "unchecked"), true);
     assert.equal(graph.duplicateDecisions.length, 1);
     assert.equal(graph.duplicateAttempts.length, 1);
+    assert.equal(graph.duplicateAttempts[0].attemptRequestId, "request_portable_duplicate");
     assert.deepEqual({ budget: graph.duplicateDecisions[0].budgetDelta, writes: graph.duplicateDecisions[0].providerWriteDelta }, { budget: 0, writes: 0 });
     assert.equal(verifyCertificationTaskReceiptGraph(graph, { trustPin: f.pin }).status, "verified");
     for (const mutate of [
@@ -535,6 +536,7 @@ test("offline portable verification rejects re-signed false claims with a fresh 
       (g: any) => { g.postStateEvidence[0] = resign({ ...g.postStateEvidence[0], expectedProjectionDigest: authorityDigest(["WRONG"]), observedProjectionDigest: authorityDigest(["WRONG"]) }); },
       (g: any) => { g.taskStatusEvidence[1] = resign({ ...g.taskStatusEvidence[1], taskId: "WRONG_TASK" }); },
       (g: any) => { g.policyEvidence[1] = resign({ ...g.policyEvidence[1], policyDigest: `sha256:${"a".repeat(64)}` }); },
+      (g: any) => { g.duplicateAttempts = []; g.duplicateDecisions = []; },
     ]) { const changed: any = structuredClone(graph); mutate(changed); assert.throws(() => verifyCertificationTaskReceiptGraph(rebuild(changed), { trustPin: f.pin }), /post-state|projection|task status|policy|duplicate|authority/i); }
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
