@@ -7,12 +7,28 @@ import { authorityCanonicalBytes, authorityDigest, signAuthorityDigest, signJobC
 import { connectionAdoptionCommitmentDigest, connectionDescriptorDigest, createOpaqueConnectionRouteRegistry, digestNormalizedMcpToolSchemas } from "../../src/connections.js";
 import { buildAuthorityDeployment } from "../../src/authority/host/deploy.js";
 import { createLocalAuthorityRuntime } from "../../src/authority/host/local.js";
-import { parseAuthorityKeyDescriptor } from "../../src/authority/certification/authority.js";
+import { createSignedCertificationReadiness, parseAuthorityKeyDescriptor } from "../../src/authority/certification/authority.js";
 import type { DispatchAdapter } from "../../src/authority/host/dispatch.js";
 import { gmailPackDigest, gmailReplyDefinitionDigest, gmailResolverId, gmailProjectionSchemaId, gmailReadEndpointId, gmailReplyWriteEndpointId, gmailPolicySchemaId } from "../../src/packs/gmail/index.js";
 import { bindableTempRoot } from "./bindable-root.js";
 
 const sha = (seed: string) => `sha256:${seed.repeat(64).slice(0, 64)}`;
+
+function jobCardTrustPin(jobPublicKey: ReturnType<typeof generateKeyPairSync>["publicKey"]) {
+  const readinessSigner = generateKeyPairSync("ed25519");
+  const cellSigner = generateKeyPairSync("ed25519");
+  const jobDescriptor = parseAuthorityKeyDescriptor({ v: "reelier.authority-key-descriptor/v1", keyId: "job_sponsor", role: "human-sponsor", purpose: "signed-job-card", algorithm: "ed25519", publicKeySpkiBase64: jobPublicKey.export({ type: "spki", format: "der" }).toString("base64") });
+  const human = parseAuthorityKeyDescriptor({ v: "reelier.authority-key-descriptor/v1", keyId: `signer_${"e".repeat(24)}`, role: "human-sponsor", purpose: "certification-readiness", algorithm: "ed25519", publicKeySpkiBase64: readinessSigner.publicKey.export({ type: "spki", format: "der" }).toString("base64") });
+  const cell = parseAuthorityKeyDescriptor({ v: "reelier.authority-key-descriptor/v1", keyId: "cell_receipt_key", role: "authority-cell", purpose: "authority-receipt", algorithm: "ed25519", publicKeySpkiBase64: cellSigner.publicKey.export({ type: "spki", format: "der" }).toString("base64") });
+  const event = (sequence: number, descriptor: typeof human, previousEventDigest: string | null) => ({ v: "reelier.authority-trust-event/v1" as const, eventId: `trust_${sequence}_${"f".repeat(12)}`, sequence, action: "activate" as const, keyDescriptorDigest: authorityDigest(descriptor), occurredAt: "2026-01-01T00:00:00.000Z", previousEventDigest });
+  const first = event(0, human, null); const second = event(1, jobDescriptor, authorityDigest(first)); const third = event(2, cell, authorityDigest(second));
+  const readiness: any = { v: "reelier.certification-readiness-candidate/v1", status: "awaiting-human-signature", preparationReady: true, signatureStatus: "absent", authorization: "absent", dispatchable: false, completeness: "unchecked", configDigest: sha("1"), selectionDigest: sha("2"), preflightDigest: "", scenarios: ["github-issue-labels"], identifiers: { taskId: `task_${"a".repeat(24)}`, jobCardId: `job_${"b".repeat(24)}`, rootGrantId: `grant_${"c".repeat(24)}`, authorityCellId: `cell_${"d".repeat(24)}`, signerId: human.keyId }, commitments: { resources: [], cleanup: [], credentials: [], runners: { status: "configured", artifacts: [] }, tests: { status: "configured", artifacts: [] }, topology: "absent", signatureStatus: "absent" } };
+  const preflightBody: any = { v: "reelier.certification-preflight/v2", configDigest: readiness.configDigest, selectionDigest: readiness.selectionDigest, identifiers: readiness.identifiers, scenarios: readiness.scenarios, resources: [], cleanup: [], credentialReferences: [], inputs: { runners: readiness.commitments.runners, tests: readiness.commitments.tests }, topology: "absent", trust: "unchecked", signatureStatus: "absent", authorization: "absent", completeness: "unchecked", missing: [], ok: true, preparationReady: true };
+  const preflight = { ...preflightBody, digest: authorityDigest(preflightBody) }; readiness.preflightDigest = preflight.digest;
+  const keyDescriptors = [human, jobDescriptor, cell]; const readinessTrustEvents = [first, second, third];
+  const signedReadiness = createSignedCertificationReadiness({ readinessCandidate: readiness, readinessCandidateDigest: authorityDigest(readiness), preflight, humanKeyDescriptor: human, jobCardKeyDescriptors: [jobDescriptor], cellKeyDescriptors: [cell], trustEvents: readinessTrustEvents, humanPrivateKey: readinessSigner.privateKey, authorizedAt: "2026-01-02T00:00:00.000Z" });
+  return { v: "reelier.job-card-trust-pin/v1" as const, signedReadiness, readinessCandidate: readiness, preflight, humanTrustRoot: human, keyDescriptors, readinessTrustEvents, currentTrustEvents: readinessTrustEvents };
+}
 
 test("local deployment dispatches once, reconciles, publishes a receipt, and survives restart", async () => {
   const root = await bindableTempRoot("reelier-local-e2e-");
@@ -42,13 +58,10 @@ test("local deployment dispatches once, reconciles, publishes a receipt, and sur
     const descriptor = { v: "reelier.connection-descriptor/v1" as const, connectionId: "gmail", kind: "adopted-mcp-stdio" as const, provider: { id: "gmail", toolServerName: "gmail-mcp" }, callableRoute: { kind: "mcp-stdio" as const, routeId: "route.gmail", endpointIds: [gmailReadEndpointId, gmailReplyWriteEndpointId] }, account: { status: "verified" as const, identity: "gmail-owner-example-test" }, toolSchemas: digestNormalizedMcpToolSchemas(liveTools), secretOwner: "host" as const, coverage: { v: "reelier.host-coverage/v1" as const, host: "codex", observation: "observed" as const, outcomeInvocation: "supported" as const, exclusiveEnforcement: "unknown" as const, limitations: ["raw-write-reachability-unmeasured"] } };
     const adoptionBody = { v: "reelier.connection-adoption/v1" as const, adoptionId: "adopt_gmail", descriptorDigest: connectionDescriptorDigest(descriptor), selectedAccountIdentity: descriptor.account.identity, mode: "existing" as const, sidecarRouteId: descriptor.callableRoute.routeId, rawWriteReachability: "reachable" as const, activationState: "active" as const, secureConnectionCommitment: null };
     const jobCard = signJobCard({ v: "reelier.signed-job-card/v1", jobId: "customer_reply", title: "Reply to a customer", taskShapeDigest: sha("a"), semanticClasses: ["communication_commit_v1"], definitionAliases: ["gmail_reply_send_v1"], connectorIds: ["gmail"], accountIdentities: [descriptor.account.identity], connectionDescriptorDigests: [connectionDescriptorDigest(descriptor)], adoptionCommitmentDigests: [connectionAdoptionCommitmentDigest(adoptionBody)], sourceRefs: ["thread"], audiences: ["operator"], limitsDigest: authorityDigest(limits), instructionsDigest: sha("b"), packDigests: [gmailPackDigest], exceptionPolicy: ["ambiguous-reconcile"], coverage: "declared-surface" }, "job_sponsor", jobSponsor.privateKey);
-    const jobDescriptor = parseAuthorityKeyDescriptor({ v: "reelier.authority-key-descriptor/v1", keyId: "job_sponsor", role: "human-sponsor", purpose: "signed-job-card", algorithm: "ed25519", publicKeySpkiBase64: jobSponsor.publicKey.export({ type: "spki", format: "der" }).toString("base64") });
-    const jobActivation = { v: "reelier.authority-trust-event/v1" as const, eventId: "trust_job_sponsor", sequence: 0, action: "activate" as const, keyDescriptorDigest: authorityDigest(jobDescriptor), occurredAt: "2026-01-01T00:00:00.000Z", previousEventDigest: null };
-    const jobCardAuthority = { signedReadinessDigest: sha("d"), signerKeyDescriptorDigest: authorityDigest(jobDescriptor), keyDescriptors: [jobDescriptor], trustEvents: [jobActivation], trustHistoryDigest: authorityDigest([jobActivation]), trustHeadDigest: authorityDigest(jobActivation) };
+    const trustPin = jobCardTrustPin(jobSponsor.publicKey);
     const candidate = {
       v: "reelier.authority-deployment-candidate/v1",
       jobCard,
-      jobCardAuthority,
       connectionDescriptors: [descriptor],
       connectionAdoptions: [{ ...adoptionBody, signedDeploymentBinding: signedJobCardDigest(jobCard) }],
       state: { tenant: "tenant_1", definitionAlias: "gmail_reply_send_v1", stateVersion: 1, candidates: [{ contractEnvelope: { canonicalBase64: contractBytes.toString("base64"), advertisedDigest: contractDigest, signerId: "contract-signer", signature: signAuthorityDigest(contractSigner.privateKey, "outcome-contract", contractDigest) }, delegationEnvelopes: [{ index: 0, canonicalBase64: grantBytes.toString("base64"), advertisedDigest: grantDigest, signerId: "operator", signature: signAuthorityDigest(operator.privateKey, "delegation-grant", grantDigest) }], stateEvents: [{ index: 0, kind: "activated" as const, contractDigest, at: "2026-01-01T00:00:00.000Z" }] }] },
@@ -59,13 +72,13 @@ test("local deployment dispatches once, reconciles, publishes a receipt, and sur
     const candidateFile = path.join(candidateRoot, "candidate.json");
     await writeFile(candidateFile, `${JSON.stringify(candidate)}\n`);
     const authorityRoot = path.join(root, "authority");
-    const built = await buildAuthorityDeployment(candidateFile, path.join(authorityRoot, "deployments", "customer_reply"));
+    const built = await buildAuthorityDeployment(candidateFile, path.join(authorityRoot, "deployments", "customer_reply"), trustPin);
 
     const adapter: DispatchAdapter = {
       async dispatch() { dispatches++; return { kind: "acknowledged", resultDigest: authorityDigest({ v: "fake-provider-response/v1", messageId: "provider-message-1" }) }; },
       async reconcile() { reconciliations++; return { kind: "acknowledged", resultDigest: authorityDigest({ v: "fake-read-back/v1", messageId: "provider-message-1" }), reconciliationStatus: "matched", normalizedProjectionDigest: authorityDigest({ v: "fake-message/v1", messageId: "provider-message-1" }) }; },
     };
-    const config = { version: 1 as const, tenant: "tenant_1", requester: "operator", definitions: ["gmail_reply_send_v1"], ledgerDir: path.join(authorityRoot, "ledger"), decisionDir: path.join(authorityRoot, "decisions"), receiptDir: path.join(authorityRoot, "receipts"), gateKeyFile: path.join(authorityRoot, "keys", "local-gate.pem"), endpoints: [], deploymentPath: built.deploymentFile };
+    const config = { version: 1 as const, tenant: "tenant_1", requester: "operator", definitions: ["gmail_reply_send_v1"], ledgerDir: path.join(authorityRoot, "ledger"), decisionDir: path.join(authorityRoot, "decisions"), receiptDir: path.join(authorityRoot, "receipts"), gateKeyFile: path.join(authorityRoot, "keys", "local-gate.pem"), endpoints: [], deploymentPath: built.deploymentFile, jobCardTrustPinPath: built.jobCardTrustPinFile };
     await assert.rejects(() => createLocalAuthorityRuntime({ ...config, definitions: ["slack_channel_topic_set_v1"] }, { dispatchAdapter: adapter, jobCardTrustPin: built.jobCardTrustPin }), /definitions.*signed Job Card/i);
     const deploymentBytes = await readFile(built.deploymentFile, "utf8");
     const stripped = JSON.parse(deploymentBytes) as Record<string, unknown>;
