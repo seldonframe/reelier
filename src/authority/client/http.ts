@@ -14,11 +14,11 @@ export async function checkAuthorityCellLive(value: unknown, dependencies: Autho
   let connection: AuthorityCellConnectionV1;
   try { connection = parseAuthorityCellConnectionV1(value); } catch { return { state: "failed", reasonCode: "connection-invalid" }; }
   try {
+    const addresses = await (dependencies.resolveAddresses ?? resolveAddresses)(new URL(connection.endpoint).hostname);
+    if (!addresses.length || addresses.some(address => !isPublicAddress(address)) && !isExplicitLoopbackHttp(connection.endpoint, addresses)) return { state: "failed", reasonCode: "endpoint-address-refused" };
     let token: string;
     try { token = await (dependencies.resolveToken ?? (reference => resolveToken(reference, dependencies.credentialRoot)))(connection.bearerTokenRef); }
     catch { return { state: "absent", reasonCode: "token-unavailable" }; }
-    const addresses = await (dependencies.resolveAddresses ?? resolveAddresses)(new URL(connection.endpoint).hostname);
-    if (!addresses.length || addresses.some(address => !isPublicAddress(address)) && !isExplicitLoopbackHttp(connection.endpoint, addresses)) return { state: "failed", reasonCode: "endpoint-address-refused" };
     const response = dependencies.request
       ? await dependencies.request(`${connection.endpoint}/v1/identity`, { method: "GET", headers: { authorization: `Bearer ${token}`, accept: "application/json" }, redirect: "error" })
       : await pinnedIdentityRequest(connection.endpoint, token, addresses[0]!);
