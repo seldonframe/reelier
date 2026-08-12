@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createRequire } from "node:module";
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { authorityDigest } from "../../src/authority/wire.js";
 import {
   parseCertificationEndpointManifest,
@@ -200,4 +203,28 @@ test("closed public plan input rejects accessor-based callbacks without invoking
   };
   assert.throws(() => parseCertificationScenarioPlan(plan, config, ["github-issue-labels"]), /inert|accessor|closed/i);
   assert.equal(calls, 0);
+});
+
+test("portable Task 4A schemas agree with runtime parsers on a positive and negative corpus", () => {
+  const Ajv2020 = createRequire(import.meta.url)("ajv/dist/2020").default;
+  const ajv = new Ajv2020({ strict: false });
+  const load = (name: string) => JSON.parse(readFileSync(path.join(process.cwd(), "contract", "authority", "v1", name), "utf8"));
+  const validators = new Map<string, (value: unknown) => boolean>();
+  const validates = (schema: string, value: unknown) => { if (!validators.has(schema)) validators.set(schema, ajv.compile(load(schema))); return validators.get(schema)!(value); };
+  const config = parseCertificationOperatorConfigV3(githubV3());
+  const endpoint = deriveCertificationEndpointManifest(config, "github-issue-labels");
+  const registry = getCertificationRunnerRegistryEntry("github-issue-labels");
+  const runner = { v: "reelier.certification-runner-manifest/v2", scenarioId: "github-issue-labels", runnerId: registry.runnerId, endpointManifestDigest: authorityDigest(endpoint), metadataDigest: registry.metadataDigest, registryDigest: certificationRunnerRegistryDigest, operations: registry.operations, executionReady: false, dispatchable: false };
+  const bindings = certificationScenarioPlanBindings(config, "github-issue-labels");
+  const plan = { v: "reelier.certification-scenario-plan/v1", scenarioId: "github-issue-labels", definitionAliases: registry.definitionAliases, sourceRefs: bindings.sourceRefs, resourceDigest: bindings.resourceDigest, accountCommitments: bindings.accountCommitments, desiredStateDigest: bindings.desiredStateDigest, policyCommitments: [{ schemaId: registry.policySchemaIds[0], digest: sha("1") }], cleanup: { recipeIds: bindings.cleanupRecipeIds, beforeStateDigest: sha("2") }, controlledCut: { case: "ambiguous-after-dispatch" }, runnerManifestDigest: sha("3"), testManifestDigest: sha("4"), endpointManifestDigest: authorityDigest(endpoint), runnerRegistryDigest: certificationRunnerRegistryDigest };
+  for (const [schema, positive, parse] of [
+    ["certification-runner-manifest-v2.schema.json", runner, () => parseCertificationRunnerManifest(runner)],
+    ["certification-endpoint-manifest-v2.schema.json", endpoint, () => parseCertificationEndpointManifest(endpoint)],
+    ["certification-scenario-plan.schema.json", plan, () => parseCertificationScenarioPlan(plan, config)],
+  ] as const) { assert.equal(validates(schema, positive), true); assert.doesNotThrow(parse); }
+  for (const [schema, negative, parse] of [
+    ["certification-runner-manifest-v2.schema.json", { ...runner, dispatchable: true }, () => parseCertificationRunnerManifest({ ...runner, dispatchable: true })],
+    ["certification-endpoint-manifest-v2.schema.json", { ...endpoint, dispatchable: true }, () => parseCertificationEndpointManifest({ ...endpoint, dispatchable: true })],
+    ["certification-scenario-plan.schema.json", { ...plan, choices: {} }, () => parseCertificationScenarioPlan({ ...plan, choices: {} }, config)],
+  ] as const) { assert.equal(validates(schema, negative), false); assert.throws(parse); }
 });
