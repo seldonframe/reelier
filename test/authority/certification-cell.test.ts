@@ -175,10 +175,21 @@ test("host runtime owns the immutable trust path and activation only commits its
   const f = await fixture();
   try {
     const host = await cell.createCertificationCellHost({ workspace: f.initialized.workspace, currentTrustPinPath: f.currentTrustPinPath, delegationAuthority: f.delegation, principalRegistry: f.principals, now: () => new Date("2026-08-11T20:10:00.000Z") });
-    const activation = await host.activateRootTask({ jobCard: f.jobCard, jobCardTrustPin: f.pin, delegationKeyDescriptor: f.delegationSigner, delegationPrivateKey: f.delegationKey.privateKey, constraints: f.constraints, effects: 2, issuedAt: at, expiresAt: expiry });
+    const activationInput = { jobCard: f.jobCard, jobCardTrustPin: f.pin, delegationKeyDescriptor: f.delegationSigner, delegationPrivateKey: f.delegationKey.privateKey, constraints: f.constraints, effects: 2, issuedAt: at, expiresAt: expiry };
+    for (const extra of [
+      { currentTrustPinPath: path.join(f.root, "stale-copy.json") },
+      { workspace: f.root },
+      { delegationAuthority: { registerRoot: async () => { throw new Error("CALLER_AUTHORITY_RAN"); } } },
+      { credentialAvailable: async () => { throw new Error("CALLBACK_RAN"); } },
+    ]) await assert.rejects(() => host.activateRootTask({ ...activationInput, ...extra } as never), /closed|unknown|caller/i);
+    const symbolActivation = { ...activationInput, [Symbol("caller")]: true };
+    await assert.rejects(() => host.activateRootTask(symbolActivation as never), /closed|unknown|caller/i);
+    const activation = await host.activateRootTask(activationInput);
     assert.equal("currentTrustPinPath" in activation, false);
     assert.match(activation.currentTrustPinPathDigest, /^sha256:[0-9a-f]{64}$/);
     const credential = await host.activatePrincipalSession();
+    await assert.rejects(() => (host.activatePrincipalSession as any)({ workspace: f.root }), /argument|closed|unknown/i);
+    await assert.rejects(() => (host.revalidateDispatchPermit as any)({ permit: {}, workspace: f.root }), /permit|invalid|closed/i);
     const activationFile = path.join(f.initialized.workspace, "authority", "delegation", "root-activation.json");
     const tampered = JSON.parse(await readFile(activationFile, "utf8"));
     tampered.currentTrustPinPathDigest = `sha256:${"0".repeat(64)}`;
