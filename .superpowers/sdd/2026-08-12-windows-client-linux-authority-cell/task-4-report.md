@@ -62,6 +62,7 @@ Independent review closure
 - `f1955cd` / `4b4dba4`: the exact post-publication crash window is covered: the conflict receipt is durable while the journal remains pending, and restart recognizes and reuses that deterministic terminal receipt instead of generating a self-linked successor.
 - `39a057a` / `a34a867`: every durable recovery-chain bundle and prior link is cryptographically verified against the activated, purpose-separated lifecycle roots before it can guide head selection or new publication. A tampered receipt signature refuses recovery.
 - `fbab7d6` / `4172645`: the exact crash between portable conflict-receipt publication and its required signed Adapter Contract extension is recoverable. Restart idempotently creates or verifies the exact expected extension, including its signature, before terminal journal commitment.
+- `c1fd737` / `f411691`: extension recovery compares the raw stored bytes with the exact expected JSON-plus-newline serialization before parsing and signature verification. Reordered but semantically equivalent signed JSON refuses while the conflict journal remains pending.
 - `76db84e` / `65eaea7`: founder-approved plan amendments explicitly include the certification-local graph schema and the minimum host budget support file in Task 4 scope.
 
 Deviations from the plan and why
@@ -104,7 +105,7 @@ Round 2 final verification (2026-08-12)
 
 ```text
 Cell/delegation focused: 36 tests, 36 pass, 0 fail, 0 skip.
-Hermetic runner/graph focused: 37 tests, 36 pass, 0 fail, 1 skip.
+Hermetic runner/graph focused: 38 tests, 37 pass, 0 fail, 1 skip.
 ```
 
 The focused files were `delegation.test`, `delegation-budget.test`, `delegation-service.test`, `certification-cell.test`, `certification-lifecycle-authority.test`, `linux-authority-cell.test`, and the complete `certification-github-issue-labels-runner.test`. `npx tsc -p tsconfig.test.json --pretty false`, `npx tsc --noEmit --pretty false`, `npm run check:authority-contract`, `npm run build`, and `git diff --check` all exited 0. The sole skip remains the Windows configuration-symlink privilege case; its plan/journal sibling cases passed.
