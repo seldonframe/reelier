@@ -113,6 +113,16 @@ export interface CertificationCellHost {
   verifyDispatchReadiness(input: Readonly<{ scenario: CertificationScenarioId; bearerToken: string }>): Promise<CertificationDispatchPermit>;
   revalidateDispatchPermit(permit: CertificationDispatchPermit): Promise<void>;
 }
+export interface CertificationCellHostInternalState {
+  readonly workspace: string;
+  readonly currentTrustPinPath: string;
+  readonly delegationAuthority: DelegationAuthority;
+  readonly principalRegistry: PrincipalRegistry;
+  readonly now?: () => Date;
+  issueHermeticGitHubPermit(bearerToken: string): Promise<object>;
+  revalidateHermeticGitHubPermit(permit: object): Promise<void>;
+}
+const certificationCellHosts = new WeakMap<object, CertificationCellHostInternalState>();
 export async function createCertificationCellHost(input: Readonly<{ workspace: string; currentTrustPinPath: string; delegationAuthority: DelegationAuthority; principalRegistry: PrincipalRegistry; now?: () => Date }>): Promise<CertificationCellHost> {
   const workspace = (await loadInitialization(input.workspace)).root;
   const configuredTrustPinPath = await canonicalExternalTrustPin(workspace, input.currentTrustPinPath);
@@ -132,7 +142,16 @@ export async function createCertificationCellHost(input: Readonly<{ workspace: s
     },
     revalidateDispatchPermit: (permit: CertificationDispatchPermit, ...args: []) => args.length === 0 ? revalidateCertificationDispatchPermit(permit) : Promise.reject(new TypeError("certification permit revalidation accepts one argument")),
   };
-  return Object.freeze(host);
+  const frozen = Object.freeze(host);
+  const hermeticInput = { scenario: "github-issue-labels" as const, workspace, currentTrustPinPath: configuredTrustPinPath, currentTrustPinPathDigest, delegationAuthority: input.delegationAuthority, principalRegistry: input.principalRegistry, now: input.now };
+  certificationCellHosts.set(frozen, Object.freeze({ workspace, currentTrustPinPath: configuredTrustPinPath, delegationAuthority: input.delegationAuthority, principalRegistry: input.principalRegistry, ...(input.now ? { now: input.now } : {}), issueHermeticGitHubPermit: (bearerToken: string) => issueHermeticGitHubPermit({ ...hermeticInput, bearerToken }), revalidateHermeticGitHubPermit }));
+  return frozen;
+}
+/** Non-barrel host composition bridge. It authenticates the real Cell instance by object identity. */
+export function certificationCellHostInternalState(host: CertificationCellHost): CertificationCellHostInternalState {
+  const state = certificationCellHosts.get(host as object);
+  if (!state) throw new TypeError("genuine branded CertificationCellHost required");
+  return state;
 }
 type EndpointCapability = Readonly<{ endpointId: string; direction: "read" | "write"; method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE" }>;
 class OpaquePermit implements CertificationDispatchPermit {
@@ -141,6 +160,7 @@ class OpaquePermit implements CertificationDispatchPermit {
 }
 interface DispatchSnapshot { readonly digest: string; readonly scenarioId: CertificationScenarioId; readonly runnerId: string; readonly metadataDigest: string; readonly endpointManifestDigest: string; readonly capabilities: readonly EndpointCapability[] }
 const permitState = new WeakMap<object, Readonly<{ snapshot: DispatchSnapshot; revalidate: () => Promise<DispatchSnapshot> }>>();
+const hermeticPermitState = new WeakMap<object, Readonly<{ snapshot: DispatchSnapshot; revalidate: () => Promise<DispatchSnapshot> }>>();
 
 async function verifyCertificationDispatchReadiness(input: Readonly<{
   workspace: string;
@@ -152,11 +172,27 @@ async function verifyCertificationDispatchReadiness(input: Readonly<{
   principalRegistry: PrincipalRegistry;
   now?: () => Date;
 }>): Promise<CertificationDispatchPermit> {
-  const revalidate = async () => dispatchSnapshot(input);
+  const revalidate = async () => dispatchSnapshot(input, "ordinary");
   const snapshot = await revalidate();
   const permit = Object.freeze(new OpaquePermit());
   permitState.set(permit, Object.freeze({ snapshot, revalidate }));
   return permit;
+}
+
+async function issueHermeticGitHubPermit(input: Readonly<{ workspace: string; scenario: "github-issue-labels"; bearerToken: string; currentTrustPinPath: string; currentTrustPinPathDigest: string; delegationAuthority: DelegationAuthority; principalRegistry: PrincipalRegistry; now?: () => Date }>): Promise<object> {
+  const revalidate = async () => dispatchSnapshot(input, "hermetic-github");
+  const snapshot = await revalidate();
+  const permit = Object.freeze(Object.create(null));
+  hermeticPermitState.set(permit, Object.freeze({ snapshot, revalidate }));
+  return permit;
+}
+
+async function revalidateHermeticGitHubPermit(permit: object): Promise<void> {
+  const state = hermeticPermitState.get(permit);
+  if (!state) throw new TypeError("hermetic GitHub dispatch permit is invalid or already used");
+  hermeticPermitState.delete(permit);
+  const current = await state.revalidate();
+  if (current.digest !== state.snapshot.digest) throw new TypeError("hermetic GitHub dispatch state became stale");
 }
 
 async function revalidateCertificationDispatchPermit(permit: CertificationDispatchPermit): Promise<void> {
@@ -167,7 +203,7 @@ async function revalidateCertificationDispatchPermit(permit: CertificationDispat
   if (current.digest !== state.snapshot.digest) throw new TypeError("certification dispatch state became stale");
 }
 
-async function dispatchSnapshot(input: Readonly<{ workspace: string; scenario: CertificationScenarioId; bearerToken: string; currentTrustPinPath: string; currentTrustPinPathDigest: string; delegationAuthority: DelegationAuthority; principalRegistry: PrincipalRegistry; now?: () => Date }>): Promise<DispatchSnapshot> {
+async function dispatchSnapshot(input: Readonly<{ workspace: string; scenario: CertificationScenarioId; bearerToken: string; currentTrustPinPath: string; currentTrustPinPathDigest: string; delegationAuthority: DelegationAuthority; principalRegistry: PrincipalRegistry; now?: () => Date }>, mode: "ordinary" | "hermetic-github"): Promise<DispatchSnapshot> {
   if (!(CERTIFICATION_SCENARIO_IDS as readonly string[]).includes(input.scenario)) throw new TypeError("certification dispatch scenario is invalid");
   const state = await loadInitialization(input.workspace);
   if (!state.initialization.scenarios.includes(input.scenario)) throw new TypeError("certification dispatch scenario was not selected");
@@ -191,7 +227,8 @@ async function dispatchSnapshot(input: Readonly<{ workspace: string; scenario: C
   if (!delegationDescriptor || delegationDescriptor.keyId !== activation.signerKeyId || delegationDescriptor.role !== "authority-cell" || delegationDescriptor.purpose !== "delegation-grant" || !currentTrust.activeDescriptorDigests.has(activation.signerKeyDescriptorDigest) || !pin.signedReadiness.activatedCellKeyDescriptorDigests.includes(activation.signerKeyDescriptorDigest) || !verifyAuthoritySignature(publicKeyFor(delegationDescriptor), "delegation-grant", activation.signedRootGrant.digest, activation.signedRootGrant.signature)) throw new TypeError("certification root grant signer is stale, revoked, or substituted");
   if (activation.constraintsDigest !== authorityDigest(grant.constraints) || jobCard.limitsDigest !== authorityDigest(grant.constraints.limits) || jobCard.taskShapeDigest !== certificationTaskShapeDigest({ identifiers: state.initialization.identifiers, scenarios: state.initialization.scenarios, constraints: grant.constraints })) throw new TypeError("certification active root constraints do not match Job Card commitments");
   const registeredRunner = getCertificationRunnerRegistryEntry(input.scenario);
-  if (!registeredRunner.executionReady || !registeredRunner.dispatchable) throw new TypeError("Task 4A certification runner metadata is configured but provider execution is unavailable and non-dispatchable");
+  if (mode === "ordinary" && (!registeredRunner.executionReady || !registeredRunner.dispatchable)) throw new TypeError("Task 4A certification runner metadata is configured but provider execution is unavailable and non-dispatchable");
+  if (mode === "hermetic-github" && input.scenario !== "github-issue-labels") throw new TypeError("hermetic permit is restricted to GitHub issue labels");
   const status = await input.delegationAuthority.taskStatus({ tenant: activation.authorityCellId, requester: grant.sponsor, taskId: activation.taskId });
   if (status.lifecycleState !== "active") throw new TypeError("certification task is revoked or inactive");
   const binding = await input.delegationAuthority.resolveSessionBinding({ tenant: activation.authorityCellId, taskId: activation.taskId, principalId: activation.principalId });
@@ -220,13 +257,13 @@ async function dispatchSnapshot(input: Readonly<{ workspace: string; scenario: C
   const planArtifact = preflight.inputs.plans.artifacts.find(item => item.scenario === input.scenario)!;
   const runnerBytes = await readConfinedFile(state.root, runnerDirectory, runnerArtifact.name);
   const runner = parseCertificationRunnerManifest(JSON.parse(runnerBytes.toString("utf8")), input.scenario);
-  if (runner.v !== "reelier.certification-runner-manifest/v2" || !runner.dispatchable || runner.registryDigest !== certificationRunnerRegistryDigest || runner.endpointManifestDigest !== authorityDigest(endpoint)) throw new TypeError("certification runner endpoint or registry commitment mismatch");
+  if (runner.v !== "reelier.certification-runner-manifest/v2" || (mode === "ordinary" && !runner.dispatchable) || (mode === "hermetic-github" && runner.dispatchable) || runner.registryDigest !== certificationRunnerRegistryDigest || runner.endpointManifestDigest !== authorityDigest(endpoint)) throw new TypeError("certification runner endpoint or registry commitment mismatch");
   const tests = parseCertificationTestManifest(JSON.parse((await readConfinedFile(state.root, testDirectory, testArtifact.name)).toString("utf8")), input.scenario, runnerArtifact.digest);
   if (tests.runnerManifestDigest !== runnerArtifact.digest) throw new TypeError("certification tests do not bind the selected runner");
   const plan = parseCertificationScenarioPlan(JSON.parse((await readConfinedFile(state.root, planDirectory, planArtifact.name)).toString("utf8")), state.config, preflight.scenarios);
   if (plan.runnerManifestDigest !== runnerArtifact.digest || plan.testManifestDigest !== testArtifact.digest || plan.endpointManifestDigest !== authorityDigest(endpoint) || plan.runnerRegistryDigest !== certificationRunnerRegistryDigest) throw new TypeError("certification scenario plan drifted from signed runner, test, endpoint, or registry authority");
   const capabilities = normalizeCapabilities(endpoint.endpoints);
-  const digest = authorityDigest({ v: "reelier.certification-dispatch-snapshot/v1", activation: authorityDigest(activation), jobCard: signedJobCardDigest(jobCard), readiness: authorityDigest(pin.signedReadiness), trustHead: authorityDigest(currentEvents[currentEvents.length - 1]), task: status.lifecycleState, principal: authorityDigest(principal), allocation: { effects: allocation.effects, consumed: allocation.consumed, remaining: allocation.remaining, revoked: allocation.revoked }, preflight: preflight.digest, endpoint: authorityDigest(endpoint), runner: runnerArtifact.digest, tests: testArtifact.digest, plan: planArtifact.digest, runnerRegistry: certificationRunnerRegistryDigest, dispatchMode: "hermetic-certification", completeness: "unchecked" });
+  const digest = authorityDigest({ v: "reelier.certification-dispatch-snapshot/v1", activation: authorityDigest(activation), jobCard: signedJobCardDigest(jobCard), readiness: authorityDigest(pin.signedReadiness), trustHead: authorityDigest(currentEvents[currentEvents.length - 1]), task: status.lifecycleState, principal: authorityDigest(principal), allocation: { effects: allocation.effects, consumed: allocation.consumed, remaining: allocation.remaining, revoked: allocation.revoked }, preflight: preflight.digest, endpoint: authorityDigest(endpoint), runner: runnerArtifact.digest, tests: testArtifact.digest, plan: planArtifact.digest, runnerRegistry: certificationRunnerRegistryDigest, dispatchMode: mode, completeness: "unchecked" });
   return Object.freeze({ digest, scenarioId: input.scenario, runnerId: runner.runnerId, metadataDigest: runner.metadataDigest, endpointManifestDigest: runner.endpointManifestDigest, capabilities });
 }
 

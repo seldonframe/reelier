@@ -1,87 +1,182 @@
-import { authorityCanonicalBytes, authorityDigest, parseAuthorityWire } from "../wire.js";
-import { authenticateOutcomeRequest, authenticatedOutcomeRequestState, deriveContractWindowLimitKey, deriveProviderSourceTriggerLimitKey, digestOutcomeRequest } from "../keys.js";
-import type { AuthorityLedger, ReservationIntent } from "../ledger.js";
-import { createReservedDispatchHandle } from "../gate.js";
+import { createHash, createPublicKey, generateKeyPairSync, randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { mkdir, open, readFile, readdir, rename } from "node:fs/promises";
+import path from "node:path";
+import type { CertificationCellHost } from "./cell.js";
+import { certificationCellHostInternalState } from "./cell.js";
+import { parseCertificationOperatorConfigV3 } from "./config.js";
+import { parseCertificationScenarioPlan } from "./manifests.js";
+import { authorityCanonicalBytes, authorityDigest } from "../wire.js";
+import { authenticateOutcomeRequest } from "../keys.js";
+import { createTrustRoots } from "../trust.js";
+import { signAuthorityDigest } from "../crypto.js";
+import { createStaticPackRegistry } from "../pack.js";
+import { createSourceRegistry } from "../source.js";
+import { createConnectorRegistry } from "../connector.js";
+import { createAuthorityStatePort } from "../state.js";
+import { createAuthorityGate } from "../gate.js";
+import { createFileGateDecisionSink } from "../decision.js";
+import { FsAuthorityLedger } from "../host/fs-ledger.js";
 import { createDispatchCoordinator } from "../host/dispatch.js";
-import type { FsDelegationBudgetLedger } from "../host/delegation-budget.js";
-import { compileGitHubIssueLabels, parseGitHubIssueLabelsPolicy } from "../../packs/github/compile.js";
-import { githubIssueLabelsAlias } from "../../packs/github/manifest.js";
+import { validateContractAgainstDelegation, validateDelegationChain } from "../delegation.js";
+import { githubIssueLabelsDefinition, parseGitHubIssueLabelsPolicy } from "../../packs/github/compile.js";
+import { createGitHubIssueLabelsSourceResolver } from "../../packs/github/source.js";
+import { githubIssueLabelsAlias, githubIssueLabelsDefinitionDigest, githubIssueLabelsPackDigest, githubIssueLabelsPolicySchemaId, githubIssueLabelsReadEndpointId, githubIssueLabelsResolverId, githubIssueLabelsRiskClass, githubIssueLabelsWriteEndpointId } from "../../packs/github/manifest.js";
 
+export type HermeticGitHubMode = "normal" | "source-drift" | "effect-drift" | "provider-503" | "accessor-response" | "cut-after-budget" | "cut-after-dispatched" | "cut-after-send-intent";
+export interface GitHubHermeticRunnerResult { readonly requestId: string; readonly status: "acknowledged" | "refused" | "failed" | "pending-reconciliation"; readonly success: false; readonly providerWrites: number; readonly reservationId: string | null }
+export interface GitHubIssueLabelsHermeticComposition { run(input: Readonly<{ bearerToken: string; requestId: string }>): Promise<GitHubHermeticRunnerResult>; recover(): Promise<readonly string[]>; status(requestId: string): Promise<GitHubHermeticRunnerResult> }
+type JournalPhase = "reserved" | "budget-intent" | "budget-consumed" | "dispatched" | "provider-send-intent" | "acknowledged" | "refused" | "failed" | "pending-reconciliation";
+interface Journal { readonly v: "reelier.github-certification-journal/v1"; readonly requestId: string; readonly requestDigest: string; readonly reservationId: string; readonly allocationId: string; readonly effectDigest: string; readonly permitSnapshotDigest: string; readonly phase: JournalPhase; readonly providerWrites: number }
 type Issue = Readonly<{ owner: string; repo: string; issueNumber: number; issueState: string; labels: readonly string[] }>;
-type Fault = "none" | "source-drift" | "effect-drift";
-interface FixedProvider { readIssue(): Promise<Issue>; replaceLabels(effect: unknown): Promise<Readonly<{ status: number; acknowledgmentId: string }>> }
-interface CurrentPermitCell { revalidateCurrentPermit(): Promise<void> }
-export interface GitHubIssueLabelsRunnerHost { run(input: Readonly<{ requestId: string }>): Promise<Readonly<{ status: "acknowledged" | "refused"; success: false; reservationId: string }>> }
 
-/** Host-construction boundary: all executable dependencies are captured once; run accepts data only. */
-export function createGitHubIssueLabelsRunnerHost(input: Readonly<{ cell: CurrentPermitCell; ledger: AuthorityLedger; budget: FsDelegationBudgetLedger; provider: FixedProvider; fault?: Fault }>): GitHubIssueLabelsRunnerHost {
-  closed(input, ["cell", "ledger", "budget", "provider", "fault"], true, "GitHub runner host construction");
-  if (!input.cell || typeof input.cell.revalidateCurrentPermit !== "function" || !input.provider || typeof input.provider.readIssue !== "function" || typeof input.provider.replaceLabels !== "function") throw new TypeError("GitHub runner requires fixed host-owned Cell and provider dependencies");
-  const fault = input.fault ?? "none";
-  if (!["none", "source-drift", "effect-drift"].includes(fault)) throw new TypeError("GitHub runner fault mode is invalid");
-  const coordinator = createDispatchCoordinator(input.ledger, {
-    async dispatch(state) {
-      const acknowledgment = await input.provider.replaceLabels(state.effect);
-      return Object.freeze({ kind: "acknowledged" as const, resultDigest: authorityDigest({ v: "reelier.github-label-acknowledgment/v1", status: acknowledgment.status, acknowledgmentId: acknowledgment.acknowledgmentId }), providerStatus: acknowledgment.status, reconciliationStatus: "not-attempted" as const, normalizedProjectionDigest: null });
+/** Non-barrel hermetic test composition. Executable authority comes only from the branded real Cell. */
+export async function createGitHubIssueLabelsHermeticComposition(cell: CertificationCellHost, options: Readonly<{ mode: HermeticGitHubMode }>): Promise<GitHubIssueLabelsHermeticComposition> {
+  const state = certificationCellHostInternalState(cell);
+  closed(options, ["mode"], "GitHub hermetic composition options");
+  const modes: readonly string[] = ["normal", "source-drift", "effect-drift", "provider-503", "accessor-response", "cut-after-budget", "cut-after-dispatched", "cut-after-send-intent"];
+  if (!modes.includes(options.mode)) throw new TypeError("GitHub hermetic composition mode is invalid");
+  const config = parseCertificationOperatorConfigV3(JSON.parse(await readFile(path.join(state.workspace, "config.json"), "utf8")));
+  if (config.scenarios.length !== 1 || config.scenarios[0] !== "github-issue-labels") throw new TypeError("GitHub runner requires the exact selected scenario");
+  const planFile = JSON.parse(await readFile(path.join(state.workspace, "inputs", "plans", "github-issue-labels.json"), "utf8"));
+  parseCertificationScenarioPlan(planFile, config, ["github-issue-labels"]);
+  const resource = config.resources["github-issue-labels"] as { apiBaseUrl: string; owner: string; repository: string; issueNumber: number };
+  const desired = (config.desiredState["github-issue-labels"] as { labels: readonly string[] }).labels;
+  if (resource.apiBaseUrl !== "https://api.github.com") throw new TypeError("GitHub endpoint is not the reviewed endpoint");
+  const activation = JSON.parse(await readFile(path.join(state.workspace, "authority", "delegation", "root-activation.json"), "utf8"));
+  const constraints = activation.signedRootGrant.grant.constraints;
+  const exactAccount = constraints.connectorAccounts.some((item: any) => item.connectorId === "github" && item.accountId === "github_fixlyai_reelier");
+  if (!exactAccount || !constraints.definitionAliases.includes(githubIssueLabelsAlias) || !constraints.riskClasses.includes(githubIssueLabelsRiskClass)) throw new TypeError("GitHub account, definition, or risk authority is not exact");
+  const journalRoot = path.join(state.workspace, "authority", "github-label-runner"); await mkdir(journalRoot, { recursive: true });
+  const ledgerRoot = path.join(journalRoot, "ledger"); await mkdir(ledgerRoot, { recursive: true });
+  const decisionRoot = path.join(journalRoot, "decisions"); await mkdir(decisionRoot, { recursive: true });
+  const provider = createBrandedProvider(resource, desired, options.mode);
+  const gateRuntime = await buildGate({ state, activation, constraints, provider, ledgerRoot, decisionRoot, resource, desired });
+  const requestIdsByReservation = new Map<string, string>();
+  let providerWrites = 0;
+  let controlledCut: ControlledCut | undefined;
+  const coordinator = createDispatchCoordinator(gateRuntime.ledger, {
+    async dispatch(dispatchState) {
+      const requestId = requestIdsByReservation.get(dispatchState.reservation.reservationId); if (!requestId) throw new Error("dispatch request binding missing");
+      const current = await loadJournal(journalRoot, requestId); if (!current) throw new Error("dispatch journal missing");
+      await saveJournal(journalRoot, { ...current, phase: "dispatched" });
+      if (options.mode === "cut-after-dispatched") { controlledCut = new ControlledCut(); throw controlledCut; }
+      await saveJournal(journalRoot, { ...current, phase: "provider-send-intent" });
+      if (options.mode === "cut-after-send-intent") { controlledCut = new ControlledCut(); throw controlledCut; }
+      const response = normalizeProviderAcknowledgment(await provider.replaceLabels(dispatchState.effect));
+      providerWrites += 1;
+      if (response.status < 200 || response.status >= 300) return { kind: "definitive-failure" as const, resultDigest: authorityDigest(response), providerStatus: response.status, reconciliationStatus: "not-attempted" as const };
+      return { kind: "acknowledged" as const, resultDigest: authorityDigest(response), providerStatus: response.status, reconciliationStatus: "not-attempted" as const };
     },
-  }, undefined, undefined, input.budget);
-  return Object.freeze({
-    async run(value: Readonly<{ requestId: string }>) {
-      closed(value, ["requestId"], false, "GitHub runner call");
-      if (typeof value.requestId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/.test(value.requestId)) throw new TypeError("GitHub runner request id is invalid");
-      const read1 = normalizeIssue(await input.provider.readIssue());
-      const effect1 = compile(read1);
-      const reservation = await reserve(input.ledger, value.requestId, read1, effect1);
-      const handle = createReservedDispatchHandle({ reservation, effect: effect1, effectCanonicalBase64: authorityCanonicalBytes(effect1).toString("base64"), effectDigest: authorityDigest(effect1) });
-      const read2 = normalizeIssue(await input.provider.readIssue());
-      const compiled2 = compile(read2);
-      const effect2 = fault === "effect-drift" ? Object.freeze({ ...(compiled2 as Record<string, unknown>), path: "/repos/fixlyai/reelier-certification/issues/2/labels" }) : compiled2;
-      if (authorityDigest(read1) !== authorityDigest(read2) || authorityDigest(effect1) !== authorityDigest(effect2)) {
-        await coordinator.cancel(handle, fault === "effect-drift" ? "effect-drift" : "source-drift");
-        return Object.freeze({ status: "refused" as const, success: false as const, reservationId: reservation.reservationId });
-      }
-      await input.cell.revalidateCurrentPermit();
-      const outcome = await coordinator.dispatch(handle);
-      if (outcome.kind !== "acknowledged") throw new Error("GitHub provider dispatch did not acknowledge");
-      return Object.freeze({ status: "acknowledged" as const, success: false as const, reservationId: reservation.reservationId });
-    },
-  });
+  }, undefined, undefined, state.delegationAuthority.budget);
+
+  async function run(value: Readonly<{ bearerToken: string; requestId: string }>): Promise<GitHubHermeticRunnerResult> {
+    closed(value, ["bearerToken", "requestId"], "GitHub runner call"); validateRequestId(value.requestId);
+    const prior = await loadJournal(journalRoot, value.requestId); if (prior) return view(prior);
+    const permit = await state.issueHermeticGitHubPermit(value.bearerToken);
+    const request = { v: "reelier.outcome-request/v1", requestId: value.requestId, sourceRefs: { issue: "issue_1" }, choices: {} };
+    const authenticated = authenticateOutcomeRequest({ tenant: activation.authorityCellId, requester: activation.principalId, definitionAlias: githubIssueLabelsAlias, request, executionContext: { v: "reelier.authority-execution-context/v1", taskId: activation.taskId, principalId: activation.principalId, grantId: activation.grantId, grantDigest: activation.signedRootGrant.digest, allocationId: activation.allocationId, runtimeSessionId: activation.runtimeSessionId, jobId: activation.jobId, authorityCellId: activation.authorityCellId } });
+    const decided = await gateRuntime.gate.decide(authenticated);
+    if (decided.kind !== "accepted") throw new Error(`GitHub AuthorityGate refused: ${JSON.stringify(decided)}`);
+    const reservationId = decided.signedDecision.reservationId!;
+    requestIdsByReservation.set(reservationId, value.requestId);
+    const reservation = await gateRuntime.ledger.getReservation(reservationId); if (!reservation) throw new Error("GitHub reservation missing");
+    const read2 = normalizeIssue(await provider.readIssue());
+    const expectedResource = read2.owner === resource.owner && read2.repo === resource.repository && read2.issueNumber === resource.issueNumber;
+    const effect2 = githubIssueLabelsDefinition.compile({ source: gateRuntime.sourceFor(read2), policy: parseGitHubIssueLabelsPolicy({ desiredLabels: desired }), choices: {} } as any);
+    const effectDigest2 = options.mode === "effect-drift" ? authorityDigest({ effect2, drift: true }) : authorityDigest(effect2);
+    const permitSnapshotDigest = authorityDigest({ v: "reelier.github-permit-snapshot/v1", activation: authorityDigest(activation), plan: authorityDigest(planFile), allocationId: activation.allocationId, effectDigest: reservation.intent.effectDigest });
+    let journal: Journal = { v: "reelier.github-certification-journal/v1", requestId: value.requestId, requestDigest: authorityDigest(request), reservationId, allocationId: activation.allocationId, effectDigest: reservation.intent.effectDigest, permitSnapshotDigest, phase: "reserved", providerWrites: 0 };
+    await saveJournal(journalRoot, journal);
+    if (!expectedResource || effectDigest2 !== reservation.intent.effectDigest) {
+      await coordinator.cancel(decided.handle, "source-or-effect-drift"); journal = { ...journal, phase: "refused" }; await saveJournal(journalRoot, journal); return view(journal);
+    }
+    await state.revalidateHermeticGitHubPermit(permit);
+    journal = { ...journal, phase: "budget-intent" }; await saveJournal(journalRoot, journal);
+    await state.delegationAuthority.budget.consumeOnce({ allocationId: activation.allocationId, reservationId, effects: 1 });
+    journal = { ...journal, phase: "budget-consumed" }; await saveJournal(journalRoot, journal);
+    if (options.mode === "cut-after-budget") throw new ControlledCut();
+    try {
+      const outcome = await coordinator.dispatch(decided.handle);
+      if (controlledCut) throw controlledCut;
+      journal = { ...(await loadJournal(journalRoot, value.requestId) ?? journal), phase: outcome.kind === "acknowledged" ? "acknowledged" : outcome.kind === "definitive-failure" ? "failed" : "pending-reconciliation", providerWrites };
+      await saveJournal(journalRoot, journal); return view(journal);
+    } catch (error) { if (error instanceof ControlledCut) throw error; throw error; }
+  }
+  async function recover(): Promise<readonly string[]> {
+    const recovered: string[] = [];
+    for (const name of await readdir(journalRoot)) {
+      if (!name.endsWith(".journal.json")) continue; const journal = await loadJournal(journalRoot, name.slice(0, -13)); if (!journal) continue;
+      if (journal.phase === "reserved" || journal.phase === "budget-intent") {
+        const reservation = await gateRuntime.ledger.getReservation(journal.reservationId);
+        if (reservation?.state === "reserved") {
+          const resultDigest = authorityDigest({ v: "reelier.github-pre-network-recovery/v1", reservationId: journal.reservationId, phase: journal.phase });
+          const transitioned = await gateRuntime.ledger.transition(journal.reservationId, "reserved", { to: "cancelled", resultDigest });
+          if (!transitioned.ok) throw new Error(`GitHub pre-network recovery refused: ${transitioned.reason}`);
+          await state.delegationAuthority.budget.returnOnce({ allocationId: journal.allocationId, reservationId: journal.reservationId, effects: 1 });
+        }
+        await saveJournal(journalRoot, { ...journal, phase: "refused" });
+      } else if (journal.phase === "budget-consumed") {
+        const reservation = await gateRuntime.ledger.getReservation(journal.reservationId);
+        if (reservation?.state === "reserved") {
+          const resultDigest = authorityDigest({ v: "reelier.github-pre-network-recovery/v1", reservationId: journal.reservationId, phase: journal.phase });
+          const transitioned = await gateRuntime.ledger.transition(journal.reservationId, "reserved", { to: "cancelled", resultDigest });
+          if (!transitioned.ok) throw new Error(`GitHub consumed recovery refused: ${transitioned.reason}`);
+        }
+        await state.delegationAuthority.budget.releaseConsumedOnce({ allocationId: journal.allocationId, reservationId: journal.reservationId, effects: 1 });
+        await saveJournal(journalRoot, { ...journal, phase: "refused" });
+      } else if (journal.phase === "dispatched") {
+        await state.delegationAuthority.budget.releaseConsumedOnce({ allocationId: journal.allocationId, reservationId: journal.reservationId, effects: 1 });
+        const reservation = await gateRuntime.ledger.getReservation(journal.reservationId);
+        if (reservation?.state === "ambiguous") {
+          const resultDigest = authorityDigest({ v: "reelier.github-no-send-intent-recovery/v1", reservationId: journal.reservationId });
+          const transitioned = await gateRuntime.ledger.transition(journal.reservationId, "ambiguous", { to: "reconciled", resultDigest });
+          if (!transitioned.ok) throw new Error(`GitHub dispatched recovery refused: ${transitioned.reason}`);
+        }
+        await saveJournal(journalRoot, { ...journal, phase: "refused" });
+      } else if (journal.phase === "provider-send-intent") { await coordinator.recover(); await saveJournal(journalRoot, { ...journal, phase: "pending-reconciliation" }); }
+      recovered.push(journal.requestId);
+    }
+    return Object.freeze(recovered);
+  }
+  return Object.freeze({ run, recover, async status(requestId: string) { validateRequestId(requestId); const journal = await loadJournal(journalRoot, requestId); if (!journal) throw new TypeError("GitHub runner request not found"); return view(journal); } });
 }
 
-function compile(issue: Issue): unknown { return compileGitHubIssueLabels({ source: { projection: issue }, policy: parseGitHubIssueLabelsPolicy({ desiredLabels: ["certification-after"] }) }); }
-function normalizeIssue(value: Issue): Issue {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("GitHub authoritative issue read is invalid");
-  const raw = value as Record<string, unknown>; closed(raw, ["owner", "repo", "issueNumber", "issueState", "labels"], false, "GitHub authoritative issue");
-  if (typeof raw.owner !== "string" || typeof raw.repo !== "string" || !Number.isSafeInteger(raw.issueNumber) || typeof raw.issueState !== "string" || !Array.isArray(raw.labels) || raw.labels.some(label => typeof label !== "string")) throw new TypeError("GitHub authoritative issue read is invalid");
-  return Object.freeze({ owner: raw.owner, repo: raw.repo, issueNumber: raw.issueNumber as number, issueState: raw.issueState, labels: Object.freeze([...(raw.labels as string[])].sort()) });
+async function buildGate(input: any) {
+  const contractKey = generateKeyPairSync("ed25519"), gateKey = generateKeyPairSync("ed25519");
+  const grant = input.activation.signedRootGrant.grant, policyBytes = authorityCanonicalBytes({ desiredLabels: input.desired });
+  const accountId = "github_fixlyai_reelier";
+  const contract = { v: "reelier.outcome-contract/v1", tenant: input.activation.authorityCellId, alias: githubIssueLabelsAlias, contractId: "github_certification_contract", validFrom: grant.issuedAt, validUntil: grant.expiresAt, packDigest: githubIssueLabelsPackDigest, definitionDigest: githubIssueLabelsDefinitionDigest, sponsor: grant.sponsor, audiences: [input.activation.principalId], delegationGrantDigest: input.activation.signedRootGrant.digest, connectorId: "github", accountId, sourceAuthority: { resolverId: githubIssueLabelsResolverId, projectionSchemaId: "github_issue_labels_projection_v1", allowedReadEndpointIds: [githubIssueLabelsReadEndpointId], authorizedProjectionPointers: ["/owner", "/repo", "/issueNumber", "/issueState", "/labels"], maxFreshnessSeconds: 60 }, riskClasses: [githubIssueLabelsRiskClass], limits: input.constraints.limits, policyCommitment: { schemaId: githubIssueLabelsPolicySchemaId, jcsBase64: policyBytes.toString("base64"), digest: `sha256:${createHash("sha256").update(policyBytes).digest("hex")}` } };
+  const contractDigest = authorityDigest(contract), candidate = { contractEnvelope: envelope(contract, contractDigest, "github_contract_signer", contractKey.privateKey, "outcome-contract"), delegationEnvelopes: [envelope(grant, input.activation.signedRootGrant.digest, input.activation.signedRootGrant.signerId, null, "delegation-grant", input.activation.signedRootGrant.signature, 0)], stateEvents: [{ index: 0, kind: "activated", contractDigest, at: grant.issuedAt }] };
+  const trustRoots = createTrustRoots([{ tenant: input.activation.authorityCellId, signerId: "github_contract_signer", principalId: input.activation.principalId, publicKey: contractKey.publicKey, purposes: ["outcome-contract"] }, { tenant: input.activation.authorityCellId, signerId: input.activation.signedRootGrant.signerId, principalId: grant.grantor, publicKey: publicKeyFromPin(input.state.currentTrustPinPath, input.activation.signedRootGrant.signerId), purposes: ["delegation-grant"] }, { tenant: input.activation.authorityCellId, signerId: "github_gate_signer", principalId: input.activation.principalId, publicKey: gateKey.publicKey, purposes: ["gate-event"] }]);
+  validateContractAgainstDelegation(contract as any, validateDelegationChain({ tenant: input.activation.authorityCellId, sponsor: contract.sponsor, now: input.state.now?.() ?? new Date(), trustRoots, grants: [input.activation.signedRootGrant] }));
+  const packs = createStaticPackRegistry([githubIssueLabelsDefinition]), sources = createSourceRegistry([createGitHubIssueLabelsSourceResolver(input.activation.authorityCellId)]), connectors = createConnectorRegistry([{ tenant: input.activation.authorityCellId, connectorId: "github", accountId, providerAccountIdentity: accountId, allowedReadEndpointIds: [githubIssueLabelsReadEndpointId], allowedWriteEndpointIds: [githubIssueLabelsWriteEndpointId], riskClasses: [githubIssueLabelsRiskClass], operatorConfigurationDigest: authorityDigest({ resource: input.resource }) }]);
+  const ledger = new FsAuthorityLedger(input.ledgerRoot, { now: () => input.state.now?.().getTime() ?? Date.parse("2026-08-11T20:10:00.000Z") });
+  const sourceFor = (issue: Issue) => ({ projection: issue, digest: authorityDigest(issue) });
+  const statePort = createAuthorityStatePort({ async loadCompleteContractSet() { return { ok: true as const, snapshot: { tenant: input.activation.authorityCellId, definitionAlias: githubIssueLabelsAlias, stateVersion: 1, candidates: [candidate] } as any, backendToken: {} }; }, async advanceVersion() { return { ok: true as const, backendObservedToken: {} }; }, async withCurrent(_token, callback) { return { ok: true as const, value: await callback() }; }, async executeSourceReads(plans) { const issue = await input.provider.readIssue(); return { ok: true as const, observations: plans.map((plan: any) => ({ planDigest: plan.planDigest, rawBytes: Buffer.from(JSON.stringify(issue)) })) }; } });
+  const gate = createAuthorityGate({ trustRoots, packs, sources, connectors, state: statePort, ledger, localGatePolicyDigest: authorityDigest({ v: "reelier.github-certification-gate-policy/v1" }), decisionSink: createFileGateDecisionSink(input.decisionRoot), signer: { async sign(value) { return { signerId: "github_gate_signer", signature: signAuthorityDigest(gateKey.privateKey, value.purpose, value.digest) }; } }, eventId: () => `evt_${randomUUID()}`, capabilityId: () => `cap_${randomUUID()}` });
+  return { gate, ledger, sourceFor };
 }
 
-async function reserve(ledger: AuthorityLedger, requestId: string, issue: Issue, effect: unknown) {
-  const tenant = "cell_github_certification", requester = "principal_github_certification";
-  const request = parseAuthorityWire("outcome-request", { v: "reelier.outcome-request/v1", requestId, sourceRefs: { issue: "issue_1" }, choices: {} });
-  const authenticated = authenticateOutcomeRequest({ tenant, requester, definitionAlias: githubIssueLabelsAlias, request });
-  const clock = await ledger.observeClock(); if (!clock.ok) throw new Error("GitHub runner ledger clock unavailable");
-  const ingress = await ledger.bindIngress(authenticated); if (!ingress.ok || !ingress.evaluationEligible) throw new Error("GitHub runner ingress reservation refused");
-  const issuedAt = "2026-08-11T20:00:00.000Z", expiresAt = "2026-08-11T20:01:00.000Z";
-  const limits = Object.freeze({ maxEffectsPerWindow: 1, windowSeconds: 3600, maxEffectsPerSourceTrigger: 1, maxBodyBytes: 4096 });
-  const contractDigest = authorityDigest({ v: "reelier.github-certification-contract/v1", tenant });
-  const effectDigest = authorityDigest(effect), requestDigest = digestOutcomeRequest(request), requestKey = authenticatedOutcomeRequestState(authenticated).requestKey;
-  const sourceBundleDigest = authorityDigest({ v: "reelier.github-certification-source/v1", issue });
-  const sourceSnapshotDigest = authorityDigest({ v: "reelier.github-certification-source-snapshot/v1", sourceBundleDigest });
-  const authorityStateDigest = authorityDigest({ v: "reelier.github-certification-authority-state/v1", tenant, contractDigest });
-  const limitsDigest = authorityDigest({ v: "reelier.capability-limits/internal-v1", contractDigest, limits });
-  const outcomeKey = authorityDigest({ v: "reelier.github-certification-outcome/v1", tenant, requestId, sourceBundleDigest, effectDigest });
-  const capabilityId = `capability_${requestId}`;
-  const capability = parseAuthorityWire("compiled-capability", { v: "reelier.compiled-capability/v1", tenant, requester, definitionAlias: githubIssueLabelsAlias, requestDigest, requestKey, contractDigest, sourceBundleDigest, sourceSnapshotDigest, authorityStateDigest, limits, limitsDigest, capabilityId, outcomeKey, effectDigest, issuedAt, expiresAt });
-  const canonicalRequestBytes = authorityCanonicalBytes(request), capabilityBytes = authorityCanonicalBytes(capability);
-  const decisionContextDigest = authorityDigest({ v: "reelier.github-certification-decision-context/v1", tenant, requestId, capabilityDigest: authorityDigest(capability) });
-  const intent: ReservationIntent = { tenant, requester, definitionAlias: githubIssueLabelsAlias, requestId, requestDigest, canonicalRequestDigest: requestDigest, canonicalRequestBytes, requestKey, ingressClaimDigest: ingress.ingressClaimDigest, decisionContextDigest, capabilityId, capabilityDigest: authorityDigest(capability), capabilityBytes, contractDigest, sourceBundleDigest, sourceSnapshotDigest, authorityStateDigest, limits, limitsDigest, outcomeKey, effectDigest, effectCanonicalBase64: authorityCanonicalBytes(effect).toString("base64"), issuedAt, expiresAt, limitSlots: [{ kind: "contract-window", key: deriveContractWindowLimitKey({ tenant, contractDigest, issuedAt, windowSeconds: limits.windowSeconds }).key, maximum: 1 }, { kind: "source-trigger", key: deriveProviderSourceTriggerLimitKey({ tenant, connectorId: "github", providerAccountIdentity: "github_fixlyai_reelier", resolverId: "github_issue_labels_source_v1", sourceIdentity: `github.${issue.owner}.${issue.repo}.${issue.issueNumber}`, triggerIdentity: authorityDigest({ labels: issue.labels }).replace(":", ".") }), maximum: 1 }], executionContext: { v: "reelier.authority-execution-context/v1", taskId: "task_github_certification", principalId: requester, grantId: "grant_github_certification", grantDigest: authorityDigest({ v: "reelier.github-certification-grant/v1" }), allocationId: "allocation_github_certification", runtimeSessionId: "session_github_certification", jobId: "job_github_certification", authorityCellId: tenant } };
-  const result = await ledger.reserve(intent); if (!result.ok || !result.dispatchEligible) throw new Error(`GitHub runner reservation refused: ${result.ok ? result.status : result.reason}`);
-  return result.reservation;
+function createBrandedProvider(resource: any, desired: readonly string[], mode: HermeticGitHubMode) { let reads = 0; let labels: readonly string[] = ["before"]; return Object.freeze({ async readIssue() { reads += 1; const issue = { owner: resource.owner, repo: resource.repository, issueNumber: resource.issueNumber, issueState: "open", labels: mode === "source-drift" && reads === 2 ? ["drifted"] : labels }; return normalizeIssue(issue); }, async replaceLabels(_effect: unknown) { labels = desired; if (mode === "accessor-response") return Object.create(Object.prototype, { status: { enumerable: true, get() { throw new Error("accessor must not execute"); } }, acknowledgmentId: { enumerable: true, value: "ack" } }); return { status: mode === "provider-503" ? 503 : 200, acknowledgmentId: "ack_1" }; } }); }
+function normalizeIssue(value: unknown): Issue { const raw = inertRecord(value, "GitHub issue"); exact(raw, ["owner", "repo", "issueNumber", "issueState", "labels"], "GitHub issue"); const labels = inertArray(raw.labels, "GitHub labels"); if (typeof raw.owner !== "string" || typeof raw.repo !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(raw.owner) || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(raw.repo) || !Number.isSafeInteger(raw.issueNumber) || typeof raw.issueState !== "string" || labels.some(x => typeof x !== "string")) throw new TypeError("GitHub issue response invalid"); return Object.freeze({ owner: raw.owner, repo: raw.repo, issueNumber: raw.issueNumber as number, issueState: raw.issueState, labels: Object.freeze([...(labels as string[])].sort()) }); }
+function normalizeProviderAcknowledgment(value: unknown) { const raw = inertRecord(value, "GitHub acknowledgment"); exact(raw, ["status", "acknowledgmentId"], "GitHub acknowledgment"); if (!Number.isSafeInteger(raw.status) || typeof raw.acknowledgmentId !== "string") throw new TypeError("GitHub acknowledgment invalid"); return Object.freeze({ status: raw.status as number, acknowledgmentId: raw.acknowledgmentId }); }
+function envelope(value: any, digest: string, signerId: string, key: any, purpose: any, signature?: any, index?: number) { return { canonicalBase64: authorityCanonicalBytes(value).toString("base64"), advertisedDigest: digest, signerId, signature: signature ?? signAuthorityDigest(key, purpose, digest), ...(index === undefined ? {} : { index }) }; }
+function publicKeyFromPin(pinPath: string, signerId: string) { const pin = JSON.parse(readFileSync(pinPath, "utf8")); const descriptor = pin.keyDescriptors.find((x: any) => x.keyId === signerId); if (!descriptor) throw new TypeError("delegation signer descriptor missing"); return createPublicKey({ key: Buffer.from(descriptor.publicKeySpkiBase64, "base64"), format: "der", type: "spki" }); }
+class ControlledCut extends Error { constructor() { super("controlled cut"); } }
+function journalPath(root: string, requestId: string) { return path.join(root, `${requestId}.journal.json`); }
+async function saveJournal(root: string, value: Journal) { const file = journalPath(root, value.requestId), temp = `${file}.${randomUUID()}.tmp`, bytes = Buffer.from(`${JSON.stringify(value)}\n`); const handle = await open(temp, "wx", 0o600); try { await handle.write(bytes); await handle.sync(); } finally { await handle.close(); } await rename(temp, file); }
+async function loadJournal(root: string, requestId: string): Promise<Journal | undefined> { try { return parseJournal(JSON.parse(await readFile(journalPath(root, requestId), "utf8")), requestId); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; } }
+function parseJournal(value: unknown, expectedRequestId: string): Journal {
+  const raw = inertRecord(value, "GitHub dispatch journal");
+  exact(raw, ["v", "requestId", "requestDigest", "reservationId", "allocationId", "effectDigest", "permitSnapshotDigest", "phase", "providerWrites"], "GitHub dispatch journal");
+  const phases: readonly string[] = ["reserved", "budget-intent", "budget-consumed", "dispatched", "provider-send-intent", "acknowledged", "refused", "failed", "pending-reconciliation"];
+  if (raw.v !== "reelier.github-certification-journal/v1" || raw.requestId !== expectedRequestId || !/^sha256:[0-9a-f]{64}$/.test(raw.requestDigest) || typeof raw.reservationId !== "string" || typeof raw.allocationId !== "string" || !/^sha256:[0-9a-f]{64}$/.test(raw.effectDigest) || !/^sha256:[0-9a-f]{64}$/.test(raw.permitSnapshotDigest) || !phases.includes(raw.phase) || !Number.isSafeInteger(raw.providerWrites) || raw.providerWrites < 0 || raw.providerWrites > 1) throw new TypeError("GitHub dispatch journal is invalid");
+  return Object.freeze(raw as Journal);
 }
-
-function closed(value: unknown, keys: readonly string[], optionalFault: boolean, label: string): asserts value is Record<string, any> {
-  if (!value || typeof value !== "object" || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype) throw new TypeError(`${label} must be a closed plain object`);
-  const allowed = optionalFault ? keys : keys; const own = Reflect.ownKeys(value);
-  if (own.some(key => typeof key !== "string") || own.some(key => !allowed.includes(key as string)) || own.some(key => Object.getOwnPropertyDescriptor(value, key)?.get || Object.getOwnPropertyDescriptor(value, key)?.set) || (!optionalFault && own.length !== keys.length) || (optionalFault && own.length !== keys.length && own.length !== keys.length - 1)) throw new TypeError(`${label} is closed against caller substitution`);
-}
+function view(journal: Journal): GitHubHermeticRunnerResult { const status = journal.phase === "acknowledged" ? "acknowledged" : journal.phase === "refused" ? "refused" : journal.phase === "failed" ? "failed" : "pending-reconciliation"; return Object.freeze({ requestId: journal.requestId, status, success: false, providerWrites: journal.providerWrites, reservationId: journal.reservationId }); }
+function validateRequestId(value: string) { if (typeof value !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/.test(value)) throw new TypeError("GitHub request id invalid"); }
+function closed(value: unknown, keys: readonly string[], label: string): asserts value is Record<string, any> { const raw = inertRecord(value, label); exact(raw, keys, label); }
+function inertRecord(value: unknown, label: string): Record<string, any> { if (!value || typeof value !== "object" || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype || Reflect.ownKeys(value).some(key => typeof key !== "string" || Object.getOwnPropertyDescriptor(value, key)?.get || Object.getOwnPropertyDescriptor(value, key)?.set)) throw new TypeError(`${label} must be an inert plain object`); return value as Record<string, any>; }
+function inertArray(value: unknown, label: string): readonly unknown[] { if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype || Reflect.ownKeys(value).some(key => key !== "length" && (typeof key !== "string" || !/^(0|[1-9][0-9]*)$/.test(key) || Object.getOwnPropertyDescriptor(value, key)?.get || Object.getOwnPropertyDescriptor(value, key)?.set))) throw new TypeError(`${label} must be an inert dense array`); return value; }
+function exact(value: Record<string, any>, keys: readonly string[], label: string) { if (Object.keys(value).length !== keys.length || Object.keys(value).some(key => !keys.includes(key))) throw new TypeError(`${label} is closed`); }
