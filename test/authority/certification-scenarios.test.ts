@@ -26,7 +26,7 @@ test("scenario requirements declare selected-only resources, cleanup, metadata, 
     metadataSections: [],
     secretSlots: ["githubCredential"],
   });
-  assert.deepEqual(CERTIFICATION_SCENARIOS["cloudflare-vercel-secret"].secretSlots, ["cloudflareCredential", "vercelCredential"]);
+  assert.deepEqual(CERTIFICATION_SCENARIOS["cloudflare-vercel-secret"].secretSlots, ["cloudflareBootstrapCredential", "vercelCredential"]);
   assert.deepEqual(CERTIFICATION_SCENARIOS["neon-migration"].secretSlots, ["neonApiCredential", "neonDatabaseUrl"]);
   assert.deepEqual(CERTIFICATION_SCENARIOS["fly-topology"].metadataSections, ["flyTopology"]);
   assert.deepEqual(CERTIFICATION_SCENARIOS["fly-topology"].secretSlots, ["flyApiCredential"]);

@@ -1,5 +1,5 @@
 {
-  "v": "reelier.certification-operator-config/v2",
+  "v": "reelier.certification-operator-config/v3",
   "authorityConfigPath": "authority/authority.yml",
   "evidenceDirectory": "authority/receipts/certification",
   "scenarios": [

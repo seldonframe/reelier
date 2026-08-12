@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { CERTIFICATION_SECRET_SLOTS, CODEX_CERTIFICATION_PROFILES, canonicalizeCertificationOperatorConfigV2, inspectCertificationResourceIdentifiers, migrateCertificationOperatorConfig, parseCertificationOperatorConfig, parseCertificationOperatorConfigV2, inspectCertificationSecretReferences } from "../../src/authority/host/certification-config.js";
+import { CERTIFICATION_SECRET_SLOTS, CODEX_CERTIFICATION_PROFILES, canonicalizeCertificationOperatorConfigV2, canonicalizeCertificationOperatorConfigV3, inspectCertificationResourceIdentifiers, migrateCertificationOperatorConfig, parseCertificationOperatorConfig, parseCertificationOperatorConfigV2, parseCertificationOperatorConfigV3, inspectCertificationSecretReferences } from "../../src/authority/host/certification-config.js";
 
 function completeConfig(): unknown {
   return {
@@ -192,17 +192,17 @@ test("v2 parsing is deeply closed, immutable, and canonically byte-stable", () =
   assert.equal(second, first);
 });
 
-test("migration maps v1 to v2, drops HubSpot and generated identity inputs, and is idempotent", () => {
+test("migration maps v1 to v3, drops HubSpot and generated identity inputs, and is idempotent", () => {
   const legacy = completeConfig() as Record<string, unknown>;
   const migrated = migrateCertificationOperatorConfig(legacy);
-  assert.equal(migrated.v, "reelier.certification-operator-config/v2");
+  assert.equal(migrated.v, "reelier.certification-operator-config/v3");
   assert.deepEqual(migrated.scenarios, ["cloudflare-dns", "cloudflare-vercel-secret", "codex-ten-principal", "fly-topology", "github-issue-labels", "neon-migration", "slack-topic", "vercel-promotion"]);
-  const serialized = canonicalizeCertificationOperatorConfigV2(migrated);
+  const serialized = canonicalizeCertificationOperatorConfigV3(migrated);
   assert.doesNotMatch(serialized, /hubspot|task_certification_1|job_founder_stack|cell_certification_1|REELIER_EGRESS_GATEWAY_BEARER/i);
   assert.equal(migrated.secretReferences.githubCredential, "env:REELIER_GITHUB_TOKEN");
   assert.equal(migrated.secretReferences.neonDatabaseUrl, "env:REELIER_NEON_DATABASE_URL");
   assert.deepEqual(migrateCertificationOperatorConfig(migrated), migrated);
-  assert.equal(canonicalizeCertificationOperatorConfigV2(migrateCertificationOperatorConfig(migrated)), serialized);
+  assert.equal(canonicalizeCertificationOperatorConfigV3(migrateCertificationOperatorConfig(migrated)), serialized);
 });
 
 test("migration refuses ambiguous legacy input without inventing required fields or revealing secrets", () => {
@@ -215,22 +215,22 @@ test("migration refuses ambiguous legacy input without inventing required fields
   });
 });
 
-test("all seven named secret slots are accepted only when their scenarios require them", () => {
+test("all eight named secret slots are accepted only when their scenarios require them", () => {
   const legacy = migrateCertificationOperatorConfig(completeConfig());
-  assert.deepEqual(Object.keys(legacy.secretReferences).sort(), ["cloudflareCredential", "flyApiCredential", "githubCredential", "neonApiCredential", "neonDatabaseUrl", "slackCredential", "vercelCredential"]);
+  assert.deepEqual(Object.keys(legacy.secretReferences).sort(), ["cloudflareBootstrapCredential", "cloudflareDnsCredential", "flyApiCredential", "githubCredential", "neonApiCredential", "neonDatabaseUrl", "slackCredential", "vercelCredential"]);
 });
 
-test("v2 keeps Codex home and generated session state outside the agent workspace", () => {
+test("v3 keeps Codex home and generated session state outside the agent workspace", () => {
   for (const field of ["codexHomePath", "sessionDirectory"] as const) {
     const raw = structuredClone(migrateCertificationOperatorConfig(completeConfig())) as unknown as { metadata: { codexTenPrincipal: Record<string, unknown> } };
     raw.metadata.codexTenPrincipal[field] = `C:/work/reelier-certification/${field}`;
-    assert.throws(() => parseCertificationOperatorConfigV2(raw), /outside the workspace/);
+    assert.throws(() => parseCertificationOperatorConfigV3(raw), /outside the workspace/);
   }
 });
 
-test("the v2 authority example is a minimal scenario-scoped non-secret template", async () => {
+test("the v3 authority example is a minimal scenario-scoped non-secret template", async () => {
   const raw = await readFile(path.resolve("authority/certification.example.json"), "utf8");
-  const parsed = parseCertificationOperatorConfigV2(JSON.parse(raw));
+  const parsed = migrateCertificationOperatorConfig(JSON.parse(raw));
   assert.deepEqual(parsed.scenarios, ["github-issue-labels"]);
   assert.deepEqual(Object.keys(parsed.secretReferences), ["githubCredential"]);
   assert.doesNotMatch(raw, /hubspot|taskId|jobId|authorityCellId|signer|grant|ghp_|Bearer\s/i);
@@ -249,34 +249,34 @@ test("v2 exported closed lists are runtime immutable", () => {
   assert.equal(Object.isFrozen(CODEX_CERTIFICATION_PROFILES), true);
 });
 
-test("v2 refuses collapsed Fly identities and inconsistent shared provider scope", () => {
+test("v3 refuses collapsed Fly identities and inconsistent shared provider scope", () => {
   const collapsedApp = structuredClone(migrateCertificationOperatorConfig(completeConfig())) as any;
   collapsedApp.metadata.flyTopology.agentAppName = collapsedApp.metadata.flyTopology.appName;
-  assert.throws(() => parseCertificationOperatorConfigV2(collapsedApp), /Fly app identities must be unique/);
+  assert.throws(() => parseCertificationOperatorConfigV3(collapsedApp), /Fly app identities must be unique/);
 
   const collapsedMachine = structuredClone(migrateCertificationOperatorConfig(completeConfig())) as any;
   collapsedMachine.metadata.flyTopology.agentMachineId = collapsedMachine.metadata.flyTopology.authorityMachineId;
-  assert.throws(() => parseCertificationOperatorConfigV2(collapsedMachine), /Fly machine identities must be unique/);
+  assert.throws(() => parseCertificationOperatorConfigV3(collapsedMachine), /Fly machine identities must be unique/);
 
   const cloudflareMismatch = structuredClone(migrateCertificationOperatorConfig(completeConfig())) as any;
   cloudflareMismatch.resources["cloudflare-vercel-secret"].cloudflareAccountId = "other-account";
-  assert.throws(() => parseCertificationOperatorConfigV2(cloudflareMismatch), /Cloudflare account scope must match/);
+  assert.throws(() => parseCertificationOperatorConfigV3(cloudflareMismatch), /Cloudflare account scope must match/);
 
   for (const field of ["vercelAccountId", "projectId"] as const) {
     const vercelMismatch = structuredClone(migrateCertificationOperatorConfig(completeConfig())) as any;
     vercelMismatch.resources["cloudflare-vercel-secret"][field] = "other-vercel-scope";
-    assert.throws(() => parseCertificationOperatorConfigV2(vercelMismatch), /Vercel account and project scope must match/);
+    assert.throws(() => parseCertificationOperatorConfigV3(vercelMismatch), /Vercel account and project scope must match/);
   }
 
   const codexEndpointMismatch = structuredClone(migrateCertificationOperatorConfig(completeConfig())) as any;
   codexEndpointMismatch.metadata.codexTenPrincipal.authorityEndpoint = "https://different-cell.fly.dev/mcp";
-  assert.throws(() => parseCertificationOperatorConfigV2(codexEndpointMismatch), /Codex authority endpoint must match Fly authority app/);
+  assert.throws(() => parseCertificationOperatorConfigV3(codexEndpointMismatch), /Codex authority endpoint must match Fly authority app/);
 
   const codexPortMismatch = structuredClone(migrateCertificationOperatorConfig(completeConfig())) as any;
   codexPortMismatch.metadata.codexTenPrincipal.authorityEndpoint = "https://reelier-cell-demo.fly.dev:444/mcp";
-  assert.throws(() => parseCertificationOperatorConfigV2(codexPortMismatch), /Codex authority endpoint must match Fly authority app/);
+  assert.throws(() => parseCertificationOperatorConfigV3(codexPortMismatch), /Codex authority endpoint must match Fly authority app/);
 
   const egressPortMismatch = structuredClone(migrateCertificationOperatorConfig(completeConfig())) as any;
   egressPortMismatch.metadata.flyTopology.egressProxyBaseUrl = "http://reelier-egress-demo.internal:80";
-  assert.throws(() => parseCertificationOperatorConfigV2(egressPortMismatch), /port 8443/);
+  assert.throws(() => parseCertificationOperatorConfigV3(egressPortMismatch), /port 8443/);
 });

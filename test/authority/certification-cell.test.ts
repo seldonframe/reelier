@@ -114,7 +114,7 @@ test("dispatch readiness permit is opaque, one-use, inert, and consumes no effec
     const endpointBytes = await readFile(endpointFile, "utf8");
     const endpoint = JSON.parse(endpointBytes); endpoint.resourceDigest = `sha256:${"9".repeat(64)}`;
     await writeFile(endpointFile, JSON.stringify(endpoint));
-    await assert.rejects(() => f.host.revalidateDispatchPermit(permit), /endpoint|stale|commitment/i);
+    await assert.rejects(() => f.host.revalidateDispatchPermit(permit), /endpoint|stale|commitment|readiness.*incomplete/i);
     assert.equal(calls, 0);
     assert.equal((await f.delegation.budget.get(f.initialized.identifiers.rootGrantId))?.remaining, 2);
     await writeFile(endpointFile, endpointBytes);

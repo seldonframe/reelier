@@ -29,7 +29,7 @@ Preflight reports phase-specific `preparationReady`; the future human signature 
 
 The scenario-scoped v2 format is tracked at `authority/certification.example.json`. It selects only the scenarios being certified and accepts only their exact resource, cleanup, metadata, and named secret-reference sections. It is private certification-estate configuration, not a customer onboarding requirement.
 
-V2 has exactly seven possible operator secret-reference slots: `githubCredential`, `vercelCredential`, `neonApiCredential`, `neonDatabaseUrl`, `cloudflareCredential`, `slackCredential`, and `flyApiCredential`. Only slots required by selected scenarios are allowed. Egress-gateway bearer material and the ten Codex session credentials are generated later and are never operator-config fields. HubSpot is not a v2 provider.
+V3 has exactly eight possible operator secret-reference slots: `githubCredential`, `vercelCredential`, `neonApiCredential`, `neonDatabaseUrl`, `cloudflareDnsCredential`, `cloudflareBootstrapCredential`, `slackCredential`, and `flyApiCredential`. Only slots required by selected scenarios are allowed. The DNS and token-bootstrap references are purpose-separated; migrating v2 copies the old opaque reference string into the selected new slots without reading its value. Egress-gateway bearer material and the ten Codex session credentials are generated later and are never operator-config fields. HubSpot is not a v3 provider.
 
 The older v1 file under `docs/runbooks/` remains only for the pre-existing live adapter commands until their runner slice migrates. It is not accepted by the initialized preflight flow. HubSpot and manually entered task/Job/Cell identifiers are not retained by v2.
 
