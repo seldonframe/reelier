@@ -59,6 +59,7 @@ function isPublicAddress(address: string): boolean {
 function mappedIpv4(value: string): string | undefined {
   if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(value)) return undefined;
   const source = value.replace(/^\[|\]$/g, ""); const pivot = source.indexOf("::");
+  if (/^::ffff:\d{1,3}(?:\.\d{1,3}){3}$/i.test(source)) return source.slice(7);
   const left = pivot < 0 ? source.split(":") : source.slice(0, pivot).split(":").filter(Boolean); const right = pivot < 0 ? [] : source.slice(pivot + 2).split(":").filter(Boolean);
   if (left.some(part => !/^[0-9a-f]{1,4}$/i.test(part)) || right.some(part => !/^[0-9a-f]{1,4}$/i.test(part)) || left.length + right.length > 8) return undefined;
   const parts = pivot < 0 ? left : [...left, ...Array(8 - left.length - right.length).fill("0"), ...right];
