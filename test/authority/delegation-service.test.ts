@@ -8,6 +8,10 @@ import { authorityDigest } from "../../src/authority/wire.js";
 import { signAuthorityDigest } from "../../src/authority/crypto.js";
 import type { DelegationGrant } from "../../src/authority/types.js";
 import { createDelegationAuthority } from "../../src/authority/host/delegation-service.js";
+import { __testSetAuthorityCellHostPlatform } from "../../src/authority/host/platform.js";
+
+const restorePlatform = __testSetAuthorityCellHostPlatform("linux");
+test.after(() => restorePlatform());
 
 const limits = { maxEffectsPerWindow: 10, windowSeconds: 3600, maxEffectsPerSourceTrigger: 2, maxBodyBytes: 4096 };
 const grant = (overrides: Partial<DelegationGrant> = {}): DelegationGrant => ({

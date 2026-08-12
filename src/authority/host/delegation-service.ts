@@ -84,7 +84,12 @@ export function createDelegationAuthority(input: Readonly<{ root: string; signGr
     const signed = value.signedChild, signedGrant = asGrant(signed.grant);
     if (signedGrant.tenant !== value.tenant || signedGrant.grantor !== value.parentPrincipal) throw new TypeError("delegation child identity mismatch");
     if (signedGrant.parentDigest !== parent.digest) throw new TypeError("delegation child parent digest mismatch");
-    if (record.grants.has(signedGrant.grantId)) throw new TypeError("delegation child grant id already exists");
+    const existing = record.grants.get(signedGrant.grantId);
+    if (existing) {
+      const allocation = await budgets.get(existing.allocationId);
+      if (authorityDigest(existing.signed) === authorityDigest(signed) && allocation?.parentAllocationId === value.parentAllocationId && allocation.effects === value.effects) return Object.freeze({ verdict: "accepted" as const, reasonCode: "delegation-allocated" as const, lifecycleState: "allocated" as const, grant: existing.grant, grantDigest: existing.digest, allocationId: existing.allocationId });
+      throw new TypeError("delegation child grant id already exists with conflicting authority");
+    }
     const now = input.now?.() ?? new Date();
     const activeChildCount = [...record.grants.values()].filter(candidate => candidate.grant.parentDigest === parent.digest && Date.parse(candidate.grant.expiresAt) > now.getTime()).length;
     validateChildDelegationRequest({ parent: parent.grant, child: signedGrant, activeChildCount, effects: value.effects, now });
