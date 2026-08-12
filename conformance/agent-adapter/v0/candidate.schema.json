@@ -78,11 +78,9 @@
         "operations": {
           "type": "array",
           "minItems": 7,
-          "maxItems": 7,
+          "maxItems": 64,
           "uniqueItems": true,
-          "items": {
-            "enum": ["jobs.search", "jobs.load", "delegations.request", "delegations.status", "tasks.status", "outcomes.invoke", "outcomes.status"]
-          }
+          "items": { "$ref": "#/$defs/id" }
         },
         "hardCodedJobRefs": {
           "type": "array",

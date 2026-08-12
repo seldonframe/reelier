@@ -25,8 +25,132 @@ function report(adapterId, checks) {
   });
 }
 
-function semanticChecks() {
-  return [passed("closed-schema", "candidate is closed and structurally valid")];
+const universalOperations = Object.freeze([
+  "jobs.search",
+  "jobs.load",
+  "delegations.request",
+  "delegations.status",
+  "tasks.status",
+  "outcomes.invoke",
+  "outcomes.status",
+]);
+
+const forbiddenOutcomeKeys = new Set([
+  "tenant",
+  "requester",
+  "principalid",
+  "grantid",
+  "allocationid",
+  "jobid",
+  "authoritycellid",
+  "credential",
+  "credentials",
+  "provideraccount",
+  "endpoint",
+  "recipient",
+  "amount",
+  "body",
+  "url",
+  "providerargs",
+  "providerarguments",
+]);
+
+function oneEvent(candidate, operation) {
+  const matches = candidate.transcript.filter((event) => event.operation === operation);
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
+function sameSet(left, right) {
+  return left.length === right.length && left.every((value) => right.includes(value));
+}
+
+function containsForbiddenKey(value) {
+  if (!value || typeof value !== "object") return false;
+  if (Array.isArray(value)) return value.some(containsForbiddenKey);
+  return Object.entries(value).some(([key, child]) => forbiddenOutcomeKeys.has(key.toLowerCase()) || containsForbiddenKey(child));
+}
+
+function semanticCheck(id, condition, passDetail, failDetail) {
+  return condition ? passed(id, passDetail) : failed(id, failDetail);
+}
+
+function semanticChecks(candidate) {
+  const search = oneEvent(candidate, "jobs.search");
+  const load = oneEvent(candidate, "jobs.load");
+  const delegation = oneEvent(candidate, "delegations.request");
+  const invoke = oneEvent(candidate, "outcomes.invoke");
+  const status = oneEvent(candidate, "outcomes.status");
+  const observed = candidate.coverageProbes.filter((probe) => probe.mode === "observed");
+  const enforced = candidate.coverageProbes.filter((probe) => probe.mode === "enforced");
+
+  const operationsConform = sameSet(candidate.descriptor.operations, universalOperations)
+    && candidate.descriptor.hardCodedJobRefs.length === 0;
+
+  const discoveredRefs = search?.response.jobs.map((job) => job.jobRef) ?? [];
+  const discoveryConforms = Boolean(
+    search && load && invoke
+    && new Set(discoveredRefs).size === discoveredRefs.length
+    && discoveredRefs.includes(load.request.jobRef)
+    && load.response.jobRef === load.request.jobRef
+    && invoke.request.jobRef === load.response.jobRef,
+  );
+
+  const outcomeKeys = invoke ? Object.keys(invoke.request).sort() : [];
+  const inputConforms = Boolean(
+    invoke
+    && sameSet(outcomeKeys, ["choices", "jobRef", "requestId", "sourceRefs"])
+    && !containsForbiddenKey(invoke.request),
+  );
+
+  const delegationConforms = Boolean(
+    delegation
+    && delegation.request.taskId === candidate.session.taskId
+    && delegation.request.parentAllocationId === candidate.session.allocationId
+    && delegation.request.childPrincipalId !== candidate.session.principalId
+    && delegation.response.principalId === delegation.request.childPrincipalId
+    && delegation.response.allocationId !== candidate.session.allocationId
+    && delegation.response.effects === delegation.request.effects
+    && delegation.request.effects > 0
+    && delegation.request.effects < candidate.session.remainingEffects,
+  );
+
+  const claims = status?.response.claims;
+  const lifecycleConforms = Boolean(
+    invoke && status && claims
+    && invoke.response.verdict === "refused"
+    && invoke.response.reasonCode === "adapter-contract-pending"
+    && invoke.response.lifecycleState === "refused"
+    && !("receiptRef" in invoke.response)
+    && status.request.requestId === invoke.request.requestId
+    && status.response.lifecycleState === "refused"
+    && status.response.pass === false
+    && claims.authorization === "unchecked"
+    && claims.dispatch === "absent"
+    && claims.providerAcknowledgment === "absent"
+    && claims.reconciliation === "absent"
+    && claims.topology === "unchecked"
+    && claims.completeness === "unchecked",
+  );
+
+  const observedConforms = observed.length === 1
+    && observed[0].activation === "available"
+    && observed[0].topology === "unchecked"
+    && observed[0].completeness === "unchecked";
+
+  const enforcedConforms = enforced.length === 1
+    && enforced[0].activation === "unavailable"
+    && enforced[0].topology !== "verified"
+    && enforced[0].completeness !== "verified";
+
+  return [
+    semanticCheck("universal-operations", operationsConform, "adapter exposes only the universal semantic operation set", "adapter operation set is missing, widened, or hard-coded"),
+    semanticCheck("dynamic-job-discovery", discoveryConforms, "loaded and invoked job references originate in catalog discovery", "job reference was not preserved from catalog discovery"),
+    semanticCheck("host-bound-outcome-input", inputConforms, "Outcome input contains no authenticated identity or provider authority", "Outcome input contains an identity or provider-authority override"),
+    semanticCheck("attenuated-child-principal", delegationConforms, "child principal and effect allocation are distinct and narrower", "child delegation does not attenuate the parent session"),
+    semanticCheck("pre-freeze-no-dispatch", lifecycleConforms, "pending Adapter Contract refuses without dispatch or a passing receipt", "pre-freeze lifecycle implies dispatch, success, or upgraded evidence"),
+    semanticCheck("observed-coverage-honesty", observedConforms, "observed mode remains available with unchecked topology and completeness", "observed mode upgrades topology or completeness"),
+    semanticCheck("enforced-mode-unavailable", enforcedConforms, "enforced mode remains unavailable without verified topology", "enforced mode activates or upgrades claims before topology verifies"),
+  ];
 }
 
 export function checkCandidate(value) {
