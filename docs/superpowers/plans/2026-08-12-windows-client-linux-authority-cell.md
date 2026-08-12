@@ -25,7 +25,7 @@
 
 - Contract freeze: `contract/authority/v1/adapter-contract-v1.json`, `scripts/build-authority-contract.mjs`, `test/authority/contract.test.ts`, `src/authority/adapter-contract.ts`, `src/authority/index.ts`.
 - Platform boundary: `src/authority/host/platform.ts`, `src/authority/cli.ts`, `src/authority/host/local.ts`, certification host entry points, focused platform tests.
-- Windows client: `src/authority/client/config.ts`, `src/authority/client/http.ts`, `src/authority/cli.ts`, closed schema under `contract/authority/v1/`, client tests and runbook.
+- Windows client: `src/authority/client/config.ts`, `src/authority/client/http.ts`, `src/authority/cli.ts`, closed non-authorizing client schema under `contract/client/v1/`, client tests and runbook. Client configuration is deliberately outside the frozen Adapter Contract v1 wire set.
 - Retired code: delete tracked `src/authority/host/windows-k1-fifo.ts` and `test/authority/windows-k1-fifo.test.ts` only after source-graph tests prove there is no production import.
 - Hermetic lifecycle: `src/authority/certification/github-issue-labels-runner.ts`, receipt/graph modules under `src/authority/certification/`, corresponding tests and schemas.
 - CI/release evidence: `.github/workflows/ci.yml`, packed-artifact tests, task reports, freeze notice containing the exact digest.
@@ -86,7 +86,7 @@ interface AuthorityCellConnectionV1 {
 }
 ```
 
-- [ ] Add a closed JSON Schema and runtime parser with exact keys, canonical endpoint normalization, no query/userinfo/fragment, no non-loopback HTTP, safe reference syntax, nonzero digest, and accessor/callback zero-invocation tests.
+- [ ] Add a closed JSON Schema under `contract/client/v1/` and runtime parser with exact keys, canonical endpoint normalization, no query/userinfo/fragment, no non-loopback HTTP, safe reference syntax, nonzero digest, and accessor/callback zero-invocation tests. This local, non-authorizing configuration schema is not a member of the frozen Adapter Contract wire set and must not change its digest.
 - [ ] Add `reelier authority connect --endpoint ... --token-ref ... --cell-id ...`. It writes only a client-owned connection file atomically; it never resolves the token during parsing or writes a ledger/receipt/key.
 - [ ] Add `reelier authority doctor --live` (or the existing doctor integration if present) to resolve the opaque reference inside the client process, authenticate to the Cell, compare Cell ID and Adapter Contract digest, and report four-state results. Redact token values and resolver errors.
 - [ ] Bind every consequential client request to the authenticated server-derived principal/session context. No task, principal, grant, allocation, or Cell identity may be supplied in the Outcome body.
