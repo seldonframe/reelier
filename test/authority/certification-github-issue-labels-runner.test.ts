@@ -317,8 +317,10 @@ test("conflict recovery refuses byte-reordered extension while its journal remai
   const f = await fixture("cut-after-conflict-publication"); try {
     await f.runner.run({ bearerToken: f.credential.token, requestId: "request_conflict_extension_bytes" });
     await assert.rejects(() => f.runner.conflict({ bearerToken: f.credential.token, requestId: "request_conflict_extension_bytes", exactBytes: Buffer.from("conflict").toString("base64") }), /controlled cut/i);
-    const root = path.join(f.initialized.workspace, "authority", "github-label-runner"), extensions = path.join(root, "receipts", "extensions"), file = (await readdir(extensions)).find(name => name.endsWith(".json"));
-    assert.ok(file);
+    const root = path.join(f.initialized.workspace, "authority", "github-label-runner"), receipts = path.join(root, "receipts"), extensions = path.join(receipts, "extensions"), portable = path.join(receipts, "portable");
+    const conflictBundle = (await Promise.all((await readdir(portable)).filter(name => name.endsWith(".json")).map(async name => JSON.parse(await readFile(path.join(portable, name), "utf8"))))).find(bundle => bundle.evidence.value.reconciliation.verdict === "conflict");
+    assert.ok(conflictBundle);
+    const file = `${authorityDigest(conflictBundle.receipt.value).slice(7)}.json`;
     const stored = JSON.parse(await readFile(path.join(extensions, file), "utf8"));
     await writeFile(path.join(extensions, file), `${JSON.stringify({ signature: stored.signature, signerId: stored.signerId, adapterContractDigest: stored.adapterContractDigest, receiptDigest: stored.receiptDigest, v: stored.v })}\n`);
     const restarted = await createGitHubIssueLabelsHermeticComposition(f.cell);
