@@ -11,7 +11,7 @@ export interface DelegationAuthoritySigner {
 }
 
 export interface DelegationAuthority {
-  registerRoot(input: Readonly<{ taskId: string; rootGrant: StoredSignedGrant; effects: number }>): Promise<void>;
+  registerRoot(input: Readonly<{ taskId: string; allocationId?: string; rootGrant: StoredSignedGrant; effects: number }>): Promise<void>;
   request(input: Readonly<{ tenant: string; parentPrincipal: string; taskId: string; parentAllocationId: string; child: DelegationGrant; effects: number }>): Promise<Readonly<{ verdict: "accepted"; reasonCode: "delegation-allocated"; lifecycleState: "allocated"; grant: DelegationGrant; grantDigest: string; allocationId: string }>>;
   status(input: Readonly<{ tenant: string; requester: string; grantId: string }>): Promise<Readonly<{ grantId: string; taskId: string; parentGrantDigest: string; grantee: string; lifecycleState: "allocated" | "revoked" }>>;
   taskStatus(input: Readonly<{ tenant: string; requester: string; taskId: string }>): Promise<Readonly<{ taskId: string; lifecycleState: "active" | "revoked"; grants: readonly string[] }>>;
@@ -24,6 +24,7 @@ interface RootRecord {
   readonly tenant: string;
   readonly taskId: string;
   readonly root: StoredSignedGrant;
+  readonly rootAllocationId: string;
   readonly grants: Map<string, { readonly grant: DelegationGrant; readonly digest: string; readonly allocationId: string; readonly signed: StoredSignedGrant }>;
   revoked: boolean;
 }
@@ -40,14 +41,20 @@ export function createDelegationAuthority(input: Readonly<{ root: string; signGr
     await loaded;
   }
 
-  async function registerRoot(value: Readonly<{ taskId: string; rootGrant: StoredSignedGrant; effects: number }>): Promise<void> {
+  async function registerRoot(value: Readonly<{ taskId: string; allocationId?: string; rootGrant: StoredSignedGrant; effects: number }>): Promise<void> {
     await ensureLoaded();
     const grant = asGrant(value.rootGrant.grant);
+    const allocationId = value.allocationId ?? "root";
     if (grant.parentDigest !== null) throw new TypeError("root delegation parent digest must be null");
     if (authorityDigest(grant) !== value.rootGrant.digest) throw new TypeError("root delegation digest mismatch");
-    if (roots.has(value.taskId)) throw new TypeError("delegation task already exists");
-    await budgets.createRoot({ taskId: value.taskId, allocationId: "root", effects: value.effects });
-    roots.set(value.taskId, { tenant: grant.tenant, taskId: value.taskId, root: value.rootGrant, grants: new Map([["root", { grant, digest: value.rootGrant.digest, allocationId: "root", signed: value.rootGrant }]]), revoked: false });
+    const existing = roots.get(value.taskId);
+    if (existing) {
+      const allocation = await budgets.get(existing.rootAllocationId);
+      if (existing.rootAllocationId !== allocationId || authorityDigest(existing.root) !== authorityDigest(value.rootGrant) || !allocation || allocation.effects !== value.effects || allocation.revoked || existing.revoked) throw new TypeError("delegation root activation conflict");
+      return;
+    }
+    await budgets.createRoot({ taskId: value.taskId, allocationId, effects: value.effects });
+    roots.set(value.taskId, { tenant: grant.tenant, taskId: value.taskId, root: value.rootGrant, rootAllocationId: allocationId, grants: new Map([[allocationId, { grant, digest: value.rootGrant.digest, allocationId, signed: value.rootGrant }]]), revoked: false });
     await persistRegistry();
   }
 
@@ -129,24 +136,25 @@ export function createDelegationAuthority(input: Readonly<{ root: string; signGr
     if (!parsed || typeof parsed !== "object" || (parsed as Record<string, unknown>).v !== "reelier.delegation-registry/v1" || !Array.isArray((parsed as Record<string, unknown>).tasks)) throw new Error("delegation registry is corrupt");
     for (const item of (parsed as { tasks: unknown[] }).tasks) {
       if (!item || typeof item !== "object" || typeof (item as Record<string, unknown>).taskId !== "string" || typeof (item as Record<string, unknown>).tenant !== "string" || !Array.isArray((item as Record<string, unknown>).grants)) throw new Error("delegation registry is corrupt");
-      const value = item as { taskId: string; tenant: string; root: StoredSignedGrant; grants: StoredSignedGrant[]; revoked?: boolean };
+      const value = item as { taskId: string; tenant: string; root: StoredSignedGrant; rootAllocationId?: string; grants: StoredSignedGrant[]; revoked?: boolean };
       const rootGrant = asGrant(value.root.grant);
       if (authorityDigest(rootGrant) !== value.root.digest) throw new Error("delegation registry digest mismatch");
       const grants = new Map<string, { readonly grant: DelegationGrant; readonly digest: string; readonly allocationId: string; readonly signed: StoredSignedGrant }>();
-      grants.set("root", { grant: rootGrant, digest: value.root.digest, allocationId: "root", signed: value.root });
+      const rootAllocationId = value.rootAllocationId ?? "root";
+      grants.set(rootAllocationId, { grant: rootGrant, digest: value.root.digest, allocationId: rootAllocationId, signed: value.root });
       for (const stored of value.grants) {
         const child = asGrant(stored.grant);
         if (authorityDigest(child) !== stored.digest) throw new Error("delegation registry child digest mismatch");
         grants.set(child.grantId, { grant: child, digest: stored.digest, allocationId: child.grantId, signed: stored });
       }
-      roots.set(value.taskId, { tenant: value.tenant, taskId: value.taskId, root: value.root, grants, revoked: value.revoked === true });
+      roots.set(value.taskId, { tenant: value.tenant, taskId: value.taskId, root: value.root, rootAllocationId, grants, revoked: value.revoked === true });
     }
   }
 
   async function persistRegistry(): Promise<void> {
     const release = await acquireRegistryLock();
     try {
-      const tasks = [...roots.values()].map(record => ({ v: "reelier.delegation-task/v1", taskId: record.taskId, tenant: record.tenant, root: record.root, grants: [...record.grants.values()].filter(item => item.allocationId !== "root").map(item => item.signed), revoked: record.revoked }));
+      const tasks = [...roots.values()].map(record => ({ v: "reelier.delegation-task/v1", taskId: record.taskId, tenant: record.tenant, root: record.root, rootAllocationId: record.rootAllocationId, grants: [...record.grants.values()].filter(item => item.allocationId !== record.rootAllocationId).map(item => item.signed), revoked: record.revoked }));
       const temporary = `${registryPath}.${process.pid}.tmp`;
       await writeFile(temporary, JSON.stringify({ v: "reelier.delegation-registry/v1", tasks }), "utf8");
       await rename(temporary, registryPath);
