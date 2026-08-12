@@ -24,6 +24,8 @@ export interface CertificationReadinessCandidate {
     credentials: readonly { readonly slot: string; readonly status: "configured" | "missing" }[];
     runners: CertificationInputSet;
     tests: CertificationInputSet;
+    plans: CertificationInputSet;
+    runnerRegistryDigest: string;
     topology: "configured" | "absent";
     signatureStatus: "absent";
   }>;
@@ -60,7 +62,7 @@ export function createCertificationReadinessCandidate(preflight: CertificationPr
     preflightDigest: preflight.digest,
     scenarios: preflight.scenarios,
     identifiers: preflight.identifiers,
-    commitments: Object.freeze({ resources: preflight.resources, cleanup: preflight.cleanup, credentials: preflight.credentialReferences, runners: preflight.inputs.runners, tests: preflight.inputs.tests, topology: preflight.topology, signatureStatus: "absent" }),
+    commitments: Object.freeze({ resources: preflight.resources, cleanup: preflight.cleanup, credentials: preflight.credentialReferences, runners: preflight.inputs.runners, tests: preflight.inputs.tests, plans: preflight.inputs.plans, runnerRegistryDigest: preflight.runnerRegistryDigest, topology: preflight.topology, signatureStatus: "absent" }),
   });
   const digest = authorityDigest(candidate);
   return Object.freeze({ candidate, digest });
@@ -73,27 +75,27 @@ export function parseCertificationReadinessCandidate(value: unknown, preflightVa
   closed(raw, ["v", "status", "preparationReady", "signatureStatus", "authorization", "dispatchable", "completeness", "configDigest", "selectionDigest", "preflightDigest", "scenarios", "identifiers", "commitments"], "certification readiness candidate");
   if (raw.v !== "reelier.certification-readiness-candidate/v1" || raw.status !== "awaiting-human-signature" || raw.preparationReady !== true || raw.signatureStatus !== "absent" || raw.authorization !== "absent" || raw.dispatchable !== false || raw.completeness !== "unchecked") throw new TypeError("certification readiness candidate cannot confer authority");
   const commitmentsRaw = object(raw.commitments, "readiness commitments");
-  closed(commitmentsRaw, ["resources", "cleanup", "credentials", "runners", "tests", "topology", "signatureStatus"], "readiness commitments");
+  closed(commitmentsRaw, ["resources", "cleanup", "credentials", "runners", "tests", "plans", "runnerRegistryDigest", "topology", "signatureStatus"], "readiness commitments");
   if (commitmentsRaw.signatureStatus !== "absent") throw new TypeError("readiness commitment signature status is invalid");
   const candidate: CertificationReadinessCandidate = Object.freeze({
     v: raw.v, status: raw.status, preparationReady: true, signatureStatus: raw.signatureStatus, authorization: raw.authorization, dispatchable: false, completeness: raw.completeness,
     configDigest: assertDigest(raw.configDigest, "readiness configuration root"), selectionDigest: assertDigest(raw.selectionDigest, "readiness selection digest"), preflightDigest: assertDigest(raw.preflightDigest, "readiness preflight digest"),
     scenarios: scenarioList(raw.scenarios), identifiers: parseIdentifiers(raw.identifiers),
-    commitments: Object.freeze({ resources: commitmentList(commitmentsRaw.resources, "resources"), cleanup: commitmentList(commitmentsRaw.cleanup, "cleanup"), credentials: credentialList(commitmentsRaw.credentials), runners: inputSet(commitmentsRaw.runners), tests: inputSet(commitmentsRaw.tests), topology: enumValue(commitmentsRaw.topology, ["configured", "absent"], "readiness topology"), signatureStatus: "absent" }),
+    commitments: Object.freeze({ resources: commitmentList(commitmentsRaw.resources, "resources"), cleanup: commitmentList(commitmentsRaw.cleanup, "cleanup"), credentials: credentialList(commitmentsRaw.credentials), runners: inputSet(commitmentsRaw.runners), tests: inputSet(commitmentsRaw.tests), plans: inputSet(commitmentsRaw.plans), runnerRegistryDigest: assertDigest(commitmentsRaw.runnerRegistryDigest, "runner registry digest"), topology: enumValue(commitmentsRaw.topology, ["configured", "absent"], "readiness topology"), signatureStatus: "absent" }),
   });
   if (candidate.configDigest !== preflight.configDigest || candidate.selectionDigest !== preflight.selectionDigest || candidate.preflightDigest !== preflight.digest || authorityDigest(candidate.identifiers) !== authorityDigest(preflight.identifiers) || authorityDigest(candidate.scenarios) !== authorityDigest(preflight.scenarios)) throw new TypeError("certification readiness preflight generated identifier identity link is invalid");
-  if (JSON.stringify(candidate.commitments.resources) !== JSON.stringify(preflight.resources) || JSON.stringify(candidate.commitments.cleanup) !== JSON.stringify(preflight.cleanup) || JSON.stringify(candidate.commitments.credentials) !== JSON.stringify(preflight.credentialReferences) || JSON.stringify(candidate.commitments.runners) !== JSON.stringify(preflight.inputs.runners) || JSON.stringify(candidate.commitments.tests) !== JSON.stringify(preflight.inputs.tests) || candidate.commitments.topology !== preflight.topology || candidate.commitments.signatureStatus !== preflight.signatureStatus) throw new TypeError("certification readiness commitment and preflight link is invalid");
+  if (JSON.stringify(candidate.commitments.resources) !== JSON.stringify(preflight.resources) || JSON.stringify(candidate.commitments.cleanup) !== JSON.stringify(preflight.cleanup) || JSON.stringify(candidate.commitments.credentials) !== JSON.stringify(preflight.credentialReferences) || JSON.stringify(candidate.commitments.runners) !== JSON.stringify(preflight.inputs.runners) || JSON.stringify(candidate.commitments.tests) !== JSON.stringify(preflight.inputs.tests) || JSON.stringify(candidate.commitments.plans) !== JSON.stringify(preflight.inputs.plans) || candidate.commitments.runnerRegistryDigest !== preflight.runnerRegistryDigest || candidate.commitments.topology !== preflight.topology || candidate.commitments.signatureStatus !== preflight.signatureStatus) throw new TypeError("certification readiness commitment and preflight link is invalid");
   return candidate;
 }
 
 function parseBoundPreflight(value: unknown): CertificationPreflightV2 {
   const raw = object(value, "certification preflight");
-  closed(raw, ["v", "configDigest", "selectionDigest", "identifiers", "scenarios", "resources", "cleanup", "credentialReferences", "inputs", "topology", "trust", "signatureStatus", "authorization", "completeness", "missing", "ok", "preparationReady", "digest"], "certification preflight");
+  closed(raw, ["v", "configDigest", "selectionDigest", "identifiers", "scenarios", "resources", "cleanup", "credentialReferences", "inputs", "runnerRegistryDigest", "topology", "trust", "signatureStatus", "authorization", "completeness", "missing", "ok", "preparationReady", "digest"], "certification preflight");
   if (raw.v !== "reelier.certification-preflight/v2" || raw.trust !== "unchecked" || raw.signatureStatus !== "absent" || raw.authorization !== "absent" || raw.completeness !== "unchecked" || raw.ok !== true || raw.preparationReady !== true) throw new TypeError("certification readiness requires a complete unchecked preflight");
   const inputsRaw = object(raw.inputs, "certification preflight inputs");
-  closed(inputsRaw, ["runners", "tests"], "certification preflight inputs");
+  closed(inputsRaw, ["runners", "tests", "plans"], "certification preflight inputs");
   const body = Object.freeze({
-    v: raw.v, configDigest: assertDigest(raw.configDigest, "preflight configuration root"), selectionDigest: assertDigest(raw.selectionDigest, "preflight selection digest"), identifiers: parseIdentifiers(raw.identifiers), scenarios: scenarioList(raw.scenarios), resources: commitmentList(raw.resources, "resources"), cleanup: commitmentList(raw.cleanup, "cleanup"), credentialReferences: credentialList(raw.credentialReferences), inputs: Object.freeze({ runners: inputSet(inputsRaw.runners), tests: inputSet(inputsRaw.tests) }), topology: enumValue(raw.topology, ["configured", "absent"], "preflight topology"), trust: "unchecked" as const, signatureStatus: "absent" as const, authorization: "absent" as const, completeness: "unchecked" as const, missing: stringList(raw.missing, "preflight missing"), ok: true as const, preparationReady: true as const,
+    v: raw.v, configDigest: assertDigest(raw.configDigest, "preflight configuration root"), selectionDigest: assertDigest(raw.selectionDigest, "preflight selection digest"), identifiers: parseIdentifiers(raw.identifiers), scenarios: scenarioList(raw.scenarios), resources: commitmentList(raw.resources, "resources"), cleanup: commitmentList(raw.cleanup, "cleanup"), credentialReferences: credentialList(raw.credentialReferences), inputs: Object.freeze({ runners: inputSet(inputsRaw.runners), tests: inputSet(inputsRaw.tests), plans: inputSet(inputsRaw.plans) }), runnerRegistryDigest: assertDigest(raw.runnerRegistryDigest, "runner registry digest"), topology: enumValue(raw.topology, ["configured", "absent"], "preflight topology"), trust: "unchecked" as const, signatureStatus: "absent" as const, authorization: "absent" as const, completeness: "unchecked" as const, missing: stringList(raw.missing, "preflight missing"), ok: true as const, preparationReady: true as const,
   });
   if (body.missing.length !== 0) throw new TypeError("certification preflight semantic missing-requirements mismatch");
   const digest = assertDigest(raw.digest, "preflight digest");

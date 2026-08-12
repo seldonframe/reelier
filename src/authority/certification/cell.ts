@@ -10,10 +10,11 @@ import { jobCardTrustMaterialFromPin, type JobCardTrustPinV1 } from "../host/dep
 import type { DelegationAuthority } from "../host/delegation-service.js";
 import type { PrincipalCredential, PrincipalRegistry } from "../host/principal-registry.js";
 import { parseAuthorityKeyDescriptor, parseTrustEvents, type AuthorityKeyDescriptorV1 } from "./authority.js";
-import { parseCertificationOperatorConfigV2 } from "./config.js";
+import { parseCertificationOperatorConfigV3 } from "./config.js";
 import { certificationWorkspaceRoot, confinedExistingDirectory, publishPrivateContentAddressed, readConfinedFile, readUnlinkedFile } from "./filesystem.js";
 import { deriveCertificationEndpointManifest, parseCertificationInitialization, validateCertificationInitialization, type CertificationIdentifiers } from "./initializer.js";
-import { parseCertificationEndpointManifest, parseCertificationRunnerManifest, parseCertificationTestManifest } from "./manifests.js";
+import { parseCertificationEndpointManifest, parseCertificationRunnerManifest, parseCertificationScenarioPlan, parseCertificationTestManifest } from "./manifests.js";
+import { certificationRunnerRegistryDigest } from "./runner-registry.js";
 import { preflightCertification } from "./preflight.js";
 import { CERTIFICATION_SCENARIO_IDS, type CertificationScenarioId } from "./scenarios.js";
 
@@ -210,22 +211,26 @@ async function dispatchSnapshot(input: Readonly<{ workspace: string; scenario: C
   const inputRoot = await requireDirectory(state.root, ["inputs"]);
   const runnerDirectory = await requireDirectory(state.root, ["inputs", "runners"]);
   const testDirectory = await requireDirectory(state.root, ["inputs", "tests"]);
+  const planDirectory = await requireDirectory(state.root, ["inputs", "plans"]);
   void inputRoot;
   const runnerArtifact = preflight.inputs.runners.artifacts.find(item => item.scenario === input.scenario)!;
   const testArtifact = preflight.inputs.tests.artifacts.find(item => item.scenario === input.scenario)!;
+  const planArtifact = preflight.inputs.plans.artifacts.find(item => item.scenario === input.scenario)!;
   const runnerBytes = await readConfinedFile(state.root, runnerDirectory, runnerArtifact.name);
   const runner = parseCertificationRunnerManifest(JSON.parse(runnerBytes.toString("utf8")), input.scenario);
-  if (runner.endpointManifestDigest !== authorityDigest(endpoint)) throw new TypeError("certification runner endpoint manifest commitment mismatch");
+  if (runner.v !== "reelier.certification-runner-manifest/v2" || !runner.dispatchable || runner.registryDigest !== certificationRunnerRegistryDigest || runner.endpointManifestDigest !== authorityDigest(endpoint)) throw new TypeError("certification runner endpoint or registry commitment mismatch");
   const tests = parseCertificationTestManifest(JSON.parse((await readConfinedFile(state.root, testDirectory, testArtifact.name)).toString("utf8")), input.scenario, runnerArtifact.digest);
   if (tests.runnerManifestDigest !== runnerArtifact.digest) throw new TypeError("certification tests do not bind the selected runner");
+  const plan = parseCertificationScenarioPlan(JSON.parse((await readConfinedFile(state.root, planDirectory, planArtifact.name)).toString("utf8")), preflight.scenarios);
+  if (plan.runnerManifestDigest !== runnerArtifact.digest || plan.testManifestDigest !== testArtifact.digest || plan.endpointManifestDigest !== authorityDigest(endpoint) || plan.runnerRegistryDigest !== certificationRunnerRegistryDigest) throw new TypeError("certification scenario plan drifted from signed runner, test, endpoint, or registry authority");
   const capabilities = normalizeCapabilities(endpoint.endpoints);
-  const digest = authorityDigest({ v: "reelier.certification-dispatch-snapshot/v1", activation: authorityDigest(activation), jobCard: signedJobCardDigest(jobCard), readiness: authorityDigest(pin.signedReadiness), trustHead: authorityDigest(currentEvents[currentEvents.length - 1]), task: status.lifecycleState, principal: authorityDigest(principal), allocation: { effects: allocation.effects, consumed: allocation.consumed, remaining: allocation.remaining, revoked: allocation.revoked }, preflight: preflight.digest, endpoint: authorityDigest(endpoint), runner: runnerArtifact.digest, tests: testArtifact.digest, dispatchMode: "hermetic-certification", completeness: "unchecked" });
+  const digest = authorityDigest({ v: "reelier.certification-dispatch-snapshot/v1", activation: authorityDigest(activation), jobCard: signedJobCardDigest(jobCard), readiness: authorityDigest(pin.signedReadiness), trustHead: authorityDigest(currentEvents[currentEvents.length - 1]), task: status.lifecycleState, principal: authorityDigest(principal), allocation: { effects: allocation.effects, consumed: allocation.consumed, remaining: allocation.remaining, revoked: allocation.revoked }, preflight: preflight.digest, endpoint: authorityDigest(endpoint), runner: runnerArtifact.digest, tests: testArtifact.digest, plan: planArtifact.digest, runnerRegistry: certificationRunnerRegistryDigest, dispatchMode: "hermetic-certification", completeness: "unchecked" });
   return Object.freeze({ digest, scenarioId: input.scenario, runnerId: runner.runnerId, implementationDigest: runner.implementationDigest, endpointManifestDigest: runner.endpointManifestDigest, capabilities });
 }
 
 async function loadInitialization(workspace: string) {
   const root = await certificationWorkspaceRoot(path.resolve(workspace));
-  const config = parseCertificationOperatorConfigV2(JSON.parse((await readConfinedFile(root, root, "config.json")).toString("utf8")));
+  const config = parseCertificationOperatorConfigV3(JSON.parse((await readConfinedFile(root, root, "config.json")).toString("utf8")));
   const initialization = parseCertificationInitialization(JSON.parse((await readConfinedFile(root, root, "initialization.json")).toString("utf8")));
   validateCertificationInitialization(config, initialization);
   return { root, config, initialization };

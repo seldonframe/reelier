@@ -1,5 +1,5 @@
 import { authorityDigest } from "../wire.js";
-import type { CertificationOperatorConfigV2 } from "./config.js";
+import type { CertificationOperatorConfigV3 } from "./config.js";
 import { CERTIFICATION_SCENARIOS, type CertificationScenarioId } from "./scenarios.js";
 
 export interface SanitizedCertificationProjection {
@@ -24,7 +24,7 @@ export interface CertificationSelectionCommitment {
   readonly projection: SanitizedCertificationProjection;
 }
 
-export function createCertificationConfigCommitment(config: CertificationOperatorConfigV2, scenarios: readonly CertificationScenarioId[]): CertificationConfigCommitment {
+export function createCertificationConfigCommitment(config: CertificationOperatorConfigV3, scenarios: readonly CertificationScenarioId[]): CertificationConfigCommitment {
   const projection = createSanitizedCertificationProjection(config, scenarios);
   const privateConfigDigest = authorityDigest(config);
   const sanitizedProjectionDigest = authorityDigest(projection);
@@ -32,7 +32,7 @@ export function createCertificationConfigCommitment(config: CertificationOperato
   return Object.freeze({ privateConfigDigest, sanitizedProjectionDigest, configCommitmentDigest, projection });
 }
 
-export function createCertificationSelectionCommitment(config: CertificationOperatorConfigV2, scenarios: readonly CertificationScenarioId[], configDigest: string): CertificationSelectionCommitment {
+export function createCertificationSelectionCommitment(config: CertificationOperatorConfigV3, scenarios: readonly CertificationScenarioId[], configDigest: string): CertificationSelectionCommitment {
   const projection = createSanitizedCertificationProjection(config, scenarios);
   const sanitizedProjectionDigest = authorityDigest(projection);
   const selectionDigest = recomputeCertificationSelectionCommitment(configDigest, sanitizedProjectionDigest);
@@ -43,7 +43,7 @@ export function recomputeCertificationSelectionCommitment(configDigest: string, 
   return authorityDigest({ v: "reelier.certification-selection-commitment/v1", configDigest, sanitizedProjectionDigest });
 }
 
-function createSanitizedCertificationProjection(config: CertificationOperatorConfigV2, scenarios: readonly CertificationScenarioId[]): SanitizedCertificationProjection {
+function createSanitizedCertificationProjection(config: CertificationOperatorConfigV3, scenarios: readonly CertificationScenarioId[]): SanitizedCertificationProjection {
   const definitions = scenarios.map(scenario => CERTIFICATION_SCENARIOS[scenario]);
   const resourceSections = unique(definitions.flatMap(definition => definition.resourceSections));
   const cleanupSections = unique(definitions.flatMap(definition => definition.cleanupCommitments));
