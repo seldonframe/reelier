@@ -81,6 +81,13 @@ test("local deployment dispatches once, reconciles, publishes a receipt, and sur
     const config = { version: 1 as const, tenant: "tenant_1", requester: "operator", definitions: ["gmail_reply_send_v1"], ledgerDir: path.join(authorityRoot, "ledger"), decisionDir: path.join(authorityRoot, "decisions"), receiptDir: path.join(authorityRoot, "receipts"), gateKeyFile: path.join(authorityRoot, "keys", "local-gate.pem"), endpoints: [], deploymentPath: built.deploymentFile, jobCardTrustPinPath: built.jobCardTrustPinFile };
     await assert.rejects(() => createLocalAuthorityRuntime({ ...config, definitions: ["slack_channel_topic_set_v1"] }, { dispatchAdapter: adapter, jobCardTrustPin: built.jobCardTrustPin }), /definitions.*signed Job Card/i);
     const deploymentBytes = await readFile(built.deploymentFile, "utf8");
+    const wrongPack = JSON.parse(deploymentBytes) as any;
+    const { signerId: _signer, signature: _signature, ...unsignedWrongPack } = wrongPack.jobCard;
+    wrongPack.jobCard = signJobCard({ ...unsignedWrongPack, packDigests: [sha("9")] }, "job_sponsor", jobSponsor.privateKey);
+    for (const item of wrongPack.connectionAdoptions) item.signedDeploymentBinding = signedJobCardDigest(wrongPack.jobCard);
+    await writeFile(built.deploymentFile, JSON.stringify(wrongPack));
+    await assert.rejects(() => createLocalAuthorityRuntime(config, { dispatchAdapter: adapter }), /pack digest.*installed reviewed packs/i);
+    await writeFile(built.deploymentFile, deploymentBytes);
     const stripped = JSON.parse(deploymentBytes) as Record<string, unknown>;
     delete stripped.jobCard; delete stripped.jobCardAuthority; stripped.connectionDescriptors = []; stripped.connectionAdoptions = [];
     await writeFile(built.deploymentFile, JSON.stringify(stripped));
