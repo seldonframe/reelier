@@ -77,3 +77,25 @@ Focused GREEN evidence before the implementation commit:
 ```
 
 `npx tsc -p tsconfig.test.json --pretty false`, `npm run check:authority-contract`, `npm run build`, and `git diff --check` all exited 0. No native helper was added. Unrelated `.gitignore`, `native/`, `rust-toolchain.toml`, `.tmp-pack/`, and certification changes were left unstaged and untouched.
+
+## Fix round 5/5 — endpoint validation before bearer-token access
+
+Commits:
+
+- `7e9ba4d test(authority): expose preflight token resolution` — strict RED regression tests.
+- `e401614 fix(authority): validate endpoint before token access` — minimal GREEN reorder and explicit safe-address fixtures for token-state tests.
+
+The RED run compiled successfully and failed 2 of 13 focused tests for the intended missing behavior. A private DNS answer and a mapped IPv6 private answer each produced `tokenResolverCalls === 1` while `requestCalls === 0`. Mixed public/private DNS was covered by the same regression loop. Unsafe IPv4, IPv6, and expanded dotted mapped literals already passed the required `tokenResolverCalls === 0` and `requestCalls === 0` invariant because the closed connection parser rejects them before live checking.
+
+`checkAuthorityCellLive` now parses the closed public connection, resolves and classifies every endpoint address, and returns `failed/endpoint-address-refused` for an empty, private, mixed, or private-mapped result before resolving token material. Only an all-safe address set can reach bearer-token resolution and the pinned/request-injected identity request. Existing token-unavailable and symlink-token tests now explicitly establish a safe public address first, preserving the honest `absent/token-unavailable` state and redaction semantics after the ordering change.
+
+Fresh final verification after the GREEN commit:
+
+```
+focused client tests: 13 passed, 0 failed
+npx tsc --noEmit --pretty false: exit 0
+npm run check:authority-contract: exit 0
+npm run build: exit 0
+```
+
+`git diff --check` for the owned implementation and focused test files exited 0 before the GREEN commit. Unrelated `.gitignore`, `native/`, `rust-toolchain.toml`, `.tmp-pack/`, and certification changes remained unstaged and untouched.
