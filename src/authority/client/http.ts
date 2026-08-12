@@ -50,7 +50,7 @@ function isExplicitLoopbackHttp(endpoint: string, addresses: readonly string[]):
 function isIpAddress(address: string): boolean { return /^\d{1,3}(?:\.\d{1,3}){3}$/.test(address) || address.includes(":"); }
 function isLoopbackAddress(address: string): boolean { return address === "::1" || address.startsWith("127."); }
 function isPublicAddress(address: string): boolean {
-  const value = address.toLowerCase().replace(/^::ffff:/, "");
+  const value = address.toLowerCase();
   const mapped = mappedIpv4(value); if (mapped) return isPublicAddress(mapped);
   if (value.includes(":")) return !(value === "::" || value === "::1" || value.startsWith("fc") || value.startsWith("fd") || value.startsWith("fe8") || value.startsWith("fe9") || value.startsWith("fea") || value.startsWith("feb") || value.startsWith("ff"));
   const parts = value.split(".").map(Number); const [a, b] = parts;
