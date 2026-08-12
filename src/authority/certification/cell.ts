@@ -130,6 +130,7 @@ export interface CertificationCellHostInternalState {
   readonly principalRegistry: PrincipalRegistry;
   readonly now?: () => Date;
   issueHermeticGitHubPermit(bearerToken: string): Promise<object>;
+  observeHermeticGitHubState(bearerToken: string): Promise<Readonly<{ digest: string; adapterContractDigest: string; preimage: Readonly<Record<string, unknown>> }>>;
   revalidateHermeticGitHubPermit(permit: object): Promise<void>;
   hermeticGitHubPermitSnapshot(permit: object): Readonly<{ digest: string; adapterContractDigest: string; preimage: Readonly<Record<string, unknown>> }>;
   hermeticGitHubAuthority(): CertificationHermeticGitHubAuthorityState;
@@ -179,7 +180,7 @@ export async function createCertificationCellHost(input: Readonly<{ workspace: s
   };
   const frozen = Object.freeze(host);
   const hermeticInput = { scenario: "github-issue-labels" as const, workspace, currentTrustPinPath: configuredTrustPinPath, currentTrustPinPathDigest, delegationAuthority: input.delegationAuthority, principalRegistry: input.principalRegistry, now: input.now };
-  certificationCellHosts.set(frozen, Object.freeze({ workspace, currentTrustPinPath: configuredTrustPinPath, delegationAuthority: input.delegationAuthority, principalRegistry: input.principalRegistry, ...(input.now ? { now: input.now } : {}), issueHermeticGitHubPermit: (bearerToken: string) => issueHermeticGitHubPermit({ ...hermeticInput, bearerToken }), revalidateHermeticGitHubPermit, hermeticGitHubPermitSnapshot, hermeticGitHubAuthority: () => hermeticAuthority }));
+  certificationCellHosts.set(frozen, Object.freeze({ workspace, currentTrustPinPath: configuredTrustPinPath, delegationAuthority: input.delegationAuthority, principalRegistry: input.principalRegistry, ...(input.now ? { now: input.now } : {}), issueHermeticGitHubPermit: (bearerToken: string) => issueHermeticGitHubPermit({ ...hermeticInput, bearerToken }), observeHermeticGitHubState: async (bearerToken: string) => { const snapshot = await dispatchSnapshot({ ...hermeticInput, bearerToken }, "hermetic-github", false); return Object.freeze({ digest: snapshot.digest, adapterContractDigest: snapshot.adapterContractDigest, preimage: snapshot.preimage }); }, revalidateHermeticGitHubPermit, hermeticGitHubPermitSnapshot, hermeticGitHubAuthority: () => hermeticAuthority }));
   return frozen;
 }
 
@@ -284,7 +285,7 @@ async function revalidateCertificationDispatchPermit(permit: CertificationDispat
   if (current.digest !== state.snapshot.digest) throw new TypeError("certification dispatch state became stale");
 }
 
-async function dispatchSnapshot(input: Readonly<{ workspace: string; scenario: CertificationScenarioId; bearerToken: string; currentTrustPinPath: string; currentTrustPinPathDigest: string; delegationAuthority: DelegationAuthority; principalRegistry: PrincipalRegistry; now?: () => Date }>, mode: "ordinary" | "hermetic-github"): Promise<DispatchSnapshot> {
+async function dispatchSnapshot(input: Readonly<{ workspace: string; scenario: CertificationScenarioId; bearerToken: string; currentTrustPinPath: string; currentTrustPinPathDigest: string; delegationAuthority: DelegationAuthority; principalRegistry: PrincipalRegistry; now?: () => Date }>, mode: "ordinary" | "hermetic-github", requireEffect = true): Promise<DispatchSnapshot> {
   if (!(CERTIFICATION_SCENARIO_IDS as readonly string[]).includes(input.scenario)) throw new TypeError("certification dispatch scenario is invalid");
   const state = await loadInitialization(input.workspace);
   if (!state.initialization.scenarios.includes(input.scenario)) throw new TypeError("certification dispatch scenario was not selected");
@@ -318,7 +319,7 @@ async function dispatchSnapshot(input: Readonly<{ workspace: string; scenario: C
   const principal = await input.principalRegistry.resolve(input.bearerToken, now);
   if (authorityDigest(principal) !== authorityDigest({ tenant: activation.authorityCellId, principalId: activation.principalId, taskId: activation.taskId, grantId: activation.grantId, grantDigest: activation.signedChildGrant.digest, allocationId: activation.allocationId, runtimeSessionId: activation.runtimeSessionId, jobId: activation.jobId, authorityCellId: activation.authorityCellId, expiresAt: binding.expiresAt, sessionTokenDigest: principal.sessionTokenDigest })) throw new TypeError("certification principal context does not match active authority state");
   const allocation = await input.delegationAuthority.budget.get(activation.allocationId);
-  if (!allocation || allocation.revoked || allocation.taskId !== activation.taskId || allocation.remaining < 1) throw new TypeError("certification effect allocation is exhausted or inactive");
+  if (!allocation || allocation.revoked || allocation.taskId !== activation.taskId || (requireEffect && allocation.remaining < 1)) throw new TypeError("certification effect allocation is exhausted or inactive");
   const preflight = await preflightCertification({ workspace: state.root, all: true });
   if (!preflight.preparationReady || preflight.completeness !== "unchecked") throw new TypeError("certification semantic runner or test readiness is incomplete");
   const readinessPreflightDigest = (pin.readinessCandidate as { readonly preflightDigest?: unknown }).preflightDigest;
@@ -344,7 +345,7 @@ async function dispatchSnapshot(input: Readonly<{ workspace: string; scenario: C
   const plan = parseCertificationScenarioPlan(JSON.parse((await readConfinedFile(state.root, planDirectory, planArtifact.name)).toString("utf8")), state.config, preflight.scenarios);
   if (plan.runnerManifestDigest !== runnerArtifact.digest || plan.testManifestDigest !== testArtifact.digest || plan.endpointManifestDigest !== authorityDigest(endpoint) || plan.runnerRegistryDigest !== certificationRunnerRegistryDigest) throw new TypeError("certification scenario plan drifted from signed runner, test, endpoint, or registry authority");
   const capabilities = normalizeCapabilities(endpoint.endpoints);
-  const preimage = Object.freeze({ v: "reelier.certification-dispatch-snapshot/v1", adapterContractDigest: AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST, activation: authorityDigest(activation), jobCard: signedJobCardDigest(jobCard), readiness: authorityDigest(pin.signedReadiness), trustHead: authorityDigest(currentEvents[currentEvents.length - 1]), task: status.lifecycleState, principal: authorityDigest(principal), allocation: { effects: allocation.effects, consumed: allocation.consumed, remaining: allocation.remaining, revoked: allocation.revoked }, preflight: preflight.digest, endpoint: authorityDigest(endpoint), runner: runnerArtifact.digest, tests: testArtifact.digest, plan: planArtifact.digest, runnerRegistry: certificationRunnerRegistryDigest, dispatchMode: mode, completeness: "unchecked" });
+  const preimage = Object.freeze({ v: "reelier.certification-dispatch-snapshot/v1", adapterContractDigest: AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST, operatorConfig: authorityDigest(state.config), activation: authorityDigest(activation), jobCard: signedJobCardDigest(jobCard), readiness: authorityDigest(pin.signedReadiness), trustHead: authorityDigest(currentEvents[currentEvents.length - 1]), task: status.lifecycleState, principal: authorityDigest(principal), allocation: { effects: allocation.effects, consumed: allocation.consumed, remaining: allocation.remaining, revoked: allocation.revoked }, preflight: preflight.digest, endpoint: authorityDigest(endpoint), runner: runnerArtifact.digest, tests: testArtifact.digest, plan: planArtifact.digest, runnerRegistry: certificationRunnerRegistryDigest, dispatchMode: mode, completeness: "unchecked" });
   const digest = authorityDigest(preimage);
   return Object.freeze({ digest, adapterContractDigest: AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST, preimage, scenarioId: input.scenario, runnerId: runner.runnerId, metadataDigest: runner.metadataDigest, endpointManifestDigest: runner.endpointManifestDigest, capabilities });
 }

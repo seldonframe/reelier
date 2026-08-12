@@ -6,7 +6,7 @@ import { mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from "node
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { authorityDigest } from "../../src/authority/wire.js";
-import { signJobCard } from "../../src/authority/job.js";
+import { signJobCard, signedJobCardDigest } from "../../src/authority/job.js";
 import { createSignedCertificationReadiness } from "../../src/authority/certification/authority.js";
 import { initializeCertification } from "../../src/authority/certification/initializer.js";
 import { preflightCertification } from "../../src/authority/certification/preflight.js";
@@ -421,8 +421,8 @@ test("closed graph of the declared durable fixture collections exports canonical
     for (let index = 1; index < graph.budgetEvents.length; index += 1) assert.equal(graph.budgetEvents[index].priorBudgetEventDigest, authorityDigest(graph.budgetEvents[index - 1]));
     assert.deepEqual(graph.topology, { status: "unchecked" });
     assert.deepEqual(graph.leases, { status: "absent", entries: [] });
-    assert.deepEqual(graph.terminalCommitment.counts, { grants: 2, principals: 2, allocations: 2, budgetEvents: 4, outcomes: 14, exceptions: 0, topologyEvidence: 0, leases: 0, receipts: 6, receiptExtensions: 6, taskAuthorities: 1, postStateEvidence: 1, policyEvidence: 2, taskStatusEvidence: 2, duplicateDecisions: 0, priorReceiptLinks: 6, keyDescriptors: 8, bindingEntries: 4 });
-    for (const key of ["grants", "principals", "allocations", "budgetEvents", "outcomes", "exceptions", "receipts", "receiptExtensions", "taskAuthorities", "postStateEvidence", "policyEvidence", "taskStatusEvidence", "duplicateDecisions", "priorReceiptLinks", "keyDescriptors"] as const) assert.equal(graph.terminalCommitment.collectionDigests[key], authorityDigest(graph[key]));
+    assert.deepEqual(graph.terminalCommitment.counts, { grants: 2, principals: 2, allocations: 2, budgetEvents: 4, outcomes: 14, exceptions: 0, topologyEvidence: 0, leases: 0, receipts: 6, receiptExtensions: 6, taskAuthorities: 1, postStateEvidence: 1, policyEvidence: 2, taskStatusEvidence: 2, duplicateAttempts: 0, duplicateDecisions: 0, priorReceiptLinks: 6, keyDescriptors: 8, bindingEntries: 4 });
+    for (const key of ["grants", "principals", "allocations", "budgetEvents", "outcomes", "exceptions", "receipts", "receiptExtensions", "taskAuthorities", "postStateEvidence", "policyEvidence", "taskStatusEvidence", "duplicateAttempts", "duplicateDecisions", "priorReceiptLinks", "keyDescriptors"] as const) assert.equal(graph.terminalCommitment.collectionDigests[key], authorityDigest(graph[key]));
     assert.equal(verifyCertificationTaskReceiptGraph(graph, { trustPin: f.pin }).status, "verified");
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
@@ -493,7 +493,7 @@ test("portable evidence links the approved task, exact post-state, policy status
     assert.equal(duplicate.status, "duplicate");
     const graph: any = await f.runner.exportGraph({ bearerToken: f.credential.token });
     assert.equal(graph.taskAuthorities.length, 1);
-    assert.equal(graph.taskAuthorities[0].signedJobCardDigest, authorityDigest(f.jobCard));
+    assert.equal(graph.taskAuthorities[0].signedJobCardDigest, signedJobCardDigest(f.jobCard));
     assert.equal(graph.taskAuthorities[0].adapterContractDigest, AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST);
     assert.equal(graph.postStateEvidence.length, 1);
     assert.equal(graph.postStateEvidence[0].confidence, "exact");
@@ -503,6 +503,7 @@ test("portable evidence links the approved task, exact post-state, policy status
     assert.deepEqual(graph.taskStatusEvidence.map((item: any) => item.phase), ["dispatch", "export"]);
     assert.equal(graph.taskStatusEvidence.every((item: any) => item.freshness === "unchecked"), true);
     assert.equal(graph.duplicateDecisions.length, 1);
+    assert.equal(graph.duplicateAttempts.length, 1);
     assert.deepEqual({ budget: graph.duplicateDecisions[0].budgetDelta, writes: graph.duplicateDecisions[0].providerWriteDelta }, { budget: 0, writes: 0 });
     assert.equal(verifyCertificationTaskReceiptGraph(graph, { trustPin: f.pin }).status, "verified");
     for (const mutate of [
