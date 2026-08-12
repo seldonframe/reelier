@@ -55,7 +55,7 @@ async function fixture(scenarios: readonly ("github-issue-labels" | "slack-topic
 test("signed Job Card activates exact durable root state and a derived restart-safe principal", async () => {
   const f = await fixture();
   try {
-    const input = { workspace: f.initialized.workspace, jobCard: f.jobCard, jobCardTrustPin: f.pin, delegationKeyDescriptor: f.delegationSigner, delegationPrivateKey: f.delegationKey.privateKey, constraints: f.constraints, effects: 2, issuedAt: at, expiresAt: expiry, delegationAuthority: f.delegation };
+    const input = { workspace: f.initialized.workspace, jobCard: f.jobCard, jobCardTrustPin: f.pin, currentTrustPinPath: f.currentTrustPinPath, delegationKeyDescriptor: f.delegationSigner, delegationPrivateKey: f.delegationKey.privateKey, constraints: f.constraints, effects: 2, issuedAt: at, expiresAt: expiry, delegationAuthority: f.delegation };
     const first = await cell.activateCertificationRootTask(input);
     const replay = await cell.activateCertificationRootTask(input);
     assert.deepEqual(replay, first);
@@ -64,6 +64,7 @@ test("signed Job Card activates exact durable root state and a derived restart-s
     assert.equal(first.grantId, f.initialized.identifiers.rootGrantId);
     assert.equal(first.allocationId, f.initialized.identifiers.rootGrantId);
     assert.equal(first.authorityCellId, f.initialized.identifiers.authorityCellId);
+    assert.equal(first.currentTrustPinPath, await import("node:fs/promises").then(({ realpath }) => realpath(f.currentTrustPinPath)));
     assert.notEqual(first.signerKeyId, f.initialized.identifiers.signerId);
     await assert.rejects(() => cell.activateCertificationRootTask({ ...input, effects: 1 }), /conflict|commitment/i);
     const credential = await cell.activateCertificationPrincipalSession({ workspace: f.initialized.workspace, delegationAuthority: f.delegation, principalRegistry: f.principals, now: new Date("2026-08-11T20:10:00.000Z") });
@@ -83,14 +84,12 @@ test("signed Job Card activates exact durable root state and a derived restart-s
 test("dispatch permit is opaque, nonserializable, one-use, and invokes the runner exactly once", async () => {
   const f = await fixture();
   try {
-    await cell.activateCertificationRootTask({ workspace: f.initialized.workspace, jobCard: f.jobCard, jobCardTrustPin: f.pin, delegationKeyDescriptor: f.delegationSigner, delegationPrivateKey: f.delegationKey.privateKey, constraints: f.constraints, effects: 2, issuedAt: at, expiresAt: expiry, delegationAuthority: f.delegation });
+    await cell.activateCertificationRootTask({ workspace: f.initialized.workspace, jobCard: f.jobCard, jobCardTrustPin: f.pin, currentTrustPinPath: f.currentTrustPinPath, delegationKeyDescriptor: f.delegationSigner, delegationPrivateKey: f.delegationKey.privateKey, constraints: f.constraints, effects: 2, issuedAt: at, expiresAt: expiry, delegationAuthority: f.delegation });
     const credential = await cell.activateCertificationPrincipalSession({ workspace: f.initialized.workspace, delegationAuthority: f.delegation, principalRegistry: f.principals, now: new Date("2026-08-11T20:10:00.000Z") });
-    const readiness = { workspace: f.initialized.workspace, scenario: "github-issue-labels" as const, bearerToken: credential.token, currentTrustPinPath: f.currentTrustPinPath, delegationAuthority: f.delegation, principalRegistry: f.principals, credentialAvailable: async (slot: string) => slot === "githubCredential", now: () => new Date("2026-08-11T20:10:00.000Z") };
+    const readiness = { workspace: f.initialized.workspace, scenario: "github-issue-labels" as const, bearerToken: credential.token, delegationAuthority: f.delegation, principalRegistry: f.principals, credentialAvailable: async (slot: string) => slot === "githubCredential", now: () => new Date("2026-08-11T20:10:00.000Z") };
     let calls = 0;
-    const registry = cell.createCertifiedRunnerRegistry();
-    const runnerManifest = JSON.parse(await readFile(path.join(f.initialized.workspace, "inputs", "runners", "github-issue-labels.json"), "utf8"));
-    const endpointManifest = JSON.parse(await readFile(path.join(f.initialized.workspace, "authority", "endpoints", "github-issue-labels.json"), "utf8"));
-    registry.register({ scenarioId: "github-issue-labels", runnerId: runnerManifest.runnerId, implementationDigest: runnerManifest.implementationDigest, endpointManifestDigest: runnerManifest.endpointManifestDigest, dispatchMode: "hermetic-certification", capabilities: endpointManifest.endpoints, run: async (context: { dispatchMode: string }) => { calls += 1; assert.equal(context.dispatchMode, "hermetic-certification"); return "ran"; } });
+    assert.equal("createCertifiedRunnerRegistry" in cell, false);
+    assert.equal("runCertificationWithPermit" in cell, false);
     await assert.rejects(() => cell.verifyCertificationDispatchReadiness({ ...readiness, credentialAvailable: async () => false }), /credential.*unavailable/i);
     await assert.rejects(() => cell.verifyCertificationDispatchReadiness({ ...readiness, bearerToken: "rat_not-the-issued-token" }), /credential/i);
     assert.equal(calls, 0);
@@ -113,17 +112,16 @@ test("dispatch permit is opaque, nonserializable, one-use, and invokes the runne
     const endpointBytes = await readFile(endpointFile, "utf8");
     const endpoint = JSON.parse(endpointBytes); endpoint.resourceDigest = `sha256:${"9".repeat(64)}`;
     await writeFile(endpointFile, JSON.stringify(endpoint));
-    await assert.rejects(() => cell.runCertificationWithPermit(permit, registry), /endpoint|stale|commitment/i);
+    await assert.rejects(() => cell.revalidateCertificationDispatchPermit(permit), /endpoint|stale|commitment/i);
     assert.equal(calls, 0);
     assert.equal((await f.delegation.budget.get(f.initialized.identifiers.rootGrantId))?.remaining, 2);
     await writeFile(endpointFile, endpointBytes);
 
     const valid = await cell.verifyCertificationDispatchReadiness(readiness);
-    assert.equal(await cell.runCertificationWithPermit(valid, registry), "ran");
-    assert.equal(calls, 1);
-    assert.equal((await f.delegation.budget.get(f.initialized.identifiers.rootGrantId))?.remaining, 1);
-    await assert.rejects(() => cell.runCertificationWithPermit(valid, registry), /used|permit/i);
-    assert.equal(calls, 1);
+    await cell.revalidateCertificationDispatchPermit(valid);
+    assert.equal(calls, 0);
+    assert.equal((await f.delegation.budget.get(f.initialized.identifiers.rootGrantId))?.remaining, 2);
+    await assert.rejects(() => cell.revalidateCertificationDispatchPermit(valid), /used|permit/i);
 
     const trustPermit = await cell.verifyCertificationDispatchReadiness(readiness);
     const pinFile = f.currentTrustPinPath;
@@ -132,8 +130,8 @@ test("dispatch permit is opaque, nonserializable, one-use, and invokes the runne
     const previous = pin.currentTrustEvents[pin.currentTrustEvents.length - 1];
     pin.currentTrustEvents.push({ v: "reelier.authority-trust-event/v1", eventId: `trust_revoke_${"f".repeat(12)}`, sequence: pin.currentTrustEvents.length, action: "revoke", keyDescriptorDigest: authorityDigest(jobSigner), occurredAt: "2026-08-11T20:05:00.000Z", previousEventDigest: authorityDigest(previous) });
     await writeFile(pinFile, JSON.stringify(pin));
-    await assert.rejects(() => cell.runCertificationWithPermit(trustPermit, registry), /revoked|active|trust/i);
-    assert.equal(calls, 1);
+    await assert.rejects(() => cell.revalidateCertificationDispatchPermit(trustPermit), /revoked|active|trust/i);
+    assert.equal(calls, 0);
     await writeFile(pinFile, pinBytes);
     await assert.rejects(() => cell.verifyCertificationDispatchReadiness(readiness), /rollback|trust/i);
   } finally { await rm(f.root, { recursive: true, force: true }); }
@@ -142,15 +140,11 @@ test("dispatch permit is opaque, nonserializable, one-use, and invokes the runne
 test("task revocation invalidates an already-issued certification permit", async () => {
   const f = await fixture();
   try {
-    await cell.activateCertificationRootTask({ workspace: f.initialized.workspace, jobCard: f.jobCard, jobCardTrustPin: f.pin, delegationKeyDescriptor: f.delegationSigner, delegationPrivateKey: f.delegationKey.privateKey, constraints: f.constraints, effects: 1, issuedAt: at, expiresAt: expiry, delegationAuthority: f.delegation });
+    await cell.activateCertificationRootTask({ workspace: f.initialized.workspace, jobCard: f.jobCard, jobCardTrustPin: f.pin, currentTrustPinPath: f.currentTrustPinPath, delegationKeyDescriptor: f.delegationSigner, delegationPrivateKey: f.delegationKey.privateKey, constraints: f.constraints, effects: 1, issuedAt: at, expiresAt: expiry, delegationAuthority: f.delegation });
     const credential = await cell.activateCertificationPrincipalSession({ workspace: f.initialized.workspace, delegationAuthority: f.delegation, principalRegistry: f.principals, now: new Date("2026-08-11T20:10:00.000Z") });
-    const permit = await cell.verifyCertificationDispatchReadiness({ workspace: f.initialized.workspace, scenario: "github-issue-labels", bearerToken: credential.token, currentTrustPinPath: f.currentTrustPinPath, delegationAuthority: f.delegation, principalRegistry: f.principals, credentialAvailable: async () => true, now: () => new Date("2026-08-11T20:10:00.000Z") });
-    const registry = cell.createCertifiedRunnerRegistry();
-    const runner = JSON.parse(await readFile(path.join(f.initialized.workspace, "inputs", "runners", "github-issue-labels.json"), "utf8"));
-    const endpoint = JSON.parse(await readFile(path.join(f.initialized.workspace, "authority", "endpoints", "github-issue-labels.json"), "utf8"));
-    registry.register({ scenarioId: "github-issue-labels", runnerId: runner.runnerId, implementationDigest: runner.implementationDigest, endpointManifestDigest: runner.endpointManifestDigest, dispatchMode: "hermetic-certification", capabilities: endpoint.endpoints, run: async () => "must-not-run" });
+    const permit = await cell.verifyCertificationDispatchReadiness({ workspace: f.initialized.workspace, scenario: "github-issue-labels", bearerToken: credential.token, delegationAuthority: f.delegation, principalRegistry: f.principals, credentialAvailable: async () => true, now: () => new Date("2026-08-11T20:10:00.000Z") });
     await f.delegation.revoke(f.initialized.identifiers.authorityCellId, f.initialized.identifiers.taskId);
-    await assert.rejects(() => cell.runCertificationWithPermit(permit, registry), /revoked|active|stale/i);
+    await assert.rejects(() => cell.revalidateCertificationDispatchPermit(permit), /revoked|active|stale/i);
     await assert.rejects(() => cell.activateCertificationPrincipalSession({ workspace: f.initialized.workspace, delegationAuthority: f.delegation, principalRegistry: f.principals, now: new Date("2026-08-11T20:10:00.000Z") }), /active|revoked/i);
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
@@ -158,24 +152,18 @@ test("task revocation invalidates an already-issued certification permit", async
 test("credential availability errors are redacted and runner registrations are exact", async () => {
   const f = await fixture();
   try {
-    await cell.activateCertificationRootTask({ workspace: f.initialized.workspace, jobCard: f.jobCard, jobCardTrustPin: f.pin, delegationKeyDescriptor: f.delegationSigner, delegationPrivateKey: f.delegationKey.privateKey, constraints: f.constraints, effects: 2, issuedAt: at, expiresAt: expiry, delegationAuthority: f.delegation });
+    await cell.activateCertificationRootTask({ workspace: f.initialized.workspace, jobCard: f.jobCard, jobCardTrustPin: f.pin, currentTrustPinPath: f.currentTrustPinPath, delegationKeyDescriptor: f.delegationSigner, delegationPrivateKey: f.delegationKey.privateKey, constraints: f.constraints, effects: 2, issuedAt: at, expiresAt: expiry, delegationAuthority: f.delegation });
     const credential = await cell.activateCertificationPrincipalSession({ workspace: f.initialized.workspace, delegationAuthority: f.delegation, principalRegistry: f.principals, now: new Date("2026-08-11T20:10:00.000Z") });
-    await assert.rejects(() => cell.verifyCertificationDispatchReadiness({ workspace: f.initialized.workspace, scenario: "github-issue-labels", bearerToken: credential.token, currentTrustPinPath: f.currentTrustPinPath, delegationAuthority: f.delegation, principalRegistry: f.principals, credentialAvailable: async () => { throw new Error("C:/private/TOKEN_CANARY provider body"); }, now: () => new Date("2026-08-11T20:10:00.000Z") }), error => !/TOKEN_CANARY|provider body/.test(String(error)) && /credential.*unavailable/i.test(String(error)));
-    const registry = cell.createCertifiedRunnerRegistry();
-    assert.throws(() => registry.register({ scenarioId: "github-issue-labels", runnerId: "wrong", implementationDigest: `sha256:${"1".repeat(64)}`, endpointManifestDigest: `sha256:${"2".repeat(64)}`, dispatchMode: "provider-network", capabilities: [], run: async () => undefined } as never), /dispatch mode|hermetic/i);
+    await assert.rejects(() => cell.verifyCertificationDispatchReadiness({ workspace: f.initialized.workspace, scenario: "github-issue-labels", bearerToken: credential.token, delegationAuthority: f.delegation, principalRegistry: f.principals, credentialAvailable: async () => { throw new Error("C:/private/TOKEN_CANARY provider body"); }, now: () => new Date("2026-08-11T20:10:00.000Z") }), error => !/TOKEN_CANARY|provider body/.test(String(error)) && /credential.*unavailable/i.test(String(error)));
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
 test("one scenario dispatches from a full multi-scenario signed preflight", async () => {
   const f = await fixture(["github-issue-labels", "slack-topic"]);
   try {
-    await cell.activateCertificationRootTask({ workspace: f.initialized.workspace, jobCard: f.jobCard, jobCardTrustPin: f.pin, delegationKeyDescriptor: f.delegationSigner, delegationPrivateKey: f.delegationKey.privateKey, constraints: f.constraints, effects: 2, issuedAt: at, expiresAt: expiry, delegationAuthority: f.delegation });
+    await cell.activateCertificationRootTask({ workspace: f.initialized.workspace, jobCard: f.jobCard, jobCardTrustPin: f.pin, currentTrustPinPath: f.currentTrustPinPath, delegationKeyDescriptor: f.delegationSigner, delegationPrivateKey: f.delegationKey.privateKey, constraints: f.constraints, effects: 2, issuedAt: at, expiresAt: expiry, delegationAuthority: f.delegation });
     const credential = await cell.activateCertificationPrincipalSession({ workspace: f.initialized.workspace, delegationAuthority: f.delegation, principalRegistry: f.principals, now: new Date("2026-08-11T20:10:00.000Z") });
-    const permit = await cell.verifyCertificationDispatchReadiness({ workspace: f.initialized.workspace, scenario: "github-issue-labels", bearerToken: credential.token, currentTrustPinPath: f.currentTrustPinPath, delegationAuthority: f.delegation, principalRegistry: f.principals, credentialAvailable: async slot => slot === "githubCredential", now: () => new Date("2026-08-11T20:10:00.000Z") });
-    const registry = cell.createCertifiedRunnerRegistry();
-    const runner = JSON.parse(await readFile(path.join(f.initialized.workspace, "inputs", "runners", "github-issue-labels.json"), "utf8"));
-    const endpoint = JSON.parse(await readFile(path.join(f.initialized.workspace, "authority", "endpoints", "github-issue-labels.json"), "utf8"));
-    registry.register({ scenarioId: "github-issue-labels", runnerId: runner.runnerId, implementationDigest: runner.implementationDigest, endpointManifestDigest: runner.endpointManifestDigest, dispatchMode: "hermetic-certification", capabilities: endpoint.endpoints, run: async () => "multi-ran" });
-    assert.equal(await cell.runCertificationWithPermit(permit, registry), "multi-ran");
+    const permit = await cell.verifyCertificationDispatchReadiness({ workspace: f.initialized.workspace, scenario: "github-issue-labels", bearerToken: credential.token, delegationAuthority: f.delegation, principalRegistry: f.principals, credentialAvailable: async slot => slot === "githubCredential", now: () => new Date("2026-08-11T20:10:00.000Z") });
+    await cell.revalidateCertificationDispatchPermit(permit);
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
