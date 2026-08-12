@@ -60,9 +60,9 @@ export function defaultAuthorityCellConnectionFile(runtime: AuthorityCellClientR
   if ((runtime.platform ?? process.platform) !== "win32") return path.resolve(".reelier", "authority-cell-connection.json");
   const env = runtime.env ?? process.env;
   const homedir = runtime.homedir ?? os.homedir();
-  const localAppData = env.LOCALAPPDATA || path.join(homedir, "AppData", "Local");
-  if (!path.isAbsolute(localAppData)) throw new TypeError("Windows authority cell connection location is unavailable");
-  return path.join(path.resolve(localAppData), "Reelier", "authority-cell-connection.json");
+  const localAppData = env.LOCALAPPDATA || path.win32.join(homedir, "AppData", "Local");
+  if (!path.win32.isAbsolute(localAppData)) throw new TypeError("Windows authority cell connection location is unavailable");
+  return path.win32.join(path.win32.resolve(localAppData), "Reelier", "authority-cell-connection.json");
 }
 
 export function authorityCellConnectionPathnameConfinement(_runtime: AuthorityCellClientRuntime = {}): "unchecked" {
