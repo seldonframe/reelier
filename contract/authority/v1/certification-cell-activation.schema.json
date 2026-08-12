@@ -3,11 +3,11 @@
   "$id": "reelier.authority/certification-cell-activation/v1",
   "$defs": {
     "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
-    "signature": { "type": "object", "additionalProperties": false, "required": ["alg", "sig"], "properties": { "alg": { "const": "ed25519" }, "sig": { "type": "string", "minLength": 1, "contentEncoding": "base64" } } }
+    "signature": { "type": "object", "additionalProperties": false, "required": ["alg", "sig"], "properties": { "alg": { "const": "ed25519" }, "sig": { "type": "string", "pattern": "^(?:[A-Za-z0-9+/]{4}){21}[A-Za-z0-9+/][AQgw]==$", "contentEncoding": "base64" } } }
   },
   "type": "object",
   "additionalProperties": false,
-  "required": ["v", "taskId", "jobId", "grantId", "allocationId", "authorityCellId", "principalId", "runtimeSessionId", "signerKeyId", "signerKeyDescriptorDigest", "signedReadinessDigest", "signedJobCardDigest", "constraintsDigest", "effects", "signedRootGrant", "completeness", "dispatchable"],
+  "required": ["v", "taskId", "jobId", "grantId", "allocationId", "authorityCellId", "principalId", "runtimeSessionId", "signerKeyId", "signerKeyDescriptorDigest", "signedReadinessDigest", "signedJobCardDigest", "constraintsDigest", "currentTrustEventCount", "currentTrustHistoryDigest", "currentTrustHeadDigest", "effects", "signedRootGrant", "completeness", "dispatchable"],
   "properties": {
     "v": { "const": "reelier.certification-cell-activation/v1" },
     "taskId": { "type": "string", "pattern": "^task_[0-9a-f]{24}$" },
@@ -22,6 +22,9 @@
     "signedReadinessDigest": { "$ref": "#/$defs/digest" },
     "signedJobCardDigest": { "$ref": "#/$defs/digest" },
     "constraintsDigest": { "$ref": "#/$defs/digest" },
+    "currentTrustEventCount": { "type": "integer", "minimum": 1 },
+    "currentTrustHistoryDigest": { "$ref": "#/$defs/digest" },
+    "currentTrustHeadDigest": { "$ref": "#/$defs/digest" },
     "effects": { "type": "integer", "minimum": 1 },
     "signedRootGrant": { "type": "object", "additionalProperties": false, "required": ["grant", "digest", "signerId", "signature"], "properties": {
       "grant": { "$ref": "reelier.authority/delegation-grant/v1" },
