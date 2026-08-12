@@ -1,6 +1,6 @@
 import { lstat, mkdir, mkdtemp, readdir, rename, rm, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { inertRecord } from "./inert.js";
+import { inertArray, inertRecord } from "./inert.js";
 import { randomBytes } from "node:crypto";
 import { authorityDigest } from "../wire.js";
 import { canonicalizeCertificationOperatorConfigV3, migrateCertificationOperatorConfig, parseCertificationOperatorConfigV3, type CertificationOperatorConfigV3 } from "./config.js";
@@ -188,10 +188,11 @@ function internalId(value: unknown, prefix: string): string {
   return value;
 }
 function scenarioList(value: unknown): readonly CertificationScenarioId[] {
-  if (!Array.isArray(value) || value.length === 0 || value.some(item => typeof item !== "string" || !(CERTIFICATION_SCENARIO_IDS as readonly string[]).includes(item))) throw new TypeError("certification initialization scenarios are invalid");
-  const scenarios = value as CertificationScenarioId[];
-  if (new Set(scenarios).size !== scenarios.length || scenarios.some((item, index) => index > 0 && scenarios[index - 1] >= item)) throw new TypeError("certification initialization scenarios must be unique and sorted");
-  return Object.freeze([...scenarios]);
+  const scenarios = inertArray(value, "certification initialization scenarios");
+  if (scenarios.length === 0 || scenarios.some(item => typeof item !== "string" || !(CERTIFICATION_SCENARIO_IDS as readonly string[]).includes(item))) throw new TypeError("certification initialization scenarios are invalid");
+  const parsed = scenarios as CertificationScenarioId[];
+  if (new Set(parsed).size !== parsed.length || parsed.some((item, index) => index > 0 && parsed[index - 1]! >= item)) throw new TypeError("certification initialization scenarios must be unique and sorted");
+  return Object.freeze([...parsed]);
 }
 function object(value: unknown, label: string): Record<string, unknown> { return inertRecord(value, label); }
 function closed(raw: Record<string, unknown>, keys: readonly string[], label: string): void { if (Object.keys(raw).length !== keys.length || Object.keys(raw).some(key => !keys.includes(key))) throw new TypeError(`${label} is closed`); }

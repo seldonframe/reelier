@@ -22,7 +22,7 @@ async function workspace(): Promise<string> {
     cleanup: { "github-issue-labels": ["restore-github-labels"], "slack-topic": ["restore-slack-topic"] },
     desiredState: { "github-issue-labels": { labels: ["certification-after"] }, "slack-topic": { topic: "Certification after" } },
     metadata: {},
-    secretReferences: { githubCredential: "env:REELIER_GITHUB_TOKEN", slackCredential: "file:C:/does-not-exist/private-token" },
+    secretReferences: { githubCredential: "env:REELIER_GITHUB_TOKEN", slackCredential: "file:secrets/does-not-exist-private-token" },
   }), "utf8");
   const result = await initializeCertification({ configPath });
   return result.workspace;

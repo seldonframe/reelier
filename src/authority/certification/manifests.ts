@@ -138,7 +138,9 @@ export function parseCertificationScenarioPlan(value: unknown, config: Certifica
   const raw = object(value, "certification scenario plan");
   closed(raw, ["v", "scenarioId", "definitionAliases", "sourceRefs", "resourceDigest", "accountCommitments", "desiredStateDigest", "policyCommitments", "cleanup", "controlledCut", "runnerManifestDigest", "testManifestDigest", "endpointManifestDigest", "runnerRegistryDigest"], "certification scenario plan");
   const scenarioId = scenario(raw.scenarioId);
-  if (raw.v !== "reelier.certification-scenario-plan/v1" || !selectedScenarios.includes(scenarioId)) throw new TypeError("certification scenario plan is not selected");
+  const selected = inertArray(selectedScenarios, "certification selected plan scenarios");
+  if (selected.some(item => typeof item !== "string" || !(CERTIFICATION_SCENARIO_IDS as readonly string[]).includes(item)) || new Set(selected).size !== selected.length) throw new TypeError("certification selected plan scenarios are invalid");
+  if (raw.v !== "reelier.certification-scenario-plan/v1" || !selected.includes(scenarioId)) throw new TypeError("certification scenario plan is not selected");
   const registry = getCertificationRunnerRegistryEntry(scenarioId);
   if (!exactList(raw.definitionAliases, registry.definitionAliases) || raw.runnerRegistryDigest !== certificationRunnerRegistryDigest) throw new TypeError("certification scenario plan registry or definition alias is invalid");
   const bindings = certificationScenarioPlanBindings(config, scenarioId);

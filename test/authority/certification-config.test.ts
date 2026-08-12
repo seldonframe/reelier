@@ -188,8 +188,8 @@ test("v2 errors never disclose invalid secret-reference values and parsing perfo
     assert.equal(String(error).includes(marker), false);
     return true;
   });
-  const missingFile = structuredClone(minimalV2()); (missingFile.secretReferences as Record<string, unknown>).githubCredential = "file:Z:/definitely/not/read/by/parser";
-  assert.equal(parseCertificationOperatorConfigV2(missingFile).secretReferences.githubCredential, "file:Z:/definitely/not/read/by/parser");
+  const missingFile = structuredClone(minimalV2()); (missingFile.secretReferences as Record<string, unknown>).githubCredential = "file:secrets/definitely-not-read-by-parser";
+  assert.equal(parseCertificationOperatorConfigV2(missingFile).secretReferences.githubCredential, "file:secrets/definitely-not-read-by-parser");
 });
 
 test("v2 parsing is deeply closed, immutable, and canonically byte-stable", () => {
