@@ -133,21 +133,38 @@ test("doctor refuses parent symlink token ancestry before reading the token", as
   } finally { await rm(root, { recursive: true, force: true }); await rm(outside, { recursive: true, force: true }); }
 });
 
-test("doctor refuses private DNS answers before bearer dispatch", async () => {
+test("doctor refuses private and mixed DNS answers before token resolution or request dispatch", async () => {
   const connection = { v: "reelier.authority-cell-connection/v1", endpoint: "https://cell.example", transport: "http", bearerTokenRef: "env:CELL_TOKEN", expectedCellId: "cell_1", adapterContractDigest: digest } as const;
-  let dispatched = false;
-  const result = await checkAuthorityCellLive(connection, { resolveToken: async () => "opaque", resolveAddresses: async () => ["8.8.8.8", "10.0.0.1"], request: async () => { dispatched = true; throw new Error("must not dispatch"); } });
-  assert.deepEqual(result, { state: "failed", reasonCode: "endpoint-address-refused" });
-  assert.equal(dispatched, false);
+  for (const addresses of [["10.0.0.1"], ["8.8.8.8", "10.0.0.1"]]) {
+    let tokenResolverCalls = 0;
+    let requestCalls = 0;
+    const result = await checkAuthorityCellLive(connection, { resolveToken: async () => { tokenResolverCalls += 1; return "opaque"; }, resolveAddresses: async () => addresses, request: async () => { requestCalls += 1; throw new Error("must not dispatch"); } });
+    assert.deepEqual(result, { state: "failed", reasonCode: "endpoint-address-refused" }, addresses.join(","));
+    assert.equal(tokenResolverCalls, 0, addresses.join(","));
+    assert.equal(requestCalls, 0, addresses.join(","));
+  }
 });
 
-test("doctor decodes every mapped IPv6 private form before bearer dispatch", async () => {
+test("doctor decodes every mapped IPv6 private form before token resolution or request dispatch", async () => {
   const connection = { v: "reelier.authority-cell-connection/v1", endpoint: "https://cell.example", transport: "http", bearerTokenRef: "env:CELL_TOKEN", expectedCellId: "cell_1", adapterContractDigest: digest } as const;
   for (const address of ["::ffff:127.0.0.1", "0:0:0:0:0:ffff:127.0.0.1", "::ffff:7f00:1", "0:0:0:0:0:ffff:7f00:1", "::ffff:10.0.0.1", "::ffff:a9fe:0101", "::ffff:0:0", "::ffff:e000:1"]) {
-    let dispatched = false;
-    const result = await checkAuthorityCellLive(connection, { resolveToken: async () => "opaque", resolveAddresses: async () => [address], request: async () => { dispatched = true; throw new Error("must not dispatch"); } });
+    let tokenResolverCalls = 0;
+    let requestCalls = 0;
+    const result = await checkAuthorityCellLive(connection, { resolveToken: async () => { tokenResolverCalls += 1; return "opaque"; }, resolveAddresses: async () => [address], request: async () => { requestCalls += 1; throw new Error("must not dispatch"); } });
     assert.deepEqual(result, { state: "failed", reasonCode: "endpoint-address-refused" }, address);
-    assert.equal(dispatched, false, address);
+    assert.equal(tokenResolverCalls, 0, address);
+    assert.equal(requestCalls, 0, address);
+  }
+});
+
+test("doctor refuses unsafe literal endpoints before token resolution or request dispatch", async () => {
+  for (const endpoint of ["https://127.0.0.1", "https://10.0.0.1", "https://169.254.1.1", "https://0.0.0.0", "https://224.0.0.1", "https://[::1]", "https://[fe80::1]", "https://[fc00::1]", "https://[ff00::1]", "https://[0:0:0:0:0:ffff:127.0.0.1]"]) {
+    let tokenResolverCalls = 0;
+    let requestCalls = 0;
+    const result = await checkAuthorityCellLive({ v: "reelier.authority-cell-connection/v1", endpoint, transport: "http", bearerTokenRef: "env:CELL_TOKEN", expectedCellId: "cell_1", adapterContractDigest: digest }, { resolveToken: async () => { tokenResolverCalls += 1; return "opaque"; }, request: async () => { requestCalls += 1; throw new Error("must not dispatch"); } });
+    assert.deepEqual(result, { state: "failed", reasonCode: "connection-invalid" }, endpoint);
+    assert.equal(tokenResolverCalls, 0, endpoint);
+    assert.equal(requestCalls, 0, endpoint);
   }
 });
 
