@@ -118,6 +118,17 @@ test("Adapter Contract digest is bound before dispatch and by every portable rec
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
+test("graph export refuses duplicate on-disk receipt extensions before Map collapse", async () => {
+  const f = await fixture(); try {
+    await f.runner.run({ bearerToken: f.credential.token, requestId: "request_duplicate_extension" });
+    const directory = path.join(f.initialized.workspace, "authority", "github-label-runner", "receipts", "extensions");
+    const original = (await readdir(directory)).find(name => name.endsWith(".json"));
+    assert.ok(original);
+    await writeFile(path.join(directory, "duplicate-extension.json"), await readFile(path.join(directory, original)));
+    await assert.rejects(() => f.runner.exportGraph({ bearerToken: f.credential.token }), /duplicate|extension|cardinality/i);
+  } finally { await rm(f.root, { recursive: true, force: true }); }
+});
+
 test("lifecycle Cell activation rejects every caller-supplied raw delegation key field before access", async () => {
   const f = await fixture(); try {
     let accesses = 0;
