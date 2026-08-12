@@ -194,6 +194,7 @@ test("closed task receipt graph verifies offline and rejects tampering, omission
       (g: any) => { g.priorReceiptLinks.find((item: any) => item.priorReceiptDigest !== null).priorReceiptDigest = null; },
       (g: any) => { g.receipts[0].contract.value.contractId = "substituted"; },
       (g: any) => { g.secretToken = "canary-private-token"; },
+      (g: any) => { g.receipts.pop(); g.priorReceiptLinks.pop(); g.outcomes.pop(); g.budgetEvents.pop(); },
     ]) { const changed = structuredClone(graph); mutate(changed); assert.throws(() => verifyCertificationTaskReceiptGraph(changed, { trustPin: f.pin }), /graph|receipt|contract|budget|confidential|closed|digest|chain/i); }
     const attacker: any = structuredClone(graph); attacker.keyDescriptors = attacker.keyDescriptors.map((item: any) => ({ ...item, keyId: `attacker_${item.keyId}` }));
     assert.throws(() => verifyCertificationTaskReceiptGraph(attacker, { trustPin: f.pin }), /trust|descriptor|activated|readiness|graph/i);
