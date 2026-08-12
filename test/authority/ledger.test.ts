@@ -331,20 +331,19 @@ test("100 real processes converge on one committed reservation and one dispatch 
   });
 });
 
-test("getReservation classifies unexplained active-preparation deletion as corruption without leaking ENOENT",async()=>{
-  await withRoot(async root=>{
-    const ledger=new FsAuthorityLedger(root,{now:()=>t0}),created=await ledger.reserve(intent());
-    assert.equal(created.ok,true);if(!created.ok)return;
+test("owned admission-preparation disappearance is corruption at every construction and promotion seam",async t=>{
+  const boundaries=["after-admission-prep-create","after-admission-prep-owner-create","after-admission-prep-owner-partial-write","after-admission-prep-owner-sync","after-admission-prep-sync","before-admission-slot-rename","after-admission-prep-final-revalidation"] as const;
+  for(const boundary of boundaries)await t.test(boundary,()=>withRoot(async root=>{
     let removed=false;
-    const reader=new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:2_000,faultInjector:(point:string)=>{
-      if(removed||point!=="after-admission-prep-sync")return;
+    const result=await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:2_000,faultInjector:(point:string)=>{
+      if(removed||point!==boundary)return;
       const prep=readdirSync(root).find(name=>name.startsWith(".authority-ledger-admission-prep-")&&name.endsWith(".tmp"));
-      assert.ok(prep,"the reader owns one active preparation at the validation seam");
+      assert.ok(prep,`${boundary}: the creator owns one exact preparation`);
       rmSync(path.join(root,prep),{recursive:true});removed=true;
-    }} as never);
-    await assert.rejects(reader.getReservation(created.reservation.reservationId),/authority ledger read refused: corruption/);
-    assert.equal(removed,true,"the exact admission-preparation deletion race was exercised");
-  });
+    }} as never).observeClock();
+    assert.equal(removed,true,`${boundary}: the exact preparation disappearance was exercised`);
+    assert.deepEqual(result,{ok:false,reason:"corruption"},`${boundary}: unexplained owned-prep loss is classified, never leaked or retried as busy`);
+  }));
 });
 
 test("cross-process collisions use ingress, semantic, capability, then limit precedence", { timeout: 60_000 }, async () => {
