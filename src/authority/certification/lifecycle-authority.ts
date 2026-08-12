@@ -3,6 +3,7 @@ import { signAuthorityDigest, verifyAuthoritySignature } from "../crypto.js";
 import type { AuthoritySignature, AuthoritySignaturePurpose } from "../types.js";
 import { authorityDigest } from "../wire.js";
 import { parseAuthorityKeyDescriptor, type AuthorityKeyDescriptorV1 } from "./authority.js";
+import { AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST } from "../adapter-contract.js";
 
 const DIRECT_PURPOSES = ["authority-evidence", "authority-journal", "authority-receipt", "delegation-grant", "gate-event", "outcome-contract"] as const;
 const ARTIFACT_PURPOSES = ["compiled-capability", "pack-manifest", "source-bundle", "transport-effect"] as const;
@@ -21,6 +22,7 @@ export interface CertificationArtifactKeyBindingV1 {
   readonly bindingId: string;
   readonly authorityCellId: string;
   readonly taskId: string;
+  readonly adapterContractDigest: string;
   readonly readinessDigest: string;
   readonly parentEvidenceDescriptorDigest: string;
   readonly entries: readonly Readonly<{ artifactPurpose: ArtifactPurpose; keyId: string; publicKeySpkiBase64: string; publicKeyDigest: string }>[];
@@ -38,6 +40,7 @@ export interface CertificationArtifactKeyBindingCommitmentV1 {
   readonly readinessDigest: string;
   readonly authorityCellId: string;
   readonly taskId: string;
+  readonly adapterContractDigest: string;
   readonly humanSignerId: string;
   readonly signature: AuthoritySignature;
 }
@@ -69,11 +72,11 @@ export function createCertificationArtifactKeyBinding(handle: CertificationLifec
     const key = material.artifacts.get(artifactPurpose)!;
     return Object.freeze({ artifactPurpose, keyId: key.descriptor.keyId, publicKeySpkiBase64: key.descriptor.publicKeySpkiBase64, publicKeyDigest: publicKeyDigest(key.descriptor.publicKeySpkiBase64) });
   }));
-  const body = Object.freeze({ v: "reelier.certification-artifact-key-binding/v1" as const, bindingId: `binding_${randomUUID().replaceAll("-", "")}`, authorityCellId: input.authorityCellId, taskId: input.taskId, readinessDigest: input.readinessDigest, parentEvidenceDescriptorDigest: authorityDigest(evidence.descriptor), entries, issuedAt, expiresAt, nonce: randomUUID().replaceAll("-", ""), scheduleDigest: authorityDigest({ v: "reelier.certification-hermetic-schedule/v1", schedule: (material as any).schedule }), signerId: evidence.descriptor.keyId });
+  const body = Object.freeze({ v: "reelier.certification-artifact-key-binding/v1" as const, bindingId: `binding_${randomUUID().replaceAll("-", "")}`, authorityCellId: input.authorityCellId, taskId: input.taskId, adapterContractDigest: AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST, readinessDigest: input.readinessDigest, parentEvidenceDescriptorDigest: authorityDigest(evidence.descriptor), entries, issuedAt, expiresAt, nonce: randomUUID().replaceAll("-", ""), scheduleDigest: authorityDigest({ v: "reelier.certification-hermetic-schedule/v1", schedule: (material as any).schedule }), signerId: evidence.descriptor.keyId });
   const bindingDigest = authorityDigest(body);
   const signature = signDomain(evidence.privateKey, "authority-evidence", "reelier.certification-artifact-key-binding/v1\0", bindingDigest);
   const binding = Object.freeze({ ...body, signature });
-  const commitmentBody = Object.freeze({ v: "reelier.certification-artifact-key-binding-commitment/v1" as const, bindingDigest: authorityDigest(binding), readinessDigest: input.readinessDigest, authorityCellId: input.authorityCellId, taskId: input.taskId, humanSignerId: human.keyId });
+  const commitmentBody = Object.freeze({ v: "reelier.certification-artifact-key-binding-commitment/v1" as const, bindingDigest: authorityDigest(binding), readinessDigest: input.readinessDigest, authorityCellId: input.authorityCellId, taskId: input.taskId, adapterContractDigest: AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST, humanSignerId: human.keyId });
   const commitmentSignature = signDomain(input.humanPrivateKey, "certification-readiness", "reelier.certification-artifact-key-binding-commitment/v1\0", authorityDigest(commitmentBody));
   const humanPublic = publicKey(input.humanPrivateKey);
   if (humanPublic !== human.publicKeySpkiBase64 || !verifyDomain(human, "certification-readiness", "reelier.certification-artifact-key-binding-commitment/v1\0", authorityDigest(commitmentBody), commitmentSignature)) throw new TypeError("human private key does not match readiness descriptor");
@@ -84,7 +87,7 @@ export function createCertificationArtifactKeyBinding(handle: CertificationLifec
 export function consumeCertificationLifecycleAuthority(handle: CertificationLifecycleAuthorityHandle, binding: CertificationArtifactKeyBindingV1, commitment: CertificationArtifactKeyBindingCommitmentV1, input: Readonly<{ authorityCellId: string; taskId: string; readinessDigest: string; descriptors: readonly AuthorityKeyDescriptorV1[]; humanDescriptor: AuthorityKeyDescriptorV1; now: Date }>): CeremonyMaterial {
   const material = requireMaterial(handle);
   if (material.bindingDigest !== authorityDigest(binding)) throw new TypeError("artifact key binding does not belong to opaque authority handle");
-  if (binding.authorityCellId !== input.authorityCellId || binding.taskId !== input.taskId || binding.readinessDigest !== input.readinessDigest || commitment.bindingDigest !== authorityDigest(binding) || commitment.readinessDigest !== input.readinessDigest || commitment.authorityCellId !== input.authorityCellId || commitment.taskId !== input.taskId) throw new TypeError("artifact key binding identity or readiness commitment mismatch");
+  if (binding.authorityCellId !== input.authorityCellId || binding.taskId !== input.taskId || binding.adapterContractDigest !== AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST || binding.readinessDigest !== input.readinessDigest || commitment.bindingDigest !== authorityDigest(binding) || commitment.readinessDigest !== input.readinessDigest || commitment.authorityCellId !== input.authorityCellId || commitment.taskId !== input.taskId || commitment.adapterContractDigest !== AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST) throw new TypeError("artifact key binding identity, Adapter Contract, or readiness commitment mismatch");
   if (Date.parse(binding.issuedAt) > input.now.getTime() || Date.parse(binding.expiresAt) <= input.now.getTime()) throw new TypeError("artifact key binding is expired or not active");
   const evidence = material.direct.get("authority-evidence")!;
   if (binding.parentEvidenceDescriptorDigest !== authorityDigest(evidence.descriptor) || !input.descriptors.some(item => authorityDigest(item) === binding.parentEvidenceDescriptorDigest)) throw new TypeError("artifact key binding parent evidence authority is not activated");
@@ -99,7 +102,7 @@ export function consumeCertificationLifecycleAuthority(handle: CertificationLife
 
 export function verifyCertificationArtifactKeyBinding(binding: CertificationArtifactKeyBindingV1, commitment: CertificationArtifactKeyBindingCommitmentV1, input: Readonly<{ descriptors: readonly AuthorityKeyDescriptorV1[]; signedReadiness: unknown; now?: Date }>): void {
   const readinessDigest = authorityDigest(input.signedReadiness), evidence = input.descriptors.find(item => authorityDigest(item) === binding.parentEvidenceDescriptorDigest), human = input.descriptors.find(item => item.role === "human-sponsor" && item.keyId === commitment.humanSignerId);
-  if (!evidence || evidence.purpose !== "authority-evidence" || !human || human.purpose !== "certification-readiness" || binding.readinessDigest !== readinessDigest || commitment.readinessDigest !== readinessDigest || commitment.bindingDigest !== authorityDigest(binding)) throw new TypeError("artifact key binding trust or readiness link is invalid");
+  if (!evidence || evidence.purpose !== "authority-evidence" || !human || human.purpose !== "certification-readiness" || binding.adapterContractDigest !== AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST || commitment.adapterContractDigest !== AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST || binding.readinessDigest !== readinessDigest || commitment.readinessDigest !== readinessDigest || commitment.bindingDigest !== authorityDigest(binding)) throw new TypeError("artifact key binding trust, Adapter Contract, or readiness link is invalid");
   const { signature, ...body } = binding, { signature: humanSignature, ...humanBody } = commitment;
   if (!verifyDomain(evidence, "authority-evidence", "reelier.certification-artifact-key-binding/v1\0", authorityDigest(body), signature) || !verifyDomain(human, "certification-readiness", "reelier.certification-artifact-key-binding-commitment/v1\0", authorityDigest(humanBody), humanSignature)) throw new TypeError("artifact key binding signature is invalid");
   if (binding.entries.length !== 4 || authorityDigest(binding.entries.map(item => item.artifactPurpose)) !== authorityDigest(ARTIFACT_PURPOSES) || new Set(binding.entries.map(item => item.keyId)).size !== 4 || binding.entries.some(item => item.publicKeyDigest !== publicKeyDigest(item.publicKeySpkiBase64))) throw new TypeError("artifact key binding entries are invalid");
