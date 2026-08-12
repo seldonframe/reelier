@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 import { authorityDigest } from "../wire.js";
 import { signAuthorityDigest } from "../crypto.js";
@@ -62,12 +62,17 @@ export async function createLocalAuthorityRuntime(config: AuthorityHostConfig, o
     if (!options.signedLease || !options.leaseSigner) throw new TypeError("managed authority requires a signed lease");
     verifyAuthorityLease(options.signedLease, { tenant: config.tenant, now: new Date(), signerId: options.leaseSigner.signerId, publicKey: options.leaseSigner.publicKey, topologyEvidenceDigest: options.signedTopologyEvidence.digest });
   }
-  await mkdir(config.ledgerDir, { recursive: true }); await mkdir(config.decisionDir, { recursive: true }); await mkdir(config.receiptDir, { recursive: true });
   if (config.deploymentPath && config.jobCardTrustPinPath) {
-    const deploymentRoot = path.dirname(path.resolve(config.deploymentPath));
     const trustPinPath = path.resolve(config.jobCardTrustPinPath);
-    if (trustPinPath === deploymentRoot || trustPinPath.startsWith(`${deploymentRoot}${path.sep}`)) throw new TypeError("host Job Card trust pin must remain outside deployment-controlled output");
+    const pinStat = await lstat(trustPinPath);
+    if (pinStat.isSymbolicLink()) throw new TypeError("host Job Card trust pin link indirection is prohibited");
+    const [deploymentRoot, canonicalTrustPin] = await Promise.all([realpath(path.dirname(path.resolve(config.deploymentPath))), realpath(trustPinPath)]);
+    const canonical = (value: string) => process.platform === "win32" ? value.toLowerCase() : value;
+    const rootIdentity = canonical(deploymentRoot);
+    const pinIdentity = canonical(canonicalTrustPin);
+    if (pinIdentity === rootIdentity || pinIdentity.startsWith(`${rootIdentity}${path.sep}`)) throw new TypeError("host Job Card trust pin must remain outside deployment-controlled output");
   }
+  await mkdir(config.ledgerDir, { recursive: true }); await mkdir(config.decisionDir, { recursive: true }); await mkdir(config.receiptDir, { recursive: true });
   const jobCardTrustPin = options.jobCardTrustPin ?? (config.jobCardTrustPinPath ? JSON.parse(await readFile(config.jobCardTrustPinPath, "utf8")) as JobCardTrustPinV1 : undefined);
   const deployment = config.deploymentPath ? await loadAuthorityDeployment(config.deploymentPath, { jobCardTrustPin }) : undefined;
   if (deployment && deployment.tenant !== config.tenant) throw new TypeError("authority deployment tenant does not match host config");
