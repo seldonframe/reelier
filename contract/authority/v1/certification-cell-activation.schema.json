@@ -7,7 +7,7 @@
   },
   "type": "object",
   "additionalProperties": false,
-  "required": ["v", "taskId", "jobId", "grantId", "allocationId", "authorityCellId", "principalId", "runtimeSessionId", "signerKeyId", "signerKeyDescriptorDigest", "signedReadinessDigest", "signedJobCardDigest", "constraintsDigest", "currentTrustEventCount", "currentTrustHistoryDigest", "currentTrustHeadDigest", "currentTrustPinPath", "effects", "signedRootGrant", "completeness", "dispatchable"],
+  "required": ["v", "taskId", "jobId", "grantId", "allocationId", "authorityCellId", "principalId", "runtimeSessionId", "signerKeyId", "signerKeyDescriptorDigest", "signedReadinessDigest", "signedJobCardDigest", "constraintsDigest", "currentTrustEventCount", "currentTrustHistoryDigest", "currentTrustHeadDigest", "currentTrustPinPathDigest", "effects", "signedRootGrant", "completeness", "dispatchable"],
   "properties": {
     "v": { "const": "reelier.certification-cell-activation/v1" },
     "taskId": { "type": "string", "pattern": "^task_[0-9a-f]{24}$" },
@@ -25,7 +25,7 @@
     "currentTrustEventCount": { "type": "integer", "minimum": 1 },
     "currentTrustHistoryDigest": { "$ref": "#/$defs/digest" },
     "currentTrustHeadDigest": { "$ref": "#/$defs/digest" },
-    "currentTrustPinPath": { "type": "string", "minLength": 1 },
+    "currentTrustPinPathDigest": { "$ref": "#/$defs/digest" },
     "effects": { "type": "integer", "minimum": 1 },
     "signedRootGrant": { "type": "object", "additionalProperties": false, "required": ["grant", "digest", "signerId", "signature"], "properties": {
       "grant": { "$ref": "reelier.authority/delegation-grant/v1" },
