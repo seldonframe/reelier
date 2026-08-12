@@ -12,7 +12,7 @@ type ArtifactPurpose = (typeof ARTIFACT_PURPOSES)[number];
 declare const opaqueAuthorityBrand: unique symbol;
 export type CertificationLifecycleAuthorityHandle = Readonly<{ readonly [opaqueAuthorityBrand]: true }>;
 type KeyMaterial = Readonly<{ descriptor: AuthorityKeyDescriptorV1; privateKey: KeyObject }>;
-export type CertificationLifecycleAuthorityMaterial = Readonly<{ direct: ReadonlyMap<DirectPurpose, KeyMaterial>; artifacts: ReadonlyMap<ArtifactPurpose, KeyMaterial>; bindingDigest?: string }>;
+export type CertificationLifecycleAuthorityMaterial = Readonly<{ direct: ReadonlyMap<DirectPurpose, KeyMaterial>; artifacts: ReadonlyMap<ArtifactPurpose, KeyMaterial>; schedule: string; bindingDigest?: string }>;
 type CeremonyMaterial = CertificationLifecycleAuthorityMaterial;
 const handles = new WeakMap<object, CeremonyMaterial>();
 
@@ -27,6 +27,7 @@ export interface CertificationArtifactKeyBindingV1 {
   readonly issuedAt: string;
   readonly expiresAt: string;
   readonly nonce: string;
+  readonly scheduleDigest: string;
   readonly signerId: string;
   readonly signature: AuthoritySignature;
 }
@@ -41,14 +42,16 @@ export interface CertificationArtifactKeyBindingCommitmentV1 {
   readonly signature: AuthoritySignature;
 }
 
-export function createCertificationLifecycleAuthorityCeremony(): Readonly<{ publicDescriptors: readonly AuthorityKeyDescriptorV1[]; opaqueHandle: CertificationLifecycleAuthorityHandle }> {
+export function createCertificationLifecycleAuthorityCeremony(options: Readonly<{ testSchedule: string }> = { testSchedule: "normal" }): Readonly<{ publicDescriptors: readonly AuthorityKeyDescriptorV1[]; opaqueHandle: CertificationLifecycleAuthorityHandle }> {
+  const schedules = ["normal", "source-drift", "effect-drift", "provider-503", "accessor-response", "cut-after-budget", "cut-after-dispatched", "cut-after-send-intent", "cut-after-apply", "pause-after-dispatched"];
+  if (Object.keys(options).length !== 1 || !schedules.includes(options.testSchedule)) throw new TypeError("certification lifecycle test schedule is closed and invalid");
   const direct = new Map<DirectPurpose, KeyMaterial>();
   for (const purpose of DIRECT_PURPOSES) direct.set(purpose, keyFor(purpose));
   const artifacts = new Map<ArtifactPurpose, KeyMaterial>();
   for (const purpose of ARTIFACT_PURPOSES) artifacts.set(purpose, artifactKeyFor(purpose));
   const target = Object.freeze(Object.create(null));
   const handle = Object.freeze(new Proxy(target, {})) as CertificationLifecycleAuthorityHandle;
-  handles.set(handle, Object.freeze({ direct, artifacts }));
+  handles.set(handle, Object.freeze({ direct, artifacts, schedule: options.testSchedule }) as CeremonyMaterial);
   return Object.freeze({ publicDescriptors: Object.freeze(DIRECT_PURPOSES.map(purpose => direct.get(purpose)!.descriptor)), opaqueHandle: handle });
 }
 
@@ -66,7 +69,7 @@ export function createCertificationArtifactKeyBinding(handle: CertificationLifec
     const key = material.artifacts.get(artifactPurpose)!;
     return Object.freeze({ artifactPurpose, keyId: key.descriptor.keyId, publicKeySpkiBase64: key.descriptor.publicKeySpkiBase64, publicKeyDigest: publicKeyDigest(key.descriptor.publicKeySpkiBase64) });
   }));
-  const body = Object.freeze({ v: "reelier.certification-artifact-key-binding/v1" as const, bindingId: `binding_${randomUUID().replaceAll("-", "")}`, authorityCellId: input.authorityCellId, taskId: input.taskId, readinessDigest: input.readinessDigest, parentEvidenceDescriptorDigest: authorityDigest(evidence.descriptor), entries, issuedAt, expiresAt, nonce: randomUUID().replaceAll("-", ""), signerId: evidence.descriptor.keyId });
+  const body = Object.freeze({ v: "reelier.certification-artifact-key-binding/v1" as const, bindingId: `binding_${randomUUID().replaceAll("-", "")}`, authorityCellId: input.authorityCellId, taskId: input.taskId, readinessDigest: input.readinessDigest, parentEvidenceDescriptorDigest: authorityDigest(evidence.descriptor), entries, issuedAt, expiresAt, nonce: randomUUID().replaceAll("-", ""), scheduleDigest: authorityDigest({ v: "reelier.certification-hermetic-schedule/v1", schedule: (material as any).schedule }), signerId: evidence.descriptor.keyId });
   const bindingDigest = authorityDigest(body);
   const signature = signDomain(evidence.privateKey, "authority-evidence", "reelier.certification-artifact-key-binding/v1\0", bindingDigest);
   const binding = Object.freeze({ ...body, signature });

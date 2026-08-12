@@ -81,7 +81,7 @@ test("Windows refuses every authority host composition before touching host depe
     assert.throws(() => createDelegationAuthority(inaccessible as never), assertLinuxRequired);
     assert.throws(() => createAuthorityEgressGateway(inaccessible as never), assertLinuxRequired);
     await assert.rejects(() => createCertificationCellHost(inaccessible as never), assertLinuxRequired);
-    await assert.rejects(() => createGitHubIssueLabelsHermeticComposition(inaccessible as never, inaccessible as never), assertLinuxRequired);
+    await assert.rejects(() => createGitHubIssueLabelsHermeticComposition(inaccessible as never), assertLinuxRequired);
   });
   assert.equal(accesses, 0);
 });
