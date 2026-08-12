@@ -112,6 +112,17 @@ test("dispatch permit is opaque, nonserializable, one-use, and invokes the runne
     await assert.rejects(() => cell.runCertificationWithPermit(valid, async () => { calls += 1; }), /used|permit/i);
     assert.equal(calls, 1);
 
+    const trustPermit = await cell.verifyCertificationDispatchReadiness(readiness);
+    const pinFile = path.join(f.initialized.workspace, "authority", "trust", "job-card-trust-pin.json");
+    const pinBytes = await readFile(pinFile, "utf8"), pin = JSON.parse(pinBytes);
+    const jobSigner = pin.keyDescriptors.find((item: { purpose: string }) => item.purpose === "signed-job-card");
+    const previous = pin.currentTrustEvents[pin.currentTrustEvents.length - 1];
+    pin.currentTrustEvents.push({ v: "reelier.authority-trust-event/v1", eventId: `trust_revoke_${"f".repeat(12)}`, sequence: pin.currentTrustEvents.length, action: "revoke", keyDescriptorDigest: authorityDigest(jobSigner), occurredAt: "2026-08-11T20:05:00.000Z", previousEventDigest: authorityDigest(previous) });
+    await writeFile(pinFile, JSON.stringify(pin));
+    await assert.rejects(() => cell.runCertificationWithPermit(trustPermit, async () => { calls += 1; }), /revoked|active|trust/i);
+    assert.equal(calls, 1);
+    await writeFile(pinFile, pinBytes);
+
     const revoked = await cell.verifyCertificationDispatchReadiness(readiness);
     await f.delegation.revoke(f.initialized.identifiers.authorityCellId, f.initialized.identifiers.taskId);
     await assert.rejects(() => cell.runCertificationWithPermit(revoked, async () => { calls += 1; }), /revoked|active|stale/i);
