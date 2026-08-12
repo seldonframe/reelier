@@ -9,7 +9,7 @@ import type { StoredSignedGrant } from "../delegation.js";
 import { jobCardTrustMaterialFromPin, type JobCardTrustPinV1 } from "../host/deployment.js";
 import type { DelegationAuthority } from "../host/delegation-service.js";
 import type { PrincipalCredential, PrincipalRegistry } from "../host/principal-registry.js";
-import { parseAuthorityKeyDescriptor, parseTrustEvents, type AuthorityKeyDescriptorV1 } from "./authority.js";
+import { parseAuthorityKeyDescriptor, parseTrustEvents, verifySignedCertificationReadiness, type AuthorityKeyDescriptorV1 } from "./authority.js";
 import { parseCertificationOperatorConfigV3 } from "./config.js";
 import { certificationWorkspaceRoot, confinedExistingDirectory, publishPrivateContentAddressed, readConfinedFile, readUnlinkedFile } from "./filesystem.js";
 import { deriveCertificationEndpointManifest, parseCertificationInitialization, validateCertificationInitialization, type CertificationIdentifiers } from "./initializer.js";
@@ -224,6 +224,7 @@ async function revalidateHermeticGitHubPermit(permit: object): Promise<void> {
 async function bindHermeticGitHubAuthority(pinPath: string, input: CertificationLifecycleAuthorityInput, identifiers: CertificationIdentifiers, now: Date): Promise<CertificationHermeticGitHubAuthorityState> {
   closedOwnKeys(input, ["handle", "binding", "commitment"], "hermetic GitHub lifecycle authority input");
   const pin = JSON.parse((await readUnlinkedFile(pinPath)).toString("utf8")) as JobCardTrustPinV1;
+  verifySignedCertificationReadiness({ signed: pin.signedReadiness, readinessCandidate: pin.readinessCandidate, preflight: pin.preflight, humanTrustRoot: pin.humanTrustRoot, keyDescriptors: pin.keyDescriptors, trustEvents: pin.readinessTrustEvents });
   const descriptors = pin.keyDescriptors.map(parseAuthorityKeyDescriptor);
   const events = parseTrustEvents(pin.currentTrustEvents, descriptors);
   const active = new Set<string>();
