@@ -57,7 +57,7 @@ test("runner refuses absent or caller-substituted contract and gate authority", 
 });
 
 test("real Cell permit, gate reservation, exact plan and budget precede one fixed provider write", async () => {
-  const f = await fixture(); try {
+  const f = await fixture("pause-after-dispatched"); try {
     await assert.rejects(() => f.cell.verifyDispatchReadiness({ scenario: "github-issue-labels", bearerToken: f.credential.token }), /execution is unavailable|non-dispatchable/i);
     const result = await f.runner.run({ bearerToken: f.credential.token, requestId: "request_normal" });
     assert.equal(result.status, "acknowledged"); assert.equal(result.success, false); assert.equal(result.providerWrites, 1);
@@ -83,6 +83,18 @@ test("well-shaped journal tampering refuses recovery without budget mutation or 
     const journal = JSON.parse(await readFile(journalPath, "utf8")); journal.effectDigest = `sha256:${"0".repeat(64)}`; await writeFile(journalPath, `${JSON.stringify(journal)}\n`, "utf8");
     const restarted = await createGitHubIssueLabelsHermeticComposition(f.cell, { mode: "normal" });
     await assert.rejects(() => restarted.recover(), /signature|tamper|journal/i);
+    const budget = await f.delegation.budget.get(f.initialized.identifiers.rootGrantId); assert.equal(budget?.consumed, 1); assert.equal(budget?.remaining, 1);
+  } finally { await rm(f.root, { recursive: true, force: true }); }
+});
+
+test("a previously valid signed journal cannot roll acknowledged ledger truth backward", async () => {
+  const f = await fixture("pause-after-dispatched"); try {
+    const journalPath = path.join(f.initialized.workspace, "authority", "github-label-runner", "request_rollback.journal.json");
+    const running = f.runner.run({ bearerToken: f.credential.token, requestId: "request_rollback" });
+    let old = ""; for (let attempts = 0; attempts < 1000; attempts += 1) { try { const bytes = await readFile(journalPath, "utf8"); if (JSON.parse(bytes).phase === "dispatched") { old = bytes; break; } } catch {} await new Promise(resolve => setTimeout(resolve, 2)); }
+    const result = await running; assert.equal(result.status, "acknowledged"); assert.notEqual(old, ""); await writeFile(journalPath, old, "utf8");
+    const restarted = await createGitHubIssueLabelsHermeticComposition(f.cell, { mode: "normal" });
+    await assert.rejects(() => restarted.recover(), /rollback|ledger|phase|binding/i);
     const budget = await f.delegation.budget.get(f.initialized.identifiers.rootGrantId); assert.equal(budget?.consumed, 1); assert.equal(budget?.remaining, 1);
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
