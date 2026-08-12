@@ -331,6 +331,22 @@ test("100 real processes converge on one committed reservation and one dispatch 
   });
 });
 
+test("getReservation reclassifies when its active admission preparation is removed during validation",async()=>{
+  await withRoot(async root=>{
+    const ledger=new FsAuthorityLedger(root,{now:()=>t0}),created=await ledger.reserve(intent());
+    assert.equal(created.ok,true);if(!created.ok)return;
+    let removed=false;
+    const reader=new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:2_000,faultInjector:(point:string)=>{
+      if(removed||point!=="after-admission-prep-sync")return;
+      const prep=readdirSync(root).find(name=>name.startsWith(".authority-ledger-admission-prep-")&&name.endsWith(".tmp"));
+      assert.ok(prep,"the reader owns one active preparation at the validation seam");
+      rmSync(path.join(root,prep),{recursive:true});removed=true;
+    }} as never);
+    assert.deepEqual(await reader.getReservation(created.reservation.reservationId),created.reservation);
+    assert.equal(removed,true,"the exact admission-preparation deletion race was exercised");
+  });
+});
+
 test("cross-process collisions use ingress, semantic, capability, then limit precedence", { timeout: 60_000 }, async () => {
   await withRoot(async root => {
     const first = intent();
