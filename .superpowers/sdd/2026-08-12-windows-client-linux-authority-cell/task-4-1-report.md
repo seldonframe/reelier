@@ -114,3 +114,36 @@ Open risks
 - `exact` post-state confidence applies only to the complete declared labels projection read authoritatively before and after. It does not prove the whole provider account, semantic correctness, safety, delivery, or universal completeness.
 - The local gate policy remains `unchecked`; no rule load, match, firing, or coverage claim is made. The Outcome Contract policy is verified only from its exact reviewed JCS commitment.
 - Existing unrelated dirt was preserved exactly: `.gitignore`, `src/authority/certification/manifests.ts`, `src/authority/certification/runner-registry.ts`, `test/authority/certification-input-fixture.ts`, `.tmp-pack/`, `native/`, and `rust-toolchain.toml`.
+
+Round 1/5 reviewer fixes
+
+- RED `833f89f`: added freshly re-signed inconsistent portable records and regenerated terminal commitments; the focused test failed with `Missing expected exception`.
+- GREEN `cfe0621`: passing graphs now require one unique exact/partial post-state per dispatched fixture request; expected labels derive from the verified Outcome Contract policy and declared intent; the signed Job Card is verified against readiness/current trust and exact permit links; task status binds graph task/grant/allocation plus durable task-and-budget history; local gate policy binds the signed authority-state preimage used by receipt decisions; journal-signed duplicate attempts pair one-to-one with evidence-signed zero-effect decisions across semantic, exact request, conflict, and cleanup replay paths.
+- Schema timestamps now use the same canonical millisecond-UTC shape as runtime validation, and post-state arrays reject exact duplicate nodes.
+
+Round 1/5 verification (verbatim tail)
+
+```text
+✔ offline portable verification rejects re-signed false claims with a fresh terminal commitment (1003.8603ms)
+✔ portable task status binds the signed observation time without claiming later freshness (3.1877ms)
+ℹ tests 41
+ℹ suites 0
+ℹ pass 40
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 1
+ℹ todo 0
+ℹ duration_ms 39625.3786
+```
+
+`npx tsc --noEmit --pretty false` and `git diff --check` exited 0 without output.
+
+```text
+> reelier@0.32.1 check:authority-contract
+> node scripts/build-authority-contract.mjs --check
+```
+
+```text
+frozen contract files unchanged
+sha256:7f46242b26d9c921f4e1ec9de6418ac5fc8c03d70c4415c25e799ae0e73a1512
+```
