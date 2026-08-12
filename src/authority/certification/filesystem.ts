@@ -1,4 +1,4 @@
-import { constants, link, lstat, mkdir, open, realpath, stat, unlink } from "node:fs/promises";
+import { constants, link, lstat, mkdir, open, readdir, realpath, stat, unlink } from "node:fs/promises";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
 
@@ -65,6 +65,14 @@ export async function readConfinedFile(root: string, directory: string, name: st
     if (!after.isFile() || before.dev !== after.dev || before.ino !== after.ino) throw new TypeError("certification artifact changed during confined read");
     return await handle.readFile();
   } finally { await handle.close(); }
+}
+
+export async function listConfinedFileNames(root: string, directory: string): Promise<readonly string[]> {
+  const trustedRoot = await certificationWorkspaceRoot(root), trustedDirectory = await trustExistingDirectory(directory, "certification directory is linked, reparse-pointed, or not confined");
+  assertContained(trustedRoot, trustedDirectory);
+  const names = await readdir(trustedDirectory);
+  for (const name of names) assertSegment(name);
+  return Object.freeze([...names].sort());
 }
 
 export async function publishPrivateContentAddressed(root: string, subdirectory: string, filename: string, content: string): Promise<string> {
