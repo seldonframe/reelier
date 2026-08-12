@@ -130,3 +130,75 @@ Open risks
 - The original hosted Windows job has not been rerun from these commits. The deterministic peak oracle, three constrained Windows repetitions, full ledger suite, and Task1C's separate Docker Node 20 N100 run cover the local regression surface.
 - The deliberately maximal one-core plus continuous busy-loop diagnostic exceeded N100's unchanged 120-second outer test limit even after batching. That environment leaves too little CPU for the entire four-wave test and is not treated as a product availability guarantee.
 - Production callers can still honestly receive `busy` when the existing 30-second coordination budget truly expires. The test harness fix prevents its own 100-process startup burst from manufacturing that condition; it does not hide or retry a production refusal.
+Files changed
+
+- `test/authority/ledger.test.ts`
+- `.superpowers/sdd/windows-100proc-convergence-report.md`
+
+## 2026-08-12 hosted Windows follow-up
+
+### What changed per file
+
+- `test/authority/ledger.test.ts`: the dead-owner liveness-loss fixture now explicitly requests an exact-root-bound K1 fence. Its shared `execute` helper derives the binding from the real test root and injects the existing private deterministic fence runtime for that case. The unchanged 20 ms budget therefore measures the housekeeping/liveness route instead of real Windows named-pipe and loopback acquisition latency.
+- `.superpowers/sdd/windows-100proc-convergence-report.md`: records this deterministic fixture correction, the hosted N100 evidence, the fairness redesign boundary, and fresh verification.
+
+### Deviations from the plan and why
+
+No production mutex change was made. Hosted run `31596294603`, Windows job `94117665864`, completed 99 of 100 children and returned exactly one `{ok:false,reason:"busy"}` after 38.558 seconds. The current Windows mutex admits contenders by repeatedly racing `listen()` with exponential delay. Waiting on the current owner's pipe close would remove blind polling but would wake all connected contenders into the same bind race; it cannot guarantee fair admission.
+
+A valid fairness change requires a cross-process protocol, not a bounded retry edit. At minimum it must provide: a total ticket/FIFO order rooted in the exact ledger binding; one-successor handoff with no newcomer barging; acknowledgement that the designated successor actually acquired before the predecessor relinquishes authority; deterministic recovery when either predecessor or designated successor crashes; deadline cancellation that removes timed-out waiters without wedging the queue; and preservation of exclusive serialization and corruption-closed classification throughout handoff. A retained-socket wake-all scheme and deterministic polling satisfy none of the single-successor, no-barging, or crash-handoff properties. Per the task's stop condition, production remained unchanged and hosted Windows convergence is not claimed.
+
+### Test results (verbatim tail)
+
+RED (`npx tsc -p tsconfig.test.json --pretty false`):
+
+```text
+test/authority/ledger.test.ts(1385,670): error TS2554: Expected 1-3 arguments, but got 4.
+```
+
+Focused parent:
+
+```text
+ℹ tests 22
+ℹ suites 0
+ℹ pass 22
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1816.3878
+```
+
+One N100 sanity run:
+
+```text
+✔ 100 real processes converge on one committed reservation and one dispatch eligibility (16873.0421ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 1
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 17050.8022
+```
+
+Typecheck, contract, and build (`npx tsc --noEmit --pretty false; npm run check:authority-contract; npm run build`):
+
+```text
+> reelier@0.32.1 check:authority-contract
+> node scripts/build-authority-contract.mjs --check
+
+> reelier@0.32.1 build
+> tsc -p tsconfig.json && node scripts/build-authority-contract.mjs --copy-schemas && node scripts/build-packs.mjs
+
+built cloudflare_api_token, cloudflare_dns, github_issue_labels, gmail, gmail_labels, hubspot_slack_information_flow, neon_database, slack_channel_topic, stripe, vercel_deployment
+```
+
+### Open risks
+
+- The deterministic liveness fixture no longer depends on Windows fence acquisition timing, but it does not fix or mask the hosted named-pipe admission starvation.
+- One local N100 repetition passed; the task required no five-run convergence claim after the fairness work crossed the protocol-redesign boundary.
+- The existing 30-second coordination deadline remains unchanged and an honestly starved contender can still return `busy` on hosted Windows.
+
+---
