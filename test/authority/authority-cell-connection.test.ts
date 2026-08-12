@@ -44,11 +44,11 @@ test("authority connect writes only a normalized opaque client connection", asyn
 });
 
 test("native Windows derives the default connection path from per-user local application data", () => {
-  const localAppData = path.resolve("C:\\Users\\operator\\AppData\\Local");
+  const localAppData = "C:\\Users\\operator\\AppData\\Local";
   const resolveDefault = defaultAuthorityCellConnectionFile as unknown as (runtime: Readonly<{ platform: NodeJS.Platform; env: NodeJS.ProcessEnv; homedir: string }>) => string;
   assert.equal(
     resolveDefault({ platform: "win32", env: { LOCALAPPDATA: localAppData }, homedir: "C:\\Users\\operator" }),
-    path.join(localAppData, "Reelier", "authority-cell-connection.json"),
+    path.win32.join(localAppData, "Reelier", "authority-cell-connection.json"),
   );
 });
 
@@ -153,9 +153,11 @@ test("doctor decodes every mapped IPv6 private form before bearer dispatch", asy
 
 test("doctor applies the IPv4 deny policy to a bracketed expanded dotted mapped literal", async () => {
   const connection = { v: "reelier.authority-cell-connection/v1", endpoint: "https://[0:0:0:0:0:ffff:127.0.0.1]", transport: "http", bearerTokenRef: "env:CELL_TOKEN", expectedCellId: "cell_1", adapterContractDigest: digest } as const;
+  let resolvedToken = false;
   let dispatched = false;
-  const result = await checkAuthorityCellLive(connection, { resolveToken: async () => "opaque", request: async () => { dispatched = true; throw new Error("must not dispatch"); } });
+  const result = await checkAuthorityCellLive(connection, { resolveToken: async () => { resolvedToken = true; return "opaque"; }, request: async () => { dispatched = true; throw new Error("must not dispatch"); } });
   assert.deepEqual(result, { state: "failed", reasonCode: "connection-invalid" });
+  assert.equal(resolvedToken, false);
   assert.equal(dispatched, false);
 });
 
