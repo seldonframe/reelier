@@ -34,6 +34,7 @@ function githubV3(): Record<string, unknown> {
     scenarios: ["github-issue-labels"],
     resources: { "github-issue-labels": { apiBaseUrl: "https://api.github.com", owner: "fixlyai", repository: "reelier-certification", issueNumber: 1 } },
     cleanup: { "github-issue-labels": ["restore-github-issue-labels"] },
+    desiredState: {},
     metadata: {},
     secretReferences: { githubCredential: "env:REELIER_GITHUB_TOKEN" },
   };
@@ -85,13 +86,14 @@ test("v2 endpoint derivation uses reviewed pack aliases, endpoint IDs, methods, 
 });
 
 test("compound endpoint authority binds provider credential account resource method and direction per endpoint", () => {
-  const config = migrateCertificationOperatorConfig({
+  const config = parseCertificationOperatorConfigV3({
     ...githubV3(),
-    v: "reelier.certification-operator-config/v2",
+    v: "reelier.certification-operator-config/v3",
     scenarios: ["cloudflare-vercel-secret"],
     resources: { "cloudflare-vercel-secret": { cloudflareApiBaseUrl: "https://api.cloudflare.com", cloudflareAccountId: "cf-acct", tokenName: "cert-token", vercelApiBaseUrl: "https://api.vercel.com", vercelAccountId: "vc-team", projectId: "vc-project" } },
     cleanup: { "cloudflare-vercel-secret": ["remove-secret", "remove-token"] },
-    secretReferences: { cloudflareCredential: "env:REELIER_CLOUDFLARE_BOOTSTRAP_TOKEN", vercelCredential: "env:REELIER_VERCEL_TOKEN" },
+    desiredState: {},
+    secretReferences: { cloudflareBootstrapCredential: "env:REELIER_CLOUDFLARE_BOOTSTRAP_TOKEN", vercelCredential: "env:REELIER_VERCEL_TOKEN" },
   });
   const manifest = deriveCertificationEndpointManifest(config, "cloudflare-vercel-secret");
   assert.equal(manifest.dispatchable, false);
@@ -208,10 +210,12 @@ test("closed public plan input rejects accessor-based callbacks without invoking
 test("portable Task 4A schemas agree with runtime parsers on a positive and negative corpus", () => {
   const Ajv2020 = createRequire(import.meta.url)("ajv/dist/2020").default;
   const ajv = new Ajv2020({ strict: false });
+  createRequire(import.meta.url)("ajv-formats").default(ajv);
   const load = (name: string) => JSON.parse(readFileSync(path.join(process.cwd(), "contract", "authority", "v1", name), "utf8"));
   const validators = new Map<string, (value: unknown) => boolean>();
   const validates = (schema: string, value: unknown) => { if (!validators.has(schema)) validators.set(schema, ajv.compile(load(schema))); return validators.get(schema)!(value); };
   const config = parseCertificationOperatorConfigV3(githubV3());
+  assert.equal(validates("certification-operator-config-v3.schema.json", githubV3()), true);
   const endpoint = deriveCertificationEndpointManifest(config, "github-issue-labels");
   const registry = getCertificationRunnerRegistryEntry("github-issue-labels");
   const runner = { v: "reelier.certification-runner-manifest/v2", scenarioId: "github-issue-labels", runnerId: registry.runnerId, endpointManifestDigest: authorityDigest(endpoint), metadataDigest: registry.metadataDigest, registryDigest: certificationRunnerRegistryDigest, operations: registry.operations, executionReady: false, dispatchable: false };
@@ -227,4 +231,13 @@ test("portable Task 4A schemas agree with runtime parsers on a positive and nega
     ["certification-endpoint-manifest-v2.schema.json", { ...endpoint, dispatchable: true }, () => parseCertificationEndpointManifest({ ...endpoint, dispatchable: true })],
     ["certification-scenario-plan.schema.json", { ...plan, choices: {} }, () => parseCertificationScenarioPlan({ ...plan, choices: {} }, config)],
   ] as const) { assert.equal(validates(schema, negative), false); assert.throws(parse); }
+  const configNegatives = [
+    { ...githubV3(), resources: { "github-issue-labels": { ...(githubV3().resources as any)["github-issue-labels"], owner: "token=plaintext" } } },
+    { ...githubV3(), resources: {} },
+    { ...githubV3(), resources: { ...(githubV3().resources as object), "slack-topic": { apiBaseUrl: "https://slack.com", teamId: "team", channelId: "channel" } } },
+    { ...githubV3(), authorityConfigPath: "../authority.yml" },
+    { ...githubV3(), secretReferences: { githubCredential: "env:1_BAD" } },
+    { ...githubV3(), scenarios: ["github-issue-labels", "cloudflare-dns"] },
+  ];
+  for (const negative of configNegatives) { assert.equal(validates("certification-operator-config-v3.schema.json", negative), false); assert.throws(() => parseCertificationOperatorConfigV3(negative)); }
 });

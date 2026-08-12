@@ -18,6 +18,11 @@
       "restore-github-issue-labels"
     ]
   },
+  "desiredState": {
+    "github-issue-labels": {
+      "labels": ["certification-after"]
+    }
+  },
   "metadata": {},
   "secretReferences": {
     "githubCredential": "env:REELIER_GITHUB_TOKEN"

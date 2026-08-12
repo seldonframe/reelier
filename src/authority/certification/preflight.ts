@@ -72,6 +72,7 @@ export async function preflightCertification(input: Readonly<{ workspace: string
     ...resources.filter(item => item.status === "missing").map(item => `resource:${item.scenario}`),
     ...cleanup.filter(item => item.status === "missing").map(item => `cleanup:${item.scenario}`),
     ...credentialReferences.filter(item => item.status === "missing").map(item => `credential-reference:${item.slot}`),
+    ...runnerScenarios.filter(scenario => !config.desiredState[scenario]).map(scenario => `desired-state:${scenario}`),
     ...runnerScenarios.filter(scenario => inputs.runners.status !== "configured" || inputs.runners.artifacts.filter(item => item.scenario === scenario).length !== 1).map(scenario => `inputs:runners:${scenario}`),
     ...runnerScenarios.filter(scenario => inputs.tests.status !== "configured" || inputs.tests.artifacts.filter(item => item.scenario === scenario).length !== 1).map(scenario => `inputs:tests:${scenario}`),
     ...runnerScenarios.filter(scenario => inputs.plans.status !== "configured" || inputs.plans.artifacts.filter(item => item.scenario === scenario).length !== 1).map(scenario => `inputs:plans:${scenario}`),

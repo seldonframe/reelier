@@ -14,9 +14,9 @@ async function initializedWorkspace(): Promise<string> {
   const root = await mkdtemp(path.join(tmpdir(), "reelier-cert-export-"));
   const configPath = path.join(root, "certification.local.json");
   await writeFile(configPath, JSON.stringify({
-    v: "reelier.certification-operator-config/v2", authorityConfigPath: "authority/authority.yml", evidenceDirectory: "authority/receipts/certification",
+    v: "reelier.certification-operator-config/v3", authorityConfigPath: "authority/authority.yml", evidenceDirectory: "authority/receipts/certification",
     scenarios: ["github-issue-labels"], resources: { "github-issue-labels": { apiBaseUrl: "https://api.github.com", owner: "fixlyai", repository: "reelier-certification", issueNumber: 1 } },
-    cleanup: { "github-issue-labels": ["restore-github-labels"] }, metadata: {}, secretReferences: { githubCredential: "env:REELIER_GITHUB_TOKEN" },
+    cleanup: { "github-issue-labels": ["restore-github-labels"] }, desiredState: { "github-issue-labels": { labels: ["certification-after"] } }, metadata: {}, secretReferences: { githubCredential: "env:REELIER_GITHUB_TOKEN" },
   }), "utf8");
   const workspace = (await initializeCertification({ configPath })).workspace;
   await writeCertificationInputManifests(workspace, ["github-issue-labels"]);
@@ -43,13 +43,13 @@ test("subset preparation preserves the immutable two-scenario initialization roo
   const root = await mkdtemp(path.join(tmpdir(), "reelier-cert-export-subset-"));
   const configPath = path.join(root, "certification.local.json");
   await writeFile(configPath, JSON.stringify({
-    v: "reelier.certification-operator-config/v2", authorityConfigPath: "authority/authority.yml", evidenceDirectory: "authority/receipts/certification",
+    v: "reelier.certification-operator-config/v3", authorityConfigPath: "authority/authority.yml", evidenceDirectory: "authority/receipts/certification",
     scenarios: ["github-issue-labels", "slack-topic"],
     resources: {
       "github-issue-labels": { apiBaseUrl: "https://api.github.com", owner: "fixlyai", repository: "reelier-certification", issueNumber: 1 },
       "slack-topic": { apiBaseUrl: "https://slack.com", teamId: "T012345", channelId: "C012345" },
     },
-    cleanup: { "github-issue-labels": ["restore-github-labels"], "slack-topic": ["restore-slack-topic"] }, metadata: {},
+    cleanup: { "github-issue-labels": ["restore-github-labels"], "slack-topic": ["restore-slack-topic"] }, desiredState: { "github-issue-labels": { labels: ["certification-after"] }, "slack-topic": { topic: "Certification after" } }, metadata: {},
     secretReferences: { githubCredential: "env:REELIER_GITHUB_TOKEN", slackCredential: "env:REELIER_SLACK_TOKEN" },
   }), "utf8");
   const initialized = await initializeCertification({ configPath });

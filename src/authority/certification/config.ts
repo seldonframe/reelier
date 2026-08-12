@@ -140,7 +140,7 @@ export function parseCertificationOperatorConfigV2(value: unknown): Certificatio
 
 export function parseCertificationOperatorConfigV3(value: unknown): CertificationOperatorConfigV3 {
   const root = object(value, "certification operator config v3");
-  closed(root, ["v", "authorityConfigPath", "evidenceDirectory", "scenarios", "resources", "cleanup", "metadata", "secretReferences", ...(Object.hasOwn(root, "desiredState") ? ["desiredState"] : [])], "certification operator config v3");
+  closed(root, ["v", "authorityConfigPath", "evidenceDirectory", "scenarios", "resources", "cleanup", "metadata", "desiredState", "secretReferences"], "certification operator config v3");
   if (root.v !== "reelier.certification-operator-config/v3") throw new TypeError("certification operator config v3 version is invalid");
   const scenarios = scenarioList(root.scenarios);
   const requirements = requirementsFor(scenarios);
@@ -148,7 +148,7 @@ export function parseCertificationOperatorConfigV3(value: unknown): Certificatio
   const cleanupRaw = exactSectionObject(root.cleanup, requirements.cleanup, "certification cleanup");
   const metadataRaw = exactSectionObject(root.metadata, requirements.metadata, "certification metadata");
   const secretsRaw = exactSectionObject(root.secretReferences, requirements.secrets, "certification secret references");
-  const desiredRaw = root.desiredState === undefined ? {} : object(root.desiredState, "certification desired state");
+  const desiredRaw = object(root.desiredState, "certification desired state");
   if (Object.keys(desiredRaw).some(key => !scenarios.includes(key as CertificationScenarioId))) throw new TypeError("certification desired state is selected-scenario-only");
   const resources: Record<string, CertificationResourceV2> = {};
   for (const section of requirements.resources) resources[section] = parseResource(section, resourcesRaw[section]);
