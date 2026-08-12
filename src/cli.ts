@@ -4431,11 +4431,13 @@ async function cmdDeploy(args: ParsedArgs): Promise<number> {
   const candidateFile = path.isAbsolute(candidate) ? candidate : path.resolve(process.cwd(), candidate);
   try {
     const raw = JSON.parse(await readFile(candidateFile, "utf8")) as Record<string, unknown>;
-    const job = raw.job as Record<string, unknown> | undefined;
+    const job = raw.jobCard as Record<string, unknown> | undefined;
     const alias = typeof job?.jobId === "string" ? job.jobId : path.basename(candidate).replace(/\.json$/i, "");
     const output = path.join(root, "deployments", alias);
-    const built = await buildAuthorityDeployment(candidateFile, output);
-    console.log(JSON.stringify({ alias, status: "deployed", deploymentFile: built.deploymentFile, jobCardFile: built.jobCardFile, jobId: built.jobCard.jobId }));
+    const trustPinFile = path.resolve(args.opts["trust-pin"] ?? path.join(root, "trust", "job-card-trust-pin.json"));
+    const trustPin = JSON.parse(await readFile(trustPinFile, "utf8"));
+    const built = await buildAuthorityDeployment(candidateFile, output, trustPin);
+    console.log(JSON.stringify({ alias, status: "deployed", deploymentFile: built.deploymentFile, jobCardFile: built.jobCardFile, jobCardTrustPinFile: built.jobCardTrustPinFile, jobId: built.jobCard.jobId }));
     return 0;
   } catch (error) {
     console.error(JSON.stringify({ status: "refused", reasonCode: "deployment-invalid", message: error instanceof Error ? error.message : String(error) }));

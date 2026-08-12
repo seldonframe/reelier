@@ -18,7 +18,7 @@ import { createAuthorityHostRuntime } from "./runtime.js";
 import type { AuthorityHostConfig } from "./config.js";
 import type { AuthorityHostRuntime } from "./server.js";
 import { createSecretResolver } from "./secret-resolver.js";
-import { firstPartyPacks, createFirstPartySourceRegistry } from "../../packs/index.js";
+import { firstPartyPacks, firstPartyPackForAlias, createFirstPartySourceRegistry } from "../../packs/index.js";
 import { loadAuthorityDeployment, type JobCardTrustPinV1 } from "./deployment.js";
 import { loadOrCreateLocalGateSigner } from "./gate-signer.js";
 import type { DelegationAuthority } from "./delegation-service.js";
@@ -63,12 +63,17 @@ export async function createLocalAuthorityRuntime(config: AuthorityHostConfig, o
     verifyAuthorityLease(options.signedLease, { tenant: config.tenant, now: new Date(), signerId: options.leaseSigner.signerId, publicKey: options.leaseSigner.publicKey, topologyEvidenceDigest: options.signedTopologyEvidence.digest });
   }
   await mkdir(config.ledgerDir, { recursive: true }); await mkdir(config.decisionDir, { recursive: true }); await mkdir(config.receiptDir, { recursive: true });
-  const deployment = config.deploymentPath ? await loadAuthorityDeployment(config.deploymentPath, { jobCardTrustPin: options.jobCardTrustPin }) : undefined;
+  const jobCardTrustPin = options.jobCardTrustPin ?? (config.jobCardTrustPinPath ? JSON.parse(await readFile(config.jobCardTrustPinPath, "utf8")) as JobCardTrustPinV1 : undefined);
+  const deployment = config.deploymentPath ? await loadAuthorityDeployment(config.deploymentPath, { jobCardTrustPin }) : undefined;
   if (deployment && deployment.tenant !== config.tenant) throw new TypeError("authority deployment tenant does not match host config");
   if (deployment && !deployment.jobCard) throw new TypeError("production authority deployment requires a signed Job Card");
   if (deployment?.jobCard) {
     const configured = [...config.definitions].sort();
     if (authorityDigest(configured) !== authorityDigest(deployment.jobCard.definitionAliases)) throw new TypeError("host definitions do not match the signed Job Card");
+    const selectedPacks = deployment.jobCard.definitionAliases.map(alias => firstPartyPackForAlias(alias));
+    if (selectedPacks.some(pack => !pack)) throw new TypeError("signed Job Card definition has no installed reviewed pack");
+    const expectedPackDigests = [...new Set(selectedPacks.map(pack => pack!.definition.packDigest))].sort();
+    if (authorityDigest(expectedPackDigests) !== authorityDigest(deployment.jobCard.packDigests)) throw new TypeError("signed Job Card pack digest set does not match installed reviewed packs");
   }
   const ledger = new FsAuthorityLedger(config.ledgerDir);
   const decisions = createFileGateDecisionSink(config.decisionDir);
