@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { generateKeyPairSync } from "node:crypto";
-import { mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { createPublicKey, generateKeyPairSync } from "node:crypto";
+import { mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { authorityDigest } from "../../src/authority/wire.js";
@@ -16,6 +16,7 @@ import { createFilePrincipalRegistry } from "../../src/authority/host/principal-
 import { createGitHubIssueLabelsHermeticComposition } from "../../src/authority/certification/github-issue-labels-runner.js";
 import { __testSetAuthorityCellHostPlatform } from "../../src/authority/host/platform.js";
 import { createCertificationArtifactKeyBinding, createCertificationLifecycleAuthorityCeremony } from "../../src/authority/certification/lifecycle-authority.js";
+import { verifyAuthorityReceiptBundle } from "../../src/authority/verify.js";
 import { writeCertificationInputManifests } from "./certification-input-fixture.js";
 
 const at = "2026-08-11T20:00:00.000Z", expiry = "2026-08-11T21:00:00.000Z";
@@ -48,7 +49,7 @@ async function fixture(mode: "normal" | "source-drift" | "effect-drift" | "provi
   await cell.activateRootTask({ jobCard, jobCardTrustPin: pin, constraints, effects: 2, issuedAt: at, expiresAt: expiry });
   const credential = await cell.activatePrincipalSession();
   const runner = await createGitHubIssueLabelsHermeticComposition(cell, { mode } as never);
-  return { root, initialized, cell, runner, credential, delegation };
+  return { root, initialized, cell, runner, credential, delegation, pin, lifecycle };
 }
 
 test("only a genuine Cell host can compose the fixed runner", async () => {
@@ -141,6 +142,24 @@ test("semantic duplicate and conflicting bytes do not write or consume additiona
     assert.equal(conflict.status, "conflict");
     assert.equal(conflict.providerWrites, 1);
     assert.equal((await f.delegation.budget.get(f.initialized.identifiers.rootGrantId))?.consumed, 1);
+  } finally { await rm(f.root, { recursive: true, force: true }); }
+});
+
+test("dispatch and reconciliation mint portable chained receipts accepted by the existing offline verifier", async () => {
+  const f = await fixture(); try {
+    await f.runner.run({ bearerToken: f.credential.token, requestId: "request_receipts" });
+    const directory = path.join(f.initialized.workspace, "authority", "github-label-runner", "receipts", "portable");
+    const bundles = await Promise.all((await readdir(directory)).map(async name => JSON.parse(await readFile(path.join(directory, name), "utf8"))));
+    assert.equal(bundles.length, 3);
+    const activation = JSON.parse(await readFile(path.join(f.initialized.workspace, "authority", "delegation", "root-activation.json"), "utf8"));
+    const direct = f.pin.keyDescriptors.filter((item: any) => item.role === "authority-cell").map((item: any) => ({ tenant: activation.authorityCellId, signerId: item.keyId, principalId: item.purpose === "delegation-grant" ? activation.signedRootGrant.grant.grantor : activation.principalId, publicKey: createPublicKey({ key: Buffer.from(item.publicKeySpkiBase64, "base64"), format: "der", type: "spki" }), purposes: [item.purpose] }));
+    const delegated = f.lifecycle.binding.entries.map(item => ({ tenant: activation.authorityCellId, signerId: item.keyId, principalId: activation.principalId, publicKey: createPublicKey({ key: Buffer.from(item.publicKeySpkiBase64, "base64"), format: "der", type: "spki" }), purposes: [item.artifactPurpose] }));
+    const first = bundles.find(bundle => bundle.receipt.value.priorReceiptDigest === null), second = bundles.find(bundle => bundle.receipt.value.priorReceiptDigest === authorityDigest(first?.receipt.value)), third = bundles.find(bundle => bundle.receipt.value.priorReceiptDigest === authorityDigest(second?.receipt.value));
+    assert.ok(first); assert.ok(second); assert.ok(third);
+    verifyAuthorityReceiptBundle(first, { tenant: activation.authorityCellId, trustRoots: [...direct, ...delegated] as never });
+    verifyAuthorityReceiptBundle(second, { tenant: activation.authorityCellId, trustRoots: [...direct, ...delegated] as never, priorReceipt: first.receipt.value });
+    verifyAuthorityReceiptBundle(third, { tenant: activation.authorityCellId, trustRoots: [...direct, ...delegated] as never, priorReceipt: second.receipt.value });
+    assert.equal(second.receipt.value.priorReceiptDigest, authorityDigest(first.receipt.value));
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
