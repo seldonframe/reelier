@@ -58,8 +58,12 @@ function isPublicAddress(address: string): boolean {
 }
 function mappedIpv4(value: string): string | undefined {
   if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(value)) return undefined;
-  const parts = value.split(":"); if (parts.length !== 2 || !parts.every(part => /^[0-9a-f]{1,4}$/.test(part))) return undefined;
-  const high = Number.parseInt(parts[0]!, 16); const low = Number.parseInt(parts[1]!, 16);
+  const source = value.replace(/^\[|\]$/g, ""); const pivot = source.indexOf("::");
+  const left = pivot < 0 ? source.split(":") : source.slice(0, pivot).split(":").filter(Boolean); const right = pivot < 0 ? [] : source.slice(pivot + 2).split(":").filter(Boolean);
+  if (left.some(part => !/^[0-9a-f]{1,4}$/i.test(part)) || right.some(part => !/^[0-9a-f]{1,4}$/i.test(part)) || left.length + right.length > 8) return undefined;
+  const parts = pivot < 0 ? left : [...left, ...Array(8 - left.length - right.length).fill("0"), ...right];
+  if (parts.length !== 8 || parts.slice(0, 5).some(part => Number.parseInt(part, 16) !== 0) || Number.parseInt(parts[5]!, 16) !== 0xffff) return undefined;
+  const high = Number.parseInt(parts[6]!, 16); const low = Number.parseInt(parts[7]!, 16);
   return `${high >> 8}.${high & 255}.${low >> 8}.${low & 255}`;
 }
 async function pinnedIdentityRequest(endpoint: string, token: string, address: string): Promise<Response> {
