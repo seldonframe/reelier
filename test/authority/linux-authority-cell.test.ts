@@ -47,6 +47,28 @@ test("Windows refuses authority CLI setup and serving before writing its workspa
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test("Windows refuses Codex activation before reading the certification config", async () => {
+  let configReads = 0;
+  const opts = new Proxy({} as Record<string, string>, { get(_target, key) { if (key === "config") configReads += 1; return "C:/nonexistent/certification.json"; } });
+  await onWindows(async () => {
+    await assert.rejects(() => runAuthorityCommand({ positional: ["certify", "activate-codex"], flags: new Set(), opts }), assertLinuxRequired);
+  });
+  assert.equal(configReads, 0);
+});
+
+test("Windows refuses Fly topology certification before config or live-provider access", async () => {
+  let configReads = 0;
+  const opts = new Proxy({} as Record<string, string>, { get(_target, key) { if (key === "adapter") return "fly-topology"; if (key === "config") { configReads += 1; throw new Error("configuration accessed"); } return undefined; } });
+  await onWindows(async () => {
+    await assert.rejects(() => runAuthorityCommand({ positional: ["certify", "run"], flags: new Set(), opts }), assertLinuxRequired);
+  });
+  assert.equal(configReads, 0);
+});
+
+test("native Windows refuses authority setup without a platform test seam", { skip: process.platform !== "win32" }, async () => {
+  await assert.rejects(() => runAuthorityCommand({ positional: ["init"], flags: new Set(), opts: { path: "C:/nonexistent/authority" } }), assertLinuxRequired);
+});
+
 test("Windows refuses every authority host composition before touching host dependencies", async () => {
   let accesses = 0;
   const inaccessible = new Proxy({}, { get() { accesses += 1; throw new Error("authority dependency accessed"); } });
