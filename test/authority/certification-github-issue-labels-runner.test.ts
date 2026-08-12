@@ -169,7 +169,8 @@ test("closed task receipt graph verifies offline and rejects tampering, omission
     await f.runner.run({ bearerToken: f.credential.token, requestId: "request_graph" });
     await f.runner.cleanup({ bearerToken: f.credential.token, requestId: "request_graph" });
     const graph = await f.runner.exportGraph({ bearerToken: f.credential.token });
-    assert.equal(verifyCertificationTaskReceiptGraph(graph).status, "verified");
+    assert.throws(() => verifyCertificationTaskReceiptGraph(graph), /external|trust pin|operator/i);
+    assert.equal(verifyCertificationTaskReceiptGraph(graph, { trustPin: f.pin }).status, "verified");
     for (const mutate of [
       (g: any) => { g.adapterContractDigest = `sha256:${"0".repeat(64)}`; },
       (g: any) => { g.receipts.pop(); },
@@ -178,7 +179,9 @@ test("closed task receipt graph verifies offline and rejects tampering, omission
       (g: any) => { g.priorReceiptLinks.find((item: any) => item.priorReceiptDigest !== null).priorReceiptDigest = null; },
       (g: any) => { g.receipts[0].contract.value.contractId = "substituted"; },
       (g: any) => { g.secretToken = "canary-private-token"; },
-    ]) { const changed = structuredClone(graph); mutate(changed); assert.throws(() => verifyCertificationTaskReceiptGraph(changed), /graph|receipt|contract|budget|confidential|closed|digest|chain/i); }
+    ]) { const changed = structuredClone(graph); mutate(changed); assert.throws(() => verifyCertificationTaskReceiptGraph(changed, { trustPin: f.pin }), /graph|receipt|contract|budget|confidential|closed|digest|chain/i); }
+    const attacker: any = structuredClone(graph); attacker.keyDescriptors = attacker.keyDescriptors.map((item: any) => ({ ...item, keyId: `attacker_${item.keyId}` }));
+    assert.throws(() => verifyCertificationTaskReceiptGraph(attacker, { trustPin: f.pin }), /trust|descriptor|activated|readiness|graph/i);
     assert.equal(JSON.stringify(graph).includes("canary-private-token"), false);
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
