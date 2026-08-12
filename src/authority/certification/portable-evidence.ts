@@ -1,0 +1,171 @@
+import type { KeyObject } from "node:crypto";
+import { createHash } from "node:crypto";
+import { parseGitHubIssueLabelsPolicy } from "../../packs/github/compile.js";
+import { githubIssueLabelsPolicySchemaId } from "../../packs/github/manifest.js";
+import { AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST } from "../adapter-contract.js";
+import { verifyAuthoritySignature } from "../crypto.js";
+import type { AuthoritySignature } from "../types.js";
+import { authorityCanonicalBytes, authorityDigest } from "../wire.js";
+
+const DIGEST = /^sha256:[0-9a-f]{64}$/;
+export interface CertificationEvidenceSigner { readonly signerId: string; sign(digest: string): AuthoritySignature }
+export interface CertificationEvidenceVerifier { readonly signerId: string; readonly publicKey: KeyObject }
+
+export interface CertificationTaskAuthorityEvidenceV1 {
+  readonly v: "reelier.certification-task-authority-evidence/v1";
+  readonly taskId: string;
+  readonly signedJobCard: unknown;
+  readonly activation: unknown;
+  readonly dispatchSnapshotPreimage: Readonly<Record<string, unknown>>;
+  readonly signedJobCardDigest: string;
+  readonly activationDigest: string;
+  readonly dispatchSnapshotDigest: string;
+  readonly operatorConfigDigest: string;
+  readonly taskShapeDigest: string;
+  readonly instructionsDigest: string;
+  readonly runnerDigest: string;
+  readonly planDigest: string;
+  readonly endpointDigest: string;
+  readonly sourceDigest: string;
+  readonly policyDigest: string;
+  readonly principalSessionDigest: string;
+  readonly grantAllocationDigest: string;
+  readonly trustHeadDigest: string;
+  readonly adapterContractDigest: string;
+  readonly intentDigest: string;
+  readonly triggerDigest: string;
+  readonly signerId: string;
+  readonly signature: AuthoritySignature;
+}
+
+export interface CertificationPostStateEvidenceV1 {
+  readonly v: "reelier.certification-post-state-evidence/v1";
+  readonly requestId: string;
+  readonly dispatchRequestDigest: string;
+  readonly permitSnapshotDigest: string;
+  readonly expectedProjectionDigest: string;
+  readonly preSourceBundleDigest: string | null;
+  readonly projectionSchemaId: string;
+  readonly projectionSchemaDigest: string;
+  readonly preProjectionDigest: string | null;
+  readonly observedProjectionDigest: string | null;
+  readonly observationMethod: "hermetic-authoritative-read" | "provider-acknowledgment" | "not-observed";
+  readonly observedAt: string;
+  readonly confidence: "exact" | "partial" | "pending" | "absent";
+  readonly signerId: string;
+  readonly signature: AuthoritySignature;
+}
+
+export interface CertificationPolicyEvidenceV1 {
+  readonly v: "reelier.certification-policy-evidence/v1";
+  readonly artifact: "outcome-contract" | "local-gate-policy";
+  readonly status: "verified" | "failed" | "unchecked" | "absent";
+  readonly schemaId: string | null;
+  readonly jcsBase64: string | null;
+  readonly policyDigest: string;
+  readonly signerId: string;
+  readonly signature: AuthoritySignature;
+}
+
+export interface CertificationTaskStatusEvidenceV1 {
+  readonly v: "reelier.certification-task-status-evidence/v1";
+  readonly phase: "dispatch" | "export";
+  readonly taskId: string;
+  readonly lifecycleState: "active" | "revoked" | "expired" | "inactive";
+  readonly grantExpiresAt: string;
+  readonly allocationRevoked: boolean;
+  readonly observedAt: string;
+  readonly durableHistoryDigest: string;
+  readonly currentActiveClaim: boolean;
+  readonly freshness: "unchecked";
+  readonly signerId: string;
+  readonly signature: AuthoritySignature;
+}
+
+export interface CertificationDuplicateDecisionV1 {
+  readonly v: "reelier.certification-duplicate-decision/v1";
+  readonly attemptRequestId: string;
+  readonly originalRequestId: string;
+  readonly originalRequestDigest: string;
+  readonly originalEffectDigest: string;
+  readonly observedAuthorityStateDigest: string;
+  readonly observedAt: string;
+  readonly budgetDelta: 0;
+  readonly providerWriteDelta: 0;
+  readonly signerId: string;
+  readonly signature: AuthoritySignature;
+}
+
+export function createCertificationTaskStatusEvidence(input: Omit<CertificationTaskStatusEvidenceV1, "v" | "freshness" | "signerId" | "signature">, signer: CertificationEvidenceSigner): CertificationTaskStatusEvidenceV1 {
+  const body = { v: "reelier.certification-task-status-evidence/v1" as const, ...input, freshness: "unchecked" as const, signerId: signer.signerId };
+  validateTaskStatusBody(body);
+  return Object.freeze({ ...body, signature: signer.sign(authorityDigest(body)) });
+}
+
+export function verifyCertificationTaskStatusEvidence(value: unknown, verifier: CertificationEvidenceVerifier): Readonly<{ status: "verified"; freshness: "unchecked"; observationDigest: string }> {
+  const record = exact(value, ["v","phase","taskId","lifecycleState","grantExpiresAt","allocationRevoked","observedAt","durableHistoryDigest","currentActiveClaim","freshness","signerId","signature"], "portable task status") as unknown as CertificationTaskStatusEvidenceV1;
+  const { signature, ...body } = record;
+  validateTaskStatusBody(body);
+  verifySigned(body, signature, verifier, "portable task status");
+  return Object.freeze({ status: "verified", freshness: "unchecked", observationDigest: authorityDigest(record) });
+}
+
+export function createCertificationTaskAuthorityEvidence(input: Omit<CertificationTaskAuthorityEvidenceV1, "v" | "signedJobCardDigest" | "activationDigest" | "dispatchSnapshotDigest" | "adapterContractDigest" | "signerId" | "signature">, signer: CertificationEvidenceSigner): CertificationTaskAuthorityEvidenceV1 {
+  const body = { v: "reelier.certification-task-authority-evidence/v1" as const, ...input, signedJobCardDigest: authorityDigest(input.signedJobCard), activationDigest: authorityDigest(input.activation), dispatchSnapshotDigest: authorityDigest(input.dispatchSnapshotPreimage), adapterContractDigest: AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST, signerId: signer.signerId };
+  validateTaskAuthorityBody(body);
+  return Object.freeze({ ...body, signature: signer.sign(authorityDigest(body)) });
+}
+
+export function createCertificationPostStateEvidence(input: Omit<CertificationPostStateEvidenceV1, "v" | "signerId" | "signature">, signer: CertificationEvidenceSigner): CertificationPostStateEvidenceV1 {
+  const body = { v: "reelier.certification-post-state-evidence/v1" as const, ...input, signerId: signer.signerId };
+  validatePostStateBody(body);
+  return Object.freeze({ ...body, signature: signer.sign(authorityDigest(body)) });
+}
+
+export function createCertificationPolicyEvidence(input: Readonly<{ outcomeContract: Readonly<{ schemaId: string; jcsBase64: string; digest: string }>; localGatePolicyDigest: string }>, signer: CertificationEvidenceSigner): readonly CertificationPolicyEvidenceV1[] {
+  const outcome = signPolicy({ v: "reelier.certification-policy-evidence/v1", artifact: "outcome-contract", status: "verified", schemaId: input.outcomeContract.schemaId, jcsBase64: input.outcomeContract.jcsBase64, policyDigest: input.outcomeContract.digest, signerId: signer.signerId }, signer);
+  const local = signPolicy({ v: "reelier.certification-policy-evidence/v1", artifact: "local-gate-policy", status: "unchecked", schemaId: null, jcsBase64: null, policyDigest: input.localGatePolicyDigest, signerId: signer.signerId }, signer);
+  return Object.freeze([outcome, local]);
+}
+
+export function createCertificationDuplicateDecision(input: Omit<CertificationDuplicateDecisionV1, "v" | "budgetDelta" | "providerWriteDelta" | "signerId" | "signature">, signer: CertificationEvidenceSigner): CertificationDuplicateDecisionV1 {
+  const body = { v: "reelier.certification-duplicate-decision/v1" as const, ...input, budgetDelta: 0 as const, providerWriteDelta: 0 as const, signerId: signer.signerId };
+  validateDuplicateBody(body);
+  return Object.freeze({ ...body, signature: signer.sign(authorityDigest(body)) });
+}
+
+export function verifyCertificationPortableEvidence(input: Readonly<{ taskAuthorities: readonly unknown[]; postStateEvidence: readonly unknown[]; policyEvidence: readonly unknown[]; taskStatusEvidence: readonly unknown[]; duplicateDecisions: readonly unknown[] }>, context: Readonly<{ verifier: CertificationEvidenceVerifier; taskId: string; receipts: readonly any[]; outcomes: readonly any[]; budgetEvents: readonly any[]; adapterContractDigest: string }>): void {
+  if (input.taskAuthorities.length !== 1) throw new TypeError("portable task authority is omitted or duplicated");
+  const task = signedExact(input.taskAuthorities[0], ["v","taskId","signedJobCard","activation","dispatchSnapshotPreimage","operatorConfigDigest","taskShapeDigest","instructionsDigest","runnerDigest","planDigest","endpointDigest","sourceDigest","policyDigest","principalSessionDigest","grantAllocationDigest","trustHeadDigest","intentDigest","triggerDigest","signedJobCardDigest","activationDigest","dispatchSnapshotDigest","adapterContractDigest","signerId","signature"], context.verifier, "portable task authority") as CertificationTaskAuthorityEvidenceV1;
+  validateTaskAuthorityBody(task);
+  if (task.taskId !== context.taskId || task.adapterContractDigest !== context.adapterContractDigest) throw new TypeError("portable task authority task or Adapter Contract is mismatched");
+  const journalSnapshots = new Set(context.outcomes.map(item => item.permitSnapshotDigest));
+  if (!journalSnapshots.has(task.dispatchSnapshotDigest)) throw new TypeError("portable task authority permit preimage is not linked to dispatch");
+  if (authorityDigest(task.signedJobCard) !== task.signedJobCardDigest || authorityDigest(task.activation) !== task.activationDigest || authorityDigest(task.dispatchSnapshotPreimage) !== task.dispatchSnapshotDigest) throw new TypeError("portable task authority normalized objects were substituted");
+  for (const key of ["operatorConfigDigest","taskShapeDigest","instructionsDigest","runnerDigest","planDigest","endpointDigest","sourceDigest","policyDigest","principalSessionDigest","grantAllocationDigest","trustHeadDigest","intentDigest","triggerDigest"] as const) if (!DIGEST.test(task[key])) throw new TypeError("portable task authority digest is invalid");
+
+  const sourceDigests = new Set(context.receipts.map(bundle => bundle.sourceBundle?.digest));
+  for (const raw of input.postStateEvidence) { const post = signedExact(raw, ["v","requestId","dispatchRequestDigest","permitSnapshotDigest","expectedProjectionDigest","preSourceBundleDigest","projectionSchemaId","projectionSchemaDigest","preProjectionDigest","observedProjectionDigest","observationMethod","observedAt","confidence","signerId","signature"], context.verifier, "portable post-state") as CertificationPostStateEvidenceV1; validatePostStateBody(post); if (!journalSnapshots.has(post.permitSnapshotDigest) || !context.outcomes.some(item => item.requestId === post.requestId && item.requestDigest === post.dispatchRequestDigest)) throw new TypeError("portable post-state is not linked to authorized dispatch"); if (post.preSourceBundleDigest !== null && !sourceDigests.has(post.preSourceBundleDigest)) throw new TypeError("portable post-state pre-read SourceBundle is omitted or substituted"); }
+  if (input.postStateEvidence.length === 0) throw new TypeError("portable post-state evidence is absent");
+
+  if (input.policyEvidence.length !== 2) throw new TypeError("portable policy evidence is incomplete");
+  const policies = input.policyEvidence.map(raw => { const item = signedExact(raw, ["v","artifact","status","schemaId","jcsBase64","policyDigest","signerId","signature"], context.verifier, "portable policy") as CertificationPolicyEvidenceV1; validatePolicyBody(item); return item; });
+  if (policies[0]!.artifact !== "outcome-contract" || policies[0]!.status !== "verified" || policies[1]!.artifact !== "local-gate-policy" || policies[1]!.status !== "unchecked") throw new TypeError("portable policy statuses cannot be upgraded or substituted");
+
+  if (input.taskStatusEvidence.length !== 2 || (input.taskStatusEvidence[0] as any)?.phase !== "dispatch" || (input.taskStatusEvidence[1] as any)?.phase !== "export") throw new TypeError("portable task status observations are incomplete");
+  for (const status of input.taskStatusEvidence) verifyCertificationTaskStatusEvidence(status, context.verifier);
+
+  const duplicateIds = new Set<string>();
+  for (const raw of input.duplicateDecisions) { const node = signedExact(raw, ["v","attemptRequestId","originalRequestId","originalRequestDigest","originalEffectDigest","observedAuthorityStateDigest","observedAt","budgetDelta","providerWriteDelta","signerId","signature"], context.verifier, "portable duplicate") as CertificationDuplicateDecisionV1; validateDuplicateBody(node); if (duplicateIds.has(node.attemptRequestId) || !context.outcomes.some(item => item.requestId === node.originalRequestId && item.requestDigest === node.originalRequestDigest && item.effectDigest === node.originalEffectDigest)) throw new TypeError("portable duplicate is omitted, duplicated, or not linked to the original effect"); duplicateIds.add(node.attemptRequestId); }
+}
+
+function signPolicy(body: Omit<CertificationPolicyEvidenceV1, "signature">, signer: CertificationEvidenceSigner): CertificationPolicyEvidenceV1 { validatePolicyBody(body); return Object.freeze({ ...body, signature: signer.sign(authorityDigest(body)) }); }
+function validateTaskStatusBody(value: any): void { if (value.v !== "reelier.certification-task-status-evidence/v1" || !["dispatch","export"].includes(value.phase) || typeof value.taskId !== "string" || !["active","revoked","expired","inactive"].includes(value.lifecycleState) || !validTime(value.grantExpiresAt) || !validTime(value.observedAt) || typeof value.allocationRevoked !== "boolean" || !DIGEST.test(value.durableHistoryDigest) || typeof value.currentActiveClaim !== "boolean" || value.freshness !== "unchecked" || typeof value.signerId !== "string") throw new TypeError("portable task status is invalid"); if (value.currentActiveClaim && (value.lifecycleState !== "active" || value.allocationRevoked || Date.parse(value.grantExpiresAt) <= Date.parse(value.observedAt))) throw new TypeError("portable task status cannot claim active after revocation or expiry"); }
+function validateTaskAuthorityBody(value: any): void { if (value.v !== "reelier.certification-task-authority-evidence/v1" || typeof value.taskId !== "string" || value.adapterContractDigest !== AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST || typeof value.signerId !== "string") throw new TypeError("portable task authority is invalid"); }
+function validatePostStateBody(value: any): void { if (value.v !== "reelier.certification-post-state-evidence/v1" || typeof value.requestId !== "string" || !DIGEST.test(value.dispatchRequestDigest) || !DIGEST.test(value.permitSnapshotDigest) || !DIGEST.test(value.expectedProjectionDigest) || (value.preSourceBundleDigest !== null && !DIGEST.test(value.preSourceBundleDigest)) || typeof value.projectionSchemaId !== "string" || !DIGEST.test(value.projectionSchemaDigest) || (value.preProjectionDigest !== null && !DIGEST.test(value.preProjectionDigest)) || (value.observedProjectionDigest !== null && !DIGEST.test(value.observedProjectionDigest)) || !["hermetic-authoritative-read","provider-acknowledgment","not-observed"].includes(value.observationMethod) || !validTime(value.observedAt) || !["exact","partial","pending","absent"].includes(value.confidence) || typeof value.signerId !== "string") throw new TypeError("portable post-state is invalid"); if (value.confidence === "exact" && (value.observationMethod !== "hermetic-authoritative-read" || value.preSourceBundleDigest === null || value.preProjectionDigest === null || value.observedProjectionDigest === null || value.expectedProjectionDigest !== value.observedProjectionDigest)) throw new TypeError("portable post-state exact confidence requires comparable authoritative pre/post evidence"); if ((value.confidence === "pending" || value.confidence === "absent") && value.observationMethod === "hermetic-authoritative-read") throw new TypeError("portable post-state confidence contradicts its observation method"); }
+function validatePolicyBody(value: any): void { if (value.v !== "reelier.certification-policy-evidence/v1" || !["outcome-contract","local-gate-policy"].includes(value.artifact) || !["verified","failed","unchecked","absent"].includes(value.status) || !DIGEST.test(value.policyDigest) || typeof value.signerId !== "string") throw new TypeError("portable policy evidence is invalid"); if (value.artifact === "outcome-contract") { if (value.status !== "verified" || value.schemaId !== githubIssueLabelsPolicySchemaId || typeof value.jcsBase64 !== "string") throw new TypeError("portable Outcome Contract policy is not verified against the reviewed schema"); const bytes = Buffer.from(value.jcsBase64, "base64"); if (bytes.toString("base64") !== value.jcsBase64 || `sha256:${createHash("sha256").update(bytes).digest("hex")}` !== value.policyDigest) throw new TypeError("portable Outcome Contract policy bytes or digest are invalid"); const parsed = JSON.parse(bytes.toString("utf8")); if (!authorityCanonicalBytes(parsed).equals(bytes)) throw new TypeError("portable Outcome Contract policy bytes are not exact JCS"); parseGitHubIssueLabelsPolicy(parsed); } else if (value.status !== "unchecked" || value.schemaId !== null || value.jcsBase64 !== null) throw new TypeError("portable local gate policy has no verified runtime rule evidence"); }
+function validateDuplicateBody(value: any): void { if (value.v !== "reelier.certification-duplicate-decision/v1" || typeof value.attemptRequestId !== "string" || typeof value.originalRequestId !== "string" || !DIGEST.test(value.originalRequestDigest) || !DIGEST.test(value.originalEffectDigest) || !DIGEST.test(value.observedAuthorityStateDigest) || !validTime(value.observedAt) || value.budgetDelta !== 0 || value.providerWriteDelta !== 0 || typeof value.signerId !== "string") throw new TypeError("portable duplicate decision is invalid or has nonzero effect"); }
+function verifySigned(body: object, signature: AuthoritySignature, verifier: CertificationEvidenceVerifier, label: string): void { if ((body as any).signerId !== verifier.signerId || !signature || !verifyAuthoritySignature(verifier.publicKey, "authority-evidence", authorityDigest(body), signature)) throw new TypeError(`${label} signature is invalid`); }
+function signedExact(value: unknown, fields: readonly string[], verifier: CertificationEvidenceVerifier, label: string): any { const record = exact(value, fields, label); const { signature, ...body } = record; verifySigned(body, signature, verifier, label); return record; }
+function exact(value: unknown, fields: readonly string[], label: string): Record<string, any> { if (!value || typeof value !== "object" || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype || Object.keys(value).join("\0") !== fields.join("\0")) throw new TypeError(`${label} is not an exact canonical object`); return value as Record<string, any>; }
+function validTime(value: unknown): value is string { return typeof value === "string" && new Date(value).toISOString() === value; }
