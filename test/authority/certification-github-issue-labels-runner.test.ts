@@ -17,6 +17,7 @@ import { createGitHubIssueLabelsHermeticComposition } from "../../src/authority/
 import { __testSetAuthorityCellHostPlatform } from "../../src/authority/host/platform.js";
 import { createCertificationArtifactKeyBinding, createCertificationLifecycleAuthorityCeremony } from "../../src/authority/certification/lifecycle-authority.js";
 import { verifyAuthorityReceiptBundle } from "../../src/authority/verify.js";
+import { verifyCertificationTaskReceiptGraph } from "../../src/authority/certification/task-receipt-graph.js";
 import { writeCertificationInputManifests } from "./certification-input-fixture.js";
 
 const at = "2026-08-11T20:00:00.000Z", expiry = "2026-08-11T21:00:00.000Z";
@@ -160,6 +161,25 @@ test("dispatch and reconciliation mint portable chained receipts accepted by the
     verifyAuthorityReceiptBundle(second, { tenant: activation.authorityCellId, trustRoots: [...direct, ...delegated] as never, priorReceipt: first.receipt.value });
     verifyAuthorityReceiptBundle(third, { tenant: activation.authorityCellId, trustRoots: [...direct, ...delegated] as never, priorReceipt: second.receipt.value });
     assert.equal(second.receipt.value.priorReceiptDigest, authorityDigest(first.receipt.value));
+  } finally { await rm(f.root, { recursive: true, force: true }); }
+});
+
+test("closed task receipt graph verifies offline and rejects tampering, omission, duplication, imbalance, forks, contract drift, and confidential leakage", async () => {
+  const f = await fixture(); try {
+    await f.runner.run({ bearerToken: f.credential.token, requestId: "request_graph" });
+    await f.runner.cleanup({ bearerToken: f.credential.token, requestId: "request_graph" });
+    const graph = await f.runner.exportGraph({ bearerToken: f.credential.token });
+    assert.equal(verifyCertificationTaskReceiptGraph(graph).status, "verified");
+    for (const mutate of [
+      (g: any) => { g.adapterContractDigest = `sha256:${"0".repeat(64)}`; },
+      (g: any) => { g.receipts.pop(); },
+      (g: any) => { g.receipts.push(g.receipts[0]); },
+      (g: any) => { g.allocations[0].consumed += 1; },
+      (g: any) => { g.priorReceiptLinks[1].priorReceiptDigest = null; },
+      (g: any) => { g.receipts[0].contract.value.contractId = "substituted"; },
+      (g: any) => { g.secretToken = "canary-private-token"; },
+    ]) { const changed = structuredClone(graph); mutate(changed); assert.throws(() => verifyCertificationTaskReceiptGraph(changed), /graph|receipt|contract|budget|confidential|closed|digest|chain/i); }
+    assert.equal(JSON.stringify(graph).includes("canary-private-token"), false);
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
