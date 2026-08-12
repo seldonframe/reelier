@@ -40,7 +40,7 @@ async function fixture() {
   for (const item of descriptors) events.push({ v: "reelier.authority-trust-event/v1", eventId: `trust_${events.length}_${"f".repeat(12)}`, sequence: events.length, action: "activate", keyDescriptorDigest: authorityDigest(item), occurredAt: at, previousEventDigest: events.length ? authorityDigest(events[events.length - 1]) : null });
   const signedReadiness = createSignedCertificationReadiness({ readinessCandidate: sealed.candidate, readinessCandidateDigest: sealed.digest, preflight, humanKeyDescriptor: human, cellKeyDescriptors: [delegationSigner, receiptSigner], jobCardKeyDescriptors: [jobSigner], trustEvents: events, humanPrivateKey: readinessKey.privateKey, authorizedAt: "2026-08-11T20:01:00.000Z" });
   const pin: any = { v: "reelier.job-card-trust-pin/v1", signedReadiness, readinessCandidate: sealed.candidate, preflight, humanTrustRoot: human, keyDescriptors: descriptors, readinessTrustEvents: events, currentTrustEvents: events };
-  const constraints = { definitionAliases: ["github_issue_labels"], audiences: ["certification_agent"], connectorAccounts: [{ connectorId: "github", accountId: "github:fixlyai/reelier-certification" }], projectionPointers: ["/labels"], riskClasses: ["record-state"], limits: { maxEffectsPerWindow: 2, windowSeconds: 3600, maxEffectsPerSourceTrigger: 1, maxBodyBytes: 4096 } };
+  const constraints = { definitionAliases: ["github_issue_labels"], audiences: ["certification_agent"], connectorAccounts: [{ connectorId: "github", accountId: "github_fixlyai_reelier" }], projectionPointers: ["/labels"], riskClasses: ["record-state"], limits: { maxEffectsPerWindow: 2, windowSeconds: 3600, maxEffectsPerSourceTrigger: 1, maxBodyBytes: 4096 } };
   const taskShapeDigest = cell.certificationTaskShapeDigest({ identifiers: initialized.identifiers, scenarios: ["github-issue-labels"], constraints });
   const jobCard = signJobCard({ v: "reelier.signed-job-card/v1", jobId: initialized.identifiers.jobCardId, title: "Certification", taskShapeDigest, semanticClasses: ["record_state_set_v1"], definitionAliases: constraints.definitionAliases, connectorIds: ["github"], accountIdentities: ["github:fixlyai/reelier-certification"], connectionDescriptorDigests: [`sha256:${"1".repeat(64)}`], adoptionCommitmentDigests: [`sha256:${"2".repeat(64)}`], sourceRefs: ["certification"], audiences: constraints.audiences, limitsDigest: authorityDigest(constraints.limits), instructionsDigest: `sha256:${"3".repeat(64)}`, packDigests: [`sha256:${"4".repeat(64)}`], exceptionPolicy: ["ambiguous-reconcile"], coverage: "declared-surface" }, jobSigner.keyId, jobKey.privateKey);
   const delegation = createDelegationAuthority({ root: path.join(initialized.workspace, "authority", "delegation"), now: () => new Date("2026-08-11T20:10:00.000Z"), signGrant: async () => { throw new Error("child delegation not expected"); } });
@@ -77,17 +77,31 @@ test("dispatch permit is opaque, nonserializable, one-use, and invokes the runne
     await cell.activateCertificationRootTask({ workspace: f.initialized.workspace, jobCard: f.jobCard, jobCardTrustPin: f.pin, delegationKeyDescriptor: f.delegationSigner, delegationPrivateKey: f.delegationKey.privateKey, constraints: f.constraints, effects: 2, issuedAt: at, expiresAt: expiry, delegationAuthority: f.delegation });
     const credential = await cell.activateCertificationPrincipalSession({ workspace: f.initialized.workspace, delegationAuthority: f.delegation, principalRegistry: f.principals, now: new Date("2026-08-11T20:10:00.000Z") });
     const readiness = { workspace: f.initialized.workspace, scenario: "github-issue-labels" as const, bearerToken: credential.token, delegationAuthority: f.delegation, principalRegistry: f.principals, credentialAvailable: async (slot: string) => slot === "githubCredential", now: () => new Date("2026-08-11T20:10:00.000Z") };
+    let calls = 0;
+    await assert.rejects(() => cell.verifyCertificationDispatchReadiness({ ...readiness, credentialAvailable: async () => false }), /credential.*unavailable/i);
+    await assert.rejects(() => cell.verifyCertificationDispatchReadiness({ ...readiness, bearerToken: "rat_not-the-issued-token" }), /credential/i);
+    assert.equal(calls, 0);
+
     const permit = await cell.verifyCertificationDispatchReadiness(readiness);
     assert.throws(() => JSON.stringify(permit), /opaque|serializ/i);
-    let calls = 0;
-    assert.equal(await cell.runCertificationWithPermit(permit, async () => { calls += 1; return "ran"; }), "ran");
+    const endpointFile = path.join(f.initialized.workspace, "authority", "endpoints", "github-issue-labels.json");
+    const endpointBytes = await readFile(endpointFile, "utf8");
+    const endpoint = JSON.parse(endpointBytes); endpoint.resourceDigest = `sha256:${"9".repeat(64)}`;
+    await writeFile(endpointFile, JSON.stringify(endpoint));
+    await assert.rejects(() => cell.runCertificationWithPermit(permit, async () => { calls += 1; }), /endpoint|stale|commitment/i);
+    assert.equal(calls, 0);
+    await writeFile(endpointFile, endpointBytes);
+
+    const valid = await cell.verifyCertificationDispatchReadiness(readiness);
+    assert.equal(await cell.runCertificationWithPermit(valid, async () => { calls += 1; return "ran"; }), "ran");
     assert.equal(calls, 1);
-    await assert.rejects(() => cell.runCertificationWithPermit(permit, async () => { calls += 1; }), /used|permit/i);
+    await assert.rejects(() => cell.runCertificationWithPermit(valid, async () => { calls += 1; }), /used|permit/i);
     assert.equal(calls, 1);
 
-    const missing = await cell.verifyCertificationDispatchReadiness({ ...readiness, credentialAvailable: async () => true });
+    const revoked = await cell.verifyCertificationDispatchReadiness(readiness);
     await f.delegation.revoke(f.initialized.identifiers.authorityCellId, f.initialized.identifiers.taskId);
-    await assert.rejects(() => cell.runCertificationWithPermit(missing, async () => { calls += 1; }), /revoked|active|stale/i);
+    await assert.rejects(() => cell.runCertificationWithPermit(revoked, async () => { calls += 1; }), /revoked|active|stale/i);
+    await assert.rejects(() => cell.activateCertificationPrincipalSession({ workspace: f.initialized.workspace, delegationAuthority: f.delegation, principalRegistry: f.principals, now: new Date("2026-08-11T20:10:00.000Z") }), /active|revoked/i);
     assert.equal(calls, 1);
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
