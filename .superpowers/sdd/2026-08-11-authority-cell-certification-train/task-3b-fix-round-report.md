@@ -91,6 +91,6 @@ Verdict: APPROVED.
 
 Open risks
 
-- Hosted Ubuntu and Windows CI remains the final Task 3B cross-platform gate.
+- Exact pushed head `4bbffba` passed hosted Ubuntu and Windows CI in GitHub Actions run `31550538611`. Ubuntu also confirmed the canonical README badge at 2,822 passing tests.
 - Live adopted connections and provider certification remain gated on operator-owned resources and credentials; these changes establish and test the fail-closed binding, not live-provider certification.
 - `.tmp-pack/` was pre-existing and intentionally left untracked and untouched.
