@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createFilePrincipalRegistry, createPrincipalRegistry } from "../../src/authority/host/principal-registry.js";
@@ -72,6 +72,19 @@ test("file principal registry survives restart and stores only token digests", a
   const afterRevocation = createFilePrincipalRegistry({ tenant: "tenant_1", file });
   await assert.rejects(() => afterRevocation.resolve(issued.token, new Date("2026-08-10T00:00:00.000Z")), /revoked/);
   await assert.rejects(() => afterRevocation.issue({ ...issued.context, principalId: "agent_late", runtimeSessionId: "session_late" }), /task is revoked/);
+});
+
+test("file principal registry serializes concurrent issuance for one runtime session", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "reelier-principal-race-"));
+  const file = path.join(root, "registry.jsonl");
+  const issue = { principalId: "principal_1", taskId: "task_1", grantId: "grant_1", grantDigest: `sha256:${"1".repeat(64)}`, allocationId: "allocation_1", runtimeSessionId: "session_race", jobId: "job_1", authorityCellId: "cell_1", expiresAt: "2027-01-01T00:00:00.000Z" };
+  const results = await Promise.allSettled([
+    createFilePrincipalRegistry({ tenant: "tenant_1", file }).issue(issue),
+    createFilePrincipalRegistry({ tenant: "tenant_1", file }).issue(issue),
+  ]);
+  assert.equal(results.filter(result => result.status === "fulfilled").length, 1);
+  assert.match((results.find(result => result.status === "rejected") as PromiseRejectedResult).reason.message, /active runtime session/i);
+  await rm(root, { recursive: true, force: true });
 });
 
 test("file principal registry fails closed on truncated or foreign events", async () => {
