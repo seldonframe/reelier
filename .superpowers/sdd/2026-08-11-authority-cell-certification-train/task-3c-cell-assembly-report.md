@@ -35,8 +35,8 @@
 - A human-signed, currently trusted Job Card activates only the initialization-generated task/job/root-grant/Cell identities. Concrete limits and the complete constraints preimage are checked against Job Card commitments. The root grant uses a readiness-activated `authority-cell/delegation-grant` key whose SPKI is purpose-separated from all other human/Cell keys.
 - Root task/allocation registration is durable and exact-replay idempotent. A conflicting task, grant, allocation identity, signed grant, or effects budget refuses.
 - The single certification principal and runtime session identity are derived from durable activation state. The existing `PrincipalRegistry` returns a short-lived bearer once and persists only its digest; restart, duplicate-session, expiry, and task-revocation paths remain fail-closed.
-- `verifyCertificationDispatchReadiness` requires a link-safe, operator-owned current-trust pin outside Authority Cell output and returns a WeakMap-backed opaque permit whose JSON serialization throws. Permit use immediately rereads and verifies monotonic current Job Card trust, signed full-selection readiness before selecting one scenario, root grant signature/constraints, task/grant/allocation/principal state, remaining effects, exact signed semantic runner/test preflight, redacted named-credential availability, and an endpoint manifest independently rederived from sanitized configuration.
-- Permit execution resolves an exact `(scenarioId, runnerId, implementationDigest, endpointManifestDigest)` entry from a host-owned certified-runner registry. Task 3C accepts only `dispatchMode:"hermetic-certification"`, exposes no provider credential or network handle to the runner, deletes the permit before revalidation, consumes one effect immediately before the registered runner, and leaves live-provider readiness false for Task 4.
+- Activation canonicalizes and binds one link-safe, operator-owned current-trust pin outside the entire certification workspace. `verifyCertificationDispatchReadiness` rejects caller-supplied trust paths and callback fields, returns a WeakMap-backed opaque permit, and rereads only that bound pin. Permit revalidation verifies monotonic current Job Card trust, signed full-selection readiness before selecting one scenario, root grant signature/constraints, task/grant/allocation/principal state, remaining effects, exact signed semantic runner/test preflight, and an endpoint manifest independently rederived from sanitized configuration.
+- Task 3C execution is structurally inert: the public/certification API exports no runner registry, runner callback, provider callback, or arbitrary-code execution transition. One-use permit revalidation deletes the permit before checking current state, invokes nothing, and consumes zero effects. The private Task 4 dispatch transition must introduce host-owned execution and consume the effect immediately before its provider write; live-provider readiness remains false here.
 - Root registration and durable principal issuance use serialized filesystem transactions. Conflicting root activations and duplicate live runtime-session credentials yield exactly one success even across independent service/registry instances.
 - Signed readiness remains `dispatchable:false`; every generated/scaffold/activation/snapshot artifact retains `completeness:"unchecked"`.
 
@@ -54,6 +54,8 @@
 - `67a16ca` current-trust revocation and zero-runner regression coverage
 - `58a838a` RED independent-review regressions for runner confinement, multi-scenario dispatch, current trust, concurrency, endpoint derivation, redaction, and canonical signatures
 - `0d46fac` GREEN review-finding closure
+- `9690113` RED require activation-bound trust and structurally inert Task 3C dispatch
+- `623fc7c` GREEN remove all public runner/callback execution and effect consumption
 
 ## Focused verification
 
@@ -80,9 +82,9 @@ The full `npm test` suite was intentionally not run, per Task 3C scope.
 
 - Portable filesystem checks reject observed links/reparse points and substitutions but cannot prove absence of hostile concurrent same-user mutation; isolated Cell topology remains Task 5.
 - Permits are intentionally process-local and non-recoverable. Process restart requires full readiness verification and a new permit.
-- Named credential checks prove availability by slot only; secret values and live provider semantics remain Task 4 and are never read, persisted, or exposed to the hermetic runner here.
+- Named credential resolution and all live provider semantics remain Task 4. Task 3C reads no secret, accepts no credential callback, invokes no runner, and consumes no effect.
 - Universal completeness remains unchecked; this assembly proves only the selected certification boundary.
 
 ## Independent review
 
-The first fresh read-only review requested changes. Its nine findings were converted into RED regressions in `03e245c` and addressed as described above. Same-reviewer re-review of `a668acf..HEAD` is pending the GREEN fix commit.
+The first fresh read-only review requested nine changes, converted into RED regressions in `58a838a`. Its same-reviewer re-review closed seven and identified two remaining trust-boundary gaps. Those became RED `9690113` and GREEN `623fc7c`. A final same-reviewer pass over `a668acf..HEAD` is pending.
