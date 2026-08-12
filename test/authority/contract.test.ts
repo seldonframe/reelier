@@ -10,7 +10,7 @@ import { authorityCanonicalBytes, authorityDigest } from "../../src/authority/wi
 import { createTrustRoots } from "../../src/authority/trust.js";
 import { validateDelegationChain } from "../../src/authority/delegation.js";
 import { validateStoredContract, isValidatedContract, verifyStoredContract, validateVerifiedContractEligibility, type ContractStateEvent } from "../../src/authority/contract.js";
-import { verifyAuthorityAdapterContractV1 } from "../../src/authority/adapter-contract.js";
+import { AUTHORITY_ADAPTER_CONTRACT_V1, verifyAuthorityAdapterContractV1 } from "../../src/authority/adapter-contract.js";
 
 function fixture() {
   const operator = generateKeyPairSync("ed25519");
@@ -114,6 +114,17 @@ test("adapter contract v1 is a closed, canonical manifest and refuses stale copi
   assert.equal(output.members.some(member => member.path === "adapter-contract-v1.json"), false);
   const files = new Map(output.members.map(member => [member.path, readFileSync(join(contractDirectory, member.path))]));
   assert.doesNotThrow(() => verifyAuthorityAdapterContractV1(output, files));
+  const mutatedFiles = new Map(files);
+  mutatedFiles.set(output.members[0].path, Buffer.from("tampered"));
+  assert.throws(() => verifyAuthorityAdapterContractV1(output, mutatedFiles), /member digest/i);
+  const omittedFiles = new Map(files);
+  omittedFiles.delete(output.members[0].path);
+  assert.throws(() => verifyAuthorityAdapterContractV1(output, omittedFiles), /member digest/i);
+  assert.equal(Object.isFrozen(AUTHORITY_ADAPTER_CONTRACT_V1), true);
+  assert.equal(Object.isFrozen(AUTHORITY_ADAPTER_CONTRACT_V1.members), true);
+  assert.equal(Object.isFrozen(AUTHORITY_ADAPTER_CONTRACT_V1.members[0]), true);
+  assert.throws(() => { (AUTHORITY_ADAPTER_CONTRACT_V1.members as unknown as { path: string }[]).push({ path: "x" }); }, /extensible|read only/i);
+  assert.throws(() => { (AUTHORITY_ADAPTER_CONTRACT_V1.members[0] as { digest: string }).digest = "sha256:" + "0".repeat(64); }, /read only/i);
   assert.throws(() => verifyAuthorityAdapterContractV1({ ...output, members: output.members.slice(1) }, files), /closed membership/i);
   assert.throws(() => verifyAuthorityAdapterContractV1({ ...output, members: [...output.members, output.members[0]] }, files), /member paths/i);
   assert.throws(() => verifyAuthorityAdapterContractV1({ ...output, members: [...output.members].reverse() }, files), /member paths/i);
@@ -124,6 +135,15 @@ test("adapter contract v1 is a closed, canonical manifest and refuses stale copi
   try {
     const copiedDirectory = join(copiedRoot, "v1");
     cpSync(contractDirectory, copiedDirectory, { recursive: true });
+    const copiedSource = join(copiedRoot, "adapter-contract.ts");
+    writeFileSync(copiedSource, readFileSync(join(process.cwd(), "src", "authority", "adapter-contract.ts"), "utf8").replace(/\n/g, "\r\n"), "utf8");
+    for (const member of output.members) writeFileSync(join(copiedDirectory, member.path), readFileSync(join(copiedDirectory, member.path), "utf8").replace(/\n/g, "\r\n"), "utf8");
+    assert.doesNotThrow(() => execFileSync(process.execPath, ["scripts/build-authority-contract.mjs", "--directory", copiedDirectory, "--source", copiedSource, "--check"], { cwd: process.cwd(), stdio: "pipe" }));
+    writeFileSync(copiedSource, "stale source\n", "utf8");
+    assert.throws(
+      () => execFileSync(process.execPath, ["scripts/build-authority-contract.mjs", "--directory", copiedDirectory, "--source", copiedSource, "--check"], { cwd: process.cwd(), stdio: "pipe" }),
+      /adapter contract source drift/i,
+    );
     writeFileSync(join(copiedDirectory, "golden-vectors.json"), "{}\n", "utf8");
     assert.throws(
       () => execFileSync(process.execPath, ["scripts/build-authority-contract.mjs", "--directory", copiedDirectory, "--check"], { cwd: process.cwd(), stdio: "pipe" }),
