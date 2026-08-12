@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createPublicKey, generateKeyPairSync } from "node:crypto";
+import { createRequire } from "node:module";
 import { mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -287,6 +288,45 @@ test("restart publishes a missing cleanup receipt after authoritative restore wi
     assert.equal((await f.delegation.budget.get(f.activation.allocationId))?.consumed, 2);
     const generations = await Promise.all((await readdir(root)).filter(name => name.startsWith("request_cleanup_publish.journal-generation.")).map(async name => JSON.parse(await readFile(path.join(root, name), "utf8"))));
     assert.deepEqual(generations.map(item => item.phase).filter((phase: string) => phase.startsWith("cleanup-")), ["cleanup-reserved", "cleanup-budget-consumed", "cleanup-dispatched", "cleanup-send-intent", "cleanup-applied", "cleanup-publication-pending", "cleanup-receipted"]);
+  } finally { await rm(f.root, { recursive: true, force: true }); }
+});
+
+test("task graph exports the complete canonical journal and budget chronology", async () => {
+  const f = await fixture(); try {
+    await f.runner.run({ bearerToken: f.credential.token, requestId: "request_graph_chronology" });
+    await f.runner.cleanup({ bearerToken: f.credential.token, requestId: "request_graph_chronology" });
+    const graph: any = await f.runner.exportGraph({ bearerToken: f.credential.token });
+    assert.deepEqual(graph.outcomes.map((item: any) => item.eventSequence), Array.from({ length: 14 }, (_, index) => index));
+    assert.deepEqual(graph.outcomes.map((item: any) => item.phase), ["reserved", "budget-intent", "budget-consumed", "dispatched", "provider-send-intent", "provider-applied", "acknowledged", "cleanup-reserved", "cleanup-budget-consumed", "cleanup-dispatched", "cleanup-send-intent", "cleanup-applied", "cleanup-publication-pending", "cleanup-receipted"]);
+    assert.deepEqual(graph.budgetEvents.map((item: any) => item.event.type), ["allocated", "allocated", "consumed", "consumed"]);
+    assert.deepEqual(graph.budgetEvents.map((item: any) => item.sequence), [0, 1, 2, 3]);
+    assert.equal(graph.budgetEvents[0].priorBudgetEventDigest, null);
+    for (let index = 1; index < graph.budgetEvents.length; index += 1) assert.equal(graph.budgetEvents[index].priorBudgetEventDigest, authorityDigest(graph.budgetEvents[index - 1]));
+    assert.deepEqual(graph.topology, { status: "unchecked" });
+    assert.deepEqual(graph.leases, { status: "absent", entries: [] });
+    assert.deepEqual(graph.terminalCommitment.counts, { grants: 2, principals: 2, allocations: 2, budgetEvents: 4, outcomes: 14, exceptions: 0, topologyEvidence: 0, leases: 0, receipts: 6, priorReceiptLinks: 6, keyDescriptors: 8, bindingEntries: 4 });
+    for (const key of ["grants", "principals", "allocations", "budgetEvents", "outcomes", "exceptions", "receipts", "priorReceiptLinks", "keyDescriptors"] as const) assert.equal(graph.terminalCommitment.collectionDigests[key], authorityDigest(graph[key]));
+    assert.equal(verifyCertificationTaskReceiptGraph(graph, { trustPin: f.pin }).status, "verified");
+  } finally { await rm(f.root, { recursive: true, force: true }); }
+});
+
+test("certification-local task graph schema is closed and accepts the exported graph", async () => {
+  const f = await fixture(); try {
+    await f.runner.run({ bearerToken: f.credential.token, requestId: "request_graph_schema" });
+    const graph = await f.runner.exportGraph({ bearerToken: f.credential.token });
+    const bytes = await readFile(path.resolve("contract/certification/v1/task-receipt-graph.schema.json"), "utf8").catch(() => null);
+    assert.ok(bytes, "certification-local task graph schema must exist");
+    const Ajv2020 = createRequire(import.meta.url)("ajv/dist/2020").default, ajv = new Ajv2020({ strict: false });
+    const validate = ajv.compile(JSON.parse(bytes));
+    assert.equal(validate(graph), true, JSON.stringify(validate.errors));
+    for (const mutate of [
+      (g: any) => { g.extra = true; },
+      (g: any) => { g.topology.extra = true; },
+      (g: any) => { g.leases.status = "verified"; },
+      (g: any) => { g.budgetEvents[0].event.extra = true; },
+      (g: any) => { g.outcomes[0].extra = true; },
+      (g: any) => { g.terminalCommitment.counts.extra = 1; },
+    ]) { const changed: any = structuredClone(graph); mutate(changed); assert.equal(validate(changed), false); }
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
