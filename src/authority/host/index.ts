@@ -64,4 +64,4 @@ export type { SupportedAuthorityHost, AuthorityHostAdapter } from "./adapters.js
 export { createAuthorityHostAdapters } from "./adapters.js";
 export type { JsonHttpsEndpoint, JsonHttpsRead, JsonHttpsResponse, JsonHttpsSecretResolver, JsonHttpsConfidentialRequest } from "../drivers/json-https.js";
 export { JsonHttpsSecurityError, executeJsonHttpsEffect, executeJsonHttpsRead } from "../drivers/json-https.js";
-export { activateCertificationRootTask, activateCertificationPrincipalSession, certificationTaskShapeDigest, verifyCertificationDispatchReadiness, revalidateCertificationDispatchPermit, type CertificationCellActivationV1, type CertificationDispatchPermit } from "../certification/cell.js";
+export { createCertificationCellHost, certificationTaskShapeDigest, type CertificationCellHost, type CertificationCellActivationV1, type CertificationDispatchPermit } from "../certification/cell.js";
