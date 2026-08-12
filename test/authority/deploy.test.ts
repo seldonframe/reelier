@@ -67,6 +67,9 @@ test("deploy requires a pre-existing human-signed job card bound to an adopted d
     await mkdir(sourceDirectory, { recursive: true });
     const { privateKey, publicKey } = generateKeyPairSync("ed25519");
     const trustPin = jobCardTrustPin(publicKey);
+    assert.deepEqual(Object.keys(trustPin.preflight.inputs).sort(), ["endpoints", "plans", "runners", "tests"]);
+    assert.equal(trustPin.preflight.executionReady, false);
+    assert.equal(trustPin.preflight.dispatchable, false);
     await writeFile(path.join(candidateKeys, "operator.pem"), publicKey.export({ type: "spki", format: "pem" }));
     await writeFile(path.join(sourceDirectory, "thread.json"), '{"message":"hello"}\n');
     const contract = { v: "reelier.outcome-contract/v1", tenant: "tenant_1", alias: "gmail_reply_send_v1", contractId: "contract_1", validFrom: "2026-01-01T00:00:00.000Z", validUntil: "2027-01-01T00:00:00.000Z", packDigest: sha("e"), definitionDigest: sha("f"), sponsor: "operator", audiences: ["operator"], delegationGrantDigest: sha("1"), connectorId: "gmail", accountId: "gmail:owner@example.test", sourceAuthority: { resolverId: "gmail_thread", projectionSchemaId: "gmail.thread/v1", allowedReadEndpointIds: ["gmail.read"], authorizedProjectionPointers: ["/message"], maxFreshnessSeconds: 60 }, riskClasses: ["message"], limits: { maxEffectsPerWindow: 1, windowSeconds: 3600, maxEffectsPerSourceTrigger: 1, maxBodyBytes: 4096 }, policyCommitment: { schemaId: "policy/v1", jcsBase64: Buffer.from("{}\n").toString("base64"), digest: authorityDigest({}) } };

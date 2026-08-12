@@ -59,6 +59,9 @@ test("local deployment dispatches once, reconciles, publishes a receipt, and sur
     const adoptionBody = { v: "reelier.connection-adoption/v1" as const, adoptionId: "adopt_gmail", descriptorDigest: connectionDescriptorDigest(descriptor), selectedAccountIdentity: descriptor.account.identity, mode: "existing" as const, sidecarRouteId: descriptor.callableRoute.routeId, rawWriteReachability: "reachable" as const, activationState: "active" as const, secureConnectionCommitment: null };
     const jobCard = signJobCard({ v: "reelier.signed-job-card/v1", jobId: "customer_reply", title: "Reply to a customer", taskShapeDigest: sha("a"), semanticClasses: ["communication_commit_v1"], definitionAliases: ["gmail_reply_send_v1"], connectorIds: ["gmail"], accountIdentities: [descriptor.account.identity], connectionDescriptorDigests: [connectionDescriptorDigest(descriptor)], adoptionCommitmentDigests: [connectionAdoptionCommitmentDigest(adoptionBody)], sourceRefs: ["thread"], audiences: ["operator"], limitsDigest: authorityDigest(limits), instructionsDigest: sha("b"), packDigests: [gmailPackDigest], exceptionPolicy: ["ambiguous-reconcile"], coverage: "declared-surface" }, "job_sponsor", jobSponsor.privateKey);
     const trustPin = jobCardTrustPin(jobSponsor.publicKey);
+    assert.deepEqual(Object.keys(trustPin.preflight.inputs).sort(), ["endpoints", "plans", "runners", "tests"]);
+    assert.equal(trustPin.preflight.executionReady, false);
+    assert.equal(trustPin.preflight.dispatchable, false);
     const candidate = {
       v: "reelier.authority-deployment-candidate/v1",
       jobCard,
