@@ -7,6 +7,7 @@ import { parseCertificationInitialization, validateCertificationInitialization, 
 import { CERTIFICATION_SCENARIOS, CERTIFICATION_SCENARIO_IDS, type CertificationScenarioId, type CertificationSecretSlot } from "./scenarios.js";
 import { certificationWorkspaceRoot, confinedExistingDirectory, readConfinedFile } from "./filesystem.js";
 import { createCertificationSelectionCommitment } from "./commitment.js";
+import { parseCertificationRunnerManifest, parseCertificationTestManifest } from "./manifests.js";
 
 export interface CertificationInputArtifact { readonly scenario: CertificationScenarioId; readonly name: string; readonly digest: string }
 export interface CertificationInputSet { readonly status: "configured" | "absent"; readonly artifacts: readonly CertificationInputArtifact[] }
@@ -52,7 +53,9 @@ export async function preflightCertification(input: Readonly<{ workspace: string
     return Object.freeze({ scenario, digest: authorityDigest(value), status: configured(value) ? "configured" as const : "missing" as const });
   }));
   const credentialReferences = Object.freeze(secretSlots.map(slot => Object.freeze({ slot, status: config.secretReferences[slot] ? "configured" as const : "missing" as const })));
-  const inputs = Object.freeze({ runners: await inspectInputSet(workspaceRoot, "runners", scenarios), tests: await inspectInputSet(workspaceRoot, "tests", scenarios) });
+  const runners = await inspectInputSet(workspaceRoot, "runners", scenarios);
+  const runnerDigests = new Map(runners.artifacts.map(item => [item.scenario, item.digest]));
+  const inputs = Object.freeze({ runners, tests: await inspectInputSet(workspaceRoot, "tests", scenarios, runnerDigests) });
   const topology = scenarios.includes("fly-topology") ? (config.metadata.flyTopology ? "configured" as const : "absent" as const) : "absent" as const;
   const missing = [
     ...resources.filter(item => item.status === "missing").map(item => `resource:${item.scenario}`),
@@ -93,7 +96,7 @@ function selectScenarios(config: CertificationOperatorConfigV2, scenario?: strin
   return Object.freeze([scenario as CertificationScenarioId]);
 }
 
-async function inspectInputSet(workspace: string, kind: "runners" | "tests", scenarios: readonly CertificationScenarioId[]): Promise<CertificationInputSet> {
+async function inspectInputSet(workspace: string, kind: "runners" | "tests", scenarios: readonly CertificationScenarioId[], runnerDigests = new Map<CertificationScenarioId, string>()): Promise<CertificationInputSet> {
   const directory = await confinedExistingDirectory(workspace, ["inputs", kind]);
   if (!directory) return Object.freeze({ status: "absent", artifacts: Object.freeze([]) });
   let names: string[];
@@ -111,17 +114,15 @@ async function inspectInputSet(workspace: string, kind: "runners" | "tests", sce
     const bytes = await readConfinedFile(workspace, directory, name);
     let parsed: unknown;
     try { parsed = JSON.parse(bytes.toString("utf8")); } catch { return undefined; }
-    if (!semanticManifestPlaceholder(parsed)) return undefined;
+    try {
+      if (kind === "runners") parseCertificationRunnerManifest(parsed, scenario);
+      else parseCertificationTestManifest(parsed, scenario, runnerDigests.get(scenario));
+    } catch { return undefined; }
     return Object.freeze({ scenario, name, digest: `sha256:${createHash("sha256").update(bytes).digest("hex")}` });
   }));
   const artifacts = inspected.filter((item): item is NonNullable<typeof item> => item !== undefined);
-  const complete = scenarios.every(scenario => artifacts.some(item => item.scenario === scenario));
+  const complete = scenarios.every(scenario => artifacts.filter(item => item.scenario === scenario).length === 1);
   return Object.freeze({ status: complete ? "configured" : "absent", artifacts: Object.freeze(artifacts) });
-}
-
-function semanticManifestPlaceholder(value: unknown): boolean {
-  if (Array.isArray(value)) return value.length > 0;
-  return Boolean(value && typeof value === "object" && Object.keys(value as Record<string, unknown>).length > 0);
 }
 
 function unique<T extends string>(values: readonly T[]): readonly T[] { return Object.freeze([...new Set(values)].sort() as T[]); }

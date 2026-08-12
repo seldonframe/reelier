@@ -98,8 +98,10 @@ test("preflight never inventories artifacts mapped to an unselected scenario", a
   await mkdir(path.join(root, "inputs", "runners"), { recursive: true });
   await mkdir(path.join(root, "inputs", "tests"), { recursive: true });
   for (const scenario of ["github-issue-labels", "slack-topic"]) {
-    await writeFile(path.join(root, "inputs", "runners", `${scenario}.json`), JSON.stringify({ scenario }), "utf8");
-    await writeFile(path.join(root, "inputs", "tests", `${scenario}--conformance.json`), JSON.stringify({ scenario }), "utf8");
+    const runner = JSON.stringify({ v: "reelier.certification-runner-manifest/v1", scenarioId: scenario, runnerId: `${scenario.replaceAll("-", "_")}_v1`, endpointManifestDigest: `sha256:${"1".repeat(64)}`, implementationDigest: `sha256:${"2".repeat(64)}`, operations: ["prepare", "authoritative-read", "compile", "reserve", "reread", "dispatch", "reconcile", "receipt", "cleanup"] });
+    await writeFile(path.join(root, "inputs", "runners", `${scenario}.json`), runner, "utf8");
+    const runnerDigest = `sha256:${createHash("sha256").update(runner).digest("hex")}`;
+    await writeFile(path.join(root, "inputs", "tests", `${scenario}--conformance.json`), JSON.stringify({ v: "reelier.certification-test-manifest/v1", scenarioId: scenario, suiteId: `${scenario.replaceAll("-", "_")}_v1`, runnerManifestDigest: runnerDigest, cases: ["account-binding", "ambiguity", "cleanup", "normal", "redaction", "stale-state"] }), "utf8");
   }
   const report = await preflightCertification({ workspace: root, scenario: "github-issue-labels" });
   assert.deepEqual(report.inputs.runners.artifacts.map(item => item.name), ["github-issue-labels.json"]);
