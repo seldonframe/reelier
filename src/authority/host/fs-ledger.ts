@@ -1365,13 +1365,18 @@ export class FsAuthorityLedger implements AuthorityLedger {
   }
 
   private async revalidateAdmissionPreparation(directory:string,expectedDirectory:FileIdentity,expectedOwner:FileIdentity,ownerBytes:Buffer):Promise<void>{
-    const directoryStat=await lstat(directory,{bigint:true});
-    if(directoryStat.isSymbolicLink()||!directoryStat.isDirectory()||!sameFileIdentity(fileIdentity(directoryStat),expectedDirectory))throw new LedgerCorruption("admission preparation directory changed");
-    const entries=await readdir(directory,{withFileTypes:true});
-    if(entries.length!==1||entries[0].name!=="owner.json"||entries[0].isSymbolicLink()||!entries[0].isFile())throw new LedgerCorruption("invalid admission preparation contents");
-    const ownerPath=path.join(directory,"owner.json"),ownerStat=await lstat(ownerPath,{bigint:true});
-    if(ownerStat.isSymbolicLink()||!ownerStat.isFile()||!sameFileIdentity(fileIdentity(ownerStat),expectedOwner))throw new LedgerCorruption("admission preparation owner changed");
-    if(!(await readFile(ownerPath)).equals(ownerBytes))throw new LedgerCorruption("admission preparation owner bytes changed");
+    try{
+      const directoryStat=await lstat(directory,{bigint:true});
+      if(directoryStat.isSymbolicLink()||!directoryStat.isDirectory()||!sameFileIdentity(fileIdentity(directoryStat),expectedDirectory))throw new LedgerCorruption("admission preparation directory changed");
+      const entries=await readdir(directory,{withFileTypes:true});
+      if(entries.length!==1||entries[0].name!=="owner.json"||entries[0].isSymbolicLink()||!entries[0].isFile())throw new LedgerCorruption("invalid admission preparation contents");
+      const ownerPath=path.join(directory,"owner.json"),ownerStat=await lstat(ownerPath,{bigint:true});
+      if(ownerStat.isSymbolicLink()||!ownerStat.isFile()||!sameFileIdentity(fileIdentity(ownerStat),expectedOwner))throw new LedgerCorruption("admission preparation owner changed");
+      if(!(await readFile(ownerPath)).equals(ownerBytes))throw new LedgerCorruption("admission preparation owner bytes changed");
+    }catch(error){
+      if(hasCode(error,"ENOENT"))throw new LedgerCorruption("admission preparation disappeared during exact validation");
+      throw error;
+    }
   }
 
   private async inspectProvisionalPublicationWait(expectedOwn:PublicationStage,previous:ProvisionalPublicationWait|null,expectedPredecessor:PublicationStage|null=null):Promise<ProvisionalPublicationObservation>{
