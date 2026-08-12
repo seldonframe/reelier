@@ -4,7 +4,7 @@ import { access, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promi
 import os from "node:os";
 import path from "node:path";
 import { runAuthorityCommand } from "../../src/authority/cli.js";
-import { parseAuthorityCellConnectionV1, writeAuthorityCellConnection } from "../../src/authority/client/config.js";
+import { defaultAuthorityCellConnectionFile, parseAuthorityCellConnectionV1, writeAuthorityCellConnection } from "../../src/authority/client/config.js";
 import { checkAuthorityCellLive } from "../../src/authority/client/http.js";
 
 const digest = "sha256:7f46242b26d9c921f4e1ec9de6418ac5fc8c03d70c4415c25e799ae0e73a1512";
@@ -16,13 +16,14 @@ test("authority connect writes only a normalized opaque client connection", asyn
   const original = console.log;
   console.log = (...values: unknown[]) => output.push(values.join(" "));
   try {
-    const exitCode = await runAuthorityCommand({ positional: ["connect"], flags: new Set(), opts: {
+    const runClientCommand = runAuthorityCommand as unknown as (command: Parameters<typeof runAuthorityCommand>[0], runtime: Readonly<{ platform: NodeJS.Platform; env: NodeJS.ProcessEnv; homedir: string }>) => Promise<number>;
+    const exitCode = await runClientCommand({ positional: ["connect"], flags: new Set(), opts: {
       endpoint: "https://CELL.EXAMPLE:443/api/",
       "token-ref": "env:REELIER_CELL_TOKEN",
       "cell-id": "cell_linux_1",
       "adapter-contract-digest": digest,
       path: file,
-    } });
+    } }, { platform: "linux", env: {}, homedir: root });
 
     assert.equal(exitCode, 0);
     assert.deepEqual(JSON.parse(await readFile(file, "utf8")), {
@@ -33,9 +34,52 @@ test("authority connect writes only a normalized opaque client connection", asyn
       expectedCellId: "cell_linux_1",
       adapterContractDigest: digest,
     });
+    const status = JSON.parse(output.join("\n")) as Record<string, unknown>;
+    assert.equal(status.pathnameConfinement, "unchecked");
     assert.equal(output.join("\n").includes("REELIER_CELL_TOKEN"), false);
   } finally {
     console.log = original;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("native Windows derives the default connection path from per-user local application data", () => {
+  const localAppData = path.resolve("C:\\Users\\operator\\AppData\\Local");
+  const resolveDefault = defaultAuthorityCellConnectionFile as unknown as (runtime: Readonly<{ platform: NodeJS.Platform; env: NodeJS.ProcessEnv; homedir: string }>) => string;
+  assert.equal(
+    resolveDefault({ platform: "win32", env: { LOCALAPPDATA: localAppData }, homedir: "C:\\Users\\operator" }),
+    path.join(localAppData, "Reelier", "authority-cell-connection.json"),
+  );
+});
+
+test("native Windows refuses custom connection output and reports no stronger pathname confinement", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-windows-cell-client-"));
+  const custom = path.join(root, "workspace", "connection.json");
+  const stdout: string[] = [];
+  const stderr: string[] = [];
+  const originalLog = console.log;
+  const originalError = console.error;
+  console.log = (...values: unknown[]) => stdout.push(values.join(" "));
+  console.error = (...values: unknown[]) => stderr.push(values.join(" "));
+  try {
+    const runClientCommand = runAuthorityCommand as unknown as (command: Parameters<typeof runAuthorityCommand>[0], runtime: Readonly<{ platform: NodeJS.Platform; env: NodeJS.ProcessEnv; homedir: string }>) => Promise<number>;
+    const exitCode = await runClientCommand({ positional: ["connect"], flags: new Set(), opts: {
+      endpoint: "https://cell.example",
+      "token-ref": "env:REELIER_CELL_TOKEN",
+      "cell-id": "cell_linux_1",
+      "adapter-contract-digest": digest,
+      path: custom,
+    } }, { platform: "win32", env: { LOCALAPPDATA: root }, homedir: root });
+
+    assert.equal(exitCode, 1);
+    assert.equal(stdout.length, 0);
+    const status = JSON.parse(stderr.join("\n")) as Record<string, unknown>;
+    assert.equal(status.status, "refused");
+    assert.equal(status.pathnameConfinement, "unchecked");
+    await assert.rejects(() => access(custom));
+  } finally {
+    console.log = originalLog;
+    console.error = originalError;
     await rm(root, { recursive: true, force: true });
   }
 });
@@ -99,12 +143,20 @@ test("doctor refuses private DNS answers before bearer dispatch", async () => {
 
 test("doctor decodes every mapped IPv6 private form before bearer dispatch", async () => {
   const connection = { v: "reelier.authority-cell-connection/v1", endpoint: "https://cell.example", transport: "http", bearerTokenRef: "env:CELL_TOKEN", expectedCellId: "cell_1", adapterContractDigest: digest } as const;
-  for (const address of ["::ffff:127.0.0.1", "::ffff:7f00:1", "0:0:0:0:0:ffff:7f00:1", "::ffff:10.0.0.1", "::ffff:a9fe:0101", "::ffff:0:0", "::ffff:e000:1"]) {
+  for (const address of ["::ffff:127.0.0.1", "0:0:0:0:0:ffff:127.0.0.1", "::ffff:7f00:1", "0:0:0:0:0:ffff:7f00:1", "::ffff:10.0.0.1", "::ffff:a9fe:0101", "::ffff:0:0", "::ffff:e000:1"]) {
     let dispatched = false;
     const result = await checkAuthorityCellLive(connection, { resolveToken: async () => "opaque", resolveAddresses: async () => [address], request: async () => { dispatched = true; throw new Error("must not dispatch"); } });
     assert.deepEqual(result, { state: "failed", reasonCode: "endpoint-address-refused" }, address);
     assert.equal(dispatched, false, address);
   }
+});
+
+test("doctor applies the IPv4 deny policy to a bracketed expanded dotted mapped literal", async () => {
+  const connection = { v: "reelier.authority-cell-connection/v1", endpoint: "https://[0:0:0:0:0:ffff:127.0.0.1]", transport: "http", bearerTokenRef: "env:CELL_TOKEN", expectedCellId: "cell_1", adapterContractDigest: digest } as const;
+  let dispatched = false;
+  const result = await checkAuthorityCellLive(connection, { resolveToken: async () => "opaque", request: async () => { dispatched = true; throw new Error("must not dispatch"); } });
+  assert.deepEqual(result, { state: "failed", reasonCode: "connection-invalid" });
+  assert.equal(dispatched, false);
 });
 
 test("connection writer refuses a symlinked parent before an outside write", async () => {
