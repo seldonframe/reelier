@@ -35,6 +35,8 @@ test("authority REST exposes job search and load with host identity", async () =
     assert.equal(createdTask.requester, "agent_1");
     const taskStatus = await getJson(`http://127.0.0.1:${address.port}/v1/tasks/task_1`);
     assert.equal(taskStatus.requester, "agent_1");
+    const forgedOutcome = await postJson(`http://127.0.0.1:${address.port}/v1/outcomes/example`, { requestId: "forged", sourceRefs: {}, choices: {}, taskId: "attacker-task", principalId: "attacker" });
+    assert.equal(forgedOutcome.reasonCode, "invalid-request");
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }

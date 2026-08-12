@@ -35,6 +35,9 @@ import { exportCertificationEvidence, verifyCertificationExport } from "./certif
 import { CERTIFICATION_SCENARIO_IDS } from "./certification/scenarios.js";
 import { signCertificationReadinessArtifact } from "./certification/authority.js";
 import { assertLinuxAuthorityCellHost } from "./host/platform.js";
+import { defaultAuthorityCellConnectionFile, writeAuthorityCellConnection } from "./client/config.js";
+import { loadAuthorityCellConnection } from "./client/config.js";
+import { checkAuthorityCellLive } from "./client/http.js";
 
 export async function runAuthorityCommand(args: Readonly<{ positional: string[]; flags: Set<string>; opts: Record<string, string> }>): Promise<number> {
   const subcommand = args.positional[0] ?? "doctor";
@@ -42,6 +45,7 @@ export async function runAuthorityCommand(args: Readonly<{ positional: string[];
     case "init": return authorityInit(args);
     case "bootstrap": return authorityBootstrap(args);
     case "doctor": return authorityDoctor(args);
+    case "connect": return authorityConnect(args);
     case "validate": return authorityValidate(args);
     case "sign": return authoritySign(args);
     case "verify": return authorityVerify(args);
@@ -52,6 +56,17 @@ export async function runAuthorityCommand(args: Readonly<{ positional: string[];
     case "egress-gateway": return authorityEgressGateway(args);
     default: console.error(`unknown authority command: ${subcommand}`); return 1;
   }
+}
+
+async function authorityConnect(args: Readonly<{ opts: Record<string, string> }>): Promise<number> {
+  try {
+    const endpoint = args.opts.endpoint; const bearerTokenRef = args.opts["token-ref"]; const expectedCellId = args.opts["cell-id"]; const adapterContractDigest = args.opts["adapter-contract-digest"];
+    if (!endpoint || !bearerTokenRef || !expectedCellId || !adapterContractDigest) throw new TypeError("authority connect requires --endpoint, --token-ref, --cell-id, and --adapter-contract-digest");
+    const file = args.opts.path ?? defaultAuthorityCellConnectionFile();
+    const connection = await writeAuthorityCellConnection(file, { v: "reelier.authority-cell-connection/v1", endpoint, transport: "http", bearerTokenRef, expectedCellId, adapterContractDigest });
+    console.log(JSON.stringify({ status: "configured", file: path.resolve(file), endpoint: connection.endpoint, cellId: connection.expectedCellId, adapterContractDigest: connection.adapterContractDigest }));
+    return 0;
+  } catch (error) { console.error(JSON.stringify({ status: "refused", reasonCode: "authority-cell-connection-invalid", message: error instanceof Error ? error.message : "invalid authority cell connection" })); return 1; }
 }
 
 async function authorityBootstrap(args: Readonly<{ opts: Record<string, string> }>): Promise<number> {
@@ -170,6 +185,10 @@ async function authorityInit(args: Readonly<{ opts: Record<string, string> }>): 
 }
 
 async function authorityDoctor(args: Readonly<{ opts: Record<string, string>; flags: Set<string> }>): Promise<number> {
+  if (args.flags.has("live") && (args.opts.connection || args.opts.path === undefined)) {
+    try { const result = await checkAuthorityCellLive(await loadAuthorityCellConnection(args.opts.connection ?? defaultAuthorityCellConnectionFile())); console.log(JSON.stringify({ ok: result.state === "verified", checks: { live: result.state }, reasonCode: result.reasonCode, cellId: result.cellId, adapterContractDigest: result.adapterContractDigest })); return result.state === "verified" ? 0 : 1; }
+    catch { console.error(JSON.stringify({ ok: false, reasonCode: "connection-invalid" })); return 1; }
+  }
   const file = args.opts.path ?? "authority/authority.yml";
   try {
     const loaded = await loadAuthorityHostConfig(file);

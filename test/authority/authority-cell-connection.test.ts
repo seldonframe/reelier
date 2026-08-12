@@ -4,6 +4,8 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { runAuthorityCommand } from "../../src/authority/cli.js";
+import { parseAuthorityCellConnectionV1 } from "../../src/authority/client/config.js";
+import { checkAuthorityCellLive } from "../../src/authority/client/http.js";
 
 const digest = "sha256:7f46242b26d9c921f4e1ec9de6418ac5fc8c03d70c4415c25e799ae0e73a1512";
 
@@ -36,4 +38,23 @@ test("authority connect writes only a normalized opaque client connection", asyn
     console.log = original;
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("connection parser rejects unsafe URLs and never invokes accessors", () => {
+  const value = Object.create(null, { v: { value: "reelier.authority-cell-connection/v1", enumerable: true }, endpoint: { get() { throw new Error("must not run"); }, enumerable: true }, transport: { value: "http", enumerable: true }, bearerTokenRef: { value: "env:CELL_TOKEN", enumerable: true }, expectedCellId: { value: "cell_1", enumerable: true }, adapterContractDigest: { value: digest, enumerable: true } });
+  assert.throws(() => parseAuthorityCellConnectionV1(value), /closed/i);
+  for (const endpoint of ["http://cell.example", "https://user:pass@cell.example", "https://cell.example/?x=1", "https://cell.example/#fragment", "http://localhost.evil"]) {
+    assert.throws(() => parseAuthorityCellConnectionV1({ v: "reelier.authority-cell-connection/v1", endpoint, transport: "http", bearerTokenRef: "env:CELL_TOKEN", expectedCellId: "cell_1", adapterContractDigest: digest }), /endpoint/i);
+  }
+});
+
+test("live cell check refuses redirect and redacts token resolver failures", async () => {
+  const secret = "never-print-this-token";
+  const connection = { v: "reelier.authority-cell-connection/v1", endpoint: "https://cell.example", transport: "http", bearerTokenRef: "env:CELL_TOKEN", expectedCellId: "cell_1", adapterContractDigest: digest } as const;
+  const failed = await checkAuthorityCellLive(connection, { resolveToken: async () => { throw new Error(secret); } });
+  assert.deepEqual(failed, { state: "failed", reasonCode: "identity-unavailable" });
+  let redirect = "";
+  const result = await checkAuthorityCellLive(connection, { resolveToken: async () => secret, request: async (_url, init) => { redirect = String(init.redirect); return new Response(JSON.stringify({ v: "reelier.authority-cell-identity/v1", cellId: "cell_1", adapterContractDigest: digest }), { status: 200 }); } });
+  assert.equal(result.state, "verified");
+  assert.equal(redirect, "error");
 });
