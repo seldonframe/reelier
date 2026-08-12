@@ -223,7 +223,7 @@ test("offline graph verification refuses an evidence root revoked by the externa
     const evidence = f.pin.keyDescriptors.find((item: any) => item.role === "authority-cell" && item.purpose === "authority-evidence");
     assert.ok(evidence);
     const previous = f.pin.currentTrustEvents[f.pin.currentTrustEvents.length - 1];
-    const revoke = { v: "reelier.authority-trust-event/v1", eventId: "trust_revoke_evidence", sequence: f.pin.currentTrustEvents.length, action: "revoke", keyDescriptorDigest: authorityDigest(evidence), occurredAt: "2026-01-02T00:00:00.000Z", previousEventDigest: authorityDigest(previous) };
+    const revoke = { v: "reelier.authority-trust-event/v1", eventId: "trust_revoke_evidence", sequence: f.pin.currentTrustEvents.length, action: "revoke", keyDescriptorDigest: authorityDigest(evidence), occurredAt: new Date(Date.parse(previous.occurredAt) + 1).toISOString(), previousEventDigest: authorityDigest(previous) };
     const revoked = { ...f.pin, currentTrustEvents: [...f.pin.currentTrustEvents, revoke] };
     assert.throws(() => verifyCertificationTaskReceiptGraph(graph, { trustPin: revoked }), /evidence.*revoked|currently active|current trust/i);
   } finally { await rm(f.root, { recursive: true, force: true }); }
