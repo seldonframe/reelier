@@ -24,6 +24,7 @@ import { createGitHubIssueLabelsSourceResolver } from "../../packs/github/source
 import { githubIssueLabelsAlias, githubIssueLabelsDefinitionDigest, githubIssueLabelsPackDigest, githubIssueLabelsPolicySchemaId, githubIssueLabelsReadEndpointId, githubIssueLabelsResolverId, githubIssueLabelsRiskClass, githubIssueLabelsWriteEndpointId } from "../../packs/github/manifest.js";
 import { ensureConfinedDirectory, readUnlinkedFile } from "./filesystem.js";
 import { assertLinuxAuthorityCellHost } from "../host/platform.js";
+import { createCertificationLifecycleReceiptPublication } from "./lifecycle-receipts.js";
 
 export type HermeticGitHubMode = "normal" | "source-drift" | "effect-drift" | "provider-503" | "accessor-response" | "cut-after-budget" | "cut-after-dispatched" | "cut-after-send-intent" | "cut-after-apply" | "pause-after-dispatched";
 export interface GitHubHermeticRunnerResult { readonly requestId: string; readonly status: "acknowledged" | "refused" | "failed" | "pending-reconciliation" | "duplicate" | "conflict" | "cleaned"; readonly success: false; readonly providerWrites: number; readonly reservationId: string | null; readonly labels?: readonly string[] }
@@ -54,10 +55,12 @@ export async function createGitHubIssueLabelsHermeticComposition(cell: Certifica
   const journalRoot = await ensureConfinedDirectory(state.workspace, ["authority", "github-label-runner"]);
   const ledgerRoot = await ensureConfinedDirectory(state.workspace, ["authority", "github-label-runner", "ledger"]);
   const decisionRoot = await ensureConfinedDirectory(state.workspace, ["authority", "github-label-runner", "decisions"]);
+  const receiptRoot = await ensureConfinedDirectory(state.workspace, ["authority", "github-label-runner", "receipts"]);
   const provider = await createBrandedProvider(journalRoot, resource, desired, options.mode);
   const gateRuntime = await buildGate({ state, activation, constraints, provider, ledgerRoot, decisionRoot, resource, desired });
   const requestIdsByReservation = new Map<string, string>();
   let controlledCut: ControlledCut | undefined;
+  const publication = createCertificationLifecycleReceiptPublication({ rootDir: receiptRoot, lifecycle: journalAuthority.lifecycle, signedRootGrant: activation.signedRootGrant, now: () => state.now?.() ?? new Date() });
   const coordinator = createDispatchCoordinator(gateRuntime.ledger, {
     async dispatch(dispatchState) {
       const requestId = requestIdsByReservation.get(dispatchState.reservation.reservationId); if (!requestId) throw new Error("dispatch request binding missing");
@@ -75,7 +78,7 @@ export async function createGitHubIssueLabelsHermeticComposition(cell: Certifica
       return { kind: "acknowledged" as const, resultDigest: authorityDigest(response), providerStatus: response.status, reconciliationStatus: "not-attempted" as const };
     },
     async reconcile(_state, prior) { if (prior.kind === "definitive-failure") return prior; const snapshot = await provider.snapshot(); const matched = authorityDigest(snapshot.labels) === authorityDigest([...desired].sort()); return { kind: matched ? "acknowledged" as const : "ambiguous" as const, resultDigest: authorityDigest({ v: "reelier.github-reconciliation/v1", labels: snapshot.labels }), reconciliationStatus: matched ? "matched" as const : "conflict" as const, normalizedProjectionDigest: authorityDigest(snapshot.labels) }; },
-  });
+  }, undefined, publication);
 
   async function executeRun(value: Readonly<{ bearerToken: string; requestId: string }>): Promise<GitHubHermeticRunnerResult> {
     closed(value, ["bearerToken", "requestId"], "GitHub runner call"); validateRequestId(value.requestId);
