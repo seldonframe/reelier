@@ -175,7 +175,7 @@ test("closed task receipt graph verifies offline and rejects tampering, omission
       (g: any) => { g.receipts.pop(); },
       (g: any) => { g.receipts.push(g.receipts[0]); },
       (g: any) => { g.allocations[0].consumed += 1; },
-      (g: any) => { g.priorReceiptLinks[1].priorReceiptDigest = null; },
+      (g: any) => { g.priorReceiptLinks.find((item: any) => item.priorReceiptDigest !== null).priorReceiptDigest = null; },
       (g: any) => { g.receipts[0].contract.value.contractId = "substituted"; },
       (g: any) => { g.secretToken = "canary-private-token"; },
     ]) { const changed = structuredClone(graph); mutate(changed); assert.throws(() => verifyCertificationTaskReceiptGraph(changed), /graph|receipt|contract|budget|confidential|closed|digest|chain/i); }
