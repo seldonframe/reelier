@@ -158,9 +158,9 @@ test("Cell signed-child helper refuses forged signers, wrong purposes, and inact
     const descriptor = (keyId: string, purpose: string, publicKey: typeof trusted.publicKey) => parseAuthorityKeyDescriptor({ v: "reelier.authority-key-descriptor/v1", keyId, role: "authority-cell", purpose, algorithm: "ed25519", publicKeySpkiBase64: publicKey.export({ type: "spki", format: "der" }).toString("base64") });
     const trustedDescriptor = descriptor("delegation_active", "delegation-grant", trusted.publicKey), wrongPurpose = descriptor("journal_active", "authority-journal", trusted.publicKey), inactive = descriptor("delegation_inactive", "delegation-grant", trusted.publicKey);
     const service = createDelegationAuthority({ root, now: () => new Date("2026-01-01T00:10:00.000Z"), signGrant: async () => { throw new Error("not used"); } });
-    await service.registerRoot({ taskId: "task_signed", rootGrant: { grant: parent, digest: parentDigest, signerId: "operator", signature: { alg: "ed25519", sig: "unused" } }, effects: 4 });
+    await service.registerRoot({ taskId: "task_signed", rootGrant: { grant: parent, digest: parentDigest, signerId: trustedDescriptor.keyId, signature: signAuthorityDigest(trusted.privateKey, "delegation-grant", parentDigest) }, signerDescriptor: trustedDescriptor, effects: 4 });
     const child = grant({ grantId: "child_signed", parentDigest, grantor: "coordinator", grantee: "worker", issuedAt: "2026-01-01T00:10:00.000Z", expiresAt: "2026-01-01T00:40:00.000Z", delegationPolicy: { mayDelegate: false, maxDepth: 0, maxFanOut: 0, maxChildDurationSeconds: 1, maxDelegatedEffects: 0 } }), digest = authorityDigest(child);
-    const input = (signerDescriptor: any, privateKey: typeof trusted.privateKey, signerId = signerDescriptor.keyId) => ({ tenant: "tenant_1", parentPrincipal: "coordinator", taskId: "task_signed", parentAllocationId: "root", signedChild: { grant: child, digest, signerId, signature: signAuthorityDigest(privateKey, "delegation-grant", digest) }, signerDescriptor, activeSignerDescriptorDigests: [authorityDigest(trustedDescriptor)], effects: 2 });
+    const input = (signerDescriptor: any, privateKey: typeof trusted.privateKey, signerId = signerDescriptor.keyId) => ({ tenant: "tenant_1", parentPrincipal: "coordinator", taskId: "task_signed", parentAllocationId: "root", signedChild: { grant: child, digest, signerId, signature: signAuthorityDigest(privateKey, "delegation-grant", digest) }, signerDescriptor, effects: 2 });
     await assert.rejects(() => registerAuthoritySignedChild(service, input(trustedDescriptor, forged.privateKey)), /signature|signer/i);
     await assert.rejects(() => registerAuthoritySignedChild(service, input(wrongPurpose, trusted.privateKey)), /purpose|signer/i);
     await assert.rejects(() => registerAuthoritySignedChild(service, input(inactive, trusted.privateKey)), /active|descriptor/i);
@@ -171,16 +171,16 @@ test("Cell signed-child helper refuses forged signers, wrong purposes, and inact
 test("Cell signed-child helper refuses an attacker descriptor that self-lists as active", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "reelier-delegation-self-listed-signer-"));
   try {
-    const attacker = generateKeyPairSync("ed25519"), parent = grant(), parentDigest = authorityDigest(parent);
+    const trusted = generateKeyPairSync("ed25519"), attacker = generateKeyPairSync("ed25519"), parent = grant(), parentDigest = authorityDigest(parent);
+    const trustedDescriptor = parseAuthorityKeyDescriptor({ v: "reelier.authority-key-descriptor/v1", keyId: "trusted_delegation", role: "authority-cell", purpose: "delegation-grant", algorithm: "ed25519", publicKeySpkiBase64: trusted.publicKey.export({ type: "spki", format: "der" }).toString("base64") });
     const attackerDescriptor = parseAuthorityKeyDescriptor({ v: "reelier.authority-key-descriptor/v1", keyId: "attacker_delegation", role: "authority-cell", purpose: "delegation-grant", algorithm: "ed25519", publicKeySpkiBase64: attacker.publicKey.export({ type: "spki", format: "der" }).toString("base64") });
     const service = createDelegationAuthority({ root, now: () => new Date("2026-01-01T00:10:00.000Z"), signGrant: async () => { throw new Error("not used"); } });
-    await service.registerRoot({ taskId: "task_self_listed", rootGrant: { grant: parent, digest: parentDigest, signerId: "operator", signature: { alg: "ed25519", sig: "unused" } }, effects: 4 });
+    await service.registerRoot({ taskId: "task_self_listed", rootGrant: { grant: parent, digest: parentDigest, signerId: trustedDescriptor.keyId, signature: signAuthorityDigest(trusted.privateKey, "delegation-grant", parentDigest) }, signerDescriptor: trustedDescriptor, effects: 4 });
     const child = grant({ grantId: "child_self_listed", parentDigest, grantor: "coordinator", grantee: "attacker", issuedAt: "2026-01-01T00:10:00.000Z", expiresAt: "2026-01-01T00:40:00.000Z", delegationPolicy: { mayDelegate: false, maxDepth: 0, maxFanOut: 0, maxChildDurationSeconds: 1, maxDelegatedEffects: 0 } }), digest = authorityDigest(child);
     await assert.rejects(() => registerAuthoritySignedChild(service, {
       tenant: "tenant_1", parentPrincipal: "coordinator", taskId: "task_self_listed", parentAllocationId: "root", effects: 2,
       signedChild: { grant: child, digest, signerId: attackerDescriptor.keyId, signature: signAuthorityDigest(attacker.privateKey, "delegation-grant", digest) },
       signerDescriptor: attackerDescriptor,
-      activeSignerDescriptorDigests: [authorityDigest(attackerDescriptor)],
     }), /active|descriptor|signer/i);
     assert.equal(await service.budget.get("child_self_listed"), undefined);
   } finally { await rm(root, { recursive: true, force: true }); }
@@ -191,9 +191,9 @@ test("Cell signed-child helper conserves allocation under exact replay, conflict
   try {
     const keys = generateKeyPairSync("ed25519"), parent = grant(), parentDigest = authorityDigest(parent), descriptor = parseAuthorityKeyDescriptor({ v: "reelier.authority-key-descriptor/v1", keyId: "delegation_active", role: "authority-cell", purpose: "delegation-grant", algorithm: "ed25519", publicKeySpkiBase64: keys.publicKey.export({ type: "spki", format: "der" }).toString("base64") });
     const service = createDelegationAuthority({ root, now: () => new Date("2026-01-01T00:10:00.000Z"), signGrant: async () => { throw new Error("not used"); } });
-    await service.registerRoot({ taskId: "task_race", rootGrant: { grant: parent, digest: parentDigest, signerId: "operator", signature: { alg: "ed25519", sig: "unused" } }, effects: 4 });
+    await service.registerRoot({ taskId: "task_race", rootGrant: { grant: parent, digest: parentDigest, signerId: descriptor.keyId, signature: signAuthorityDigest(keys.privateKey, "delegation-grant", parentDigest) }, signerDescriptor: descriptor, effects: 4 });
     const child = (grantee: string) => grant({ grantId: "child_race", parentDigest, grantor: "coordinator", grantee, issuedAt: "2026-01-01T00:10:00.000Z", expiresAt: "2026-01-01T00:40:00.000Z", delegationPolicy: { mayDelegate: false, maxDepth: 0, maxFanOut: 0, maxChildDurationSeconds: 1, maxDelegatedEffects: 0 } });
-    const request = (value: DelegationGrant) => { const digest = authorityDigest(value); return { tenant: "tenant_1", parentPrincipal: "coordinator", taskId: "task_race", parentAllocationId: "root", signedChild: { grant: value, digest, signerId: descriptor.keyId, signature: signAuthorityDigest(keys.privateKey, "delegation-grant", digest) }, signerDescriptor: descriptor, activeSignerDescriptorDigests: [authorityDigest(descriptor)], effects: 2 }; };
+    const request = (value: DelegationGrant) => { const digest = authorityDigest(value); return { tenant: "tenant_1", parentPrincipal: "coordinator", taskId: "task_race", parentAllocationId: "root", signedChild: { grant: value, digest, signerId: descriptor.keyId, signature: signAuthorityDigest(keys.privateKey, "delegation-grant", digest) }, signerDescriptor: descriptor, effects: 2 }; };
     const exact = request(child("worker")), results = await Promise.all([registerAuthoritySignedChild(service, exact), registerAuthoritySignedChild(service, exact)]);
     assert.deepEqual(results[0], results[1]);
     await assert.rejects(() => registerAuthoritySignedChild(service, request(child("attacker"))), /conflict|exists/i);
