@@ -216,6 +216,19 @@ test("linked config, plan, and journal paths refuse before authority recovery or
   });
 });
 
+test("offline graph verification refuses an evidence root revoked by the external current trust history", async () => {
+  const f = await fixture(); try {
+    await f.runner.run({ bearerToken: f.credential.token, requestId: "request_revoked_evidence" });
+    const graph = await f.runner.exportGraph({ bearerToken: f.credential.token });
+    const evidence = f.pin.keyDescriptors.find((item: any) => item.role === "authority-cell" && item.purpose === "authority-evidence");
+    assert.ok(evidence);
+    const previous = f.pin.currentTrustEvents[f.pin.currentTrustEvents.length - 1];
+    const revoke = { v: "reelier.authority-trust-event/v1", eventId: "trust_revoke_evidence", sequence: f.pin.currentTrustEvents.length, action: "revoke", keyDescriptorDigest: authorityDigest(evidence), occurredAt: "2026-01-02T00:00:00.000Z", previousEventDigest: authorityDigest(previous) };
+    const revoked = { ...f.pin, currentTrustEvents: [...f.pin.currentTrustEvents, revoke] };
+    assert.throws(() => verifyCertificationTaskReceiptGraph(graph, { trustPin: revoked }), /evidence.*revoked|currently active|current trust/i);
+  } finally { await rm(f.root, { recursive: true, force: true }); }
+});
+
 test("a junction-substituted receipt store refuses cleanup and leaves the external target untouched", async t => {
   const f = await fixture(); const outside = await mkdtemp(path.join(tmpdir(), "reelier-receipt-outside-")); try {
     await f.runner.run({ bearerToken: f.credential.token, requestId: "request_receipt_link" });
