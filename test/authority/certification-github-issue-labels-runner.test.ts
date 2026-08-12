@@ -138,6 +138,12 @@ test("cut after authoritative apply reconciles from durable provider state witho
     assert.equal(cleaned.status, "cleaned");
     assert.deepEqual(cleaned.labels, ["before"]);
     assert.equal(cleaned.providerWrites, 2);
+    assert.equal((await f.delegation.budget.get(f.initialized.identifiers.rootGrantId))?.consumed, 2);
+    const replay = await restarted.cleanup({ bearerToken: f.credential.token, requestId: "request_cut_apply" });
+    assert.equal(replay.providerWrites, 2);
+    assert.equal((await f.delegation.budget.get(f.initialized.identifiers.rootGrantId))?.consumed, 2);
+    const portable = path.join(f.initialized.workspace, "authority", "github-label-runner", "receipts", "portable");
+    assert.equal((await readdir(portable)).length >= 5, true);
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
