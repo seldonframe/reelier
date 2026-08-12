@@ -27,7 +27,7 @@
 - Platform boundary: `src/authority/host/platform.ts`, `src/authority/cli.ts`, `src/authority/host/local.ts`, certification host entry points, focused platform tests.
 - Windows client: `src/authority/client/config.ts`, `src/authority/client/http.ts`, `src/authority/cli.ts`, a minimal authenticated identity route in `src/authority/ingress/http.ts` and host/server composition, closed non-authorizing client schema under `contract/client/v1/`, client tests and runbook. Client configuration is deliberately outside the frozen Adapter Contract v1 wire set.
 - Retired code: delete tracked `src/authority/host/windows-k1-fifo.ts` and `test/authority/windows-k1-fifo.test.ts` only after source-graph tests prove there is no production import.
-- Hermetic lifecycle: `src/authority/certification/github-issue-labels-runner.ts`, receipt/graph modules under `src/authority/certification/`, corresponding tests and schemas.
+- Hermetic lifecycle: `src/authority/certification/github-issue-labels-runner.ts`, receipt/graph modules under `src/authority/certification/`, and the minimal genuine-Cell authority binding in `src/authority/certification/cell.ts` required for purpose-separated portable receipt/evidence signing; corresponding tests and certification-local schemas.
 - CI/release evidence: `.github/workflows/ci.yml`, packed-artifact tests, task reports, freeze notice containing the exact digest.
 
 ---
@@ -107,6 +107,7 @@ Security tests cover config substitution, symlinked token files, DNS/URL confusi
 - [ ] Model the hermetic provider as durable in-Cell state with authoritative reads. Support exact apply, a controlled cut after apply, reconciliation without resend, duplicate semantic Outcome, conflicting bytes, and exact cleanup restoration.
 - [ ] Journal every transition under the existing signed, rollback-resistant, link-safe Cell boundary. Consume budget before the simulated write; retain consumption for acknowledged/ambiguous/matched/conflicting/unavailable results; return only proven predispatch or authoritative not-applied cases.
 - [ ] Mint real authority receipts for reservation, dispatch, ambiguity/reconciliation, and cleanup. Preserve prior-receipt links and the exact contract digest.
+- [ ] Bind every portable receipt/evidence signer through genuine Cell activation and purpose-aware trust. No public constructor, per-run input, serialized config, or runtime self-anchor may supply a private signer.
 - [ ] Implement a closed `TaskReceiptGraphV1` exporter/verifier containing root task, complete grant lineage, principals, allocations, budget events, Outcomes, exceptions, topology status, leases if present, and prior-receipt links. Unsupported topology/lease evidence is `unchecked` or `absent`, never fabricated as verified.
 - [ ] Verify the exported graph offline with network/provider/credential access disabled. Tampering, omission, duplicate nodes, broken lineage, budget imbalance, receipt-chain forks, contract mismatch, and confidential-field leakage must fail.
 
