@@ -7,7 +7,7 @@ import { normalizeSignedJobCard, signedJobCardDigest, verifySignedJobCard, type 
 import type { AuthoritySignature, DelegationConstraints, DelegationGrant } from "../types.js";
 import type { StoredSignedGrant } from "../delegation.js";
 import { jobCardTrustMaterialFromPin, type JobCardTrustPinV1 } from "../host/deployment.js";
-import type { DelegationAuthority } from "../host/delegation-service.js";
+import { registerAuthoritySignedChild, type DelegationAuthority } from "../host/delegation-service.js";
 import type { PrincipalCredential, PrincipalRegistry } from "../host/principal-registry.js";
 import { parseAuthorityKeyDescriptor, parseTrustEvents, verifySignedCertificationReadiness, type AuthorityKeyDescriptorV1 } from "./authority.js";
 import { parseCertificationOperatorConfigV3 } from "./config.js";
@@ -28,6 +28,7 @@ export interface CertificationCellActivationV1 {
   readonly jobId: string;
   readonly grantId: string;
   readonly allocationId: string;
+  readonly rootAllocationId: string;
   readonly authorityCellId: string;
   readonly principalId: string;
   readonly runtimeSessionId: string;
@@ -42,6 +43,7 @@ export interface CertificationCellActivationV1 {
   readonly currentTrustPinPathDigest: string;
   readonly effects: number;
   readonly signedRootGrant: StoredSignedGrant;
+  readonly signedChildGrant: StoredSignedGrant;
   readonly completeness: "unchecked";
   readonly dispatchable: false;
 }
@@ -78,22 +80,26 @@ async function activateCertificationRootTask(input: Readonly<{
   if (jobCard.limitsDigest !== authorityDigest(constraints.limits) || jobCard.taskShapeDigest !== certificationTaskShapeDigest({ identifiers: state.initialization.identifiers, scenarios: state.initialization.scenarios, constraints })) throw new TypeError("certification Job Card concrete limits or constraints commitment mismatch");
   if (!Number.isSafeInteger(input.effects) || input.effects < 1 || input.effects > constraints.limits.maxEffectsPerWindow) throw new TypeError("certification root effects exceed the committed limits");
   const identifiers = state.initialization.identifiers;
-  const principalId = deriveId("principal", identifiers);
+  const principalId = deriveId("principal", identifiers), rootPrincipalId = delegation.keyId;
   const runtimeSessionId = deriveId("session", identifiers);
-  const grant = parseAuthorityWire("delegation-grant", { v: "reelier.delegation-grant/v1", tenant: identifiers.authorityCellId, grantId: identifiers.rootGrantId, parentDigest: null, sponsor: jobCard.signerId, grantor: delegation.keyId, grantee: principalId, issuedAt: canonicalTime(input.issuedAt), expiresAt: canonicalTime(input.expiresAt), constraints, delegationPolicy: { mayDelegate: false, maxDepth: 0, maxFanOut: 0, maxChildDurationSeconds: 1, maxDelegatedEffects: 0 } });
+  const issuedAt = canonicalTime(input.issuedAt), expiresAt = canonicalTime(input.expiresAt), childDuration = Math.ceil((Date.parse(expiresAt) - Date.parse(issuedAt)) / 1000);
+  const grant = parseAuthorityWire("delegation-grant", { v: "reelier.delegation-grant/v1", tenant: identifiers.authorityCellId, grantId: identifiers.rootGrantId, parentDigest: null, sponsor: jobCard.signerId, grantor: delegation.keyId, grantee: rootPrincipalId, issuedAt, expiresAt, constraints, delegationPolicy: { mayDelegate: true, maxDepth: 1, maxFanOut: 1, maxChildDurationSeconds: childDuration, maxDelegatedEffects: input.effects } });
   if (Date.parse(grant.expiresAt) <= Date.parse(grant.issuedAt)) throw new TypeError("certification root validity is invalid");
   const grantDigest = authorityDigest(grant);
   const signature = signAuthorityDigest(input.delegationPrivateKey, "delegation-grant", grantDigest);
   const publicKey = publicKeyFor(delegation);
   if (!verifyAuthoritySignature(publicKey, "delegation-grant", grantDigest, signature)) throw new TypeError("certification delegation private key does not match its descriptor");
   const signedRootGrant: StoredSignedGrant = Object.freeze({ grant, digest: grantDigest, signerId: delegation.keyId, signature });
+  const child = parseAuthorityWire("delegation-grant", { v: "reelier.delegation-grant/v1", tenant: identifiers.authorityCellId, grantId: `${identifiers.rootGrantId}_child`, parentDigest: grantDigest, sponsor: jobCard.signerId, grantor: rootPrincipalId, grantee: principalId, issuedAt, expiresAt, constraints, delegationPolicy: { mayDelegate: false, maxDepth: 0, maxFanOut: 0, maxChildDurationSeconds: 1, maxDelegatedEffects: 0 } });
+  const childDigest = authorityDigest(child), signedChildGrant: StoredSignedGrant = Object.freeze({ grant: child, digest: childDigest, signerId: delegation.keyId, signature: signAuthorityDigest(input.delegationPrivateKey, "delegation-grant", childDigest) });
   const currentTrustPinPath = await canonicalExternalTrustPin(state.root, input.currentTrustPinPath);
   if (trustPinPathDigest(currentTrustPinPath) !== input.currentTrustPinPathDigest) throw new TypeError("operator current trust pin path changed after host configuration");
   const authoritativePin = JSON.parse((await readUnlinkedFile(currentTrustPinPath)).toString("utf8")) as JobCardTrustPinV1;
   if (authorityDigest(authoritativePin) !== authorityDigest(input.jobCardTrustPin)) throw new TypeError("operator current trust pin does not match activation trust material");
   const currentTrustEvents = parseTrustEvents(authoritativePin.currentTrustEvents, authoritativePin.keyDescriptors);
-  const activation: CertificationCellActivationV1 = Object.freeze({ v: "reelier.certification-cell-activation/v1", taskId: identifiers.taskId, jobId: identifiers.jobCardId, grantId: identifiers.rootGrantId, allocationId: identifiers.rootGrantId, authorityCellId: identifiers.authorityCellId, principalId, runtimeSessionId, signerKeyId: delegation.keyId, signerKeyDescriptorDigest: descriptorDigest, signedReadinessDigest: authorityDigest(readiness), signedJobCardDigest: signedJobCardDigest(jobCard), constraintsDigest: authorityDigest(constraints), currentTrustEventCount: currentTrustEvents.length, currentTrustHistoryDigest: authorityDigest(currentTrustEvents), currentTrustHeadDigest: authorityDigest(currentTrustEvents[currentTrustEvents.length - 1]), currentTrustPinPathDigest: input.currentTrustPinPathDigest, effects: input.effects, signedRootGrant, completeness: "unchecked", dispatchable: false });
-  await input.delegationAuthority.registerRoot({ taskId: activation.taskId, allocationId: activation.allocationId, rootGrant: signedRootGrant, effects: input.effects });
+  const activation: CertificationCellActivationV1 = Object.freeze({ v: "reelier.certification-cell-activation/v1", taskId: identifiers.taskId, jobId: identifiers.jobCardId, grantId: child.grantId, allocationId: child.grantId, rootAllocationId: identifiers.rootGrantId, authorityCellId: identifiers.authorityCellId, principalId, runtimeSessionId, signerKeyId: delegation.keyId, signerKeyDescriptorDigest: descriptorDigest, signedReadinessDigest: authorityDigest(readiness), signedJobCardDigest: signedJobCardDigest(jobCard), constraintsDigest: authorityDigest(constraints), currentTrustEventCount: currentTrustEvents.length, currentTrustHistoryDigest: authorityDigest(currentTrustEvents), currentTrustHeadDigest: authorityDigest(currentTrustEvents[currentTrustEvents.length - 1]), currentTrustPinPathDigest: input.currentTrustPinPathDigest, effects: input.effects, signedRootGrant, signedChildGrant, completeness: "unchecked", dispatchable: false });
+  await input.delegationAuthority.registerRoot({ taskId: activation.taskId, allocationId: activation.rootAllocationId, rootGrant: signedRootGrant, effects: input.effects });
+  await registerAuthoritySignedChild(input.delegationAuthority, { tenant: identifiers.authorityCellId, parentPrincipal: rootPrincipalId, taskId: activation.taskId, parentAllocationId: activation.rootAllocationId, signedChild: signedChildGrant, signerDescriptor: delegation, effects: input.effects });
   const authorityRoot = await requireAuthorityRoot(state.root);
   await publishExact(authorityRoot, "deployment", "job-card.json", jobCard);
   await publishExact(authorityRoot, "trust", "job-card-trust-pin.json", input.jobCardTrustPin);
@@ -106,7 +112,7 @@ async function activateCertificationPrincipalSession(input: Readonly<{ workspace
   const now = input.now ?? new Date();
   const binding = await input.delegationAuthority.resolveSessionBinding({ tenant: activation.authorityCellId, taskId: activation.taskId, principalId: activation.principalId });
   assertBinding(activation, binding, now);
-  return input.principalRegistry.issue({ principalId: activation.principalId, taskId: activation.taskId, grantId: activation.grantId, grantDigest: activation.signedRootGrant.digest, allocationId: activation.allocationId, runtimeSessionId: activation.runtimeSessionId, jobId: activation.jobId, authorityCellId: activation.authorityCellId, expiresAt: binding.expiresAt });
+  return input.principalRegistry.issue({ principalId: activation.principalId, taskId: activation.taskId, grantId: activation.grantId, grantDigest: activation.signedChildGrant.digest, allocationId: activation.allocationId, runtimeSessionId: activation.runtimeSessionId, jobId: activation.jobId, authorityCellId: activation.authorityCellId, expiresAt: binding.expiresAt });
 }
 
 export interface CertificationDispatchPermit { readonly kind: "certification-dispatch-permit" }
@@ -273,7 +279,7 @@ async function dispatchSnapshot(input: Readonly<{ workspace: string; scenario: C
   if (activation.signedJobCardDigest !== signedJobCardDigest(jobCard) || activation.signedReadinessDigest !== authorityDigest(pin.signedReadiness) || activation.jobId !== jobCard.jobId || activation.authorityCellId !== state.initialization.identifiers.authorityCellId) throw new TypeError("certification activation Job Card or readiness state was substituted");
   const grant = activation.signedRootGrant.grant as DelegationGrant;
   const delegationDescriptor = pin.keyDescriptors.map(parseAuthorityKeyDescriptor).find(item => authorityDigest(item) === activation.signerKeyDescriptorDigest);
-  if (!delegationDescriptor || delegationDescriptor.keyId !== activation.signerKeyId || delegationDescriptor.role !== "authority-cell" || delegationDescriptor.purpose !== "delegation-grant" || !currentTrust.activeDescriptorDigests.has(activation.signerKeyDescriptorDigest) || !pin.signedReadiness.activatedCellKeyDescriptorDigests.includes(activation.signerKeyDescriptorDigest) || !verifyAuthoritySignature(publicKeyFor(delegationDescriptor), "delegation-grant", activation.signedRootGrant.digest, activation.signedRootGrant.signature)) throw new TypeError("certification root grant signer is stale, revoked, or substituted");
+  if (!delegationDescriptor || delegationDescriptor.keyId !== activation.signerKeyId || delegationDescriptor.role !== "authority-cell" || delegationDescriptor.purpose !== "delegation-grant" || !currentTrust.activeDescriptorDigests.has(activation.signerKeyDescriptorDigest) || !pin.signedReadiness.activatedCellKeyDescriptorDigests.includes(activation.signerKeyDescriptorDigest) || !verifyAuthoritySignature(publicKeyFor(delegationDescriptor), "delegation-grant", activation.signedRootGrant.digest, activation.signedRootGrant.signature) || !verifyAuthoritySignature(publicKeyFor(delegationDescriptor), "delegation-grant", activation.signedChildGrant.digest, activation.signedChildGrant.signature)) throw new TypeError("certification root/child grant signer is stale, revoked, or substituted");
   if (activation.constraintsDigest !== authorityDigest(grant.constraints) || jobCard.limitsDigest !== authorityDigest(grant.constraints.limits) || jobCard.taskShapeDigest !== certificationTaskShapeDigest({ identifiers: state.initialization.identifiers, scenarios: state.initialization.scenarios, constraints: grant.constraints })) throw new TypeError("certification active root constraints do not match Job Card commitments");
   const registeredRunner = getCertificationRunnerRegistryEntry(input.scenario);
   if (mode === "ordinary" && (!registeredRunner.executionReady || !registeredRunner.dispatchable)) throw new TypeError("Task 4A certification runner metadata is configured but provider execution is unavailable and non-dispatchable");
@@ -284,7 +290,7 @@ async function dispatchSnapshot(input: Readonly<{ workspace: string; scenario: C
   const now = input.now?.() ?? new Date();
   assertBinding(activation, binding, now);
   const principal = await input.principalRegistry.resolve(input.bearerToken, now);
-  if (authorityDigest(principal) !== authorityDigest({ tenant: activation.authorityCellId, principalId: activation.principalId, taskId: activation.taskId, grantId: activation.grantId, grantDigest: activation.signedRootGrant.digest, allocationId: activation.allocationId, runtimeSessionId: activation.runtimeSessionId, jobId: activation.jobId, authorityCellId: activation.authorityCellId, expiresAt: binding.expiresAt, sessionTokenDigest: principal.sessionTokenDigest })) throw new TypeError("certification principal context does not match active authority state");
+  if (authorityDigest(principal) !== authorityDigest({ tenant: activation.authorityCellId, principalId: activation.principalId, taskId: activation.taskId, grantId: activation.grantId, grantDigest: activation.signedChildGrant.digest, allocationId: activation.allocationId, runtimeSessionId: activation.runtimeSessionId, jobId: activation.jobId, authorityCellId: activation.authorityCellId, expiresAt: binding.expiresAt, sessionTokenDigest: principal.sessionTokenDigest })) throw new TypeError("certification principal context does not match active authority state");
   const allocation = await input.delegationAuthority.budget.get(activation.allocationId);
   if (!allocation || allocation.revoked || allocation.taskId !== activation.taskId || allocation.remaining < 1) throw new TypeError("certification effect allocation is exhausted or inactive");
   const preflight = await preflightCertification({ workspace: state.root, all: true });
@@ -332,13 +338,14 @@ async function loadActivation(workspace: string): Promise<CertificationCellActiv
 function parseActivation(value: unknown, ids: CertificationIdentifiers): CertificationCellActivationV1 {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("certification Cell activation must be an object");
   const raw = value as Record<string, any>;
-  const fields = ["v", "taskId", "jobId", "grantId", "allocationId", "authorityCellId", "principalId", "runtimeSessionId", "signerKeyId", "signerKeyDescriptorDigest", "signedReadinessDigest", "signedJobCardDigest", "constraintsDigest", "currentTrustEventCount", "currentTrustHistoryDigest", "currentTrustHeadDigest", "currentTrustPinPathDigest", "effects", "signedRootGrant", "completeness", "dispatchable"];
-  if (Object.keys(raw).sort().join("\0") !== fields.sort().join("\0") || raw.v !== "reelier.certification-cell-activation/v1" || raw.taskId !== ids.taskId || raw.jobId !== ids.jobCardId || raw.grantId !== ids.rootGrantId || raw.allocationId !== ids.rootGrantId || raw.authorityCellId !== ids.authorityCellId || raw.completeness !== "unchecked" || raw.dispatchable !== false || !Number.isSafeInteger(raw.effects) || raw.effects < 1) throw new TypeError("certification Cell activation is closed and bound to generated identities");
+  const fields = ["v", "taskId", "jobId", "grantId", "allocationId", "rootAllocationId", "authorityCellId", "principalId", "runtimeSessionId", "signerKeyId", "signerKeyDescriptorDigest", "signedReadinessDigest", "signedJobCardDigest", "constraintsDigest", "currentTrustEventCount", "currentTrustHistoryDigest", "currentTrustHeadDigest", "currentTrustPinPathDigest", "effects", "signedRootGrant", "signedChildGrant", "completeness", "dispatchable"];
+  if (Object.keys(raw).sort().join("\0") !== fields.sort().join("\0") || raw.v !== "reelier.certification-cell-activation/v1" || raw.taskId !== ids.taskId || raw.jobId !== ids.jobCardId || raw.rootAllocationId !== ids.rootGrantId || raw.grantId !== `${ids.rootGrantId}_child` || raw.allocationId !== raw.grantId || raw.authorityCellId !== ids.authorityCellId || raw.completeness !== "unchecked" || raw.dispatchable !== false || !Number.isSafeInteger(raw.effects) || raw.effects < 1) throw new TypeError("certification Cell activation is closed and bound to generated identities");
   for (const field of ["signerKeyDescriptorDigest", "signedReadinessDigest", "signedJobCardDigest", "constraintsDigest", "currentTrustHistoryDigest", "currentTrustHeadDigest", "currentTrustPinPathDigest"] as const) if (!DIGEST.test(raw[field])) throw new TypeError("certification Cell activation digest is invalid");
   if (!Number.isSafeInteger(raw.currentTrustEventCount) || raw.currentTrustEventCount < 1) throw new TypeError("certification Cell activation trust count is invalid");
-  const rootSignature = raw.signedRootGrant?.signature;
+  const rootSignature = raw.signedRootGrant?.signature, childSignature = raw.signedChildGrant?.signature;
   const signatureBytes = rootSignature?.alg === "ed25519" && typeof rootSignature.sig === "string" ? Buffer.from(rootSignature.sig, "base64") : undefined;
-  if (!raw.signedRootGrant || !signatureBytes || signatureBytes.length !== 64 || signatureBytes.toString("base64") !== rootSignature.sig || authorityDigest(raw.signedRootGrant.grant) !== raw.signedRootGrant.digest || raw.signedRootGrant.grant.grantId !== raw.grantId || raw.signedRootGrant.grant.grantee !== raw.principalId || raw.signedRootGrant.signerId !== raw.signerKeyId || authorityDigest(raw.signedRootGrant.grant.constraints) !== raw.constraintsDigest) throw new TypeError("certification Cell root grant link or canonical signature is invalid");
+  const childSignatureBytes = childSignature?.alg === "ed25519" && typeof childSignature.sig === "string" ? Buffer.from(childSignature.sig, "base64") : null;
+  if (!raw.signedRootGrant || !signatureBytes || signatureBytes.length !== 64 || signatureBytes.toString("base64") !== rootSignature.sig || authorityDigest(raw.signedRootGrant.grant) !== raw.signedRootGrant.digest || raw.signedRootGrant.grant.grantId !== raw.rootAllocationId || raw.signedRootGrant.signerId !== raw.signerKeyId || authorityDigest(raw.signedRootGrant.grant.constraints) !== raw.constraintsDigest || !raw.signedChildGrant || !childSignatureBytes || childSignatureBytes.length !== 64 || authorityDigest(raw.signedChildGrant.grant) !== raw.signedChildGrant.digest || raw.signedChildGrant.grant.parentDigest !== raw.signedRootGrant.digest || raw.signedChildGrant.grant.grantId !== raw.grantId || raw.signedChildGrant.grant.grantee !== raw.principalId || raw.signedChildGrant.signerId !== raw.signerKeyId || raw.allocationId !== raw.grantId) throw new TypeError("certification Cell root/child grant link or canonical signature is invalid");
   return Object.freeze(raw as CertificationCellActivationV1);
 }
 function verifyCurrentJobCardTrust(jobCard: SignedJobCardV1, pin: JobCardTrustPinV1) {
@@ -386,7 +393,7 @@ async function observeCurrentTrust(authorityRoot: string, activation: Certificat
 function publicKeyFor(descriptor: AuthorityKeyDescriptorV1): KeyObject { return createPublicKey({ key: Buffer.from(descriptor.publicKeySpkiBase64, "base64"), format: "der", type: "spki" }); }
 function deriveId(kind: "principal" | "session", ids: CertificationIdentifiers): string { return `${kind}_${authorityDigest({ v: `reelier.certification-${kind}-id/v1`, taskId: ids.taskId, authorityCellId: ids.authorityCellId }).slice(7, 31)}`; }
 function canonicalTime(value: string): string { const time = Date.parse(value); if (!Number.isFinite(time)) throw new TypeError("certification activation time is invalid"); const canonical = new Date(time).toISOString(); if (canonical !== value) throw new TypeError("certification activation time must be canonical"); return canonical; }
-function assertBinding(activation: CertificationCellActivationV1, binding: Awaited<ReturnType<DelegationAuthority["resolveSessionBinding"]>>, now: Date): void { if (binding.lifecycleState !== "allocated" || binding.taskId !== activation.taskId || binding.grantId !== activation.grantId || binding.grantDigest !== activation.signedRootGrant.digest || binding.grantee !== activation.principalId || binding.allocationId !== activation.allocationId || binding.effects !== activation.effects || Date.parse(binding.expiresAt) <= now.getTime()) throw new TypeError("certification principal binding is stale, revoked, substituted, or exhausted"); }
+function assertBinding(activation: CertificationCellActivationV1, binding: Awaited<ReturnType<DelegationAuthority["resolveSessionBinding"]>>, now: Date): void { if (binding.lifecycleState !== "allocated" || binding.taskId !== activation.taskId || binding.grantId !== activation.grantId || binding.grantDigest !== activation.signedChildGrant.digest || binding.grantee !== activation.principalId || binding.allocationId !== activation.allocationId || binding.effects !== activation.effects || Date.parse(binding.expiresAt) <= now.getTime()) throw new TypeError("certification principal binding is stale, revoked, substituted, or exhausted"); }
 async function requireAuthorityRoot(root: string): Promise<string> { return requireDirectory(root, ["authority"]); }
 async function requireDirectory(root: string, segments: readonly string[]): Promise<string> { const directory = await confinedExistingDirectory(root, segments); if (!directory) throw new TypeError("certification Cell durable directory is absent"); return directory; }
 async function publishExact(root: string, directory: string, filename: string, value: unknown): Promise<void> { const content = `${JSON.stringify(value)}\n`; await publishPrivateContentAddressed(root, directory, filename, content); const target = await requireDirectory(root, [directory]); const observed = await readConfinedFile(root, target, filename); if (observed.toString("utf8") !== content) throw new TypeError("certification Cell activation conflict"); }

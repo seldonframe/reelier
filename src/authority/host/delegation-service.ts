@@ -1,6 +1,9 @@
+import { createPublicKey } from "node:crypto";
 import type { DelegationGrant } from "../types.js";
 import { authorityDigest } from "../wire.js";
 import { validateChildDelegationRequest, type StoredSignedGrant } from "../delegation.js";
+import { verifyAuthoritySignature } from "../crypto.js";
+import { parseAuthorityKeyDescriptor, type AuthorityKeyDescriptorV1 } from "../certification/authority.js";
 import { FsDelegationBudgetLedger } from "./delegation-budget.js";
 import { lstat, mkdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -66,25 +69,32 @@ export function createDelegationAuthority(input: Readonly<{ root: string; signGr
   }
 
   async function request(value: Readonly<{ tenant: string; parentPrincipal: string; taskId: string; parentAllocationId: string; child: DelegationGrant; effects: number }>) {
-    await ensureLoaded();
+    const signed = await input.signGrant(value.child);
+    return registerSignedChild({ tenant: value.tenant, parentPrincipal: value.parentPrincipal, taskId: value.taskId, parentAllocationId: value.parentAllocationId, signedChild: signed, effects: value.effects });
+  }
+
+  async function registerSignedChild(value: SignedChildRegistration): Promise<SignedChildResult> {
+    const release = await acquireRegistryLock();
+    try {
+    await loadRegistry(); loaded = Promise.resolve();
     const record = roots.get(value.taskId);
     if (!record || record.tenant !== value.tenant || record.revoked) throw new TypeError("delegation task is not active");
     const parent = record.grants.get(value.parentAllocationId);
     if (!parent || parent.grant.grantee !== value.parentPrincipal) throw new TypeError("delegation parent principal mismatch");
-    if (value.child.tenant !== value.tenant || value.child.grantor !== value.parentPrincipal) throw new TypeError("delegation child identity mismatch");
-    if (value.child.parentDigest !== parent.digest) throw new TypeError("delegation child parent digest mismatch");
-    if (record.grants.has(value.child.grantId)) throw new TypeError("delegation child grant id already exists");
+    const signed = value.signedChild, signedGrant = asGrant(signed.grant);
+    if (signedGrant.tenant !== value.tenant || signedGrant.grantor !== value.parentPrincipal) throw new TypeError("delegation child identity mismatch");
+    if (signedGrant.parentDigest !== parent.digest) throw new TypeError("delegation child parent digest mismatch");
+    if (record.grants.has(signedGrant.grantId)) throw new TypeError("delegation child grant id already exists");
     const now = input.now?.() ?? new Date();
     const activeChildCount = [...record.grants.values()].filter(candidate => candidate.grant.parentDigest === parent.digest && Date.parse(candidate.grant.expiresAt) > now.getTime()).length;
-    validateChildDelegationRequest({ parent: parent.grant, child: value.child, activeChildCount, effects: value.effects, now });
-    const allocationId = value.child.grantId;
-    const signed = await input.signGrant(value.child);
-    const signedGrant = asGrant(signed.grant);
-    if (authorityDigest(signedGrant) !== signed.digest || authorityDigest(signedGrant) !== authorityDigest(value.child) || signedGrant.grantId !== value.child.grantId) throw new TypeError("authority cell returned an invalid child grant");
+    validateChildDelegationRequest({ parent: parent.grant, child: signedGrant, activeChildCount, effects: value.effects, now });
+    const allocationId = signedGrant.grantId;
+    if (authorityDigest(signedGrant) !== signed.digest) throw new TypeError("authority cell returned an invalid child grant");
     await budgets.allocate({ allocationId, parentAllocationId: value.parentAllocationId, effects: value.effects, maxFanOut: parent.grant.delegationPolicy!.maxFanOut });
     record.grants.set(allocationId, { grant: signedGrant, digest: signed.digest, allocationId, signed });
-    await persistRegistry();
+    await persistRegistryUnlocked();
     return Object.freeze({ verdict: "accepted" as const, reasonCode: "delegation-allocated" as const, lifecycleState: "allocated" as const, grant: signedGrant, grantDigest: signed.digest, allocationId });
+    } finally { await release(); }
   }
 
   async function status(value: Readonly<{ tenant: string; requester: string; grantId: string }>) {
@@ -129,7 +139,9 @@ export function createDelegationAuthority(input: Readonly<{ root: string; signGr
     return Object.freeze({ taskId: value.taskId, grantId: entry.grant.grantId, grantDigest: entry.digest, grantee: entry.grant.grantee, allocationId: entry.allocationId, expiresAt: entry.grant.expiresAt, effects: allocation.effects, lifecycleState: "allocated" as const });
   }
 
-  return Object.freeze({ registerRoot, request, status, taskStatus, resolveSessionBinding, revoke, budget: budgets });
+  const service = Object.freeze({ registerRoot, request, status, taskStatus, resolveSessionBinding, revoke, budget: budgets });
+  authoritySignedChildRegistrars.set(service, registerSignedChild);
+  return service;
 
   async function loadRegistry(): Promise<void> {
     await ensureRegistryRoot();
@@ -197,6 +209,19 @@ export function createDelegationAuthority(input: Readonly<{ root: string; signGr
     const [canonicalParent, canonicalRoot] = await Promise.all([realpath(parent), realpath(rootPath)]);
     if (path.relative(canonicalParent, path.dirname(canonicalRoot)) !== "") throw new TypeError("delegation registry directory is not confined to its exact parent");
   }
+}
+
+type SignedChildRegistration = Readonly<{ tenant: string; parentPrincipal: string; taskId: string; parentAllocationId: string; signedChild: StoredSignedGrant; effects: number }>;
+type SignedChildResult = Readonly<{ verdict: "accepted"; reasonCode: "delegation-allocated"; lifecycleState: "allocated"; grant: DelegationGrant; grantDigest: string; allocationId: string }>;
+const authoritySignedChildRegistrars = new WeakMap<object, (input: SignedChildRegistration) => Promise<SignedChildResult>>();
+
+/** Direct-module Cell bridge. Deliberately omitted from host/package barrels. */
+export async function registerAuthoritySignedChild(service: DelegationAuthority, input: SignedChildRegistration & Readonly<{ signerDescriptor: AuthorityKeyDescriptorV1 }>): Promise<SignedChildResult> {
+  const register = authoritySignedChildRegistrars.get(service as object);
+  if (!register) throw new TypeError("genuine branded delegation authority required");
+  const descriptor = parseAuthorityKeyDescriptor(input.signerDescriptor), child = asGrant(input.signedChild.grant), digest = authorityDigest(child);
+  if (descriptor.role !== "authority-cell" || descriptor.purpose !== "delegation-grant" || input.signedChild.signerId !== descriptor.keyId || input.signedChild.digest !== digest || !verifyAuthoritySignature(createPublicKey({ key: Buffer.from(descriptor.publicKeySpkiBase64, "base64"), format: "der", type: "spki" }), "delegation-grant", digest, input.signedChild.signature)) throw new TypeError("authority-signed child signer, purpose, digest, or signature is invalid");
+  return register({ tenant: input.tenant, parentPrincipal: input.parentPrincipal, taskId: input.taskId, parentAllocationId: input.parentAllocationId, signedChild: input.signedChild, effects: input.effects });
 }
 
 async function requireUnlinkedDirectory(target: string): Promise<void> {
