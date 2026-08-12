@@ -46,15 +46,18 @@ test("connection parser rejects unsafe URLs and never invokes accessors", () => 
   for (const endpoint of ["http://cell.example", "https://user:pass@cell.example", "https://cell.example/?x=1", "https://cell.example/#fragment", "http://localhost.evil"]) {
     assert.throws(() => parseAuthorityCellConnectionV1({ v: "reelier.authority-cell-connection/v1", endpoint, transport: "http", bearerTokenRef: "env:CELL_TOKEN", expectedCellId: "cell_1", adapterContractDigest: digest }), /endpoint/i);
   }
+  for (const endpoint of ["https://127.0.0.1", "https://10.0.0.1", "https://169.254.1.1", "https://0.0.0.0", "https://224.0.0.1", "https://[::1]", "https://[fe80::1]", "https://[fc00::1]", "https://[ff00::1]"]) {
+    assert.throws(() => parseAuthorityCellConnectionV1({ v: "reelier.authority-cell-connection/v1", endpoint, transport: "http", bearerTokenRef: "env:CELL_TOKEN", expectedCellId: "cell_1", adapterContractDigest: digest }), /endpoint/i);
+  }
 });
 
 test("live cell check refuses redirect and redacts token resolver failures", async () => {
   const secret = "never-print-this-token";
   const connection = { v: "reelier.authority-cell-connection/v1", endpoint: "https://cell.example", transport: "http", bearerTokenRef: "env:CELL_TOKEN", expectedCellId: "cell_1", adapterContractDigest: digest } as const;
   const failed = await checkAuthorityCellLive(connection, { resolveToken: async () => { throw new Error(secret); } });
-  assert.deepEqual(failed, { state: "failed", reasonCode: "identity-unavailable" });
+  assert.deepEqual(failed, { state: "absent", reasonCode: "token-unavailable" });
   let redirect = "";
-  const result = await checkAuthorityCellLive(connection, { resolveToken: async () => secret, request: async (_url, init) => { redirect = String(init.redirect); return new Response(JSON.stringify({ v: "reelier.authority-cell-identity/v1", cellId: "cell_1", adapterContractDigest: digest }), { status: 200 }); } });
+  const result = await checkAuthorityCellLive(connection, { resolveToken: async () => secret, resolveAddresses: async () => ["8.8.8.8"], request: async (_url, init) => { redirect = String(init.redirect); return new Response(JSON.stringify({ v: "reelier.authority-cell-identity/v1", cellId: "cell_1", adapterContractDigest: digest }), { status: 200 }); } });
   assert.equal(result.state, "verified");
   assert.equal(redirect, "error");
 });
@@ -68,9 +71,9 @@ test("doctor treats an unavailable token reference as absent without exposing it
 test("doctor rejects stale Cell and adapter identities exactly", async () => {
   const connection = { v: "reelier.authority-cell-connection/v1", endpoint: "https://cell.example", transport: "http", bearerTokenRef: "env:CELL_TOKEN", expectedCellId: "cell_1", adapterContractDigest: digest } as const;
   const response = (cellId: string, adapterContractDigest: string) => new Response(JSON.stringify({ v: "reelier.authority-cell-identity/v1", cellId, adapterContractDigest }), { status: 200 });
-  const staleCell = await checkAuthorityCellLive(connection, { resolveToken: async () => "opaque", request: async () => response("cell_old", digest) });
+  const staleCell = await checkAuthorityCellLive(connection, { resolveToken: async () => "opaque", resolveAddresses: async () => ["8.8.8.8"], request: async () => response("cell_old", digest) });
   assert.deepEqual(staleCell, { state: "failed", reasonCode: "cell-id-mismatch", cellId: "cell_old" });
-  const staleContract = await checkAuthorityCellLive(connection, { resolveToken: async () => "opaque", request: async () => response("cell_1", `sha256:${"c".repeat(64)}`) });
+  const staleContract = await checkAuthorityCellLive(connection, { resolveToken: async () => "opaque", resolveAddresses: async () => ["8.8.8.8"], request: async () => response("cell_1", `sha256:${"c".repeat(64)}`) });
   assert.deepEqual(staleContract, { state: "failed", reasonCode: "adapter-contract-mismatch", cellId: "cell_1", adapterContractDigest: `sha256:${"c".repeat(64)}` });
 });
 
@@ -84,4 +87,12 @@ test("doctor refuses parent symlink token ancestry before reading the token", as
     const result = await checkAuthorityCellLive(connection, { credentialRoot: root } as never);
     assert.deepEqual(result, { state: "absent", reasonCode: "token-unavailable" });
   } finally { await rm(root, { recursive: true, force: true }); await rm(outside, { recursive: true, force: true }); }
+});
+
+test("doctor refuses private DNS answers before bearer dispatch", async () => {
+  const connection = { v: "reelier.authority-cell-connection/v1", endpoint: "https://cell.example", transport: "http", bearerTokenRef: "env:CELL_TOKEN", expectedCellId: "cell_1", adapterContractDigest: digest } as const;
+  let dispatched = false;
+  const result = await checkAuthorityCellLive(connection, { resolveToken: async () => "opaque", resolveAddresses: async () => ["8.8.8.8", "10.0.0.1"], request: async () => { dispatched = true; throw new Error("must not dispatch"); } });
+  assert.deepEqual(result, { state: "failed", reasonCode: "endpoint-address-refused" });
+  assert.equal(dispatched, false);
 });

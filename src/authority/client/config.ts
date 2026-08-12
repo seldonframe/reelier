@@ -44,12 +44,18 @@ export function defaultAuthorityCellConnectionFile(): string { return path.resol
 function normalizeEndpoint(value: string): string {
   let url: URL;
   try { url = new URL(value); } catch { throw new TypeError("authority cell endpoint is invalid"); }
-  if (url.username || url.password || url.search || url.hash || (url.protocol !== "https:" && !(url.protocol === "http:" && isLoopback(url.hostname)))) throw new TypeError("authority cell endpoint is unsafe");
+  if (url.username || url.password || url.search || url.hash || (isUnsafeLiteral(url.hostname) && !(url.protocol === "http:" && isLoopback(url.hostname))) || (url.protocol !== "https:" && !(url.protocol === "http:" && isLoopback(url.hostname)))) throw new TypeError("authority cell endpoint is unsafe");
   const pathname = url.pathname.replace(/\/+$/, "") || "";
   return `${url.protocol}//${url.host}${pathname}`;
 }
 
 function isLoopback(hostname: string): boolean { return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1" || /^127(?:\.\d{1,3}){3}$/.test(hostname); }
+function isUnsafeLiteral(hostname: string): boolean {
+  const host = hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  if (host.includes(":")) return host === "::" || host === "::1" || host.startsWith("fc") || host.startsWith("fd") || /^fe[89ab]/.test(host) || host.startsWith("ff");
+  if (!/^\d{1,3}(?:\.\d{1,3}){3}$/.test(host)) return false;
+  const [a, b] = host.split(".").map(Number); return a === 0 || a === 10 || a === 127 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || a >= 224;
+}
 
 function parseTokenReference(value: string): `env:${string}` | `file:${string}` {
   if (/^env:[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(value)) return value as `env:${string}`;
