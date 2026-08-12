@@ -67,7 +67,7 @@ test("real Cell permit, gate reservation, exact plan and budget precede one fixe
     await assert.rejects(() => f.cell.verifyDispatchReadiness({ scenario: "github-issue-labels", bearerToken: f.credential.token }), /execution is unavailable|non-dispatchable/i);
     const result = await f.runner.run({ bearerToken: f.credential.token, requestId: "request_normal" });
     assert.equal(result.status, "acknowledged"); assert.equal(result.success, false); assert.equal(result.providerWrites, 1);
-    assert.equal((await f.delegation.budget.get(f.initialized.identifiers.rootGrantId))?.consumed, 1);
+    assert.equal((await f.delegation.budget.get(f.activation.allocationId))?.consumed, 1);
     assert.equal((await f.runner.status({ bearerToken: f.credential.token, requestId: "request_normal" })).status, "acknowledged");
     const duplicate = await f.runner.run({ bearerToken: f.credential.token, requestId: "request_normal" }); assert.equal(duplicate.providerWrites, 1);
     await assert.rejects(() => f.runner.run({ bearerToken: "invalid", requestId: "request_normal" }), /credential|principal|bearer/i);
@@ -76,7 +76,7 @@ test("real Cell permit, gate reservation, exact plan and budget precede one fixe
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
-for (const mode of ["source-drift", "effect-drift"] as const) test(`${mode} refuses with zero writes and no budget consumption`, async () => { const f = await fixture(mode); try { const result = await f.runner.run({ bearerToken: f.credential.token, requestId: `request_${mode}` }); assert.equal(result.status, "refused"); assert.equal(result.providerWrites, 0); const budget = await f.delegation.budget.get(f.initialized.identifiers.rootGrantId); assert.equal(budget?.consumed, 0); assert.equal(budget?.remaining, 2); } finally { await rm(f.root, { recursive: true, force: true }); } });
+for (const mode of ["source-drift", "effect-drift"] as const) test(`${mode} refuses with zero writes and no budget consumption`, async () => { const f = await fixture(mode); try { const result = await f.runner.run({ bearerToken: f.credential.token, requestId: `request_${mode}` }); assert.equal(result.status, "refused"); assert.equal(result.providerWrites, 0); const budget = await f.delegation.budget.get(f.activation.allocationId); assert.equal(budget?.consumed, 0); assert.equal(budget?.remaining, 2); } finally { await rm(f.root, { recursive: true, force: true }); } });
 
 for (const mode of ["provider-503", "accessor-response"] as const) test(`${mode} is never acknowledged`, async () => { const f = await fixture(mode); try { const result = await f.runner.run({ bearerToken: f.credential.token, requestId: `request_${mode}` }); assert.notEqual(result.status, "acknowledged"); assert.equal(result.success, false); assert.equal(result.providerWrites, 1); } finally { await rm(f.root, { recursive: true, force: true }); } });
 
@@ -84,7 +84,7 @@ test("503 after apply is ambiguous, retains budget, and blocks cleanup until aut
   const f = await fixture("provider-503"); try {
     const result = await f.runner.run({ bearerToken: f.credential.token, requestId: "request_503_ambiguous" });
     assert.equal(result.status, "pending-reconciliation");
-    assert.equal((await f.delegation.budget.get(f.initialized.identifiers.rootGrantId))?.consumed, 1);
+    assert.equal((await f.delegation.budget.get(f.activation.allocationId))?.consumed, 1);
     await assert.rejects(() => f.runner.cleanup({ bearerToken: f.credential.token, requestId: "request_503_ambiguous" }), /reconciliation|acknowledged/i);
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
@@ -119,7 +119,7 @@ test("pending reconciliation uses an authoritative read and converges without re
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
-for (const mode of ["cut-after-budget", "cut-after-dispatched", "cut-after-send-intent"] as const) test(`${mode} recovery converges without resending`, async () => { const f = await fixture(mode); try { await assert.rejects(() => f.runner.run({ bearerToken: f.credential.token, requestId: `request_${mode}` }), /controlled cut/i); const restarted = await createGitHubIssueLabelsHermeticComposition(f.cell); const recovered = await restarted.recover(); const status = await restarted.status({ bearerToken: f.credential.token, requestId: `request_${mode}` }); assert.equal(status.providerWrites <= 1, true); assert.equal(recovered.includes(`request_${mode}`), true); const budget = await f.delegation.budget.get(f.initialized.identifiers.rootGrantId); assert.equal(budget?.remaining, mode === "cut-after-budget" ? 2 : 1); if (mode !== "cut-after-budget") assert.equal(status.status, "pending-reconciliation"); } finally { await rm(f.root, { recursive: true, force: true }); } });
+for (const mode of ["cut-after-budget", "cut-after-dispatched", "cut-after-send-intent"] as const) test(`${mode} recovery converges without resending`, async () => { const f = await fixture(mode); try { await assert.rejects(() => f.runner.run({ bearerToken: f.credential.token, requestId: `request_${mode}` }), /controlled cut/i); const restarted = await createGitHubIssueLabelsHermeticComposition(f.cell); const recovered = await restarted.recover(); const status = await restarted.status({ bearerToken: f.credential.token, requestId: `request_${mode}` }); assert.equal(status.providerWrites <= 1, true); assert.equal(recovered.includes(`request_${mode}`), true); const budget = await f.delegation.budget.get(f.activation.allocationId); assert.equal(budget?.remaining, mode === "cut-after-budget" ? 2 : 1); if (mode !== "cut-after-budget") assert.equal(status.status, "pending-reconciliation"); } finally { await rm(f.root, { recursive: true, force: true }); } });
 
 test("well-shaped journal tampering refuses recovery without budget mutation or provider action", async () => {
   const f = await fixture("cut-after-budget"); try {
@@ -128,7 +128,7 @@ test("well-shaped journal tampering refuses recovery without budget mutation or 
     const journal = JSON.parse(await readFile(journalPath, "utf8")); journal.effectDigest = `sha256:${"0".repeat(64)}`; await writeFile(journalPath, `${JSON.stringify(journal)}\n`, "utf8");
     const restarted = await createGitHubIssueLabelsHermeticComposition(f.cell);
     await assert.rejects(() => restarted.recover(), /signature|tamper|journal/i);
-    const budget = await f.delegation.budget.get(f.initialized.identifiers.rootGrantId); assert.equal(budget?.consumed, 1); assert.equal(budget?.remaining, 1);
+    const budget = await f.delegation.budget.get(f.activation.allocationId); assert.equal(budget?.consumed, 1); assert.equal(budget?.remaining, 1);
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
@@ -140,7 +140,7 @@ test("a previously valid signed journal cannot roll acknowledged ledger truth ba
     const result = await running; assert.equal(result.status, "acknowledged"); assert.notEqual(old, ""); await writeFile(journalPath, old, "utf8");
     const restarted = await createGitHubIssueLabelsHermeticComposition(f.cell);
     await assert.rejects(() => restarted.recover(), /rollback|ledger|phase|binding/i);
-    const budget = await f.delegation.budget.get(f.initialized.identifiers.rootGrantId); assert.equal(budget?.consumed, 1); assert.equal(budget?.remaining, 1);
+    const budget = await f.delegation.budget.get(f.activation.allocationId); assert.equal(budget?.consumed, 1); assert.equal(budget?.remaining, 1);
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
@@ -152,7 +152,7 @@ test("concurrent recovery cannot release a live dispatched request before its on
     const restarted = await createGitHubIssueLabelsHermeticComposition(f.cell);
     await assert.rejects(() => restarted.recover(), /busy|lock/i);
     const result = await running; assert.equal(result.status, "acknowledged"); assert.equal(result.providerWrites, 1);
-    const budget = await f.delegation.budget.get(f.initialized.identifiers.rootGrantId); assert.equal(budget?.consumed, 1); assert.equal(budget?.remaining, 1);
+    const budget = await f.delegation.budget.get(f.activation.allocationId); assert.equal(budget?.consumed, 1); assert.equal(budget?.remaining, 1);
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
@@ -168,10 +168,10 @@ test("cut after authoritative apply reconciles from durable provider state witho
     assert.equal(cleaned.status, "cleaned");
     assert.deepEqual(cleaned.labels, ["before"]);
     assert.equal(cleaned.providerWrites, 2);
-    assert.equal((await f.delegation.budget.get(f.initialized.identifiers.rootGrantId))?.consumed, 2);
+    assert.equal((await f.delegation.budget.get(f.activation.allocationId))?.consumed, 2);
     const replay = await restarted.cleanup({ bearerToken: f.credential.token, requestId: "request_cut_apply" });
     assert.equal(replay.providerWrites, 2);
-    assert.equal((await f.delegation.budget.get(f.initialized.identifiers.rootGrantId))?.consumed, 2);
+    assert.equal((await f.delegation.budget.get(f.activation.allocationId))?.consumed, 2);
     const portable = path.join(f.initialized.workspace, "authority", "github-label-runner", "receipts", "portable");
     assert.equal((await readdir(portable)).length >= 5, true);
   } finally { await rm(f.root, { recursive: true, force: true }); }
@@ -187,7 +187,7 @@ test("semantic duplicate and conflicting bytes do not write or consume additiona
     const conflict = await f.runner.conflict({ bearerToken: f.credential.token, requestId: "request_original" });
     assert.equal(conflict.status, "conflict");
     assert.equal(conflict.providerWrites, 1);
-    assert.equal((await f.delegation.budget.get(f.initialized.identifiers.rootGrantId))?.consumed, 1);
+    assert.equal((await f.delegation.budget.get(f.activation.allocationId))?.consumed, 1);
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
@@ -239,9 +239,9 @@ test("linked config, plan, and journal paths refuse before authority recovery or
       const original = target === "config" ? path.join(f.initialized.workspace, "config.json") : target === "plan" ? path.join(f.initialized.workspace, "inputs", "plans") : path.join(f.initialized.workspace, "authority", "github-label-runner");
       const real = `${original}.real`; await rename(original, real);
       try { await symlink(real, original, target === "config" ? "file" : "junction"); } catch (error) { if ((error as NodeJS.ErrnoException).code === "EPERM") { t.skip("symlink privilege unavailable"); return; } throw error; }
-      const budgetBefore = await f.delegation.budget.get(f.initialized.identifiers.rootGrantId);
+      const budgetBefore = await f.delegation.budget.get(f.activation.allocationId);
       await assert.rejects(() => createGitHubIssueLabelsHermeticComposition(f.cell), /linked|reparse|confined/i);
-      const budgetAfter = await f.delegation.budget.get(f.initialized.identifiers.rootGrantId); assert.equal(budgetAfter?.consumed, budgetBefore?.consumed); assert.equal(budgetAfter?.remaining, budgetBefore?.remaining);
+      const budgetAfter = await f.delegation.budget.get(f.activation.allocationId); assert.equal(budgetAfter?.consumed, budgetBefore?.consumed); assert.equal(budgetAfter?.remaining, budgetBefore?.remaining);
     } finally { await rm(f.root, { recursive: true, force: true }); }
   });
 });
