@@ -47,10 +47,10 @@ async function fixture(mode: "normal" | "source-drift" | "effect-drift" | "provi
   const lifecycle = createCertificationArtifactKeyBinding(ceremony.opaqueHandle, { authorityCellId: initialized.identifiers.authorityCellId, taskId: initialized.identifiers.taskId, readinessDigest: authorityDigest(signedReadiness), humanDescriptor: human as any, humanPrivateKey: readinessKey.privateKey, issuedAt: at, expiresAt: expiry });
   const lifecycleAuthority = { handle: ceremony.opaqueHandle, binding: authorityMode === "substituted" ? { ...lifecycle.binding, taskId: "task_substituted" } : lifecycle.binding, commitment: lifecycle.humanCommitment };
   const cell = await createCertificationCellHost({ workspace: initialized.workspace, currentTrustPinPath: trustPath, delegationAuthority: delegation, principalRegistry: principals, now: () => new Date("2026-08-11T20:10:00.000Z"), ...(authorityMode === "absent" ? {} : { lifecycleAuthority }) });
-  await cell.activateRootTask({ jobCard, jobCardTrustPin: pin, constraints, effects: 2, issuedAt: at, expiresAt: expiry });
+  const activation = await cell.activateRootTask({ jobCard, jobCardTrustPin: pin, constraints, effects: 2, issuedAt: at, expiresAt: expiry });
   const credential = await cell.activatePrincipalSession();
   const runner = await createGitHubIssueLabelsHermeticComposition(cell);
-  return { root, initialized, cell, runner, credential, delegation, pin, lifecycle };
+  return { root, initialized, cell, runner, credential, delegation, pin, lifecycle, activation };
 }
 
 test("only a genuine Cell host can compose the fixed runner", async () => {
@@ -86,6 +86,21 @@ test("503 after apply is ambiguous, retains budget, and blocks cleanup until aut
     assert.equal(result.status, "pending-reconciliation");
     assert.equal((await f.delegation.budget.get(f.initialized.identifiers.rootGrantId))?.consumed, 1);
     await assert.rejects(() => f.runner.cleanup({ bearerToken: f.credential.token, requestId: "request_503_ambiguous" }), /reconciliation|acknowledged/i);
+  } finally { await rm(f.root, { recursive: true, force: true }); }
+});
+
+test("lifecycle activation delegates to a narrower child principal and child allocation", async () => {
+  const f = await fixture(); try {
+    const activation: any = f.activation;
+    assert.equal(activation.signedRootGrant.grant.delegationPolicy.mayDelegate, true);
+    assert.equal(activation.signedChildGrant.grant.parentDigest, activation.signedRootGrant.digest);
+    assert.equal(activation.signedChildGrant.grant.grantor, activation.signedRootGrant.grant.grantee);
+    assert.equal(activation.principalId, activation.signedChildGrant.grant.grantee);
+    assert.notEqual(activation.allocationId, activation.rootAllocationId);
+    assert.equal(f.credential.context.grantId, activation.signedChildGrant.grant.grantId);
+    const rootBudget = await f.delegation.budget.get(activation.rootAllocationId), childBudget = await f.delegation.budget.get(activation.allocationId);
+    assert.equal(rootBudget?.remaining, 0);
+    assert.equal(childBudget?.effects, 2);
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
