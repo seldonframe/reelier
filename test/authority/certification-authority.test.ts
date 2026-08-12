@@ -16,6 +16,7 @@ import {
 import { initializeCertification } from "../../src/authority/certification/initializer.js";
 import { parseCertificationReadinessCandidate, sealCertificationReadiness } from "../../src/authority/certification/readiness.js";
 import { writeCertificationInputManifests } from "./certification-input-fixture.js";
+import { certificationRunnerRegistryDigest } from "../../src/authority/certification/runner-registry.js";
 
 const at = "2026-08-11T20:00:00.000Z";
 const later = "2026-08-11T20:01:00.000Z";
@@ -51,7 +52,7 @@ function candidate(): any {
       authorityCellId: `cell_${"d".repeat(24)}`,
       signerId: `signer_${"e".repeat(24)}`,
     },
-    commitments: { resources: [], cleanup: [], credentials: [], runners: { status: "configured", artifacts: [] }, tests: { status: "configured", artifacts: [] }, topology: "absent", signatureStatus: "absent" },
+    commitments: { resources: [], cleanup: [], credentials: [], runners: { status: "configured", artifacts: [] }, tests: { status: "configured", artifacts: [] }, plans: { status: "configured", artifacts: [] }, runnerRegistryDigest: certificationRunnerRegistryDigest, topology: "absent", signatureStatus: "absent" },
   };
   return { ...base, preflightDigest: preflightForCandidate(base).digest };
 }
@@ -60,7 +61,7 @@ function preflightForCandidate(value: any): any {
   const body = {
     v: "reelier.certification-preflight/v2", configDigest: value.configDigest, selectionDigest: value.selectionDigest,
     identifiers: value.identifiers, scenarios: value.scenarios, resources: value.commitments.resources, cleanup: value.commitments.cleanup,
-    credentialReferences: value.commitments.credentials, inputs: { runners: value.commitments.runners, tests: value.commitments.tests },
+    credentialReferences: value.commitments.credentials, inputs: { runners: value.commitments.runners, tests: value.commitments.tests, plans: value.commitments.plans }, runnerRegistryDigest: value.commitments.runnerRegistryDigest,
     topology: value.commitments.topology, trust: "unchecked", signatureStatus: "absent", authorization: "absent", completeness: "unchecked",
     missing: [], ok: true, preparationReady: true,
   };

@@ -94,3 +94,35 @@ test("preflight refuses scenario substitution", async () => {
   const root = await workspace();
   await assert.rejects(() => preflightCertification({ workspace: root, scenario: "cloudflare-dns" }), /not selected/);
 });
+
+test("v1 runner manifests remain parseable but cannot satisfy dispatch readiness", async () => {
+  const root = await workspace();
+  const runnerDirectory = path.join(root, "inputs", "runners");
+  const testDirectory = path.join(root, "inputs", "tests");
+  await mkdir(runnerDirectory, { recursive: true });
+  await mkdir(testDirectory, { recursive: true });
+  const runner = { v: "reelier.certification-runner-manifest/v1", scenarioId: "github-issue-labels", runnerId: "legacy_runner", endpointManifestDigest: `sha256:${"1".repeat(64)}`, implementationDigest: `sha256:${"2".repeat(64)}`, operations: ["prepare", "authoritative-read", "compile", "reserve", "reread", "dispatch", "reconcile", "receipt", "cleanup"] };
+  await writeFile(path.join(runnerDirectory, "github-issue-labels.json"), JSON.stringify(runner), "utf8");
+  const report = await preflightCertification({ workspace: root, scenario: "github-issue-labels" });
+  assert.equal(report.inputs.runners.status, "absent");
+  assert.equal(report.preparationReady, false);
+  assert.match(report.missing.join(" "), /inputs:runners/);
+});
+
+test("preflight rejects executable dependency injection and performs zero provider credential dispatch or budget calls", async () => {
+  const root = await workspace();
+  let providerCalls = 0, credentialCalls = 0, dispatchCalls = 0, budgetCalls = 0;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => { providerCalls += 1; throw new Error("must not fetch"); }) as typeof fetch;
+  try {
+    await assert.rejects(() => preflightCertification({
+      workspace: root,
+      scenario: "github-issue-labels",
+      provider: () => { providerCalls += 1; },
+      credentialResolver: () => { credentialCalls += 1; },
+      dispatchAdapter: () => { dispatchCalls += 1; },
+      budgetLedger: () => { budgetCalls += 1; },
+    } as never), /closed|callback|executable/i);
+  } finally { globalThis.fetch = originalFetch; }
+  assert.deepEqual({ providerCalls, credentialCalls, dispatchCalls, budgetCalls }, { providerCalls: 0, credentialCalls: 0, dispatchCalls: 0, budgetCalls: 0 });
+});
