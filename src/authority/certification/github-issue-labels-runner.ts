@@ -193,6 +193,7 @@ export async function createGitHubIssueLabelsHermeticComposition(cell: Certifica
       const unorderedReceipts = await Promise.all((await listConfinedFileNames(receiptRoot, portable)).filter(name => name.endsWith(".json")).map(async name => parseAuthorityReceiptBundle(JSON.parse((await readConfinedFile(receiptRoot, portable, name)).toString("utf8")))));
       const receipts = canonicalReceiptOrder(unorderedReceipts);
       const unorderedExtensions = await loadCertificationReceiptExtensions(receiptRoot), extensionsByReceipt = new Map(unorderedExtensions.map(extension => [extension.receiptDigest, extension]));
+      if (extensionsByReceipt.size !== unorderedExtensions.length) throw new TypeError("portable receipt Adapter Contract extensions contain duplicate receipt digests");
       const receiptExtensions = Object.freeze(receipts.map(bundle => { const extension = extensionsByReceipt.get(authorityDigest(bundle.receipt.value)); if (!extension) throw new TypeError("portable receipt Adapter Contract extension is absent"); return extension; }));
       if (extensionsByReceipt.size !== receiptExtensions.length) throw new TypeError("portable receipt Adapter Contract extensions contain extras");
       const outcomes: Journal[] = [];
