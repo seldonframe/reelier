@@ -43,6 +43,7 @@ export async function exportCertificationEvidence(input: Readonly<{ workspace: s
     scenarios: commitment.projection.scenarios,
     resources: commitment.projection.resources,
     cleanup: commitment.projection.cleanup,
+    desiredState: commitment.projection.desiredState,
     metadata: commitment.projection.metadata,
     credentialReferences: commitment.projection.credentialReferences,
   });
@@ -101,7 +102,7 @@ export function verifyCertificationExport(value: unknown): Readonly<{ digest: st
 
 function parseProjectedConfig(value: unknown, manifestScenarios: readonly CertificationScenarioId[]): any {
   const raw = object(value, "certification export config");
-  closed(raw, ["v", "configDigest", "sanitizedProjectionDigest", "selectionDigest", "scenarios", "resources", "cleanup", "metadata", "credentialReferences"], "certification export config");
+  closed(raw, ["v", "configDigest", "sanitizedProjectionDigest", "selectionDigest", "scenarios", "resources", "cleanup", "desiredState", "metadata", "credentialReferences"], "certification export config");
   if (raw.v !== "reelier.certification-export-config/v3") throw new TypeError("certification export config version is invalid");
   const configDigest = assertDigest(raw.configDigest, "certification initialization config digest");
   const sanitizedProjectionDigest = assertDigest(raw.sanitizedProjectionDigest, "certification sanitized projection digest");
@@ -118,14 +119,16 @@ function parseProjectedConfig(value: unknown, manifestScenarios: readonly Certif
   const cleanupRaw = object(raw.cleanup, "certification export cleanup"); closed(cleanupRaw, expectedCleanup, "certification export cleanup");
   const cleanup: Record<string, readonly string[]> = {};
   for (const section of expectedCleanup) cleanup[section] = stringList(cleanupRaw[section], `certification ${section} cleanup`);
+  const desiredState = object(raw.desiredState, "certification export desired state");
+  if (Object.keys(desiredState).some(key => !scenarios.includes(key as CertificationScenarioId))) throw new TypeError("certification export desired state selection mismatch");
   if (!Array.isArray(raw.metadata)) throw new TypeError("certification export metadata must be an array");
   const metadata = Object.freeze(raw.metadata.map((item: unknown) => { const entry = object(item, "certification export metadata item"); closed(entry, ["section", "digest", "status"], "certification export metadata item"); if (typeof entry.section !== "string" || entry.status !== "configured") throw new TypeError("certification export metadata item is invalid"); return Object.freeze({ section: entry.section, digest: assertDigest(entry.digest, "certification export metadata digest"), status: "configured" as const }); }));
   if (!same(metadata.map((item: any) => item.section), expectedMetadata)) throw new TypeError("certification export metadata selection mismatch");
   const credentialReferences = credentialList(raw.credentialReferences);
   if (!same(credentialReferences.map((item: any) => item.slot), expectedCredentials)) throw new TypeError("certification export credential selection mismatch");
-  const projection = { v: "reelier.certification-sanitized-config/v1", scenarios, resources: Object.freeze(resources), cleanup: Object.freeze(cleanup), metadata, credentialReferences };
+  const projection = { v: "reelier.certification-sanitized-config/v1", scenarios, resources: Object.freeze(resources), cleanup: Object.freeze(cleanup), desiredState: Object.freeze(desiredState), metadata, credentialReferences };
   if (authorityDigest(projection) !== sanitizedProjectionDigest || recomputeCertificationSelectionCommitment(configDigest, sanitizedProjectionDigest) !== selectionDigest) throw new TypeError("certification sanitized projection digest or selection commitment mismatch");
-  return Object.freeze({ v: raw.v, configDigest, sanitizedProjectionDigest, selectionDigest, scenarios, resources: projection.resources, cleanup: projection.cleanup, metadata, credentialReferences });
+  return Object.freeze({ v: raw.v, configDigest, sanitizedProjectionDigest, selectionDigest, scenarios, resources: projection.resources, cleanup: projection.cleanup, desiredState: projection.desiredState, metadata, credentialReferences });
 }
 
 function verifyPreflightSemantics(config: any, preflight: any): void {

@@ -7,6 +7,7 @@ export interface SanitizedCertificationProjection {
   readonly scenarios: readonly CertificationScenarioId[];
   readonly resources: Readonly<Record<string, unknown>>;
   readonly cleanup: Readonly<Record<string, readonly string[]>>;
+  readonly desiredState: Readonly<Record<string, Readonly<Record<string, unknown>>>>;
   readonly metadata: readonly { readonly section: string; readonly digest: string; readonly status: "configured" }[];
   readonly credentialReferences: readonly { readonly slot: string; readonly status: "configured" }[];
 }
@@ -54,6 +55,7 @@ function createSanitizedCertificationProjection(config: CertificationOperatorCon
     scenarios: Object.freeze([...scenarios]),
     resources: Object.freeze(Object.fromEntries(resourceSections.map(section => [section, config.resources[section]]))),
     cleanup: Object.freeze(Object.fromEntries(cleanupSections.map(section => [section, config.cleanup[section]]))),
+    desiredState: Object.freeze(Object.fromEntries(scenarios.filter(scenario => config.desiredState[scenario]).map(scenario => [scenario, config.desiredState[scenario]!])) as Record<string, Readonly<Record<string, unknown>>>),
     metadata: Object.freeze(metadataSections.map(section => Object.freeze({ section, digest: authorityDigest(config.metadata[section]), status: "configured" as const }))),
     credentialReferences: Object.freeze(secretSlots.map(slot => Object.freeze({ slot, status: "configured" as const }))),
   });

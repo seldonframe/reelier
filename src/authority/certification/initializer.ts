@@ -8,6 +8,7 @@ import { assertUnlinkedCreationParent, certificationWorkspaceRoot, readConfinedF
 import { CERTIFICATION_SCENARIO_IDS, type CertificationScenarioId } from "./scenarios.js";
 import { CERTIFICATION_SCENARIOS } from "./scenarios.js";
 import { parseCertificationEndpointManifest, type CertificationEndpointManifestV2 } from "./manifests.js";
+import { certificationEndpointCommitments } from "./scenario-bindings.js";
 import { CERTIFICATION_PROVIDER_SCENARIO_IDS, getCertificationRunnerRegistryEntry } from "./runner-registry.js";
 
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
@@ -97,24 +98,10 @@ export async function initializeCertification(input: Readonly<{ configPath: stri
 function derivedPrincipalId(identifiers: CertificationIdentifiers): string { return `principal_${authorityDigest({ v: "reelier.certification-principal-id/v1", taskId: identifiers.taskId, authorityCellId: identifiers.authorityCellId }).slice(7, 31)}`; }
 export function deriveCertificationEndpointManifest(config: CertificationOperatorConfigV3, scenario: CertificationScenarioId): CertificationEndpointManifestV2 {
   const registry = getCertificationRunnerRegistryEntry(scenario);
-  const resource = config.resources[scenario];
-  const commitments = endpointCommitments(scenario, resource);
+  const commitments = certificationEndpointCommitments(config, scenario);
   const manifest = parseCertificationEndpointManifest({ v: "reelier.certification-endpoint-manifest/v2", scenarioId: scenario, definitionAliases: registry.definitionAliases, endpoints: registry.endpoints.map(endpoint => ({ ...endpoint, ...commitments[endpoint.provider] })), completeness: "unchecked", dispatchable: registry.dispatchable }, scenario);
   if (manifest.v !== "reelier.certification-endpoint-manifest/v2") throw new TypeError("certification endpoint derivation must produce v2");
   return manifest;
-}
-function endpointCommitments(scenario: CertificationScenarioId, resource: unknown): Readonly<Record<string, Readonly<{ accountCommitment: string; resourceCommitment: string }>>> {
-  const raw = resource as Record<string, any>;
-  const commitment = (provider: string, account: unknown, selectedResource: unknown) => Object.freeze({ accountCommitment: authorityDigest({ v: "reelier.certification-provider-account/v1", provider, account }), resourceCommitment: authorityDigest({ v: "reelier.certification-provider-resource/v1", provider, resource: selectedResource }) });
-  switch (scenario) {
-    case "github-issue-labels": return { github: commitment("github", raw.owner, { owner: raw.owner, repository: raw.repository, issueNumber: raw.issueNumber }) };
-    case "cloudflare-dns": return { cloudflare: commitment("cloudflare", raw.accountId, { accountId: raw.accountId, zoneId: raw.zoneId, recordId: raw.recordId, recordName: raw.recordName }) };
-    case "slack-topic": return { slack: commitment("slack", raw.teamId, { teamId: raw.teamId, channelId: raw.channelId }) };
-    case "cloudflare-vercel-secret": return { cloudflare: commitment("cloudflare", raw.cloudflareAccountId, { accountId: raw.cloudflareAccountId, tokenName: raw.tokenName }), vercel: commitment("vercel", raw.vercelAccountId, { accountId: raw.vercelAccountId, projectId: raw.projectId }) };
-    case "vercel-promotion": return { vercel: commitment("vercel", raw.accountId, { accountId: raw.accountId, projectId: raw.projectId, deploymentId: raw.deploymentId, domains: raw.domains }) };
-    case "neon-migration": return { neon: commitment("neon", raw.accountId, { accountId: raw.accountId, projectId: raw.projectId, branchId: raw.branchId, database: raw.database, role: raw.role }) };
-    default: throw new TypeError("certification scenario has no provider endpoint manifest");
-  }
 }
 async function writeCellScaffold(stage: string, config: CertificationOperatorConfigV3, initialization: CertificationInitialization): Promise<void> {
   const root = path.join(stage, "authority");

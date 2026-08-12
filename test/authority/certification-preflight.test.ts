@@ -40,6 +40,16 @@ test("preflight is selected-scenario-only and never resolves or discloses secret
   } finally { delete process.env.REELIER_GITHUB_TOKEN; }
 });
 
+test("preflight rejects request accessors without invoking them", async () => {
+  let calls = 0;
+  const request = Object.create(Object.prototype, {
+    workspace: { enumerable: true, configurable: true, get: () => { calls += 1; return "C:/must-not-be-read"; } },
+    all: { enumerable: true, configurable: true, writable: true, value: true },
+  });
+  await assert.rejects(() => preflightCertification(request), /inert|accessor|closed/i);
+  assert.equal(calls, 0);
+});
+
 test("preflight refuses empty runner and test placeholders as semantically absent", async () => {
   const root = await workspace();
   const absent = await preflightCertification({ workspace: root, scenario: "github-issue-labels" });

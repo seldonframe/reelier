@@ -36,6 +36,21 @@ test("certification operator config is closed and preserves only secret referenc
   assert.throws(() => parseCertificationOperatorConfig(raw), /closed/);
 });
 
+test("v3 config rejects top-level and nested accessors without invoking them", () => {
+  const valid = migrateCertificationOperatorConfig(completeConfig()) as unknown as Record<string, unknown>;
+  let calls = 0;
+  const top = Object.create(Object.prototype, Object.fromEntries(Object.entries(valid).map(([key, value]) => [key, key === "v"
+    ? { enumerable: true, configurable: true, get: () => { calls += 1; return value; } }
+    : { enumerable: true, configurable: true, writable: true, value }])));
+  assert.throws(() => parseCertificationOperatorConfigV3(top), /inert|accessor|closed/i);
+  assert.equal(calls, 0);
+  const resources = structuredClone(valid.resources) as Record<string, Record<string, unknown>>;
+  const github = resources["github-issue-labels"]!;
+  Object.defineProperty(github, "owner", { enumerable: true, configurable: true, get: () => { calls += 1; return "fixlyai"; } });
+  assert.throws(() => parseCertificationOperatorConfigV3({ ...valid, resources }), /inert|accessor|closed/i);
+  assert.equal(calls, 0);
+});
+
 test("secret-reference inspection reports availability without returning values", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "reelier-cert-config-"));
   const secretFile = path.join(root, "neon-url");
