@@ -2,6 +2,8 @@
 
 The Authority Cell runs on Linux. Windows runs the client and retains only an endpoint, an opaque token reference, the expected Cell ID, and the frozen Adapter Contract digest. The connection file never contains the token value.
 
+This file is public, non-secret, and non-authorizing metadata: it is never evidence of a safe Cell or authority to dispatch. On native Windows its same-user path-mutation resistance is `unchecked`; token-file ancestry remains fail-closed. Every consequential action still requires independently resolved credentials plus authenticated exact Cell ID and frozen Adapter Contract digest.
+
 After a Cell endpoint and token reference exist, configure the client with one command:
 
 ```powershell
