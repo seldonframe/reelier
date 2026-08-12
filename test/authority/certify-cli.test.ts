@@ -11,9 +11,9 @@ async function fixture(): Promise<{ configPath: string; workspace: string }> {
   const root = await mkdtemp(path.join(tmpdir(), "reelier-cert-cli-"));
   const configPath = path.join(root, "certification.local.json");
   await writeFile(configPath, JSON.stringify({
-    v: "reelier.certification-operator-config/v2", authorityConfigPath: "authority/authority.yml", evidenceDirectory: "authority/receipts/certification",
+    v: "reelier.certification-operator-config/v3", authorityConfigPath: "authority/authority.yml", evidenceDirectory: "authority/receipts/certification",
     scenarios: ["github-issue-labels"], resources: { "github-issue-labels": { apiBaseUrl: "https://api.github.com", owner: "fixlyai", repository: "reelier-certification", issueNumber: 1 } },
-    cleanup: { "github-issue-labels": ["restore-github-labels"] }, metadata: {}, secretReferences: { githubCredential: "env:REELIER_GITHUB_TOKEN" },
+    cleanup: { "github-issue-labels": ["restore-github-labels"] }, desiredState: { "github-issue-labels": { labels: ["certification-after"] } }, metadata: {}, secretReferences: { githubCredential: "env:REELIER_GITHUB_TOKEN" },
   }), "utf8");
   return { configPath, workspace: path.join(root, "certification") };
 }

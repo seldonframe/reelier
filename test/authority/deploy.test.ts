@@ -5,28 +5,14 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { authorityDigest, authorityCanonicalBytes, normalizeSignedJobCard, signJobCard, signedJobCardDigest, verifySignedJobCard, verifyAuthoritySignature } from "../../src/authority/index.js";
-import { createSignedCertificationReadiness, parseAuthorityKeyDescriptor } from "../../src/authority/certification/authority.js";
 import { gmailPackDigest } from "../../src/packs/gmail/index.js";
 import { buildAuthorityDeployment } from "../../src/authority/host/deploy.js";
 import { loadAuthorityDeployment } from "../../src/authority/host/deployment.js";
 import { connectionAdoptionCommitmentDigest, connectionDescriptorDigest } from "../../src/connections.js";
+import { jobCardTrustPinFixture } from "./job-card-trust-pin-fixture.js";
 
 const sha = (seed: string) => `sha256:${seed.repeat(64).slice(0, 64)}`;
-const jobCardTrustPin = (publicKey: ReturnType<typeof generateKeyPairSync>["publicKey"]) => {
-  const readinessSigner = generateKeyPairSync("ed25519");
-  const cell = generateKeyPairSync("ed25519");
-  const descriptor = parseAuthorityKeyDescriptor({ v: "reelier.authority-key-descriptor/v1", keyId: "human_sponsor", role: "human-sponsor", purpose: "signed-job-card", algorithm: "ed25519", publicKeySpkiBase64: publicKey.export({ type: "spki", format: "der" }).toString("base64") });
-  const human = parseAuthorityKeyDescriptor({ v: "reelier.authority-key-descriptor/v1", keyId: `signer_${"e".repeat(24)}`, role: "human-sponsor", purpose: "certification-readiness", algorithm: "ed25519", publicKeySpkiBase64: readinessSigner.publicKey.export({ type: "spki", format: "der" }).toString("base64") });
-  const cellDescriptor = parseAuthorityKeyDescriptor({ v: "reelier.authority-key-descriptor/v1", keyId: "cell_receipt_key", role: "authority-cell", purpose: "authority-receipt", algorithm: "ed25519", publicKeySpkiBase64: cell.publicKey.export({ type: "spki", format: "der" }).toString("base64") });
-  const event = (sequence: number, item: any, previousEventDigest: string | null) => ({ v: "reelier.authority-trust-event/v1" as const, eventId: `trust_${sequence}_${"f".repeat(12)}`, sequence, action: "activate" as const, keyDescriptorDigest: authorityDigest(item), occurredAt: "2026-01-01T00:00:00.000Z", previousEventDigest });
-  const first = event(0, human, null); const second = event(1, cellDescriptor, authorityDigest(first)); const third = event(2, descriptor, authorityDigest(second));
-  const readiness: any = { v: "reelier.certification-readiness-candidate/v1", status: "awaiting-human-signature", preparationReady: true, signatureStatus: "absent", authorization: "absent", dispatchable: false, completeness: "unchecked", configDigest: sha("1"), selectionDigest: sha("2"), preflightDigest: "", scenarios: ["github-issue-labels"], identifiers: { taskId: `task_${"a".repeat(24)}`, jobCardId: `job_${"b".repeat(24)}`, rootGrantId: `grant_${"c".repeat(24)}`, authorityCellId: `cell_${"d".repeat(24)}`, signerId: human.keyId }, commitments: { resources: [], cleanup: [], credentials: [], runners: { status: "configured", artifacts: [] }, tests: { status: "configured", artifacts: [] }, topology: "absent", signatureStatus: "absent" } };
-  const preflightBody: any = { v: "reelier.certification-preflight/v2", configDigest: readiness.configDigest, selectionDigest: readiness.selectionDigest, identifiers: readiness.identifiers, scenarios: readiness.scenarios, resources: [], cleanup: [], credentialReferences: [], inputs: { runners: readiness.commitments.runners, tests: readiness.commitments.tests }, topology: "absent", trust: "unchecked", signatureStatus: "absent", authorization: "absent", completeness: "unchecked", missing: [], ok: true, preparationReady: true };
-  const preflight = { ...preflightBody, digest: authorityDigest(preflightBody) }; readiness.preflightDigest = preflight.digest;
-  const keyDescriptors = [human, cellDescriptor, descriptor]; const readinessTrustEvents = [first, second, third];
-  const signedReadiness = createSignedCertificationReadiness({ readinessCandidate: readiness, readinessCandidateDigest: authorityDigest(readiness), preflight, humanKeyDescriptor: human, cellKeyDescriptors: [cellDescriptor], jobCardKeyDescriptors: [descriptor], trustEvents: readinessTrustEvents, humanPrivateKey: readinessSigner.privateKey, authorizedAt: "2026-01-02T00:00:00.000Z" });
-  return { v: "reelier.job-card-trust-pin/v1" as const, signedReadiness, readinessCandidate: readiness, preflight, humanTrustRoot: human, keyDescriptors, readinessTrustEvents, currentTrustEvents: readinessTrustEvents };
-};
+const jobCardTrustPin = (publicKey: ReturnType<typeof generateKeyPairSync>["publicKey"]) => jobCardTrustPinFixture(publicKey, "human_sponsor", "cell_receipt_key");
 const unsignedJob = {
   v: "reelier.signed-job-card/v1" as const,
   jobId: "customer_reply",
