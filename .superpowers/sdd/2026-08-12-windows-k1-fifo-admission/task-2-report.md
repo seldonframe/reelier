@@ -45,3 +45,80 @@
 - Windows lacks the explicit directory-handle synchronization used on non-Windows platforms; file contents are synced before rename, and atomic namespace transitions plus crash-residue tests are covered, but a power-loss durability claim for directory entries remains platform-limited.
 - By Task 2 scope, genuine-permit `withdraw` remains bounded `busy` and `close` only validates ownership. Election, liveness-server operation, withdrawal, dead-owner recovery, root-mutex acquisition, and ledger integration belong to later tasks and are intentionally absent.
 - Verification was limited to the requested Task 2 compile and focused tests; the full suite and hosted Windows stress gate were not run.
+
+## Fix round 1/5 — BLOCKED on link-safe Windows mutation
+
+### Status and scope
+
+No production or test file was changed in this fix round. Review finding 2 is a central safety invariant and the review explicitly requires work to stop rather than substitute pre/post pathname validation when Node cannot provide an actually link-safe primitive. Investigation confirmed that limitation on the supported Windows runtime, so findings 1 and 3–7 remain unimplemented pending an architectural decision.
+
+### Finding mapping
+
+1. **Permit invalidation:** not implemented because finding 2 triggered the mandatory stop. Required future RED coverage remains forged, foreign, closed, and double-close permits; GREEN must delete/transition the module-private `WeakMap` entry before closing owned resources and reject all reuse.
+2. **Pathname TOCTOU:** confirmed blocking. A validated queue directory can be displaced and replaced by a junction before `open("wx")`; Node then follows the junction and writes outside the bound root. There is no built-in descriptor-relative child mutation API or Windows no-follow flag in this runtime.
+3. **Mutable caller input:** not implemented because finding 2 triggered the mandatory stop. Required future RED coverage remains binding/runtime/fault-observer mutation, including mutation at the final observer; GREEN must capture an immutable deep binding projection and function references once and revalidate after the last observer.
+4. **Directory `nlink`:** not implemented because finding 2 triggered the mandatory stop. Required future RED coverage remains a non-Windows publication success or deterministic directory-identity mutation test; GREEN must separate stable directory identity (`dev`/`ino`/`mode`) from regular-file identity (`nlink === 1`).
+5. **Crash residue assertions:** not implemented because finding 2 triggered the mandatory stop. Required future RED coverage remains non-following `lstat`, direct-child `realpath` confinement, identity/no-link assertions, and exact canonical-prefix bytes for every residue.
+6. **Committed collision:** not implemented because finding 2 triggered the mandatory stop. Required future RED coverage remains exact retry/collision with no newly introduced preparation artifact; GREEN must classify the committed destination before creating/writing preparation state and mutate only exact-owner artifacts.
+7. **Sync event naming:** not implemented because finding 2 triggered the mandatory stop. Future GREEN must rename Windows no-op events to `...directory-sync-attempted` or emit an explicit supported/skipped state.
+
+### Runtime API inventory command and exact output
+
+Command:
+
+```powershell
+node --input-type=module -e "import fs from 'node:fs'; import fsp from 'node:fs/promises'; const h=await fsp.open('package.json','r'); console.log(JSON.stringify({node:process.version,platform:process.platform,O_NOFOLLOW:fs.constants.O_NOFOLLOW??null,O_DIRECTORY:fs.constants.O_DIRECTORY??null,atApis:Object.keys(fs).filter(k=>/at$/i.test(k)||k.includes('openat')||k.includes('renameat')||k.includes('mkdirat')),fileHandleMethods:Object.getOwnPropertyNames(Object.getPrototypeOf(h)).sort()},null,2)); await h.close()"
+```
+
+```text
+{
+  "node": "v24.9.0",
+  "platform": "win32",
+  "O_NOFOLLOW": null,
+  "O_DIRECTORY": null,
+  "atApis": [
+    "fstat",
+    "lstat",
+    "stat"
+  ],
+  "fileHandleMethods": [
+    "appendFile",
+    "chmod",
+    "chown",
+    "constructor",
+    "createReadStream",
+    "createWriteStream",
+    "datasync",
+    "fd",
+    "getAsyncId",
+    "read",
+    "readFile",
+    "readLines",
+    "readableWebStream",
+    "stat",
+    "sync",
+    "truncate",
+    "utimes",
+    "write",
+    "writeFile",
+    "writev"
+  ]
+}
+```
+
+### Minimal deterministic reproducer and exact output
+
+The disposable reproducer creates a real queue, validates it with non-following `lstat`, displaces it, installs an external junction at the same pathname, then performs the same path-based `open("wx")` used by publication. It does not touch the worktree.
+
+```text
+validated=true
+external=escaped-write
+```
+
+Exit code: `0`.
+
+### Exact API limitation and required decision
+
+`node:fs` accepts pathnames for `mkdir`, `open`, `rename`, `readFile`, and `realpath`. On Windows in Node v24.9.0 it exposes neither descriptor-relative `openat`/`mkdirat`/`renameat` operations nor `O_NOFOLLOW`/`O_DIRECTORY`; a `FileHandle` cannot create, open, or rename a child relative to its already-validated handle. Even a final-component no-follow flag would not close traversal through a substituted intermediate queue/preparation junction. Therefore validation before and after a pathname mutation can detect substitution only after an external write may already have occurred.
+
+Closing the invariant requires an architectural change outside the approved two-file TypeScript design: for example, a reviewed native Windows helper/addon that performs handle-relative, reparse-point-rejecting creation and rename from an anchored root directory handle, or a different coordination substrate. Weakening the invariant to detection-after-write is explicitly disallowed.
