@@ -72,6 +72,7 @@
     "build": "tsc -p tsconfig.json && node scripts/build-authority-contract.mjs --copy-schemas",
     "build:authority-contract": "node scripts/build-authority-contract.mjs",
     "check:authority-contract": "node scripts/build-authority-contract.mjs --check",
+    "check:agent-adapter": "node conformance/agent-adapter/v0/check.mjs",
     "lint:fault-pins": "node scripts/lint-fault-pins.mjs",
     "baseline": "node scripts/baseline-diff.mjs",
     "test": "tsc -p tsconfig.test.json && node --test --test-concurrency=1 \"dist-test/test/**/*.test.js\"",

@@ -172,3 +172,21 @@ test("Grok Build and Grok Bot share identical transport-neutral semantics", () =
   assert.deepEqual(bot.report.checks.map((check) => check.id), build.report.checks.map((check) => check.id));
   assert.deepEqual(bot.report.checks.map((check) => check.status), build.report.checks.map((check) => check.status));
 });
+
+test("the package script checks an adapter candidate end to end", () => {
+  const candidate = path.join("conformance", "agent-adapter", "v0", "fixtures", "grok-build-observed.json");
+  const command = process.platform === "win32" ? (process.env.ComSpec ?? "cmd.exe") : "npm";
+  const args = process.platform === "win32"
+    ? ["/d", "/s", "/c", "npm.cmd", "run", "check:agent-adapter", "--", candidate]
+    : ["run", "check:agent-adapter", "--", candidate];
+  const result = spawnSync(command, args, {
+    cwd: process.cwd(),
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const lines = result.stdout.trim().split(/\r?\n/);
+  const report = JSON.parse(lines.at(-1) ?? "") as ConformanceReport;
+  assert.equal(report.v, "reelier.agent-adapter-conformance-report/v0");
+  assert.equal(report.adapterId, "xai.grok-build");
+  assert.equal(report.status, "passed");
+});
