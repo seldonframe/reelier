@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { runAuthorityCommand } from "../../src/authority/cli.js";
@@ -57,4 +57,31 @@ test("live cell check refuses redirect and redacts token resolver failures", asy
   const result = await checkAuthorityCellLive(connection, { resolveToken: async () => secret, request: async (_url, init) => { redirect = String(init.redirect); return new Response(JSON.stringify({ v: "reelier.authority-cell-identity/v1", cellId: "cell_1", adapterContractDigest: digest }), { status: 200 }); } });
   assert.equal(result.state, "verified");
   assert.equal(redirect, "error");
+});
+
+test("doctor treats an unavailable token reference as absent without exposing it", async () => {
+  const connection = { v: "reelier.authority-cell-connection/v1", endpoint: "https://cell.example", transport: "http", bearerTokenRef: "env:CELL_TOKEN", expectedCellId: "cell_1", adapterContractDigest: digest } as const;
+  const result = await checkAuthorityCellLive(connection, { resolveToken: async () => { throw new Error("secret-must-not-leak"); } });
+  assert.deepEqual(result, { state: "absent", reasonCode: "token-unavailable" });
+});
+
+test("doctor rejects stale Cell and adapter identities exactly", async () => {
+  const connection = { v: "reelier.authority-cell-connection/v1", endpoint: "https://cell.example", transport: "http", bearerTokenRef: "env:CELL_TOKEN", expectedCellId: "cell_1", adapterContractDigest: digest } as const;
+  const response = (cellId: string, adapterContractDigest: string) => new Response(JSON.stringify({ v: "reelier.authority-cell-identity/v1", cellId, adapterContractDigest }), { status: 200 });
+  const staleCell = await checkAuthorityCellLive(connection, { resolveToken: async () => "opaque", request: async () => response("cell_old", digest) });
+  assert.deepEqual(staleCell, { state: "failed", reasonCode: "cell-id-mismatch", cellId: "cell_old" });
+  const staleContract = await checkAuthorityCellLive(connection, { resolveToken: async () => "opaque", request: async () => response("cell_1", `sha256:${"c".repeat(64)}`) });
+  assert.deepEqual(staleContract, { state: "failed", reasonCode: "adapter-contract-mismatch", cellId: "cell_1", adapterContractDigest: `sha256:${"c".repeat(64)}` });
+});
+
+test("doctor refuses parent symlink token ancestry before reading the token", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-cell-token-root-"));
+  const outside = await mkdtemp(path.join(os.tmpdir(), "reelier-cell-token-outside-"));
+  try {
+    await writeFile(path.join(outside, "token"), "opaque-token");
+    await symlink(outside, path.join(root, "linked"), "junction");
+    const connection = { v: "reelier.authority-cell-connection/v1", endpoint: "https://cell.example", transport: "http", bearerTokenRef: `file:${path.join(root, "linked", "token")}`, expectedCellId: "cell_1", adapterContractDigest: digest } as const;
+    const result = await checkAuthorityCellLive(connection, { credentialRoot: root } as never);
+    assert.deepEqual(result, { state: "absent", reasonCode: "token-unavailable" });
+  } finally { await rm(root, { recursive: true, force: true }); await rm(outside, { recursive: true, force: true }); }
 });
