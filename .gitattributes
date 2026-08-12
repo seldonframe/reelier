@@ -12,5 +12,8 @@ contract/wire-contract.v1.public-key.pem text eol=lf
 test/fixtures/golden/** text eol=lf
 *.skill.md text eol=lf
 
+# Public proof artifacts are byte-bound by SHA-256 and must survive Windows checkout unchanged.
+docs/evidence/receipt-proof/** text eol=lf
+
 # POSIX shell script — must stay LF (CRLF breaks the shebang on execution).
 .githooks/pre-push text eol=lf
