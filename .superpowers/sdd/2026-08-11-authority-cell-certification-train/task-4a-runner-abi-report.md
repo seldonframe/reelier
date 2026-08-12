@@ -24,6 +24,8 @@ The provider registry covers exactly GitHub labels, Cloudflare DNS, Slack topic,
 - `718bf7e` GREEN — count all matching artifacts before parsing, make public artifact parsers inert, derive plan policy identity, keep Task 4A before-state pending, publish only desired-state field commitments, and bind static schema authority.
 - `c0b7ece` RED — reproduce nested-array getter execution, non-inert array shapes, scenario-plan static-identity schema gaps, unsafe file references, and the missing host semantic-verification boundary.
 - `7d65231` GREEN — make every touched nested-array boundary descriptor-safe, canonicalize order-insensitive dynamic lists, bind scenario-static plan identities, constrain file references, and expose narrow host-only semantic verifiers.
+- `5b51643` RED — reproduce stale CLI desired-state input and pre-Task4A signed-readiness integration fixtures.
+- `a0573f7` GREEN — migrate the CLI scenario to explicit v3 authority and share one exact current non-dispatchable readiness fixture across deploy and local E2E tests.
 
 ## Files
 
@@ -43,12 +45,13 @@ Tests and operator material include the focused certification suite, `authority/
 
 ## Verification
 
-At implementation head `7d65231`:
+At implementation head `a0573f7`:
 
 ```text
 npm run build                                                       PASS
 npx tsc -p tsconfig.test.json --pretty false                        PASS
 focused authority/certification tests                              111 passed, 0 failed, 0 skipped
+affected CLI/deploy/local integration tests                         11 passed, 0 failed, 0 skipped
 npm run check:authority-contract                                   PASS
 ```
 
@@ -77,4 +80,4 @@ These deviations bind and preserve non-dispatchability. They do not implement a 
 
 ## Review
 
-The first independent review returned FIX FIRST. Commits `178369b` through `ca1184b` addressed that pass. The next review found five remaining trust-boundary classes. RED `44b72a2` and GREEN `718bf7e` closed those executable findings. The final pass then identified nested-array getter execution and an overstatement of portable-schema authority. RED `c0b7ece` proves those failures; GREEN `7d65231` routes every touched untrusted array through descriptor-safe `inertArray`, binds scenario-static plan identities with an exact `oneOf`, canonicalizes dynamic lists before commitment, restricts `file:` references to safe relative payloads, and documents plus exports the mandatory narrow host semantic-verification boundary without exposing the private registry or execution. The same reviewer must re-review exact range `25be3a5..HEAD` before final handoff.
+The first independent review returned FIX FIRST. Commits `178369b` through `ca1184b` addressed that pass. The next review found five remaining trust-boundary classes. RED `44b72a2` and GREEN `718bf7e` closed those executable findings. The final pass then identified nested-array getter execution and an overstatement of portable-schema authority. RED `c0b7ece` proves those failures; GREEN `7d65231` routes every touched untrusted array through descriptor-safe `inertArray`, binds scenario-static plan identities with an exact `oneOf`, canonicalizes dynamic lists before commitment, restricts `file:` references to safe relative payloads, and documents plus exports the mandatory narrow host semantic-verification boundary without exposing the private registry or execution. Full-suite integration exposed three stale test producers; RED `5b51643` reproduced them and GREEN `a0573f7` migrated them without changing production or weakening the strict parser. The same reviewer inspected `9055bcd..a0573f7` and returned **Ship** with no blocking or non-blocking findings. Exact implementation re-review range remains `25be3a5..a0573f7`.
