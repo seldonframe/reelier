@@ -272,6 +272,19 @@ test("conflict receipt publication is recoverable and cannot verify ahead of its
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
+test("conflict recovery refuses a duplicated non-head receipt in its durable chain", async () => {
+  const f = await fixture("cut-after-conflict-publication"); try {
+    await f.runner.run({ bearerToken: f.credential.token, requestId: "request_conflict_chain_duplicate" });
+    await assert.rejects(() => f.runner.conflict({ bearerToken: f.credential.token, requestId: "request_conflict_chain_duplicate", exactBytes: Buffer.from("conflict").toString("base64") }), /controlled cut/i);
+    const portable = path.join(f.initialized.workspace, "authority", "github-label-runner", "receipts", "portable"), files = (await readdir(portable)).filter(name => name.endsWith(".json"));
+    const nonHead = (await Promise.all(files.map(async name => ({ name, bundle: JSON.parse(await readFile(path.join(portable, name), "utf8")) })))).find(item => item.bundle.receipt.value.priorReceiptDigest === null);
+    assert.ok(nonHead);
+    await writeFile(path.join(portable, "duplicate-non-head.json"), await readFile(path.join(portable, nonHead.name)));
+    const restarted = await createGitHubIssueLabelsHermeticComposition(f.cell);
+    await assert.rejects(() => restarted.recover(), /receipt.*fork|duplicate|incomplete/i);
+  } finally { await rm(f.root, { recursive: true, force: true }); }
+});
+
 test("dispatch and reconciliation mint portable chained receipts accepted by the existing offline verifier", async () => {
   const f = await fixture(); try {
     await f.runner.run({ bearerToken: f.credential.token, requestId: "request_receipts" });
