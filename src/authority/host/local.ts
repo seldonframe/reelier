@@ -63,11 +63,17 @@ export async function createLocalAuthorityRuntime(config: AuthorityHostConfig, o
     verifyAuthorityLease(options.signedLease, { tenant: config.tenant, now: new Date(), signerId: options.leaseSigner.signerId, publicKey: options.leaseSigner.publicKey, topologyEvidenceDigest: options.signedTopologyEvidence.digest });
   }
   await mkdir(config.ledgerDir, { recursive: true }); await mkdir(config.decisionDir, { recursive: true }); await mkdir(config.receiptDir, { recursive: true });
+  if (config.deploymentPath && config.jobCardTrustPinPath) {
+    const deploymentRoot = path.dirname(path.resolve(config.deploymentPath));
+    const trustPinPath = path.resolve(config.jobCardTrustPinPath);
+    if (trustPinPath === deploymentRoot || trustPinPath.startsWith(`${deploymentRoot}${path.sep}`)) throw new TypeError("host Job Card trust pin must remain outside deployment-controlled output");
+  }
   const jobCardTrustPin = options.jobCardTrustPin ?? (config.jobCardTrustPinPath ? JSON.parse(await readFile(config.jobCardTrustPinPath, "utf8")) as JobCardTrustPinV1 : undefined);
   const deployment = config.deploymentPath ? await loadAuthorityDeployment(config.deploymentPath, { jobCardTrustPin }) : undefined;
   if (deployment && deployment.tenant !== config.tenant) throw new TypeError("authority deployment tenant does not match host config");
   if (deployment && !deployment.jobCard) throw new TypeError("production authority deployment requires a signed Job Card");
   if (deployment?.jobCard) {
+    if (deployment.jobCard.definitionAliases.length !== 1) throw new TypeError("loaded signed Job Card must bind exactly one invokable definition");
     const configured = [...config.definitions].sort();
     if (authorityDigest(configured) !== authorityDigest(deployment.jobCard.definitionAliases)) throw new TypeError("host definitions do not match the signed Job Card");
     const selectedPacks = deployment.jobCard.definitionAliases.map(alias => firstPartyPackForAlias(alias));
@@ -104,7 +110,9 @@ export async function createLocalAuthorityRuntime(config: AuthorityHostConfig, o
   const adapter = options.dispatchAdapter ?? createJsonHttpsDispatchAdapter({ endpoints: config.endpoints, secrets: createSecretResolver() });
   const dispatch = createDispatchCoordinator(ledger, adapter, undefined, publication, options.delegation?.budget);
   const runtime = createAuthorityHostRuntime({ gate, dispatch, ledger, decisions, delegation: options.delegation, ...(options.delegation ? { verifyRootGrant: (grant, tenant) => { verifyTrustedAuthority(trustRoots, { tenant, signerId: grant.signerId, purpose: "delegation-grant", advertisedDigest: grant.digest, value: grant.grant, signature: grant.signature }); } } : {}) });
-  const jobs = Object.freeze((deployment?.jobCard?.definitionAliases ?? config.definitions).map(alias => Object.freeze({ jobId: alias, alias })));
+  const jobs = deployment?.jobCard
+    ? Object.freeze([Object.freeze({ jobId: deployment.jobCard.jobId, alias: deployment.jobCard.definitionAliases[0]! })])
+    : Object.freeze(config.definitions.map(alias => Object.freeze({ jobId: alias, alias })));
   const authorizedRequester = (context: { readonly tenant: string; readonly requester: string }): boolean => context.tenant === config.tenant && (deployment?.jobCard?.audiences.includes(context.requester) ?? true);
   return Object.freeze({
     ...runtime,
@@ -122,7 +130,7 @@ export async function createLocalAuthorityRuntime(config: AuthorityHostConfig, o
     },
     async jobsSearch(input: unknown) {
       const query = input && typeof input === "object" && !Array.isArray(input) && typeof (input as Record<string, unknown>).query === "string" ? String((input as Record<string, unknown>).query).toLowerCase() : "";
-      return Object.freeze({ requestId: "", verdict: "accepted" as const, reasonCode: "jobs-found", lifecycleState: "catalog", jobs: Object.freeze(jobs.filter(job => !query || job.alias.toLowerCase().includes(query))) });
+      return Object.freeze({ requestId: "", verdict: "accepted" as const, reasonCode: "jobs-found", lifecycleState: "catalog", jobs: Object.freeze(jobs.filter(job => !query || job.jobId.toLowerCase().includes(query) || job.alias.toLowerCase().includes(query))) });
     },
     async jobLoad(input: unknown) {
       const jobId = input && typeof input === "object" && !Array.isArray(input) && typeof (input as Record<string, unknown>).jobId === "string" ? String((input as Record<string, unknown>).jobId) : "";
@@ -133,10 +141,11 @@ export async function createLocalAuthorityRuntime(config: AuthorityHostConfig, o
       if (!input || typeof input !== "object" || Array.isArray(input)) return Object.freeze({ requestId: "", verdict: "refused" as const, reasonCode: "invalid-request", lifecycleState: "refused" });
       const raw = input as Record<string, unknown>;
       const jobRef = typeof raw.jobRef === "string" ? raw.jobRef : "";
-      if (!jobs.some(job => job.jobId === jobRef)) return Object.freeze({ requestId: typeof raw.requestId === "string" ? raw.requestId : "", verdict: "refused" as const, reasonCode: "job-not-found", lifecycleState: "unknown" });
+      const job = jobs.find(item => item.jobId === jobRef);
+      if (!job) return Object.freeze({ requestId: typeof raw.requestId === "string" ? raw.requestId : "", verdict: "refused" as const, reasonCode: "job-not-found", lifecycleState: "unknown" });
       const request = { ...raw }; delete request.jobRef;
       if (!authorizedRequester(context)) return Object.freeze({ requestId: typeof raw.requestId === "string" ? raw.requestId : "", verdict: "refused" as const, reasonCode: "job-authority-refused", lifecycleState: "refused" });
-      return runtime.outcome(jobRef, request, context);
+      return runtime.outcome(job.alias, request, context);
     },
   });
 }

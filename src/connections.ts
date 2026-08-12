@@ -92,8 +92,8 @@ export function createOpaqueConnectionRouteRegistry(): OpaqueConnectionRouteRegi
       let connection: DownstreamConnection | undefined;
       try {
         connection = await entry.resolve();
-        const serverIdentity = connection.advertisedName ?? connection.name;
-        if (serverIdentity !== descriptor.provider.toolServerName) throw new TypeError("opaque route server identity mismatch");
+        const serverIdentity = connection.advertisedName;
+        if (typeof serverIdentity !== "string" || !serverIdentity || serverIdentity !== descriptor.provider.toolServerName) throw new TypeError("opaque route server identity mismatch");
         const observedSchemas = digestNormalizedMcpToolSchemas(connection.tools);
         if (!sameStringArrays(observedSchemas.map(item => item.digest), descriptor.toolSchemas.map(item => item.digest))) throw new TypeError("opaque route schema mismatch");
         const tools = new Set(connection.tools.map(tool => tool.name));

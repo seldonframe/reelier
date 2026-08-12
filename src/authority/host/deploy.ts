@@ -21,7 +21,8 @@ export interface BuiltAuthorityDeployment {
   readonly directory: string;
   readonly deploymentFile: string;
   readonly jobCardFile: string;
-  readonly jobCardTrustPinFile: string;
+  /** Exported evidence for review/copy only. Hosts must pin an independently owned trust path. */
+  readonly jobCardTrustEvidenceFile: string;
   readonly jobCard: SignedJobCardV1;
   readonly manifest: AuthorityDeploymentManifest;
   readonly jobCardTrustPin: JobCardTrustPinV1;
@@ -70,12 +71,12 @@ export async function buildAuthorityDeployment(inputFile: string, outputDirector
     };
     const deploymentFile = path.join(output, "deployment.json");
     const jobCardFile = path.join(output, "job.json");
-    const jobCardTrustPinFile = path.join(output, "job-card-trust-pin.json");
+    const jobCardTrustEvidenceFile = path.join(output, "job-card-trust-evidence.json");
     await writeFile(deploymentFile, `${JSON.stringify(manifest, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
     await writeFile(jobCardFile, `${JSON.stringify(jobCard, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
-    await writeFile(jobCardTrustPinFile, `${JSON.stringify(jobCardTrustPin, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+    await writeFile(jobCardTrustEvidenceFile, `${JSON.stringify(jobCardTrustPin, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
     const loaded = await loadAuthorityDeployment(deploymentFile, { jobCardTrustPin });
-    return Object.freeze({ directory: output, deploymentFile, jobCardFile, jobCardTrustPinFile, jobCard, manifest: loaded, jobCardTrustPin });
+    return Object.freeze({ directory: output, deploymentFile, jobCardFile, jobCardTrustEvidenceFile, jobCard, manifest: loaded, jobCardTrustPin });
   } catch (error) {
     await rm(output, { recursive: true, force: true }).catch(() => undefined);
     throw new TypeError(`deployment could not be built: ${error instanceof Error ? error.message : String(error)}`);
