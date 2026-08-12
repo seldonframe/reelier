@@ -19,6 +19,7 @@ import { githubIssueLabelsAlias, githubIssueLabelsReadEndpointId, githubIssueLab
 import { cloudflareDnsRecordSetReadEndpointId, cloudflareDnsRecordSetWriteEndpointId } from "../../src/packs/cloudflare/manifest.js";
 import { slackChannelTopicReadEndpointId, slackChannelTopicWriteEndpointId } from "../../src/packs/slack-topic/manifest.js";
 import { neonDatabaseMigrationReadEndpointId, neonDatabaseMigrationWriteEndpointId } from "../../src/packs/neon/manifest.js";
+import { certificationScenarioPlanBindings } from "../../src/authority/certification/scenario-bindings.js";
 
 const sha = (character: string) => `sha256:${character.repeat(64)}`;
 
@@ -124,30 +125,34 @@ test("runner v2 binds registry metadata but remains non-dispatchable without imp
 });
 
 test("scenario plan is closed, selected-only, digest-bound, and rejects secret or executable shapes", () => {
+  const config = parseCertificationOperatorConfigV3(githubV3());
+  const bindings = certificationScenarioPlanBindings(config, "github-issue-labels");
   const base = {
     v: "reelier.certification-scenario-plan/v1",
     scenarioId: "github-issue-labels",
     definitionAliases: [githubIssueLabelsAlias],
-    sourceRefs: { issue: "github:fixlyai/reelier-certification#1" },
-    choices: { labels: ["certification-after"] },
+    sourceRefs: bindings.sourceRefs,
+    resourceDigest: bindings.resourceDigest,
+    accountCommitments: bindings.accountCommitments,
+    desiredStateDigest: bindings.desiredStateDigest,
     policyCommitments: [{ schemaId: "github_issue_labels_policy_v1", digest: sha("1") }],
-    cleanup: { recipeId: "restore-github-issue-labels", beforeStateDigest: sha("2") },
+    cleanup: { recipeIds: bindings.cleanupRecipeIds, beforeStateDigest: sha("2") },
     controlledCut: { case: "ambiguous-after-dispatch" },
     runnerManifestDigest: sha("3"),
     testManifestDigest: sha("4"),
     endpointManifestDigest: sha("5"),
     runnerRegistryDigest: certificationRunnerRegistryDigest,
   };
-  assert.equal(parseCertificationScenarioPlan(base, ["github-issue-labels"]).scenarioId, "github-issue-labels");
+  assert.equal(parseCertificationScenarioPlan(base, config, ["github-issue-labels"]).scenarioId, "github-issue-labels");
   for (const mutation of [
     { ...base, scenarioId: "slack-topic" },
     { ...base, callback: () => undefined },
     { ...base, modulePath: "./runner.js" },
     { ...base, command: "node runner.js" },
-    { ...base, choices: { authorization: "Bearer private" } },
-    { ...base, choices: { token: "secret" } },
+    { ...base, sourceRefs: { github: sha("9") } },
+    { ...base, cleanup: { recipeIds: ["caller-choice"], beforeStateDigest: sha("2") } },
     { ...base, unselectedScenarioData: { "slack-topic": {} } },
-  ]) assert.throws(() => parseCertificationScenarioPlan(mutation, ["github-issue-labels"]), /closed|secret|executable|selected|scenario/i);
+  ]) assert.throws(() => parseCertificationScenarioPlan(mutation, config, ["github-issue-labels"]), /closed|authority|config|selected|scenario/i);
 });
 
 test("private runner registry is exact metadata and unavailable compound runners stay non-dispatchable", () => {
@@ -175,20 +180,24 @@ test("public package exports do not expose the private runner registry", async (
 
 test("closed public plan input rejects accessor-based callbacks without invoking them", () => {
   let calls = 0;
-  const choices = Object.create(Object.prototype, {
-    desired: { enumerable: true, get: () => { calls += 1; return "reviewed"; } },
+  const sourceRefs = Object.create(Object.prototype, {
+    github: { enumerable: true, get: () => { calls += 1; return sha("1"); } },
   });
+  const config = parseCertificationOperatorConfigV3(githubV3());
+  const bindings = certificationScenarioPlanBindings(config, "github-issue-labels");
   const plan = {
     v: "reelier.certification-scenario-plan/v1",
     scenarioId: "github-issue-labels",
     definitionAliases: [githubIssueLabelsAlias],
-    sourceRefs: { issue: "github:fixlyai/reelier-certification#1" },
-    choices,
+    sourceRefs,
+    resourceDigest: bindings.resourceDigest,
+    accountCommitments: bindings.accountCommitments,
+    desiredStateDigest: bindings.desiredStateDigest,
     policyCommitments: [{ schemaId: "github_issue_labels_policy_v1", digest: sha("1") }],
-    cleanup: { recipeId: "restore-github-issue-labels", beforeStateDigest: sha("2") },
+    cleanup: { recipeIds: bindings.cleanupRecipeIds, beforeStateDigest: sha("2") },
     controlledCut: { case: "ambiguous-after-dispatch" },
     runnerManifestDigest: sha("3"), testManifestDigest: sha("4"), endpointManifestDigest: sha("5"), runnerRegistryDigest: certificationRunnerRegistryDigest,
   };
-  assert.throws(() => parseCertificationScenarioPlan(plan, ["github-issue-labels"]), /accessor|closed|executable/i);
+  assert.throws(() => parseCertificationScenarioPlan(plan, config, ["github-issue-labels"]), /inert|accessor|closed/i);
   assert.equal(calls, 0);
 });

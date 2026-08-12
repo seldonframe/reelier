@@ -9,6 +9,7 @@ import { certificationWorkspaceRoot, confinedExistingDirectory, readConfinedFile
 import { createCertificationSelectionCommitment } from "./commitment.js";
 import { parseCertificationEndpointManifest, parseCertificationRunnerManifest, parseCertificationScenarioPlan, parseCertificationTestManifest } from "./manifests.js";
 import { CERTIFICATION_PROVIDER_SCENARIO_IDS, certificationRunnerRegistryDigest } from "./runner-registry.js";
+import { inertRecord } from "./inert.js";
 
 export interface CertificationInputArtifact { readonly scenario: CertificationScenarioId; readonly name: string; readonly digest: string }
 export interface CertificationInputSet { readonly status: "configured" | "absent"; readonly artifacts: readonly CertificationInputArtifact[] }
@@ -37,12 +38,13 @@ export interface CertificationPreflightV2 {
 }
 
 export async function preflightCertification(input: Readonly<{ workspace: string; scenario?: string; all?: boolean }>): Promise<CertificationPreflightV2> {
-  closedInput(input, ["workspace", ...(input.scenario === undefined ? [] : ["scenario"]), ...(input.all === undefined ? [] : ["all"])], "certification preflight request");
-  const workspace = path.resolve(input.workspace);
+  const request = closedInput(input, ["workspace", "scenario", "all"], "certification preflight request");
+  if (typeof request.workspace !== "string") throw new TypeError("certification preflight workspace is invalid");
+  const workspace = path.resolve(request.workspace);
   const workspaceRoot = await certificationWorkspaceRoot(workspace);
   const config = parseCertificationOperatorConfigV3(JSON.parse((await readConfinedFile(workspaceRoot, workspaceRoot, "config.json")).toString("utf8")));
   const initialization = parseCertificationInitialization(JSON.parse((await readConfinedFile(workspaceRoot, workspaceRoot, "initialization.json")).toString("utf8")));
-  const scenarios = selectScenarios(config, input.scenario, input.all);
+  const scenarios = selectScenarios(config, request.scenario as string | undefined, request.all as boolean | undefined);
   validateCertificationInitialization(config, initialization);
   const selectedCommitment = createCertificationSelectionCommitment(config, scenarios, initialization.configDigest);
   const definitions = scenarios.map(scenario => CERTIFICATION_SCENARIOS[scenario]);
@@ -64,7 +66,7 @@ export async function preflightCertification(input: Readonly<{ workspace: string
   const tests = await inspectInputSet(workspaceRoot, "tests", runnerScenarios, runnerDigests);
   const testDigests = new Map(tests.artifacts.map(item => [item.scenario, item.digest]));
   const endpoints = await inspectEndpoints(workspaceRoot, runnerScenarios);
-  const inputs = Object.freeze({ runners, tests, plans: await inspectPlans(workspaceRoot, runnerScenarios, runnerDigests, testDigests), endpoints });
+  const inputs = Object.freeze({ runners, tests, plans: await inspectPlans(workspaceRoot, config, runnerScenarios, runnerDigests, testDigests), endpoints });
   const topology = scenarios.includes("fly-topology") ? (config.metadata.flyTopology ? "configured" as const : "absent" as const) : "absent" as const;
   const missing = [
     ...resources.filter(item => item.status === "missing").map(item => `resource:${item.scenario}`),
@@ -102,11 +104,11 @@ export async function preflightCertification(input: Readonly<{ workspace: string
   return Object.freeze({ ...body, digest: authorityDigest(body) });
 }
 
-function closedInput(value: unknown, allowed: readonly string[], label: string): void {
-  if (!value || typeof value !== "object" || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype) throw new TypeError(`${label} must be a closed plain object`);
-  const keys = Reflect.ownKeys(value);
-  if (keys.some(key => typeof key !== "string") || keys.some(key => !allowed.includes(key as string))) throw new TypeError(`${label} is closed and accepts no callback or executable dependencies`);
-  for (const descriptor of Object.values(Object.getOwnPropertyDescriptors(value))) if (descriptor.get || descriptor.set) throw new TypeError(`${label} accepts no accessor callback`);
+function closedInput(value: unknown, allowed: readonly string[], label: string): Record<string, unknown> {
+  const raw = inertRecord(value, label);
+  const keys = Object.keys(raw);
+  if (!Object.hasOwn(raw, "workspace") || keys.some(key => !allowed.includes(key))) throw new TypeError(`${label} is closed and accepts no callback or executable dependencies`);
+  return raw;
 }
 
 function selectScenarios(config: CertificationOperatorConfigV3, scenario?: string, all?: boolean): readonly CertificationScenarioId[] {
@@ -168,7 +170,7 @@ async function inspectEndpoints(workspace: string, scenarios: readonly Certifica
   return Object.freeze({ status: complete ? "configured" : "absent", artifacts: Object.freeze(artifacts) });
 }
 
-async function inspectPlans(workspace: string, scenarios: readonly CertificationScenarioId[], runnerDigests: ReadonlyMap<CertificationScenarioId, string>, testDigests: ReadonlyMap<CertificationScenarioId, string>): Promise<CertificationInputSet> {
+async function inspectPlans(workspace: string, config: CertificationOperatorConfigV3, scenarios: readonly CertificationScenarioId[], runnerDigests: ReadonlyMap<CertificationScenarioId, string>, testDigests: ReadonlyMap<CertificationScenarioId, string>): Promise<CertificationInputSet> {
   const directory = await confinedExistingDirectory(workspace, ["inputs", "plans"]);
   const endpointDirectory = await confinedExistingDirectory(workspace, ["authority", "endpoints"]);
   if (!directory || !endpointDirectory) return Object.freeze({ status: "absent", artifacts: Object.freeze([]) });
@@ -180,7 +182,7 @@ async function inspectPlans(workspace: string, scenarios: readonly Certification
     const name = matching[0]!.name;
     try {
       const bytes = await readConfinedFile(workspace, directory, name);
-      const plan = parseCertificationScenarioPlan(JSON.parse(bytes.toString("utf8")), scenarios);
+      const plan = parseCertificationScenarioPlan(JSON.parse(bytes.toString("utf8")), config, scenarios);
       const endpoint = parseCertificationEndpointManifest(JSON.parse((await readConfinedFile(workspace, endpointDirectory, `${scenario}.json`)).toString("utf8")), scenario);
       if (plan.runnerManifestDigest !== runnerDigests.get(scenario) || plan.testManifestDigest !== testDigests.get(scenario) || plan.endpointManifestDigest !== authorityDigest(endpoint) || plan.runnerRegistryDigest !== certificationRunnerRegistryDigest) continue;
       artifacts.push(Object.freeze({ scenario, name, digest: `sha256:${createHash("sha256").update(bytes).digest("hex")}` }));

@@ -1,5 +1,9 @@
 import { CERTIFICATION_SCENARIOS, CERTIFICATION_SCENARIO_IDS, type CertificationScenarioId, type CertificationSecretSlot } from "./scenarios.js";
+import { authorityDigest } from "../wire.js";
 import { CERTIFICATION_RUNNER_OPERATIONS, certificationRunnerRegistryDigest, getCertificationRunnerRegistryEntry, type CertificationProvider } from "./runner-registry.js";
+import { inertArray, inertRecord } from "./inert.js";
+import type { CertificationOperatorConfigV3 } from "./config.js";
+import { certificationScenarioPlanBindings } from "./scenario-bindings.js";
 
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
 const ID = /^[a-z][a-z0-9_]{2,127}$/;
@@ -65,9 +69,11 @@ export interface CertificationScenarioPlanV1 {
   readonly scenarioId: CertificationScenarioId;
   readonly definitionAliases: readonly string[];
   readonly sourceRefs: Readonly<Record<string, string>>;
-  readonly choices: Readonly<Record<string, unknown>>;
+  readonly resourceDigest: string;
+  readonly accountCommitments: readonly Readonly<{ provider: CertificationProvider; digest: string }>[];
+  readonly desiredStateDigest: string;
   readonly policyCommitments: readonly Readonly<{ schemaId: string; digest: string }>[];
-  readonly cleanup: Readonly<{ recipeId: string; beforeStateDigest: string }>;
+  readonly cleanup: Readonly<{ recipeIds: readonly string[]; beforeStateDigest: string }>;
   readonly controlledCut: Readonly<{ case: "ambiguous-after-dispatch" }>;
   readonly runnerManifestDigest: string;
   readonly testManifestDigest: string;
@@ -82,8 +88,9 @@ export function parseCertificationEndpointManifest(value: unknown, expectedScena
   const scenarioId = scenario(raw.scenarioId);
   if (expectedScenario !== undefined && scenarioId !== expectedScenario) throw new TypeError("certification endpoint manifest scenario is invalid");
   const registry = getCertificationRunnerRegistryEntry(scenarioId);
-  if (!exactList(raw.definitionAliases, registry.definitionAliases) || raw.completeness !== "unchecked" || raw.dispatchable !== registry.dispatchable || !Array.isArray(raw.endpoints) || raw.endpoints.length !== registry.endpoints.length) throw new TypeError("certification endpoint manifest v2 is invalid");
-  const endpoints = raw.endpoints.map((value: unknown, index: number) => {
+  const endpointValues = inertArray(raw.endpoints, "certification endpoint list");
+  if (!exactList(raw.definitionAliases, registry.definitionAliases) || raw.completeness !== "unchecked" || raw.dispatchable !== registry.dispatchable || endpointValues.length !== registry.endpoints.length) throw new TypeError("certification endpoint manifest v2 is invalid");
+  const endpoints = endpointValues.map((value: unknown, index: number) => {
     const endpoint = object(value, "certification endpoint v2");
     closed(endpoint, ["endpointId", "provider", "credentialSlot", "accountCommitment", "resourceCommitment", "direction", "method"], "certification endpoint v2");
     const expected = registry.endpoints[index]!;
@@ -99,8 +106,9 @@ function parseEndpointV1(raw: Record<string, any>, expectedScenario?: Certificat
   const providers = ["cloudflare", "codex", "fly", "github", "neon", "slack", "vercel"] as const;
   const expectedProvider = scenarioId.startsWith("cloudflare-") ? "cloudflare" : scenarioId.startsWith("codex-") ? "codex" : scenarioId.startsWith("fly-") ? "fly" : scenarioId.startsWith("github-") ? "github" : scenarioId.startsWith("neon-") ? "neon" : scenarioId.startsWith("slack-") ? "slack" : "vercel";
   const expectedSlots = CERTIFICATION_SCENARIOS[scenarioId].secretSlots.map(slot => slot === "cloudflareDnsCredential" || slot === "cloudflareBootstrapCredential" ? "cloudflareCredential" : slot);
-  if ((expectedScenario !== undefined && scenarioId !== expectedScenario) || typeof raw.provider !== "string" || !providers.includes(raw.provider as typeof providers[number]) || raw.provider !== expectedProvider || !digest(raw.resourceDigest) || !exactList(raw.credentialSlots, expectedSlots) || raw.completeness !== "unchecked" || !Array.isArray(raw.endpoints) || raw.endpoints.length === 0) throw new TypeError("certification endpoint manifest v1 is invalid");
-  const endpoints = raw.endpoints.map((value: unknown) => { const endpoint = object(value, "certification endpoint"); closed(endpoint, ["endpointId", "direction", "method"], "certification endpoint"); if (typeof endpoint.endpointId !== "string" || !/^[a-z][a-z0-9_.-]{2,127}$/.test(endpoint.endpointId) || (endpoint.direction !== "read" && endpoint.direction !== "write") || !["GET", "POST", "PUT", "PATCH", "DELETE"].includes(String(endpoint.method))) throw new TypeError("certification endpoint is invalid"); return Object.freeze({ endpointId: endpoint.endpointId, direction: endpoint.direction, method: endpoint.method as Method }); });
+  const endpointValues = inertArray(raw.endpoints, "certification endpoint list");
+  if ((expectedScenario !== undefined && scenarioId !== expectedScenario) || typeof raw.provider !== "string" || !providers.includes(raw.provider as typeof providers[number]) || raw.provider !== expectedProvider || !digest(raw.resourceDigest) || !exactList(raw.credentialSlots, expectedSlots) || raw.completeness !== "unchecked" || endpointValues.length === 0) throw new TypeError("certification endpoint manifest v1 is invalid");
+  const endpoints = endpointValues.map((value: unknown) => { const endpoint = object(value, "certification endpoint"); closed(endpoint, ["endpointId", "direction", "method"], "certification endpoint"); if (typeof endpoint.endpointId !== "string" || !/^[a-z][a-z0-9_.-]{2,127}$/.test(endpoint.endpointId) || (endpoint.direction !== "read" && endpoint.direction !== "write") || !["GET", "POST", "PUT", "PATCH", "DELETE"].includes(String(endpoint.method))) throw new TypeError("certification endpoint is invalid"); return Object.freeze({ endpointId: endpoint.endpointId, direction: endpoint.direction, method: endpoint.method as Method }); });
   const identities = endpoints.map(endpoint => endpoint.endpointId); if (new Set(identities).size !== identities.length || identities.some((item, index) => index > 0 && identities[index - 1]! >= item)) throw new TypeError("certification endpoints must be unique and sorted");
   return Object.freeze({ v: "reelier.certification-endpoint-manifest/v1", scenarioId, provider: raw.provider, resourceDigest: raw.resourceDigest, credentialSlots: Object.freeze([...expectedSlots]), endpoints: Object.freeze(endpoints), completeness: "unchecked", dispatchable: false });
 }
@@ -126,30 +134,30 @@ export function parseCertificationTestManifest(value: unknown, expectedScenario?
   return Object.freeze({ v: raw.v, scenarioId, suiteId: raw.suiteId, runnerManifestDigest: raw.runnerManifestDigest, cases: TEST_CASES });
 }
 
-export function parseCertificationScenarioPlan(value: unknown, selectedScenarios: readonly CertificationScenarioId[]): CertificationScenarioPlanV1 {
+export function parseCertificationScenarioPlan(value: unknown, config: CertificationOperatorConfigV3, selectedScenarios: readonly CertificationScenarioId[] = config.scenarios): CertificationScenarioPlanV1 {
   const raw = object(value, "certification scenario plan");
-  closed(raw, ["v", "scenarioId", "definitionAliases", "sourceRefs", "choices", "policyCommitments", "cleanup", "controlledCut", "runnerManifestDigest", "testManifestDigest", "endpointManifestDigest", "runnerRegistryDigest"], "certification scenario plan");
+  closed(raw, ["v", "scenarioId", "definitionAliases", "sourceRefs", "resourceDigest", "accountCommitments", "desiredStateDigest", "policyCommitments", "cleanup", "controlledCut", "runnerManifestDigest", "testManifestDigest", "endpointManifestDigest", "runnerRegistryDigest"], "certification scenario plan");
   const scenarioId = scenario(raw.scenarioId);
   if (raw.v !== "reelier.certification-scenario-plan/v1" || !selectedScenarios.includes(scenarioId)) throw new TypeError("certification scenario plan is not selected");
   const registry = getCertificationRunnerRegistryEntry(scenarioId);
   if (!exactList(raw.definitionAliases, registry.definitionAliases) || raw.runnerRegistryDigest !== certificationRunnerRegistryDigest) throw new TypeError("certification scenario plan registry or definition alias is invalid");
+  const bindings = certificationScenarioPlanBindings(config, scenarioId);
   const sourceRefs = stringRecord(raw.sourceRefs, "scenario source refs");
-  const choices = safeChoices(raw.choices);
-  if (!Array.isArray(raw.policyCommitments) || raw.policyCommitments.length === 0) throw new TypeError("certification policy commitments are invalid");
-  const policyCommitments = raw.policyCommitments.map(value => { const item = object(value, "certification policy commitment"); closed(item, ["schemaId", "digest"], "certification policy commitment"); if (typeof item.schemaId !== "string" || !ID.test(item.schemaId) || !digest(item.digest)) throw new TypeError("certification policy commitment is invalid"); return Object.freeze({ schemaId: item.schemaId, digest: item.digest }); });
-  const cleanup = object(raw.cleanup, "certification cleanup recipe"); closed(cleanup, ["recipeId", "beforeStateDigest"], "certification cleanup recipe"); if (typeof cleanup.recipeId !== "string" || !TEXT.test(cleanup.recipeId) || !digest(cleanup.beforeStateDigest)) throw new TypeError("certification cleanup recipe is invalid");
+  if (authorityDigest(sourceRefs) !== authorityDigest(bindings.sourceRefs) || raw.resourceDigest !== bindings.resourceDigest || raw.desiredStateDigest !== bindings.desiredStateDigest) throw new TypeError("certification scenario plan resource or desired-state authority does not match config");
+  const accountValues = inertArray(raw.accountCommitments, "certification account commitments");
+  const accountCommitments = accountValues.map(value => { const item = object(value, "certification account commitment"); closed(item, ["provider", "digest"], "certification account commitment"); if (typeof item.provider !== "string" || !digest(item.digest)) throw new TypeError("certification account commitment is invalid"); return Object.freeze({ provider: item.provider as CertificationProvider, digest: item.digest }); });
+  if (authorityDigest(accountCommitments) !== authorityDigest(bindings.accountCommitments)) throw new TypeError("certification scenario plan account authority does not match config");
+  const policyValues = inertArray(raw.policyCommitments, "certification policy commitments");
+  if (policyValues.length === 0) throw new TypeError("certification policy commitments are invalid");
+  const policyCommitments = policyValues.map(value => { const item = object(value, "certification policy commitment"); closed(item, ["schemaId", "digest"], "certification policy commitment"); if (typeof item.schemaId !== "string" || !ID.test(item.schemaId) || !digest(item.digest)) throw new TypeError("certification policy commitment is invalid"); return Object.freeze({ schemaId: item.schemaId, digest: item.digest }); });
+  const cleanup = object(raw.cleanup, "certification cleanup recipe"); closed(cleanup, ["recipeIds", "beforeStateDigest"], "certification cleanup recipe"); if (!exactList(cleanup.recipeIds, bindings.cleanupRecipeIds) || !digest(cleanup.beforeStateDigest)) throw new TypeError("certification cleanup recipe is invalid or does not match config");
   const controlledCut = object(raw.controlledCut, "certification controlled cut"); closed(controlledCut, ["case"], "certification controlled cut"); if (controlledCut.case !== "ambiguous-after-dispatch") throw new TypeError("certification controlled-cut case is invalid");
   for (const [name, value] of [["runner", raw.runnerManifestDigest], ["test", raw.testManifestDigest], ["endpoint", raw.endpointManifestDigest]] as const) if (!digest(value)) throw new TypeError(`certification ${name} manifest digest is invalid`);
-  return Object.freeze({ v: "reelier.certification-scenario-plan/v1", scenarioId, definitionAliases: registry.definitionAliases, sourceRefs, choices, policyCommitments: Object.freeze(policyCommitments), cleanup: Object.freeze({ recipeId: cleanup.recipeId, beforeStateDigest: cleanup.beforeStateDigest }), controlledCut: Object.freeze({ case: "ambiguous-after-dispatch" }), runnerManifestDigest: raw.runnerManifestDigest, testManifestDigest: raw.testManifestDigest, endpointManifestDigest: raw.endpointManifestDigest, runnerRegistryDigest: certificationRunnerRegistryDigest });
+  return Object.freeze({ v: "reelier.certification-scenario-plan/v1", scenarioId, definitionAliases: registry.definitionAliases, sourceRefs, resourceDigest: bindings.resourceDigest, accountCommitments: Object.freeze(accountCommitments), desiredStateDigest: bindings.desiredStateDigest, policyCommitments: Object.freeze(policyCommitments), cleanup: Object.freeze({ recipeIds: bindings.cleanupRecipeIds, beforeStateDigest: cleanup.beforeStateDigest }), controlledCut: Object.freeze({ case: "ambiguous-after-dispatch" }), runnerManifestDigest: raw.runnerManifestDigest, testManifestDigest: raw.testManifestDigest, endpointManifestDigest: raw.endpointManifestDigest, runnerRegistryDigest: certificationRunnerRegistryDigest });
 }
-
-function safeChoices(value: unknown): Readonly<Record<string, unknown>> { const raw = object(value, "certification desired choices"); rejectAccessors(raw, "choices"); rejectDangerous(raw, "choices"); return deepFreeze(structuredClone(raw)); }
-function rejectAccessors(value: unknown, label: string): void { if (!value || typeof value !== "object") return; for (const descriptor of Object.values(Object.getOwnPropertyDescriptors(value))) { if (descriptor.get || descriptor.set) throw new TypeError(`certification ${label} contains an accessor or executable field`); if ("value" in descriptor) rejectAccessors(descriptor.value, label); } }
-function rejectDangerous(value: unknown, label: string): void { if (typeof value === "function" || typeof value === "symbol" || typeof value === "bigint" || value === undefined) throw new TypeError(`certification ${label} contains executable or unsupported data`); if (typeof value === "string") { if (/bearer\s|(?:password|secret|token|private[-_ ]?key)[:=]/i.test(value) || /(?:^|[._-])(cmd|command|callback|function|module|path|source|code)(?:$|[._-])/i.test(value)) throw new TypeError(`certification ${label} contains secret-shaped or executable data`); return; } if (Array.isArray(value)) { for (const item of value) rejectDangerous(item, label); return; } if (value && typeof value === "object") { const raw = value as Record<string, unknown>; for (const [key, item] of Object.entries(raw)) { if (/(?:secret|token|password|authorization|cookie|callback|function|module|path|command|sourcecode|code)/i.test(key)) throw new TypeError(`certification ${label} contains secret-shaped or executable fields`); rejectDangerous(item, label); } } }
 function stringRecord(value: unknown, label: string): Readonly<Record<string, string>> { const raw = object(value, label); if (Object.keys(raw).length === 0) throw new TypeError(`${label} is invalid`); const result: Record<string, string> = {}; for (const key of Object.keys(raw).sort()) { if (!ID.test(key) || typeof raw[key] !== "string" || !TEXT.test(raw[key]) || /bearer|secret|token|password/i.test(raw[key])) throw new TypeError(`${label} contains secret-shaped or invalid data`); result[key] = raw[key]; } return Object.freeze(result); }
-function deepFreeze<T>(value: T): T { if (value && typeof value === "object") { Object.freeze(value); for (const item of Object.values(value as Record<string, unknown>)) deepFreeze(item); } return value; }
-function exactList(value: unknown, expected: readonly string[]): boolean { return Array.isArray(value) && value.length === expected.length && value.every((item, index) => item === expected[index]); }
+function exactList(value: unknown, expected: readonly string[]): boolean { const list = inertArray(value, "certification exact list"); return list.length === expected.length && list.every((item, index) => item === expected[index]); }
 function digest(value: unknown): value is string { return typeof value === "string" && DIGEST.test(value); }
 function scenario(value: unknown): CertificationScenarioId { if (typeof value !== "string" || !(CERTIFICATION_SCENARIO_IDS as readonly string[]).includes(value)) throw new TypeError("certification manifest scenario is invalid"); return value as CertificationScenarioId; }
-function object(value: unknown, label: string): Record<string, any> { if (!value || typeof value !== "object" || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype) throw new TypeError(`${label} must be a closed plain object`); return value as Record<string, any>; }
+function object(value: unknown, label: string): Record<string, any> { return inertRecord(value, label) as Record<string, any>; }
 function closed(raw: Record<string, unknown>, keys: readonly string[], label: string): void { const own = Reflect.ownKeys(raw); if (own.some(key => typeof key !== "string") || own.length !== keys.length || own.some(key => !keys.includes(key as string))) throw new TypeError(`${label} is closed`); }

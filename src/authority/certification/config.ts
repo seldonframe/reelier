@@ -1,5 +1,6 @@
 import canonicalize from "canonicalize";
 import path from "node:path";
+import { inertArray, inertRecord } from "./inert.js";
 import {
   CERTIFICATION_SCENARIOS,
   CERTIFICATION_SCENARIO_IDS,
@@ -100,6 +101,7 @@ export interface CertificationOperatorConfigV2 {
 
 export interface CertificationOperatorConfigV3 extends Omit<CertificationOperatorConfigV2, "v" | "secretReferences"> {
   readonly v: "reelier.certification-operator-config/v3";
+  readonly desiredState: Readonly<Partial<Record<CertificationScenarioId, Readonly<Record<string, unknown>>>>>;
   readonly secretReferences: Readonly<Partial<Record<CertificationSecretSlot, string>>>;
 }
 
@@ -138,7 +140,7 @@ export function parseCertificationOperatorConfigV2(value: unknown): Certificatio
 
 export function parseCertificationOperatorConfigV3(value: unknown): CertificationOperatorConfigV3 {
   const root = object(value, "certification operator config v3");
-  closed(root, ["v", "authorityConfigPath", "evidenceDirectory", "scenarios", "resources", "cleanup", "metadata", "secretReferences"], "certification operator config v3");
+  closed(root, ["v", "authorityConfigPath", "evidenceDirectory", "scenarios", "resources", "cleanup", "metadata", "secretReferences", ...(Object.hasOwn(root, "desiredState") ? ["desiredState"] : [])], "certification operator config v3");
   if (root.v !== "reelier.certification-operator-config/v3") throw new TypeError("certification operator config v3 version is invalid");
   const scenarios = scenarioList(root.scenarios);
   const requirements = requirementsFor(scenarios);
@@ -146,6 +148,8 @@ export function parseCertificationOperatorConfigV3(value: unknown): Certificatio
   const cleanupRaw = exactSectionObject(root.cleanup, requirements.cleanup, "certification cleanup");
   const metadataRaw = exactSectionObject(root.metadata, requirements.metadata, "certification metadata");
   const secretsRaw = exactSectionObject(root.secretReferences, requirements.secrets, "certification secret references");
+  const desiredRaw = root.desiredState === undefined ? {} : object(root.desiredState, "certification desired state");
+  if (Object.keys(desiredRaw).some(key => !scenarios.includes(key as CertificationScenarioId))) throw new TypeError("certification desired state is selected-scenario-only");
   const resources: Record<string, CertificationResourceV2> = {};
   for (const section of requirements.resources) resources[section] = parseResource(section, resourcesRaw[section]);
   const cleanup: Record<string, readonly string[]> = {};
@@ -154,8 +158,10 @@ export function parseCertificationOperatorConfigV3(value: unknown): Certificatio
   for (const section of requirements.metadata) metadata[section] = section === "flyTopology" ? flyTopology(metadataRaw[section]) : codexTenPrincipal(metadataRaw[section]);
   const secretReferences: Partial<Record<CertificationSecretSlot, string>> = {};
   for (const slot of requirements.secrets) secretReferences[slot] = secretRef(secretsRaw[slot], slot);
+  const desiredState: Partial<Record<CertificationScenarioId, Readonly<Record<string, unknown>>>> = {};
+  for (const scenario of scenarios) if (Object.hasOwn(desiredRaw, scenario)) desiredState[scenario] = parseDesiredState(scenario, desiredRaw[scenario]);
   assertSharedScope(resources, metadata);
-  return Object.freeze({ v: "reelier.certification-operator-config/v3", authorityConfigPath: safePath(root.authorityConfigPath, "authorityConfigPath"), evidenceDirectory: safePath(root.evidenceDirectory, "evidenceDirectory"), scenarios, resources: Object.freeze(resources), cleanup: Object.freeze(cleanup), metadata: Object.freeze(metadata), secretReferences: Object.freeze(secretReferences) });
+  return Object.freeze({ v: "reelier.certification-operator-config/v3", authorityConfigPath: safePath(root.authorityConfigPath, "authorityConfigPath"), evidenceDirectory: safePath(root.evidenceDirectory, "evidenceDirectory"), scenarios, resources: Object.freeze(resources), cleanup: Object.freeze(cleanup), metadata: Object.freeze(metadata), desiredState: Object.freeze(desiredState), secretReferences: Object.freeze(secretReferences) });
 }
 
 export function canonicalizeCertificationOperatorConfigV3(value: unknown): string {
@@ -177,7 +183,7 @@ export function migrateCertificationOperatorConfig(value: unknown): Certificatio
     const legacy = parseCertificationOperatorConfigV2(root);
     const { cloudflareCredential, ...references } = legacy.secretReferences;
     const selected = new Set(legacy.scenarios);
-    return parseCertificationOperatorConfigV3({ ...legacy, v: "reelier.certification-operator-config/v3", secretReferences: {
+    return parseCertificationOperatorConfigV3({ ...legacy, v: "reelier.certification-operator-config/v3", desiredState: {}, secretReferences: {
       ...references,
       ...(selected.has("cloudflare-vercel-secret") ? { cloudflareBootstrapCredential: cloudflareCredential } : {}),
       ...(selected.has("cloudflare-dns") ? { cloudflareDnsCredential: cloudflareCredential } : {}),
@@ -245,9 +251,10 @@ function requirementsFor(scenarios: readonly CertificationScenarioId[]): Readonl
 }
 
 function scenarioList(value: unknown): readonly CertificationScenarioId[] {
-  if (!Array.isArray(value) || value.length === 0 || value.length > CERTIFICATION_SCENARIO_IDS.length) throw new TypeError("certification scenarios are invalid");
-  if (value.some(item => typeof item !== "string" || !SCENARIO_SET.has(item))) throw new TypeError("certification scenario is unknown");
-  const scenarios = value as CertificationScenarioId[];
+  const list = inertArray(value, "certification scenarios");
+  if (list.length === 0 || list.length > CERTIFICATION_SCENARIO_IDS.length) throw new TypeError("certification scenarios are invalid");
+  if (list.some(item => typeof item !== "string" || !SCENARIO_SET.has(item))) throw new TypeError("certification scenario is unknown");
+  const scenarios = list as CertificationScenarioId[];
   if (new Set(scenarios).size !== scenarios.length) throw new TypeError("certification scenarios must be unique");
   if (scenarios.some((item, index) => index > 0 && scenarios[index - 1] >= item)) throw new TypeError("certification scenarios must be sorted");
   return Object.freeze([...scenarios]);
@@ -276,6 +283,46 @@ function parseResource(section: CertificationResourceSection, value: unknown): C
     case "neon-migration":
       closed(raw, ["apiBaseUrl", "accountId", "projectId", "branchId", "database", "role"], `${section} resource`);
       return Object.freeze({ apiBaseUrl: providerUrl(raw.apiBaseUrl, "https://console.neon.tech/api/v2", "neon apiBaseUrl"), accountId: id(raw.accountId, "neon accountId"), projectId: id(raw.projectId, "neon projectId"), branchId: id(raw.branchId, "neon branchId"), database: id(raw.database, "neon database"), role: id(raw.role, "neon role") });
+  }
+}
+
+function parseDesiredState(scenario: CertificationScenarioId, value: unknown): Readonly<Record<string, unknown>> {
+  const raw = object(value, `${scenario} desired state`);
+  switch (scenario) {
+    case "github-issue-labels":
+      closed(raw, ["labels"], `${scenario} desired state`);
+      return Object.freeze({ labels: uniqueSortedIds(raw.labels, "github desired labels") });
+    case "cloudflare-dns":
+      closed(raw, ["type", "content", "ttl", "proxied"], `${scenario} desired state`);
+      if (!["A", "AAAA", "CNAME", "TXT"].includes(String(raw.type)) || typeof raw.content !== "string" || raw.content.length < 1 || raw.content.length > 2048 || !Number.isSafeInteger(raw.ttl) || (raw.ttl as number) < 1 || typeof raw.proxied !== "boolean") throw new TypeError("cloudflare DNS desired state is invalid");
+      return Object.freeze({ type: raw.type, content: raw.content, ttl: raw.ttl, proxied: raw.proxied });
+    case "slack-topic":
+      closed(raw, ["topic"], `${scenario} desired state`);
+      if (typeof raw.topic !== "string" || raw.topic.length < 1 || raw.topic.length > 250) throw new TypeError("Slack desired topic is invalid");
+      return Object.freeze({ topic: raw.topic });
+    case "cloudflare-vercel-secret": {
+      closed(raw, ["cloudflare", "vercel"], `${scenario} desired state`);
+      const cloudflare = object(raw.cloudflare, "Cloudflare token desired state");
+      closed(cloudflare, ["permissionGroupIds", "resources", "notBefore", "expiresAt", "requestIpIn", "requestIpNotIn"], "Cloudflare token desired state");
+      const vercel = object(raw.vercel, "Vercel secret desired state");
+      closed(vercel, ["environment", "key"], "Vercel secret desired state");
+      if (!['production', 'preview'].includes(String(vercel.environment)) || typeof vercel.key !== "string" || !ID.test(vercel.key)) throw new TypeError("Vercel secret desired state is invalid");
+      const resources = object(cloudflare.resources, "Cloudflare token desired resources");
+      const normalizedResources: Record<string, string> = {};
+      for (const key of Object.keys(resources).sort()) { if (!ID.test(key) || typeof resources[key] !== "string" || !ID.test(resources[key])) throw new TypeError("Cloudflare token desired resources are invalid"); normalizedResources[key] = resources[key] as string; }
+      if (Object.keys(normalizedResources).length === 0 || Object.keys(normalizedResources).length > 16) throw new TypeError("Cloudflare token desired resources are invalid");
+      for (const key of ["notBefore", "expiresAt"] as const) if (typeof cloudflare[key] !== "string" || !Number.isFinite(Date.parse(cloudflare[key] as string))) throw new TypeError("Cloudflare token desired validity is invalid");
+      return Object.freeze({ cloudflare: Object.freeze({ permissionGroupIds: uniqueSortedIds(cloudflare.permissionGroupIds, "Cloudflare permission groups"), resources: Object.freeze(normalizedResources), notBefore: cloudflare.notBefore, expiresAt: cloudflare.expiresAt, requestIpIn: uniqueSortedStrings(cloudflare.requestIpIn, "Cloudflare request IP allowlist"), requestIpNotIn: uniqueSortedStrings(cloudflare.requestIpNotIn, "Cloudflare request IP denylist") }), vercel: Object.freeze({ environment: vercel.environment, key: vercel.key }) });
+    }
+    case "vercel-promotion":
+      closed(raw, ["deploymentId", "domains"], `${scenario} desired state`);
+      return Object.freeze({ deploymentId: id(raw.deploymentId, "Vercel desired deployment"), domains: dnsList(raw.domains, "Vercel desired domains") });
+    case "neon-migration":
+      closed(raw, ["migrationId", "sql", "expectedSchemaDigest"], `${scenario} desired state`);
+      if (typeof raw.sql !== "string" || raw.sql.length < 1 || raw.sql.length > 100_000 || typeof raw.expectedSchemaDigest !== "string" || !DIGEST.test(raw.expectedSchemaDigest)) throw new TypeError("Neon migration desired state is invalid");
+      return Object.freeze({ migrationId: id(raw.migrationId, "Neon migration id"), sql: raw.sql, expectedSchemaDigest: raw.expectedSchemaDigest });
+    default:
+      throw new TypeError("certification scenario has no provider desired state");
   }
 }
 
@@ -356,7 +403,7 @@ function assertSharedScope(
   }
 }
 
-function object(value: unknown, label: string): Record<string, unknown> { if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError(`${label} must be an object`); return value as Record<string, unknown>; }
+function object(value: unknown, label: string): Record<string, unknown> { return inertRecord(value, label); }
 function closed(raw: Record<string, unknown>, keys: readonly string[], label: string): void { if (Object.keys(raw).length !== keys.length || Object.keys(raw).some(key => !keys.includes(key))) throw new TypeError(`${label} is closed`); }
 function exactSectionObject<T extends string>(value: unknown, keys: readonly T[], label: string): Record<T, unknown> { const raw = object(value, label); closed(raw, keys, label); return raw as Record<T, unknown>; }
 function id(value: unknown, label: string): string { if (typeof value !== "string" || !ID.test(value)) throw new TypeError(`${label} is invalid`); return value; }
@@ -368,7 +415,8 @@ function httpsUrl(value: unknown, label: string): string { const raw = text(valu
 function providerUrl(value: unknown, expected: string, label: string): string { const parsed = httpsUrl(value, label); if (parsed !== expected) throw new TypeError(`${label} is not the pinned certification API`); return parsed; }
 function internalHttpOrigin(value: unknown, label: string): string { const raw = text(value, label); let url: URL; try { url = new URL(raw); } catch { throw new TypeError(`${label} is invalid`); } if (url.protocol !== "http:" || !url.hostname.endsWith(".internal") || url.username || url.password || url.pathname !== "/" || url.search || url.hash) throw new TypeError(`${label} must be a Fly internal HTTP origin`); return url.toString().replace(/\/$/, ""); }
 function dns(value: unknown, label: string): string { const result = text(value, label, 253).toLowerCase(); if (!DNS.test(result)) throw new TypeError(`${label} is invalid`); return result; }
-function dnsList(value: unknown, label: string): readonly string[] { if (!Array.isArray(value) || value.length === 0 || value.length > 64) throw new TypeError(`${label} is invalid`); const values = value.map(item => dns(item, label)); if (new Set(values).size !== values.length) throw new TypeError(`${label} must be unique`); values.sort(); return Object.freeze(values); }
-function uniqueSortedIds(value: unknown, label: string): readonly string[] { if (!Array.isArray(value) || value.length === 0 || value.length > 64) throw new TypeError(`${label} is invalid`); const values = value.map(item => id(item, label)); if (new Set(values).size !== values.length) throw new TypeError(`${label} must be unique`); if (values.some((item, index) => index > 0 && values[index - 1] >= item)) throw new TypeError(`${label} must be sorted`); return Object.freeze(values); }
-function exactStringList<T extends string>(value: unknown, expected: readonly T[], label: string): readonly T[] { if (!Array.isArray(value) || value.length !== expected.length || value.some((item, index) => item !== expected[index])) throw new TypeError(`${label} must contain the exact sorted profile set`); return Object.freeze([...(value as T[])]); }
+function dnsList(value: unknown, label: string): readonly string[] { const list = inertArray(value, label); if (list.length === 0 || list.length > 64) throw new TypeError(`${label} is invalid`); const values = list.map(item => dns(item, label)); if (new Set(values).size !== values.length) throw new TypeError(`${label} must be unique`); values.sort(); return Object.freeze(values); }
+function uniqueSortedIds(value: unknown, label: string): readonly string[] { const list = inertArray(value, label); if (list.length === 0 || list.length > 64) throw new TypeError(`${label} is invalid`); const values = list.map(item => id(item, label)); if (new Set(values).size !== values.length) throw new TypeError(`${label} must be unique`); if (values.some((item, index) => index > 0 && values[index - 1] >= item)) throw new TypeError(`${label} must be sorted`); return Object.freeze(values); }
+function uniqueSortedStrings(value: unknown, label: string): readonly string[] { const list = inertArray(value, label); if (list.length > 64 || list.some(item => typeof item !== "string" || item.length < 1 || item.length > 256)) throw new TypeError(`${label} is invalid`); const values = list as string[]; if (new Set(values).size !== values.length || values.some((item, index) => index > 0 && values[index - 1]! >= item)) throw new TypeError(`${label} must be unique and sorted`); return Object.freeze([...values]); }
+function exactStringList<T extends string>(value: unknown, expected: readonly T[], label: string): readonly T[] { const list = inertArray(value, label); if (list.length !== expected.length || list.some((item, index) => item !== expected[index])) throw new TypeError(`${label} must contain the exact sorted profile set`); return Object.freeze([...(list as T[])]); }
 function isWithin(parent: string, candidate: string): boolean { const relative = path.relative(parent, candidate); return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative)); }
