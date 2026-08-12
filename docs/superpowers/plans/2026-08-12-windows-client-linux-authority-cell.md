@@ -15,7 +15,7 @@
 - Do not rewrite or squash the historical FIFO/native commits. This plan supersedes them prospectively.
 - Linux behavior must not be weakened to make Windows pass. Windows hosting refuses; Windows client and offline verification pass.
 - Every refusal is deterministic, typed, redacted, and occurs before filesystem, key, principal, budget, ledger, receipt, provider, or network mutation.
-- No credential value is accepted by a connection file. Only closed `env:` or confined `file:` references are stored.
+- No credential value is accepted by a connection file. Only closed `env:` or confined `file:` references are stored. Connection metadata is public and non-authorizing: on Windows its pathname is not evidence of same-user filesystem confinement, and it can never supply task, principal, grant, allocation, or session authority.
 - Ordinary certification readiness remains non-dispatchable until a host-internal implemented runner and executed evidence exist.
 - A provider acknowledgement is not authoritative reconciliation. Ambiguous writes retain consumption and are never resent automatically.
 - `verified` means the named evidence verified; it never means safe, correct, wise, complete, or successful.
@@ -87,7 +87,7 @@ interface AuthorityCellConnectionV1 {
 ```
 
 - [ ] Add a closed JSON Schema under `contract/client/v1/` and runtime parser with exact keys, canonical endpoint normalization, no query/userinfo/fragment, no non-loopback HTTP, safe reference syntax, nonzero digest, and accessor/callback zero-invocation tests. This local, non-authorizing configuration schema is not a member of the frozen Adapter Contract wire set and must not change its digest.
-- [ ] Add `reelier authority connect --endpoint ... --token-ref ... --cell-id ...`. It writes only a client-owned connection file atomically; it never resolves the token during parsing or writes a ledger/receipt/key.
+- [ ] Add `reelier authority connect --endpoint ... --token-ref ... --cell-id ...`. It writes only public, non-authorizing connection metadata atomically and never resolves the token during parsing or writes a ledger/receipt/key. Native Windows restricts persistence to the canonical user client-config location and reports same-user pathname confinement as `unchecked`; it must not recreate the rejected native filesystem helper.
 - [ ] Add `reelier authority doctor --live` (or the existing doctor integration if present) to resolve the opaque reference inside the client process, authenticate to the Cell, compare Cell ID and Adapter Contract digest, and report four-state results. Redact token values and resolver errors.
 - [ ] Add one authenticated, read-only `GET /v1/identity` Cell route returning only the closed Cell ID and Adapter Contract digest. It performs no writes and reveals nothing to unauthenticated callers.
 - [ ] Bind every consequential client request to the authenticated server-derived principal/session context. No task, principal, grant, allocation, or Cell identity may be supplied in the Outcome body.
