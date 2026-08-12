@@ -1,7 +1,7 @@
 import { createPublicKey } from "node:crypto";
 import path from "node:path";
 import { createAuthorityEvidence, createAuthorityReceipt, createAuthorityReceiptBundle } from "../evidence.js";
-import { signAuthorityDigest } from "../crypto.js";
+import { signAuthorityDigest, verifyAuthoritySignature } from "../crypto.js";
 import type { AuthorityKind, AuthorityReceipt, AuthorityReceiptBundle, AuthorityWireByKind, SignedAuthorityArtifact } from "../types.js";
 import { parseAuthorityReceiptBundle } from "../evidence.js";
 import { authorityDigest, parseAuthorityWire } from "../wire.js";
@@ -24,17 +24,19 @@ export function createCertificationLifecycleReceiptPublication(input: Readonly<{
     if (recovered && recovered.receipt.value.receiptId === portableReceiptId(value.state.reservation.reservationId, value.phase, value.outcome.resultDigest)) {
       const reconciliation = recovered.evidence.value.reconciliation;
       if (reconciliation.verdict !== (value.outcome.reconciliationStatus ?? "not-attempted") || reconciliation.normalizedProjectionDigest !== (value.outcome.normalizedProjectionDigest ?? null)) throw new TypeError("portable receipt recovery conflicts with the durable terminal receipt");
+      await ensureExtension(input.rootDir, recovered, input.lifecycle);
       return Object.freeze({ receiptRef: authorityDigest(recovered.receipt.value), evidenceDigest: recovered.evidence.digest });
     }
     let priorReceipt = prior.get(value.state.reservation.reservationId) ?? recovered?.receipt.value;
     if (!priorReceipt && value.phase === "dispatch") {
       const reservation = portable(value.state, { kind: "ambiguous", resultDigest: authorityDigest({ reservationId: value.state.reservation.reservationId, phase: "reservation" }), reconciliationStatus: "not-attempted" }, "reservation", input);
-      await save(input.rootDir, reservation); await saveExtension(input.rootDir, extensionFor(reservation, input.lifecycle)); priorReceipt = reservation.receipt.value;
+      await save(input.rootDir, reservation); await ensureExtension(input.rootDir, reservation, input.lifecycle); priorReceipt = reservation.receipt.value;
     }
     const bundle = portable(value.state, value.outcome, value.phase, input, priorReceipt, recovered);
     prior.set(value.state.reservation.reservationId, bundle.receipt.value);
     await save(input.rootDir, bundle);
-    await saveExtension(input.rootDir, extensionFor(bundle, input.lifecycle));
+    if (input.lifecycle.schedule === "cut-after-conflict-receipt-before-extension" && value.phase === "reconcile" && value.outcome.reconciliationStatus === "conflict") throw new Error("controlled cut");
+    await ensureExtension(input.rootDir, bundle, input.lifecycle);
     return Object.freeze({ receiptRef: authorityDigest(bundle.receipt.value), evidenceDigest: bundle.evidence.digest });
   } });
 }
@@ -77,6 +79,7 @@ async function save(root: string, bundle: AuthorityReceiptBundle): Promise<void>
 
 function extensionFor(bundle: AuthorityReceiptBundle, lifecycle: CertificationLifecycleAuthorityMaterial): CertificationReceiptExtensionV1 { const key = lifecycle.direct.get("authority-receipt"); if (!key) throw new TypeError("receipt extension signer is absent"); const body = { v: "reelier.certification-receipt-extension/v1" as const, receiptDigest: authorityDigest(bundle.receipt.value), adapterContractDigest: AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST, signerId: key.descriptor.keyId }; return Object.freeze({ ...body, signature: signAuthorityDigest(key.privateKey, "authority-receipt", authorityDigest(body)) }); }
 async function saveExtension(root: string, extension: CertificationReceiptExtensionV1): Promise<void> { await publishPrivateContentAddressed(root, "extensions", `${extension.receiptDigest.slice(7)}.json`, `${JSON.stringify(extension)}\n`); }
+async function ensureExtension(root: string, bundle: AuthorityReceiptBundle, lifecycle: CertificationLifecycleAuthorityMaterial): Promise<void> { const expected = extensionFor(bundle, lifecycle); await saveExtension(root, expected); const directory = await ensureConfinedDirectory(root, ["extensions"]), stored = JSON.parse((await readConfinedFile(root, directory, `${expected.receiptDigest.slice(7)}.json`)).toString("utf8")); if (authorityDigest(stored) !== authorityDigest(expected)) throw new TypeError("certification receipt extension conflicts with the durable receipt"); const key = lifecycle.direct.get("authority-receipt"); if (!key || !verifyAuthoritySignature(descriptorPublicKey(key.descriptor.publicKeySpkiBase64), "authority-receipt", authorityDigest({ v: stored.v, receiptDigest: stored.receiptDigest, adapterContractDigest: stored.adapterContractDigest, signerId: stored.signerId }), stored.signature)) throw new TypeError("certification receipt extension signature is invalid"); }
 export async function loadCertificationReceiptExtensions(root: string): Promise<readonly CertificationReceiptExtensionV1[]> { const directory = await confinedExistingDirectory(root, ["extensions"]); if (!directory) return Object.freeze([]); const extensions: CertificationReceiptExtensionV1[] = []; for (const name of await listConfinedFileNames(root, directory)) { if (!name.endsWith(".json")) continue; const raw = JSON.parse((await readConfinedFile(root, directory, name)).toString("utf8")); const fields = ["v", "receiptDigest", "adapterContractDigest", "signerId", "signature"]; if (!raw || typeof raw !== "object" || Array.isArray(raw) || Object.keys(raw).join("\0") !== fields.join("\0") || raw.v !== "reelier.certification-receipt-extension/v1" || !/^sha256:[0-9a-f]{64}$/.test(raw.receiptDigest) || raw.adapterContractDigest !== AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST || typeof raw.signerId !== "string" || raw.signature?.alg !== "ed25519" || typeof raw.signature?.sig !== "string") throw new TypeError("certification receipt extension is invalid"); extensions.push(Object.freeze(raw)); } return Object.freeze(extensions); }
 
 function signed<K extends AuthorityKind>(kind: K, value: AuthorityWireByKind[K], material: CertificationLifecycleAuthorityMaterial): SignedAuthorityArtifact<K> { const key = material.direct.get(kind as any) ?? material.artifacts.get(kind as any); if (!key) throw new TypeError(`lifecycle signer absent for ${kind}`); const parsed = parseAuthorityWire(kind, value) as AuthorityWireByKind[K], digest = authorityDigest(parsed); return Object.freeze({ kind, signerId: key.descriptor.keyId, digest, value: parsed, signature: signAuthorityDigest(key.privateKey, kind, digest) }); }

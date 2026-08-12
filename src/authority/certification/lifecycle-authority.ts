@@ -46,7 +46,7 @@ export interface CertificationArtifactKeyBindingCommitmentV1 {
 }
 
 export function createCertificationLifecycleAuthorityCeremony(options: Readonly<{ testSchedule: string }> = { testSchedule: "normal" }): Readonly<{ publicDescriptors: readonly AuthorityKeyDescriptorV1[]; opaqueHandle: CertificationLifecycleAuthorityHandle }> {
-  const schedules = ["normal", "source-drift", "effect-drift", "provider-503", "accessor-response", "cut-after-budget", "cut-after-dispatched", "cut-after-send-intent", "cut-after-apply", "cut-after-cleanup-publication", "cut-after-conflict-publication", "pause-after-dispatched"];
+  const schedules = ["normal", "source-drift", "effect-drift", "provider-503", "accessor-response", "cut-after-budget", "cut-after-dispatched", "cut-after-send-intent", "cut-after-apply", "cut-after-cleanup-publication", "cut-after-conflict-publication", "cut-after-conflict-receipt-before-extension", "pause-after-dispatched"];
   if (Object.keys(options).length !== 1 || !schedules.includes(options.testSchedule)) throw new TypeError("certification lifecycle test schedule is closed and invalid");
   const direct = new Map<DirectPurpose, KeyMaterial>();
   for (const purpose of DIRECT_PURPOSES) direct.set(purpose, keyFor(purpose));
