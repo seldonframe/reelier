@@ -2,14 +2,16 @@
 
 The Authority Cell runs on Linux. Windows runs the client and retains only an endpoint, an opaque token reference, the expected Cell ID, and the frozen Adapter Contract digest. The connection file never contains the token value.
 
-This file is public, non-secret, and non-authorizing metadata: it is never evidence of a safe Cell or authority to dispatch. On native Windows its same-user path-mutation resistance is `unchecked`; token-file ancestry remains fail-closed. Every consequential action still requires independently resolved credentials plus authenticated exact Cell ID and frozen Adapter Contract digest.
+This file is public, non-secret, and non-authorizing metadata: it is never evidence of a safe Cell or authority to dispatch. It cannot contain task, principal, grant, allocation, or session fields. On native Windows its same-user path-mutation resistance is `unchecked`; token-file ancestry remains fail-closed. The connection and live-doctor status expose `pathnameConfinement: "unchecked"` rather than implying filesystem authority. Every consequential action still requires independently resolved credentials plus authenticated exact Cell ID and frozen Adapter Contract digest.
 
 After a Cell endpoint and token reference exist, configure the client with one command:
 
 ```powershell
 reelier authority connect --endpoint https://cell.example --token-ref env:REELIER_CELL_TOKEN --cell-id cell_linux_1 --adapter-contract-digest sha256:<frozen-adapter-contract-digest>
-reelier authority doctor --live --connection .reelier/authority-cell-connection.json
+reelier authority doctor --live
 ```
+
+On native Windows, `connect` writes only `%LOCALAPPDATA%\Reelier\authority-cell-connection.json` (falling back to the current user's `AppData\Local` directory when `LOCALAPPDATA` is unavailable). Windows refuses `connect --path`; a workspace or custom output path cannot replace the canonical per-user location. On other client platforms the default remains `.reelier/authority-cell-connection.json`, and `--path` may select another public-metadata location.
 
 For local WSL, run the Cell inside WSL and expose only a loopback listener such as `http://127.0.0.1:<port>`; loopback HTTP is the sole non-HTTPS client exception. For a local Linux container, publish its listener only to `127.0.0.1` and use the same loopback endpoint. For a remote Linux or Fly Cell, use its HTTPS endpoint.
 

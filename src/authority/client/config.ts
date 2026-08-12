@@ -1,5 +1,7 @@
 import { lstat, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
+import { isPublicIpAddress, normalizeIpLiteral } from "./ip.js";
 
 export interface AuthorityCellConnectionV1 {
   readonly v: "reelier.authority-cell-connection/v1";
@@ -13,6 +15,12 @@ export interface AuthorityCellConnectionV1 {
 const KEYS = ["v", "endpoint", "transport", "bearerTokenRef", "expectedCellId", "adapterContractDigest"] as const;
 const DIGEST = /^sha256:(?!0{64}$)[0-9a-f]{64}$/;
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+
+interface AuthorityCellClientRuntime {
+  readonly platform?: NodeJS.Platform;
+  readonly env?: NodeJS.ProcessEnv;
+  readonly homedir?: string;
+}
 
 /** Closed, inert local configuration parser. It never dereferences token references. */
 export function parseAuthorityCellConnectionV1(value: unknown): AuthorityCellConnectionV1 {
@@ -48,7 +56,18 @@ async function assertSafeParent(directory: string): Promise<void> {
   }
 }
 
-export function defaultAuthorityCellConnectionFile(): string { return path.resolve(".reelier", "authority-cell-connection.json"); }
+export function defaultAuthorityCellConnectionFile(runtime: AuthorityCellClientRuntime = {}): string {
+  if ((runtime.platform ?? process.platform) !== "win32") return path.resolve(".reelier", "authority-cell-connection.json");
+  const env = runtime.env ?? process.env;
+  const homedir = runtime.homedir ?? os.homedir();
+  const localAppData = env.LOCALAPPDATA || path.join(homedir, "AppData", "Local");
+  if (!path.isAbsolute(localAppData)) throw new TypeError("Windows authority cell connection location is unavailable");
+  return path.join(path.resolve(localAppData), "Reelier", "authority-cell-connection.json");
+}
+
+export function authorityCellConnectionPathnameConfinement(_runtime: AuthorityCellClientRuntime = {}): "unchecked" {
+  return "unchecked";
+}
 
 function normalizeEndpoint(value: string): string {
   let url: URL;
@@ -61,7 +80,7 @@ function normalizeEndpoint(value: string): string {
 function isLoopback(hostname: string): boolean { return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1" || /^127(?:\.\d{1,3}){3}$/.test(hostname); }
 function isUnsafeLiteral(hostname: string): boolean {
   const host = hostname.replace(/^\[|\]$/g, "").toLowerCase();
-  if (host.includes(":")) return host === "::" || host === "::1" || host.startsWith("fc") || host.startsWith("fd") || /^fe[89ab]/.test(host) || host.startsWith("ff");
+  if (normalizeIpLiteral(host)) return !isPublicIpAddress(host);
   if (!/^\d{1,3}(?:\.\d{1,3}){3}$/.test(host)) return false;
   const [a, b] = host.split(".").map(Number); return a === 0 || a === 10 || a === 127 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || a >= 224;
 }

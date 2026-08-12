@@ -4,6 +4,7 @@ import { request as httpsRequest } from "node:https";
 import { request as httpRequest } from "node:http";
 import path from "node:path";
 import { parseAuthorityCellConnectionV1, type AuthorityCellConnectionV1 } from "./config.js";
+import { isLoopbackIpAddress, isPublicIpAddress, normalizeIpLiteral } from "./ip.js";
 
 export type AuthorityCellLiveResult = Readonly<{ state: "verified" | "failed" | "unchecked" | "absent"; reasonCode: string; cellId?: string; adapterContractDigest?: string }>;
 export interface AuthorityCellClientDependencies { readonly resolveToken?: (reference: AuthorityCellConnectionV1["bearerTokenRef"]) => Promise<string>; readonly request?: (url: string, init: RequestInit) => Promise<Response>; readonly credentialRoot?: string; readonly resolveAddresses?: (hostname: string) => Promise<readonly string[]>; }
@@ -43,30 +44,13 @@ async function resolveToken(reference: AuthorityCellConnectionV1["bearerTokenRef
 }
 
 async function resolveAddresses(hostname: string): Promise<readonly string[]> {
-  if (isIpAddress(hostname)) return [hostname];
+  const literal = normalizeIpLiteral(hostname);
+  if (literal) return [literal];
   return (await lookup(hostname, { all: true, verbatim: true })).map(entry => entry.address);
 }
 function isExplicitLoopbackHttp(endpoint: string, addresses: readonly string[]): boolean { const url = new URL(endpoint); return url.protocol === "http:" && (url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "::1") && addresses.every(isLoopbackAddress); }
-function isIpAddress(address: string): boolean { return /^\d{1,3}(?:\.\d{1,3}){3}$/.test(address) || address.includes(":"); }
-function isLoopbackAddress(address: string): boolean { return address === "::1" || address.startsWith("127."); }
-function isPublicAddress(address: string): boolean {
-  const value = address.toLowerCase();
-  const mapped = mappedIpv4(value); if (mapped) return isPublicAddress(mapped);
-  if (value.includes(":")) return !(value === "::" || value === "::1" || value.startsWith("fc") || value.startsWith("fd") || value.startsWith("fe8") || value.startsWith("fe9") || value.startsWith("fea") || value.startsWith("feb") || value.startsWith("ff"));
-  const parts = value.split(".").map(Number); const [a, b] = parts;
-  return parts.length === 4 && parts.every(part => part >= 0 && part <= 255) && !(a === 0 || a === 10 || a === 127 || (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && (b === 0 || b === 168)) || a >= 224);
-}
-function mappedIpv4(value: string): string | undefined {
-  if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(value)) return undefined;
-  const source = value.replace(/^\[|\]$/g, ""); const pivot = source.indexOf("::");
-  if (/^::ffff:\d{1,3}(?:\.\d{1,3}){3}$/i.test(source)) return source.slice(7);
-  const left = pivot < 0 ? source.split(":") : source.slice(0, pivot).split(":").filter(Boolean); const right = pivot < 0 ? [] : source.slice(pivot + 2).split(":").filter(Boolean);
-  if (left.some(part => !/^[0-9a-f]{1,4}$/i.test(part)) || right.some(part => !/^[0-9a-f]{1,4}$/i.test(part)) || left.length + right.length > 8) return undefined;
-  const parts = pivot < 0 ? left : [...left, ...Array(8 - left.length - right.length).fill("0"), ...right];
-  if (parts.length !== 8 || parts.slice(0, 5).some(part => Number.parseInt(part, 16) !== 0) || Number.parseInt(parts[5]!, 16) !== 0xffff) return undefined;
-  const high = Number.parseInt(parts[6]!, 16); const low = Number.parseInt(parts[7]!, 16);
-  return `${high >> 8}.${high & 255}.${low >> 8}.${low & 255}`;
-}
+function isLoopbackAddress(address: string): boolean { return isLoopbackIpAddress(address); }
+function isPublicAddress(address: string): boolean { return isPublicIpAddress(address); }
 async function pinnedIdentityRequest(endpoint: string, token: string, address: string): Promise<Response> {
   const url = new URL(`${endpoint}/v1/identity`);
   return new Promise((resolve, reject) => { const request = url.protocol === "https:" ? httpsRequest : httpRequest; const options = { method: "GET", headers: { authorization: `Bearer ${token}`, accept: "application/json" }, ...(url.protocol === "https:" ? { servername: url.hostname } : {}), lookup: (_host: string, _options: unknown, callback: (error: Error | null, address: string, family: number) => void) => callback(null, address, address.includes(":") ? 6 : 4) }; const req = request(url, options, response => { const chunks: Buffer[] = []; response.on("data", chunk => chunks.push(Buffer.from(chunk))); response.on("end", () => resolve(new Response(Buffer.concat(chunks), { status: response.statusCode ?? 0 }))); }); req.once("error", reject); req.end(); });
