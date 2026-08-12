@@ -77,6 +77,18 @@ pub(crate) fn parse_lifecycle_names(marker: &str, acknowledgement: &str) -> Resu
 pub(crate) fn validate_ticket_bytes(bytes: &[u8], expected_sha256_hex: &str) -> Result<(), NativeStatus>;
 ```
 
+Lifecycle names are exactly disposition-bound to the same canonical `orderKey`:
+
+```text
+withdrawn marker: `.ticket-withdrawal-${orderKey}`
+withdrawn acknowledgement: `.ticket-withdrawal-ack-${orderKey}.json`
+dead-owner marker: `.ticket-retired-${orderKey}`
+dead-owner acknowledgement: `.ticket-retired-ack-${orderKey}.json`
+```
+
+`parse_lifecycle_names` accepts only one of those two matching pairs. Cross-paired dispositions,
+different order keys, missing `.json`, stage suffixes, and broader prefixes refuse.
+
 - [ ] **Step 1: Write Rust RED tests for closed inputs and opaque shells**
 
 In `names.rs`, add `#[cfg(test)]` vectors for exact Task 1 FIFO names and reject separators, `..`, colon/ADS syntax, NUL/control characters, uppercase identities, broad prefixes, zero components, mismatched order keys, and names above 255 UTF-16 code units. In `status.rs`, assert only the five closed status strings serialize. In `lib.rs`, add compile-time/resource tests that raw handle fields are private and no arbitrary path method is exported.
