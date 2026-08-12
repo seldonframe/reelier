@@ -2,6 +2,7 @@ Files changed
 
 - `.gitattributes`
 - `contract/authority/v1/adapter-contract-v1.json`
+- `package.json`
 - `scripts/build-authority-contract.mjs`
 - `src/authority/adapter-contract-template.ts`
 - `src/authority/adapter-contract.ts`
@@ -13,11 +14,12 @@ What changed per file
 
 - `.gitattributes`: LF-pins all v1 authority contract inputs and generated adapter source.
 - `adapter-contract-v1.json`: generated closed v1 descriptor using normalized input bytes, sorted members, per-file SHA-256 values, the golden-vector digest, domain separation, and a nonzero aggregate digest.
+- `package.json`: makes normal build and prepublish paths run the non-mutating adapter-contract freshness gate before compiling or packing.
 - `build-authority-contract.mjs`: normalizes CRLF/LF before hashing/checking, checks generation of both descriptor and TypeScript export, and supports copied source/directory checks.
-- `adapter-contract-template.ts`: template for the generated public adapter surface; it deep-freezes the descriptor, members, and member values and verifies caller-supplied normalized bytes only.
+- `adapter-contract-template.ts`: template for the generated public adapter surface; it deep-freezes the descriptor, members, and member values and byte-correctly verifies caller-supplied normalized `Uint8Array` values.
 - `adapter-contract.ts`: generated frozen public descriptor/digest and narrow verifier.
 - `index.ts`: exports the frozen adapter contract surface without runner, credential, filesystem, or provider behavior.
-- `contract.test.ts`: covers cross-EOL stability, source staleness, deep immutability, member-byte mutation and omission, plus closed-manifest refusal paths.
+- `contract.test.ts`: covers cross-EOL stability, source staleness, deep immutability, member-byte mutation and omission, plain-`Uint8Array` verification, package-script staleness refusal, and closed-manifest refusal paths.
 
 Deviations from the plan and why
 
@@ -30,8 +32,7 @@ Approved digest
 Test results (verbatim tail)
 
 ```text
-descriptor-byte-hashes: B54D4CD22DA704176CA756B8DC067272462AE79322EC5A381B02AB0E8F263526 B54D4CD22DA704176CA756B8DC067272462AE79322EC5A381B02AB0E8F263526
-✔ adapter contract v1 is a closed, canonical manifest and refuses stale copied output (259.2321ms)
+✔ adapter contract v1 is a closed, canonical manifest and refuses stale copied output (595.012ms)
 ℹ tests 5
 ℹ pass 5
 ℹ fail 0
@@ -40,7 +41,7 @@ descriptor-byte-hashes: B54D4CD22DA704176CA756B8DC067272462AE79322EC5A381B02AB0E
 > node scripts/build-authority-contract.mjs --check
 
 > reelier@0.32.1 build
-> tsc -p tsconfig.json && node scripts/build-authority-contract.mjs --copy-schemas && node scripts/build-packs.mjs
+> node scripts/build-authority-contract.mjs --check && tsc -p tsconfig.json && node scripts/build-authority-contract.mjs --copy-schemas && node scripts/build-packs.mjs
 
 built cloudflare_api_token, cloudflare_dns, github_issue_labels, gmail, gmail_labels, hubspot_slack_information_flow, neon_database, slack_channel_topic, stripe, vercel_deployment
 ```
