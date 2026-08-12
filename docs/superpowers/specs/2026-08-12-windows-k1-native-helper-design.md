@@ -250,4 +250,3 @@ close hosted falsifiers.
 - Code signing may be added later, but signatures would authenticate a binary, not its authority;
   packed-artifact digests and the Authority Cell trust boundary remain mandatory.
 - Unsupported power-loss durability is `unchecked`, not `verified`.
-
