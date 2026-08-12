@@ -53,3 +53,27 @@ Open risks
 - Fix round 2: IPv4-mapped IPv6 answers are decoded before the IPv4 public-address policy; config writer parent ancestry refuses symlinks/junctions before creating or writing its temporary file.
 - Fix round 3: configuration metadata is explicitly non-authorizing. Native Windows same-user mutation resistance remains `unchecked`; no native-helper TCB was introduced. Expanded, compressed, hexadecimal, and dotted IPv4-mapped IPv6 forms now decode through the IPv4 deny policy.
 - Consequential request construction is not introduced by this task; the server continues to derive requester/session context from authenticated ingress. Future client dispatch code must consume the verified live result before sending consequential requests.
+
+## Fix round 4/5 — remaining Windows client and mapped-address findings
+
+Commits:
+
+- `3128f6e test(authority): expose Windows client output gaps` — RED tests committed before production changes.
+- `185c575 fix(authority): close Windows client connection gaps` — structural mapped-IP parsing, Windows output contract, and runbook.
+- `24fc977 fix(authority): make Windows client path portable` — explicit Windows path semantics and stronger bearer-resolution regression assertion.
+
+The RED run compiled successfully and then failed 5 of 12 focused tests for the expected missing behavior: no `pathnameConfinement` result, a workspace-relative Windows default path, acceptance of Windows `--path`, an expanded dotted mapped DNS answer reaching the request seam, and a bracketed expanded dotted mapped literal reaching endpoint-address handling instead of being rejected before token resolution.
+
+The client now parses IP literals structurally through Node's IP parser and canonical URL form, expands IPv6 to eight words, recognizes the mapped prefix, decodes the embedded IPv4, and applies the existing IPv4 deny policy. The same decoder is used for DNS answers and literal endpoints; no mapped-address spellings are enumerated. The bracketed literal test also proves the bearer resolver and request callback are both untouched.
+
+Native Windows now derives the sole default output from `%LOCALAPPDATA%\Reelier\authority-cell-connection.json`, with a closed fallback to the current user's `AppData\Local` directory. `authority connect --path` refuses before writing on Windows. The platform, environment, and home-directory substitutions are private runtime/test inputs rather than CLI/config/body data, and tests do not mutate global process state. Connect and live-doctor results expose `pathnameConfinement: "unchecked"`; the implementation deliberately claims no same-user pathname authority on any client platform. The saved configuration remains the existing closed six-field public metadata object and cannot carry task, principal, grant, allocation, or session authority.
+
+Focused GREEN evidence before the implementation commit:
+
+```
+ℹ tests 14
+ℹ pass 14
+ℹ fail 0
+```
+
+`npx tsc -p tsconfig.test.json --pretty false`, `npm run check:authority-contract`, `npm run build`, and `git diff --check` all exited 0. No native helper was added. Unrelated `.gitignore`, `native/`, `rust-toolchain.toml`, `.tmp-pack/`, and certification changes were left unstaged and untouched.
