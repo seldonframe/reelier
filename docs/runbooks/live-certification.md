@@ -1,5 +1,11 @@
 # Live certification runbook
 
+## Schema validation is not semantic authority verification
+
+The packaged Task 4A JSON Schemas reject open or structurally invalid artifacts and bind static reviewed identities. They cannot compare instance-dependent sibling values or recompute configuration-derived digests. Passing Ajv alone therefore never establishes that a plan, endpoint manifest, or runner belongs to the reviewed operator configuration.
+
+The Authority Cell host must perform semantic verification before preparation or use. Host integrations use `verifyCertificationOperatorConfigV3`, `verifyCertificationEndpointManifestV2`, `verifyCertificationRunnerManifestV2`, and `verifyCertificationScenarioPlanV1` from the authority host module. These functions bind dynamic resources, accounts, desired-state digests, cleanup recipes, endpoint digests, and selected scenarios without exporting the private runner registry or any execution capability. A third-party verifier without the reviewed private host configuration can validate structure, but must report semantic authority as unchecked.
+
 ## Preconditions
 
 1. Provision one isolated Fly Authority Cell and durable ledger.

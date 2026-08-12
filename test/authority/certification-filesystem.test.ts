@@ -23,7 +23,7 @@ async function initialized(): Promise<string> {
   await writeFile(configPath, JSON.stringify({
     v: "reelier.certification-operator-config/v3", authorityConfigPath: "C:/private/AUTHORITY_PATH_CANARY", evidenceDirectory: "C:/private/EVIDENCE_PATH_CANARY",
     scenarios: ["github-issue-labels"], resources: { "github-issue-labels": { apiBaseUrl: "https://api.github.com", owner: "fixlyai", repository: "reelier-certification", issueNumber: 1 } },
-    cleanup: { "github-issue-labels": ["restore-github-labels"] }, desiredState: { "github-issue-labels": { labels: ["certification-after"] } }, metadata: {}, secretReferences: { githubCredential: "file:C:/private/TOKEN_PATH_CANARY" },
+    cleanup: { "github-issue-labels": ["restore-github-labels"] }, desiredState: { "github-issue-labels": { labels: ["certification-after"] } }, metadata: {}, secretReferences: { githubCredential: "file:private/TOKEN_PATH_CANARY" },
   }), "utf8");
   return (await initializeCertification({ configPath })).workspace;
 }
