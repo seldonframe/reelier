@@ -187,7 +187,7 @@ async function authorityInit(args: Readonly<{ opts: Record<string, string> }>): 
 async function authorityDoctor(args: Readonly<{ opts: Record<string, string>; flags: Set<string> }>): Promise<number> {
   if (args.flags.has("live") && (args.opts.connection || args.opts.path === undefined)) {
     try { const result = await checkAuthorityCellLive(await loadAuthorityCellConnection(args.opts.connection ?? defaultAuthorityCellConnectionFile())); console.log(JSON.stringify({ ok: result.state === "verified", checks: { live: result.state }, reasonCode: result.reasonCode, cellId: result.cellId, adapterContractDigest: result.adapterContractDigest })); return result.state === "verified" ? 0 : 1; }
-    catch { console.error(JSON.stringify({ ok: false, reasonCode: "connection-invalid" })); return 1; }
+    catch (error) { const absent = (error as NodeJS.ErrnoException).code === "ENOENT"; console.error(JSON.stringify({ ok: false, checks: { live: absent ? "absent" : "failed" }, reasonCode: absent ? "connection-unavailable" : "connection-invalid" })); return 1; }
   }
   const file = args.opts.path ?? "authority/authority.yml";
   try {
