@@ -53,6 +53,14 @@ Round 2 reviewer closure and commits
 - `cd84a18` / `28c0e3b` / `86b5426`: the frozen Adapter Contract digest is signed into the lifecycle binding and human commitment, present in the opaque pre-dispatch permit snapshot, every journal generation, each certification-local signed portable-receipt extension, and the graph. Cross-link mismatch refuses offline, and graph counts cover every extension.
 - `be812dd` / `f4811fc`: the direct Cell child-registration helper rejects forged signatures, wrong purposes, inactive descriptors, conflicting replay, and conserves a single allocation under concurrent exact replay.
 
+Independent review closure
+
+- `d7d68de` / `fe5bc67`: a self-listed attacker descriptor no longer counts as active. The host registry persists and verifies the root task's delegation signer, and direct signed-child registration must match that host-observed signer; the request carries no active-set assertion.
+- `295a403` / `45f357f`: graph export checks raw receipt-extension cardinality before digest indexing, so duplicate files cannot be collapsed by a `Map`.
+- `08fcb2f` / `33b2659`: conflict publication is journal-first and restart-safe. A signed `conflict-publication-pending` generation binds the exact bytes before publication; recovery selects the unique existing receipt-chain head, republishes idempotently, and commits the portable receipt digest. Graph export refuses pending conflict publication, and offline verification links the terminal journal to the exact conflict receipt and its reconciliation evidence.
+- `61c8b05` / `19e9f3c`: restart recovery validates the complete receipt chain from its unique root through every node before selecting the head; duplicated non-head nodes, forks, disconnected nodes, and zero/multiple heads refuse.
+- `76db84e` / `65eaea7`: founder-approved plan amendments explicitly include the certification-local graph schema and the minimum host budget support file in Task 4 scope.
+
 Deviations from the plan and why
 
 - The four artifact signing purposes are not legal `AuthorityKeyDescriptorV1` purposes, and that schema belongs to the frozen Adapter Contract. Per orchestrator direction, a certification-local binding signed by the activated `authority-evidence` key delegates those subkeys; a human readiness companion commitment prevents unsigned attachment. The frozen digest remains `sha256:7f46242b26d9c921f4e1ec9de6418ac5fc8c03d70c4415c25e799ae0e73a1512`.
@@ -92,8 +100,8 @@ built cloudflare_api_token, cloudflare_dns, github_issue_labels, gmail, gmail_la
 Round 2 final verification (2026-08-12)
 
 ```text
-Cell/delegation focused: 35 tests, 35 pass, 0 fail, 0 skip.
-Hermetic runner/graph focused: 32 tests, 31 pass, 0 fail, 1 skip.
+Cell/delegation focused: 36 tests, 36 pass, 0 fail, 0 skip.
+Hermetic runner/graph focused: 35 tests, 34 pass, 0 fail, 1 skip.
 ```
 
 The focused files were `delegation.test`, `delegation-budget.test`, `delegation-service.test`, `certification-cell.test`, `certification-lifecycle-authority.test`, `linux-authority-cell.test`, and the complete `certification-github-issue-labels-runner.test`. `npx tsc -p tsconfig.test.json --pretty false`, `npx tsc --noEmit --pretty false`, `npm run check:authority-contract`, `npm run build`, and `git diff --check` all exited 0. The sole skip remains the Windows configuration-symlink privilege case; its plan/journal sibling cases passed.
