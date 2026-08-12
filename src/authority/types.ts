@@ -1,6 +1,6 @@
 export const authorityKinds = ["principal","delegation-grant","source-bundle","outcome-contract","outcome-request","transport-effect","compiled-capability","decision-context","gate-event","authority-evidence","authority-receipt","pack-manifest"] as const;
 export type AuthorityKind = (typeof authorityKinds)[number];
-export type AuthoritySignaturePurpose = AuthorityKind | "signed-job-card" | "authority-lease" | "release-evidence" | "certification-readiness" | "topology-evidence";
+export type AuthoritySignaturePurpose = AuthorityKind | "signed-job-card" | "authority-journal" | "authority-lease" | "release-evidence" | "certification-readiness" | "topology-evidence";
 export type ClaimStatus = "verified" | "failed" | "unchecked" | "absent";
 type Wire<V extends string> = Readonly<{ v: V }>;
 export interface Principal extends Wire<"reelier.principal/v1"> { id: string; kind: "operator"|"requester"|"sponsor"|"gate"|"provider" }
