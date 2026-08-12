@@ -139,7 +139,7 @@ test("preflight refuses forged runner test endpoint plan and registry bindings",
   const fs = await import("node:fs/promises");
   const originals = Object.fromEntries(await Promise.all(Object.entries(files).map(async ([key, file]) => [key, await fs.readFile(file, "utf8")]))) as Record<keyof typeof files, string>;
   const cases: readonly [keyof typeof files, (raw: any) => void, string][] = [
-    ["runner", raw => { raw.implementationDigest = `sha256:${"9".repeat(64)}`; }, "runners"],
+    ["runner", raw => { raw.metadataDigest = `sha256:${"9".repeat(64)}`; }, "runners"],
     ["tests", raw => { raw.runnerManifestDigest = `sha256:${"8".repeat(64)}`; }, "tests"],
     ["plan", raw => { raw.testManifestDigest = `sha256:${"7".repeat(64)}`; }, "plans"],
     ["plan", raw => { raw.runnerRegistryDigest = `sha256:${"6".repeat(64)}`; }, "plans"],
@@ -151,5 +151,28 @@ test("preflight refuses forged runner test endpoint plan and registry bindings",
     assert.equal(report.preparationReady, false);
     assert.match(report.missing.join(" "), new RegExp(`inputs:${missingKind}:github-issue-labels`));
     await fs.writeFile(files[kind], originals[kind], "utf8");
+  }
+});
+
+test("configured metadata never becomes provider execution readiness in Task 4A", async () => {
+  const root = await workspace();
+  await writeCertificationInputManifests(root, ["github-issue-labels"]);
+  const report = await preflightCertification({ workspace: root, scenario: "github-issue-labels" });
+  assert.equal(report.preparationReady, true);
+  assert.equal(report.executionReady, false);
+  assert.equal(report.dispatchable, false);
+});
+
+test("duplicate runner test endpoint and plan artifacts each refuse preparation", async () => {
+  const fs = await import("node:fs/promises");
+  for (const kind of ["runners", "tests", "plans", "endpoints"] as const) {
+    const root = await workspace();
+    await writeCertificationInputManifests(root, ["github-issue-labels"]);
+    const base = kind === "endpoints" ? path.join(root, "authority", "endpoints") : path.join(root, "inputs", kind);
+    const source = path.join(base, "github-issue-labels.json");
+    await fs.copyFile(source, path.join(base, "github-issue-labels--duplicate.json"));
+    const report = await preflightCertification({ workspace: root, scenario: "github-issue-labels" });
+    assert.equal(report.preparationReady, false, kind);
+    assert.match(report.missing.join(" "), new RegExp(`inputs:${kind}:github-issue-labels`), kind);
   }
 });

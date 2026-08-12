@@ -101,7 +101,7 @@ test("compound endpoint authority binds provider credential account resource met
   assert.equal(new Set(manifest.endpoints.map(endpoint => endpoint.resourceCommitment)).size, 2);
 });
 
-test("runner v2 is registry-bound and carries the exact closed lifecycle while v1 is non-dispatchable", () => {
+test("runner v2 binds registry metadata but remains non-dispatchable without implementation and executed-test evidence", () => {
   const endpoint = deriveCertificationEndpointManifest(parseCertificationOperatorConfigV3(githubV3()), "github-issue-labels");
   const registry = getCertificationRunnerRegistryEntry("github-issue-labels");
   const runner = parseCertificationRunnerManifest({
@@ -109,13 +109,15 @@ test("runner v2 is registry-bound and carries the exact closed lifecycle while v
     scenarioId: "github-issue-labels",
     runnerId: registry.runnerId,
     endpointManifestDigest: authorityDigest(endpoint),
-    implementationDigest: registry.implementationDigest,
+    metadataDigest: registry.metadataDigest,
     registryDigest: certificationRunnerRegistryDigest,
     operations: ["prepare", "authoritative-read", "compile", "reserve", "authoritative-reread", "recompile", "dispatch", "controlled-cut", "reconcile", "receipt", "cleanup", "export", "offline-verify"],
-    dispatchable: true,
+    dispatchable: false,
   }, "github-issue-labels");
-  assert.equal(runner.dispatchable, true);
-  assert.throws(() => parseCertificationRunnerManifest({ ...runner, implementationDigest: sha("f") }, "github-issue-labels"), /implementation|registry/i);
+  assert.equal(runner.dispatchable, false);
+  assert.equal(runner.executionReady, false);
+  assert.equal("implementationDigest" in runner, false);
+  assert.throws(() => parseCertificationRunnerManifest({ ...runner, metadataDigest: sha("f") }, "github-issue-labels"), /metadata|registry/i);
   const v1 = parseCertificationRunnerManifest({ v: "reelier.certification-runner-manifest/v1", scenarioId: "github-issue-labels", runnerId: "legacy_runner", endpointManifestDigest: sha("1"), implementationDigest: sha("2"), operations: ["prepare", "authoritative-read", "compile", "reserve", "reread", "dispatch", "reconcile", "receipt", "cleanup"] });
   assert.equal(v1.dispatchable, false);
 });
@@ -151,6 +153,9 @@ test("private runner registry is exact metadata and unavailable compound runners
   const scenarios = ["cloudflare-dns", "cloudflare-vercel-secret", "github-issue-labels", "neon-migration", "slack-topic", "vercel-promotion"];
   const entries = scenarios.map(scenario => getCertificationRunnerRegistryEntry(scenario as never));
   assert.deepEqual(entries.map(entry => entry.scenarioId), scenarios);
+  assert.equal(entries.every(entry => entry.dispatchable === false), true);
+  assert.equal(entries.every(entry => entry.executionReady === false), true);
+  assert.equal(entries.every(entry => "implementationDigest" in entry === false), true);
   assert.equal(entries.find(entry => entry.scenarioId === "cloudflare-vercel-secret")?.dispatchable, false);
   assert.match(entries.find(entry => entry.scenarioId === "cloudflare-vercel-secret")?.unavailableReason ?? "", /not registered/i);
   const serialized = JSON.stringify(entries);
