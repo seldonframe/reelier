@@ -1,6 +1,26 @@
 import canonicalize from "canonicalize";
 import { createHash, createPrivateKey, sign } from "node:crypto";
-import { cp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { cp, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+import { join, resolve } from "node:path";
+
+const directoryFlag = process.argv.indexOf("--directory");
+if (directoryFlag !== -1 && !process.argv[directoryFlag + 1]) throw new Error("--directory requires a path");
+const contractDirectory = directoryFlag === -1
+  ? fileURLToPath(new URL("../contract/authority/v1/", import.meta.url))
+  : resolve(process.argv[directoryFlag + 1]);
+const target = join(contractDirectory, "golden-vectors.json");
+const descriptorTarget = join(contractDirectory, "adapter-contract-v1.json");
+const adapterContractMembers = [
+  "authority-evidence.schema.json", "authority-key-descriptor.schema.json", "authority-receipt-bundle.schema.json", "authority-receipt.schema.json",
+  "boundable-task-candidate.schema.json", "certification-cell-activation.schema.json", "certification-endpoint-manifest-v2.schema.json", "certification-endpoint-manifest.schema.json",
+  "certification-operator-config-v3.schema.json", "certification-runner-manifest-v2.schema.json", "certification-runner-manifest.schema.json", "certification-scenario-plan.schema.json",
+  "certification-test-manifest.schema.json", "compiled-capability.schema.json", "connection-adoption.schema.json", "connection-descriptor.schema.json",
+  "connection-inventory.schema.json", "decision-context.schema.json", "delegation-grant.schema.json", "gate-event.schema.json", "golden-vectors.json",
+  "observation-envelope.schema.json", "observed-action.schema.json", "outcome-contract.schema.json", "outcome-request.schema.json", "pack-manifest.schema.json",
+  "principal.schema.json", "shadow-report.schema.json", "signed-certification-readiness.schema.json", "source-bundle.schema.json",
+  "staged-artifact-commitment.schema.json", "transport-effect.schema.json", "trust-event.schema.json",
+];
 
 const digest = "sha256:" + "9".repeat(64);
 const at = "2026-01-01T00:00:00.000Z";
@@ -63,18 +83,44 @@ const renderedVectors = Object.fromEntries(Object.entries(vectors).map(([kind, v
 }]));
 renderedVectors["decision-context"].variants = { preCompileRefusal: makeVector("decision-context", refusedDecisionContext) };
 const rendered = JSON.stringify(renderedVectors, null, 2) + "\n";
-const target = new URL("../contract/authority/v1/golden-vectors.json", import.meta.url);
-const decisionContextSchema = JSON.parse(await readFile(new URL("../contract/authority/v1/decision-context.schema.json", import.meta.url), "utf8"));
-const receiptSchema = JSON.parse(await readFile(new URL("../contract/authority/v1/authority-receipt.schema.json", import.meta.url), "utf8"));
+const decisionContextSchema = JSON.parse(await readFile(join(contractDirectory, "decision-context.schema.json"), "utf8"));
+const receiptSchema = JSON.parse(await readFile(join(contractDirectory, "authority-receipt.schema.json"), "utf8"));
 const { $schema: _decisionMetaSchema, $id: _decisionId, ...decisionContextBody } = decisionContextSchema;
 if (canonicalize(decisionContextBody) !== canonicalize(receiptSchema?.properties?.decisionContext)) {
   throw new Error("authority schema drift: receipt-embedded DecisionContext must equal the standalone DecisionContext schema");
 }
+const descriptor = await renderAdapterContractDescriptor(contractDirectory);
+const renderedDescriptor = JSON.stringify(descriptor, null, 2) + "\n";
 if (process.argv.includes("--copy-schemas")) {
   await mkdir(new URL("../dist/authority/schemas/", import.meta.url), { recursive: true });
-  await cp(new URL("../contract/authority/v1/", import.meta.url), new URL("../dist/authority/schemas/", import.meta.url), { recursive: true });
+  await cp(contractDirectory, new URL("../dist/authority/schemas/", import.meta.url), { recursive: true });
   process.exit(0);
 }
 if (process.argv.includes("--check")) {
   if ((await readFile(target, "utf8")) !== rendered) throw new Error("authority golden vectors drift; run node scripts/build-authority-contract.mjs");
+  if ((await readFile(descriptorTarget, "utf8")) !== renderedDescriptor) throw new Error("authority adapter contract drift; run node scripts/build-authority-contract.mjs");
 } else await writeFile(target, rendered, "utf8");
+if (!process.argv.includes("--check")) {
+  await writeFile(descriptorTarget, renderedDescriptor, "utf8");
+}
+
+async function renderAdapterContractDescriptor(directory) {
+  if (adapterContractMembers.join("\0") !== [...adapterContractMembers].sort().join("\0")) throw new Error("adapter contract members must be sorted");
+  if (new Set(adapterContractMembers).size !== adapterContractMembers.length) throw new Error("adapter contract members must be unique");
+  if (adapterContractMembers.some(path => path.includes("/") || path.includes("\\") || path === "adapter-contract-v1.json" || path === "." || path === "..")) throw new Error("adapter contract member path is invalid");
+  const actualFiles = await readdir(directory, { withFileTypes: true });
+  const actualNames = actualFiles.filter(entry => entry.isFile()).map(entry => entry.name).filter(name => name !== "adapter-contract-v1.json").sort();
+  if (actualNames.join("\0") !== adapterContractMembers.join("\0")) throw new Error("authority adapter contract membership drift");
+  const members = await Promise.all(adapterContractMembers.map(async path => ({
+    path,
+    digest: `sha256:${createHash("sha256").update(await readFile(join(directory, path))).digest("hex")}`,
+  })));
+  const goldenVectorsDigest = members.find(member => member.path === "golden-vectors.json")?.digest;
+  if (!goldenVectorsDigest) throw new Error("authority adapter contract must include golden vectors");
+  const unsigned = { v: "reelier.adapter-contract/v1", domain: "reelier.adapter-contract/v1\\0", members, goldenVectorsDigest };
+  return { ...unsigned, digest: `sha256:${createHash("sha256").update(canonicalize(unsigned), "utf8").digest("hex")}` };
+}
+
+function renderAdapterContractSource(descriptor) {
+  return `// Generated by scripts/build-authority-contract.mjs; do not edit.\nimport canonicalize from "canonicalize";\nimport { createHash } from "node:crypto";\n\nexport type AuthorityAdapterContractV1 = Readonly<{ v: "reelier.adapter-contract/v1"; domain: "reelier.adapter-contract/v1\\\\0"; members: readonly Readonly<{ path: string; digest: string }>[]; goldenVectorsDigest: string; digest: string }>;\n\nexport const AUTHORITY_ADAPTER_CONTRACT_V1: AuthorityAdapterContractV1 = Object.freeze(${JSON.stringify(descriptor, null, 2)});\nexport const AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST = AUTHORITY_ADAPTER_CONTRACT_V1.digest;\n\n/** Verifies only the frozen authority adapter manifest against caller-supplied bytes. */\nexport function verifyAuthorityAdapterContractV1(value: unknown, files: ReadonlyMap<string, Uint8Array>): AuthorityAdapterContractV1 {\n  if (!value || typeof value !== "object") throw new TypeError("invalid adapter contract: descriptor must be an object");\n  const descriptor = value as { v?: unknown; domain?: unknown; members?: unknown; goldenVectorsDigest?: unknown; digest?: unknown };\n  if (descriptor.v !== "reelier.adapter-contract/v1" || descriptor.domain !== "reelier.adapter-contract/v1\\\\0") throw new TypeError("invalid adapter contract: version or domain");\n  if (!Array.isArray(descriptor.members) || typeof descriptor.goldenVectorsDigest !== "string" || typeof descriptor.digest !== "string") throw new TypeError("invalid adapter contract: shape");\n  const members = descriptor.members.map(member => {\n    if (!member || typeof member !== "object" || typeof (member as { path?: unknown }).path !== "string" || typeof (member as { digest?: unknown }).digest !== "string") throw new TypeError("invalid adapter contract: member shape");\n    return member as { path: string; digest: string };\n  });\n  const paths = members.map(member => member.path);\n  if (paths.join("\\0") !== [...paths].sort().join("\\0") || new Set(paths).size !== paths.length || paths.some(path => path.includes("/") || path.includes("\\\\") || path === "adapter-contract-v1.json" || path === "." || path === "..")) throw new TypeError("invalid adapter contract: member paths");\n  if (paths.join("\\0") !== AUTHORITY_ADAPTER_CONTRACT_V1.members.map(member => member.path).join("\\0")) throw new TypeError("invalid adapter contract: closed membership");\n  for (const member of members) {\n    const bytes = files.get(member.path);\n    if (!bytes || \`sha256:\${createHash("sha256").update(bytes).digest("hex")}\` !== member.digest) throw new TypeError(\`invalid adapter contract: member digest \${member.path}\`);\n  }\n  const goldenVectors = members.find(member => member.path === "golden-vectors.json");\n  if (!goldenVectors || goldenVectors.digest !== descriptor.goldenVectorsDigest) throw new TypeError("invalid adapter contract: golden vectors digest");\n  const unsigned = { v: descriptor.v, domain: descriptor.domain, members: members.map(member => ({ path: member.path, digest: member.digest })), goldenVectorsDigest: descriptor.goldenVectorsDigest };\n  const expected = \`sha256:\${createHash("sha256").update(canonicalize(unsigned), "utf8").digest("hex")}\`;\n  if (descriptor.digest !== expected || /^sha256:0{64}$/.test(descriptor.digest)) throw new TypeError("invalid adapter contract: aggregate digest");\n  return Object.freeze({ ...unsigned, digest: descriptor.digest }) as AuthorityAdapterContractV1;\n}\n`;
+}
