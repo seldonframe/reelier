@@ -89,8 +89,9 @@ export function createOpaqueConnectionRouteRegistry(): OpaqueConnectionRouteRegi
       if (!entry) throw new TypeError("opaque route is missing");
       const digest = connectionDescriptorDigest(descriptor);
       if (adoption.activationState !== "active" || adoption.descriptorDigest !== digest || entry.descriptorDigest !== digest || adoption.selectedAccountIdentity !== descriptor.account.identity || entry.account !== descriptor.account.identity || adoption.sidecarRouteId !== descriptor.callableRoute.routeId) throw new TypeError("opaque route descriptor or account mismatch");
-      const connection = await entry.resolve();
+      let connection: DownstreamConnection | undefined;
       try {
+        connection = await entry.resolve();
         const serverIdentity = connection.advertisedName ?? connection.name;
         if (serverIdentity !== descriptor.provider.toolServerName) throw new TypeError("opaque route server identity mismatch");
         const observedSchemas = digestNormalizedMcpToolSchemas(connection.tools);
@@ -100,9 +101,9 @@ export function createOpaqueConnectionRouteRegistry(): OpaqueConnectionRouteRegi
         const account = await verifyConnectionAccount(connection, entry.verifier, descriptor.account.identity);
         if (account !== descriptor.account.identity) throw new TypeError("opaque route account mismatch");
         return connection;
-      } catch (error) {
-        await connection.close().catch(() => undefined);
-        throw new TypeError(`opaque route verification failed: ${error instanceof Error ? error.message : "unavailable"}`);
+      } catch {
+        await connection?.close().catch(() => undefined);
+        throw new TypeError("opaque route verification failed");
       }
     },
   });
