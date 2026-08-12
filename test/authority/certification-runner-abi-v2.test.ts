@@ -166,3 +166,23 @@ test("public package exports do not expose the private runner registry", async (
     assert.equal("certificationRunnerRegistryDigest" in surface, false);
   }
 });
+
+test("closed public plan input rejects accessor-based callbacks without invoking them", () => {
+  let calls = 0;
+  const choices = Object.create(Object.prototype, {
+    desired: { enumerable: true, get: () => { calls += 1; return "reviewed"; } },
+  });
+  const plan = {
+    v: "reelier.certification-scenario-plan/v1",
+    scenarioId: "github-issue-labels",
+    definitionAliases: [githubIssueLabelsAlias],
+    sourceRefs: { issue: "github:fixlyai/reelier-certification#1" },
+    choices,
+    policyCommitments: [{ schemaId: "github_issue_labels_policy_v1", digest: sha("1") }],
+    cleanup: { recipeId: "restore-github-issue-labels", beforeStateDigest: sha("2") },
+    controlledCut: { case: "ambiguous-after-dispatch" },
+    runnerManifestDigest: sha("3"), testManifestDigest: sha("4"), endpointManifestDigest: sha("5"), runnerRegistryDigest: certificationRunnerRegistryDigest,
+  };
+  assert.throws(() => parseCertificationScenarioPlan(plan, ["github-issue-labels"]), /accessor|closed|executable/i);
+  assert.equal(calls, 0);
+});
