@@ -481,3 +481,37 @@ test("a junction-substituted receipt store refuses cleanup and leaves the extern
     assert.deepEqual(await readdir(outside), []);
   } finally { await rm(f.root, { recursive: true, force: true }); await rm(outside, { recursive: true, force: true }); }
 });
+
+test("portable evidence links the approved task, exact post-state, policy statuses, task status, and zero-effect duplicates", async () => {
+  const f = await fixture(); try {
+    await f.runner.run({ bearerToken: f.credential.token, requestId: "request_portable_original" });
+    const duplicate = await f.runner.run({ bearerToken: f.credential.token, requestId: "request_portable_duplicate" });
+    assert.equal(duplicate.status, "duplicate");
+    const graph: any = await f.runner.exportGraph({ bearerToken: f.credential.token });
+    assert.equal(graph.taskAuthorities.length, 1);
+    assert.equal(graph.taskAuthorities[0].signedJobCardDigest, authorityDigest(f.jobCard));
+    assert.equal(graph.taskAuthorities[0].adapterContractDigest, AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST);
+    assert.equal(graph.postStateEvidence.length, 1);
+    assert.equal(graph.postStateEvidence[0].confidence, "exact");
+    assert.equal(graph.postStateEvidence[0].expectedProjectionDigest, graph.postStateEvidence[0].observedProjectionDigest);
+    assert.deepEqual(graph.policyEvidence.map((item: any) => [item.artifact, item.status]), [["outcome-contract", "verified"], ["local-gate-policy", "unchecked"]]);
+    assert.equal(graph.policyEvidence.some((item: any) => "fired" in item || "matchedRule" in item || "coverage" in item), false);
+    assert.deepEqual(graph.taskStatusEvidence.map((item: any) => item.phase), ["dispatch", "export"]);
+    assert.equal(graph.taskStatusEvidence.every((item: any) => item.freshness === "unchecked"), true);
+    assert.equal(graph.duplicateDecisions.length, 1);
+    assert.deepEqual({ budget: graph.duplicateDecisions[0].budgetDelta, writes: graph.duplicateDecisions[0].providerWriteDelta }, { budget: 0, writes: 0 });
+    assert.equal(verifyCertificationTaskReceiptGraph(graph, { trustPin: f.pin }).status, "verified");
+    for (const mutate of [
+      (g: any) => { g.taskAuthorities[0].instructionsDigest = `sha256:${"9".repeat(64)}`; },
+      (g: any) => { g.taskAuthorities[0].dispatchSnapshotPreimage.intentDigest = `sha256:${"8".repeat(64)}`; },
+      (g: any) => { g.postStateEvidence[0].preSourceBundleDigest = `sha256:${"7".repeat(64)}`; },
+      (g: any) => { g.postStateEvidence[0].observedProjectionDigest = `sha256:${"6".repeat(64)}`; },
+      (g: any) => { g.policyEvidence[0].policyDigest = `sha256:${"5".repeat(64)}`; },
+      (g: any) => { g.policyEvidence[1].status = "verified"; },
+      (g: any) => { g.policyEvidence[0].fired = true; },
+      (g: any) => { g.taskStatusEvidence[1].allocationRevoked = true; },
+      (g: any) => { g.duplicateDecisions.pop(); },
+      (g: any) => { g.duplicateDecisions[0].providerWriteDelta = 1; },
+    ]) { const changed = structuredClone(graph); mutate(changed); assert.throws(() => verifyCertificationTaskReceiptGraph(changed, { trustPin: f.pin }), /portable|task|post-state|policy|status|duplicate|signature|terminal|digest|closed/i); }
+  } finally { await rm(f.root, { recursive: true, force: true }); }
+});
