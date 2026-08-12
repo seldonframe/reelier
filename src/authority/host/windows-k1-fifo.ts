@@ -1,11 +1,11 @@
-import { authorityCanonicalBytes } from "../wire.js";
+import { authorityCanonicalBytes, authorityDigest } from "../wire.js";
 
 const TICKET_VERSION = "reelier.windows-k1-fifo-ticket/internal-v1";
 const SHA256 = /^sha256:[0-9a-f]{64}$/;
 const HEX = /^[0-9a-f]{64}$/;
 const TICKET = /^[0-9a-f]{16}$/;
-const ORDER_KEY = "([0-9a-f]{16})-([0-9a-f]{64})-([0-9]{10})-([0-9a-f]{64})";
-const NAME = new RegExp(`^(?:\\.ticket-prep-(${ORDER_KEY})\\.tmp|\\.ticket-(${ORDER_KEY})|\\.ticket-retired-(${ORDER_KEY})|\\.ticket-withdrawal-(${ORDER_KEY}))$`);
+const PID = /^[0-9]+$/;
+const NAME = /^(?:\.ticket-prep-(.+)\.tmp|\.ticket-retired-(.+)|\.ticket-withdrawal-(.+)|\.ticket-(.+))$/;
 
 export interface WindowsK1FifoBinding {
   readonly canonicalRoot: string;
@@ -40,18 +40,28 @@ export function parseWindowsK1FifoTicketRecord(bytes: Buffer): WindowsK1FifoTick
   if (keys.join("\0") !== ["hostDigest", "livenessDigest", "nonce", "pid", "rootMaterialDigest", "ticket", "v"].join("\0")) throw new TypeError("Windows K1 FIFO ticket record keys are not closed");
   if (record.v !== TICKET_VERSION || typeof record.rootMaterialDigest !== "string" || typeof record.ticket !== "string" || typeof record.hostDigest !== "string" || typeof record.pid !== "number" || typeof record.nonce !== "string" || typeof record.livenessDigest !== "string") throw new TypeError("invalid Windows K1 FIFO ticket record");
   if (!SHA256.test(record.rootMaterialDigest) || record.rootMaterialDigest === `sha256:${"0".repeat(64)}` || !TICKET.test(record.ticket) || record.ticket === "0000000000000000" || !HEX.test(record.hostDigest) || record.hostDigest === "0".repeat(64) || !Number.isSafeInteger(record.pid) || record.pid <= 0 || !HEX.test(record.nonce) || record.nonce === "0".repeat(64) || !SHA256.test(record.livenessDigest) || record.livenessDigest === `sha256:${"0".repeat(64)}`) throw new TypeError("invalid Windows K1 FIFO ticket record fields");
+  const expectedLivenessDigest = authorityDigest({ v: "reelier.windows-k1-fifo-liveness-material/internal-v1", rootMaterialDigest: record.rootMaterialDigest, ticket: record.ticket, hostDigest: record.hostDigest, pid: record.pid, nonce: record.nonce });
+  if (record.livenessDigest !== expectedLivenessDigest) throw new TypeError("Windows K1 FIFO ticket liveness digest mismatch");
   return Object.freeze({ v: TICKET_VERSION, rootMaterialDigest: record.rootMaterialDigest as `sha256:${string}`, ticket: record.ticket, hostDigest: record.hostDigest, pid: record.pid, nonce: record.nonce, livenessDigest: record.livenessDigest as `sha256:${string}` });
 }
 
 export function parseWindowsK1FifoName(name: string): ParsedWindowsK1FifoName | null {
   const match = NAME.exec(name);
   if (match === null) return null;
-  const kinds = ["preparation", "ticket", "retired", "withdrawal"] as const;
+  const kinds = ["preparation", "retired", "withdrawal", "ticket"] as const;
   for (let index = 0; index < kinds.length; index++) {
-    const orderKey = match[1 + index * 5];
-    if (orderKey !== undefined) return Object.freeze({ kind: kinds[index], orderKey, name });
+    const orderKey = match[1 + index];
+    if (orderKey !== undefined && parseOrderKey(orderKey)) return Object.freeze({ kind: kinds[index], orderKey, name });
   }
   return null;
+}
+
+function parseOrderKey(orderKey: string): boolean {
+  const [ticket, hostDigest, pidText, nonce, ...extra] = orderKey.split("-");
+  if (extra.length > 0 || ticket === undefined || hostDigest === undefined || pidText === undefined || nonce === undefined) return false;
+  if (!TICKET.test(ticket) || ticket === "0000000000000000" || !HEX.test(hostDigest) || hostDigest === "0".repeat(64) || !HEX.test(nonce) || nonce === "0".repeat(64) || !PID.test(pidText)) return false;
+  const pid = Number(pidText);
+  return Number.isSafeInteger(pid) && pid > 0 && pid.toString(10).padStart(10, "0") === pidText;
 }
 
 export function compareWindowsK1FifoTickets(left: WindowsK1FifoTicketRecord, right: WindowsK1FifoTicketRecord): number {
