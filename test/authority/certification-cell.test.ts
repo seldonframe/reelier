@@ -81,6 +81,7 @@ test("dispatch permit is opaque, nonserializable, one-use, and invokes the runne
     await assert.rejects(() => cell.verifyCertificationDispatchReadiness({ ...readiness, credentialAvailable: async () => false }), /credential.*unavailable/i);
     await assert.rejects(() => cell.verifyCertificationDispatchReadiness({ ...readiness, bearerToken: "rat_not-the-issued-token" }), /credential/i);
     assert.equal(calls, 0);
+    assert.equal((await f.delegation.budget.get(f.initialized.identifiers.rootGrantId))?.remaining, 2);
 
     const permit = await cell.verifyCertificationDispatchReadiness(readiness);
     assert.throws(() => JSON.stringify(permit), /opaque|serializ/i);
@@ -90,11 +91,13 @@ test("dispatch permit is opaque, nonserializable, one-use, and invokes the runne
     await writeFile(endpointFile, JSON.stringify(endpoint));
     await assert.rejects(() => cell.runCertificationWithPermit(permit, async () => { calls += 1; }), /endpoint|stale|commitment/i);
     assert.equal(calls, 0);
+    assert.equal((await f.delegation.budget.get(f.initialized.identifiers.rootGrantId))?.remaining, 2);
     await writeFile(endpointFile, endpointBytes);
 
     const valid = await cell.verifyCertificationDispatchReadiness(readiness);
     assert.equal(await cell.runCertificationWithPermit(valid, async () => { calls += 1; return "ran"; }), "ran");
     assert.equal(calls, 1);
+    assert.equal((await f.delegation.budget.get(f.initialized.identifiers.rootGrantId))?.remaining, 1);
     await assert.rejects(() => cell.runCertificationWithPermit(valid, async () => { calls += 1; }), /used|permit/i);
     assert.equal(calls, 1);
 
