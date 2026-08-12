@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
-import { copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { authorityCanonicalBytes, authorityDigest, signAuthorityDigest, signJobCard, signedJobCardDigest } from "../../src/authority/index.js";
 import { connectionAdoptionCommitmentDigest, connectionDescriptorDigest, createOpaqueConnectionRouteRegistry, digestNormalizedMcpToolSchemas } from "../../src/connections.js";
@@ -80,6 +80,10 @@ test("local deployment dispatches once, reconciles, publishes a receipt, and sur
     };
     const unsafeConfig = { version: 1 as const, tenant: "tenant_1", requester: "operator", definitions: ["gmail_reply_send_v1"], ledgerDir: path.join(authorityRoot, "unsafe-ledger"), decisionDir: path.join(authorityRoot, "unsafe-decisions"), receiptDir: path.join(authorityRoot, "unsafe-receipts"), endpoints: [], deploymentPath: built.deploymentFile, jobCardTrustPinPath: built.jobCardTrustEvidenceFile };
     await assert.rejects(() => createLocalAuthorityRuntime(unsafeConfig, { dispatchAdapter: adapter }), /trust pin.*outside deployment-controlled output/i);
+    const linkedDeployment = path.join(authorityRoot, "linked-deployment");
+    await symlink(built.directory, linkedDeployment, process.platform === "win32" ? "junction" : "dir");
+    await assert.rejects(() => createLocalAuthorityRuntime({ ...unsafeConfig, jobCardTrustPinPath: path.join(linkedDeployment, "job-card-trust-evidence.json") }, { dispatchAdapter: adapter }), /trust pin.*outside deployment-controlled output|link.*indirection/i);
+    if (process.platform === "win32") await assert.rejects(() => createLocalAuthorityRuntime({ ...unsafeConfig, jobCardTrustPinPath: built.jobCardTrustEvidenceFile.toUpperCase() }, { dispatchAdapter: adapter }), /trust pin.*outside deployment-controlled output/i);
     const hostTrustPinPath = path.join(authorityRoot, "trust", "job-card-trust-pin.json");
     await mkdir(path.dirname(hostTrustPinPath), { recursive: true });
     await copyFile(built.jobCardTrustEvidenceFile, hostTrustPinPath);
