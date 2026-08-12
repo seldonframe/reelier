@@ -50,6 +50,22 @@ test("delegation authority mints a narrower child and consumes conserved budget"
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test("root registration is exact-replay idempotent and binds its generated allocation identity", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-delegation-root-replay-"));
+  try {
+    const parent = grant({ grantId: "grant_generated", grantee: "principal_generated" });
+    const stored = { grant: parent, digest: authorityDigest(parent), signerId: "delegation_cell", signature: { alg: "ed25519" as const, sig: "unused" } };
+    const service = createDelegationAuthority({ root, now: () => new Date("2026-01-01T00:10:00.000Z"), signGrant: async value => ({ grant: value, digest: authorityDigest(value), signerId: "delegation_cell", signature: { alg: "ed25519", sig: "unused" } }) });
+    const registration = { taskId: "task_generated", allocationId: "grant_generated", rootGrant: stored, effects: 4 } as Parameters<typeof service.registerRoot>[0];
+    await service.registerRoot(registration);
+    await service.registerRoot(registration);
+    assert.deepEqual(await service.resolveSessionBinding({ tenant: "tenant_1", taskId: "task_generated", principalId: "principal_generated" }), {
+      taskId: "task_generated", grantId: "grant_generated", grantDigest: stored.digest, grantee: "principal_generated", allocationId: "grant_generated", expiresAt: parent.expiresAt, effects: 4, lifecycleState: "allocated",
+    });
+    await assert.rejects(() => service.registerRoot({ ...registration, effects: 3 }), /conflict/i);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("delegation authority refuses a corrupt durable registry", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "reelier-delegation-service-corrupt-"));
   try {
