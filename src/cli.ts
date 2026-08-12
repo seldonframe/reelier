@@ -4437,7 +4437,7 @@ async function cmdDeploy(args: ParsedArgs): Promise<number> {
     const trustPinFile = path.resolve(args.opts["trust-pin"] ?? path.join(root, "trust", "job-card-trust-pin.json"));
     const trustPin = JSON.parse(await readFile(trustPinFile, "utf8"));
     const built = await buildAuthorityDeployment(candidateFile, output, trustPin);
-    console.log(JSON.stringify({ alias, status: "deployed", deploymentFile: built.deploymentFile, jobCardFile: built.jobCardFile, jobCardTrustPinFile: built.jobCardTrustPinFile, jobId: built.jobCard.jobId }));
+    console.log(JSON.stringify({ alias, status: "deployed", deploymentFile: built.deploymentFile, jobCardFile: built.jobCardFile, jobCardTrustEvidenceFile: built.jobCardTrustEvidenceFile, jobId: built.jobCard.jobId }));
     return 0;
   } catch (error) {
     console.error(JSON.stringify({ status: "refused", reasonCode: "deployment-invalid", message: error instanceof Error ? error.message : String(error) }));

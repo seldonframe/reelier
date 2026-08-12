@@ -78,6 +78,8 @@ test("local deployment dispatches once, reconciles, publishes a receipt, and sur
       async dispatch() { dispatches++; return { kind: "acknowledged", resultDigest: authorityDigest({ v: "fake-provider-response/v1", messageId: "provider-message-1" }) }; },
       async reconcile() { reconciliations++; return { kind: "acknowledged", resultDigest: authorityDigest({ v: "fake-read-back/v1", messageId: "provider-message-1" }), reconciliationStatus: "matched", normalizedProjectionDigest: authorityDigest({ v: "fake-message/v1", messageId: "provider-message-1" }) }; },
     };
+    const unsafeConfig = { version: 1 as const, tenant: "tenant_1", requester: "operator", definitions: ["gmail_reply_send_v1"], ledgerDir: path.join(authorityRoot, "unsafe-ledger"), decisionDir: path.join(authorityRoot, "unsafe-decisions"), receiptDir: path.join(authorityRoot, "unsafe-receipts"), endpoints: [], deploymentPath: built.deploymentFile, jobCardTrustPinPath: built.jobCardTrustEvidenceFile };
+    await assert.rejects(() => createLocalAuthorityRuntime(unsafeConfig, { dispatchAdapter: adapter }), /trust pin.*outside deployment-controlled output/i);
     const hostTrustPinPath = path.join(authorityRoot, "trust", "job-card-trust-pin.json");
     await mkdir(path.dirname(hostTrustPinPath), { recursive: true });
     await copyFile(built.jobCardTrustEvidenceFile, hostTrustPinPath);
