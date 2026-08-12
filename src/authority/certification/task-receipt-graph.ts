@@ -8,9 +8,10 @@ import type { AuthorityKeyDescriptorV1 } from "./authority.js";
 import { parseTrustEvents, verifySignedCertificationReadiness } from "./authority.js";
 import type { JobCardTrustPinV1 } from "../host/deployment.js";
 import { verifyAuthoritySignature } from "../crypto.js";
+import type { CertificationReceiptExtensionV1 } from "./lifecycle-receipts.js";
 
-const COLLECTIONS = ["grants", "principals", "allocations", "budgetEvents", "outcomes", "exceptions", "receipts", "priorReceiptLinks", "keyDescriptors"] as const;
-const COUNT_FIELDS = ["grants", "principals", "allocations", "budgetEvents", "outcomes", "exceptions", "topologyEvidence", "leases", "receipts", "priorReceiptLinks", "keyDescriptors", "bindingEntries"] as const;
+const COLLECTIONS = ["grants", "principals", "allocations", "budgetEvents", "outcomes", "exceptions", "receipts", "receiptExtensions", "priorReceiptLinks", "keyDescriptors"] as const;
+const COUNT_FIELDS = ["grants", "principals", "allocations", "budgetEvents", "outcomes", "exceptions", "topologyEvidence", "leases", "receipts", "receiptExtensions", "priorReceiptLinks", "keyDescriptors", "bindingEntries"] as const;
 type CollectionName = (typeof COLLECTIONS)[number];
 
 interface GraphTerminalCommitmentV1 {
@@ -23,14 +24,14 @@ interface GraphTerminalCommitmentV1 {
   readonly signature: AuthoritySignature;
 }
 
-export interface CertificationTaskReceiptGraphV1 { readonly v: "reelier.certification-task-receipt-graph/v1"; readonly adapterContractDigest: string; readonly taskId: string; readonly authorityCellId: string; readonly rootGrant: any; readonly grants: readonly any[]; readonly principals: readonly any[]; readonly allocations: readonly any[]; readonly budgetEvents: readonly any[]; readonly outcomes: readonly any[]; readonly exceptions: readonly any[]; readonly topology: Readonly<{ status: "unchecked" }>; readonly leases: Readonly<{ status: "absent"; entries: readonly never[] }>; readonly receipts: readonly AuthorityReceiptBundle[]; readonly priorReceiptLinks: readonly Readonly<{ receiptDigest: string; priorReceiptDigest: string | null }>[]; readonly binding: CertificationArtifactKeyBindingV1; readonly commitment: CertificationArtifactKeyBindingCommitmentV1; readonly keyDescriptors: readonly AuthorityKeyDescriptorV1[]; readonly signedReadiness: unknown; readonly terminalCommitment: GraphTerminalCommitmentV1 }
+export interface CertificationTaskReceiptGraphV1 { readonly v: "reelier.certification-task-receipt-graph/v1"; readonly adapterContractDigest: string; readonly taskId: string; readonly authorityCellId: string; readonly rootGrant: any; readonly grants: readonly any[]; readonly principals: readonly any[]; readonly allocations: readonly any[]; readonly budgetEvents: readonly any[]; readonly outcomes: readonly any[]; readonly exceptions: readonly any[]; readonly topology: Readonly<{ status: "unchecked" }>; readonly leases: Readonly<{ status: "absent"; entries: readonly never[] }>; readonly receipts: readonly AuthorityReceiptBundle[]; readonly receiptExtensions: readonly CertificationReceiptExtensionV1[]; readonly priorReceiptLinks: readonly Readonly<{ receiptDigest: string; priorReceiptDigest: string | null }>[]; readonly binding: CertificationArtifactKeyBindingV1; readonly commitment: CertificationArtifactKeyBindingCommitmentV1; readonly keyDescriptors: readonly AuthorityKeyDescriptorV1[]; readonly signedReadiness: unknown; readonly terminalCommitment: GraphTerminalCommitmentV1 }
 
 export function createCertificationTaskReceiptGraph(input: Omit<CertificationTaskReceiptGraphV1, "v" | "adapterContractDigest" | "topology" | "leases" | "priorReceiptLinks" | "terminalCommitment"> & Readonly<{ terminalSigner: Readonly<{ signerId: string; sign(digest: string): AuthoritySignature }> }>): CertificationTaskReceiptGraphV1 {
   const { terminalSigner, ...nodes } = input;
   const links = Object.freeze(input.receipts.map(bundle => Object.freeze({ receiptDigest: authorityDigest(bundle.receipt.value), priorReceiptDigest: bundle.receipt.value.priorReceiptDigest })));
   const topology = Object.freeze({ status: "unchecked" as const }), leases = Object.freeze({ status: "absent" as const, entries: Object.freeze([]) });
   const content = { v: "reelier.certification-task-receipt-graph/v1" as const, adapterContractDigest: AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST, ...nodes, topology, leases, priorReceiptLinks: links };
-  const counts = Object.freeze({ grants: input.grants.length, principals: input.principals.length, allocations: input.allocations.length, budgetEvents: input.budgetEvents.length, outcomes: input.outcomes.length, exceptions: input.exceptions.length, topologyEvidence: 0, leases: 0, receipts: input.receipts.length, priorReceiptLinks: links.length, keyDescriptors: input.keyDescriptors.length, bindingEntries: input.binding.entries.length });
+  const counts = Object.freeze({ grants: input.grants.length, principals: input.principals.length, allocations: input.allocations.length, budgetEvents: input.budgetEvents.length, outcomes: input.outcomes.length, exceptions: input.exceptions.length, topologyEvidence: 0, leases: 0, receipts: input.receipts.length, receiptExtensions: input.receiptExtensions.length, priorReceiptLinks: links.length, keyDescriptors: input.keyDescriptors.length, bindingEntries: input.binding.entries.length });
   const collectionDigests = Object.freeze(Object.fromEntries(COLLECTIONS.map(key => [key, authorityDigest(content[key])])) as Record<CollectionName, string>);
   const terminalBody = { v: "reelier.certification-task-graph-terminal/v1" as const, rootGrantDigest: input.rootGrant.digest, contentDigest: authorityDigest(content), counts, collectionDigests, signerId: terminalSigner.signerId };
   const terminalCommitment = Object.freeze({ ...terminalBody, signature: terminalSigner.sign(authorityDigest(terminalBody)) });
@@ -39,7 +40,7 @@ export function createCertificationTaskReceiptGraph(input: Omit<CertificationTas
 
 export function verifyCertificationTaskReceiptGraph(value: unknown, options?: Readonly<{ trustPin: JobCardTrustPinV1 }>): Readonly<{ status: "verified"; digest: string }> {
   if (!options?.trustPin) throw new TypeError("external operator trust pin is required for graph verification");
-  const fields = ["v","adapterContractDigest","taskId","authorityCellId","rootGrant","grants","principals","allocations","budgetEvents","outcomes","exceptions","receipts","binding","commitment","keyDescriptors","signedReadiness","topology","leases","priorReceiptLinks","terminalCommitment"];
+  const fields = ["v","adapterContractDigest","taskId","authorityCellId","rootGrant","grants","principals","allocations","budgetEvents","outcomes","exceptions","receipts","receiptExtensions","binding","commitment","keyDescriptors","signedReadiness","topology","leases","priorReceiptLinks","terminalCommitment"];
   const g = exactRecord(value, fields, "receipt graph");
   if (g.v !== "reelier.certification-task-receipt-graph/v1" || g.adapterContractDigest !== AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST || typeof g.taskId !== "string" || typeof g.authorityCellId !== "string") throw new TypeError("receipt graph is closed or contract mismatched");
   if (containsConfidential(g)) throw new TypeError("receipt graph contains confidential fields");
@@ -61,7 +62,7 @@ export function verifyCertificationTaskReceiptGraph(value: unknown, options?: Re
 
   const terminalFields = ["v","rootGrantDigest","contentDigest","counts","collectionDigests","signerId","signature"], terminal = exactRecord(g.terminalCommitment, terminalFields, "receipt graph terminal commitment");
   const counts = exactRecord(terminal.counts, COUNT_FIELDS, "receipt graph terminal counts"), collectionDigests = exactRecord(terminal.collectionDigests, COLLECTIONS, "receipt graph collection digests");
-  const expectedCounts = { grants: g.grants.length, principals: g.principals.length, allocations: g.allocations.length, budgetEvents: g.budgetEvents.length, outcomes: g.outcomes.length, exceptions: g.exceptions.length, topologyEvidence: 0, leases: 0, receipts: g.receipts.length, priorReceiptLinks: g.priorReceiptLinks.length, keyDescriptors: g.keyDescriptors.length, bindingEntries: g.binding.entries.length };
+  const expectedCounts = { grants: g.grants.length, principals: g.principals.length, allocations: g.allocations.length, budgetEvents: g.budgetEvents.length, outcomes: g.outcomes.length, exceptions: g.exceptions.length, topologyEvidence: 0, leases: 0, receipts: g.receipts.length, receiptExtensions: g.receiptExtensions.length, priorReceiptLinks: g.priorReceiptLinks.length, keyDescriptors: g.keyDescriptors.length, bindingEntries: g.binding.entries.length };
   if (COUNT_FIELDS.some(key => counts[key] !== expectedCounts[key]) || COLLECTIONS.some(key => collectionDigests[key] !== authorityDigest(g[key]))) throw new TypeError("receipt graph terminal counts or collection digests are invalid");
   const { terminalCommitment: _terminal, ...content } = g, { signature: terminalSignature, ...terminalBody } = terminal;
   if (terminal.v !== "reelier.certification-task-graph-terminal/v1" || terminal.signerId !== evidenceRoot.keyId || terminal.rootGrantDigest !== g.rootGrant.digest || terminal.contentDigest !== authorityDigest(content) || !verifyAuthoritySignature(publicKey(evidenceRoot), "authority-evidence", authorityDigest(terminalBody), terminalSignature as AuthoritySignature)) throw new TypeError("receipt graph signed terminal commitment is invalid");
@@ -74,6 +75,7 @@ export function verifyCertificationTaskReceiptGraph(value: unknown, options?: Re
   verifyOutcomeChronology(g, pin, active);
   verifyExceptions(g);
   verifyReceiptChains(g, pin, root, child);
+  verifyReceiptExtensions(g, pin, active);
   return Object.freeze({ status: "verified", digest: authorityDigest(g) });
 }
 
@@ -107,6 +109,8 @@ function verifyReceiptChains(g: any, pin: JobCardTrustPinV1, root: any, child: a
   if (authorityDigest(ordered) !== authorityDigest(g.receipts)) throw new TypeError("receipt graph receipt order is not canonical");
   const expectedLinks = g.receipts.map((bundle: any) => ({ receiptDigest: authorityDigest(bundle.receipt.value), priorReceiptDigest: bundle.receipt.value.priorReceiptDigest })); if (authorityDigest(expectedLinks) !== authorityDigest(g.priorReceiptLinks)) throw new TypeError("receipt graph prior links mismatch");
 }
+
+function verifyReceiptExtensions(g: any, pin: JobCardTrustPinV1, active: Map<string, boolean>): void { const descriptor = pin.keyDescriptors.find(item => item.role === "authority-cell" && item.purpose === "authority-receipt"); if (!descriptor || !active.get(authorityDigest(descriptor)) || g.receiptExtensions.length !== g.receipts.length) throw new TypeError("receipt graph Adapter Contract extensions are incomplete or signer is inactive"); for (const [index, extension] of g.receiptExtensions.entries()) { exactRecord(extension, ["v","receiptDigest","adapterContractDigest","signerId","signature"], "receipt graph Adapter Contract extension"); const body = { v: extension.v, receiptDigest: extension.receiptDigest, adapterContractDigest: extension.adapterContractDigest, signerId: extension.signerId }; if (extension.v !== "reelier.certification-receipt-extension/v1" || extension.receiptDigest !== authorityDigest(g.receipts[index].receipt.value) || extension.adapterContractDigest !== AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST || extension.adapterContractDigest !== g.adapterContractDigest || extension.signerId !== descriptor.keyId || !verifyAuthoritySignature(publicKey(descriptor), "authority-receipt", authorityDigest(body), extension.signature)) throw new TypeError("receipt graph Adapter Contract extension is invalid"); } }
 
 function graphJournalBody(value: any): any { return { v: value.v, requestId: value.requestId, requestDigest: value.requestDigest, reservationId: value.reservationId, cleanupReservationId: value.cleanupReservationId, allocationId: value.allocationId, effectDigest: value.effectDigest, permitSnapshotDigest: value.permitSnapshotDigest, adapterContractDigest: value.adapterContractDigest, exactBytesDigest: value.exactBytesDigest, conflictReceiptDigest: value.conflictReceiptDigest, eventSequence: value.eventSequence, priorJournalDigest: value.priorJournalDigest, phase: value.phase, providerWrites: value.providerWrites }; }
 function publicKey(descriptor: Readonly<{ publicKeySpkiBase64: string }>) { return createPublicKey({ key: Buffer.from(descriptor.publicKeySpkiBase64, "base64"), format: "der", type: "spki" }); }
