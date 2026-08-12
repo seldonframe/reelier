@@ -41,7 +41,7 @@ What changed
 Deviations from plan and why
 
 - None. The trust-pin shape was expanded before the unreleased ABI freeze so the builder can verify the complete signed-readiness proof rather than trusting a digest-only snapshot.
-- The expensive full suite was not rerun after the final focused fixes because the coordinating agent explicitly requested waiting for review. The same reviewer returned `APPROVED` with no findings. Earlier in the fix round, the full suite completed with 2,823 passing, 2 failing, and 1 skipped; both failures were the now-fixed empty-workspace behavior and their focused regressions pass.
+- The expensive full suite was deferred until the same reviewer returned `APPROVED` with no findings. The coordinating agent then reran the exact-head Windows suite successfully: 2,826 passing, 0 failing, and 1 skipped. An earlier full run completed with 2,823 passing, 2 failing, and 1 skipped; both failures were the now-fixed empty-workspace behavior.
 
 Test results (verbatim tail)
 
@@ -70,6 +70,16 @@ Additional verification:
 built cloudflare_api_token, cloudflare_dns, github_issue_labels, gmail, gmail_labels, hubspot_slack_information_flow, neon_database, slack_channel_topic, stripe, vercel_deployment
 ```
 
+Exact-head full Windows suite:
+
+```text
+tests 2827
+pass 2826
+fail 0
+skipped 1
+duration_ms 762583.8885
+```
+
 Independent review
 
 ```text
@@ -81,6 +91,6 @@ Verdict: APPROVED.
 
 Open risks
 
-- The repository-wide suite should still be rerun by the coordinating release train after all parallel branch work has settled.
+- Hosted Ubuntu and Windows CI remains the final Task 3B cross-platform gate.
 - Live adopted connections and provider certification remain gated on operator-owned resources and credentials; these changes establish and test the fail-closed binding, not live-provider certification.
 - `.tmp-pack/` was pre-existing and intentionally left untracked and untouched.
