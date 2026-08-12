@@ -1,4 +1,4 @@
-import { lstat, mkdir, mkdtemp, rename, rm, unlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readdir, rename, rm, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { authorityDigest } from "../wire.js";
@@ -115,24 +115,38 @@ async function writeCellScaffold(stage: string, config: ReturnType<typeof parseC
   const root = path.join(stage, "authority");
   const directories = ["decisions", "delegation", "deployment", "endpoints", "ledger", "principals", "receipts", "trust"];
   await Promise.all(directories.map(directory => mkdir(path.join(root, directory), { recursive: true, mode: 0o700 })));
-  const authorityConfig = { version: 1, tenant: initialization.identifiers.authorityCellId, requester: derivedPrincipalId(initialization.identifiers), definitions: initialization.scenarios.map(scenario => scenario.replaceAll("-", "_")), topology: "unknown", ledgerDir: "ledger", decisionDir: "decisions", receiptDir: "receipts", ingress: { principalRegistryFile: "principals/registry.jsonl" }, endpoints: [], deploymentPath: "deployment/manifest.json", jobCardTrustPinPath: "trust/job-card-trust-pin.json", completeness: "unchecked", dispatchable: false };
-  await writeFile(path.join(root, "authority.yml"), `${JSON.stringify(authorityConfig)}\n`, { flag: "wx", mode: 0o600 });
+  await writeFile(path.join(root, "authority.yml"), `${JSON.stringify(cellAuthorityConfig(initialization))}\n`, { flag: "wx", mode: 0o600 });
   await writeFile(path.join(root, "principals", "registry.jsonl"), "", { flag: "wx", mode: 0o600 });
-  await writeFile(path.join(root, "trust", "references.json"), `${JSON.stringify({ v: "reelier.certification-trust-references/v1", humanTrustRootFile: "human-trust-root.json", keyDescriptorsFile: "key-descriptors.json", readinessTrustEventsFile: "readiness-trust-events.json", currentTrustEventsFile: "current-trust-events.json", signedReadinessFile: "signed-readiness.json" })}\n`, { flag: "wx", mode: 0o600 });
-  await writeFile(path.join(root, "deployment", "references.json"), `${JSON.stringify({ v: "reelier.certification-deployment-references/v1", manifestFile: "manifest.json", jobCardFile: "job-card.json", jobCardTrustPinFile: "../trust/job-card-trust-pin.json" })}\n`, { flag: "wx", mode: 0o600 });
+  await writeFile(path.join(root, "trust", "references.json"), `${JSON.stringify(trustReferences())}\n`, { flag: "wx", mode: 0o600 });
+  await writeFile(path.join(root, "deployment", "references.json"), `${JSON.stringify(deploymentReferences())}\n`, { flag: "wx", mode: 0o600 });
   for (const scenario of initialization.scenarios) await writeFile(path.join(root, "endpoints", `${scenario}.json`), `${JSON.stringify(endpointManifest(config, scenario))}\n`, { flag: "wx", mode: 0o600 });
 }
 async function validateCellScaffold(root: string, config: ReturnType<typeof parseCertificationOperatorConfigV2>, initialization: CertificationInitialization): Promise<void> {
   const authority = await import("./filesystem.js").then(module => module.confinedExistingDirectory(root, ["authority"]));
   const endpoints = authority ? await import("./filesystem.js").then(module => module.confinedExistingDirectory(root, ["authority", "endpoints"])) : undefined;
   if (!authority || !endpoints) throw new TypeError("certification Authority Cell scaffold is incomplete");
+  const expectedRootNames = ["authority.yml", "decisions", "delegation", "deployment", "endpoints", "ledger", "principals", "receipts", "trust"];
+  const rootEntries = await readdir(authority, { withFileTypes: true });
+  if (rootEntries.map(entry => entry.name).sort().join("\0") !== expectedRootNames.join("\0") || rootEntries.some(entry => entry.isSymbolicLink())) throw new TypeError("certification Authority Cell scaffold contains an unselected or linked artifact");
+  for (const directory of expectedRootNames.filter(name => name !== "authority.yml")) if (!await import("./filesystem.js").then(module => module.confinedExistingDirectory(root, ["authority", directory]))) throw new TypeError("certification Authority Cell scaffold directory is incomplete");
   const rawConfig = JSON.parse((await readConfinedFile(root, authority, "authority.yml")).toString("utf8"));
-  if (rawConfig.tenant !== initialization.identifiers.authorityCellId || rawConfig.requester !== derivedPrincipalId(initialization.identifiers) || rawConfig.dispatchable !== false || rawConfig.completeness !== "unchecked") throw new TypeError("certification Authority Cell scaffold identity is invalid");
+  if (authorityDigest(rawConfig) !== authorityDigest(cellAuthorityConfig(initialization))) throw new TypeError("certification Authority Cell scaffold identity is invalid");
+  const trust = await import("./filesystem.js").then(module => module.confinedExistingDirectory(root, ["authority", "trust"]));
+  const deployment = await import("./filesystem.js").then(module => module.confinedExistingDirectory(root, ["authority", "deployment"]));
+  const principals = await import("./filesystem.js").then(module => module.confinedExistingDirectory(root, ["authority", "principals"]));
+  if (!trust || !deployment || !principals || authorityDigest(JSON.parse((await readConfinedFile(root, trust, "references.json")).toString("utf8"))) !== authorityDigest(trustReferences()) || authorityDigest(JSON.parse((await readConfinedFile(root, deployment, "references.json")).toString("utf8"))) !== authorityDigest(deploymentReferences())) throw new TypeError("certification Authority Cell public references are incomplete or substituted");
+  await readConfinedFile(root, principals, "registry.jsonl");
+  const endpointEntries = await readdir(endpoints, { withFileTypes: true });
+  const expectedEndpoints = initialization.scenarios.map(scenario => `${scenario}.json`);
+  if (endpointEntries.map(entry => entry.name).sort().join("\0") !== expectedEndpoints.join("\0") || endpointEntries.some(entry => !entry.isFile() || entry.isSymbolicLink())) throw new TypeError("certification endpoint scaffold is not selected-scenario-only");
   for (const scenario of initialization.scenarios) {
     const actual = parseCertificationEndpointManifest(JSON.parse((await readConfinedFile(root, endpoints, `${scenario}.json`)).toString("utf8")), scenario);
     if (authorityDigest(actual) !== authorityDigest(endpointManifest(config, scenario))) throw new TypeError("certification endpoint manifest was substituted");
   }
 }
+function cellAuthorityConfig(initialization: CertificationInitialization) { return Object.freeze({ version: 1, tenant: initialization.identifiers.authorityCellId, requester: derivedPrincipalId(initialization.identifiers), definitions: initialization.scenarios.map(scenario => scenario.replaceAll("-", "_")), topology: "unknown", ledgerDir: "ledger", decisionDir: "decisions", receiptDir: "receipts", ingress: { principalRegistryFile: "principals/registry.jsonl" }, endpoints: [], deploymentPath: "deployment/manifest.json", jobCardTrustPinPath: "trust/job-card-trust-pin.json", completeness: "unchecked", dispatchable: false }); }
+function trustReferences() { return Object.freeze({ v: "reelier.certification-trust-references/v1", humanTrustRootFile: "human-trust-root.json", keyDescriptorsFile: "key-descriptors.json", readinessTrustEventsFile: "readiness-trust-events.json", currentTrustEventsFile: "current-trust-events.json", signedReadinessFile: "signed-readiness.json" }); }
+function deploymentReferences() { return Object.freeze({ v: "reelier.certification-deployment-references/v1", manifestFile: "manifest.json", jobCardFile: "job-card.json", jobCardTrustPinFile: "../trust/job-card-trust-pin.json" }); }
 
 async function removeOwnedStage(staging: string, creationParent: string, workspaceBasename: string, owner: string): Promise<void> {
   if (path.dirname(staging) !== creationParent || !path.basename(staging).startsWith(`.${workspaceBasename}.staging-`)) return;
