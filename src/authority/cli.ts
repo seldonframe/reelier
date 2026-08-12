@@ -34,6 +34,7 @@ import { sealCertificationReadiness } from "./certification/readiness.js";
 import { exportCertificationEvidence, verifyCertificationExport } from "./certification/export.js";
 import { CERTIFICATION_SCENARIO_IDS } from "./certification/scenarios.js";
 import { signCertificationReadinessArtifact } from "./certification/authority.js";
+import { assertLinuxAuthorityCellHost } from "./host/platform.js";
 
 export async function runAuthorityCommand(args: Readonly<{ positional: string[]; flags: Set<string>; opts: Record<string, string> }>): Promise<number> {
   const subcommand = args.positional[0] ?? "doctor";
@@ -54,6 +55,7 @@ export async function runAuthorityCommand(args: Readonly<{ positional: string[];
 }
 
 async function authorityBootstrap(args: Readonly<{ opts: Record<string, string> }>): Promise<number> {
+  assertLinuxAuthorityCellHost();
   const result = await authorityInit(args);
   if (result !== 0) return result;
   const root = path.resolve(args.opts.path ?? "authority");
@@ -73,6 +75,7 @@ async function authorityBootstrap(args: Readonly<{ opts: Record<string, string> 
 }
 
 async function authorityEgressGateway(args: Readonly<{ opts: Record<string, string> }>): Promise<number> {
+  assertLinuxAuthorityCellHost();
   const configPath = args.opts.config;
   if (!configPath) { console.error(JSON.stringify({ status: "refused", reasonCode: "egress-gateway-config-required" })); return 1; }
   try {
@@ -131,6 +134,7 @@ export function parseAuthorityServeMode(opts: Readonly<Record<string, string>>):
 }
 
 async function authorityInit(args: Readonly<{ opts: Record<string, string> }>): Promise<number> {
+  assertLinuxAuthorityCellHost();
   const root = path.resolve(args.opts.path ?? "authority");
   await Promise.all(["contracts", "trust", "connectors", "receipts", "decisions", "ledger", "keys"].map(dir => mkdir(path.join(root, dir), { recursive: true })));
   const configPath = path.join(root, "authority.yml");
@@ -241,6 +245,7 @@ async function authorityVerify(args: Readonly<{ opts: Record<string, string> }>)
 }
 
 async function authorityServe(args: Readonly<{ opts: Record<string, string> }>): Promise<number> {
+  assertLinuxAuthorityCellHost();
   const serveMode = parseAuthorityServeMode(args.opts);
   const loaded = await loadAuthorityHostConfig(args.opts.path ?? "authority/authority.yml");
   const artifactRoot = path.dirname(loaded.file);

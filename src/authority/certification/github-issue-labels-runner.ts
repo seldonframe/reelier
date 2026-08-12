@@ -23,6 +23,7 @@ import { githubIssueLabelsDefinition, parseGitHubIssueLabelsPolicy } from "../..
 import { createGitHubIssueLabelsSourceResolver } from "../../packs/github/source.js";
 import { githubIssueLabelsAlias, githubIssueLabelsDefinitionDigest, githubIssueLabelsPackDigest, githubIssueLabelsPolicySchemaId, githubIssueLabelsReadEndpointId, githubIssueLabelsResolverId, githubIssueLabelsRiskClass, githubIssueLabelsWriteEndpointId } from "../../packs/github/manifest.js";
 import { ensureConfinedDirectory, readUnlinkedFile } from "./filesystem.js";
+import { assertLinuxAuthorityCellHost } from "../host/platform.js";
 
 export type HermeticGitHubMode = "normal" | "source-drift" | "effect-drift" | "provider-503" | "accessor-response" | "cut-after-budget" | "cut-after-dispatched" | "cut-after-send-intent" | "pause-after-dispatched";
 export interface GitHubHermeticRunnerResult { readonly requestId: string; readonly status: "acknowledged" | "refused" | "failed" | "pending-reconciliation"; readonly success: false; readonly providerWrites: number; readonly reservationId: string | null }
@@ -33,6 +34,7 @@ type Issue = Readonly<{ owner: string; repo: string; issueNumber: number; issueS
 
 /** Non-barrel hermetic test composition. Executable authority comes only from the branded real Cell. */
 export async function createGitHubIssueLabelsHermeticComposition(cell: CertificationCellHost, options: Readonly<{ mode: HermeticGitHubMode }>): Promise<GitHubIssueLabelsHermeticComposition> {
+  assertLinuxAuthorityCellHost();
   const state = certificationCellHostInternalState(cell);
   const journalAuthority = state.hermeticGitHubAuthority();
   closed(options, ["mode"], "GitHub hermetic composition options");
@@ -153,6 +155,7 @@ export async function createGitHubIssueLabelsHermeticComposition(cell: Certifica
 }
 
 async function buildGate(input: any) {
+  assertLinuxAuthorityCellHost();
   const authority = input.state.hermeticGitHubAuthority();
   const grant = input.activation.signedRootGrant.grant, policyBytes = authorityCanonicalBytes({ desiredLabels: input.desired });
   const accountId = "github_fixlyai_reelier";

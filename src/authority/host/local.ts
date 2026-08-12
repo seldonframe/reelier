@@ -28,6 +28,7 @@ import type { SignedAuthorityLeaseV1 } from "../types.js";
 import type { SourceReadAdapter } from "./source-read-adapter.js";
 import type { DownstreamConnection } from "../../mcp-client.js";
 import type { OpaqueConnectionRouteRegistry } from "../../connections.js";
+import { assertLinuxAuthorityCellHost } from "./platform.js";
 
 /** Builds the local host from signed-artifact boundaries. An empty workspace is intentionally
  * usable for discovery and status, but every Outcome refuses until a signed contract is installed. */
@@ -54,6 +55,7 @@ export interface LocalAuthorityRuntime extends AuthorityHostRuntime {
 }
 
 export async function createLocalAuthorityRuntime(config: AuthorityHostConfig, options: LocalAuthorityRuntimeOptions = {}): Promise<LocalAuthorityRuntime> {
+  assertLinuxAuthorityCellHost();
   if (config.cloud && config.topology !== "isolated") throw new TypeError("managed authority requires isolated topology");
   if (config.cloud) {
     if (!options.signedTopologyEvidence || !options.topologySigner) throw new TypeError("managed authority requires signed topology evidence");
