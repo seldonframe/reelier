@@ -25,6 +25,14 @@ const descriptor = (keyId: string, role: "human-sponsor" | "authority-cell", pur
 const restorePlatform = __testSetAuthorityCellHostPlatform("linux");
 test.after(() => restorePlatform());
 
+type LifecycleActivationInput = Parameters<Awaited<ReturnType<typeof createCertificationCellHost>>["activateRootTask"]>[0];
+function compileTimeLifecycleActivationBoundary(): void {
+  // @ts-expect-error Lifecycle Cell callers must never be able to type-check raw signer material.
+  const forbidden: LifecycleActivationInput = { jobCard: {}, jobCardTrustPin: {} as never, constraints: {} as never, effects: 1, issuedAt: at, expiresAt: expiry, delegationKeyDescriptor: {}, delegationPrivateKey: generateKeyPairSync("ed25519").privateKey };
+  void forbidden;
+}
+void compileTimeLifecycleActivationBoundary;
+
 async function fixture(mode: "normal" | "source-drift" | "effect-drift" | "provider-503" | "accessor-response" | "cut-after-budget" | "cut-after-dispatched" | "cut-after-send-intent" | "pause-after-dispatched" = "normal", authorityMode: "valid" | "absent" | "substituted" = "valid") {
   const root = await mkdtemp(path.join(tmpdir(), "reelier-github-cell-"));
   const configPath = path.join(root, "certification.local.json");
@@ -50,7 +58,7 @@ async function fixture(mode: "normal" | "source-drift" | "effect-drift" | "provi
   const activation = await cell.activateRootTask({ jobCard, jobCardTrustPin: pin, constraints, effects: 2, issuedAt: at, expiresAt: expiry });
   const credential = await cell.activatePrincipalSession();
   const runner = await createGitHubIssueLabelsHermeticComposition(cell);
-  return { root, initialized, cell, runner, credential, delegation, pin, lifecycle, activation };
+  return { root, initialized, cell, runner, credential, delegation, pin, lifecycle, activation, jobCard, constraints };
 }
 
 test("only a genuine Cell host can compose the fixed runner", async () => {
@@ -86,6 +94,15 @@ test("503 after apply is ambiguous, retains budget, and blocks cleanup until aut
     assert.equal(result.status, "pending-reconciliation");
     assert.equal((await f.delegation.budget.get(f.activation.allocationId))?.consumed, 1);
     await assert.rejects(() => f.runner.cleanup({ bearerToken: f.credential.token, requestId: "request_503_ambiguous" }), /reconciliation|acknowledged/i);
+  } finally { await rm(f.root, { recursive: true, force: true }); }
+});
+
+test("lifecycle Cell activation rejects every caller-supplied raw delegation key field before access", async () => {
+  const f = await fixture(); try {
+    let accesses = 0;
+    const rawKey = new Proxy({}, { get() { accesses += 1; throw new Error("RAW_KEY_ACCESSED"); } });
+    await assert.rejects(() => f.cell.activateRootTask({ jobCard: f.jobCard, jobCardTrustPin: f.pin, constraints: f.constraints, effects: 2, issuedAt: at, expiresAt: expiry, delegationKeyDescriptor: rawKey, delegationPrivateKey: rawKey } as never), /closed|unknown|caller/i);
+    assert.equal(accesses, 0);
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
