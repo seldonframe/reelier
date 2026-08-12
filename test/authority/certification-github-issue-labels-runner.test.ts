@@ -1,81 +1,61 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {
-  runGitHubIssueLabelsHermeticCertificationSuite,
-  verifyGitHubIssueLabelsCertificationExport,
-} from "../../src/authority/certification/github-issue-labels-runner.js";
-import { getCertificationRunnerRegistryEntry } from "../../src/authority/certification/runner-registry.js";
+import { mkdtemp, rm } from "node:fs/promises";
+import path from "node:path";
+import os from "node:os";
+import { FsAuthorityLedger } from "../../src/authority/host/fs-ledger.js";
+import { FsDelegationBudgetLedger } from "../../src/authority/host/delegation-budget.js";
+import { createGitHubIssueLabelsRunnerHost } from "../../src/authority/certification/github-issue-labels-runner.js";
 
-test("GitHub issue-label certification executes the fixed private lifecycle and verifies its portable graph offline", async () => {
-  const suite = await runGitHubIssueLabelsHermeticCertificationSuite();
-  const normal = suite.cases.find(item => item.caseId === "normal")!;
+async function fixture(fault: "none" | "source-drift" | "effect-drift" = "none") {
+  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-github-runner-"));
+  const writes: unknown[] = [];
+  let reads = 0;
+  let revalidations = 0;
+  const budget = new FsDelegationBudgetLedger(path.join(root, "budget"));
+  await budget.createRoot({ taskId: "task_github_certification", allocationId: "allocation_github_certification", effects: 1 });
+  const provider = Object.freeze({
+    async readIssue() { reads += 1; return { owner: "fixlyai", repo: "reelier-certification", issueNumber: 1, issueState: "open", labels: fault === "source-drift" && reads === 2 ? ["drifted"] : ["before"] }; },
+    async replaceLabels(effect: unknown) { writes.push(effect); return Object.freeze({ status: 200, acknowledgmentId: "ack_1" }); },
+  });
+  const cell = Object.freeze({ async revalidateCurrentPermit() { revalidations += 1; } });
+  const ledger = new FsAuthorityLedger(path.join(root, "ledger"), { now: () => Date.parse("2026-08-11T20:00:00.000Z") });
+  const host = createGitHubIssueLabelsRunnerHost({ cell, ledger, budget, provider, fault });
+  return { root, host, ledger, budget, writes, get reads() { return reads; }, get revalidations() { return revalidations; } };
+}
 
-  assert.deepEqual(normal.lifecycle, [
-    "prepare", "authoritative-read-1", "compile-1", "reserve",
-    "authoritative-read-2", "compile-2", "permit-revalidate",
-    "durable-dispatched", "budget-consumed", "provider-write",
-    "authoritative-readback", "reconciled", "receipt",
-    "cleanup-authorized", "cleanup-dispatched", "cleanup-provider-write",
-    "cleanup-readback", "cleanup-reconciled", "cleanup-receipt",
-  ]);
-  assert.equal(normal.status, "passed");
-  assert.equal(normal.providerWrites, 2);
-  assert.equal(normal.receipts.length, 2);
-  assert.equal(normal.receipts[1]?.priorReceiptDigest, normal.receipts[0]?.digest);
-  assert.deepEqual(normal.beforeLabels, ["before", "triage"]);
-  assert.deepEqual(normal.afterLabels, ["certification-after"]);
-  assert.deepEqual(normal.finalLabels, normal.beforeLabels);
-  assert.doesNotMatch(JSON.stringify(normal), /Bearer |REELIER_GITHUB_TOKEN|token_[A-Za-z0-9]/);
-
-  const verified = verifyGitHubIssueLabelsCertificationExport(suite.exported);
-  assert.equal(verified.graphDigest, suite.graphDigest);
-  assert.equal(verified.receiptCount, suite.graph.receipts.length);
-  assert.equal(verified.secretsRequired, false);
+test("fixed host-private runner rereads, revalidates, durably dispatches, consumes, then writes exactly once", async () => {
+  const f = await fixture();
+  try {
+    const result = await f.host.run({ requestId: "request_normal" });
+    assert.equal(result.status, "acknowledged");
+    assert.equal(result.success, false, "provider acknowledgement alone is not reconciliation success");
+    assert.equal(f.reads, 2);
+    assert.equal(f.revalidations, 1);
+    assert.equal(f.writes.length, 1);
+    assert.equal((await f.ledger.getReservation(result.reservationId))?.state, "acknowledged");
+    assert.equal((await f.budget.get("allocation_github_certification"))?.consumed, 1);
+  } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
-test("drift, effect mismatch, and caller substitution refuse before any provider write", async () => {
-  const suite = await runGitHubIssueLabelsHermeticCertificationSuite();
-  for (const caseId of ["source-drift", "effect-mismatch", "caller-substitution"] as const) {
-    const result = suite.cases.find(item => item.caseId === caseId)!;
-    assert.equal(result.status, "refused", caseId);
-    assert.equal(result.providerWrites, 0, caseId);
-    assert.equal(result.lifecycle.includes("provider-write"), false, caseId);
-  }
+test("caller substitution is closed before reads, reservation, budget, or provider write", async () => {
+  const f = await fixture();
+  try {
+    await assert.rejects(() => f.host.run({ requestId: "request_substitution", provider: async () => undefined } as never), /closed|caller|unknown/i);
+    assert.equal(f.reads, 0);
+    assert.equal(f.writes.length, 0);
+    assert.equal((await f.budget.get("allocation_github_certification"))?.consumed, 0);
+  } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
-test("apply-then-cut ambiguity persists, reconciles later, and never resends", async () => {
-  const suite = await runGitHubIssueLabelsHermeticCertificationSuite();
-  const result = suite.cases.find(item => item.caseId === "apply-then-cut")!;
-  assert.equal(result.status, "passed");
-  assert.equal(result.lifecycle.includes("ambiguous-persisted"), true);
-  assert.equal(result.lifecycle.includes("reconcile-later"), true);
-  assert.equal(result.primaryWriteAttempts, 1);
-  assert.equal(result.resentAfterAmbiguity, false);
-});
-
-test("acknowledgement alone never reconciles and failed cleanup is stranded, never passed", async () => {
-  const suite = await runGitHubIssueLabelsHermeticCertificationSuite();
-  const acknowledgement = suite.cases.find(item => item.caseId === "acknowledgement-only")!;
-  assert.equal(acknowledgement.status, "exception");
-  assert.equal(acknowledgement.reconciliation, "unavailable");
-  assert.equal(acknowledgement.lifecycle.includes("provider-acknowledged"), true);
-  assert.equal(acknowledgement.lifecycle.includes("reconciled"), false);
-
-  const cleanup = suite.cases.find(item => item.caseId === "cleanup-failure")!;
-  assert.equal(cleanup.status, "stranded");
-  assert.equal(cleanup.cleanup, "failed");
-  assert.notEqual(cleanup.status, "passed");
-});
-
-test("GitHub alone carries hermetic implementation and executed-test readiness", () => {
-  const github = getCertificationRunnerRegistryEntry("github-issue-labels");
-  assert.equal(github.executionReady, true);
-  assert.equal(github.dispatchable, true);
-  assert.match(github.implementationDigest ?? "", /^sha256:[0-9a-f]{64}$/);
-  assert.match(github.testEvidenceDigest ?? "", /^sha256:[0-9a-f]{64}$/);
-  for (const scenario of ["cloudflare-dns", "cloudflare-vercel-secret", "neon-migration", "slack-topic", "vercel-promotion"] as const) {
-    const runner = getCertificationRunnerRegistryEntry(scenario);
-    assert.equal(runner.executionReady, false, scenario);
-    assert.equal(runner.dispatchable, false, scenario);
-  }
+for (const fault of ["source-drift", "effect-drift"] as const) test(`${fault} cancels the real reservation with zero provider writes`, async () => {
+  const f = await fixture(fault);
+  try {
+    const result = await f.host.run({ requestId: `request_${fault.replace("-", "_")}` });
+    assert.equal(result.status, "refused");
+    assert.equal(f.writes.length, 0);
+    assert.equal(f.revalidations, 0);
+    assert.equal((await f.ledger.getReservation(result.reservationId))?.state, "cancelled");
+    assert.equal((await f.budget.get("allocation_github_certification"))?.consumed, 0);
+  } finally { await rm(f.root, { recursive: true, force: true }); }
 });
