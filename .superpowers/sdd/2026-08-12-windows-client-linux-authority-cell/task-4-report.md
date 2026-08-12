@@ -1,16 +1,19 @@
 Files changed
 
 - `contract/certification/v1/task-receipt-graph.schema.json`
+- `contract/certification/v1/task-current-state.schema.json`
 - `src/authority/certification/cell.ts`
 - `src/authority/certification/filesystem.ts`
 - `src/authority/certification/github-issue-labels-runner.ts`
 - `src/authority/certification/lifecycle-authority.ts`
 - `src/authority/certification/lifecycle-receipts.ts`
+- `src/authority/certification/portable-evidence.ts`
 - `src/authority/certification/task-receipt-graph.ts`
 - `src/authority/host/delegation-budget.ts`
 - `src/authority/host/delegation-service.ts`
 - `test/authority/certification-github-issue-labels-runner.test.ts`
 - `test/authority/certification-lifecycle-authority.test.ts`
+- `test/authority/certification-portable-evidence.test.ts`
 - `test/authority/delegation-service.test.ts`
 - `test/authority/linux-authority-cell.test.ts`
 - `.superpowers/sdd/2026-08-12-windows-client-linux-authority-cell/task-4-report.md`
@@ -18,15 +21,18 @@ Files changed
 What changed per file
 
 - `task-receipt-graph.schema.json`: closes the certification-local graph vocabulary and exact collection/count/commitment shapes without widening the frozen public contract.
+- `task-current-state.schema.json`: closes the signed dispatch/export task-status observation shape and fixes freshness beyond its signed observation time at `unchecked`.
 - `cell.ts`: consumes a one-use opaque lifecycle-authority handle after activated/current trust, human commitment, binding signature, identity, Adapter Contract digest, and validity checks. Hermetic root activation uses the ceremony delegation key rather than accepting it in the call, and the pre-dispatch permit snapshot binds the exact Adapter Contract digest.
 - `github-issue-labels-runner.ts`: persists branded provider state, supports cut-after-apply authoritative reconciliation without resend, semantic duplicate/conflict outcomes, exact cleanup restoration, portable receipt publication, and authenticated graph export.
 - `lifecycle-authority.ts`: adds the process-local pre-readiness ceremony, six legal activated descriptors, four evidence-root-delegated artifact subkeys, human-signed companion commitment, one-use handle consumption, exact Adapter Contract commitment, and public offline binding verification. It does not modify the frozen Adapter Contract.
 - `lifecycle-receipts.ts`: composes `createFileReceiptPublication` with real portable reservation, dispatch, and reconciliation bundles. Every artifact is exact-purpose signed, prior receipt links use receipt-value digests, each receipt has a signed certification-local Adapter Contract extension, and restart reconciliation rebuilds only from the prior portable bundle.
+- `portable-evidence.ts`: defines and verifies purpose-bound task authority, comparable post-state, distinct Outcome Contract/local-gate policy, task-status, and zero-effect duplicate evidence under the activated `authority-evidence` key.
 - `task-receipt-graph.ts`: adds the closed certification-local graph and offline verifier. It derives roots from activated descriptors plus the human/evidence-root binding, calls `verifyAuthorityReceiptBundle`, and rejects closed-shape, full-journal-lineage, budget chronology/conservation, receipt-chain/extension, contract, and confidential-field failures. Topology is `unchecked`; leases are `absent`.
 - `delegation-budget.ts`: exports validated per-task budget events so the graph can prove exact chronology and conservation rather than accepting caller summaries.
 - `delegation-service.ts`: requires the signed child grant's signer descriptor to be externally active/current before registration, while preserving exact replay idempotence and conflicting-replay refusal.
 - `certification-github-issue-labels-runner.test.ts`: activates the private Linux platform seam on Windows and covers apply, duplicate, conflict, cut/reconcile/no-resend, cleanup, portable receipts, graph verification/tampering, rollback, race, and linked-path behavior.
 - `certification-lifecycle-authority.test.ts`: covers opaque/nonserializable ceremony output, exact public purposes, purpose-separated subkeys, evidence-root delegation, human commitment, frozen digest, and private-material canary absence.
+- `certification-portable-evidence.test.ts`: covers signed task-status observation semantics, explicitly unchecked later freshness, and refusal of false active claims after expiry or revocation.
 - `delegation-service.test.ts`: covers forged signers, wrong purpose, inactive descriptors, exact/conflicting replay, and concurrent registration with one allocation/effect.
 - `filesystem.ts`: adds confined directory enumeration so portable receipt discovery revalidates directory identity and rejects link/junction substitution.
 - `linux-authority-cell.test.ts`: creates the fault schedule during the pre-readiness ceremony; no runtime caller fault selector remains.
@@ -72,6 +78,16 @@ Deviations from the plan and why
 - Cleanup is represented by its own existing-v1 portable request receipt chain; no frozen AuthorityEvidence schema was widened.
 - Existing non-hermetic certification callers retain the legacy raw delegation activation input. The hermetic lifecycle path neither accepts nor uses it. Removing it globally requires migration of the broader certification API and tests beyond this task.
 - The opaque ceremony is deliberately process-local and non-restartable. A production keystore may implement the same opaque boundary later.
+
+Boundaries and non-claims
+
+- Payment is not authorization. No payment or x402 state grants, widens, or substitutes delegation authority.
+- Authentication or possession of a principal session is not delegation. Dispatch still requires the signed Job Card, grant lineage, allocation, and current Cell authority state.
+- Linux or hermetic confinement is not proof of external-effect scope. The fixture proves only its declared in-Cell provider transition and declared labels projection.
+- Skill repeatability is not content correctness, semantic correctness, safety, or fitness for purpose.
+- Reviewer predictions and model judgments do not authorize dispatch; only the committed authority inputs and Cell decision do.
+- Receipts are not universal completeness evidence. The export is a closed graph of the declared durable fixture collections, not proof that every possible write was receipted.
+- GUI/computer-use actions, direct HTTP outside the Cell, plugin-delivered traffic, universal plugin interception, and external delivery are outside this fixture.
 
 Test results (verbatim tail)
 
