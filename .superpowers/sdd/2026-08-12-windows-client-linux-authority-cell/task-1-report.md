@@ -32,7 +32,7 @@ Approved digest
 Test results (verbatim tail)
 
 ```text
-✔ adapter contract v1 is a closed, canonical manifest and refuses stale copied output (595.012ms)
+✔ adapter contract v1 is a closed, canonical manifest and refuses stale copied output (580.9496ms)
 ℹ tests 5
 ℹ pass 5
 ℹ fail 0
