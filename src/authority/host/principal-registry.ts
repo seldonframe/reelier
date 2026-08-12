@@ -1,5 +1,5 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { appendFile, mkdir, readFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, rm, stat } from "node:fs/promises";
 import path from "node:path";
 
 const TOKEN_PREFIX = "rat_";
@@ -126,15 +126,21 @@ type PrincipalRegistryEvent =
 export function createFilePrincipalRegistry(options: Readonly<{ tenant: string; file: string }>): PrincipalRegistry {
   assertId(options.tenant, "tenant");
   const file = path.resolve(options.file);
+  const lock = `${file}.lock`;
   let writer = Promise.resolve();
 
   const append = async (event: PrincipalRegistryEvent): Promise<void> => {
     const operation = writer.then(async () => {
-      await mkdir(path.dirname(file), { recursive: true });
-      await appendFile(file, `${JSON.stringify(event)}\n`, { encoding: "utf8", mode: 0o600 });
+      const release = await acquireFileLock();
+      try { await appendUnlocked(event); } finally { await release(); }
     });
     writer = operation.catch(() => {});
     await operation;
+  };
+
+  const appendUnlocked = async (event: PrincipalRegistryEvent): Promise<void> => {
+    await mkdir(path.dirname(file), { recursive: true });
+    await appendFile(file, `${JSON.stringify(event)}\n`, { encoding: "utf8", mode: 0o600 });
   };
 
   const load = async (): Promise<Readonly<{ sessions: Map<string, PrincipalSessionContext & { revoked: boolean }>; revokedTasks: Set<string> }>> => {
@@ -166,13 +172,20 @@ export function createFilePrincipalRegistry(options: Readonly<{ tenant: string; 
   return Object.freeze({
     async issue(input: PrincipalCredentialIssue): Promise<PrincipalCredential> {
       validateIssue(input);
-      const token = `${TOKEN_PREFIX}${randomBytes(32).toString("base64url")}`;
-      const context: PrincipalSessionContext = Object.freeze({ tenant: options.tenant, principalId: input.principalId, taskId: input.taskId, grantId: input.grantId, grantDigest: input.grantDigest, allocationId: input.allocationId, runtimeSessionId: input.runtimeSessionId, jobId: input.jobId, authorityCellId: input.authorityCellId, expiresAt: parseExpiry(input.expiresAt).toISOString(), sessionTokenDigest: digestToken(token) });
-      const current = await load();
-      if (current.revokedTasks.has(context.taskId)) throw new TypeError("principal task is revoked");
-      if ([...current.sessions.values()].some(existing => existing.runtimeSessionId === context.runtimeSessionId && !existing.revoked)) throw new TypeError("active runtime session already has a principal credential");
-      await append({ v: "reelier.principal-registry-event/v1", kind: "issued", context });
-      return Object.freeze({ token, context });
+      const operation = writer.then(async () => {
+        const release = await acquireFileLock();
+        try {
+          const current = await loadUnlocked();
+          if (current.revokedTasks.has(input.taskId)) throw new TypeError("principal task is revoked");
+          if ([...current.sessions.values()].some(existing => existing.runtimeSessionId === input.runtimeSessionId && !existing.revoked)) throw new TypeError("active runtime session already has a principal credential");
+          const token = `${TOKEN_PREFIX}${randomBytes(32).toString("base64url")}`;
+          const context: PrincipalSessionContext = Object.freeze({ tenant: options.tenant, principalId: input.principalId, taskId: input.taskId, grantId: input.grantId, grantDigest: input.grantDigest, allocationId: input.allocationId, runtimeSessionId: input.runtimeSessionId, jobId: input.jobId, authorityCellId: input.authorityCellId, expiresAt: parseExpiry(input.expiresAt).toISOString(), sessionTokenDigest: digestToken(token) });
+          await appendUnlocked({ v: "reelier.principal-registry-event/v1", kind: "issued", context });
+          return Object.freeze({ token, context });
+        } finally { await release(); }
+      });
+      writer = operation.then(() => undefined, () => undefined);
+      return operation;
     },
     async resolve(token: string, now = new Date()): Promise<PrincipalSessionContext> {
       if (typeof token !== "string" || !token.startsWith(TOKEN_PREFIX)) throw new TypeError("invalid principal credential");
@@ -187,6 +200,42 @@ export function createFilePrincipalRegistry(options: Readonly<{ tenant: string; 
     async revoke(sessionTokenDigest: string): Promise<void> { assertDigest(sessionTokenDigest, "sessionTokenDigest"); await load(); await append({ v: "reelier.principal-registry-event/v1", kind: "revoked", sessionTokenDigest }); },
     async revokeTask(taskId: string): Promise<void> { assertId(taskId, "taskId"); await load(); await append({ v: "reelier.principal-registry-event/v1", kind: "task-revoked", taskId }); },
   });
+
+  async function loadUnlocked(): Promise<Readonly<{ sessions: Map<string, PrincipalSessionContext & { revoked: boolean }>; revokedTasks: Set<string> }>> {
+    let raw: string;
+    try { raw = await readFile(file, "utf8"); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return { sessions: new Map(), revokedTasks: new Set() }; throw error; }
+    return parseRegistry(raw, options.tenant);
+  }
+
+  async function acquireFileLock(): Promise<() => Promise<void>> {
+    await mkdir(path.dirname(file), { recursive: true });
+    const started = Date.now();
+    for (;;) {
+      try { await mkdir(lock); return async () => { await rm(lock, { recursive: true, force: true }); }; }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        try { if (Date.now() - (await stat(lock)).mtimeMs > 20_000) await rm(lock, { recursive: true, force: true }); } catch { /* another writer owns it */ }
+        if (Date.now() - started > 10_000) throw new Error("principal registry busy");
+        await new Promise(resolve => setTimeout(resolve, 5));
+      }
+    }
+  }
+}
+
+function parseRegistry(raw: string, tenant: string): Readonly<{ sessions: Map<string, PrincipalSessionContext & { revoked: boolean }>; revokedTasks: Set<string> }> {
+  if (raw.length > 0 && !raw.endsWith("\n")) throw new TypeError("principal registry is corrupt");
+  const sessions = new Map<string, PrincipalSessionContext & { revoked: boolean }>();
+  const revokedTasks = new Set<string>();
+  for (const line of raw.split("\n")) {
+    if (!line) continue;
+    let parsed: unknown;
+    try { parsed = JSON.parse(line); } catch { throw new TypeError("principal registry is corrupt"); }
+    const event = parseRegistryEvent(parsed, tenant);
+    if (event.kind === "issued") { if (sessions.has(event.context.sessionTokenDigest)) throw new TypeError("principal registry is corrupt"); sessions.set(event.context.sessionTokenDigest, { ...event.context, revoked: revokedTasks.has(event.context.taskId) }); }
+    else if (event.kind === "revoked") { const existing = sessions.get(event.sessionTokenDigest); if (existing) existing.revoked = true; }
+    else { revokedTasks.add(event.taskId); for (const existing of sessions.values()) if (existing.taskId === event.taskId) existing.revoked = true; }
+  }
+  return { sessions, revokedTasks };
 }
 
 function digestToken(token: string): string {

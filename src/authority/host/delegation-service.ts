@@ -42,20 +42,24 @@ export function createDelegationAuthority(input: Readonly<{ root: string; signGr
   }
 
   async function registerRoot(value: Readonly<{ taskId: string; allocationId?: string; rootGrant: StoredSignedGrant; effects: number }>): Promise<void> {
-    await ensureLoaded();
     const grant = asGrant(value.rootGrant.grant);
     const allocationId = value.allocationId ?? "root";
     if (grant.parentDigest !== null) throw new TypeError("root delegation parent digest must be null");
     if (authorityDigest(grant) !== value.rootGrant.digest) throw new TypeError("root delegation digest mismatch");
-    const existing = roots.get(value.taskId);
-    if (existing) {
-      const allocation = await budgets.get(existing.rootAllocationId);
-      if (existing.rootAllocationId !== allocationId || authorityDigest(existing.root) !== authorityDigest(value.rootGrant) || !allocation || allocation.effects !== value.effects || allocation.revoked || existing.revoked) throw new TypeError("delegation root activation conflict");
-      return;
-    }
-    await budgets.createRoot({ taskId: value.taskId, allocationId, effects: value.effects });
-    roots.set(value.taskId, { tenant: grant.tenant, taskId: value.taskId, root: value.rootGrant, rootAllocationId: allocationId, grants: new Map([[allocationId, { grant, digest: value.rootGrant.digest, allocationId, signed: value.rootGrant }]]), revoked: false });
-    await persistRegistry();
+    const release = await acquireRegistryLock();
+    try {
+      await loadRegistry();
+      loaded = Promise.resolve();
+      const existing = roots.get(value.taskId);
+      if (existing) {
+        const allocation = await budgets.get(existing.rootAllocationId);
+        if (existing.rootAllocationId !== allocationId || authorityDigest(existing.root) !== authorityDigest(value.rootGrant) || !allocation || allocation.effects !== value.effects || allocation.revoked || existing.revoked) throw new TypeError("delegation root activation conflict");
+        return;
+      }
+      await budgets.createRoot({ taskId: value.taskId, allocationId, effects: value.effects });
+      roots.set(value.taskId, { tenant: grant.tenant, taskId: value.taskId, root: value.rootGrant, rootAllocationId: allocationId, grants: new Map([[allocationId, { grant, digest: value.rootGrant.digest, allocationId, signed: value.rootGrant }]]), revoked: false });
+      try { await persistRegistryUnlocked(); } catch (error) { roots.delete(value.taskId); loaded = undefined; throw error; }
+    } finally { await release(); }
   }
 
   async function request(value: Readonly<{ tenant: string; parentPrincipal: string; taskId: string; parentAllocationId: string; child: DelegationGrant; effects: number }>) {
@@ -128,12 +132,13 @@ export function createDelegationAuthority(input: Readonly<{ root: string; signGr
     await mkdir(input.root, { recursive: true });
     let raw: string;
     try { raw = await readFile(registryPath, "utf8"); } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") { roots.clear(); return; }
       throw new Error("delegation registry unavailable", { cause: error });
     }
     let parsed: unknown;
     try { parsed = JSON.parse(raw); } catch (error) { throw new Error("delegation registry is corrupt", { cause: error }); }
     if (!parsed || typeof parsed !== "object" || (parsed as Record<string, unknown>).v !== "reelier.delegation-registry/v1" || !Array.isArray((parsed as Record<string, unknown>).tasks)) throw new Error("delegation registry is corrupt");
+    const loadedRoots = new Map<string, RootRecord>();
     for (const item of (parsed as { tasks: unknown[] }).tasks) {
       if (!item || typeof item !== "object" || typeof (item as Record<string, unknown>).taskId !== "string" || typeof (item as Record<string, unknown>).tenant !== "string" || !Array.isArray((item as Record<string, unknown>).grants)) throw new Error("delegation registry is corrupt");
       const value = item as { taskId: string; tenant: string; root: StoredSignedGrant; rootAllocationId?: string; grants: StoredSignedGrant[]; revoked?: boolean };
@@ -147,18 +152,24 @@ export function createDelegationAuthority(input: Readonly<{ root: string; signGr
         if (authorityDigest(child) !== stored.digest) throw new Error("delegation registry child digest mismatch");
         grants.set(child.grantId, { grant: child, digest: stored.digest, allocationId: child.grantId, signed: stored });
       }
-      roots.set(value.taskId, { tenant: value.tenant, taskId: value.taskId, root: value.root, rootAllocationId, grants, revoked: value.revoked === true });
+      loadedRoots.set(value.taskId, { tenant: value.tenant, taskId: value.taskId, root: value.root, rootAllocationId, grants, revoked: value.revoked === true });
     }
+    roots.clear();
+    for (const [taskId, record] of loadedRoots) roots.set(taskId, record);
   }
 
   async function persistRegistry(): Promise<void> {
     const release = await acquireRegistryLock();
     try {
-      const tasks = [...roots.values()].map(record => ({ v: "reelier.delegation-task/v1", taskId: record.taskId, tenant: record.tenant, root: record.root, rootAllocationId: record.rootAllocationId, grants: [...record.grants.values()].filter(item => item.allocationId !== record.rootAllocationId).map(item => item.signed), revoked: record.revoked }));
-      const temporary = `${registryPath}.${process.pid}.tmp`;
-      await writeFile(temporary, JSON.stringify({ v: "reelier.delegation-registry/v1", tasks }), "utf8");
-      await rename(temporary, registryPath);
+      await persistRegistryUnlocked();
     } finally { await release(); }
+  }
+
+  async function persistRegistryUnlocked(): Promise<void> {
+    const tasks = [...roots.values()].map(record => ({ v: "reelier.delegation-task/v1", taskId: record.taskId, tenant: record.tenant, root: record.root, rootAllocationId: record.rootAllocationId, grants: [...record.grants.values()].filter(item => item.allocationId !== record.rootAllocationId).map(item => item.signed), revoked: record.revoked }));
+    const temporary = `${registryPath}.${process.pid}.${Math.random().toString(16).slice(2)}.tmp`;
+    await writeFile(temporary, JSON.stringify({ v: "reelier.delegation-registry/v1", tasks }), "utf8");
+    await rename(temporary, registryPath);
   }
 
   async function acquireRegistryLock(): Promise<() => Promise<void>> {

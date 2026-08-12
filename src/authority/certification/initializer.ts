@@ -106,7 +106,7 @@ const ENDPOINTS: Readonly<Record<CertificationScenarioId, readonly Readonly<{ en
 
 function providerFor(scenario: CertificationScenarioId): CertificationEndpointManifestV1["provider"] { return scenario.startsWith("cloudflare-") ? "cloudflare" : scenario.startsWith("codex-") ? "codex" : scenario.startsWith("fly-") ? "fly" : scenario.startsWith("github-") ? "github" : scenario.startsWith("neon-") ? "neon" : scenario.startsWith("slack-") ? "slack" : "vercel"; }
 function derivedPrincipalId(identifiers: CertificationIdentifiers): string { return `principal_${authorityDigest({ v: "reelier.certification-principal-id/v1", taskId: identifiers.taskId, authorityCellId: identifiers.authorityCellId }).slice(7, 31)}`; }
-function endpointManifest(config: ReturnType<typeof parseCertificationOperatorConfigV2>, scenario: CertificationScenarioId): CertificationEndpointManifestV1 {
+export function deriveCertificationEndpointManifest(config: ReturnType<typeof parseCertificationOperatorConfigV2>, scenario: CertificationScenarioId): CertificationEndpointManifestV1 {
   const definition = CERTIFICATION_SCENARIOS[scenario];
   const resourceProjection = { resources: definition.resourceSections.map(section => config.resources[section]), metadata: definition.metadataSections.map(section => config.metadata[section]) };
   return parseCertificationEndpointManifest({ v: "reelier.certification-endpoint-manifest/v1", scenarioId: scenario, provider: providerFor(scenario), resourceDigest: authorityDigest(resourceProjection), credentialSlots: definition.secretSlots, endpoints: ENDPOINTS[scenario], completeness: "unchecked" }, scenario);
@@ -119,7 +119,7 @@ async function writeCellScaffold(stage: string, config: ReturnType<typeof parseC
   await writeFile(path.join(root, "principals", "registry.jsonl"), "", { flag: "wx", mode: 0o600 });
   await writeFile(path.join(root, "trust", "references.json"), `${JSON.stringify(trustReferences())}\n`, { flag: "wx", mode: 0o600 });
   await writeFile(path.join(root, "deployment", "references.json"), `${JSON.stringify(deploymentReferences())}\n`, { flag: "wx", mode: 0o600 });
-  for (const scenario of initialization.scenarios) await writeFile(path.join(root, "endpoints", `${scenario}.json`), `${JSON.stringify(endpointManifest(config, scenario))}\n`, { flag: "wx", mode: 0o600 });
+  for (const scenario of initialization.scenarios) await writeFile(path.join(root, "endpoints", `${scenario}.json`), `${JSON.stringify(deriveCertificationEndpointManifest(config, scenario))}\n`, { flag: "wx", mode: 0o600 });
 }
 async function validateCellScaffold(root: string, config: ReturnType<typeof parseCertificationOperatorConfigV2>, initialization: CertificationInitialization): Promise<void> {
   const authority = await import("./filesystem.js").then(module => module.confinedExistingDirectory(root, ["authority"]));
@@ -141,7 +141,7 @@ async function validateCellScaffold(root: string, config: ReturnType<typeof pars
   if (endpointEntries.map(entry => entry.name).sort().join("\0") !== expectedEndpoints.join("\0") || endpointEntries.some(entry => !entry.isFile() || entry.isSymbolicLink())) throw new TypeError("certification endpoint scaffold is not selected-scenario-only");
   for (const scenario of initialization.scenarios) {
     const actual = parseCertificationEndpointManifest(JSON.parse((await readConfinedFile(root, endpoints, `${scenario}.json`)).toString("utf8")), scenario);
-    if (authorityDigest(actual) !== authorityDigest(endpointManifest(config, scenario))) throw new TypeError("certification endpoint manifest was substituted");
+    if (authorityDigest(actual) !== authorityDigest(deriveCertificationEndpointManifest(config, scenario))) throw new TypeError("certification endpoint manifest was substituted");
   }
 }
 function cellAuthorityConfig(initialization: CertificationInitialization) { return Object.freeze({ version: 1, tenant: initialization.identifiers.authorityCellId, requester: derivedPrincipalId(initialization.identifiers), definitions: initialization.scenarios.map(scenario => scenario.replaceAll("-", "_")), topology: "unknown", ledgerDir: "ledger", decisionDir: "decisions", receiptDir: "receipts", ingress: { principalRegistryFile: "principals/registry.jsonl" }, endpoints: [], deploymentPath: "deployment/manifest.json", jobCardTrustPinPath: "trust/job-card-trust-pin.json", completeness: "unchecked", dispatchable: false }); }

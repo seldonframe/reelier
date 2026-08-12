@@ -37,8 +37,9 @@ export function parseCertificationEndpointManifest(value: unknown, expectedScena
   closed(raw, ["v", "scenarioId", "provider", "resourceDigest", "credentialSlots", "endpoints", "completeness"], "certification endpoint manifest");
   const scenarioId = scenario(raw.scenarioId);
   const providers = ["cloudflare", "codex", "fly", "github", "neon", "slack", "vercel"] as const;
+  const expectedProvider = scenarioId.startsWith("cloudflare-") ? "cloudflare" : scenarioId.startsWith("codex-") ? "codex" : scenarioId.startsWith("fly-") ? "fly" : scenarioId.startsWith("github-") ? "github" : scenarioId.startsWith("neon-") ? "neon" : scenarioId.startsWith("slack-") ? "slack" : "vercel";
   const expectedSlots = CERTIFICATION_SCENARIOS[scenarioId].secretSlots;
-  if (raw.v !== "reelier.certification-endpoint-manifest/v1" || (expectedScenario !== undefined && scenarioId !== expectedScenario) || typeof raw.provider !== "string" || !providers.includes(raw.provider as typeof providers[number]) || !digest(raw.resourceDigest) || !exactList(raw.credentialSlots, expectedSlots) || raw.completeness !== "unchecked" || !Array.isArray(raw.endpoints) || raw.endpoints.length === 0) throw new TypeError("certification endpoint manifest is invalid");
+  if (raw.v !== "reelier.certification-endpoint-manifest/v1" || (expectedScenario !== undefined && scenarioId !== expectedScenario) || typeof raw.provider !== "string" || !providers.includes(raw.provider as typeof providers[number]) || raw.provider !== expectedProvider || !digest(raw.resourceDigest) || !exactList(raw.credentialSlots, expectedSlots) || raw.completeness !== "unchecked" || !Array.isArray(raw.endpoints) || raw.endpoints.length === 0) throw new TypeError("certification endpoint manifest is invalid");
   const endpoints = raw.endpoints.map((value: unknown) => {
     const endpoint = object(value, "certification endpoint");
     closed(endpoint, ["endpointId", "direction", "method"], "certification endpoint");
