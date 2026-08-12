@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createHash, generateKeyPairSync } from "node:crypto";
+import { generateKeyPairSync } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -84,79 +84,32 @@ test("signed Job Card activates exact durable root state and a derived restart-s
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
-test("dispatch readiness permit is opaque, one-use, inert, and consumes no effect", async () => {
+test("Task 4A runner metadata cannot issue a dispatch permit and consumes no budget access", async () => {
   const f = await fixture();
   try {
     await f.host.activateRootTask({ jobCard: f.jobCard, jobCardTrustPin: f.pin, delegationKeyDescriptor: f.delegationSigner, delegationPrivateKey: f.delegationKey.privateKey, constraints: f.constraints, effects: 2, issuedAt: at, expiresAt: expiry });
     const credential = await f.host.activatePrincipalSession();
     const readiness = { scenario: "github-issue-labels" as const, bearerToken: credential.token };
-    let calls = 0;
     assert.equal("createCertifiedRunnerRegistry" in cell, false);
     assert.equal("runCertificationWithPermit" in cell, false);
-    await assert.rejects(() => f.host.verifyDispatchReadiness({ ...readiness, bearerToken: "rat_not-the-issued-token" }), /credential/i);
-    assert.equal(calls, 0);
+    await assert.rejects(() => f.host.verifyDispatchReadiness({ ...readiness, bearerToken: "rat_not-the-issued-token" }), /execution is unavailable|non-dispatchable/i);
     assert.equal((await f.delegation.budget.get(f.initialized.identifiers.rootGrantId))?.remaining, 2);
-
-    const runnerFile = path.join(f.initialized.workspace, "inputs", "runners", "github-issue-labels.json");
-    const testFile = path.join(f.initialized.workspace, "inputs", "tests", "github-issue-labels.json");
-    const originalRunner = await readFile(runnerFile, "utf8"), originalTests = await readFile(testFile, "utf8");
-    const substitutedRunner = { ...JSON.parse(originalRunner), implementationDigest: `sha256:${"8".repeat(64)}` };
-    const substitutedRunnerBytes = `${JSON.stringify(substitutedRunner)}\n`;
-    const substitutedTests = { ...JSON.parse(originalTests), runnerManifestDigest: `sha256:${createHash("sha256").update(substitutedRunnerBytes).digest("hex")}` };
-    await writeFile(runnerFile, substitutedRunnerBytes); await writeFile(testFile, `${JSON.stringify(substitutedTests)}\n`);
-    await assert.rejects(() => f.host.verifyDispatchReadiness(readiness), /signed|readiness|preflight|manifest.*commitment/i);
-    assert.equal(calls, 0);
-    await writeFile(runnerFile, originalRunner); await writeFile(testFile, originalTests);
-
-    const permit = await f.host.verifyDispatchReadiness(readiness);
-    assert.throws(() => JSON.stringify(permit), /opaque|serializ/i);
-    const endpointFile = path.join(f.initialized.workspace, "authority", "endpoints", "github-issue-labels.json");
-    const endpointBytes = await readFile(endpointFile, "utf8");
-    const endpoint = JSON.parse(endpointBytes); endpoint.resourceDigest = `sha256:${"9".repeat(64)}`;
-    await writeFile(endpointFile, JSON.stringify(endpoint));
-    await assert.rejects(() => f.host.revalidateDispatchPermit(permit), /endpoint|stale|commitment|readiness.*incomplete/i);
-    assert.equal(calls, 0);
-    assert.equal((await f.delegation.budget.get(f.initialized.identifiers.rootGrantId))?.remaining, 2);
-    await writeFile(endpointFile, endpointBytes);
-
-    const planPermit = await f.host.verifyDispatchReadiness(readiness);
-    const planFile = path.join(f.initialized.workspace, "inputs", "plans", "github-issue-labels.json");
-    const planBytes = await readFile(planFile, "utf8"), plan = JSON.parse(planBytes);
-    plan.choices = { desiredState: "operator-reviewed-drift" };
-    await writeFile(planFile, `${JSON.stringify(plan)}\n`);
-    await assert.rejects(() => f.host.revalidateDispatchPermit(planPermit), /readiness|preflight|stale|plan/i);
-    assert.equal(calls, 0);
-    assert.equal((await f.delegation.budget.get(f.initialized.identifiers.rootGrantId))?.remaining, 2);
-    await writeFile(planFile, planBytes);
-
-    const valid = await f.host.verifyDispatchReadiness(readiness);
-    await f.host.revalidateDispatchPermit(valid);
-    assert.equal(calls, 0);
-    assert.equal((await f.delegation.budget.get(f.initialized.identifiers.rootGrantId))?.remaining, 2);
-    await assert.rejects(() => f.host.revalidateDispatchPermit(valid), /used|permit/i);
-
-    const trustPermit = await f.host.verifyDispatchReadiness(readiness);
-    const pinFile = f.currentTrustPinPath;
-    const pinBytes = await readFile(pinFile, "utf8"), pin = JSON.parse(pinBytes);
-    const jobSigner = pin.keyDescriptors.find((item: { purpose: string }) => item.purpose === "signed-job-card");
-    const previous = pin.currentTrustEvents[pin.currentTrustEvents.length - 1];
-    pin.currentTrustEvents.push({ v: "reelier.authority-trust-event/v1", eventId: `trust_revoke_${"f".repeat(12)}`, sequence: pin.currentTrustEvents.length, action: "revoke", keyDescriptorDigest: authorityDigest(jobSigner), occurredAt: "2026-08-11T20:05:00.000Z", previousEventDigest: authorityDigest(previous) });
-    await writeFile(pinFile, JSON.stringify(pin));
-    await assert.rejects(() => f.host.revalidateDispatchPermit(trustPermit), /revoked|active|trust/i);
-    assert.equal(calls, 0);
-    await writeFile(pinFile, pinBytes);
-    await assert.rejects(() => f.host.verifyDispatchReadiness(readiness), /rollback|trust/i);
+    const budget = f.delegation.budget as any;
+    const get = budget.get.bind(budget);
+    let budgetReads = 0;
+    budget.get = async (...args: unknown[]) => { budgetReads += 1; return get(...args); };
+    await assert.rejects(() => f.host.verifyDispatchReadiness(readiness), /execution is unavailable|non-dispatchable/i);
+    assert.equal(budgetReads, 0);
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
-test("task revocation invalidates an already-issued certification permit", async () => {
+test("Task 4A cannot issue a permit before later task revocation", async () => {
   const f = await fixture();
   try {
     await f.host.activateRootTask({ jobCard: f.jobCard, jobCardTrustPin: f.pin, delegationKeyDescriptor: f.delegationSigner, delegationPrivateKey: f.delegationKey.privateKey, constraints: f.constraints, effects: 1, issuedAt: at, expiresAt: expiry });
     const credential = await f.host.activatePrincipalSession();
-    const permit = await f.host.verifyDispatchReadiness({ scenario: "github-issue-labels", bearerToken: credential.token });
+    await assert.rejects(() => f.host.verifyDispatchReadiness({ scenario: "github-issue-labels", bearerToken: credential.token }), /execution is unavailable|non-dispatchable/i);
     await f.delegation.revoke(f.initialized.identifiers.authorityCellId, f.initialized.identifiers.taskId);
-    await assert.rejects(() => f.host.revalidateDispatchPermit(permit), /revoked|active|stale/i);
     await assert.rejects(() => f.host.activatePrincipalSession(), /active|revoked/i);
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
@@ -171,13 +124,12 @@ test("readiness exposes no caller callback and callers cannot select the trust p
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
-test("one scenario dispatches from a full multi-scenario signed preflight", async () => {
+test("full multi-scenario metadata remains non-dispatchable", async () => {
   const f = await fixture(["github-issue-labels", "slack-topic"]);
   try {
     await f.host.activateRootTask({ jobCard: f.jobCard, jobCardTrustPin: f.pin, delegationKeyDescriptor: f.delegationSigner, delegationPrivateKey: f.delegationKey.privateKey, constraints: f.constraints, effects: 2, issuedAt: at, expiresAt: expiry });
     const credential = await f.host.activatePrincipalSession();
-    const permit = await f.host.verifyDispatchReadiness({ scenario: "github-issue-labels", bearerToken: credential.token });
-    await f.host.revalidateDispatchPermit(permit);
+    await assert.rejects(() => f.host.verifyDispatchReadiness({ scenario: "github-issue-labels", bearerToken: credential.token }), /execution is unavailable|non-dispatchable/i);
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 

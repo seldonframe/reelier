@@ -14,7 +14,7 @@ import { parseCertificationOperatorConfigV3 } from "./config.js";
 import { certificationWorkspaceRoot, confinedExistingDirectory, publishPrivateContentAddressed, readConfinedFile, readUnlinkedFile } from "./filesystem.js";
 import { deriveCertificationEndpointManifest, parseCertificationInitialization, validateCertificationInitialization, type CertificationIdentifiers } from "./initializer.js";
 import { parseCertificationEndpointManifest, parseCertificationRunnerManifest, parseCertificationScenarioPlan, parseCertificationTestManifest } from "./manifests.js";
-import { certificationRunnerRegistryDigest } from "./runner-registry.js";
+import { certificationRunnerRegistryDigest, getCertificationRunnerRegistryEntry } from "./runner-registry.js";
 import { preflightCertification } from "./preflight.js";
 import { CERTIFICATION_SCENARIO_IDS, type CertificationScenarioId } from "./scenarios.js";
 
@@ -139,7 +139,7 @@ class OpaquePermit implements CertificationDispatchPermit {
   readonly kind = "certification-dispatch-permit" as const;
   toJSON(): never { throw new TypeError("certification dispatch permit is opaque and nonserializable"); }
 }
-interface DispatchSnapshot { readonly digest: string; readonly scenarioId: CertificationScenarioId; readonly runnerId: string; readonly implementationDigest: string; readonly endpointManifestDigest: string; readonly capabilities: readonly EndpointCapability[] }
+interface DispatchSnapshot { readonly digest: string; readonly scenarioId: CertificationScenarioId; readonly runnerId: string; readonly metadataDigest: string; readonly endpointManifestDigest: string; readonly capabilities: readonly EndpointCapability[] }
 const permitState = new WeakMap<object, Readonly<{ snapshot: DispatchSnapshot; revalidate: () => Promise<DispatchSnapshot> }>>();
 
 async function verifyCertificationDispatchReadiness(input: Readonly<{
@@ -190,6 +190,8 @@ async function dispatchSnapshot(input: Readonly<{ workspace: string; scenario: C
   const delegationDescriptor = pin.keyDescriptors.map(parseAuthorityKeyDescriptor).find(item => authorityDigest(item) === activation.signerKeyDescriptorDigest);
   if (!delegationDescriptor || delegationDescriptor.keyId !== activation.signerKeyId || delegationDescriptor.role !== "authority-cell" || delegationDescriptor.purpose !== "delegation-grant" || !currentTrust.activeDescriptorDigests.has(activation.signerKeyDescriptorDigest) || !pin.signedReadiness.activatedCellKeyDescriptorDigests.includes(activation.signerKeyDescriptorDigest) || !verifyAuthoritySignature(publicKeyFor(delegationDescriptor), "delegation-grant", activation.signedRootGrant.digest, activation.signedRootGrant.signature)) throw new TypeError("certification root grant signer is stale, revoked, or substituted");
   if (activation.constraintsDigest !== authorityDigest(grant.constraints) || jobCard.limitsDigest !== authorityDigest(grant.constraints.limits) || jobCard.taskShapeDigest !== certificationTaskShapeDigest({ identifiers: state.initialization.identifiers, scenarios: state.initialization.scenarios, constraints: grant.constraints })) throw new TypeError("certification active root constraints do not match Job Card commitments");
+  const registeredRunner = getCertificationRunnerRegistryEntry(input.scenario);
+  if (!registeredRunner.executionReady || !registeredRunner.dispatchable) throw new TypeError("Task 4A certification runner metadata is configured but provider execution is unavailable and non-dispatchable");
   const status = await input.delegationAuthority.taskStatus({ tenant: activation.authorityCellId, requester: grant.sponsor, taskId: activation.taskId });
   if (status.lifecycleState !== "active") throw new TypeError("certification task is revoked or inactive");
   const binding = await input.delegationAuthority.resolveSessionBinding({ tenant: activation.authorityCellId, taskId: activation.taskId, principalId: activation.principalId });
@@ -225,7 +227,7 @@ async function dispatchSnapshot(input: Readonly<{ workspace: string; scenario: C
   if (plan.runnerManifestDigest !== runnerArtifact.digest || plan.testManifestDigest !== testArtifact.digest || plan.endpointManifestDigest !== authorityDigest(endpoint) || plan.runnerRegistryDigest !== certificationRunnerRegistryDigest) throw new TypeError("certification scenario plan drifted from signed runner, test, endpoint, or registry authority");
   const capabilities = normalizeCapabilities(endpoint.endpoints);
   const digest = authorityDigest({ v: "reelier.certification-dispatch-snapshot/v1", activation: authorityDigest(activation), jobCard: signedJobCardDigest(jobCard), readiness: authorityDigest(pin.signedReadiness), trustHead: authorityDigest(currentEvents[currentEvents.length - 1]), task: status.lifecycleState, principal: authorityDigest(principal), allocation: { effects: allocation.effects, consumed: allocation.consumed, remaining: allocation.remaining, revoked: allocation.revoked }, preflight: preflight.digest, endpoint: authorityDigest(endpoint), runner: runnerArtifact.digest, tests: testArtifact.digest, plan: planArtifact.digest, runnerRegistry: certificationRunnerRegistryDigest, dispatchMode: "hermetic-certification", completeness: "unchecked" });
-  return Object.freeze({ digest, scenarioId: input.scenario, runnerId: runner.runnerId, implementationDigest: runner.implementationDigest, endpointManifestDigest: runner.endpointManifestDigest, capabilities });
+  return Object.freeze({ digest, scenarioId: input.scenario, runnerId: runner.runnerId, metadataDigest: runner.metadataDigest, endpointManifestDigest: runner.endpointManifestDigest, capabilities });
 }
 
 async function loadInitialization(workspace: string) {

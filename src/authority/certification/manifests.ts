@@ -14,6 +14,7 @@ export interface CertificationRunnerManifestV1 {
   readonly endpointManifestDigest: string;
   readonly implementationDigest: string;
   readonly operations: typeof RUNNER_OPERATIONS_V1;
+  readonly executionReady: false;
   readonly dispatchable: false;
 }
 export interface CertificationRunnerManifestV2 {
@@ -21,10 +22,11 @@ export interface CertificationRunnerManifestV2 {
   readonly scenarioId: CertificationScenarioId;
   readonly runnerId: string;
   readonly endpointManifestDigest: string;
-  readonly implementationDigest: string;
+  readonly metadataDigest: string;
   readonly registryDigest: string;
   readonly operations: typeof CERTIFICATION_RUNNER_OPERATIONS;
-  readonly dispatchable: boolean;
+  readonly executionReady: false;
+  readonly dispatchable: false;
 }
 export type CertificationRunnerManifest = CertificationRunnerManifestV1 | CertificationRunnerManifestV2;
 
@@ -54,7 +56,7 @@ export interface CertificationEndpointManifestV2 {
   readonly definitionAliases: readonly string[];
   readonly endpoints: readonly CertificationEndpointV2[];
   readonly completeness: "unchecked";
-  readonly dispatchable: boolean;
+  readonly dispatchable: false;
 }
 export type CertificationEndpointManifest = CertificationEndpointManifestV1 | CertificationEndpointManifestV2;
 
@@ -88,7 +90,7 @@ export function parseCertificationEndpointManifest(value: unknown, expectedScena
     if (endpoint.endpointId !== expected.endpointId || endpoint.provider !== expected.provider || endpoint.credentialSlot !== expected.credentialSlot || endpoint.direction !== expected.direction || endpoint.method !== expected.method || !digest(endpoint.accountCommitment) || !digest(endpoint.resourceCommitment)) throw new TypeError("certification endpoint does not match reviewed static pack registration");
     return Object.freeze({ endpointId: expected.endpointId, provider: expected.provider, credentialSlot: expected.credentialSlot, accountCommitment: endpoint.accountCommitment, resourceCommitment: endpoint.resourceCommitment, direction: expected.direction, method: expected.method });
   });
-  return Object.freeze({ v: "reelier.certification-endpoint-manifest/v2", scenarioId, definitionAliases: registry.definitionAliases, endpoints: Object.freeze(endpoints), completeness: "unchecked", dispatchable: registry.dispatchable });
+  return Object.freeze({ v: "reelier.certification-endpoint-manifest/v2", scenarioId, definitionAliases: registry.definitionAliases, endpoints: Object.freeze(endpoints), completeness: "unchecked", dispatchable: false });
 }
 
 function parseEndpointV1(raw: Record<string, any>, expectedScenario?: CertificationScenarioId): CertificationEndpointManifestV1 {
@@ -109,13 +111,13 @@ export function parseCertificationRunnerManifest(value: unknown, expectedScenari
     closed(raw, ["v", "scenarioId", "runnerId", "endpointManifestDigest", "implementationDigest", "operations"], "certification runner manifest v1");
     const scenarioId = scenario(raw.scenarioId);
     if ((expectedScenario !== undefined && scenarioId !== expectedScenario) || typeof raw.runnerId !== "string" || !ID.test(raw.runnerId) || !digest(raw.endpointManifestDigest) || !digest(raw.implementationDigest) || !exactList(raw.operations, RUNNER_OPERATIONS_V1)) throw new TypeError("certification runner manifest v1 is invalid");
-    return Object.freeze({ v: "reelier.certification-runner-manifest/v1", scenarioId, runnerId: raw.runnerId, endpointManifestDigest: raw.endpointManifestDigest, implementationDigest: raw.implementationDigest, operations: RUNNER_OPERATIONS_V1, dispatchable: false });
+    return Object.freeze({ v: "reelier.certification-runner-manifest/v1", scenarioId, runnerId: raw.runnerId, endpointManifestDigest: raw.endpointManifestDigest, implementationDigest: raw.implementationDigest, operations: RUNNER_OPERATIONS_V1, executionReady: false, dispatchable: false });
   }
-  closed(raw, ["v", "scenarioId", "runnerId", "endpointManifestDigest", "implementationDigest", "registryDigest", "operations", "dispatchable"], "certification runner manifest v2");
+  closed(raw, ["v", "scenarioId", "runnerId", "endpointManifestDigest", "metadataDigest", "registryDigest", "operations", "executionReady", "dispatchable"], "certification runner manifest v2");
   const scenarioId = scenario(raw.scenarioId);
   const registry = getCertificationRunnerRegistryEntry(scenarioId);
-  if (raw.v !== "reelier.certification-runner-manifest/v2" || (expectedScenario !== undefined && scenarioId !== expectedScenario) || raw.runnerId !== registry.runnerId || !digest(raw.endpointManifestDigest) || raw.implementationDigest !== registry.implementationDigest || raw.registryDigest !== certificationRunnerRegistryDigest || !exactList(raw.operations, CERTIFICATION_RUNNER_OPERATIONS) || raw.dispatchable !== registry.dispatchable) throw new TypeError("certification runner manifest v2 does not match built-in registry implementation");
-  return Object.freeze({ v: "reelier.certification-runner-manifest/v2", scenarioId, runnerId: registry.runnerId, endpointManifestDigest: raw.endpointManifestDigest, implementationDigest: registry.implementationDigest, registryDigest: certificationRunnerRegistryDigest, operations: CERTIFICATION_RUNNER_OPERATIONS, dispatchable: registry.dispatchable });
+  if (raw.v !== "reelier.certification-runner-manifest/v2" || (expectedScenario !== undefined && scenarioId !== expectedScenario) || raw.runnerId !== registry.runnerId || !digest(raw.endpointManifestDigest) || raw.metadataDigest !== registry.metadataDigest || raw.registryDigest !== certificationRunnerRegistryDigest || !exactList(raw.operations, CERTIFICATION_RUNNER_OPERATIONS) || raw.executionReady !== false || raw.dispatchable !== false) throw new TypeError("certification runner manifest v2 does not match built-in registry metadata");
+  return Object.freeze({ v: "reelier.certification-runner-manifest/v2", scenarioId, runnerId: registry.runnerId, endpointManifestDigest: raw.endpointManifestDigest, metadataDigest: registry.metadataDigest, registryDigest: certificationRunnerRegistryDigest, operations: CERTIFICATION_RUNNER_OPERATIONS, executionReady: false, dispatchable: false });
 }
 
 export function parseCertificationTestManifest(value: unknown, expectedScenario?: CertificationScenarioId, expectedRunnerDigest?: string): CertificationTestManifestV1 {
