@@ -21,6 +21,8 @@ import { verifyAuthorityReceiptBundle } from "../../src/authority/verify.js";
 import { verifyCertificationTaskReceiptGraph } from "../../src/authority/certification/task-receipt-graph.js";
 import { writeCertificationInputManifests } from "./certification-input-fixture.js";
 import { AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST } from "../../src/authority/adapter-contract.js";
+import { signAuthorityDigest } from "../../src/authority/crypto.js";
+import { createCertificationTaskReceiptGraph } from "../../src/authority/certification/task-receipt-graph.js";
 
 const at = "2026-08-11T20:00:00.000Z", expiry = "2026-08-11T21:00:00.000Z";
 const descriptor = (keyId: string, role: "human-sponsor" | "authority-cell", purpose: string, publicKey: ReturnType<typeof generateKeyPairSync>["publicKey"]) => ({ v: "reelier.authority-key-descriptor/v1", keyId, role, purpose, algorithm: "ed25519", publicKeySpkiBase64: publicKey.export({ type: "spki", format: "der" }).toString("base64") });
@@ -515,5 +517,23 @@ test("portable evidence links the approved task, exact post-state, policy status
       (g: any) => { g.duplicateDecisions.pop(); },
       (g: any) => { g.duplicateDecisions[0].providerWriteDelta = 1; },
     ]) { const changed = structuredClone(graph); mutate(changed); assert.throws(() => verifyCertificationTaskReceiptGraph(changed, { trustPin: f.pin }), /portable|task|post-state|policy|status|duplicate|signature|terminal|digest|closed/i); }
+  } finally { await rm(f.root, { recursive: true, force: true }); }
+});
+
+test("offline portable verification rejects re-signed false claims with a fresh terminal commitment", async () => {
+  const f = await fixture(); try {
+    await f.runner.run({ bearerToken: f.credential.token, requestId: "request_resigned" });
+    const graph: any = await f.runner.exportGraph({ bearerToken: f.credential.token });
+    const evidence = f.cell && certificationCellHostInternalState(f.cell).hermeticGitHubAuthority().lifecycle.direct.get("authority-evidence")!;
+    const signer = { signerId: evidence.descriptor.keyId, sign: (digest: string) => signAuthorityDigest(evidence.privateKey, "authority-evidence", digest) };
+    const resign = (record: any) => { const { signature: _old, ...body } = record; return { ...body, signature: signer.sign(authorityDigest(body)) }; };
+    const rebuild = (changed: any) => { const { v: _v, adapterContractDigest: _adapter, topology: _topology, leases: _leases, priorReceiptLinks: _links, terminalCommitment: _terminal, ...content } = changed; return createCertificationTaskReceiptGraph({ ...content, terminalSigner: signer }); };
+    for (const mutate of [
+      (g: any) => { g.postStateEvidence[0] = resign({ ...g.postStateEvidence[0], confidence: "pending", observationMethod: "provider-acknowledgment", observedProjectionDigest: null }); },
+      (g: any) => { g.postStateEvidence.push(g.postStateEvidence[0]); },
+      (g: any) => { g.postStateEvidence[0] = resign({ ...g.postStateEvidence[0], expectedProjectionDigest: authorityDigest(["WRONG"]), observedProjectionDigest: authorityDigest(["WRONG"]) }); },
+      (g: any) => { g.taskStatusEvidence[1] = resign({ ...g.taskStatusEvidence[1], taskId: "WRONG_TASK" }); },
+      (g: any) => { g.policyEvidence[1] = resign({ ...g.policyEvidence[1], policyDigest: `sha256:${"a".repeat(64)}` }); },
+    ]) { const changed: any = structuredClone(graph); mutate(changed); assert.throws(() => verifyCertificationTaskReceiptGraph(rebuild(changed), { trustPin: f.pin }), /post-state|projection|task status|policy|duplicate|authority/i); }
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
