@@ -1,10 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { runAuthorityCommand } from "../../src/authority/cli.js";
-import { parseAuthorityCellConnectionV1 } from "../../src/authority/client/config.js";
+import { parseAuthorityCellConnectionV1, writeAuthorityCellConnection } from "../../src/authority/client/config.js";
 import { checkAuthorityCellLive } from "../../src/authority/client/http.js";
 
 const digest = "sha256:7f46242b26d9c921f4e1ec9de6418ac5fc8c03d70c4415c25e799ae0e73a1512";
@@ -95,4 +95,25 @@ test("doctor refuses private DNS answers before bearer dispatch", async () => {
   const result = await checkAuthorityCellLive(connection, { resolveToken: async () => "opaque", resolveAddresses: async () => ["8.8.8.8", "10.0.0.1"], request: async () => { dispatched = true; throw new Error("must not dispatch"); } });
   assert.deepEqual(result, { state: "failed", reasonCode: "endpoint-address-refused" });
   assert.equal(dispatched, false);
+});
+
+test("doctor decodes every mapped IPv6 private form before bearer dispatch", async () => {
+  const connection = { v: "reelier.authority-cell-connection/v1", endpoint: "https://cell.example", transport: "http", bearerTokenRef: "env:CELL_TOKEN", expectedCellId: "cell_1", adapterContractDigest: digest } as const;
+  for (const address of ["::ffff:127.0.0.1", "::ffff:7f00:1", "::ffff:10.0.0.1", "::ffff:a9fe:0101", "::ffff:0:0", "::ffff:e000:1"]) {
+    let dispatched = false;
+    const result = await checkAuthorityCellLive(connection, { resolveToken: async () => "opaque", resolveAddresses: async () => [address], request: async () => { dispatched = true; throw new Error("must not dispatch"); } });
+    assert.deepEqual(result, { state: "failed", reasonCode: "endpoint-address-refused" }, address);
+    assert.equal(dispatched, false, address);
+  }
+});
+
+test("connection writer refuses a symlinked parent before an outside write", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-cell-config-root-"));
+  const outside = await mkdtemp(path.join(os.tmpdir(), "reelier-cell-config-outside-"));
+  try {
+    await symlink(outside, path.join(root, "linked"), "junction");
+    const target = path.join(root, "linked", "connection.json");
+    await assert.rejects(() => writeAuthorityCellConnection(target, { v: "reelier.authority-cell-connection/v1", endpoint: "https://cell.example", transport: "http", bearerTokenRef: "env:CELL_TOKEN", expectedCellId: "cell_1", adapterContractDigest: digest }), /unsafe|symlink|connection/i);
+    await assert.rejects(() => access(path.join(outside, "connection.json")));
+  } finally { await rm(root, { recursive: true, force: true }); await rm(outside, { recursive: true, force: true }); }
 });
