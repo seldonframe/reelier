@@ -167,3 +167,21 @@ test("one scenario dispatches from a full multi-scenario signed preflight", asyn
     await cell.revalidateCertificationDispatchPermit(permit);
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
+
+test("host runtime owns the immutable trust path and activation only commits its digest", async () => {
+  const f = await fixture();
+  try {
+    const host = await cell.createCertificationCellHost({ workspace: f.initialized.workspace, currentTrustPinPath: f.currentTrustPinPath, delegationAuthority: f.delegation, principalRegistry: f.principals, now: () => new Date("2026-08-11T20:10:00.000Z") });
+    const activation = await host.activateRootTask({ jobCard: f.jobCard, jobCardTrustPin: f.pin, delegationKeyDescriptor: f.delegationSigner, delegationPrivateKey: f.delegationKey.privateKey, constraints: f.constraints, effects: 2, issuedAt: at, expiresAt: expiry });
+    assert.equal("currentTrustPinPath" in activation, false);
+    assert.match(activation.currentTrustPinPathDigest, /^sha256:[0-9a-f]{64}$/);
+    const credential = await host.activatePrincipalSession();
+    const activationFile = path.join(f.initialized.workspace, "authority", "delegation", "root-activation.json");
+    const tampered = JSON.parse(await readFile(activationFile, "utf8"));
+    tampered.currentTrustPinPathDigest = `sha256:${"0".repeat(64)}`;
+    await writeFile(activationFile, JSON.stringify(tampered));
+    await assert.rejects(() => host.verifyDispatchReadiness({ scenario: "github-issue-labels", bearerToken: credential.token }), /trust.*path|commitment|substitut/i);
+    assert.equal("activateCertificationRootTask" in cell, false);
+    assert.equal("verifyCertificationDispatchReadiness" in cell, false);
+  } finally { await rm(f.root, { recursive: true, force: true }); }
+});
