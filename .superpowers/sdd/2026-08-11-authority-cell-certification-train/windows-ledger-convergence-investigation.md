@@ -1,56 +1,86 @@
-# Windows ledger convergence investigation
+Files changed
 
-Status: **release blocker remains open**.
+- `src/authority/host/fs-ledger.ts`
+- `test/authority/ledger.test.ts`
+- `.superpowers/sdd/2026-08-11-authority-cell-certification-train/windows-ledger-convergence-investigation.md`
 
-## Hosted falsifiers
+# Windows owned-preparation loss fix
 
-Exact merge commit `13ed819` produced two failing Windows executions in GitHub Actions run
-`31596294603`:
+## What changed per file
 
-- Job `94112526160`: the 100-process reservation convergence test returned 99 `busy` results and
-  one `corruption` result, with no committed winner.
-- Rerun job `94117665864`: the same test again produced no winner (only one captured `busy`
-  result), and `dead-owner liveness loss before final revalidation remains busy and consumes once`
-  emitted no prep-housekeeping observer events instead of the expected four.
+- `src/authority/host/fs-ledger.ts`: maps ENOENT after exclusive preparation creation to
+  `LedgerCorruption` during owner creation, exact validation, and promotion. It adds one private
+  post-final-revalidation fault seam so rename-time disappearance is reachable. Other transient
+  errors, deadlines, authenticated housekeeping transitions, and convergence behavior are unchanged.
+- `test/authority/ledger.test.ts`: table-drives deletion of the creator's exact preparation at all
+  seven construction/promotion seams and requires `{ok:false,reason:"corruption"}` without a raw
+  filesystem exception. Existing liveness-routing diagnostics remain.
+- This report records RED/GREEN and verification evidence.
 
-Ubuntu and the canonical badge gate were green. PR #117 is badge-only and is not part of this
-investigation.
+## Root cause and commits
 
-## Partial hardening in this range
+The creator had no uniform owned-preparation disappearance rule. Deletion immediately after
+`after-admission-prep-create` leaked raw ENOENT from `open(owner.json)`. Deletion after final exact
+validation could make promotion `rename` return ENOENT, which the generic transient branch converted
+to `busy`. Both contradict the invariant that unexplained loss of an exact owned identity is
+corruption; only authenticated monotonic retirement/cleanup lineage may be treated as progress.
 
-- `29ed08e` first pinned the raw `ENOENT` stack observed during active preparation validation.
-- `cf21e39` corrected that initial test's unsafe expectation: unexplained deletion is corruption,
-  not a retryable success.
-- `5a54237` maps an `ENOENT` from any syscall in exact admission-preparation revalidation to the
-  existing typed `LedgerCorruption` result. Raw filesystem exceptions no longer escape this path.
-- `3bf9830` enriches the pre-existing liveness-routing assertion message with result, exception,
-  event, probe, and timing evidence.
+- RED: `00f2ae2 test(ledger): pin owned prep disappearance seams`
+- GREEN: `f2522a2 fix(ledger): fail closed on owned prep loss`
 
-This does **not** establish why the Windows operation fence sometimes refuses before any
-prep-housekeeping event, and it does **not** prove that 100 contenders always elect a winner.
-No timeout was increased and no corruption result was downgraded to `busy`.
+Earlier partial hardening remains in `cf21e39` and `5a54237`; `29ed08e`'s unsafe initial success
+expectation was superseded by `cf21e39`.
 
-## Local evidence
+## Deviations
 
-On the exact working tree after `5a54237`/`3bf9830`:
+None from the bounded reviewer fix. This change does not claim to resolve the separate hosted
+all-busy/no-winner convergence failure from run `31596294603`; no convergence algorithm changed.
 
-- TypeScript test compilation passed.
-- The unexplained preparation-deletion test passed and returned typed corruption.
-- The complete `prep-only housekeeper revalidates one-use authority before mutation` parent passed
-  22/22.
-- Four consecutive 100-process convergence waves passed locally; each produced one reservation and
-  one dispatch-eligible winner.
+## Test results (verbatim tails)
 
-These local passes do not supersede the two unchanged-tree hosted Windows failures.
+RED:
 
-## Required closure evidence
+```text
+✖ after-admission-prep-create (30.538ms)
+Error: ENOENT: no such file or directory, open '...admission-prep...tmp\\owner.json'
+ℹ pass 5
+ℹ fail 2
+```
 
-Before Task 4B resumes or the release gate closes:
+Focused deletion plus complete prep-housekeeper parent:
 
-1. Identify the pre-filesystem Windows fence/mutex refusal path responsible for empty observer
-   events or prove a different exact cause.
-2. Add a deterministic regression for that cause without weakening serialization or liveness
-   checks.
-3. Pass repeated 100-process convergence and dead-owner handoff tests on hosted Windows.
-4. Independently review the final kernel change.
+```text
+✔ prep-only housekeeper revalidates one-use authority before mutation (1757.434ms)
+ℹ tests 30
+ℹ pass 30
+ℹ fail 0
+ℹ duration_ms 2031.8355
+```
 
+Three N100 repetitions:
+
+```text
+N100 ATTEMPT 3
+✔ 100 real processes converge on one committed reservation and one dispatch eligibility (32347.0622ms)
+ℹ tests 1
+ℹ pass 1
+ℹ fail 0
+ℹ duration_ms 32783.1362
+```
+
+Build and contract:
+
+```text
+> reelier@0.32.1 build
+> tsc -p tsconfig.json && node scripts/build-authority-contract.mjs --copy-schemas && node scripts/build-packs.mjs
+built cloudflare_api_token, cloudflare_dns, github_issue_labels, gmail, gmail_labels, hubspot_slack_information_flow, neon_database, slack_channel_topic, stripe, vercel_deployment
+> reelier@0.32.1 check:authority-contract
+> node scripts/build-authority-contract.mjs --check
+```
+
+## Open risks
+
+- Hosted Windows convergence remains independently unresolved: exact merge `13ed819` twice produced
+  no winner, and one run emitted no prep-housekeeping events. Local N100 passed three fresh repeats;
+  that does not falsify the hosted result.
+- CI has not run the new owned-preparation deletion matrix.
