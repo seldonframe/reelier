@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { generateKeyPairSync } from "node:crypto";
+import { createHash, generateKeyPairSync } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -82,6 +82,17 @@ test("dispatch permit is opaque, nonserializable, one-use, and invokes the runne
     await assert.rejects(() => cell.verifyCertificationDispatchReadiness({ ...readiness, bearerToken: "rat_not-the-issued-token" }), /credential/i);
     assert.equal(calls, 0);
     assert.equal((await f.delegation.budget.get(f.initialized.identifiers.rootGrantId))?.remaining, 2);
+
+    const runnerFile = path.join(f.initialized.workspace, "inputs", "runners", "github-issue-labels.json");
+    const testFile = path.join(f.initialized.workspace, "inputs", "tests", "github-issue-labels.json");
+    const originalRunner = await readFile(runnerFile, "utf8"), originalTests = await readFile(testFile, "utf8");
+    const substitutedRunner = { ...JSON.parse(originalRunner), implementationDigest: `sha256:${"8".repeat(64)}` };
+    const substitutedRunnerBytes = `${JSON.stringify(substitutedRunner)}\n`;
+    const substitutedTests = { ...JSON.parse(originalTests), runnerManifestDigest: `sha256:${createHash("sha256").update(substitutedRunnerBytes).digest("hex")}` };
+    await writeFile(runnerFile, substitutedRunnerBytes); await writeFile(testFile, `${JSON.stringify(substitutedTests)}\n`);
+    await assert.rejects(() => cell.verifyCertificationDispatchReadiness(readiness), /signed|readiness|preflight|manifest.*commitment/i);
+    assert.equal(calls, 0);
+    await writeFile(runnerFile, originalRunner); await writeFile(testFile, originalTests);
 
     const permit = await cell.verifyCertificationDispatchReadiness(readiness);
     assert.throws(() => JSON.stringify(permit), /opaque|serializ/i);
