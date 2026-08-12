@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { initializeCertification } from "../../src/authority/certification/initializer.js";
+import { parseCertificationInitialization } from "../../src/authority/certification/initializer.js";
 import { preflightCertification } from "../../src/authority/certification/preflight.js";
 import { sealCertificationReadiness } from "../../src/authority/certification/readiness.js";
 import { exportCertificationEvidence, verifyCertificationExport } from "../../src/authority/certification/export.js";
@@ -37,6 +38,49 @@ test("certification export is a closed linked package that verifies offline with
   else assert.equal(permissions & 0o077, 0);
   const serialized = JSON.stringify(fromDisk);
   assert.doesNotMatch(serialized, /REELIER_GITHUB_TOKEN|authority\/authority\.yml|authority\/receipts\/certification/);
+});
+
+test("offline artifact parsing rejects adversarial nested arrays without invoking index getters", async t => {
+  const workspace = await initializedWorkspace();
+  const exported = await exportCertificationEvidence({ workspace, scenario: "github-issue-labels" });
+  const original = JSON.parse(await readFile(exported.path, "utf8"));
+  const cases: readonly [string, (bundle: any, value: unknown[]) => void][] = [
+    ["manifest scenarios", (bundle, value) => { bundle.manifest.scenarios = value; }],
+    ["initialization scenarios", (bundle, value) => { bundle.artifacts.initialization.scenarios = value; }],
+    ["projected cleanup", (bundle, value) => { bundle.artifacts.config.cleanup["github-issue-labels"] = value; }],
+    ["projected metadata", (bundle, value) => { bundle.artifacts.config.metadata = value; }],
+    ["projected credentials", (bundle, value) => { bundle.artifacts.config.credentialReferences = value; }],
+    ["projected desired state", (bundle, value) => { bundle.artifacts.config.desiredState["github-issue-labels"] = value; }],
+    ["preflight scenarios", (bundle, value) => { bundle.artifacts.preflight.scenarios = value; }],
+    ["preflight resources", (bundle, value) => { bundle.artifacts.preflight.resources = value; }],
+    ["preflight artifacts", (bundle, value) => { bundle.artifacts.preflight.inputs.runners.artifacts = value; }],
+    ["readiness scenarios", (bundle, value) => { bundle.artifacts.readiness.scenarios = value; }],
+    ["readiness resources", (bundle, value) => { bundle.artifacts.readiness.commitments.resources = value; }],
+  ];
+  for (const [label, mutate] of cases) await t.test(label, () => {
+    const bundle = structuredClone(original);
+    let getterCalls = 0;
+    const value = new Array(1);
+    Object.defineProperty(value, "0", { enumerable: true, configurable: true, get: () => { getterCalls += 1; return "attacker"; } });
+    mutate(bundle, value);
+    assert.throws(() => verifyCertificationExport(bundle));
+    assert.equal(getterCalls, 0);
+  });
+});
+
+test("initialization scenarios require a dense enumerable symbol-free ordinary array", async t => {
+  const workspace = await initializedWorkspace();
+  const initialization = JSON.parse(await readFile(path.join(workspace, "initialization.json"), "utf8"));
+  const variants: readonly [string, () => unknown[]][] = [
+    ["index getter", () => { const value = new Array(1); Object.defineProperty(value, "0", { enumerable: true, get: () => "github-issue-labels" }); return value; }],
+    ["sparse", () => new Array(1)],
+    ["non-enumerable index", () => { const value: unknown[] = []; Object.defineProperty(value, "0", { enumerable: false, value: "github-issue-labels" }); value.length = 1; return value; }],
+    ["symbol property", () => { const value = ["github-issue-labels"]; Object.defineProperty(value, Symbol("authority"), { value: true }); return value; }],
+    ["custom prototype", () => { const value = ["github-issue-labels"]; Object.setPrototypeOf(value, Object.create(Array.prototype)); return value; }],
+  ];
+  for (const [label, create] of variants) await t.test(label, () => {
+    assert.throws(() => parseCertificationInitialization({ ...initialization, scenarios: create() }), /array|inert|dense/i);
+  });
 });
 
 test("subset preparation preserves the immutable two-scenario initialization root and identifiers", async () => {
