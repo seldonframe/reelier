@@ -4,6 +4,8 @@
 # working tree checks the file out as CRLF while git/CI/npm see LF.
 contract/wire-contract.v1.json text eol=lf
 contract/wire-contract.v1.public-key.pem text eol=lf
+contract/authority/v1/** text eol=lf
+src/authority/adapter-contract.ts text eol=lf
 
 # Golden-file + skill fixtures are compared as text (renderSkillMd emits LF);
 # freeze them to LF so the string/byte-exact tests pass on Windows checkouts

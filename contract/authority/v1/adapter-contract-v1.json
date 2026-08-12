@@ -4,7 +4,7 @@
   "members": [
     {
       "path": "authority-evidence.schema.json",
-      "digest": "sha256:375a76695a1bf3107095b168a351174280a5a6e66e3b6d1988cfabbff1e9f854"
+      "digest": "sha256:1089605f21c943596330712bbaf4534c0038cafc3dee7bcca809d90884ca08d9"
     },
     {
       "path": "authority-key-descriptor.schema.json",
@@ -12,11 +12,11 @@
     },
     {
       "path": "authority-receipt-bundle.schema.json",
-      "digest": "sha256:485ca52d0b3f3bd2b24cfbe14dd5115a3959ede1b21ebe75ad46ff8c52b75bec"
+      "digest": "sha256:02ca84c711fbec7ecf6c040c2d51ad8b1cb062effbc4e2bc94ca9fe4d6552f16"
     },
     {
       "path": "authority-receipt.schema.json",
-      "digest": "sha256:f6abcd2ec24ac8b1c22e0c78ba40dbcd347b61f6de1cf211a534e3dbaa4ae2de"
+      "digest": "sha256:12b6e3744abbb59fd45f4cf19adf4291a02870b2ec39e8156100bd2a99da92de"
     },
     {
       "path": "boundable-task-candidate.schema.json",
@@ -24,7 +24,7 @@
     },
     {
       "path": "certification-cell-activation.schema.json",
-      "digest": "sha256:890e02716babf2924abf337bbbbd9d730531fc5b7ee8bb278d8fe21f80ae2f85"
+      "digest": "sha256:d0491a91aca0b0870e7a3391f644ec115125a4d50a1a124fcc515bdd9fc8ce7c"
     },
     {
       "path": "certification-endpoint-manifest-v2.schema.json",
@@ -56,7 +56,7 @@
     },
     {
       "path": "compiled-capability.schema.json",
-      "digest": "sha256:367c81cb23f896cfbb59ed817f09bb22b74b7cf97d57f8b281ab2423b59fe507"
+      "digest": "sha256:ccdc67b9257d879d1ac2987ee029ece93a11fa8bb8c9140123aae435cc2af5f5"
     },
     {
       "path": "connection-adoption.schema.json",
@@ -72,15 +72,15 @@
     },
     {
       "path": "decision-context.schema.json",
-      "digest": "sha256:f8bd66e154089535e02eef904824734e72e6efb592ccd0d3df62b2179425a823"
+      "digest": "sha256:2e7a0510195f65700758b158dca0b098d04d213b95ded365e2d2d8c3aab69978"
     },
     {
       "path": "delegation-grant.schema.json",
-      "digest": "sha256:d4cbcaec70869867fd01857ed04aa0fc43fb9830a709eabdce930f4f5b75d1b0"
+      "digest": "sha256:da7d2f516f7ae41691b0f502a1ea44655eea5b2908d779344d890dc3d7acb1c4"
     },
     {
       "path": "gate-event.schema.json",
-      "digest": "sha256:7b02a6300349ad015696db1d276c2e6ccc358f60270d6899bb5092ba3a2bf3b6"
+      "digest": "sha256:f89df96748f4372f24e58ed498ecf9598770e93588751e585de71244dc9a2d91"
     },
     {
       "path": "golden-vectors.json",
@@ -96,19 +96,19 @@
     },
     {
       "path": "outcome-contract.schema.json",
-      "digest": "sha256:2c50cf5faca775f9fdef015dd40c35fb3458b660fb5e4aca1db9b21f73c769f2"
+      "digest": "sha256:4f1dce4c0d817d920aa592b5d13006d270cbe232cfa8a9650fa0a1c4db70c1b7"
     },
     {
       "path": "outcome-request.schema.json",
-      "digest": "sha256:5fac08c26c69f8460a85e4f94afd8211da963506ce3aa6c2c32afd0a7a3a59b1"
+      "digest": "sha256:c25035d676d7210bb8ab52733feb3efea6295ba9230112d356a16b5a842761b8"
     },
     {
       "path": "pack-manifest.schema.json",
-      "digest": "sha256:765fa2afe3dbf2d4cf199a779d3aa68698f4105d6a01dc4a296a5102cc92c434"
+      "digest": "sha256:c7794aa81007d57b88921bc79f091c0ab058209ac954f6aac4ea917a98570059"
     },
     {
       "path": "principal.schema.json",
-      "digest": "sha256:69a2255d7056d11633d440dac0a04f5e06d0572dbf27c3eec36713b2edf91f8c"
+      "digest": "sha256:57a609cf5919b6f9912d7e38d808e7e663d4ceafc2c4929503f6974c3f96e2c0"
     },
     {
       "path": "shadow-report.schema.json",
@@ -120,7 +120,7 @@
     },
     {
       "path": "source-bundle.schema.json",
-      "digest": "sha256:7f638a3e2bbb18a3bd9116924b2196d19e9c4a281f859821e8fd6d55bff7e0e2"
+      "digest": "sha256:835becfd183d40a8390784a623b660744970e366bf84755e80dab93c3e53e6ff"
     },
     {
       "path": "staged-artifact-commitment.schema.json",
@@ -128,7 +128,7 @@
     },
     {
       "path": "transport-effect.schema.json",
-      "digest": "sha256:78a5a0327785aa5a75d822c7429258b9ad5e571486f6415bbb60dd26f3c5e3e1"
+      "digest": "sha256:799e8adf9c5c6faa06fc3d09a818d855eb854b16b50f41d55378529290136d93"
     },
     {
       "path": "trust-event.schema.json",
@@ -136,5 +136,5 @@
     }
   ],
   "goldenVectorsDigest": "sha256:4bc81059ec0e66a47a25f1746fff9616cf79ec1d38fd84fa220e1b12438e76aa",
-  "digest": "sha256:ea716a6f609efef8c239c2845fe414e046aa6f76b660d814c9f1af442e91bfd1"
+  "digest": "sha256:7f46242b26d9c921f4e1ec9de6418ac5fc8c03d70c4415c25e799ae0e73a1512"
 }

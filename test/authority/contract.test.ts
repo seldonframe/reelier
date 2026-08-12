@@ -136,8 +136,10 @@ test("adapter contract v1 is a closed, canonical manifest and refuses stale copi
     const copiedDirectory = join(copiedRoot, "v1");
     cpSync(contractDirectory, copiedDirectory, { recursive: true });
     const copiedSource = join(copiedRoot, "adapter-contract.ts");
-    writeFileSync(copiedSource, readFileSync(join(process.cwd(), "src", "authority", "adapter-contract.ts"), "utf8").replace(/\n/g, "\r\n"), "utf8");
-    for (const member of output.members) writeFileSync(join(copiedDirectory, member.path), readFileSync(join(copiedDirectory, member.path), "utf8").replace(/\n/g, "\r\n"), "utf8");
+    writeFileSync(copiedSource, readFileSync(join(process.cwd(), "src", "authority", "adapter-contract.ts"), "utf8"), "utf8");
+    execFileSync(process.execPath, ["scripts/build-authority-contract.mjs", "--directory", copiedDirectory, "--source", copiedSource], { cwd: process.cwd(), stdio: "pipe" });
+    writeFileSync(copiedSource, readFileSync(copiedSource, "utf8").replace(/\r?\n/g, "\r\n"), "utf8");
+    for (const member of output.members) writeFileSync(join(copiedDirectory, member.path), readFileSync(join(copiedDirectory, member.path), "utf8").replace(/\r?\n/g, "\r\n"), "utf8");
     assert.doesNotThrow(() => execFileSync(process.execPath, ["scripts/build-authority-contract.mjs", "--directory", copiedDirectory, "--source", copiedSource, "--check"], { cwd: process.cwd(), stdio: "pipe" }));
     writeFileSync(copiedSource, "stale source\n", "utf8");
     assert.throws(
