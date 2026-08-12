@@ -168,6 +168,24 @@ test("Cell signed-child helper refuses forged signers, wrong purposes, and inact
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test("Cell signed-child helper refuses an attacker descriptor that self-lists as active", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-delegation-self-listed-signer-"));
+  try {
+    const attacker = generateKeyPairSync("ed25519"), parent = grant(), parentDigest = authorityDigest(parent);
+    const attackerDescriptor = parseAuthorityKeyDescriptor({ v: "reelier.authority-key-descriptor/v1", keyId: "attacker_delegation", role: "authority-cell", purpose: "delegation-grant", algorithm: "ed25519", publicKeySpkiBase64: attacker.publicKey.export({ type: "spki", format: "der" }).toString("base64") });
+    const service = createDelegationAuthority({ root, now: () => new Date("2026-01-01T00:10:00.000Z"), signGrant: async () => { throw new Error("not used"); } });
+    await service.registerRoot({ taskId: "task_self_listed", rootGrant: { grant: parent, digest: parentDigest, signerId: "operator", signature: { alg: "ed25519", sig: "unused" } }, effects: 4 });
+    const child = grant({ grantId: "child_self_listed", parentDigest, grantor: "coordinator", grantee: "attacker", issuedAt: "2026-01-01T00:10:00.000Z", expiresAt: "2026-01-01T00:40:00.000Z", delegationPolicy: { mayDelegate: false, maxDepth: 0, maxFanOut: 0, maxChildDurationSeconds: 1, maxDelegatedEffects: 0 } }), digest = authorityDigest(child);
+    await assert.rejects(() => registerAuthoritySignedChild(service, {
+      tenant: "tenant_1", parentPrincipal: "coordinator", taskId: "task_self_listed", parentAllocationId: "root", effects: 2,
+      signedChild: { grant: child, digest, signerId: attackerDescriptor.keyId, signature: signAuthorityDigest(attacker.privateKey, "delegation-grant", digest) },
+      signerDescriptor: attackerDescriptor,
+      activeSignerDescriptorDigests: [authorityDigest(attackerDescriptor)],
+    }), /active|descriptor|signer/i);
+    assert.equal(await service.budget.get("child_self_listed"), undefined);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("Cell signed-child helper conserves allocation under exact replay, conflict, and concurrency", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "reelier-delegation-signed-child-race-"));
   try {
