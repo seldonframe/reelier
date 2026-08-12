@@ -114,6 +114,8 @@ test("adapter contract v1 is a closed, canonical manifest and refuses stale copi
   assert.equal(output.members.some(member => member.path === "adapter-contract-v1.json"), false);
   const files = new Map(output.members.map(member => [member.path, readFileSync(join(contractDirectory, member.path))]));
   assert.doesNotThrow(() => verifyAuthorityAdapterContractV1(output, files));
+  const plainUint8Files = new Map(output.members.map(member => [member.path, new Uint8Array(readFileSync(join(contractDirectory, member.path)))]));
+  assert.doesNotThrow(() => verifyAuthorityAdapterContractV1(output, plainUint8Files));
   const mutatedFiles = new Map(files);
   mutatedFiles.set(output.members[0].path, Buffer.from("tampered"));
   assert.throws(() => verifyAuthorityAdapterContractV1(output, mutatedFiles), /member digest/i);
@@ -153,5 +155,17 @@ test("adapter contract v1 is a closed, canonical manifest and refuses stale copi
     );
   } finally {
     rmSync(copiedRoot, { recursive: true, force: true });
+  }
+
+  const sourcePath = join(process.cwd(), "src", "authority", "adapter-contract.ts");
+  const source = readFileSync(sourcePath, "utf8");
+  try {
+    writeFileSync(sourcePath, `${source}\n// stale package build input\n`, "utf8");
+    assert.throws(
+      () => execFileSync(process.platform === "win32" ? "npm.cmd" : "npm", ["run", "build"], { cwd: process.cwd(), stdio: "pipe" }),
+      /adapter contract source drift/i,
+    );
+  } finally {
+    writeFileSync(sourcePath, source, "utf8");
   }
 });
