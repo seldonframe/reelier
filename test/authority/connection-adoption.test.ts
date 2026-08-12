@@ -58,9 +58,12 @@ test("opaque route registry checks exact descriptor and does not open routes unt
   await assert.rejects(() => registry.resolve({ ...liveDescriptor, account: { status: "verified", identity: "github:other" } }, adoption), /descriptor|account|route/i);
   const missing = createOpaqueConnectionRouteRegistry();
   await assert.rejects(() => missing.resolve(descriptor, adoption), /route.*missing/i);
+  (connection as { advertisedName?: string }).advertisedName = undefined;
+  await assert.rejects(() => registry.resolve(liveDescriptor, adoption), /verification failed/i);
+  assert.equal(closed, 1);
   connection.advertisedName = "evil-server";
   await assert.rejects(() => registry.resolve(liveDescriptor, adoption), /server|identity|route/i);
-  assert.equal(closed, 1);
+  assert.equal(closed, 2);
   const secret = "provider-token-must-not-leak";
   const failing = createOpaqueConnectionRouteRegistry();
   failing.register({ sidecarRouteId: "route.github", descriptor: liveDescriptor, verifier: { provider: "github", sourceEndpointIds: ["issues.get"], writeEndpointIds: ["issues.labels.set"], expectedToolSchemaDigests: liveDescriptor.toolSchemas.map(item => item.digest), accountProbe: { toolName: "issues.get", args: {}, reviewedReadOnly: true, extractAccountIdentity: () => "github:fixlyai" } }, resolve: async () => { throw new Error(secret); } });
