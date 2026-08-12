@@ -11,7 +11,7 @@ async function workspace(): Promise<string> {
   const root = await mkdtemp(path.join(tmpdir(), "reelier-cert-preflight-"));
   const configPath = path.join(root, "certification.local.json");
   await writeFile(configPath, JSON.stringify({
-    v: "reelier.certification-operator-config/v2",
+    v: "reelier.certification-operator-config/v3",
     authorityConfigPath: "authority/authority.yml",
     evidenceDirectory: "authority/receipts/certification",
     scenarios: ["github-issue-labels", "slack-topic"],
@@ -20,6 +20,7 @@ async function workspace(): Promise<string> {
       "slack-topic": { apiBaseUrl: "https://slack.com", teamId: "T012345", channelId: "C012345" },
     },
     cleanup: { "github-issue-labels": ["restore-github-labels"], "slack-topic": ["restore-slack-topic"] },
+    desiredState: { "github-issue-labels": { labels: ["certification-after"] }, "slack-topic": { topic: "Certification after" } },
     metadata: {},
     secretReferences: { githubCredential: "env:REELIER_GITHUB_TOKEN", slackCredential: "file:C:/does-not-exist/private-token" },
   }), "utf8");
