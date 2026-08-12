@@ -287,6 +287,19 @@ test("conflict recovery refuses a duplicated non-head receipt in its durable cha
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
+test("conflict recovery verifies every durable receipt signature before selecting the head", async () => {
+  const f = await fixture("cut-after-conflict-publication"); try {
+    await f.runner.run({ bearerToken: f.credential.token, requestId: "request_conflict_chain_signature" });
+    await assert.rejects(() => f.runner.conflict({ bearerToken: f.credential.token, requestId: "request_conflict_chain_signature", exactBytes: Buffer.from("conflict").toString("base64") }), /controlled cut/i);
+    const portable = path.join(f.initialized.workspace, "authority", "github-label-runner", "receipts", "portable"), file = (await readdir(portable)).find(name => name.endsWith(".json"));
+    assert.ok(file);
+    const bundle = JSON.parse(await readFile(path.join(portable, file), "utf8")); bundle.receipt.signature.sig = Buffer.alloc(64, 7).toString("base64");
+    await writeFile(path.join(portable, file), `${JSON.stringify(bundle)}\n`);
+    const restarted = await createGitHubIssueLabelsHermeticComposition(f.cell);
+    await assert.rejects(() => restarted.recover(), /signature|trusted authority|verification/i);
+  } finally { await rm(f.root, { recursive: true, force: true }); }
+});
+
 test("dispatch and reconciliation mint portable chained receipts accepted by the existing offline verifier", async () => {
   const f = await fixture(); try {
     await f.runner.run({ bearerToken: f.credential.token, requestId: "request_receipts" });
