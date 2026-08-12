@@ -18,7 +18,8 @@ export type CertificationSecretSlot =
   | "vercelCredential"
   | "neonApiCredential"
   | "neonDatabaseUrl"
-  | "cloudflareCredential"
+  | "cloudflareDnsCredential"
+  | "cloudflareBootstrapCredential"
   | "slackCredential"
   | "flyApiCredential";
 
@@ -47,8 +48,8 @@ function scenario(
 }
 
 export const CERTIFICATION_SCENARIOS: Readonly<Record<CertificationScenarioId, CertificationScenarioDefinition>> = Object.freeze({
-  "cloudflare-dns": scenario("cloudflare-dns", ["cloudflare-dns"], ["cloudflare-dns"], [], ["cloudflareCredential"]),
-  "cloudflare-vercel-secret": scenario("cloudflare-vercel-secret", ["cloudflare-vercel-secret"], ["cloudflare-vercel-secret"], [], ["cloudflareCredential", "vercelCredential"]),
+  "cloudflare-dns": scenario("cloudflare-dns", ["cloudflare-dns"], ["cloudflare-dns"], [], ["cloudflareDnsCredential"]),
+  "cloudflare-vercel-secret": scenario("cloudflare-vercel-secret", ["cloudflare-vercel-secret"], ["cloudflare-vercel-secret"], [], ["cloudflareBootstrapCredential", "vercelCredential"]),
   "codex-ten-principal": scenario("codex-ten-principal", [], [], ["codexTenPrincipal"], []),
   "fly-topology": scenario("fly-topology", [], [], ["flyTopology"], ["flyApiCredential"]),
   "github-issue-labels": scenario("github-issue-labels", ["github-issue-labels"], ["github-issue-labels"], [], ["githubCredential"]),

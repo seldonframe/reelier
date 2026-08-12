@@ -45,7 +45,7 @@ test("v3 migration splits Cloudflare DNS and bootstrap references without resolv
       "cloudflare-dns": { apiBaseUrl: "https://api.cloudflare.com", accountId: "acct", zoneId: "zone", recordId: "record", recordName: "certification.example.com" },
       "cloudflare-vercel-secret": { cloudflareApiBaseUrl: "https://api.cloudflare.com", cloudflareAccountId: "acct", tokenName: "cert-token", vercelApiBaseUrl: "https://api.vercel.com", vercelAccountId: "team", projectId: "project" },
     },
-    cleanup: { "cloudflare-dns": ["restore-dns"], "cloudflare-vercel-secret": ["remove-token", "remove-secret"] },
+    cleanup: { "cloudflare-dns": ["restore-dns"], "cloudflare-vercel-secret": ["remove-secret", "remove-token"] },
     metadata: {},
     secretReferences: { cloudflareCredential: "file:Z:/must-not-be-read", vercelCredential: "env:REELIER_VERCEL_TOKEN" },
   };
@@ -57,7 +57,7 @@ test("v3 migration splits Cloudflare DNS and bootstrap references without resolv
     vercelCredential: "env:REELIER_VERCEL_TOKEN",
   });
   assert.deepEqual(migrateCertificationOperatorConfig(migrated), migrated);
-  assert.equal(parseCertificationOperatorConfigV3(migrated), migrated);
+  assert.deepEqual(parseCertificationOperatorConfigV3(migrated), migrated);
 });
 
 test("v2 endpoint derivation uses reviewed pack aliases, endpoint IDs, methods, and directions", () => {

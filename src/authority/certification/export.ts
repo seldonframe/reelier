@@ -1,6 +1,6 @@
 import path from "node:path";
 import { authorityDigest } from "../wire.js";
-import { parseCertificationOperatorConfigV2, type CertificationOperatorConfigV2 } from "./config.js";
+import { parseCertificationOperatorConfigV3 } from "./config.js";
 import { deriveCertificationIdentifiers, parseCertificationInitialization, validateCertificationInitialization } from "./initializer.js";
 import { preflightCertification } from "./preflight.js";
 import { createCertificationReadinessCandidate, parseCertificationReadinessCandidate } from "./readiness.js";
@@ -23,7 +23,7 @@ const RESOURCE_KEYS: Readonly<Record<string, readonly string[]>> = Object.freeze
 export async function exportCertificationEvidence(input: Readonly<{ workspace: string; scenario?: string; all?: boolean; hooks?: Readonly<{ afterPreflight?: () => Promise<void> }> }>): Promise<Readonly<{ digest: string; path: string }>> {
   const workspace = path.resolve(input.workspace);
   const workspaceRoot = await certificationWorkspaceRoot(workspace);
-  const config = parseCertificationOperatorConfigV2(JSON.parse((await readConfinedFile(workspaceRoot, workspaceRoot, "config.json")).toString("utf8")));
+  const config = parseCertificationOperatorConfigV3(JSON.parse((await readConfinedFile(workspaceRoot, workspaceRoot, "config.json")).toString("utf8")));
   const initialization = parseCertificationInitialization(JSON.parse((await readConfinedFile(workspaceRoot, workspaceRoot, "initialization.json")).toString("utf8")));
   validateCertificationInitialization(config, initialization);
   const preflight = await preflightCertification(input);

@@ -2,12 +2,13 @@ import { lstat, mkdir, mkdtemp, readdir, rename, rm, unlink, writeFile } from "n
 import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { authorityDigest } from "../wire.js";
-import { canonicalizeCertificationOperatorConfigV2, parseCertificationOperatorConfigV2 } from "./config.js";
+import { canonicalizeCertificationOperatorConfigV3, migrateCertificationOperatorConfig, parseCertificationOperatorConfigV3, type CertificationOperatorConfigV3 } from "./config.js";
 import { createCertificationConfigCommitment, recomputeCertificationConfigCommitment } from "./commitment.js";
 import { assertUnlinkedCreationParent, certificationWorkspaceRoot, readConfinedFile, readUnlinkedFile } from "./filesystem.js";
 import { CERTIFICATION_SCENARIO_IDS, type CertificationScenarioId } from "./scenarios.js";
 import { CERTIFICATION_SCENARIOS } from "./scenarios.js";
-import { parseCertificationEndpointManifest, type CertificationEndpointManifestV1 } from "./manifests.js";
+import { parseCertificationEndpointManifest, type CertificationEndpointManifestV2 } from "./manifests.js";
+import { CERTIFICATION_PROVIDER_SCENARIO_IDS, getCertificationRunnerRegistryEntry } from "./runner-registry.js";
 
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
 const ID = /^(?:task|job|grant|cell|signer)_[0-9a-f]{24}$/;
@@ -38,8 +39,8 @@ export async function initializeCertification(input: Readonly<{ configPath: stri
 }>> {
   const configPath = path.resolve(input.configPath);
   const workspace = path.resolve(input.workspace ?? path.join(path.dirname(configPath), "certification"));
-  const parsed = parseCertificationOperatorConfigV2(JSON.parse((await readUnlinkedFile(configPath)).toString("utf8")));
-  const canonicalConfig = canonicalizeCertificationOperatorConfigV2(parsed);
+  const parsed = migrateCertificationOperatorConfig(JSON.parse((await readUnlinkedFile(configPath)).toString("utf8")));
+  const canonicalConfig = canonicalizeCertificationOperatorConfigV3(parsed);
   const commitment = createCertificationConfigCommitment(parsed, parsed.scenarios);
   const configDigest = commitment.configCommitmentDigest;
   const identifiers = deriveCertificationIdentifiers(configDigest);
@@ -56,7 +57,7 @@ export async function initializeCertification(input: Readonly<{ configPath: stri
   const workspaceInfo = await lstat(workspace).catch(error => (error as NodeJS.ErrnoException).code === "ENOENT" ? undefined : Promise.reject(error));
   if (workspaceInfo) {
     const root = await certificationWorkspaceRoot(workspace);
-    const existingConfig = parseCertificationOperatorConfigV2(JSON.parse((await readConfinedFile(root, root, "config.json")).toString("utf8")));
+    const existingConfig = parseCertificationOperatorConfigV3(JSON.parse((await readConfinedFile(root, root, "config.json")).toString("utf8")));
     const existing = parseCertificationInitialization(JSON.parse((await readConfinedFile(root, root, "initialization.json")).toString("utf8")));
     validateCertificationInitialization(existingConfig, existing);
     if (existing.configDigest !== configDigest) throw new TypeError("certification initialization cannot resume with substituted configuration or identifiers");
@@ -80,7 +81,7 @@ export async function initializeCertification(input: Readonly<{ configPath: stri
     const winnerInfo = await lstat(workspace).catch(inner => (inner as NodeJS.ErrnoException).code === "ENOENT" ? undefined : Promise.reject(inner));
     if (winnerInfo) {
       const root = await certificationWorkspaceRoot(workspace);
-      const existingConfig = parseCertificationOperatorConfigV2(JSON.parse((await readConfinedFile(root, root, "config.json")).toString("utf8")));
+      const existingConfig = parseCertificationOperatorConfigV3(JSON.parse((await readConfinedFile(root, root, "config.json")).toString("utf8")));
       const existing = parseCertificationInitialization(JSON.parse((await readConfinedFile(root, root, "initialization.json")).toString("utf8")));
       validateCertificationInitialization(existingConfig, existing);
       if (existing.configDigest === configDigest) {
@@ -93,25 +94,29 @@ export async function initializeCertification(input: Readonly<{ configPath: stri
   return Object.freeze({ status: "initialized", workspace, configDigest, identifiers });
 }
 
-const ENDPOINTS: Readonly<Record<CertificationScenarioId, readonly Readonly<{ endpointId: string; direction: "read" | "write"; method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE" }>[]>> = Object.freeze({
-  "cloudflare-dns": [{ endpointId: "cloudflare.dns.get", direction: "read", method: "GET" }, { endpointId: "cloudflare.dns.update", direction: "write", method: "PUT" }],
-  "cloudflare-vercel-secret": [{ endpointId: "cloudflare.tokens.create", direction: "write", method: "POST" }, { endpointId: "cloudflare.tokens.get", direction: "read", method: "GET" }, { endpointId: "vercel.environment.get", direction: "read", method: "GET" }, { endpointId: "vercel.environment.set", direction: "write", method: "POST" }],
-  "codex-ten-principal": [{ endpointId: "codex.session.inspect", direction: "read", method: "GET" }, { endpointId: "codex.session.launch", direction: "write", method: "POST" }],
-  "fly-topology": [{ endpointId: "fly.machines.inspect", direction: "read", method: "GET" }],
-  "github-issue-labels": [{ endpointId: "github.issue.get", direction: "read", method: "GET" }, { endpointId: "github.issue.labels.set", direction: "write", method: "PUT" }],
-  "neon-migration": [{ endpointId: "neon.branch.inspect", direction: "read", method: "GET" }, { endpointId: "neon.migration.apply", direction: "write", method: "POST" }],
-  "slack-topic": [{ endpointId: "slack.channel.inspect", direction: "read", method: "GET" }, { endpointId: "slack.channel.topic.set", direction: "write", method: "POST" }],
-  "vercel-promotion": [{ endpointId: "vercel.deployment.inspect", direction: "read", method: "GET" }, { endpointId: "vercel.deployment.promote", direction: "write", method: "POST" }],
-});
-
-function providerFor(scenario: CertificationScenarioId): CertificationEndpointManifestV1["provider"] { return scenario.startsWith("cloudflare-") ? "cloudflare" : scenario.startsWith("codex-") ? "codex" : scenario.startsWith("fly-") ? "fly" : scenario.startsWith("github-") ? "github" : scenario.startsWith("neon-") ? "neon" : scenario.startsWith("slack-") ? "slack" : "vercel"; }
 function derivedPrincipalId(identifiers: CertificationIdentifiers): string { return `principal_${authorityDigest({ v: "reelier.certification-principal-id/v1", taskId: identifiers.taskId, authorityCellId: identifiers.authorityCellId }).slice(7, 31)}`; }
-export function deriveCertificationEndpointManifest(config: ReturnType<typeof parseCertificationOperatorConfigV2>, scenario: CertificationScenarioId): CertificationEndpointManifestV1 {
-  const definition = CERTIFICATION_SCENARIOS[scenario];
-  const resourceProjection = { resources: definition.resourceSections.map(section => config.resources[section]), metadata: definition.metadataSections.map(section => config.metadata[section]) };
-  return parseCertificationEndpointManifest({ v: "reelier.certification-endpoint-manifest/v1", scenarioId: scenario, provider: providerFor(scenario), resourceDigest: authorityDigest(resourceProjection), credentialSlots: definition.secretSlots, endpoints: ENDPOINTS[scenario], completeness: "unchecked" }, scenario);
+export function deriveCertificationEndpointManifest(config: CertificationOperatorConfigV3, scenario: CertificationScenarioId): CertificationEndpointManifestV2 {
+  const registry = getCertificationRunnerRegistryEntry(scenario);
+  const resource = config.resources[scenario];
+  const commitments = endpointCommitments(scenario, resource);
+  const manifest = parseCertificationEndpointManifest({ v: "reelier.certification-endpoint-manifest/v2", scenarioId: scenario, definitionAliases: registry.definitionAliases, endpoints: registry.endpoints.map(endpoint => ({ ...endpoint, ...commitments[endpoint.provider] })), completeness: "unchecked", dispatchable: registry.dispatchable }, scenario);
+  if (manifest.v !== "reelier.certification-endpoint-manifest/v2") throw new TypeError("certification endpoint derivation must produce v2");
+  return manifest;
 }
-async function writeCellScaffold(stage: string, config: ReturnType<typeof parseCertificationOperatorConfigV2>, initialization: CertificationInitialization): Promise<void> {
+function endpointCommitments(scenario: CertificationScenarioId, resource: unknown): Readonly<Record<string, Readonly<{ accountCommitment: string; resourceCommitment: string }>>> {
+  const raw = resource as Record<string, any>;
+  const commitment = (provider: string, account: unknown, selectedResource: unknown) => Object.freeze({ accountCommitment: authorityDigest({ v: "reelier.certification-provider-account/v1", provider, account }), resourceCommitment: authorityDigest({ v: "reelier.certification-provider-resource/v1", provider, resource: selectedResource }) });
+  switch (scenario) {
+    case "github-issue-labels": return { github: commitment("github", raw.owner, { owner: raw.owner, repository: raw.repository, issueNumber: raw.issueNumber }) };
+    case "cloudflare-dns": return { cloudflare: commitment("cloudflare", raw.accountId, { accountId: raw.accountId, zoneId: raw.zoneId, recordId: raw.recordId, recordName: raw.recordName }) };
+    case "slack-topic": return { slack: commitment("slack", raw.teamId, { teamId: raw.teamId, channelId: raw.channelId }) };
+    case "cloudflare-vercel-secret": return { cloudflare: commitment("cloudflare", raw.cloudflareAccountId, { accountId: raw.cloudflareAccountId, tokenName: raw.tokenName }), vercel: commitment("vercel", raw.vercelAccountId, { accountId: raw.vercelAccountId, projectId: raw.projectId }) };
+    case "vercel-promotion": return { vercel: commitment("vercel", raw.accountId, { accountId: raw.accountId, projectId: raw.projectId, deploymentId: raw.deploymentId, domains: raw.domains }) };
+    case "neon-migration": return { neon: commitment("neon", raw.accountId, { accountId: raw.accountId, projectId: raw.projectId, branchId: raw.branchId, database: raw.database, role: raw.role }) };
+    default: throw new TypeError("certification scenario has no provider endpoint manifest");
+  }
+}
+async function writeCellScaffold(stage: string, config: CertificationOperatorConfigV3, initialization: CertificationInitialization): Promise<void> {
   const root = path.join(stage, "authority");
   const directories = ["decisions", "delegation", "deployment", "endpoints", "ledger", "principals", "receipts", "trust"];
   await Promise.all(directories.map(directory => mkdir(path.join(root, directory), { recursive: true, mode: 0o700 })));
@@ -119,9 +124,9 @@ async function writeCellScaffold(stage: string, config: ReturnType<typeof parseC
   await writeFile(path.join(root, "principals", "registry.jsonl"), "", { flag: "wx", mode: 0o600 });
   await writeFile(path.join(root, "trust", "references.json"), `${JSON.stringify(trustReferences())}\n`, { flag: "wx", mode: 0o600 });
   await writeFile(path.join(root, "deployment", "references.json"), `${JSON.stringify(deploymentReferences())}\n`, { flag: "wx", mode: 0o600 });
-  for (const scenario of initialization.scenarios) await writeFile(path.join(root, "endpoints", `${scenario}.json`), `${JSON.stringify(deriveCertificationEndpointManifest(config, scenario))}\n`, { flag: "wx", mode: 0o600 });
+  for (const scenario of initialization.scenarios.filter(isProviderScenario)) await writeFile(path.join(root, "endpoints", `${scenario}.json`), `${JSON.stringify(deriveCertificationEndpointManifest(config, scenario))}\n`, { flag: "wx", mode: 0o600 });
 }
-async function validateCellScaffold(root: string, config: ReturnType<typeof parseCertificationOperatorConfigV2>, initialization: CertificationInitialization): Promise<void> {
+async function validateCellScaffold(root: string, config: CertificationOperatorConfigV3, initialization: CertificationInitialization): Promise<void> {
   const authority = await import("./filesystem.js").then(module => module.confinedExistingDirectory(root, ["authority"]));
   const endpoints = authority ? await import("./filesystem.js").then(module => module.confinedExistingDirectory(root, ["authority", "endpoints"])) : undefined;
   if (!authority || !endpoints) throw new TypeError("certification Authority Cell scaffold is incomplete");
@@ -137,13 +142,14 @@ async function validateCellScaffold(root: string, config: ReturnType<typeof pars
   if (!trust || !deployment || !principals || authorityDigest(JSON.parse((await readConfinedFile(root, trust, "references.json")).toString("utf8"))) !== authorityDigest(trustReferences()) || authorityDigest(JSON.parse((await readConfinedFile(root, deployment, "references.json")).toString("utf8"))) !== authorityDigest(deploymentReferences())) throw new TypeError("certification Authority Cell public references are incomplete or substituted");
   await readConfinedFile(root, principals, "registry.jsonl");
   const endpointEntries = await readdir(endpoints, { withFileTypes: true });
-  const expectedEndpoints = initialization.scenarios.map(scenario => `${scenario}.json`);
+  const expectedEndpoints = initialization.scenarios.filter(isProviderScenario).map(scenario => `${scenario}.json`);
   if (endpointEntries.map(entry => entry.name).sort().join("\0") !== expectedEndpoints.join("\0") || endpointEntries.some(entry => !entry.isFile() || entry.isSymbolicLink())) throw new TypeError("certification endpoint scaffold is not selected-scenario-only");
-  for (const scenario of initialization.scenarios) {
+  for (const scenario of initialization.scenarios.filter(isProviderScenario)) {
     const actual = parseCertificationEndpointManifest(JSON.parse((await readConfinedFile(root, endpoints, `${scenario}.json`)).toString("utf8")), scenario);
     if (authorityDigest(actual) !== authorityDigest(deriveCertificationEndpointManifest(config, scenario))) throw new TypeError("certification endpoint manifest was substituted");
   }
 }
+function isProviderScenario(value: CertificationScenarioId): boolean { return (CERTIFICATION_PROVIDER_SCENARIO_IDS as readonly string[]).includes(value); }
 function cellAuthorityConfig(initialization: CertificationInitialization) { return Object.freeze({ version: 1, tenant: initialization.identifiers.authorityCellId, requester: derivedPrincipalId(initialization.identifiers), definitions: initialization.scenarios.map(scenario => scenario.replaceAll("-", "_")), topology: "unknown", ledgerDir: "ledger", decisionDir: "decisions", receiptDir: "receipts", ingress: { principalRegistryFile: "principals/registry.jsonl" }, endpoints: [], deploymentPath: "deployment/manifest.json", jobCardTrustPinPath: "trust/job-card-trust-pin.json", completeness: "unchecked", dispatchable: false }); }
 function trustReferences() { return Object.freeze({ v: "reelier.certification-trust-references/v1", humanTrustRootFile: "human-trust-root.json", keyDescriptorsFile: "key-descriptors.json", readinessTrustEventsFile: "readiness-trust-events.json", currentTrustEventsFile: "current-trust-events.json", signedReadinessFile: "signed-readiness.json" }); }
 function deploymentReferences() { return Object.freeze({ v: "reelier.certification-deployment-references/v1", manifestFile: "manifest.json", jobCardFile: "job-card.json", jobCardTrustPinFile: "../trust/job-card-trust-pin.json" }); }
@@ -181,7 +187,7 @@ export function deriveCertificationIdentifiers(configDigest: string): Certificat
   return Object.freeze({ taskId: id("task_", "task"), jobCardId: id("job_", "job-card"), rootGrantId: id("grant_", "root-grant"), authorityCellId: id("cell_", "authority-cell"), signerId: id("signer_", "signer") });
 }
 
-export function validateCertificationInitialization(config: ReturnType<typeof parseCertificationOperatorConfigV2>, initialization: CertificationInitialization): void {
+export function validateCertificationInitialization(config: CertificationOperatorConfigV3, initialization: CertificationInitialization): void {
   const commitment = createCertificationConfigCommitment(config, config.scenarios);
   const derived = deriveCertificationIdentifiers(commitment.configCommitmentDigest);
   if (initialization.configDigest !== commitment.configCommitmentDigest || initialization.privateConfigDigest !== commitment.privateConfigDigest || initialization.sanitizedProjectionDigest !== commitment.sanitizedProjectionDigest || authorityDigest(initialization.scenarios) !== authorityDigest(config.scenarios) || authorityDigest(initialization.identifiers) !== authorityDigest(derived)) {

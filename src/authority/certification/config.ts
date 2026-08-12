@@ -17,7 +17,8 @@ const SEMVER = /^\d+\.\d+\.\d+$/;
 const SCENARIO_SET = new Set<string>(CERTIFICATION_SCENARIO_IDS);
 
 export const CERTIFICATION_SECRET_SLOTS = Object.freeze([
-  "cloudflareCredential",
+  "cloudflareBootstrapCredential",
+  "cloudflareDnsCredential",
   "flyApiCredential",
   "githubCredential",
   "neonApiCredential",
@@ -94,6 +95,11 @@ export interface CertificationOperatorConfigV2 {
     flyTopology: FlyTopologyCertificationMetadataV2;
     codexTenPrincipal: CodexTenPrincipalCertificationMetadataV2;
   }>>;
+  readonly secretReferences: Readonly<Partial<Record<CertificationSecretSlot | "cloudflareCredential", string>>>;
+}
+
+export interface CertificationOperatorConfigV3 extends Omit<CertificationOperatorConfigV2, "v" | "secretReferences"> {
+  readonly v: "reelier.certification-operator-config/v3";
   readonly secretReferences: Readonly<Partial<Record<CertificationSecretSlot, string>>>;
 }
 
@@ -102,7 +108,7 @@ export function parseCertificationOperatorConfigV2(value: unknown): Certificatio
   closed(root, ["v", "authorityConfigPath", "evidenceDirectory", "scenarios", "resources", "cleanup", "metadata", "secretReferences"], "certification operator config v2");
   if (root.v !== "reelier.certification-operator-config/v2") throw new TypeError("certification operator config v2 version is invalid");
   const scenarios = scenarioList(root.scenarios);
-  const requirements = requirementsFor(scenarios);
+  const requirements = requirementsForV2(scenarios);
   const resourcesRaw = exactSectionObject(root.resources, requirements.resources, "certification resources");
   const cleanupRaw = exactSectionObject(root.cleanup, requirements.cleanup, "certification cleanup");
   const metadataRaw = exactSectionObject(root.metadata, requirements.metadata, "certification metadata");
@@ -114,7 +120,7 @@ export function parseCertificationOperatorConfigV2(value: unknown): Certificatio
   for (const section of requirements.cleanup) cleanup[section] = uniqueSortedIds(cleanupRaw[section], `${section} cleanup commitments`);
   const metadata: Record<string, FlyTopologyCertificationMetadataV2 | CodexTenPrincipalCertificationMetadataV2> = {};
   for (const section of requirements.metadata) metadata[section] = section === "flyTopology" ? flyTopology(metadataRaw[section]) : codexTenPrincipal(metadataRaw[section]);
-  const secretReferences: Partial<Record<CertificationSecretSlot, string>> = {};
+  const secretReferences: Partial<Record<CertificationSecretSlot | "cloudflareCredential", string>> = {};
   for (const slot of requirements.secrets) secretReferences[slot] = secretRef(secretsRaw[slot], slot);
   assertSharedScope(resources, metadata);
 
@@ -130,19 +136,57 @@ export function parseCertificationOperatorConfigV2(value: unknown): Certificatio
   });
 }
 
+export function parseCertificationOperatorConfigV3(value: unknown): CertificationOperatorConfigV3 {
+  const root = object(value, "certification operator config v3");
+  closed(root, ["v", "authorityConfigPath", "evidenceDirectory", "scenarios", "resources", "cleanup", "metadata", "secretReferences"], "certification operator config v3");
+  if (root.v !== "reelier.certification-operator-config/v3") throw new TypeError("certification operator config v3 version is invalid");
+  const scenarios = scenarioList(root.scenarios);
+  const requirements = requirementsFor(scenarios);
+  const resourcesRaw = exactSectionObject(root.resources, requirements.resources, "certification resources");
+  const cleanupRaw = exactSectionObject(root.cleanup, requirements.cleanup, "certification cleanup");
+  const metadataRaw = exactSectionObject(root.metadata, requirements.metadata, "certification metadata");
+  const secretsRaw = exactSectionObject(root.secretReferences, requirements.secrets, "certification secret references");
+  const resources: Record<string, CertificationResourceV2> = {};
+  for (const section of requirements.resources) resources[section] = parseResource(section, resourcesRaw[section]);
+  const cleanup: Record<string, readonly string[]> = {};
+  for (const section of requirements.cleanup) cleanup[section] = uniqueSortedIds(cleanupRaw[section], `${section} cleanup commitments`);
+  const metadata: Record<string, FlyTopologyCertificationMetadataV2 | CodexTenPrincipalCertificationMetadataV2> = {};
+  for (const section of requirements.metadata) metadata[section] = section === "flyTopology" ? flyTopology(metadataRaw[section]) : codexTenPrincipal(metadataRaw[section]);
+  const secretReferences: Partial<Record<CertificationSecretSlot, string>> = {};
+  for (const slot of requirements.secrets) secretReferences[slot] = secretRef(secretsRaw[slot], slot);
+  assertSharedScope(resources, metadata);
+  return Object.freeze({ v: "reelier.certification-operator-config/v3", authorityConfigPath: safePath(root.authorityConfigPath, "authorityConfigPath"), evidenceDirectory: safePath(root.evidenceDirectory, "evidenceDirectory"), scenarios, resources: Object.freeze(resources), cleanup: Object.freeze(cleanup), metadata: Object.freeze(metadata), secretReferences: Object.freeze(secretReferences) });
+}
+
+export function canonicalizeCertificationOperatorConfigV3(value: unknown): string {
+  const canonical = canonicalize(parseCertificationOperatorConfigV3(value));
+  if (canonical === undefined) throw new TypeError("certification operator config v3 is not canonicalizable");
+  return canonical;
+}
+
 export function canonicalizeCertificationOperatorConfigV2(value: unknown): string {
   const canonical = canonicalize(parseCertificationOperatorConfigV2(value));
   if (canonical === undefined) throw new TypeError("certification operator config v2 is not canonicalizable");
   return canonical;
 }
 
-export function migrateCertificationOperatorConfig(value: unknown): CertificationOperatorConfigV2 {
+export function migrateCertificationOperatorConfig(value: unknown): CertificationOperatorConfigV3 {
   const root = object(value, "certification operator config");
-  if (root.v === "reelier.certification-operator-config/v2") return parseCertificationOperatorConfigV2(root);
+  if (root.v === "reelier.certification-operator-config/v3") return parseCertificationOperatorConfigV3(root);
+  if (root.v === "reelier.certification-operator-config/v2") {
+    const legacy = parseCertificationOperatorConfigV2(root);
+    const { cloudflareCredential, ...references } = legacy.secretReferences;
+    const selected = new Set(legacy.scenarios);
+    return parseCertificationOperatorConfigV3({ ...legacy, v: "reelier.certification-operator-config/v3", secretReferences: {
+      ...references,
+      ...(selected.has("cloudflare-vercel-secret") ? { cloudflareBootstrapCredential: cloudflareCredential } : {}),
+      ...(selected.has("cloudflare-dns") ? { cloudflareDnsCredential: cloudflareCredential } : {}),
+    } });
+  }
   if (root.v !== "reelier.certification-operator-config/v1") throw new TypeError("certification operator config migration requires v1 or v2");
   const legacy = legacyV1(root);
   const scenarios = [...CERTIFICATION_SCENARIO_IDS];
-  return parseCertificationOperatorConfigV2({
+  return migrateCertificationOperatorConfig({
     v: "reelier.certification-operator-config/v2",
     authorityConfigPath: legacy.authorityConfigPath,
     evidenceDirectory: legacy.evidenceDirectory,
@@ -177,6 +221,11 @@ export function migrateCertificationOperatorConfig(value: unknown): Certificatio
       vercelCredential: legacy.vercel.credentialRef,
     },
   });
+}
+
+function requirementsForV2(scenarios: readonly CertificationScenarioId[]): ReturnType<typeof requirementsFor> {
+  const current = requirementsFor(scenarios);
+  return Object.freeze({ ...current, secrets: Object.freeze([...new Set(current.secrets.map(slot => slot === "cloudflareDnsCredential" || slot === "cloudflareBootstrapCredential" ? "cloudflareCredential" : slot))].sort()) as readonly CertificationSecretSlot[] });
 }
 
 function requirementsFor(scenarios: readonly CertificationScenarioId[]): Readonly<{
