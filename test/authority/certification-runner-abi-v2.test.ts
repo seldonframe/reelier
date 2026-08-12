@@ -23,6 +23,10 @@ import { cloudflareDnsRecordSetReadEndpointId, cloudflareDnsRecordSetWriteEndpoi
 import { slackChannelTopicReadEndpointId, slackChannelTopicWriteEndpointId } from "../../src/packs/slack-topic/manifest.js";
 import { neonDatabaseMigrationReadEndpointId, neonDatabaseMigrationWriteEndpointId } from "../../src/packs/neon/manifest.js";
 import { certificationScenarioPlanBindings } from "../../src/authority/certification/scenario-bindings.js";
+import { createCertificationSelectionCommitment } from "../../src/authority/certification/commitment.js";
+import { parseCertificationInitialization } from "../../src/authority/certification/initializer.js";
+import { parseCertificationReadinessCandidate } from "../../src/authority/certification/readiness.js";
+import { verifyCertificationExport } from "../../src/authority/certification/export.js";
 
 const sha = (character: string) => `sha256:${character.repeat(64)}`;
 
@@ -158,6 +162,42 @@ test("scenario plan is closed, selected-only, digest-bound, and rejects secret o
     { ...base, cleanup: { recipeIds: ["caller-choice"], beforeStateDigest: sha("2") } },
     { ...base, unselectedScenarioData: { "slack-topic": {} } },
   ]) assert.throws(() => parseCertificationScenarioPlan(mutation, config, ["github-issue-labels"]), /closed|authority|config|selected|scenario/i);
+  assert.throws(() => parseCertificationScenarioPlan({ ...base, policyCommitments: [{ schemaId: "github_issue_labels_policy_v1", digest: sha("9") }] }, config, ["github-issue-labels"]), /policy|digest/i);
+  assert.throws(() => parseCertificationScenarioPlan({ ...base, cleanup: { recipeIds: bindings.cleanupRecipeIds, beforeStateDigest: sha("9") } }, config, ["github-issue-labels"]), /before.state|pending|cleanup/i);
+});
+
+test("sanitized commitments disclose no raw desired-state values", () => {
+  const canary = "TASK4A_DESIRED_STATE_CANARY";
+  const config = parseCertificationOperatorConfigV3({
+    ...githubV3(),
+    desiredState: { "github-issue-labels": { labels: [canary] } },
+  });
+  const commitment = createCertificationSelectionCommitment(config, ["github-issue-labels"], sha("a"));
+  const serialized = JSON.stringify(commitment.projection);
+  assert.doesNotMatch(serialized, new RegExp(canary));
+  assert.match(serialized, /digest|byteCount|type/i);
+});
+
+test("public certification artifact parsers reject getters without invoking them", () => {
+  const getterObject = (keys: readonly string[], getterKey: string, getter: () => unknown): Record<string, unknown> => {
+    const descriptors: PropertyDescriptorMap = {};
+    for (const key of keys) descriptors[key] = key === getterKey
+      ? { enumerable: true, configurable: true, get: getter }
+      : { enumerable: true, configurable: true, writable: true, value: null };
+    return Object.create(Object.prototype, descriptors) as Record<string, unknown>;
+  };
+  let getterCalls = 0;
+  const initialization = getterObject(["v", "configDigest", "privateConfigDigest", "sanitizedProjectionDigest", "scenarios", "identifiers", "completeness"], "v", () => { getterCalls += 1; return "reelier.certification-initialization/v1"; });
+  assert.throws(() => parseCertificationInitialization(initialization));
+  assert.equal(getterCalls, 0);
+
+  const preflight = getterObject(["v", "configDigest", "selectionDigest", "identifiers", "scenarios", "resources", "cleanup", "credentialReferences", "inputs", "runnerRegistryDigest", "topology", "trust", "signatureStatus", "authorization", "completeness", "missing", "ok", "preparationReady", "executionReady", "dispatchable", "digest"], "v", () => { getterCalls += 1; return "reelier.certification-preflight/v2"; });
+  assert.throws(() => parseCertificationReadinessCandidate({}, preflight));
+  assert.equal(getterCalls, 0);
+
+  const exported = getterObject(["v", "manifest", "artifacts", "digest"], "v", () => { getterCalls += 1; return "reelier.certification-export/v1"; });
+  assert.throws(() => verifyCertificationExport(exported));
+  assert.equal(getterCalls, 0);
 });
 
 test("private runner registry is exact metadata and unavailable compound runners stay non-dispatchable", () => {
@@ -238,6 +278,21 @@ test("portable Task 4A schemas agree with runtime parsers on a positive and nega
     { ...githubV3(), authorityConfigPath: "../authority.yml" },
     { ...githubV3(), secretReferences: { githubCredential: "env:1_BAD" } },
     { ...githubV3(), scenarios: ["github-issue-labels", "cloudflare-dns"] },
+    { ...githubV3(), authorityConfigPath: "file:../authority.yml" },
+    { ...githubV3(), resources: { "github-issue-labels": { ...(githubV3().resources as any)["github-issue-labels"], issueNumber: Number.MAX_SAFE_INTEGER + 1 } } },
+    { ...githubV3(), cleanup: { "github-issue-labels": ["z-cleanup", "a-cleanup"] } },
+    { ...githubV3(), desiredState: { "github-issue-labels": { labels: ["z-label", "a-label"] } } },
   ];
   for (const negative of configNegatives) { assert.equal(validates("certification-operator-config-v3.schema.json", negative), false); assert.throws(() => parseCertificationOperatorConfigV3(negative)); }
+
+  for (const [schema, negative] of [
+    ["certification-runner-manifest-v2.schema.json", { ...runner, runnerId: "arbitrary_runner" }],
+    ["certification-runner-manifest-v2.schema.json", { ...runner, metadataDigest: sha("f") }],
+    ["certification-runner-manifest-v2.schema.json", { ...runner, registryDigest: sha("e") }],
+    ["certification-endpoint-manifest-v2.schema.json", { ...endpoint, definitionAliases: ["arbitrary_alias"] }],
+    ["certification-endpoint-manifest-v2.schema.json", { ...endpoint, endpoints: endpoint.endpoints.map((item, index) => index === 0 ? { ...item, endpointId: "arbitrary_endpoint" } : item) }],
+    ["certification-scenario-plan.schema.json", { ...plan, definitionAliases: ["arbitrary_alias"] }],
+    ["certification-scenario-plan.schema.json", { ...plan, runnerRegistryDigest: sha("d") }],
+    ["certification-scenario-plan.schema.json", { ...plan, cleanup: { ...plan.cleanup, recipeIds: ["arbitrary-recipe"] } }],
+  ] as const) assert.equal(validates(schema, negative), false, `${schema} must reject arbitrary reviewed authority`);
 });

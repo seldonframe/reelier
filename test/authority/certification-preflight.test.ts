@@ -193,3 +193,16 @@ test("duplicate runner test endpoint and plan artifacts each refuse preparation"
     assert.match(report.missing.join(" "), new RegExp(`inputs:${kind}:github-issue-labels`), kind);
   }
 });
+
+test("malformed matching runner test endpoint and plan duplicates still refuse preparation", async () => {
+  const fs = await import("node:fs/promises");
+  for (const kind of ["runners", "tests", "plans", "endpoints"] as const) {
+    const root = await workspace();
+    await writeCertificationInputManifests(root, ["github-issue-labels"]);
+    const base = kind === "endpoints" ? path.join(root, "authority", "endpoints") : path.join(root, "inputs", kind);
+    await fs.writeFile(path.join(base, "github-issue-labels--malformed.json"), "{not-json", "utf8");
+    const report = await preflightCertification({ workspace: root, scenario: "github-issue-labels" });
+    assert.equal(report.preparationReady, false, kind);
+    assert.match(report.missing.join(" "), new RegExp(`inputs:${kind}:github-issue-labels`), kind);
+  }
+});
