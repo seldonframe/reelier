@@ -66,6 +66,22 @@ test("root registration is exact-replay idempotent and binds its generated alloc
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test("concurrent conflicting root registrations serialize and exactly one succeeds", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-delegation-root-race-"));
+  try {
+    const left = grant({ grantId: "grant_race", grantee: "principal_left" });
+    const right = grant({ grantId: "grant_race", grantee: "principal_right" });
+    const signed = (value: DelegationGrant) => ({ grant: value, digest: authorityDigest(value), signerId: "cell", signature: { alg: "ed25519" as const, sig: "unused" } });
+    const service = () => createDelegationAuthority({ root, now: () => new Date("2026-01-01T00:10:00.000Z"), signGrant: async value => signed(value) });
+    const results = await Promise.allSettled([
+      service().registerRoot({ taskId: "task_race", allocationId: "grant_race", rootGrant: signed(left), effects: 2 }),
+      service().registerRoot({ taskId: "task_race", allocationId: "grant_race", rootGrant: signed(right), effects: 2 }),
+    ]);
+    assert.equal(results.filter(result => result.status === "fulfilled").length, 1);
+    assert.match((results.find(result => result.status === "rejected") as PromiseRejectedResult).reason.message, /conflict/i);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("delegation authority refuses a corrupt durable registry", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "reelier-delegation-service-corrupt-"));
   try {
