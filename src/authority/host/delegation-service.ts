@@ -15,7 +15,7 @@ export interface DelegationAuthoritySigner {
 }
 
 export interface DelegationAuthority {
-  registerRoot(input: Readonly<{ taskId: string; allocationId?: string; rootGrant: StoredSignedGrant; effects: number }>): Promise<void>;
+  registerRoot(input: Readonly<{ taskId: string; allocationId?: string; rootGrant: StoredSignedGrant; signerDescriptor?: AuthorityKeyDescriptorV1; effects: number }>): Promise<void>;
   request(input: Readonly<{ tenant: string; parentPrincipal: string; taskId: string; parentAllocationId: string; child: DelegationGrant; effects: number }>): Promise<Readonly<{ verdict: "accepted"; reasonCode: "delegation-allocated"; lifecycleState: "allocated"; grant: DelegationGrant; grantDigest: string; allocationId: string }>>;
   status(input: Readonly<{ tenant: string; requester: string; grantId: string }>): Promise<Readonly<{ grantId: string; taskId: string; parentGrantDigest: string; grantee: string; lifecycleState: "allocated" | "revoked" }>>;
   taskStatus(input: Readonly<{ tenant: string; requester: string; taskId: string }>): Promise<Readonly<{ taskId: string; lifecycleState: "active" | "revoked"; grants: readonly string[] }>>;
@@ -29,6 +29,7 @@ interface RootRecord {
   readonly taskId: string;
   readonly root: StoredSignedGrant;
   readonly rootAllocationId: string;
+  readonly signerDescriptor?: AuthorityKeyDescriptorV1;
   readonly grants: Map<string, { readonly grant: DelegationGrant; readonly digest: string; readonly allocationId: string; readonly signed: StoredSignedGrant }>;
   revoked: boolean;
 }
@@ -47,11 +48,12 @@ export function createDelegationAuthority(input: Readonly<{ root: string; signGr
     await loaded;
   }
 
-  async function registerRoot(value: Readonly<{ taskId: string; allocationId?: string; rootGrant: StoredSignedGrant; effects: number }>): Promise<void> {
+  async function registerRoot(value: Readonly<{ taskId: string; allocationId?: string; rootGrant: StoredSignedGrant; signerDescriptor?: AuthorityKeyDescriptorV1; effects: number }>): Promise<void> {
     const grant = asGrant(value.rootGrant.grant);
     const allocationId = value.allocationId ?? "root";
     if (grant.parentDigest !== null) throw new TypeError("root delegation parent digest must be null");
     if (authorityDigest(grant) !== value.rootGrant.digest) throw new TypeError("root delegation digest mismatch");
+    const signerDescriptor = value.signerDescriptor === undefined ? undefined : verifiedDelegationSigner(value.signerDescriptor, value.rootGrant);
     const release = await acquireRegistryLock();
     try {
       await loadRegistry();
@@ -59,11 +61,11 @@ export function createDelegationAuthority(input: Readonly<{ root: string; signGr
       const existing = roots.get(value.taskId);
       if (existing) {
         const allocation = await budgets.get(existing.rootAllocationId);
-        if (existing.rootAllocationId !== allocationId || authorityDigest(existing.root) !== authorityDigest(value.rootGrant) || !allocation || allocation.effects !== value.effects || allocation.revoked || existing.revoked) throw new TypeError("delegation root activation conflict");
+        if (existing.rootAllocationId !== allocationId || authorityDigest(existing.root) !== authorityDigest(value.rootGrant) || authorityDigest(existing.signerDescriptor ?? null) !== authorityDigest(signerDescriptor ?? null) || !allocation || allocation.effects !== value.effects || allocation.revoked || existing.revoked) throw new TypeError("delegation root activation conflict");
         return;
       }
       await budgets.createRoot({ taskId: value.taskId, allocationId, effects: value.effects });
-      roots.set(value.taskId, { tenant: grant.tenant, taskId: value.taskId, root: value.rootGrant, rootAllocationId: allocationId, grants: new Map([[allocationId, { grant, digest: value.rootGrant.digest, allocationId, signed: value.rootGrant }]]), revoked: false });
+      roots.set(value.taskId, { tenant: grant.tenant, taskId: value.taskId, root: value.rootGrant, rootAllocationId: allocationId, ...(signerDescriptor ? { signerDescriptor } : {}), grants: new Map([[allocationId, { grant, digest: value.rootGrant.digest, allocationId, signed: value.rootGrant }]]), revoked: false });
       try { await persistRegistryUnlocked(); } catch (error) { roots.delete(value.taskId); loaded = undefined; throw error; }
     } finally { await release(); }
   }
@@ -73,12 +75,13 @@ export function createDelegationAuthority(input: Readonly<{ root: string; signGr
     return registerSignedChild({ tenant: value.tenant, parentPrincipal: value.parentPrincipal, taskId: value.taskId, parentAllocationId: value.parentAllocationId, signedChild: signed, effects: value.effects });
   }
 
-  async function registerSignedChild(value: SignedChildRegistration): Promise<SignedChildResult> {
+  async function registerSignedChild(value: SignedChildRegistration & Readonly<{ signerDescriptor?: AuthorityKeyDescriptorV1 }>): Promise<SignedChildResult> {
     const release = await acquireRegistryLock();
     try {
     await loadRegistry(); loaded = Promise.resolve();
     const record = roots.get(value.taskId);
     if (!record || record.tenant !== value.tenant || record.revoked) throw new TypeError("delegation task is not active");
+    if (value.signerDescriptor && (!record.signerDescriptor || authorityDigest(record.signerDescriptor) !== authorityDigest(value.signerDescriptor))) throw new TypeError("authority-signed child signer is not the host-observed active task signer");
     const parent = record.grants.get(value.parentAllocationId);
     if (!parent || parent.grant.grantee !== value.parentPrincipal) throw new TypeError("delegation parent principal mismatch");
     const signed = value.signedChild, signedGrant = asGrant(signed.grant);
@@ -161,9 +164,10 @@ export function createDelegationAuthority(input: Readonly<{ root: string; signGr
     const loadedRoots = new Map<string, RootRecord>();
     for (const item of (parsed as { tasks: unknown[] }).tasks) {
       if (!item || typeof item !== "object" || typeof (item as Record<string, unknown>).taskId !== "string" || typeof (item as Record<string, unknown>).tenant !== "string" || !Array.isArray((item as Record<string, unknown>).grants)) throw new Error("delegation registry is corrupt");
-      const value = item as { taskId: string; tenant: string; root: StoredSignedGrant; rootAllocationId?: string; grants: StoredSignedGrant[]; revoked?: boolean };
+      const value = item as { taskId: string; tenant: string; root: StoredSignedGrant; rootAllocationId?: string; signerDescriptor?: AuthorityKeyDescriptorV1; grants: StoredSignedGrant[]; revoked?: boolean };
       const rootGrant = asGrant(value.root.grant);
       if (authorityDigest(rootGrant) !== value.root.digest) throw new Error("delegation registry digest mismatch");
+      const signerDescriptor = value.signerDescriptor === undefined ? undefined : verifiedDelegationSigner(value.signerDescriptor, value.root);
       const grants = new Map<string, { readonly grant: DelegationGrant; readonly digest: string; readonly allocationId: string; readonly signed: StoredSignedGrant }>();
       const rootAllocationId = value.rootAllocationId ?? "root";
       grants.set(rootAllocationId, { grant: rootGrant, digest: value.root.digest, allocationId: rootAllocationId, signed: value.root });
@@ -172,7 +176,7 @@ export function createDelegationAuthority(input: Readonly<{ root: string; signGr
         if (authorityDigest(child) !== stored.digest) throw new Error("delegation registry child digest mismatch");
         grants.set(child.grantId, { grant: child, digest: stored.digest, allocationId: child.grantId, signed: stored });
       }
-      loadedRoots.set(value.taskId, { tenant: value.tenant, taskId: value.taskId, root: value.root, rootAllocationId, grants, revoked: value.revoked === true });
+      loadedRoots.set(value.taskId, { tenant: value.tenant, taskId: value.taskId, root: value.root, rootAllocationId, ...(signerDescriptor ? { signerDescriptor } : {}), grants, revoked: value.revoked === true });
     }
     roots.clear();
     for (const [taskId, record] of loadedRoots) roots.set(taskId, record);
@@ -186,7 +190,7 @@ export function createDelegationAuthority(input: Readonly<{ root: string; signGr
   }
 
   async function persistRegistryUnlocked(): Promise<void> {
-    const tasks = [...roots.values()].map(record => ({ v: "reelier.delegation-task/v1", taskId: record.taskId, tenant: record.tenant, root: record.root, rootAllocationId: record.rootAllocationId, grants: [...record.grants.values()].filter(item => item.allocationId !== record.rootAllocationId).map(item => item.signed), revoked: record.revoked }));
+    const tasks = [...roots.values()].map(record => ({ v: "reelier.delegation-task/v1", taskId: record.taskId, tenant: record.tenant, root: record.root, rootAllocationId: record.rootAllocationId, ...(record.signerDescriptor ? { signerDescriptor: record.signerDescriptor } : {}), grants: [...record.grants.values()].filter(item => item.allocationId !== record.rootAllocationId).map(item => item.signed), revoked: record.revoked }));
     const temporary = `${registryPath}.${process.pid}.${Math.random().toString(16).slice(2)}.tmp`;
     await writeFile(temporary, JSON.stringify({ v: "reelier.delegation-registry/v1", tasks }), "utf8");
     await rename(temporary, registryPath);
@@ -218,15 +222,21 @@ export function createDelegationAuthority(input: Readonly<{ root: string; signGr
 
 type SignedChildRegistration = Readonly<{ tenant: string; parentPrincipal: string; taskId: string; parentAllocationId: string; signedChild: StoredSignedGrant; effects: number }>;
 type SignedChildResult = Readonly<{ verdict: "accepted"; reasonCode: "delegation-allocated"; lifecycleState: "allocated"; grant: DelegationGrant; grantDigest: string; allocationId: string }>;
-const authoritySignedChildRegistrars = new WeakMap<object, (input: SignedChildRegistration) => Promise<SignedChildResult>>();
+const authoritySignedChildRegistrars = new WeakMap<object, (input: SignedChildRegistration & Readonly<{ signerDescriptor?: AuthorityKeyDescriptorV1 }>) => Promise<SignedChildResult>>();
 
 /** Direct-module Cell bridge. Deliberately omitted from host/package barrels. */
-export async function registerAuthoritySignedChild(service: DelegationAuthority, input: SignedChildRegistration & Readonly<{ signerDescriptor: AuthorityKeyDescriptorV1; activeSignerDescriptorDigests: readonly string[] }>): Promise<SignedChildResult> {
+export async function registerAuthoritySignedChild(service: DelegationAuthority, input: SignedChildRegistration & Readonly<{ signerDescriptor: AuthorityKeyDescriptorV1 }>): Promise<SignedChildResult> {
   const register = authoritySignedChildRegistrars.get(service as object);
   if (!register) throw new TypeError("genuine branded delegation authority required");
   const descriptor = parseAuthorityKeyDescriptor(input.signerDescriptor), child = asGrant(input.signedChild.grant), digest = authorityDigest(child);
-  if (!Array.isArray(input.activeSignerDescriptorDigests) || input.activeSignerDescriptorDigests.length === 0 || !input.activeSignerDescriptorDigests.every(value => /^sha256:[0-9a-f]{64}$/.test(value)) || !input.activeSignerDescriptorDigests.includes(authorityDigest(descriptor)) || descriptor.role !== "authority-cell" || descriptor.purpose !== "delegation-grant" || input.signedChild.signerId !== descriptor.keyId || input.signedChild.digest !== digest || !verifyAuthoritySignature(createPublicKey({ key: Buffer.from(descriptor.publicKeySpkiBase64, "base64"), format: "der", type: "spki" }), "delegation-grant", digest, input.signedChild.signature)) throw new TypeError("authority-signed child signer must be active and its purpose, digest, and signature valid");
-  return register({ tenant: input.tenant, parentPrincipal: input.parentPrincipal, taskId: input.taskId, parentAllocationId: input.parentAllocationId, signedChild: input.signedChild, effects: input.effects });
+  if (descriptor.role !== "authority-cell" || descriptor.purpose !== "delegation-grant" || input.signedChild.signerId !== descriptor.keyId || input.signedChild.digest !== digest || !verifyAuthoritySignature(createPublicKey({ key: Buffer.from(descriptor.publicKeySpkiBase64, "base64"), format: "der", type: "spki" }), "delegation-grant", digest, input.signedChild.signature)) throw new TypeError("authority-signed child signer must be active and its purpose, digest, and signature valid");
+  return register({ tenant: input.tenant, parentPrincipal: input.parentPrincipal, taskId: input.taskId, parentAllocationId: input.parentAllocationId, signedChild: input.signedChild, signerDescriptor: descriptor, effects: input.effects });
+}
+
+function verifiedDelegationSigner(value: unknown, signed: StoredSignedGrant): AuthorityKeyDescriptorV1 {
+  const descriptor = parseAuthorityKeyDescriptor(value), digest = authorityDigest(asGrant(signed.grant));
+  if (descriptor.role !== "authority-cell" || descriptor.purpose !== "delegation-grant" || descriptor.keyId !== signed.signerId || signed.digest !== digest || !verifyAuthoritySignature(createPublicKey({ key: Buffer.from(descriptor.publicKeySpkiBase64, "base64"), format: "der", type: "spki" }), "delegation-grant", digest, signed.signature)) throw new TypeError("delegation root signer descriptor, digest, or signature is invalid");
+  return descriptor;
 }
 
 async function requireUnlinkedDirectory(target: string): Promise<void> {
