@@ -35,9 +35,9 @@ Test results (verbatim tail)
 ✔ connection parser rejects unsafe URLs and never invokes accessors (0.78ms)
 ✔ live cell check refuses redirect and redacts token resolver failures (2.1902ms)
 ✔ authority REST exposes job search and load with host identity (60.4299ms)
-✔ authority identity is authenticated, closed, and server-derived (17.3643ms)
-ℹ tests 5
-ℹ pass 5
+✔ doctor refuses private DNS answers before bearer dispatch (0.3437ms)
+ℹ tests 7
+ℹ pass 7
 ℹ fail 0
 ```
 
