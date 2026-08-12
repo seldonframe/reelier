@@ -177,5 +177,5 @@ export function verifyAuthorityAdapterContractV1(value: unknown, files: Readonly
 }
 
 function normalizeContractBytes(bytes: Uint8Array): Buffer {
-  return Buffer.from(bytes.toString().replace(/\r\n/g, "\n"), "utf8");
+  return Buffer.from(Buffer.from(bytes).toString("utf8").replace(/\r\n/g, "\n"), "utf8");
 }

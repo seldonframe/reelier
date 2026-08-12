@@ -73,7 +73,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && node scripts/build-authority-contract.mjs --copy-schemas && node scripts/build-packs.mjs",
+    "build": "node scripts/build-authority-contract.mjs --check && tsc -p tsconfig.json && node scripts/build-authority-contract.mjs --copy-schemas && node scripts/build-packs.mjs",
     "build:authority-contract": "node scripts/build-authority-contract.mjs",
     "check:authority-contract": "node scripts/build-authority-contract.mjs --check",
     "lint:fault-pins": "node scripts/lint-fault-pins.mjs",
@@ -84,7 +84,7 @@
     "test:e2e": "node scripts/e2e-local.mjs",
     "test:mutation": "stryker run",
     "preflight": "node scripts/preflight.mjs",
-    "prepublishOnly": "npm run build && npm test",
+    "prepublishOnly": "npm run check:authority-contract && npm run build && npm test",
     "hooks:install": "git config core.hooksPath .githooks"
   },
   "publishConfig": {

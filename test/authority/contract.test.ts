@@ -162,7 +162,7 @@ test("adapter contract v1 is a closed, canonical manifest and refuses stale copi
   try {
     writeFileSync(sourcePath, `${source}\n// stale package build input\n`, "utf8");
     assert.throws(
-      () => execFileSync(process.platform === "win32" ? "npm.cmd" : "npm", ["run", "build"], { cwd: process.cwd(), stdio: "pipe" }),
+      () => execFileSync(process.platform === "win32" ? (process.env.ComSpec ?? "cmd.exe") : "npm", process.platform === "win32" ? ["/d", "/s", "/c", "npm run build"] : ["run", "build"], { cwd: process.cwd(), stdio: "pipe" }),
       /adapter contract source drift/i,
     );
   } finally {
