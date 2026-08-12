@@ -134,6 +134,10 @@ interface CertificationHermeticGitHubAuthorityState {
   signGate(digest: string): AuthoritySignature;
   signJournal(digest: string): AuthoritySignature;
   readonly lifecycle: CertificationLifecycleAuthorityMaterial;
+  readonly binding: CertificationArtifactKeyBindingV1;
+  readonly commitment: CertificationArtifactKeyBindingCommitmentV1;
+  readonly keyDescriptors: readonly AuthorityKeyDescriptorV1[];
+  readonly signedReadiness: unknown;
 }
 interface CertificationLifecycleAuthorityInput { readonly handle: CertificationLifecycleAuthorityHandle; readonly binding: CertificationArtifactKeyBindingV1; readonly commitment: CertificationArtifactKeyBindingCommitmentV1 }
 const certificationCellHosts = new WeakMap<object, CertificationCellHostInternalState>();
@@ -236,7 +240,7 @@ async function bindHermeticGitHubAuthority(pinPath: string, input: Certification
   const lifecycle = consumeCertificationLifecycleAuthority(input.handle, input.binding, input.commitment, { authorityCellId: identifiers.authorityCellId, taskId: identifiers.taskId, readinessDigest: authorityDigest(pin.signedReadiness), descriptors: selected as AuthorityKeyDescriptorV1[], humanDescriptor: human, now });
   const get = <P extends "outcome-contract" | "gate-event" | "authority-journal">(purpose: P) => lifecycle.direct.get(purpose)!;
   const contract = get("outcome-contract"), gate = get("gate-event"), journal = get("authority-journal");
-  return Object.freeze({ contractDescriptor: contract.descriptor, gateDescriptor: gate.descriptor, journalDescriptor: journal.descriptor, signContract: (digest: string) => signAuthorityDigest(contract.privateKey, "outcome-contract", digest), signGate: (digest: string) => signAuthorityDigest(gate.privateKey, "gate-event", digest), signJournal: (digest: string) => signAuthorityDigest(journal.privateKey, "authority-journal", digest), lifecycle });
+  return Object.freeze({ contractDescriptor: contract.descriptor, gateDescriptor: gate.descriptor, journalDescriptor: journal.descriptor, signContract: (digest: string) => signAuthorityDigest(contract.privateKey, "outcome-contract", digest), signGate: (digest: string) => signAuthorityDigest(gate.privateKey, "gate-event", digest), signJournal: (digest: string) => signAuthorityDigest(journal.privateKey, "authority-journal", digest), lifecycle, binding: input.binding, commitment: input.commitment, keyDescriptors: descriptors, signedReadiness: pin.signedReadiness });
 }
 
 async function revalidateCertificationDispatchPermit(permit: CertificationDispatchPermit): Promise<void> {
