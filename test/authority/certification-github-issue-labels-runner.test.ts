@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { authorityDigest } from "../../src/authority/wire.js";
@@ -97,4 +97,18 @@ test("concurrent recovery cannot release a live dispatched request before its on
     const result = await running; assert.equal(result.status, "acknowledged"); assert.equal(result.providerWrites, 1);
     const budget = await f.delegation.budget.get(f.initialized.identifiers.rootGrantId); assert.equal(budget?.consumed, 1); assert.equal(budget?.remaining, 1);
   } finally { await rm(f.root, { recursive: true, force: true }); }
+});
+
+test("linked config, plan, and journal paths refuse before authority recovery or provider action", async t => {
+  for (const target of ["config", "plan", "journal"] as const) await t.test(target, async t => {
+    const f = await fixture(target === "journal" ? "cut-after-budget" : "normal"); try {
+      if (target === "journal") await assert.rejects(() => f.runner.run({ bearerToken: f.credential.token, requestId: "request_link" }), /controlled cut/i);
+      const original = target === "config" ? path.join(f.initialized.workspace, "config.json") : target === "plan" ? path.join(f.initialized.workspace, "inputs", "plans") : path.join(f.initialized.workspace, "authority", "github-label-runner");
+      const real = `${original}.real`; await rename(original, real);
+      try { await symlink(real, original, target === "config" ? "file" : "junction"); } catch (error) { if ((error as NodeJS.ErrnoException).code === "EPERM") { t.skip("symlink privilege unavailable"); return; } throw error; }
+      const budgetBefore = await f.delegation.budget.get(f.initialized.identifiers.rootGrantId);
+      await assert.rejects(() => createGitHubIssueLabelsHermeticComposition(f.cell, { mode: "normal" }), /linked|reparse|confined/i);
+      const budgetAfter = await f.delegation.budget.get(f.initialized.identifiers.rootGrantId); assert.equal(budgetAfter?.consumed, budgetBefore?.consumed); assert.equal(budgetAfter?.remaining, budgetBefore?.remaining);
+    } finally { await rm(f.root, { recursive: true, force: true }); }
+  });
 });
