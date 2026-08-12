@@ -45,7 +45,7 @@ Tests and operator material include the focused certification suite, `authority/
 
 ## Verification
 
-At implementation head `a0573f7`:
+At implementation head `a0573f7` and evidence head `36d9e1d`:
 
 ```text
 npm run build                                                       PASS
@@ -53,9 +53,12 @@ npx tsc -p tsconfig.test.json --pretty false                        PASS
 focused authority/certification tests                              111 passed, 0 failed, 0 skipped
 affected CLI/deploy/local integration tests                         11 passed, 0 failed, 0 skipped
 npm run check:authority-contract                                   PASS
+npm test (local Windows)                                           2879 passed, 0 failed, 1 skipped
+GitHub Actions run 31591505958 (Ubuntu, exact head 36d9e1d)        PASS
+GitHub Actions run 31591505958 (Windows, exact head 36d9e1d)       PASS
 ```
 
-The focused set covers certification authority, Cell, config, export, filesystem, initializer, preflight, readiness, runner ABI, scenarios, and runner behavior. Per instruction, the full `npm test` suite was not run.
+The focused set covers certification authority, Cell, config, export, filesystem, initializer, preflight, readiness, runner ABI, scenarios, and runner behavior. The final full-suite pass completed locally on Windows and on both hosted Ubuntu and Windows runners against exact pushed head `36d9e1d83f04a9360ec50429ce5ceef0c1acc821`.
 
 Security assertions include exact reviewed endpoint constants; compound per-provider account/resource authority; typed config-derived plans with no arbitrary choices/source/recipe authority; zero-invocation accessor rejection for nested index getters plus sparse, non-enumerable, symbol-bearing, and custom-prototype arrays; exact-one artifact counting; non-dispatchable metadata refusal before budget access; and an Ajv/runtime parity corpus covering positive inputs plus static scenario substitution, dispatchability, arbitrary-plan, credential-shaped nested value, missing selected field, unselected extra field, unsafe path, unsafe environment/file references, and dynamic cleanup/list semantics. Dynamic list order is structural input, not authority: runtime rejects duplicates and sorts before commitments.
 
