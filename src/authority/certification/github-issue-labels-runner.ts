@@ -76,7 +76,7 @@ export async function createGitHubIssueLabelsHermeticComposition(cell: Certifica
       await saveJournal(journalRoot, { ...current, phase: "provider-applied", providerWrites: (await provider.snapshot()).writes }, journalAuthority);
       if (mode === "cut-after-apply") { controlledCut = new ControlledCut(); throw controlledCut; }
       const response = normalizeProviderAcknowledgment(rawResponse);
-      if (response.status < 200 || response.status >= 300) return { kind: "definitive-failure" as const, resultDigest: authorityDigest(response), providerStatus: response.status, reconciliationStatus: "not-attempted" as const };
+      if (response.status < 200 || response.status >= 300) return { kind: "ambiguous" as const, resultDigest: authorityDigest(response), providerStatus: response.status, reconciliationStatus: "not-attempted" as const };
       return { kind: "acknowledged" as const, resultDigest: authorityDigest(response), providerStatus: response.status, reconciliationStatus: "not-attempted" as const };
     },
     async reconcile(_state, prior) { if (prior.kind === "definitive-failure") return prior; const snapshot = await provider.snapshot(); const matched = authorityDigest(snapshot.labels) === authorityDigest([...desired].sort()); return { kind: matched ? "acknowledged" as const : "ambiguous" as const, resultDigest: authorityDigest({ v: "reelier.github-reconciliation/v1", labels: snapshot.labels }), reconciliationStatus: matched ? "matched" as const : "conflict" as const, normalizedProjectionDigest: authorityDigest(snapshot.labels) }; },
