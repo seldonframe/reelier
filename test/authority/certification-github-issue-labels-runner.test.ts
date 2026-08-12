@@ -257,6 +257,8 @@ test("conflict receipt publication is recoverable and cannot verify ahead of its
     assert.equal(pending.phase, "conflict-publication-pending");
     assert.match(pending.exactBytesDigest, /^sha256:[0-9a-f]{64}$/);
     assert.equal(pending.conflictReceiptDigest, null);
+    const portable = path.join(f.initialized.workspace, "authority", "github-label-runner", "receipts", "portable"), conflictReceipts = await Promise.all((await readdir(portable)).filter(name => name.endsWith(".json")).map(async name => JSON.parse(await readFile(path.join(portable, name), "utf8"))));
+    assert.equal(conflictReceipts.some(bundle => bundle.evidence.value.reconciliation.verdict === "conflict" && bundle.evidence.value.reconciliation.normalizedProjectionDigest === pending.exactBytesDigest), true);
     await assert.rejects(() => f.runner.exportGraph({ bearerToken: f.credential.token }), /receipt.*journal|lifecycle|pending/i);
     const restarted = await createGitHubIssueLabelsHermeticComposition(f.cell);
     assert.deepEqual(await restarted.recover(), ["request_conflict_cut"]);
