@@ -14,10 +14,13 @@ import { createCertificationCellHost, certificationTaskShapeDigest } from "../..
 import { createDelegationAuthority } from "../../src/authority/host/delegation-service.js";
 import { createFilePrincipalRegistry } from "../../src/authority/host/principal-registry.js";
 import { createGitHubIssueLabelsHermeticComposition } from "../../src/authority/certification/github-issue-labels-runner.js";
+import { __testSetAuthorityCellHostPlatform } from "../../src/authority/host/platform.js";
 import { writeCertificationInputManifests } from "./certification-input-fixture.js";
 
 const at = "2026-08-11T20:00:00.000Z", expiry = "2026-08-11T21:00:00.000Z";
 const descriptor = (keyId: string, role: "human-sponsor" | "authority-cell", purpose: string, publicKey: ReturnType<typeof generateKeyPairSync>["publicKey"]) => ({ v: "reelier.authority-key-descriptor/v1", keyId, role, purpose, algorithm: "ed25519", publicKeySpkiBase64: publicKey.export({ type: "spki", format: "der" }).toString("base64") });
+const restorePlatform = __testSetAuthorityCellHostPlatform("linux");
+test.after(() => restorePlatform());
 
 async function fixture(mode: "normal" | "source-drift" | "effect-drift" | "provider-503" | "accessor-response" | "cut-after-budget" | "cut-after-dispatched" | "cut-after-send-intent" | "pause-after-dispatched" = "normal", authorityMode: "valid" | "absent" | "substituted" = "valid") {
   const root = await mkdtemp(path.join(tmpdir(), "reelier-github-cell-"));
@@ -108,6 +111,35 @@ test("concurrent recovery cannot release a live dispatched request before its on
     await assert.rejects(() => restarted.recover(), /busy|lock/i);
     const result = await running; assert.equal(result.status, "acknowledged"); assert.equal(result.providerWrites, 1);
     const budget = await f.delegation.budget.get(f.initialized.identifiers.rootGrantId); assert.equal(budget?.consumed, 1); assert.equal(budget?.remaining, 1);
+  } finally { await rm(f.root, { recursive: true, force: true }); }
+});
+
+test("cut after authoritative apply reconciles from durable provider state without resend and cleanup restores exact before labels", async () => {
+  const f = await fixture("cut-after-apply" as never); try {
+    await assert.rejects(() => f.runner.run({ bearerToken: f.credential.token, requestId: "request_cut_apply" }), /controlled cut/i);
+    const restarted = await createGitHubIssueLabelsHermeticComposition(f.cell, { mode: "normal" });
+    await restarted.recover();
+    const reconciled = await restarted.status({ bearerToken: f.credential.token, requestId: "request_cut_apply" });
+    assert.equal(reconciled.status, "acknowledged");
+    assert.equal(reconciled.providerWrites, 1);
+    const cleaned = await restarted.cleanup({ bearerToken: f.credential.token, requestId: "request_cut_apply" });
+    assert.equal(cleaned.status, "cleaned");
+    assert.deepEqual(cleaned.labels, ["before"]);
+    assert.equal(cleaned.providerWrites, 2);
+  } finally { await rm(f.root, { recursive: true, force: true }); }
+});
+
+test("semantic duplicate and conflicting bytes do not write or consume additional budget", async () => {
+  const f = await fixture(); try {
+    const first = await f.runner.run({ bearerToken: f.credential.token, requestId: "request_original" });
+    assert.equal(first.providerWrites, 1);
+    const duplicate = await f.runner.run({ bearerToken: f.credential.token, requestId: "request_semantic_duplicate" });
+    assert.equal(duplicate.status, "duplicate");
+    assert.equal(duplicate.providerWrites, 1);
+    const conflict = await f.runner.conflict({ bearerToken: f.credential.token, requestId: "request_original" });
+    assert.equal(conflict.status, "conflict");
+    assert.equal(conflict.providerWrites, 1);
+    assert.equal((await f.delegation.budget.get(f.initialized.identifiers.rootGrantId))?.consumed, 1);
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
