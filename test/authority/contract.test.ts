@@ -1,6 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
+import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { execFileSync } from "node:child_process";
 import { signAuthorityDigest } from "../../src/authority/crypto.js";
 import { authorityCanonicalBytes, authorityDigest } from "../../src/authority/wire.js";
 import { createTrustRoots } from "../../src/authority/trust.js";
@@ -87,4 +91,37 @@ test("trusted contract digest is staged before mutable eligibility checks", () =
   assert.throws(() => verifyStoredContract({ stored: { ...f.stored, contract: { ...f.contract, unexpected: true } }, trustRoots: f.roots, tenant: "tenant_1" }), /wire|advertised digest|additional/i);
   assert.throws(() => verifyStoredContract({ stored: { ...f.stored, signature: { ...f.stored.signature, sig: "AA==" } }, trustRoots: f.roots, tenant: "tenant_1" }), /signature/i);
   assert.throws(() => verifyStoredContract({ stored: f.stored, trustRoots: f.roots, tenant: "tenant_2" }), /tenant|trust/i);
+});
+
+test("adapter contract v1 is a closed, canonical manifest and refuses stale copied output", () => {
+  const contractDirectory = join(process.cwd(), "contract", "authority", "v1");
+  const descriptorPath = join(contractDirectory, "adapter-contract-v1.json");
+  assert.equal(existsSync(descriptorPath), true, "adapter contract descriptor must be generated");
+  const output = JSON.parse(readFileSync(descriptorPath, "utf8")) as {
+    v: string;
+    domain: string;
+    members: readonly { path: string; digest: string }[];
+    goldenVectorsDigest: string;
+    digest: string;
+  };
+  assert.equal(output.v, "reelier.adapter-contract/v1");
+  assert.equal(output.domain, "reelier.adapter-contract/v1\\0");
+  assert.match(output.digest, /^sha256:(?!0{64}$)[0-9a-f]{64}$/);
+  assert.match(output.goldenVectorsDigest, /^sha256:[0-9a-f]{64}$/);
+  assert.deepEqual(output.members.map(member => member.path), [...output.members.map(member => member.path)].sort());
+  assert.equal(new Set(output.members.map(member => member.path)).size, output.members.length);
+  assert.equal(output.members.some(member => member.path === "adapter-contract-v1.json"), false);
+
+  const copiedRoot = mkdtempSync(join(tmpdir(), "reelier-adapter-contract-"));
+  try {
+    const copiedDirectory = join(copiedRoot, "v1");
+    cpSync(contractDirectory, copiedDirectory, { recursive: true });
+    writeFileSync(join(copiedDirectory, "golden-vectors.json"), "{}\n", "utf8");
+    assert.throws(
+      () => execFileSync(process.execPath, ["scripts/build-authority-contract.mjs", "--directory", copiedDirectory, "--check"], { cwd: process.cwd(), stdio: "pipe" }),
+      /authority adapter contract drift/i,
+    );
+  } finally {
+    rmSync(copiedRoot, { recursive: true, force: true });
+  }
 });
