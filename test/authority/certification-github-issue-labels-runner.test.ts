@@ -231,6 +231,22 @@ test("linked config, plan, and journal paths refuse before authority recovery or
   });
 });
 
+test("cleanup journal is append-only and refuses a valid old signed head rollback", async () => {
+  const f = await fixture(); try {
+    await f.runner.run({ bearerToken: f.credential.token, requestId: "request_cleanup_rollback" });
+    const head = path.join(f.initialized.workspace, "authority", "github-label-runner", "request_cleanup_rollback.journal.json");
+    const acknowledged = await readFile(head);
+    await f.runner.cleanup({ bearerToken: f.credential.token, requestId: "request_cleanup_rollback" });
+    const cleaned = JSON.parse(await readFile(head, "utf8"));
+    assert.equal(cleaned.phase, "cleaned");
+    assert.equal(cleaned.eventSequence > 0, true);
+    assert.match(cleaned.priorJournalDigest, /^sha256:/);
+    await writeFile(head, acknowledged);
+    const restarted = await createGitHubIssueLabelsHermeticComposition(f.cell);
+    await assert.rejects(() => restarted.status({ bearerToken: f.credential.token, requestId: "request_cleanup_rollback" }), /rollback|journal head|generation/i);
+  } finally { await rm(f.root, { recursive: true, force: true }); }
+});
+
 test("offline graph verification refuses an evidence root revoked by the external current trust history", async () => {
   const f = await fixture(); try {
     await f.runner.run({ bearerToken: f.credential.token, requestId: "request_revoked_evidence" });
