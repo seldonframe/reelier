@@ -4,6 +4,7 @@ import type { CertificationIdentifiers } from "./initializer.js";
 import { preflightCertification, type CertificationInputSet, type CertificationPreflightV2 } from "./preflight.js";
 import { CERTIFICATION_SCENARIOS, CERTIFICATION_SCENARIO_IDS, type CertificationScenarioId, type CertificationSecretSlot } from "./scenarios.js";
 import { certificationWorkspaceRoot, publishPrivateContentAddressed, readConfinedFile, confinedExistingDirectory } from "./filesystem.js";
+import { inertRecord } from "./inert.js";
 
 export interface CertificationReadinessCandidate {
   readonly v: "reelier.certification-readiness-candidate/v1";
@@ -116,5 +117,5 @@ function stringList(value: unknown, label: string): readonly string[] { if (!Arr
 function assertUniqueSorted(values: readonly string[], label: string): void { if (new Set(values).size !== values.length || values.some((item, index) => index > 0 && values[index - 1] >= item)) throw new TypeError(`certification ${label} must be unique and sorted`); }
 function enumValue<T extends string>(value: unknown, values: readonly T[], label: string): T { if (typeof value !== "string" || !values.includes(value as T)) throw new TypeError(`certification ${label} is invalid`); return value as T; }
 function assertDigest(value: unknown, label: string): string { if (typeof value !== "string" || !/^sha256:[0-9a-f]{64}$/.test(value)) throw new TypeError(`${label} is invalid`); return value; }
-function object(value: unknown, label: string): Record<string, any> { if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError(`${label} must be an object`); return value as Record<string, any>; }
+function object(value: unknown, label: string): Record<string, any> { return inertRecord(value, label) as Record<string, any>; }
 function closed(raw: Record<string, unknown>, keys: readonly string[], label: string): void { if (Object.keys(raw).length !== keys.length || Object.keys(raw).some(key => !keys.includes(key))) throw new TypeError(`${label} is closed`); }

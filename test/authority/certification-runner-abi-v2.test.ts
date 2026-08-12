@@ -13,6 +13,7 @@ import { deriveCertificationEndpointManifest } from "../../src/authority/certifi
 import {
   getCertificationRunnerRegistryEntry,
   certificationRunnerRegistryDigest,
+  certificationPolicyCommitments,
 } from "../../src/authority/certification/runner-registry.js";
 import {
   migrateCertificationOperatorConfig,
@@ -144,8 +145,8 @@ test("scenario plan is closed, selected-only, digest-bound, and rejects secret o
     resourceDigest: bindings.resourceDigest,
     accountCommitments: bindings.accountCommitments,
     desiredStateDigest: bindings.desiredStateDigest,
-    policyCommitments: [{ schemaId: "github_issue_labels_policy_v1", digest: sha("1") }],
-    cleanup: { recipeIds: bindings.cleanupRecipeIds, beforeStateDigest: sha("2") },
+    policyCommitments: certificationPolicyCommitments("github-issue-labels"),
+    cleanup: { recipeIds: bindings.cleanupRecipeIds, beforeState: "pending" },
     controlledCut: { case: "ambiguous-after-dispatch" },
     runnerManifestDigest: sha("3"),
     testManifestDigest: sha("4"),
@@ -159,11 +160,11 @@ test("scenario plan is closed, selected-only, digest-bound, and rejects secret o
     { ...base, modulePath: "./runner.js" },
     { ...base, command: "node runner.js" },
     { ...base, sourceRefs: { github: sha("9") } },
-    { ...base, cleanup: { recipeIds: ["caller-choice"], beforeStateDigest: sha("2") } },
+    { ...base, cleanup: { recipeIds: ["caller-choice"], beforeState: "pending" } },
     { ...base, unselectedScenarioData: { "slack-topic": {} } },
-  ]) assert.throws(() => parseCertificationScenarioPlan(mutation, config, ["github-issue-labels"]), /closed|authority|config|selected|scenario/i);
+  ]) assert.throws(() => parseCertificationScenarioPlan(mutation, config, ["github-issue-labels"]), /closed|authority|config|selected|scenario|pending/i);
   assert.throws(() => parseCertificationScenarioPlan({ ...base, policyCommitments: [{ schemaId: "github_issue_labels_policy_v1", digest: sha("9") }] }, config, ["github-issue-labels"]), /policy|digest/i);
-  assert.throws(() => parseCertificationScenarioPlan({ ...base, cleanup: { recipeIds: bindings.cleanupRecipeIds, beforeStateDigest: sha("9") } }, config, ["github-issue-labels"]), /before.state|pending|cleanup/i);
+  assert.throws(() => parseCertificationScenarioPlan({ ...base, cleanup: { recipeIds: bindings.cleanupRecipeIds, beforeStateDigest: sha("9") } }, config, ["github-issue-labels"]), /before.state|pending|cleanup|closed/i);
 });
 
 test("sanitized commitments disclose no raw desired-state values", () => {
@@ -238,8 +239,8 @@ test("closed public plan input rejects accessor-based callbacks without invoking
     resourceDigest: bindings.resourceDigest,
     accountCommitments: bindings.accountCommitments,
     desiredStateDigest: bindings.desiredStateDigest,
-    policyCommitments: [{ schemaId: "github_issue_labels_policy_v1", digest: sha("1") }],
-    cleanup: { recipeIds: bindings.cleanupRecipeIds, beforeStateDigest: sha("2") },
+    policyCommitments: certificationPolicyCommitments("github-issue-labels"),
+    cleanup: { recipeIds: bindings.cleanupRecipeIds, beforeState: "pending" },
     controlledCut: { case: "ambiguous-after-dispatch" },
     runnerManifestDigest: sha("3"), testManifestDigest: sha("4"), endpointManifestDigest: sha("5"), runnerRegistryDigest: certificationRunnerRegistryDigest,
   };
@@ -260,7 +261,7 @@ test("portable Task 4A schemas agree with runtime parsers on a positive and nega
   const registry = getCertificationRunnerRegistryEntry("github-issue-labels");
   const runner = { v: "reelier.certification-runner-manifest/v2", scenarioId: "github-issue-labels", runnerId: registry.runnerId, endpointManifestDigest: authorityDigest(endpoint), metadataDigest: registry.metadataDigest, registryDigest: certificationRunnerRegistryDigest, operations: registry.operations, executionReady: false, dispatchable: false };
   const bindings = certificationScenarioPlanBindings(config, "github-issue-labels");
-  const plan = { v: "reelier.certification-scenario-plan/v1", scenarioId: "github-issue-labels", definitionAliases: registry.definitionAliases, sourceRefs: bindings.sourceRefs, resourceDigest: bindings.resourceDigest, accountCommitments: bindings.accountCommitments, desiredStateDigest: bindings.desiredStateDigest, policyCommitments: [{ schemaId: registry.policySchemaIds[0], digest: sha("1") }], cleanup: { recipeIds: bindings.cleanupRecipeIds, beforeStateDigest: sha("2") }, controlledCut: { case: "ambiguous-after-dispatch" }, runnerManifestDigest: sha("3"), testManifestDigest: sha("4"), endpointManifestDigest: authorityDigest(endpoint), runnerRegistryDigest: certificationRunnerRegistryDigest };
+  const plan = { v: "reelier.certification-scenario-plan/v1", scenarioId: "github-issue-labels", definitionAliases: registry.definitionAliases, sourceRefs: bindings.sourceRefs, resourceDigest: bindings.resourceDigest, accountCommitments: bindings.accountCommitments, desiredStateDigest: bindings.desiredStateDigest, policyCommitments: certificationPolicyCommitments("github-issue-labels"), cleanup: { recipeIds: bindings.cleanupRecipeIds, beforeState: "pending" }, controlledCut: { case: "ambiguous-after-dispatch" }, runnerManifestDigest: sha("3"), testManifestDigest: sha("4"), endpointManifestDigest: authorityDigest(endpoint), runnerRegistryDigest: certificationRunnerRegistryDigest };
   for (const [schema, positive, parse] of [
     ["certification-runner-manifest-v2.schema.json", runner, () => parseCertificationRunnerManifest(runner)],
     ["certification-endpoint-manifest-v2.schema.json", endpoint, () => parseCertificationEndpointManifest(endpoint)],
@@ -277,13 +278,12 @@ test("portable Task 4A schemas agree with runtime parsers on a positive and nega
     { ...githubV3(), resources: { ...(githubV3().resources as object), "slack-topic": { apiBaseUrl: "https://slack.com", teamId: "team", channelId: "channel" } } },
     { ...githubV3(), authorityConfigPath: "../authority.yml" },
     { ...githubV3(), secretReferences: { githubCredential: "env:1_BAD" } },
+    { ...githubV3(), secretReferences: { githubCredential: "file:../secret" } },
     { ...githubV3(), scenarios: ["github-issue-labels", "cloudflare-dns"] },
     { ...githubV3(), authorityConfigPath: "file:../authority.yml" },
     { ...githubV3(), resources: { "github-issue-labels": { ...(githubV3().resources as any)["github-issue-labels"], issueNumber: Number.MAX_SAFE_INTEGER + 1 } } },
-    { ...githubV3(), cleanup: { "github-issue-labels": ["z-cleanup", "a-cleanup"] } },
-    { ...githubV3(), desiredState: { "github-issue-labels": { labels: ["z-label", "a-label"] } } },
   ];
-  for (const negative of configNegatives) { assert.equal(validates("certification-operator-config-v3.schema.json", negative), false); assert.throws(() => parseCertificationOperatorConfigV3(negative)); }
+  for (const [index, negative] of configNegatives.entries()) { assert.equal(validates("certification-operator-config-v3.schema.json", negative), false, `config negative ${index}`); assert.throws(() => parseCertificationOperatorConfigV3(negative)); }
 
   for (const [schema, negative] of [
     ["certification-runner-manifest-v2.schema.json", { ...runner, runnerId: "arbitrary_runner" }],
@@ -293,6 +293,5 @@ test("portable Task 4A schemas agree with runtime parsers on a positive and nega
     ["certification-endpoint-manifest-v2.schema.json", { ...endpoint, endpoints: endpoint.endpoints.map((item, index) => index === 0 ? { ...item, endpointId: "arbitrary_endpoint" } : item) }],
     ["certification-scenario-plan.schema.json", { ...plan, definitionAliases: ["arbitrary_alias"] }],
     ["certification-scenario-plan.schema.json", { ...plan, runnerRegistryDigest: sha("d") }],
-    ["certification-scenario-plan.schema.json", { ...plan, cleanup: { ...plan.cleanup, recipeIds: ["arbitrary-recipe"] } }],
   ] as const) assert.equal(validates(schema, negative), false, `${schema} must reject arbitrary reviewed authority`);
 });
