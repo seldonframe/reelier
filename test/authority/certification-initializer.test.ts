@@ -72,6 +72,16 @@ test("certification init generates deterministic internal identifiers and resume
   assert.equal(await readFile(path.join(authority, "principals", "registry.jsonl"), "utf8"), "");
 });
 
+test("certification Cell resume refuses an unselected endpoint manifest", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "reelier-cert-init-endpoint-substitution-"));
+  const configPath = path.join(root, "certification.local.json");
+  const workspace = path.join(root, "certification");
+  await writeFile(configPath, JSON.stringify(config()), "utf8");
+  await initializeCertification({ configPath, workspace });
+  await writeFile(path.join(workspace, "authority", "endpoints", "hubspot.json"), JSON.stringify({ bearerToken: "must-not-be-in-scaffold" }), "utf8");
+  await assert.rejects(() => initializeCertification({ configPath, workspace }), /selected|endpoint|scaffold/i);
+});
+
 test("concurrent identical certification init converges on one atomic workspace", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "reelier-cert-init-concurrent-"));
   const configPath = path.join(root, "certification.local.json");
