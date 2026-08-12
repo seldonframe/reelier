@@ -1,3 +1,4 @@
+import { createPublicKey } from "node:crypto";
 import path from "node:path";
 import { createAuthorityEvidence, createAuthorityReceipt, createAuthorityReceiptBundle } from "../evidence.js";
 import { signAuthorityDigest } from "../crypto.js";
@@ -9,6 +10,7 @@ import type { DispatchOutcome, DispatchPublication, DispatchRequestState } from 
 import type { CertificationLifecycleAuthorityMaterial } from "./lifecycle-authority.js";
 import { certificationWorkspaceRoot, confinedExistingDirectory, ensureConfinedDirectory, listConfinedFileNames, publishPrivateContentAddressed, readConfinedFile } from "./filesystem.js";
 import { AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST } from "../adapter-contract.js";
+import { verifyAuthorityReceiptBundle } from "../verify.js";
 
 export interface CertificationReceiptExtensionV1 { readonly v: "reelier.certification-receipt-extension/v1"; readonly receiptDigest: string; readonly adapterContractDigest: string; readonly signerId: string; readonly signature: Readonly<{ alg: "ed25519"; sig: string }> }
 
@@ -18,7 +20,7 @@ export function createCertificationLifecycleReceiptPublication(input: Readonly<{
   return Object.freeze({ async publish(value: Parameters<DispatchPublication["publish"]>[0]) {
     await certificationWorkspaceRoot(input.rootDir);
     await local.publish(value);
-    const recovered = (value.state as any).contract ? undefined : await priorBundle(input.rootDir, value.state.effectDigest);
+    const recovered = (value.state as any).contract ? undefined : await priorBundle(input.rootDir, value.state.effectDigest, input.lifecycle, input.signedGrants);
     if (recovered && recovered.receipt.value.receiptId === portableReceiptId(value.state.reservation.reservationId, value.phase, value.outcome.resultDigest)) {
       const reconciliation = recovered.evidence.value.reconciliation;
       if (reconciliation.verdict !== (value.outcome.reconciliationStatus ?? "not-attempted") || reconciliation.normalizedProjectionDigest !== (value.outcome.normalizedProjectionDigest ?? null)) throw new TypeError("portable receipt recovery conflicts with the durable terminal receipt");
@@ -53,7 +55,24 @@ function portable(state: DispatchRequestState, outcome: DispatchOutcome, phase: 
 
 function portableReceiptId(reservationId: string, phase: string, resultDigest: string): string { return `receipt_${authorityDigest({ reservationId, phase, result: resultDigest }).slice(7, 31)}`; }
 
-async function priorBundle(root: string, effectDigest: string): Promise<AuthorityReceiptBundle | undefined> { const directory = await confinedExistingDirectory(root, ["portable"]); if (!directory) return undefined; const matches: AuthorityReceiptBundle[] = []; for (const name of await listConfinedFileNames(root, directory)) { if (!name.endsWith(".json")) continue; const bundle = parseAuthorityReceiptBundle(JSON.parse((await readConfinedFile(root, directory, name)).toString("utf8"))); if (bundle.transportEffect.digest === effectDigest) matches.push(bundle); } if (matches.length === 0) return undefined; const digests = matches.map(bundle => authorityDigest(bundle.receipt.value)); if (new Set(digests).size !== matches.length) throw new TypeError("portable receipt recovery chain contains duplicate nodes"); const roots = matches.filter(bundle => bundle.receipt.value.priorReceiptDigest === null); if (roots.length !== 1) throw new TypeError("portable receipt recovery chain is forked or incomplete"); let head = roots[0]!, visited = 1; for (;;) { const digest = authorityDigest(head.receipt.value), successors = matches.filter(bundle => bundle.receipt.value.priorReceiptDigest === digest); if (successors.length === 0) break; if (successors.length !== 1) throw new TypeError("portable receipt recovery chain is forked or incomplete"); head = successors[0]!; visited += 1; } if (visited !== matches.length) throw new TypeError("portable receipt recovery chain is forked or incomplete"); return head; }
+async function priorBundle(root: string, effectDigest: string, lifecycle: CertificationLifecycleAuthorityMaterial, signedGrants: readonly any[]): Promise<AuthorityReceiptBundle | undefined> {
+  const directory = await confinedExistingDirectory(root, ["portable"]); if (!directory) return undefined;
+  const matches: AuthorityReceiptBundle[] = [];
+  for (const name of await listConfinedFileNames(root, directory)) { if (!name.endsWith(".json")) continue; const bundle = parseAuthorityReceiptBundle(JSON.parse((await readConfinedFile(root, directory, name)).toString("utf8"))); if (bundle.transportEffect.digest === effectDigest) matches.push(bundle); }
+  if (matches.length === 0) return undefined;
+  const digests = matches.map(bundle => authorityDigest(bundle.receipt.value)); if (new Set(digests).size !== matches.length) throw new TypeError("portable receipt recovery chain contains duplicate nodes");
+  const roots = matches.filter(bundle => bundle.receipt.value.priorReceiptDigest === null); if (roots.length !== 1) throw new TypeError("portable receipt recovery chain is forked or incomplete");
+  const tenant = roots[0]!.receipt.value.decisionContext.tenant, directPrincipal = signedGrants.at(-1)?.grant?.grantee;
+  if (typeof tenant !== "string" || typeof directPrincipal !== "string") throw new TypeError("portable receipt recovery authority is incomplete");
+  const trustRoots = [
+    ...[...lifecycle.direct.values()].map(key => ({ tenant, signerId: key.descriptor.keyId, principalId: key.descriptor.purpose === "delegation-grant" ? signedGrants[0]?.grant?.grantor : directPrincipal, publicKey: descriptorPublicKey(key.descriptor.publicKeySpkiBase64), purposes: [key.descriptor.purpose] })),
+    ...[...lifecycle.artifacts.values()].map(key => ({ tenant, signerId: key.descriptor.keyId, principalId: directPrincipal, publicKey: descriptorPublicKey(key.descriptor.publicKeySpkiBase64), purposes: [key.descriptor.purpose] })),
+  ] as any;
+  let head = roots[0]!, prior: AuthorityReceipt | undefined, visited = 0;
+  for (;;) { verifyAuthorityReceiptBundle(head, { tenant, trustRoots, ...(prior ? { priorReceipt: prior } : {}) }); visited += 1; const digest = authorityDigest(head.receipt.value), successors = matches.filter(bundle => bundle.receipt.value.priorReceiptDigest === digest); if (successors.length === 0) break; if (successors.length !== 1) throw new TypeError("portable receipt recovery chain is forked or incomplete"); prior = head.receipt.value; head = successors[0]!; }
+  if (visited !== matches.length) throw new TypeError("portable receipt recovery chain is forked or incomplete"); return head;
+}
+function descriptorPublicKey(base64: string) { return createPublicKey({ key: Buffer.from(base64, "base64"), format: "der", type: "spki" }); }
 async function save(root: string, bundle: AuthorityReceiptBundle): Promise<void> { await publishPrivateContentAddressed(root, "portable", `${bundle.receipt.value.receiptId}.json`, `${JSON.stringify(bundle)}\n`); const directory = await ensureConfinedDirectory(root, ["portable"]); const stored = parseAuthorityReceiptBundle(JSON.parse((await readConfinedFile(root, directory, `${bundle.receipt.value.receiptId}.json`)).toString("utf8"))); if (authorityDigest(stored) !== authorityDigest(bundle)) throw new TypeError("portable receipt publication conflicts with immutable receipt"); }
 
 function extensionFor(bundle: AuthorityReceiptBundle, lifecycle: CertificationLifecycleAuthorityMaterial): CertificationReceiptExtensionV1 { const key = lifecycle.direct.get("authority-receipt"); if (!key) throw new TypeError("receipt extension signer is absent"); const body = { v: "reelier.certification-receipt-extension/v1" as const, receiptDigest: authorityDigest(bundle.receipt.value), adapterContractDigest: AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST, signerId: key.descriptor.keyId }; return Object.freeze({ ...body, signature: signAuthorityDigest(key.privateKey, "authority-receipt", authorityDigest(body)) }); }
