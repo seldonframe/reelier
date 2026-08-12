@@ -1,6 +1,6 @@
 import { createHash, createPublicKey, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { open, readdir, rename, unlink } from "node:fs/promises";
+import { open, readdir, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { CertificationCellHost } from "./cell.js";
 import { certificationCellHostInternalState } from "./cell.js";
@@ -25,10 +25,10 @@ import { githubIssueLabelsAlias, githubIssueLabelsDefinitionDigest, githubIssueL
 import { ensureConfinedDirectory, readUnlinkedFile } from "./filesystem.js";
 import { assertLinuxAuthorityCellHost } from "../host/platform.js";
 
-export type HermeticGitHubMode = "normal" | "source-drift" | "effect-drift" | "provider-503" | "accessor-response" | "cut-after-budget" | "cut-after-dispatched" | "cut-after-send-intent" | "pause-after-dispatched";
-export interface GitHubHermeticRunnerResult { readonly requestId: string; readonly status: "acknowledged" | "refused" | "failed" | "pending-reconciliation"; readonly success: false; readonly providerWrites: number; readonly reservationId: string | null }
-export interface GitHubIssueLabelsHermeticComposition { run(input: Readonly<{ bearerToken: string; requestId: string }>): Promise<GitHubHermeticRunnerResult>; recover(): Promise<readonly string[]>; status(input: Readonly<{ bearerToken: string; requestId: string }>): Promise<GitHubHermeticRunnerResult> }
-type JournalPhase = "reserved" | "budget-intent" | "budget-consumed" | "dispatched" | "provider-send-intent" | "acknowledged" | "refused" | "failed" | "pending-reconciliation";
+export type HermeticGitHubMode = "normal" | "source-drift" | "effect-drift" | "provider-503" | "accessor-response" | "cut-after-budget" | "cut-after-dispatched" | "cut-after-send-intent" | "cut-after-apply" | "pause-after-dispatched";
+export interface GitHubHermeticRunnerResult { readonly requestId: string; readonly status: "acknowledged" | "refused" | "failed" | "pending-reconciliation" | "duplicate" | "conflict" | "cleaned"; readonly success: false; readonly providerWrites: number; readonly reservationId: string | null; readonly labels?: readonly string[] }
+export interface GitHubIssueLabelsHermeticComposition { run(input: Readonly<{ bearerToken: string; requestId: string }>): Promise<GitHubHermeticRunnerResult>; conflict(input: Readonly<{ bearerToken: string; requestId: string }>): Promise<GitHubHermeticRunnerResult>; cleanup(input: Readonly<{ bearerToken: string; requestId: string }>): Promise<GitHubHermeticRunnerResult>; recover(): Promise<readonly string[]>; status(input: Readonly<{ bearerToken: string; requestId: string }>): Promise<GitHubHermeticRunnerResult> }
+type JournalPhase = "reserved" | "budget-intent" | "budget-consumed" | "dispatched" | "provider-send-intent" | "provider-applied" | "acknowledged" | "cleaned" | "refused" | "failed" | "pending-reconciliation";
 interface Journal { readonly v: "reelier.github-certification-journal/v1"; readonly requestId: string; readonly requestDigest: string; readonly reservationId: string; readonly allocationId: string; readonly effectDigest: string; readonly permitSnapshotDigest: string; readonly phase: JournalPhase; readonly providerWrites: number; readonly signerId?: string; readonly signature?: Readonly<{ alg: "ed25519"; sig: string }> }
 type Issue = Readonly<{ owner: string; repo: string; issueNumber: number; issueState: string; labels: readonly string[] }>;
 
@@ -38,7 +38,7 @@ export async function createGitHubIssueLabelsHermeticComposition(cell: Certifica
   const state = certificationCellHostInternalState(cell);
   const journalAuthority = state.hermeticGitHubAuthority();
   closed(options, ["mode"], "GitHub hermetic composition options");
-  const modes: readonly string[] = ["normal", "source-drift", "effect-drift", "provider-503", "accessor-response", "cut-after-budget", "cut-after-dispatched", "cut-after-send-intent", "pause-after-dispatched"];
+  const modes: readonly string[] = ["normal", "source-drift", "effect-drift", "provider-503", "accessor-response", "cut-after-budget", "cut-after-dispatched", "cut-after-send-intent", "cut-after-apply", "pause-after-dispatched"];
   if (!modes.includes(options.mode)) throw new TypeError("GitHub hermetic composition mode is invalid");
   const config = parseCertificationOperatorConfigV3(JSON.parse((await readUnlinkedFile(path.join(state.workspace, "config.json"))).toString("utf8")));
   if (config.scenarios.length !== 1 || config.scenarios[0] !== "github-issue-labels") throw new TypeError("GitHub runner requires the exact selected scenario");
@@ -54,10 +54,9 @@ export async function createGitHubIssueLabelsHermeticComposition(cell: Certifica
   const journalRoot = await ensureConfinedDirectory(state.workspace, ["authority", "github-label-runner"]);
   const ledgerRoot = await ensureConfinedDirectory(state.workspace, ["authority", "github-label-runner", "ledger"]);
   const decisionRoot = await ensureConfinedDirectory(state.workspace, ["authority", "github-label-runner", "decisions"]);
-  const provider = createBrandedProvider(resource, desired, options.mode);
+  const provider = await createBrandedProvider(journalRoot, resource, desired, options.mode);
   const gateRuntime = await buildGate({ state, activation, constraints, provider, ledgerRoot, decisionRoot, resource, desired });
   const requestIdsByReservation = new Map<string, string>();
-  let providerWrites = 0;
   let controlledCut: ControlledCut | undefined;
   const coordinator = createDispatchCoordinator(gateRuntime.ledger, {
     async dispatch(dispatchState) {
@@ -68,22 +67,30 @@ export async function createGitHubIssueLabelsHermeticComposition(cell: Certifica
       if (options.mode === "pause-after-dispatched") await new Promise(resolve => setTimeout(resolve, 500));
       await saveJournal(journalRoot, { ...current, phase: "provider-send-intent" }, journalAuthority);
       if (options.mode === "cut-after-send-intent") { controlledCut = new ControlledCut(); throw controlledCut; }
-      const rawResponse = await provider.replaceLabels(dispatchState.effect); providerWrites += 1;
+      const rawResponse = await provider.replaceLabels(dispatchState.effect);
+      await saveJournal(journalRoot, { ...current, phase: "provider-applied", providerWrites: (await provider.snapshot()).writes }, journalAuthority);
+      if (options.mode === "cut-after-apply") { controlledCut = new ControlledCut(); throw controlledCut; }
       const response = normalizeProviderAcknowledgment(rawResponse);
       if (response.status < 200 || response.status >= 300) return { kind: "definitive-failure" as const, resultDigest: authorityDigest(response), providerStatus: response.status, reconciliationStatus: "not-attempted" as const };
       return { kind: "acknowledged" as const, resultDigest: authorityDigest(response), providerStatus: response.status, reconciliationStatus: "not-attempted" as const };
     },
+    async reconcile(_state, prior) { if (prior.kind === "definitive-failure") return prior; const snapshot = await provider.snapshot(); const matched = authorityDigest(snapshot.labels) === authorityDigest([...desired].sort()); return { kind: matched ? "acknowledged" as const : "ambiguous" as const, resultDigest: authorityDigest({ v: "reelier.github-reconciliation/v1", labels: snapshot.labels }), reconciliationStatus: matched ? "matched" as const : "conflict" as const, normalizedProjectionDigest: authorityDigest(snapshot.labels) }; },
   });
 
   async function executeRun(value: Readonly<{ bearerToken: string; requestId: string }>): Promise<GitHubHermeticRunnerResult> {
     closed(value, ["bearerToken", "requestId"], "GitHub runner call"); validateRequestId(value.requestId);
     const accessPermit = await state.issueHermeticGitHubPermit(value.bearerToken); await state.revalidateHermeticGitHubPermit(accessPermit);
     const prior = await loadJournal(journalRoot, value.requestId, journalAuthority); if (prior) return view(prior);
+    for (const name of await readdir(journalRoot)) { if (!name.endsWith(".journal.json")) continue; const existingId = name.slice(0, -13); const existing = await loadJournal(journalRoot, existingId, journalAuthority); if (existing?.phase === "acknowledged") { const snapshot = await provider.snapshot(); return Object.freeze({ requestId: value.requestId, status: "duplicate" as const, success: false as const, providerWrites: snapshot.writes, reservationId: existing.reservationId }); } }
     const permit = await state.issueHermeticGitHubPermit(value.bearerToken);
     const request = { v: "reelier.outcome-request/v1", requestId: value.requestId, sourceRefs: { issue: "issue_1" }, choices: {} };
     const authenticated = authenticateOutcomeRequest({ tenant: activation.authorityCellId, requester: activation.principalId, definitionAlias: githubIssueLabelsAlias, request, executionContext: { v: "reelier.authority-execution-context/v1", taskId: activation.taskId, principalId: activation.principalId, grantId: activation.grantId, grantDigest: activation.signedRootGrant.digest, allocationId: activation.allocationId, runtimeSessionId: activation.runtimeSessionId, jobId: activation.jobId, authorityCellId: activation.authorityCellId } });
     const decided = await gateRuntime.gate.decide(authenticated);
-    if (decided.kind !== "accepted") throw new Error(`GitHub AuthorityGate refused: ${JSON.stringify(decided)}`);
+    if (decided.kind !== "accepted") {
+      const snapshot = await provider.snapshot();
+      if (decided.kind === "refused" && decided.status.reasonCode === "semantic-duplicate") return Object.freeze({ requestId: value.requestId, status: "duplicate", success: false, providerWrites: snapshot.writes, reservationId: null });
+      throw new Error(`GitHub AuthorityGate refused: ${JSON.stringify(decided)}`);
+    }
     const reservationId = decided.signedDecision.reservationId!;
     requestIdsByReservation.set(reservationId, value.requestId);
     const reservation = await gateRuntime.ledger.getReservation(reservationId); if (!reservation) throw new Error("GitHub reservation missing");
@@ -105,7 +112,7 @@ export async function createGitHubIssueLabelsHermeticComposition(cell: Certifica
     try {
       const outcome = await coordinator.dispatch(decided.handle);
       if (controlledCut) throw controlledCut;
-      journal = { ...(await loadJournal(journalRoot, value.requestId, journalAuthority) ?? journal), phase: outcome.kind === "acknowledged" ? "acknowledged" : outcome.kind === "definitive-failure" ? "failed" : "pending-reconciliation", providerWrites };
+      journal = { ...(await loadJournal(journalRoot, value.requestId, journalAuthority) ?? journal), phase: outcome.kind === "acknowledged" ? "acknowledged" : outcome.kind === "definitive-failure" ? "failed" : "pending-reconciliation", providerWrites: (await provider.snapshot()).writes };
       await saveJournal(journalRoot, journal, journalAuthority); return view(journal);
     } catch (error) { if (error instanceof ControlledCut) throw error; throw error; }
   }
@@ -119,7 +126,7 @@ export async function createGitHubIssueLabelsHermeticComposition(cell: Certifica
       if (!name.endsWith(".journal.json")) continue; const requestId = name.slice(0, -13); await withRequestLock(journalRoot, requestId, async () => { const journal = await loadJournal(journalRoot, requestId, journalAuthority); if (!journal) return;
       const boundReservation = await gateRuntime.ledger.getReservation(journal.reservationId), allocation = await state.delegationAuthority.budget.get(journal.allocationId);
       if (!boundReservation || boundReservation.intent.requestDigest !== journal.requestDigest || boundReservation.intent.effectDigest !== journal.effectDigest || boundReservation.intent.executionContext?.allocationId !== journal.allocationId || !allocation || allocation.taskId !== activation.taskId || allocation.revoked) throw new TypeError("GitHub dispatch journal authority binding is invalid or tampered");
-      const compatible: Record<JournalPhase, readonly string[]> = { reserved: ["reserved"], "budget-intent": ["reserved"], "budget-consumed": ["reserved"], dispatched: ["dispatched", "ambiguous"], "provider-send-intent": ["dispatched", "ambiguous"], acknowledged: ["acknowledged"], refused: ["cancelled", "reconciled"], failed: ["definitive-failure"], "pending-reconciliation": ["ambiguous"] };
+      const compatible: Record<JournalPhase, readonly string[]> = { reserved: ["reserved"], "budget-intent": ["reserved"], "budget-consumed": ["reserved"], dispatched: ["dispatched", "ambiguous"], "provider-send-intent": ["dispatched", "ambiguous"], "provider-applied": ["ambiguous", "dispatched"], acknowledged: ["acknowledged", "reconciled"], cleaned: ["acknowledged", "reconciled"], refused: ["cancelled", "reconciled"], failed: ["definitive-failure"], "pending-reconciliation": ["ambiguous"] };
       if (!compatible[journal.phase].includes(boundReservation.state)) throw new TypeError("GitHub signed journal rollback conflicts with monotonic ledger truth");
       if (journal.phase === "reserved" || journal.phase === "budget-intent") {
         const reservation = await gateRuntime.ledger.getReservation(journal.reservationId);
@@ -145,13 +152,16 @@ export async function createGitHubIssueLabelsHermeticComposition(cell: Certifica
         } else {
           await coordinator.recover(); await saveJournal(journalRoot, { ...journal, phase: "pending-reconciliation" }, journalAuthority);
         }
-      } else if (journal.phase === "provider-send-intent") { await coordinator.recover(); await saveJournal(journalRoot, { ...journal, phase: "pending-reconciliation" }, journalAuthority); }
+      } else if (journal.phase === "provider-send-intent" || journal.phase === "provider-applied") { await coordinator.recover(); const outcome = await coordinator.reconcile(journal.reservationId); await saveJournal(journalRoot, { ...journal, phase: outcome.reconciliationStatus === "matched" ? "acknowledged" : "pending-reconciliation", providerWrites: (await provider.snapshot()).writes }, journalAuthority); }
       recovered.push(journal.requestId);
       });
     }
     return Object.freeze(recovered);
   }
-  return Object.freeze({ run, recover, async status(value: Readonly<{ bearerToken: string; requestId: string }>) { closed(value, ["bearerToken", "requestId"], "GitHub runner status call"); validateRequestId(value.requestId); const accessPermit = await state.issueHermeticGitHubPermit(value.bearerToken); await state.revalidateHermeticGitHubPermit(accessPermit); const journal = await loadJournal(journalRoot, value.requestId, journalAuthority); if (!journal) throw new TypeError("GitHub runner request not found"); return view(journal); } });
+  return Object.freeze({ run, recover,
+    async conflict(value: Readonly<{ bearerToken: string; requestId: string }>) { closed(value, ["bearerToken", "requestId"], "GitHub conflict call"); const accessPermit = await state.issueHermeticGitHubPermit(value.bearerToken); await state.revalidateHermeticGitHubPermit(accessPermit); const snapshot = await provider.snapshot(); const prior = await loadJournal(journalRoot, value.requestId, journalAuthority); if (!prior) throw new TypeError("GitHub conflict requires an existing request"); return Object.freeze({ requestId: value.requestId, status: "conflict" as const, success: false as const, providerWrites: snapshot.writes, reservationId: prior.reservationId }); },
+    async cleanup(value: Readonly<{ bearerToken: string; requestId: string }>) { closed(value, ["bearerToken", "requestId"], "GitHub cleanup call"); const accessPermit = await state.issueHermeticGitHubPermit(value.bearerToken); await state.revalidateHermeticGitHubPermit(accessPermit); const journal = await loadJournal(journalRoot, value.requestId, journalAuthority); if (!journal || journal.phase !== "acknowledged") throw new TypeError("GitHub cleanup requires acknowledged apply"); const snapshot = await provider.restore(); const cleaned = { ...journal, phase: "cleaned" as const, providerWrites: snapshot.writes }; await saveJournal(journalRoot, cleaned, journalAuthority); return Object.freeze({ ...view(cleaned), labels: snapshot.labels }); },
+    async status(value: Readonly<{ bearerToken: string; requestId: string }>) { closed(value, ["bearerToken", "requestId"], "GitHub runner status call"); validateRequestId(value.requestId); const accessPermit = await state.issueHermeticGitHubPermit(value.bearerToken); await state.revalidateHermeticGitHubPermit(accessPermit); const journal = await loadJournal(journalRoot, value.requestId, journalAuthority); if (!journal) throw new TypeError("GitHub runner request not found"); return view(journal); } });
 }
 
 async function buildGate(input: any) {
@@ -171,7 +181,8 @@ async function buildGate(input: any) {
   return { gate, ledger, sourceFor };
 }
 
-function createBrandedProvider(resource: any, desired: readonly string[], mode: HermeticGitHubMode) { let reads = 0; let labels: readonly string[] = ["before"]; return Object.freeze({ async readIssue() { reads += 1; const issue = { owner: resource.owner, repo: resource.repository, issueNumber: resource.issueNumber, issueState: "open", labels: mode === "source-drift" && reads === 2 ? ["drifted"] : labels }; return normalizeIssue(issue); }, async replaceLabels(_effect: unknown) { labels = desired; if (mode === "accessor-response") return Object.create(Object.prototype, { status: { enumerable: true, get() { throw new Error("accessor must not execute"); } }, acknowledgmentId: { enumerable: true, value: "ack" } }); return { status: mode === "provider-503" ? 503 : 200, acknowledgmentId: "ack_1" }; } }); }
+async function createBrandedProvider(root: string, resource: any, desired: readonly string[], mode: HermeticGitHubMode) { const file = path.join(root, "provider-state.json"); let reads = 0; async function load() { try { const raw = inertRecord(JSON.parse((await readUnlinkedFile(file)).toString("utf8")), "GitHub provider state"); exact(raw, ["v", "before", "labels", "writes"], "GitHub provider state"); return { before: normalizeLabels(raw.before), labels: normalizeLabels(raw.labels), writes: raw.writes as number }; } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; const initial = { before: Object.freeze(["before"]), labels: Object.freeze(["before"]), writes: 0 }; await persist(initial); return initial; } } async function persist(state: { before: readonly string[]; labels: readonly string[]; writes: number }) { const temp = `${file}.${randomUUID()}.tmp`; await writeFile(temp, `${JSON.stringify({ v: "reelier.github-hermetic-provider/v1", ...state })}\n`, { flag: "wx", mode: 0o600 }); await rename(temp, file); } await load(); return Object.freeze({ async readIssue() { reads += 1; const state = await load(); return normalizeIssue({ owner: resource.owner, repo: resource.repository, issueNumber: resource.issueNumber, issueState: "open", labels: mode === "source-drift" && reads === 2 ? ["drifted"] : state.labels }); }, async replaceLabels(_effect: unknown) { const state = await load(); await persist({ ...state, labels: Object.freeze([...desired].sort()), writes: state.writes + 1 }); if (mode === "accessor-response") return Object.create(Object.prototype, { status: { enumerable: true, get() { throw new Error("accessor must not execute"); } }, acknowledgmentId: { enumerable: true, value: "ack" } }); return { status: mode === "provider-503" ? 503 : 200, acknowledgmentId: "ack_1" }; }, async snapshot() { const state = await load(); return Object.freeze(state); }, async restore() { const state = await load(); const next = { ...state, labels: state.before, writes: state.writes + 1 }; await persist(next); return Object.freeze(next); } }); }
+function normalizeLabels(value: unknown): readonly string[] { const labels = inertArray(value, "GitHub durable labels"); if (labels.some(item => typeof item !== "string")) throw new TypeError("GitHub durable labels invalid"); return Object.freeze([...(labels as string[])].sort()); }
 function normalizeIssue(value: unknown): Issue { const raw = inertRecord(value, "GitHub issue"); exact(raw, ["owner", "repo", "issueNumber", "issueState", "labels"], "GitHub issue"); const labels = inertArray(raw.labels, "GitHub labels"); if (typeof raw.owner !== "string" || typeof raw.repo !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(raw.owner) || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(raw.repo) || !Number.isSafeInteger(raw.issueNumber) || typeof raw.issueState !== "string" || labels.some(x => typeof x !== "string")) throw new TypeError("GitHub issue response invalid"); return Object.freeze({ owner: raw.owner, repo: raw.repo, issueNumber: raw.issueNumber as number, issueState: raw.issueState, labels: Object.freeze([...(labels as string[])].sort()) }); }
 function normalizeProviderAcknowledgment(value: unknown) { const raw = inertRecord(value, "GitHub acknowledgment"); exact(raw, ["status", "acknowledgmentId"], "GitHub acknowledgment"); if (!Number.isSafeInteger(raw.status) || typeof raw.acknowledgmentId !== "string") throw new TypeError("GitHub acknowledgment invalid"); return Object.freeze({ status: raw.status as number, acknowledgmentId: raw.acknowledgmentId }); }
 function envelope(value: any, digest: string, signerId: string, key: any, purpose: any, signature?: any, index?: number) { return { canonicalBase64: authorityCanonicalBytes(value).toString("base64"), advertisedDigest: digest, signerId, signature: signature ?? signAuthorityDigest(key, purpose, digest), ...(index === undefined ? {} : { index }) }; }
@@ -184,14 +195,14 @@ async function loadJournal(root: string, requestId: string, authority: any): Pro
 function parseJournal(value: unknown, expectedRequestId: string): Journal {
   const raw = inertRecord(value, "GitHub dispatch journal");
   exact(raw, ["v", "requestId", "requestDigest", "reservationId", "allocationId", "effectDigest", "permitSnapshotDigest", "phase", "providerWrites", "signerId", "signature"], "GitHub dispatch journal");
-  const phases: readonly string[] = ["reserved", "budget-intent", "budget-consumed", "dispatched", "provider-send-intent", "acknowledged", "refused", "failed", "pending-reconciliation"];
-  if (raw.v !== "reelier.github-certification-journal/v1" || raw.requestId !== expectedRequestId || !/^sha256:[0-9a-f]{64}$/.test(raw.requestDigest) || typeof raw.reservationId !== "string" || typeof raw.allocationId !== "string" || !/^sha256:[0-9a-f]{64}$/.test(raw.effectDigest) || !/^sha256:[0-9a-f]{64}$/.test(raw.permitSnapshotDigest) || !phases.includes(raw.phase) || !Number.isSafeInteger(raw.providerWrites) || raw.providerWrites < 0 || raw.providerWrites > 1 || typeof raw.signerId !== "string" || !raw.signature || raw.signature.alg !== "ed25519" || typeof raw.signature.sig !== "string") throw new TypeError("GitHub dispatch journal is invalid");
+  const phases: readonly string[] = ["reserved", "budget-intent", "budget-consumed", "dispatched", "provider-send-intent", "provider-applied", "acknowledged", "cleaned", "refused", "failed", "pending-reconciliation"];
+  if (raw.v !== "reelier.github-certification-journal/v1" || raw.requestId !== expectedRequestId || !/^sha256:[0-9a-f]{64}$/.test(raw.requestDigest) || typeof raw.reservationId !== "string" || typeof raw.allocationId !== "string" || !/^sha256:[0-9a-f]{64}$/.test(raw.effectDigest) || !/^sha256:[0-9a-f]{64}$/.test(raw.permitSnapshotDigest) || !phases.includes(raw.phase) || !Number.isSafeInteger(raw.providerWrites) || raw.providerWrites < 0 || typeof raw.signerId !== "string" || !raw.signature || raw.signature.alg !== "ed25519" || typeof raw.signature.sig !== "string") throw new TypeError("GitHub dispatch journal is invalid");
   return Object.freeze(raw as Journal);
 }
 function journalBody(value: Journal) { return { v: value.v, requestId: value.requestId, requestDigest: value.requestDigest, reservationId: value.reservationId, allocationId: value.allocationId, effectDigest: value.effectDigest, permitSnapshotDigest: value.permitSnapshotDigest, phase: value.phase, providerWrites: value.providerWrites }; }
-function assertJournalTransition(prior: Journal, next: Journal) { const stable = ["requestId", "requestDigest", "reservationId", "allocationId", "effectDigest", "permitSnapshotDigest"] as const; if (stable.some(key => prior[key] !== next[key])) throw new TypeError("GitHub dispatch journal identity conflict"); const allowed: Record<JournalPhase, readonly JournalPhase[]> = { reserved: ["budget-intent", "refused"], "budget-intent": ["budget-consumed", "refused"], "budget-consumed": ["dispatched", "refused"], dispatched: ["provider-send-intent", "pending-reconciliation"], "provider-send-intent": ["acknowledged", "failed", "pending-reconciliation"], acknowledged: [], refused: [], failed: [], "pending-reconciliation": [] }; if (!allowed[prior.phase].includes(next.phase)) throw new TypeError("GitHub dispatch journal phase transition is invalid"); }
+function assertJournalTransition(prior: Journal, next: Journal) { const stable = ["requestId", "requestDigest", "reservationId", "allocationId", "effectDigest", "permitSnapshotDigest"] as const; if (stable.some(key => prior[key] !== next[key])) throw new TypeError("GitHub dispatch journal identity conflict"); const allowed: Record<JournalPhase, readonly JournalPhase[]> = { reserved: ["budget-intent", "refused"], "budget-intent": ["budget-consumed", "refused"], "budget-consumed": ["dispatched", "refused"], dispatched: ["provider-send-intent", "pending-reconciliation"], "provider-send-intent": ["provider-applied", "acknowledged", "failed", "pending-reconciliation"], "provider-applied": ["acknowledged", "failed", "pending-reconciliation"], acknowledged: ["cleaned"], cleaned: [], refused: [], failed: [], "pending-reconciliation": ["acknowledged"] }; if (!allowed[prior.phase].includes(next.phase)) throw new TypeError("GitHub dispatch journal phase transition is invalid"); }
 async function withRequestLock<T>(root: string, requestId: string, operation: () => Promise<T>): Promise<T> { const lock = path.join(root, `${requestId}.lock`); let handle; try { handle = await open(lock, "wx", 0o600); await handle.writeFile(`${process.pid}\n`, "utf8"); await handle.sync(); return await operation(); } catch (error) { if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new Error("GitHub dispatch request is busy"); throw error; } finally { if (handle) { await handle.close(); await unlink(lock).catch(() => undefined); } } }
-function view(journal: Journal): GitHubHermeticRunnerResult { const status = journal.phase === "acknowledged" ? "acknowledged" : journal.phase === "refused" ? "refused" : journal.phase === "failed" ? "failed" : "pending-reconciliation"; return Object.freeze({ requestId: journal.requestId, status, success: false, providerWrites: journal.providerWrites, reservationId: journal.reservationId }); }
+function view(journal: Journal): GitHubHermeticRunnerResult { const status = journal.phase === "acknowledged" ? "acknowledged" : journal.phase === "cleaned" ? "cleaned" : journal.phase === "refused" ? "refused" : journal.phase === "failed" ? "failed" : "pending-reconciliation"; return Object.freeze({ requestId: journal.requestId, status, success: false, providerWrites: journal.providerWrites, reservationId: journal.reservationId }); }
 function validateRequestId(value: string) { if (typeof value !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/.test(value)) throw new TypeError("GitHub request id invalid"); }
 function closed(value: unknown, keys: readonly string[], label: string): asserts value is Record<string, any> { const raw = inertRecord(value, label); exact(raw, keys, label); }
 function inertRecord(value: unknown, label: string): Record<string, any> { if (!value || typeof value !== "object" || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype || Reflect.ownKeys(value).some(key => typeof key !== "string" || Object.getOwnPropertyDescriptor(value, key)?.get || Object.getOwnPropertyDescriptor(value, key)?.set)) throw new TypeError(`${label} must be an inert plain object`); return value as Record<string, any>; }
