@@ -1,0 +1,67 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { runAuthorityCommand, parseAuthorityServeMode } from "../../src/authority/cli.js";
+import { createLocalAuthorityRuntime } from "../../src/authority/host/local.js";
+import { createAuthorityHostRuntime } from "../../src/authority/host/runtime.js";
+import { createDispatchCoordinator } from "../../src/authority/host/dispatch.js";
+import { createFileReceiptPublication } from "../../src/authority/host/receipts.js";
+import { validateAuthorityHostConfig } from "../../src/authority/host/config.js";
+import { createCertificationCellHost, certificationTaskShapeDigest } from "../../src/authority/certification/cell.js";
+import { createGitHubIssueLabelsHermeticComposition } from "../../src/authority/certification/github-issue-labels-runner.js";
+import { __testSetAuthorityCellHostPlatform } from "../../src/authority/host/platform.js";
+
+const LINUX_REQUIRED = "AUTHORITY_CELL_LINUX_REQUIRED";
+
+function assertLinuxRequired(error: unknown): boolean {
+  assert.ok(error instanceof Error);
+  assert.equal((error as Error & { code?: unknown }).code, LINUX_REQUIRED);
+  assert.match(error.message, /Windows is supported as a client/i);
+  assert.match(error.message, /WSL.*container.*remote Linux Authority Cell/i);
+  return true;
+}
+
+async function onWindows(operation: () => Promise<void> | void): Promise<void> {
+  const restore = __testSetAuthorityCellHostPlatform("win32");
+  try { await operation(); } finally { restore(); }
+}
+
+test("Windows refuses authority CLI setup and serving before writing its workspace", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-linux-authority-cell-"));
+  try {
+    await onWindows(async () => {
+      for (const positional of [["init"], ["bootstrap"], ["serve"]]) {
+        await assert.rejects(
+          () => runAuthorityCommand({ positional, flags: new Set(), opts: { path: root } }),
+          assertLinuxRequired,
+          positional[0],
+        );
+      }
+    });
+    assert.deepEqual(await readdir(root), []);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("Windows refuses every authority host composition before touching host dependencies", async () => {
+  let accesses = 0;
+  const inaccessible = new Proxy({}, { get() { accesses += 1; throw new Error("authority dependency accessed"); } });
+  await onWindows(async () => {
+    await assert.rejects(() => createLocalAuthorityRuntime(inaccessible as never), assertLinuxRequired);
+    assert.throws(() => createAuthorityHostRuntime(inaccessible as never), assertLinuxRequired);
+    assert.throws(() => createDispatchCoordinator(inaccessible as never, inaccessible as never, inaccessible as never, inaccessible as never, inaccessible as never), assertLinuxRequired);
+    assert.throws(() => createFileReceiptPublication(inaccessible as never), assertLinuxRequired);
+    await assert.rejects(() => createCertificationCellHost(inaccessible as never), assertLinuxRequired);
+    await assert.rejects(() => createGitHubIssueLabelsHermeticComposition(inaccessible as never, inaccessible as never), assertLinuxRequired);
+  });
+  assert.equal(accesses, 0);
+});
+
+test("Windows remains supported for Authority client parsing and offline preparation", async () => {
+  await onWindows(() => {
+    assert.deepEqual(parseAuthorityServeMode({ transport: "http", host: "127.0.0.1", port: "8080" }), { transport: "http", host: "127.0.0.1", port: 8080 });
+    assert.doesNotThrow(() => validateAuthorityHostConfig({ version: 1, tenant: "tenant_1", requester: "operator", definitions: [], ledgerDir: "ledger", decisionDir: "decisions", receiptDir: "receipts", endpoints: [] }, "/authority"));
+    assert.doesNotThrow(() => certificationTaskShapeDigest({ identifiers: { taskId: "task_1", jobCardId: "job_1", rootGrantId: "grant_1", authorityCellId: "cell_1", signerId: "signer_1" }, scenarios: ["github-issue-labels"], constraints: { definitionAliases: [], audiences: [], connectorAccounts: [], projectionPointers: [], riskClasses: [], limits: { maxEffectsPerWindow: 1, windowSeconds: 60, maxEffectsPerSourceTrigger: 1, maxBodyBytes: 1 } } }));
+  });
+});
