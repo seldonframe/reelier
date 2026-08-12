@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { mkdirSync, readdirSync, renameSync } from "node:fs";
 import { lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import path from "node:path";
@@ -215,6 +216,47 @@ test("Windows K1 FIFO confinement refuses substituted roots and linked queue tar
     await rm(parent, { recursive: true, force: true });
   }
 });
+
+test("Windows K1 FIFO confinement final validation refuses a replaced queue identity", async () => {
+  const parent = await fifoRoot();
+  const root = path.join(parent, "root");
+  const external = path.join(parent, "external");
+  await mkdir(root);
+  await mkdir(external);
+  const canary = path.join(external, "canary.txt");
+  const canaryBytes = Buffer.from("queue-replacement-canary\n");
+  await writeFile(canary, canaryBytes);
+  try {
+    let replaced = false;
+    const queue = path.join(root, ".authority-ledger-k1-fifo");
+    const displaced = path.join(external, "displaced-queue");
+    const host = createWindowsK1FifoHost({
+      root,
+      binding: await fifoBinding(root),
+      runtime: { monotonicNow: () => 0, delay: async () => {} },
+      faultInjector(point) {
+        if (point !== "after-fifo-queue-directory-sync" || replaced) return;
+        replaced = true;
+        renameSync(queue, displaced);
+        mkdirSync(queue);
+        const ticketName = requireSingleTicketName(displaced);
+        renameSync(path.join(displaced, ticketName), path.join(queue, ticketName));
+      },
+    });
+    assert.deepEqual(await host.enter({ ticket: 1n, pid: process.pid, nonce: "3".repeat(64), deadline: 100 }), { ok: false, reason: "corruption" });
+    assert.equal(replaced, true);
+    assert.deepEqual(await readFile(canary), canaryBytes);
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+function requireSingleTicketName(directory: string): string {
+  const names = readdirSync(directory);
+  assert.equal(names.length, 1);
+  assert.equal(parseWindowsK1FifoName(names[0])?.kind, "ticket");
+  return names[0];
+}
 
 test("opaque FIFO permit has no serializable state and rejects unrelated hosts", async () => {
   const parent = await fifoRoot();
