@@ -1,11 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { initializeCertification } from "../../src/authority/certification/initializer.js";
 import { preflightCertification } from "../../src/authority/certification/preflight.js";
+import { writeCertificationInputManifests } from "./certification-input-fixture.js";
 
 async function workspace(): Promise<string> {
   const root = await mkdtemp(path.join(tmpdir(), "reelier-cert-preflight-"));
@@ -43,15 +43,16 @@ test("preflight is selected-scenario-only and never resolves or discloses secret
 test("preflight refuses empty runner and test placeholders as semantically absent", async () => {
   const root = await workspace();
   const absent = await preflightCertification({ workspace: root, scenario: "github-issue-labels" });
-  assert.deepEqual(absent.inputs, { runners: { status: "absent", artifacts: [] }, tests: { status: "absent", artifacts: [] } });
+  assert.deepEqual(absent.inputs, { runners: { status: "absent", artifacts: [] }, tests: { status: "absent", artifacts: [] }, plans: { status: "absent", artifacts: [] } });
   await mkdir(path.join(root, "inputs", "runners"), { recursive: true });
   await mkdir(path.join(root, "inputs", "tests"), { recursive: true });
   await writeFile(path.join(root, "inputs", "runners", "github-issue-labels.json"), "{}", "utf8");
   await writeFile(path.join(root, "inputs", "tests", "github-issue-labels.json"), "[]", "utf8");
   const placeholders = await preflightCertification({ workspace: root, scenario: "github-issue-labels" });
-  assert.deepEqual(placeholders.inputs, { runners: { status: "absent", artifacts: [] }, tests: { status: "absent", artifacts: [] } });
+  assert.deepEqual(placeholders.inputs, { runners: { status: "absent", artifacts: [] }, tests: { status: "absent", artifacts: [] }, plans: { status: "absent", artifacts: [] } });
   assert.equal(placeholders.preparationReady, false);
   assert.deepEqual(placeholders.missing.filter(item => item.startsWith("inputs:")), [
+    "inputs:plans:github-issue-labels",
     "inputs:runners:github-issue-labels",
     "inputs:tests:github-issue-labels",
   ]);
@@ -60,33 +61,13 @@ test("preflight refuses empty runner and test placeholders as semantically absen
 test("preflight accepts only closed scenario-bound runner and test manifests", async () => {
   const root = await workspace();
   const runnerDirectory = path.join(root, "inputs", "runners");
-  const testDirectory = path.join(root, "inputs", "tests");
-  await mkdir(runnerDirectory, { recursive: true });
-  await mkdir(testDirectory, { recursive: true });
-  const endpointManifestDigest = `sha256:${"1".repeat(64)}`;
-  const runner = {
-    v: "reelier.certification-runner-manifest/v1",
-    scenarioId: "github-issue-labels",
-    runnerId: "github_issue_labels_certification_v1",
-    endpointManifestDigest,
-    implementationDigest: `sha256:${"2".repeat(64)}`,
-    operations: ["prepare", "authoritative-read", "compile", "reserve", "reread", "dispatch", "reconcile", "receipt", "cleanup"],
-  };
-  const runnerBytes = `${JSON.stringify(runner)}\n`;
-  const runnerDigest = `sha256:${createHash("sha256").update(runnerBytes).digest("hex")}`;
-  const tests = {
-    v: "reelier.certification-test-manifest/v1",
-    scenarioId: "github-issue-labels",
-    suiteId: "github_issue_labels_conformance_v1",
-    runnerManifestDigest: runnerDigest,
-    cases: ["account-binding", "ambiguity", "cleanup", "normal", "redaction", "stale-state"],
-  };
-  await writeFile(path.join(runnerDirectory, "github-issue-labels.json"), runnerBytes, "utf8");
-  await writeFile(path.join(testDirectory, "github-issue-labels.json"), `${JSON.stringify(tests)}\n`, "utf8");
+  await writeCertificationInputManifests(root, ["github-issue-labels"]);
   const ready = await preflightCertification({ workspace: root, scenario: "github-issue-labels" });
   assert.equal(ready.inputs.runners.status, "configured");
   assert.equal(ready.inputs.tests.status, "configured");
+  assert.equal(ready.inputs.plans.status, "configured");
 
+  const runner = JSON.parse(await import("node:fs/promises").then(module => module.readFile(path.join(runnerDirectory, "github-issue-labels.json"), "utf8")));
   await writeFile(path.join(runnerDirectory, "github-issue-labels.json"), JSON.stringify({ ...runner, scenarioId: "slack-topic", extra: true }), "utf8");
   const substituted = await preflightCertification({ workspace: root, scenario: "github-issue-labels" });
   assert.equal(substituted.inputs.runners.status, "absent");
@@ -95,17 +76,11 @@ test("preflight accepts only closed scenario-bound runner and test manifests", a
 
 test("preflight never inventories artifacts mapped to an unselected scenario", async () => {
   const root = await workspace();
-  await mkdir(path.join(root, "inputs", "runners"), { recursive: true });
-  await mkdir(path.join(root, "inputs", "tests"), { recursive: true });
-  for (const scenario of ["github-issue-labels", "slack-topic"]) {
-    const runner = JSON.stringify({ v: "reelier.certification-runner-manifest/v1", scenarioId: scenario, runnerId: `${scenario.replaceAll("-", "_")}_v1`, endpointManifestDigest: `sha256:${"1".repeat(64)}`, implementationDigest: `sha256:${"2".repeat(64)}`, operations: ["prepare", "authoritative-read", "compile", "reserve", "reread", "dispatch", "reconcile", "receipt", "cleanup"] });
-    await writeFile(path.join(root, "inputs", "runners", `${scenario}.json`), runner, "utf8");
-    const runnerDigest = `sha256:${createHash("sha256").update(runner).digest("hex")}`;
-    await writeFile(path.join(root, "inputs", "tests", `${scenario}--conformance.json`), JSON.stringify({ v: "reelier.certification-test-manifest/v1", scenarioId: scenario, suiteId: `${scenario.replaceAll("-", "_")}_v1`, runnerManifestDigest: runnerDigest, cases: ["account-binding", "ambiguity", "cleanup", "normal", "redaction", "stale-state"] }), "utf8");
-  }
+  await writeCertificationInputManifests(root, ["github-issue-labels", "slack-topic"]);
   const report = await preflightCertification({ workspace: root, scenario: "github-issue-labels" });
   assert.deepEqual(report.inputs.runners.artifacts.map(item => item.name), ["github-issue-labels.json"]);
-  assert.deepEqual(report.inputs.tests.artifacts.map(item => item.name), ["github-issue-labels--conformance.json"]);
+  assert.deepEqual(report.inputs.tests.artifacts.map(item => item.name), ["github-issue-labels.json"]);
+  assert.deepEqual(report.inputs.plans.artifacts.map(item => item.name), ["github-issue-labels.json"]);
   assert.doesNotMatch(JSON.stringify(report), /slack-topic/);
 });
 

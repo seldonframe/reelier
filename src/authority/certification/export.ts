@@ -7,6 +7,7 @@ import { createCertificationReadinessCandidate, parseCertificationReadinessCandi
 import { CERTIFICATION_SCENARIOS, CERTIFICATION_SCENARIO_IDS, type CertificationScenarioId } from "./scenarios.js";
 import { certificationWorkspaceRoot, confinedExistingDirectory, publishPrivateContentAddressed, readConfinedFile } from "./filesystem.js";
 import { createCertificationSelectionCommitment, recomputeCertificationSelectionCommitment } from "./commitment.js";
+import { CERTIFICATION_PROVIDER_SCENARIO_IDS, certificationRunnerRegistryDigest } from "./runner-registry.js";
 
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
 // Local filesystem checks are preparation evidence only; no export claim verifies exclusive confinement.
@@ -91,7 +92,7 @@ export function verifyCertificationExport(value: unknown): Readonly<{ digest: st
   if (!same(scenarios, preflight.scenarios) || !same(scenarios, readiness.scenarios)) throw new TypeError("certification export scenario link mismatch");
   if (scenarios.some(scenario => !initialization.scenarios.includes(scenario))) throw new TypeError("certification export selection is not a subset of initialization scenarios");
   verifyPreflightSemantics(config, preflight);
-  if (JSON.stringify(readiness.commitments.resources) !== JSON.stringify(preflight.resources) || JSON.stringify(readiness.commitments.cleanup) !== JSON.stringify(preflight.cleanup) || JSON.stringify(readiness.commitments.credentials) !== JSON.stringify(preflight.credentialReferences) || JSON.stringify(readiness.commitments.runners) !== JSON.stringify(preflight.inputs.runners) || JSON.stringify(readiness.commitments.tests) !== JSON.stringify(preflight.inputs.tests) || readiness.commitments.topology !== preflight.topology || readiness.commitments.signatureStatus !== preflight.signatureStatus) throw new TypeError("certification export readiness commitment link mismatch");
+  if (JSON.stringify(readiness.commitments.resources) !== JSON.stringify(preflight.resources) || JSON.stringify(readiness.commitments.cleanup) !== JSON.stringify(preflight.cleanup) || JSON.stringify(readiness.commitments.credentials) !== JSON.stringify(preflight.credentialReferences) || JSON.stringify(readiness.commitments.runners) !== JSON.stringify(preflight.inputs.runners) || JSON.stringify(readiness.commitments.tests) !== JSON.stringify(preflight.inputs.tests) || JSON.stringify(readiness.commitments.plans) !== JSON.stringify(preflight.inputs.plans) || readiness.commitments.runnerRegistryDigest !== preflight.runnerRegistryDigest || readiness.commitments.topology !== preflight.topology || readiness.commitments.signatureStatus !== preflight.signatureStatus) throw new TypeError("certification export readiness commitment link mismatch");
   const rootDigest = assertDigest(root.digest, "certification export digest");
   if (rootDigest !== authorityDigest({ v: root.v, manifest, artifacts: parsedArtifacts })) throw new TypeError("certification export digest mismatch");
   return Object.freeze({ digest: rootDigest, claims: CLAIMS, authorization: "absent", dispatchable: false });
@@ -131,26 +132,29 @@ function verifyPreflightSemantics(config: any, preflight: any): void {
   const cleanup = Object.entries(config.cleanup).map(([scenario, value]) => ({ scenario, digest: authorityDigest(value), status: configured(value) ? "configured" : "missing" })).sort(byScenario);
   const credentialReferences = config.credentialReferences;
   const topology = config.scenarios.includes("fly-topology") ? (config.metadata.some((item: any) => item.section === "flyTopology") ? "configured" : "absent") : "absent";
+  const runnerScenarios = config.scenarios.filter((scenario: string) => (CERTIFICATION_PROVIDER_SCENARIO_IDS as readonly string[]).includes(scenario));
   const missing = [
     ...resources.filter(item => item.status === "missing").map(item => `resource:${item.scenario}`),
     ...cleanup.filter(item => item.status === "missing").map(item => `cleanup:${item.scenario}`),
     ...credentialReferences.filter((item: any) => item.status === "missing").map((item: any) => `credential-reference:${item.slot}`),
-    ...config.scenarios.filter((scenario: string) => !preflight.inputs.runners.artifacts.some((item: any) => item.scenario === scenario)).map((scenario: string) => `inputs:runners:${scenario}`),
-    ...config.scenarios.filter((scenario: string) => !preflight.inputs.tests.artifacts.some((item: any) => item.scenario === scenario)).map((scenario: string) => `inputs:tests:${scenario}`),
+    ...runnerScenarios.filter((scenario: string) => !preflight.inputs.runners.artifacts.some((item: any) => item.scenario === scenario)).map((scenario: string) => `inputs:runners:${scenario}`),
+    ...runnerScenarios.filter((scenario: string) => !preflight.inputs.tests.artifacts.some((item: any) => item.scenario === scenario)).map((scenario: string) => `inputs:tests:${scenario}`),
+    ...runnerScenarios.filter((scenario: string) => !preflight.inputs.plans.artifacts.some((item: any) => item.scenario === scenario)).map((scenario: string) => `inputs:plans:${scenario}`),
     ...(config.scenarios.includes("fly-topology") && topology === "absent" ? ["topology:metadata"] : []),
   ].sort();
-  const runnerStatus = config.scenarios.every((scenario: string) => preflight.inputs.runners.artifacts.some((item: any) => item.scenario === scenario)) ? "configured" : "absent";
-  const testStatus = config.scenarios.every((scenario: string) => preflight.inputs.tests.artifacts.some((item: any) => item.scenario === scenario)) ? "configured" : "absent";
-  if (JSON.stringify(preflight.resources) !== JSON.stringify(resources) || JSON.stringify(preflight.cleanup) !== JSON.stringify(cleanup) || JSON.stringify(preflight.credentialReferences) !== JSON.stringify(credentialReferences) || preflight.inputs.runners.status !== runnerStatus || preflight.inputs.tests.status !== testStatus || preflight.topology !== topology || JSON.stringify(preflight.missing) !== JSON.stringify(missing) || preflight.ok !== (missing.length === 0) || preflight.preparationReady !== (missing.length === 0)) throw new TypeError("certification preflight semantic mismatch");
+  const runnerStatus = runnerScenarios.every((scenario: string) => preflight.inputs.runners.artifacts.some((item: any) => item.scenario === scenario)) ? "configured" : "absent";
+  const testStatus = runnerScenarios.every((scenario: string) => preflight.inputs.tests.artifacts.some((item: any) => item.scenario === scenario)) ? "configured" : "absent";
+  const planStatus = runnerScenarios.every((scenario: string) => preflight.inputs.plans.artifacts.some((item: any) => item.scenario === scenario)) ? "configured" : "absent";
+  if (JSON.stringify(preflight.resources) !== JSON.stringify(resources) || JSON.stringify(preflight.cleanup) !== JSON.stringify(cleanup) || JSON.stringify(preflight.credentialReferences) !== JSON.stringify(credentialReferences) || preflight.inputs.runners.status !== runnerStatus || preflight.inputs.tests.status !== testStatus || preflight.inputs.plans.status !== planStatus || preflight.runnerRegistryDigest !== certificationRunnerRegistryDigest || preflight.topology !== topology || JSON.stringify(preflight.missing) !== JSON.stringify(missing) || preflight.ok !== (missing.length === 0) || preflight.preparationReady !== (missing.length === 0)) throw new TypeError("certification preflight semantic mismatch");
 }
 
 function parsePreflight(value: unknown): any {
   const raw = object(value, "certification preflight");
-  closed(raw, ["v", "configDigest", "selectionDigest", "identifiers", "scenarios", "resources", "cleanup", "credentialReferences", "inputs", "topology", "trust", "signatureStatus", "authorization", "completeness", "missing", "ok", "preparationReady", "digest"], "certification preflight");
+  closed(raw, ["v", "configDigest", "selectionDigest", "identifiers", "scenarios", "resources", "cleanup", "credentialReferences", "inputs", "runnerRegistryDigest", "topology", "trust", "signatureStatus", "authorization", "completeness", "missing", "ok", "preparationReady", "digest"], "certification preflight");
   if (raw.v !== "reelier.certification-preflight/v2" || raw.trust !== "unchecked" || raw.signatureStatus !== "absent" || raw.authorization !== "absent" || raw.completeness !== "unchecked" || typeof raw.ok !== "boolean" || typeof raw.preparationReady !== "boolean") throw new TypeError("certification preflight is invalid");
   assertDigest(raw.configDigest, "certification preflight config digest"); assertDigest(raw.selectionDigest, "certification preflight selection digest");
-  const inputsRaw = object(raw.inputs, "certification preflight inputs"); closed(inputsRaw, ["runners", "tests"], "certification preflight inputs");
-  const body = { v: raw.v, configDigest: raw.configDigest, selectionDigest: raw.selectionDigest, identifiers: parseIdentifiers(raw.identifiers), scenarios: scenarioList(raw.scenarios), resources: commitmentList(raw.resources, "resources"), cleanup: commitmentList(raw.cleanup, "cleanup"), credentialReferences: credentialList(raw.credentialReferences), inputs: { runners: inputSet(inputsRaw.runners), tests: inputSet(inputsRaw.tests) }, topology: enumValue(raw.topology, ["configured", "absent"], "preflight topology"), trust: raw.trust, signatureStatus: raw.signatureStatus, authorization: raw.authorization, completeness: raw.completeness, missing: stringList(raw.missing, "certification preflight missing"), ok: raw.ok, preparationReady: raw.preparationReady };
+  const inputsRaw = object(raw.inputs, "certification preflight inputs"); closed(inputsRaw, ["runners", "tests", "plans"], "certification preflight inputs");
+  const body = { v: raw.v, configDigest: raw.configDigest, selectionDigest: raw.selectionDigest, identifiers: parseIdentifiers(raw.identifiers), scenarios: scenarioList(raw.scenarios), resources: commitmentList(raw.resources, "resources"), cleanup: commitmentList(raw.cleanup, "cleanup"), credentialReferences: credentialList(raw.credentialReferences), inputs: { runners: inputSet(inputsRaw.runners), tests: inputSet(inputsRaw.tests), plans: inputSet(inputsRaw.plans) }, runnerRegistryDigest: assertDigest(raw.runnerRegistryDigest, "certification runner registry digest"), topology: enumValue(raw.topology, ["configured", "absent"], "preflight topology"), trust: raw.trust, signatureStatus: raw.signatureStatus, authorization: raw.authorization, completeness: raw.completeness, missing: stringList(raw.missing, "certification preflight missing"), ok: raw.ok, preparationReady: raw.preparationReady };
   if (assertDigest(raw.digest, "certification preflight digest") !== authorityDigest(body)) throw new TypeError("certification preflight digest mismatch");
   return Object.freeze({ ...body, digest: raw.digest });
 }

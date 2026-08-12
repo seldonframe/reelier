@@ -64,7 +64,7 @@ test("certification init generates deterministic internal identifiers and resume
   assert.deepEqual(endpointNames, ["github-issue-labels.json"]);
   const endpoint = JSON.parse(await readFile(path.join(authority, "endpoints", endpointNames[0]), "utf8"));
   assert.equal(endpoint.scenarioId, "github-issue-labels");
-  assert.deepEqual(endpoint.credentialSlots, ["githubCredential"]);
+  assert.deepEqual(endpoint.endpoints.map((item: { credentialSlot: string }) => item.credentialSlot), ["githubCredential", "githubCredential"]);
   assert.ok(endpoint.endpoints.some((item: { direction: string }) => item.direction === "read"));
   assert.ok(endpoint.endpoints.some((item: { direction: string }) => item.direction === "write"));
   const scaffold = JSON.stringify({ authorityConfig, endpoint });
