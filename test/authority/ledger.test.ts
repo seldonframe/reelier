@@ -331,7 +331,7 @@ test("100 real processes converge on one committed reservation and one dispatch 
   });
 });
 
-test("getReservation reclassifies when its active admission preparation is removed during validation",async()=>{
+test("getReservation classifies unexplained active-preparation deletion as corruption without leaking ENOENT",async()=>{
   await withRoot(async root=>{
     const ledger=new FsAuthorityLedger(root,{now:()=>t0}),created=await ledger.reserve(intent());
     assert.equal(created.ok,true);if(!created.ok)return;
@@ -342,7 +342,7 @@ test("getReservation reclassifies when its active admission preparation is remov
       assert.ok(prep,"the reader owns one active preparation at the validation seam");
       rmSync(path.join(root,prep),{recursive:true});removed=true;
     }} as never);
-    assert.deepEqual(await reader.getReservation(created.reservation.reservationId),created.reservation);
+    await assert.rejects(reader.getReservation(created.reservation.reservationId),error=>error instanceof Error&&error.name==="AuthorityLedgerReadError"&&error.message.includes("corruption"));
     assert.equal(removed,true,"the exact admission-preparation deletion race was exercised");
   });
 });
