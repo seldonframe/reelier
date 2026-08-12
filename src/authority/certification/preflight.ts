@@ -107,9 +107,21 @@ async function inspectInputSet(workspace: string, kind: "runners" | "tests", sce
     const scenario = scenarios.find(candidate => name === `${candidate}.json` || name.startsWith(`${candidate}--`));
     return scenario ? [{ scenario, name }] : [];
   });
-  const artifacts = await Promise.all(mapped.map(async ({ scenario, name }) => Object.freeze({ scenario, name, digest: `sha256:${createHash("sha256").update(await readConfinedFile(workspace, directory, name)).digest("hex")}` })));
+  const inspected = await Promise.all(mapped.map(async ({ scenario, name }) => {
+    const bytes = await readConfinedFile(workspace, directory, name);
+    let parsed: unknown;
+    try { parsed = JSON.parse(bytes.toString("utf8")); } catch { return undefined; }
+    if (!semanticManifestPlaceholder(parsed)) return undefined;
+    return Object.freeze({ scenario, name, digest: `sha256:${createHash("sha256").update(bytes).digest("hex")}` });
+  }));
+  const artifacts = inspected.filter((item): item is NonNullable<typeof item> => item !== undefined);
   const complete = scenarios.every(scenario => artifacts.some(item => item.scenario === scenario));
   return Object.freeze({ status: complete ? "configured" : "absent", artifacts: Object.freeze(artifacts) });
+}
+
+function semanticManifestPlaceholder(value: unknown): boolean {
+  if (Array.isArray(value)) return value.length > 0;
+  return Boolean(value && typeof value === "object" && Object.keys(value as Record<string, unknown>).length > 0);
 }
 
 function unique<T extends string>(values: readonly T[]): readonly T[] { return Object.freeze([...new Set(values)].sort() as T[]); }
