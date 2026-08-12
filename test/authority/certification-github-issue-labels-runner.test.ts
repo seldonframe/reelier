@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { FsAuthorityLedger } from "../../src/authority/host/fs-ledger.js";
@@ -19,7 +19,8 @@ async function fixture(fault: "none" | "source-drift" | "effect-drift" = "none")
     async replaceLabels(effect: unknown) { writes.push(effect); return Object.freeze({ status: 200, acknowledgmentId: "ack_1" }); },
   });
   const cell = Object.freeze({ async revalidateCurrentPermit() { revalidations += 1; } });
-  const ledger = new FsAuthorityLedger(path.join(root, "ledger"), { now: () => Date.parse("2026-08-11T20:00:00.000Z") });
+  const ledgerRoot = path.join(root, "ledger"); await mkdir(ledgerRoot);
+  const ledger = new FsAuthorityLedger(ledgerRoot, { now: () => Date.parse("2026-08-11T20:00:00.000Z") });
   const host = createGitHubIssueLabelsRunnerHost({ cell, ledger, budget, provider, fault });
   return { root, host, ledger, budget, writes, get reads() { return reads; }, get revalidations() { return revalidations; } };
 }
