@@ -118,6 +118,19 @@ test("key descriptors and trust events are closed and enforce the exact role-pur
   assert.throws(() => parseTrustEvents([fixture.events[0], { ...fixture.events[1], previousEventDigest: null }], [fixture.humanDescriptor, fixture.cellDescriptor]), /chain|previous/i);
 });
 
+test("readiness activates a distinct purpose-separated delegation-grant Cell key", () => {
+  const fixture = validFixture();
+  const delegation = generateKeyPairSync("ed25519");
+  const descriptor = keyDescriptor("cell_delegation_key", "authority-cell", "delegation-grant", delegation.publicKey);
+  const activation = trustEvent(2, "activate", authorityDigest(descriptor), authorityDigest(fixture.events[1]));
+  const events = [...fixture.events, activation];
+  assert.equal(parseAuthorityKeyDescriptor(descriptor).purpose, "delegation-grant");
+  const signed = createSignedCertificationReadiness({ readinessCandidate: fixture.readiness, readinessCandidateDigest: authorityDigest(fixture.readiness), preflight: preflightForCandidate(fixture.readiness), humanKeyDescriptor: fixture.humanDescriptor, cellKeyDescriptors: [fixture.cellDescriptor, descriptor], trustEvents: events, humanPrivateKey: fixture.human.privateKey, authorizedAt: later });
+  assert.ok(signed.activatedCellKeyDescriptorDigests.includes(authorityDigest(descriptor)));
+  const reused = keyDescriptor("cell_delegation_reused", "authority-cell", "delegation-grant", createPublicKey({ key: Buffer.from(fixture.cellDescriptor.publicKeySpkiBase64, "base64"), format: "der", type: "spki" }));
+  assert.throws(() => createSignedCertificationReadiness({ readinessCandidate: fixture.readiness, readinessCandidateDigest: authorityDigest(fixture.readiness), preflight: preflightForCandidate(fixture.readiness), humanKeyDescriptor: fixture.humanDescriptor, cellKeyDescriptors: [fixture.cellDescriptor, reused], trustEvents: events, humanPrivateKey: fixture.human.privateKey, authorizedAt: later }), /SPKI|key material|fingerprint.*unique/i);
+});
+
 test("readiness separately activates a purpose-bound human Job Card signer", () => {
   const fixture = validFixture();
   const jobSigner = generateKeyPairSync("ed25519");
