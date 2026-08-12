@@ -89,6 +89,21 @@ test("503 after apply is ambiguous, retains budget, and blocks cleanup until aut
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
+test("pending reconciliation uses an authoritative read and converges without resend", async () => {
+  const f = await fixture("provider-503"); try {
+    const pending = await f.runner.run({ bearerToken: f.credential.token, requestId: "request_503_recover" });
+    assert.equal(pending.status, "pending-reconciliation");
+    assert.equal(pending.providerWrites, 1);
+    const restarted = await createGitHubIssueLabelsHermeticComposition(f.cell);
+    assert.deepEqual(await restarted.recover(), ["request_503_recover"]);
+    const reconciled = await restarted.status({ bearerToken: f.credential.token, requestId: "request_503_recover" });
+    assert.equal(reconciled.status, "acknowledged");
+    assert.equal(reconciled.providerWrites, 1);
+    const cleaned = await restarted.cleanup({ bearerToken: f.credential.token, requestId: "request_503_recover" });
+    assert.equal(cleaned.status, "cleaned");
+  } finally { await rm(f.root, { recursive: true, force: true }); }
+});
+
 for (const mode of ["cut-after-budget", "cut-after-dispatched", "cut-after-send-intent"] as const) test(`${mode} recovery converges without resending`, async () => { const f = await fixture(mode); try { await assert.rejects(() => f.runner.run({ bearerToken: f.credential.token, requestId: `request_${mode}` }), /controlled cut/i); const restarted = await createGitHubIssueLabelsHermeticComposition(f.cell); const recovered = await restarted.recover(); const status = await restarted.status({ bearerToken: f.credential.token, requestId: `request_${mode}` }); assert.equal(status.providerWrites <= 1, true); assert.equal(recovered.includes(`request_${mode}`), true); const budget = await f.delegation.budget.get(f.initialized.identifiers.rootGrantId); assert.equal(budget?.remaining, mode === "cut-after-budget" ? 2 : 1); if (mode !== "cut-after-budget") assert.equal(status.status, "pending-reconciliation"); } finally { await rm(f.root, { recursive: true, force: true }); } });
 
 test("well-shaped journal tampering refuses recovery without budget mutation or provider action", async () => {
