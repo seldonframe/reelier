@@ -117,7 +117,7 @@ async function activateCertificationPrincipalSession(input: Readonly<{ workspace
 
 export interface CertificationDispatchPermit { readonly kind: "certification-dispatch-permit" }
 export interface CertificationCellHost {
-  activateRootTask(input: Readonly<{ jobCard: unknown; jobCardTrustPin: JobCardTrustPinV1; delegationKeyDescriptor?: unknown; delegationPrivateKey?: KeyObject; constraints: DelegationConstraints; effects: number; issuedAt: string; expiresAt: string }>): Promise<CertificationCellActivationV1>;
+  activateRootTask(input: Readonly<{ jobCard: unknown; jobCardTrustPin: JobCardTrustPinV1; constraints: DelegationConstraints; effects: number; issuedAt: string; expiresAt: string }>): Promise<CertificationCellActivationV1>;
   activatePrincipalSession(): Promise<PrincipalCredential>;
   verifyDispatchReadiness(input: Readonly<{ scenario: CertificationScenarioId; bearerToken: string }>): Promise<CertificationDispatchPermit>;
   revalidateDispatchPermit(permit: CertificationDispatchPermit): Promise<void>;
@@ -155,14 +155,15 @@ export async function createCertificationCellHost(input: Readonly<{ workspace: s
   const workspace = loaded.root;
   const configuredTrustPinPath = await canonicalExternalTrustPin(workspace, input.currentTrustPinPath);
   const currentTrustPinPathDigest = trustPinPathDigest(configuredTrustPinPath);
-  const hermeticAuthority = input.lifecycleAuthority === undefined ? undefined : await bindHermeticGitHubAuthority(configuredTrustPinPath, input.lifecycleAuthority, loaded.initialization.identifiers, input.now?.() ?? new Date());
+  if (!input.lifecycleAuthority) throw new TypeError("opaque certification lifecycle authority is required");
+  const hermeticAuthority = await bindHermeticGitHubAuthority(configuredTrustPinPath, input.lifecycleAuthority, loaded.initialization.identifiers, input.now?.() ?? new Date());
   const host: CertificationCellHost = {
     activateRootTask: async (values: Parameters<CertificationCellHost["activateRootTask"]>[0]) => {
       assertLinuxAuthorityCellHost();
-      const lifecycleDelegation = hermeticAuthority?.lifecycle.direct.get("delegation-grant");
-      const expected = ["jobCard", "jobCardTrustPin", ...(lifecycleDelegation ? [] : ["delegationKeyDescriptor", "delegationPrivateKey"]), "constraints", "effects", "issuedAt", "expiresAt"];
+      const lifecycleDelegation = hermeticAuthority.lifecycle.direct.get("delegation-grant")!;
+      const expected = ["jobCard", "jobCardTrustPin", "constraints", "effects", "issuedAt", "expiresAt"];
       closedOwnKeys(values, expected, "certification root activation input");
-      return activateCertificationRootTask({ jobCard: values.jobCard, jobCardTrustPin: values.jobCardTrustPin, delegationKeyDescriptor: lifecycleDelegation?.descriptor ?? values.delegationKeyDescriptor, delegationPrivateKey: lifecycleDelegation?.privateKey ?? values.delegationPrivateKey!, constraints: values.constraints, effects: values.effects, issuedAt: values.issuedAt, expiresAt: values.expiresAt, workspace, currentTrustPinPath: configuredTrustPinPath, currentTrustPinPathDigest, delegationAuthority: input.delegationAuthority });
+      return activateCertificationRootTask({ jobCard: values.jobCard, jobCardTrustPin: values.jobCardTrustPin, delegationKeyDescriptor: lifecycleDelegation.descriptor, delegationPrivateKey: lifecycleDelegation.privateKey, constraints: values.constraints, effects: values.effects, issuedAt: values.issuedAt, expiresAt: values.expiresAt, workspace, currentTrustPinPath: configuredTrustPinPath, currentTrustPinPathDigest, delegationAuthority: input.delegationAuthority });
     },
     activatePrincipalSession: (...args: []) => {
       if (args.length !== 0) return Promise.reject(new TypeError("certification principal activation accepts no arguments"));
@@ -176,8 +177,25 @@ export async function createCertificationCellHost(input: Readonly<{ workspace: s
   };
   const frozen = Object.freeze(host);
   const hermeticInput = { scenario: "github-issue-labels" as const, workspace, currentTrustPinPath: configuredTrustPinPath, currentTrustPinPathDigest, delegationAuthority: input.delegationAuthority, principalRegistry: input.principalRegistry, now: input.now };
-  certificationCellHosts.set(frozen, Object.freeze({ workspace, currentTrustPinPath: configuredTrustPinPath, delegationAuthority: input.delegationAuthority, principalRegistry: input.principalRegistry, ...(input.now ? { now: input.now } : {}), issueHermeticGitHubPermit: (bearerToken: string) => issueHermeticGitHubPermit({ ...hermeticInput, bearerToken }), revalidateHermeticGitHubPermit, hermeticGitHubAuthority: () => { if (!hermeticAuthority) throw new TypeError("activated hermetic GitHub contract and gate signer authority is required"); return hermeticAuthority; } }));
+  certificationCellHosts.set(frozen, Object.freeze({ workspace, currentTrustPinPath: configuredTrustPinPath, delegationAuthority: input.delegationAuthority, principalRegistry: input.principalRegistry, ...(input.now ? { now: input.now } : {}), issueHermeticGitHubPermit: (bearerToken: string) => issueHermeticGitHubPermit({ ...hermeticInput, bearerToken }), revalidateHermeticGitHubPermit, hermeticGitHubAuthority: () => hermeticAuthority }));
   return frozen;
+}
+
+/** Compatibility-only activation host. It cannot compose runners, permits, receipts, or graphs. */
+export interface LegacyCertificationActivationHost {
+  activateRootTask(input: Readonly<{ jobCard: unknown; jobCardTrustPin: JobCardTrustPinV1; delegationKeyDescriptor: unknown; delegationPrivateKey: KeyObject; constraints: DelegationConstraints; effects: number; issuedAt: string; expiresAt: string }>): Promise<CertificationCellActivationV1>;
+  activatePrincipalSession(): Promise<PrincipalCredential>;
+}
+
+export async function createLegacyCertificationActivationHost(input: Readonly<{ workspace: string; currentTrustPinPath: string; delegationAuthority: DelegationAuthority; principalRegistry: PrincipalRegistry; now?: () => Date }>): Promise<LegacyCertificationActivationHost> {
+  assertLinuxAuthorityCellHost();
+  closedOwnKeys(input, ["workspace", "currentTrustPinPath", "delegationAuthority", "principalRegistry", ...(input.now === undefined ? [] : ["now"])], "legacy certification activation host input");
+  const loaded = await loadInitialization(input.workspace), workspace = loaded.root;
+  const configuredTrustPinPath = await canonicalExternalTrustPin(workspace, input.currentTrustPinPath), currentTrustPinPathDigest = trustPinPathDigest(configuredTrustPinPath);
+  return Object.freeze({
+    activateRootTask: async (values: Parameters<LegacyCertificationActivationHost["activateRootTask"]>[0]) => { closedOwnKeys(values, ["jobCard", "jobCardTrustPin", "delegationKeyDescriptor", "delegationPrivateKey", "constraints", "effects", "issuedAt", "expiresAt"], "legacy certification root activation input"); return activateCertificationRootTask({ jobCard: values.jobCard, jobCardTrustPin: values.jobCardTrustPin, delegationKeyDescriptor: values.delegationKeyDescriptor, delegationPrivateKey: values.delegationPrivateKey, constraints: values.constraints, effects: values.effects, issuedAt: values.issuedAt, expiresAt: values.expiresAt, workspace, currentTrustPinPath: configuredTrustPinPath, currentTrustPinPathDigest, delegationAuthority: input.delegationAuthority }); },
+    activatePrincipalSession: (...args: []) => args.length === 0 ? activateCertificationPrincipalSession({ workspace, delegationAuthority: input.delegationAuthority, principalRegistry: input.principalRegistry, now: input.now?.() }) : Promise.reject(new TypeError("legacy certification principal activation accepts no arguments")),
+  });
 }
 /** Non-barrel host composition bridge. It authenticates the real Cell instance by object identity. */
 export function certificationCellHostInternalState(host: CertificationCellHost): CertificationCellHostInternalState {
