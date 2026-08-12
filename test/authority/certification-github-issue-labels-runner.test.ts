@@ -35,7 +35,7 @@ function compileTimeLifecycleActivationBoundary(): void {
 }
 void compileTimeLifecycleActivationBoundary;
 
-async function fixture(mode: "normal" | "source-drift" | "effect-drift" | "provider-503" | "accessor-response" | "cut-after-budget" | "cut-after-dispatched" | "cut-after-send-intent" | "cut-after-cleanup-publication" | "cut-after-conflict-publication" | "pause-after-dispatched" = "normal", authorityMode: "valid" | "absent" | "substituted" | "contract-substituted" = "valid") {
+async function fixture(mode: "normal" | "source-drift" | "effect-drift" | "provider-503" | "accessor-response" | "cut-after-budget" | "cut-after-dispatched" | "cut-after-send-intent" | "cut-after-cleanup-publication" | "cut-after-conflict-publication" | "cut-after-conflict-receipt-before-extension" | "pause-after-dispatched" = "normal", authorityMode: "valid" | "absent" | "substituted" | "contract-substituted" = "valid") {
   const root = await mkdtemp(path.join(tmpdir(), "reelier-github-cell-"));
   const configPath = path.join(root, "certification.local.json");
   await writeFile(configPath, JSON.stringify({ v: "reelier.certification-operator-config/v3", authorityConfigPath: "authority/authority.yml", evidenceDirectory: "authority/receipts/certification", scenarios: ["github-issue-labels"], resources: { "github-issue-labels": { apiBaseUrl: "https://api.github.com", owner: "fixlyai", repository: "reelier-certification", issueNumber: 1 } }, cleanup: { "github-issue-labels": ["restore-github-labels"] }, desiredState: { "github-issue-labels": { labels: ["certification-after"] } }, metadata: {}, secretReferences: { githubCredential: "env:REELIER_GITHUB_TOKEN" } }), "utf8");
@@ -297,6 +297,19 @@ test("conflict recovery verifies every durable receipt signature before selectin
     await writeFile(path.join(portable, file), `${JSON.stringify(bundle)}\n`);
     const restarted = await createGitHubIssueLabelsHermeticComposition(f.cell);
     await assert.rejects(() => restarted.recover(), /signature|trusted authority|verification/i);
+  } finally { await rm(f.root, { recursive: true, force: true }); }
+});
+
+test("conflict recovery repairs the signed extension after a receipt-before-extension crash", async () => {
+  const f = await fixture("cut-after-conflict-receipt-before-extension"); try {
+    await f.runner.run({ bearerToken: f.credential.token, requestId: "request_conflict_extension_cut" });
+    await assert.rejects(() => f.runner.conflict({ bearerToken: f.credential.token, requestId: "request_conflict_extension_cut", exactBytes: Buffer.from("conflict").toString("base64") }), /controlled cut/i);
+    const receiptRoot = path.join(f.initialized.workspace, "authority", "github-label-runner", "receipts"), portable = path.join(receiptRoot, "portable"), extensions = path.join(receiptRoot, "extensions");
+    assert.equal((await readdir(portable)).length, (await readdir(extensions)).length + 1);
+    const restarted = await createGitHubIssueLabelsHermeticComposition(f.cell);
+    assert.deepEqual(await restarted.recover(), ["request_conflict_extension_cut"]);
+    assert.equal((await readdir(portable)).length, (await readdir(extensions)).length);
+    assert.equal(verifyCertificationTaskReceiptGraph(await restarted.exportGraph({ bearerToken: f.credential.token }), { trustPin: f.pin }).status, "verified");
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
