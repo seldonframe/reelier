@@ -155,6 +155,9 @@ async function dispatchSnapshot(input: Readonly<{ workspace: string; scenario: C
   if (!allocation || allocation.revoked || allocation.taskId !== activation.taskId || allocation.remaining < 1) throw new TypeError("certification effect allocation is exhausted or inactive");
   const preflight = await preflightCertification({ workspace: state.root, scenario: input.scenario });
   if (!preflight.preparationReady || preflight.completeness !== "unchecked") throw new TypeError("certification semantic runner or test readiness is incomplete");
+  const readinessPreflightDigest = (pin.readinessCandidate as { readonly preflightDigest?: unknown }).preflightDigest;
+  const pinnedPreflightDigest = (pin.preflight as { readonly digest?: unknown }).digest;
+  if (preflight.digest !== readinessPreflightDigest || preflight.digest !== pinnedPreflightDigest) throw new TypeError("certification semantic manifests drifted from signed readiness preflight commitment");
   const endpointDirectory = await requireDirectory(authorityRoot, ["endpoints"]);
   const endpoint = parseCertificationEndpointManifest(JSON.parse((await readConfinedFile(authorityRoot, endpointDirectory, `${input.scenario}.json`)).toString("utf8")), input.scenario);
   const inputRoot = await requireDirectory(state.root, ["inputs"]);
