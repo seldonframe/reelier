@@ -159,7 +159,7 @@ export async function createGitHubIssueLabelsHermeticComposition(cell: Certifica
         } else {
           await coordinator.recover(); await saveJournal(journalRoot, { ...journal, phase: "pending-reconciliation" }, journalAuthority);
         }
-      } else if (journal.phase === "provider-send-intent" || journal.phase === "provider-applied") { await coordinator.recover(); const outcome = await coordinator.reconcile(journal.reservationId); await saveJournal(journalRoot, { ...journal, phase: outcome.reconciliationStatus === "matched" ? "acknowledged" : "pending-reconciliation", providerWrites: (await provider.snapshot()).writes }, journalAuthority); }
+      } else if (journal.phase === "provider-send-intent" || journal.phase === "provider-applied" || journal.phase === "pending-reconciliation") { await coordinator.recover(); const outcome = await coordinator.reconcile(journal.reservationId); await saveJournal(journalRoot, { ...journal, phase: outcome.reconciliationStatus === "matched" ? "acknowledged" : "pending-reconciliation", providerWrites: (await provider.snapshot()).writes }, journalAuthority); }
       recovered.push(journal.requestId);
       });
     }
