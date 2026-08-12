@@ -7,6 +7,7 @@ import type { AuthorityIngressOutcome } from "../ingress/mcp.js";
 import type { DelegationAuthority } from "./delegation-service.js";
 import type { StoredSignedGrant } from "../delegation.js";
 import type { AuthorityExecutionContextV1 } from "../types.js";
+import { assertLinuxAuthorityCellHost } from "./platform.js";
 
 export interface AuthorityHostRuntimeDependencies {
   readonly gate: AuthorityGate;
@@ -19,6 +20,7 @@ export interface AuthorityHostRuntimeDependencies {
 }
 
 export function createAuthorityHostRuntime(deps: AuthorityHostRuntimeDependencies) {
+  assertLinuxAuthorityCellHost();
   if (!deps || typeof deps !== "object") throw new TypeError("authority runtime dependencies required");
   const refusal = (requestId: string, reasonCode: string, lifecycleState = "refused"): AuthorityIngressOutcome => Object.freeze({ requestId, verdict: "refused", reasonCode, lifecycleState });
   const accepted = (requestId: string, lifecycleState: string, receiptRef?: string): AuthorityIngressOutcome => Object.freeze({ requestId, verdict: "accepted", reasonCode: "accepted", lifecycleState, ...(receiptRef ? { receiptRef } : {}) });

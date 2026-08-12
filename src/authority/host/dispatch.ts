@@ -1,4 +1,5 @@
 import { authorityDigest } from "../wire.js";
+import { assertLinuxAuthorityCellHost } from "./platform.js";
 import { unwrapReservedDispatchHandle, type ReservedDispatchHandle } from "../gate.js";
 import type { AuthorityLedger, LedgerState, StoredReservationIntent } from "../ledger.js";
 
@@ -12,6 +13,7 @@ export interface DispatchCoordinator { dispatch(handle: ReservedDispatchHandle):
 export interface DispatchBudget { consumeOnce(input: Readonly<{ allocationId: string; reservationId: string; effects: number }>): Promise<unknown>; returnOnce(input: Readonly<{ allocationId: string; reservationId: string; effects: number }>): Promise<unknown>; releaseConsumedOnce?(input: Readonly<{ allocationId: string; reservationId: string; effects: number }>): Promise<unknown>; }
 
 export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: DispatchAdapter, evidence?: DispatchEvidenceWriter, publication?: DispatchPublication, budget?: DispatchBudget): DispatchCoordinator {
+  assertLinuxAuthorityCellHost();
   const budgetFor = (state: DispatchRequestState): { allocationId: string; reservationId: string; effects: number } | undefined => {
     const context = state.reservation.intent.executionContext;
     return context ? { allocationId: context.allocationId, reservationId: state.reservation.reservationId, effects: 1 } : undefined;

@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import path from "node:path";
 import { authorityCanonicalBytes, authorityDigest } from "../wire.js";
 import type { DispatchPublication, DispatchRequestState, DispatchOutcome } from "./dispatch.js";
+import { assertLinuxAuthorityCellHost } from "./platform.js";
 
 /**
  * Minimal local publication used by the host before a terminal ledger transition.
@@ -37,6 +38,7 @@ function fileName(receiptRef: string): string {
 
 /** Creates an immutable, restart-safe local receipt/evidence publication. */
 export function createFileReceiptPublication(options: FileReceiptPublicationOptions): DispatchPublication {
+  assertLinuxAuthorityCellHost();
   const root = path.resolve(options.rootDir);
   return Object.freeze({
     async publish(input: Readonly<{ phase: "dispatch" | "cancelled" | "ambiguous" | "reconcile"; state: DispatchRequestState; outcome: DispatchOutcome; dispatchedRequestDigest: string | null; priorReceiptDigest?: string | null }>) {

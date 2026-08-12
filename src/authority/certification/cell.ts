@@ -17,6 +17,7 @@ import { parseCertificationEndpointManifest, parseCertificationRunnerManifest, p
 import { certificationRunnerRegistryDigest, getCertificationRunnerRegistryEntry } from "./runner-registry.js";
 import { preflightCertification } from "./preflight.js";
 import { CERTIFICATION_SCENARIO_IDS, type CertificationScenarioId } from "./scenarios.js";
+import { assertLinuxAuthorityCellHost } from "../host/platform.js";
 
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
 
@@ -62,6 +63,7 @@ async function activateCertificationRootTask(input: Readonly<{
   expiresAt: string;
   delegationAuthority: DelegationAuthority;
 }>): Promise<CertificationCellActivationV1> {
+  assertLinuxAuthorityCellHost();
   const state = await loadInitialization(input.workspace);
   const jobCard = normalizeSignedJobCard(input.jobCard);
   const trust = verifyCurrentJobCardTrust(jobCard, input.jobCardTrustPin);
@@ -141,6 +143,7 @@ interface CertificationHermeticGitHubAuthorityInput {
 }
 const certificationCellHosts = new WeakMap<object, CertificationCellHostInternalState>();
 export async function createCertificationCellHost(input: Readonly<{ workspace: string; currentTrustPinPath: string; delegationAuthority: DelegationAuthority; principalRegistry: PrincipalRegistry; now?: () => Date; hermeticGitHubAuthority?: CertificationHermeticGitHubAuthorityInput }>): Promise<CertificationCellHost> {
+  assertLinuxAuthorityCellHost();
   const hostKeys = ["workspace", "currentTrustPinPath", "delegationAuthority", "principalRegistry", ...(input.now === undefined ? [] : ["now"]), ...(input.hermeticGitHubAuthority === undefined ? [] : ["hermeticGitHubAuthority"])];
   closedOwnKeys(input, hostKeys, "certification Cell host input");
   const workspace = (await loadInitialization(input.workspace)).root;
@@ -149,6 +152,7 @@ export async function createCertificationCellHost(input: Readonly<{ workspace: s
   const hermeticAuthority = input.hermeticGitHubAuthority === undefined ? undefined : await bindHermeticGitHubAuthority(configuredTrustPinPath, input.hermeticGitHubAuthority);
   const host: CertificationCellHost = {
     activateRootTask: async (values: Parameters<CertificationCellHost["activateRootTask"]>[0]) => {
+      assertLinuxAuthorityCellHost();
       closedOwnKeys(values, ["jobCard", "jobCardTrustPin", "delegationKeyDescriptor", "delegationPrivateKey", "constraints", "effects", "issuedAt", "expiresAt"], "certification root activation input");
       return activateCertificationRootTask({ jobCard: values.jobCard, jobCardTrustPin: values.jobCardTrustPin, delegationKeyDescriptor: values.delegationKeyDescriptor, delegationPrivateKey: values.delegationPrivateKey, constraints: values.constraints, effects: values.effects, issuedAt: values.issuedAt, expiresAt: values.expiresAt, workspace, currentTrustPinPath: configuredTrustPinPath, currentTrustPinPathDigest, delegationAuthority: input.delegationAuthority });
     },
