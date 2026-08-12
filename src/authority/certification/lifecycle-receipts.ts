@@ -8,11 +8,13 @@ import { authorityDigest, parseAuthorityWire } from "../wire.js";
 import { createFileReceiptPublication } from "../host/receipts.js";
 import type { DispatchOutcome, DispatchPublication, DispatchRequestState } from "../host/dispatch.js";
 import type { CertificationLifecycleAuthorityMaterial } from "./lifecycle-authority.js";
+import { certificationWorkspaceRoot } from "./filesystem.js";
 
 export function createCertificationLifecycleReceiptPublication(input: Readonly<{ rootDir: string; lifecycle: CertificationLifecycleAuthorityMaterial; signedRootGrant: any; now: () => Date }>): DispatchPublication {
   const local = createFileReceiptPublication({ rootDir: path.join(input.rootDir, "local") });
   const prior = new Map<string, AuthorityReceipt>();
   return Object.freeze({ async publish(value: Parameters<DispatchPublication["publish"]>[0]) {
+    await certificationWorkspaceRoot(input.rootDir);
     const published = await local.publish(value);
     const recovered = (value.state as any).contract ? undefined : await priorBundle(input.rootDir, value.state.effectDigest);
     let priorReceipt = prior.get(value.state.reservation.reservationId) ?? recovered?.receipt.value ?? (await chainTail(input.rootDir))?.receipt.value;
