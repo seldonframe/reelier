@@ -2,7 +2,7 @@ import type { DelegationGrant } from "../types.js";
 import { authorityDigest } from "../wire.js";
 import { validateChildDelegationRequest, type StoredSignedGrant } from "../delegation.js";
 import { FsDelegationBudgetLedger } from "./delegation-budget.js";
-import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { CodexSessionGrantBinding } from "./codex-session-activation.js";
 
@@ -30,10 +30,11 @@ interface RootRecord {
 }
 
 export function createDelegationAuthority(input: Readonly<{ root: string; signGrant: (value: DelegationGrant) => Promise<StoredSignedGrant>; now?: () => Date }>): DelegationAuthority {
-  const budgets = new FsDelegationBudgetLedger(input.root);
+  const rootPath = path.resolve(input.root);
+  const budgets = new FsDelegationBudgetLedger(rootPath);
   const roots = new Map<string, RootRecord>();
-  const registryPath = path.join(input.root, "delegation-registry.json");
-  const lockPath = path.join(input.root, "delegation-registry.lock");
+  const registryPath = path.join(rootPath, "delegation-registry.json");
+  const lockPath = path.join(rootPath, "delegation-registry.lock");
   let loaded: Promise<void> | undefined;
 
   async function ensureLoaded(): Promise<void> {
@@ -129,7 +130,7 @@ export function createDelegationAuthority(input: Readonly<{ root: string; signGr
   return Object.freeze({ registerRoot, request, status, taskStatus, resolveSessionBinding, revoke, budget: budgets });
 
   async function loadRegistry(): Promise<void> {
-    await mkdir(input.root, { recursive: true });
+    await ensureRegistryRoot();
     let raw: string;
     try { raw = await readFile(registryPath, "utf8"); } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") { roots.clear(); return; }
@@ -173,6 +174,7 @@ export function createDelegationAuthority(input: Readonly<{ root: string; signGr
   }
 
   async function acquireRegistryLock(): Promise<() => Promise<void>> {
+    await ensureRegistryRoot();
     const started = Date.now();
     for (;;) {
       try { await mkdir(lockPath); return async () => { await rm(lockPath, { recursive: true, force: true }); }; }
@@ -183,6 +185,25 @@ export function createDelegationAuthority(input: Readonly<{ root: string; signGr
         await new Promise(resolve => setTimeout(resolve, 5));
       }
     }
+  }
+
+  async function ensureRegistryRoot(): Promise<void> {
+    const parent = path.dirname(rootPath);
+    await requireUnlinkedDirectory(parent);
+    try { await mkdir(rootPath); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+    await requireUnlinkedDirectory(rootPath);
+    const [canonicalParent, canonicalRoot] = await Promise.all([realpath(parent), realpath(rootPath)]);
+    if (path.relative(canonicalParent, path.dirname(canonicalRoot)) !== "") throw new TypeError("delegation registry directory is not confined to its exact parent");
+  }
+}
+
+async function requireUnlinkedDirectory(target: string): Promise<void> {
+  const resolved = path.resolve(target), parsed = path.parse(resolved);
+  let current = parsed.root;
+  for (const segment of resolved.slice(parsed.root.length).split(path.sep).filter(Boolean)) {
+    current = path.join(current, segment);
+    const info = await lstat(current);
+    if (!info.isDirectory() || info.isSymbolicLink()) throw new TypeError("delegation registry directory is linked or not confined");
   }
 }
 
