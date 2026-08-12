@@ -36,13 +36,13 @@ interface Journal { readonly v: "reelier.github-certification-journal/v1"; reado
 type Issue = Readonly<{ owner: string; repo: string; issueNumber: number; issueState: string; labels: readonly string[] }>;
 
 /** Non-barrel hermetic test composition. Executable authority comes only from the branded real Cell. */
-export async function createGitHubIssueLabelsHermeticComposition(cell: CertificationCellHost, options: Readonly<{ mode: HermeticGitHubMode }>): Promise<GitHubIssueLabelsHermeticComposition> {
+export async function createGitHubIssueLabelsHermeticComposition(cell: CertificationCellHost): Promise<GitHubIssueLabelsHermeticComposition> {
   assertLinuxAuthorityCellHost();
   const state = certificationCellHostInternalState(cell);
   const journalAuthority = state.hermeticGitHubAuthority();
-  closed(options, ["mode"], "GitHub hermetic composition options");
   const modes: readonly string[] = ["normal", "source-drift", "effect-drift", "provider-503", "accessor-response", "cut-after-budget", "cut-after-dispatched", "cut-after-send-intent", "cut-after-apply", "pause-after-dispatched"];
-  if (!modes.includes(options.mode)) throw new TypeError("GitHub hermetic composition mode is invalid");
+  const mode = journalAuthority.lifecycle.schedule as HermeticGitHubMode;
+  if (!modes.includes(mode) || journalAuthority.binding.scheduleDigest !== authorityDigest({ v: "reelier.certification-hermetic-schedule/v1", schedule: mode })) throw new TypeError("GitHub hermetic schedule commitment is invalid");
   const config = parseCertificationOperatorConfigV3(JSON.parse((await readUnlinkedFile(path.join(state.workspace, "config.json"))).toString("utf8")));
   if (config.scenarios.length !== 1 || config.scenarios[0] !== "github-issue-labels") throw new TypeError("GitHub runner requires the exact selected scenario");
   const planFile = JSON.parse((await readUnlinkedFile(path.join(state.workspace, "inputs", "plans", "github-issue-labels.json"))).toString("utf8"));
@@ -58,7 +58,7 @@ export async function createGitHubIssueLabelsHermeticComposition(cell: Certifica
   const ledgerRoot = await ensureConfinedDirectory(state.workspace, ["authority", "github-label-runner", "ledger"]);
   const decisionRoot = await ensureConfinedDirectory(state.workspace, ["authority", "github-label-runner", "decisions"]);
   const receiptRoot = await ensureConfinedDirectory(state.workspace, ["authority", "github-label-runner", "receipts"]);
-  const provider = await createBrandedProvider(journalRoot, resource, desired, options.mode);
+  const provider = await createBrandedProvider(journalRoot, resource, desired, mode);
   const gateRuntime = await buildGate({ state, activation, constraints, provider, ledgerRoot, decisionRoot, resource, desired });
   const requestIdsByReservation = new Map<string, string>();
   let controlledCut: ControlledCut | undefined;
@@ -68,13 +68,13 @@ export async function createGitHubIssueLabelsHermeticComposition(cell: Certifica
       const requestId = requestIdsByReservation.get(dispatchState.reservation.reservationId); if (!requestId) throw new Error("dispatch request binding missing");
       const current = await loadJournal(journalRoot, requestId, journalAuthority); if (!current) throw new Error("dispatch journal missing");
       await saveJournal(journalRoot, { ...current, phase: "dispatched" }, journalAuthority);
-      if (options.mode === "cut-after-dispatched") { controlledCut = new ControlledCut(); throw controlledCut; }
-      if (options.mode === "pause-after-dispatched") await new Promise(resolve => setTimeout(resolve, 500));
+      if (mode === "cut-after-dispatched") { controlledCut = new ControlledCut(); throw controlledCut; }
+      if (mode === "pause-after-dispatched") await new Promise(resolve => setTimeout(resolve, 500));
       await saveJournal(journalRoot, { ...current, phase: "provider-send-intent" }, journalAuthority);
-      if (options.mode === "cut-after-send-intent") { controlledCut = new ControlledCut(); throw controlledCut; }
+      if (mode === "cut-after-send-intent") { controlledCut = new ControlledCut(); throw controlledCut; }
       const rawResponse = await provider.replaceLabels(dispatchState.effect);
       await saveJournal(journalRoot, { ...current, phase: "provider-applied", providerWrites: (await provider.snapshot()).writes }, journalAuthority);
-      if (options.mode === "cut-after-apply") { controlledCut = new ControlledCut(); throw controlledCut; }
+      if (mode === "cut-after-apply") { controlledCut = new ControlledCut(); throw controlledCut; }
       const response = normalizeProviderAcknowledgment(rawResponse);
       if (response.status < 200 || response.status >= 300) return { kind: "definitive-failure" as const, resultDigest: authorityDigest(response), providerStatus: response.status, reconciliationStatus: "not-attempted" as const };
       return { kind: "acknowledged" as const, resultDigest: authorityDigest(response), providerStatus: response.status, reconciliationStatus: "not-attempted" as const };
@@ -102,7 +102,7 @@ export async function createGitHubIssueLabelsHermeticComposition(cell: Certifica
     const read2 = normalizeIssue(await provider.readIssue());
     const expectedResource = read2.owner === resource.owner && read2.repo === resource.repository && read2.issueNumber === resource.issueNumber;
     const effect2 = githubIssueLabelsDefinition.compile({ source: gateRuntime.sourceFor(read2), policy: parseGitHubIssueLabelsPolicy({ desiredLabels: desired }), choices: {} } as any);
-    const effectDigest2 = options.mode === "effect-drift" ? authorityDigest({ effect2, drift: true }) : authorityDigest(effect2);
+    const effectDigest2 = mode === "effect-drift" ? authorityDigest({ effect2, drift: true }) : authorityDigest(effect2);
     const permitSnapshotDigest = authorityDigest({ v: "reelier.github-permit-snapshot/v1", activation: authorityDigest(activation), plan: authorityDigest(planFile), allocationId: activation.allocationId, effectDigest: reservation.intent.effectDigest });
     let journal: Journal = { v: "reelier.github-certification-journal/v1", requestId: value.requestId, requestDigest: authorityDigest(request), reservationId, allocationId: activation.allocationId, effectDigest: reservation.intent.effectDigest, permitSnapshotDigest, phase: "reserved", providerWrites: 0 };
     await saveJournal(journalRoot, journal, journalAuthority);
@@ -113,7 +113,7 @@ export async function createGitHubIssueLabelsHermeticComposition(cell: Certifica
     journal = { ...journal, phase: "budget-intent" }; await saveJournal(journalRoot, journal, journalAuthority);
     await state.delegationAuthority.budget.consumeOnce({ allocationId: activation.allocationId, reservationId, effects: 1 });
     journal = { ...journal, phase: "budget-consumed" }; await saveJournal(journalRoot, journal, journalAuthority);
-    if (options.mode === "cut-after-budget") throw new ControlledCut();
+    if (mode === "cut-after-budget") throw new ControlledCut();
     try {
       const outcome = await coordinator.dispatch(decided.handle);
       if (controlledCut) throw controlledCut;
