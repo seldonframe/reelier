@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { authorityCanonicalBytes, authorityDigest, signAuthorityDigest, signJobCard, signedJobCardDigest } from "../../src/authority/index.js";
 import { connectionAdoptionCommitmentDigest, connectionDescriptorDigest, createOpaqueConnectionRouteRegistry, digestNormalizedMcpToolSchemas } from "../../src/connections.js";
@@ -78,7 +78,11 @@ test("local deployment dispatches once, reconciles, publishes a receipt, and sur
       async dispatch() { dispatches++; return { kind: "acknowledged", resultDigest: authorityDigest({ v: "fake-provider-response/v1", messageId: "provider-message-1" }) }; },
       async reconcile() { reconciliations++; return { kind: "acknowledged", resultDigest: authorityDigest({ v: "fake-read-back/v1", messageId: "provider-message-1" }), reconciliationStatus: "matched", normalizedProjectionDigest: authorityDigest({ v: "fake-message/v1", messageId: "provider-message-1" }) }; },
     };
-    const config = { version: 1 as const, tenant: "tenant_1", requester: "operator", definitions: ["gmail_reply_send_v1"], ledgerDir: path.join(authorityRoot, "ledger"), decisionDir: path.join(authorityRoot, "decisions"), receiptDir: path.join(authorityRoot, "receipts"), gateKeyFile: path.join(authorityRoot, "keys", "local-gate.pem"), endpoints: [], deploymentPath: built.deploymentFile, jobCardTrustPinPath: built.jobCardTrustPinFile };
+    const hostTrustPinPath = path.join(authorityRoot, "trust", "job-card-trust-pin.json");
+    await mkdir(path.dirname(hostTrustPinPath), { recursive: true });
+    await copyFile(built.jobCardTrustEvidenceFile, hostTrustPinPath);
+    assert.equal(hostTrustPinPath.startsWith(`${built.directory}${path.sep}`), false, "host trust pin must remain outside deployment-controlled output");
+    const config = { version: 1 as const, tenant: "tenant_1", requester: "operator", definitions: ["gmail_reply_send_v1"], ledgerDir: path.join(authorityRoot, "ledger"), decisionDir: path.join(authorityRoot, "decisions"), receiptDir: path.join(authorityRoot, "receipts"), gateKeyFile: path.join(authorityRoot, "keys", "local-gate.pem"), endpoints: [], deploymentPath: built.deploymentFile, jobCardTrustPinPath: hostTrustPinPath };
     await assert.rejects(() => createLocalAuthorityRuntime({ ...config, definitions: ["slack_channel_topic_set_v1"] }, { dispatchAdapter: adapter, jobCardTrustPin: built.jobCardTrustPin }), /definitions.*signed Job Card/i);
     const deploymentBytes = await readFile(built.deploymentFile, "utf8");
     const wrongPack = JSON.parse(deploymentBytes) as any;
@@ -100,7 +104,15 @@ test("local deployment dispatches once, reconciles, publishes a receipt, and sur
     await runtime.resolveAdoptedConnection("gmail");
     assert.equal(adoptedRouteOpens, 1);
     const request = { v: "reelier.outcome-request/v1", requestId: "customer-request-1", sourceRefs: { thread: "thread_1" }, choices: {} };
-    const first = await runtime.outcome("gmail_reply_send_v1", request, { tenant: "tenant_1", requester: "operator" });
+    const found = await runtime.jobsSearch!({ query: "customer" }, { tenant: "tenant_1", requester: "operator" }) as any;
+    assert.deepEqual(found.jobs, [{ jobId: "customer_reply", alias: "gmail_reply_send_v1" }]);
+    const aliasLoad = await runtime.jobLoad!({ jobId: "gmail_reply_send_v1" }, { tenant: "tenant_1", requester: "operator" }) as any;
+    assert.equal(aliasLoad.verdict, "refused");
+    const loaded = await runtime.jobLoad!({ jobId: "customer_reply" }, { tenant: "tenant_1", requester: "operator" }) as any;
+    assert.equal(loaded.jobRef, "customer_reply");
+    const aliasInvoke = await runtime.invoke!({ ...request, requestId: "alias-invoke", jobRef: "gmail_reply_send_v1" }, { tenant: "tenant_1", requester: "operator" });
+    assert.equal(aliasInvoke.verdict, "refused");
+    const first = await runtime.invoke!({ ...request, jobRef: "customer_reply" }, { tenant: "tenant_1", requester: "operator" });
     assert.equal(first.verdict, "accepted", JSON.stringify(first));
     assert.equal(first.lifecycleState, "reconciled");
     assert.ok(first.receiptRef);
