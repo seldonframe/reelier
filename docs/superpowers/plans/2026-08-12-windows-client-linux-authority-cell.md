@@ -2,11 +2,13 @@
 
 > **Founder-locked 2026-08-12.** Implement with `superpowers:subagent-driven-development`, one fresh worker and one independent reviewer per task. Use TDD and separate RED/GREEN commits. Do not revive the Node FIFO or native-helper alternatives.
 
-**Goal:** Keep Reelier fully usable from Windows while running reservation, dispatch coordination, credentials, reconciliation, and receipt minting inside a Linux Authority Cell whose filesystem and process invariants are enforceable.
+**Goal:** In this increment, keep Windows fully supported for Reelier preparation, Authority Cell connection/identity validation, host refusal, and offline verification while reservation, dispatch coordination, credentials, reconciliation, and receipt minting run inside a Linux Authority Cell whose filesystem and process invariants are enforceable. A live consequential Windows-to-Linux dispatch client remains a later, separately certified increment.
 
-**Architecture:** Public contracts, client configuration, preparation, agent adapters, and offline verification remain substrate-neutral. Authority-bearing commands fail before mutation on non-Linux hosts and direct the operator to a configured Linux Cell over authenticated HTTP/MCP. Adapter Contract v1 freezes the exact substrate-neutral wire boundary. A hermetic GitHub-label certification lifecycle crosses that boundary without credentials or network calls, exercises genuine Cell authority/budget/ledger/reconciliation/cleanup, exports a complete signed graph, and verifies it offline on Ubuntu and Windows.
+**Architecture:** Public contracts, client configuration, preparation, agent adapters, and offline verification remain substrate-neutral. Authority-bearing commands fail before mutation on non-Linux hosts and direct the operator to configure and validate a Linux Cell; this increment does not claim a live remote consequential dispatch route. Adapter Contract v1 freezes the exact substrate-neutral wire boundary. A Linux-hosted hermetic GitHub-label lifecycle exercises genuine Cell authority/budget/ledger/reconciliation/cleanup without provider credentials or external network calls, exports a complete signed graph, and verifies it offline on Ubuntu and Windows.
 
-**Non-goals:** Native Windows Authority Cell hosting; Node FIFO admission; Rust/Win32 helpers; weaker pathname validation; live-provider credentials; provider SDK calls; Grok-specific transport or an Outcome before the contract freeze.
+**Non-goals:** Native Windows Authority Cell hosting; Node FIFO admission; Rust/Win32 helpers; weaker pathname validation; live-provider credentials; provider SDK calls; vendor-specific transport or an Outcome before the contract freeze.
+
+**Evidence-guided amendment (founder-approved 2026-08-12):** A published large open-source maintenance factory reports operating a task-specialized, isolated workflow with risk-scaled human review and documented evidence, together with throughput and backlog results. We infer only as a thesis signal that this workflow shape may improve reviewer leverage; it is not evidence of Reelier demand, Reelier-style reconciliation, causal uplift, cryptographic completeness, or Outcomes per reviewer. Other supplied onboarding examples are thesis signals for an optional default agent, terminal-native discovery, and an interactive path to first value. Named provenance and strategic interpretation remain in the private evidence lane. These signals do not authorize a write, prove demand, privilege a vendor, or change the Foundation boundary. This plan therefore adds a factory-shaped packed journey without broadening Task 4, while a separate dependent plan owns the agent-neutral guided tour.
 
 ## Global constraints
 
@@ -34,6 +36,8 @@
 
 ### Task 1: Freeze Adapter Contract v1 and golden vectors
 
+**Files touched (closed historical scope):** `.gitattributes`, `contract/authority/v1/adapter-contract-v1.json`, `package.json`, `scripts/build-authority-contract.mjs`, `src/authority/adapter-contract-template.ts`, `src/authority/adapter-contract.ts`, `src/authority/index.ts`, `test/authority/contract.test.ts`, and `.superpowers/sdd/2026-08-12-windows-client-linux-authority-cell/task-1-report.md`.
+
 **Outcome:** One canonical, nonzero digest identifies the complete public adapter/wire contract independently of its host OS.
 
 - [ ] Add RED tests proving the contract set has a closed manifest, sorted unique members, an exact version, per-file SHA-256 digests, a golden-vector digest, and a nonzero aggregate digest. Mutation, omission, duplicate paths, reordered members, path traversal, self-inclusion, and stale generated output must refuse.
@@ -41,7 +45,7 @@
 - [ ] Include every public v1 authority schema and `golden-vectors.json`; exclude certification-local/internal files only if the exclusion is explicit and tested. Do not infer membership from filesystem enumeration at verification time.
 - [ ] Add a narrow substrate-neutral reader/verifier and export only the frozen descriptor/digest needed by clients and receipts. Export no runner, credential, filesystem, or provider behavior.
 - [ ] Run regeneration twice and prove byte stability. Run tamper tests against a copied contract directory.
-- [ ] Independently review the exact public surface, manifest membership, canonicalization, domain separation, golden vectors, and nonzero digest. Record the approved digest; do not notify Grok yet.
+- [ ] Independently review the exact public surface, manifest membership, canonicalization, domain separation, golden vectors, and nonzero digest. Record the approved digest; do not prepare downstream-consumer evidence yet.
 
 Verification:
 
@@ -55,6 +59,8 @@ npm run build
 ---
 
 ### Task 2: Enforce the Linux Authority Cell boundary and retire Windows FIFO
+
+**Files touched (closed historical scope):** `src/authority/certification/cell.ts`, `src/authority/certification/github-issue-labels-runner.ts`, `src/authority/cli.ts`, `src/authority/host/delegation-service.ts`, `src/authority/host/dispatch.ts`, `src/authority/host/egress-gateway.ts`, `src/authority/host/local.ts`, `src/authority/host/platform.ts`, `src/authority/host/receipts.ts`, `src/authority/host/runtime.ts`, `src/authority/host/server.ts`, deletion of `src/authority/host/windows-k1-fifo.ts`, `test/authority/authority-serve.test.ts`, `test/authority/init.test.ts`, `test/authority/linux-authority-cell.test.ts`, `test/authority/local-e2e.test.ts`, deletion of `test/authority/windows-k1-fifo.test.ts`, and `.superpowers/sdd/2026-08-12-windows-client-linux-authority-cell/task-2-report.md`.
 
 **Outcome:** A native Windows process cannot begin authority-bearing setup or execution, while all client/preparation/offline commands remain usable.
 
@@ -70,6 +76,8 @@ Verification includes a Windows-platform simulation on every OS and a native Lin
 ---
 
 ### Task 3: Add the closed Windows-to-Linux Cell connection path
+
+**Files touched (closed historical scope):** `contract/client/v1/authority-cell-connection.schema.json`, `docs/runbooks/authority-cell-client.md`, `docs/superpowers/plans/2026-08-12-windows-client-linux-authority-cell.md`, `src/authority/cli.ts`, `src/authority/client/config.ts`, `src/authority/client/http.ts`, `src/authority/client/ip.ts`, `src/authority/host/config.ts`, `src/authority/host/server.ts`, `src/authority/ingress/http.ts`, `test/authority/authority-cell-connection.test.ts`, `test/authority/http.test.ts`, and `.superpowers/sdd/2026-08-12-windows-client-linux-authority-cell/task-3-report.md`.
 
 **Outcome:** A Windows user can configure and verify a Linux Authority Cell without copying provider credentials into the workspace or model context.
 
@@ -90,7 +98,7 @@ interface AuthorityCellConnectionV1 {
 - [ ] Add `reelier authority connect --endpoint ... --token-ref ... --cell-id ...`. It writes only public, non-authorizing connection metadata atomically and never resolves the token during parsing or writes a ledger/receipt/key. Native Windows restricts persistence to the canonical user client-config location and reports same-user pathname confinement as `unchecked`; it must not recreate the rejected native filesystem helper.
 - [ ] Add `reelier authority doctor --live` (or the existing doctor integration if present) to resolve the opaque reference inside the client process, authenticate to the Cell, compare Cell ID and Adapter Contract digest, and report four-state results. Redact token values and resolver errors.
 - [ ] Add one authenticated, read-only `GET /v1/identity` Cell route returning only the closed Cell ID and Adapter Contract digest. It performs no writes and reveals nothing to unauthenticated callers.
-- [ ] Bind every consequential client request to the authenticated server-derived principal/session context. No task, principal, grant, allocation, or Cell identity may be supplied in the Outcome body.
+- [ ] Any future consequential client request must bind to the authenticated server-derived principal/session context. No task, principal, grant, allocation, or Cell identity may be supplied in the Outcome body.
 - [ ] Add an exact compatibility refusal for contract-digest mismatch. The client may still perform status/export/offline verification, but it may not request consequential dispatch.
 - [ ] Document three starts: local WSL, local Linux container, and remote/Fly Linux Cell. Keep the default path one command after the Cell endpoint and token reference exist.
 
@@ -100,7 +108,9 @@ Security tests cover config substitution, symlinked token files, DNS/URL confusi
 
 ### Task 4: Complete the hermetic GitHub-label lifecycle through the Linux Cell
 
-**Outcome:** The first complete certification scenario exercises genuine authority and recovery with zero credentials, zero provider SDK calls, and zero network access.
+**Files touched (closed scope):** `src/authority/certification/cell.ts`, `src/authority/certification/filesystem.ts`, `src/authority/certification/github-issue-labels-runner.ts`, `src/authority/certification/lifecycle-authority.ts`, `src/authority/certification/lifecycle-receipts.ts`, `src/authority/certification/task-receipt-graph.ts`, `src/authority/host/delegation-service.ts`, `test/authority/certification-cell.test.ts`, `test/authority/certification-github-issue-labels-runner.test.ts`, `test/authority/certification-lifecycle-authority.test.ts`, `test/authority/delegation-service.test.ts`, `test/authority/linux-authority-cell.test.ts`, and `.superpowers/sdd/2026-08-12-windows-client-linux-authority-cell/task-4-report.md`. Expanding this list requires a plan amendment and review before code.
+
+**Outcome:** The first complete certification scenario exercises genuine authority and recovery with zero provider credentials, zero provider SDK calls, and zero external network access; purpose-separated authority signing keys remain opaque and confined inside the Cell.
 
 - [ ] Extend the existing branded Cell-internal GitHub runner; do not expose an executable callback, provider port, ledger, budget, signer, or fault injector through a public constructor or per-call input.
 - [ ] Bind the frozen Adapter Contract digest, exact operator config, signed Job Card, root/child grant, principal session, allocation, endpoint manifest, scenario plan, desired labels, and hermetic runner identity before permit issuance.
@@ -121,23 +131,39 @@ Acceptance: apply succeeds once; duplicate dispatches zero additional writes; co
 
 **Outcome:** Ubuntu hosts the authority lifecycle; Windows proves client compatibility and offline verification against the exact packed artifact.
 
+**Files/interfaces:** Create `src/authority/certification/factory-journey.ts`, `contract/certification/v1/factory-journey-summary.schema.json`, `test/authority/certification-factory-journey.test.ts`, and `test/packed/authority-factory-journey.mjs`; modify `src/authority/cli.ts`, `src/authority/index.ts`, `test/authority/package.test.ts`, `package.json`, and `.github/workflows/ci.yml`. The non-authorizing certification-local summary binds the existing verified graph digest and reports derived workflow evidence; it does not modify graph semantics. The CLI may invoke the journey internally; `src/authority/index.ts` may expose offline verification but must not export the factory executor, provider, signer, ledger, budget, or callback.
+
+- [ ] Gate this task on the hosted Windows `FsAuthorityLedger` concurrency failure being fixed or explicitly proven absent on the exact merge candidate. Do not mask it with retries, sleeps, or increased timeouts.
+- [ ] Shape the packed certification as a small software-factory journey without building a factory orchestrator: classification/context, preparation, consequential execution, and independent review are non-authorizing workflow stages around the already-reviewed Task 4 root→child execution lineage. Do not invent additional principals, grants, allocations, graph nodes, or terminal semantics in this task.
+- [ ] Exercise and report only terminal/reason states the reviewed Task 4 lifecycle actually emits. Unsupported factory categories remain `absent`; ambiguity/manual/blocked states are never passing and operational reason codes never replace or collapse `verified`, `failed`, `unchecked`, and `absent`.
+- [ ] Present a deterministic reviewer packet derived only from signed artifacts: declared operation, compiled effect, existing principal/grant/allocation lineage, provider observation, reconciliation result, cleanup result, exceptions, receipt chain, graph digest, and explicit non-claims. The packet may summarize evidence but may not add authority, invent nodes/states, score safety, or claim semantic correctness.
 - [ ] Add explicit CI jobs/steps rather than relying on incidental full-suite coverage:
+  - Pack: build once on Ubuntu, run Adapter Contract drift checks, create one tarball, record its SHA-256 and commit, inspect its contents, and upload only that tarball.
   - Ubuntu: construct and run the Linux Authority Cell hermetic lifecycle, export graph, verify offline.
   - Windows: assert host refusal/no writes, configure/validate a Linux Cell connection fixture, verify the Ubuntu-produced contract vectors and graph offline.
+- [ ] Every job consuming the tarball or cross-job evidence must recompute and match tarball SHA-256, commit, Adapter Contract digest, graph digest, and secret-canary result. Windows receives public verification material only.
 - [ ] Pack the npm artifact once, install that exact tarball into clean Ubuntu and Windows fixtures, and run contract/client/offline gates against it. Assert the obsolete FIFO/native helper is absent from package contents and public exports.
+- [ ] Emit non-secret, reproducible acceptance measurements from the packed journey: at most four logical operator steps after installation; `authorityBoundaryCeremonies: 1`; `fixtureOperatorConfirmations: 1`; `liveHumanReview: absent`; `providerCredentialValueHandling: 0`; `clientBearerResolution: 0`; `providerSdkCalls: 0`; `externalSockets: 0`; elapsed milliseconds reported but not correctness-gated; and Ubuntu-produced evidence verified offline on Windows. Purpose-separated authority signing keys are generated and confined inside the Cell and are explicitly excluded from the provider-credential metric. Measurements are release evidence, not market evidence.
+- [ ] Reject unknown categories, multiple terminal claims for one Outcome, extra writes/budget, or passing ambiguous/manual/blocked evidence. Record unsupported categories as `absent` rather than fabricating required counts.
 - [ ] Run build, test compile, focused authority suites, authority-contract drift, full `npm test`, package-content checks, and `git diff --check`. Never raise timeouts or add sleeps to hide a race.
 - [ ] Independently review release evidence and exact packed contents. Merge only after required `test (ubuntu-latest)` and `test (windows-latest)` checks are green on the merge candidate.
 
+Acceptance: one factory-shaped hermetic journey reaches one reconciled consequential Outcome and exact cleanup using the reviewed Task 4 root→child lineage; existing failure/ambiguity/conflict/revocation falsifiers remain deterministic; the reviewer packet verifies from the same signed graph on Ubuntu and Windows; provider credential handling, bearer resolution, provider SDK calls, and external sockets remain zero; Cell signing keys remain confined; unsupported categories are honestly absent; no result claims general software-factory capability.
+
 ---
 
-### Task 6: Freeze notice and Grok-channel handoff
+### Task 6: Freeze evidence and downstream-consumer handoff
 
-**Outcome:** The approved nonzero Adapter Contract digest is communicated exactly once after the freeze and green CI.
+**Outcome:** Prepare one deterministic, verified downstream-consumer handoff artifact after the freeze and green CI; delivery remains `absent` unless a separately authorized external action occurs.
+
+**Files/interfaces:** Create `src/authority/certification/factory-release-evidence.ts`, `contract/certification/v1/factory-release-evidence.schema.json`, `test/authority/factory-release-evidence.test.ts`, and `docs/release/authority-cell-factory-freeze.md`; modify `src/authority/certification/lifecycle-authority.ts`, `src/authority/certification/cell.ts`, `test/authority/certification-lifecycle-authority.test.ts`, and `test/authority/certification-cell.test.ts`. Add an object-identity-branded, purpose-bound Cell-internal `signFactoryReleaseEvidence(digest)` method returning only signature and public binding; never return lifecycle material or private keys. Do not overload a Cloud-oriented release manifest or add transport code.
 
 - [ ] Create a signed release-evidence record containing commit, package tarball digest, Adapter Contract digest, golden-vector digest, Ubuntu/Windows run IDs, hermetic graph digest, reviewer verdicts, and explicit live-provider status `absent`.
+- [ ] Use a closed Authority Cell factory-release evidence artifact rather than overloading Cloud-oriented release fields. Bind the metrics digest and exact Ubuntu/Windows job identifiers alongside artifact/graph/reviewer digests. Sign through a purpose-bound opaque one-use ceremony whose public key is committed and rooted in the activated evidence authority; parse and verify it offline without a raw-key API.
+- [ ] Include the Task 5 acceptance measurements and terminal-category counts, including explicit zero/`absent` entries for unsupported categories, in the signed release evidence. Report them as engineering evidence from the hermetic fixture, never adoption, safety, or production-provider evidence.
 - [ ] Recompute and compare the contract digest from the packed artifact before notification. All-zero, stale, locally dirty, or differently computed digests block the handoff.
-- [ ] Send the Grok-channel task a non-executable message containing the exact digest, manifest path, commit, and CI evidence. Do not send credentials, create a Grok transport adapter, or execute a Grok Outcome.
-- [ ] If no authenticated Grok task/channel is available, stop with a prepared exact message and name that external coordination as the only blocker; do not guess a destination.
+- [ ] Produce a non-executable downstream-consumer message containing the exact digest, manifest path, commit, and CI evidence. Do not send credentials, create a vendor transport adapter, or execute an Outcome.
+- [ ] Report delivery as `absent` in OSS evidence. Any authenticated external transmission, acknowledgement, retry, or exactly-once claim requires a separate privately authorized plan with destination authority and idempotency semantics.
 
 ## Completion criteria
 
@@ -145,7 +171,9 @@ Acceptance: apply succeeds once; duplicate dispatches zero additional writes; co
 - Every native Windows Authority Cell hosting entry point refuses before mutation with one actionable error.
 - Consequential Path C execution runs only inside a Linux Authority Cell.
 - Adapter Contract v1 and golden vectors have one independently reviewed, reproducible, nonzero digest.
-- The hermetic GitHub-label lifecycle proves dispatch, ambiguity, no-resend reconciliation, cleanup, receipts, and offline graph verification without credentials or provider/network calls.
+- The hermetic GitHub-label lifecycle proves dispatch, ambiguity, no-resend reconciliation, cleanup, receipts, and offline graph verification without provider credential values, client bearer/reference resolution, or provider/external-network calls; Cell signing keys remain opaque and confined.
+- The packed artifact proves a factory-shaped journey around the reviewed root→child execution lineage, with one explicit fixture authority ceremony and a deterministic reviewer packet; `liveHumanReview` remains `absent`, and no result claims a factory orchestrator.
+- Release evidence reports time/steps to first governed Outcome, authority-ceremony count, zero provider credential handling/bearer resolution/external sockets, confined Cell signing keys, and honest terminal categories without weakening four-state proof semantics.
 - Ubuntu and Windows pass against the exact packed artifact.
 - No native Windows helper or Node FIFO implementation ships.
-- Grok receives only the frozen digest/evidence handoff after all gates pass.
+- One deterministic downstream-consumer handoff artifact is prepared after all gates pass; OSS makes no delivery claim.
