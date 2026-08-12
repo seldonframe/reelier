@@ -27,7 +27,7 @@
 - Platform boundary: `src/authority/host/platform.ts`, `src/authority/cli.ts`, `src/authority/host/local.ts`, certification host entry points, focused platform tests.
 - Windows client: `src/authority/client/config.ts`, `src/authority/client/http.ts`, `src/authority/cli.ts`, a minimal authenticated identity route in `src/authority/ingress/http.ts` and host/server composition, closed non-authorizing client schema under `contract/client/v1/`, client tests and runbook. Client configuration is deliberately outside the frozen Adapter Contract v1 wire set.
 - Retired code: delete tracked `src/authority/host/windows-k1-fifo.ts` and `test/authority/windows-k1-fifo.test.ts` only after source-graph tests prove there is no production import.
-- Hermetic lifecycle: `src/authority/certification/github-issue-labels-runner.ts`, receipt/graph modules under `src/authority/certification/`, and the minimal genuine-Cell authority binding in `src/authority/certification/cell.ts` required for purpose-separated portable receipt/evidence signing; corresponding tests and certification-local schemas.
+- Hermetic lifecycle: `src/authority/certification/github-issue-labels-runner.ts`, receipt/graph modules under `src/authority/certification/`, the minimal genuine-Cell authority binding in `src/authority/certification/cell.ts`, and a non-package-exported verification-first signed-child registration seam in `src/authority/host/delegation-service.ts`; corresponding tests and certification-local schemas.
 - CI/release evidence: `.github/workflows/ci.yml`, packed-artifact tests, task reports, freeze notice containing the exact digest.
 
 ---
