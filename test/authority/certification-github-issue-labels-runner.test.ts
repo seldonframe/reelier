@@ -15,6 +15,7 @@ import { createDelegationAuthority } from "../../src/authority/host/delegation-s
 import { createFilePrincipalRegistry } from "../../src/authority/host/principal-registry.js";
 import { createGitHubIssueLabelsHermeticComposition } from "../../src/authority/certification/github-issue-labels-runner.js";
 import { __testSetAuthorityCellHostPlatform } from "../../src/authority/host/platform.js";
+import { createCertificationArtifactKeyBinding, createCertificationLifecycleAuthorityCeremony } from "../../src/authority/certification/lifecycle-authority.js";
 import { writeCertificationInputManifests } from "./certification-input-fixture.js";
 
 const at = "2026-08-11T20:00:00.000Z", expiry = "2026-08-11T21:00:00.000Z";
@@ -29,11 +30,11 @@ async function fixture(mode: "normal" | "source-drift" | "effect-drift" | "provi
   const initialized = await initializeCertification({ configPath }); await writeCertificationInputManifests(initialized.workspace, ["github-issue-labels"]);
   const selection = { workspace: initialized.workspace, scenario: "github-issue-labels" as const };
   const preflight = await preflightCertification(selection), sealed = await sealCertificationReadiness(selection);
-  const readinessKey = generateKeyPairSync("ed25519"), jobKey = generateKeyPairSync("ed25519"), delegationKey = generateKeyPairSync("ed25519"), receiptKey = generateKeyPairSync("ed25519"), contractKey = generateKeyPairSync("ed25519"), gateKey = generateKeyPairSync("ed25519"), journalKey = generateKeyPairSync("ed25519");
-  const human = descriptor(initialized.identifiers.signerId, "human-sponsor", "certification-readiness", readinessKey.publicKey), jobSigner = descriptor("human_job_card_signer", "human-sponsor", "signed-job-card", jobKey.publicKey), delegationSigner = descriptor("cell_delegation_signer", "authority-cell", "delegation-grant", delegationKey.publicKey), receiptSigner = descriptor("cell_receipt_signer", "authority-cell", "authority-receipt", receiptKey.publicKey), contractSigner = descriptor("cell_contract_signer", "authority-cell", "outcome-contract", contractKey.publicKey), gateSigner = descriptor("cell_gate_signer", "authority-cell", "gate-event", gateKey.publicKey), journalSigner = descriptor("cell_journal_signer", "authority-cell", "authority-journal", journalKey.publicKey);
-  const descriptors = [human, jobSigner, delegationSigner, receiptSigner, contractSigner, gateSigner, journalSigner], events: any[] = [];
+  const readinessKey = generateKeyPairSync("ed25519"), jobKey = generateKeyPairSync("ed25519"), ceremony = createCertificationLifecycleAuthorityCeremony();
+  const human = descriptor(initialized.identifiers.signerId, "human-sponsor", "certification-readiness", readinessKey.publicKey), jobSigner = descriptor("human_job_card_signer", "human-sponsor", "signed-job-card", jobKey.publicKey);
+  const descriptors = [human, jobSigner, ...ceremony.publicDescriptors], events: any[] = [];
   for (const item of descriptors) events.push({ v: "reelier.authority-trust-event/v1", eventId: `trust_${events.length}_${"f".repeat(12)}`, sequence: events.length, action: "activate", keyDescriptorDigest: authorityDigest(item), occurredAt: at, previousEventDigest: events.length ? authorityDigest(events.at(-1)) : null });
-  const signedReadiness = createSignedCertificationReadiness({ readinessCandidate: sealed.candidate, readinessCandidateDigest: sealed.digest, preflight, humanKeyDescriptor: human as any, cellKeyDescriptors: [delegationSigner, receiptSigner, contractSigner, gateSigner, journalSigner] as any, jobCardKeyDescriptors: [jobSigner] as any, trustEvents: events, humanPrivateKey: readinessKey.privateKey, authorizedAt: "2026-08-11T20:01:00.000Z" });
+  const signedReadiness = createSignedCertificationReadiness({ readinessCandidate: sealed.candidate, readinessCandidateDigest: sealed.digest, preflight, humanKeyDescriptor: human as any, cellKeyDescriptors: ceremony.publicDescriptors, jobCardKeyDescriptors: [jobSigner] as any, trustEvents: events, humanPrivateKey: readinessKey.privateKey, authorizedAt: "2026-08-11T20:01:00.000Z" });
   const pin: any = { v: "reelier.job-card-trust-pin/v1", signedReadiness, readinessCandidate: sealed.candidate, preflight, humanTrustRoot: human, keyDescriptors: descriptors, readinessTrustEvents: events, currentTrustEvents: events };
   const principalId = `principal_${authorityDigest({ v: "reelier.certification-principal-id/v1", taskId: initialized.identifiers.taskId, authorityCellId: initialized.identifiers.authorityCellId }).slice(7, 31)}`;
   const constraints = { definitionAliases: ["github_issue_labels_set_v1"], audiences: [principalId], connectorAccounts: [{ connectorId: "github", accountId: "github_fixlyai_reelier" }], projectionPointers: ["/owner", "/repo", "/issueNumber", "/issueState", "/labels"], riskClasses: ["github_issue_labels"], limits: { maxEffectsPerWindow: 2, windowSeconds: 3600, maxEffectsPerSourceTrigger: 1, maxBodyBytes: 4096 } };
@@ -41,10 +42,10 @@ async function fixture(mode: "normal" | "source-drift" | "effect-drift" | "provi
   const delegation = createDelegationAuthority({ root: path.join(initialized.workspace, "authority", "delegation"), now: () => new Date("2026-08-11T20:10:00.000Z"), signGrant: async () => { throw new Error("child delegation not expected"); } });
   const principals = createFilePrincipalRegistry({ tenant: initialized.identifiers.authorityCellId, file: path.join(initialized.workspace, "authority", "principals", "registry.jsonl") });
   const trustPath = path.join(root, "operator-current-trust.json"); await writeFile(trustPath, `${JSON.stringify(pin)}\n`);
-  const substituted = generateKeyPairSync("ed25519");
-  const hermeticGitHubAuthority = { contractDescriptor: contractSigner, contractPrivateKey: authorityMode === "substituted" ? substituted.privateKey : contractKey.privateKey, gateDescriptor: gateSigner, gatePrivateKey: gateKey.privateKey, journalDescriptor: journalSigner, journalPrivateKey: journalKey.privateKey };
-  const cell = await createCertificationCellHost({ workspace: initialized.workspace, currentTrustPinPath: trustPath, delegationAuthority: delegation, principalRegistry: principals, now: () => new Date("2026-08-11T20:10:00.000Z"), ...(authorityMode === "absent" ? {} : { hermeticGitHubAuthority }) });
-  await cell.activateRootTask({ jobCard, jobCardTrustPin: pin, delegationKeyDescriptor: delegationSigner, delegationPrivateKey: delegationKey.privateKey, constraints, effects: 2, issuedAt: at, expiresAt: expiry });
+  const lifecycle = createCertificationArtifactKeyBinding(ceremony.opaqueHandle, { authorityCellId: initialized.identifiers.authorityCellId, taskId: initialized.identifiers.taskId, readinessDigest: authorityDigest(signedReadiness), humanDescriptor: human as any, humanPrivateKey: readinessKey.privateKey, issuedAt: at, expiresAt: expiry });
+  const lifecycleAuthority = { handle: ceremony.opaqueHandle, binding: authorityMode === "substituted" ? { ...lifecycle.binding, taskId: "task_substituted" } : lifecycle.binding, commitment: lifecycle.humanCommitment };
+  const cell = await createCertificationCellHost({ workspace: initialized.workspace, currentTrustPinPath: trustPath, delegationAuthority: delegation, principalRegistry: principals, now: () => new Date("2026-08-11T20:10:00.000Z"), ...(authorityMode === "absent" ? {} : { lifecycleAuthority }) });
+  await cell.activateRootTask({ jobCard, jobCardTrustPin: pin, constraints, effects: 2, issuedAt: at, expiresAt: expiry });
   const credential = await cell.activatePrincipalSession();
   const runner = await createGitHubIssueLabelsHermeticComposition(cell, { mode } as never);
   return { root, initialized, cell, runner, credential, delegation };
@@ -55,7 +56,7 @@ test("only a genuine Cell host can compose the fixed runner", async () => {
 });
 
 test("runner refuses absent or caller-substituted contract and gate authority", async () => {
-  await assert.rejects(() => fixture("normal", "absent"), /activated|descriptor|signer|authority/i);
+  await assert.rejects(() => fixture("normal", "absent"), /activated|descriptor|signer|authority|closed/i);
   await assert.rejects(() => fixture("normal", "substituted"), /match|descriptor|signer|authority/i);
 });
 

@@ -18,6 +18,7 @@ import { certificationRunnerRegistryDigest, getCertificationRunnerRegistryEntry 
 import { preflightCertification } from "./preflight.js";
 import { CERTIFICATION_SCENARIO_IDS, type CertificationScenarioId } from "./scenarios.js";
 import { assertLinuxAuthorityCellHost } from "../host/platform.js";
+import { consumeCertificationLifecycleAuthority, type CertificationArtifactKeyBindingCommitmentV1, type CertificationArtifactKeyBindingV1, type CertificationLifecycleAuthorityHandle, type CertificationLifecycleAuthorityMaterial } from "./lifecycle-authority.js";
 
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
 
@@ -110,7 +111,7 @@ async function activateCertificationPrincipalSession(input: Readonly<{ workspace
 
 export interface CertificationDispatchPermit { readonly kind: "certification-dispatch-permit" }
 export interface CertificationCellHost {
-  activateRootTask(input: Readonly<{ jobCard: unknown; jobCardTrustPin: JobCardTrustPinV1; delegationKeyDescriptor: unknown; delegationPrivateKey: KeyObject; constraints: DelegationConstraints; effects: number; issuedAt: string; expiresAt: string }>): Promise<CertificationCellActivationV1>;
+  activateRootTask(input: Readonly<{ jobCard: unknown; jobCardTrustPin: JobCardTrustPinV1; delegationKeyDescriptor?: unknown; delegationPrivateKey?: KeyObject; constraints: DelegationConstraints; effects: number; issuedAt: string; expiresAt: string }>): Promise<CertificationCellActivationV1>;
   activatePrincipalSession(): Promise<PrincipalCredential>;
   verifyDispatchReadiness(input: Readonly<{ scenario: CertificationScenarioId; bearerToken: string }>): Promise<CertificationDispatchPermit>;
   revalidateDispatchPermit(permit: CertificationDispatchPermit): Promise<void>;
@@ -132,29 +133,26 @@ interface CertificationHermeticGitHubAuthorityState {
   signContract(digest: string): AuthoritySignature;
   signGate(digest: string): AuthoritySignature;
   signJournal(digest: string): AuthoritySignature;
+  readonly lifecycle: CertificationLifecycleAuthorityMaterial;
 }
-interface CertificationHermeticGitHubAuthorityInput {
-  readonly contractDescriptor: unknown;
-  readonly contractPrivateKey: KeyObject;
-  readonly gateDescriptor: unknown;
-  readonly gatePrivateKey: KeyObject;
-  readonly journalDescriptor: unknown;
-  readonly journalPrivateKey: KeyObject;
-}
+interface CertificationLifecycleAuthorityInput { readonly handle: CertificationLifecycleAuthorityHandle; readonly binding: CertificationArtifactKeyBindingV1; readonly commitment: CertificationArtifactKeyBindingCommitmentV1 }
 const certificationCellHosts = new WeakMap<object, CertificationCellHostInternalState>();
-export async function createCertificationCellHost(input: Readonly<{ workspace: string; currentTrustPinPath: string; delegationAuthority: DelegationAuthority; principalRegistry: PrincipalRegistry; now?: () => Date; hermeticGitHubAuthority?: CertificationHermeticGitHubAuthorityInput }>): Promise<CertificationCellHost> {
+export async function createCertificationCellHost(input: Readonly<{ workspace: string; currentTrustPinPath: string; delegationAuthority: DelegationAuthority; principalRegistry: PrincipalRegistry; now?: () => Date; lifecycleAuthority?: CertificationLifecycleAuthorityInput }>): Promise<CertificationCellHost> {
   assertLinuxAuthorityCellHost();
-  const hostKeys = ["workspace", "currentTrustPinPath", "delegationAuthority", "principalRegistry", ...(input.now === undefined ? [] : ["now"]), ...(input.hermeticGitHubAuthority === undefined ? [] : ["hermeticGitHubAuthority"])];
+  const hostKeys = ["workspace", "currentTrustPinPath", "delegationAuthority", "principalRegistry", ...(input.now === undefined ? [] : ["now"]), ...(input.lifecycleAuthority === undefined ? [] : ["lifecycleAuthority"])];
   closedOwnKeys(input, hostKeys, "certification Cell host input");
-  const workspace = (await loadInitialization(input.workspace)).root;
+  const loaded = await loadInitialization(input.workspace);
+  const workspace = loaded.root;
   const configuredTrustPinPath = await canonicalExternalTrustPin(workspace, input.currentTrustPinPath);
   const currentTrustPinPathDigest = trustPinPathDigest(configuredTrustPinPath);
-  const hermeticAuthority = input.hermeticGitHubAuthority === undefined ? undefined : await bindHermeticGitHubAuthority(configuredTrustPinPath, input.hermeticGitHubAuthority);
+  const hermeticAuthority = input.lifecycleAuthority === undefined ? undefined : await bindHermeticGitHubAuthority(configuredTrustPinPath, input.lifecycleAuthority, loaded.initialization.identifiers, input.now?.() ?? new Date());
   const host: CertificationCellHost = {
     activateRootTask: async (values: Parameters<CertificationCellHost["activateRootTask"]>[0]) => {
       assertLinuxAuthorityCellHost();
-      closedOwnKeys(values, ["jobCard", "jobCardTrustPin", "delegationKeyDescriptor", "delegationPrivateKey", "constraints", "effects", "issuedAt", "expiresAt"], "certification root activation input");
-      return activateCertificationRootTask({ jobCard: values.jobCard, jobCardTrustPin: values.jobCardTrustPin, delegationKeyDescriptor: values.delegationKeyDescriptor, delegationPrivateKey: values.delegationPrivateKey, constraints: values.constraints, effects: values.effects, issuedAt: values.issuedAt, expiresAt: values.expiresAt, workspace, currentTrustPinPath: configuredTrustPinPath, currentTrustPinPathDigest, delegationAuthority: input.delegationAuthority });
+      const lifecycleDelegation = hermeticAuthority?.lifecycle.direct.get("delegation-grant");
+      const expected = ["jobCard", "jobCardTrustPin", ...(lifecycleDelegation ? [] : ["delegationKeyDescriptor", "delegationPrivateKey"]), "constraints", "effects", "issuedAt", "expiresAt"];
+      closedOwnKeys(values, expected, "certification root activation input");
+      return activateCertificationRootTask({ jobCard: values.jobCard, jobCardTrustPin: values.jobCardTrustPin, delegationKeyDescriptor: lifecycleDelegation?.descriptor ?? values.delegationKeyDescriptor, delegationPrivateKey: lifecycleDelegation?.privateKey ?? values.delegationPrivateKey!, constraints: values.constraints, effects: values.effects, issuedAt: values.issuedAt, expiresAt: values.expiresAt, workspace, currentTrustPinPath: configuredTrustPinPath, currentTrustPinPathDigest, delegationAuthority: input.delegationAuthority });
     },
     activatePrincipalSession: (...args: []) => {
       if (args.length !== 0) return Promise.reject(new TypeError("certification principal activation accepts no arguments"));
@@ -219,30 +217,26 @@ async function revalidateHermeticGitHubPermit(permit: object): Promise<void> {
   if (current.digest !== state.snapshot.digest) throw new TypeError("hermetic GitHub dispatch state became stale");
 }
 
-async function bindHermeticGitHubAuthority(pinPath: string, input: CertificationHermeticGitHubAuthorityInput): Promise<CertificationHermeticGitHubAuthorityState> {
-  closedOwnKeys(input, ["contractDescriptor", "contractPrivateKey", "gateDescriptor", "gatePrivateKey", "journalDescriptor", "journalPrivateKey"], "hermetic GitHub authority input");
-  const contractDescriptor = parseAuthorityKeyDescriptor(input.contractDescriptor);
-  const gateDescriptor = parseAuthorityKeyDescriptor(input.gateDescriptor);
-  const journalDescriptor = parseAuthorityKeyDescriptor(input.journalDescriptor);
-  if (contractDescriptor.role !== "authority-cell" || contractDescriptor.purpose !== "outcome-contract" || gateDescriptor.role !== "authority-cell" || gateDescriptor.purpose !== "gate-event" || journalDescriptor.role !== "authority-cell" || journalDescriptor.purpose !== "authority-journal" || new Set([contractDescriptor.keyId, gateDescriptor.keyId, journalDescriptor.keyId]).size !== 3) throw new TypeError("hermetic GitHub authority requires purpose-separated contract, gate, and journal descriptors");
+async function bindHermeticGitHubAuthority(pinPath: string, input: CertificationLifecycleAuthorityInput, identifiers: CertificationIdentifiers, now: Date): Promise<CertificationHermeticGitHubAuthorityState> {
+  closedOwnKeys(input, ["handle", "binding", "commitment"], "hermetic GitHub lifecycle authority input");
   const pin = JSON.parse((await readUnlinkedFile(pinPath)).toString("utf8")) as JobCardTrustPinV1;
   const descriptors = pin.keyDescriptors.map(parseAuthorityKeyDescriptor);
   const events = parseTrustEvents(pin.currentTrustEvents, descriptors);
   const active = new Set<string>();
   for (const event of events) event.action === "activate" ? active.add(event.keyDescriptorDigest) : active.delete(event.keyDescriptorDigest);
-  for (const descriptor of [contractDescriptor, gateDescriptor, journalDescriptor]) {
+  const required = ["outcome-contract", "gate-event", "authority-journal", "authority-evidence", "authority-receipt", "delegation-grant"];
+  const selected = required.map(purpose => descriptors.find(item => item.role === "authority-cell" && item.purpose === purpose));
+  if (selected.some(item => !item) || new Set(selected.map(item => item!.keyId)).size !== required.length) throw new TypeError("hermetic GitHub lifecycle authority descriptors are absent or not purpose-separated");
+  for (const descriptor of selected as AuthorityKeyDescriptorV1[]) {
     const digest = authorityDigest(descriptor);
     const pinned = descriptors.find(candidate => authorityDigest(candidate) === digest);
     if (!pinned || !active.has(digest) || !pin.signedReadiness.activatedCellKeyDescriptorDigests.includes(digest)) throw new TypeError("hermetic GitHub signer descriptor is not activated by signed readiness and current trust");
   }
-  const probeDigest = authorityDigest({ v: "reelier.hermetic-github-signer-probe/v1", pin: authorityDigest(pin.signedReadiness) });
-  const bind = (descriptor: AuthorityKeyDescriptorV1, privateKey: KeyObject, purpose: "outcome-contract" | "gate-event" | "authority-journal") => {
-    if (!(privateKey instanceof KeyObject) || privateKey.type !== "private" || privateKey.asymmetricKeyType !== "ed25519") throw new TypeError("hermetic GitHub signer private key is invalid");
-    const signature = signAuthorityDigest(privateKey, purpose, probeDigest);
-    if (!verifyAuthoritySignature(publicKeyFor(descriptor), purpose, probeDigest, signature)) throw new TypeError("hermetic GitHub private key does not match its activated descriptor");
-    return (digest: string) => signAuthorityDigest(privateKey, purpose, digest);
-  };
-  return Object.freeze({ contractDescriptor, gateDescriptor, journalDescriptor, signContract: bind(contractDescriptor, input.contractPrivateKey, "outcome-contract"), signGate: bind(gateDescriptor, input.gatePrivateKey, "gate-event"), signJournal: bind(journalDescriptor, input.journalPrivateKey, "authority-journal") });
+  const human = descriptors.find(item => item.keyId === pin.signedReadiness.signerKeyId)!;
+  const lifecycle = consumeCertificationLifecycleAuthority(input.handle, input.binding, input.commitment, { authorityCellId: identifiers.authorityCellId, taskId: identifiers.taskId, readinessDigest: authorityDigest(pin.signedReadiness), descriptors: selected as AuthorityKeyDescriptorV1[], humanDescriptor: human, now });
+  const get = <P extends "outcome-contract" | "gate-event" | "authority-journal">(purpose: P) => lifecycle.direct.get(purpose)!;
+  const contract = get("outcome-contract"), gate = get("gate-event"), journal = get("authority-journal");
+  return Object.freeze({ contractDescriptor: contract.descriptor, gateDescriptor: gate.descriptor, journalDescriptor: journal.descriptor, signContract: (digest: string) => signAuthorityDigest(contract.privateKey, "outcome-contract", digest), signGate: (digest: string) => signAuthorityDigest(gate.privateKey, "gate-event", digest), signJournal: (digest: string) => signAuthorityDigest(journal.privateKey, "authority-journal", digest), lifecycle });
 }
 
 async function revalidateCertificationDispatchPermit(permit: CertificationDispatchPermit): Promise<void> {

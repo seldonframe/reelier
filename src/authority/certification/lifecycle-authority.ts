@@ -12,7 +12,8 @@ type ArtifactPurpose = (typeof ARTIFACT_PURPOSES)[number];
 declare const opaqueAuthorityBrand: unique symbol;
 export type CertificationLifecycleAuthorityHandle = Readonly<{ readonly [opaqueAuthorityBrand]: true }>;
 type KeyMaterial = Readonly<{ descriptor: AuthorityKeyDescriptorV1; privateKey: KeyObject }>;
-type CeremonyMaterial = Readonly<{ direct: ReadonlyMap<DirectPurpose, KeyMaterial>; artifacts: ReadonlyMap<ArtifactPurpose, KeyMaterial>; bindingDigest?: string }>;
+export type CertificationLifecycleAuthorityMaterial = Readonly<{ direct: ReadonlyMap<DirectPurpose, KeyMaterial>; artifacts: ReadonlyMap<ArtifactPurpose, KeyMaterial>; bindingDigest?: string }>;
+type CeremonyMaterial = CertificationLifecycleAuthorityMaterial;
 const handles = new WeakMap<object, CeremonyMaterial>();
 
 export interface CertificationArtifactKeyBindingV1 {
@@ -77,7 +78,21 @@ export function createCertificationArtifactKeyBinding(handle: CertificationLifec
   return Object.freeze({ binding, humanCommitment: Object.freeze({ ...commitmentBody, signature: commitmentSignature }) });
 }
 
-export function certificationLifecycleAuthorityMaterial(handle: CertificationLifecycleAuthorityHandle): CeremonyMaterial { return requireMaterial(handle); }
+export function consumeCertificationLifecycleAuthority(handle: CertificationLifecycleAuthorityHandle, binding: CertificationArtifactKeyBindingV1, commitment: CertificationArtifactKeyBindingCommitmentV1, input: Readonly<{ authorityCellId: string; taskId: string; readinessDigest: string; descriptors: readonly AuthorityKeyDescriptorV1[]; humanDescriptor: AuthorityKeyDescriptorV1; now: Date }>): CeremonyMaterial {
+  const material = requireMaterial(handle);
+  if (material.bindingDigest !== authorityDigest(binding)) throw new TypeError("artifact key binding does not belong to opaque authority handle");
+  if (binding.authorityCellId !== input.authorityCellId || binding.taskId !== input.taskId || binding.readinessDigest !== input.readinessDigest || commitment.bindingDigest !== authorityDigest(binding) || commitment.readinessDigest !== input.readinessDigest || commitment.authorityCellId !== input.authorityCellId || commitment.taskId !== input.taskId) throw new TypeError("artifact key binding identity or readiness commitment mismatch");
+  if (Date.parse(binding.issuedAt) > input.now.getTime() || Date.parse(binding.expiresAt) <= input.now.getTime()) throw new TypeError("artifact key binding is expired or not active");
+  const evidence = material.direct.get("authority-evidence")!;
+  if (binding.parentEvidenceDescriptorDigest !== authorityDigest(evidence.descriptor) || !input.descriptors.some(item => authorityDigest(item) === binding.parentEvidenceDescriptorDigest)) throw new TypeError("artifact key binding parent evidence authority is not activated");
+  const { signature, ...bindingBody } = binding;
+  if (binding.signerId !== evidence.descriptor.keyId || !verifyDomain(evidence.descriptor, "authority-evidence", "reelier.certification-artifact-key-binding/v1\0", authorityDigest(bindingBody), signature)) throw new TypeError("artifact key binding signature is invalid");
+  const human = parseAuthorityKeyDescriptor(input.humanDescriptor), { signature: humanSignature, ...commitmentBody } = commitment;
+  if (commitment.humanSignerId !== human.keyId || !verifyDomain(human, "certification-readiness", "reelier.certification-artifact-key-binding-commitment/v1\0", authorityDigest(commitmentBody), humanSignature)) throw new TypeError("artifact key binding human commitment is invalid");
+  if (authorityDigest(binding.entries.map(item => item.artifactPurpose)) !== authorityDigest(ARTIFACT_PURPOSES) || binding.entries.some(item => { const expected = material.artifacts.get(item.artifactPurpose); return !expected || item.keyId !== expected.descriptor.keyId || item.publicKeySpkiBase64 !== expected.descriptor.publicKeySpkiBase64 || item.publicKeyDigest !== publicKeyDigest(item.publicKeySpkiBase64); })) throw new TypeError("artifact key binding subkeys are substituted or incomplete");
+  handles.delete(handle as object);
+  return material;
+}
 
 function requireMaterial(handle: CertificationLifecycleAuthorityHandle): CeremonyMaterial { const material = handles.get(handle as object); if (!material) throw new TypeError("genuine opaque certification lifecycle authority handle required"); return material; }
 function keyFor(purpose: DirectPurpose): KeyMaterial { const pair = generateKeyPairSync("ed25519"); const descriptor = parseAuthorityKeyDescriptor({ v: "reelier.authority-key-descriptor/v1", keyId: `cell_${purpose.replaceAll("-", "_")}_${randomUUID().slice(0, 8)}`, role: "authority-cell", purpose, algorithm: "ed25519", publicKeySpkiBase64: pair.publicKey.export({ type: "spki", format: "der" }).toString("base64") }); return Object.freeze({ descriptor, privateKey: pair.privateKey }); }
