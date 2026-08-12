@@ -181,6 +181,9 @@ test("host runtime owns the immutable trust path and activation only commits its
       { workspace: f.root },
       { delegationAuthority: { registerRoot: async () => { throw new Error("CALLER_AUTHORITY_RAN"); } } },
       { credentialAvailable: async () => { throw new Error("CALLBACK_RAN"); } },
+      { constructor: "caller" },
+      { prototype: "caller" },
+      JSON.parse('{"__proto__":"caller"}'),
     ]) await assert.rejects(() => host.activateRootTask({ ...activationInput, ...extra } as never), /closed|unknown|caller/i);
     const symbolActivation = { ...activationInput, [Symbol("caller")]: true };
     await assert.rejects(() => host.activateRootTask(symbolActivation as never), /closed|unknown|caller/i);
@@ -190,6 +193,7 @@ test("host runtime owns the immutable trust path and activation only commits its
     const credential = await host.activatePrincipalSession();
     await assert.rejects(() => (host.activatePrincipalSession as any)({ workspace: f.root }), /argument|closed|unknown/i);
     await assert.rejects(() => (host.revalidateDispatchPermit as any)({ permit: {}, workspace: f.root }), /permit|invalid|closed/i);
+    await assert.rejects(() => host.verifyDispatchReadiness(Object.assign({ scenario: "github-issue-labels", bearerToken: credential.token }, { [Symbol("caller")]: true }) as never), /closed|unknown|caller/i);
     const activationFile = path.join(f.initialized.workspace, "authority", "delegation", "root-activation.json");
     const tampered = JSON.parse(await readFile(activationFile, "utf8"));
     tampered.currentTrustPinPathDigest = `sha256:${"0".repeat(64)}`;
