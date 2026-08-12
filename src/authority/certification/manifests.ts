@@ -1,6 +1,6 @@
 import { CERTIFICATION_SCENARIOS, CERTIFICATION_SCENARIO_IDS, type CertificationScenarioId, type CertificationSecretSlot } from "./scenarios.js";
 import { authorityDigest } from "../wire.js";
-import { CERTIFICATION_RUNNER_OPERATIONS, certificationRunnerRegistryDigest, getCertificationRunnerRegistryEntry, type CertificationProvider } from "./runner-registry.js";
+import { CERTIFICATION_RUNNER_OPERATIONS, certificationPolicyCommitments, certificationRunnerRegistryDigest, getCertificationRunnerRegistryEntry, type CertificationProvider } from "./runner-registry.js";
 import { inertArray, inertRecord } from "./inert.js";
 import type { CertificationOperatorConfigV3 } from "./config.js";
 import { certificationScenarioPlanBindings } from "./scenario-bindings.js";
@@ -73,7 +73,7 @@ export interface CertificationScenarioPlanV1 {
   readonly accountCommitments: readonly Readonly<{ provider: CertificationProvider; digest: string }>[];
   readonly desiredStateDigest: string;
   readonly policyCommitments: readonly Readonly<{ schemaId: string; digest: string }>[];
-  readonly cleanup: Readonly<{ recipeIds: readonly string[]; beforeStateDigest: string }>;
+  readonly cleanup: Readonly<{ recipeIds: readonly string[]; beforeState: "pending" }>;
   readonly controlledCut: Readonly<{ case: "ambiguous-after-dispatch" }>;
   readonly runnerManifestDigest: string;
   readonly testManifestDigest: string;
@@ -150,11 +150,11 @@ export function parseCertificationScenarioPlan(value: unknown, config: Certifica
   const policyValues = inertArray(raw.policyCommitments, "certification policy commitments");
   if (policyValues.length !== registry.policySchemaIds.length || policyValues.length > 8) throw new TypeError("certification policy commitments are invalid");
   const policyCommitments = policyValues.map(value => { const item = object(value, "certification policy commitment"); closed(item, ["schemaId", "digest"], "certification policy commitment"); if (typeof item.schemaId !== "string" || !ID.test(item.schemaId) || !digest(item.digest)) throw new TypeError("certification policy commitment is invalid"); return Object.freeze({ schemaId: item.schemaId, digest: item.digest }); });
-  if (!exactList(policyCommitments.map(item => item.schemaId), registry.policySchemaIds)) throw new TypeError("certification policy commitments do not match reviewed pack schemas");
-  const cleanup = object(raw.cleanup, "certification cleanup recipe"); closed(cleanup, ["recipeIds", "beforeStateDigest"], "certification cleanup recipe"); if (!exactList(cleanup.recipeIds, bindings.cleanupRecipeIds) || !digest(cleanup.beforeStateDigest)) throw new TypeError("certification cleanup recipe is invalid or does not match config");
+  if (authorityDigest(policyCommitments) !== authorityDigest(certificationPolicyCommitments(scenarioId))) throw new TypeError("certification policy commitments do not match reviewed pack schemas");
+  const cleanup = object(raw.cleanup, "certification cleanup recipe"); closed(cleanup, ["recipeIds", "beforeState"], "certification cleanup recipe"); if (!exactList(cleanup.recipeIds, bindings.cleanupRecipeIds) || cleanup.beforeState !== "pending") throw new TypeError("certification cleanup recipe before state must remain pending until provider read");
   const controlledCut = object(raw.controlledCut, "certification controlled cut"); closed(controlledCut, ["case"], "certification controlled cut"); if (controlledCut.case !== "ambiguous-after-dispatch") throw new TypeError("certification controlled-cut case is invalid");
   for (const [name, value] of [["runner", raw.runnerManifestDigest], ["test", raw.testManifestDigest], ["endpoint", raw.endpointManifestDigest]] as const) if (!digest(value)) throw new TypeError(`certification ${name} manifest digest is invalid`);
-  return Object.freeze({ v: "reelier.certification-scenario-plan/v1", scenarioId, definitionAliases: registry.definitionAliases, sourceRefs, resourceDigest: bindings.resourceDigest, accountCommitments: Object.freeze(accountCommitments), desiredStateDigest: bindings.desiredStateDigest, policyCommitments: Object.freeze(policyCommitments), cleanup: Object.freeze({ recipeIds: bindings.cleanupRecipeIds, beforeStateDigest: cleanup.beforeStateDigest }), controlledCut: Object.freeze({ case: "ambiguous-after-dispatch" }), runnerManifestDigest: raw.runnerManifestDigest, testManifestDigest: raw.testManifestDigest, endpointManifestDigest: raw.endpointManifestDigest, runnerRegistryDigest: certificationRunnerRegistryDigest });
+  return Object.freeze({ v: "reelier.certification-scenario-plan/v1", scenarioId, definitionAliases: registry.definitionAliases, sourceRefs, resourceDigest: bindings.resourceDigest, accountCommitments: Object.freeze(accountCommitments), desiredStateDigest: bindings.desiredStateDigest, policyCommitments: certificationPolicyCommitments(scenarioId), cleanup: Object.freeze({ recipeIds: bindings.cleanupRecipeIds, beforeState: "pending" as const }), controlledCut: Object.freeze({ case: "ambiguous-after-dispatch" }), runnerManifestDigest: raw.runnerManifestDigest, testManifestDigest: raw.testManifestDigest, endpointManifestDigest: raw.endpointManifestDigest, runnerRegistryDigest: certificationRunnerRegistryDigest });
 }
 function stringRecord(value: unknown, label: string): Readonly<Record<string, string>> { const raw = object(value, label); if (Object.keys(raw).length === 0) throw new TypeError(`${label} is invalid`); const result: Record<string, string> = {}; for (const key of Object.keys(raw).sort()) { if (!ID.test(key) || typeof raw[key] !== "string" || !TEXT.test(raw[key]) || /bearer|secret|token|password/i.test(raw[key])) throw new TypeError(`${label} contains secret-shaped or invalid data`); result[key] = raw[key]; } return Object.freeze(result); }
 function exactList(value: unknown, expected: readonly string[]): boolean { const list = inertArray(value, "certification exact list"); return list.length === expected.length && list.every((item, index) => item === expected[index]); }

@@ -145,7 +145,9 @@ async function inspectInputSet(workspace: string, kind: "runners" | "tests", sce
     return Object.freeze({ scenario, name, digest: `sha256:${createHash("sha256").update(bytes).digest("hex")}` });
   }));
   const artifacts = inspected.filter((item): item is NonNullable<typeof item> => item !== undefined);
-  const complete = scenarios.every(scenario => artifacts.filter(item => item.scenario === scenario).length === 1);
+  const complete = scenarios.every(scenario =>
+    entries.filter(entry => entry.name === `${scenario}.json` || entry.name.startsWith(`${scenario}--`)).length === 1
+    && artifacts.filter(item => item.scenario === scenario).length === 1);
   return Object.freeze({ status: complete ? "configured" : "absent", artifacts: Object.freeze(artifacts) });
 }
 
@@ -156,6 +158,7 @@ async function inspectEndpoints(workspace: string, scenarios: readonly Certifica
   const artifacts: CertificationInputArtifact[] = [];
   for (const scenario of scenarios) {
     const matching = entries.filter(entry => entry.name === `${scenario}.json` || entry.name.startsWith(`${scenario}--`));
+    if (matching.length !== 1) continue;
     for (const entry of matching) {
       if (!entry.isFile() || entry.isSymbolicLink()) continue;
       try {

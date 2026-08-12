@@ -103,3 +103,10 @@ export function getCertificationRunnerRegistryEntry(scenarioId: CertificationSce
   if (!entry) throw new TypeError("certification scenario has no built-in provider runner");
   return entry;
 }
+
+export function certificationPolicyCommitments(scenarioId: CertificationScenarioId): readonly Readonly<{ schemaId: string; digest: string }>[] {
+  return Object.freeze(getCertificationRunnerRegistryEntry(scenarioId).policySchemaIds.map(schemaId => Object.freeze({
+    schemaId,
+    digest: authorityDigest({ v: "reelier.certification-policy-schema-identity/v1", schemaId }),
+  })));
+}

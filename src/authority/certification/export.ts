@@ -8,6 +8,7 @@ import { CERTIFICATION_SCENARIOS, CERTIFICATION_SCENARIO_IDS, type Certification
 import { certificationWorkspaceRoot, confinedExistingDirectory, publishPrivateContentAddressed, readConfinedFile } from "./filesystem.js";
 import { createCertificationSelectionCommitment, recomputeCertificationSelectionCommitment } from "./commitment.js";
 import { CERTIFICATION_PROVIDER_SCENARIO_IDS, certificationRunnerRegistryDigest } from "./runner-registry.js";
+import { inertArray, inertRecord } from "./inert.js";
 
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
 // Local filesystem checks are preparation evidence only; no export claim verifies exclusive confinement.
@@ -119,8 +120,18 @@ function parseProjectedConfig(value: unknown, manifestScenarios: readonly Certif
   const cleanupRaw = object(raw.cleanup, "certification export cleanup"); closed(cleanupRaw, expectedCleanup, "certification export cleanup");
   const cleanup: Record<string, readonly string[]> = {};
   for (const section of expectedCleanup) cleanup[section] = stringList(cleanupRaw[section], `certification ${section} cleanup`);
-  const desiredState = object(raw.desiredState, "certification export desired state");
-  if (Object.keys(desiredState).some(key => !scenarios.includes(key as CertificationScenarioId))) throw new TypeError("certification export desired state selection mismatch");
+  const desiredRaw = object(raw.desiredState, "certification export desired state");
+  if (Object.keys(desiredRaw).some(key => !scenarios.includes(key as CertificationScenarioId))) throw new TypeError("certification export desired state selection mismatch");
+  const desiredState = Object.freeze(Object.fromEntries(Object.keys(desiredRaw).sort().map(scenario => {
+    const entries = inertArray(desiredRaw[scenario], `certification ${scenario} desired-state commitments`).map(item => {
+      const entry = object(item, "certification desired-state field commitment");
+      closed(entry, ["name", "type", "byteCount", "digest", "contentSensitivity"], "certification desired-state field commitment");
+      if (typeof entry.name !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/.test(entry.name) || !["array", "boolean", "null", "number", "object", "string"].includes(entry.type) || !Number.isSafeInteger(entry.byteCount) || entry.byteCount < 1 || entry.contentSensitivity !== "unchecked") throw new TypeError("certification desired-state field commitment is invalid");
+      return Object.freeze({ name: entry.name, type: entry.type, byteCount: entry.byteCount, digest: assertDigest(entry.digest, "certification desired-state field digest"), contentSensitivity: "unchecked" as const });
+    });
+    if (entries.length === 0 || new Set(entries.map(item => item.name)).size !== entries.length || entries.some((item, index) => index > 0 && entries[index - 1]!.name >= item.name)) throw new TypeError("certification desired-state field commitments must be non-empty, unique, and sorted");
+    return [scenario, Object.freeze(entries)];
+  })));
   if (!Array.isArray(raw.metadata)) throw new TypeError("certification export metadata must be an array");
   const metadata = Object.freeze(raw.metadata.map((item: unknown) => { const entry = object(item, "certification export metadata item"); closed(entry, ["section", "digest", "status"], "certification export metadata item"); if (typeof entry.section !== "string" || entry.status !== "configured") throw new TypeError("certification export metadata item is invalid"); return Object.freeze({ section: entry.section, digest: assertDigest(entry.digest, "certification export metadata digest"), status: "configured" as const }); }));
   if (!same(metadata.map((item: any) => item.section), expectedMetadata)) throw new TypeError("certification export metadata selection mismatch");
@@ -180,5 +191,5 @@ function unique<T extends string>(values: readonly T[]): readonly T[] { return O
 function byScenario(left: any, right: any): number { return left.scenario.localeCompare(right.scenario); }
 function assertDigest(value: unknown, label: string): string { if (typeof value !== "string" || !DIGEST.test(value)) throw new TypeError(`${label} is invalid`); return value; }
 function same(left: readonly string[], right: readonly string[]): boolean { return left.length === right.length && left.every((item, index) => item === right[index]); }
-function object(value: unknown, label: string): Record<string, any> { if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError(`${label} must be an object`); return value as Record<string, any>; }
+function object(value: unknown, label: string): Record<string, any> { return inertRecord(value, label) as Record<string, any>; }
 function closed(raw: Record<string, unknown>, keys: readonly string[], label: string): void { if (Object.keys(raw).length !== keys.length || Object.keys(raw).some(key => !keys.includes(key))) throw new TypeError(`${label} is closed`); }
