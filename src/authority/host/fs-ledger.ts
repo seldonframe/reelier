@@ -144,7 +144,7 @@ export const ledgerLockFaultPoints = Object.freeze([
   "before-ledger-operation-callback",
   "after-owner-file-sync", "after-lock-directory-sync", "before-lock-retire", "after-lock-retire",
 ] as const);
-// The 13 crash-visible boundaries the spec taxonomy deliberately excludes, deleted from the
+// The crash-visible boundaries the spec taxonomy deliberately excludes, deleted from the
 // public registry in the D3(a) ABI freeze (owner decision 2026-08-05, performed 2026-08-06).
 // They remain emitted — the committed corpus observes them through the injector, which has
 // always received them at runtime — but they are internal: never part of `ledgerFaultPoints`
@@ -159,6 +159,7 @@ const ledgerInternalBoundaries = Object.freeze([
   "before-lock-publication-provisional-root-reenumeration",
   "before-lock-publication-provisional-predecessor-liveness", "before-staged-publication-settlement",
   "after-lock-publication-generation-closed", "before-lock-publication-predecessor-validation",
+  "after-admission-prep-final-revalidation",
 ] as const);
 type LedgerInternalBoundary = (typeof ledgerInternalBoundaries)[number];
 export const ledgerFaultPoints = Object.freeze([...reservationFaultPoints, ...dispatchFaultPoints, ...resultFaultPoints, ...ingressFaultPoints, ...clockFaultPoints, ...ledgerLockFaultPoints]);
@@ -1325,7 +1326,8 @@ export class FsAuthorityLedger implements AuthorityLedger {
       await this.writeAll(handle,ownerBytes.subarray(1),1);
       await handle.sync();
       this.fault("after-admission-prep-owner-sync");
-    }finally{if(handle)await handle.close();}
+    }catch(error){if(hasCode(error,"ENOENT"))throw new LedgerCorruption("admission preparation disappeared during owner creation");throw error;}
+    finally{if(handle)await handle.close();}
     await this.revalidateAdmissionPreparation(prepPath,directoryIdentity,ownerIdentity,ownerBytes);
     await this.syncDirectory(prepPath);
     this.fault("after-admission-prep-sync");
@@ -1347,10 +1349,12 @@ export class FsAuthorityLedger implements AuthorityLedger {
     // promoted into the fixed slot and only caught by the post-rename check below — reporting
     // corruption on a root where the corrupt owner is already installed as the slot.
     await this.revalidateAdmissionPreparation(prepPath,directoryIdentity,ownerIdentity,ownerBytes);
+    this.fault("after-admission-prep-final-revalidation");
     try{await rename(prepPath,slotPath);}
     catch(error){
       // A destination that appeared between the check and the rename is preserved, never clobbered.
       if(hasCode(error,"EEXIST")||hasCode(error,"ENOTEMPTY"))throw new LedgerCorruption("admission slot destination appeared during promotion");
+      if(hasCode(error,"ENOENT"))throw new LedgerCorruption("admission preparation disappeared during promotion");
       if(isTransientLockError(error))throw new CoordinationExhausted("acquisition","transient-sharing");
       throw error;
     }
