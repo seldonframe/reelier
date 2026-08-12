@@ -14,6 +14,7 @@
 - `src/authority/certification/preflight.ts`
 - `src/authority/host/delegation-service.ts`
 - `src/authority/host/index.ts`
+- `src/authority/host/principal-registry.ts`
 - `test/authority/certification-authority.test.ts`
 - `test/authority/certification-cell.test.ts`
 - `test/authority/certification-export.test.ts`
@@ -24,6 +25,7 @@
 - `test/authority/certification-readiness.test.ts`
 - `test/authority/certify-cli.test.ts`
 - `test/authority/delegation-service.test.ts`
+- `test/authority/principal-registry.test.ts`
 - `.superpowers/sdd/2026-08-11-authority-cell-certification-train/task-3c-cell-assembly-report.md`
 
 ## Implementation
@@ -33,7 +35,9 @@
 - A human-signed, currently trusted Job Card activates only the initialization-generated task/job/root-grant/Cell identities. Concrete limits and the complete constraints preimage are checked against Job Card commitments. The root grant uses a readiness-activated `authority-cell/delegation-grant` key whose SPKI is purpose-separated from all other human/Cell keys.
 - Root task/allocation registration is durable and exact-replay idempotent. A conflicting task, grant, allocation identity, signed grant, or effects budget refuses.
 - The single certification principal and runtime session identity are derived from durable activation state. The existing `PrincipalRegistry` returns a short-lived bearer once and persists only its digest; restart, duplicate-session, expiry, and task-revocation paths remain fail-closed.
-- `verifyCertificationDispatchReadiness` returns a WeakMap-backed opaque permit whose JSON serialization throws. Permit use immediately rereads and verifies current Job Card trust, signed readiness, root grant signature/constraints, task/grant/allocation/principal state, remaining effects, exact signed semantic runner/test preflight, named credential availability, and endpoint commitments. The permit is deleted before revalidation, can be used once, consumes one effect immediately before the runner callback, and calls the runner zero times on every tested invalid/stale path.
+- `verifyCertificationDispatchReadiness` requires a link-safe, operator-owned current-trust pin outside Authority Cell output and returns a WeakMap-backed opaque permit whose JSON serialization throws. Permit use immediately rereads and verifies monotonic current Job Card trust, signed full-selection readiness before selecting one scenario, root grant signature/constraints, task/grant/allocation/principal state, remaining effects, exact signed semantic runner/test preflight, redacted named-credential availability, and an endpoint manifest independently rederived from sanitized configuration.
+- Permit execution resolves an exact `(scenarioId, runnerId, implementationDigest, endpointManifestDigest)` entry from a host-owned certified-runner registry. Task 3C accepts only `dispatchMode:"hermetic-certification"`, exposes no provider credential or network handle to the runner, deletes the permit before revalidation, consumes one effect immediately before the registered runner, and leaves live-provider readiness false for Task 4.
+- Root registration and durable principal issuance use serialized filesystem transactions. Conflicting root activations and duplicate live runtime-session credentials yield exactly one success even across independent service/registry instances.
 - Signed readiness remains `dispatchable:false`; every generated/scaffold/activation/snapshot artifact retains `completeness:"unchecked"`.
 
 ## TDD commits
@@ -48,6 +52,8 @@
 - `79e626d` RED signed-manifest drift; `95d8921` GREEN signed preflight pin
 - `a224f8a` RED unselected scaffold drift; `797ef7d` GREEN closed inventory
 - `67a16ca` current-trust revocation and zero-runner regression coverage
+- `58a838a` RED independent-review regressions for runner confinement, multi-scenario dispatch, current trust, concurrency, endpoint derivation, redaction, and canonical signatures
+- `0d46fac` GREEN review-finding closure
 
 ## Focused verification
 
@@ -56,11 +62,11 @@ Commands run at the implementation head:
 ```text
 npm run build
 npx tsc -p tsconfig.test.json --pretty false
-node --test <11 focused authority test files>
+node --test <10 explicitly listed changed authority test files>
 npm run check:authority-contract
 ```
 
-Results: build passed; test compilation passed; authority contract drift check passed; focused tests **61 passed, 0 failed, 0 skipped**.
+Results: build passed; test compilation passed; authority contract drift check passed; focused tests **65 passed, 0 failed, 0 skipped**.
 
 The full `npm test` suite was intentionally not run, per Task 3C scope.
 
@@ -74,9 +80,9 @@ The full `npm test` suite was intentionally not run, per Task 3C scope.
 
 - Portable filesystem checks reject observed links/reparse points and substitutions but cannot prove absence of hostile concurrent same-user mutation; isolated Cell topology remains Task 5.
 - Permits are intentionally process-local and non-recoverable. Process restart requires full readiness verification and a new permit.
-- Named credential checks prove availability by slot only; secret values and live provider semantics remain Task 4 and are never read or persisted here.
+- Named credential checks prove availability by slot only; secret values and live provider semantics remain Task 4 and are never read, persisted, or exposed to the hermetic runner here.
 - Universal completeness remains unchecked; this assembly proves only the selected certification boundary.
 
 ## Independent review
 
-Pending fresh read-only review of `a668acf..HEAD`.
+The first fresh read-only review requested changes. Its nine findings were converted into RED regressions in `03e245c` and addressed as described above. Same-reviewer re-review of `a668acf..HEAD` is pending the GREEN fix commit.
