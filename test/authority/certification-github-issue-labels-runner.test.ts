@@ -19,7 +19,7 @@ import { writeCertificationInputManifests } from "./certification-input-fixture.
 const at = "2026-08-11T20:00:00.000Z", expiry = "2026-08-11T21:00:00.000Z";
 const descriptor = (keyId: string, role: "human-sponsor" | "authority-cell", purpose: string, publicKey: ReturnType<typeof generateKeyPairSync>["publicKey"]) => ({ v: "reelier.authority-key-descriptor/v1", keyId, role, purpose, algorithm: "ed25519", publicKeySpkiBase64: publicKey.export({ type: "spki", format: "der" }).toString("base64") });
 
-async function fixture(mode: "normal" | "source-drift" | "effect-drift" | "provider-503" | "accessor-response" | "cut-after-budget" | "cut-after-dispatched" | "cut-after-send-intent" = "normal") {
+async function fixture(mode: "normal" | "source-drift" | "effect-drift" | "provider-503" | "accessor-response" | "cut-after-budget" | "cut-after-dispatched" | "cut-after-send-intent" = "normal", hermeticGitHubAuthority?: unknown) {
   const root = await mkdtemp(path.join(tmpdir(), "reelier-github-cell-"));
   const configPath = path.join(root, "certification.local.json");
   await writeFile(configPath, JSON.stringify({ v: "reelier.certification-operator-config/v3", authorityConfigPath: "authority/authority.yml", evidenceDirectory: "authority/receipts/certification", scenarios: ["github-issue-labels"], resources: { "github-issue-labels": { apiBaseUrl: "https://api.github.com", owner: "fixlyai", repository: "reelier-certification", issueNumber: 1 } }, cleanup: { "github-issue-labels": ["restore-github-labels"] }, desiredState: { "github-issue-labels": { labels: ["certification-after"] } }, metadata: {}, secretReferences: { githubCredential: "env:REELIER_GITHUB_TOKEN" } }), "utf8");
@@ -38,7 +38,7 @@ async function fixture(mode: "normal" | "source-drift" | "effect-drift" | "provi
   const delegation = createDelegationAuthority({ root: path.join(initialized.workspace, "authority", "delegation"), now: () => new Date("2026-08-11T20:10:00.000Z"), signGrant: async () => { throw new Error("child delegation not expected"); } });
   const principals = createFilePrincipalRegistry({ tenant: initialized.identifiers.authorityCellId, file: path.join(initialized.workspace, "authority", "principals", "registry.jsonl") });
   const trustPath = path.join(root, "operator-current-trust.json"); await writeFile(trustPath, `${JSON.stringify(pin)}\n`);
-  const cell = await createCertificationCellHost({ workspace: initialized.workspace, currentTrustPinPath: trustPath, delegationAuthority: delegation, principalRegistry: principals, now: () => new Date("2026-08-11T20:10:00.000Z") });
+  const cell = await createCertificationCellHost({ workspace: initialized.workspace, currentTrustPinPath: trustPath, delegationAuthority: delegation, principalRegistry: principals, now: () => new Date("2026-08-11T20:10:00.000Z"), ...(hermeticGitHubAuthority === undefined ? {} : { hermeticGitHubAuthority }) } as never);
   await cell.activateRootTask({ jobCard, jobCardTrustPin: pin, delegationKeyDescriptor: delegationSigner, delegationPrivateKey: delegationKey.privateKey, constraints, effects: 2, issuedAt: at, expiresAt: expiry });
   const credential = await cell.activatePrincipalSession();
   const runner = await createGitHubIssueLabelsHermeticComposition(cell, { mode });
@@ -47,6 +47,11 @@ async function fixture(mode: "normal" | "source-drift" | "effect-drift" | "provi
 
 test("only a genuine Cell host can compose the fixed runner", async () => {
   await assert.rejects(() => createGitHubIssueLabelsHermeticComposition({ verifyDispatchReadiness: async () => ({}), revalidateDispatchPermit: async () => undefined } as never, { mode: "normal" }), /genuine|brand|Cell/i);
+});
+
+test("runner refuses absent or caller-substituted contract and gate authority", async () => {
+  const contract = generateKeyPairSync("ed25519"), gate = generateKeyPairSync("ed25519");
+  await assert.rejects(() => fixture("normal", { contractPrivateKey: contract.privateKey, gatePrivateKey: gate.privateKey }), /activated|descriptor|signer|authority/i);
 });
 
 test("real Cell permit, gate reservation, exact plan and budget precede one fixed provider write", async () => {
