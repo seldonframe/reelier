@@ -22,6 +22,8 @@ The provider registry covers exactly GitHub labels, Cloudflare DNS, Slack topic,
 - `ca1184b` — close exact v3 resource/metadata shapes, sorted scenario selections, selection conditionals, and safe path/reference patterns.
 - `44b72a2` RED — reproduce malformed name-matching duplicates, substitutable policy/before-state claims, raw desired-state disclosure, getter execution, and schema authority substitution.
 - `718bf7e` GREEN — count all matching artifacts before parsing, make public artifact parsers inert, derive plan policy identity, keep Task 4A before-state pending, publish only desired-state field commitments, and bind static schema authority.
+- `c0b7ece` RED — reproduce nested-array getter execution, non-inert array shapes, scenario-plan static-identity schema gaps, unsafe file references, and the missing host semantic-verification boundary.
+- `7d65231` GREEN — make every touched nested-array boundary descriptor-safe, canonicalize order-insensitive dynamic lists, bind scenario-static plan identities, constrain file references, and expose narrow host-only semantic verifiers.
 
 ## Files
 
@@ -34,25 +36,25 @@ Contracts:
 
 Implementation:
 
-- `src/authority/certification/{cell,commitment,config,export,inert,initializer,manifests,preflight,readiness,runner-registry,scenario-bindings,scenarios}.ts`
+- `src/authority/certification/{cell,commitment,config,export,inert,initializer,manifests,preflight,readiness,runner-registry,scenario-bindings,scenarios,semantic-verification}.ts`
 - `src/authority/host/certification-config.ts`
 
 Tests and operator material include the focused certification suite, `authority/certification.example.json`, `docs/runbooks/live-certification.md`, and this report.
 
 ## Verification
 
-At implementation head `718bf7e`:
+At implementation head `7d65231`:
 
 ```text
 npm run build                                                       PASS
 npx tsc -p tsconfig.test.json --pretty false                        PASS
-focused authority/certification tests                               91 passed, 0 failed, 0 skipped
+focused authority/certification tests                              111 passed, 0 failed, 0 skipped
 npm run check:authority-contract                                   PASS
 ```
 
 The focused set covers certification authority, Cell, config, export, filesystem, initializer, preflight, readiness, runner ABI, scenarios, and runner behavior. Per instruction, the full `npm test` suite was not run.
 
-Security assertions include exact reviewed endpoint constants; compound per-provider account/resource authority; typed config-derived plans with no arbitrary choices/source/recipe authority; zero-invocation accessor rejection; exact-one artifact counting; non-dispatchable metadata refusal before budget access; and an Ajv/runtime parity corpus covering positive inputs plus dispatchability, arbitrary-plan, credential-shaped nested value, missing selected field, unselected extra field, unsorted selection, unsafe path, and unsafe environment-reference negatives.
+Security assertions include exact reviewed endpoint constants; compound per-provider account/resource authority; typed config-derived plans with no arbitrary choices/source/recipe authority; zero-invocation accessor rejection for nested index getters plus sparse, non-enumerable, symbol-bearing, and custom-prototype arrays; exact-one artifact counting; non-dispatchable metadata refusal before budget access; and an Ajv/runtime parity corpus covering positive inputs plus static scenario substitution, dispatchability, arbitrary-plan, credential-shaped nested value, missing selected field, unselected extra field, unsafe path, unsafe environment/file references, and dynamic cleanup/list semantics. Dynamic list order is structural input, not authority: runtime rejects duplicates and sorts before commitments.
 
 ## Deviations and risks
 
@@ -60,6 +62,7 @@ Security assertions include exact reviewed endpoint constants; compound per-prov
 - Fly topology and ten-principal Codex remain separate scenarios without fake provider endpoint manifests.
 - V2 migration deterministically duplicates an old Cloudflare reference when both purpose-separated v3 slots are selected; the operator must replace it before live certification.
 - Universal completeness remains `unchecked`; no live/provider action, credential resolution, dispatch, budget consumption, push, merge, publish, or deployment occurred.
+- Packaged JSON Schema is a structural and static-identity gate, not semantic authority verification. Configuration-derived resource, account, desired-state, cleanup, endpoint, and selection commitments require the exported Authority Cell host semantic verifiers; a verifier without that private host context must report them `unchecked`.
 
 ## Cross-task scope deviations
 
@@ -74,4 +77,4 @@ These deviations bind and preserve non-dispatchability. They do not implement a 
 
 ## Review
 
-The first independent review returned FIX FIRST. Commits `178369b` through `ca1184b` addressed that pass. The next review found five remaining trust-boundary classes. RED `44b72a2` reproduced them and GREEN `718bf7e` closes the executable findings: invalid matching duplicates are counted before parse; artifact parsers reject accessors without invocation; policy identity is derived and before-state stays `pending`; desired state is exported only as canonical per-field name/type/byte-count/digest commitments with content sensitivity `unchecked`; and the portable runner/endpoint/plan schemas bind reviewed static identities. The same reviewer must re-review exact range `25be3a5..HEAD` before final handoff.
+The first independent review returned FIX FIRST. Commits `178369b` through `ca1184b` addressed that pass. The next review found five remaining trust-boundary classes. RED `44b72a2` and GREEN `718bf7e` closed those executable findings. The final pass then identified nested-array getter execution and an overstatement of portable-schema authority. RED `c0b7ece` proves those failures; GREEN `7d65231` routes every touched untrusted array through descriptor-safe `inertArray`, binds scenario-static plan identities with an exact `oneOf`, canonicalizes dynamic lists before commitment, restricts `file:` references to safe relative payloads, and documents plus exports the mandatory narrow host semantic-verification boundary without exposing the private registry or execution. The same reviewer must re-review exact range `25be3a5..HEAD` before final handoff.
