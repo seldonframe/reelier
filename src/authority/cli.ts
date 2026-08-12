@@ -298,6 +298,7 @@ async function authorityServe(args: Readonly<{ opts: Record<string, string> }>):
 
 async function authorityCertify(args: Readonly<{ positional: string[]; flags: Set<string>; opts: Record<string, string> }>): Promise<number> {
   const action = args.positional[1] ?? "preflight";
+  if (action === "activate-codex" || (action === "run" && args.opts.adapter === "fly-topology")) assertLinuxAuthorityCellHost();
   if (action === "init") {
     if (args.positional.length !== 2 || args.flags.size !== 0 || Object.keys(args.opts).some(option => option !== "config")) { console.error(JSON.stringify({ status: "refused", reasonCode: "certification-command-invalid" })); return 1; }
   }
