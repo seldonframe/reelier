@@ -214,3 +214,13 @@ test("linked config, plan, and journal paths refuse before authority recovery or
     } finally { await rm(f.root, { recursive: true, force: true }); }
   });
 });
+
+test("a junction-substituted receipt store refuses cleanup and leaves the external target untouched", async t => {
+  const f = await fixture(); const outside = await mkdtemp(path.join(tmpdir(), "reelier-receipt-outside-")); try {
+    await f.runner.run({ bearerToken: f.credential.token, requestId: "request_receipt_link" });
+    const receipts = path.join(f.initialized.workspace, "authority", "github-label-runner", "receipts"), real = `${receipts}.real`;
+    await rename(receipts, real); try { await symlink(outside, receipts, "junction"); } catch (error) { if ((error as NodeJS.ErrnoException).code === "EPERM") { t.skip("symlink privilege unavailable"); return; } throw error; }
+    await assert.rejects(() => f.runner.cleanup({ bearerToken: f.credential.token, requestId: "request_receipt_link" }), /linked|reparse|confined/i);
+    assert.deepEqual(await readdir(outside), []);
+  } finally { await rm(f.root, { recursive: true, force: true }); await rm(outside, { recursive: true, force: true }); }
+});
