@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "reelier.authority/certification-operator-config/v3",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["v", "authorityConfigPath", "evidenceDirectory", "scenarios", "resources", "cleanup", "metadata", "secretReferences"],
+  "properties": {
+    "v": { "const": "reelier.certification-operator-config/v3" },
+    "authorityConfigPath": { "$ref": "#/$defs/localText" },
+    "evidenceDirectory": { "$ref": "#/$defs/localText" },
+    "scenarios": { "type": "array", "minItems": 1, "maxItems": 8, "uniqueItems": true, "items": { "enum": ["cloudflare-dns", "cloudflare-vercel-secret", "codex-ten-principal", "fly-topology", "github-issue-labels", "neon-migration", "slack-topic", "vercel-promotion"] } },
+    "resources": { "type": "object", "additionalProperties": false, "properties": { "cloudflare-dns": { "type": "object" }, "cloudflare-vercel-secret": { "type": "object" }, "github-issue-labels": { "type": "object" }, "neon-migration": { "type": "object" }, "slack-topic": { "type": "object" }, "vercel-promotion": { "type": "object" } } },
+    "cleanup": { "type": "object", "additionalProperties": false, "properties": { "cloudflare-dns": { "$ref": "#/$defs/idList" }, "cloudflare-vercel-secret": { "$ref": "#/$defs/idList" }, "github-issue-labels": { "$ref": "#/$defs/idList" }, "neon-migration": { "$ref": "#/$defs/idList" }, "slack-topic": { "$ref": "#/$defs/idList" }, "vercel-promotion": { "$ref": "#/$defs/idList" } } },
+    "metadata": { "type": "object", "additionalProperties": false, "properties": { "flyTopology": { "type": "object" }, "codexTenPrincipal": { "type": "object" } } },
+    "secretReferences": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "cloudflareBootstrapCredential": { "$ref": "#/$defs/secretReference" },
+        "cloudflareDnsCredential": { "$ref": "#/$defs/secretReference" },
+        "flyApiCredential": { "$ref": "#/$defs/secretReference" },
+        "githubCredential": { "$ref": "#/$defs/secretReference" },
+        "neonApiCredential": { "$ref": "#/$defs/secretReference" },
+        "neonDatabaseUrl": { "$ref": "#/$defs/secretReference" },
+        "slackCredential": { "$ref": "#/$defs/secretReference" },
+        "vercelCredential": { "$ref": "#/$defs/secretReference" }
+      }
+    }
+  },
+  "$defs": {
+    "localText": { "type": "string", "minLength": 1, "maxLength": 1024, "not": { "pattern": "^(?:https?:|file:)" } },
+    "secretReference": { "type": "string", "pattern": "^(?:env:[A-Z][A-Z0-9_]{1,127}|file:[^\\r\\n\\u0000]{1,2048})$" },
+    "idList": { "type": "array", "minItems": 1, "maxItems": 64, "uniqueItems": true, "items": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$" } }
+  }
+}

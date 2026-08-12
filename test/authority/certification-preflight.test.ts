@@ -126,3 +126,30 @@ test("preflight rejects executable dependency injection and performs zero provid
   } finally { globalThis.fetch = originalFetch; }
   assert.deepEqual({ providerCalls, credentialCalls, dispatchCalls, budgetCalls }, { providerCalls: 0, credentialCalls: 0, dispatchCalls: 0, budgetCalls: 0 });
 });
+
+test("preflight refuses forged runner test endpoint plan and registry bindings", async () => {
+  const root = await workspace();
+  await writeCertificationInputManifests(root, ["github-issue-labels"]);
+  const files = {
+    runner: path.join(root, "inputs", "runners", "github-issue-labels.json"),
+    tests: path.join(root, "inputs", "tests", "github-issue-labels.json"),
+    plan: path.join(root, "inputs", "plans", "github-issue-labels.json"),
+    endpoint: path.join(root, "authority", "endpoints", "github-issue-labels.json"),
+  };
+  const fs = await import("node:fs/promises");
+  const originals = Object.fromEntries(await Promise.all(Object.entries(files).map(async ([key, file]) => [key, await fs.readFile(file, "utf8")]))) as Record<keyof typeof files, string>;
+  const cases: readonly [keyof typeof files, (raw: any) => void, string][] = [
+    ["runner", raw => { raw.implementationDigest = `sha256:${"9".repeat(64)}`; }, "runners"],
+    ["tests", raw => { raw.runnerManifestDigest = `sha256:${"8".repeat(64)}`; }, "tests"],
+    ["plan", raw => { raw.testManifestDigest = `sha256:${"7".repeat(64)}`; }, "plans"],
+    ["plan", raw => { raw.runnerRegistryDigest = `sha256:${"6".repeat(64)}`; }, "plans"],
+    ["endpoint", raw => { raw.endpoints[0].accountCommitment = `sha256:${"5".repeat(64)}`; }, "plans"],
+  ];
+  for (const [kind, mutate, missingKind] of cases) {
+    const raw = JSON.parse(originals[kind]); mutate(raw); await fs.writeFile(files[kind], `${JSON.stringify(raw)}\n`, "utf8");
+    const report = await preflightCertification({ workspace: root, scenario: "github-issue-labels" });
+    assert.equal(report.preparationReady, false);
+    assert.match(report.missing.join(" "), new RegExp(`inputs:${missingKind}:github-issue-labels`));
+    await fs.writeFile(files[kind], originals[kind], "utf8");
+  }
+});

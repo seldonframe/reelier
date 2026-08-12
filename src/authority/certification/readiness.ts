@@ -32,6 +32,7 @@ export interface CertificationReadinessCandidate {
 }
 
 export async function sealCertificationReadiness(input: Readonly<{ workspace: string; scenario?: string; all?: boolean }>): Promise<Readonly<{ candidate: CertificationReadinessCandidate; digest: string; path: string }>> {
+  closedRequest(input);
   const workspace = path.resolve(input.workspace);
   const root = await certificationWorkspaceRoot(workspace);
   const preflight = await preflightCertification(input);
@@ -45,6 +46,7 @@ export async function sealCertificationReadiness(input: Readonly<{ workspace: st
   if (authorityDigest(existing) !== digest || JSON.stringify(existing) !== JSON.stringify(candidate)) throw new TypeError("immutable readiness candidate mismatch");
   return Object.freeze({ candidate, digest, path: output });
 }
+function closedRequest(value: unknown): void { if (!value || typeof value !== "object" || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype) throw new TypeError("certification readiness request must be a closed plain object"); const keys = Reflect.ownKeys(value); const allowed = ["workspace", "scenario", "all"]; if (keys.some(key => typeof key !== "string" || !allowed.includes(key))) throw new TypeError("certification readiness request is closed and accepts no callback or executable dependencies"); for (const descriptor of Object.values(Object.getOwnPropertyDescriptors(value))) if (descriptor.get || descriptor.set) throw new TypeError("certification readiness request accepts no accessor callback"); }
 
 export function createCertificationReadinessCandidate(preflight: CertificationPreflightV2): Readonly<{ candidate: CertificationReadinessCandidate; digest: string }> {
   if (!preflight.preparationReady) throw new TypeError("certification preparation is incomplete and cannot be sealed");
