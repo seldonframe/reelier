@@ -2,21 +2,24 @@
 
 ## Outcome
 
-Task 4A freezes a closed, inert certification runner ABI without adding provider execution. V2 endpoint manifests derive aliases and endpoint identities from the installed static-pack constants. V2 runner manifests bind the fixed private registry and its content-derived implementation digest. Scenario plans bind selected non-secret operator intent, typed cleanup/before-state, the controlled-cut case, and runner/test/endpoint/registry digests.
+Task 4A freezes a closed, inert certification runner metadata ABI without adding provider execution. V2 endpoint manifests derive aliases and endpoint identities from installed static-pack constants. V2 runner manifests bind the fixed private registry and its content-derived metadata digest; they do not claim an implementation digest. Every registry entry, manifest, preflight, readiness candidate, and signed readiness remains `executionReady:false` and `dispatchable:false` until a later task supplies a real implementation artifact and executed hermetic-test evidence.
 
-Task 3C remains structurally inert: the Cell exposes no runner, provider, credential resolver, dispatch adapter, or caller-supplied executable behavior. Its opaque permit still only revalidates and consumes no effect. V1 runner and endpoint manifests remain parseable but cannot satisfy preparation or dispatch readiness.
+Scenario plans derive exact source, resource, account, desired-state, cleanup, controlled-cut, policy-schema, and runner/test/endpoint/registry commitments from parsed operator configuration and reviewed pack constants. Task 3C remains structurally inert: the Cell exposes no runner, provider, credential resolver, dispatch adapter, or caller-supplied executable behavior. Task 4A metadata cannot issue an opaque permit; verification refuses before task status, budget, credential, or provider access. V1 runner and endpoint manifests remain parseable but cannot satisfy preparation or dispatch readiness.
 
-The provider registry covers exactly GitHub labels, Cloudflare DNS, Slack topic, Cloudflare-to-Vercel secret, Vercel promotion, and Neon migration. HubSpot is absent. The compound secret entry is explicitly unavailable and non-dispatchable because token-create and Vercel environment-secret helpers are not registered static packs; Task 4A did not add pack definitions.
+The provider registry covers exactly GitHub labels, Cloudflare DNS, Slack topic, Cloudflare-to-Vercel secret, Vercel promotion, and Neon migration. HubSpot is absent. The compound secret entry is non-dispatchable because real implementation and executed-test evidence are absent.
 
 ## Commits
 
 - `a5837b2` RED — specify V2 runner ABI, endpoint derivation, compound binding, config migration, plans, and private exports.
-- `ee3ccf9` GREEN — implement closed schemas/parsers, config v3, registry, scaffold/preflight/readiness binding, and exact lifecycle.
-- `b3d4eb0` RED — reject accessor-backed executable input without invocation.
-- `836d206` GREEN — close accessor handling, offline export links, examples, runbook, and compatibility fixtures.
-- `d480a6f` RED — require closed readiness inputs and zero provider/credential/dispatch/budget access.
-- `c8d75cf` GREEN — close preflight/readiness requests, add forged-binding and zero-call coverage, and add config v3 schema.
-- `6080dbd` — make the scenario-plan schema pattern portable.
+- `ee3ccf9` GREEN — implement initial schemas/parsers, config v3, registry, scaffold/preflight/readiness binding, and lifecycle.
+- `b3d4eb0` / `836d206` — reject accessor-backed input and close export/examples/runbook compatibility.
+- `d480a6f` / `c8d75cf` — require closed readiness inputs with zero provider, credential, dispatch, or budget access.
+- `6080dbd` — make scenario-plan schema patterns portable.
+- `178369b` — keep metadata-only runners, readiness, and Cell verification non-dispatchable; require exactly one endpoint/runner/test/plan artifact.
+- `d3f56d0` — bind typed plans to provider-specific v3 desired state and descriptor-only inert operator authority.
+- `9093ad7` — close Task 4A manifest/plan schemas and exact reviewed policy-schema commitments.
+- `2d6eb95` — add portable-schema/runtime parity coverage.
+- `ca1184b` — close exact v3 resource/metadata shapes, sorted scenario selections, selection conditionals, and safe path/reference patterns.
 
 ## Files
 
@@ -29,54 +32,43 @@ Contracts:
 
 Implementation:
 
-- `src/authority/certification/{cell,commitment,config,export,initializer,manifests,preflight,readiness,runner-registry,scenarios}.ts`
+- `src/authority/certification/{cell,commitment,config,export,inert,initializer,manifests,preflight,readiness,runner-registry,scenario-bindings,scenarios}.ts`
 - `src/authority/host/certification-config.ts`
 
-Tests:
-
-- `test/authority/certification-runner-abi-v2.test.ts`
-- `test/authority/certification-{authority,cell,config,initializer,preflight,scenarios}.test.ts`
-- `test/authority/certification-input-fixture.ts`
-
-Operator material:
-
-- `authority/certification.example.json`
-- `docs/runbooks/live-certification.md`
-- this migration note and report
+Tests and operator material include the focused certification suite, `authority/certification.example.json`, `docs/runbooks/live-certification.md`, and this report.
 
 ## Verification
 
-At implementation head `6080dbd`:
+At implementation head `ca1184b`:
 
 ```text
-npm run build                                                        PASS
-npx tsc -p tsconfig.test.json --pretty false                         PASS
-focused authority/certification tests                               100 passed, 0 failed, 0 skipped
-npm run check:authority-contract                                     PASS
+npx tsc -p tsconfig.test.json                                      PASS
+focused authority/certification tests                              88 passed, 0 failed, 0 skipped
+npm run check:authority-contract                                   PASS
 ```
 
-The focused set covered certification authority, Cell, config, export, filesystem, initializer, preflight, readiness, runner ABI, scenarios, CLI, delegation service, and principal registry. Per instruction, the full `npm test` suite was not run.
+The focused set covers certification authority, Cell, config, export, filesystem, initializer, preflight, readiness, runner ABI, scenarios, and runner behavior. Per instruction, the full `npm test` suite was not run.
 
-Security assertions include:
-
-- exact corrected GitHub, Cloudflare DNS, Slack, and Neon constants;
-- compound per-endpoint provider, credential, account/resource commitment, method, and direction;
-- deterministic secret-blind v2-to-v3 Cloudflare migration;
-- selected-only closed plans rejecting secret-shaped, authorization, callback, function, module/path/source/code/command, unknown, and accessor input;
-- forged runner implementation, test, endpoint, plan, and registry bindings refuse preparation/readiness;
-- signed plan drift invalidates an issued inert permit and consumes zero budget;
-- V1 parses but is non-dispatchable;
-- private registry is metadata-only and absent from public package surfaces;
-- injected provider/fetch, credential resolver, dispatch adapter, and budget ledger spies remain exactly zero.
+Security assertions include exact reviewed endpoint constants; compound per-provider account/resource authority; typed config-derived plans with no arbitrary choices/source/recipe authority; zero-invocation accessor rejection; exact-one artifact counting; non-dispatchable metadata refusal before budget access; and an Ajv/runtime parity corpus covering positive inputs plus dispatchability, arbitrary-plan, credential-shaped nested value, missing selected field, unselected extra field, unsorted selection, unsafe path, and unsafe environment-reference negatives.
 
 ## Deviations and risks
 
-- No token-create or Vercel-secret pack definition was added. Their compound registry entry is deliberately `dispatchable:false` with an explicit unavailable reason.
-- Fly topology and ten-principal Codex remain selected certification scenarios but are not provider runner registry entries; they retain their separate Task 5/6 preparation paths and do not receive fake endpoint manifests.
-- Registry implementation digests commit the complete closed built-in runner metadata in this ABI slice. Actual provider runner implementations and live test evidence remain later Task 4 slices.
-- The v2 migration can only duplicate the old opaque Cloudflare reference; it cannot infer which distinct credential the operator intended. The v3 output is deterministic, but live setup must replace duplicated references with purpose-separated credentials.
+- No provider runner implementation or live test evidence was added. Metadata digests commit metadata only.
+- Fly topology and ten-principal Codex remain separate scenarios without fake provider endpoint manifests.
+- V2 migration deterministically duplicates an old Cloudflare reference when both purpose-separated v3 slots are selected; the operator must replace it before live certification.
 - Universal completeness remains `unchecked`; no live/provider action, credential resolution, dispatch, budget consumption, push, merge, publish, or deployment occurred.
+
+## Cross-task scope deviations
+
+Task 4A necessarily changed a small Task 2/3 ABI surface before freeze:
+
+- `config.ts`, `commitment.ts`, `initializer.ts`, `export.ts`, and the v3 config schema now carry provider-specific non-secret `desiredState`. A typed runner plan cannot be authoritative unless its desired effect is committed by operator configuration; retaining arbitrary plan `choices` would make Task 4A mutable authority.
+- `preflight.ts`, `readiness.ts`, `authority.ts`, `cell.ts`, and their tests now bind endpoint commitments plus explicit `executionReady:false`/`dispatchable:false`. Task 4A introduced runner/endpoint/plan artifacts, so earlier readiness records had to bind those artifacts and exact-one cardinality.
+- `cell.ts` was tightened only to prevent the pre-existing Task 3C permit surface from turning metadata into provider authority. It performs no Task 5 behavior: no credential resolution, provider call, dispatch, reconciliation, cleanup, receipt, or budget reservation was added.
+- Export/parser changes mirror those commitments for offline recomputation; they add neither authorization nor execution.
+
+These deviations bind and preserve non-dispatchability. They do not implement a provider runner or expand Task 4A into Task 5.
 
 ## Review
 
-Fresh independent review is pending because the collaboration thread limit was reached after the required review was requested. This report must be updated with the reviewer verdict and any fix commits before Task 4A handoff is final.
+The first independent review returned FIX FIRST. Commits `178369b` through `ca1184b` address every listed blocker. The same reviewer must re-review exact range `25be3a5..HEAD` before final handoff.
