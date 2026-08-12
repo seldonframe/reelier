@@ -105,7 +105,9 @@ test("Adapter Contract digest is bound before dispatch and by every portable rec
     assert.equal((f.lifecycle.binding as any).adapterContractDigest, AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST);
     assert.equal((f.lifecycle.humanCommitment as any).adapterContractDigest, AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST);
     const internal: any = certificationCellHostInternalState(f.cell), permit = await internal.issueHermeticGitHubPermit(f.credential.token);
-    assert.deepEqual(internal.hermeticGitHubPermitSnapshot(permit), { digest: internal.hermeticGitHubPermitSnapshot(permit).digest, adapterContractDigest: AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST });
+    const snapshot = internal.hermeticGitHubPermitSnapshot(permit);
+    assert.equal(snapshot.adapterContractDigest, AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST);
+    assert.equal(authorityDigest(snapshot.preimage), snapshot.digest);
     await internal.revalidateHermeticGitHubPermit(permit);
     await f.runner.run({ bearerToken: f.credential.token, requestId: "request_contract_binding" });
     const graph: any = await f.runner.exportGraph({ bearerToken: f.credential.token });
@@ -404,7 +406,7 @@ test("restart publishes a missing cleanup receipt after authoritative restore wi
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
-test("task graph exports the complete canonical journal and budget chronology", async () => {
+test("closed graph of the declared durable fixture collections exports canonical journal and budget chronology", async () => {
   const f = await fixture(); try {
     await f.runner.run({ bearerToken: f.credential.token, requestId: "request_graph_chronology" });
     await f.runner.cleanup({ bearerToken: f.credential.token, requestId: "request_graph_chronology" });
@@ -417,8 +419,8 @@ test("task graph exports the complete canonical journal and budget chronology", 
     for (let index = 1; index < graph.budgetEvents.length; index += 1) assert.equal(graph.budgetEvents[index].priorBudgetEventDigest, authorityDigest(graph.budgetEvents[index - 1]));
     assert.deepEqual(graph.topology, { status: "unchecked" });
     assert.deepEqual(graph.leases, { status: "absent", entries: [] });
-    assert.deepEqual(graph.terminalCommitment.counts, { grants: 2, principals: 2, allocations: 2, budgetEvents: 4, outcomes: 14, exceptions: 0, topologyEvidence: 0, leases: 0, receipts: 6, receiptExtensions: 6, priorReceiptLinks: 6, keyDescriptors: 8, bindingEntries: 4 });
-    for (const key of ["grants", "principals", "allocations", "budgetEvents", "outcomes", "exceptions", "receipts", "receiptExtensions", "priorReceiptLinks", "keyDescriptors"] as const) assert.equal(graph.terminalCommitment.collectionDigests[key], authorityDigest(graph[key]));
+    assert.deepEqual(graph.terminalCommitment.counts, { grants: 2, principals: 2, allocations: 2, budgetEvents: 4, outcomes: 14, exceptions: 0, topologyEvidence: 0, leases: 0, receipts: 6, receiptExtensions: 6, taskAuthorities: 1, postStateEvidence: 1, policyEvidence: 2, taskStatusEvidence: 2, duplicateDecisions: 0, priorReceiptLinks: 6, keyDescriptors: 8, bindingEntries: 4 });
+    for (const key of ["grants", "principals", "allocations", "budgetEvents", "outcomes", "exceptions", "receipts", "receiptExtensions", "taskAuthorities", "postStateEvidence", "policyEvidence", "taskStatusEvidence", "duplicateDecisions", "priorReceiptLinks", "keyDescriptors"] as const) assert.equal(graph.terminalCommitment.collectionDigests[key], authorityDigest(graph[key]));
     assert.equal(verifyCertificationTaskReceiptGraph(graph, { trustPin: f.pin }).status, "verified");
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
@@ -503,7 +505,7 @@ test("portable evidence links the approved task, exact post-state, policy status
     assert.equal(verifyCertificationTaskReceiptGraph(graph, { trustPin: f.pin }).status, "verified");
     for (const mutate of [
       (g: any) => { g.taskAuthorities[0].instructionsDigest = `sha256:${"9".repeat(64)}`; },
-      (g: any) => { g.taskAuthorities[0].dispatchSnapshotPreimage.intentDigest = `sha256:${"8".repeat(64)}`; },
+      (g: any) => { g.taskAuthorities[0].dispatchSnapshotPreimage.runner = `sha256:${"8".repeat(64)}`; },
       (g: any) => { g.postStateEvidence[0].preSourceBundleDigest = `sha256:${"7".repeat(64)}`; },
       (g: any) => { g.postStateEvidence[0].observedProjectionDigest = `sha256:${"6".repeat(64)}`; },
       (g: any) => { g.policyEvidence[0].policyDigest = `sha256:${"5".repeat(64)}`; },

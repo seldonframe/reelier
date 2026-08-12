@@ -430,6 +430,36 @@
         "signature": { "$ref": "#/$defs/signature" }
       }
     },
+    "taskAuthority": {
+      "type": "object", "additionalProperties": false,
+      "required": ["v","taskId","signedJobCard","activation","dispatchSnapshotPreimage","operatorConfigDigest","taskShapeDigest","instructionsDigest","runnerDigest","planDigest","endpointDigest","sourceDigest","policyDigest","principalSessionDigest","grantAllocationDigest","trustHeadDigest","declaredIntent","declaredTrigger","signedJobCardDigest","activationDigest","dispatchSnapshotDigest","adapterContractDigest","intentDigest","triggerDigest","signerId","signature"],
+      "properties": {
+        "v": { "const": "reelier.certification-task-authority-evidence/v1" }, "taskId": { "type": "string" }, "signedJobCard": { "type": "object" }, "activation": { "type": "object" }, "dispatchSnapshotPreimage": { "type": "object" },
+        "operatorConfigDigest": { "$ref": "#/$defs/digest" }, "taskShapeDigest": { "$ref": "#/$defs/digest" }, "instructionsDigest": { "$ref": "#/$defs/digest" }, "runnerDigest": { "$ref": "#/$defs/digest" }, "planDigest": { "$ref": "#/$defs/digest" }, "endpointDigest": { "$ref": "#/$defs/digest" }, "sourceDigest": { "$ref": "#/$defs/digest" }, "policyDigest": { "$ref": "#/$defs/digest" }, "principalSessionDigest": { "$ref": "#/$defs/digest" }, "grantAllocationDigest": { "$ref": "#/$defs/digest" }, "trustHeadDigest": { "$ref": "#/$defs/digest" }, "declaredIntent": { "type": "object" }, "declaredTrigger": { "type": "object" }, "intentDigest": { "$ref": "#/$defs/digest" }, "triggerDigest": { "$ref": "#/$defs/digest" }, "signedJobCardDigest": { "$ref": "#/$defs/digest" }, "activationDigest": { "$ref": "#/$defs/digest" }, "dispatchSnapshotDigest": { "$ref": "#/$defs/digest" }, "adapterContractDigest": { "$ref": "#/$defs/digest" }, "signerId": { "type": "string" }, "signature": { "$ref": "#/$defs/signature" }
+      }
+    },
+    "postStateEvidence": {
+      "type": "object", "additionalProperties": false,
+      "required": ["v","requestId","dispatchRequestDigest","permitSnapshotDigest","expectedProjectionDigest","preSourceBundleDigest","projectionSchemaId","projectionSchemaDigest","preProjectionDigest","observedProjectionDigest","observationMethod","observedAt","confidence","signerId","signature"],
+      "properties": {
+        "v": { "const": "reelier.certification-post-state-evidence/v1" }, "requestId": { "type": "string" }, "dispatchRequestDigest": { "$ref": "#/$defs/digest" }, "permitSnapshotDigest": { "$ref": "#/$defs/digest" }, "expectedProjectionDigest": { "$ref": "#/$defs/digest" }, "preSourceBundleDigest": { "$ref": "#/$defs/nullableDigest" }, "projectionSchemaId": { "type": "string" }, "projectionSchemaDigest": { "$ref": "#/$defs/digest" }, "preProjectionDigest": { "$ref": "#/$defs/nullableDigest" }, "observedProjectionDigest": { "$ref": "#/$defs/nullableDigest" }, "observationMethod": { "enum": ["hermetic-authoritative-read","provider-acknowledgment","not-observed"] }, "observedAt": { "type": "string" }, "confidence": { "enum": ["exact","partial","pending","absent"] }, "signerId": { "type": "string" }, "signature": { "$ref": "#/$defs/signature" }
+      }
+    },
+    "policyEvidence": {
+      "type": "object", "additionalProperties": false,
+      "required": ["v","artifact","status","schemaId","jcsBase64","policyDigest","signerId","signature"],
+      "properties": { "v": { "const": "reelier.certification-policy-evidence/v1" }, "artifact": { "enum": ["outcome-contract","local-gate-policy"] }, "status": { "enum": ["verified","failed","unchecked","absent"] }, "schemaId": { "type": ["string","null"] }, "jcsBase64": { "type": ["string","null"] }, "policyDigest": { "$ref": "#/$defs/digest" }, "signerId": { "type": "string" }, "signature": { "$ref": "#/$defs/signature" } }
+    },
+    "taskStatusEvidence": {
+      "type": "object", "additionalProperties": false,
+      "required": ["v","phase","taskId","lifecycleState","grantExpiresAt","allocationRevoked","observedAt","durableHistoryDigest","currentActiveClaim","freshness","signerId","signature"],
+      "properties": { "v": { "const": "reelier.certification-task-status-evidence/v1" }, "phase": { "enum": ["dispatch","export"] }, "taskId": { "type": "string" }, "lifecycleState": { "enum": ["active","revoked","expired","inactive"] }, "grantExpiresAt": { "type": "string" }, "allocationRevoked": { "type": "boolean" }, "observedAt": { "type": "string" }, "durableHistoryDigest": { "$ref": "#/$defs/digest" }, "currentActiveClaim": { "type": "boolean" }, "freshness": { "const": "unchecked" }, "signerId": { "type": "string" }, "signature": { "$ref": "#/$defs/signature" } }
+    },
+    "duplicateDecision": {
+      "type": "object", "additionalProperties": false,
+      "required": ["v","attemptRequestId","originalRequestId","originalRequestDigest","originalEffectDigest","observedAuthorityState","observedAuthorityStateDigest","observedAt","budgetDelta","providerWriteDelta","signerId","signature"],
+      "properties": { "v": { "const": "reelier.certification-duplicate-decision/v1" }, "attemptRequestId": { "type": "string" }, "originalRequestId": { "type": "string" }, "originalRequestDigest": { "$ref": "#/$defs/digest" }, "originalEffectDigest": { "$ref": "#/$defs/digest" }, "observedAuthorityState": { "type": "object" }, "observedAuthorityStateDigest": { "$ref": "#/$defs/digest" }, "observedAt": { "type": "string" }, "budgetDelta": { "const": 0 }, "providerWriteDelta": { "const": 0 }, "signerId": { "type": "string" }, "signature": { "$ref": "#/$defs/signature" } }
+    },
     "counts": {
       "type": "object",
       "additionalProperties": false,
@@ -444,6 +474,11 @@
         "leases",
         "receipts",
         "receiptExtensions",
+        "taskAuthorities",
+        "postStateEvidence",
+        "policyEvidence",
+        "taskStatusEvidence",
+        "duplicateDecisions",
         "priorReceiptLinks",
         "keyDescriptors",
         "bindingEntries"
@@ -459,6 +494,11 @@
         "leases": { "const": 0 },
         "receipts": { "type": "integer", "minimum": 0 },
         "receiptExtensions": { "type": "integer", "minimum": 0 },
+        "taskAuthorities": { "type": "integer", "minimum": 0 },
+        "postStateEvidence": { "type": "integer", "minimum": 0 },
+        "policyEvidence": { "type": "integer", "minimum": 0 },
+        "taskStatusEvidence": { "type": "integer", "minimum": 0 },
+        "duplicateDecisions": { "type": "integer", "minimum": 0 },
         "priorReceiptLinks": { "type": "integer", "minimum": 0 },
         "keyDescriptors": { "type": "integer", "minimum": 0 },
         "bindingEntries": { "type": "integer", "minimum": 0 }
@@ -476,6 +516,11 @@
         "exceptions",
         "receipts",
         "receiptExtensions",
+        "taskAuthorities",
+        "postStateEvidence",
+        "policyEvidence",
+        "taskStatusEvidence",
+        "duplicateDecisions",
         "priorReceiptLinks",
         "keyDescriptors"
       ],
@@ -488,6 +533,11 @@
         "exceptions": { "$ref": "#/$defs/digest" },
         "receipts": { "$ref": "#/$defs/digest" },
         "receiptExtensions": { "$ref": "#/$defs/digest" },
+        "taskAuthorities": { "$ref": "#/$defs/digest" },
+        "postStateEvidence": { "$ref": "#/$defs/digest" },
+        "policyEvidence": { "$ref": "#/$defs/digest" },
+        "taskStatusEvidence": { "$ref": "#/$defs/digest" },
+        "duplicateDecisions": { "$ref": "#/$defs/digest" },
         "priorReceiptLinks": { "$ref": "#/$defs/digest" },
         "keyDescriptors": { "$ref": "#/$defs/digest" }
       }
@@ -531,6 +581,11 @@
     "exceptions",
     "receipts",
     "receiptExtensions",
+    "taskAuthorities",
+    "postStateEvidence",
+    "policyEvidence",
+    "taskStatusEvidence",
+    "duplicateDecisions",
     "binding",
     "commitment",
     "keyDescriptors",
@@ -585,6 +640,11 @@
       "minItems": 1,
       "items": { "$ref": "#/$defs/receiptExtension" }
     },
+    "taskAuthorities": { "type": "array", "minItems": 1, "maxItems": 1, "items": { "$ref": "#/$defs/taskAuthority" } },
+    "postStateEvidence": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/postStateEvidence" } },
+    "policyEvidence": { "type": "array", "minItems": 2, "maxItems": 2, "items": { "$ref": "#/$defs/policyEvidence" } },
+    "taskStatusEvidence": { "type": "array", "minItems": 2, "maxItems": 2, "items": { "$ref": "#/$defs/taskStatusEvidence" } },
+    "duplicateDecisions": { "type": "array", "items": { "$ref": "#/$defs/duplicateDecision" } },
     "binding": { "$ref": "#/$defs/binding" },
     "commitment": { "$ref": "#/$defs/bindingCommitment" },
     "keyDescriptors": {
