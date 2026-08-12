@@ -221,11 +221,11 @@ type SignedChildResult = Readonly<{ verdict: "accepted"; reasonCode: "delegation
 const authoritySignedChildRegistrars = new WeakMap<object, (input: SignedChildRegistration) => Promise<SignedChildResult>>();
 
 /** Direct-module Cell bridge. Deliberately omitted from host/package barrels. */
-export async function registerAuthoritySignedChild(service: DelegationAuthority, input: SignedChildRegistration & Readonly<{ signerDescriptor: AuthorityKeyDescriptorV1 }>): Promise<SignedChildResult> {
+export async function registerAuthoritySignedChild(service: DelegationAuthority, input: SignedChildRegistration & Readonly<{ signerDescriptor: AuthorityKeyDescriptorV1; activeSignerDescriptorDigests: readonly string[] }>): Promise<SignedChildResult> {
   const register = authoritySignedChildRegistrars.get(service as object);
   if (!register) throw new TypeError("genuine branded delegation authority required");
   const descriptor = parseAuthorityKeyDescriptor(input.signerDescriptor), child = asGrant(input.signedChild.grant), digest = authorityDigest(child);
-  if (descriptor.role !== "authority-cell" || descriptor.purpose !== "delegation-grant" || input.signedChild.signerId !== descriptor.keyId || input.signedChild.digest !== digest || !verifyAuthoritySignature(createPublicKey({ key: Buffer.from(descriptor.publicKeySpkiBase64, "base64"), format: "der", type: "spki" }), "delegation-grant", digest, input.signedChild.signature)) throw new TypeError("authority-signed child signer, purpose, digest, or signature is invalid");
+  if (!Array.isArray(input.activeSignerDescriptorDigests) || input.activeSignerDescriptorDigests.length === 0 || !input.activeSignerDescriptorDigests.every(value => /^sha256:[0-9a-f]{64}$/.test(value)) || !input.activeSignerDescriptorDigests.includes(authorityDigest(descriptor)) || descriptor.role !== "authority-cell" || descriptor.purpose !== "delegation-grant" || input.signedChild.signerId !== descriptor.keyId || input.signedChild.digest !== digest || !verifyAuthoritySignature(createPublicKey({ key: Buffer.from(descriptor.publicKeySpkiBase64, "base64"), format: "der", type: "spki" }), "delegation-grant", digest, input.signedChild.signature)) throw new TypeError("authority-signed child signer must be active and its purpose, digest, and signature valid");
   return register({ tenant: input.tenant, parentPrincipal: input.parentPrincipal, taskId: input.taskId, parentAllocationId: input.parentAllocationId, signedChild: input.signedChild, effects: input.effects });
 }
 
