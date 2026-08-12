@@ -313,6 +313,20 @@ test("conflict recovery repairs the signed extension after a receipt-before-exte
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
+test("conflict recovery refuses byte-reordered extension while its journal remains pending", async () => {
+  const f = await fixture("cut-after-conflict-publication"); try {
+    await f.runner.run({ bearerToken: f.credential.token, requestId: "request_conflict_extension_bytes" });
+    await assert.rejects(() => f.runner.conflict({ bearerToken: f.credential.token, requestId: "request_conflict_extension_bytes", exactBytes: Buffer.from("conflict").toString("base64") }), /controlled cut/i);
+    const root = path.join(f.initialized.workspace, "authority", "github-label-runner"), extensions = path.join(root, "receipts", "extensions"), file = (await readdir(extensions)).find(name => name.endsWith(".json"));
+    assert.ok(file);
+    const stored = JSON.parse(await readFile(path.join(extensions, file), "utf8"));
+    await writeFile(path.join(extensions, file), `${JSON.stringify({ signature: stored.signature, signerId: stored.signerId, adapterContractDigest: stored.adapterContractDigest, receiptDigest: stored.receiptDigest, v: stored.v })}\n`);
+    const restarted = await createGitHubIssueLabelsHermeticComposition(f.cell);
+    await assert.rejects(() => restarted.recover(), /extension.*bytes|conflict|canonical/i);
+    assert.equal(JSON.parse(await readFile(path.join(root, "request_conflict_extension_bytes.journal.json"), "utf8")).phase, "conflict-publication-pending");
+  } finally { await rm(f.root, { recursive: true, force: true }); }
+});
+
 test("dispatch and reconciliation mint portable chained receipts accepted by the existing offline verifier", async () => {
   const f = await fixture(); try {
     await f.runner.run({ bearerToken: f.credential.token, requestId: "request_receipts" });
