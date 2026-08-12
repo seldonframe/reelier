@@ -20,6 +20,8 @@ The provider registry covers exactly GitHub labels, Cloudflare DNS, Slack topic,
 - `9093ad7` — close Task 4A manifest/plan schemas and exact reviewed policy-schema commitments.
 - `2d6eb95` — add portable-schema/runtime parity coverage.
 - `ca1184b` — close exact v3 resource/metadata shapes, sorted scenario selections, selection conditionals, and safe path/reference patterns.
+- `44b72a2` RED — reproduce malformed name-matching duplicates, substitutable policy/before-state claims, raw desired-state disclosure, getter execution, and schema authority substitution.
+- `718bf7e` GREEN — count all matching artifacts before parsing, make public artifact parsers inert, derive plan policy identity, keep Task 4A before-state pending, publish only desired-state field commitments, and bind static schema authority.
 
 ## Files
 
@@ -39,11 +41,12 @@ Tests and operator material include the focused certification suite, `authority/
 
 ## Verification
 
-At implementation head `ca1184b`:
+At implementation head `718bf7e`:
 
 ```text
-npx tsc -p tsconfig.test.json                                      PASS
-focused authority/certification tests                              88 passed, 0 failed, 0 skipped
+npm run build                                                       PASS
+npx tsc -p tsconfig.test.json --pretty false                        PASS
+focused authority/certification tests                               91 passed, 0 failed, 0 skipped
 npm run check:authority-contract                                   PASS
 ```
 
@@ -71,4 +74,4 @@ These deviations bind and preserve non-dispatchability. They do not implement a 
 
 ## Review
 
-The first independent review returned FIX FIRST. Commits `178369b` through `ca1184b` address every listed blocker. The same reviewer must re-review exact range `25be3a5..HEAD` before final handoff.
+The first independent review returned FIX FIRST. Commits `178369b` through `ca1184b` addressed that pass. The next review found five remaining trust-boundary classes. RED `44b72a2` reproduced them and GREEN `718bf7e` closes the executable findings: invalid matching duplicates are counted before parse; artifact parsers reject accessors without invocation; policy identity is derived and before-state stays `pending`; desired state is exported only as canonical per-field name/type/byte-count/digest commitments with content sensitivity `unchecked`; and the portable runner/endpoint/plan schemas bind reviewed static identities. The same reviewer must re-review exact range `25be3a5..HEAD` before final handoff.
