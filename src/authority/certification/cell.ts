@@ -1,4 +1,4 @@
-import { createPublicKey, type KeyObject } from "node:crypto";
+import { createPublicKey, randomUUID, type KeyObject } from "node:crypto";
 import path from "node:path";
 import { authorityDigest, parseAuthorityWire } from "../wire.js";
 import { signAuthorityDigest, verifyAuthoritySignature } from "../crypto.js";
@@ -98,7 +98,7 @@ class OpaquePermit implements CertificationDispatchPermit {
   readonly kind = "certification-dispatch-permit" as const;
   toJSON(): never { throw new TypeError("certification dispatch permit is opaque and nonserializable"); }
 }
-const permitState = new WeakMap<object, Readonly<{ digest: string; revalidate: () => Promise<string> }>>();
+const permitState = new WeakMap<object, Readonly<{ digest: string; revalidate: () => Promise<string>; consume: () => Promise<void> }>>();
 
 export async function verifyCertificationDispatchReadiness(input: Readonly<{
   workspace: string;
@@ -111,8 +111,10 @@ export async function verifyCertificationDispatchReadiness(input: Readonly<{
 }>): Promise<CertificationDispatchPermit> {
   const revalidate = async () => dispatchSnapshot(input);
   const digest = await revalidate();
+  const activation = await loadActivation(input.workspace);
+  const reservationId = `certification_${randomUUID()}`;
   const permit = Object.freeze(new OpaquePermit());
-  permitState.set(permit, Object.freeze({ digest, revalidate }));
+  permitState.set(permit, Object.freeze({ digest, revalidate, consume: async () => { await input.delegationAuthority.budget.consumeOnce({ allocationId: activation.allocationId, reservationId, effects: 1 }); } }));
   return permit;
 }
 
@@ -122,6 +124,7 @@ export async function runCertificationWithPermit<T>(permit: CertificationDispatc
   permitState.delete(permit as object);
   const current = await state.revalidate();
   if (current !== state.digest) throw new TypeError("certification dispatch state became stale");
+  await state.consume();
   return runner();
 }
 
