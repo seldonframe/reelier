@@ -18,7 +18,7 @@ function jobCardTrustPin(jobPublicKey: ReturnType<typeof generateKeyPairSync>["p
   return jobCardTrustPinFixture(jobPublicKey, "job_sponsor", "cell_receipt_key");
 }
 
-test("local deployment dispatches once, reconciles, publishes a receipt, and survives restart", async () => {
+test("local deployment dispatches once, reconciles, publishes a receipt, and survives restart", { skip: process.platform === "win32" }, async () => {
   const root = await bindableTempRoot("reelier-local-e2e-");
   let dispatches = 0;
   let reconciliations = 0;

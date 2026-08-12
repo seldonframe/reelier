@@ -39,7 +39,7 @@ test("the Fly Authority Cell bootstrap initializes through the image entrypoint 
   assert.match(manifest, /destination = "\/data"/);
 });
 
-test("authority bootstrap remains alive after initialization until it receives a shutdown signal", async () => {
+test("authority bootstrap remains alive after initialization until it receives a shutdown signal", { skip: process.platform === "win32" }, async () => {
   const root = await mkdtemp(path.join(tmpdir(), "reelier-authority-bootstrap-"));
   const child = spawn(process.execPath, [path.resolve("dist-test/src/cli.js"), "authority", "bootstrap", "--path", root], {
     stdio: ["ignore", "pipe", "pipe"],

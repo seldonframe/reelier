@@ -4,6 +4,7 @@ import { connect as netConnect, isIP, type Socket } from "node:net";
 import { timingSafeEqual } from "node:crypto";
 import type { Duplex } from "node:stream";
 import type { SecretResolver } from "./secret-resolver.js";
+import { assertLinuxAuthorityCellHost } from "./platform.js";
 
 const DNS = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
 const SECRET_REF = /^(?:env:[A-Za-z_][A-Za-z0-9_]{0,127}|file:.+)$/;
@@ -42,6 +43,7 @@ export function parseAuthorityEgressGatewayConfig(value: unknown): AuthorityEgre
 }
 
 export function createAuthorityEgressGateway(options: AuthorityEgressGatewayOptions): AuthorityEgressGateway {
+  assertLinuxAuthorityCellHost();
   const config = parseAuthorityEgressGatewayConfig(options.config);
   if (!options.secrets || typeof options.secrets.resolve !== "function") throw new TypeError("egress gateway secret resolver is required");
   const resolve = options.resolve ?? (hostname => dnsLookup(hostname, { all: true, verbatim: true }));

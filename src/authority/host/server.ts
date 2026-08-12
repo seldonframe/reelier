@@ -6,6 +6,7 @@ import type { AuthorityHostConfig } from "./config.js";
 import type { StagedArtifactCommitmentV1 } from "./artifacts.js";
 import type { AuthorityExecutionContextV1 } from "../types.js";
 import type { PrincipalRegistry } from "./principal-registry.js";
+import { assertLinuxAuthorityCellHost } from "./platform.js";
 
 type AuthorityContext = { readonly tenant: string; readonly requester: string; readonly executionContext?: AuthorityExecutionContextV1 };
 
@@ -32,6 +33,7 @@ export interface AuthorityHostServer {
 
 /** One host-neutral server for every supported agent adapter. Provider effects remain injected. */
 export function createAuthorityHostServer(config: AuthorityHostConfig, runtime: AuthorityHostRuntime, options: Readonly<{ principalRegistry?: PrincipalRegistry }> = {}): AuthorityHostServer {
+  assertLinuxAuthorityCellHost();
   const handler: AuthorityMcpHandler = { outcome: runtime.outcome, status: runtime.status, jobsSearch: runtime.jobsSearch, jobLoad: runtime.jobLoad, invoke: runtime.invoke, delegationRequest: runtime.delegationRequest, delegationStatus: runtime.delegationStatus, taskCreate: runtime.taskCreate, taskStatus: runtime.taskStatus };
   const stdioContext = { tenant: config.tenant, requester: config.requester };
   const httpContext = { tenant: config.tenant, requester: config.requester, resolvePrincipal: async (header: string | undefined) => { try { const raw = header?.startsWith("Bearer ") ? header.slice(7).trim() : ""; if (!raw || !options.principalRegistry) return undefined; const principal = await options.principalRegistry.resolve(raw); return { tenant: principal.tenant, requester: principal.principalId, executionContext: { v: "reelier.authority-execution-context/v1" as const, taskId: principal.taskId, principalId: principal.principalId, grantId: principal.grantId, grantDigest: principal.grantDigest, allocationId: principal.allocationId, runtimeSessionId: principal.runtimeSessionId, jobId: principal.jobId, authorityCellId: principal.authorityCellId } }; } catch { return undefined; } } };
