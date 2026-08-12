@@ -58,6 +58,8 @@
 - `623fc7c` GREEN remove all public runner/callback execution and effect consumption
 - `eda13a2` RED require the host runtime, not mutable activation, to own current-trust path authority
 - `68bf302` GREEN expose one closed host object and bind only the path digest in activation
+- `38abcea` RED reject host-method dependency injection through runtime extra keys
+- `c2b0c2c` GREEN exact-key validate/project host inputs and assign host authority last
 
 ## Focused verification
 
@@ -89,4 +91,4 @@ The full `npm test` suite was intentionally not run, per Task 3C scope.
 
 ## Independent review
 
-The first fresh read-only review requested nine changes, converted into RED regressions in `58a838a`. Its same-reviewer re-review closed seven and identified two remaining trust-boundary gaps; RED `9690113` and GREEN `623fc7c` removed execution. The next pass found mutable activation still selected the trust path; RED `eda13a2` and GREEN `68bf302` moved that authority into the host constructor. A final same-reviewer pass over `a668acf..HEAD` is pending.
+The first fresh read-only review requested nine changes, converted into RED regressions in `58a838a`. Its same-reviewer re-review closed seven and identified two remaining trust-boundary gaps; RED `9690113` and GREEN `623fc7c` removed execution. The next pass found mutable activation still selected the trust path; RED `eda13a2` and GREEN `68bf302` moved that authority into the host constructor. The following pass caught runtime object-spread injection; RED `38abcea` and GREEN `c2b0c2c` close all host method inputs, including symbol and prototype-key cases. A final same-reviewer pass over `a668acf..HEAD` is pending.
