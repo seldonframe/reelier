@@ -32,6 +32,9 @@ What changed
 - Bound runtime jobs, definitions, audiences, descriptors, accounts, schemas, and route endpoints to the signed deployment.
 - Required HTTP requests to authenticate through the existing scoped, hashed, expiring `PrincipalRegistry`; stdio retains its process-scoped host identity.
 - Sanitized adopted-route resolution and verification failures so provider and credential details cannot enter public errors.
+- Required an actual nonempty MCP `advertisedName` matching the signed descriptor; the opaque connection specification name is never accepted as server identity.
+- Made the signed Job Card `jobId` the public catalog/load/invoke identity while retaining its signed definition alias only for internal Outcome dispatch.
+- Labeled deployment trust output as evidence only and required the host pin to live outside deployment-controlled output. Canonical `realpath` identities, Windows case folding, and link checks close case, junction, and symlink indirection bypasses before the pin is read.
 - Preserved empty-workspace discovery/status behavior while refusing unsigned consequential Outcomes.
 - Extended hermetic deployment, runtime, route, HTTP, certification, and observation tests for the new boundaries.
 
@@ -43,16 +46,16 @@ Deviations from plan and why
 Test results (verbatim tail)
 
 ```text
-✔ local runtime creates a root task only for the authenticated sponsor (37.2217ms)
-✔ public production export parses DecisionContext and its portable evidence against packaged schemas (349.8499ms)
-ℹ tests 21
+✔ managed local authority rejects declaration-only topology evidence (2.9792ms)
+✔ local runtime creates a root task only for the authenticated sponsor (63.8303ms)
+ℹ tests 18
 ℹ suites 0
-ℹ pass 21
+ℹ pass 18
 ℹ fail 0
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 5393.435
+ℹ duration_ms 13520.8694
 
 > reelier@0.32.1 check:authority-contract
 > node scripts/build-authority-contract.mjs --check
@@ -70,7 +73,7 @@ built cloudflare_api_token, cloudflare_dns, github_issue_labels, gmail, gmail_la
 Independent review
 
 ```text
-Spec compliance: Met through 7af427f.
+Spec compliance: Met through be93a09.
 Blocking issues: None.
 Non-blocking issues: None.
 Verdict: APPROVED.
