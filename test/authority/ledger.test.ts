@@ -23,6 +23,7 @@ import {
 import {
   FsAuthorityLedger as RawFsAuthorityLedger,
   dispatchFaultPoints,
+  preparedDispatchFaultPoints,
   ledgerFaultPoints,
   ledgerLockFaultPoints,
   reservationFaultPoints,
@@ -32,6 +33,11 @@ import {
   __testAdmissionClockOption,
   __testPrepHousekeeperRuntimeOption,
 } from "../../src/authority/host/fs-ledger.js";
+
+test("prepared dispatch fault seam is separate from legacy dispatch transition points", () => {
+  assert.equal((dispatchFaultPoints as readonly string[]).includes("after-prepared-dispatch-transition"), false);
+  assert.deepEqual([...preparedDispatchFaultPoints], ["after-prepared-dispatch-transition"]);
+});
 import * as hostAuthorityModule from "../../src/authority/host/fs-ledger.js";
 import { materializedHttpRequestDigest, type MaterializedHttpRequestProjectionV1 } from "../../src/authority/host/http-response-semantics.js";
 import { createPreparedDispatch, consumePreparedDispatch } from "../../src/authority/host/prepared-dispatch.js";
