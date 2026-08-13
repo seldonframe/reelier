@@ -26,7 +26,28 @@ try {
     assert.deepEqual(Object.keys(metadata).sort(), expected); assert.equal(metadata.v, "reelier.factory-evidence-metadata/v1"); assert.equal(metadata.secretCanaryResult, "empty");
     const graph = JSON.parse(readFileSync(path.join(evidence, "graph.json"), "utf8")), trustPin = JSON.parse(readFileSync(path.join(evidence, "trust-pin.json"), "utf8")), summary = JSON.parse(readFileSync(path.join(evidence, "factory-journey-summary.json"), "utf8"));
     assert.deepEqual(require("node:fs").readdirSync(evidence).sort(), ["factory-evidence-metadata.json", "factory-journey-summary.json", "graph.json", "trust-pin.json"]);
-    assert.equal(authority.verifyCertificationTaskReceiptGraph(graph, { trustPin }).status, "verified"); assert.equal(digest(path.join(evidence, "graph.json")), metadata.graphDigest); assert.equal(digest(path.join(evidence, "trust-pin.json")), metadata.trustPinDigest); assert.equal(digest(path.join(evidence, "factory-journey-summary.json")), metadata.summaryDigest); assert.equal(digest(tarball).slice(7), metadata.tarballSha256); assert.equal(authority.AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST, metadata.adapterContractDigest); assert.equal(summary.graphDigest, authority.authorityDigest(graph)); assert.equal(summary.reviewerPacket.graphDigest, summary.graphDigest); assert.deepEqual(Object.keys(summary.reviewerPacket), ["humanApprovedTaskBinding", "declared", "compiledEffect", "lineage", "policyStatus", "postStateConfidence", "providerObservation", "reconciliationResult", "cleanupResult", "duplicateDecisions", "exceptions", "receiptChain", "fixtureOperatorConfirmation", "graphDigest", "nonClaims"]);
+    assert.equal(authority.verifyCertificationTaskReceiptGraph(graph, { trustPin }).status, "verified"); assert.equal(digest(path.join(evidence, "graph.json")), metadata.graphDigest); assert.equal(digest(path.join(evidence, "trust-pin.json")), metadata.trustPinDigest); assert.equal(digest(path.join(evidence, "factory-journey-summary.json")), metadata.summaryDigest); assert.equal(digest(tarball).slice(7), metadata.tarballSha256); assert.equal(authority.AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST, metadata.adapterContractDigest);
+    const schemaPath = require.resolve("reelier/contract/certification/v1/factory-journey-summary.schema.json"); assert.equal(path.relative(consumer, schemaPath).startsWith(".."), false, "summary schema stays in clean consumer");
+    const Ajv2020 = require("ajv/dist/2020").default, validateSummary = new Ajv2020({ strict: true }).compile(JSON.parse(readFileSync(schemaPath, "utf8"))); assert.equal(validateSummary(summary), true, JSON.stringify(validateSummary.errors));
+    const taskAuthority = graph.taskAuthorities[0], nonClaims = ["semantic-correctness", "general-software-factory-capability", "live-human-review"], graphDigest = authority.authorityDigest(graph);
+    const reviewerPacket = {
+      humanApprovedTaskBinding: { taskId: graph.taskId, authorityCellId: graph.authorityCellId, signedReadinessDigest: taskAuthority.activation.signedReadinessDigest, authorization: graph.signedReadiness.authorization, dispatchable: graph.signedReadiness.dispatchable },
+      declared: { trigger: taskAuthority.declaredTrigger, intent: taskAuthority.declaredIntent, operation: taskAuthority.signedJobCard.semanticClasses },
+      compiledEffect: graph.outcomes.map(item => item.effectDigest),
+      lineage: { principals: graph.principals.map(item => item.principalId), grants: graph.grants.map(item => item.digest), allocations: graph.allocations.map(item => item.allocationId) },
+      policyStatus: graph.policyEvidence.map(item => ({ artifact: item.artifact, status: item.status })),
+      postStateConfidence: graph.postStateEvidence.map(item => item.confidence),
+      providerObservation: graph.receipts.map(item => item.receipt.value.claims.providerAcknowledgment),
+      reconciliationResult: graph.receipts.map(item => item.evidence.value.reconciliation.verdict),
+      cleanupResult: graph.receipts.filter(item => item.receipt.value.decisionContext.requestId.endsWith(".cleanup")).map(item => item.evidence.value.reconciliation.verdict),
+      duplicateDecisions: graph.duplicateDecisions,
+      exceptions: graph.exceptions,
+      receiptChain: graph.receipts.map(item => ({ receiptDigest: authority.authorityDigest(item.receipt.value), priorReceiptDigest: item.receipt.value.priorReceiptDigest })),
+      fixtureOperatorConfirmation: { kind: "fixture", basis: "signed-readiness-construction", signedReadinessDigest: taskAuthority.activation.signedReadinessDigest, liveHuman: false, grantsAuthority: false },
+      graphDigest,
+      nonClaims,
+    };
+    assert.deepEqual(summary, { v: "reelier.factory-journey-summary/v1", journey: "github-issue-labels", graphDigest, stages: ["classification", "preparation", "consequential-execution", "independent-review"], authorityBoundaryCeremonies: 1, fixtureOperatorConfirmations: 1, liveHumanReview: "absent", providerCredentialValueHandling: 0, clientBearerResolution: 0, providerSdkCalls: 0, externalSockets: 0, unsupportedCategories: { ambiguity: "absent", manual: "absent", blocked: "absent" }, nonClaims, logicalOperatorSteps: 4, elapsedMs: summary.elapsedMs, reviewerPacket });
     process.exit(0);
   }
   const bin = path.join(consumer, "node_modules", ".bin", process.platform === "win32" ? "reelier.cmd" : "reelier");
