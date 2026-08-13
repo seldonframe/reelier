@@ -27,6 +27,7 @@ export function materializedHttpRequestDigest(projection: MaterializedHttpReques
 export function parseHttpResponseSemanticsProfileV1(value: unknown): HttpResponseSemanticsProfileV1 {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("HTTP response semantics profile is invalid");
   const raw = value as Record<string, unknown>;
+  if (Object.getPrototypeOf(value) !== Object.prototype || Object.keys(raw).sort().join(",") !== "acknowledgedStatuses,profileId,v") throw new TypeError("HTTP response semantics profile contains unknown fields");
   if (raw.v !== "reelier.http-response-semantics/v1" || typeof raw.profileId !== "string" || !Array.isArray(raw.acknowledgedStatuses) || raw.acknowledgedStatuses.length === 0) throw new TypeError("HTTP response semantics profile is invalid");
   const statuses = raw.acknowledgedStatuses;
   if (statuses.some(status => !Number.isInteger(status) || (status as number) < 200 || (status as number) > 299) || new Set(statuses as number[]).size !== statuses.length) throw new TypeError("HTTP response semantics statuses are invalid");
@@ -51,6 +52,10 @@ function normalizeProjection(value: MaterializedHttpRequestProjectionV1): Materi
 
 function normalizeQuery(query: string): string {
   if (!query) return "";
-  return query.split("&").sort().join("&");
+  const pairs = query.split("&");
+  for (const pair of pairs) {
+    const key = pair.split("=", 1)[0]!.toLowerCase();
+    if (/(?:token|secret|password|credential|authorization|api[-_]?key)/.test(key)) throw new TypeError("materialized request projection contains a secret query field");
+  }
+  return pairs.sort().join("&");
 }
-
