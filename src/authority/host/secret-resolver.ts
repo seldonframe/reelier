@@ -131,8 +131,13 @@ export function createSecretResolver(options?: SecretResolverOptions): SlotSecre
 
 function validateOptions(options: SecretResolverOptions): void {
   if (!options || typeof options.fileRoot !== "string" || !options.fileRoot || !options.slots || typeof options.slots !== "object" || Array.isArray(options.slots)) throw new TypeError("secret resolver options are invalid");
+  if (Object.getPrototypeOf(options.slots) !== Object.prototype) throw new TypeError("secret slot map prototype is invalid");
+  const slotDescriptors = Object.getOwnPropertyDescriptors(options.slots);
+  if (Object.values(slotDescriptors).some(descriptor => !Object.prototype.hasOwnProperty.call(descriptor, "value") || descriptor.get || descriptor.set)) throw new TypeError("secret slot map contains accessor fields");
   for (const [slotId, definition] of Object.entries(options.slots)) {
     if (!SLOT_ID.test(slotId) || !definition || typeof definition !== "object" || Object.getPrototypeOf(definition) !== Object.prototype) throw new TypeError("secret slot definition is invalid");
+    const definitionDescriptors = Object.getOwnPropertyDescriptors(definition);
+    if (Object.values(definitionDescriptors).some(descriptor => !Object.prototype.hasOwnProperty.call(descriptor, "value") || descriptor.get || descriptor.set)) throw new TypeError("secret slot definition contains accessor fields");
     const keys = Object.keys(definition);
     if ((definition as SecretSlotDefinition).kind === "file") {
       if (keys.length !== 2 || keys.some(key => !["kind", "path"].includes(key)) || typeof (definition as SecretSlotFileDefinition).path !== "string" || !(definition as SecretSlotFileDefinition).path || (definition as SecretSlotFileDefinition).path.includes("\0")) throw new TypeError("secret file slot definition is invalid");
@@ -171,7 +176,11 @@ async function readConfinedFile(root: string, relative: string): Promise<{ value
     if (!before.isFile() || before.size > MAX_SLOT_BYTES) throw new Error("secret file is invalid");
     const bytes = await handle.readFile();
     const after = await handle.stat();
-    if (!after.isFile() || before.size !== after.size || before.mtimeMs !== after.mtimeMs || bytes.byteLength !== after.size) throw new Error("secret file changed");
+    const currentPathStat = await lstat(candidate);
+    const canonicalCandidate = await realpath(candidate);
+    const canonicalExpected = path.resolve(rootReal, path.relative(root, candidate));
+    const identityChanged = before.dev !== currentPathStat.dev || before.ino !== currentPathStat.ino;
+    if (canonicalCandidate !== canonicalExpected || currentPathStat.isSymbolicLink() || !currentPathStat.isFile() || identityChanged || !after.isFile() || before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs || bytes.byteLength !== after.size) throw new Error("secret file changed");
     const value = bytes.toString("utf8").trim();
     if (!value || value.includes("\0") || Buffer.byteLength(value, "utf8") > MAX_SLOT_BYTES) throw new Error("secret file is invalid");
     return { value, version: `${after.size}:${after.mtimeMs}` };

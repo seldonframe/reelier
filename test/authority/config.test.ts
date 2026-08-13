@@ -35,13 +35,14 @@ test("canonical native HTTPS routes carry only opaque credential slot ids", () =
   const route = {
     v: "reelier.json-https-route/v1" as const, providerId: "github", connectorId: "github", accountId: "acct",
     providerAccountIdentity: "github:acct", endpointId: "github.write", origin: "https://api.github.com",
-    allowedMethods: ["PUT" as const], allowedPathPrefixes: ["/repos/acct/repo/issues/1/labels"], credentialSlotId: "github.tracer",
+    allowedMethods: ["PUT" as const, "POST" as const], allowedPathPrefixes: ["/z", "/a"], credentialSlotId: "github.tracer",
     responseSemanticsProfileId: "github.labels.v1", reconciliationRecipeId: "github.labels.read.v1", readEndpointId: "github.read",
     egressPolicyDigest: "sha256:" + "1".repeat(64),
   };
   const parsed = validateAuthorityHostConfig({ ...base, nativeHttpsRoutes: [route, { ...route, endpointId: "github.read", allowedMethods: ["GET"], readEndpointId: "github.read" }] });
   assert.equal(parsed.nativeHttpsRoutes?.[0]?.credentialSlotId, "github.tracer");
-  assert.deepEqual(parsed.nativeHttpsRoutes?.[0]?.allowedMethods, ["PUT"]);
+  assert.deepEqual(parsed.nativeHttpsRoutes?.[0]?.allowedMethods, ["POST", "PUT"]);
+  assert.deepEqual(parsed.nativeHttpsRoutes?.[0]?.allowedPathPrefixes, ["/a", "/z"]);
   assert.equal(Object.isFrozen(parsed.nativeHttpsRoutes), true);
   assert.equal(Object.isFrozen(parsed.nativeHttpsRoutes?.[0]), true);
   assert.equal(JSON.stringify(parsed).includes("secretRef"), false);

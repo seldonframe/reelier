@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { authorityDigest } from "../wire.js";
 import type { JsonHttpsEndpoint } from "../drivers/json-https.js";
-import { createJsonHttpsRouteRegistry, type JsonHttpsRouteV1 } from "./json-https-route.js";
+import { createJsonHttpsRouteRegistry, parseJsonHttpsRouteV1, type JsonHttpsRouteV1 } from "./json-https-route.js";
 
 export interface AuthorityHostConfig {
   readonly version: 1;
@@ -60,7 +60,7 @@ function validateNativeRoutes(value: unknown): readonly JsonHttpsRouteV1[] {
   if (!Array.isArray(value)) throw new TypeError("native HTTPS routes must be an array");
   const routes = value.map(item => {
     if (item && typeof item === "object" && Object.prototype.hasOwnProperty.call(item, "secretRef")) throw new TypeError("canonical native HTTPS route cannot contain a secret reference");
-    return item as JsonHttpsRouteV1;
+    return parseJsonHttpsRouteV1(item);
   });
   createJsonHttpsRouteRegistry(routes);
   return Object.freeze(routes.map(route => Object.freeze({ ...route })));
