@@ -15,8 +15,10 @@ import { validateAuthorityHostConfig } from "../../src/authority/host/config.js"
 import { createCertificationCellHost, certificationTaskShapeDigest } from "../../src/authority/certification/cell.js";
 import { createGitHubIssueLabelsHermeticComposition } from "../../src/authority/certification/github-issue-labels-runner.js";
 import { __testSetAuthorityCellHostPlatform } from "../../src/authority/host/platform.js";
+import * as host from "../../src/authority/host/index.js";
 
 const LINUX_REQUIRED = "AUTHORITY_CELL_LINUX_REQUIRED";
+const SUPPORTED_LINUX_HOST_ROOTS = ["createAuthorityEgressGateway", "createAuthorityHostRuntime", "createAuthorityHostServer", "createCertificationCellHost", "createDelegationAuthority", "createDispatchCoordinator", "createFileReceiptPublication", "createLocalAuthorityRuntime"] as const;
 
 function assertLinuxRequired(error: unknown): boolean {
   assert.ok(error instanceof Error);
@@ -84,6 +86,11 @@ test("Windows refuses every authority host composition before touching host depe
     await assert.rejects(() => createGitHubIssueLabelsHermeticComposition(inaccessible as never), assertLinuxRequired);
   });
   assert.equal(accesses, 0);
+});
+
+test("declared host namespace contains every supported Linux composition root", () => {
+  for (const root of SUPPORTED_LINUX_HOST_ROOTS) assert.equal(Object.hasOwn(host, root), true, root);
+  assert.equal(Object.hasOwn(host, "FsAuthorityLedger"), false);
 });
 
 test("Windows remains supported for Authority client parsing and offline preparation", async () => {

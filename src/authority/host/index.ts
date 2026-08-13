@@ -11,7 +11,6 @@ export { createJsonHttpsDispatchAdapter } from "./json-https-connector.js";
 export type { ComposioConnection, ComposioDispatchRoute, ComposioDispatchAdapterOptions } from "./composio-connector.js";
 export { createComposioDispatchAdapter } from "./composio-connector.js";
 export type { AuthorityLedger, LedgerState, ReservationSnapshot, TransitionEvent } from "../ledger.js";
-export { FsAuthorityLedger } from "./fs-ledger.js";
 export type { AuthorityMcpHandler, AuthorityMcpDefinition } from "../ingress/mcp.js";
 export { buildAuthorityMcpServer } from "../ingress/mcp.js";
 export { handleAuthorityHttp } from "../ingress/http.js";
