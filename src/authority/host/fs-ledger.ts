@@ -3069,7 +3069,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
           view = await this.loadView();
           continue;
         }
-        if (reservation.state !== "dispatched") continue;
+        if (reservation.state !== "dispatched" || reservation.sendStarted === true) continue;
         if (view.highWaterMark === null) throw new LedgerCorruption("dispatched reservation has no durable clock");
         const transition = await this.appendEvent(view, { type: "transition", reservationId: reservation.reservationId, from: "dispatched", to: "ambiguous", at: view.highWaterMark }, "result") as TransitionJournalEvent;
         view = await this.loadView();
