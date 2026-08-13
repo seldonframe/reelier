@@ -1,4 +1,5 @@
 import canonicalize from "canonicalize";
+import { createDispatchCommitLease, type PreparedDispatchDescriptionV1, type DispatchCommitLease } from "./prepared-dispatch.js";
 import { createHash, randomBytes } from "node:crypto";
 import {
   lstatSync,
@@ -553,6 +554,17 @@ export class FsAuthorityLedger implements AuthorityLedger {
       const next = applyTransition(current, transition);
       return frozen({ ok: true, status: "transitioned", reservation: detachReservation(next) });
     });
+  }
+
+  async commitPreparedDispatch(input: Readonly<{ reservationId: string; allocationId: string; expectedAuthorityGeneration: string; preparedDescription: PreparedDispatchDescriptionV1; absoluteDeadlineMs: number }>): Promise<DispatchCommitLease> {
+    const reservation = await this.getReservation(input.reservationId);
+    if (!reservation || reservation.state !== "reserved") throw new Error("prepared dispatch reservation is not reserved");
+    const context = reservation.intent.executionContext;
+    if ((context?.allocationId ?? input.allocationId) !== input.allocationId) throw new Error("prepared dispatch allocation mismatch");
+    if (input.preparedDescription.authorityGeneration !== input.expectedAuthorityGeneration || input.preparedDescription.reservationId !== input.reservationId || input.preparedDescription.allocationId !== input.allocationId) throw new Error("prepared dispatch authority binding mismatch");
+    const transitioned = await this.transition(input.reservationId, "reserved", { to: "dispatched" });
+    if (!transitioned.ok) throw new Error(`prepared dispatch commit refused: ${transitioned.reason}`);
+    return createDispatchCommitLease({ reservationId: input.reservationId, allocationId: input.allocationId, preparedDigest: input.preparedDescription.materializedRequestDigest, authorityGeneration: input.expectedAuthorityGeneration, authorityExpiresAt: input.preparedDescription.authorityExpiresAt, absoluteDeadlineMs: input.absoluteDeadlineMs, commitGeneration: `commit:${input.reservationId}` });
   }
 
   async recover(options: Readonly<{ deferTerminal?: boolean }> = {}): Promise<RecoverResult> {

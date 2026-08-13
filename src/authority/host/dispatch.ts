@@ -2,11 +2,12 @@ import { authorityDigest } from "../wire.js";
 import { assertLinuxAuthorityCellHost } from "./platform.js";
 import { unwrapReservedDispatchHandle, type ReservedDispatchHandle } from "../gate.js";
 import type { AuthorityLedger, LedgerState, StoredReservationIntent } from "../ledger.js";
+import { consumePreparedDispatch, type PreparedDispatch, type PreparedDispatchDescriptionV1 } from "./prepared-dispatch.js";
 
 export interface DispatchRequestState { readonly reservation: { readonly reservationId: string; readonly state: LedgerState; readonly intent: Pick<StoredReservationIntent, "effectDigest" | "effectCanonicalBase64" | "executionContext"> }; readonly effect: unknown; readonly effectCanonicalBase64: string; readonly effectDigest: string; readonly [key: string]: unknown; }
 export type ReconciliationStatus = "matched" | "not-applied" | "conflict" | "unavailable" | "not-attempted";
 export interface DispatchOutcome { readonly kind: "acknowledged" | "definitive-failure" | "ambiguous"; readonly resultDigest: string; readonly providerResultDigest?: string; readonly providerStatus?: number; readonly responseDigest?: string; /** Digest of the exact provider request bytes when confidential material was inserted inside the Authority Cell. */ readonly materializedRequestDigest?: string; readonly reconciliationStatus?: ReconciliationStatus; readonly normalizedProjectionDigest?: string | null; readonly receiptRef?: string; readonly evidenceDigest?: string; readonly priorReceiptDigest?: string; }
-export interface DispatchAdapter { dispatch(state: DispatchRequestState): Promise<DispatchOutcome>; reconcile?(state: DispatchRequestState, outcome: DispatchOutcome): Promise<DispatchOutcome>; }
+export interface DispatchAdapter { dispatch(state: DispatchRequestState): Promise<DispatchOutcome>; prepare?(state: DispatchRequestState): Promise<PreparedDispatch>; dispatchPrepared?(prepared: PreparedDispatch, commitLease: import("./prepared-dispatch.js").DispatchCommitLease): Promise<DispatchOutcome>; reconcile?(state: DispatchRequestState, outcome: DispatchOutcome): Promise<DispatchOutcome>; }
 export interface DispatchEvidenceWriter { persist(input: Readonly<{ state: DispatchRequestState; outcome: DispatchOutcome; dispatchedRequestDigest: string; }>): Promise<void>; }
 export interface DispatchPublication { publish(input: Readonly<{ phase: "dispatch" | "cancelled" | "ambiguous" | "reconcile"; state: DispatchRequestState; outcome: DispatchOutcome; dispatchedRequestDigest: string | null; priorReceiptDigest?: string | null; }>): Promise<Readonly<{ receiptRef: string; evidenceDigest: string }>>; }
 export interface DispatchCoordinator { dispatch(handle: ReservedDispatchHandle): Promise<DispatchOutcome>; cancel(handle: ReservedDispatchHandle, reason?: string): Promise<DispatchOutcome>; reconcile(reservationId: string): Promise<DispatchOutcome>; recover(): Promise<readonly string[]>; }
@@ -23,6 +24,26 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
       const state = unwrapReservedDispatchHandle(handle) as DispatchRequestState;
       if (!state.reservation || state.reservation.state !== "reserved") throw new TypeError("dispatch handle is not reserved");
       const reservationId = state.reservation.reservationId;
+      if (adapter.prepare && ledger.commitPreparedDispatch) {
+        const context = state.reservation.intent.executionContext;
+        const prepared = await adapter.prepare(state);
+        const description: PreparedDispatchDescriptionV1 = prepared.description;
+        const lease = await ledger.commitPreparedDispatch({ reservationId, allocationId: context?.allocationId ?? description.allocationId, expectedAuthorityGeneration: description.authorityGeneration, preparedDescription: description, absoluteDeadlineMs: description.absoluteDeadlineMs });
+        let outcome: DispatchOutcome;
+        try { outcome = adapter.dispatchPrepared ? await adapter.dispatchPrepared(prepared, lease) : await consumePreparedDispatch(prepared, lease); }
+        catch { outcome = { kind: "ambiguous", resultDigest: authorityDigest({ v: "reelier.dispatch-result/v1", reservationId, status: "ambiguous" }) }; }
+        const current = await ledger.getReservation(reservationId);
+        if (current?.state === "reserved") {
+          const marked = await ledger.transition(reservationId, "reserved", { to: "dispatched" });
+          if (!marked.ok) throw new Error(`dispatch transition refused: ${marked.reason}`);
+        }
+        const dispatchedRequestDigest = outcome.materializedRequestDigest ?? description.materializedRequestDigest;
+        if (evidence) await evidence.persist({ state, outcome, dispatchedRequestDigest });
+        const terminal = outcome.kind;
+        const result = await ledger.transition(reservationId, "dispatched", terminal === "ambiguous" ? { to: "ambiguous" } : { to: terminal, resultDigest: outcome.resultDigest });
+        if (!result.ok) throw new Error(`dispatch result transition refused: ${result.reason}`);
+        return Object.freeze({ ...outcome, materializedRequestDigest: dispatchedRequestDigest });
+      }
       const transitioned = await ledger.transition(reservationId, "reserved", { to: "dispatched" });
       if (!transitioned.ok) throw new Error(`dispatch transition refused: ${transitioned.reason}`);
       const budgetClaim = budgetFor(state);

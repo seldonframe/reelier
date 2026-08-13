@@ -8,6 +8,8 @@ export type { McpDispatchRoute, McpDispatchAdapterOptions } from "./mcp-connecto
 export { createMcpDispatchAdapter } from "./mcp-connector.js";
 export type { JsonHttpsDispatchAdapterOptions } from "./json-https-connector.js";
 export { createJsonHttpsDispatchAdapter } from "./json-https-connector.js";
+export { createPreparedDispatch, createDispatchCommitLease, consumePreparedDispatch, describePreparedDispatch, type PreparedDispatch, type DispatchCommitLease, type PreparedDispatchDescriptionV1, type MaterializedHttpRequestProjectionV1 } from "./prepared-dispatch.js";
+export { materializedHttpRequestDigest, parseHttpResponseSemanticsProfileV1, classifyHttpResponse, type HttpResponseSemanticsProfileV1, type HttpResponseObservation } from "./http-response-semantics.js";
 export type { ComposioConnection, ComposioDispatchRoute, ComposioDispatchAdapterOptions } from "./composio-connector.js";
 export { createComposioDispatchAdapter } from "./composio-connector.js";
 export type { AuthorityLedger, LedgerState, ReservationSnapshot, TransitionEvent } from "../ledger.js";
@@ -62,6 +64,6 @@ export type { FileReceiptPublicationOptions, LocalAuthorityPublication } from ".
 export type { SupportedAuthorityHost, AuthorityHostAdapter } from "./adapters.js";
 export { createAuthorityHostAdapters } from "./adapters.js";
 export type { JsonHttpsEndpoint, JsonHttpsRead, JsonHttpsResponse, JsonHttpsSecretResolver, JsonHttpsConfidentialRequest } from "../drivers/json-https.js";
-export { JsonHttpsSecurityError, executeJsonHttpsEffect, executeJsonHttpsRead } from "../drivers/json-https.js";
+export { JsonHttpsSecurityError, executeJsonHttpsEffect, executeJsonHttpsRead, prepareJsonHttpsEffect, buildMaterializedHttpRequestProjection } from "../drivers/json-https.js";
 export { createCertificationCellHost, certificationTaskShapeDigest, type CertificationCellHost, type CertificationCellActivationV1, type CertificationDispatchPermit } from "../certification/cell.js";
 export { verifyCertificationOperatorConfigV3, verifyCertificationEndpointManifestV2, verifyCertificationRunnerManifestV2, verifyCertificationScenarioPlanV1 } from "../certification/semantic-verification.js";

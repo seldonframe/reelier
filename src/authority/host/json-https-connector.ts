@@ -1,5 +1,6 @@
 import { authorityDigest } from "../wire.js";
-import { executeJsonHttpsEffect, type JsonHttpsEndpoint, type JsonHttpsSecretResolver } from "../drivers/json-https.js";
+import { executeJsonHttpsEffect, prepareJsonHttpsEffect, type JsonHttpsEndpoint, type JsonHttpsSecretResolver } from "../drivers/json-https.js";
+import { classifyHttpResponse, parseHttpResponseSemanticsProfileV1 } from "./http-response-semantics.js";
 import { createJsonHttpsRouteRegistry, lookupJsonHttpsRoute, type JsonHttpsRouteRegistry, type JsonHttpsRouteV1 } from "./json-https-route.js";
 import type { DispatchAdapter, DispatchOutcome, DispatchRequestState } from "./dispatch.js";
 
@@ -28,10 +29,21 @@ export function createJsonHttpsDispatchAdapter(options: JsonHttpsDispatchAdapter
       try {
         const response = await executeJsonHttpsEffect(state.effect as never, endpoint, options.secrets, { timeoutMs: options.timeoutMs, maxResponseBytes: options.maxResponseBytes });
         const resultDigest = authorityDigest({ v: "reelier.https-response/v1", endpointId, status: response.status, headers: response.headers, bodyDigest: authorityDigest(response.body.toString("base64")) });
-        return Object.freeze({ kind: response.status >= 200 && response.status < 300 ? "acknowledged" as const : "definitive-failure" as const, resultDigest, providerStatus: response.status, responseDigest: resultDigest });
+        const profile = parseHttpResponseSemanticsProfileV1({ v: "reelier.http-response-semantics/v1", profileId: route && "responseSemanticsProfileId" in route ? route.responseSemanticsProfileId : "legacy.2xx", acknowledgedStatuses: [200, 201, 202, 203, 204, 205, 206, 207, 208, 226] });
+        const kind = classifyHttpResponse(profile, { kind: "response", status: response.status });
+        return Object.freeze({ kind, resultDigest, providerStatus: response.status, responseDigest: resultDigest, ...(response.materializedRequestDigest ? { materializedRequestDigest: response.materializedRequestDigest } : {}) });
       } catch (error) {
         return Object.freeze({ kind: "ambiguous" as const, resultDigest: authorityDigest({ v: "reelier.https-dispatch/v1", endpointId, status: "transport-error", error: error instanceof Error ? error.name : "Error" }) });
       }
+    },
+    async prepare(state: DispatchRequestState) {
+      const endpointId = state.effect && typeof state.effect === "object" && typeof (state.effect as Record<string, unknown>).endpointId === "string" ? String((state.effect as Record<string, unknown>).endpointId) : "";
+      const route = routes ? lookupJsonHttpsRoute(routes, endpointId) : undefined;
+      const endpoint = route ?? endpoints.get(endpointId);
+      if (!endpoint) throw new Error("endpoint-not-configured");
+      const context = state.reservation.intent.executionContext;
+      const expiresAt = typeof (state.reservation.intent as Record<string, unknown>).expiresAt === "string" ? String((state.reservation.intent as Record<string, unknown>).expiresAt) : new Date(Date.now() + (options.timeoutMs ?? 15_000)).toISOString();
+      return prepareJsonHttpsEffect(state.effect as never, endpoint, options.secrets, { timeoutMs: options.timeoutMs, maxResponseBytes: options.maxResponseBytes, reservationId: state.reservation.reservationId, allocationId: context?.allocationId ?? "unbound", authorityGeneration: "legacy", authorityExpiresAt: expiresAt });
     },
   });
 }

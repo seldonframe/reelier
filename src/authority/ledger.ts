@@ -148,4 +148,6 @@ export interface AuthorityLedger {
   lookupReservationLinkage(reservationId:string):Promise<ReservationLinkage|undefined>;
   getReservationHistory(reservationId: string): Promise<ReservationHistory | undefined>;
   getHighWaterMark(): Promise<Readonly<{ observedAt: string | null }>>;
+  /** Optional Path C durable commit boundary. Implementations must persist send-started before returning the lease. */
+  commitPreparedDispatch?(input: Readonly<{ reservationId: string; allocationId: string; expectedAuthorityGeneration: string; preparedDescription: import("./host/prepared-dispatch.js").PreparedDispatchDescriptionV1; absoluteDeadlineMs: number }>): Promise<import("./host/prepared-dispatch.js").DispatchCommitLease>;
 }

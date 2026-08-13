@@ -8,6 +8,9 @@ import type { TransportEffect } from "../types.js";
 import { assertAllPublicAddresses } from "../client/ip.js";
 import { createTotalDeadline, raceTotalDeadline, type TotalDeadline } from "../net/deadline.js";
 import type { JsonHttpsRouteV1 } from "../host/json-https-route.js";
+import { materializedHttpRequestDigest, type MaterializedHttpRequestProjectionV1 } from "../host/http-response-semantics.js";
+import { createPreparedDispatch, type PreparedDispatch } from "../host/prepared-dispatch.js";
+import { authorityDigest } from "../wire.js";
 
 const FORBIDDEN = new Set(["authorization", "cookie", "host"]);
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
@@ -26,7 +29,7 @@ export interface JsonHttpsEndpoint {
 }
 
 export interface JsonHttpsSecretResolver { resolve(reference: string): Promise<string>; acquireSlot?: (slotId: string) => Promise<{ readonly readOnce: () => string }>; }
-export interface JsonHttpsResponse { readonly status: number; readonly headers: Readonly<Record<string, string>>; readonly body: Buffer; readonly requestBytesDigest: string; }
+export interface JsonHttpsResponse { readonly status: number; readonly headers: Readonly<Record<string, string>>; readonly body: Buffer; readonly requestBytesDigest: string; readonly materializedRequestProjection?: MaterializedHttpRequestProjectionV1; readonly materializedRequestDigest?: string; }
 export interface JsonHttpsRead { readonly endpointId: string; readonly method?: "GET"; readonly path: string; readonly query?: string; readonly headers?: Readonly<Record<string, string>>; }
 export interface JsonHttpsConfidentialRequest { readonly endpointId: string; readonly method: "POST" | "PUT" | "PATCH" | "DELETE"; readonly path: string; readonly query?: string; readonly headers?: Readonly<Record<string, string>>; readonly body: Uint8Array; }
 
@@ -55,7 +58,32 @@ export async function executeJsonHttpsEffect(effect: TransportEffect, endpoint: 
   const body = Buffer.from(effect.bodyBase64, "base64");
   const secret = await materializeSecret(endpoint, secrets, deadline);
   deadline.remainingMs("credential"); const proxySecret = runtimeEndpoint.egressProxy ? await secrets.resolve(runtimeEndpoint.egressProxy.bearerRef) : undefined;
-  return requestPinned(runtimeEndpoint, effect.method, effect.path, effect.query, effect.headers, body, secret, proxySecret, options, deadline);
+  const projection = buildMaterializedHttpRequestProjection(runtimeEndpoint, effect.method, effect.path, effect.query, effect.headers, body);
+  return requestPinned(runtimeEndpoint, effect.method, effect.path, effect.query, effect.headers, body, secret, proxySecret, options, deadline, projection);
+}
+
+/** Materializes one consequential request without sending it; the returned capability owns the exact bytes. */
+export async function prepareJsonHttpsEffect(effect: TransportEffect, endpoint: JsonHttpsEndpoint | JsonHttpsRouteV1, secrets: JsonHttpsSecretResolver, options: JsonHttpsOptions & Readonly<{ reservationId?: string; allocationId?: string; authorityGeneration?: string; authorityExpiresAt?: string }> = {}): Promise<PreparedDispatch> {
+  const runtimeEndpoint = materializeEndpoint(endpoint);
+  const deadline = dispatchDeadline(options);
+  deadline.remainingMs("prepare");
+  if (effect.endpointId !== runtimeEndpoint.endpointId || !runtimeEndpoint.allowedMethods.includes(effect.method)) throw new JsonHttpsSecurityError("effect is not allowed for endpoint");
+  validatePath(effect.path, runtimeEndpoint); validateQuery(effect.query); validateHeaders(effect.headers);
+  if (base64DecodedBytes(effect.bodyBase64) > MAX_REQUEST_BYTES) throw new JsonHttpsSecurityError("request exceeds configured limit");
+  const body = Buffer.from(effect.bodyBase64, "base64");
+  const secret = await materializeSecret(endpoint, secrets, deadline);
+  const proxySecret = runtimeEndpoint.egressProxy ? await secrets.resolve(runtimeEndpoint.egressProxy.bearerRef) : undefined;
+  const projection = buildMaterializedHttpRequestProjection(runtimeEndpoint, effect.method, effect.path, effect.query, effect.headers, body);
+  const description = {
+    v: "reelier.prepared-dispatch-description/v1" as const,
+    routeDigest: authorityDigest({ v: "reelier.json-https-route/v1", endpointId: runtimeEndpoint.endpointId, origin: runtimeEndpoint.baseUrl, allowedPathPrefixes: runtimeEndpoint.allowedPathPrefixes }),
+    materializedRequestDigest: materializedHttpRequestDigest(projection), projection,
+    authorityGeneration: options.authorityGeneration ?? "legacy",
+    authorityExpiresAt: options.authorityExpiresAt ?? new Date(Date.now() + (deadline.absoluteDeadlineMs - deadline.startedAtMs)).toISOString(),
+    absoluteDeadlineMs: deadline.absoluteDeadlineMs,
+    reservationId: options.reservationId ?? "unbound", allocationId: options.allocationId ?? "unbound",
+  };
+  return createPreparedDispatch({ description, send: async () => { try { const response = await requestPinned(runtimeEndpoint, effect.method, effect.path, effect.query, effect.headers, body, secret, proxySecret, options, deadline, projection); const resultDigest = authorityDigest({ v: "reelier.https-response/v1", endpointId: runtimeEndpoint.endpointId, status: response.status, headers: response.headers, bodyDigest: authorityDigest(response.body.toString("base64")) }); return Object.freeze({ kind: response.status >= 200 && response.status < 300 ? "acknowledged" as const : "ambiguous" as const, resultDigest, providerStatus: response.status, responseDigest: resultDigest, materializedRequestDigest: response.materializedRequestDigest }); } finally { body.fill(0); } } });
 }
 
 export async function executeJsonHttpsRead(read: JsonHttpsRead, endpoint: JsonHttpsEndpoint | JsonHttpsRouteV1, secrets: JsonHttpsSecretResolver, options: JsonHttpsOptions = {}): Promise<JsonHttpsResponse> {
@@ -69,7 +97,9 @@ export async function executeJsonHttpsRead(read: JsonHttpsRead, endpoint: JsonHt
   validateHeaders(read.headers ?? {});
   const secret = await materializeSecret(endpoint, secrets, deadline);
   deadline.remainingMs("credential"); const proxySecret = runtimeEndpoint.egressProxy ? await secrets.resolve(runtimeEndpoint.egressProxy.bearerRef) : undefined;
-  return requestPinned(runtimeEndpoint, "GET", read.path, read.query ?? "", read.headers ?? {}, Buffer.alloc(0), secret, proxySecret, options, deadline);
+  const body = Buffer.alloc(0);
+  const projection = buildMaterializedHttpRequestProjection(runtimeEndpoint, "GET", read.path, read.query ?? "", read.headers ?? {}, body);
+  return requestPinned(runtimeEndpoint, "GET", read.path, read.query ?? "", read.headers ?? {}, body, secret, proxySecret, options, deadline, projection);
 }
 
 function isNativeRoute(endpoint: JsonHttpsEndpoint | JsonHttpsRouteV1): endpoint is JsonHttpsRouteV1 { return "credentialSlotId" in endpoint; }
@@ -113,7 +143,7 @@ function dispatchDeadline(options: JsonHttpsOptions): TotalDeadline {
 }
 function base64DecodedBytes(value: string): number { return Math.floor(value.length * 3 / 4) - (value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0); }
 
-async function requestPinned(endpoint: JsonHttpsEndpoint, method: string, path: string, query: string, headers: Readonly<Record<string, string>>, body: Buffer, secret: string | undefined, proxySecret: string | undefined, options: JsonHttpsOptions, deadline: TotalDeadline): Promise<JsonHttpsResponse> {
+async function requestPinned(endpoint: JsonHttpsEndpoint, method: string, path: string, query: string, headers: Readonly<Record<string, string>>, body: Buffer, secret: string | undefined, proxySecret: string | undefined, options: JsonHttpsOptions, deadline: TotalDeadline, projection?: MaterializedHttpRequestProjectionV1): Promise<JsonHttpsResponse> {
   let base: URL;
   try { base = new URL(endpoint.baseUrl); } catch { throw new JsonHttpsSecurityError("invalid endpoint base URL"); }
   if (base.protocol !== "https:" || base.username || base.password || base.pathname !== "/" && base.pathname !== "") throw new JsonHttpsSecurityError("endpoint base URL must be HTTPS origin only");
@@ -125,7 +155,7 @@ async function requestPinned(endpoint: JsonHttpsEndpoint, method: string, path: 
   const requestBytesDigest = `sha256:${createHash("sha256").update(body).digest("hex")}`;
   if (endpoint.egressProxy) {
     if (!proxySecret) throw new JsonHttpsSecurityError("egress proxy credential is unavailable");
-    return requestThroughProxy(endpoint.egressProxy, base, target, method, requestHeaders, body, proxySecret, maxResponseBytes, requestBytesDigest, deadline);
+    return requestThroughProxy(endpoint.egressProxy, base, target, method, requestHeaders, body, proxySecret, maxResponseBytes, requestBytesDigest, deadline, projection);
   }
   deadline.remainingMs("dns");
   const addresses = await raceTotalDeadline(deadline, "dns", dnsLookup(base.hostname, { all: true, verbatim: true }));
@@ -141,7 +171,7 @@ async function requestPinned(endpoint: JsonHttpsEndpoint, method: string, path: 
       if ((response.statusCode ?? 0) >= 300 && (response.statusCode ?? 0) < 400) { req.destroy(); finish(new JsonHttpsSecurityError("HTTPS redirects are refused")); return; }
       const chunks: Buffer[] = []; let size = 0;
       response.on("data", chunk => { try { deadline.remainingMs("body"); } catch (error) { req.destroy(error as Error); return; } const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk); size += bytes.length; if (size > maxResponseBytes) { req.destroy(new JsonHttpsSecurityError("response exceeds configured limit")); return; } chunks.push(bytes); });
-      response.on("end", () => { const out: Record<string, string> = {}; for (const [key, value] of Object.entries(response.headers)) if (typeof value === "string") out[key] = value; finish(undefined, { status: response.statusCode ?? 0, headers: out, body: Buffer.concat(chunks), requestBytesDigest }); });
+      response.on("end", () => { const out: Record<string, string> = {}; for (const [key, value] of Object.entries(response.headers)) if (typeof value === "string") out[key] = value; finish(undefined, { status: response.statusCode ?? 0, headers: out, body: Buffer.concat(chunks), requestBytesDigest, ...(projection ? { materializedRequestProjection: projection, materializedRequestDigest: materializedHttpRequestDigest(projection) } : {}) }); });
       response.on("error", finish);
     });
     const timer = setTimeout(() => { req.destroy(new JsonHttpsSecurityError("HTTPS total deadline expired")); finish(new JsonHttpsSecurityError("HTTPS total deadline expired")); }, deadline.remainingMs("connect"));
@@ -163,11 +193,12 @@ export async function executeJsonHttpsConfidentialRequest(request: JsonHttpsConf
   const body = Buffer.from(request.body);
   deadline.remainingMs("credential"); const secret = endpoint.secretRef ? await secrets.resolve(endpoint.secretRef) : undefined;
   deadline.remainingMs("credential"); const proxySecret = endpoint.egressProxy ? await secrets.resolve(endpoint.egressProxy.bearerRef) : undefined;
-  try { return await requestPinned(endpoint, request.method, request.path, request.query ?? "", request.headers ?? {}, body, secret, proxySecret, options, deadline); }
+  const projection = buildMaterializedHttpRequestProjection(endpoint, request.method, request.path, request.query ?? "", request.headers ?? {}, body);
+  try { return await requestPinned(endpoint, request.method, request.path, request.query ?? "", request.headers ?? {}, body, secret, proxySecret, options, deadline, projection); }
   finally { body.fill(0); }
 }
 
-async function requestThroughProxy(proxy: NonNullable<JsonHttpsEndpoint["egressProxy"]>, base: URL, target: URL, method: string, headers: Readonly<Record<string, string>>, body: Buffer, proxySecret: string, maxResponseBytes: number, requestBytesDigest: string, deadline: TotalDeadline): Promise<JsonHttpsResponse> {
+async function requestThroughProxy(proxy: NonNullable<JsonHttpsEndpoint["egressProxy"]>, base: URL, target: URL, method: string, headers: Readonly<Record<string, string>>, body: Buffer, proxySecret: string, maxResponseBytes: number, requestBytesDigest: string, deadline: TotalDeadline, projection?: MaterializedHttpRequestProjectionV1): Promise<JsonHttpsResponse> {
   let origin: URL;
   try { origin = new URL(proxy.baseUrl); } catch { throw new JsonHttpsSecurityError("invalid egress proxy URL"); }
   if (origin.protocol !== "http:" || origin.username || origin.password || origin.pathname !== "/" || origin.search || origin.hash || !origin.hostname.endsWith(".internal")) throw new JsonHttpsSecurityError("egress proxy must be a credential-free Fly internal HTTP origin");
@@ -201,7 +232,7 @@ async function requestThroughProxy(proxy: NonNullable<JsonHttpsEndpoint["egressP
           createConnection: () => secure,
         }, response => {
           if (settled) { response.destroy(); return; }
-          collectResponse(response, request, maxResponseBytes, requestBytesDigest, deadline, value => { if (settled) return; settled = true; clearTimeout(timer); resolve(value); }, fail);
+          collectResponse(response, request, maxResponseBytes, requestBytesDigest, deadline, value => { if (settled) return; settled = true; clearTimeout(timer); resolve(projection ? { ...value, materializedRequestProjection: projection, materializedRequestDigest: materializedHttpRequestDigest(projection) } : value); }, fail);
         });
         request.once("error", fail);
         try { deadline.remainingMs("upload"); if (body.length) request.write(body); } catch (error) { request.destroy(error as Error); fail(error as Error); return; }
@@ -213,6 +244,20 @@ async function requestThroughProxy(proxy: NonNullable<JsonHttpsEndpoint["egressP
     const timer = setTimeout(() => { const error = new JsonHttpsSecurityError("egress proxy total deadline expired"); connectRequest.destroy(error); tunneledRequest?.destroy(error); secureSocket?.destroy(error); activeSocket?.destroy(error); fail(error); }, deadline.remainingMs("connect"));
     timer.unref();
   });
+}
+
+export function buildMaterializedHttpRequestProjection(endpoint: JsonHttpsEndpoint, method: "POST" | "PUT" | "PATCH" | "DELETE" | "GET", path: string, query: string, headers: Readonly<Record<string, string>>, body: Uint8Array): MaterializedHttpRequestProjectionV1 {
+  if (method === "GET") {
+    return buildProjection(endpoint, method, path, query, headers, body);
+  }
+  return buildProjection(endpoint, method, path, query, headers, body);
+}
+
+function buildProjection(endpoint: JsonHttpsEndpoint, method: "POST" | "PUT" | "PATCH" | "DELETE" | "GET", path: string, query: string, headers: Readonly<Record<string, string>>, body: Uint8Array): MaterializedHttpRequestProjectionV1 {
+  const projectedHeaders: Record<string, string> = {};
+  for (const [name, value] of Object.entries(headers)) if (!["authorization", "cookie", "host", "proxy-authorization"].includes(name.toLowerCase())) projectedHeaders[name.toLowerCase()] = value;
+  const projection = { v: "reelier.materialized-http-request/v1" as const, method: method as MaterializedHttpRequestProjectionV1["method"], origin: new URL(endpoint.baseUrl).origin, normalizedPath: path, normalizedQuery: query ? query.split("&").sort().join("&") : "", reviewedHeaders: projectedHeaders, bodyDigest: `sha256:${createHash("sha256").update(body).digest("hex")}` };
+  return Object.freeze(projection);
 }
 
 function collectResponse(response: import("node:http").IncomingMessage, request: import("node:http").ClientRequest, maxResponseBytes: number, requestBytesDigest: string, deadline: TotalDeadline, resolve: (value: JsonHttpsResponse) => void, reject: (error: Error) => void): void {
