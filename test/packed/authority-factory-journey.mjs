@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdtempSync, readdirSync, rmSync, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
@@ -14,6 +14,9 @@ const tarball = args[tarballIndex + 1], out = args[outIndex + 1];
 const evidence = args[evidenceIndex + 1];
 assert.ok(path.isAbsolute(tarball) && existsSync(tarball), "tarball must be an existing absolute path"); if (outIndex >= 0) assert.ok(path.isAbsolute(out) && !existsSync(out), "out must be an absent absolute path"); else assert.ok(path.isAbsolute(evidence) && existsSync(evidence), "evidence must be an existing absolute path");
 const digest = value => "sha256:" + createHash("sha256").update(readFileSync(value)).digest("hex");
+const secretCanary = Buffer.from("REELIER_FACTORY_SECRET_CANARY_V1_6F4E91C28A73", "utf8");
+const scanCanary = value => { const entry = lstatSync(value); assert.equal(entry.isSymbolicLink(), false, `downloaded artifact cannot be a symlink: ${value}`); if (entry.isDirectory()) for (const child of readdirSync(value)) scanCanary(path.join(value, child)); else assert.equal(readFileSync(value).includes(secretCanary), false, `deterministic secret canary found in downloaded artifact: ${value}`); };
+scanCanary(tarball); if (evidenceIndex >= 0) scanCanary(evidence);
 const consumer = mkdtempSync(path.join(os.tmpdir(), "reelier-factory-consumer-"));
 try {
   const npmCli = [process.env.npm_execpath, path.join(path.dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js"), path.resolve(path.dirname(process.execPath), "..", "lib", "node_modules", "npm", "bin", "npm-cli.js")].find(value => value && existsSync(value)); assert.ok(npmCli);
@@ -25,7 +28,7 @@ try {
     const metadata = JSON.parse(readFileSync(path.join(evidence, "factory-evidence-metadata.json"), "utf8")), expected = ["adapterContractDigest", "graphDigest", "secretCanaryResult", "summaryDigest", "tarballSha256", "trustPinDigest", "v", "workflowSourceSha"];
     assert.deepEqual(Object.keys(metadata).sort(), expected); assert.equal(metadata.v, "reelier.factory-evidence-metadata/v1"); assert.equal(metadata.secretCanaryResult, "empty");
     const graph = JSON.parse(readFileSync(path.join(evidence, "graph.json"), "utf8")), trustPin = JSON.parse(readFileSync(path.join(evidence, "trust-pin.json"), "utf8")), summary = JSON.parse(readFileSync(path.join(evidence, "factory-journey-summary.json"), "utf8"));
-    assert.deepEqual(require("node:fs").readdirSync(evidence).sort(), ["factory-evidence-metadata.json", "factory-journey-summary.json", "graph.json", "trust-pin.json"]);
+    assert.deepEqual(readdirSync(evidence).sort(), ["factory-evidence-metadata.json", "factory-journey-summary.json", "graph.json", "trust-pin.json"]);
     assert.equal(authority.verifyCertificationTaskReceiptGraph(graph, { trustPin }).status, "verified"); assert.equal(digest(path.join(evidence, "graph.json")), metadata.graphDigest); assert.equal(digest(path.join(evidence, "trust-pin.json")), metadata.trustPinDigest); assert.equal(digest(path.join(evidence, "factory-journey-summary.json")), metadata.summaryDigest); assert.equal(digest(tarball).slice(7), metadata.tarballSha256); assert.equal(authority.AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST, metadata.adapterContractDigest);
     const schemaPath = require.resolve("reelier/contract/certification/v1/factory-journey-summary.schema.json"); assert.equal(path.relative(consumer, schemaPath).startsWith(".."), false, "summary schema stays in clean consumer");
     const Ajv2020 = require("ajv/dist/2020").default, validateSummary = new Ajv2020({ strict: true }).compile(JSON.parse(readFileSync(schemaPath, "utf8"))); assert.equal(validateSummary(summary), true, JSON.stringify(validateSummary.errors));
@@ -57,5 +60,5 @@ try {
   const graph = JSON.parse(readFileSync(line.graphPath, "utf8")), trustPin = JSON.parse(readFileSync(line.trustPath, "utf8")), summary = JSON.parse(readFileSync(line.summaryPath, "utf8"));
   assert.equal(authority.verifyCertificationTaskReceiptGraph(graph, { trustPin }).status, "verified"); assert.equal(line.graphDigest, authority.authorityDigest(graph)); assert.equal(line.summaryDigest, authority.authorityDigest(summary)); assert.equal(summary.graphDigest, line.graphDigest);
   for (const file of [line.graphPath, line.trustPath, line.summaryPath]) { const relative = path.relative(out, file); assert.ok(relative && !relative.startsWith("..") && !path.isAbsolute(relative)); assert.ok(existsSync(file)); }
-  assert.deepEqual(require("node:fs").readdirSync(out).sort(), ["factory-journey-summary.json", "graph.json", "trust-pin.json"]);
+  assert.deepEqual(readdirSync(out).sort(), ["factory-journey-summary.json", "graph.json", "trust-pin.json"]);
 } finally { rmSync(consumer, { recursive: true, force: true }); }
