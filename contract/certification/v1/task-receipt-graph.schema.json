@@ -118,6 +118,7 @@
         "adapterContractDigest",
         "exactBytesDigest",
         "conflictReceiptDigest",
+        "duplicateAttemptHeadDigest",
         "eventSequence",
         "priorJournalDigest",
         "phase",
@@ -139,6 +140,7 @@
         "adapterContractDigest": { "$ref": "#/$defs/digest" },
         "exactBytesDigest": { "$ref": "#/$defs/nullableDigest" },
         "conflictReceiptDigest": { "$ref": "#/$defs/nullableDigest" },
+        "duplicateAttemptHeadDigest": { "$ref": "#/$defs/nullableDigest" },
         "eventSequence": { "type": "integer", "minimum": 0 },
         "priorJournalDigest": { "$ref": "#/$defs/nullableDigest" },
         "phase": {

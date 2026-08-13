@@ -563,14 +563,17 @@ test("externally anchored duplicate head rejects canonical rollback after restar
     const currentGraph: any = await restarted.exportGraph({ bearerToken: f.credential.token });
     assert.equal(currentGraph.duplicateAttemptHead.count, 3);
     const currentDuplicateAttemptHeadDigest = authorityDigest(currentGraph.duplicateAttemptHead);
+    assert.equal(verifyCertificationTaskReceiptGraph(currentGraph, { trustPin: f.pin }).duplicateHistoryFreshness, "unchecked");
 
     await writeFile(ledgerPath, oldLedger);
     const rolledBackGraph: any = await restarted.exportGraph({ bearerToken: f.credential.token });
     assert.equal(rolledBackGraph.duplicateAttemptHead.count, 1);
     assert.throws(
-      () => verifyCertificationTaskReceiptGraph(rolledBackGraph, { trustPin: f.pin, currentDuplicateAttemptHeadDigest } as any),
+      () => verifyCertificationTaskReceiptGraph(rolledBackGraph, { trustPin: f.pin }),
       /duplicate.*current|head.*rollback|external.*anchor/i,
     );
+    assert.equal(verifyCertificationTaskReceiptGraph(oldGraph, { trustPin: f.pin }).duplicateHistoryFreshness, "unchecked");
+    assert.notEqual(authorityDigest(oldGraph.duplicateAttemptHead), currentDuplicateAttemptHeadDigest);
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 

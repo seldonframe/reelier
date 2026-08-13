@@ -67,6 +67,7 @@ interface Journal {
   readonly adapterContractDigest?: string;
   readonly exactBytesDigest?: string | null;
   readonly conflictReceiptDigest?: string | null;
+  readonly duplicateAttemptHeadDigest?: string | null;
   readonly eventSequence?: number;
   readonly priorJournalDigest?: string | null;
   readonly phase: JournalPhase;
@@ -209,6 +210,9 @@ export async function createGitHubIssueLabelsHermeticComposition(cell: Certifica
         attempts,
         decisions,
       });
+      const current = await loadJournal(journalRoot, original.requestId, journalAuthority);
+      if (!current) throw new TypeError("duplicate attempt original journal is absent");
+      await saveJournal(journalRoot, { ...current, duplicateAttemptHeadDigest: authorityDigest(head) }, journalAuthority);
     });
   }
   const coordinator = createDispatchCoordinator(
@@ -1453,9 +1457,10 @@ function verifiedJournal(value: unknown, requestId: string, authority: any): Jou
 }
 function parseJournal(value: unknown, expectedRequestId: string): Journal {
   const raw = inertRecord(value, "GitHub dispatch journal");
-  exact(raw, ["v", "requestId", "requestDigest", "reservationId", "cleanupReservationId", "allocationId", "effectDigest", "permitSnapshotDigest", "adapterContractDigest", "exactBytesDigest", "conflictReceiptDigest", "eventSequence", "priorJournalDigest", "phase", "providerWrites", "signerId", "signature"], "GitHub dispatch journal");
+  exact(raw, ["v", "requestId", "requestDigest", "reservationId", "cleanupReservationId", "allocationId", "effectDigest", "permitSnapshotDigest", "adapterContractDigest", "exactBytesDigest", "conflictReceiptDigest", "duplicateAttemptHeadDigest", "eventSequence", "priorJournalDigest", "phase", "providerWrites", "signerId", "signature"], "GitHub dispatch journal");
   const phases: readonly string[] = ["reserved", "budget-intent", "budget-consumed", "dispatched", "provider-send-intent", "provider-applied", "acknowledged", "conflict-publication-pending", "conflict", "cleanup-reserved", "cleanup-budget-consumed", "cleanup-dispatched", "cleanup-send-intent", "cleanup-applied", "cleanup-publication-pending", "cleanup-receipted", "cleanup-refused", "refused", "failed", "pending-reconciliation"];
   if (raw.v !== "reelier.github-certification-journal/v1" || raw.requestId !== expectedRequestId || !/^sha256:[0-9a-f]{64}$/.test(raw.requestDigest) || typeof raw.reservationId !== "string" || (raw.cleanupReservationId !== null && typeof raw.cleanupReservationId !== "string") || typeof raw.allocationId !== "string" || !/^sha256:[0-9a-f]{64}$/.test(raw.effectDigest) || !/^sha256:[0-9a-f]{64}$/.test(raw.permitSnapshotDigest) || raw.adapterContractDigest !== AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST || (raw.exactBytesDigest !== null && !/^sha256:[0-9a-f]{64}$/.test(raw.exactBytesDigest)) || (raw.conflictReceiptDigest !== null && !/^sha256:[0-9a-f]{64}$/.test(raw.conflictReceiptDigest)) || !Number.isSafeInteger(raw.eventSequence) || raw.eventSequence < 0 || (raw.priorJournalDigest !== null && !/^sha256:[0-9a-f]{64}$/.test(raw.priorJournalDigest)) || !phases.includes(raw.phase) || !Number.isSafeInteger(raw.providerWrites) || raw.providerWrites < 0 || typeof raw.signerId !== "string" || !raw.signature || raw.signature.alg !== "ed25519" || typeof raw.signature.sig !== "string" || (raw.phase === "conflict" && (raw.exactBytesDigest === null || raw.conflictReceiptDigest === null)) || (raw.phase === "conflict-publication-pending" && (raw.exactBytesDigest === null || raw.conflictReceiptDigest !== null)) || (!["conflict", "conflict-publication-pending"].includes(raw.phase) && (raw.exactBytesDigest !== null || raw.conflictReceiptDigest !== null))) throw new TypeError("GitHub dispatch journal is invalid");
+  if (raw.duplicateAttemptHeadDigest !== null && !/^sha256:[0-9a-f]{64}$/.test(raw.duplicateAttemptHeadDigest)) throw new TypeError("GitHub duplicate checkpoint digest is invalid");
   return Object.freeze(raw as Journal);
 }
 function journalBody(value: Journal) {
@@ -1471,6 +1476,7 @@ function journalBody(value: Journal) {
     adapterContractDigest: value.adapterContractDigest,
     exactBytesDigest: value.exactBytesDigest ?? null,
     conflictReceiptDigest: value.conflictReceiptDigest ?? null,
+    duplicateAttemptHeadDigest: value.duplicateAttemptHeadDigest ?? null,
     eventSequence: value.eventSequence,
     priorJournalDigest: value.priorJournalDigest,
     phase: value.phase,
@@ -1502,7 +1508,8 @@ function assertJournalTransition(prior: Journal, next: Journal) {
     failed: [],
     "pending-reconciliation": ["acknowledged"],
   };
-  if (!allowed[prior.phase].includes(next.phase)) throw new TypeError("GitHub dispatch journal phase transition is invalid");
+  const duplicateCheckpoint = prior.phase === next.phase && next.duplicateAttemptHeadDigest !== null && prior.duplicateAttemptHeadDigest !== next.duplicateAttemptHeadDigest;
+  if (!allowed[prior.phase].includes(next.phase) && !duplicateCheckpoint) throw new TypeError("GitHub dispatch journal phase transition is invalid");
 }
 async function withRequestLock<T>(root: string, requestId: string, operation: () => Promise<T>): Promise<T> {
   const lock = path.join(root, `${requestId}.lock`);
