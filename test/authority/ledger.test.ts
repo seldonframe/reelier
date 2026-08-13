@@ -41,6 +41,7 @@ test("prepared dispatch fault seam is separate from legacy dispatch transition p
 import * as hostAuthorityModule from "../../src/authority/host/fs-ledger.js";
 import { materializedHttpRequestDigest, type MaterializedHttpRequestProjectionV1 } from "../../src/authority/host/http-response-semantics.js";
 import { createPreparedDispatch, consumePreparedDispatch } from "../../src/authority/host/prepared-dispatch.js";
+import { createDispatchCoordinator } from "../../src/authority/host/dispatch.js";
 
 class FsAuthorityLedger extends RawFsAuthorityLedger {
   override async reserve(candidate: ReservationIntent) {
@@ -276,9 +277,14 @@ test("crash after durable dispatch but before send marker recovers ambiguous wit
   const preparedDescription = { v: "reelier.prepared-dispatch-description/v1" as const, routeDigest: digest("route"), materializedRequestDigest: materializedHttpRequestDigest(projection), projection, authorityGeneration: reservation.intent.authorityStateDigest, authorityExpiresAt: new Date(t0 + 60_000).toISOString(), absoluteDeadlineMs: 60_000, reservationId: reservation.reservationId, allocationId: "unbound" };
   const crashing = new RawFsAuthorityLedger(root, { now: () => t0, monotonicNow: () => 0, faultInjector: point => { if (point === "after-prepared-dispatch-transition") throw new Error("cut"); } });
   await assert.rejects(() => crashing.commitPreparedDispatch!({ reservationId: reservation.reservationId, allocationId: "unbound", expectedAuthorityGeneration: reservation.intent.authorityStateDigest, preparedDescription, absoluteDeadlineMs: 60_000 }), /cut/);
-  const recovered = await new RawFsAuthorityLedger(root, { now: () => t0, monotonicNow: () => 0 }).recover({ deferTerminal: true });
+  const restarted = new RawFsAuthorityLedger(root, { now: () => t0, monotonicNow: () => 0 });
+  const recovered = await restarted.recover();
   assert.equal(recovered.ok, true);
   if (recovered.ok) assert.equal(recovered.reservations[0]?.state, "ambiguous");
+  let sends = 0;
+  const coordinator = createDispatchCoordinator(restarted, { async dispatch() { sends++; throw new Error("recovery must not resend"); } });
+  assert.deepEqual(await coordinator.recover(), []);
+  assert.equal(sends, 0);
 }));
 
 test("stale authority generation refuses before the reservation becomes dispatched", { skip: process.platform !== "linux" }, () => withRoot(async root => {
