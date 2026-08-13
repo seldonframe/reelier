@@ -281,13 +281,13 @@ test("crash after durable dispatch but before send marker recovers ambiguous wit
   const crashing = new RawFsAuthorityLedger(root, { now: () => t0, monotonicNow: () => 0, faultInjector: point => { if (point === "after-prepared-dispatch-transition") throw new Error("cut"); } });
   await assert.rejects(() => crashing.commitPreparedDispatch!({ reservationId: reservation.reservationId, allocationId: "unbound", expectedAuthorityGeneration: reservation.intent.authorityStateDigest, preparedDescription, absoluteDeadlineMs: 60_000 }), /cut/);
   const restarted = new RawFsAuthorityLedger(root, { now: () => t0, monotonicNow: () => 0 });
-  const recovered = await restarted.recover();
-  assert.equal(recovered.ok, true);
-  if (recovered.ok) assert.equal(recovered.reservations[0]?.state, "ambiguous");
   let sends = 0;
   const coordinator = createDispatchCoordinator(restarted, { async dispatch() { sends++; throw new Error("recovery must not resend"); } });
   assert.deepEqual(await coordinator.recover(), []);
   assert.equal(sends, 0);
+  const recovered = await restarted.recover({ deferTerminal: true });
+  assert.equal(recovered.ok, true);
+  if (recovered.ok) assert.equal(recovered.reservations[0]?.state, "ambiguous", "coordinator recovery must transition markerless dispatched state safely");
 }));
 
 test("stale authority generation refuses before the reservation becomes dispatched", { skip: process.platform !== "linux" }, () => withRoot(async root => {
