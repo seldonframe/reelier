@@ -86,15 +86,15 @@ Full `npm test`: exit 1 on Windows after 463 seconds; verbatim result tail:
 
 The verbatim failure tail ends with `AuthorityCellLinuxRequiredError` from `local-runtime.test.js` and `receipts.test.js`: Windows is supported as a client, while Authority Cell hosting requires Linux. This is reported as a failure, not a pass. Hosted Ubuntu remains the authority-host correctness gate.
 
-Local pack surface verification: exit 0. The final pack was created once in a fresh OS temp directory, installed by the packed surface harness, contained 497 files, and had zero paths matching obsolete Windows FIFO/native helpers. Both generated Task 5 temp tarball directories are outside the repository; no Task 5 tarball exists in the worktree. The pre-existing `.tmp-pack/reelier-0.32.0.tgz` is unrelated dirty state and is byte-identical below.
+Local pack surface verification: exit 0. The final pack was created once in a fresh OS temp directory, installed by the packed surface harness, contained 497 files, and had zero paths matching obsolete Windows FIFO/native helpers. Both generated Task 5 temp tarball directories were deleted after verification (`A_EXISTS=False`, `B_EXISTS=False`); no Task 5 tarball exists in the worktree or its temporary verification locations. The pre-existing `.tmp-pack/reelier-0.32.0.tgz` is unrelated dirty state and is byte-identical below.
 
 `git diff --check 55ff795..6d5f08f` and `git diff --check`: exit 0.
 
 ## Audit
 
 - `task5Base`: `55ff79566bdcd6b88ba47bbf36996236fd6c7b1b`
-- `task5Reviewed` implementation snapshot before this report commit: `6d5f08fe43dadbb315e53ec47081c743b3884d46`
-- The report commit necessarily follows that reviewed implementation snapshot. The final branch HEAD is recorded in the commit history; reviewers should diff `task5Base..HEAD`, which contains exactly the allowlist at the top of this report.
+- `task5Reviewed` current review snapshot before this evidence-finalization commit: `22e5e2bdaedf17e39b3071ca0d157779026ecded`
+- `task5Reviewed` names the literal complete code-and-report snapshot reviewed by the final audits below. This evidence-finalization commit changes only this report. Reviewers should diff `task5Base..HEAD`, which contains exactly the allowlist at the top of this report.
 
 Literal pre-existing dirty-path snapshot, before and after (path, before SHA-256, after SHA-256, equal):
 
@@ -117,7 +117,7 @@ rust-toolchain.toml  b921a5cf16cb5b9ffde3d3756e34d859051e665b05ad89df5afda3c6581
 
 Snapshot equality: `true`. All remain unstaged.
 
-Literal scope audit for `git diff --name-only 55ff795..6d5f08f`:
+Literal scope audit for `git diff --name-only 55ff795..22e5e2b`:
 
 ```text
 .github/workflows/ci.yml
