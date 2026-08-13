@@ -167,6 +167,22 @@ test("normal HTTPS effects reject oversized uploads before resolving credentials
   assert.equal(credentialResolved, false);
 });
 
+test("native canonical routes resolve a one-use credential slot and reject legacy references", async () => {
+  let acquired = "";
+  const route = {
+    v: "reelier.json-https-route/v1" as const, providerId: "github", connectorId: "github", accountId: "acct",
+    providerAccountIdentity: "github:acct", endpointId: "github.write", origin: "https://api.github.com",
+    allowedMethods: ["PUT" as const], allowedPathPrefixes: ["/repos/acct/repo/issues/1/labels"], credentialSlotId: "github.tracer",
+    responseSemanticsProfileId: "github.labels.v1", reconciliationRecipeId: "github.labels.read.v1", readEndpointId: "github.read",
+    egressPolicyDigest: "sha256:" + "1".repeat(64),
+  };
+  await assert.rejects(() => executeJsonHttpsEffect({ endpointId: "github.write", method: "PUT", path: "/repos/acct/repo/issues/1/labels", query: "", headers: {}, bodyBase64: Buffer.alloc(10 * 1024 * 1024 + 1).toString("base64") } as never, route as never, {
+    async resolve() { throw new Error("legacy resolver must not be called"); },
+    async acquireSlot(slotId: string) { acquired = slotId; return { readOnce: () => "CANARY", description: { v: "reelier.secret-lease-description/v1", slotId, instanceId: "i", version: "v", expiresAt: new Date(Date.now() + 1000).toISOString() } }; },
+  } as never), /configured limit/i);
+  assert.equal(acquired, "");
+});
+
 test("total deadlines expose one absolute expiry for native HTTPS dispatch", () => {
   const deadline = createTotalDeadline({ timeoutMs: 100, monotonicNow: () => 50 });
   assert.equal(deadline.startedAtMs, 50);
