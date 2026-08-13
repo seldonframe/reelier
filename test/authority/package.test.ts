@@ -117,7 +117,10 @@ test("matrix verifies public factory evidence through a clean installed consumer
   assert.match(harness, /tarballSha256/);
   assert.match(harness, /AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST/);
   assert.match(harness, /path\.resolve\(line\.graphPath\)/);
-  assert.match(harness, /Object\.keys\(summary\.reviewerPacket\)/);
+  assert.match(harness, /const reviewerPacket =/);
+  assert.match(harness, /assert\.deepEqual\(summary, .*reviewerPacket/);
+  assert.match(harness, /factory-journey-summary\.schema\.json/);
+  assert.match(harness, /scanCanary\(tarball\).*scanCanary\(evidence\)/s);
   assert.match(testJob, /factory-evidence-metadata\.json/);
   assert.match(testJob, /m\.workflowSourceSha.*github\.sha/);
 });
