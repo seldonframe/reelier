@@ -32,3 +32,24 @@ test("canonical HTTPS dispatch joins routes to opaque slot leases, never legacy 
   assert.equal(result.kind, "definitive-failure");
   assert.equal(acquired, "");
 });
+
+test("canonical HTTPS dispatch acquires and consumes the slot before transport, with no canary in result", async () => {
+  const route = {
+    v: "reelier.json-https-route/v1" as const, providerId: "github", connectorId: "github", accountId: "acct",
+    providerAccountIdentity: "github:acct", endpointId: "github.write", origin: "https://127.0.0.1",
+    allowedMethods: ["PUT" as const], allowedPathPrefixes: ["/labels"], credentialSlotId: "github.tracer",
+    responseSemanticsProfileId: "github.labels.v1", reconciliationRecipeId: "github.labels.read.v1", readEndpointId: "github.read",
+    egressPolicyDigest: "sha256:" + "1".repeat(64),
+  };
+  const read = { ...route, endpointId: "github.read", allowedMethods: ["GET" as const] };
+  let acquired = "";
+  let consumed = false;
+  const adapter = createJsonHttpsDispatchAdapter({ endpoints: [], routes: [route, read], secrets: {
+    async resolve() { throw new Error("legacy resolver must not be used"); },
+    async acquireSlot(slotId: string) { acquired = slotId; return { readOnce: () => { consumed = true; return "CANARY_SLOT_VALUE"; }, description: { v: "reelier.secret-lease-description/v1", slotId, instanceId: "i", version: "v", expiresAt: new Date(Date.now() + 1000).toISOString() } }; },
+  } });
+  const result = await adapter.dispatch({ reservation: { reservationId: "r", state: "reserved", intent: { effectDigest: "sha256:" + "1".repeat(64) } }, effect: { endpointId: "github.write", method: "PUT", path: "/labels", query: "", headers: {}, bodyBase64: Buffer.from("{}").toString("base64") }, effectCanonicalBase64: "e30=", effectDigest: "sha256:" + "1".repeat(64) });
+  assert.equal(acquired, "github.tracer");
+  assert.equal(consumed, true);
+  assert.equal(JSON.stringify(result).includes("CANARY_SLOT_VALUE"), false);
+});
