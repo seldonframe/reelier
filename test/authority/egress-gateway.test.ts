@@ -4,6 +4,10 @@ import { connect as netConnect } from "node:net";
 import { PassThrough } from "node:stream";
 import { createAuthorityEgressGateway, parseAuthorityEgressGatewayConfig } from "../../src/authority/host/egress-gateway.js";
 import { assertAllPublicAddresses } from "../../src/authority/client/ip.js";
+import { __testSetAuthorityCellHostPlatform } from "../../src/authority/host/platform.js";
+
+const restorePlatform = __testSetAuthorityCellHostPlatform("linux");
+process.once("exit", restorePlatform);
 
 const config = {
   v: "reelier.egress-gateway-config/v1",
