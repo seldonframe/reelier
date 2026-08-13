@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, open, rename, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createSecretResolver, describeSecretLease } from "../../src/authority/host/secret-resolver.js";
@@ -82,6 +82,44 @@ test("credential slots reject linked and non-directory roots", async () => {
   await writeFile(fileRoot, "not a directory");
   const resolver = createSecretResolver({ fileRoot: fileRoot, slots: { token: { kind: "file", path: "token" } }, env: Object.freeze({}) });
   await assert.rejects(() => resolver.acquireSlot("token"), /unavailable|root/i);
+});
+
+test("credential slot rejects a file replaced between open/read and post-stat", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "reelier-secret-slot-"));
+  const tokenPath = path.join(root, "token");
+  const replacementPath = path.join(root, "replacement");
+  const originalPath = path.join(root, "original");
+  await writeFile(tokenPath, "original");
+  await writeFile(replacementPath, "newval!!");
+  const probe = await open(tokenPath, "r");
+  const handlePrototype = Object.getPrototypeOf(probe) as { readFile: (...args: never[]) => Promise<Buffer> };
+  await probe.close();
+  const originalReadFile = handlePrototype.readFile;
+  let replaced = false;
+  handlePrototype.readFile = async function(this: unknown, ...args: never[]) {
+    const bytes = await originalReadFile.apply(this, args);
+    await rename(tokenPath, originalPath);
+    await rename(replacementPath, tokenPath);
+    replaced = true;
+    return bytes;
+  };
+  try {
+    const resolver = createSecretResolver({ fileRoot: root, slots: { token: { kind: "file", path: "token" } }, env: Object.freeze({}) });
+    await assert.rejects(() => resolver.acquireSlot("token"), /unavailable|changed/i);
+    assert.equal(replaced, true);
+  } finally {
+    handlePrototype.readFile = originalReadFile;
+  }
+});
+
+test("credential slot refuses a symlinked file root", async () => {
+  const parent = await mkdtemp(path.join(tmpdir(), "reelier-secret-slot-"));
+  const target = await mkdtemp(path.join(parent, "target-"));
+  const linkedRoot = path.join(parent, "linked-root");
+  try { await symlink(target, linkedRoot, "junction"); } catch { return; }
+  await writeFile(path.join(target, "token"), "value");
+  const resolver = createSecretResolver({ fileRoot: linkedRoot, slots: { token: { kind: "file", path: "token" } }, env: Object.freeze({}) });
+  await assert.rejects(() => resolver.acquireSlot("token"), /unavailable|root|link/i);
 });
 
 test("credential env slots reject empty and NUL values", async () => {
