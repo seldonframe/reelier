@@ -1,10 +1,12 @@
 import { createServer, type Server } from "node:http";
 import { lookup as dnsLookup } from "node:dns/promises";
-import { connect as netConnect, isIP, type Socket } from "node:net";
+import { connect as netConnect, type Socket } from "node:net";
 import { timingSafeEqual } from "node:crypto";
 import type { Duplex } from "node:stream";
 import type { SecretResolver } from "./secret-resolver.js";
 import { assertLinuxAuthorityCellHost } from "./platform.js";
+import { assertAllPublicAddresses } from "../client/ip.js";
+import { createTotalDeadline } from "../net/deadline.js";
 
 const DNS = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
 const SECRET_REF = /^(?:env:[A-Za-z_][A-Za-z0-9_]{0,127}|file:.+)$/;
@@ -25,6 +27,8 @@ export interface AuthorityEgressGatewayOptions {
   readonly secrets: SecretResolver;
   readonly resolve?: (hostname: string) => Promise<readonly Readonly<{ address: string; family: number }>[]>;
   readonly dial?: (input: Readonly<{ address: string; port: number }>) => Promise<Duplex>;
+  readonly timeoutMs?: number;
+  readonly monotonicNow?: () => number;
 }
 
 export function parseAuthorityEgressGatewayConfig(value: unknown): AuthorityEgressGatewayConfigV1 {
@@ -60,15 +64,24 @@ export function createAuthorityEgressGateway(options: AuthorityEgressGatewayOpti
           if (!client.destroyed) client.end(`HTTP/1.1 ${status} ${label}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
         };
         try {
+          const deadline = createTotalDeadline({ timeoutMs: options.timeoutMs ?? 15_000, monotonicNow: options.monotonicNow });
+          let upstream: Duplex | undefined;
+          const timer = setTimeout(() => { client.destroy(); upstream?.destroy(); }, deadline.remainingMs("credential"));
+          timer.unref(); client.once("close", () => clearTimeout(timer));
+          deadline.remainingMs("credential");
           const expected = await options.secrets.resolve(config.bearerRef);
+          deadline.remainingMs("credential");
           const authorization = request.headers["proxy-authorization"];
           const supplied = typeof authorization === "string" && authorization.startsWith("Bearer ") ? authorization.slice(7) : "";
           if (!constantTimeEqual(supplied, expected)) { refuse(407); return; }
           const target = parseConnectTarget(request.url);
           if (!config.allowedHosts.includes(target.hostname)) { refuse(403); return; }
+          deadline.remainingMs("dns");
           const addresses = await resolve(target.hostname);
-          if (!addresses.length || addresses.some(item => !isPublicAddress(item.address))) { refuse(502); return; }
-          const upstream = await dial({ address: addresses[0].address, port: 443 });
+          let pinned: readonly Readonly<{ address: string; family: 4 | 6 }>[];
+          try { pinned = assertAllPublicAddresses(addresses.map(item => item.address)); } catch { refuse(502); return; }
+          deadline.remainingMs("connect");
+          upstream = await dial({ address: pinned[0]!.address, port: 443 });
           let opened = false;
           const open = () => {
             if (opened || client.destroyed) return;
@@ -106,15 +119,6 @@ function parseConnectTarget(value: string | undefined): Readonly<{ hostname: str
 function constantTimeEqual(left: string, right: string): boolean {
   const a = Buffer.from(left); const b = Buffer.from(right);
   return a.length === b.length && a.length > 0 && timingSafeEqual(a, b);
-}
-
-function isPublicAddress(address: string): boolean {
-  if (isIP(address) === 4) {
-    const [a, b] = address.split(".").map(Number);
-    return !(a === 0 || a === 10 || a === 127 || a >= 224 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168));
-  }
-  const normalized = address.toLowerCase();
-  return isIP(address) === 6 && !(normalized === "::" || normalized === "::1" || normalized.startsWith("fc") || normalized.startsWith("fd") || /^fe[89ab]/.test(normalized));
 }
 
 function dialTcp(input: Readonly<{ address: string; port: number }>): Promise<Socket> {
