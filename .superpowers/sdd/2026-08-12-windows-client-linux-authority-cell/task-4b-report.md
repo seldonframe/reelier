@@ -1,6 +1,7 @@
 Files changed
 
 - `.github/workflows/ci.yml`
+- `README.md`
 - `CHANGELOG.md`
 - `src/authority/host/index.ts`
 - `test/authority/package.test.ts`
@@ -153,3 +154,77 @@ Public API claim: `reelier/authority/host` no longer owns `FsAuthorityLedger`; i
 - `windows-native` RED command: `node test/packed/authority-host-boundary.mjs --tarball <absolute-path> --mode windows-native` failed with `windows-native composition-root no-access proof not implemented`. GREEN rerun exited 0 after asserting all eight installed-tarball roots reject with `AUTHORITY_CELL_LINUX_REQUIRED`, dependency accesses `0`, callback invocations `0`, and every supplied temporary root empty.
 - The generated root `reelier-0.32.1.tgz` was verified as this task's just-packed 894960-byte artifact with SHA-256 `8c7da130074f27a43940263157e17e3d7e103590080850349389c196a151fdd3` and removed. `.tmp-pack` was untouched.
 - Hosted Ubuntu status remains `absent` locally. No Ubuntu full-suite or N100 green claim is made.
+
+## Merge review fix round 1 (2026-08-13)
+
+### Files changed
+
+- `README.md`
+- `test/authority/package.test.ts`
+- `.superpowers/sdd/2026-08-12-windows-client-linux-authority-cell/task-4b-report.md`
+
+### What changed per file
+
+- `README.md`: replaced the unsupported merged-tree `2875 passing` claim with the explicit non-numeric `hosted verification pending` badge state. No merged Ubuntu count is claimed.
+- `test/authority/package.test.ts`: retained the exact prerequisite-only assertion for every ordinary downstream matrix step, while recognizing the badge step's conjunction and independently requiring the pack-success predicate, the Linux-runner predicate, and `&&`. Existing job dependency, `always()`, explicit failure propagation, step ordering, and compile-before-`dist-test` checks remain intact.
+- `.superpowers/sdd/2026-08-12-windows-client-linux-authority-cell/task-4b-report.md`: recorded the merge-review correction, focused test evidence, and hosted-evidence limitation.
+
+### Deviations from plan and why
+
+- None. The workflow itself was not changed in this fix round; its already-correct combined guard remains intact. No numeric badge value was inferred from local Windows evidence.
+
+### Test results (verbatim tail)
+
+RED before the test compatibility fix: `node --test --test-concurrency=1 dist-test/test/authority/package.test.js` exited `1` because the old assertion required the exact prerequisite-only guard on the badge step:
+
+```text
+ℹ tests 4
+ℹ suites 0
+ℹ pass 3
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1748.6376
+AssertionError [ERR_ASSERTION]: - name: Check README tests badge has a prerequisite success guard
+```
+
+Final verification command: `npx tsc -p tsconfig.test.json --pretty false`, then the focused package and badge suites, then `git diff --check -- README.md test/authority/package.test.ts`; all exited `0`. Package-suite tail:
+
+```text
+ℹ tests 4
+ℹ suites 0
+ℹ pass 4
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 522.4707
+```
+
+Badge-suite tail:
+
+```text
+ℹ tests 22
+ℹ suites 0
+ℹ pass 22
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 79.7643
+```
+
+Controlled canonical-style diagnostic used the unmistakably synthetic count `314159`; it printed the TAP total and exited `1` with the pending README state, proving the hosted badge step will intentionally fail rather than certify a count:
+
+```text
+# tests 314159
+# pass 314159
+# fail 0
+{"ok":false,"actualPass":314159,"badgeCount":null,"message":"no tests badge found in README.md"}
+```
+
+### Open risks
+
+- The canonical merged Ubuntu pass count remains absent locally. The next hosted Ubuntu full-suite run must supply the actual `# pass` total before the pending badge can be replaced with a numeric claim.
+- The controlled diagnostic proves failure disposition and preservation of the parsed total; `314159` is a fixture, not suite evidence.

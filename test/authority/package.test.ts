@@ -31,14 +31,26 @@ test("CI keeps both required matrix contexts failing when authority pack prerequ
   const prerequisite = "if: ${{ needs.pack-authority-host-boundary.result == 'success' }}";
   const enforcement = testJob.indexOf("- name: Enforce authority pack prerequisite");
   assert.ok(enforcement >= 0);
-  for (const step of ["actions/checkout@v4", "actions/setup-node@v4", "- run: npm ci", "- name: Clean build output", "- run: npm run build", "- name: Compile test checkout", "actions/download-artifact@v4", "- name: Verify downloaded authority pack provenance", "- name: Verify downloaded package boundary on native OS", "- name: Run native authority platform evidence", "- name: Run supported tests", "- name: Check README tests badge"]) {
+  for (const step of ["actions/checkout@v4", "actions/setup-node@v4", "- run: npm ci", "- name: Clean build output", "- run: npm run build", "- name: Compile test checkout", "actions/download-artifact@v4", "- name: Verify downloaded authority pack provenance", "- name: Verify downloaded package boundary on native OS", "- name: Run native authority platform evidence", "- name: Run supported tests"]) {
     const position = testJob.indexOf(step, enforcement);
     assert.ok(position > enforcement, step);
     assert.ok(testJob.slice(position, position + 240).includes(prerequisite), `${step} has a prerequisite success guard`);
   }
+  const badgeStep = testJob.slice(testJob.indexOf("- name: Check README tests badge", enforcement));
+  assert.match(badgeStep, /if: \$\{\{[^\r\n]*needs\.pack-authority-host-boundary\.result == 'success'/);
+  assert.match(badgeStep, /if: \$\{\{[^\r\n]*runner\.os == 'Linux'/);
+  assert.match(badgeStep, /if: \$\{\{[^\r\n]*&&[^\r\n]*\}\}/);
   const downstreamSteps = testJob.slice(testJob.indexOf("      - uses: actions/checkout@v4")).split(/(?=^      - )/m).filter(block => block.startsWith("      - "));
   assert.ok(downstreamSteps.length >= 10, "all downstream matrix steps are parsed");
-  for (const block of downstreamSteps) assert.ok(block.includes(prerequisite), `downstream step is prerequisite-guarded: ${block.split(/\r?\n/, 1)[0]}`);
+  for (const block of downstreamSteps) {
+    if (block.startsWith("      - name: Check README tests badge")) {
+      assert.match(block, /needs\.pack-authority-host-boundary\.result == 'success'/);
+      assert.match(block, /runner\.os == 'Linux'/);
+      assert.match(block, /&&/);
+    } else {
+      assert.ok(block.includes(prerequisite), `downstream step is prerequisite-guarded: ${block.split(/\r?\n/, 1)[0]}`);
+    }
+  }
   const compilePosition = testJob.indexOf("- name: Compile test checkout");
   const firstDistTestPosition = testJob.indexOf("dist-test/");
   assert.ok(compilePosition > 0 && compilePosition < firstDistTestPosition, "test checkout compiles before the first dist-test invocation");
