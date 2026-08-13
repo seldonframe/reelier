@@ -31,7 +31,7 @@ export function createJsonHttpsDispatchAdapter(options: JsonHttpsDispatchAdapter
         const response = await executeJsonHttpsEffect(state.effect as never, endpoint, options.secrets, { timeoutMs: options.timeoutMs, maxResponseBytes: options.maxResponseBytes });
         const resultDigest = authorityDigest({ v: "reelier.https-response/v1", endpointId, status: response.status, headers: response.headers, bodyDigest: authorityDigest(response.body.toString("base64")) });
         const profile = parseHttpResponseSemanticsProfileV1({ v: "reelier.http-response-semantics/v1", profileId: route && "responseSemanticsProfileId" in route ? route.responseSemanticsProfileId : "legacy.2xx", acknowledgedStatuses: [200, 201, 202, 203, 204, 205, 206, 207, 208, 226] });
-        const kind = classifyHttpResponse(profile, { kind: "response", status: response.status });
+        const kind = malformedJsonResponse(response) ? "ambiguous" as const : classifyHttpResponse(profile, { kind: "response", status: response.status });
         return Object.freeze({ kind, resultDigest, providerStatus: response.status, responseDigest: resultDigest, ...(response.materializedRequestDigest ? { materializedRequestDigest: response.materializedRequestDigest } : {}) });
       } catch (error) {
         return Object.freeze({ kind: "ambiguous" as const, resultDigest: authorityDigest({ v: "reelier.https-dispatch/v1", endpointId, status: "transport-error", error: error instanceof Error ? error.name : "Error" }) });
@@ -48,4 +48,10 @@ export function createJsonHttpsDispatchAdapter(options: JsonHttpsDispatchAdapter
       return prepareJsonHttpsEffect(state.effect as never, endpoint, options.secrets, { timeoutMs: options.timeoutMs, maxResponseBytes: options.maxResponseBytes, monotonicNow: options.monotonicNow, reservationId: state.reservation.reservationId, allocationId: context?.allocationId ?? "unbound", authorityGeneration, authorityExpiresAt: expiresAt });
     },
   });
+}
+
+export function malformedJsonResponse(response: Readonly<{ headers: Readonly<Record<string, string>>; body: Buffer }>): boolean {
+  const contentType = Object.entries(response.headers).find(([name]) => name.toLowerCase() === "content-type")?.[1]?.toLowerCase() ?? "";
+  if (!contentType.includes("json") || response.body.length === 0) return false;
+  try { JSON.parse(response.body.toString("utf8")); return false; } catch { return true; }
 }
