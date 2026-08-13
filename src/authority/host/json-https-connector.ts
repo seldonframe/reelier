@@ -44,7 +44,8 @@ export function createJsonHttpsDispatchAdapter(options: JsonHttpsDispatchAdapter
       if (!endpoint) throw new Error("endpoint-not-configured");
       const context = state.reservation.intent.executionContext;
       const expiresAt = typeof (state.reservation.intent as Record<string, unknown>).expiresAt === "string" ? String((state.reservation.intent as Record<string, unknown>).expiresAt) : new Date(Date.now() + (options.timeoutMs ?? 15_000)).toISOString();
-      return prepareJsonHttpsEffect(state.effect as never, endpoint, options.secrets, { timeoutMs: options.timeoutMs, maxResponseBytes: options.maxResponseBytes, monotonicNow: options.monotonicNow, reservationId: state.reservation.reservationId, allocationId: context?.allocationId ?? "unbound", authorityGeneration: "legacy", authorityExpiresAt: expiresAt });
+      const authorityGeneration = typeof (state.reservation.intent as Record<string, unknown>).authorityStateDigest === "string" ? String((state.reservation.intent as Record<string, unknown>).authorityStateDigest) : "legacy";
+      return prepareJsonHttpsEffect(state.effect as never, endpoint, options.secrets, { timeoutMs: options.timeoutMs, maxResponseBytes: options.maxResponseBytes, monotonicNow: options.monotonicNow, reservationId: state.reservation.reservationId, allocationId: context?.allocationId ?? "unbound", authorityGeneration, authorityExpiresAt: expiresAt });
     },
   });
 }

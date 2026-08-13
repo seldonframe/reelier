@@ -169,6 +169,7 @@ export type LedgerFaultPoint = (typeof ledgerFaultPoints)[number];
 export interface FsAuthorityLedgerOptions {
   readonly now?: () => number;
   readonly monotonicNow?: () => number;
+  readonly authorityGeneration?: () => string;
   // The parameter type names the frozen public ABI; at runtime the injector also receives the
   // 13 module-private internal boundary names (see `ledgerInternalBoundaries`) — longstanding
   // behavior. Treat unknown names as internal boundaries, never as errors; an exhaustive
@@ -439,12 +440,14 @@ export class FsAuthorityLedger implements AuthorityLedger {
   private refusalOnlyK1ClassificationActive=false;
   private lockTail:Promise<void>=Promise.resolve();
   private readonly monotonicClock: () => number;
+  private readonly authorityGeneration: (() => string) | undefined;
 
   constructor(root: string, options: FsAuthorityLedgerOptions = {}) {
     const resolved = path.resolve(root);
     const internalOptions=options as InternalFsAuthorityLedgerOptions,injected=Object.prototype.hasOwnProperty.call(internalOptions,__testK1OperationFenceRuntimeOption),injectedRuntime=injected?parseK1OperationFenceRuntime(internalOptions[__testK1OperationFenceRuntimeOption]):undefined;
     this.options = { now: options.now ?? Date.now, faultInjector: options.faultInjector, lockTimeoutMs: options.lockTimeoutMs ?? 30_000 };
     this.monotonicClock = options.monotonicNow ?? monotonicNow;
+    this.authorityGeneration = options.authorityGeneration;
     this.admissionClock=internalOptions[__testAdmissionClockOption]??(()=>process.hrtime.bigint());
     // Assigned before the invalid-fence early return below, so the field is initialised on every
     // construction path. Only the two exact literals are recognised ({mode:"legacy"} disables,
@@ -579,6 +582,8 @@ export class FsAuthorityLedger implements AuthorityLedger {
       const context = reservation.intent.executionContext;
       if ((context?.allocationId ?? input.allocationId) !== input.allocationId) throw new Error("prepared dispatch allocation mismatch");
       if (input.preparedDescription.authorityGeneration !== input.expectedAuthorityGeneration || input.preparedDescription.reservationId !== input.reservationId || input.preparedDescription.allocationId !== input.allocationId) throw new Error("prepared dispatch authority binding mismatch");
+      const currentAuthorityGeneration = this.authorityGeneration?.() ?? reservation.intent.authorityStateDigest;
+      if (input.expectedAuthorityGeneration !== currentAuthorityGeneration) throw new Error("prepared dispatch authority generation is stale");
       if (this.monotonicClock() >= input.absoluteDeadlineMs) throw new Error("prepared dispatch deadline expired");
       if (this.options.now() >= Date.parse(input.preparedDescription.authorityExpiresAt)) throw new Error("prepared dispatch authority expired");
       const now = this.options.now();
