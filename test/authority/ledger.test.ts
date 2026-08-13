@@ -34,6 +34,7 @@ import {
 } from "../../src/authority/host/fs-ledger.js";
 import * as hostAuthorityModule from "../../src/authority/host/fs-ledger.js";
 import { materializedHttpRequestDigest, type MaterializedHttpRequestProjectionV1 } from "../../src/authority/host/http-response-semantics.js";
+import { createPreparedDispatch, consumePreparedDispatch } from "../../src/authority/host/prepared-dispatch.js";
 
 class FsAuthorityLedger extends RawFsAuthorityLedger {
   override async reserve(candidate: ReservationIntent) {
@@ -250,6 +251,8 @@ test("prepared commit durably marks send-started and recovery never reopens it",
   const projection: MaterializedHttpRequestProjectionV1 = { v: "reelier.materialized-http-request/v1", method: "PUT", origin: "https://api.github.com", normalizedPath: "/repos/a", normalizedQuery: "", reviewedHeaders: {}, bodyDigest: digest("1") };
   const preparedDescription = { v: "reelier.prepared-dispatch-description/v1" as const, routeDigest: digest("route"), materializedRequestDigest: materializedHttpRequestDigest(projection), projection, authorityGeneration: reservation.intent.authorityStateDigest, authorityExpiresAt: new Date(t0 + 60_000).toISOString(), absoluteDeadlineMs: 60_000, reservationId: reservation.reservationId, allocationId: "unbound" };
   const lease = await ledger.commitPreparedDispatch!({ reservationId: reservation.reservationId, allocationId: "unbound", expectedAuthorityGeneration: reservation.intent.authorityStateDigest, preparedDescription, absoluteDeadlineMs: 60_000 });
+  const prepared = createPreparedDispatch({ description: preparedDescription, monotonicNow: () => 0, wallClockNow: () => t0, send: async () => ({ kind: "acknowledged" as const, resultDigest: digest("a") }) });
+  await consumePreparedDispatch(prepared, lease);
   assert.ok(lease);
   const committed = await ledger.getReservation(reservation.reservationId);
   assert.equal(committed?.state, "dispatched");
