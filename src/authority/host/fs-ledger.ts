@@ -446,7 +446,9 @@ export class FsAuthorityLedger implements AuthorityLedger {
     const resolved = path.resolve(root);
     const internalOptions=options as InternalFsAuthorityLedgerOptions,injected=Object.prototype.hasOwnProperty.call(internalOptions,__testK1OperationFenceRuntimeOption),injectedRuntime=injected?parseK1OperationFenceRuntime(internalOptions[__testK1OperationFenceRuntimeOption]):undefined;
     this.options = { now: options.now ?? Date.now, faultInjector: options.faultInjector, lockTimeoutMs: options.lockTimeoutMs ?? 30_000 };
-    this.monotonicClock = options.monotonicNow ?? monotonicNow;
+    // Keep the prepared transport deadline on the same process monotonic origin as
+    // createTotalDeadline (performance.now), unless the host explicitly injects one clock.
+    this.monotonicClock = options.monotonicNow ?? (() => performance.now());
     this.authorityGeneration = options.authorityGeneration;
     this.admissionClock=internalOptions[__testAdmissionClockOption]??(()=>process.hrtime.bigint());
     // Assigned before the invalid-fence early return below, so the field is initialised on every
