@@ -36,16 +36,21 @@ function assertNoEnvironmentOverrides(environment) {
   if (environment !== undefined && Object.keys(environment).length > 0) throw new Error("environment overrides are not supported");
 }
 
-function resolveClosedCommand(command, args) {
-  if (command === "node") return { command: process.execPath, args: args.map((argument) => argument.startsWith("scripts/") ? resolve(REPOSITORY_ROOT, argument) : argument) };
+function resolveClosedCommand(command, args, exists) {
+  if (!exists(process.execPath)) throw new Error("local preflight unavailable");
+  if (command === "node") {
+    const resolvedArgs = args.map((argument) => argument.startsWith("scripts/") ? resolve(REPOSITORY_ROOT, argument) : argument);
+    if (!exists(resolvedArgs[0])) throw new Error("local preflight unavailable");
+    return { command: process.execPath, args: resolvedArgs };
+  }
   if (command === "typescript") {
-    if (!existsSync(TYPESCRIPT_ENTRYPOINT)) throw new Error("local TypeScript unavailable");
+    if (!exists(TYPESCRIPT_ENTRYPOINT)) throw new Error("local preflight unavailable");
     return {
       command: process.execPath,
       args: [TYPESCRIPT_ENTRYPOINT, ...args.map((argument) => argument.startsWith("tsconfig") ? resolve(REPOSITORY_ROOT, argument) : argument)],
     };
   }
-  throw new Error("invalid preflight command");
+  throw new Error("local preflight unavailable");
 }
 
 export function runAccelerationPreflight({
@@ -55,27 +60,30 @@ export function runAccelerationPreflight({
   args = [],
   cleanLinux = false,
   environment,
+  exists = existsSync,
 }) {
   if (!Object.hasOwn(PREFLIGHT_PROFILES, profile)) throw new Error("unknown profile");
   if (args.length > 0) throw new Error("extra arguments are not supported");
   if (cleanLinux && platform !== "linux") throw new Error("--clean-linux requires Linux");
   assertNoEnvironmentOverrides(environment);
 
-  const results = PREFLIGHT_PROFILES[profile].map(({ command, args: commandArgs }, index) => {
+  const resolvedCommands = PREFLIGHT_PROFILES[profile].map(({ command, args: commandArgs }) => resolveClosedCommand(command, commandArgs, exists));
+  const results = [];
+  for (const [index, closedCommand] of resolvedCommands.entries()) {
     const startedAt = Date.now();
-    const closedCommand = resolveClosedCommand(command, commandArgs);
     let outcome;
     try {
-      outcome = spawn(closedCommand.command, closedCommand.args, { shell: false, stdio: "pipe", env: CONTROLLED_CHILD_ENV });
+      outcome = spawn(closedCommand.command, closedCommand.args, { shell: false, stdio: "pipe", env: CONTROLLED_CHILD_ENV, cwd: REPOSITORY_ROOT });
     } catch {
       outcome = { status: null };
     }
-    return Object.freeze({
+    results.push(Object.freeze({
       commandId: `${profile}:${index + 1}`,
       exitCode: outcome.status ?? null,
       durationMs: Date.now() - startedAt,
-    });
-  });
+    }));
+    if (outcome.status !== 0) break;
+  }
 
   return Object.freeze({ evidenceClass: "preflight", commands: Object.freeze(results) });
 }
