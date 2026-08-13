@@ -33,6 +33,7 @@ import {
   __testPrepHousekeeperRuntimeOption,
 } from "../../src/authority/host/fs-ledger.js";
 import * as hostAuthorityModule from "../../src/authority/host/fs-ledger.js";
+import { materializedHttpRequestDigest, type MaterializedHttpRequestProjectionV1 } from "../../src/authority/host/http-response-semantics.js";
 
 class FsAuthorityLedger extends RawFsAuthorityLedger {
   override async reserve(candidate: ReservationIntent) {
@@ -242,6 +243,21 @@ async function snapshotDurableSubtrees(root:string,subtrees:readonly string[]):P
 async function snapshotRootArtifacts(root:string):Promise<ReadonlyArray<Readonly<{name:string;type:"directory"|"file";bytes?:string}>>>{const snapshot:Array<Readonly<{name:string;type:"directory"|"file";bytes?:string}>>=[];const walk=async(directory:string,relative:string):Promise<void>=>{for(const entry of (await readdir(directory,{withFileTypes:true})).sort((left,right)=>left.name.localeCompare(right.name))){const child=path.join(directory,entry.name),name=path.posix.join(relative,entry.name);if(entry.isDirectory()){snapshot.push({name,type:"directory"});await walk(child,name);}else{assert.equal(entry.isFile(),true,`root snapshot contains only regular files: ${name}`);snapshot.push({name,type:"file",bytes:(await readFile(child)).toString("base64")});}}};await walk(root,"");return snapshot;}
 
 async function commitRawBoundIntent(root:string):Promise<Readonly<{candidate:ReservationIntent;reservation:ReservationSnapshot}>>{const candidate=intent(),ledger=new RawFsAuthorityLedger(root,{now:()=>t0}),request=JSON.parse(Buffer.from(candidate.canonicalRequestBytes).toString("utf8")),authenticated=authenticateOutcomeRequest({tenant:candidate.tenant,requester:candidate.requester,definitionAlias:candidate.definitionAlias,request}),binding=await ledger.bindIngress(authenticated);assert.equal(binding.ok,true);if(!binding.ok)throw new Error("fixture ingress bind refused");const boundCandidate:ReservationIntent={...candidate,ingressClaimDigest:binding.ingressClaimDigest},created=await ledger.reserve(boundCandidate);assert.equal(created.ok,true);if(!created.ok)throw new Error("fixture reservation refused");return {candidate:boundCandidate,reservation:created.reservation};}
+
+test("prepared commit durably marks send-started and recovery never reopens it", { skip: process.platform !== "linux" }, () => withRoot(async root => {
+  const ledger = new RawFsAuthorityLedger(root, { now: () => t0 });
+  const { reservation } = await commitRawBoundIntent(root);
+  const projection: MaterializedHttpRequestProjectionV1 = { v: "reelier.materialized-http-request/v1", method: "PUT", origin: "https://api.github.com", normalizedPath: "/repos/a", normalizedQuery: "", reviewedHeaders: {}, bodyDigest: digest("1") };
+  const preparedDescription = { v: "reelier.prepared-dispatch-description/v1" as const, routeDigest: digest("route"), materializedRequestDigest: materializedHttpRequestDigest(projection), projection, authorityGeneration: "generation-1", authorityExpiresAt: new Date(t0 + 60_000).toISOString(), absoluteDeadlineMs: 60_000, reservationId: reservation.reservationId, allocationId: "unbound" };
+  const lease = await ledger.commitPreparedDispatch!({ reservationId: reservation.reservationId, allocationId: "unbound", expectedAuthorityGeneration: "generation-1", preparedDescription, absoluteDeadlineMs: 60_000 });
+  assert.ok(lease);
+  const committed = await ledger.getReservation(reservation.reservationId);
+  assert.equal(committed?.state, "dispatched");
+  assert.equal(committed?.sendStarted, true);
+  const recovered = await ledger.recover({ deferTerminal: true });
+  assert.equal(recovered.ok, true);
+  if (recovered.ok) assert.equal(recovered.reservations[0]?.sendStarted, true);
+}));
 
 test("reservation retains an exact transport effect commitment for restart evidence", async () => {
   await withRoot(async root => {

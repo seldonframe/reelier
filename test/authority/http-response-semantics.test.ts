@@ -17,4 +17,5 @@ test("materialized request projection binds route and body while excluding crede
   assert.equal(projection.normalizedQuery, "a=1&b=2");
   assert.deepEqual(projection.reviewedHeaders, { accept: "application/json" });
   assert.equal(JSON.stringify(projection).includes("secret"), false);
+  assert.throws(() => buildMaterializedHttpRequestProjection({ endpointId: "e", baseUrl: "https://api.github.com", allowedMethods: ["PUT"], allowedPathPrefixes: ["/repos"], accountIdentity: "acct" }, "PUT", "/repos/a", "api_key=secret", {}, Buffer.from("body")), /secret query/i);
 });
