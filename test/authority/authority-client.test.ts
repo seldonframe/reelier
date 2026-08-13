@@ -8,7 +8,7 @@ test("the authority boundary refuses loopback, private, link-local, and mapped p
   for (const address of ["127.0.0.1", "169.254.169.254", "10.0.0.1", "::1", "fc00::1", "fe80::1", "::ffff:127.0.0.1"]) {
     assert.equal(classifyPublicAddress(address).ok, false, address);
   }
-  for (const address of ["192.0.2.1", "198.18.0.1", "198.51.100.1", "203.0.113.1", "2001:db8::1"]) assert.equal(classifyPublicAddress(address).ok, false, address);
+  for (const address of ["192.0.2.1", "198.18.0.1", "198.51.100.1", "203.0.113.1", "2001:db8::1", "2001:2::1"]) assert.equal(classifyPublicAddress(address).ok, false, address);
   assert.throws(() => assertAllPublicAddresses(["203.0.113.10", "::ffff:127.0.0.1"]), /public/i);
 });
 
