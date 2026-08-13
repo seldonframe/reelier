@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createJsonHttpsDispatchAdapter } from "reelier/authority/host";
+import { createJsonHttpsDispatchAdapter } from "../../src/authority/host/json-https-connector.js";
 
 test("HTTPS dispatch refuses an effect whose endpoint is not operator configured", async () => {
   const adapter = createJsonHttpsDispatchAdapter({ endpoints: [], secrets: { async resolve() { return "never"; } } });

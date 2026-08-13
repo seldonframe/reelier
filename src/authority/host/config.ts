@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { authorityDigest } from "../wire.js";
 import type { JsonHttpsEndpoint } from "../drivers/json-https.js";
+import { createJsonHttpsRouteRegistry, type JsonHttpsRouteV1 } from "./json-https-route.js";
 
 export interface AuthorityHostConfig {
   readonly version: 1;
@@ -17,6 +18,8 @@ export interface AuthorityHostConfig {
   readonly gateKeyFile?: string;
   /** Legacy JSON HTTPS runtime endpoints. They are non-certifiable and never route authority. */
   readonly endpoints: readonly JsonHttpsEndpoint[];
+  /** Canonical native HTTPS routes. Credential slots are injected by the host at runtime. */
+  readonly nativeHttpsRoutes?: readonly JsonHttpsRouteV1[];
   readonly deploymentPath?: string;
   readonly jobCardTrustPinPath?: string;
   readonly cloud?: { readonly baseUrl: string; readonly tokenRef: string };
@@ -39,6 +42,7 @@ function validateConfig(value: unknown, baseDir: string): AuthorityHostConfig {
   if (raw.version !== 1 || typeof raw.tenant !== "string" || !raw.tenant || typeof raw.requester !== "string" || !raw.requester) throw new TypeError("authority config requires version, tenant, and requester");
   const definitions = list(raw.definitions, "definitions");
   const endpoints = Array.isArray(raw.endpoints) ? raw.endpoints.map(item => validateEndpoint(item)) : [];
+  const nativeHttpsRoutes = raw.nativeHttpsRoutes === undefined ? undefined : validateNativeRoutes(raw.nativeHttpsRoutes);
   const resolvePath = (item: unknown, fallback: string) => path.resolve(baseDir, typeof item === "string" && item ? item : fallback);
   const ingress = raw.ingress === undefined ? undefined : validateIngress(raw.ingress, baseDir);
   const topology = raw.topology === undefined ? "unknown" : raw.topology;
@@ -48,7 +52,17 @@ function validateConfig(value: unknown, baseDir: string): AuthorityHostConfig {
   const jobCardTrustPinPath = raw.jobCardTrustPinPath === undefined ? undefined : resolvePath(raw.jobCardTrustPinPath, "trust/job-card-trust-pin.json");
   const gateKeyFile = raw.gateKeyFile === undefined ? undefined : resolvePath(raw.gateKeyFile, "keys/local-gate.pem");
   if (raw.authorityCellId !== undefined && (typeof raw.authorityCellId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(raw.authorityCellId))) throw new TypeError("invalid authority cell id");
-  return Object.freeze({ version: 1, tenant: raw.tenant, requester: raw.requester, ...(raw.authorityCellId ? { authorityCellId: raw.authorityCellId } : {}), definitions, ingress, topology, ledgerDir: resolvePath(raw.ledgerDir, ".authority/ledger"), decisionDir: resolvePath(raw.decisionDir, ".authority/decisions"), receiptDir: resolvePath(raw.receiptDir, ".authority/receipts"), ...(gateKeyFile ? { gateKeyFile } : {}), endpoints, ...(deploymentPath ? { deploymentPath } : {}), ...(jobCardTrustPinPath ? { jobCardTrustPinPath } : {}), cloud });
+  return Object.freeze({ version: 1, tenant: raw.tenant, requester: raw.requester, ...(raw.authorityCellId ? { authorityCellId: raw.authorityCellId } : {}), definitions, ingress, topology, ledgerDir: resolvePath(raw.ledgerDir, ".authority/ledger"), decisionDir: resolvePath(raw.decisionDir, ".authority/decisions"), receiptDir: resolvePath(raw.receiptDir, ".authority/receipts"), ...(gateKeyFile ? { gateKeyFile } : {}), endpoints, ...(nativeHttpsRoutes ? { nativeHttpsRoutes } : {}), ...(deploymentPath ? { deploymentPath } : {}), ...(jobCardTrustPinPath ? { jobCardTrustPinPath } : {}), cloud });
+}
+
+function validateNativeRoutes(value: unknown): readonly JsonHttpsRouteV1[] {
+  if (!Array.isArray(value)) throw new TypeError("native HTTPS routes must be an array");
+  const routes = value.map(item => {
+    if (item && typeof item === "object" && Object.prototype.hasOwnProperty.call(item, "secretRef")) throw new TypeError("canonical native HTTPS route cannot contain a secret reference");
+    return item as JsonHttpsRouteV1;
+  });
+  createJsonHttpsRouteRegistry(routes);
+  return Object.freeze(routes.map(route => Object.freeze({ ...route })));
 }
 
 function validateEndpoint(value: unknown): JsonHttpsEndpoint {

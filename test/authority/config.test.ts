@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { loadAuthorityHostConfig, validateAuthorityHostConfig } from "reelier/authority/host";
+import { loadAuthorityHostConfig, validateAuthorityHostConfig } from "../../src/authority/host/config.js";
 
 test("authority YAML accepts nested endpoint mappings", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "reelier-authority-config-"));

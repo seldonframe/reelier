@@ -7,6 +7,7 @@ import { connect as tlsConnect } from "node:tls";
 import type { TransportEffect } from "../types.js";
 import { assertAllPublicAddresses } from "../client/ip.js";
 import { createTotalDeadline, raceTotalDeadline, type TotalDeadline } from "../net/deadline.js";
+import type { JsonHttpsRouteV1 } from "../host/json-https-route.js";
 
 const FORBIDDEN = new Set(["authorization", "cookie", "host"]);
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
@@ -24,7 +25,7 @@ export interface JsonHttpsEndpoint {
   readonly egressProxy?: Readonly<{ baseUrl: string; bearerRef: string }>;
 }
 
-export interface JsonHttpsSecretResolver { resolve(reference: string): Promise<string>; }
+export interface JsonHttpsSecretResolver { resolve(reference: string): Promise<string>; acquireSlot?: (slotId: string) => Promise<{ readonly readOnce: () => string }>; }
 export interface JsonHttpsResponse { readonly status: number; readonly headers: Readonly<Record<string, string>>; readonly body: Buffer; readonly requestBytesDigest: string; }
 export interface JsonHttpsRead { readonly endpointId: string; readonly method?: "GET"; readonly path: string; readonly query?: string; readonly headers?: Readonly<Record<string, string>>; }
 export interface JsonHttpsConfidentialRequest { readonly endpointId: string; readonly method: "POST" | "PUT" | "PATCH" | "DELETE"; readonly path: string; readonly query?: string; readonly headers?: Readonly<Record<string, string>>; readonly body: Uint8Array; }
@@ -41,32 +42,48 @@ export function createPinnedLookup(address: string): LookupFunction {
   };
 }
 
-export async function executeJsonHttpsEffect(effect: TransportEffect, endpoint: JsonHttpsEndpoint, secrets: JsonHttpsSecretResolver, options: JsonHttpsOptions = {}): Promise<JsonHttpsResponse> {
+export async function executeJsonHttpsEffect(effect: TransportEffect, endpoint: JsonHttpsEndpoint | JsonHttpsRouteV1, secrets: JsonHttpsSecretResolver, options: JsonHttpsOptions = {}): Promise<JsonHttpsResponse> {
+  const runtimeEndpoint = materializeEndpoint(endpoint);
   const deadline = dispatchDeadline(options);
   deadline.remainingMs("prepare");
-  if (effect.endpointId !== endpoint.endpointId) throw new JsonHttpsSecurityError("effect endpoint does not match configured endpoint");
-  if (!endpoint.allowedMethods.includes(effect.method)) throw new JsonHttpsSecurityError("method is not allowed for endpoint");
-  validatePath(effect.path, endpoint);
+  if (effect.endpointId !== runtimeEndpoint.endpointId) throw new JsonHttpsSecurityError("effect endpoint does not match configured endpoint");
+  if (!runtimeEndpoint.allowedMethods.includes(effect.method)) throw new JsonHttpsSecurityError("method is not allowed for endpoint");
+  validatePath(effect.path, runtimeEndpoint);
   validateQuery(effect.query);
   validateHeaders(effect.headers);
   if (base64DecodedBytes(effect.bodyBase64) > MAX_REQUEST_BYTES) throw new JsonHttpsSecurityError("request exceeds configured limit");
   const body = Buffer.from(effect.bodyBase64, "base64");
-  deadline.remainingMs("credential"); const secret = endpoint.secretRef ? await secrets.resolve(endpoint.secretRef) : undefined;
-  deadline.remainingMs("credential"); const proxySecret = endpoint.egressProxy ? await secrets.resolve(endpoint.egressProxy.bearerRef) : undefined;
-  return requestPinned(endpoint, effect.method, effect.path, effect.query, effect.headers, body, secret, proxySecret, options, deadline);
+  const secret = await materializeSecret(endpoint, secrets, deadline);
+  deadline.remainingMs("credential"); const proxySecret = runtimeEndpoint.egressProxy ? await secrets.resolve(runtimeEndpoint.egressProxy.bearerRef) : undefined;
+  return requestPinned(runtimeEndpoint, effect.method, effect.path, effect.query, effect.headers, body, secret, proxySecret, options, deadline);
 }
 
-export async function executeJsonHttpsRead(read: JsonHttpsRead, endpoint: JsonHttpsEndpoint, secrets: JsonHttpsSecretResolver, options: JsonHttpsOptions = {}): Promise<JsonHttpsResponse> {
+export async function executeJsonHttpsRead(read: JsonHttpsRead, endpoint: JsonHttpsEndpoint | JsonHttpsRouteV1, secrets: JsonHttpsSecretResolver, options: JsonHttpsOptions = {}): Promise<JsonHttpsResponse> {
+  const runtimeEndpoint = materializeEndpoint(endpoint);
   const deadline = dispatchDeadline(options);
   deadline.remainingMs("prepare");
-  if (read.endpointId !== endpoint.endpointId) throw new JsonHttpsSecurityError("read endpoint does not match configured endpoint");
-  if (!endpoint.allowedMethods.includes("GET")) throw new JsonHttpsSecurityError("GET is not allowed for endpoint");
-  validatePath(read.path, endpoint);
+  if (read.endpointId !== runtimeEndpoint.endpointId) throw new JsonHttpsSecurityError("read endpoint does not match configured endpoint");
+  if (!runtimeEndpoint.allowedMethods.includes("GET")) throw new JsonHttpsSecurityError("GET is not allowed for endpoint");
+  validatePath(read.path, runtimeEndpoint);
   validateQuery(read.query ?? "");
   validateHeaders(read.headers ?? {});
-  deadline.remainingMs("credential"); const secret = endpoint.secretRef ? await secrets.resolve(endpoint.secretRef) : undefined;
-  deadline.remainingMs("credential"); const proxySecret = endpoint.egressProxy ? await secrets.resolve(endpoint.egressProxy.bearerRef) : undefined;
-  return requestPinned(endpoint, "GET", read.path, read.query ?? "", read.headers ?? {}, Buffer.alloc(0), secret, proxySecret, options, deadline);
+  const secret = await materializeSecret(endpoint, secrets, deadline);
+  deadline.remainingMs("credential"); const proxySecret = runtimeEndpoint.egressProxy ? await secrets.resolve(runtimeEndpoint.egressProxy.bearerRef) : undefined;
+  return requestPinned(runtimeEndpoint, "GET", read.path, read.query ?? "", read.headers ?? {}, Buffer.alloc(0), secret, proxySecret, options, deadline);
+}
+
+function isNativeRoute(endpoint: JsonHttpsEndpoint | JsonHttpsRouteV1): endpoint is JsonHttpsRouteV1 { return "credentialSlotId" in endpoint; }
+function materializeEndpoint(endpoint: JsonHttpsEndpoint | JsonHttpsRouteV1): JsonHttpsEndpoint {
+  if (!isNativeRoute(endpoint)) return endpoint;
+  return { endpointId: endpoint.endpointId, baseUrl: endpoint.origin, allowedMethods: endpoint.allowedMethods, allowedPathPrefixes: endpoint.allowedPathPrefixes, accountIdentity: endpoint.providerAccountIdentity };
+}
+async function materializeSecret(endpoint: JsonHttpsEndpoint | JsonHttpsRouteV1, secrets: JsonHttpsSecretResolver, deadline: TotalDeadline): Promise<string | undefined> {
+  deadline.remainingMs("credential");
+  if (isNativeRoute(endpoint)) {
+    if (!secrets.acquireSlot) throw new JsonHttpsSecurityError("canonical route credential slot is unavailable");
+    try { const lease = await secrets.acquireSlot(endpoint.credentialSlotId); return lease.readOnce(); } catch { throw new JsonHttpsSecurityError("canonical route credential slot is unavailable"); }
+  }
+  return endpoint.secretRef ? secrets.resolve(endpoint.secretRef) : undefined;
 }
 
 function validatePath(path: string, endpoint: JsonHttpsEndpoint): void {
