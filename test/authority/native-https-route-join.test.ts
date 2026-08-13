@@ -92,3 +92,14 @@ test("certified budget remains consumed when commit reports a post-transition fa
     assert.deepEqual(events, ["consume", "cas"]);
   } finally { restore(); }
 });
+
+test("certified identity rejects unsigned verifier bypass and accepts namespaced account identity", { skip: process.platform === "win32" }, async () => {
+  const restore = __testSetAuthorityCellHostPlatform("linux");
+  try {
+    const route = { ...routeAuthority(), providerAccountIdentity: "github:octocat" };
+    const reservation: any = { reservationId: "r1", state: "reserved", intent: { effectDigest: sha("3"), routeAuthority: route } };
+    const ledger: any = { async getReservation() { return reservation; } };
+    const coordinator = createDispatchCoordinator(ledger, { async dispatch() { throw new Error("must not send"); } }, undefined, undefined, undefined, { identityProbe: async () => ({ ...identityFor(route), providerLogin: "octocat" }), verifyIdentity: async () => true, revalidator: { async routeReread() { return route; }, async revalidate() { return { authorityGeneration: route.authorityGeneration, authorityExpiresAt: route.authorityExpiresAt, routeAuthorityDigest: authorityDigest(route) }; } } });
+    await assert.rejects(() => coordinator.dispatch(createReservedDispatchHandle({ reservation, effect: {}, effectCanonicalBase64: "e30=", effectDigest: sha("3") })), /identity/i);
+  } finally { restore(); }
+});
