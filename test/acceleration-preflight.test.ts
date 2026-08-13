@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
+import { spawnSync } from "node:child_process";
 
 // The production change that must make these tests fail is accepting an open
 // command/profile, or reporting a result above the preflight evidence class.
-// @ts-expect-error The runner is introduced by the GREEN step.
-import { PREFLIGHT_PROFILES, runAccelerationPreflight } from "../scripts/run-acceleration-preflight.mjs";
+const { PREFLIGHT_PROFILES, runAccelerationPreflight } = await import(
+  pathToFileURL(path.join(process.cwd(), "scripts", "run-acceleration-preflight.mjs")).href,
+);
 
 interface SpawnCall {
   command: string;
@@ -42,7 +46,9 @@ test("each preflight profile dispatches its closed commands with shell disabled"
     assert.equal(result.evidenceClass, "preflight");
     assert.deepEqual(calls.map(({ command, args }) => [command, args]), commands);
     assert.equal(calls.every((call) => call.shell === false), true);
-    assert.deepEqual(result.commands.map((command: { commandId: string; exitCode: number | null; durationMs: number }) => Object.keys(command).sort()), ["commandId", "durationMs", "exitCode"]);
+    assert.equal(result.commands.every((command: { commandId: string; exitCode: number | null; durationMs: number }) => (
+      Object.keys(command).sort().join(",") === "commandId,durationMs,exitCode"
+    )), true);
   }
 });
 
@@ -62,4 +68,16 @@ test("profiles contain only local preflight commands", () => {
   for (const commands of Object.values(PREFLIGHT_PROFILES)) {
     assert.equal(forbidden.test(JSON.stringify(commands)), false);
   }
+});
+
+test("the CLI emits a preflight-only JSON summary", () => {
+  const result = spawnSync(process.execPath, ["scripts/run-acceleration-preflight.mjs", "--profile", "provider-authority"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const summary = JSON.parse(result.stdout.trim().split(/\r?\n/).at(-1) ?? "") as { evidenceClass: string; commands: unknown[] };
+  assert.deepEqual(Object.keys(summary).sort(), ["commands", "evidenceClass"]);
+  assert.equal(summary.evidenceClass, "preflight");
+  assert.equal(Array.isArray(summary.commands), true);
 });

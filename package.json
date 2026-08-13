@@ -88,6 +88,7 @@
     "test:packed-factory-journey": "node test/packed/authority-factory-journey.mjs",
     "test:mutation": "stryker run",
     "preflight": "node scripts/preflight.mjs",
+    "preflight:acceleration": "node scripts/run-acceleration-preflight.mjs",
     "prepublishOnly": "npm run check:authority-contract && npm run build && npm test",
     "hooks:install": "git config core.hooksPath .githooks"
   },
