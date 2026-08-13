@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { lstat, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -66,8 +66,8 @@ test("factory journey atomically publishes an exact verified packet derived from
     const packet = summary.reviewerPacket;
     assert.deepEqual(Object.keys(packet), ["humanApprovedTaskBinding", "declared", "compiledEffect", "lineage", "policyStatus", "postStateConfidence", "providerObservation", "reconciliationResult", "cleanupResult", "duplicateDecisions", "exceptions", "receiptChain", "fixtureOperatorConfirmation", "graphDigest", "nonClaims"]);
     assert.equal(packet.graphDigest, authorityDigest(graph));
-    assert.deepEqual(packet.humanApprovedTaskBinding, { taskId: graph.taskId, authorityCellId: graph.authorityCellId, signedReadinessDigest: graph.taskAuthorities[0].signedReadinessDigest, authorization: "human-signed", dispatchable: false });
-    assert.deepEqual(packet.declared, { trigger: "certification-fixture", intent: "github-issue-labels", operation: "set-labels" });
+    assert.deepEqual(packet.humanApprovedTaskBinding, { taskId: graph.taskId, authorityCellId: graph.authorityCellId, signedReadinessDigest: graph.taskAuthorities[0].activation.signedReadinessDigest, authorization: "human-signed", dispatchable: false });
+    assert.deepEqual(packet.declared, { trigger: graph.taskAuthorities[0].declaredTrigger, intent: graph.taskAuthorities[0].declaredIntent, operation: graph.taskAuthorities[0].signedJobCard.semanticClasses });
     assert.deepEqual(packet.compiledEffect, graph.outcomes.map((item: any) => item.effectDigest));
     assert.deepEqual(packet.lineage, { principals: graph.principals.map((item: any) => item.principalId), grants: graph.grants.map((item: any) => item.digest), allocations: graph.allocations.map((item: any) => item.allocationId) });
     assert.deepEqual(packet.policyStatus, graph.policyEvidence.map((item: any) => ({ artifact: item.artifact, status: item.status })));
@@ -78,7 +78,7 @@ test("factory journey atomically publishes an exact verified packet derived from
     assert.deepEqual(packet.duplicateDecisions, graph.duplicateDecisions);
     assert.deepEqual(packet.exceptions, graph.exceptions);
     assert.deepEqual(packet.receiptChain, graph.receipts.map((item: any) => ({ receiptDigest: authorityDigest(item.receipt.value), priorReceiptDigest: item.receipt.value.priorReceiptDigest })));
-    assert.deepEqual(packet.fixtureOperatorConfirmation, { kind: "fixture", basis: "signed-readiness-construction", signedReadinessDigest: graph.taskAuthorities[0].signedReadinessDigest, liveHuman: false, grantsAuthority: false });
+    assert.deepEqual(packet.fixtureOperatorConfirmation, { kind: "fixture", basis: "signed-readiness-construction", signedReadinessDigest: graph.taskAuthorities[0].activation.signedReadinessDigest, liveHuman: false, grantsAuthority: false });
     assert.deepEqual(packet.nonClaims, summary.nonClaims);
   } finally { restorePlatform(); await rm(root, { recursive: true, force: true }); }
 });
@@ -89,8 +89,8 @@ test("factory journey refuses the complete closed CLI corpus without authority o
   try {
     const existingFile = path.join(root, "existing-file"); await writeFile(existingFile, "sentinel");
     const existingDirectory = path.join(root, "existing-directory"); await mkdir(existingDirectory);
-    const existingTarget = path.join(root, "symlink-target"); await writeFile(existingTarget, "target");
-    const existingSymlink = path.join(root, "existing-symlink"); await symlink(existingTarget, existingSymlink, "file");
+    const existingTarget = path.join(root, "symlink-target"); await mkdir(existingTarget);
+    const existingSymlink = path.join(root, "existing-symlink"); await symlink(existingTarget, existingSymlink, process.platform === "win32" ? "junction" : "dir");
     const unknownOptions = ["config", "credential", "provider", "signer", "ledger", "callback", "network", "retry", "task", "grant", "principal", "allocation"];
     const cases: AuthorityCommand[] = [
       command("relative-output"),

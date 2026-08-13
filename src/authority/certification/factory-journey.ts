@@ -1,6 +1,5 @@
 import { createHash, generateKeyPairSync } from "node:crypto";
 import { access, lstat, mkdtemp, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import path from "node:path";
 import { authorityDigest } from "../wire.js";
 import { signJobCard } from "../job.js";
@@ -22,6 +21,14 @@ import { certificationScenarioPlanBindings } from "./scenario-bindings.js";
 const AT = "2026-08-11T20:00:00.000Z", EXPIRY = "2026-08-11T21:00:00.000Z";
 const descriptor = (keyId: string, role: "human-sponsor" | "authority-cell", purpose: string, publicKey: ReturnType<typeof generateKeyPairSync>["publicKey"]) => ({ v: "reelier.authority-key-descriptor/v1", keyId, role, purpose, algorithm: "ed25519", publicKeySpkiBase64: publicKey.export({ type: "spki", format: "der" }).toString("base64") });
 
+export type FactoryJourneyFault = "staging" | "root" | "graph-write" | "trust-write" | "summary-write" | "cleanup" | "rename";
+let testFault: FactoryJourneyFault | undefined;
+export function __testSetFactoryJourneyFault(value: FactoryJourneyFault): () => void {
+  const previous = testFault; testFault = value;
+  return () => { testFault = previous; };
+}
+function fault(point: FactoryJourneyFault): void { if (testFault === point) throw new Error(`factory journey test fault: ${point}`); }
+
 async function writeFactoryInputManifests(workspace: string): Promise<void> {
   const config = parseCertificationOperatorConfigV3(JSON.parse(await readFile(path.join(workspace, "config.json"), "utf8")));
   const directories = ["runners", "tests", "plans"].map(name => path.join(workspace, "inputs", name)); await Promise.all(directories.map(directory => mkdir(directory, { recursive: true })));
@@ -41,7 +48,7 @@ export async function certifyFactoryJourney(out: string): Promise<Readonly<{ gra
   try { await lstat(out); throw new TypeError("factory output already exists"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   const parent = path.dirname(out); let staging: string | undefined, root: string | undefined, published = false;
   try {
-    await access(parent); staging = await mkdtemp(path.join(parent, ".reelier-factory-journey-")); root = await mkdtemp(path.join(tmpdir(), "reelier-factory-cell-"));
+    await access(parent); fault("staging"); staging = await mkdtemp(path.join(parent, ".reelier-factory-journey-")); fault("root"); root = await mkdtemp(path.join(parent, ".reelier-factory-cell-"));
     const configPath = path.join(root, "certification.local.json");
     await writeFile(configPath, JSON.stringify({ v: "reelier.certification-operator-config/v3", authorityConfigPath: "authority/authority.yml", evidenceDirectory: "authority/receipts/certification", scenarios: ["github-issue-labels"], resources: { "github-issue-labels": { apiBaseUrl: "https://api.github.com", owner: "fixlyai", repository: "reelier-certification", issueNumber: 1 } }, cleanup: { "github-issue-labels": ["restore-github-labels"] }, desiredState: { "github-issue-labels": { labels: ["certification-after"] } }, metadata: {}, secretReferences: { githubCredential: "env:REELIER_GITHUB_TOKEN" } }), "utf8");
     const initialized = await initializeCertification({ configPath }); await writeFactoryInputManifests(initialized.workspace);
@@ -66,12 +73,36 @@ export async function certifyFactoryJourney(out: string): Promise<Readonly<{ gra
     await runner.run({ bearerToken: credential.token, requestId: "factory_journey" }); await runner.cleanup({ bearerToken: credential.token, requestId: "factory_journey" });
     const graph = await runner.exportGraph({ bearerToken: credential.token }); verifyCertificationTaskReceiptGraph(graph, { trustPin: pin });
     const graphDigest = authorityDigest(graph);
-    const reviewerPacket = Object.freeze({ taskBinding: { taskId: graph.taskId, authorityCellId: graph.authorityCellId }, trigger: "fixture-operator-confirmation", intent: "github-issue-labels", operation: "set-labels", compiledEffect: graph.outcomes.map(item => item.effectDigest), lineage: { rootGrant: graph.rootGrant.digest, grants: graph.grants.map(item => item.digest), allocations: graph.allocations.map(item => item.allocationId) }, policy: graph.policyEvidence, postState: graph.postStateEvidence, observation: graph.taskStatusEvidence, reconciliation: graph.outcomes.map(item => item.phase), cleanup: graph.outcomes.filter(item => item.phase === "cleaned"), duplicates: graph.duplicateDecisions, exceptions: graph.exceptions, receipts: graph.receipts.map(item => authorityDigest(item.receipt.value)), graphDigest, nonClaims: ["semantic-correctness", "general-software-factory-capability"] });
-    const summary = Object.freeze({ v: "reelier.factory-journey-summary/v1", journey: "github-issue-labels", graphDigest, stages: ["classification", "preparation", "consequential-execution", "independent-review"], authorityBoundaryCeremonies: 1, fixtureOperatorConfirmations: 1, liveHumanReview: "absent", providerCredentialValueHandling: 0, clientBearerResolution: 0, providerSdkCalls: 0, externalSockets: 0, unsupportedCategories: "absent", nonClaims: ["semantic-correctness", "general-software-factory-capability"], logicalOperatorSteps: 4, elapsedMs: Date.now() - started, reviewerPacket });
+    const taskAuthority = graph.taskAuthorities[0] as any, readinessArtifact = graph.signedReadiness as any;
+    const nonClaims = ["semantic-correctness", "general-software-factory-capability", "live-human-review"];
+    const fixtureOperatorConfirmation = Object.freeze({ kind: "fixture", basis: "signed-readiness-construction", signedReadinessDigest: taskAuthority.activation.signedReadinessDigest, liveHuman: false, grantsAuthority: false });
+    const reviewerPacket = Object.freeze({
+      humanApprovedTaskBinding: { taskId: graph.taskId, authorityCellId: graph.authorityCellId, signedReadinessDigest: taskAuthority.activation.signedReadinessDigest, authorization: readinessArtifact.authorization, dispatchable: readinessArtifact.dispatchable },
+      declared: { trigger: taskAuthority.declaredTrigger, intent: taskAuthority.declaredIntent, operation: taskAuthority.signedJobCard.semanticClasses },
+      compiledEffect: graph.outcomes.map(item => item.effectDigest),
+      lineage: { principals: graph.principals.map(item => item.principalId), grants: graph.grants.map(item => item.digest), allocations: graph.allocations.map(item => item.allocationId) },
+      policyStatus: graph.policyEvidence.map((item: any) => ({ artifact: item.artifact, status: item.status })),
+      postStateConfidence: graph.postStateEvidence.map((item: any) => item.confidence),
+      providerObservation: graph.receipts.map(item => item.receipt.value.claims.providerAcknowledgment),
+      reconciliationResult: graph.receipts.map(item => item.evidence.value.reconciliation.verdict),
+      cleanupResult: graph.outcomes.filter(item => item.phase === "cleaned").map(item => item.phase),
+      duplicateDecisions: graph.duplicateDecisions,
+      exceptions: graph.exceptions,
+      receiptChain: graph.receipts.map(item => ({ receiptDigest: authorityDigest(item.receipt.value), priorReceiptDigest: item.receipt.value.priorReceiptDigest })),
+      fixtureOperatorConfirmation,
+      graphDigest,
+      nonClaims,
+    });
+    const summary = Object.freeze({ v: "reelier.factory-journey-summary/v1", journey: "github-issue-labels", graphDigest, stages: ["classification", "preparation", "consequential-execution", "independent-review"], authorityBoundaryCeremonies: 1, fixtureOperatorConfirmations: 1, liveHumanReview: "absent", providerCredentialValueHandling: 0, clientBearerResolution: 0, providerSdkCalls: 0, externalSockets: 0, unsupportedCategories: { ambiguity: "absent", manual: "absent", blocked: "absent" }, nonClaims, logicalOperatorSteps: 4, elapsedMs: Date.now() - started, reviewerPacket });
     const summaryDigest = authorityDigest(summary);
+    fault("cleanup");
+    fault("graph-write");
     await writeFile(path.join(staging, "graph.json"), `${JSON.stringify(graph)}\n`, { flag: "wx" });
+    fault("trust-write");
     await writeFile(path.join(staging, "trust-pin.json"), `${JSON.stringify(pin)}\n`, { flag: "wx" });
+    fault("summary-write");
     await writeFile(path.join(staging, "factory-journey-summary.json"), `${JSON.stringify(summary)}\n`, { flag: "wx" });
+    fault("rename");
     await rename(staging, out); published = true;
     return Object.freeze({ graphPath: path.join(out, "graph.json"), trustPath: path.join(out, "trust-pin.json"), summaryPath: path.join(out, "factory-journey-summary.json"), graphDigest, summaryDigest });
   } catch (error) { if (staging && !published) await rm(staging, { recursive: true, force: true }).catch(() => undefined); throw error; }
