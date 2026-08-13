@@ -36,6 +36,8 @@
   },
   "files": [
     "dist",
+    "!dist/authority/host/windows-k1-fifo.js",
+    "!dist/authority/host/windows-k1-fifo.d.ts",
     "SPEC.md",
     "README.md",
     "LICENSE",
