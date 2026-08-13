@@ -83,6 +83,7 @@
     "test:coverage": "c8 npm test",
     "test:fuzz": "tsc -p tsconfig.test.json && node scripts/run-fuzz.mjs",
     "test:e2e": "node scripts/e2e-local.mjs",
+    "test:packed-factory-journey": "node test/packed/authority-factory-journey.mjs",
     "test:mutation": "stryker run",
     "preflight": "node scripts/preflight.mjs",
     "prepublishOnly": "npm run check:authority-contract && npm run build && npm test",
