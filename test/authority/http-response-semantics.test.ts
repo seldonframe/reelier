@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { classifyHttpResponse, parseHttpResponseSemanticsProfileV1 } from "../../src/authority/host/http-response-semantics.js";
 import { buildMaterializedHttpRequestProjection } from "../../src/authority/drivers/json-https.js";
+import { malformedJsonResponse } from "../../src/authority/host/json-https-connector.js";
 
 const profile = parseHttpResponseSemanticsProfileV1({ v: "reelier.http-response-semantics/v1", profileId: "github.labels.v1", acknowledgedStatuses: [200, 201, 202, 204] });
 test("only reviewed 2xx responses are acknowledged", () => {
@@ -10,6 +11,10 @@ test("only reviewed 2xx responses are acknowledged", () => {
 });
 test("disconnect, malformed, overflow, and post-send deadline are ambiguous", () => {
   for (const kind of ["disconnect", "malformed", "overflow", "deadline"] as const) assert.equal(classifyHttpResponse(profile, { kind }), "ambiguous");
+});
+test("JSON content-type with malformed body is not acknowledged", () => {
+  assert.equal(malformedJsonResponse({ headers: { "content-type": "application/json" }, body: Buffer.from("{bad") }), true);
+  assert.equal(malformedJsonResponse({ headers: { "content-type": "application/json" }, body: Buffer.from("{}") }), false);
 });
 test("materialized request projection binds route and body while excluding credentials", () => {
   const projection = buildMaterializedHttpRequestProjection({ endpointId: "e", baseUrl: "https://api.github.com", allowedMethods: ["PUT"], allowedPathPrefixes: ["/repos"], accountIdentity: "acct" }, "PUT", "/repos/a", "b=2&a=1", { Authorization: "Bearer secret", Accept: "application/json" }, Buffer.from("body"));
