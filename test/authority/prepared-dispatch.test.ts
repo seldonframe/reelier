@@ -9,6 +9,7 @@ import {
 } from "../../src/authority/host/prepared-dispatch.js";
 import { createDispatchCoordinator } from "../../src/authority/host/dispatch.js";
 import { createReservedDispatchHandle } from "../../src/authority/gate.js";
+import { prepareJsonHttpsEffect } from "../../src/authority/drivers/json-https.js";
 
 const digest = (value: unknown) => authorityDigest(value);
 const projection: MaterializedHttpRequestProjectionV1 = Object.freeze({
@@ -92,6 +93,16 @@ test("injected clocks refuse stale authority and expired monotonic deadline befo
   assert.equal(sends, 0);
 });
 
+test("native route digest binds every canonical route authority field", async () => {
+  const route = { v: "reelier.json-https-route/v1" as const, providerId: "github", connectorId: "github", accountId: "acct", providerAccountIdentity: "github:acct", endpointId: "write", origin: "https://api.github.com", allowedMethods: ["PUT" as const], allowedPathPrefixes: ["/repos"], credentialSlotId: "slot", responseSemanticsProfileId: "profile-a", reconciliationRecipeId: "recipe", readEndpointId: "read", egressPolicyDigest: digest("egress") };
+  const changed = { ...route, responseSemanticsProfileId: "profile-b" };
+  const secrets = { async resolve() { return "unused"; }, async acquireSlot() { return { readOnce: () => "secret" }; } };
+  const effect = { endpointId: "write", method: "PUT" as const, path: "/repos/a", query: "", headers: {}, bodyBase64: Buffer.from("{}").toString("base64") };
+  const first = await prepareJsonHttpsEffect(effect as never, route, secrets, { reservationId: "r", allocationId: "a", authorityGeneration: "g", authorityExpiresAt: new Date(Date.now() + 60_000).toISOString() });
+  const second = await prepareJsonHttpsEffect(effect as never, changed, secrets, { reservationId: "r", allocationId: "a", authorityGeneration: "g", authorityExpiresAt: new Date(Date.now() + 60_000).toISOString() });
+  assert.notEqual(first.description.routeDigest, second.description.routeDigest);
+});
+
 test("coordinator uses durable prepared commit boundary and recovery never resends", { skip: process.platform !== "linux" }, async () => {
   const events: string[] = [];
   let reservation: any = { reservationId: "reservation-1", state: "reserved", intent: { effectDigest: digest("effect"), allocationId: "allocation-1", executionContext: { allocationId: "allocation-1" } } };
@@ -120,9 +131,11 @@ test("coordinator does not permit an adapter-specific prepared send bypass", { s
   const reservation: any = { reservationId: "reservation-1", state: "reserved", intent: { effectDigest: digest("effect"), executionContext: { allocationId: "allocation-1" } } };
   const ledger: any = {
     async getReservation() { return reservation; },
-    async commitPreparedDispatch() { throw new Error("commit boundary should be required"); },
+    async commitPreparedDispatch(input: any) { return createDispatchCommitLease({ reservationId: input.reservationId, allocationId: input.allocationId, preparedDigest: input.preparedDescription.materializedRequestDigest, authorityGeneration: input.expectedAuthorityGeneration, authorityExpiresAt: input.preparedDescription.authorityExpiresAt, absoluteDeadlineMs: input.absoluteDeadlineMs, commitGeneration: "commit-1" }); },
+    async transition(_id: string, _expected: string, event: any) { reservation.state = event.to; return { ok: true, status: "transitioned", reservation }; },
   };
-  const adapter: any = { async prepare() { throw new Error("prepare called"); }, async dispatchPrepared() { throw new Error("bypass called"); }, async dispatch() { throw new Error("legacy called"); } };
+  const adapter: any = { async prepare() { return createPreparedDispatch({ description: { v: "reelier.prepared-dispatch-description/v1", routeDigest: digest("route"), materializedRequestDigest: digest(projection), projection, authorityGeneration: "generation-1", authorityExpiresAt: new Date(Date.now() + 60_000).toISOString(), absoluteDeadlineMs: performance.now() + 60_000, reservationId: "reservation-1", allocationId: "allocation-1" }, send: async () => ({ kind: "acknowledged", resultDigest: digest("result") }) }); }, async dispatchPrepared() { throw new Error("bypass called"); }, async dispatch() { throw new Error("legacy called"); } };
   const handle = createReservedDispatchHandle({ reservation, effect: {}, effectCanonicalBase64: "e30=", effectDigest: digest("effect") });
-  await assert.rejects(() => createDispatchCoordinator(ledger, adapter).dispatch(handle), /prepare called|commit boundary/);
+  const outcome = await createDispatchCoordinator(ledger, adapter).dispatch(handle);
+  assert.equal(outcome.kind, "acknowledged");
 });
