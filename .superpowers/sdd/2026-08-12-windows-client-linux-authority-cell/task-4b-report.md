@@ -112,6 +112,42 @@ Public API claim: `reelier/authority/host` no longer owns `FsAuthorityLedger`; i
 
 ## Open risks / deviations
 
+## Gate 0 Linux oracle correction (2026-08-13)
+
+### Files changed
+
+- `test/authority/ledger.test.ts`
+- `.superpowers/sdd/2026-08-12-windows-client-linux-authority-cell/task-4b-report.md`
+
+### What changed per file
+
+- `test/authority/ledger.test.ts`: corrected the N100 test oracle so assignment indices are asserted per distinct intent-limit key. Both committed slots use different keys and therefore each receives the first free index, `0`; the previous expected second-slot index of `1` incorrectly used its position in `limitSlots`.
+- `.superpowers/sdd/2026-08-12-windows-client-linux-authority-cell/task-4b-report.md`: recorded this hosted Gate 0 oracle correction and its local Windows verification limitation.
+
+### Deviations from plan
+
+- None. Production allocator code, timeout, retry, concurrency, and conservation behavior were not modified. The allocator filters existing assignments by `item.key` before selecting the first unoccupied index, which confirms the test-only correction.
+
+### Test results (verbatim tail)
+
+`npx tsc -p tsconfig.test.json --noEmit; npx tsc -p tsconfig.test.json; node --test --test-concurrency=1 --test-name-pattern "N100 authority convergence" dist-test/test/authority/ledger.test.js` exited `0` on Windows. The test compilation completed successfully. Focused test tail:
+
+```text
+﹣ N100 authority convergence: one committed reservation, exact-existing outcomes, and acknowledged recovery (1.9701ms) # SKIP
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 1
+ℹ todo 0
+ℹ duration_ms 232.9408
+```
+
+### Open risks
+
+- The N100 test is intentionally guarded with `skip: process.platform !== "linux"`; Windows cannot execute its Linux filesystem convergence path. Hosted Ubuntu revalidation is still required to demonstrate the corrected oracle there.
+
 - Hosted `test (ubuntu-latest)` evidence attached to this workflow SHA was not available locally, so the required N100 result is absent.
 - The earlier native-Windows full-suite run confirmed Linux-host-only tests are inappropriate for the required Windows context. The approved native Windows gate is now the explicit supported 26-test suite above; Ubuntu retains the full suite and N100.
 - `windows-native` RED command: `node test/packed/authority-host-boundary.mjs --tarball <absolute-path> --mode windows-native` failed with `windows-native composition-root no-access proof not implemented`. GREEN rerun exited 0 after asserting all eight installed-tarball roots reject with `AUTHORITY_CELL_LINUX_REQUIRED`, dependency accesses `0`, callback invocations `0`, and every supplied temporary root empty.
