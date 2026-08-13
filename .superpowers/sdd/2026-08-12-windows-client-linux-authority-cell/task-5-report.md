@@ -54,3 +54,9 @@ Verbatim tail:
 ## Open risks
 
 - Do not merge until the generated tarball is removed and required hosted `test (ubuntu-latest)` and `test (windows-latest)` checks are attached to the current workflow SHA and green.
+
+## Round-two correction
+
+- RED commit `43b546fb30cf18fd62f0452114a10a86cebeaadb` proved the evidence producer lacked exact-SHA checkout/setup before it invoked the packed-only harness.
+- GREEN commit `d3bc1f19fe27aea9a6fb9f7f227e8acc8b951ad0` adds checkout at `github.sha`, Node setup, checkout build, frozen Adapter Contract comparison, and secret-canary scanning of the three public artifacts. It also hardens the installed harness's exact stdout/stderr/file-list/path-containment contract and keeps staging/root allocation within cleanup handling.
+- Round-two focused result: `tsc` plus package/factory suites: 7 pass, 0 fail. Hosted verification remains pending.
