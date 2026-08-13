@@ -78,13 +78,13 @@ test("factory evidence producer is checkout-built but installs and runs only the
 
 test("CI packs exactly once and closes package and evidence contents against obsolete Windows helpers", () => {
   const workflow = readFileSync(path.join(process.cwd(), ".github", "workflows", "ci.yml"), "utf8");
-  assert.equal(workflow.match(/npm["',\s]+pack["',\s]+--ignore-scripts["',\s]+--json/g)?.length, 1, "one npm pack invocation");
+  assert.equal(workflow.match(/\["pack","--ignore-scripts","--json"\]/g)?.length, 1, "one npm pack invocation");
   const pack = workflow.slice(workflow.indexOf("  pack-authority-host-boundary:"), workflow.indexOf("  produce-authority-factory-evidence:"));
-  assert.match(pack, /npm notice --json/);
-  assert.match(pack, /native\/windows-k1-helper/);
-  assert.match(pack, /authority\/host\/windows-k1/);
+  assert.match(pack, /packed\.files/);
+  assert.match(pack, /native\\\/windows-k1-helper/);
+  assert.match(pack, /authority\\\/host\\\/windows-k1/);
   assert.match(pack, /fifo/i);
-  assert.match(pack, /test !/);
+  assert.match(pack, /obsolete Windows FIFO\/native helper was packed/);
   const producer = workflow.slice(workflow.indexOf("  produce-authority-factory-evidence:"), workflow.indexOf("  test:"));
   assert.match(producer, /find factory-evidence -maxdepth 1 -type f/);
   assert.match(producer, /factory-evidence-metadata\.json/);
