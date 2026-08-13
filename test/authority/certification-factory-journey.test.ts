@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cp, lstat, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { appendFile, cp, lstat, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { runAuthorityCommand } from "../../src/authority/cli.js";
@@ -129,10 +129,8 @@ test("installed offline verifier scans downloaded artifacts instead of trusting 
     assert.equal((await capture(command(produced))).code, 0);
     await cp(produced, evidence, { recursive: true });
     const tarball = packCurrentCheckout(root);
+    await appendFile(tarball, FACTORY_SECRET_CANARY);
     await writeFactoryEvidenceMetadata(evidence, tarball);
-    const metadataPath = path.join(evidence, "factory-evidence-metadata.json"), metadata = JSON.parse(await readFile(metadataPath, "utf8"));
-    metadata.workflowSourceSha = FACTORY_SECRET_CANARY;
-    await writeFile(metadataPath, `${JSON.stringify(metadata)}\n`);
     const result = spawnSync(process.execPath, [path.join(process.cwd(), "test", "packed", "authority-factory-journey.mjs"), "--tarball", tarball, "--verify-evidence", evidence], { cwd: process.cwd(), encoding: "utf8" });
     assert.notEqual(result.status, 0, "installed verifier must scan actual evidence bytes for the deterministic canary");
   } finally { restorePlatform(); await rm(root, { recursive: true, force: true }); }
