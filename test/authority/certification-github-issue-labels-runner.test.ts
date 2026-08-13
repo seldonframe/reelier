@@ -543,6 +543,37 @@ test("duplicate ledger serializes concurrent exhausted attempts and ignores lexi
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
+test("externally anchored duplicate head rejects canonical rollback after restart and concurrent attempts", async () => {
+  const f = await fixture(); try {
+    await f.runner.run({ bearerToken: f.credential.token, requestId: "request_duplicate_anchor_original" });
+    await f.runner.cleanup({ bearerToken: f.credential.token, requestId: "request_duplicate_anchor_original" });
+    await f.runner.run({ bearerToken: f.credential.token, requestId: "request_duplicate_anchor_old" });
+    const portable = path.join(f.initialized.workspace, "authority", "github-label-runner", "portable-evidence"),
+      ledgerPath = path.join(portable, "duplicate-ledger.json"),
+      oldLedger = await readFile(ledgerPath),
+      oldGraph: any = await f.runner.exportGraph({ bearerToken: f.credential.token });
+    assert.equal(oldGraph.duplicateAttemptHead.count, 1);
+
+    const restarted = await createGitHubIssueLabelsHermeticComposition(f.cell);
+    const [left, right] = await Promise.all([
+      restarted.run({ bearerToken: f.credential.token, requestId: "request_duplicate_anchor_left" }),
+      restarted.run({ bearerToken: f.credential.token, requestId: "request_duplicate_anchor_right" }),
+    ]);
+    assert.deepEqual([left.status, right.status], ["duplicate", "duplicate"]);
+    const currentGraph: any = await restarted.exportGraph({ bearerToken: f.credential.token });
+    assert.equal(currentGraph.duplicateAttemptHead.count, 3);
+    const currentDuplicateAttemptHeadDigest = authorityDigest(currentGraph.duplicateAttemptHead);
+
+    await writeFile(ledgerPath, oldLedger);
+    const rolledBackGraph: any = await restarted.exportGraph({ bearerToken: f.credential.token });
+    assert.equal(rolledBackGraph.duplicateAttemptHead.count, 1);
+    assert.throws(
+      () => verifyCertificationTaskReceiptGraph(rolledBackGraph, { trustPin: f.pin, currentDuplicateAttemptHeadDigest } as any),
+      /duplicate.*current|head.*rollback|external.*anchor/i,
+    );
+  } finally { await rm(f.root, { recursive: true, force: true }); }
+});
+
 test("exhausted exact conflict replay records literal request id and operation kind without effect", async () => {
   const f = await fixture(); try {
     await f.runner.run({ bearerToken: f.credential.token, requestId: "request_exhausted_conflict" });
