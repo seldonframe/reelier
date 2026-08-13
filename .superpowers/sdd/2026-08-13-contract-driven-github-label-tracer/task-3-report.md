@@ -18,6 +18,8 @@ Commits
 
 - RED: `4acba1687567a79e738d1edde9acfff1b333dedd` — `test(authority): specify canonical HTTPS routes`
 - GREEN: `1cf3f09c09cd494299116497bf3d19bdbc9b5663` — `feat(authority): canonicalize native HTTPS routes`
+- Readback-resolution RED: `598719eb091aecb3714c08171737b269f991c457` — `test(authority): require registered GET readback routes`
+- Readback-resolution GREEN: `3d339fc85426b097b67135651f6ab3d3dcbf4ad2` — `fix(authority): require registered GET readback routes`
 
 Deviations from the plan
 
@@ -36,9 +38,9 @@ test/authority/json-https-route.test.ts(10,8): error TS2307: Cannot find module 
 GREEN command/output tail:
 
 ```text
-✔ canonical HTTPS routes freeze the GitHub labels write and independent read routes (2.9658ms)
-✔ canonical HTTPS route parsing is closed and inert (0.8449ms)
-✔ canonicalization sorts methods and path prefixes while rejecting duplicate normalized entries (0.6635ms)
+✔ canonical HTTPS routes freeze the GitHub labels write and independent read routes (3.9022ms)
+✔ canonical HTTPS route parsing is closed and inert (1.1444ms)
+✔ canonicalization sorts methods and path prefixes while rejecting duplicate normalized entries (1.2084ms)
 ℹ tests 11
 ℹ suites 0
 ℹ pass 11
@@ -46,7 +48,7 @@ GREEN command/output tail:
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 758.8968
+ℹ duration_ms 896.4868
 ```
 
 Self-review
@@ -54,6 +56,7 @@ Self-review
 - `git diff --check` passed.
 - The parser reads own property descriptors before values, so malicious getters are not invoked.
 - Canonical route identity includes every authority field; the test changes each field independently and observes a different digest.
+- Every `readEndpointId` now resolves during registry construction and must name an independently registered GET route.
 - No legacy endpoint is converted, inferred, or admitted into the canonical registry.
 
 Evidence maturity
