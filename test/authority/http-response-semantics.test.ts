@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { classifyHttpResponse, parseHttpResponseSemanticsProfileV1 } from "../../src/authority/host/http-response-semantics.js";
+import { classifyHttpResponse, materializedHttpRequestDigest, parseHttpResponseSemanticsProfileV1 } from "../../src/authority/host/http-response-semantics.js";
 import { buildMaterializedHttpRequestProjection } from "../../src/authority/drivers/json-https.js";
 import { malformedJsonResponse } from "../../src/authority/host/json-https-connector.js";
 
@@ -25,5 +25,12 @@ test("materialized request projection binds route and body while excluding crede
   assert.throws(() => buildMaterializedHttpRequestProjection({ endpointId: "e", baseUrl: "https://api.github.com", allowedMethods: ["PUT"], allowedPathPrefixes: ["/repos"], accountIdentity: "acct" }, "PUT", "/repos/a", "api_key=secret", {}, Buffer.from("body")), /secret query/i);
   for (const query of ["%61pi_key=secret", "api%5Fkey=secret", "%61uthorization=secret"]) {
     assert.throws(() => buildMaterializedHttpRequestProjection({ endpointId: "e", baseUrl: "https://api.github.com", allowedMethods: ["PUT"], allowedPathPrefixes: ["/repos"], accountIdentity: "acct" }, "PUT", "/repos/a", query, {}, Buffer.from("body")), /secret query/i);
+  }
+});
+
+test("direct projection digest rejects encoded sensitive and malformed query keys", () => {
+  const base = { v: "reelier.materialized-http-request/v1" as const, method: "PUT" as const, origin: "https://api.github.com", normalizedPath: "/repos/a", reviewedHeaders: {}, bodyDigest: "sha256:" + "1".repeat(64) };
+  for (const normalizedQuery of ["%61pi_key=secret", "api%5Fkey=secret", "%61uthorization=secret", "%bad=secret"]) {
+    assert.throws(() => materializedHttpRequestDigest({ ...base, normalizedQuery }), /query/i);
   }
 });
