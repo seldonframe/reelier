@@ -37,16 +37,15 @@ test("CI keeps both required matrix contexts failing when authority pack prerequ
     assert.ok(testJob.slice(position, position + 240).includes(prerequisite), `${step} has a prerequisite success guard`);
   }
   const badgeStep = testJob.slice(testJob.indexOf("- name: Check README tests badge", enforcement));
-  assert.match(badgeStep, /if: \$\{\{[^\r\n]*needs\.pack-authority-host-boundary\.result == 'success'/);
-  assert.match(badgeStep, /if: \$\{\{[^\r\n]*runner\.os == 'Linux'/);
-  assert.match(badgeStep, /if: \$\{\{[^\r\n]*&&[^\r\n]*\}\}/);
+  const badgeGuard = badgeStep.match(/^\s*(if: \$\{\{.*\}\})\r?$/m);
+  assert.ok(badgeGuard, "badge step has an if guard");
+  const expectedBadgeGuard = "if: ${{ needs.pack-authority-host-boundary.result == 'success' && runner.os == 'Linux' }}";
+  assert.equal(badgeGuard[1].replace(/\s+/g, " "), expectedBadgeGuard);
   const downstreamSteps = testJob.slice(testJob.indexOf("      - uses: actions/checkout@v4")).split(/(?=^      - )/m).filter(block => block.startsWith("      - "));
   assert.ok(downstreamSteps.length >= 10, "all downstream matrix steps are parsed");
   for (const block of downstreamSteps) {
     if (block.startsWith("      - name: Check README tests badge")) {
-      assert.match(block, /needs\.pack-authority-host-boundary\.result == 'success'/);
-      assert.match(block, /runner\.os == 'Linux'/);
-      assert.match(block, /&&/);
+      assert.ok(block.includes(expectedBadgeGuard), "badge step has the exact combined prerequisite and OS guard");
     } else {
       assert.ok(block.includes(prerequisite), `downstream step is prerequisite-guarded: ${block.split(/\r?\n/, 1)[0]}`);
     }
