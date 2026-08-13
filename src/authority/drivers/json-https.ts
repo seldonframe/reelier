@@ -256,7 +256,9 @@ export function buildMaterializedHttpRequestProjection(endpoint: JsonHttpsEndpoi
 
 function buildProjection(endpoint: JsonHttpsEndpoint, method: "POST" | "PUT" | "PATCH" | "DELETE" | "GET", path: string, query: string, headers: Readonly<Record<string, string>>, body: Uint8Array): MaterializedHttpRequestProjectionV1 {
   for (const pair of query ? query.split("&") : []) {
-    const key = pair.split("=", 1)[0]!.toLowerCase();
+    const rawKey = pair.split("=", 1)[0]!;
+    let key: string;
+    try { key = decodeURIComponent(rawKey).toLowerCase(); } catch { throw new JsonHttpsSecurityError("materialized request projection contains malformed query encoding"); }
     if (/(?:token|secret|password|credential|authorization|api[-_]?key)/.test(key)) throw new JsonHttpsSecurityError("materialized request projection contains a secret query field");
   }
   const projectedHeaders: Record<string, string> = {};

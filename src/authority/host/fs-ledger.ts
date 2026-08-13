@@ -85,6 +85,7 @@ export const dispatchFaultPoints = Object.freeze([
   "dispatch-before-file-sync", "dispatch-after-file-sync", "dispatch-before-close", "dispatch-after-close",
   "dispatch-before-directory-sync", "dispatch-after-directory-sync",
   "dispatch-before-journal-transition", "dispatch-after-journal-transition",
+  "after-prepared-dispatch-transition",
 ] as const);
 export const resultFaultPoints = Object.freeze([
   "result-before-clock-high-water-write", "result-after-clock-high-water-write",
@@ -593,25 +594,17 @@ export class FsAuthorityLedger implements AuthorityLedger {
       const withClock = await this.persistClock(view, now, "dispatch");
       const at = new Date(now).toISOString();
       const transition = await this.appendEvent(withClock, { type: "transition", reservationId: input.reservationId, from: "reserved", to: "dispatched", at }, "dispatch") as TransitionJournalEvent;
-      const next = applyTransition(reservation, transition);
+      this.fault("after-prepared-dispatch-transition");
+      // Keep the commit lock held across both journal appends. A restarted or
+      // concurrent reader can therefore never observe dispatched without its
+      // send-started marker and cannot race a second send decision.
+      const afterTransition = await this.loadView();
+      await this.appendEvent(afterTransition, { type: "send-started", reservationId: input.reservationId, preparedDigest: input.preparedDescription.materializedRequestDigest, authorityGeneration: input.expectedAuthorityGeneration, at }, "dispatch");
       return createDispatchCommitLease({ reservationId: input.reservationId, allocationId: input.allocationId, preparedDigest: input.preparedDescription.materializedRequestDigest, authorityGeneration: input.expectedAuthorityGeneration, authorityExpiresAt: input.preparedDescription.authorityExpiresAt, absoluteDeadlineMs: input.absoluteDeadlineMs, commitGeneration: `commit:${input.reservationId}`,
-        commit: async () => { await this.markPreparedDispatchStarted(input.reservationId, input.preparedDescription.materializedRequestDigest, input.expectedAuthorityGeneration); },
       });
     });
     if (isLockFailure(result)) throw new Error(`prepared dispatch commit refused: ${result.reason}`);
     return result as DispatchCommitLease;
-  }
-
-  private async markPreparedDispatchStarted(reservationId: string, preparedDigest: string, authorityGeneration: string): Promise<void> {
-    const result = await this.withLock("dispatch", async reclaimed => {
-      const view = await this.prepare(reclaimed, false, "dispatch");
-      const current = view.reservations.get(reservationId);
-      if (!current || current.state !== "dispatched" || current.sendStarted === true) throw new Error("prepared dispatch send boundary is unavailable");
-      const now = this.options.now();
-      const clocked = await this.persistClock(view, now, "dispatch");
-      await this.appendEvent(clocked, { type: "send-started", reservationId, preparedDigest, authorityGeneration, at: new Date(now).toISOString() }, "dispatch");
-    });
-    if (isLockFailure(result)) throw new Error(`send-started boundary refused: ${result.reason}`);
   }
 
   async recover(options: Readonly<{ deferTerminal?: boolean }> = {}): Promise<RecoverResult> {
