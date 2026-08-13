@@ -28,7 +28,11 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
         const context = state.reservation.intent.executionContext;
         const prepared = await adapter.prepare(state);
         const description: PreparedDispatchDescriptionV1 = prepared.description;
-        const lease = await ledger.commitPreparedDispatch({ reservationId, allocationId: context?.allocationId ?? description.allocationId, expectedAuthorityGeneration: description.authorityGeneration, preparedDescription: description, absoluteDeadlineMs: description.absoluteDeadlineMs });
+        const budgetClaim = budgetFor(state);
+        if (budget && budgetClaim) await budget.consumeOnce(budgetClaim);
+        let lease: import("./prepared-dispatch.js").DispatchCommitLease;
+        try { lease = await ledger.commitPreparedDispatch({ reservationId, allocationId: context?.allocationId ?? description.allocationId, expectedAuthorityGeneration: description.authorityGeneration, preparedDescription: description, absoluteDeadlineMs: description.absoluteDeadlineMs }); }
+        catch (error) { if (budget && budgetClaim) { if (budget.releaseConsumedOnce) await budget.releaseConsumedOnce(budgetClaim); else await budget.returnOnce(budgetClaim); } throw error; }
         let outcome: DispatchOutcome;
         try { outcome = adapter.dispatchPrepared ? await adapter.dispatchPrepared(prepared, lease) : await consumePreparedDispatch(prepared, lease); }
         catch { outcome = { kind: "ambiguous", resultDigest: authorityDigest({ v: "reelier.dispatch-result/v1", reservationId, status: "ambiguous" }) }; }
