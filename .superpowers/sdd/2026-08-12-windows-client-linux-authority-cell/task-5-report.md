@@ -140,3 +140,62 @@ This is exactly the Task 5 allowlist. `git status --short --untracked-files=all`
 - Hosted `test (ubuntu-latest)` and `test (windows-latest)` checks attached to the current workflow SHA are pending. Do not merge until both are green.
 - The local Windows full suite remains red as recorded above; it is not evidence for Linux Authority Cell hosting.
 - Acceptance measurements are release evidence only, not market evidence. The packet makes no claim of semantic correctness, live human review, or general software-factory capability.
+
+## Fix round 5 (2026-08-13)
+
+### Files changed in this round
+
+- `.github/workflows/ci.yml`
+- `.superpowers/sdd/2026-08-12-windows-client-linux-authority-cell/task-5-report.md`
+- `test/authority/certification-factory-journey.test.ts`
+- `test/authority/package.test.ts`
+- `test/packed/authority-factory-journey.mjs`
+
+### What changed
+
+- `test/packed/authority-factory-journey.mjs` now validates the installed summary against the schema resolved from the clean installed consumer and independently reconstructs the entire closed reviewer packet and fixed summary derivation from the graph after signed-graph verification. A summary with recomputed raw-byte metadata is rejected when any derived value is substituted.
+- The packed verifier recursively scans the actual downloaded tarball and evidence files for the deterministic `REELIER_FACTORY_SECRET_CANARY_V1_6F4E91C28A73` bytes before installation or metadata acceptance; symlink substitutions are rejected. The producer independently scans its downloaded tarball and generated evidence before writing `secretCanaryResult: "empty"`. Both matrix legs invoke the independently scanning verifier.
+- `.github/workflows/ci.yml` now matches npm pack JSON's real root-relative filenames (`dist/...`, never `package/dist/...`) when rejecting obsolete Windows FIFO/native helpers.
+- Tests plant the deterministic canary in the actual tarball, recompute `tarballSha256` and the remaining metadata, and prove the installed verifier still refuses it. A live `npm pack --dry-run --json` regression establishes that npm reports `dist/...` paths with no `package/` prefix.
+
+### TDD commits and evidence
+
+- RED `58e5cfe`: the installed verifier exited `0` after `reviewerPacket.humanApprovedTaskBinding.taskId` was substituted and `summaryDigest` recomputed.
+- GREEN `6456c1a`: the same falsifier passed after full graph-derived packet/summary equality and packed-schema validation.
+- RED `1cff95f`: the installed verifier exited `0` with the deterministic canary planted in downloaded evidence while metadata still claimed `empty`.
+- GREEN `00a8e8f`: the same falsifier passed after recursive actual-byte scans. Follow-up `3af3cac` strengthened it by appending the canary to the tarball and recomputing metadata, rather than placing it in a metadata field.
+- RED `b8369b5`: focused package tests failed on the obsolete `package/dist/...` matcher and the missing deterministic producer scan.
+- GREEN `c5a45e3`: both focused package regressions passed with root-relative matching and independent producer scanning.
+- `3bbe4b5` updates the workflow-structure assertion to require full derived-summary validation, packed schema validation, and both tarball/evidence scans.
+
+### Verification
+
+`npm run check:authority-contract`, `npm run build`, and `npx tsc -p tsconfig.test.json --pretty false`: exit 0; verbatim tail:
+
+```text
+built cloudflare_api_token, cloudflare_dns, github_issue_labels, gmail, gmail_labels, hubspot_slack_information_flow, neon_database, slack_channel_topic, stripe, vercel_deployment
+CONTRACT_EXIT=0
+BUILD_EXIT=0
+TEST_COMPILE_EXIT=0
+```
+
+`node --test --test-concurrency=1 dist-test/test/authority/certification-factory-journey.test.js dist-test/test/authority/package.test.js`: exit 0; verbatim tail:
+
+```text
+ℹ tests 13
+ℹ suites 0
+ℹ pass 13
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 38625.9035
+```
+
+The full suite was not rerun in this fix round. Its last Windows result remains the explicitly reported `3011` tests / `2980` pass / `25` fail / `6` skipped, dominated by Linux Authority Cell requirements; this round did not mask or reinterpret it.
+
+### Deviations and open risks
+
+- No graph semantics, Adapter Contract bytes/digest, retry/sleep/timeout behavior, or authority trust boundary changed.
+- Actual final recursive-delete failure was assessed but not injected: a genuine `rm` failure cannot also prove zero private residue without a second deletion attempt, while this task forbids adding retry behavior and forbids weakening refusal cleanup. The existing `cleanup` seam therefore remains a pre-cleanup refusal test and is not represented as proof of an actual `rm` failure.
+- Hosted Ubuntu and Windows required checks for the current workflow SHA remain mandatory before merge.
