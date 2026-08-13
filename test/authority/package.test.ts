@@ -31,7 +31,7 @@ test("CI keeps both required matrix contexts failing when authority pack prerequ
   const prerequisite = "if: ${{ needs.pack-authority-host-boundary.result == 'success' }}";
   const enforcement = testJob.indexOf("- name: Enforce authority pack prerequisite");
   assert.ok(enforcement >= 0);
-  for (const step of ["actions/checkout@v4", "actions/setup-node@v4", "- run: npm ci", "- name: Clean build output", "- run: npm run build", "actions/download-artifact@v4", "- name: Verify downloaded authority pack provenance", "- name: Verify downloaded package boundary on native OS", "- name: Run native authority platform evidence", "- name: Run supported tests", "- name: Check README tests badge"]) {
+  for (const step of ["actions/checkout@v4", "actions/setup-node@v4", "- run: npm ci", "- name: Clean build output", "- run: npm run build", "- name: Compile test checkout", "actions/download-artifact@v4", "- name: Verify downloaded authority pack provenance", "- name: Verify downloaded package boundary on native OS", "- name: Run native authority platform evidence", "- name: Run supported tests", "- name: Check README tests badge"]) {
     const position = testJob.indexOf(step, enforcement);
     assert.ok(position > enforcement, step);
     assert.ok(testJob.slice(position, position + 240).includes(prerequisite), `${step} has a prerequisite success guard`);
@@ -39,6 +39,10 @@ test("CI keeps both required matrix contexts failing when authority pack prerequ
   const downstreamSteps = testJob.slice(testJob.indexOf("      - uses: actions/checkout@v4")).split(/(?=^      - )/m).filter(block => block.startsWith("      - "));
   assert.ok(downstreamSteps.length >= 10, "all downstream matrix steps are parsed");
   for (const block of downstreamSteps) assert.ok(block.includes(prerequisite), `downstream step is prerequisite-guarded: ${block.split(/\r?\n/, 1)[0]}`);
+  const compilePosition = testJob.indexOf("- name: Compile test checkout");
+  const firstDistTestPosition = testJob.indexOf("dist-test/");
+  assert.ok(compilePosition > 0 && compilePosition < firstDistTestPosition, "test checkout compiles before the first dist-test invocation");
+  assert.match(testJob.slice(compilePosition, firstDistTestPosition), /run: npx tsc -p tsconfig\.test\.json --pretty false/);
   assert.match(testJob, /if \[ '\$\{\{ matrix\.os \}\}' = 'ubuntu-latest' \]; then npm test[^\n]*else node --test --test-concurrency=1 dist-test\/test\/authority\/package\.test\.js dist-test\/test\/authority\/linux-authority-cell\.test\.js dist-test\/test\/authority\/authority-cell-connection\.test\.js dist-test\/test\/authority\/certification-portable-evidence\.test\.js/);
 });
 
