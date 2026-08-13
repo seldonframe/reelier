@@ -2,7 +2,7 @@ export type { AuthorityHostConfig } from "./config.js";
 export { loadAuthorityHostConfig, validateAuthorityHostConfig } from "./config.js";
 export type { SecretResolver } from "./secret-resolver.js";
 export { createSecretResolver } from "./secret-resolver.js";
-export type { DispatchAdapter, DispatchCoordinator, DispatchOutcome, DispatchEvidenceWriter, DispatchPublication, DispatchBudget } from "./dispatch.js";
+export type { DispatchAdapter, DispatchCoordinator, DispatchOutcome, DispatchEvidenceWriter, DispatchPublication, DispatchBudget, CertifiedIdentityVerifier, CertifiedDispatchOptions } from "./dispatch.js";
 export { createDispatchCoordinator } from "./dispatch.js";
 export type { McpDispatchRoute, McpDispatchAdapterOptions } from "./mcp-connector.js";
 export { createMcpDispatchAdapter } from "./mcp-connector.js";
