@@ -72,20 +72,34 @@ test("native Windows refuses authority setup without a platform test seam", { sk
 });
 
 test("Windows refuses every authority host composition before touching host dependencies", async () => {
-  let accesses = 0;
-  const inaccessible = new Proxy({}, { get() { accesses += 1; throw new Error("authority dependency accessed"); } });
+  for (const name of SUPPORTED_LINUX_HOST_ROOTS) {
+    const root = await mkdtemp(path.join(os.tmpdir(), `reelier-linux-authority-${name}-`));
+    let dependencyAccesses = 0, callbackInvocations = 0;
+    const callback = () => { callbackInvocations += 1; throw new Error("authority callback invoked"); };
+    const dependency = <T extends object>(value: T): T => new Proxy(value, { get(target, key, receiver) { dependencyAccesses += 1; return Reflect.get(target, key, receiver); } });
+    try {
+      await onWindows(async () => {
+        const operations: Record<typeof name, () => unknown> = {
+          createAuthorityEgressGateway: () => createAuthorityEgressGateway(dependency({ config: {}, secrets: dependency({ resolve: callback }) }) as never),
+          createAuthorityHostRuntime: () => createAuthorityHostRuntime(dependency({}) as never),
+          createAuthorityHostServer: () => createAuthorityHostServer(dependency({ ledgerDir: root }) as never, dependency({}) as never, dependency({ principalRegistry: dependency({ resolve: callback }) }) as never),
+          createCertificationCellHost: () => createCertificationCellHost(dependency({ workspace: root, currentTrustPinPath: path.join(root, "trust.json"), delegationAuthority: dependency({ signGrant: callback }) }) as never),
+          createDelegationAuthority: () => createDelegationAuthority(dependency({ root, signGrant: callback }) as never),
+          createDispatchCoordinator: () => createDispatchCoordinator(dependency({}) as never, dependency({ dispatch: callback }) as never, dependency({ write: callback }) as never, dependency({ publish: callback }) as never, dependency({ reserve: callback }) as never),
+          createFileReceiptPublication: () => createFileReceiptPublication(dependency({ root }) as never),
+          createLocalAuthorityRuntime: () => createLocalAuthorityRuntime(dependency({ ledgerDir: root, decisionDir: root, receiptDir: root, tenant: "tenant", requester: "requester", definitions: [] }) as never, dependency({ dispatchAdapter: dependency({ dispatch: callback }) }) as never),
+        };
+        await assert.rejects(async () => operations[name](), assertLinuxRequired, name);
+      });
+      assert.equal(dependencyAccesses, 0, `${name}: dependency accesses`);
+      assert.equal(callbackInvocations, 0, `${name}: callback invocations`);
+      assert.deepEqual(await readdir(root), [], `${name}: empty root`);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  }
   await onWindows(async () => {
-    await assert.rejects(() => createLocalAuthorityRuntime(inaccessible as never), assertLinuxRequired);
-    assert.throws(() => createAuthorityHostRuntime(inaccessible as never), assertLinuxRequired);
-    assert.throws(() => createDispatchCoordinator(inaccessible as never, inaccessible as never, inaccessible as never, inaccessible as never, inaccessible as never), assertLinuxRequired);
-    assert.throws(() => createFileReceiptPublication(inaccessible as never), assertLinuxRequired);
-    assert.throws(() => createAuthorityHostServer(inaccessible as never, inaccessible as never, inaccessible as never), assertLinuxRequired);
-    assert.throws(() => createDelegationAuthority(inaccessible as never), assertLinuxRequired);
-    assert.throws(() => createAuthorityEgressGateway(inaccessible as never), assertLinuxRequired);
-    await assert.rejects(() => createCertificationCellHost(inaccessible as never), assertLinuxRequired);
+    const inaccessible = new Proxy({}, { get() { throw new Error("internal composition dependency accessed"); } });
     await assert.rejects(() => createGitHubIssueLabelsHermeticComposition(inaccessible as never), assertLinuxRequired);
   });
-  assert.equal(accesses, 0);
 });
 
 test("declared host namespace contains every supported Linux composition root", () => {
