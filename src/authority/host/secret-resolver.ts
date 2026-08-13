@@ -150,6 +150,8 @@ function safeRelative(value: string): boolean {
 
 async function readConfinedFile(root: string, relative: string): Promise<{ value: string; version: string }> {
   if (!safeRelative(relative)) throw new Error("secret path escapes root");
+  const rootStat = await lstat(root);
+  if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) throw new Error("secret root is not a regular directory");
   const rootReal = await realpath(root);
   const candidate = path.resolve(root, relative);
   const boundary = process.platform === "win32" ? rootReal.toLowerCase() : rootReal;
