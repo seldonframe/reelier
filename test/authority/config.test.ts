@@ -43,4 +43,5 @@ test("canonical native HTTPS routes carry only opaque credential slot ids", () =
   assert.equal(parsed.nativeHttpsRoutes?.[0]?.credentialSlotId, "github.tracer");
   assert.equal(JSON.stringify(parsed).includes("secretRef"), false);
   assert.throws(() => validateAuthorityHostConfig({ ...base, nativeHttpsRoutes: [{ ...route, secretRef: "env:CANARY" }] }), /route|unknown|invalid/i);
+  assert.throws(() => validateAuthorityHostConfig({ ...base, endpoints: [{ endpointId: "github.write", baseUrl: "https://api.github.com", accountIdentity: "acct", allowedMethods: ["PUT"], allowedPathPrefixes: ["/repos"] }], nativeHttpsRoutes: [route, { ...route, endpointId: "github.read", allowedMethods: ["GET"], readEndpointId: "github.read" }] }), /overlap|identit/i);
 });
