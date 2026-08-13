@@ -71,6 +71,18 @@ test("factory evidence producer is checkout-built but installs and runs only the
   assert.match(producer, /graph\.json/);
   assert.match(producer, /trust-pin\.json/);
   assert.match(producer, /factory-journey-summary\.json/);
+  assert.match(producer, /Object\.keys\(metadata\)/);
+  assert.match(producer, /adapterContractDigest/);
+  assert.match(producer, /trustPinDigest/);
+});
+
+test("matrix verifies public factory evidence through a clean installed consumer on both operating systems", () => {
+  const workflow = readFileSync(path.join(process.cwd(), ".github", "workflows", "ci.yml"), "utf8");
+  const testJob = workflow.slice(workflow.indexOf("  test:"));
+  assert.match(testJob, /authority-factory-public-evidence/);
+  assert.match(testJob, /test\/packed\/authority-factory-journey\.mjs --verify-evidence/);
+  assert.match(testJob, /reelier\/authority/);
+  assert.match(testJob, /factory-evidence-metadata\.json/);
 });
 
 test("packed boundary harness invokes npm with an argument array even from metacharacter paths", () => {
