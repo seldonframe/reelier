@@ -12,7 +12,7 @@ Files changed
 ## Scope and commits
 
 - task4bBase: `039cc7b3703df6b859df8cb81659294b2c4bfa0d`
-- commits: `2ad0e88 test(authority): align Task 1 package allowlists`; `46a2b88 test(authority): add Gate 0 package boundary coverage`; `bba23a6 feat(authority): gate raw ledger behind Linux host boundary`
+- commits: `2ad0e88 test(authority): align Task 1 package allowlists`; `46a2b88 test(authority): add Gate 0 package boundary coverage`; `bba23a6 feat(authority): gate raw ledger behind Linux host boundary`; `be3e0fa docs(authority): record Gate 0 verification evidence`; `444c6b9 test(authority): require packed Windows composition proof`; `d6d2604 test(authority): prove packed Windows root refusal`
 - task4bReviewed: `bba23a6f` before this evidence-report commit; pre-existing dirty-path hashes were rechecked and matched exactly.
 
 ## What changed
@@ -41,7 +41,7 @@ The final combined command was: `npm run check:authority-contract; npm run build
 | Evidence | downloaded tarball | same-workflow checkout | native OS |
 |---|---|---|---|
 | declared host barrel/no raw subpath/physical internal file | verified (local surface mode) | absent | Windows |
-| Windows host-root refusal before access/callback/root mutation | absent | seam-only supplemental coverage verified | Windows |
+| Windows host-root refusal before access/callback/root mutation | verified (`windows-native`, eight installed-tarball roots) | seam-only supplemental coverage verified | Windows |
 | N100 one reserved/99 exact-existing/acknowledged recovery | absent | absent | Ubuntu hosted evidence absent |
 
 Public API claim: `reelier/authority/host` no longer owns `FsAuthorityLedger`; its undeclared `fs-ledger.js` package-specifier rejects. Nonclaim: the physically shipped internal file is not inaccessible by an absolute resolved path, and the excluded complement is neither an approved inventory nor removed by this task.
@@ -49,5 +49,6 @@ Public API claim: `reelier/authority/host` no longer owns `FsAuthorityLedger`; i
 ## Open risks / deviations
 
 - Hosted `test (ubuntu-latest)` evidence attached to this workflow SHA was not available locally, so the required N100 result is absent.
-- The full `npm test` final run timed out at the local 120 second command limit; it requires a longer runner execution for a conclusive suite result.
-- The `windows-native` packed harness currently verifies the native platform seam and package boundary, but does not yet drive all eight installed-tarball composition roots with per-root dependency/callback/filesystem probes. This is an incomplete portion of the approved brief and requires follow-up before Gate 0 approval.
+- The longer full `npm test` run completed with failures on this native Windows host: pre-existing host-operation tests expect Linux host behavior but now receive `AUTHORITY_CELL_LINUX_REQUIRED` (examples: `local-runtime.test.js`, `receipts.test.js`). This is not a passing full-suite result.
+- `windows-native` RED command: `node test/packed/authority-host-boundary.mjs --tarball <absolute-path> --mode windows-native` failed with `windows-native composition-root no-access proof not implemented`. GREEN rerun exited 0 after asserting all eight installed-tarball roots reject with `AUTHORITY_CELL_LINUX_REQUIRED`, dependency accesses `0`, callback invocations `0`, and every supplied temporary root empty.
+- The generated root `reelier-0.32.1.tgz` was verified as this task's just-packed 894960-byte artifact with SHA-256 `8c7da130074f27a43940263157e17e3d7e103590080850349389c196a151fdd3` and removed. `.tmp-pack` was untouched.
