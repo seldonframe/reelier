@@ -1,6 +1,7 @@
 Files changed
 
 - `.github/workflows/ci.yml`
+- `.superpowers/sdd/2026-08-12-windows-client-linux-authority-cell/task-5-report.md`
 - `CHANGELOG.md`
 - `contract/certification/v1/factory-journey-summary.schema.json`
 - `package.json`
@@ -10,59 +11,132 @@ Files changed
 - `test/authority/certification-factory-journey.test.ts`
 - `test/authority/package.test.ts`
 - `test/packed/authority-factory-journey.mjs`
-- `.superpowers/sdd/2026-08-12-windows-client-linux-authority-cell/task-5-report.md`
 
-## What changed
+## What changed per file
 
-- The Linux-only `authority certify factory-journey --out` command atomically publishes the signed receipt graph, external trust pin, and a closed non-authorizing summary. It has no credential/provider/network options and redacts every refusal to `factory-journey-refused`.
-- `reelier/authority` now exposes only the existing graph verifier for installed offline verification; no factory executor or authority-bearing construction API is exported.
-- The packed harness installs one supplied tarball into a temporary consumer and verifies the generated artifacts through that installed package.
-- CI reuses the pack job, adds an Ubuntu producer for the public evidence packet, and makes the OS matrix depend on both producer jobs.
+- `.github/workflows/ci.yml`: keeps exactly one pack job, rejects obsolete Windows FIFO/native-helper package entries, produces one closed four-file public evidence artifact on Ubuntu, and makes both matrix legs verify provenance and the installed offline verifier before later guarded steps.
+- `CHANGELOG.md`: records the unreleased installed factory-journey CLI and offline graph verifier.
+- `contract/certification/v1/factory-journey-summary.schema.json`: closes the summary and reviewer-packet schemas, including four stages, four-state/nonclaim fields, existing graph lineage, signed cleanup results, and a non-authorizing fixture confirmation.
+- `package.json`: excludes the obsolete compiled `windows-k1-fifo` helper from npm contents and retains the packed harness script.
+- `src/authority/certification/factory-journey.ts`: stages in a private sibling, allocates its private Cell root under the same cleanup lifecycle, removes both on every failure, exposes only a direct package-internal test fault seam, and derives the closed reviewer packet from the already verified signed graph. The deterministic fixture confirmation is bound to the graph's signed-readiness digest; it says `liveHuman: false` and `grantsAuthority: false`.
+- `src/authority/cli.ts`: accepts only `authority certify factory-journey --out <absolute-absent-path>` and emits the exact compact success/refusal streams.
+- `src/authority/index.ts`: exports only `verifyCertificationTaskReceiptGraph` for installed offline verification; no factory executor, provider, signer, ledger, budget, callback, or fault seam is public.
+- `test/authority/certification-factory-journey.test.ts`: covers exact success output/files, relative output, existing file/directory/symlink, extra positionals, unknown flags and credential/provider/signer/ledger/callback/network/retry/task/grant/principal/allocation-like options, non-Linux refusal, staging/root/write/cleanup/rename faults, residue cleanup, and literal graph-derived reviewer fields.
+- `test/authority/package.test.ts`: enforces the two-prerequisite DAG, exact one-pack rule, closed evidence artifact, installed verifier, raw provenance checks, and absence of obsolete helper exports/package entries.
+- `test/packed/authority-factory-journey.mjs`: accepts one exact argument shape, installs only the supplied tarball in a clean consumer, resolves `reelier/authority` inside it, enforces exact CLI/file/path contracts, and recomputes raw-byte graph/trust/summary/tarball digests plus Adapter Contract provenance.
 
-## Plan deviations
+## Deviations from the plan
 
-- The local `npm pack` verification generated `reelier-0.32.1.tgz` at the worktree root. After validating its exact absolute path is inside this worktree and it is untracked, the environment rejected the required native `Remove-Item -LiteralPath` command twice. The controller then removed only that validated untracked generated file with `System.IO.File.Delete`; it is absent from the final status.
-- The full local `npm test` completed after 390.6 seconds with exit 1 on the Windows workstation. Linux-host suites expected Linux semantic behavior but correctly received `AuthorityCellLinuxRequiredError`; no test or product timeout/retry was altered. Required hosted Ubuntu/Windows workflow evidence remains the merge gate.
+- None in Task 5 scope. The private fault seam is exported only from the internal module so the TypeScript test can exercise lifecycle faults; it is absent from every package export/barrel and cannot inject executable dependencies into the public CLI/API.
+- Local verification ran on Windows. Linux Authority Cell hosting was not claimed locally; hosted Ubuntu and Windows checks for the current workflow SHA remain required before merge.
 
-## Tests
+## TDD evidence
 
-Verbatim tail:
+- RED `2ed433c`: compile failed because `FactoryJourneyFault` and `__testSetFactoryJourneyFault` did not exist.
+- GREEN `a07ada6`: factory suite passed 3/3 after lifecycle cleanup, graph derivation, and closed schema implementation.
+- RED `303f319`: package structure test failed because exact-one-pack/package/evidence closure was absent.
+- GREEN `8c55790`: package suite passed 7/7 after CI closure guards.
+- RED `a74bfac`: packed provenance test failed because the harness did not hash raw bytes or bind tarball/Adapter Contract provenance.
+- GREEN `d20961c`: package suite passed 7/7 after packed harness and matrix provenance hardening.
+- Pack inspection then found two obsolete entries, `dist/authority/host/windows-k1-fifo.js` and `.d.ts`; `03fd75c` excludes them. The next pack contained 497 files and reported `OBSOLETE_COUNT=0`.
+- RED `5b7aad6`: the reviewer packet's cleanup result was empty while signed cleanup receipts reported `not-attempted`, `matched`, `matched`.
+- GREEN `6d5f08f`: final focused factory/package suite passed 10/10 with signed cleanup results derived from receipt evidence.
+
+## Test results
+
+`npm run check:authority-contract`: exit 0.
+
+`npm run build`: exit 0; verbatim tail:
 
 ```text
-✔ factory journey atomically publishes a verified graph and non-authorizing summary
-✔ factory journey refuses existing output without mutating it
-✔ declared authority host barrel exposes only supported composition roots as Gate 0 claims
-✔ CI keeps both required matrix contexts failing when authority pack prerequisite fails
-✔ packed boundary harness invokes npm with an argument array even from metacharacter paths
-✔ public production export parses DecisionContext and its portable evidence against packaged schemas
-ℹ pass 6
-ℹ fail 0
+> node scripts/build-authority-contract.mjs --check && tsc -p tsconfig.json && node scripts/build-authority-contract.mjs --copy-schemas && node scripts/build-packs.mjs
+
+built cloudflare_api_token, cloudflare_dns, github_issue_labels, gmail, gmail_labels, hubspot_slack_information_flow, neon_database, slack_channel_topic, stripe, vercel_deployment
 ```
 
-`npm run check:authority-contract` and `npm run build` completed successfully. `npm test` completed in 390.6 seconds with exit 1; its failure tail is `local-runtime.test.js` and `receipts.test.js` receiving `AUTHORITY_CELL_LINUX_REQUIRED` on this Windows host. `git diff --check` completed with exit 0.
+`npx tsc -p tsconfig.test.json --pretty false`: exit 0.
+
+Final focused factory/package command: exit 0; verbatim tail:
+
+```text
+ℹ tests 10
+ℹ suites 0
+ℹ pass 10
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 22411.6506
+```
+
+The broader 54-test authority batch had factory 3/3 and package 7/7 green, but exited 1 on this Windows host with three existing Linux-host/race expectations in the GitHub runner corpus: concurrent recovery lock refusal, linked-journal controlled-cut wording, and its post-test async ENOENT. No retry, sleep, timeout, or mutex behavior changed.
+
+Full `npm test`: exit 1 on Windows after 463 seconds; verbatim result tail:
+
+```text
+ℹ tests 3011
+ℹ suites 0
+ℹ pass 2980
+ℹ fail 25
+ℹ cancelled 0
+ℹ skipped 6
+ℹ todo 0
+ℹ duration_ms 449811.2547
+```
+
+The verbatim failure tail ends with `AuthorityCellLinuxRequiredError` from `local-runtime.test.js` and `receipts.test.js`: Windows is supported as a client, while Authority Cell hosting requires Linux. This is reported as a failure, not a pass. Hosted Ubuntu remains the authority-host correctness gate.
+
+Local pack surface verification: exit 0. The final pack was created once in a fresh OS temp directory, installed by the packed surface harness, contained 497 files, and had zero paths matching obsolete Windows FIFO/native helpers. Both generated Task 5 temp tarball directories are outside the repository; no Task 5 tarball exists in the worktree. The pre-existing `.tmp-pack/reelier-0.32.0.tgz` is unrelated dirty state and is byte-identical below.
+
+`git diff --check 55ff795..6d5f08f` and `git diff --check`: exit 0.
 
 ## Audit
 
 - `task5Base`: `55ff79566bdcd6b88ba47bbf36996236fd6c7b1b`
-- `task5Reviewed`: `16a3ed35b5cd9eef9e99a8e8b14957e72fe2e563`
-- Task commits: `9d128a8feefa15d0a3506c849f20b1739c361935`, `9fbde7b5ef461352220c1733eb3a7f0bb0cf6856`, `16a3ed35b5cd9eef9e99a8e8b14957e72fe2e563`, plus the round-one guard/report amendments.
-- Round-one review commit: `ab2d31694df9f064e134ef490c35dc9a4767668f`; every later matrix step now contains the exact pack-and-producer success guard.
-- Pre-existing dirty-path hashes were rechecked byte-for-byte and match the start snapshot: `true`.
-- `git diff --name-only task5Base..task5Reviewed` contains only the Task 5 allowlist except this report, which is added in the following report commit.
-- `git status` contains the original dirty paths plus the generated out-of-scope `reelier-0.32.1.tgz` noted above; the original paths remained unstaged and byte-identical.
+- `task5Reviewed` implementation snapshot before this report commit: `6d5f08fe43dadbb315e53ec47081c743b3884d46`
+- The report commit necessarily follows that reviewed implementation snapshot. The final branch HEAD is recorded in the commit history; reviewers should diff `task5Base..HEAD`, which contains exactly the allowlist at the top of this report.
+
+Literal pre-existing dirty-path snapshot, before and after (path, before SHA-256, after SHA-256, equal):
+
+```text
+.gitignore  8e60b7940460e69ba94c3ff85aeff87c5388478026760c4b6d1f9aa2f36bf609  8e60b7940460e69ba94c3ff85aeff87c5388478026760c4b6d1f9aa2f36bf609  true
+src/authority/certification/manifests.ts  31021c1b517b0ba1351064c3acfdf314c46d94926b00368fb97f4e45a91486b0  31021c1b517b0ba1351064c3acfdf314c46d94926b00368fb97f4e45a91486b0  true
+src/authority/certification/runner-registry.ts  90d0943698f4fbb6c8261e34171aa44146e8ad840938fd10112d2d1d640cd21f  90d0943698f4fbb6c8261e34171aa44146e8ad840938fd10112d2d1d640cd21f  true
+test/authority/certification-input-fixture.ts  4789f255e39e000ed2ae40dbdb90ea5da2ae85a835ab604a78bb69155fcd11ba  4789f255e39e000ed2ae40dbdb90ea5da2ae85a835ab604a78bb69155fcd11ba  true
+.tmp-pack/full-test-output-serial.log  a64ccf7bd70b314746f24747b03de85dab97b51080c1c5e14466d2c32476b3ab  a64ccf7bd70b314746f24747b03de85dab97b51080c1c5e14466d2c32476b3ab  true
+.tmp-pack/full-test-output.log  3b88281fadcdc2e2362071306fe615ba217b6b021a3d43dae6014b93f4b694bb  3b88281fadcdc2e2362071306fe615ba217b6b021a3d43dae6014b93f4b694bb  true
+.tmp-pack/reelier-0.32.0.tgz  acfb4e7de668cccd06c19bba1013baac506575154135b139169008fa0455cb7e  acfb4e7de668cccd06c19bba1013baac506575154135b139169008fa0455cb7e  true
+native/windows-k1-helper/Cargo.lock  da1c70beb98d9279917016de836f6842483144c0d8b78f152eeffd21a45d53b6  da1c70beb98d9279917016de836f6842483144c0d8b78f152eeffd21a45d53b6  true
+native/windows-k1-helper/Cargo.toml  5479e734bdacb84ebd0bd60f07f54b8dc700427a9dd564ee00219b51b84c53eb  5479e734bdacb84ebd0bd60f07f54b8dc700427a9dd564ee00219b51b84c53eb  true
+native/windows-k1-helper/build.rs  97468c35adf133032e6c12143c62e91171aedc34676a10cd0be3e374472dcd56  97468c35adf133032e6c12143c62e91171aedc34676a10cd0be3e374472dcd56  true
+native/windows-k1-helper/src/lib.rs  52a7d6f48edf4ca99e9b4d15d0a68b4e3d9b74cd9ad67fa3185ef38b6e04028d  52a7d6f48edf4ca99e9b4d15d0a68b4e3d9b74cd9ad67fa3185ef38b6e04028d  true
+native/windows-k1-helper/src/names.rs  f6d8f6a87f7292a09553740c98a6fdc9c65f4070a7813efc1ccd1022a039251c  f6d8f6a87f7292a09553740c98a6fdc9c65f4070a7813efc1ccd1022a039251c  true
+native/windows-k1-helper/src/status.rs  a87717902392746bb51f97a07872b07dd417505b120f42eb5ba8babdfb4a7041  a87717902392746bb51f97a07872b07dd417505b120f42eb5ba8babdfb4a7041  true
+rust-toolchain.toml  b921a5cf16cb5b9ffde3d3756e34d859051e665b05ad89df5afda3c6581ac792  b921a5cf16cb5b9ffde3d3756e34d859051e665b05ad89df5afda3c6581ac792  true
+```
+
+Snapshot equality: `true`. All remain unstaged.
+
+Literal scope audit for `git diff --name-only 55ff795..6d5f08f`:
+
+```text
+.github/workflows/ci.yml
+.superpowers/sdd/2026-08-12-windows-client-linux-authority-cell/task-5-report.md
+CHANGELOG.md
+contract/certification/v1/factory-journey-summary.schema.json
+package.json
+src/authority/certification/factory-journey.ts
+src/authority/cli.ts
+src/authority/index.ts
+test/authority/certification-factory-journey.test.ts
+test/authority/package.test.ts
+test/packed/authority-factory-journey.mjs
+```
+
+This is exactly the Task 5 allowlist. `git status --short --untracked-files=all` contains only the 14 byte-identical pre-existing dirty paths listed above. No Task 5 file is uncommitted.
 
 ## Open risks
 
-- Do not merge until the generated tarball is removed and required hosted `test (ubuntu-latest)` and `test (windows-latest)` checks are attached to the current workflow SHA and green.
-
-## Round-two correction
-
-- RED commit `43b546fb30cf18fd62f0452114a10a86cebeaadb` proved the evidence producer lacked exact-SHA checkout/setup before it invoked the packed-only harness.
-- GREEN commit `d3bc1f19fe27aea9a6fb9f7f227e8acc8b951ad0` adds checkout at `github.sha`, Node setup, checkout build, frozen Adapter Contract comparison, and secret-canary scanning of the three public artifacts. It also hardens the installed harness's exact stdout/stderr/file-list/path-containment contract and keeps staging/root allocation within cleanup handling.
-- Round-two focused result: `tsc` plus package/factory suites: 7 pass, 0 fail. Hosted verification remains pending.
-
-## Round-three correction
-
-- RED commits `61760163bb0618b91392b1e4737d7681dae256b2` required closed producer metadata validation and a matrix clean-consumer verifier. The structural test failed for both missing requirements.
-- GREEN commits `e59fa452a3682b25955856eafca29640e487dd3e` and `76782ea500adeb36b01c0eb62ef2b5e8b926eee0` make the matrix call the packed harness in `--verify-evidence` mode. That mode installs the downloaded tarball into a fresh consumer, resolves `reelier/authority` only there, verifies the graph/trust pin, and validates the closed metadata field set and public evidence digests.
-- Current focused package result: 6 pass, 0 fail.
+- Hosted `test (ubuntu-latest)` and `test (windows-latest)` checks attached to the current workflow SHA are pending. Do not merge until both are green.
+- The local Windows full suite remains red as recorded above; it is not evidence for Linux Authority Cell hosting.
+- Acceptance measurements are release evidence only, not market evidence. The packet makes no claim of semantic correctness, live human review, or general software-factory capability.
