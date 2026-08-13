@@ -36,8 +36,7 @@ export function isPublicIpAddress(value: string): boolean {
   if (mapped) return isPublicIpv4(mapped);
   if (isIP(normalized) === 4) return isPublicIpv4(normalized);
   const words = expandIpv6Words(normalized);
-  const special2001 = words?.[0] === 0x2001 && (words[1] === 0x0002 && words[2] === 0 || words[1] === 0x0db8 || words[1]! >= 0x0010 && words[1]! <= 0x002f);
-  return !(normalized === "::" || normalized === "::1" || normalized.startsWith("fc") || normalized.startsWith("fd") || normalized.startsWith("fe8") || normalized.startsWith("fe9") || normalized.startsWith("fea") || normalized.startsWith("feb") || normalized.startsWith("ff") || special2001);
+  return !!words && isIanaGloballyReachableIpv6(words);
 }
 
 export function isLoopbackIpAddress(value: string): boolean {
@@ -73,4 +72,25 @@ function isPublicIpv4(value: string): boolean {
   const parts = value.split(".").map(Number);
   const [a, b] = parts;
   return parts.length === 4 && parts.every(part => Number.isInteger(part) && part >= 0 && part <= 255) && !(a === 0 || a === 10 || a === 127 || (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && (b === 0 || b === 2 || b === 168)) || (a === 198 && (b === 18 || b === 19 || b === 51)) || (a === 203 && b === 0 && parts[2] === 113) || a >= 224);
+}
+
+/** IANA IPv6 Special-Purpose Address Registry: special prefixes fail closed unless explicitly globally reachable. */
+function isIanaGloballyReachableIpv6(words: readonly number[]): boolean {
+  const [a, b, c, d] = words;
+  if (words.every(word => word === 0) || a === 0 && b === 0 && c === 0 && d === 0 && words.slice(4, 7).every(word => word === 0) && words[7] === 1) return false;
+  if (a >= 0xfc00 && a <= 0xfdff || a >= 0xfe80 && a <= 0xfebf || a >= 0xff00) return false;
+  if (a === 0x0064 && b === 0xff9b && c === 1) return false;
+  if (a === 0x0100 && b === 0 && c === 0 && (d === 0 || d === 1)) return false;
+  if (a === 0x2002 || a === 0x3fff && b <= 0x000f || a === 0x5f00) return false;
+  if (a === 0x2001 && b === 0x0db8) return false;
+  if (a === 0x2001 && b <= 0x01ff) return isGloballyReachable2001Exception(words);
+  return true;
+}
+
+function isGloballyReachable2001Exception(words: readonly number[]): boolean {
+  const [, b, c, d, e, f, g, h] = words;
+  if (b === 1 && c === 0 && d === 0 && e === 0 && f === 0 && g === 0 && (h === 1 || h === 2 || h === 3)) return true;
+  if (b === 3) return true;
+  if (b === 4 && c === 0x0112) return true;
+  return b >= 0x0020 && b <= 0x003f;
 }
