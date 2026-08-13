@@ -43,6 +43,7 @@ function validateConfig(value: unknown, baseDir: string): AuthorityHostConfig {
   const definitions = list(raw.definitions, "definitions");
   const endpoints = Array.isArray(raw.endpoints) ? raw.endpoints.map(item => validateEndpoint(item)) : [];
   const nativeHttpsRoutes = raw.nativeHttpsRoutes === undefined ? undefined : validateNativeRoutes(raw.nativeHttpsRoutes);
+  if (nativeHttpsRoutes && endpoints.some(endpoint => nativeHttpsRoutes.some(route => route.endpointId === endpoint.endpointId))) throw new TypeError("legacy and canonical HTTPS endpoint identities must not overlap");
   const resolvePath = (item: unknown, fallback: string) => path.resolve(baseDir, typeof item === "string" && item ? item : fallback);
   const ingress = raw.ingress === undefined ? undefined : validateIngress(raw.ingress, baseDir);
   const topology = raw.topology === undefined ? "unknown" : raw.topology;

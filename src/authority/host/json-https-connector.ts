@@ -18,6 +18,7 @@ export function createJsonHttpsDispatchAdapter(options: JsonHttpsDispatchAdapter
   const endpoints = new Map(options.endpoints.map(endpoint => [endpoint.endpointId, endpoint]));
   if (endpoints.size !== options.endpoints.length) throw new TypeError("duplicate HTTPS endpoint identity");
   const routes: JsonHttpsRouteRegistry | undefined = options.routes === undefined ? undefined : Array.isArray(options.routes) ? createJsonHttpsRouteRegistry(options.routes as readonly JsonHttpsRouteV1[]) : (options.routes as JsonHttpsRouteRegistry);
+  if (routes && options.endpoints.some(endpoint => lookupJsonHttpsRoute(routes, endpoint.endpointId))) throw new TypeError("legacy and canonical HTTPS endpoint identities must not overlap");
   return Object.freeze({
     async dispatch(state: DispatchRequestState): Promise<DispatchOutcome> {
       const endpointId = state.effect && typeof state.effect === "object" && typeof (state.effect as Record<string, unknown>).endpointId === "string" ? String((state.effect as Record<string, unknown>).endpointId) : "";
