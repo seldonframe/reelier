@@ -104,7 +104,7 @@ test("matrix verifies public factory evidence through a clean installed consumer
   assert.match(harness, /path\.resolve\(line\.graphPath\)/);
   assert.match(harness, /Object\.keys\(summary\.reviewerPacket\)/);
   assert.match(testJob, /factory-evidence-metadata\.json/);
-  assert.match(testJob, /metadata\.workflowSourceSha.*github\.sha/);
+  assert.match(testJob, /m\.workflowSourceSha.*github\.sha/);
 });
 
 test("packed boundary harness invokes npm with an argument array even from metacharacter paths", () => {
