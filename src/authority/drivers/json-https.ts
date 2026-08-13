@@ -6,12 +6,30 @@ import { createHash } from "node:crypto";
 import { connect as tlsConnect } from "node:tls";
 import type { TransportEffect } from "../types.js";
 import { assertAllPublicAddresses } from "../client/ip.js";
-import { createTotalDeadline, raceTotalDeadline, type TotalDeadline } from "../net/deadline.js";
+import { __testSetTotalDeadlineTimers, createTotalDeadline, raceTotalDeadline, type TotalDeadline } from "../net/deadline.js";
 
 const FORBIDDEN = new Set(["authorization", "cookie", "host"]);
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 const MAX_REQUEST_BYTES = 10 * 1024 * 1024;
+type NativeTransport = Readonly<{
+  lookup: typeof dnsLookup;
+  httpsRequest: typeof httpsRequest;
+  httpRequest: typeof httpRequest;
+  tlsConnect: typeof tlsConnect;
+  setTimeout: typeof setTimeout;
+  clearTimeout: typeof clearTimeout;
+}>;
+const nativeTransport: NativeTransport = { lookup: dnsLookup, httpsRequest, httpRequest, tlsConnect, setTimeout, clearTimeout };
+let activeTransport = nativeTransport;
 type JsonHttpsOptions = Readonly<{ timeoutMs?: number; maxResponseBytes?: number; maxRequestBytes?: number; monotonicNow?: () => number }>;
+
+/** Test-only primitive seam. It is deliberately absent from every serialized endpoint, effect, and authority contract. */
+export function __testSetJsonHttpsTransport(override: Partial<NativeTransport>): () => void {
+  const previous = activeTransport;
+  activeTransport = { ...nativeTransport, ...override };
+  const restoreDeadlineTimers = __testSetTotalDeadlineTimers({ setTimeout: activeTransport.setTimeout as never, clearTimeout: activeTransport.clearTimeout as never });
+  return () => { activeTransport = previous; restoreDeadlineTimers(); };
+}
 
 /** Legacy runtime endpoint configuration; canonical route authority is separate. */
 export interface JsonHttpsEndpoint {
@@ -91,10 +109,14 @@ function validateQuery(query: string): void {
   }
 }
 
-function dispatchDeadline(options: JsonHttpsOptions): TotalDeadline { return createTotalDeadline({ timeoutMs: options.timeoutMs ?? 15_000, monotonicNow: options.monotonicNow }); }
+function transportFor(): NativeTransport { return activeTransport; }
+function dispatchDeadline(options: JsonHttpsOptions): TotalDeadline {
+  return createTotalDeadline({ timeoutMs: options.timeoutMs ?? 15_000, monotonicNow: options.monotonicNow });
+}
 function base64DecodedBytes(value: string): number { return Math.floor(value.length * 3 / 4) - (value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0); }
 
 async function requestPinned(endpoint: JsonHttpsEndpoint, method: string, path: string, query: string, headers: Readonly<Record<string, string>>, body: Buffer, secret: string | undefined, proxySecret: string | undefined, options: JsonHttpsOptions, deadline: TotalDeadline): Promise<JsonHttpsResponse> {
+  const transport = transportFor();
   let base: URL;
   try { base = new URL(endpoint.baseUrl); } catch { throw new JsonHttpsSecurityError("invalid endpoint base URL"); }
   if (base.protocol !== "https:" || base.username || base.password || base.pathname !== "/" && base.pathname !== "") throw new JsonHttpsSecurityError("endpoint base URL must be HTTPS origin only");
@@ -106,17 +128,17 @@ async function requestPinned(endpoint: JsonHttpsEndpoint, method: string, path: 
   const requestBytesDigest = `sha256:${createHash("sha256").update(body).digest("hex")}`;
   if (endpoint.egressProxy) {
     if (!proxySecret) throw new JsonHttpsSecurityError("egress proxy credential is unavailable");
-    return requestThroughProxy(endpoint.egressProxy, base, target, method, requestHeaders, body, proxySecret, maxResponseBytes, requestBytesDigest, deadline);
+    return requestThroughProxy(endpoint.egressProxy, base, target, method, requestHeaders, body, proxySecret, maxResponseBytes, requestBytesDigest, deadline, transport);
   }
   deadline.remainingMs("dns");
-  const addresses = await raceTotalDeadline(deadline, "dns", dnsLookup(base.hostname, { all: true, verbatim: true }));
+  const addresses = await raceTotalDeadline(deadline, "dns", transport.lookup(base.hostname, { all: true, verbatim: true }));
   let pinned: readonly Readonly<{ address: string; family: 4 | 6 }>[];
   try { pinned = assertAllPublicAddresses(addresses.map(item => item.address)); } catch { throw new JsonHttpsSecurityError("endpoint resolved to a non-public address"); }
   const chosen = pinned[0]!.address;
   return new Promise((resolve, reject) => {
     let settled = false;
-    const finish = (error?: Error, value?: JsonHttpsResponse) => { if (settled) return; settled = true; clearTimeout(timer); error ? reject(error) : resolve(value!); };
-    const req = httpsRequest({ protocol: "https:", hostname: base.hostname, port: base.port || 443, method, path: `${target.pathname}${target.search}`, headers: requestHeaders, servername: base.hostname, lookup: createPinnedLookup(chosen) }, response => {
+    const finish = (error?: Error, value?: JsonHttpsResponse) => { if (settled) return; settled = true; transport.clearTimeout(timer); error ? reject(error) : resolve(value!); };
+    const req = transport.httpsRequest({ protocol: "https:", hostname: base.hostname, port: base.port || 443, method, path: `${target.pathname}${target.search}`, headers: requestHeaders, servername: base.hostname, lookup: createPinnedLookup(chosen) }, response => {
       try { deadline.remainingMs("headers"); } catch (error) { req.destroy(error as Error); finish(error as Error); return; }
       if ((response.statusCode ?? 0) >= 300 && (response.statusCode ?? 0) < 400) { req.destroy(); finish(new JsonHttpsSecurityError("HTTPS redirects are refused")); return; }
       const chunks: Buffer[] = []; let size = 0;
@@ -124,7 +146,7 @@ async function requestPinned(endpoint: JsonHttpsEndpoint, method: string, path: 
       response.on("end", () => { const out: Record<string, string> = {}; for (const [key, value] of Object.entries(response.headers)) if (typeof value === "string") out[key] = value; finish(undefined, { status: response.statusCode ?? 0, headers: out, body: Buffer.concat(chunks), requestBytesDigest }); });
       response.on("error", finish);
     });
-    const timer = setTimeout(() => { req.destroy(new JsonHttpsSecurityError("HTTPS total deadline expired")); finish(new JsonHttpsSecurityError("HTTPS total deadline expired")); }, deadline.remainingMs("connect"));
+    const timer = transport.setTimeout(() => { req.destroy(new JsonHttpsSecurityError("HTTPS total deadline expired")); finish(new JsonHttpsSecurityError("HTTPS total deadline expired")); }, deadline.remainingMs("connect"));
     timer.unref(); req.on("error", finish);
     try { deadline.remainingMs("upload"); if (body.length) req.write(body); } catch (error) { req.destroy(error as Error); finish(error as Error); return; }
     req.end();
@@ -147,12 +169,12 @@ export async function executeJsonHttpsConfidentialRequest(request: JsonHttpsConf
   finally { body.fill(0); }
 }
 
-async function requestThroughProxy(proxy: NonNullable<JsonHttpsEndpoint["egressProxy"]>, base: URL, target: URL, method: string, headers: Readonly<Record<string, string>>, body: Buffer, proxySecret: string, maxResponseBytes: number, requestBytesDigest: string, deadline: TotalDeadline): Promise<JsonHttpsResponse> {
+async function requestThroughProxy(proxy: NonNullable<JsonHttpsEndpoint["egressProxy"]>, base: URL, target: URL, method: string, headers: Readonly<Record<string, string>>, body: Buffer, proxySecret: string, maxResponseBytes: number, requestBytesDigest: string, deadline: TotalDeadline, transport: NativeTransport): Promise<JsonHttpsResponse> {
   let origin: URL;
   try { origin = new URL(proxy.baseUrl); } catch { throw new JsonHttpsSecurityError("invalid egress proxy URL"); }
   if (origin.protocol !== "http:" || origin.username || origin.password || origin.pathname !== "/" || origin.search || origin.hash || !origin.hostname.endsWith(".internal")) throw new JsonHttpsSecurityError("egress proxy must be a credential-free Fly internal HTTP origin");
   if (!/^(?:env:[A-Za-z_][A-Za-z0-9_]{0,127}|file:.+)$/.test(proxy.bearerRef)) throw new JsonHttpsSecurityError("egress proxy credential reference is invalid");
-  deadline.remainingMs("dns"); const addresses = await raceTotalDeadline(deadline, "dns", dnsLookup(origin.hostname, { all: true, verbatim: true }));
+  deadline.remainingMs("dns"); const addresses = await raceTotalDeadline(deadline, "dns", transport.lookup(origin.hostname, { all: true, verbatim: true }));
   let pinned: readonly Readonly<{ address: string; family: 4 | 6 }>[];
   try { pinned = assertAllPublicAddresses(addresses.map(item => item.address)); } catch { throw new JsonHttpsSecurityError("egress proxy resolved to a non-public address"); }
   const chosen = pinned[0]!.address;
@@ -161,8 +183,8 @@ async function requestThroughProxy(proxy: NonNullable<JsonHttpsEndpoint["egressP
     let activeSocket: import("node:net").Socket | undefined;
     let secureSocket: import("node:tls").TLSSocket | undefined;
     let tunneledRequest: import("node:http").ClientRequest | undefined;
-    const fail = (error: Error) => { if (settled) return; settled = true; clearTimeout(timer); reject(error); };
-    const connectRequest = httpRequest({
+    const fail = (error: Error) => { if (settled) return; settled = true; transport.clearTimeout(timer); reject(error); };
+    const connectRequest = transport.httpRequest({
       protocol: "http:", hostname: origin.hostname, port: origin.port || 8443, method: "CONNECT", path: `${base.hostname}:${base.port || "443"}`,
       headers: { "Proxy-Authorization": `Bearer ${proxySecret}` },
       lookup: createPinnedLookup(chosen),
@@ -171,13 +193,13 @@ async function requestThroughProxy(proxy: NonNullable<JsonHttpsEndpoint["egressP
       activeSocket = socket;
       if (response.statusCode !== 200 || head.length) { socket.destroy(); fail(new JsonHttpsSecurityError("egress proxy refused the tunnel")); return; }
       try { deadline.remainingMs("tls"); } catch (error) { socket.destroy(error as Error); fail(error as Error); return; }
-      const secure = secureSocket = tlsConnect({ socket, servername: base.hostname, rejectUnauthorized: true });
+      const secure = secureSocket = transport.tlsConnect({ socket, servername: base.hostname, rejectUnauthorized: true });
       secure.once("error", fail);
       secure.once("secureConnect", () => {
-        const request = tunneledRequest = httpRequest({
+        const request = tunneledRequest = transport.httpRequest({
           method, path: `${target.pathname}${target.search}`, headers: { ...headers, Host: base.host }, agent: false,
           createConnection: () => secure,
-        }, response => collectResponse(response, request, maxResponseBytes, requestBytesDigest, deadline, value => { if (settled) return; settled = true; clearTimeout(timer); resolve(value); }, fail));
+        }, response => collectResponse(response, request, maxResponseBytes, requestBytesDigest, deadline, value => { if (settled) return; settled = true; transport.clearTimeout(timer); resolve(value); }, fail));
         request.once("error", fail);
         try { deadline.remainingMs("upload"); if (body.length) request.write(body); } catch (error) { request.destroy(error as Error); fail(error as Error); return; }
         request.end();
@@ -185,7 +207,7 @@ async function requestThroughProxy(proxy: NonNullable<JsonHttpsEndpoint["egressP
     });
     connectRequest.once("error", fail);
     connectRequest.end();
-    const timer = setTimeout(() => { const error = new JsonHttpsSecurityError("egress proxy total deadline expired"); connectRequest.destroy(error); tunneledRequest?.destroy(error); secureSocket?.destroy(error); activeSocket?.destroy(error); fail(error); }, deadline.remainingMs("connect"));
+    const timer = transport.setTimeout(() => { const error = new JsonHttpsSecurityError("egress proxy total deadline expired"); connectRequest.destroy(error); tunneledRequest?.destroy(error); secureSocket?.destroy(error); activeSocket?.destroy(error); fail(error); }, deadline.remainingMs("connect"));
     timer.unref();
   });
 }

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { createPinnedLookup, executeJsonHttpsEffect, executeJsonHttpsRead } from "../../src/authority/drivers/json-https.js";
+import { __testSetJsonHttpsTransport, createPinnedLookup, executeJsonHttpsEffect, executeJsonHttpsRead } from "../../src/authority/drivers/json-https.js";
 import { createTotalDeadline } from "../../src/authority/net/deadline.js";
 
 class FakeRequest extends EventEmitter {
@@ -21,7 +21,7 @@ class FakeSocket extends EventEmitter {
   destroyed = false;
   connecting = false;
   destroyError: Error | undefined;
-  destroy(error?: Error) { this.destroyed = true; this.destroyError = error; if (error) queueMicrotask(() => this.emit("error", error)); return this; }
+  destroy(error?: Error) { this.destroyed = true; this.destroyError = error; return this; }
 }
 
 function controlledTimers() {
@@ -31,14 +31,20 @@ function controlledTimers() {
       setTimeout(callback: () => void) { callbacks.push(callback); return { unref() {} }; },
       clearTimeout() {},
     },
-    fireNext() { const callback = callbacks.shift(); assert.ok(callback, "expected a pending transport timer"); callback(); },
+    fireNext() { const pending = callbacks.splice(0); assert.ok(pending.length, "expected a pending transport timer"); for (const callback of pending) callback(); },
   };
+}
+
+async function waitFor(predicate: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 10 && !predicate(); attempt += 1) await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(predicate(), true, "expected native transport stage to start");
 }
 
 const endpoint = { endpointId: "endpoint", baseUrl: "https://localhost", allowedMethods: ["GET"] as const, allowedPathPrefixes: ["/read"], accountIdentity: "account" };
 
 function readWithTransport(transport: object, extra: object = {}) {
-  return executeJsonHttpsRead({ endpointId: "endpoint", path: "/read" }, endpoint, { async resolve() { throw new Error("unexpected credential resolution"); } }, { timeoutMs: 100, monotonicNow: () => 0, __testTransport: transport, ...extra } as never);
+  const restore = __testSetJsonHttpsTransport(transport);
+  return executeJsonHttpsRead({ endpointId: "endpoint", path: "/read" }, endpoint, { async resolve() { throw new Error("unexpected credential resolution"); } }, { timeoutMs: 100, monotonicNow: () => 0, ...extra }).finally(restore);
 }
 
 test("pinned DNS lookup supports Node's single-address callback shape", async () => {
@@ -102,8 +108,7 @@ test("native HTTPS pins the selected validated address and destroys an active re
     ...clock.timers,
   });
   const refused = assert.rejects(pending, /deadline/i);
-  await Promise.resolve();
-  await Promise.resolve();
+  await waitFor(() => pinnedAddress.length > 0);
   clock.fireNext();
   await refused;
   assert.equal(pinnedAddress, "8.8.8.8");
@@ -119,7 +124,7 @@ test("native HTTPS refuses redirects and destroys the request", async () => {
     ...controlledTimers().timers,
   });
   const refused = assert.rejects(pending, /redirect/i);
-  await Promise.resolve(); await Promise.resolve();
+  await waitFor(() => respond !== undefined);
   assert.ok(respond); respond(new FakeResponse(302, { location: "https://other.example" }));
   await refused;
   assert.equal(request.destroyed, true);
@@ -134,11 +139,54 @@ test("native HTTPS destroys and refuses a response that crosses the byte cap", a
     ...controlledTimers().timers,
   }, { maxResponseBytes: 3 });
   const refused = assert.rejects(pending, /configured limit/i);
-  await Promise.resolve(); await Promise.resolve();
+  await waitFor(() => respond !== undefined);
   assert.ok(respond); const response = new FakeResponse(200); respond(response); response.emit("data", Buffer.from("four"));
   await refused;
   assert.equal(request.destroyed, true);
 });
+
+test("native HTTPS destroys an active body stream at expiry and suppresses its late end", async () => {
+  const clock = controlledTimers();
+  const request = new FakeRequest();
+  let respond: ((response: FakeResponse) => void) | undefined;
+  const pending = readWithTransport({
+    lookup: async () => [{ address: "8.8.8.8", family: 4 }],
+    httpsRequest(_options: unknown, callback: (response: FakeResponse) => void) { respond = callback; return request; },
+    ...clock.timers,
+  });
+  const refused = assert.rejects(pending, /deadline/i);
+  await waitFor(() => respond !== undefined);
+  assert.ok(respond); const response = new FakeResponse(200); respond(response); response.emit("data", Buffer.from("partial"));
+  clock.fireNext();
+  await refused;
+  assert.equal(request.destroyed, true);
+  response.emit("end");
+  assert.equal(request.destroyed, true);
+});
+
+for (const stage of ["connect", "tls"] as const) {
+  test(`proxy transport destroys active ${stage.toUpperCase()} resources at expiry`, async () => {
+    const clock = controlledTimers();
+    const connectRequest = new FakeRequest();
+    const rawSocket = new FakeSocket();
+    const secureSocket = new FakeSocket();
+    const restore = __testSetJsonHttpsTransport({
+      lookup: async () => [{ address: "8.8.8.8", family: 4 }],
+      httpRequest() { return connectRequest; },
+      tlsConnect() { return secureSocket; },
+      ...clock.timers,
+    } as never);
+    const pending = executeJsonHttpsRead({ endpointId: "endpoint", path: "/read" }, { ...endpoint, egressProxy: { baseUrl: "http://proxy.internal", bearerRef: "env:PROXY" } }, { async resolve() { return "opaque"; } }, { timeoutMs: 100, monotonicNow: () => 0 }).finally(restore);
+    const refused = assert.rejects(pending, /deadline/i);
+    await waitFor(() => connectRequest.listenerCount("connect") > 0);
+    if (stage === "tls") connectRequest.emit("connect", { statusCode: 200 }, rawSocket, Buffer.alloc(0));
+    clock.fireNext();
+    await refused;
+    assert.equal(connectRequest.destroyed, true);
+    assert.equal(rawSocket.destroyed, stage === "tls");
+    assert.equal(secureSocket.destroyed, stage === "tls");
+  });
+}
 
 test("proxy transport destroys CONNECT and tunnel resources on expiry and ignores late success", async () => {
   const clock = controlledTimers();
@@ -146,32 +194,22 @@ test("proxy transport destroys CONNECT and tunnel resources on expiry and ignore
   const rawSocket = new FakeSocket();
   const secureSocket = new FakeSocket();
   const tunneledRequest = new FakeRequest();
-  let connectCallback: ((response: { statusCode: number }, socket: FakeSocket, head: Buffer) => void) | undefined;
-  let secureCallback: (() => void) | undefined;
   let tunnelCallback: ((response: FakeResponse) => void) | undefined;
-  let seamRead = false;
-  const options = {
-    timeoutMs: 100,
-    monotonicNow: () => 0,
-    get __testTransport() {
-      seamRead = true;
-      return {
+  const restore = __testSetJsonHttpsTransport({
         lookup: async () => [{ address: "8.8.8.8", family: 4 }],
         httpRequest(options: { method: string }, callback?: (response: FakeResponse) => void) {
-          if (options.method === "CONNECT") { connectCallback = callback as never; return connectRequest; }
+          if (options.method === "CONNECT") return connectRequest;
           tunnelCallback = callback; return tunneledRequest;
         },
         tlsConnect() { return secureSocket; },
         ...clock.timers,
-      };
-    },
-  };
-  secureSocket.once = ((event: string, callback: () => void) => { if (event === "secureConnect") secureCallback = callback; else EventEmitter.prototype.once.call(secureSocket, event, callback); return secureSocket; }) as never;
-  const pending = executeJsonHttpsRead({ endpointId: "endpoint", path: "/read" }, { ...endpoint, egressProxy: { baseUrl: "http://proxy.internal", bearerRef: "env:PROXY" } }, { async resolve() { if (!seamRead) throw new Error("test seam was not read"); return "opaque"; } }, options as never);
+  } as never);
+  const pending = executeJsonHttpsRead({ endpointId: "endpoint", path: "/read" }, { ...endpoint, egressProxy: { baseUrl: "http://proxy.internal", bearerRef: "env:PROXY" } }, { async resolve() { return "opaque"; } }, { timeoutMs: 100, monotonicNow: () => 0 }).finally(restore);
   const refused = assert.rejects(pending, /deadline/i);
-  await Promise.resolve(); await Promise.resolve();
-  assert.ok(connectCallback); connectCallback({ statusCode: 200 }, rawSocket, Buffer.alloc(0));
-  assert.ok(secureCallback); secureCallback();
+  await waitFor(() => connectRequest.listenerCount("connect") > 0);
+  connectRequest.emit("connect", { statusCode: 200 }, rawSocket, Buffer.alloc(0));
+  secureSocket.emit("secureConnect");
+  await waitFor(() => tunnelCallback !== undefined);
   assert.ok(tunnelCallback);
   clock.fireNext();
   await refused;
