@@ -103,3 +103,14 @@ test("certified identity rejects unsigned verifier bypass and accepts namespaced
     await assert.rejects(() => coordinator.dispatch(createReservedDispatchHandle({ reservation, effect: {}, effectCanonicalBase64: "e30=", effectDigest: sha("3") })), /identity/i);
   } finally { restore(); }
 });
+
+test("certified identity rejects fake signatures, wrong purpose, and evil namespaces", { skip: process.platform === "win32" }, async () => {
+  const restore = __testSetAuthorityCellHostPlatform("linux");
+  try {
+    const route = { ...routeAuthority(), providerAccountIdentity: "evil:octocat" };
+    const reservation: any = { reservationId: "r1", state: "reserved", intent: { effectDigest: sha("3"), routeAuthority: route } };
+    const ledger: any = { async getReservation() { return reservation; } };
+    const coordinator = createDispatchCoordinator(ledger, { async dispatch() { throw new Error("must not send"); } }, undefined, undefined, undefined, { identityProbe: async () => ({ ...identityFor(route), providerLogin: "octocat", signerId: "fake", signature: { alg: "ed25519", purpose: "wrong-purpose", sig: "fake" } }), verifyIdentity: { purpose: "wrong-purpose", verify: async () => true }, revalidator: { async routeReread() { return route; }, async revalidate() { return { authorityGeneration: route.authorityGeneration, authorityExpiresAt: route.authorityExpiresAt, routeAuthorityDigest: authorityDigest(route) }; } } });
+    await assert.rejects(() => coordinator.dispatch(createReservedDispatchHandle({ reservation, effect: {}, effectCanonicalBase64: "e30=", effectDigest: sha("3") })), /identity|purpose|namespace/i);
+  } finally { restore(); }
+});
