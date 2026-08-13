@@ -12,6 +12,11 @@ test("the authority boundary refuses loopback, private, link-local, and mapped p
   assert.throws(() => assertAllPublicAddresses(["203.0.113.10", "::ffff:127.0.0.1"]), /public/i);
 });
 
+test("IPv6 special-purpose registry policy permits only globally reachable exceptions", () => {
+  for (const address of ["64:ff9b:1::1", "100::1", "100:0:0:1::1", "2001:2::1", "2001:db8::1", "2002::1", "3fff::1", "5f00::1", "fc00::1", "fe80::1", "ff00::1"]) assert.equal(classifyPublicAddress(address).ok, false, address);
+  for (const address of ["64:ff9b::1", "2001:1::1", "2001:1::2", "2001:1::3", "2001:3::1", "2001:4:112::1", "2001:20::1", "2001:30::1", "2606:4700:4700::1111"]) assert.equal(classifyPublicAddress(address).ok, true, address);
+});
+
 test("injected identity requests receive the validated pin, deadline, and abort signal", async () => {
   const result = await checkAuthorityCellLive({ v: "reelier.authority-cell-connection/v1", endpoint: "https://cell.example", transport: "http", bearerTokenRef: "env:CELL_TOKEN", expectedCellId: "cell_1", adapterContractDigest: `sha256:${"a".repeat(64)}` }, {
     resolveAddresses: async () => ["8.8.8.8"],
