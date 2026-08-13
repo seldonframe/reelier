@@ -65,6 +65,12 @@ async function fixture(mode: "normal" | "source-drift" | "effect-drift" | "provi
   return { root, initialized, cell, runner, credential, delegation, pin, lifecycle, activation, jobCard, constraints };
 }
 
+async function settleLiveRunBeforeFixtureRemoval(root: string, release: () => void, running?: Promise<unknown>): Promise<void> {
+  release();
+  if (running) await Promise.allSettled([running]);
+  await rm(root, { recursive: true, force: true });
+}
+
 test("only a genuine Cell host can compose the fixed runner", async () => {
   await assert.rejects(() => createGitHubIssueLabelsHermeticComposition({ verifyDispatchReadiness: async () => ({}), revalidateDispatchPermit: async () => undefined } as never), /genuine|brand|Cell/i);
 });
@@ -215,7 +221,10 @@ test("concurrent recovery cannot release a live dispatched request before its on
     release();
     const result = await running; assert.equal(result.status, "acknowledged"); assert.equal(result.providerWrites, 1);
     const budget = await f.delegation.budget.get(f.activation.allocationId); assert.equal(budget?.consumed, 1); assert.equal(budget?.remaining, 1);
-  } finally { await settleLiveRunBeforeFixtureRemoval(f.root, release, running); restoreBarrier(); }
+  } finally {
+    try { await settleLiveRunBeforeFixtureRemoval(f.root, release, running); }
+    finally { restoreBarrier(); }
+  }
 });
 
 test("failed live-dispatch assertion cleanup settles work before deleting its fixture without masking the primary error", async () => {
