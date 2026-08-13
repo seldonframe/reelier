@@ -1,0 +1,293 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://reelier.dev/contracts/agent-adapter/v0/candidate.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["v", "descriptor", "session", "transcript", "coverageProbes"],
+  "properties": {
+    "v": { "const": "reelier.agent-adapter-candidate/v0" },
+    "descriptor": { "$ref": "#/$defs/descriptor" },
+    "session": { "$ref": "#/$defs/session" },
+    "transcript": {
+      "type": "array",
+      "minItems": 5,
+      "maxItems": 64,
+      "items": {
+        "oneOf": [
+          { "$ref": "#/$defs/jobsSearch" },
+          { "$ref": "#/$defs/jobLoad" },
+          { "$ref": "#/$defs/delegationRequest" },
+          { "$ref": "#/$defs/outcomeInvoke" },
+          { "$ref": "#/$defs/outcomeStatus" }
+        ]
+      }
+    },
+    "coverageProbes": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": { "$ref": "#/$defs/coverageProbe" }
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "descriptor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["adapterId", "agentHost", "transport", "execution", "identityBinding", "providerCredentialAccess", "authorityContract", "coverage", "operations", "hardCodedJobRefs"],
+      "properties": {
+        "adapterId": { "$ref": "#/$defs/id" },
+        "agentHost": { "$ref": "#/$defs/id" },
+        "transport": { "enum": ["mcp-stdio", "https"] },
+        "execution": { "const": "fixture-only" },
+        "identityBinding": { "const": "host-authenticated" },
+        "providerCredentialAccess": { "const": "none" },
+        "authorityContract": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "digest"],
+          "properties": {
+            "status": { "const": "pending-freeze" },
+            "digest": { "type": "null" }
+          }
+        },
+        "coverage": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["supportedModes", "defaultMode"],
+          "properties": {
+            "supportedModes": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "uniqueItems": true,
+              "items": { "enum": ["observed", "enforced"] }
+            },
+            "defaultMode": { "const": "observed" }
+          }
+        },
+        "operations": {
+          "type": "array",
+          "minItems": 7,
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/id" }
+        },
+        "hardCodedJobRefs": {
+          "type": "array",
+          "maxItems": 0
+        }
+      }
+    },
+    "session": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["taskId", "principalId", "allocationId", "remainingEffects"],
+      "properties": {
+        "taskId": { "$ref": "#/$defs/id" },
+        "principalId": { "$ref": "#/$defs/id" },
+        "allocationId": { "$ref": "#/$defs/id" },
+        "remainingEffects": { "type": "integer", "minimum": 2, "maximum": 1000000 }
+      }
+    },
+    "job": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["jobRef", "title"],
+      "properties": {
+        "jobRef": { "$ref": "#/$defs/id" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 256 }
+      }
+    },
+    "jobsSearch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operation", "request", "response"],
+      "properties": {
+        "operation": { "const": "jobs.search" },
+        "request": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["query"],
+          "properties": { "query": { "type": "string", "maxLength": 256 } }
+        },
+        "response": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["jobs"],
+          "properties": {
+            "jobs": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 64,
+              "items": { "$ref": "#/$defs/job" }
+            }
+          }
+        }
+      }
+    },
+    "jobLoad": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operation", "request", "response"],
+      "properties": {
+        "operation": { "const": "jobs.load" },
+        "request": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["jobRef"],
+          "properties": { "jobRef": { "$ref": "#/$defs/id" } }
+        },
+        "response": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["jobRef", "definitionAliases", "requestSchemaDigest"],
+          "properties": {
+            "jobRef": { "$ref": "#/$defs/id" },
+            "definitionAliases": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 64,
+              "uniqueItems": true,
+              "items": { "$ref": "#/$defs/id" }
+            },
+            "requestSchemaDigest": { "$ref": "#/$defs/digest" }
+          }
+        }
+      }
+    },
+    "delegationRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operation", "request", "response"],
+      "properties": {
+        "operation": { "const": "delegations.request" },
+        "request": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["taskId", "parentAllocationId", "childPrincipalId", "effects"],
+          "properties": {
+            "taskId": { "$ref": "#/$defs/id" },
+            "parentAllocationId": { "$ref": "#/$defs/id" },
+            "childPrincipalId": { "$ref": "#/$defs/id" },
+            "effects": { "type": "integer", "minimum": 1, "maximum": 1000000 }
+          }
+        },
+        "response": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["verdict", "principalId", "allocationId", "effects"],
+          "properties": {
+            "verdict": { "const": "accepted" },
+            "principalId": { "$ref": "#/$defs/id" },
+            "allocationId": { "$ref": "#/$defs/id" },
+            "effects": { "type": "integer", "minimum": 1, "maximum": 1000000 }
+          }
+        }
+      }
+    },
+    "sourceRefs": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 64,
+      "propertyNames": { "$ref": "#/$defs/id" },
+      "additionalProperties": { "type": "string", "minLength": 1, "maxLength": 512 }
+    },
+    "choices": {
+      "type": "object",
+      "maxProperties": 64,
+      "additionalProperties": { "type": ["string", "number", "integer", "boolean", "null"] }
+    },
+    "outcomeInvoke": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operation", "request", "response"],
+      "properties": {
+        "operation": { "const": "outcomes.invoke" },
+        "request": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["jobRef", "requestId", "sourceRefs", "choices"],
+          "properties": {
+            "jobRef": { "$ref": "#/$defs/id" },
+            "requestId": { "$ref": "#/$defs/id" },
+            "sourceRefs": { "$ref": "#/$defs/sourceRefs" },
+            "choices": { "$ref": "#/$defs/choices" }
+          }
+        },
+        "response": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["verdict", "reasonCode", "lifecycleState"],
+          "properties": {
+            "verdict": { "enum": ["accepted", "refused"] },
+            "reasonCode": { "$ref": "#/$defs/id" },
+            "lifecycleState": { "$ref": "#/$defs/id" },
+            "receiptRef": { "$ref": "#/$defs/id" }
+          }
+        }
+      }
+    },
+    "claimStatus": {
+      "enum": ["verified", "failed", "unchecked", "absent"]
+    },
+    "claims": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["authorization", "dispatch", "providerAcknowledgment", "reconciliation", "topology", "completeness"],
+      "properties": {
+        "authorization": { "$ref": "#/$defs/claimStatus" },
+        "dispatch": { "$ref": "#/$defs/claimStatus" },
+        "providerAcknowledgment": { "$ref": "#/$defs/claimStatus" },
+        "reconciliation": { "$ref": "#/$defs/claimStatus" },
+        "topology": { "$ref": "#/$defs/claimStatus" },
+        "completeness": { "$ref": "#/$defs/claimStatus" }
+      }
+    },
+    "outcomeStatus": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operation", "request", "response"],
+      "properties": {
+        "operation": { "const": "outcomes.status" },
+        "request": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["requestId"],
+          "properties": { "requestId": { "$ref": "#/$defs/id" } }
+        },
+        "response": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["lifecycleState", "pass", "claims"],
+          "properties": {
+            "lifecycleState": { "$ref": "#/$defs/id" },
+            "pass": { "type": "boolean" },
+            "claims": { "$ref": "#/$defs/claims" }
+          }
+        }
+      }
+    },
+    "coverageProbe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "activation", "rawWriteReachability", "topology", "completeness"],
+      "properties": {
+        "mode": { "enum": ["observed", "enforced"] },
+        "activation": { "enum": ["available", "unavailable"] },
+        "rawWriteReachability": { "enum": ["absent", "unknown", "present"] },
+        "topology": { "$ref": "#/$defs/claimStatus" },
+        "completeness": { "$ref": "#/$defs/claimStatus" }
+      }
+    }
+  }
+}

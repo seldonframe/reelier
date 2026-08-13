@@ -158,6 +158,6 @@ jobs:
       # badge-check.mjs's CANONICAL_PLATFORM; test/action-version-pin.test.ts
       # -style, test/badge-check.test.ts asserts the two can't drift apart.
       - name: Check README tests badge
-        if: ${{ needs.pack-authority-host-boundary.result == 'success' }}
+        if: ${{ needs.pack-authority-host-boundary.result == 'success' && runner.os == 'Linux' }}
         shell: bash
         run: if [ '${{ runner.os }}' = 'Linux' ]; then node scripts/check-badge.mjs test-output.txt; fi
