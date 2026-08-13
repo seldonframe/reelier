@@ -36,6 +36,8 @@ test("canonical HTTPS routes freeze the GitHub labels write and independent read
   assert.equal(lookupJsonHttpsRoute(registry, "github.issue.labels.replace")?.readEndpointId, "github.issue.labels.readback");
   assert.equal(lookupJsonHttpsRoute(registry, "github.issue.labels.readback")?.allowedMethods[0], "GET");
   assert.equal(lookupJsonHttpsRoute(registry, "github.issue.get"), undefined);
+  assert.throws(() => createJsonHttpsRouteRegistry([write]), /read endpoint/i);
+  assert.throws(() => createJsonHttpsRouteRegistry([write, { ...read, allowedMethods: ["PUT"] }]), /read endpoint/i);
   assert.equal(jsonHttpsRouteDigest(write), jsonHttpsRouteDigest(structuredClone(write)));
   for (const differingRoute of [
     { ...write, providerId: "gitlab" }, { ...write, connectorId: "gitlab" }, { ...write, accountId: "other-account" },
