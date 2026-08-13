@@ -12,9 +12,9 @@ Files changed
 ## Scope and commits
 
 - task4bBase: `039cc7b3703df6b859df8cb81659294b2c4bfa0d`
-- implementation/review range: `039cc7b3703df6b859df8cb81659294b2c4bfa0d..3080a707b5f1dfc6abda8661af77fe05a8882c25`. This names the immutable base and latest GREEN implementation endpoint; every report commit is outside the implementation range, so the provenance statement does not refer to itself.
+- reviewed task range: `039cc7b3703df6b859df8cb81659294b2c4bfa0d..3080a707b5f1dfc6abda8661af77fe05a8882c25`. This range contains the implementation commits listed below plus intermediate evidence commits `be3e0faef3e290590cdeb5ea32436e4e8da9ac06`, `1c4111734c77d66b937c67fe42869b80aaa83321`, `b228fc54499fb0774f532ab947f5b5dc874e02ea`, and `18d973e2bea92b0b15a517839ce91b3e8deccb7b`. Its endpoint `3080a707b5f1dfc6abda8661af77fe05a8882c25` is the latest GREEN implementation commit.
 - implementation commits in that range: `2ad0e882b53a738fc4b14e8f27ac76aaa031d04a`, `46a2b88421147ac582625a1b683242e3512795e0`, `bba23a65e7a90e24c408153f4c4dd5275d7227fc`, `444c6b9104cd684cb997147e431d7c0448a0da69`, `d6d260414ade771a37d77f75e2d5fb138883bd7c`, `5e5679b5d38218e36b93cdd7374dfb63f37888d0` (review RED), `f55287fd5d96fb9f801859892aca75d42b614fb2` (review GREEN), `e2e7f820ccf20969f0bc8cef040f95f1f81b4f90` (compile-order RED), and `3080a707b5f1dfc6abda8661af77fe05a8882c25` (latest GREEN).
-- evidence-only report commits outside that implementation range: `be3e0faef3e290590cdeb5ea32436e4e8da9ac06`, `1c4111734c77d66b937c67fe42869b80aaa83321`, `b228fc54499fb0774f532ab947f5b5dc874e02ea`, `18d973e2bea92b0b15a517839ce91b3e8deccb7b`, and `106c17845d21a89289f2ee04b2ccacfe02b9a9a9`. The commit containing this provenance correction is necessarily report-only and is not claimed as part of the implementation range.
+- report-only commits after the reviewed implementation endpoint: `106c17845d21a89289f2ee04b2ccacfe02b9a9a9`, `5dd6b2702465d5a9a61e0b7f8d84904276983ac3` (the prior provenance correction), and the commit containing this factual correction. They are outside `task4bReviewed` and are not implementation commits.
 - task4bReviewed: `3080a707b5f1dfc6abda8661af77fe05a8882c25`; pre-existing dirty-path hashes were rechecked against the `task4bBase` snapshot and matched exactly.
 
 ## What changed
