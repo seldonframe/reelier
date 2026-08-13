@@ -52,7 +52,7 @@
         "postStateConfidence": { "type": "array", "minItems": 1, "items": { "enum": ["exact", "partial", "pending", "absent"] } },
         "providerObservation": { "type": "array", "minItems": 1, "items": { "enum": ["verified", "failed", "unchecked", "absent"] } },
         "reconciliationResult": { "type": "array", "minItems": 1, "items": { "enum": ["matched", "not-applied", "conflict", "unavailable", "not-attempted"] } },
-        "cleanupResult": { "type": "array", "minItems": 1, "items": { "const": "cleaned" } },
+        "cleanupResult": { "type": "array", "minItems": 1, "items": { "enum": ["matched", "not-applied", "conflict", "unavailable", "not-attempted"] } },
         "duplicateDecisions": { "type": "array" },
         "exceptions": { "type": "array" },
         "receiptChain": { "type": "array", "minItems": 1, "items": { "type": "object", "additionalProperties": false, "required": ["receiptDigest", "priorReceiptDigest"], "properties": { "receiptDigest": { "$ref": "#/$defs/digest" }, "priorReceiptDigest": { "anyOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }] } } } },

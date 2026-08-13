@@ -85,7 +85,7 @@ export async function certifyFactoryJourney(out: string): Promise<Readonly<{ gra
       postStateConfidence: graph.postStateEvidence.map((item: any) => item.confidence),
       providerObservation: graph.receipts.map(item => item.receipt.value.claims.providerAcknowledgment),
       reconciliationResult: graph.receipts.map(item => item.evidence.value.reconciliation.verdict),
-      cleanupResult: graph.outcomes.filter(item => item.phase === "cleaned").map(item => item.phase),
+      cleanupResult: graph.receipts.filter(item => item.receipt.value.decisionContext.requestId.endsWith(".cleanup")).map(item => item.evidence.value.reconciliation.verdict),
       duplicateDecisions: graph.duplicateDecisions,
       exceptions: graph.exceptions,
       receiptChain: graph.receipts.map(item => ({ receiptDigest: authorityDigest(item.receipt.value), priorReceiptDigest: item.receipt.value.priorReceiptDigest })),
