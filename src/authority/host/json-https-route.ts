@@ -58,6 +58,10 @@ export function createJsonHttpsRouteRegistry(routes: readonly JsonHttpsRouteV1[]
   const parsed = routes.map(parseJsonHttpsRouteV1);
   const byEndpointId = new Map(parsed.map(route => [route.endpointId, route]));
   if (byEndpointId.size !== parsed.length) throw new TypeError("duplicate JSON HTTPS route endpoint id");
+  for (const route of parsed) {
+    const readRoute = byEndpointId.get(route.readEndpointId);
+    if (!readRoute || !readRoute.allowedMethods.includes("GET")) throw new TypeError("JSON HTTPS route read endpoint must be a registered GET route");
+  }
   return Object.freeze({ route: (endpointId: string) => typeof endpointId === "string" ? byEndpointId.get(endpointId) : undefined });
 }
 
