@@ -264,6 +264,17 @@ test("prepared commit durably marks send-started and recovery never reopens it",
   if (recovered.ok) assert.equal(recovered.reservations[0]?.sendStarted, true);
 }));
 
+test("crash after durable dispatch but before send marker recovers ambiguous without resend", { skip: process.platform !== "linux" }, () => withRoot(async root => {
+  const { reservation } = await commitRawBoundIntent(root);
+  const projection: MaterializedHttpRequestProjectionV1 = { v: "reelier.materialized-http-request/v1", method: "PUT", origin: "https://api.github.com", normalizedPath: "/repos/a", normalizedQuery: "", reviewedHeaders: {}, bodyDigest: digest("1") };
+  const preparedDescription = { v: "reelier.prepared-dispatch-description/v1" as const, routeDigest: digest("route"), materializedRequestDigest: materializedHttpRequestDigest(projection), projection, authorityGeneration: reservation.intent.authorityStateDigest, authorityExpiresAt: new Date(t0 + 60_000).toISOString(), absoluteDeadlineMs: 60_000, reservationId: reservation.reservationId, allocationId: "unbound" };
+  const crashing = new RawFsAuthorityLedger(root, { now: () => t0, monotonicNow: () => 0, faultInjector: point => { if (point === "after-prepared-dispatch-transition") throw new Error("cut"); } });
+  await assert.rejects(() => crashing.commitPreparedDispatch!({ reservationId: reservation.reservationId, allocationId: "unbound", expectedAuthorityGeneration: reservation.intent.authorityStateDigest, preparedDescription, absoluteDeadlineMs: 60_000 }), /cut/);
+  const recovered = await new RawFsAuthorityLedger(root, { now: () => t0, monotonicNow: () => 0 }).recover({ deferTerminal: true });
+  assert.equal(recovered.ok, true);
+  if (recovered.ok) assert.equal(recovered.reservations[0]?.state, "ambiguous");
+}));
+
 test("reservation retains an exact transport effect commitment for restart evidence", async () => {
   await withRoot(async root => {
     const effect = { v: "reelier.transport-effect/v1", endpointId: "write", method: "POST", path: "/items", query: "", headers: { "Content-Type": "application/json" }, bodyBase64: Buffer.from("{}").toString("base64"), riskClass: "test", idempotency: "native", preconditions: [], reconciliation: { recipeId: "recipe" } } as const;
