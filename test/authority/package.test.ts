@@ -76,6 +76,21 @@ test("factory evidence producer is checkout-built but installs and runs only the
   assert.match(producer, /trustPinDigest/);
 });
 
+test("CI packs exactly once and closes package and evidence contents against obsolete Windows helpers", () => {
+  const workflow = readFileSync(path.join(process.cwd(), ".github", "workflows", "ci.yml"), "utf8");
+  assert.equal(workflow.match(/npm["',\s]+pack["',\s]+--ignore-scripts["',\s]+--json/g)?.length, 1, "one npm pack invocation");
+  const pack = workflow.slice(workflow.indexOf("  pack-authority-host-boundary:"), workflow.indexOf("  produce-authority-factory-evidence:"));
+  assert.match(pack, /npm notice --json/);
+  assert.match(pack, /native\/windows-k1-helper/);
+  assert.match(pack, /authority\/host\/windows-k1/);
+  assert.match(pack, /fifo/i);
+  assert.match(pack, /test !/);
+  const producer = workflow.slice(workflow.indexOf("  produce-authority-factory-evidence:"), workflow.indexOf("  test:"));
+  assert.match(producer, /find factory-evidence -maxdepth 1 -type f/);
+  assert.match(producer, /factory-evidence-metadata\.json/);
+  assert.match(producer, /wc -l/);
+});
+
 test("matrix verifies public factory evidence through a clean installed consumer on both operating systems", () => {
   const workflow = readFileSync(path.join(process.cwd(), ".github", "workflows", "ci.yml"), "utf8");
   const testJob = workflow.slice(workflow.indexOf("  test:"));
@@ -118,6 +133,7 @@ test("public production export parses DecisionContext and its portable evidence 
   assert.deepEqual(authority.parseAuthorityWire("authority-receipt", receipt), receipt);
   assert.deepEqual(authority.parsePortableAuthorityEvidence(gate, receipt), { gateEvent: gate, receipt });
   assert.deepEqual(Object.keys(authority).sort(), ["AUTHORITY_ADAPTER_CONTRACT_V1","AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST","assertAcceptedDecisionContext","authorityCanonicalBytes","authorityDigest","authorityEvidenceCanonicalBytes","authorityKinds","createAuthorityEvidence","createAuthorityReceipt","createAuthorityReceiptBundle","decisionContextPresence","digestAuthorityReceiptBundle","normalizeSignedJobCard","parseAuthorityKeyDescriptor","parseAuthorityReceiptBundle","parseAuthorityWire","parseCanonicalAuthorityJson","parsePortableAuthorityEvidence","parseSignedCertificationReadiness","parseTrustEvents","signAuthorityDigest","signJobCard","signedJobCardDigest","verifyAuthorityAdapterContractV1","verifyAuthorityReceipt","verifyAuthorityReceiptBundle","verifyAuthoritySignature","verifyCertificationTaskReceiptGraph","verifySignedCertificationReadiness","verifySignedJobCard"], "the public runtime export surface is an exact allowlist");
+  for (const obsolete of ["createWindowsK1Helper", "createWindowsFifo", "WindowsK1Helper", "WindowsFifoAuthorityLedger"]) assert.equal(obsolete in authority, false, `${obsolete} is not public`);
   for (const internal of ["authenticateOutcomeRequest", "authenticatedOutcomeRequestState", "createConnectorRegistry", "connectorRegistrationDigest", "createAuthorityStatePort", "digestAuthorityState", "trustRootSetDigest", "definitionRegistrationDigest", "sourceResolverRegistrationDigest", "authoritySignatureDigest", "ingressFaultPoints", "clockFaultPoints"]) assert.equal(internal in authority, false, internal);
   assert.equal("validateSourceBundle" in authority, false, "candidate SourceBundle constructors stay private");
   for (const internal of ["createAuthorityGate", "createReservedDispatchHandle", "unwrapReservedDispatchHandle", "createFileGateDecisionSink", "parseGateDecisionRecord", "GateDecisionSink", "GateDecisionSigner", "ReservedDispatchHandle"]) assert.equal(internal in authority, false, internal);
