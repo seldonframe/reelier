@@ -110,6 +110,9 @@ jobs:
         run: rm -rf dist dist-test
       - run: npm run build
         if: ${{ needs.pack-authority-host-boundary.result == 'success' }}
+      - name: Compile test checkout
+        if: ${{ needs.pack-authority-host-boundary.result == 'success' }}
+        run: npx tsc -p tsconfig.test.json --pretty false
       - uses: actions/download-artifact@v4
         if: ${{ needs.pack-authority-host-boundary.result == 'success' }}
         with:
