@@ -20,6 +20,8 @@ All notable changes to `reelier`. Dates are release dates.
 
 ### Added
 
+- `reelier authority certify factory-journey --out <absolute-output-directory>` creates a Linux Authority Cell certification packet with a portable signed graph, offline trust pin, and non-authorizing factory-journey summary. Installed `reelier/authority` now exposes `verifyCertificationTaskReceiptGraph` for offline verification.
+
 - **`reelier coverage --host claude-code` — the same read-only inventory, for
   the Claude Code CLI.** Group A is the surface `install` can reach
   (`<cwd>/.mcp.json` and `~/.claude.json`, both derived from
