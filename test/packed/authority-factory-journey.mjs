@@ -5,12 +5,15 @@ import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
+import { createHash } from "node:crypto";
 
 const args = process.argv.slice(2), tarballIndex = args.indexOf("--tarball"), outIndex = args.indexOf("--out"), evidenceIndex = args.indexOf("--verify-evidence");
-if (tarballIndex < 0 || !args[tarballIndex + 1] || (outIndex < 0) === (evidenceIndex < 0)) throw new Error("usage: --tarball <absolute-path> (--out <absolute-path>|--verify-evidence <absolute-path>)");
+const expectedArgs = outIndex >= 0 ? ["--tarball", args[tarballIndex + 1], "--out", args[outIndex + 1]] : ["--tarball", args[tarballIndex + 1], "--verify-evidence", args[evidenceIndex + 1]];
+if (tarballIndex !== 0 || (outIndex < 0) === (evidenceIndex < 0) || args.length !== 4 || !args.every((value, index) => value === expectedArgs[index])) throw new Error("usage: --tarball <absolute-path> (--out <absolute-path>|--verify-evidence <absolute-path>)");
 const tarball = args[tarballIndex + 1], out = args[outIndex + 1];
 const evidence = args[evidenceIndex + 1];
 assert.ok(path.isAbsolute(tarball) && existsSync(tarball), "tarball must be an existing absolute path"); if (outIndex >= 0) assert.ok(path.isAbsolute(out) && !existsSync(out), "out must be an absent absolute path"); else assert.ok(path.isAbsolute(evidence) && existsSync(evidence), "evidence must be an existing absolute path");
+const digest = value => "sha256:" + createHash("sha256").update(readFileSync(value)).digest("hex");
 const consumer = mkdtempSync(path.join(os.tmpdir(), "reelier-factory-consumer-"));
 try {
   const npmCli = [process.env.npm_execpath, path.join(path.dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js"), path.resolve(path.dirname(process.execPath), "..", "lib", "node_modules", "npm", "bin", "npm-cli.js")].find(value => value && existsSync(value)); assert.ok(npmCli);
@@ -21,16 +24,17 @@ try {
   if (evidenceIndex >= 0) {
     const metadata = JSON.parse(readFileSync(path.join(evidence, "factory-evidence-metadata.json"), "utf8")), expected = ["adapterContractDigest", "graphDigest", "secretCanaryResult", "summaryDigest", "tarballSha256", "trustPinDigest", "v", "workflowSourceSha"];
     assert.deepEqual(Object.keys(metadata).sort(), expected); assert.equal(metadata.v, "reelier.factory-evidence-metadata/v1"); assert.equal(metadata.secretCanaryResult, "empty");
-    const digest = value => "sha256:" + authority.authorityDigest(JSON.parse(readFileSync(value, "utf8"))).slice(7);
     const graph = JSON.parse(readFileSync(path.join(evidence, "graph.json"), "utf8")), trustPin = JSON.parse(readFileSync(path.join(evidence, "trust-pin.json"), "utf8")), summary = JSON.parse(readFileSync(path.join(evidence, "factory-journey-summary.json"), "utf8"));
-    assert.equal(authority.verifyCertificationTaskReceiptGraph(graph, { trustPin }).status, "verified"); assert.equal(digest(path.join(evidence, "graph.json")), metadata.graphDigest); assert.equal(digest(path.join(evidence, "trust-pin.json")), metadata.trustPinDigest); assert.equal(digest(path.join(evidence, "factory-journey-summary.json")), metadata.summaryDigest); assert.equal(summary.graphDigest, metadata.graphDigest);
+    assert.deepEqual(require("node:fs").readdirSync(evidence).sort(), ["factory-evidence-metadata.json", "factory-journey-summary.json", "graph.json", "trust-pin.json"]);
+    assert.equal(authority.verifyCertificationTaskReceiptGraph(graph, { trustPin }).status, "verified"); assert.equal(digest(path.join(evidence, "graph.json")), metadata.graphDigest); assert.equal(digest(path.join(evidence, "trust-pin.json")), metadata.trustPinDigest); assert.equal(digest(path.join(evidence, "factory-journey-summary.json")), metadata.summaryDigest); assert.equal(digest(tarball).slice(7), metadata.tarballSha256); assert.equal(authority.AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST, metadata.adapterContractDigest); assert.equal(summary.graphDigest, authority.authorityDigest(graph)); assert.equal(summary.reviewerPacket.graphDigest, summary.graphDigest); assert.deepEqual(Object.keys(summary.reviewerPacket), ["humanApprovedTaskBinding", "declared", "compiledEffect", "lineage", "policyStatus", "postStateConfidence", "providerObservation", "reconciliationResult", "cleanupResult", "duplicateDecisions", "exceptions", "receiptChain", "fixtureOperatorConfirmation", "graphDigest", "nonClaims"]);
     process.exit(0);
   }
   const bin = path.join(consumer, "node_modules", ".bin", process.platform === "win32" ? "reelier.cmd" : "reelier");
   const result = exec(bin, ["authority", "certify", "factory-journey", "--out", out]); assert.equal(result.status, 0, result.stderr); assert.equal(result.stderr, ""); assert.match(result.stdout, /^[^\r\n]+\r?\n$/);
   const line = JSON.parse(result.stdout.trim()); assert.deepEqual(Object.keys(line).sort(), ["graphDigest", "graphPath", "journey", "status", "summaryDigest", "summaryPath", "trustPath"]); assert.equal(line.status, "verified"); assert.equal(line.journey, "github-issue-labels");
+  assert.equal(path.resolve(line.graphPath), path.join(out, "graph.json")); assert.equal(path.resolve(line.trustPath), path.join(out, "trust-pin.json")); assert.equal(path.resolve(line.summaryPath), path.join(out, "factory-journey-summary.json"));
   const graph = JSON.parse(readFileSync(line.graphPath, "utf8")), trustPin = JSON.parse(readFileSync(line.trustPath, "utf8")), summary = JSON.parse(readFileSync(line.summaryPath, "utf8"));
   assert.equal(authority.verifyCertificationTaskReceiptGraph(graph, { trustPin }).status, "verified"); assert.equal(line.graphDigest, authority.authorityDigest(graph)); assert.equal(line.summaryDigest, authority.authorityDigest(summary)); assert.equal(summary.graphDigest, line.graphDigest);
-  for (const file of [line.graphPath, line.trustPath, line.summaryPath]) { assert.equal(path.relative(out, file).startsWith(".."), false); assert.ok(existsSync(file)); }
+  for (const file of [line.graphPath, line.trustPath, line.summaryPath]) { const relative = path.relative(out, file); assert.ok(relative && !relative.startsWith("..") && !path.isAbsolute(relative)); assert.ok(existsSync(file)); }
   assert.deepEqual(require("node:fs").readdirSync(out).sort(), ["factory-journey-summary.json", "graph.json", "trust-pin.json"]);
 } finally { rmSync(consumer, { recursive: true, force: true }); }
