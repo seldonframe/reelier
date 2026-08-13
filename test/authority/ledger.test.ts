@@ -251,6 +251,8 @@ test("prepared commit durably marks send-started and recovery never reopens it",
   const projection: MaterializedHttpRequestProjectionV1 = { v: "reelier.materialized-http-request/v1", method: "PUT", origin: "https://api.github.com", normalizedPath: "/repos/a", normalizedQuery: "", reviewedHeaders: {}, bodyDigest: digest("1") };
   const preparedDescription = { v: "reelier.prepared-dispatch-description/v1" as const, routeDigest: digest("route"), materializedRequestDigest: materializedHttpRequestDigest(projection), projection, authorityGeneration: reservation.intent.authorityStateDigest, authorityExpiresAt: new Date(t0 + 60_000).toISOString(), absoluteDeadlineMs: 60_000, reservationId: reservation.reservationId, allocationId: "unbound" };
   const lease = await ledger.commitPreparedDispatch!({ reservationId: reservation.reservationId, allocationId: "unbound", expectedAuthorityGeneration: reservation.intent.authorityStateDigest, preparedDescription, absoluteDeadlineMs: 60_000 });
+  const beforeSend = await ledger.getReservation(reservation.reservationId);
+  assert.equal(beforeSend?.sendStarted, true, "send-started must be durable before the commit lease is returned");
   const prepared = createPreparedDispatch({ description: preparedDescription, monotonicNow: () => 0, wallClockNow: () => t0, send: async () => ({ kind: "acknowledged" as const, resultDigest: digest("a") }) });
   await consumePreparedDispatch(prepared, lease);
   assert.ok(lease);
