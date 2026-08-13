@@ -30,7 +30,7 @@ import type { DownstreamConnection } from "../../mcp-client.js";
 import type { OpaqueConnectionRouteRegistry } from "../../connections.js";
 import { assertLinuxAuthorityCellHost } from "./platform.js";
 import type { RouteAuthoritySnapshotV1 } from "../ledger.js";
-import type { CertifiedDispatchOptions } from "./dispatch.js";
+import type { CertifiedDispatchOptions, CertifiedIdentityVerifier } from "./dispatch.js";
 import type { AuthenticatedProviderIdentityV1 } from "./github-account-identity.js";
 
 /** Builds the local host from signed-artifact boundaries. An empty workspace is intentionally
@@ -55,7 +55,7 @@ export interface LocalAuthorityRuntimeOptions {
   readonly secretResolverOptions?: SecretResolverOptions;
   readonly routeAuthority?: (input: Readonly<{ tenant:string; requester:string; definitionAlias:string; connectorId:string; accountId:string; endpointId:string; authorityGeneration:string; authorityExpiresAt:string }>) => RouteAuthoritySnapshotV1 | undefined;
   readonly authenticatedProviderIdentity?: () => Promise<AuthenticatedProviderIdentityV1>;
-  readonly verifyAuthenticatedProviderIdentity?: (identity: AuthenticatedProviderIdentityV1) => Promise<boolean> | boolean;
+  readonly verifyAuthenticatedProviderIdentity?: CertifiedIdentityVerifier;
   readonly certifiedDispatch?: CertifiedDispatchOptions;
 }
 
