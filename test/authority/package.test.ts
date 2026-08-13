@@ -27,14 +27,14 @@ test("CI keeps both required matrix contexts failing when authority pack prerequ
   assert.match(testJob, /^  test:\r?\n    needs: pack-authority-host-boundary\r?\n    # `always\(\)`/m);
   assert.match(testJob, /    if: \$\{\{ always\(\) \}\}/);
   assert.match(testJob, /- name: Enforce authority pack prerequisite\r?\n        if: \$\{\{ always\(\) \}\}/);
-  assert.match(testJob, /needs\.pack-authority-host-boundary\.result != 'success'/);
+  assert.match(testJob, /needs\.pack-authority-host-boundary\.result \}\}[' ]+!= 'success'/);
   const prerequisite = "if: ${{ needs.pack-authority-host-boundary.result == 'success' }}";
   const enforcement = testJob.indexOf("- name: Enforce authority pack prerequisite");
   assert.ok(enforcement >= 0);
   for (const step of ["actions/checkout@v4", "actions/setup-node@v4", "- run: npm ci", "- name: Clean build output", "- run: npm run build", "- name: Run tests"]) {
     const position = testJob.indexOf(step, enforcement);
     assert.ok(position > enforcement, step);
-    assert.ok(testJob.slice(Math.max(enforcement, position - 140), position).includes(prerequisite), `${step} has a prerequisite success guard`);
+    assert.ok(testJob.slice(position, position + 240).includes(prerequisite), `${step} has a prerequisite success guard`);
   }
 });
 
