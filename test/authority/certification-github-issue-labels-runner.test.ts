@@ -522,6 +522,25 @@ test("portable evidence links the approved task, exact post-state, policy status
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
+test("portable export preserves dispatch history while reporting a current task revocation", async () => {
+  const f = await fixture(); try {
+    await f.runner.run({ bearerToken: f.credential.token, requestId: "request_revoked_export" });
+    await f.delegation.revoke(f.initialized.identifiers.authorityCellId, f.initialized.identifiers.taskId);
+    const graph: any = await f.runner.exportGraph({ bearerToken: f.credential.token });
+    assert.deepEqual(graph.taskStatusEvidence.map((item: any) => [item.phase, item.lifecycleState, item.allocationRevoked]), [["dispatch", "active", false], ["export", "revoked", true]]);
+    assert.equal(verifyCertificationTaskReceiptGraph(graph, { trustPin: f.pin }).status, "verified");
+    const evidence = certificationCellHostInternalState(f.cell).hermeticGitHubAuthority().lifecycle.direct.get("authority-evidence")!;
+    const signer = { signerId: evidence.descriptor.keyId, sign: (digest: string) => signAuthorityDigest(evidence.privateKey, "authority-evidence", digest) };
+    const resign = (record: any) => { const { signature: _old, ...body } = record; return { ...body, signature: signer.sign(authorityDigest(body)) }; };
+    const rebuild = (changed: any) => { const { v: _v, adapterContractDigest: _adapter, topology: _topology, leases: _leases, priorReceiptLinks: _links, terminalCommitment: _terminal, ...content } = changed; return createCertificationTaskReceiptGraph({ ...content, terminalSigner: signer }); };
+    for (const [index, allocationRevoked, lifecycleState] of [[0, true, "revoked"], [1, false, "active"]] as const) {
+      const changed = structuredClone(graph), previous = changed.taskStatusEvidence[index];
+      changed.taskStatusEvidence[index] = resign({ ...previous, allocationRevoked, lifecycleState, currentActiveClaim: !allocationRevoked });
+      assert.throws(() => verifyCertificationTaskReceiptGraph(rebuild(changed), { trustPin: f.pin }), /task status|history|observation/i);
+    }
+  } finally { await rm(f.root, { recursive: true, force: true }); }
+});
+
 test("offline portable verification rejects re-signed false claims with a fresh terminal commitment", async () => {
   const f = await fixture(); try {
     await f.runner.run({ bearerToken: f.credential.token, requestId: "request_resigned" });
