@@ -106,16 +106,16 @@ jobs:
         run: |
           if [ '${{ needs.pack-authority-host-boundary.result }}' != 'success' ] || [ '${{ needs.produce-authority-factory-evidence.result }}' != 'success' ]; then exit 1; fi
       - uses: actions/checkout@v4
-        if: ${{ needs.pack-authority-host-boundary.result == 'success' }}
+        if: ${{ needs.pack-authority-host-boundary.result == 'success' && needs.produce-authority-factory-evidence.result == 'success' }}
         with:
           ref: ${{ github.sha }}
       - uses: actions/setup-node@v4
-        if: ${{ needs.pack-authority-host-boundary.result == 'success' }}
+        if: ${{ needs.pack-authority-host-boundary.result == 'success' && needs.produce-authority-factory-evidence.result == 'success' }}
         with:
           node-version: 22
           cache: npm
       - run: npm ci
-        if: ${{ needs.pack-authority-host-boundary.result == 'success' }}
+        if: ${{ needs.pack-authority-host-boundary.result == 'success' && needs.produce-authority-factory-evidence.result == 'success' }}
       # Belt-and-suspenders, not a fix for anything seen on this runner:
       # actions/checkout@v4 always starts from an empty workspace and
       # nothing here caches dist/dist-test, so there is nothing to clean
@@ -125,16 +125,16 @@ jobs:
       # is exactly the kind of thing an future "speed up CI" cache on these
       # directories would reintroduce silently. Cheap now, guards later.
       - name: Clean build output
-        if: ${{ needs.pack-authority-host-boundary.result == 'success' }}
+        if: ${{ needs.pack-authority-host-boundary.result == 'success' && needs.produce-authority-factory-evidence.result == 'success' }}
         shell: bash
         run: rm -rf dist dist-test
       - run: npm run build
-        if: ${{ needs.pack-authority-host-boundary.result == 'success' }}
+        if: ${{ needs.pack-authority-host-boundary.result == 'success' && needs.produce-authority-factory-evidence.result == 'success' }}
       - name: Compile test checkout
-        if: ${{ needs.pack-authority-host-boundary.result == 'success' }}
+        if: ${{ needs.pack-authority-host-boundary.result == 'success' && needs.produce-authority-factory-evidence.result == 'success' }}
         run: npx tsc -p tsconfig.test.json --pretty false
       - uses: actions/download-artifact@v4
-        if: ${{ needs.pack-authority-host-boundary.result == 'success' }}
+        if: ${{ needs.pack-authority-host-boundary.result == 'success' && needs.produce-authority-factory-evidence.result == 'success' }}
         with:
           name: authority-host-boundary-pack
           path: authority-host-boundary-pack
@@ -151,7 +151,7 @@ jobs:
           test "$(node -e 'const x=require("node:crypto"),f=require("node:fs");process.stdout.write("sha256:"+x.createHash("sha256").update(f.readFileSync("authority-factory-public-evidence/graph.json")).digest("hex"))')" = "$(node -e 'console.log(JSON.parse(require("node:fs").readFileSync("authority-factory-public-evidence/factory-evidence-metadata.json")).graphDigest)')"
           node --input-type=module -e 'import { readFileSync } from "node:fs"; import { verifyCertificationTaskReceiptGraph } from "./dist/authority/index.js"; const graph=JSON.parse(readFileSync("authority-factory-public-evidence/graph.json")),trustPin=JSON.parse(readFileSync("authority-factory-public-evidence/trust-pin.json")); if(verifyCertificationTaskReceiptGraph(graph,{trustPin}).status!=="verified") process.exit(1)'
       - name: Verify downloaded authority pack provenance
-        if: ${{ needs.pack-authority-host-boundary.result == 'success' }}
+        if: ${{ needs.pack-authority-host-boundary.result == 'success' && needs.produce-authority-factory-evidence.result == 'success' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -159,12 +159,12 @@ jobs:
           test "$(sha256sum authority-host-boundary-pack/*.tgz | awk '{print $1}')" = "$(cat authority-host-boundary-pack/authority-host-boundary.sha256)"
           test "$(node --input-type=module -e 'import { AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST } from "./dist/authority/index.js"; console.log(AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST)')" = "$(cat authority-host-boundary-pack/authority-adapter-contract.digest)"
       - name: Verify downloaded package boundary on native OS
-        if: ${{ needs.pack-authority-host-boundary.result == 'success' }}
+        if: ${{ needs.pack-authority-host-boundary.result == 'success' && needs.produce-authority-factory-evidence.result == 'success' }}
         shell: bash
         run: |
           if [ '${{ matrix.os }}' = 'ubuntu-latest' ]; then node test/packed/authority-host-boundary.mjs --tarball "$(pwd)/authority-host-boundary-pack/$(basename authority-host-boundary-pack/*.tgz)" --mode surface; else node test/packed/authority-host-boundary.mjs --tarball "$(pwd)/authority-host-boundary-pack/$(basename authority-host-boundary-pack/*.tgz)" --mode windows-native; fi
       - name: Run native authority platform evidence
-        if: ${{ needs.pack-authority-host-boundary.result == 'success' }}
+        if: ${{ needs.pack-authority-host-boundary.result == 'success' && needs.produce-authority-factory-evidence.result == 'success' }}
         shell: bash
         run: |
           if [ '${{ matrix.os }}' = 'ubuntu-latest' ]; then node --test --test-concurrency=1 --test-name-pattern='^N100 authority convergence:' dist-test/test/authority/ledger.test.js; else node --test --test-concurrency=1 dist-test/test/authority/linux-authority-cell.test.js dist-test/test/authority/authority-cell-connection.test.js dist-test/test/authority/certification-portable-evidence.test.js; fi
@@ -174,7 +174,7 @@ jobs:
       # on both matrix legs so the captured output and the exit code stay
       # trustworthy on Windows too.
       - name: Run supported tests
-        if: ${{ needs.pack-authority-host-boundary.result == 'success' }}
+        if: ${{ needs.pack-authority-host-boundary.result == 'success' && needs.produce-authority-factory-evidence.result == 'success' }}
         shell: bash
         run: |
           set -o pipefail
@@ -190,6 +190,6 @@ jobs:
       # badge-check.mjs's CANONICAL_PLATFORM; test/action-version-pin.test.ts
       # -style, test/badge-check.test.ts asserts the two can't drift apart.
       - name: Check README tests badge
-        if: ${{ needs.pack-authority-host-boundary.result == 'success' }}
+        if: ${{ needs.pack-authority-host-boundary.result == 'success' && needs.produce-authority-factory-evidence.result == 'success' && runner.os == 'Linux' }}
         shell: bash
         run: if [ '${{ runner.os }}' = 'Linux' ]; then node scripts/check-badge.mjs test-output.txt; fi

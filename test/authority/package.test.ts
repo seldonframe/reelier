@@ -29,7 +29,7 @@ test("CI keeps both required matrix contexts failing when authority pack prerequ
   assert.match(testJob, /- name: Enforce authority pack and factory evidence prerequisites\r?\n        if: \$\{\{ always\(\) \}\}/);
   assert.match(testJob, /needs\.pack-authority-host-boundary\.result \}\}[' ]+!= 'success'/);
   assert.match(testJob, /needs\.produce-authority-factory-evidence\.result \}\}[' ]+!= 'success'/);
-  const prerequisite = "needs.pack-authority-host-boundary.result == 'success'";
+  const prerequisite = "if: ${{ needs.pack-authority-host-boundary.result == 'success' && needs.produce-authority-factory-evidence.result == 'success' }}";
   const enforcement = testJob.indexOf("- name: Enforce authority pack and factory evidence prerequisites");
   assert.ok(enforcement >= 0);
   for (const step of ["actions/checkout@v4", "actions/setup-node@v4", "- run: npm ci", "- name: Clean build output", "- run: npm run build", "- name: Compile test checkout", "actions/download-artifact@v4", "- name: Verify downloaded authority pack provenance", "- name: Verify downloaded package boundary on native OS", "- name: Run native authority platform evidence", "- name: Run supported tests"]) {
@@ -40,7 +40,7 @@ test("CI keeps both required matrix contexts failing when authority pack prerequ
   const badgeStep = testJob.slice(testJob.indexOf("- name: Check README tests badge", enforcement));
   const badgeGuard = badgeStep.match(/^\s*(if: \$\{\{.*\}\})\r?$/m);
   assert.ok(badgeGuard, "badge step has an if guard");
-  const expectedBadgeGuard = "if: ${{ needs.pack-authority-host-boundary.result == 'success' && runner.os == 'Linux' }}";
+  const expectedBadgeGuard = "if: ${{ needs.pack-authority-host-boundary.result == 'success' && needs.produce-authority-factory-evidence.result == 'success' && runner.os == 'Linux' }}";
   assert.equal(badgeGuard[1].replace(/\s+/g, " "), expectedBadgeGuard);
   const downstreamSteps = testJob.slice(testJob.indexOf("      - uses: actions/checkout@v4")).split(/(?=^      - )/m).filter(block => block.startsWith("      - "));
   assert.ok(downstreamSteps.length >= 10, "all downstream matrix steps are parsed");
