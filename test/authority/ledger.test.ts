@@ -283,7 +283,7 @@ test("crash after durable dispatch but before send marker recovers ambiguous wit
   const restarted = new RawFsAuthorityLedger(root, { now: () => t0, monotonicNow: () => 0 });
   let sends = 0;
   const coordinator = createDispatchCoordinator(restarted, { async dispatch() { sends++; throw new Error("recovery must not resend"); } });
-  assert.deepEqual(await coordinator.recover(), []);
+  assert.deepEqual(await coordinator.recover(), [reservation.reservationId]);
   assert.equal(sends, 0);
   const recovered = await restarted.recover({ deferTerminal: true });
   assert.equal(recovered.ok, true);
