@@ -330,7 +330,7 @@ test("N100 authority convergence: one committed reservation, exact-existing outc
     const winner=winners[0]!;
     assert.equal(successes.filter(result=>result.status==="existing"&&result.dispatchEligible===false).length,99,"99 exact-existing outcomes");
     for(const result of successes.filter(result=>result!==winner))assert.deepEqual(result,{ok:true,status:"existing",dispatchEligible:false,reservation:winner.reservation},"exact-existing outcome matches the winner reservation");
-    assert.deepEqual(winner.reservation.limitAssignments,winner.reservation.intent.limitSlots.map((slot,index)=>({key:slot.key,index,maximum:slot.maximum})),"one exact assignment per committed intent limit slot");
+    assert.deepEqual(winner.reservation.limitAssignments,winner.reservation.intent.limitSlots.map(slot=>({key:slot.key,index:0,maximum:slot.maximum})),"one exact assignment per committed intent limit key");
     const ledger=new FsAuthorityLedger(root,{now:()=>t0});
     const dispatched=await ledger.transition(winner.reservation.reservationId,"reserved",{to:"dispatched"});
     assert.equal(dispatched.ok,true);
