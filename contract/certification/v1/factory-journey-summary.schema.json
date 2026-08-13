@@ -1,1 +1,69 @@
-{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"reelier.factory-journey-summary/v1","type":"object","required":["v","journey","graphDigest","stages","authorityBoundaryCeremonies","fixtureOperatorConfirmations","liveHumanReview","providerCredentialValueHandling","clientBearerResolution","providerSdkCalls","externalSockets","unsupportedCategories","nonClaims","logicalOperatorSteps","elapsedMs","reviewerPacket"],"properties":{"v":{"const":"reelier.factory-journey-summary/v1"},"journey":{"const":"github-issue-labels"},"graphDigest":{"type":"string","pattern":"^sha256:[0-9a-f]{64}$"},"stages":{"type":"array"},"authorityBoundaryCeremonies":{"const":1},"fixtureOperatorConfirmations":{"const":1},"liveHumanReview":{"const":"absent"},"providerCredentialValueHandling":{"const":0},"clientBearerResolution":{"const":0},"providerSdkCalls":{"const":0},"externalSockets":{"const":0},"unsupportedCategories":{"const":"absent"},"nonClaims":{"type":"array"},"logicalOperatorSteps":{"type":"integer","maximum":4},"elapsedMs":{"type":"integer","minimum":0},"reviewerPacket":{"type":"object"}},"additionalProperties":false}
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "reelier.factory-journey-summary/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["v", "journey", "graphDigest", "stages", "authorityBoundaryCeremonies", "fixtureOperatorConfirmations", "liveHumanReview", "providerCredentialValueHandling", "clientBearerResolution", "providerSdkCalls", "externalSockets", "unsupportedCategories", "nonClaims", "logicalOperatorSteps", "elapsedMs", "reviewerPacket"],
+  "properties": {
+    "v": { "const": "reelier.factory-journey-summary/v1" },
+    "journey": { "const": "github-issue-labels" },
+    "graphDigest": { "$ref": "#/$defs/digest" },
+    "stages": { "const": ["classification", "preparation", "consequential-execution", "independent-review"] },
+    "authorityBoundaryCeremonies": { "const": 1 },
+    "fixtureOperatorConfirmations": { "const": 1 },
+    "liveHumanReview": { "const": "absent" },
+    "providerCredentialValueHandling": { "const": 0 },
+    "clientBearerResolution": { "const": 0 },
+    "providerSdkCalls": { "const": 0 },
+    "externalSockets": { "const": 0 },
+    "unsupportedCategories": {
+      "type": "object", "additionalProperties": false,
+      "required": ["ambiguity", "manual", "blocked"],
+      "properties": { "ambiguity": { "const": "absent" }, "manual": { "const": "absent" }, "blocked": { "const": "absent" } }
+    },
+    "nonClaims": { "const": ["semantic-correctness", "general-software-factory-capability", "live-human-review"] },
+    "logicalOperatorSteps": { "type": "integer", "minimum": 1, "maximum": 4 },
+    "elapsedMs": { "type": "integer", "minimum": 0 },
+    "reviewerPacket": { "$ref": "#/$defs/reviewerPacket" }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "reviewerPacket": {
+      "type": "object", "additionalProperties": false,
+      "required": ["humanApprovedTaskBinding", "declared", "compiledEffect", "lineage", "policyStatus", "postStateConfidence", "providerObservation", "reconciliationResult", "cleanupResult", "duplicateDecisions", "exceptions", "receiptChain", "fixtureOperatorConfirmation", "graphDigest", "nonClaims"],
+      "properties": {
+        "humanApprovedTaskBinding": {
+          "type": "object", "additionalProperties": false,
+          "required": ["taskId", "authorityCellId", "signedReadinessDigest", "authorization", "dispatchable"],
+          "properties": { "taskId": { "type": "string" }, "authorityCellId": { "type": "string" }, "signedReadinessDigest": { "$ref": "#/$defs/digest" }, "authorization": { "const": "human-signed" }, "dispatchable": { "const": false } }
+        },
+        "declared": {
+          "type": "object", "additionalProperties": false,
+          "required": ["trigger", "intent", "operation"],
+          "properties": { "trigger": { "type": "object" }, "intent": { "type": "object" }, "operation": { "type": "array", "minItems": 1, "items": { "type": "string" } } }
+        },
+        "compiledEffect": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/digest" } },
+        "lineage": {
+          "type": "object", "additionalProperties": false,
+          "required": ["principals", "grants", "allocations"],
+          "properties": { "principals": { "type": "array", "minItems": 1, "items": { "type": "string" } }, "grants": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/digest" } }, "allocations": { "type": "array", "minItems": 1, "items": { "type": "string" } } }
+        },
+        "policyStatus": { "type": "array", "minItems": 1, "items": { "type": "object", "additionalProperties": false, "required": ["artifact", "status"], "properties": { "artifact": { "type": "string" }, "status": { "enum": ["verified", "failed", "unchecked", "absent"] } } } },
+        "postStateConfidence": { "type": "array", "minItems": 1, "items": { "enum": ["exact", "partial", "pending", "absent"] } },
+        "providerObservation": { "type": "array", "minItems": 1, "items": { "enum": ["verified", "failed", "unchecked", "absent"] } },
+        "reconciliationResult": { "type": "array", "minItems": 1, "items": { "enum": ["matched", "not-applied", "conflict", "unavailable", "not-attempted"] } },
+        "cleanupResult": { "type": "array", "minItems": 1, "items": { "const": "cleaned" } },
+        "duplicateDecisions": { "type": "array" },
+        "exceptions": { "type": "array" },
+        "receiptChain": { "type": "array", "minItems": 1, "items": { "type": "object", "additionalProperties": false, "required": ["receiptDigest", "priorReceiptDigest"], "properties": { "receiptDigest": { "$ref": "#/$defs/digest" }, "priorReceiptDigest": { "anyOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }] } } } },
+        "fixtureOperatorConfirmation": {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "basis", "signedReadinessDigest", "liveHuman", "grantsAuthority"],
+          "properties": { "kind": { "const": "fixture" }, "basis": { "const": "signed-readiness-construction" }, "signedReadinessDigest": { "$ref": "#/$defs/digest" }, "liveHuman": { "const": false }, "grantsAuthority": { "const": false } }
+        },
+        "graphDigest": { "$ref": "#/$defs/digest" },
+        "nonClaims": { "const": ["semantic-correctness", "general-software-factory-capability", "live-human-review"] }
+      }
+    }
+  }
+}
