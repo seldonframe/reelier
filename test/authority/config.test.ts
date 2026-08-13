@@ -24,3 +24,8 @@ test("authority endpoint accepts only an explicit Fly-internal egress proxy", ()
   assert.throws(() => validateAuthorityHostConfig({ ...base, endpoints: [{ ...endpoint, egressProxy: { ...endpoint.egressProxy, baseUrl: "https://public.example" } }] }), /egress proxy/);
   assert.throws(() => validateAuthorityHostConfig({ ...base, endpoints: [{ ...endpoint, egressProxy: { ...endpoint.egressProxy, token: "plaintext" } }] }), /closed/);
 });
+
+test("legacy endpoints do not silently become canonical native HTTPS route authority", () => {
+  const config = validateAuthorityHostConfig({ version: 1, tenant: "tenant", requester: "operator", definitions: [], endpoints: [{ endpointId: "github", baseUrl: "https://api.github.com", accountIdentity: "acct", allowedMethods: ["PUT"], allowedPathPrefixes: ["/repos"] }] });
+  assert.equal("nativeHttpsRoutes" in config, false);
+});
