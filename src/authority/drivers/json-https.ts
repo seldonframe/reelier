@@ -6,10 +6,11 @@ import { createHash } from "node:crypto";
 import { connect as tlsConnect } from "node:tls";
 import type { TransportEffect } from "../types.js";
 import { assertAllPublicAddresses } from "../client/ip.js";
-import { createTotalDeadline, type TotalDeadline } from "../net/deadline.js";
+import { createTotalDeadline, raceTotalDeadline, type TotalDeadline } from "../net/deadline.js";
 
 const FORBIDDEN = new Set(["authorization", "cookie", "host"]);
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
+const MAX_REQUEST_BYTES = 10 * 1024 * 1024;
 type JsonHttpsOptions = Readonly<{ timeoutMs?: number; maxResponseBytes?: number; maxRequestBytes?: number; monotonicNow?: () => number }>;
 
 /** Legacy runtime endpoint configuration; canonical route authority is separate. */
@@ -41,25 +42,28 @@ export function createPinnedLookup(address: string): LookupFunction {
 }
 
 export async function executeJsonHttpsEffect(effect: TransportEffect, endpoint: JsonHttpsEndpoint, secrets: JsonHttpsSecretResolver, options: JsonHttpsOptions = {}): Promise<JsonHttpsResponse> {
+  const deadline = dispatchDeadline(options);
+  deadline.remainingMs("prepare");
   if (effect.endpointId !== endpoint.endpointId) throw new JsonHttpsSecurityError("effect endpoint does not match configured endpoint");
   if (!endpoint.allowedMethods.includes(effect.method)) throw new JsonHttpsSecurityError("method is not allowed for endpoint");
   validatePath(effect.path, endpoint);
   validateQuery(effect.query);
   validateHeaders(effect.headers);
+  if (base64DecodedBytes(effect.bodyBase64) > MAX_REQUEST_BYTES) throw new JsonHttpsSecurityError("request exceeds configured limit");
   const body = Buffer.from(effect.bodyBase64, "base64");
-  const deadline = dispatchDeadline(options);
   deadline.remainingMs("credential"); const secret = endpoint.secretRef ? await secrets.resolve(endpoint.secretRef) : undefined;
   deadline.remainingMs("credential"); const proxySecret = endpoint.egressProxy ? await secrets.resolve(endpoint.egressProxy.bearerRef) : undefined;
   return requestPinned(endpoint, effect.method, effect.path, effect.query, effect.headers, body, secret, proxySecret, options, deadline);
 }
 
 export async function executeJsonHttpsRead(read: JsonHttpsRead, endpoint: JsonHttpsEndpoint, secrets: JsonHttpsSecretResolver, options: JsonHttpsOptions = {}): Promise<JsonHttpsResponse> {
+  const deadline = dispatchDeadline(options);
+  deadline.remainingMs("prepare");
   if (read.endpointId !== endpoint.endpointId) throw new JsonHttpsSecurityError("read endpoint does not match configured endpoint");
   if (!endpoint.allowedMethods.includes("GET")) throw new JsonHttpsSecurityError("GET is not allowed for endpoint");
   validatePath(read.path, endpoint);
   validateQuery(read.query ?? "");
   validateHeaders(read.headers ?? {});
-  const deadline = dispatchDeadline(options);
   deadline.remainingMs("credential"); const secret = endpoint.secretRef ? await secrets.resolve(endpoint.secretRef) : undefined;
   deadline.remainingMs("credential"); const proxySecret = endpoint.egressProxy ? await secrets.resolve(endpoint.egressProxy.bearerRef) : undefined;
   return requestPinned(endpoint, "GET", read.path, read.query ?? "", read.headers ?? {}, Buffer.alloc(0), secret, proxySecret, options, deadline);
@@ -88,6 +92,7 @@ function validateQuery(query: string): void {
 }
 
 function dispatchDeadline(options: JsonHttpsOptions): TotalDeadline { return createTotalDeadline({ timeoutMs: options.timeoutMs ?? 15_000, monotonicNow: options.monotonicNow }); }
+function base64DecodedBytes(value: string): number { return Math.floor(value.length * 3 / 4) - (value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0); }
 
 async function requestPinned(endpoint: JsonHttpsEndpoint, method: string, path: string, query: string, headers: Readonly<Record<string, string>>, body: Buffer, secret: string | undefined, proxySecret: string | undefined, options: JsonHttpsOptions, deadline: TotalDeadline): Promise<JsonHttpsResponse> {
   let base: URL;
@@ -104,7 +109,7 @@ async function requestPinned(endpoint: JsonHttpsEndpoint, method: string, path: 
     return requestThroughProxy(endpoint.egressProxy, base, target, method, requestHeaders, body, proxySecret, maxResponseBytes, requestBytesDigest, deadline);
   }
   deadline.remainingMs("dns");
-  const addresses = await dnsLookup(base.hostname, { all: true, verbatim: true });
+  const addresses = await raceTotalDeadline(deadline, "dns", dnsLookup(base.hostname, { all: true, verbatim: true }));
   let pinned: readonly Readonly<{ address: string; family: 4 | 6 }>[];
   try { pinned = assertAllPublicAddresses(addresses.map(item => item.address)); } catch { throw new JsonHttpsSecurityError("endpoint resolved to a non-public address"); }
   const chosen = pinned[0]!.address;
@@ -112,6 +117,7 @@ async function requestPinned(endpoint: JsonHttpsEndpoint, method: string, path: 
     let settled = false;
     const finish = (error?: Error, value?: JsonHttpsResponse) => { if (settled) return; settled = true; clearTimeout(timer); error ? reject(error) : resolve(value!); };
     const req = httpsRequest({ protocol: "https:", hostname: base.hostname, port: base.port || 443, method, path: `${target.pathname}${target.search}`, headers: requestHeaders, servername: base.hostname, lookup: createPinnedLookup(chosen) }, response => {
+      try { deadline.remainingMs("headers"); } catch (error) { req.destroy(error as Error); finish(error as Error); return; }
       if ((response.statusCode ?? 0) >= 300 && (response.statusCode ?? 0) < 400) { req.destroy(); finish(new JsonHttpsSecurityError("HTTPS redirects are refused")); return; }
       const chunks: Buffer[] = []; let size = 0;
       response.on("data", chunk => { try { deadline.remainingMs("body"); } catch (error) { req.destroy(error as Error); return; } const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk); size += bytes.length; if (size > maxResponseBytes) { req.destroy(new JsonHttpsSecurityError("response exceeds configured limit")); return; } chunks.push(bytes); });
@@ -127,13 +133,14 @@ async function requestPinned(endpoint: JsonHttpsEndpoint, method: string, path: 
 
 /** Executes host-materialized confidential bytes without placing them in a serializable TransportEffect. */
 export async function executeJsonHttpsConfidentialRequest(request: JsonHttpsConfidentialRequest, endpoint: JsonHttpsEndpoint, secrets: JsonHttpsSecretResolver, options: JsonHttpsOptions = {}): Promise<JsonHttpsResponse> {
+  const deadline = dispatchDeadline(options);
+  deadline.remainingMs("prepare");
   if (request.endpointId !== endpoint.endpointId) throw new JsonHttpsSecurityError("confidential request endpoint does not match configured endpoint");
   if (!endpoint.allowedMethods.includes(request.method)) throw new JsonHttpsSecurityError("method is not allowed for endpoint");
   validatePath(request.path, endpoint); validateQuery(request.query ?? ""); validateHeaders(request.headers ?? {});
-  const maxRequestBytes = Math.min(options.maxRequestBytes ?? 10 * 1024 * 1024, 10 * 1024 * 1024);
+  const maxRequestBytes = Math.min(options.maxRequestBytes ?? MAX_REQUEST_BYTES, MAX_REQUEST_BYTES);
   if (!Number.isSafeInteger(maxRequestBytes) || maxRequestBytes < 1 || request.body.byteLength > maxRequestBytes) throw new JsonHttpsSecurityError("confidential request exceeds configured limit");
   const body = Buffer.from(request.body);
-  const deadline = dispatchDeadline(options);
   deadline.remainingMs("credential"); const secret = endpoint.secretRef ? await secrets.resolve(endpoint.secretRef) : undefined;
   deadline.remainingMs("credential"); const proxySecret = endpoint.egressProxy ? await secrets.resolve(endpoint.egressProxy.bearerRef) : undefined;
   try { return await requestPinned(endpoint, request.method, request.path, request.query ?? "", request.headers ?? {}, body, secret, proxySecret, options, deadline); }
@@ -145,7 +152,7 @@ async function requestThroughProxy(proxy: NonNullable<JsonHttpsEndpoint["egressP
   try { origin = new URL(proxy.baseUrl); } catch { throw new JsonHttpsSecurityError("invalid egress proxy URL"); }
   if (origin.protocol !== "http:" || origin.username || origin.password || origin.pathname !== "/" || origin.search || origin.hash || !origin.hostname.endsWith(".internal")) throw new JsonHttpsSecurityError("egress proxy must be a credential-free Fly internal HTTP origin");
   if (!/^(?:env:[A-Za-z_][A-Za-z0-9_]{0,127}|file:.+)$/.test(proxy.bearerRef)) throw new JsonHttpsSecurityError("egress proxy credential reference is invalid");
-  deadline.remainingMs("dns"); const addresses = await dnsLookup(origin.hostname, { all: true, verbatim: true });
+  deadline.remainingMs("dns"); const addresses = await raceTotalDeadline(deadline, "dns", dnsLookup(origin.hostname, { all: true, verbatim: true }));
   let pinned: readonly Readonly<{ address: string; family: 4 | 6 }>[];
   try { pinned = assertAllPublicAddresses(addresses.map(item => item.address)); } catch { throw new JsonHttpsSecurityError("egress proxy resolved to a non-public address"); }
   const chosen = pinned[0]!.address;
@@ -163,7 +170,8 @@ async function requestThroughProxy(proxy: NonNullable<JsonHttpsEndpoint["egressP
     connectRequest.once("connect", (response, socket, head) => {
       activeSocket = socket;
       if (response.statusCode !== 200 || head.length) { socket.destroy(); fail(new JsonHttpsSecurityError("egress proxy refused the tunnel")); return; }
-      deadline.remainingMs("tls"); const secure = secureSocket = tlsConnect({ socket, servername: base.hostname, rejectUnauthorized: true });
+      try { deadline.remainingMs("tls"); } catch (error) { socket.destroy(error as Error); fail(error as Error); return; }
+      const secure = secureSocket = tlsConnect({ socket, servername: base.hostname, rejectUnauthorized: true });
       secure.once("error", fail);
       secure.once("secureConnect", () => {
         const request = tunneledRequest = httpRequest({
@@ -183,6 +191,7 @@ async function requestThroughProxy(proxy: NonNullable<JsonHttpsEndpoint["egressP
 }
 
 function collectResponse(response: import("node:http").IncomingMessage, request: import("node:http").ClientRequest, maxResponseBytes: number, requestBytesDigest: string, deadline: TotalDeadline, resolve: (value: JsonHttpsResponse) => void, reject: (error: Error) => void): void {
+  try { deadline.remainingMs("headers"); } catch (error) { request.destroy(error as Error); reject(error as Error); return; }
   if ((response.statusCode ?? 0) >= 300 && (response.statusCode ?? 0) < 400) { request.destroy(); reject(new JsonHttpsSecurityError("HTTPS redirects are refused")); return; }
   const chunks: Buffer[] = []; let size = 0;
   response.on("data", chunk => { try { deadline.remainingMs("body"); } catch (error) { request.destroy(error as Error); return; } const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk); size += bytes.length; if (size > maxResponseBytes) { request.destroy(new JsonHttpsSecurityError("response exceeds configured limit")); return; } chunks.push(bytes); });

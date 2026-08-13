@@ -6,7 +6,7 @@ import type { Duplex } from "node:stream";
 import type { SecretResolver } from "./secret-resolver.js";
 import { assertLinuxAuthorityCellHost } from "./platform.js";
 import { assertAllPublicAddresses } from "../client/ip.js";
-import { createTotalDeadline } from "../net/deadline.js";
+import { createTotalDeadline, raceTotalDeadline } from "../net/deadline.js";
 
 const DNS = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
 const SECRET_REF = /^(?:env:[A-Za-z_][A-Za-z0-9_]{0,127}|file:.+)$/;
@@ -77,11 +77,12 @@ export function createAuthorityEgressGateway(options: AuthorityEgressGatewayOpti
           const target = parseConnectTarget(request.url);
           if (!config.allowedHosts.includes(target.hostname)) { refuse(403); return; }
           deadline.remainingMs("dns");
-          const addresses = await resolve(target.hostname);
+          const addresses = await raceTotalDeadline(deadline, "dns", resolve(target.hostname));
           let pinned: readonly Readonly<{ address: string; family: 4 | 6 }>[];
           try { pinned = assertAllPublicAddresses(addresses.map(item => item.address)); } catch { refuse(502); return; }
           deadline.remainingMs("connect");
           upstream = await dial({ address: pinned[0]!.address, port: 443 });
+          try { deadline.remainingMs("connect"); } catch (error) { upstream.destroy(error as Error); throw error; }
           let opened = false;
           const open = () => {
             if (opened || client.destroyed) return;

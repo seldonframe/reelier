@@ -5,10 +5,11 @@ import { request as httpRequest } from "node:http";
 import path from "node:path";
 import { parseAuthorityCellConnectionV1, type AuthorityCellConnectionV1 } from "./config.js";
 import { assertAllPublicAddresses, normalizeIpLiteral } from "./ip.js";
-import { createTotalDeadline, type TotalDeadline } from "../net/deadline.js";
+import { createTotalDeadline, raceTotalDeadline, type TotalDeadline } from "../net/deadline.js";
 
 export type AuthorityCellLiveResult = Readonly<{ state: "verified" | "failed" | "unchecked" | "absent"; reasonCode: string; cellId?: string; adapterContractDigest?: string }>;
-export interface AuthorityCellClientDependencies { readonly resolveToken?: (reference: AuthorityCellConnectionV1["bearerTokenRef"]) => Promise<string>; readonly request?: (url: string, init: RequestInit) => Promise<Response>; readonly credentialRoot?: string; readonly resolveAddresses?: (hostname: string) => Promise<readonly string[]>; readonly timeoutMs?: number; readonly monotonicNow?: () => number; }
+export interface AuthorityCellRequestContext { readonly address: string; readonly deadline: TotalDeadline; readonly signal: AbortSignal; readonly lookup: (hostname: string) => string; }
+export interface AuthorityCellClientDependencies { readonly resolveToken?: (reference: AuthorityCellConnectionV1["bearerTokenRef"]) => Promise<string>; readonly request?: (url: string, init: RequestInit, context: AuthorityCellRequestContext) => Promise<Response>; readonly credentialRoot?: string; readonly resolveAddresses?: (hostname: string) => Promise<readonly string[]>; readonly timeoutMs?: number; readonly monotonicNow?: () => number; }
 
 /** Client-only live identity check. The token is resolved only here and never returned or logged. */
 export async function checkAuthorityCellLive(value: unknown, dependencies: AuthorityCellClientDependencies = {}): Promise<AuthorityCellLiveResult> {
@@ -17,16 +18,16 @@ export async function checkAuthorityCellLive(value: unknown, dependencies: Autho
   try {
     const deadline = createTotalDeadline({ timeoutMs: dependencies.timeoutMs ?? 15_000, monotonicNow: dependencies.monotonicNow });
     deadline.remainingMs("dns");
-    const addresses = await (dependencies.resolveAddresses ?? resolveAddresses)(new URL(connection.endpoint).hostname);
+    const addresses = await raceTotalDeadline(deadline, "dns", (dependencies.resolveAddresses ?? resolveAddresses)(new URL(connection.endpoint).hostname));
     let pinned: readonly Readonly<{ address: string; family: 4 | 6 }>[];
     try { pinned = assertAllPublicAddresses(addresses); } catch { return { state: "failed", reasonCode: "endpoint-address-refused" }; }
     deadline.remainingMs("credential");
     let token: string;
-    try { token = await (dependencies.resolveToken ?? (reference => resolveToken(reference, dependencies.credentialRoot)))(connection.bearerTokenRef); }
+    try { token = await raceTotalDeadline(deadline, "credential", (dependencies.resolveToken ?? (reference => resolveToken(reference, dependencies.credentialRoot)))(connection.bearerTokenRef)); }
     catch { return { state: "absent", reasonCode: "token-unavailable" }; }
     deadline.remainingMs("identity");
     const response = dependencies.request
-      ? await dependencies.request(`${connection.endpoint}/v1/identity`, { method: "GET", headers: { authorization: `Bearer ${token}`, accept: "application/json" }, redirect: "error" })
+      ? await raceTotalDeadline(deadline, "identity", dependencies.request(`${connection.endpoint}/v1/identity`, { method: "GET", headers: { authorization: `Bearer ${token}`, accept: "application/json" }, redirect: "error", signal: deadline.signal }, Object.freeze({ address: pinned[0]!.address, deadline, signal: deadline.signal, lookup: () => pinned[0]!.address })))
       : await pinnedIdentityRequest(connection.endpoint, token, pinned[0]!.address, deadline);
     deadline.remainingMs("body");
     if (response.status >= 300 && response.status < 400) return { state: "failed", reasonCode: "identity-unavailable" };
