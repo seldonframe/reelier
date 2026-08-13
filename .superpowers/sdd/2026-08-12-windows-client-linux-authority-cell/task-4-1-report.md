@@ -195,3 +195,25 @@ Round 2 open risks
 
 - The existing Windows symlink-privilege test remains skipped; native Linux CI is still required for that host boundary.
 - The journal-signed duplicate head proves the exported collection's exact count/history. It does not claim universal interception or completeness outside the declared durable fixture boundary.
+
+Round 3/5 reviewer fixes
+
+- RED `fc627ed`: demonstrated exhausted replays failing before terminal inspection, concurrent duplicate loss, lexical old-head selection, literal request-ID mutation, and self-consistent false lifecycle acceptance.
+- GREEN `67363ca`: replaced lexical evidence fragments with one confined canonical duplicate ledger, serialized under a task-wide exclusive lock. Each append allocates its monotonic sequence while locked, commits attempt and zero-effect decision together, and advances a journal-signed predecessor-linked head committing both histories. Run/conflict/cleanup are separate signed operation kinds while caller request IDs remain literal. Terminal replay inspection authenticates through the non-effect observation path before any effect-capacity permit. Dispatch/export lifecycle history now commits independently derived task, grant, allocation, journal, and budget inputs and the verifier derives lifecycle rather than trusting a self-authored digest.
+
+Round 3 verification
+
+```text
+✔ portable evidence links the approved task, exact post-state, policy statuses, task status, and zero-effect duplicates
+✔ duplicate ledger serializes concurrent exhausted attempts and ignores lexical old-head injection
+✔ exhausted exact conflict replay records literal request id and operation kind without effect
+✔ portable export preserves dispatch history while reporting a current task revocation
+✔ offline portable verification rejects re-signed false claims with a fresh terminal commitment
+ℹ tests 5
+ℹ pass 5
+ℹ fail 0
+```
+
+The first combined focused run passed 43/45 with the existing symlink skip and the previously recorded concurrent-recovery baseline flake. The subsequent exact runner run passed every new Round 3 case except a nondeterministic `ingress-ledger-unavailable` in the re-signed falsifier after 30 seconds, alongside the same pre-existing concurrent-recovery flake: 40 pass, 2 fail, 1 skip. The identical re-signed falsifier passed in the immediately preceding focused run. No timeout, retry, or unrelated path was changed.
+
+`npm run check:authority-contract`, `npx tsc --noEmit --pretty false`, `git diff --check`, and the frozen `contract/authority/v1` diff exited 0. Adapter Contract v1 remains `sha256:7f46242b26d9c921f4e1ec9de6418ac5fc8c03d70c4415c25e799ae0e73a1512`.
