@@ -15,6 +15,7 @@ export interface AuthorityHostConfig {
   readonly decisionDir: string;
   readonly receiptDir: string;
   readonly gateKeyFile?: string;
+  /** Legacy JSON HTTPS runtime endpoints. They are non-certifiable and never route authority. */
   readonly endpoints: readonly JsonHttpsEndpoint[];
   readonly deploymentPath?: string;
   readonly jobCardTrustPinPath?: string;
