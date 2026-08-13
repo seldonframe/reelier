@@ -217,3 +217,51 @@ Round 3 verification
 The first combined focused run passed 43/45 with the existing symlink skip and the previously recorded concurrent-recovery baseline flake. The subsequent exact runner run passed every new Round 3 case except a nondeterministic `ingress-ledger-unavailable` in the re-signed falsifier after 30 seconds, alongside the same pre-existing concurrent-recovery flake: 40 pass, 2 fail, 1 skip. The identical re-signed falsifier passed in the immediately preceding focused run. No timeout, retry, or unrelated path was changed.
 
 `npm run check:authority-contract`, `npx tsc --noEmit --pretty false`, `git diff --check`, and the frozen `contract/authority/v1` diff exited 0. Adapter Contract v1 remains `sha256:7f46242b26d9c921f4e1ec9de6418ac5fc8c03d70c4415c25e799ae0e73a1512`.
+
+Round 4/5 duplicate checkpoint fix
+
+Files changed
+
+- `contract/certification/v1/task-receipt-graph.schema.json`
+- `src/authority/certification/github-issue-labels-runner.ts`
+- `src/authority/certification/portable-evidence.ts`
+- `src/authority/certification/task-receipt-graph.ts`
+- `test/authority/certification-github-issue-labels-runner.test.ts`
+- `.superpowers/sdd/2026-08-12-windows-client-linux-authority-cell/task-4-1-report.md`
+
+What changed per file
+
+- The runner now checkpoints each signed duplicate head in the independently authority-journal-signed append-only request generation chain while holding the duplicate ledger lock.
+- Portable verification requires the presented duplicate collection head at the terminal signed journal checkpoint, rejecting canonical ledger rollback paired with current journal history.
+- Graph verification reports `duplicateHistoryFreshness: "unchecked"`: it proves completeness only at the included signed checkpoint, never universal or later currentness.
+- The certification schema includes the nullable journal checkpoint digest.
+- The test captures a genuine count-one state, restarts, appends two concurrent attempts, restores the old canonical ledger, regenerates the evidence terminal, and proves rejection. The honest count-three graph passes; the captured old graph remains historical with freshness unchecked.
+
+Deviations from the plan and why
+
+- No files outside Task 4A closed scope changed. No external freshness authority was added. Per orchestrator ruling, the existing authority-journal generation chain is the independent checkpoint; historical artifacts remain valid only for their signed checkpoint.
+
+Test results (verbatim tail)
+
+```text
+✔ duplicate ledger serializes concurrent exhausted attempts and ignores lexical old-head injection (2960.5066ms)
+✔ externally anchored duplicate head rejects canonical rollback after restart and concurrent attempts (3724.1226ms)
+ℹ tests 2
+ℹ suites 0
+ℹ pass 2
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 6939.9882
+```
+
+The combined runner/portable suite passed 43, failed 2, and skipped 1. One failure was the previously recorded Windows concurrent-recovery flake (`Missing expected rejection` plus post-test ENOENT activity). The new rollback case hit the previously recorded nondeterministic `ingress-ledger-unavailable` after 30 seconds; the identical case passed in both focused executions. No retry, sleep, timeout, or unrelated path was changed.
+
+`npm run check:authority-contract`, `npx tsc --noEmit --pretty false`, `node scripts/build-authority-contract.mjs --check`, and `git diff --check` exited 0. `git diff 7cbb8af -- contract/authority/v1` is empty. Adapter Contract v1 remains `sha256:7f46242b26d9c921f4e1ec9de6418ac5fc8c03d70c4415c25e799ae0e73a1512`.
+
+Open risks
+
+- Duplicate completeness is only as of the included signed journal checkpoint. Freshness after that checkpoint is explicitly unchecked.
+- A captured old graph plus its captured old journal is valid historical evidence and cannot satisfy a later-currentness claim.
+- Existing Windows filesystem/concurrency flakes remain recorded and unmasked; Linux CI is still required for the real host boundary.
