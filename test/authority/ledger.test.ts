@@ -232,6 +232,12 @@ async function rewriteJournal(root: string, mutate: (event: Record<string, unkno
 
 async function readJournalEvents(root:string):Promise<Record<string,unknown>[]>{const journal=path.join(root,"journal"),names=(await readdir(journal)).sort();return Promise.all(names.map(async name=>JSON.parse(await readFile(path.join(journal,name),"utf8")) as Record<string,unknown>));}
 
+async function n100TransitionFailureDiagnostic(root:string,result:unknown):Promise<string>{
+  const value=typeof result==="object"&&result!==null?result as Record<string,unknown>:{};
+  const redactedResult={ok:value.ok,...(typeof value.reason==="string"?{reason:value.reason}:{}),...(typeof value.status==="string"?{status:value.status}:{})};
+  return JSON.stringify({result:redactedResult,rootEntries:(await readdir(root)).sort()});
+}
+
 async function snapshotDurableSubtrees(root:string,subtrees:readonly string[]):Promise<ReadonlyArray<Readonly<{name:string;bytes:string}>>>{const snapshot:Array<Readonly<{name:string;bytes:string}>>=[];const walk=async(directory:string,relative:string):Promise<void>=>{for(const entry of (await readdir(directory,{withFileTypes:true})).sort((left,right)=>left.name.localeCompare(right.name))){const child=path.join(directory,entry.name),name=path.posix.join(relative,entry.name);if(entry.isDirectory())await walk(child,name);else{assert.equal(entry.isFile(),true,`durable snapshot contains only regular files: ${name}`);snapshot.push({name,bytes:(await readFile(child)).toString("base64")});}}};for(const subtree of [...subtrees].sort())await walk(path.join(root,subtree),subtree);return snapshot;}
 async function snapshotRootArtifacts(root:string):Promise<ReadonlyArray<Readonly<{name:string;type:"directory"|"file";bytes?:string}>>>{const snapshot:Array<Readonly<{name:string;type:"directory"|"file";bytes?:string}>>=[];const walk=async(directory:string,relative:string):Promise<void>=>{for(const entry of (await readdir(directory,{withFileTypes:true})).sort((left,right)=>left.name.localeCompare(right.name))){const child=path.join(directory,entry.name),name=path.posix.join(relative,entry.name);if(entry.isDirectory()){snapshot.push({name,type:"directory"});await walk(child,name);}else{assert.equal(entry.isFile(),true,`root snapshot contains only regular files: ${name}`);snapshot.push({name,type:"file",bytes:(await readFile(child)).toString("base64")});}}};await walk(root,"");return snapshot;}
 
@@ -333,10 +339,10 @@ test("N100 authority convergence: one committed reservation, exact-existing outc
     assert.deepEqual(winner.reservation.limitAssignments,winner.reservation.intent.limitSlots.map(slot=>({key:slot.key,index:0,maximum:slot.maximum})),"one exact assignment per committed intent limit key");
     const ledger=new FsAuthorityLedger(root,{now:()=>t0});
     const dispatched=await ledger.transition(winner.reservation.reservationId,"reserved",{to:"dispatched"});
-    assert.equal(dispatched.ok,true);
+    assert.equal(dispatched.ok,true,dispatched.ok?undefined:`dispatch diagnostic: ${await n100TransitionFailureDiagnostic(root,dispatched)}`);
     if(!dispatched.ok)return;
     const acknowledged=await ledger.transition(winner.reservation.reservationId,"dispatched",{to:"acknowledged",resultDigest:digest("n")});
-    assert.equal(acknowledged.ok,true);
+    assert.equal(acknowledged.ok,true,acknowledged.ok?undefined:`acknowledge diagnostic: ${await n100TransitionFailureDiagnostic(root,acknowledged)}`);
     if(!acknowledged.ok)return;
     const recovered = await new FsAuthorityLedger(root, { now: () => t0 }).recover();
     assert.equal(recovered.ok, true);
