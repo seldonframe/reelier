@@ -228,3 +228,59 @@ Controlled canonical-style diagnostic used the unmistakably synthetic count `314
 
 - The canonical merged Ubuntu pass count remains absent locally. The next hosted Ubuntu full-suite run must supply the actual `# pass` total before the pending badge can be replaced with a numeric claim.
 - The controlled diagnostic proves failure disposition and preservation of the parsed total; `314159` is a fixture, not suite evidence.
+
+## Merge review fix round 2 (2026-08-13)
+
+### Files changed
+
+- `test/authority/package.test.ts`
+- `.superpowers/sdd/2026-08-12-windows-client-linux-authority-cell/task-4b-report.md`
+
+### What changed per file
+
+- `test/authority/package.test.ts`: replaced the three independently loose badge-guard token checks with exact normalized equality against `if: ${{ needs.pack-authority-host-boundary.result == 'success' && runner.os == 'Linux' }}`. The downstream step audit now requires that same exact combined guard; ordinary steps retain their exact prerequisite-only checks.
+- `.superpowers/sdd/2026-08-12-windows-client-linux-authority-cell/task-4b-report.md`: recorded the falsifier RED and focused GREEN evidence.
+
+### Deviations from plan and why
+
+- None. `.github/workflows/ci.yml` and `README.md` were unchanged.
+
+### Test results (verbatim tail)
+
+RED mutation command evaluated the prior three assertions against the reviewer's weakened guard `${{ needs.pack-authority-host-boundary.result == 'success' || true && runner.os == 'Linux' }}`. It exited `1`, proving those checks incorrectly accepted the falsifier:
+
+```text
+AssertionError [ERR_ASSERTION]: regression must reject a guard that weakens pack success with || true
+
+true !== false
+```
+
+Final verification ran `npx tsc -p tsconfig.test.json --pretty false`, focused package and badge suites, and `git diff --check -- test/authority/package.test.ts`; all exited `0`. Package-suite tail:
+
+```text
+ℹ tests 4
+ℹ suites 0
+ℹ pass 4
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 693.7931
+```
+
+Badge-suite tail:
+
+```text
+ℹ tests 22
+ℹ suites 0
+ℹ pass 22
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 95.641
+```
+
+### Open risks
+
+- The exact normalized equality intentionally treats any semantic change to the badge guard as review-requiring. The hosted Ubuntu pass count remains absent and pending as recorded in fix round 1.
