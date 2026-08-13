@@ -99,9 +99,16 @@ function canonicalPaths(value: unknown): readonly string[] {
 }
 
 function inertArray(value: unknown, label: string): unknown[] {
-  if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype || hasAccessor(value)) throw new TypeError(`JSON HTTPS route ${label} must be an inert array`);
+  if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype || !hasExactArrayKeys(value) || hasAccessor(value)) throw new TypeError(`JSON HTTPS route ${label} must be an inert array`);
   return Array.from(value);
 }
 
+function hasExactArrayKeys(value: unknown[]): boolean {
+  const names = Object.getOwnPropertyNames(value);
+  return Object.getOwnPropertySymbols(value).length === 0 && names.length === value.length + 1 && names.includes("length") && names.every(name => name === "length" || (/^(?:0|[1-9]\d*)$/.test(name) && Number(name) < value.length));
+}
 function hasAccessor(value: object): boolean { return Object.values(Object.getOwnPropertyDescriptors(value)).some(descriptor => !("value" in descriptor) || descriptor.get || descriptor.set); }
-function validPath(value: string): boolean { return value.startsWith("/") && !value.includes("//") && !value.includes("\\") && !/[?#]/.test(value) && value.split("/").every((part, index) => index === 0 || (part !== "." && part !== "..")); }
+function validPath(value: string): boolean {
+  if (!value.startsWith("/") || value.includes("//") || value.includes("\\") || /[?#]/.test(value) || !value.split("/").every((part, index) => index === 0 || (part !== "." && part !== ".."))) return false;
+  try { return new URL(value, "https://route.invalid").pathname === value; } catch { return false; }
+}
