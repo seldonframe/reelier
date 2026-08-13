@@ -31,6 +31,7 @@ import type { OpaqueConnectionRouteRegistry } from "../../connections.js";
 import { assertLinuxAuthorityCellHost } from "./platform.js";
 import type { RouteAuthoritySnapshotV1 } from "../ledger.js";
 import type { CertifiedDispatchOptions } from "./dispatch.js";
+import type { AuthenticatedProviderIdentityV1 } from "./github-account-identity.js";
 
 /** Builds the local host from signed-artifact boundaries. An empty workspace is intentionally
  * usable for discovery and status, but every Outcome refuses until a signed contract is installed. */
@@ -53,6 +54,7 @@ export interface LocalAuthorityRuntimeOptions {
   readonly secretResolver?: SecretResolver;
   readonly secretResolverOptions?: SecretResolverOptions;
   readonly routeAuthority?: (input: Readonly<{ tenant:string; requester:string; definitionAlias:string; connectorId:string; accountId:string; endpointId:string; authorityGeneration:string; authorityExpiresAt:string }>) => RouteAuthoritySnapshotV1 | undefined;
+  readonly authenticatedProviderIdentity?: () => Promise<AuthenticatedProviderIdentityV1>;
   readonly certifiedDispatch?: CertifiedDispatchOptions;
 }
 
@@ -119,7 +121,7 @@ export async function createLocalAuthorityRuntime(config: AuthorityHostConfig, o
       } catch { return { ok: false as const, reason: "unavailable" as const }; }
     },
   });
-  const gate = createAuthorityGate({ trustRoots, packs, sources, connectors: connectorRegistry, state, ledger, ...(options.routeAuthority ? { routeAuthority: options.routeAuthority } : {}), localGatePolicyDigest: authorityDigest({ v: "reelier.local-gate-policy/v1", tenant: config.tenant }), decisionSink: decisions, signer: { async sign(input) { return { signerId: "local-gate", signature: signAuthorityDigest(privateKey, input.purpose, input.digest) }; } }, eventId: () => `evt_${randomUUID()}`, capabilityId: () => `cap_${randomUUID()}` });
+  const gate = createAuthorityGate({ trustRoots, packs, sources, connectors: connectorRegistry, state, ledger, ...(options.routeAuthority ? { routeAuthority: options.routeAuthority } : {}), ...(options.authenticatedProviderIdentity ? { authenticatedProviderIdentity: options.authenticatedProviderIdentity } : {}), localGatePolicyDigest: authorityDigest({ v: "reelier.local-gate-policy/v1", tenant: config.tenant }), decisionSink: decisions, signer: { async sign(input) { return { signerId: "local-gate", signature: signAuthorityDigest(privateKey, input.purpose, input.digest) }; } }, eventId: () => `evt_${randomUUID()}`, capabilityId: () => `cap_${randomUUID()}` });
   const publication = createFileReceiptPublication({ rootDir: config.receiptDir });
   const secrets = options.secretResolver ?? createSecretResolver(options.secretResolverOptions);
   const adapter = options.dispatchAdapter ?? createJsonHttpsDispatchAdapter({ endpoints: config.endpoints, routes: config.nativeHttpsRoutes, secrets });

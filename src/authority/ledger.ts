@@ -26,6 +26,9 @@ export interface RouteAuthoritySnapshotV1 {
   readonly accountId: string;
   readonly providerAccountIdentity: string;
   readonly endpointId: string;
+  readonly credentialSlotId: string;
+  readonly slotInstanceId: string;
+  readonly slotVersion: string;
   readonly authenticatedProviderIdentityDigest: string;
   readonly sourceReadRouteDigest: string;
   readonly projectionSchemaDigest: string;
