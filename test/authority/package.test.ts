@@ -82,13 +82,28 @@ test("CI packs exactly once and closes package and evidence contents against obs
   const pack = workflow.slice(workflow.indexOf("  pack-authority-host-boundary:"), workflow.indexOf("  produce-authority-factory-evidence:"));
   assert.match(pack, /packed\.files/);
   assert.match(pack, /native\\\/windows-k1-helper/);
-  assert.match(pack, /authority\\\/host\\\/windows-k1/);
+  assert.match(pack, /dist\\\/authority\\\/host\\\/windows-k1/);
+  assert.doesNotMatch(pack, /package\\\/dist\\\/authority\\\/host\\\/windows-k1/);
   assert.match(pack, /fifo/i);
   assert.match(pack, /obsolete Windows FIFO\/native helper was packed/);
   const producer = workflow.slice(workflow.indexOf("  produce-authority-factory-evidence:"), workflow.indexOf("  test:"));
   assert.match(producer, /find factory-evidence -maxdepth 1 -type f/);
   assert.match(producer, /factory-evidence-metadata\.json/);
   assert.match(producer, /wc -l/);
+});
+
+test("npm pack filenames are root-relative and the workflow scans the deterministic canary before claiming empty", () => {
+  const workflow = readFileSync(path.join(process.cwd(), ".github", "workflows", "ci.yml"), "utf8");
+  const producer = workflow.slice(workflow.indexOf("  produce-authority-factory-evidence:"), workflow.indexOf("  test:"));
+  assert.match(producer, /REELIER_FACTORY_SECRET_CANARY_V1_6F4E91C28A73/);
+  assert.match(producer, /includes\(.*secretCanary/);
+  assert.ok(producer.indexOf("secretCanary") < producer.indexOf('secretCanaryResult:"empty"'), "actual bytes are scanned before metadata claims empty");
+  const npmCli = [process.env.npm_execpath, path.join(path.dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js"), path.resolve(path.dirname(process.execPath), "..", "lib", "node_modules", "npm", "bin", "npm-cli.js")].find(value => value && existsSync(value));
+  assert.ok(npmCli, "npm CLI is available");
+  const packed = JSON.parse(execFileSync(process.execPath, [npmCli, "pack", "--ignore-scripts", "--dry-run", "--json"], { cwd: process.cwd(), encoding: "utf8" })) as [{ files: { path: string }[] }];
+  const names = packed[0].files.map(file => file.path);
+  assert.ok(names.some(name => name.startsWith("dist/")), "npm reports packed dist paths");
+  assert.equal(names.some(name => name.startsWith("package/")), false, "npm pack JSON paths have no package/ prefix");
 });
 
 test("matrix verifies public factory evidence through a clean installed consumer on both operating systems", () => {
