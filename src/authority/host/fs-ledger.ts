@@ -34,6 +34,7 @@ import type {
   ReserveReason,
   ReserveResult,
   StoredReservationIntent,
+  RouteAuthoritySnapshotV1,
   TransitionEvent,
   TransitionReason,
   TransitionResult,
@@ -588,6 +589,8 @@ export class FsAuthorityLedger implements AuthorityLedger {
       const context = reservation.intent.executionContext;
       if ((context?.allocationId ?? input.allocationId) !== input.allocationId) throw new Error("prepared dispatch allocation mismatch");
       if (input.preparedDescription.authorityGeneration !== input.expectedAuthorityGeneration || input.preparedDescription.reservationId !== input.reservationId || input.preparedDescription.allocationId !== input.allocationId) throw new Error("prepared dispatch authority binding mismatch");
+      const routeAuthority = reservation.intent.routeAuthority;
+      if (routeAuthority && (input.preparedDescription.routeDigest !== routeAuthority.routeDigest || input.preparedDescription.materializedRequestDigest !== routeAuthority.expectedMaterializedRequestDigest)) throw new Error("prepared dispatch route authority mismatch");
       const currentAuthorityGeneration = this.authorityGeneration?.() ?? reservation.intent.authorityStateDigest;
       if (input.expectedAuthorityGeneration !== currentAuthorityGeneration) throw new Error("prepared dispatch authority generation is stale");
       if (this.monotonicClock() >= input.absoluteDeadlineMs) throw new Error("prepared dispatch deadline expired");
@@ -3473,6 +3476,7 @@ function normalizeIntent(input: ReservationIntent): StoredReservationIntent {
     return frozen({ kind: slot.kind, key: slot.key, maximum: slot.maximum });
   });
   if (slots.length !== 2 || slots[0].kind !== "contract-window" || slots[1].kind !== "source-trigger" || slots[0].maximum !== sealed.limits.maxEffectsPerWindow || slots[1].maximum !== sealed.limits.maxEffectsPerSourceTrigger || new Set(slots.map(slot => slot.key)).size !== slots.length) throw new TypeError("limit slots must exactly match sealed limits");
+  const routeAuthority = input.routeAuthority === undefined ? undefined : normalizeRouteAuthoritySnapshot(input.routeAuthority);
   return frozen({
     tenant: input.tenant, requester: input.requester, definitionAlias: sealed.definitionAlias, requestId: input.requestId, requestDigest: sealed.requestDigest,
     canonicalRequestDigest: input.canonicalRequestDigest, canonicalRequestBase64: request.toString("base64"), requestKey: input.requestKey,ingressClaimDigest:input.ingressClaimDigest,decisionContextDigest:input.decisionContextDigest,
@@ -3482,12 +3486,13 @@ function normalizeIntent(input: ReservationIntent): StoredReservationIntent {
     outcomeKey: input.outcomeKey, effectDigest: input.effectDigest, ...(effectCanonicalBase64 === undefined ? {} : { effectCanonicalBase64 }), issuedAt: input.issuedAt, expiresAt: input.expiresAt,
     limitSlots: Object.freeze(slots),
     ...(input.executionContext ? { executionContext: frozen(input.executionContext) } : {}),
+    ...(routeAuthority ? { routeAuthority } : {}),
   });
 }
 
 function normalizeStoredIntent(input: StoredReservationIntent): StoredReservationIntent {
   if (!input || typeof input !== "object" || typeof input.canonicalRequestBase64 !== "string" || typeof input.capabilityBase64 !== "string") throw new LedgerCorruption("malformed stored intent");
-  assertExactKeysOptional(input, ["authorityStateDigest", "capabilityBase64", "capabilityDigest", "capabilityId", "canonicalRequestBase64", "canonicalRequestDigest", "contractDigest", "decisionContextDigest", "definitionAlias", "effectDigest", "expiresAt", "ingressClaimDigest", "issuedAt", "limitSlots", "limits", "limitsDigest", "outcomeKey", "requestDigest", "requestId", "requestKey", "requester", "sourceBundleDigest", "sourceSnapshotDigest", "tenant"], ["effectCanonicalBase64", "executionContext"]);
+  assertExactKeysOptional(input, ["authorityStateDigest", "capabilityBase64", "capabilityDigest", "capabilityId", "canonicalRequestBase64", "canonicalRequestDigest", "contractDigest", "decisionContextDigest", "definitionAlias", "effectDigest", "expiresAt", "ingressClaimDigest", "issuedAt", "limitSlots", "limits", "limitsDigest", "outcomeKey", "requestDigest", "requestId", "requestKey", "requester", "sourceBundleDigest", "sourceSnapshotDigest", "tenant"], ["effectCanonicalBase64", "executionContext", "routeAuthority"]);
   if (!Array.isArray(input.limitSlots)) throw new LedgerCorruption("malformed stored limit slots");
   for (const slot of input.limitSlots) assertExactKeys(slot, ["key", "kind", "maximum"]);
   const request = Buffer.from(input.canonicalRequestBase64, "base64");
@@ -3496,6 +3501,20 @@ function normalizeStoredIntent(input: StoredReservationIntent): StoredReservatio
   try {
     return normalizeIntent({ ...input, canonicalRequestBytes: request, capabilityBytes: capability });
   } catch { throw new LedgerCorruption("invalid stored intent"); }
+}
+
+function normalizeRouteAuthoritySnapshot(value: RouteAuthoritySnapshotV1): RouteAuthoritySnapshotV1 {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("route authority snapshot is invalid");
+  const keys = ["v","connectorRegistrationDigest","operatorConfigurationDigest","routeDigest","providerId","connectorId","accountId","providerAccountIdentity","endpointId","authenticatedProviderIdentityDigest","sourceReadRouteDigest","projectionSchemaDigest","expectedMaterializedRequestDigest","authorityGeneration","authorityExpiresAt"] as const;
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  if (Object.keys(descriptors).length !== keys.length || keys.some(key => !(key in descriptors)) || Object.keys(descriptors).some(key => !keys.includes(key as typeof keys[number])) || Object.values(descriptors).some(descriptor => !("value" in descriptor) || descriptor.get || descriptor.set)) throw new TypeError("route authority snapshot contains unknown or accessor fields");
+  const raw = value as unknown as Record<string, unknown>;
+  if (raw.v !== "reelier.route-authority-snapshot/v1") throw new TypeError("route authority snapshot version is invalid");
+  for (const key of ["connectorRegistrationDigest","operatorConfigurationDigest","routeDigest","authenticatedProviderIdentityDigest","sourceReadRouteDigest","projectionSchemaDigest","expectedMaterializedRequestDigest"] as const) if (typeof raw[key] !== "string" || !SHA.test(raw[key] as string)) throw new TypeError("route authority snapshot digest is invalid");
+  if (typeof raw.authorityGeneration !== "string" || !raw.authorityGeneration) throw new TypeError("route authority generation is invalid");
+  for (const key of ["providerId","connectorId","accountId","providerAccountIdentity","endpointId"] as const) if (typeof raw[key] !== "string" || !(raw[key] as string)) throw new TypeError("route authority identity is invalid");
+  if (typeof raw.authorityExpiresAt !== "string" || !isIso(raw.authorityExpiresAt)) throw new TypeError("route authority expiry is invalid");
+  return frozen({ ...value });
 }
 
 function validateReservation(value: ReservationSnapshot): void {
