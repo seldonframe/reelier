@@ -1,7 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { lstat, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { execFileSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { cp, lstat, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { runAuthorityCommand } from "../../src/authority/cli.js";
@@ -33,6 +35,22 @@ function assertRefused(result: Awaited<ReturnType<typeof capture>>): void {
 
 async function privateResidue(parent: string): Promise<string[]> {
   return (await readdir(parent)).filter(name => name.startsWith(".reelier-factory-"));
+}
+
+const rawDigest = (bytes: Buffer): string => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+
+async function writeFactoryEvidenceMetadata(evidence: string, tarball: string): Promise<void> {
+  const files = ["graph.json", "trust-pin.json", "factory-journey-summary.json"];
+  const [graphDigest, trustPinDigest, summaryDigest] = await Promise.all(files.map(async file => rawDigest(await readFile(path.join(evidence, file)))));
+  const metadata = { v: "reelier.factory-evidence-metadata/v1", workflowSourceSha: "review-falsifier", tarballSha256: rawDigest(await readFile(tarball)).slice(7), adapterContractDigest: (await import("../../src/authority/adapter-contract.js")).AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST, graphDigest, trustPinDigest, summaryDigest, secretCanaryResult: "empty" };
+  await writeFile(path.join(evidence, "factory-evidence-metadata.json"), `${JSON.stringify(metadata)}\n`);
+}
+
+function packCurrentCheckout(destination: string): string {
+  const npmCli = [process.env.npm_execpath, path.join(path.dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js"), path.resolve(path.dirname(process.execPath), "..", "lib", "node_modules", "npm", "bin", "npm-cli.js")].find(value => value && existsSync(value));
+  assert.ok(npmCli, "npm CLI is available");
+  const packed = JSON.parse(execFileSync(process.execPath, [npmCli, "pack", "--ignore-scripts", "--json", "--pack-destination", destination], { cwd: process.cwd(), encoding: "utf8" })) as [{ filename: string }];
+  return path.join(destination, packed[0].filename);
 }
 
 test("factory journey atomically publishes an exact verified packet derived from the signed graph", async () => {
@@ -81,6 +99,24 @@ test("factory journey atomically publishes an exact verified packet derived from
     assert.deepEqual(packet.receiptChain, graph.receipts.map((item: any) => ({ receiptDigest: authorityDigest(item.receipt.value), priorReceiptDigest: item.receipt.value.priorReceiptDigest })));
     assert.deepEqual(packet.fixtureOperatorConfirmation, { kind: "fixture", basis: "signed-readiness-construction", signedReadinessDigest: graph.taskAuthorities[0].activation.signedReadinessDigest, liveHuman: false, grantsAuthority: false });
     assert.deepEqual(packet.nonClaims, summary.nonClaims);
+  } finally { restorePlatform(); await rm(root, { recursive: true, force: true }); }
+});
+
+test("installed offline verifier rejects a recomputed unsigned reviewer-packet substitution", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "reelier-factory-packed-substitution-"));
+  const produced = path.join(root, "produced"), evidence = path.join(root, "evidence");
+  const restorePlatform = __testSetAuthorityCellHostPlatform("linux");
+  try {
+    assert.equal((await capture(command(produced))).code, 0);
+    await cp(produced, evidence, { recursive: true });
+    const tarball = packCurrentCheckout(root);
+    const summaryPath = path.join(evidence, "factory-journey-summary.json");
+    const summary = JSON.parse(await readFile(summaryPath, "utf8"));
+    summary.reviewerPacket.humanApprovedTaskBinding.taskId = "substituted_unsigned_task";
+    await writeFile(summaryPath, `${JSON.stringify(summary)}\n`);
+    await writeFactoryEvidenceMetadata(evidence, tarball);
+    const result = spawnSync(process.execPath, [path.join(process.cwd(), "test", "packed", "authority-factory-journey.mjs"), "--tarball", tarball, "--verify-evidence", evidence], { cwd: process.cwd(), encoding: "utf8" });
+    assert.notEqual(result.status, 0, "installed verifier must derive the reviewer packet from the verified signed graph");
   } finally { restorePlatform(); await rm(root, { recursive: true, force: true }); }
 });
 
