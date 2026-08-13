@@ -17,7 +17,7 @@ What changed per file
 Commits
 
 - RED: `4acba1687567a79e738d1edde9acfff1b333dedd` — `test(authority): specify canonical HTTPS routes`
-- GREEN: recorded after this report is staged in the final commit.
+- GREEN: `1cf3f09c09cd494299116497bf3d19bdbc9b5663` — `feat(authority): canonicalize native HTTPS routes`
 
 Deviations from the plan
 
