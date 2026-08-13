@@ -14,7 +14,7 @@ import { sealCertificationReadiness } from "../../src/authority/certification/re
 import { createCertificationCellHost, certificationCellHostInternalState, certificationTaskShapeDigest } from "../../src/authority/certification/cell.js";
 import { createDelegationAuthority } from "../../src/authority/host/delegation-service.js";
 import { createFilePrincipalRegistry } from "../../src/authority/host/principal-registry.js";
-import { createGitHubIssueLabelsHermeticComposition } from "../../src/authority/certification/github-issue-labels-runner.js";
+import { __testSetGitHubIssueLabelsRunnerBarrier, createGitHubIssueLabelsHermeticComposition } from "../../src/authority/certification/github-issue-labels-runner.js";
 import { __testSetAuthorityCellHostPlatform } from "../../src/authority/host/platform.js";
 import { createCertificationArtifactKeyBinding, createCertificationLifecycleAuthorityCeremony } from "../../src/authority/certification/lifecycle-authority.js";
 import { verifyAuthorityReceiptBundle } from "../../src/authority/verify.js";
@@ -198,15 +198,23 @@ test("a previously valid signed journal cannot roll acknowledged ledger truth ba
 });
 
 test("concurrent recovery cannot release a live dispatched request before its one write", async () => {
-  const f = await fixture("pause-after-dispatched"); try {
+  let entered!: () => void, release!: () => void;
+  const atBarrier = new Promise<void>((resolve) => { entered = resolve; });
+  const holdBarrier = new Promise<void>((resolve) => { release = resolve; });
+  const restoreBarrier = __testSetGitHubIssueLabelsRunnerBarrier(async (requestId: string) => {
+    if (requestId !== "request_race") return;
+    entered();
+    await holdBarrier;
+  });
+  const f = await fixture(); try {
     const running = f.runner.run({ bearerToken: f.credential.token, requestId: "request_race" });
-    const journalPath = path.join(f.initialized.workspace, "authority", "github-label-runner", "request_race.journal.json");
-    for (let attempts = 0; attempts < 100; attempts += 1) { try { if (JSON.parse(await readFile(journalPath, "utf8")).phase === "dispatched") break; } catch {} await new Promise(resolve => setTimeout(resolve, 5)); }
+    await atBarrier;
     const restarted = await createGitHubIssueLabelsHermeticComposition(f.cell);
     await assert.rejects(() => restarted.recover(), /busy|lock/i);
+    release();
     const result = await running; assert.equal(result.status, "acknowledged"); assert.equal(result.providerWrites, 1);
     const budget = await f.delegation.budget.get(f.activation.allocationId); assert.equal(budget?.consumed, 1); assert.equal(budget?.remaining, 1);
-  } finally { await rm(f.root, { recursive: true, force: true }); }
+  } finally { release(); restoreBarrier(); await rm(f.root, { recursive: true, force: true }); }
 });
 
 test("cut after authoritative apply reconciles from durable provider state without resend and cleanup restores exact before labels", async () => {
