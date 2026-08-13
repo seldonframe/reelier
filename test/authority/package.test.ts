@@ -31,11 +31,19 @@ test("CI keeps both required matrix contexts failing when authority pack prerequ
   const prerequisite = "if: ${{ needs.pack-authority-host-boundary.result == 'success' }}";
   const enforcement = testJob.indexOf("- name: Enforce authority pack prerequisite");
   assert.ok(enforcement >= 0);
-  for (const step of ["actions/checkout@v4", "actions/setup-node@v4", "- run: npm ci", "- name: Clean build output", "- run: npm run build", "- name: Run tests"]) {
+  for (const step of ["actions/checkout@v4", "actions/setup-node@v4", "- run: npm ci", "- name: Clean build output", "- run: npm run build", "actions/download-artifact@v4", "- name: Verify downloaded authority pack provenance", "- name: Verify downloaded package boundary on native OS", "- name: Run native authority platform evidence", "- name: Run supported tests"]) {
     const position = testJob.indexOf(step, enforcement);
     assert.ok(position > enforcement, step);
     assert.ok(testJob.slice(position, position + 240).includes(prerequisite), `${step} has a prerequisite success guard`);
   }
+  assert.match(testJob, /if \[ '\$\{\{ matrix\.os \}\}' = 'ubuntu-latest' \]; then npm test[^\n]*else node --test --test-concurrency=1 dist-test\/test\/authority\/package\.test\.js dist-test\/test\/authority\/linux-authority-cell\.test\.js dist-test\/test\/authority\/authority-cell-connection\.test\.js dist-test\/test\/authority\/certification-portable-evidence\.test\.js/);
+});
+
+test("packed boundary harness invokes npm with an argument array even from metacharacter paths", () => {
+  const harness = readFileSync(path.join(process.cwd(), "test", "packed", "authority-host-boundary.mjs"), "utf8");
+  assert.doesNotMatch(harness, /ComSpec|cmd\.exe|npmArgs\.join/);
+  assert.match(harness, /execFileSync\(process\.execPath, \[npmCli, \.\.\.npmArgs\]/);
+  assert.match(harness, /reelier authority & host-/);
 });
 
 test("public production export parses DecisionContext and its portable evidence against packaged schemas", async () => {
