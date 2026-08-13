@@ -14,7 +14,7 @@ import { sealCertificationReadiness } from "../../src/authority/certification/re
 import { createCertificationCellHost, certificationCellHostInternalState, certificationTaskShapeDigest } from "../../src/authority/certification/cell.js";
 import { createDelegationAuthority } from "../../src/authority/host/delegation-service.js";
 import { createFilePrincipalRegistry } from "../../src/authority/host/principal-registry.js";
-import { __testSetGitHubIssueLabelsRunnerBarrier, createGitHubIssueLabelsHermeticComposition } from "../../src/authority/certification/github-issue-labels-runner.js";
+import { __testSetGitHubIssueLabelsRunnerBarrier, createGitHubIssueLabelsHermeticComposition, type GitHubIssueLabelsHermeticComposition } from "../../src/authority/certification/github-issue-labels-runner.js";
 import { __testSetAuthorityCellHostPlatform } from "../../src/authority/host/platform.js";
 import { createCertificationArtifactKeyBinding, createCertificationLifecycleAuthorityCeremony } from "../../src/authority/certification/lifecycle-authority.js";
 import { verifyAuthorityReceiptBundle } from "../../src/authority/verify.js";
@@ -199,6 +199,7 @@ test("a previously valid signed journal cannot roll acknowledged ledger truth ba
 
 test("concurrent recovery cannot release a live dispatched request before its one write", async () => {
   let entered!: () => void, release!: () => void;
+  let running: ReturnType<GitHubIssueLabelsHermeticComposition["run"]> | undefined;
   const atBarrier = new Promise<void>((resolve) => { entered = resolve; });
   const holdBarrier = new Promise<void>((resolve) => { release = resolve; });
   const restoreBarrier = __testSetGitHubIssueLabelsRunnerBarrier(async (requestId: string) => {
@@ -207,14 +208,36 @@ test("concurrent recovery cannot release a live dispatched request before its on
     await holdBarrier;
   });
   const f = await fixture(); try {
-    const running = f.runner.run({ bearerToken: f.credential.token, requestId: "request_race" });
+    running = f.runner.run({ bearerToken: f.credential.token, requestId: "request_race" });
     await atBarrier;
     const restarted = await createGitHubIssueLabelsHermeticComposition(f.cell);
     await assert.rejects(() => restarted.recover(), /busy|lock/i);
     release();
     const result = await running; assert.equal(result.status, "acknowledged"); assert.equal(result.providerWrites, 1);
     const budget = await f.delegation.budget.get(f.activation.allocationId); assert.equal(budget?.consumed, 1); assert.equal(budget?.remaining, 1);
-  } finally { release(); restoreBarrier(); await rm(f.root, { recursive: true, force: true }); }
+  } finally { await settleLiveRunBeforeFixtureRemoval(f.root, release, running); restoreBarrier(); }
+});
+
+test("failed live-dispatch assertion cleanup settles work before deleting its fixture without masking the primary error", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "reelier-live-dispatch-cleanup-"));
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  let settled = false;
+  const running = (async () => {
+    await held;
+    await writeFile(path.join(root, "settled"), "yes", "utf8");
+    settled = true;
+    throw new Error("secondary live-run failure");
+  })();
+  const primary = new Error("primary recovery assertion failure");
+  let observed: unknown;
+  try {
+    try { throw primary; }
+    finally { await settleLiveRunBeforeFixtureRemoval(root, release, running); }
+  } catch (error) { observed = error; }
+  assert.equal(observed, primary);
+  assert.equal(settled, true);
+  await assert.rejects(() => readFile(path.join(root, "settled")), /ENOENT/);
 });
 
 test("cut after authoritative apply reconciles from durable provider state without resend and cleanup restores exact before labels", async () => {
