@@ -35,7 +35,9 @@ export function isPublicIpAddress(value: string): boolean {
   const mapped = mappedIpv4(normalized);
   if (mapped) return isPublicIpv4(mapped);
   if (isIP(normalized) === 4) return isPublicIpv4(normalized);
-  return !(normalized === "::" || normalized === "::1" || normalized.startsWith("fc") || normalized.startsWith("fd") || normalized.startsWith("fe8") || normalized.startsWith("fe9") || normalized.startsWith("fea") || normalized.startsWith("feb") || normalized.startsWith("ff") || normalized.startsWith("2001:db8:"));
+  const words = expandIpv6Words(normalized);
+  const special2001 = words?.[0] === 0x2001 && (words[1] === 0x0002 && words[2] === 0 || words[1] === 0x0db8 || words[1]! >= 0x0010 && words[1]! <= 0x002f);
+  return !(normalized === "::" || normalized === "::1" || normalized.startsWith("fc") || normalized.startsWith("fd") || normalized.startsWith("fe8") || normalized.startsWith("fe9") || normalized.startsWith("fea") || normalized.startsWith("feb") || normalized.startsWith("ff") || special2001);
 }
 
 export function isLoopbackIpAddress(value: string): boolean {
