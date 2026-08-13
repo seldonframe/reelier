@@ -3,6 +3,7 @@ Files changed
 - `.github/workflows/ci.yml`
 - `README.md`
 - `CHANGELOG.md`
+- `src/authority/host/fs-ledger.ts`
 - `src/authority/host/index.ts`
 - `test/authority/package.test.ts`
 - `test/authority/ledger.test.ts`
@@ -326,3 +327,71 @@ Exit code: 0
 ### Open risks
 
 - The hosted Ubuntu reproduction was not run from this Windows worktree. The next Linux failure will include the redacted transition result and sorted root entries in the failed dispatch or acknowledge assertion.
+
+## Gate 0 Linux fixed-slot released-residue correction (2026-08-13)
+
+### Files changed
+
+- `src/authority/host/fs-ledger.ts`
+- `test/authority/ledger.test.ts`
+- `.superpowers/sdd/2026-08-12-windows-client-linux-authority-cell/task-4b-report.md`
+
+### What changed per file
+
+- `src/authority/host/fs-ledger.ts`: the closed bare fixed-slot branch now uses the existing `blockingRetiredResidue(retired, slot.owner)` boundary. It tolerates only unrelated `released` legacy markers; same-owner `released` and every `publication-aborted` or `recovery-pending` marker remain blocking corruption.
+- `test/authority/ledger.test.ts`: adds a deterministic closed-graph RED/GREEN regression for a live fixed slot beside byte-valid retirement markers, including byte identity and zero-callback assertions; adds a no-sleep/no-retry same-process option-on reserve, dispatch, and immediate acknowledge regression; and replaces the N100 fixture's non-hex `digest("n")` with the valid fixed SHA-256-shaped `digest("a")`.
+- `.superpowers/sdd/2026-08-12-windows-client-linux-authority-cell/task-4b-report.md`: records the hosted evidence, root cause, RED/GREEN evidence, and remaining hosted requirement.
+
+### Root cause and hosted evidence
+
+Hosted run `31691716040`, Ubuntu job `94420370893`, produced one winner and 99 exact-existing outcomes, then dispatched successfully and immediately refused acknowledge with `{ok:false,reason:"corruption"}`. The diagnostic root had one live fixed admission slot and one unrelated `.authority-ledger-lock-<same parent pid>-<different nonce>.released` marker plus normal ledger directories. The bare fixed-slot branch alone rejected `retired.size`; the preparation, W1, retired-preparation, withdrawal, and orphan-final families already use `blockingRetiredResidue`. The correction applies that same boundary to the bare fixed slot and changes no timeout, retry, concurrency, lock, or non-released corruption rule.
+
+The same-process regression also exposed a separate test-fixture defect: `digest("n")` is not hexadecimal and therefore correctly fails result-digest validation. N100 now uses `digest("a")`; production digest validation was not changed.
+
+### Deviations from plan and why
+
+- The deterministic classifier regression calls the emitted private classification pipeline directly. A static public-entry fixture is pre-drained by the deliberately earlier legacy-retirement service, while a paused cross-process fixture is refused by the outer K1 operation fence before filesystem classification. The direct pipeline test isolates the exact hosted closed graph, exercises real parsing/classification, and proves byte identity and zero callback entry.
+- No production scope was added. The same-process public regression was feasible and was added without sleeps or retries.
+
+### Test results (verbatim tails)
+
+RED commit `906b68c` (`test(ledger): pin live slot released residue`). Command: `npx tsc -p tsconfig.test.json; node --test --test-concurrency=1 --test-name-pattern "a live fixed admission slot tolerates only unrelated released retirement residue" dist-test/test/authority/ledger.test.js`. It exited `1` only on the intended unrelated-released case; both boundary falsifiers passed:
+
+```text
+▶ a live fixed admission slot tolerates only unrelated released retirement residue
+  ✖ an unrelated released marker is inert bounded-busy residue (42.9421ms)
+  ✔ a same-owner released marker stays corruption (15.5592ms)
+  ✔ an unrelated recovery-pending marker stays corruption (13.1423ms)
+✖ a live fixed admission slot tolerates only unrelated released retirement residue (73.2135ms)
+ℹ tests 4
+ℹ pass 2
+ℹ fail 2
+AssertionError [ERR_ASSERTION]: unrelated released
+  + actual - expected
+  {
+    ok: false,
+  + reason: 'corruption'
+  - reason: 'busy'
+  }
+```
+
+GREEN focused command: `npx tsc -p tsconfig.test.json; node --test --test-concurrency=1 --test-name-pattern "^N100 authority convergence:|an option-on warm ledger dispatches and immediately acknowledges|a live fixed admission slot tolerates only unrelated released retirement residue|warm preparation-stage|K1 fixed slot with same-owner|transition timestamps are stamped|result digest presence is enforced" dist-test/test/authority/ledger.test.js`. It exited `0` on native Windows:
+
+```text
+✔ K1 fixed slot with same-owner sub-complete withdrawal terminal is preserved live in-flight residue (467.3688ms)
+ℹ tests 35
+ℹ suites 0
+ℹ pass 34
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 1
+ℹ todo 0
+ℹ duration_ms 6767.0829
+```
+
+The skipped test is exactly the Linux-only N100 hosted gate. Test compilation completed with exit code `0` before the focused run.
+
+### Open risks
+
+- Required hosted Ubuntu revalidation remains absent for the corrected workflow SHA. Gate 0 is not claimed complete until the Linux N100 test demonstrates one winner, 99 exact-existing outcomes, successful dispatch, successful immediate acknowledge, and acknowledged recovery on the current workflow SHA.
+- Native Windows proves the deterministic classifier boundaries and same-process transition regression, but cannot execute the Linux-only N100 gate.

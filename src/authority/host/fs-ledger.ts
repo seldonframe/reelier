@@ -2215,7 +2215,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
       // nothing. A LIVE window stays preserved; a dead one derives the W1 dead-owner route
       // (the dead-slot withdrawn descriptor) and the chain completes it.
       if(withdrawals.length===1&&sameCoordinationOwner(slot.owner,withdrawals[0].owner)&&parsedK1.length===2&&!acks.length&&!prepRetired.length&&!slotRetired.length&&!publications.length&&activeOwner===null&&this.blockingRetiredResidue(retired,slot.owner)===0)return "busy";
-      if(parsedK1.length!==1||retired.size||acks.length||prepRetired.length||slotRetired.length||withdrawals.length)throw new LedgerCorruption("impossible fixed-slot graph");
+      if(parsedK1.length!==1||this.blockingRetiredResidue(retired,slot.owner)||acks.length||prepRetired.length||slotRetired.length||withdrawals.length)throw new LedgerCorruption("impossible fixed-slot graph");
       if(publications.length&&activeOwner!==null)throw new LedgerCorruption("slot cannot bind stage and active lock");
       if(publications.length&&!sameCoordinationOwner(slot.owner,publications[0].owner))throw new LedgerCorruption("slot publication owner mismatch");
       if(activeOwner!==null&&!sameCoordinationOwner(slot.owner,activeOwner))throw new LedgerCorruption("slot active owner mismatch");
