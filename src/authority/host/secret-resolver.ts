@@ -179,10 +179,13 @@ async function readConfinedFile(root: string, relative: string): Promise<{ value
     const currentPathStat = await lstat(candidate);
     const canonicalCandidate = await realpath(candidate);
     const canonicalExpected = path.resolve(rootReal, path.relative(root, candidate));
-    const identityChanged = before.dev !== currentPathStat.dev || before.ino !== currentPathStat.ino;
-    if (canonicalCandidate !== canonicalExpected || currentPathStat.isSymbolicLink() || !currentPathStat.isFile() || identityChanged || !after.isFile() || before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs || bytes.byteLength !== after.size) throw new Error("secret file changed");
+    if (!sameFileIdentity(before, currentPathStat) || canonicalCandidate !== canonicalExpected || currentPathStat.isSymbolicLink() || !currentPathStat.isFile() || !after.isFile() || before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs || bytes.byteLength !== after.size) throw new Error("secret file changed");
     const value = bytes.toString("utf8").trim();
     if (!value || value.includes("\0") || Buffer.byteLength(value, "utf8") > MAX_SLOT_BYTES) throw new Error("secret file is invalid");
     return { value, version: `${after.size}:${after.mtimeMs}` };
   } finally { await handle.close(); }
+}
+
+function sameFileIdentity(left: { readonly dev: number; readonly ino: number }, right: { readonly dev: number; readonly ino: number }): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
 }
