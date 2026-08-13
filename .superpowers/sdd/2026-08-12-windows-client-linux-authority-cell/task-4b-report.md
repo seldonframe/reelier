@@ -17,8 +17,9 @@ Files changed
 - task4bBase: `039cc7b3703df6b859df8cb81659294b2c4bfa0d`
 - historical package-boundary review range: `039cc7b3703df6b859df8cb81659294b2c4bfa0d..3080a707b5f1dfc6abda8661af77fe05a8882c25`. It contains the earlier implementation/evidence commits `2ad0e882b53a738fc4b14e8f27ac76aaa031d04a`, `46a2b88421147ac582625a1b683242e3512795e0`, `bba23a65e7a90e24c408153f4c4dd5275d7227fc`, `444c6b9104cd684cb997147e431d7c0448a0da69`, `d6d260414ade771a37d77f75e2d5fb138883bd7c`, `be3e0faef3e290590cdeb5ea32436e4e8da9ac06`, `1c4111734c77d66b937c67fe42869b80aaa83321`, `b228fc54499fb0774f532ab947f5b5dc874e02ea`, `18d973e2bea92b0b15a517839ce91b3e8deccb7b`, review RED `5e5679b5d38218e36b93cdd7374dfb63f37888d0`, review GREEN `f55287fd5d96fb9f801859892aca75d42b614fb2`, compile-order RED `e2e7f820ccf20969f0bc8cef040f95f1f81b4f90`, and compile-order GREEN `3080a707b5f1dfc6abda8661af77fe05a8882c25`. Endpoint `3080a70` is historical package-boundary review provenance, not the latest Task 4B implementation or a review endpoint for the later fixed-slot change.
 - subsequent report-only history before the fixed-slot work: `106c17845d21a89289f2ee04b2ccacfe02b9a9a9` and `5dd6b2702465d5a9a61e0b7f8d84904276983ac3`.
-- latest implementation GREEN: `b15277f` (`fix(ledger): tolerate unrelated released slot residue`), preceded by deterministic RED `906b68c` (`test(ledger): pin live slot released residue`). Formal amendment/report commit `23a733f` (`docs(plan): authorize fixed-slot residue correction`) followed those code commits. Provenance/evidence correction `8d57029` (`docs(report): correct fixed-slot provenance`) is docs-only and is not an implementation commit.
-- task4bReviewed: `8d57029a3a82b73da18940bfe6e77ce86b2949e8`, the independently reviewed snapshot covering the fixed-slot implementation, amendment, and corrected provenance/evidence statements. The review verdict required this report-only endpoint follow-up to record the controlling `task4bReviewed` value; this follow-up changes provenance metadata only and does not move or amend the reviewed implementation snapshot. The earlier dirty-path equality evidence remains historical evidence for the earlier package-boundary review only.
+- latest production implementation GREEN: `b15277f` (`fix(ledger): tolerate unrelated released slot residue`), preceded by deterministic RED `906b68c` (`test(ledger): pin live slot released residue`). Formal amendment/report commit `23a733f` (`docs(plan): authorize fixed-slot residue correction`) followed those code commits. Provenance/evidence correction `8d57029` (`docs(report): correct fixed-slot provenance`) is docs-only and is not an implementation commit.
+- previous independently reviewed report snapshot: `8d57029a3a82b73da18940bfe6e77ce86b2949e8`, recorded by report-only endpoint `e58a3c8`. Badge-plan amendments `8d12adbaab0a6b5fa77c39f6da3b35d473061632` and `86569ae97f99d9ce38b801253fcd0f52d83b82b6` were independently reviewed before the README change. README GREEN `a844968c9a9d65b103995f79e6fd3805912f4e64` was independently reviewed and is the Task 4B implementation/evidence-complete snapshot.
+- task4bReviewed: **pending for the report-only commit containing this final hosted-evidence update.** `a844968` has complete implementation evidence, but the report-only endpoint is not self-validating: it still requires independent review and a fresh all-green hosted run at that exact report commit SHA before Task 4B acceptance. The earlier dirty-path equality evidence remains historical evidence for the earlier package-boundary review only.
 
 ## What changed
 
@@ -107,13 +108,15 @@ Diagnostic excluded complement (not frozen authority): count `96`; UTF-8 JCS sor
 
 | Evidence | downloaded tarball | same-workflow checkout | native OS |
 |---|---|---|---|
-| declared host barrel/no raw subpath/physical internal file | verified (local surface mode) | absent | Windows |
-| Windows host-root refusal before access/callback/root mutation | verified (`windows-native`, eight installed-tarball roots) | verified supplemental seam: eight per-root dependency/callback counters and empty roots | Windows |
-| N100 one reserved/99 exact-existing/acknowledged recovery | absent | absent | Ubuntu hosted evidence absent |
+| declared host barrel/no raw subpath/physical internal file | verified locally and by hosted pack/surface gates | verified by package assertions | Windows local and Ubuntu hosted |
+| Windows host-root refusal before access/callback/root mutation | verified (`windows-native`, eight installed-tarball roots) | verified supplemental seam: eight per-root dependency/callback counters and empty roots | Windows local and hosted |
+| N100 one reserved/99 exact-existing/acknowledged recovery | not a tarball claim | verified in fresh hosted run `31695679244`, Ubuntu job `94432890322` | Ubuntu |
 
 Public API claim: `reelier/authority/host` no longer owns `FsAuthorityLedger`; its undeclared `fs-ledger.js` package-specifier rejects. Nonclaim: the physically shipped internal file is not inaccessible by an absolute resolved path, and the excluded complement is neither an approved inventory nor removed by this task.
 
 ## Open risks / deviations
+
+The sections below are chronological and retain what was absent at each earlier checkpoint. The final hosted-evidence section supersedes those historical pending statements. The only current Task 4B acceptance risk is the required independent review and fresh same-SHA hosted confirmation of this report-only endpoint.
 
 ## Gate 0 Linux oracle correction (2026-08-13)
 
@@ -399,3 +402,39 @@ The skipped test is exactly the Linux-only N100 hosted gate. Test compilation co
 
 - Required hosted Ubuntu revalidation remains absent for the corrected workflow SHA. Gate 0 is not claimed complete until the Linux N100 test demonstrates one winner, 99 exact-existing outcomes, successful dispatch, successful immediate acknowledge, and acknowledged recovery on the current workflow SHA.
 - Native Windows proves the deterministic classifier boundaries and same-process transition regression, but cannot execute the Linux-only N100 gate.
+
+## Final hosted Task 4B evidence and README badge correction (2026-08-13)
+
+### Files changed
+
+- `docs/superpowers/plans/2026-08-12-windows-client-linux-authority-cell.md`
+- `README.md`
+- `.superpowers/sdd/2026-08-12-windows-client-linux-authority-cell/task-4b-report.md`
+
+### Reviewed plan and implementation sequence
+
+- Hosted RED run `31694228957` at exact SHA `e58a3c8`, Ubuntu job `94428309626`, passed the pack gate, native Ubuntu N100 gate, Ubuntu full suite (`# pass 2979`, `# fail 0`), and Windows gate. Its sole Ubuntu failure was `Check README tests badge`, because the README deliberately still contained the pending nonnumeric badge.
+- The immutable raw job log has SHA-256 `bee6b3a51739a29c6f52992d0251564834e7d8d503182ec025619952e60723a1`. The normalized `Run supported tests` capture has SHA-256 `8be745f5466bfd1bc655ee1cdad468cce77e11f019249b44f178e8dd16421d60`; it contains the unique terminal `# pass 2979` and `# fail 0` oracle used by `scripts/check-badge.mjs`.
+- Plan amendments `8d12adbaab0a6b5fa77c39f6da3b35d473061632` and `86569ae97f99d9ce38b801253fcd0f52d83b82b6` were independently reviewed before the README edit. They authorize only the exact pending-to-`2979 passing` badge-line replacement and preserve every other README byte.
+- Reviewed README GREEN `a844968c9a9d65b103995f79e6fd3805912f4e64` performs only that authorized one-line replacement.
+
+The recorded fixed-slot sequencing deviation remains unchanged: RED `906b68c` and GREEN `b15277f` preceded formal amendment `23a733f`. The later badge amendments do not erase or recharacterize that deviation.
+
+### Fresh hosted GREEN at the README commit
+
+Fresh hosted run `31695679244` ran at exact head `a844968c9a9d65b103995f79e6fd3805912f4e64`:
+
+- pack job `94432801066`: **success**;
+- Ubuntu job `94432890322`: **success**, including native Authority/N100, supported full-suite tests, and README badge verification;
+- Windows job `94432890382`: **success**.
+
+This establishes the complete Task 4B implementation evidence at `a844968`: the packed boundary, native Ubuntu N100 convergence and acknowledged recovery, full Ubuntu suite with the canonical badge count, and native Windows client/refusal boundary all passed in one fresh hosted workflow at the exact README GREEN SHA. It does not widen the proof boundary to semantic correctness, universal completeness, or Windows authority hosting.
+
+### Deviations from plan
+
+- No new implementation deviation was introduced by the badge correction. The historical fixed-slot amendment-before-code sequencing deviation remains disclosed above.
+- This final evidence update is report-only. Its commit necessarily has a SHA newer than `a844968`; therefore Task 4B is not accepted merely because this text records an earlier green run. The report-only commit must receive independent review and a fresh all-green hosted confirmation at its own exact SHA.
+
+### Current open risk
+
+- Task 4B implementation/evidence is complete at `a844968`, but `task4bReviewed` remains pending until the report-only endpoint containing this section is independently reviewed and its exact SHA passes pack, Ubuntu (including N100, full suite, and badge), and Windows hosted gates.
