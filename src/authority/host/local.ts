@@ -17,7 +17,7 @@ import { createFileReceiptPublication } from "./receipts.js";
 import { createAuthorityHostRuntime } from "./runtime.js";
 import type { AuthorityHostConfig } from "./config.js";
 import type { AuthorityHostRuntime } from "./server.js";
-import { createSecretResolver } from "./secret-resolver.js";
+import { createSecretResolver, type SecretResolver, type SecretResolverOptions } from "./secret-resolver.js";
 import { firstPartyPacks, firstPartyPackForAlias, createFirstPartySourceRegistry } from "../../packs/index.js";
 import { loadAuthorityDeployment, type JobCardTrustPinV1 } from "./deployment.js";
 import { loadOrCreateLocalGateSigner } from "./gate-signer.js";
@@ -47,6 +47,9 @@ export interface LocalAuthorityRuntimeOptions {
   /** Host-pinned, currently authoritative trust state. It must not be loaded
    * from the deployment being verified. */
   readonly jobCardTrustPin?: JobCardTrustPinV1;
+  /** Host-owned credential slots are injected out-of-band and never loaded from authority.yml. */
+  readonly secretResolver?: SecretResolver;
+  readonly secretResolverOptions?: SecretResolverOptions;
 }
 
 export interface LocalAuthorityRuntime extends AuthorityHostRuntime {
@@ -114,7 +117,8 @@ export async function createLocalAuthorityRuntime(config: AuthorityHostConfig, o
   });
   const gate = createAuthorityGate({ trustRoots, packs, sources, connectors: connectorRegistry, state, ledger, localGatePolicyDigest: authorityDigest({ v: "reelier.local-gate-policy/v1", tenant: config.tenant }), decisionSink: decisions, signer: { async sign(input) { return { signerId: "local-gate", signature: signAuthorityDigest(privateKey, input.purpose, input.digest) }; } }, eventId: () => `evt_${randomUUID()}`, capabilityId: () => `cap_${randomUUID()}` });
   const publication = createFileReceiptPublication({ rootDir: config.receiptDir });
-  const adapter = options.dispatchAdapter ?? createJsonHttpsDispatchAdapter({ endpoints: config.endpoints, secrets: createSecretResolver() });
+  const secrets = options.secretResolver ?? createSecretResolver(options.secretResolverOptions);
+  const adapter = options.dispatchAdapter ?? createJsonHttpsDispatchAdapter({ endpoints: config.endpoints, routes: config.nativeHttpsRoutes, secrets });
   const dispatch = createDispatchCoordinator(ledger, adapter, undefined, publication, options.delegation?.budget);
   const runtime = createAuthorityHostRuntime({ gate, dispatch, ledger, decisions, delegation: options.delegation, ...(options.delegation ? { verifyRootGrant: (grant, tenant) => { verifyTrustedAuthority(trustRoots, { tenant, signerId: grant.signerId, purpose: "delegation-grant", advertisedDigest: grant.digest, value: grant.grant, signature: grant.signature }); } } : {}) });
   const jobs = deployment?.jobCard

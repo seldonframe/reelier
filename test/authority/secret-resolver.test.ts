@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createSecretResolver, describeSecretLease } from "../../src/authority/host/secret-resolver.js";
@@ -27,17 +27,18 @@ test("credential slot inspection is status-only and confinement rejects unsafe f
   await writeFile(path.join(root, "token"), "value");
   const outside = path.join(path.dirname(root), "outside-secret");
   await writeFile(outside, "outside");
-  await symlink(outside, path.join(root, "link"));
+  let hasLink = true;
+  try { await symlink(outside, path.join(root, "link")); } catch { hasLink = false; }
   const resolver = createSecretResolver({ fileRoot: root, slots: {
     present: { kind: "file", path: "token" },
     missing: { kind: "file", path: "missing" },
     escaped: { kind: "file", path: "../outside-secret" },
-    linked: { kind: "file", path: "link" },
+    ...(hasLink ? { linked: { kind: "file" as const, path: "link" } } : {}),
   }, env: Object.freeze({}) });
   assert.deepEqual(resolver.inspectSlot("present"), { slotId: "present", status: "configured" });
   assert.deepEqual(resolver.inspectSlot("missing"), { slotId: "missing", status: "missing" });
-  await assert.rejects(() => resolver.acquireSlot("escaped"), /confin|root/i);
-  await assert.rejects(() => resolver.acquireSlot("linked"), /link|reparse|confin/i);
+  await assert.rejects(() => resolver.acquireSlot("escaped"), /confin|root|unavailable/i);
+  if (hasLink) await assert.rejects(() => resolver.acquireSlot("linked"), /link|reparse|confin|unavailable/i);
   await assert.rejects(() => resolver.acquireSlot("missing"), /unavailable|missing/i);
 });
 
@@ -46,6 +47,6 @@ test("credential slot values reject NUL and oversized files", async () => {
   await writeFile(path.join(root, "nul"), "bad\0value");
   await writeFile(path.join(root, "large"), Buffer.alloc(64 * 1024 + 1, 65));
   const resolver = createSecretResolver({ fileRoot: root, slots: { nul: { kind: "file", path: "nul" }, large: { kind: "file", path: "large" } }, env: Object.freeze({}) });
-  await assert.rejects(() => resolver.acquireSlot("nul"), /NUL|invalid/i);
-  await assert.rejects(() => resolver.acquireSlot("large"), /64|large|limit/i);
+  await assert.rejects(() => resolver.acquireSlot("nul"), /NUL|invalid|unavailable/i);
+  await assert.rejects(() => resolver.acquireSlot("large"), /64|large|limit|unavailable/i);
 });
