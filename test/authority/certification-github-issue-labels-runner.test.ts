@@ -505,6 +505,7 @@ test("portable evidence links the approved task, exact post-state, policy status
     assert.equal(graph.duplicateDecisions.length, 1);
     assert.equal(graph.duplicateAttempts.length, 1);
     assert.equal(graph.duplicateAttempts[0].attemptRequestId, "request_portable_duplicate");
+    assert.equal(graph.duplicateAttempts[0].operationKind, "run");
     assert.deepEqual({ budget: graph.duplicateDecisions[0].budgetDelta, writes: graph.duplicateDecisions[0].providerWriteDelta }, { budget: 0, writes: 0 });
     assert.equal(verifyCertificationTaskReceiptGraph(graph, { trustPin: f.pin }).status, "verified");
     for (const mutate of [
@@ -519,6 +520,42 @@ test("portable evidence links the approved task, exact post-state, policy status
       (g: any) => { g.duplicateDecisions.pop(); },
       (g: any) => { g.duplicateDecisions[0].providerWriteDelta = 1; },
     ]) { const changed = structuredClone(graph); mutate(changed); assert.throws(() => verifyCertificationTaskReceiptGraph(changed, { trustPin: f.pin }), /portable|task|post-state|policy|status|duplicate|signature|terminal|digest|closed/i); }
+  } finally { await rm(f.root, { recursive: true, force: true }); }
+});
+
+test("duplicate ledger serializes concurrent exhausted attempts and ignores lexical old-head injection", async () => {
+  const f = await fixture(); try {
+    await f.runner.run({ bearerToken: f.credential.token, requestId: "request_duplicate_race_original" });
+    await f.runner.cleanup({ bearerToken: f.credential.token, requestId: "request_duplicate_race_original" });
+    const [left, right] = await Promise.all([
+      f.runner.run({ bearerToken: f.credential.token, requestId: "request_duplicate_race_left" }),
+      f.runner.run({ bearerToken: f.credential.token, requestId: "request_duplicate_race_right" }),
+    ]);
+    assert.deepEqual([left.status, right.status], ["duplicate", "duplicate"]);
+    const first: any = await f.runner.exportGraph({ bearerToken: f.credential.token });
+    assert.equal(first.duplicateAttemptHead.count, 2);
+    assert.deepEqual(first.duplicateAttempts.map((item: any) => item.attemptRequestId).sort(), ["request_duplicate_race_left", "request_duplicate_race_right"]);
+    const portable = path.join(f.initialized.workspace, "authority", "github-label-runner", "portable-evidence");
+    await writeFile(path.join(portable, "duplicate-head.zzzzzzzz.json"), `${JSON.stringify({ ...first.duplicateAttemptHead, count: 0 })}\n`);
+    const exported: any = await f.runner.exportGraph({ bearerToken: f.credential.token });
+    assert.equal(exported.duplicateAttemptHead.count, 2);
+    assert.equal(verifyCertificationTaskReceiptGraph(exported, { trustPin: f.pin }).status, "verified");
+  } finally { await rm(f.root, { recursive: true, force: true }); }
+});
+
+test("exhausted exact conflict replay records literal request id and operation kind without effect", async () => {
+  const f = await fixture(); try {
+    await f.runner.run({ bearerToken: f.credential.token, requestId: "request_exhausted_conflict" });
+    const exactBytes = Buffer.from("conflict", "utf8").toString("base64");
+    await f.runner.conflict({ bearerToken: f.credential.token, requestId: "request_exhausted_conflict", exactBytes });
+    await f.delegation.budget.consumeOnce({ allocationId: f.activation.allocationId, reservationId: "manual_exhaustion", effects: 1 });
+    const replay = await f.runner.conflict({ bearerToken: f.credential.token, requestId: "request_exhausted_conflict", exactBytes });
+    assert.equal(replay.status, "conflict");
+    const graph: any = await f.runner.exportGraph({ bearerToken: f.credential.token });
+    const attempt = graph.duplicateAttempts.at(-1);
+    assert.equal(attempt.attemptRequestId, "request_exhausted_conflict");
+    assert.equal(attempt.operationKind, "conflict");
+    assert.deepEqual({ consumed: (await f.delegation.budget.get(f.activation.allocationId))?.consumed, writes: replay.providerWrites }, { consumed: 2, writes: 1 });
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
@@ -537,6 +574,13 @@ test("portable export preserves dispatch history while reporting a current task 
       const changed = structuredClone(graph), previous = changed.taskStatusEvidence[index];
       changed.taskStatusEvidence[index] = resign({ ...previous, allocationRevoked, lifecycleState, currentActiveClaim: !allocationRevoked });
       assert.throws(() => verifyCertificationTaskReceiptGraph(rebuild(changed), { trustPin: f.pin }), /task status|history|observation/i);
+    }
+    for (const index of [0, 1]) {
+      const changed = structuredClone(graph), previous = changed.taskStatusEvidence[index], lifecycleState = "inactive", allocationRevoked = index === 0 ? false : true;
+      const budgetEvents = changed.budgetEvents.map((node: any) => node.event).slice(0, index === 0 ? 2 : undefined);
+      const durableHistoryDigest = authorityDigest({ task: { taskId: changed.taskId, authorityCellId: changed.authorityCellId, lifecycleState, grantExpiresAt: previous.grantExpiresAt, allocationRevoked }, budgetEvents });
+      changed.taskStatusEvidence[index] = resign({ ...previous, lifecycleState, allocationRevoked, currentActiveClaim: false, durableHistoryDigest });
+      assert.throws(() => verifyCertificationTaskReceiptGraph(rebuild(changed), { trustPin: f.pin }), /task status|history|lifecycle|observation/i);
     }
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
