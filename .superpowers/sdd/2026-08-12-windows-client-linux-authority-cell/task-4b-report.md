@@ -57,6 +57,22 @@ Exact local Windows CI-equivalent verification: `npm run check:authority-contrac
 
 Tarball SHA-256: `8c7da130074f27a43940263157e17e3d7e103590080850349389c196a151fdd3`. Both packed modes exited 0. The generated root tarball was removed after verification; `.tmp-pack` was untouched.
 
+Argument-boundary case: copied that byte-identical tarball to native Windows temporary path `reelier task4b & args-<nonce>\reelier package & exact.tgz`, ran `node test/packed/authority-host-boundary.mjs --tarball <special-absolute-path> --mode windows-native`, compared source/copy SHA-256, and exited 0. The harness invokes the resolved npm CLI as `execFileSync(process.execPath, [npmCli, ...npmArgs])`; it never constructs a `cmd.exe` command string. Both temporary copies were removed afterward.
+
+Fresh post-report Windows gate tail:
+
+```text
+ℹ tests 26
+ℹ suites 0
+ℹ pass 26
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1415.6782
+SCOPE_OK=8
+```
+
 Diagnostic excluded complement (not frozen authority): count `96`; UTF-8 JCS sorted-name-array digest `sha256:7db00876f1f8ef4c9d05c3f1b985544e776ad0a293593e57eff1811e2f0b3b15`. Witness membership: `FsDelegationBudgetLedger=true`, `executeJsonHttpsEffect=true`, `launchCodexDogfood=true`, `runCertification=true`, `runCertificationSuite=true`.
 
 | Evidence | downloaded tarball | same-workflow checkout | native OS |
