@@ -38,7 +38,28 @@ try {
   const excluded = names.filter(name => !SUPPORTED_LINUX_HOST_ROOTS.includes(name));
   for (const witness of ["FsDelegationBudgetLedger", "executeJsonHttpsEffect", "launchCodexDogfood", "runCertification", "runCertificationSuite"]) assert.equal(excluded.includes(witness), true, witness);
   assert.match(`sha256:${createHash("sha256").update(JSON.stringify(excluded), "utf8").digest("hex")}`, /^sha256:[0-9a-f]{64}$/);
-  if (mode === "windows-native") throw new Error("windows-native composition-root no-access proof not implemented");
+  if (mode === "windows-native") {
+    let dependencyAccesses = 0;
+    let callbackInvocations = 0;
+    const roots = SUPPORTED_LINUX_HOST_ROOTS.map(name => mkdtempSync(path.join(os.tmpdir(), `reelier-authority-host-${name}-`)));
+    const callback = () => { callbackInvocations += 1; throw new Error("callback invoked"); };
+    const dependency = (value) => new Proxy(value, { get(target, key, receiver) { dependencyAccesses += 1; return Reflect.get(target, key, receiver); } });
+    const assertRefusal = async (operation, name) => {
+      await assert.rejects(async () => operation(), error => error?.code === "AUTHORITY_CELL_LINUX_REQUIRED", name);
+    };
+    await assertRefusal(() => host.createAuthorityEgressGateway(dependency({ config: { v: "reelier.egress-gateway-config/v1", bearerRef: "env:TOKEN", allowedHosts: ["example.com"] }, secrets: dependency({ resolve: callback }) })), "createAuthorityEgressGateway");
+    await assertRefusal(() => host.createAuthorityHostRuntime(dependency({})), "createAuthorityHostRuntime");
+    await assertRefusal(() => host.createAuthorityHostServer(dependency({ ledgerDir: roots[2] }), dependency({}), dependency({ principalRegistry: dependency({ resolve: callback }) })), "createAuthorityHostServer");
+    await assertRefusal(() => host.createCertificationCellHost(dependency({ workspace: roots[3], currentTrustPinPath: path.join(roots[3], "trust.json"), delegationAuthority: dependency({ signGrant: callback }) })), "createCertificationCellHost");
+    await assertRefusal(() => host.createDelegationAuthority(dependency({ root: roots[4], signGrant: callback })), "createDelegationAuthority");
+    await assertRefusal(() => host.createDispatchCoordinator(dependency({}), dependency({ dispatch: callback }), dependency({ write: callback }), dependency({ publish: callback }), dependency({ reserve: callback })), "createDispatchCoordinator");
+    await assertRefusal(() => host.createFileReceiptPublication(dependency({ root: roots[6] })), "createFileReceiptPublication");
+    await assertRefusal(() => host.createLocalAuthorityRuntime(dependency({ ledgerDir: roots[7], decisionDir: roots[7], receiptDir: roots[7], tenant: "tenant", requester: "requester", definitions: [] }), dependency({ dispatchAdapter: dependency({ dispatch: callback }) })), "createLocalAuthorityRuntime");
+    assert.equal(dependencyAccesses, 0, "native Windows refusal precedes every dependency property access");
+    assert.equal(callbackInvocations, 0, "native Windows refusal invokes no callback");
+    for (const root of roots) assert.deepEqual(readdirSync(root), [], `native Windows refusal leaves ${root} empty`);
+    for (const root of roots) rmSync(root, { recursive: true, force: true });
+  }
 } finally {
   rmSync(consumer, { recursive: true, force: true });
 }
