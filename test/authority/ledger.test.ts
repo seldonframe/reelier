@@ -315,19 +315,32 @@ test("the N100 wave scheduler starts all work while capping live children at ten
   assert.deepEqual(results,Array.from({length:100},(_,index)=>index));assert.deepEqual({started,peak},{started:100,peak:10});
 });
 
-test("100 real processes converge on one committed reservation and one dispatch eligibility", { timeout: 120_000 }, async t => {
+test("N100 authority convergence: one committed reservation, exact-existing outcomes, and acknowledged recovery", { timeout: 120_000, skip: process.platform !== "linux" }, async t => {
   await withRoot(async root => {
     let outstanding=0,peakOutstanding=0;
     const run=()=>{outstanding++;peakOutstanding=Math.max(peakOutstanding,outstanding);return spawnReserve(root,intent(),{signal:t.signal}).finally(()=>{outstanding--;});};
     const results=await collectN100Waves(Array.from({length:100},()=>run));
-    const successes = results as Array<{ ok: boolean; status: string; dispatchEligible: boolean; reservation: { reservationId: string } }>;
+    const outcomes = results as Array<{ ok: boolean; status: string; dispatchEligible: boolean; reservation: ReservationSnapshot } | { ok: false; reason: string }>;
     assert.equal(peakOutstanding<=10,true,`the convergence harness started ${peakOutstanding} simultaneous reserve children`);
-    assert.equal(successes.every(result => result.ok), true, JSON.stringify(successes.filter(result => !result.ok)));
-    assert.equal(new Set(successes.map(result => result.reservation.reservationId)).size, 1);
-    assert.equal(successes.filter(result => result.dispatchEligible).length, 1);
+    const refused=outcomes.filter((result):result is { ok:false;reason:string }=>!result.ok);
+    assert.deepEqual(refused,[],`zero refused results, including busy and corruption: ${JSON.stringify(refused)}`);
+    const successes=outcomes.filter((result):result is { ok:true;status:string;dispatchEligible:boolean;reservation:ReservationSnapshot }=>result.ok);
+    const winners=successes.filter(result=>result.status==="reserved"&&result.dispatchEligible===true);
+    assert.equal(winners.length,1,"exactly one reserved dispatch-eligible result");
+    const winner=winners[0]!;
+    assert.equal(successes.filter(result=>result.status==="existing"&&result.dispatchEligible===false).length,99,"99 exact-existing outcomes");
+    for(const result of successes.filter(result=>result!==winner))assert.deepEqual(result,{ok:true,status:"existing",dispatchEligible:false,reservation:winner.reservation},"exact-existing outcome matches the winner reservation");
+    assert.deepEqual(winner.reservation.limitAssignments,winner.reservation.intent.limitSlots.map((slot,index)=>({key:slot.key,index,maximum:slot.maximum})),"one exact assignment per committed intent limit slot");
+    const ledger=new FsAuthorityLedger(root,{now:()=>t0});
+    const dispatched=await ledger.transition(winner.reservation.reservationId,"reserved",{to:"dispatched"});
+    assert.equal(dispatched.ok,true);
+    if(!dispatched.ok)return;
+    const acknowledged=await ledger.transition(winner.reservation.reservationId,"dispatched",{to:"acknowledged",resultDigest:digest("n")});
+    assert.equal(acknowledged.ok,true);
+    if(!acknowledged.ok)return;
     const recovered = await new FsAuthorityLedger(root, { now: () => t0 }).recover();
     assert.equal(recovered.ok, true);
-    if (recovered.ok) assert.equal(recovered.reservations.length, 1);
+    if (recovered.ok) assert.deepEqual(recovered.reservations,[acknowledged.reservation]);
   });
 });
 
