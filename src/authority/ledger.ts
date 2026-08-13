@@ -7,6 +7,7 @@ export type LedgerState =
   | "acknowledged"
   | "definitive-failure"
   | "ambiguous"
+  | "cancelled"
   | "reconciled";
 
 export interface LimitSlotIntent {
@@ -37,9 +38,13 @@ export interface ReservationIntent {
   readonly limitsDigest: string;
   readonly outcomeKey: string;
   readonly effectDigest: string;
+  /** Canonical transport-effect bytes retained for restart-time evidence when available. */
+  readonly effectCanonicalBase64?: string;
   readonly issuedAt: string;
   readonly expiresAt: string;
   readonly limitSlots: readonly LimitSlotIntent[];
+  /** Host-authenticated task/principal lineage; never read from OutcomeRequest. */
+  readonly executionContext?: import("./types.js").AuthorityExecutionContextV1;
 }
 
 export interface StoredReservationIntent extends Omit<ReservationIntent, "canonicalRequestBytes" | "capabilityBytes" | "limitSlots"> {
@@ -60,7 +65,9 @@ export interface ReservationSnapshot {
 }
 
 export type TransitionEvent =
-  | Readonly<{ to: "dispatched" | "ambiguous" }>
+  | Readonly<{ to: "dispatched" }>
+  | Readonly<{ to: "ambiguous"; resultDigest?: string }>
+  | Readonly<{ to: "cancelled"; resultDigest: string }>
   | Readonly<{ to: "acknowledged" | "definitive-failure" | "reconciled"; resultDigest: string }>;
 
 export interface ReservationHistoryEntry {
@@ -136,7 +143,7 @@ export interface AuthorityLedger {
   lookupIngressClaimLinkage(requestKey:string):Promise<VerifiedIngressClaimLinkage|undefined>;
   reserve(intent: ReservationIntent): Promise<ReserveResult>;
   transition(reservationId: string, expectedState: LedgerState, event: TransitionEvent): Promise<TransitionResult>;
-  recover(): Promise<RecoverResult>;
+  recover(options?: Readonly<{ deferTerminal?: boolean }>): Promise<RecoverResult>;
   getReservation(reservationId: string): Promise<ReservationSnapshot | undefined>;
   lookupReservationLinkage(reservationId:string):Promise<ReservationLinkage|undefined>;
   getReservationHistory(reservationId: string): Promise<ReservationHistory | undefined>;

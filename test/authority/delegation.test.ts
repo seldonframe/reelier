@@ -5,7 +5,7 @@ import { signAuthorityDigest } from "../../src/authority/crypto.js";
 import { authorityDigest } from "../../src/authority/wire.js";
 import type { DelegationGrant } from "../../src/authority/types.js";
 import { createTrustRoots } from "../../src/authority/trust.js";
-import { validateDelegationChain, validateContractAgainstDelegation, type StoredSignedGrant } from "../../src/authority/delegation.js";
+import { validateChildDelegationRequest, validateDelegationChain, validateContractAgainstDelegation, type StoredSignedGrant } from "../../src/authority/delegation.js";
 
 const now = new Date("2026-01-15T00:00:00.000Z");
 const limits = { maxEffectsPerWindow: 10, windowSeconds: 3600, maxEffectsPerSourceTrigger: 2, maxBodyBytes: 4096 };
@@ -80,4 +80,35 @@ test("the contract must fit and bind the leaf grant in every delegated dimension
     ["projection", { sourceAuthority: { authorizedProjectionPointers: ["/recipient"] } }], ["risk", { riskClasses: ["profile"] }],
     ["limits", { limits: { ...f.child.constraints.limits, maxBodyBytes: 4096 } }], ["validity", { validUntil: "2026-02-01T00:00:00.000Z" }],
   ] as const) assert.throws(() => validateContractAgainstDelegation({ ...contract, ...amended } as Parameters<typeof validateContractAgainstDelegation>[0], chain), /leaf|tenant|sponsor|definition|audience|connector|projection|risk|limit|validity/i, label);
+});
+
+test("delegation policy requires explicit permission and attenuates child depth, fan-out, duration, and budget", () => {
+  const f = fixture();
+  const policy = { mayDelegate: true, maxDepth: 2, maxFanOut: 3, maxChildDurationSeconds: 3600, maxDelegatedEffects: 6 };
+  const rootWithPolicy = { ...root, delegationPolicy: policy } as DelegationGrant;
+  const rootSignedWithPolicy = signed(rootWithPolicy, "operator_key", f.operator.privateKey);
+  const childWithPolicy = { ...f.child, parentDigest: rootSignedWithPolicy.digest, delegationPolicy: { mayDelegate: true, maxDepth: 1, maxFanOut: 2, maxChildDurationSeconds: 1800, maxDelegatedEffects: 3 } } as DelegationGrant;
+  const childSignedWithPolicy = signed(childWithPolicy, "delegate_key", f.delegate.privateKey);
+  assert.doesNotThrow(() => validateDelegationChain({ tenant: "tenant_1", sponsor: "sponsor_1", now, trustRoots: f.roots, grants: [rootSignedWithPolicy, childSignedWithPolicy] }));
+
+  const widen = (change: Record<string, unknown>) => validateDelegationChain({
+    tenant: "tenant_1", sponsor: "sponsor_1", now, trustRoots: f.roots,
+    grants: [rootSignedWithPolicy, signed({ ...childWithPolicy, delegationPolicy: { ...childWithPolicy.delegationPolicy, ...change } } as DelegationGrant, "delegate_key", f.delegate.privateKey)],
+  });
+  assert.doesNotThrow(() => widen({ mayDelegate: false }));
+  assert.throws(() => widen({ maxDepth: 2 }), /delegation|depth|widen/i);
+  assert.throws(() => widen({ maxFanOut: 4 }), /delegation|fan.?out|widen/i);
+  assert.throws(() => widen({ maxChildDurationSeconds: 3601 }), /delegation|duration|widen/i);
+  assert.throws(() => widen({ maxDelegatedEffects: 7 }), /delegation|budget|widen/i);
+});
+
+test("an Authority Cell accepts only a narrower unsigned child request", () => {
+  const f = fixture();
+  const parent = signed({ ...root, delegationPolicy: { mayDelegate: true, maxDepth: 2, maxFanOut: 2, maxChildDurationSeconds: 3600, maxDelegatedEffects: 4 } } as DelegationGrant, "operator_key", f.operator.privateKey);
+  const parentGrant = parent.grant as DelegationGrant;
+  const child = { ...f.child, grantor: "delegate_1", issuedAt: "2026-01-15T00:00:00.000Z", expiresAt: "2026-01-15T00:30:00.000Z", delegationPolicy: { mayDelegate: false, maxDepth: 0, maxFanOut: 0, maxChildDurationSeconds: 1, maxDelegatedEffects: 0 } } as DelegationGrant;
+  assert.doesNotThrow(() => validateChildDelegationRequest({ parent: parentGrant, child, activeChildCount: 0, effects: 2, now }));
+  assert.throws(() => validateChildDelegationRequest({ parent: parentGrant, child, activeChildCount: 2, effects: 1, now }), /fan.?out/i);
+  assert.throws(() => validateChildDelegationRequest({ parent: parentGrant, child, activeChildCount: 0, effects: 5, now }), /budget/i);
+  assert.throws(() => validateChildDelegationRequest({ parent: { ...parentGrant, delegationPolicy: undefined }, child, activeChildCount: 0, effects: 1, now }), /mayDelegate/i);
 });

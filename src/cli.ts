@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Hand-rolled argv parsing (no commander). Two subcommands: run, bench.
 
-import { readFile, writeFile, appendFile, access, readdir, realpath, stat } from "node:fs/promises";
+import { readFile, writeFile, appendFile, access, readdir, realpath, stat, mkdir } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
@@ -37,6 +37,7 @@ import { startLogin, pollForToken, openBrowser } from "./login.js";
 import type { spawn } from "node:child_process";
 import { builtinTools, type Tool, type ToolContext } from "./tools.js";
 import { connectDownstream, type DownstreamConnection } from "./mcp-client.js";
+import { loadConnectionInventory } from "./connections.js";
 import { buildMcpTools } from "./mcp-tool.js";
 import { buildProxyServer, Recorder } from "./recorder.js";
 import { parseTraceLines, formatTrace } from "./trace.js";
@@ -120,6 +121,13 @@ import { buildDiscoveryBundle, discoverOpportunities, formatDiscoveryPreview, si
 import { collectClaudeCodeCoverage, collectCodexCoverage, renderCoverageReport, renderCoverageView } from "./coverage.js";
 import { uploadDiscoveryBundle } from "./discovery-client.js";
 import { createBridgeServer } from "./bridge.js";
+import { runAuthorityCommand } from "./authority/cli.js";
+import { buildAuthorityDeployment } from "./authority/host/deploy.js";
+import {
+  initializeInspection,
+  renderInitializationReport,
+  type InitializationDependencies,
+} from "./initialization.js";
 
 // Exported (alongside cmdPush below) so test/push-cli.test.ts can drive
 // cmdPush's console output directly with a fake ParsedArgs + monkeypatched
@@ -135,7 +143,7 @@ export interface ParsedArgs {
   fails: string[];
 }
 
-function parseArgv(argv: string[]): ParsedArgs {
+export function parseArgv(argv: string[]): ParsedArgs {
   const positional: string[] = [];
   const flags = new Set<string>();
   const vars: Record<string, string> = {};
@@ -195,13 +203,29 @@ function parseArgv(argv: string[]): ParsedArgs {
       arg === "--expires" ||
       arg === "--key" ||
       arg === "--path"
+      || arg === "--input"
+      || arg === "--pack"
+      || arg === "--tenant"
+      || arg === "--signer"
+      || arg === "--adapter"
+      || arg === "--transport"
+      || arg === "--port"
+      || arg === "--certification-config"
+      || arg === "--config"
+      || arg === "--scenario"
+      || arg === "--candidate"
+      || arg === "--descriptors"
+      || arg === "--trust-events"
     ) {
       const val = argv[++i];
-      if (!val) {
+      if (!val || val.startsWith("--")) {
         throw new Error(`${arg} requires a value`);
       }
-      opts[arg.slice(2)] = val;
+      const option = arg.slice(2);
+      if (opts[option] !== undefined) throw new Error(`duplicate --${option} option`);
+      opts[option] = val;
     } else if (arg.startsWith("--")) {
+      if (arg === "--all" && flags.has("all")) throw new Error("duplicate --all option");
       flags.add(arg.slice(2));
     } else {
       positional.push(arg);
@@ -4217,186 +4241,45 @@ async function cmdInitSigning(homedir: string): Promise<number> {
 
 // Exported so test/init-signing-cli.test.ts can drive the `--signing` path
 // directly (same reasoning as cmdPush's export note above).
-export async function cmdInit(args: ParsedArgs): Promise<number> {
-  const yes = args.flags.has("yes");
-  const cwd = process.cwd();
-  const homedir = os.homedir();
+export interface CmdInitOverrides {
+  readonly cwd?: string;
+  readonly homedir?: string;
+  readonly authorityRoot?: string;
+  readonly dependencies?: InitializationDependencies;
+}
+
+export async function cmdInit(args: ParsedArgs, overrides: CmdInitOverrides = {}): Promise<number> {
+  const cwd = overrides.cwd ?? process.cwd();
+  const homedir = overrides.homedir ?? os.homedir();
 
   if (args.flags.has("signing")) {
     return cmdInitSigning(homedir);
   }
 
-  console.log("Reelier init — record once, replay forever. Let's get your first receipt in under 60 seconds.");
-  console.log("");
-
-  // Step 0 — meet the user where they are: before recording anything NEW,
-  // look at the agent work they've ALREADY done and offer to compile a
-  // replayable skill straight from history. Read-only sessions only (safe
-  // to replay); any scan failure degrades honestly to the normal init flow —
-  // never a crash, never a fabricated candidate.
   try {
-    const discovered = discoverOpportunities(await discoveryInputs(homedir));
-    if (discovered.length > 0) {
-      console.log("Agent opportunities found");
-      for (let i = 0; i < Math.min(3, discovered.length); i++) {
-        console.log(formatDiscoveryOpportunity(i + 1, discovered[i]).join("\n"));
-      }
-      console.log("  To inspect the exact sanitized bundle before sharing: reelier discover --upload");
-      console.log("");
+    const result = await initializeInspection({
+      cwd,
+      homedir,
+      dryRun: args.flags.has("dry-run"),
+      ...(overrides.authorityRoot === undefined ? {} : { authorityRoot: overrides.authorityRoot }),
+      ...(overrides.dependencies === undefined ? {} : { dependencies: overrides.dependencies }),
+    });
+    if (result.status === "busy") {
+      console.error("Initialization busy: another local inspection is in progress.");
+      return 2;
     }
-    const sessions = await scanAgentSessions(homedir);
-    const candidates = rankByReplayWorthiness(
-      sessions.filter((s) => s.replayableCount > 0 && s.readOnly)
-    ).slice(0, 3);
-
-    if (candidates.length > 0) {
-      console.log("Step 0 — you already have replayable work");
-      console.log(
-        `  Scanned your agent history (${agentSources().map((s) => s.label).join(", ")}): ${candidates.length} read-only session(s) Reelier can replay as-is:`
-      );
-      for (let i = 0; i < candidates.length; i++) {
-        console.log(fmtSessionLine(i + 1, candidates[i]));
-      }
-
-      if (yes) {
-        console.log("  (--yes: skipping the offer — compile any of these later with `reelier scan`.)");
-      } else {
-        const rl0 = createInterface({ input: process.stdin, output: process.stdout });
-        let pick: string;
-        try {
-          pick = (
-            await rl0.question("\n  Compile one into a skill now? (number, or Enter to skip): ")
-          ).trim();
-        } finally {
-          rl0.close();
-        }
-        const n = parseInt(pick, 10);
-        if (Number.isInteger(n) && n >= 1 && n <= candidates.length) {
-          const session = candidates[n - 1];
-          const source = await readFile(session.path, "utf8");
-          const traceFileName = path.basename(session.path);
-          const name = `${session.project}-${traceFileName.replace(/\.jsonl$/i, "")}`;
-          const result = compileSessionTranscript(source, { name, traceFileName });
-          if (result.ok) {
-            const outPath = path.join(cwd, `${result.compileResult.name}.skill.md`);
-            await writeFile(outPath, result.skillSource, "utf8");
-            console.log(
-              `  Wrote ${outPath} (${result.compileResult.stats.steps} steps, ${result.compileResult.stats.asserts} asserts).`
-            );
-            console.log("  Replay it (MCP-tool steps need their server wrapped):");
-            console.log(`    reelier run ${outPath}`);
-          } else {
-            // Shouldn't happen (scan pre-filtered), but never fabricate.
-            console.log(`  ${session.path}: ${result.reason}`);
-          }
-        }
-      }
-      console.log("");
+    for (const line of renderInitializationReport(result.report, result.status === "dry-run")) console.log(line);
+    return 0;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "";
+    if (message.startsWith("checkpoint state refused")) {
+      console.error("Initialization refused: checkpoint state is malformed, unknown, or stale.");
+    } else {
+      console.error("Initialization refused: local inspection failed.");
     }
-  } catch {
-    // Scan is a best-effort bonus — a missing/unreadable ~/.claude/projects
-    // must never block first-run init.
+    return 1;
   }
 
-  const detection = await detectAgentConfig(cwd, homedir);
-  console.log("Step 1 — agent config");
-  console.log(
-    `  project MCP config (${detection.projectConfigPath}): ${detection.projectConfigExists ? "found" : "not found"}`
-  );
-  console.log(
-    `  user Claude config (${detection.userConfigPath}): ${detection.userConfigExists ? "found" : "not found"}`
-  );
-  console.log("");
-  console.log("  To record a real agent session later, front an existing MCP server with reelier:");
-  console.log(`    ${reelierProxyCommandLine("<your-mcp-server-command>")}`);
-  console.log(
-    "  Recording needs at least one --wrap'd downstream server — since we don't know yours yet, the default"
-  );
-  console.log("  below is the zero-setup demo path instead.");
-
-  let wrapCommand: string | undefined;
-
-  if (!yes) {
-    const rl = createInterface({ input: process.stdin, output: process.stdout });
-    try {
-      const choice = (
-        await rl.question("\nRecord a REAL session against your own MCP server instead of the demo? [y/N] ")
-      )
-        .trim()
-        .toLowerCase();
-
-      if (choice === "y" || choice === "yes") {
-        const raw = (
-          await rl.question("Paste the command line for your downstream MCP server (e.g. npx -y @your/mcp-server): ")
-        ).trim();
-
-        if (raw) {
-          wrapCommand = raw;
-
-          const writeChoice = (await rl.question(`Write/merge this into ${detection.projectConfigPath}? [y/N] `))
-            .trim()
-            .toLowerCase();
-          if (writeChoice === "y" || writeChoice === "yes") {
-            // A malformed existing .mcp.json (or any other read/write
-            // failure here) must never abort the whole init — the file is
-            // already left untouched by construction (planMcpConfigWrite
-            // only reads+parses; applyMcpConfigWrite is never reached until
-            // an explicit confirm below), so the honest recovery is to say
-            // so and fall through to the zero-setup demo path rather than
-            // crash with a raw SyntaxError.
-            try {
-              const plan = await planMcpConfigWrite(detection.projectConfigPath, wrapCommand);
-              if (!plan.result.added) {
-                console.log(
-                  `  A "reelier" server is already configured in ${detection.projectConfigPath} — left untouched.`
-                );
-              } else {
-                console.log("  Resulting .mcp.json:");
-                console.log(
-                  plan.after
-                    .split("\n")
-                    .map((l) => `    ${l}`)
-                    .join("\n")
-                );
-                const confirm = (await rl.question("  Write this? [y/N] ")).trim().toLowerCase();
-                if (confirm === "y" || confirm === "yes") {
-                  await applyMcpConfigWrite(detection.projectConfigPath, plan.result.config);
-                  console.log(
-                    `  Wrote ${detection.projectConfigPath} (preserved ${plan.result.preservedServerNames.length} existing server(s)).`
-                  );
-                } else {
-                  console.log("  Skipped — nothing written.");
-                }
-              }
-            } catch (err) {
-              console.log(
-                `  Your existing ${detection.projectConfigPath} isn't valid JSON — leaving it untouched; ` +
-                  `continuing with the demo path. (${(err as Error).message})`
-              );
-              wrapCommand = undefined;
-            }
-          }
-
-          if (wrapCommand) {
-            console.log("");
-            console.log("  Restart your agent so it picks up the new MCP server, then tell it:");
-            console.log('    "record yourself doing <the task you want to teach me>"');
-            await rl.question("\n  Press Enter once you've finished recording and stopped the recording... ");
-          }
-        }
-      }
-    } finally {
-      rl.close();
-    }
-  }
-
-  const initCode = wrapCommand ? await runRealPath(wrapCommand, cwd) : await runDemoPath(cwd);
-
-  // Closing offer — make lossless capture the default happy path. Runs even
-  // when the demo/replay above failed (the offer is independent of it), but
-  // an init failure keeps its exit code either way.
-  const offerCode = await offerWrapInstall(cwd, homedir, !yes && process.stdin.isTTY === true);
-  return initCode !== 0 ? initCode : offerCode;
 }
 
 /** env -> config file -> DEFAULT_CLOUD_URL — same chain resolvePushConfig uses to resolve a base URL. */
@@ -4517,8 +4400,57 @@ export async function cmdWhoami(fetchImpl: typeof fetch = fetch): Promise<number
   return 0;
 }
 
+async function cmdConnect(args: ParsedArgs): Promise<number> {
+  const provider = args.positional[0];
+  if (provider !== "gmail" && provider !== "stripe") { console.error("connect requires gmail or stripe"); return 1; }
+  const root = path.resolve(args.opts.path ?? "authority");
+  await mkdir(path.join(root, "connectors"), { recursive: true });
+  const file = path.join(root, "connectors", `${provider}.json`);
+  try { await access(file); console.log(JSON.stringify({ provider, status: "configured", file })); return 0; } catch { /* create metadata below */ }
+  await writeFile(file, `${JSON.stringify({ v: "reelier.connector-intent/v1", provider, status: "oauth-required", createdAt: new Date().toISOString() }, null, 2)}\n`, "utf8");
+  console.log(JSON.stringify({ provider, status: "oauth-required", next: "open browser to authorize the managed worker", file }));
+  return 0;
+}
+
+export async function cmdConnections(args: ParsedArgs): Promise<number> {
+  const root = path.resolve(args.opts.path ?? "authority");
+  try {
+    const report = await loadConnectionInventory(root);
+    console.log(JSON.stringify(report));
+    return report.issues.length === 0 ? 0 : 1;
+  } catch {
+    console.error(JSON.stringify({ v: "reelier.connection-inventory-refusal/v1", reasonCode: "inventory-unreadable" }));
+    return 1;
+  }
+}
+
+async function cmdDeploy(args: ParsedArgs): Promise<number> {
+  const candidate = args.positional[0];
+  if (!candidate) { console.error("deploy requires a candidate alias or file"); return 1; }
+  const root = path.resolve(args.opts.path ?? "authority");
+  const candidateFile = path.isAbsolute(candidate) ? candidate : path.resolve(process.cwd(), candidate);
+  try {
+    const raw = JSON.parse(await readFile(candidateFile, "utf8")) as Record<string, unknown>;
+    const job = raw.jobCard as Record<string, unknown> | undefined;
+    const alias = typeof job?.jobId === "string" ? job.jobId : path.basename(candidate).replace(/\.json$/i, "");
+    const output = path.join(root, "deployments", alias);
+    const trustPinFile = path.resolve(args.opts["trust-pin"] ?? path.join(root, "trust", "job-card-trust-pin.json"));
+    const trustPin = JSON.parse(await readFile(trustPinFile, "utf8"));
+    const built = await buildAuthorityDeployment(candidateFile, output, trustPin);
+    console.log(JSON.stringify({ alias, status: "deployed", deploymentFile: built.deploymentFile, jobCardFile: built.jobCardFile, jobCardTrustEvidenceFile: built.jobCardTrustEvidenceFile, jobId: built.jobCard.jobId }));
+    return 0;
+  } catch (error) {
+    console.error(JSON.stringify({ status: "refused", reasonCode: "deployment-invalid", message: error instanceof Error ? error.message : String(error) }));
+    return 1;
+  }
+}
+
+async function cmdDoctor(args: ParsedArgs): Promise<number> {
+  return runAuthorityCommand({ positional: ["doctor"], flags: args.flags, opts: { path: args.opts.path ?? "authority/authority.yml" } });
+}
+
 const USAGE =
-  "Usage: reelier <run|bench|baseline|cost|prices|mcp|serve|trace|compile|manifest|approve|push|get|verify|diff|ci|policy|init|discover|bridge|from-session|scan|install|uninstall|login|logout|whoami> [options]\n" +
+  "Usage: reelier <run|bench|baseline|cost|prices|mcp|serve|trace|compile|manifest|approve|push|get|verify|diff|ci|policy|init|discover|connections|connect|deploy|doctor|bridge|from-session|scan|install|uninstall|login|logout|whoami> [options]\n" +
   "  discover â€” rank observed workflow opportunities locally; use --upload to preview and explicitly send one sanitized bundle to Arena Cloud.\n" +
   "  bridge  — reelier bridge --port 4777: expose nonce-gated local capabilities and Work Card handoff metadata; never executes Cloud plugin code.\n" +
   "  login  — reelier login: connect this machine to Reelier Cloud via a device-code browser handshake; writes ~/.reelier/config.json.\n" +
@@ -4537,7 +4469,14 @@ const USAGE =
   "           An explicit per-call cwd/out argument always wins over the workspace.\n" +
   "  get    — fetch a public registry skill to ./skills/<skill>.skill.md; never executes it.\n" +
   "           reelier get --mine <name> fetches YOUR OWN private skill (authenticated) instead.\n" +
+  "  init   - reelier init [--dry-run]: checkpointed local inspection of Path A observation, Path B replay/freeze\n" +
+  "           candidates, and Path C connections/candidates. It does not deploy, gate, dispatch, upload, or rewrite configs.\n" +
+  "           --dry-run performs the same local inspection without writing .reelier/init artifacts.\n" +
   "  init --signing — generate (or print the existing) Ed25519 signing key at ~/.reelier/signing/; idempotent.\n" +
+  "  authority certify — private expert workflow: init --config <v2>, then require --scenario <id> or --all for preflight,\n" +
+  "           seal-readiness, export, and offline verify --input <export>. seal-readiness remains unsigned.\n" +
+  "           sign-readiness requires a pre-existing human key, descriptors, trust events, and an exact interactive digest confirmation;\n" +
+  "           the signed readiness authorization remains non-dispatchable.\n" +
   "  verify <permalink|file> [--key <pub.pem>] — recompute the record digest and check signature/timestamp claims.\n" +
   "  diff   — compare the last two runs of a skill; exit 1 on drift (gate a scheduled replay).\n" +
   "  baseline — reelier baseline <skill.md>: the latest run against a median/MAD baseline of this skill's OWN previous runs,\n" +
@@ -4618,10 +4557,20 @@ async function main(): Promise<number> {
       return cmdCi(args);
     case "policy":
       return cmdPolicy(args);
+    case "authority":
+      return runAuthorityCommand(args);
     case "init":
       return cmdInit(args);
     case "discover":
       return cmdDiscover(args);
+    case "connections":
+      return cmdConnections(args);
+    case "connect":
+      return cmdConnect(args);
+    case "deploy":
+      return cmdDeploy(args);
+    case "doctor":
+      return cmdDoctor(args);
     case "bridge":
       return cmdBridge(args);
     case "coverage":

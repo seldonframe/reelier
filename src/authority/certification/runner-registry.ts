@@ -1,0 +1,112 @@
+import { authorityDigest } from "../wire.js";
+import {
+  githubIssueLabelsAlias,
+  githubIssueLabelsReadEndpointId,
+  githubIssueLabelsWriteEndpointId,
+  githubIssueLabelsPolicySchemaId,
+} from "../../packs/github/manifest.js";
+import {
+  cloudflareDnsRecordSetAlias,
+  cloudflareDnsRecordSetReadEndpointId,
+  cloudflareDnsRecordSetWriteEndpointId,
+  cloudflareDnsRecordSetPolicySchemaId,
+} from "../../packs/cloudflare/manifest.js";
+import {
+  slackChannelTopicAlias,
+  slackChannelTopicReadEndpointId,
+  slackChannelTopicWriteEndpointId,
+  slackChannelTopicPolicySchemaId,
+} from "../../packs/slack-topic/manifest.js";
+import {
+  vercelDeploymentReleaseAlias,
+  vercelDeploymentReleaseReadEndpointId,
+  vercelDeploymentReleaseWriteEndpointId,
+  vercelDeploymentReleasePolicySchemaId,
+} from "../../packs/vercel/manifest.js";
+import {
+  neonDatabaseMigrationAlias,
+  neonDatabaseMigrationReadEndpointId,
+  neonDatabaseMigrationWriteEndpointId,
+  neonDatabaseMigrationPolicySchemaId,
+} from "../../packs/neon/manifest.js";
+import {
+  cloudflareTokenCreateAlias,
+  cloudflareTokenCreateReadEndpointId,
+  cloudflareTokenCreateWriteEndpointId,
+  cloudflareTokenCreatePolicySchemaId,
+} from "../../packs/cloudflare-token/create.js";
+import {
+  vercelProjectEnvironmentSecretSetAlias,
+  vercelProjectEnvironmentSecretSetReadEndpointId,
+  vercelProjectEnvironmentSecretSetWriteEndpointId,
+  vercelProjectEnvironmentSecretSetPolicySchemaId,
+} from "../../packs/vercel-environment-secret/manifest.js";
+import type { CertificationScenarioId, CertificationSecretSlot } from "./scenarios.js";
+
+export const CERTIFICATION_RUNNER_OPERATIONS = Object.freeze([
+  "prepare", "authoritative-read", "compile", "reserve", "authoritative-reread", "recompile",
+  "dispatch", "controlled-cut", "reconcile", "receipt", "cleanup", "export", "offline-verify",
+] as const);
+
+export type CertificationProvider = "cloudflare" | "github" | "neon" | "slack" | "vercel";
+export interface CertificationRegistryEndpoint {
+  readonly endpointId: string;
+  readonly provider: CertificationProvider;
+  readonly credentialSlot: CertificationSecretSlot;
+  readonly direction: "read" | "write";
+  readonly method: "GET" | "POST" | "PUT";
+}
+export interface CertificationRunnerRegistryEntry {
+  readonly scenarioId: Extract<CertificationScenarioId, "cloudflare-dns" | "cloudflare-vercel-secret" | "github-issue-labels" | "neon-migration" | "slack-topic" | "vercel-promotion">;
+  readonly runnerId: string;
+  readonly definitionAliases: readonly string[];
+  readonly endpoints: readonly CertificationRegistryEndpoint[];
+  readonly operations: typeof CERTIFICATION_RUNNER_OPERATIONS;
+  readonly policySchemaIds: readonly string[];
+  readonly executionReady: false;
+  readonly dispatchable: false;
+  readonly unavailableReason: string | null;
+  readonly metadataDigest: string;
+}
+
+type EntrySeed = Omit<CertificationRunnerRegistryEntry, "metadataDigest" | "operations" | "policySchemaIds" | "executionReady" | "dispatchable">;
+const endpoint = (endpointId: string, provider: CertificationProvider, credentialSlot: CertificationSecretSlot, direction: "read" | "write", method: "GET" | "POST" | "PUT"): CertificationRegistryEndpoint => Object.freeze({ endpointId, provider, credentialSlot, direction, method });
+const policySchemaIds = (scenarioId: EntrySeed["scenarioId"]): readonly string[] => Object.freeze(({
+  "cloudflare-dns": [cloudflareDnsRecordSetPolicySchemaId],
+  "cloudflare-vercel-secret": [cloudflareTokenCreatePolicySchemaId, vercelProjectEnvironmentSecretSetPolicySchemaId].sort(),
+  "github-issue-labels": [githubIssueLabelsPolicySchemaId],
+  "neon-migration": [neonDatabaseMigrationPolicySchemaId],
+  "slack-topic": [slackChannelTopicPolicySchemaId],
+  "vercel-promotion": [vercelDeploymentReleasePolicySchemaId],
+} satisfies Record<EntrySeed["scenarioId"], string[]>)[scenarioId]);
+const seed = (value: EntrySeed): CertificationRunnerRegistryEntry => {
+  const body = Object.freeze({ ...value, definitionAliases: Object.freeze([...value.definitionAliases]), endpoints: Object.freeze([...value.endpoints]), operations: CERTIFICATION_RUNNER_OPERATIONS, policySchemaIds: policySchemaIds(value.scenarioId) });
+  return Object.freeze({ ...body, executionReady: false as const, dispatchable: false as const, metadataDigest: authorityDigest({ v: "reelier.certification-runner-metadata/v2", metadata: body }) });
+};
+
+const entries = Object.freeze([
+  seed({ scenarioId: "cloudflare-dns", runnerId: "builtin_cloudflare_dns_v2", definitionAliases: [cloudflareDnsRecordSetAlias], endpoints: [endpoint(cloudflareDnsRecordSetReadEndpointId, "cloudflare", "cloudflareDnsCredential", "read", "GET"), endpoint(cloudflareDnsRecordSetWriteEndpointId, "cloudflare", "cloudflareDnsCredential", "write", "PUT")], unavailableReason: "runner implementation artifact and executed hermetic-test evidence are not available in Task 4A" }),
+  seed({ scenarioId: "cloudflare-vercel-secret", runnerId: "builtin_cloudflare_vercel_secret_v2", definitionAliases: [cloudflareTokenCreateAlias, vercelProjectEnvironmentSecretSetAlias], endpoints: [endpoint(cloudflareTokenCreateReadEndpointId, "cloudflare", "cloudflareBootstrapCredential", "read", "GET"), endpoint(cloudflareTokenCreateWriteEndpointId, "cloudflare", "cloudflareBootstrapCredential", "write", "POST"), endpoint(vercelProjectEnvironmentSecretSetReadEndpointId, "vercel", "vercelCredential", "read", "GET"), endpoint(vercelProjectEnvironmentSecretSetWriteEndpointId, "vercel", "vercelCredential", "write", "POST")], unavailableReason: "Cloudflare token-create and Vercel environment-secret definitions are not registered static packs; runner implementation and executed tests are absent" }),
+  seed({ scenarioId: "github-issue-labels", runnerId: "builtin_github_issue_labels_v2", definitionAliases: [githubIssueLabelsAlias], endpoints: [endpoint(githubIssueLabelsReadEndpointId, "github", "githubCredential", "read", "GET"), endpoint(githubIssueLabelsWriteEndpointId, "github", "githubCredential", "write", "PUT")], unavailableReason: "runner implementation artifact and executed hermetic-test evidence are not available in Task 4A" }),
+  seed({ scenarioId: "neon-migration", runnerId: "builtin_neon_migration_v2", definitionAliases: [neonDatabaseMigrationAlias], endpoints: [endpoint(neonDatabaseMigrationReadEndpointId, "neon", "neonApiCredential", "read", "GET"), endpoint(neonDatabaseMigrationWriteEndpointId, "neon", "neonDatabaseUrl", "write", "POST")], unavailableReason: "runner implementation artifact and executed hermetic-test evidence are not available in Task 4A" }),
+  seed({ scenarioId: "slack-topic", runnerId: "builtin_slack_topic_v2", definitionAliases: [slackChannelTopicAlias], endpoints: [endpoint(slackChannelTopicReadEndpointId, "slack", "slackCredential", "read", "GET"), endpoint(slackChannelTopicWriteEndpointId, "slack", "slackCredential", "write", "POST")], unavailableReason: "runner implementation artifact and executed hermetic-test evidence are not available in Task 4A" }),
+  seed({ scenarioId: "vercel-promotion", runnerId: "builtin_vercel_promotion_v2", definitionAliases: [vercelDeploymentReleaseAlias], endpoints: [endpoint(vercelDeploymentReleaseReadEndpointId, "vercel", "vercelCredential", "read", "GET"), endpoint(vercelDeploymentReleaseWriteEndpointId, "vercel", "vercelCredential", "write", "POST")], unavailableReason: "runner implementation artifact and executed hermetic-test evidence are not available in Task 4A" }),
+] as const);
+
+export const CERTIFICATION_PROVIDER_SCENARIO_IDS = Object.freeze(entries.map(entry => entry.scenarioId));
+
+const registry = new Map<CertificationScenarioId, CertificationRunnerRegistryEntry>(entries.map(entry => [entry.scenarioId, entry]));
+export const certificationRunnerRegistryDigest = authorityDigest({ v: "reelier.certification-runner-registry/v2", entries });
+
+export function getCertificationRunnerRegistryEntry(scenarioId: CertificationScenarioId): CertificationRunnerRegistryEntry {
+  const entry = registry.get(scenarioId);
+  if (!entry) throw new TypeError("certification scenario has no built-in provider runner");
+  return entry;
+}
+
+export function certificationPolicyCommitments(scenarioId: CertificationScenarioId): readonly Readonly<{ schemaId: string; digest: string }>[] {
+  return Object.freeze(getCertificationRunnerRegistryEntry(scenarioId).policySchemaIds.map(schemaId => Object.freeze({
+    schemaId,
+    digest: authorityDigest({ v: "reelier.certification-policy-schema-identity/v1", schemaId }),
+  })));
+}

@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "reelier.authority-trust-event/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["v", "eventId", "sequence", "action", "keyDescriptorDigest", "occurredAt", "previousEventDigest"],
+  "properties": {
+    "v": { "const": "reelier.authority-trust-event/v1" },
+    "eventId": { "type": "string", "pattern": "^[a-z][a-z0-9_-]{2,127}$" },
+    "sequence": { "type": "integer", "minimum": 0 },
+    "action": { "enum": ["activate", "revoke"] },
+    "keyDescriptorDigest": { "$ref": "#/$defs/digest" },
+    "occurredAt": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$" },
+    "previousEventDigest": { "oneOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }] }
+  },
+  "$defs": { "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" } }
+}

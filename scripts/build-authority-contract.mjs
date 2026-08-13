@@ -1,6 +1,31 @@
 import canonicalize from "canonicalize";
 import { createHash, createPrivateKey, sign } from "node:crypto";
-import { cp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { cp, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+import { join, resolve } from "node:path";
+
+const directoryFlag = process.argv.indexOf("--directory");
+if (directoryFlag !== -1 && !process.argv[directoryFlag + 1]) throw new Error("--directory requires a path");
+const contractDirectory = directoryFlag === -1
+  ? fileURLToPath(new URL("../contract/authority/v1/", import.meta.url))
+  : resolve(process.argv[directoryFlag + 1]);
+const target = join(contractDirectory, "golden-vectors.json");
+const descriptorTarget = join(contractDirectory, "adapter-contract-v1.json");
+const adapterContractSourceTarget = fileURLToPath(new URL("../src/authority/adapter-contract.ts", import.meta.url));
+const adapterContractTemplateTarget = fileURLToPath(new URL("../src/authority/adapter-contract-template.ts", import.meta.url));
+const sourceFlag = process.argv.indexOf("--source");
+if (sourceFlag !== -1 && !process.argv[sourceFlag + 1]) throw new Error("--source requires a path");
+const adapterContractSource = sourceFlag === -1 ? adapterContractSourceTarget : resolve(process.argv[sourceFlag + 1]);
+const adapterContractMembers = [
+  "authority-evidence.schema.json", "authority-key-descriptor.schema.json", "authority-receipt-bundle.schema.json", "authority-receipt.schema.json",
+  "boundable-task-candidate.schema.json", "certification-cell-activation.schema.json", "certification-endpoint-manifest-v2.schema.json", "certification-endpoint-manifest.schema.json",
+  "certification-operator-config-v3.schema.json", "certification-runner-manifest-v2.schema.json", "certification-runner-manifest.schema.json", "certification-scenario-plan.schema.json",
+  "certification-test-manifest.schema.json", "compiled-capability.schema.json", "connection-adoption.schema.json", "connection-descriptor.schema.json",
+  "connection-inventory.schema.json", "decision-context.schema.json", "delegation-grant.schema.json", "gate-event.schema.json", "golden-vectors.json",
+  "observation-envelope.schema.json", "observed-action.schema.json", "outcome-contract.schema.json", "outcome-request.schema.json", "pack-manifest.schema.json",
+  "principal.schema.json", "shadow-report.schema.json", "signed-certification-readiness.schema.json", "source-bundle.schema.json",
+  "staged-artifact-commitment.schema.json", "transport-effect.schema.json", "trust-event.schema.json",
+];
 
 const digest = "sha256:" + "9".repeat(64);
 const at = "2026-01-01T00:00:00.000Z";
@@ -28,6 +53,10 @@ const refusedDecisionContext = {
 const decisionContextDigest = "sha256:" + createHash("sha256").update(canonicalize(acceptedDecisionContext), "utf8").digest("hex");
 const gateEvent = { v: "reelier.gate-event/v1", eventId: "event_1", at, verdict: "accepted", reasonCode: "accepted", decisionContextDigest };
 const gateEventDigest = "sha256:" + createHash("sha256").update(canonicalize(gateEvent), "utf8").digest("hex");
+const evidenceEventDigest = "sha256:" + createHash("sha256").update(canonicalize({ v: "reelier.authority-evidence-event/internal-v1", reservationId: "reservation_1", state: "reserved", at }), "utf8").digest("hex");
+const evidenceDispatchEventDigest = "sha256:" + createHash("sha256").update(canonicalize({ v: "reelier.authority-evidence-event/internal-v1", reservationId: "reservation_1", state: "dispatched", at: "2026-01-01T00:00:01.000Z" }), "utf8").digest("hex");
+const authorityEvidence = { v: "reelier.authority-evidence/v1", evidenceId: "evidence_1", receiptId: "receipt_1", decisionContextDigest, gateEventDigest, effectDigest: "sha256:" + "6".repeat(64), reservationId: "reservation_1", timeline: [{ state: "reserved", at, eventDigest: evidenceEventDigest }, { state: "dispatched", at: "2026-01-01T00:00:01.000Z", eventDigest: evidenceDispatchEventDigest }], dispatchedRequestDigest: "sha256:" + "a".repeat(64), providerResponseDigest: "sha256:" + "b".repeat(64), reconciliation: { recipeId: "fixture-reconcile", verdict: "not-attempted", normalizedProjectionDigest: null }, topology: { egress: "unchecked", secretIsolation: "unchecked", ingressAuthentication: "verified", notes: null } };
+const authorityEvidenceDigest = "sha256:" + createHash("sha256").update(canonicalize(authorityEvidence), "utf8").digest("hex");
 const vectorSourceRefsDigest = "sha256:" + createHash("sha256").update(canonicalize({ v: "reelier.source-refs/internal-v1", sourceRefs: { appointment: "ref_1" } }), "utf8").digest("hex");
 const vectorObservations = [{ index: 0, planDigest: "sha256:" + "a".repeat(64), endpointId: "appointments.get", rawDigest: "sha256:" + "b".repeat(64) }];
 const vectorReadSetDigest = "sha256:" + createHash("sha256").update(canonicalize({ v: "reelier.source-read-set/internal-v1", sourceRefsDigest: vectorSourceRefsDigest, observations: vectorObservations }), "utf8").digest("hex");
@@ -42,7 +71,8 @@ const vectors = {
   "compiled-capability": { v: "reelier.compiled-capability/v1", tenant: "tenant_1", requester: "requester_1", definitionAlias: "definition_1", requestDigest: digest, requestKey: digest, contractDigest: digest, sourceBundleDigest: digest, sourceSnapshotDigest: digest, authorityStateDigest: digest, limits, limitsDigest: vectorLimitsDigest, capabilityId: "capability_1", outcomeKey: digest, effectDigest: digest, issuedAt: at, expiresAt: "2026-01-01T00:01:00.000Z" },
   "decision-context": acceptedDecisionContext,
   "gate-event": gateEvent,
-  "authority-receipt": { v: "reelier.authority-receipt/v1", receiptId: "receipt_1", gateEventDigest, decisionContextDigest, decisionContext: acceptedDecisionContext, claims: { authorization: "verified", sourceCompleteness: "verified", dispatch: "verified", providerAcknowledgment: "unchecked", reconciliation: "absent", topology: "unchecked", completeness: "unchecked" } },
+  "authority-evidence": authorityEvidence,
+  "authority-receipt": { v: "reelier.authority-receipt/v1", receiptId: "receipt_1", gateEventDigest, decisionContextDigest, decisionContext: acceptedDecisionContext, evidenceDigest: authorityEvidenceDigest, priorReceiptDigest: null, claims: { authorization: "verified", sourceCompleteness: "verified", dispatch: "verified", providerAcknowledgment: "unchecked", reconciliation: "absent", topology: "unchecked", completeness: "unchecked" } },
   "pack-manifest": { v: "reelier.outcome-pack-manifest/v1", packId: "first_party", packDigest: digest, definitions: ["definition_1"] },
 };
 function makeVector(kind, value) {
@@ -58,18 +88,56 @@ const renderedVectors = Object.fromEntries(Object.entries(vectors).map(([kind, v
 }]));
 renderedVectors["decision-context"].variants = { preCompileRefusal: makeVector("decision-context", refusedDecisionContext) };
 const rendered = JSON.stringify(renderedVectors, null, 2) + "\n";
-const target = new URL("../contract/authority/v1/golden-vectors.json", import.meta.url);
-const decisionContextSchema = JSON.parse(await readFile(new URL("../contract/authority/v1/decision-context.schema.json", import.meta.url), "utf8"));
-const receiptSchema = JSON.parse(await readFile(new URL("../contract/authority/v1/authority-receipt.schema.json", import.meta.url), "utf8"));
+const decisionContextSchema = JSON.parse(await readFile(join(contractDirectory, "decision-context.schema.json"), "utf8"));
+const receiptSchema = JSON.parse(await readFile(join(contractDirectory, "authority-receipt.schema.json"), "utf8"));
 const { $schema: _decisionMetaSchema, $id: _decisionId, ...decisionContextBody } = decisionContextSchema;
 if (canonicalize(decisionContextBody) !== canonicalize(receiptSchema?.properties?.decisionContext)) {
   throw new Error("authority schema drift: receipt-embedded DecisionContext must equal the standalone DecisionContext schema");
 }
+const descriptor = await renderAdapterContractDescriptor(contractDirectory);
+const renderedDescriptor = JSON.stringify(descriptor, null, 2) + "\n";
+const renderedAdapterContractSource = await renderAdapterContractSource(descriptor);
 if (process.argv.includes("--copy-schemas")) {
   await mkdir(new URL("../dist/authority/schemas/", import.meta.url), { recursive: true });
-  await cp(new URL("../contract/authority/v1/", import.meta.url), new URL("../dist/authority/schemas/", import.meta.url), { recursive: true });
+  await cp(contractDirectory, new URL("../dist/authority/schemas/", import.meta.url), { recursive: true });
   process.exit(0);
 }
 if (process.argv.includes("--check")) {
-  if ((await readFile(target, "utf8")) !== rendered) throw new Error("authority golden vectors drift; run node scripts/build-authority-contract.mjs");
+  if (normalizeText(await readFile(target, "utf8")) !== rendered) throw new Error("authority golden vectors drift; run node scripts/build-authority-contract.mjs");
+  if (normalizeText(await readFile(descriptorTarget, "utf8")) !== renderedDescriptor) throw new Error("authority adapter contract drift; run node scripts/build-authority-contract.mjs");
+  if (normalizeText(await readFile(adapterContractSource, "utf8")) !== renderedAdapterContractSource) throw new Error("authority adapter contract source drift; run node scripts/build-authority-contract.mjs");
 } else await writeFile(target, rendered, "utf8");
+if (!process.argv.includes("--check")) {
+  await writeFile(descriptorTarget, renderedDescriptor, "utf8");
+  await writeFile(adapterContractSource, renderedAdapterContractSource, "utf8");
+}
+
+async function renderAdapterContractDescriptor(directory) {
+  if (adapterContractMembers.join("\0") !== [...adapterContractMembers].sort().join("\0")) throw new Error("adapter contract members must be sorted");
+  if (new Set(adapterContractMembers).size !== adapterContractMembers.length) throw new Error("adapter contract members must be unique");
+  if (adapterContractMembers.some(path => path.includes("/") || path.includes("\\") || path === "adapter-contract-v1.json" || path === "." || path === "..")) throw new Error("adapter contract member path is invalid");
+  const actualFiles = await readdir(directory, { withFileTypes: true });
+  const actualNames = actualFiles.filter(entry => entry.isFile()).map(entry => entry.name).filter(name => name !== "adapter-contract-v1.json").sort();
+  if (actualNames.join("\0") !== adapterContractMembers.join("\0")) throw new Error("authority adapter contract membership drift");
+  const members = await Promise.all(adapterContractMembers.map(async path => ({
+    path,
+    digest: `sha256:${createHash("sha256").update(normalizeContractBytes(await readFile(join(directory, path)))).digest("hex")}`,
+  })));
+  const goldenVectorsDigest = members.find(member => member.path === "golden-vectors.json")?.digest;
+  if (!goldenVectorsDigest) throw new Error("authority adapter contract must include golden vectors");
+  const unsigned = { v: "reelier.adapter-contract/v1", domain: "reelier.adapter-contract/v1\\0", members, goldenVectorsDigest };
+  return { ...unsigned, digest: `sha256:${createHash("sha256").update(canonicalize(unsigned), "utf8").digest("hex")}` };
+}
+
+async function renderAdapterContractSource(descriptor) {
+  const template = await readFile(adapterContractTemplateTarget, "utf8");
+  return normalizeText(template.replace("null as never", JSON.stringify(descriptor, null, 2)));
+}
+
+function normalizeText(text) {
+  return text.replace(/\r\n/g, "\n");
+}
+
+function normalizeContractBytes(bytes) {
+  return Buffer.from(normalizeText(bytes.toString("utf8")), "utf8");
+}

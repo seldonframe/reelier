@@ -14,6 +14,17 @@
         "maxEffectsPerSourceTrigger": { "type": "integer", "minimum": 1, "maximum": 1000000 },
         "maxBodyBytes": { "type": "integer", "minimum": 1, "maximum": 10485760 }
       }
+    },
+    "delegationPolicy": {
+      "type": "object", "additionalProperties": false,
+      "required": ["mayDelegate", "maxDepth", "maxFanOut", "maxChildDurationSeconds", "maxDelegatedEffects"],
+      "properties": {
+        "mayDelegate": { "type": "boolean" },
+        "maxDepth": { "type": "integer", "minimum": 0, "maximum": 8 },
+        "maxFanOut": { "type": "integer", "minimum": 0, "maximum": 1000 },
+        "maxChildDurationSeconds": { "type": "integer", "minimum": 1, "maximum": 31536000 },
+        "maxDelegatedEffects": { "type": "integer", "minimum": 0, "maximum": 1000000 }
+      }
     }
   },
   "type": "object", "additionalProperties": false,
@@ -21,6 +32,7 @@
   "properties": {
     "v": { "const": "reelier.delegation-grant/v1" }, "tenant": { "$ref": "#/$defs/id" }, "grantId": { "$ref": "#/$defs/id" },
     "parentDigest": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/digest" }] },
+    "delegationPolicy": { "$ref": "#/$defs/delegationPolicy" },
     "sponsor": { "$ref": "#/$defs/id" }, "grantor": { "$ref": "#/$defs/id" }, "grantee": { "$ref": "#/$defs/id" },
     "issuedAt": { "type": "string", "format": "date-time" }, "expiresAt": { "type": "string", "format": "date-time" },
     "constraints": {

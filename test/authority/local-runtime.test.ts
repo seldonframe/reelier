@@ -1,0 +1,108 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { generateKeyPairSync } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { createLocalAuthorityRuntime } from "../../src/authority/host/local.js";
+import { createDelegationAuthority } from "../../src/authority/host/delegation-service.js";
+import { loadOrCreateLocalGateSigner } from "../../src/authority/host/gate-signer.js";
+import { authorityDigest } from "../../src/authority/wire.js";
+import { signAuthorityDigest } from "../../src/authority/crypto.js";
+import { createTopologyProbe, runTopologyProbe, signTopologyEvidence } from "../../src/authority/host/topology.js";
+import { signAuthorityLease } from "../../src/authority/host/lease.js";
+import type { DelegationGrant } from "../../src/authority/types.js";
+
+test("local authority serve uses the real gate and refuses an unsigned empty deployment", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-local-runtime-"));
+  try {
+    const runtime = await createLocalAuthorityRuntime({ version: 1, tenant: "tenant_1", requester: "operator", definitions: ["gmail_reply_send_v1"], ledgerDir: path.join(root, "ledger"), decisionDir: path.join(root, "decisions"), receiptDir: path.join(root, "receipts"), endpoints: [] });
+    const result = await runtime.outcome("gmail_reply_send_v1", { v: "reelier.outcome-request/v1", requestId: "local-1", sourceRefs: { thread: "opaque" }, choices: {} }, { tenant: "tenant_1", requester: "operator" });
+    assert.equal(result.verdict, "refused");
+    assert.equal(result.reasonCode, "contract-not-found");
+    const status = await runtime.status({ requestId: "local-1" }, { tenant: "tenant_1", requester: "operator" });
+    assert.equal(status.reasonCode, "contract-not-found");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("local authority catalog lists only configured definitions and loads an opaque job reference", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-local-catalog-"));
+  try {
+    const runtime = await createLocalAuthorityRuntime({ version: 1, tenant: "tenant_1", requester: "operator", definitions: ["gmail_reply_send_v1"], ledgerDir: path.join(root, "ledger"), decisionDir: path.join(root, "decisions"), receiptDir: path.join(root, "receipts"), endpoints: [] });
+    const found = await runtime.jobsSearch!({ query: "gmail" }, { tenant: "tenant_1", requester: "operator" }) as { jobs: Array<{ jobId: string; alias: string }> };
+    assert.deepEqual(found.jobs, [{ jobId: "gmail_reply_send_v1", alias: "gmail_reply_send_v1" }]);
+    const loaded = await runtime.jobLoad!({ jobId: "gmail_reply_send_v1" }, { tenant: "tenant_1", requester: "operator" }) as { jobRef: string };
+    assert.equal(loaded.jobRef, "gmail_reply_send_v1");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("local authority runtime refuses a malformed signed deployment instead of silently using an empty authority state", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-local-deployment-"));
+  try {
+    const deploymentPath = path.join(root, "deployment.json");
+    await (await import("node:fs/promises")).writeFile(deploymentPath, JSON.stringify({ v: "reelier.authority-deployment/v1", tenant: "tenant_1", state: { tenant: "tenant_1", definitionAlias: "gmail_reply_send_v1", stateVersion: 1, candidates: [] }, connectors: "not-an-array", trust: [], sourceDirectory: "sources" }));
+    await assert.rejects(() => createLocalAuthorityRuntime({ version: 1, tenant: "tenant_1", requester: "operator", definitions: ["gmail_reply_send_v1"], ledgerDir: path.join(root, "ledger"), decisionDir: path.join(root, "decisions"), receiptDir: path.join(root, "receipts"), endpoints: [], deploymentPath } as never), /deployment connectors|trust roots|unknown or missing field/i);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("managed local authority refuses a non-exclusive topology", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-managed-topology-"));
+  try {
+    await assert.rejects(() => createLocalAuthorityRuntime({ version: 1, tenant: "tenant_1", requester: "operator", definitions: ["gmail_reply_send_v1"], topology: "same-user", ledgerDir: path.join(root, "ledger"), decisionDir: path.join(root, "decisions"), receiptDir: path.join(root, "receipts"), endpoints: [], cloud: { baseUrl: "https://cloud.example", tokenRef: "cloud-token" } }), /managed authority requires isolated topology/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("managed local authority refuses isolated declarations without host topology evidence", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-managed-topology-evidence-"));
+  try {
+    await assert.rejects(() => createLocalAuthorityRuntime({ version: 1, tenant: "tenant_1", requester: "operator", definitions: ["gmail_reply_send_v1"], topology: "isolated", ledgerDir: path.join(root, "ledger"), decisionDir: path.join(root, "decisions"), receiptDir: path.join(root, "receipts"), endpoints: [], cloud: { baseUrl: "https://cloud.example", tokenRef: "cloud-token" } }), /topology evidence/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("managed local authority accepts only complete verified topology evidence", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-managed-topology-verified-"));
+  try {
+    const keys = generateKeyPairSync("ed25519");
+    const observedAt = new Date();
+    const probe = createTopologyProbe({ probeId: "local-test", checks: Object.fromEntries(["credentialIsolation", "providerEgress", "rawWriteReachability", "readCoverage", "runtimeIdentity", "declaredSurfaceEnforcement"].map(field => [field, async () => "verified" as const])) as never });
+    const result = await runTopologyProbe(probe, { tenant: "tenant_1", observedAt: observedAt.toISOString(), expiresAt: new Date(observedAt.getTime() + 60_000).toISOString() });
+    const signed = signTopologyEvidence(result, { signerId: "topology-signer", privateKey: keys.privateKey });
+    const lease = signAuthorityLease({ tenant: "tenant_1", kernel: "kernel_1", taskId: "task_1", definitionAlias: "gmail_reply_send_v1", stateVersion: 1, stateDigest: "sha256:" + "1".repeat(64), jobCardDigest: "sha256:" + "2".repeat(64), rootGrantDigest: "sha256:" + "3".repeat(64), topologyEvidenceDigest: signed.digest, issuedAt: observedAt.toISOString(), expiresAt: new Date(observedAt.getTime() + 60_000).toISOString(), nonce: "nonce_1", signerId: "topology-signer", privateKey: keys.privateKey });
+    const runtime = await createLocalAuthorityRuntime({ version: 1, tenant: "tenant_1", requester: "operator", definitions: ["gmail_reply_send_v1"], topology: "isolated", ledgerDir: path.join(root, "ledger"), decisionDir: path.join(root, "decisions"), receiptDir: path.join(root, "receipts"), endpoints: [], cloud: { baseUrl: "https://cloud.example", tokenRef: "cloud-token" } }, { signedTopologyEvidence: signed, topologySigner: { signerId: "topology-signer", publicKey: keys.publicKey }, signedLease: lease, leaseSigner: { signerId: "topology-signer", publicKey: keys.publicKey } });
+    assert.equal(typeof runtime.status, "function");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("managed local authority rejects declaration-only topology evidence", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-managed-topology-declaration-only-"));
+  try {
+    const evidence = { v: "reelier.topology-evidence/v1" as const, credentialIsolation: "verified" as const, providerEgress: "verified" as const, rawWriteReachability: "verified" as const, readCoverage: "verified" as const, runtimeIdentity: "verified" as const, declaredSurfaceEnforcement: "verified" as const };
+    await assert.rejects(() => createLocalAuthorityRuntime({ version: 1, tenant: "tenant_1", requester: "operator", definitions: [], topology: "isolated", ledgerDir: path.join(root, "ledger"), decisionDir: path.join(root, "decisions"), receiptDir: path.join(root, "receipts"), endpoints: [], cloud: { baseUrl: "https://cloud.example", tokenRef: "cloud-token" } }, { topologyEvidence: evidence }), /signed topology evidence/i);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("local runtime creates a root task only for the authenticated sponsor", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-local-task-create-"));
+  try {
+    const keys = generateKeyPairSync("ed25519");
+    const gateKeyFile = path.join(root, "gate.pem");
+    const gateSigner = await loadOrCreateLocalGateSigner(gateKeyFile);
+    const delegation = createDelegationAuthority({ root: path.join(root, "delegations"), now: () => new Date("2026-01-01T00:00:30.000Z"), signGrant: async value => ({ grant: value, digest: authorityDigest(value), signerId: "authority-cell", signature: signAuthorityDigest(keys.privateKey, "delegation-grant", authorityDigest(value)) }) });
+    const runtime = await createLocalAuthorityRuntime({ version: 1, tenant: "tenant_1", requester: "operator", definitions: [], gateKeyFile, ledgerDir: path.join(root, "ledger"), decisionDir: path.join(root, "decisions"), receiptDir: path.join(root, "receipts"), endpoints: [] }, { delegation });
+    const grant: DelegationGrant = { v: "reelier.delegation-grant/v1", tenant: "tenant_1", grantId: "root", parentDigest: null, sponsor: "operator", grantor: "operator", grantee: "coordinator", issuedAt: "2026-01-01T00:00:00.000Z", expiresAt: "2027-01-01T00:00:00.000Z", constraints: { definitionAliases: ["gmail_reply_send_v1"], audiences: ["coordinator"], connectorAccounts: [{ connectorId: "gmail", accountId: "acct_1" }], projectionPointers: ["/thread"], riskClasses: ["communication"], limits: { maxEffectsPerWindow: 10, windowSeconds: 3600, maxEffectsPerSourceTrigger: 1, maxBodyBytes: 4096 } }, delegationPolicy: { mayDelegate: true, maxDepth: 1, maxFanOut: 1, maxChildDurationSeconds: 60, maxDelegatedEffects: 1 } };
+    const signed = { grant, digest: authorityDigest(grant), signerId: "local-gate", signature: signAuthorityDigest(gateSigner.privateKey, "delegation-grant", authorityDigest(grant)) };
+    const created = await runtime.taskCreate!({ taskId: "task_1", rootGrant: signed, effects: 1 }, { tenant: "tenant_1", requester: "operator" });
+    assert.deepEqual(created, { taskId: "task_1", verdict: "accepted", reasonCode: "task-created", lifecycleState: "active" });
+    const child: DelegationGrant = { ...grant, grantId: "child_test", parentDigest: signed.digest, grantor: "coordinator", grantee: "codex_test_agent", issuedAt: "2026-01-01T00:00:30.000Z", expiresAt: "2026-01-01T00:01:00.000Z", delegationPolicy: undefined };
+    const executionContext = { v: "reelier.authority-execution-context/v1" as const, taskId: "task_1", principalId: "coordinator", grantId: "root", grantDigest: signed.digest, allocationId: "root", runtimeSessionId: "session_coordinator", jobId: "job_1", authorityCellId: "cell_1" };
+    const delegated = await runtime.delegationRequest!({ child, effects: 0 }, { tenant: "tenant_1", requester: "coordinator", executionContext });
+    assert.equal((delegated as { verdict: string }).verdict, "accepted");
+    const spoofed = await runtime.delegationRequest!({ taskId: "task_attacker", parentAllocationId: "attacker", child: { ...child, grantId: "child_spoof" }, effects: 0 }, { tenant: "tenant_1", requester: "coordinator", executionContext });
+    assert.equal((spoofed as { verdict: string }).verdict, "refused");
+    assert.match((spoofed as { reasonCode: string }).reasonCode, /identity|unknown/i);
+    const refused = await runtime.taskCreate!({ taskId: "task_2", rootGrant: { ...signed, grant: { ...grant, sponsor: "attacker" } }, effects: 1 }, { tenant: "tenant_1", requester: "operator" });
+    assert.equal((refused as { verdict: string }).verdict, "refused");
+    const forged = await runtime.taskCreate!({ taskId: "task_3", rootGrant: signed, effects: 1 }, { tenant: "tenant_1", requester: "operator" });
+    assert.equal((forged as { verdict: string }).verdict, "refused");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

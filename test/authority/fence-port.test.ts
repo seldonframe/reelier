@@ -1,7 +1,7 @@
 // Pins the K1 fence port derivation that `bindable-root.ts` mirrors.
 //
 // `bindable-root.ts` reproduces a module-private derivation so suites can select temp roots the
-// host will actually let the fence bind (see that file's header for why the host defect exists).
+// host will let the PRIMARY fence bind (see that file's header for why primary selection remains).
 // A silent divergence between the mirror and `src/` would not fail anything — it would quietly stop
 // selecting and bring back a rotating, nondeterministic failing set, which is the exact failure
 // this whole exercise was spent diagnosing. These pins make that divergence loud.
@@ -101,4 +101,91 @@ test("selection actually discriminates — an unselected root can be unbindable,
   }
   // And a certainly-free port reads as bindable.
   assert.equal(await fencePortIsBindable(0), true, "port 0 is always bindable");
+});
+
+test("an unrelated listener on the primary fence port cannot disable a fresh ledger root", async () => {
+  const { createServer } = await import("node:net");
+  const root = await bindableTempRoot("reelier-fence-foreign-");
+  const port = fencePortForRoot(root);
+  const foreign = createServer(socket => socket.end("foreign-service\n"));
+  await new Promise<void>((resolve, reject) => {
+    foreign.once("error", reject);
+    foreign.listen({ host: "127.0.0.1", port, exclusive: true, reusePort: false }, resolve);
+  });
+  try {
+    const result = await new FsAuthorityLedger(root, { now: () => 1, lockTimeoutMs: 1_000 }).observeClock();
+    assert.deepEqual(result, { ok: true, status: "advanced", observedAt: "1970-01-01T00:00:00.001Z" });
+  } finally {
+    await new Promise<void>(resolve => foreign.close(() => resolve()));
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a fence identity response completes without resetting its probing client", async () => {
+  const { createConnection, createServer } = await import("node:net");
+  const hostModule = await import("../../src/authority/host/fs-ledger.js") as unknown as {
+    __testServeK1OperationFenceIdentity?: (socket: import("node:net").Socket, materialDigest: string) => void;
+  };
+  const serve = hostModule.__testServeK1OperationFenceIdentity;
+  assert.equal(typeof serve, "function", "the host-private identity responder is available to exercise its socket lifecycle");
+  const materialDigest = `sha256:${"1".repeat(64)}`;
+  const server = createServer(socket => serve!(socket, materialDigest));
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen({ host: "127.0.0.1", port: 0, exclusive: true }, resolve);
+  });
+  try {
+    const address = server.address();
+    assert.ok(address !== null && typeof address !== "string", "the test server reports its ephemeral port");
+    const observed = await new Promise<{ text: string; error: NodeJS.ErrnoException | null }>(resolve => {
+      let text = "";
+      const client = createConnection({ host: "127.0.0.1", port: address.port });
+      client.setEncoding("utf8");
+      client.on("data", chunk => { text += chunk; });
+      client.once("error", error => resolve({ text, error }));
+      client.once("end", () => resolve({ text, error: null }));
+    });
+    assert.equal(observed.text, `reelier-k1-operation-fence/v1 ${materialDigest}\n`);
+    assert.equal(observed.error, null, "a complete identity response ends cleanly instead of reporting ECONNRESET");
+  } finally {
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+});
+
+test("a fence identity server reclaims a half-open client after delivering data and EOF", { timeout: 2_000 }, async () => {
+  const { createConnection, createServer } = await import("node:net");
+  const hostModule = await import("../../src/authority/host/fs-ledger.js") as unknown as {
+    __testServeK1OperationFenceIdentity?: (socket: import("node:net").Socket, materialDigest: string) => void;
+  };
+  const serve = hostModule.__testServeK1OperationFenceIdentity;
+  assert.equal(typeof serve, "function");
+  const materialDigest = `sha256:${"2".repeat(64)}`;
+  let reclaimServerSocket!:()=>void;
+  const serverSocketReclaimed=new Promise<void>(resolve=>{reclaimServerSocket=resolve;});
+  const server = createServer({ allowHalfOpen: true }, socket => { socket.once("close",reclaimServerSocket);serve!(socket, materialDigest); });
+  let client:import("node:net").Socket|undefined;
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen({ host: "127.0.0.1", port: 0, exclusive: true }, resolve);
+  });
+  try {
+    const address = server.address();
+    assert.ok(address !== null && typeof address !== "string");
+    const observed = await new Promise<{ text: string; writableEndedAtEof: boolean }>((resolve, reject) => {
+      let text = "";
+      client = createConnection({ host: "127.0.0.1", port: address.port, allowHalfOpen: true });
+      client.setEncoding("utf8");
+      client.on("data", chunk => { text += chunk; });
+      client.once("end", () => resolve({ text, writableEndedAtEof:client!.writableEnded }));
+      client.once("error", reject);
+    });
+    assert.deepEqual(observed,{text:`reelier-k1-operation-fence/v1 ${materialDigest}\n`,writableEndedAtEof:false});
+    const reclaimed=await new Promise<boolean>(resolve=>{const watchdog=setTimeout(()=>resolve(false),1_000);watchdog.unref();void serverSocketReclaimed.then(()=>{clearTimeout(watchdog);resolve(true);});});
+    assert.equal(reclaimed,true,"the server socket closes within the responder's bounded reclamation window");
+    const openConnections=await new Promise<number>((resolve,reject)=>server.getConnections((error,count)=>error?reject(error):resolve(count)));
+    assert.equal(openConnections,0,"the server reclaims the client even though its write side remains open");
+  } finally {
+    client?.destroy();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
 });

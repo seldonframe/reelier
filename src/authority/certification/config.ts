@@ -1,0 +1,422 @@
+import canonicalize from "canonicalize";
+import path from "node:path";
+import { inertArray, inertRecord } from "./inert.js";
+import {
+  CERTIFICATION_SCENARIOS,
+  CERTIFICATION_SCENARIO_IDS,
+  type CertificationCleanupCommitment,
+  type CertificationMetadataSection,
+  type CertificationResourceSection,
+  type CertificationScenarioId,
+  type CertificationSecretSlot,
+} from "./scenarios.js";
+
+const ID = /^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/;
+const DIGEST = /^sha256:[0-9a-f]{64}$/;
+const DNS = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
+const SEMVER = /^\d+\.\d+\.\d+$/;
+const SCENARIO_SET = new Set<string>(CERTIFICATION_SCENARIO_IDS);
+
+export const CERTIFICATION_SECRET_SLOTS = Object.freeze([
+  "cloudflareBootstrapCredential",
+  "cloudflareDnsCredential",
+  "flyApiCredential",
+  "githubCredential",
+  "neonApiCredential",
+  "neonDatabaseUrl",
+  "slackCredential",
+  "vercelCredential",
+] as const satisfies readonly CertificationSecretSlot[]);
+
+export const CODEX_CERTIFICATION_PROFILES = Object.freeze([
+  "code_implementer",
+  "communication",
+  "coordinator",
+  "database_migration",
+  "independent_verifier",
+  "infrastructure",
+  "release",
+  "secret_lifecycle",
+  "security_reviewer",
+  "test_agent",
+] as const);
+
+export interface GitHubIssueLabelsCertificationResourceV2 { readonly apiBaseUrl: string; readonly owner: string; readonly repository: string; readonly issueNumber: number }
+export interface CloudflareDnsCertificationResourceV2 { readonly apiBaseUrl: string; readonly accountId: string; readonly zoneId: string; readonly recordId: string; readonly recordName: string }
+export interface SlackTopicCertificationResourceV2 { readonly apiBaseUrl: string; readonly teamId: string; readonly channelId: string }
+export interface CloudflareVercelSecretCertificationResourceV2 { readonly cloudflareApiBaseUrl: string; readonly cloudflareAccountId: string; readonly tokenName: string; readonly vercelApiBaseUrl: string; readonly vercelAccountId: string; readonly projectId: string }
+export interface VercelPromotionCertificationResourceV2 { readonly apiBaseUrl: string; readonly accountId: string; readonly projectId: string; readonly deploymentId: string; readonly domains: readonly string[] }
+export interface NeonMigrationCertificationResourceV2 { readonly apiBaseUrl: string; readonly accountId: string; readonly projectId: string; readonly branchId: string; readonly database: string; readonly role: string }
+
+export type CertificationResourceV2 =
+  | GitHubIssueLabelsCertificationResourceV2
+  | CloudflareDnsCertificationResourceV2
+  | SlackTopicCertificationResourceV2
+  | CloudflareVercelSecretCertificationResourceV2
+  | VercelPromotionCertificationResourceV2
+  | NeonMigrationCertificationResourceV2;
+
+export interface FlyTopologyCertificationMetadataV2 {
+  readonly appName: string;
+  readonly authorityMachineId: string;
+  readonly agentAppName: string;
+  readonly agentMachineId: string;
+  readonly egressAppName: string;
+  readonly egressMachineId: string;
+  readonly orgSlug: string;
+  readonly region: string;
+  readonly flyctlPath: string;
+  readonly flyctlVersion: string;
+  readonly egressProxyBaseUrl: string;
+  readonly authorityImageDigest: string;
+  readonly agentImageDigest: string;
+  readonly gatewayImageDigest: string;
+  readonly networkPolicyDigest: string;
+  readonly schemaDigest: string;
+}
+
+export interface CodexTenPrincipalCertificationMetadataV2 {
+  readonly binaryPath: string;
+  readonly version: string;
+  readonly authorityEndpoint: string;
+  readonly codexHomePath: string;
+  readonly workspacePath: string;
+  readonly sessionDirectory: string;
+  readonly profiles: readonly typeof CODEX_CERTIFICATION_PROFILES[number][];
+}
+
+export interface CertificationOperatorConfigV2 {
+  readonly v: "reelier.certification-operator-config/v2";
+  readonly authorityConfigPath: string;
+  readonly evidenceDirectory: string;
+  readonly scenarios: readonly CertificationScenarioId[];
+  readonly resources: Readonly<Record<string, CertificationResourceV2>>;
+  readonly cleanup: Readonly<Record<string, readonly string[]>>;
+  readonly metadata: Readonly<Partial<{
+    flyTopology: FlyTopologyCertificationMetadataV2;
+    codexTenPrincipal: CodexTenPrincipalCertificationMetadataV2;
+  }>>;
+  readonly secretReferences: Readonly<Partial<Record<CertificationSecretSlot | "cloudflareCredential", string>>>;
+}
+
+export interface CertificationOperatorConfigV3 extends Omit<CertificationOperatorConfigV2, "v" | "secretReferences"> {
+  readonly v: "reelier.certification-operator-config/v3";
+  readonly desiredState: Readonly<Partial<Record<CertificationScenarioId, Readonly<Record<string, unknown>>>>>;
+  readonly secretReferences: Readonly<Partial<Record<CertificationSecretSlot, string>>>;
+}
+
+export function parseCertificationOperatorConfigV2(value: unknown): CertificationOperatorConfigV2 {
+  const root = object(value, "certification operator config v2");
+  closed(root, ["v", "authorityConfigPath", "evidenceDirectory", "scenarios", "resources", "cleanup", "metadata", "secretReferences"], "certification operator config v2");
+  if (root.v !== "reelier.certification-operator-config/v2") throw new TypeError("certification operator config v2 version is invalid");
+  const scenarios = scenarioList(root.scenarios);
+  const requirements = requirementsForV2(scenarios);
+  const resourcesRaw = exactSectionObject(root.resources, requirements.resources, "certification resources");
+  const cleanupRaw = exactSectionObject(root.cleanup, requirements.cleanup, "certification cleanup");
+  const metadataRaw = exactSectionObject(root.metadata, requirements.metadata, "certification metadata");
+  const secretsRaw = exactSectionObject(root.secretReferences, requirements.secrets, "certification secret references");
+
+  const resources: Record<string, CertificationResourceV2> = {};
+  for (const section of requirements.resources) resources[section] = parseResource(section, resourcesRaw[section]);
+  const cleanup: Record<string, readonly string[]> = {};
+  for (const section of requirements.cleanup) cleanup[section] = uniqueSortedIds(cleanupRaw[section], `${section} cleanup commitments`);
+  const metadata: Record<string, FlyTopologyCertificationMetadataV2 | CodexTenPrincipalCertificationMetadataV2> = {};
+  for (const section of requirements.metadata) metadata[section] = section === "flyTopology" ? flyTopology(metadataRaw[section]) : codexTenPrincipal(metadataRaw[section]);
+  const secretReferences: Partial<Record<CertificationSecretSlot | "cloudflareCredential", string>> = {};
+  for (const slot of requirements.secrets) secretReferences[slot] = secretRef(secretsRaw[slot], slot);
+  assertSharedScope(resources, metadata);
+
+  return Object.freeze({
+    v: "reelier.certification-operator-config/v2" as const,
+    authorityConfigPath: safePath(root.authorityConfigPath, "authorityConfigPath"),
+    evidenceDirectory: safePath(root.evidenceDirectory, "evidenceDirectory"),
+    scenarios,
+    resources: Object.freeze(resources),
+    cleanup: Object.freeze(cleanup),
+    metadata: Object.freeze(metadata),
+    secretReferences: Object.freeze(secretReferences),
+  });
+}
+
+export function parseCertificationOperatorConfigV3(value: unknown): CertificationOperatorConfigV3 {
+  const root = object(value, "certification operator config v3");
+  closed(root, ["v", "authorityConfigPath", "evidenceDirectory", "scenarios", "resources", "cleanup", "metadata", "desiredState", "secretReferences"], "certification operator config v3");
+  if (root.v !== "reelier.certification-operator-config/v3") throw new TypeError("certification operator config v3 version is invalid");
+  const scenarios = scenarioList(root.scenarios);
+  const requirements = requirementsFor(scenarios);
+  const resourcesRaw = exactSectionObject(root.resources, requirements.resources, "certification resources");
+  const cleanupRaw = exactSectionObject(root.cleanup, requirements.cleanup, "certification cleanup");
+  const metadataRaw = exactSectionObject(root.metadata, requirements.metadata, "certification metadata");
+  const secretsRaw = exactSectionObject(root.secretReferences, requirements.secrets, "certification secret references");
+  const desiredRaw = object(root.desiredState, "certification desired state");
+  if (Object.keys(desiredRaw).some(key => !scenarios.includes(key as CertificationScenarioId))) throw new TypeError("certification desired state is selected-scenario-only");
+  const resources: Record<string, CertificationResourceV2> = {};
+  for (const section of requirements.resources) resources[section] = parseResource(section, resourcesRaw[section]);
+  const cleanup: Record<string, readonly string[]> = {};
+  for (const section of requirements.cleanup) cleanup[section] = uniqueSortedIds(cleanupRaw[section], `${section} cleanup commitments`);
+  const metadata: Record<string, FlyTopologyCertificationMetadataV2 | CodexTenPrincipalCertificationMetadataV2> = {};
+  for (const section of requirements.metadata) metadata[section] = section === "flyTopology" ? flyTopology(metadataRaw[section]) : codexTenPrincipal(metadataRaw[section]);
+  const secretReferences: Partial<Record<CertificationSecretSlot, string>> = {};
+  for (const slot of requirements.secrets) secretReferences[slot] = secretRef(secretsRaw[slot], slot);
+  const desiredState: Partial<Record<CertificationScenarioId, Readonly<Record<string, unknown>>>> = {};
+  for (const scenario of scenarios) if (Object.hasOwn(desiredRaw, scenario)) desiredState[scenario] = parseDesiredState(scenario, desiredRaw[scenario]);
+  assertSharedScope(resources, metadata);
+  return Object.freeze({ v: "reelier.certification-operator-config/v3", authorityConfigPath: safePath(root.authorityConfigPath, "authorityConfigPath"), evidenceDirectory: safePath(root.evidenceDirectory, "evidenceDirectory"), scenarios, resources: Object.freeze(resources), cleanup: Object.freeze(cleanup), metadata: Object.freeze(metadata), desiredState: Object.freeze(desiredState), secretReferences: Object.freeze(secretReferences) });
+}
+
+export function canonicalizeCertificationOperatorConfigV3(value: unknown): string {
+  const canonical = canonicalize(parseCertificationOperatorConfigV3(value));
+  if (canonical === undefined) throw new TypeError("certification operator config v3 is not canonicalizable");
+  return canonical;
+}
+
+export function canonicalizeCertificationOperatorConfigV2(value: unknown): string {
+  const canonical = canonicalize(parseCertificationOperatorConfigV2(value));
+  if (canonical === undefined) throw new TypeError("certification operator config v2 is not canonicalizable");
+  return canonical;
+}
+
+export function migrateCertificationOperatorConfig(value: unknown): CertificationOperatorConfigV3 {
+  const root = object(value, "certification operator config");
+  if (root.v === "reelier.certification-operator-config/v3") return parseCertificationOperatorConfigV3(root);
+  if (root.v === "reelier.certification-operator-config/v2") {
+    const legacy = parseCertificationOperatorConfigV2(root);
+    const { cloudflareCredential, ...references } = legacy.secretReferences;
+    const selected = new Set(legacy.scenarios);
+    return parseCertificationOperatorConfigV3({ ...legacy, v: "reelier.certification-operator-config/v3", desiredState: {}, secretReferences: {
+      ...references,
+      ...(selected.has("cloudflare-vercel-secret") ? { cloudflareBootstrapCredential: cloudflareCredential } : {}),
+      ...(selected.has("cloudflare-dns") ? { cloudflareDnsCredential: cloudflareCredential } : {}),
+    } });
+  }
+  if (root.v !== "reelier.certification-operator-config/v1") throw new TypeError("certification operator config migration requires v1 or v2");
+  const legacy = legacyV1(root);
+  const scenarios = [...CERTIFICATION_SCENARIO_IDS];
+  return migrateCertificationOperatorConfig({
+    v: "reelier.certification-operator-config/v2",
+    authorityConfigPath: legacy.authorityConfigPath,
+    evidenceDirectory: legacy.evidenceDirectory,
+    scenarios,
+    resources: {
+      "cloudflare-dns": { apiBaseUrl: legacy.cloudflare.apiBaseUrl, accountId: legacy.cloudflare.accountId, zoneId: legacy.cloudflare.zoneId, recordId: legacy.cloudflare.recordId, recordName: legacy.cloudflare.recordName },
+      "cloudflare-vercel-secret": { cloudflareApiBaseUrl: legacy.cloudflare.apiBaseUrl, cloudflareAccountId: legacy.cloudflare.accountId, tokenName: legacy.cloudflare.tokenName, vercelApiBaseUrl: legacy.vercel.apiBaseUrl, vercelAccountId: legacy.vercel.accountId, projectId: legacy.vercel.projectId },
+      "github-issue-labels": { apiBaseUrl: legacy.github.apiBaseUrl, owner: legacy.github.accountId, repository: legacy.github.repository, issueNumber: legacy.github.issueNumber },
+      "neon-migration": { apiBaseUrl: legacy.neon.apiBaseUrl, accountId: legacy.neon.accountId, projectId: legacy.neon.projectId, branchId: legacy.neon.branchId, database: legacy.neon.database, role: legacy.neon.role },
+      "slack-topic": { apiBaseUrl: legacy.slack.apiBaseUrl, teamId: legacy.slack.accountId, channelId: legacy.slack.channelId },
+      "vercel-promotion": { apiBaseUrl: legacy.vercel.apiBaseUrl, accountId: legacy.vercel.accountId, projectId: legacy.vercel.projectId, deploymentId: legacy.vercel.deploymentId, domains: legacy.vercel.domains },
+    },
+    cleanup: {
+      "cloudflare-dns": [legacy.cloudflare.cleanupRef],
+      "cloudflare-vercel-secret": [legacy.cloudflare.cleanupRef, legacy.vercel.cleanupRef].sort(),
+      "github-issue-labels": [legacy.github.cleanupRef],
+      "neon-migration": [legacy.neon.cleanupRef],
+      "slack-topic": [legacy.slack.cleanupRef],
+      "vercel-promotion": [legacy.vercel.cleanupRef],
+    },
+    metadata: {
+      codexTenPrincipal: { binaryPath: legacy.codex.binaryPath, version: legacy.codex.version, authorityEndpoint: legacy.codex.authorityEndpoint, codexHomePath: legacy.codex.codexHomePath, workspacePath: legacy.codex.workspacePath, sessionDirectory: legacy.codex.sessionCredentialDirectory, profiles: [...CODEX_CERTIFICATION_PROFILES] },
+      flyTopology: { appName: legacy.fly.appName, authorityMachineId: legacy.fly.authorityMachineId, agentAppName: legacy.fly.agentAppName, agentMachineId: legacy.fly.agentMachineId, egressAppName: legacy.fly.egressAppName, egressMachineId: legacy.fly.egressMachineId, orgSlug: legacy.fly.orgSlug, region: legacy.fly.region, flyctlPath: legacy.fly.flyctlPath, flyctlVersion: legacy.fly.flyctlVersion, egressProxyBaseUrl: legacy.fly.egressProxyBaseUrl, authorityImageDigest: legacy.fly.authorityImageDigest, agentImageDigest: legacy.fly.agentImageDigest, gatewayImageDigest: legacy.fly.gatewayImageDigest, networkPolicyDigest: legacy.fly.networkPolicyDigest, schemaDigest: legacy.fly.schemaDigest },
+    },
+    secretReferences: {
+      cloudflareCredential: legacy.cloudflare.credentialRef,
+      flyApiCredential: legacy.fly.apiCredentialRef,
+      githubCredential: legacy.github.credentialRef,
+      neonApiCredential: legacy.neon.credentialRef,
+      neonDatabaseUrl: legacy.neon.databaseUrlRef,
+      slackCredential: legacy.slack.credentialRef,
+      vercelCredential: legacy.vercel.credentialRef,
+    },
+  });
+}
+
+function requirementsForV2(scenarios: readonly CertificationScenarioId[]): ReturnType<typeof requirementsFor> {
+  const current = requirementsFor(scenarios);
+  return Object.freeze({ ...current, secrets: Object.freeze([...new Set(current.secrets.map(slot => slot === "cloudflareDnsCredential" || slot === "cloudflareBootstrapCredential" ? "cloudflareCredential" : slot))].sort()) as readonly CertificationSecretSlot[] });
+}
+
+function requirementsFor(scenarios: readonly CertificationScenarioId[]): Readonly<{
+  resources: readonly CertificationResourceSection[];
+  cleanup: readonly CertificationCleanupCommitment[];
+  metadata: readonly CertificationMetadataSection[];
+  secrets: readonly CertificationSecretSlot[];
+}> {
+  const collect = <T extends string>(select: (definition: typeof CERTIFICATION_SCENARIOS[CertificationScenarioId]) => readonly T[]): readonly T[] =>
+    Object.freeze([...new Set(scenarios.flatMap(scenario => select(CERTIFICATION_SCENARIOS[scenario])))].sort());
+  return Object.freeze({
+    resources: collect(definition => definition.resourceSections),
+    cleanup: collect(definition => definition.cleanupCommitments),
+    metadata: collect(definition => definition.metadataSections),
+    secrets: collect(definition => definition.secretSlots),
+  });
+}
+
+function scenarioList(value: unknown): readonly CertificationScenarioId[] {
+  const list = inertArray(value, "certification scenarios");
+  if (list.length === 0 || list.length > CERTIFICATION_SCENARIO_IDS.length) throw new TypeError("certification scenarios are invalid");
+  if (list.some(item => typeof item !== "string" || !SCENARIO_SET.has(item))) throw new TypeError("certification scenario is unknown");
+  const scenarios = list as CertificationScenarioId[];
+  if (new Set(scenarios).size !== scenarios.length) throw new TypeError("certification scenarios must be unique");
+  if (scenarios.some((item, index) => index > 0 && scenarios[index - 1] >= item)) throw new TypeError("certification scenarios must be sorted");
+  return Object.freeze([...scenarios]);
+}
+
+function parseResource(section: CertificationResourceSection, value: unknown): CertificationResourceV2 {
+  const raw = object(value, `${section} resource`);
+  switch (section) {
+    case "github-issue-labels": {
+      closed(raw, ["apiBaseUrl", "owner", "repository", "issueNumber"], `${section} resource`);
+      if (!Number.isSafeInteger(raw.issueNumber) || (raw.issueNumber as number) < 1) throw new TypeError("github issue number is invalid");
+      return Object.freeze({ apiBaseUrl: providerUrl(raw.apiBaseUrl, "https://api.github.com", "github apiBaseUrl"), owner: id(raw.owner, "github owner"), repository: id(raw.repository, "github repository"), issueNumber: raw.issueNumber as number });
+    }
+    case "cloudflare-dns":
+      closed(raw, ["apiBaseUrl", "accountId", "zoneId", "recordId", "recordName"], `${section} resource`);
+      return Object.freeze({ apiBaseUrl: providerUrl(raw.apiBaseUrl, "https://api.cloudflare.com", "cloudflare apiBaseUrl"), accountId: id(raw.accountId, "cloudflare accountId"), zoneId: id(raw.zoneId, "cloudflare zoneId"), recordId: id(raw.recordId, "cloudflare recordId"), recordName: dns(raw.recordName, "cloudflare recordName") });
+    case "slack-topic":
+      closed(raw, ["apiBaseUrl", "teamId", "channelId"], `${section} resource`);
+      return Object.freeze({ apiBaseUrl: providerUrl(raw.apiBaseUrl, "https://slack.com", "slack apiBaseUrl"), teamId: id(raw.teamId, "slack teamId"), channelId: id(raw.channelId, "slack channelId") });
+    case "cloudflare-vercel-secret":
+      closed(raw, ["cloudflareApiBaseUrl", "cloudflareAccountId", "tokenName", "vercelApiBaseUrl", "vercelAccountId", "projectId"], `${section} resource`);
+      return Object.freeze({ cloudflareApiBaseUrl: providerUrl(raw.cloudflareApiBaseUrl, "https://api.cloudflare.com", "cloudflare apiBaseUrl"), cloudflareAccountId: id(raw.cloudflareAccountId, "cloudflare accountId"), tokenName: id(raw.tokenName, "cloudflare tokenName"), vercelApiBaseUrl: providerUrl(raw.vercelApiBaseUrl, "https://api.vercel.com", "vercel apiBaseUrl"), vercelAccountId: id(raw.vercelAccountId, "vercel accountId"), projectId: id(raw.projectId, "vercel projectId") });
+    case "vercel-promotion":
+      closed(raw, ["apiBaseUrl", "accountId", "projectId", "deploymentId", "domains"], `${section} resource`);
+      return Object.freeze({ apiBaseUrl: providerUrl(raw.apiBaseUrl, "https://api.vercel.com", "vercel apiBaseUrl"), accountId: id(raw.accountId, "vercel accountId"), projectId: id(raw.projectId, "vercel projectId"), deploymentId: id(raw.deploymentId, "vercel deploymentId"), domains: dnsList(raw.domains, "vercel domains") });
+    case "neon-migration":
+      closed(raw, ["apiBaseUrl", "accountId", "projectId", "branchId", "database", "role"], `${section} resource`);
+      return Object.freeze({ apiBaseUrl: providerUrl(raw.apiBaseUrl, "https://console.neon.tech/api/v2", "neon apiBaseUrl"), accountId: id(raw.accountId, "neon accountId"), projectId: id(raw.projectId, "neon projectId"), branchId: id(raw.branchId, "neon branchId"), database: id(raw.database, "neon database"), role: id(raw.role, "neon role") });
+  }
+}
+
+function parseDesiredState(scenario: CertificationScenarioId, value: unknown): Readonly<Record<string, unknown>> {
+  const raw = object(value, `${scenario} desired state`);
+  switch (scenario) {
+    case "github-issue-labels":
+      closed(raw, ["labels"], `${scenario} desired state`);
+      return Object.freeze({ labels: uniqueSortedIds(raw.labels, "github desired labels") });
+    case "cloudflare-dns":
+      closed(raw, ["type", "content", "ttl", "proxied"], `${scenario} desired state`);
+      if (!["A", "AAAA", "CNAME", "TXT"].includes(String(raw.type)) || typeof raw.content !== "string" || raw.content.length < 1 || raw.content.length > 2048 || !Number.isSafeInteger(raw.ttl) || (raw.ttl as number) < 1 || typeof raw.proxied !== "boolean") throw new TypeError("cloudflare DNS desired state is invalid");
+      return Object.freeze({ type: raw.type, content: raw.content, ttl: raw.ttl, proxied: raw.proxied });
+    case "slack-topic":
+      closed(raw, ["topic"], `${scenario} desired state`);
+      if (typeof raw.topic !== "string" || raw.topic.length < 1 || raw.topic.length > 250) throw new TypeError("Slack desired topic is invalid");
+      return Object.freeze({ topic: raw.topic });
+    case "cloudflare-vercel-secret": {
+      closed(raw, ["cloudflare", "vercel"], `${scenario} desired state`);
+      const cloudflare = object(raw.cloudflare, "Cloudflare token desired state");
+      closed(cloudflare, ["permissionGroupIds", "resources", "notBefore", "expiresAt", "requestIpIn", "requestIpNotIn"], "Cloudflare token desired state");
+      const vercel = object(raw.vercel, "Vercel secret desired state");
+      closed(vercel, ["environment", "key"], "Vercel secret desired state");
+      if (!['production', 'preview'].includes(String(vercel.environment)) || typeof vercel.key !== "string" || !ID.test(vercel.key)) throw new TypeError("Vercel secret desired state is invalid");
+      const resources = object(cloudflare.resources, "Cloudflare token desired resources");
+      const normalizedResources: Record<string, string> = {};
+      for (const key of Object.keys(resources).sort()) { if (!ID.test(key) || typeof resources[key] !== "string" || !ID.test(resources[key])) throw new TypeError("Cloudflare token desired resources are invalid"); normalizedResources[key] = resources[key] as string; }
+      if (Object.keys(normalizedResources).length === 0 || Object.keys(normalizedResources).length > 16) throw new TypeError("Cloudflare token desired resources are invalid");
+      for (const key of ["notBefore", "expiresAt"] as const) if (typeof cloudflare[key] !== "string" || !Number.isFinite(Date.parse(cloudflare[key] as string))) throw new TypeError("Cloudflare token desired validity is invalid");
+      return Object.freeze({ cloudflare: Object.freeze({ permissionGroupIds: uniqueSortedIds(cloudflare.permissionGroupIds, "Cloudflare permission groups"), resources: Object.freeze(normalizedResources), notBefore: cloudflare.notBefore, expiresAt: cloudflare.expiresAt, requestIpIn: uniqueSortedStrings(cloudflare.requestIpIn, "Cloudflare request IP allowlist"), requestIpNotIn: uniqueSortedStrings(cloudflare.requestIpNotIn, "Cloudflare request IP denylist") }), vercel: Object.freeze({ environment: vercel.environment, key: vercel.key }) });
+    }
+    case "vercel-promotion":
+      closed(raw, ["deploymentId", "domains"], `${scenario} desired state`);
+      return Object.freeze({ deploymentId: id(raw.deploymentId, "Vercel desired deployment"), domains: dnsList(raw.domains, "Vercel desired domains") });
+    case "neon-migration":
+      closed(raw, ["migrationId", "sql", "expectedSchemaDigest"], `${scenario} desired state`);
+      if (typeof raw.sql !== "string" || raw.sql.length < 1 || raw.sql.length > 100_000 || typeof raw.expectedSchemaDigest !== "string" || !DIGEST.test(raw.expectedSchemaDigest)) throw new TypeError("Neon migration desired state is invalid");
+      return Object.freeze({ migrationId: id(raw.migrationId, "Neon migration id"), sql: raw.sql, expectedSchemaDigest: raw.expectedSchemaDigest });
+    default:
+      throw new TypeError("certification scenario has no provider desired state");
+  }
+}
+
+function flyTopology(value: unknown): FlyTopologyCertificationMetadataV2 {
+  const raw = object(value, "fly topology metadata");
+  closed(raw, ["appName", "authorityMachineId", "agentAppName", "agentMachineId", "egressAppName", "egressMachineId", "orgSlug", "region", "flyctlPath", "flyctlVersion", "egressProxyBaseUrl", "authorityImageDigest", "agentImageDigest", "gatewayImageDigest", "networkPolicyDigest", "schemaDigest"], "fly topology metadata");
+  const egressAppName = id(raw.egressAppName, "fly egressAppName");
+  const egressProxyBaseUrl = internalHttpOrigin(raw.egressProxyBaseUrl, "fly egressProxyBaseUrl");
+  const egressProxyUrl = new URL(egressProxyBaseUrl);
+  if (egressProxyUrl.hostname !== `${egressAppName}.internal`) throw new TypeError("fly egress proxy does not match egress app");
+  if (egressProxyUrl.port !== "8443") throw new TypeError("fly egress proxy must use port 8443");
+  if (typeof raw.flyctlVersion !== "string" || !SEMVER.test(raw.flyctlVersion)) throw new TypeError("fly flyctlVersion is invalid");
+  const appName = id(raw.appName, "fly appName");
+  const agentAppName = id(raw.agentAppName, "fly agentAppName");
+  const authorityMachineId = id(raw.authorityMachineId, "fly authorityMachineId");
+  const agentMachineId = id(raw.agentMachineId, "fly agentMachineId");
+  const egressMachineId = id(raw.egressMachineId, "fly egressMachineId");
+  if (new Set([appName, agentAppName, egressAppName]).size !== 3) throw new TypeError("Fly app identities must be unique");
+  if (new Set([authorityMachineId, agentMachineId, egressMachineId]).size !== 3) throw new TypeError("Fly machine identities must be unique");
+  return Object.freeze({ appName, authorityMachineId, agentAppName, agentMachineId, egressAppName, egressMachineId, orgSlug: id(raw.orgSlug, "fly orgSlug"), region: id(raw.region, "fly region"), flyctlPath: safePath(raw.flyctlPath, "flyctlPath"), flyctlVersion: raw.flyctlVersion, egressProxyBaseUrl, authorityImageDigest: digest(raw.authorityImageDigest, "fly authority image digest"), agentImageDigest: digest(raw.agentImageDigest, "fly agent image digest"), gatewayImageDigest: digest(raw.gatewayImageDigest, "fly gateway image digest"), networkPolicyDigest: digest(raw.networkPolicyDigest, "fly network policy digest"), schemaDigest: digest(raw.schemaDigest, "fly schema digest") });
+}
+
+function codexTenPrincipal(value: unknown): CodexTenPrincipalCertificationMetadataV2 {
+  const raw = object(value, "Codex ten-principal metadata");
+  closed(raw, ["binaryPath", "version", "authorityEndpoint", "codexHomePath", "workspacePath", "sessionDirectory", "profiles"], "Codex ten-principal metadata");
+  if (typeof raw.version !== "string" || !SEMVER.test(raw.version)) throw new TypeError("Codex version is invalid");
+  const workspacePath = safePath(raw.workspacePath, "Codex workspacePath");
+  const codexHomePath = safePath(raw.codexHomePath, "Codex codexHomePath");
+  const sessionDirectory = safePath(raw.sessionDirectory, "Codex sessionDirectory");
+  if (isWithin(path.resolve(workspacePath), path.resolve(codexHomePath)) || isWithin(path.resolve(workspacePath), path.resolve(sessionDirectory))) throw new TypeError("Codex home and session directory must be outside the workspace");
+  const profiles = exactStringList(raw.profiles, CODEX_CERTIFICATION_PROFILES, "Codex profiles");
+  return Object.freeze({ binaryPath: safePath(raw.binaryPath, "Codex binaryPath"), version: raw.version, authorityEndpoint: httpsUrl(raw.authorityEndpoint, "Codex authorityEndpoint"), codexHomePath, workspacePath, sessionDirectory, profiles });
+}
+
+function legacyV1(root: Record<string, unknown>): any {
+  closed(root, ["v", "authorityConfigPath", "evidenceDirectory", "providers", "fly", "codex"], "legacy certification operator config");
+  const providers = object(root.providers, "legacy certification providers");
+  for (const name of ["github", "vercel", "neon", "cloudflare", "hubspot", "slack"] as const) {
+    if (!Object.prototype.hasOwnProperty.call(providers, name)) throw new TypeError(`legacy ${name} provider is required`);
+  }
+  closed(providers, ["github", "vercel", "neon", "cloudflare", "hubspot", "slack"], "legacy certification providers");
+  const provider = (name: string, extras: readonly string[]): Record<string, unknown> => {
+    const raw = object(providers[name], `legacy ${name} provider`);
+    closed(raw, ["apiBaseUrl", "accountId", "credentialRef", "cleanupRef", ...extras], `legacy ${name} provider`);
+    httpsUrl(raw.apiBaseUrl, `${name} apiBaseUrl`); id(raw.accountId, `${name} accountId`); secretRef(raw.credentialRef, `${name} credential`); id(raw.cleanupRef, `${name} cleanupRef`);
+    return raw;
+  };
+  const github = provider("github", ["repository", "issueNumber"]); id(github.repository, "github repository"); if (!Number.isSafeInteger(github.issueNumber) || (github.issueNumber as number) < 1) throw new TypeError("legacy github issueNumber is invalid");
+  const vercel = provider("vercel", ["projectId", "deploymentId", "domains"]); id(vercel.projectId, "vercel projectId"); id(vercel.deploymentId, "vercel deploymentId"); dnsList(vercel.domains, "vercel domains");
+  const neon = provider("neon", ["projectId", "branchId", "database", "role", "databaseUrlRef"]); for (const key of ["projectId", "branchId", "database", "role"]) id(neon[key], `neon ${key}`); secretRef(neon.databaseUrlRef, "neon database URL");
+  const cloudflare = provider("cloudflare", ["zoneId", "recordId", "recordName", "tokenName"]); for (const key of ["zoneId", "recordId", "tokenName"]) id(cloudflare[key], `cloudflare ${key}`); dns(cloudflare.recordName, "cloudflare recordName");
+  const hubspot = provider("hubspot", ["ticketId", "contactId", "approvedProperties"]); for (const key of ["ticketId", "contactId"]) id(hubspot[key], `hubspot ${key}`); uniqueSortedIds(hubspot.approvedProperties, "hubspot approvedProperties");
+  const slack = provider("slack", ["channelId"]); id(slack.channelId, "slack channelId");
+  const fly = object(root.fly, "legacy fly metadata");
+  closed(fly, ["appName", "authorityMachineId", "agentAppName", "agentMachineId", "egressAppName", "egressMachineId", "orgSlug", "region", "apiCredentialRef", "flyctlPath", "flyctlVersion", "egressProxyBaseUrl", "egressProxyBearerRef", "authorityImageDigest", "agentImageDigest", "gatewayImageDigest", "networkPolicyDigest", "schemaDigest"], "legacy fly metadata");
+  for (const key of ["appName", "authorityMachineId", "agentAppName", "agentMachineId", "egressAppName", "egressMachineId", "orgSlug", "region"]) id(fly[key], `fly ${key}`);
+  secretRef(fly.apiCredentialRef, "fly API credential"); secretRef(fly.egressProxyBearerRef, "legacy egress bearer"); safePath(fly.flyctlPath, "flyctlPath"); if (typeof fly.flyctlVersion !== "string" || !SEMVER.test(fly.flyctlVersion)) throw new TypeError("legacy flyctlVersion is invalid"); internalHttpOrigin(fly.egressProxyBaseUrl, "fly egressProxyBaseUrl"); for (const key of ["authorityImageDigest", "agentImageDigest", "gatewayImageDigest", "networkPolicyDigest", "schemaDigest"]) digest(fly[key], `fly ${key}`);
+  const codex = object(root.codex, "legacy Codex metadata");
+  closed(codex, ["binaryPath", "version", "authorityEndpoint", "taskId", "jobId", "authorityCellId", "codexHomePath", "workspacePath", "sessionCredentialDirectory"], "legacy Codex metadata");
+  if (typeof codex.version !== "string" || !SEMVER.test(codex.version)) throw new TypeError("legacy Codex version is invalid"); for (const key of ["taskId", "jobId", "authorityCellId"]) id(codex[key], `legacy Codex ${key}`); httpsUrl(codex.authorityEndpoint, "Codex authorityEndpoint"); for (const key of ["binaryPath", "codexHomePath", "workspacePath", "sessionCredentialDirectory"]) safePath(codex[key], `Codex ${key}`);
+  return { authorityConfigPath: safePath(root.authorityConfigPath, "authorityConfigPath"), evidenceDirectory: safePath(root.evidenceDirectory, "evidenceDirectory"), github, vercel, neon, cloudflare, slack, fly, codex };
+}
+
+function assertSharedScope(
+  resources: Readonly<Record<string, CertificationResourceV2>>,
+  metadata: Readonly<Record<string, FlyTopologyCertificationMetadataV2 | CodexTenPrincipalCertificationMetadataV2>>,
+): void {
+  const cloudflareDns = resources["cloudflare-dns"] as CloudflareDnsCertificationResourceV2 | undefined;
+  const secret = resources["cloudflare-vercel-secret"] as CloudflareVercelSecretCertificationResourceV2 | undefined;
+  const promotion = resources["vercel-promotion"] as VercelPromotionCertificationResourceV2 | undefined;
+  if (cloudflareDns && secret && cloudflareDns.accountId !== secret.cloudflareAccountId) throw new TypeError("Cloudflare account scope must match across selected scenarios");
+  if (promotion && secret && (promotion.accountId !== secret.vercelAccountId || promotion.projectId !== secret.projectId)) throw new TypeError("Vercel account and project scope must match across selected scenarios");
+  const fly = metadata.flyTopology as FlyTopologyCertificationMetadataV2 | undefined;
+  const codex = metadata.codexTenPrincipal as CodexTenPrincipalCertificationMetadataV2 | undefined;
+  if (fly && codex) {
+    const endpoint = new URL(codex.authorityEndpoint);
+    if (endpoint.origin !== `https://${fly.appName}.fly.dev` || endpoint.pathname !== "/mcp") throw new TypeError("Codex authority endpoint must match Fly authority app");
+  }
+}
+
+function object(value: unknown, label: string): Record<string, unknown> { return inertRecord(value, label); }
+function closed(raw: Record<string, unknown>, keys: readonly string[], label: string): void { if (Object.keys(raw).length !== keys.length || Object.keys(raw).some(key => !keys.includes(key))) throw new TypeError(`${label} is closed`); }
+function exactSectionObject<T extends string>(value: unknown, keys: readonly T[], label: string): Record<T, unknown> { const raw = object(value, label); closed(raw, keys, label); return raw as Record<T, unknown>; }
+function id(value: unknown, label: string): string { if (typeof value !== "string" || !ID.test(value)) throw new TypeError(`${label} is invalid`); return value; }
+function text(value: unknown, label: string, max = 2048): string { if (typeof value !== "string" || value.length === 0 || value.length > max || /[\0\r\n]/.test(value)) throw new TypeError(`${label} is invalid`); return value; }
+function safePath(value: unknown, label: string): string { const result = text(value, label, 1024); if (/^(?:https?:|file:)/i.test(result) || result.split(/[\\/]+/).includes("..")) throw new TypeError(`${label} is unsafe`); return result; }
+function secretRef(value: unknown, slot: string): string { if (typeof value !== "string" || /[\0\r\n]/.test(value)) throw new TypeError(`${slot} secret reference is invalid`); if (value.startsWith("env:")) { if (!/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(value.slice(4))) throw new TypeError(`${slot} secret reference is invalid`); } else if (value.startsWith("file:")) { const reference = value.slice(5); const segments = reference.split(/[\\/]+/); if (!reference || path.isAbsolute(reference) || reference.includes(":") || !/^[A-Za-z0-9._~\\/-]+$/.test(reference) || segments.some(segment => !segment || segment === "." || segment === "..")) throw new TypeError(`${slot} secret reference is invalid`); } else throw new TypeError(`${slot} secret reference is invalid`); return value; }
+function digest(value: unknown, label: string): string { if (typeof value !== "string" || !DIGEST.test(value)) throw new TypeError(`${label} is invalid`); return value; }
+function httpsUrl(value: unknown, label: string): string { const raw = text(value, label); let url: URL; try { url = new URL(raw); } catch { throw new TypeError(`${label} is invalid`); } if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash) throw new TypeError(`${label} must be a credential-free HTTPS URL`); return url.toString().replace(/\/$/, ""); }
+function providerUrl(value: unknown, expected: string, label: string): string { const parsed = httpsUrl(value, label); if (parsed !== expected) throw new TypeError(`${label} is not the pinned certification API`); return parsed; }
+function internalHttpOrigin(value: unknown, label: string): string { const raw = text(value, label); let url: URL; try { url = new URL(raw); } catch { throw new TypeError(`${label} is invalid`); } if (url.protocol !== "http:" || !url.hostname.endsWith(".internal") || url.username || url.password || url.pathname !== "/" || url.search || url.hash) throw new TypeError(`${label} must be a Fly internal HTTP origin`); return url.toString().replace(/\/$/, ""); }
+function dns(value: unknown, label: string): string { const result = text(value, label, 253).toLowerCase(); if (!DNS.test(result)) throw new TypeError(`${label} is invalid`); return result; }
+function dnsList(value: unknown, label: string): readonly string[] { const list = inertArray(value, label); if (list.length === 0 || list.length > 64) throw new TypeError(`${label} is invalid`); const values = list.map(item => dns(item, label)); if (new Set(values).size !== values.length) throw new TypeError(`${label} must be unique`); values.sort(); return Object.freeze(values); }
+function uniqueSortedIds(value: unknown, label: string): readonly string[] { const list = inertArray(value, label); if (list.length === 0 || list.length > 64) throw new TypeError(`${label} is invalid`); const values = list.map(item => id(item, label)); if (new Set(values).size !== values.length) throw new TypeError(`${label} must be unique`); values.sort(); return Object.freeze(values); }
+function uniqueSortedStrings(value: unknown, label: string): readonly string[] { const list = inertArray(value, label); if (list.length > 64 || list.some(item => typeof item !== "string" || item.length < 1 || item.length > 256)) throw new TypeError(`${label} is invalid`); const values = [...list] as string[]; if (new Set(values).size !== values.length) throw new TypeError(`${label} must be unique`); values.sort(); return Object.freeze(values); }
+function exactStringList<T extends string>(value: unknown, expected: readonly T[], label: string): readonly T[] { const list = inertArray(value, label); if (list.length !== expected.length || list.some((item, index) => item !== expected[index])) throw new TypeError(`${label} must contain the exact sorted profile set`); return Object.freeze([...(list as T[])]); }
+function isWithin(parent: string, candidate: string): boolean { const relative = path.relative(parent, candidate); return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative)); }
