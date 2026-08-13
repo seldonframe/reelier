@@ -38,6 +38,7 @@ async function privateResidue(parent: string): Promise<string[]> {
 }
 
 const rawDigest = (bytes: Buffer): string => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+const FACTORY_SECRET_CANARY = "REELIER_FACTORY_SECRET_CANARY_V1_6F4E91C28A73";
 
 async function writeFactoryEvidenceMetadata(evidence: string, tarball: string): Promise<void> {
   const files = ["graph.json", "trust-pin.json", "factory-journey-summary.json"];
@@ -117,6 +118,23 @@ test("installed offline verifier rejects a recomputed unsigned reviewer-packet s
     await writeFactoryEvidenceMetadata(evidence, tarball);
     const result = spawnSync(process.execPath, [path.join(process.cwd(), "test", "packed", "authority-factory-journey.mjs"), "--tarball", tarball, "--verify-evidence", evidence], { cwd: process.cwd(), encoding: "utf8" });
     assert.notEqual(result.status, 0, "installed verifier must derive the reviewer packet from the verified signed graph");
+  } finally { restorePlatform(); await rm(root, { recursive: true, force: true }); }
+});
+
+test("installed offline verifier scans downloaded artifacts instead of trusting empty canary metadata", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "reelier-factory-packed-canary-"));
+  const produced = path.join(root, "produced"), evidence = path.join(root, "evidence");
+  const restorePlatform = __testSetAuthorityCellHostPlatform("linux");
+  try {
+    assert.equal((await capture(command(produced))).code, 0);
+    await cp(produced, evidence, { recursive: true });
+    const tarball = packCurrentCheckout(root);
+    await writeFactoryEvidenceMetadata(evidence, tarball);
+    const metadataPath = path.join(evidence, "factory-evidence-metadata.json"), metadata = JSON.parse(await readFile(metadataPath, "utf8"));
+    metadata.workflowSourceSha = FACTORY_SECRET_CANARY;
+    await writeFile(metadataPath, `${JSON.stringify(metadata)}\n`);
+    const result = spawnSync(process.execPath, [path.join(process.cwd(), "test", "packed", "authority-factory-journey.mjs"), "--tarball", tarball, "--verify-evidence", evidence], { cwd: process.cwd(), encoding: "utf8" });
+    assert.notEqual(result.status, 0, "installed verifier must scan actual evidence bytes for the deterministic canary");
   } finally { restorePlatform(); await rm(root, { recursive: true, force: true }); }
 });
 
