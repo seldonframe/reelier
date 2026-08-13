@@ -3,6 +3,7 @@ import { assertLinuxAuthorityCellHost } from "./platform.js";
 import { unwrapReservedDispatchHandle, type ReservedDispatchHandle } from "../gate.js";
 import type { AuthorityLedger, LedgerState, StoredReservationIntent } from "../ledger.js";
 import { consumePreparedDispatch, type PreparedDispatch, type PreparedDispatchDescriptionV1 } from "./prepared-dispatch.js";
+import type { AuthenticatedProviderIdentityV1 } from "./github-account-identity.js";
 
 export interface DispatchRequestState { readonly reservation: { readonly reservationId: string; readonly state: LedgerState; readonly intent: Pick<StoredReservationIntent, "effectDigest" | "effectCanonicalBase64" | "executionContext" | "routeAuthority"> }; readonly effect: unknown; readonly effectCanonicalBase64: string; readonly effectDigest: string; readonly [key: string]: unknown; }
 export type ReconciliationStatus = "matched" | "not-applied" | "conflict" | "unavailable" | "not-attempted";
@@ -14,7 +15,7 @@ export interface DispatchCoordinator { dispatch(handle: ReservedDispatchHandle):
 export interface DispatchBudget { consumeOnce(input: Readonly<{ allocationId: string; reservationId: string; effects: number }>): Promise<unknown>; returnOnce(input: Readonly<{ allocationId: string; reservationId: string; effects: number }>): Promise<unknown>; releaseConsumedOnce?(input: Readonly<{ allocationId: string; reservationId: string; effects: number }>): Promise<unknown>; }
 export interface CurrentDispatchAuthorityV1 { readonly authorityGeneration: string; readonly authorityExpiresAt: string; readonly authorityStateDigest?: string; readonly sourceBundleDigest?: string; readonly grantDigest?: string; readonly runtimeSessionId?: string; readonly routeAuthorityDigest: string; readonly providerId?: string; readonly connectorId?: string; readonly accountId?: string; readonly endpointId?: string; }
 export interface DispatchAuthorityRevalidator { revalidate(state: DispatchRequestState): Promise<CurrentDispatchAuthorityV1>; routeReread(state: DispatchRequestState): Promise<import("../ledger.js").RouteAuthoritySnapshotV1>; }
-export interface CertifiedDispatchOptions { readonly revalidator: DispatchAuthorityRevalidator; readonly onPhase?: (phase: "route-reread" | "authority-validation-before-prepare" | "prepare" | "authority-validation-after-prepare" | "dispatch-commit-cas" | "authority-send-boundary" | "send-started" | "send") => void; }
+export interface CertifiedDispatchOptions { readonly identityProbe: () => Promise<AuthenticatedProviderIdentityV1>; readonly revalidator: DispatchAuthorityRevalidator; readonly onPhase?: (phase: "identity-probe" | "route-reread" | "authority-validation-before-prepare" | "prepare" | "authority-validation-after-prepare" | "dispatch-commit-cas" | "authority-send-boundary" | "send-started" | "send") => void; }
 
 export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: DispatchAdapter, evidence?: DispatchEvidenceWriter, publication?: DispatchPublication, budget?: DispatchBudget, certified?: CertifiedDispatchOptions): DispatchCoordinator {
   assertLinuxAuthorityCellHost();
@@ -30,7 +31,7 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
       const routeAuthority = state.reservation.intent.routeAuthority;
       if (certified && !routeAuthority) throw new Error("certified dispatch requires a durable route authority snapshot");
       let authorityBefore: CurrentDispatchAuthorityV1 | undefined;
-      if (certified) { certified.onPhase?.("route-reread"); const reread = await certified.revalidator.routeReread(state); if (authorityDigest(reread) !== authorityDigest(routeAuthority!)) throw new Error("route authority snapshot mismatch"); certified.onPhase?.("authority-validation-before-prepare"); authorityBefore = await certified.revalidator.revalidate(state); if (authorityBefore.routeAuthorityDigest !== authorityDigest(routeAuthority!) || authorityBefore.providerId !== undefined && authorityBefore.providerId !== routeAuthority!.providerId || authorityBefore.connectorId !== undefined && authorityBefore.connectorId !== routeAuthority!.connectorId || authorityBefore.accountId !== undefined && authorityBefore.accountId !== routeAuthority!.accountId || authorityBefore.endpointId !== undefined && authorityBefore.endpointId !== routeAuthority!.endpointId) throw new Error("route authority binding mismatch"); }
+      if (certified) { certified.onPhase?.("identity-probe"); const identity = await certified.identityProbe(); if (!identity || authorityDigest(identity) !== routeAuthority!.authenticatedProviderIdentityDigest || identity.credentialSlotId !== routeAuthority!.credentialSlotId || identity.slotInstanceId !== routeAuthority!.slotInstanceId || identity.slotVersion !== routeAuthority!.slotVersion || Date.parse(identity.slotExpiresAt) !== Date.parse(routeAuthority!.authorityExpiresAt) || identity.providerAccountId !== routeAuthority!.accountId || identity.providerLogin !== routeAuthority!.providerAccountIdentity || identity.routeDigest !== routeAuthority!.routeDigest) throw new Error("authenticated provider identity binding mismatch"); certified.onPhase?.("route-reread"); const reread = inertRouteSnapshot(await certified.revalidator.routeReread(state)); if (authorityDigest(reread) !== authorityDigest(routeAuthority!)) throw new Error("route authority snapshot mismatch"); certified.onPhase?.("authority-validation-before-prepare"); authorityBefore = await certified.revalidator.revalidate(state); if (authorityBefore.routeAuthorityDigest !== authorityDigest(routeAuthority!) || authorityBefore.providerId !== undefined && authorityBefore.providerId !== routeAuthority!.providerId || authorityBefore.connectorId !== undefined && authorityBefore.connectorId !== routeAuthority!.connectorId || authorityBefore.accountId !== undefined && authorityBefore.accountId !== routeAuthority!.accountId || authorityBefore.endpointId !== undefined && authorityBefore.endpointId !== routeAuthority!.endpointId) throw new Error("route authority binding mismatch"); }
       if (adapter.prepare && ledger.commitPreparedDispatch) {
         certified?.onPhase?.("prepare");
         const context = state.reservation.intent.executionContext;
@@ -42,7 +43,14 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
         if (budget && budgetClaim) await budget.consumeOnce(budgetClaim);
         let lease: import("./prepared-dispatch.js").DispatchCommitLease;
         try { certified?.onPhase?.("dispatch-commit-cas"); lease = await ledger.commitPreparedDispatch({ reservationId, allocationId: context?.allocationId ?? description.allocationId, expectedAuthorityGeneration: description.authorityGeneration, preparedDescription: description, absoluteDeadlineMs: description.absoluteDeadlineMs }); }
-        catch (error) { if (budget && budgetClaim) { if (budget.releaseConsumedOnce) await budget.releaseConsumedOnce(budgetClaim); else await budget.returnOnce(budgetClaim); } throw error; }
+        catch (error) {
+          if (budget && budgetClaim) {
+            let committed = false;
+            try { committed = (await ledger.getReservation(reservationId))?.state !== "reserved"; } catch { committed = true; }
+            if (!committed) { if (budget.releaseConsumedOnce) await budget.releaseConsumedOnce(budgetClaim); else await budget.returnOnce(budgetClaim); }
+          }
+          throw error;
+        }
         let outcome: DispatchOutcome;
         try { certified?.onPhase?.("authority-send-boundary"); outcome = await consumePreparedDispatch(prepared, lease); certified?.onPhase?.("send"); }
         catch { outcome = { kind: "ambiguous", resultDigest: authorityDigest({ v: "reelier.dispatch-result/v1", reservationId, status: "ambiguous" }) }; }
@@ -160,6 +168,14 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
       return Object.freeze(ambiguous);
     },
   });
+}
+
+function inertRouteSnapshot(value: import("../ledger.js").RouteAuthoritySnapshotV1): import("../ledger.js").RouteAuthoritySnapshotV1 {
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype) throw new TypeError("route authority snapshot is not inert");
+  const keys = ["v","connectorRegistrationDigest","operatorConfigurationDigest","routeDigest","providerId","connectorId","accountId","providerAccountIdentity","endpointId","credentialSlotId","slotInstanceId","slotVersion","authenticatedProviderIdentityDigest","sourceReadRouteDigest","projectionSchemaDigest","expectedMaterializedRequestDigest","authorityGeneration","authorityExpiresAt"];
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  if (Object.keys(descriptors).length !== keys.length || keys.some(key => !(key in descriptors)) || Object.keys(descriptors).some(key => !keys.includes(key)) || Object.values(descriptors).some(descriptor => !("value" in descriptor) || descriptor.get || descriptor.set)) throw new TypeError("route authority snapshot is not inert");
+  return Object.freeze({ ...value });
 }
 
 function recoveredState(reservation: DispatchRequestState["reservation"]): DispatchRequestState {

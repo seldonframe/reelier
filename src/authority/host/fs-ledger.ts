@@ -3505,14 +3505,14 @@ function normalizeStoredIntent(input: StoredReservationIntent): StoredReservatio
 
 function normalizeRouteAuthoritySnapshot(value: RouteAuthoritySnapshotV1): RouteAuthoritySnapshotV1 {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("route authority snapshot is invalid");
-  const keys = ["v","connectorRegistrationDigest","operatorConfigurationDigest","routeDigest","providerId","connectorId","accountId","providerAccountIdentity","endpointId","authenticatedProviderIdentityDigest","sourceReadRouteDigest","projectionSchemaDigest","expectedMaterializedRequestDigest","authorityGeneration","authorityExpiresAt"] as const;
+  const keys = ["v","connectorRegistrationDigest","operatorConfigurationDigest","routeDigest","providerId","connectorId","accountId","providerAccountIdentity","endpointId","credentialSlotId","slotInstanceId","slotVersion","authenticatedProviderIdentityDigest","sourceReadRouteDigest","projectionSchemaDigest","expectedMaterializedRequestDigest","authorityGeneration","authorityExpiresAt"] as const;
   const descriptors = Object.getOwnPropertyDescriptors(value);
   if (Object.keys(descriptors).length !== keys.length || keys.some(key => !(key in descriptors)) || Object.keys(descriptors).some(key => !keys.includes(key as typeof keys[number])) || Object.values(descriptors).some(descriptor => !("value" in descriptor) || descriptor.get || descriptor.set)) throw new TypeError("route authority snapshot contains unknown or accessor fields");
   const raw = value as unknown as Record<string, unknown>;
   if (raw.v !== "reelier.route-authority-snapshot/v1") throw new TypeError("route authority snapshot version is invalid");
   for (const key of ["connectorRegistrationDigest","operatorConfigurationDigest","routeDigest","authenticatedProviderIdentityDigest","sourceReadRouteDigest","projectionSchemaDigest","expectedMaterializedRequestDigest"] as const) if (typeof raw[key] !== "string" || !SHA.test(raw[key] as string)) throw new TypeError("route authority snapshot digest is invalid");
   if (typeof raw.authorityGeneration !== "string" || !raw.authorityGeneration) throw new TypeError("route authority generation is invalid");
-  for (const key of ["providerId","connectorId","accountId","providerAccountIdentity","endpointId"] as const) if (typeof raw[key] !== "string" || !(raw[key] as string)) throw new TypeError("route authority identity is invalid");
+  for (const key of ["providerId","connectorId","accountId","providerAccountIdentity","endpointId","credentialSlotId","slotInstanceId","slotVersion"] as const) if (typeof raw[key] !== "string" || !(raw[key] as string)) throw new TypeError("route authority identity is invalid");
   if (typeof raw.authorityExpiresAt !== "string" || !isIso(raw.authorityExpiresAt)) throw new TypeError("route authority expiry is invalid");
   return frozen({ ...value });
 }
