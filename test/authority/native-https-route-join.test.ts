@@ -57,3 +57,20 @@ test("certified dispatch refuses a route reread that differs from the durable sn
     assert.equal(prepared, false);
   } finally { restore(); }
 });
+
+test("certified budget consumption is rolled back exactly once when commit CAS refuses", { skip: process.platform === "win32" }, async () => {
+  const restore = __testSetAuthorityCellHostPlatform("linux");
+  try {
+    const reservation: any = { reservationId: "r1", state: "reserved", intent: { effectDigest: sha("3"), routeAuthority: routeAuthority(), executionContext: { allocationId: "a1" } } };
+    const projection: any = { v: "reelier.materialized-http-request/v1", method: "PUT", origin: "https://api.github.com", normalizedPath: "/x", normalizedQuery: "", reviewedHeaders: {}, bodyDigest: sha("4") };
+    const route = { ...routeAuthority(), expectedMaterializedRequestDigest: authorityDigest(projection) };
+    reservation.intent.routeAuthority = route;
+    const events: string[] = [];
+    const ledger: any = { async getReservation() { return reservation; }, async commitPreparedDispatch() { events.push("cas"); throw new Error("stale generation"); } };
+    const adapter: any = { async prepare() { return createPreparedDispatch({ description: { v: "reelier.prepared-dispatch-description/v1", routeDigest: route.routeDigest, materializedRequestDigest: route.expectedMaterializedRequestDigest, projection, authorityGeneration: route.authorityGeneration, authorityExpiresAt: route.authorityExpiresAt, absoluteDeadlineMs: performance.now() + 60_000, reservationId: "r1", allocationId: "a1" }, send: async () => { throw new Error("must not send"); } }); } };
+    const budget = { async consumeOnce() { events.push("consume"); }, async returnOnce() { events.push("return"); } };
+    const coordinator = createDispatchCoordinator(ledger, adapter, undefined, undefined, budget, { revalidator: { async routeReread() { return route; }, async revalidate() { return { authorityGeneration: route.authorityGeneration, authorityExpiresAt: route.authorityExpiresAt, routeAuthorityDigest: authorityDigest(route) }; } } });
+    await assert.rejects(() => coordinator.dispatch(createReservedDispatchHandle({ reservation, effect: {}, effectCanonicalBase64: "e30=", effectDigest: sha("3") })), /stale generation/i);
+    assert.deepEqual(events, ["consume", "cas", "return"]);
+  } finally { restore(); }
+});
