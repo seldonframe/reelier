@@ -29,6 +29,11 @@ reports/
 # Never commit it; see CLAUDE.md §10.2 for the build rule.
 .mex/
 
+# DeepSec keeps local configuration, scan state, and generated findings here.
+# Reports stay out of the product repository; CI uploads only a short-lived
+# artifact when the optional review produces one.
+.deepsec/
+
 *.mcpb
 .screenshots-tmp/
 .house-tenant-key.local

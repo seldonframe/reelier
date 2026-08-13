@@ -1,0 +1,53 @@
+name: DeepSec security review
+
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      base_ref:
+        description: Git ref to compare against
+        required: false
+        default: main
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    # DeepSec executes an agent against checked-out source. Keep it away from
+    # forks; the analysis step below also skips when no credential is set.
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' ||
+          github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    env:
+      AI_GATEWAY_API_KEY: ${{ secrets.AI_GATEWAY_API_KEY }}
+    steps:
+      - name: Check out repository history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Run DeepSec on the change set
+        if: ${{ env.AI_GATEWAY_API_KEY != '' }}
+        run: >-
+          npx --yes deepsec@2.3.5 process
+          --root .
+          --diff "origin/${{ github.event.pull_request.base.ref || inputs.base_ref }}"
+          --comment-out comment.md
+
+      - name: Upload DeepSec findings
+        if: ${{ always() && hashFiles('comment.md') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: deepsec-findings
+          path: comment.md
+          retention-days: 7
