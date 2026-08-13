@@ -16,6 +16,24 @@ export interface LimitSlotIntent {
   readonly maximum: number;
 }
 
+export interface RouteAuthoritySnapshotV1 {
+  readonly v: "reelier.route-authority-snapshot/v1";
+  readonly connectorRegistrationDigest: string;
+  readonly operatorConfigurationDigest: string;
+  readonly routeDigest: string;
+  readonly providerId: string;
+  readonly connectorId: string;
+  readonly accountId: string;
+  readonly providerAccountIdentity: string;
+  readonly endpointId: string;
+  readonly authenticatedProviderIdentityDigest: string;
+  readonly sourceReadRouteDigest: string;
+  readonly projectionSchemaDigest: string;
+  readonly expectedMaterializedRequestDigest: string;
+  readonly authorityGeneration: string;
+  readonly authorityExpiresAt: string;
+}
+
 export interface ReservationIntent {
   readonly tenant: string;
   readonly requester: string;
@@ -45,12 +63,14 @@ export interface ReservationIntent {
   readonly limitSlots: readonly LimitSlotIntent[];
   /** Host-authenticated task/principal lineage; never read from OutcomeRequest. */
   readonly executionContext?: import("./types.js").AuthorityExecutionContextV1;
+  readonly routeAuthority?: RouteAuthoritySnapshotV1;
 }
 
 export interface StoredReservationIntent extends Omit<ReservationIntent, "canonicalRequestBytes" | "capabilityBytes" | "limitSlots"> {
   readonly canonicalRequestBase64: string;
   readonly capabilityBase64: string;
   readonly limitSlots: readonly LimitSlotIntent[];
+  readonly routeAuthority?: RouteAuthoritySnapshotV1;
 }
 export interface ReservationLinkage {readonly reservationId:string;readonly state:Exclude<LedgerState,"issued">;readonly ingressClaimDigest:string;readonly capabilityId:string;readonly capabilityDigest:string;readonly authorityStateDigest:string;readonly decisionContextDigest:string;readonly updatedAt:string;readonly receiptRef?:string}
 

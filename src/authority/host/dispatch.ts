@@ -4,7 +4,7 @@ import { unwrapReservedDispatchHandle, type ReservedDispatchHandle } from "../ga
 import type { AuthorityLedger, LedgerState, StoredReservationIntent } from "../ledger.js";
 import { consumePreparedDispatch, type PreparedDispatch, type PreparedDispatchDescriptionV1 } from "./prepared-dispatch.js";
 
-export interface DispatchRequestState { readonly reservation: { readonly reservationId: string; readonly state: LedgerState; readonly intent: Pick<StoredReservationIntent, "effectDigest" | "effectCanonicalBase64" | "executionContext"> }; readonly effect: unknown; readonly effectCanonicalBase64: string; readonly effectDigest: string; readonly [key: string]: unknown; }
+export interface DispatchRequestState { readonly reservation: { readonly reservationId: string; readonly state: LedgerState; readonly intent: Pick<StoredReservationIntent, "effectDigest" | "effectCanonicalBase64" | "executionContext" | "routeAuthority"> }; readonly effect: unknown; readonly effectCanonicalBase64: string; readonly effectDigest: string; readonly [key: string]: unknown; }
 export type ReconciliationStatus = "matched" | "not-applied" | "conflict" | "unavailable" | "not-attempted";
 export interface DispatchOutcome { readonly kind: "acknowledged" | "definitive-failure" | "ambiguous"; readonly resultDigest: string; readonly providerResultDigest?: string; readonly providerStatus?: number; readonly responseDigest?: string; /** Digest of the exact provider request bytes when confidential material was inserted inside the Authority Cell. */ readonly materializedRequestDigest?: string; readonly reconciliationStatus?: ReconciliationStatus; readonly normalizedProjectionDigest?: string | null; readonly receiptRef?: string; readonly evidenceDigest?: string; readonly priorReceiptDigest?: string; }
 export interface DispatchAdapter { dispatch(state: DispatchRequestState): Promise<DispatchOutcome>; prepare?(state: DispatchRequestState): Promise<PreparedDispatch>; reconcile?(state: DispatchRequestState, outcome: DispatchOutcome): Promise<DispatchOutcome>; }
@@ -12,8 +12,11 @@ export interface DispatchEvidenceWriter { persist(input: Readonly<{ state: Dispa
 export interface DispatchPublication { publish(input: Readonly<{ phase: "dispatch" | "cancelled" | "ambiguous" | "reconcile"; state: DispatchRequestState; outcome: DispatchOutcome; dispatchedRequestDigest: string | null; priorReceiptDigest?: string | null; }>): Promise<Readonly<{ receiptRef: string; evidenceDigest: string }>>; }
 export interface DispatchCoordinator { dispatch(handle: ReservedDispatchHandle): Promise<DispatchOutcome>; cancel(handle: ReservedDispatchHandle, reason?: string): Promise<DispatchOutcome>; reconcile(reservationId: string): Promise<DispatchOutcome>; recover(): Promise<readonly string[]>; }
 export interface DispatchBudget { consumeOnce(input: Readonly<{ allocationId: string; reservationId: string; effects: number }>): Promise<unknown>; returnOnce(input: Readonly<{ allocationId: string; reservationId: string; effects: number }>): Promise<unknown>; releaseConsumedOnce?(input: Readonly<{ allocationId: string; reservationId: string; effects: number }>): Promise<unknown>; }
+export interface CurrentDispatchAuthorityV1 { readonly authorityGeneration: string; readonly authorityExpiresAt: string; readonly authorityStateDigest?: string; readonly sourceBundleDigest?: string; readonly grantDigest?: string; readonly runtimeSessionId?: string; readonly routeAuthorityDigest: string; }
+export interface DispatchAuthorityRevalidator { revalidate(state: DispatchRequestState): Promise<CurrentDispatchAuthorityV1>; routeReread?(state: DispatchRequestState): Promise<void>; }
+export interface CertifiedDispatchOptions { readonly revalidator: DispatchAuthorityRevalidator; readonly onPhase?: (phase: "route-reread" | "authority-validation-before-prepare" | "prepare" | "authority-validation-after-prepare" | "dispatch-commit-cas" | "authority-send-boundary" | "send-started" | "send") => void; }
 
-export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: DispatchAdapter, evidence?: DispatchEvidenceWriter, publication?: DispatchPublication, budget?: DispatchBudget): DispatchCoordinator {
+export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: DispatchAdapter, evidence?: DispatchEvidenceWriter, publication?: DispatchPublication, budget?: DispatchBudget, certified?: CertifiedDispatchOptions): DispatchCoordinator {
   assertLinuxAuthorityCellHost();
   const budgetFor = (state: DispatchRequestState): { allocationId: string; reservationId: string; effects: number } | undefined => {
     const context = state.reservation.intent.executionContext;
@@ -24,17 +27,24 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
       const state = unwrapReservedDispatchHandle(handle) as DispatchRequestState;
       if (!state.reservation || state.reservation.state !== "reserved") throw new TypeError("dispatch handle is not reserved");
       const reservationId = state.reservation.reservationId;
+      const routeAuthority = state.reservation.intent.routeAuthority;
+      if (certified && !routeAuthority) throw new Error("certified dispatch requires a durable route authority snapshot");
+      let authorityBefore: CurrentDispatchAuthorityV1 | undefined;
+      if (certified) { certified.onPhase?.("route-reread"); if (certified.revalidator.routeReread) await certified.revalidator.routeReread(state); certified.onPhase?.("authority-validation-before-prepare"); authorityBefore = await certified.revalidator.revalidate(state); if (authorityBefore.routeAuthorityDigest !== authorityDigest(routeAuthority!)) throw new Error("route authority snapshot mismatch"); }
       if (adapter.prepare && ledger.commitPreparedDispatch) {
+        certified?.onPhase?.("prepare");
         const context = state.reservation.intent.executionContext;
         const prepared = await adapter.prepare(state);
         const description: PreparedDispatchDescriptionV1 = prepared.description;
+        if (routeAuthority && (description.routeDigest !== routeAuthority.routeDigest || description.materializedRequestDigest !== routeAuthority.expectedMaterializedRequestDigest)) throw new Error("prepared dispatch does not match durable route authority");
+        if (certified) { certified.onPhase?.("authority-validation-after-prepare"); const authorityAfter = await certified.revalidator.revalidate(state); if (!authorityBefore || authorityAfter.authorityGeneration !== authorityBefore.authorityGeneration || authorityAfter.routeAuthorityDigest !== authorityBefore.routeAuthorityDigest || description.authorityGeneration !== authorityAfter.authorityGeneration) throw new Error("dispatch authority changed during preparation"); }
         const budgetClaim = budgetFor(state);
         if (budget && budgetClaim) await budget.consumeOnce(budgetClaim);
         let lease: import("./prepared-dispatch.js").DispatchCommitLease;
-        try { lease = await ledger.commitPreparedDispatch({ reservationId, allocationId: context?.allocationId ?? description.allocationId, expectedAuthorityGeneration: description.authorityGeneration, preparedDescription: description, absoluteDeadlineMs: description.absoluteDeadlineMs }); }
+        try { certified?.onPhase?.("dispatch-commit-cas"); lease = await ledger.commitPreparedDispatch({ reservationId, allocationId: context?.allocationId ?? description.allocationId, expectedAuthorityGeneration: description.authorityGeneration, preparedDescription: description, absoluteDeadlineMs: description.absoluteDeadlineMs }); }
         catch (error) { if (budget && budgetClaim) { if (budget.releaseConsumedOnce) await budget.releaseConsumedOnce(budgetClaim); else await budget.returnOnce(budgetClaim); } throw error; }
         let outcome: DispatchOutcome;
-        try { outcome = await consumePreparedDispatch(prepared, lease); }
+        try { certified?.onPhase?.("authority-send-boundary"); certified?.onPhase?.("send-started"); outcome = await consumePreparedDispatch(prepared, lease); certified?.onPhase?.("send"); }
         catch { outcome = { kind: "ambiguous", resultDigest: authorityDigest({ v: "reelier.dispatch-result/v1", reservationId, status: "ambiguous" }) }; }
         const current = await ledger.getReservation(reservationId);
         if (current?.state === "reserved") {
@@ -48,6 +58,7 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
         if (!result.ok) throw new Error(`dispatch result transition refused: ${result.reason}`);
         return Object.freeze({ ...outcome, materializedRequestDigest: dispatchedRequestDigest });
       }
+      if (certified) throw new Error("certified dispatch requires prepared commit boundary");
       const transitioned = await ledger.transition(reservationId, "reserved", { to: "dispatched" });
       if (!transitioned.ok) throw new Error(`dispatch transition refused: ${transitioned.reason}`);
       const budgetClaim = budgetFor(state);
