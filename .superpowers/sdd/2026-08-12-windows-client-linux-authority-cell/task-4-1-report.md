@@ -147,3 +147,51 @@ Round 1/5 verification (verbatim tail)
 frozen contract files unchanged
 sha256:7f46242b26d9c921f4e1ec9de6418ac5fc8c03d70c4415c25e799ae0e73a1512
 ```
+
+Round 2/5 reviewer fixes
+
+- RED `3e6fda8`: exposed missing durable duplicate-history commitment, caller request-ID rewriting, and acceptance of partial evidence without a reviewed authoritative observation.
+- RED `17cdbfd`: added a real dispatch -> revoke -> export case plus freshly re-signed historical/current status falsifiers; the passing export initially failed because dispatch history was compared with current revocation state.
+- GREEN `86de703`: added a journal-authority-signed duplicate-attempt head with exact count/history digest, stable attempt IDs separate from unmodified caller request IDs, and one-to-one attempt/decision linkage. Exact replay, conflict replay, and cleanup replay remain zero-write, zero-budget, and receipt-free even after capacity exhaustion. Partial evidence now requires a real observed projection and the named reviewed authoritative read method. Status verification distinguishes signed dispatch history from the current export observation.
+- The duplicate omission falsifier now creates a genuine duplicate before deleting both attempt/decision collections and rebuilding the evidence-signed terminal commitment; the independently journal-signed head makes the omission refuse.
+
+Round 2/5 verification (verbatim tail)
+
+Focused portable + runner tests:
+
+```text
+✔ portable export preserves dispatch history while reporting a current task revocation (989.5977ms)
+✔ offline portable verification rejects re-signed false claims with a fresh terminal commitment (1097.6292ms)
+✔ portable task status binds the signed observation time without claiming later freshness (3.1673ms)
+✔ partial post-state requires a reviewed observation with a real observed projection (0.2332ms)
+ℹ tests 43
+ℹ suites 0
+ℹ pass 42
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 1
+ℹ todo 0
+ℹ duration_ms 42744.717
+```
+
+Exact runner suite:
+
+```text
+✔ portable export preserves dispatch history while reporting a current task revocation (961.7524ms)
+✔ offline portable verification rejects re-signed false claims with a fresh terminal commitment (1132.0059ms)
+ℹ tests 41
+ℹ suites 0
+ℹ pass 40
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 1
+ℹ todo 0
+ℹ duration_ms 40099.4236
+```
+
+`npm run check:authority-contract`, `npx tsc --noEmit --pretty false`, `node scripts/build-authority-contract.mjs --check`, and `git diff --check` exited 0. `git diff c30c92ca45bd337143a42e18f414fb83a53622bb -- contract/authority/v1` remained empty. Adapter Contract v1 remains `sha256:7f46242b26d9c921f4e1ec9de6418ac5fc8c03d70c4415c25e799ae0e73a1512`.
+
+Round 2 open risks
+
+- The existing Windows symlink-privilege test remains skipped; native Linux CI is still required for that host boundary.
+- The journal-signed duplicate head proves the exported collection's exact count/history. It does not claim universal interception or completeness outside the declared durable fixture boundary.
