@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
@@ -38,6 +38,7 @@ try {
   const excluded = names.filter(name => !SUPPORTED_LINUX_HOST_ROOTS.includes(name));
   for (const witness of ["FsDelegationBudgetLedger", "executeJsonHttpsEffect", "launchCodexDogfood", "runCertification", "runCertificationSuite"]) assert.equal(excluded.includes(witness), true, witness);
   assert.match(`sha256:${createHash("sha256").update(JSON.stringify(excluded), "utf8").digest("hex")}`, /^sha256:[0-9a-f]{64}$/);
+  if (mode === "windows-native") throw new Error("windows-native composition-root no-access proof not implemented");
 } finally {
   rmSync(consumer, { recursive: true, force: true });
 }
