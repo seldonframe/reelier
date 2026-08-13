@@ -217,3 +217,18 @@ Verification at `5391c4f`:
 - `npx tsc -p tsconfig.test.json`: exit 0.
 
 Fresh hosted Ubuntu remains required for the exact corrected SHA; this local evidence makes no hosted-green claim.
+
+### Independent-review closure
+
+The reviewer required the correction to be explicitly authorized in the locked plan and required the assertion-failure path to settle the live run before fixture deletion. Plan commit `3aaa58e` adds the narrow four-path amendment while preserving Task 6. RED `9e2939e` declares the live run outside the assertion `try` and adds a forced primary-error/secondary-live-run-failure falsifier; test compilation failed only because `settleLiveRunBeforeFixtureRemoval` was absent. GREEN `0a6aba4` releases the barrier, awaits `Promise.allSettled([running])`, and only then removes the fixture. The falsifier proves the primary assertion error remains observable, the secondary rejection is settled, and the root is removed after work completion.
+
+Fresh verification at `0a6aba4`:
+
+- corrected concurrency and cleanup falsifiers: 10/10 iterations, two tests per iteration, all passed;
+- complete GitHub certification runner: 45 tests, 44 passed, 0 failed, 1 platform skip;
+- `npx tsc -p tsconfig.test.json --pretty false`: exit 0;
+- `npm run check:authority-contract`: exit 0;
+- `npm run build`: exit 0, including all ten pack builds;
+- `git diff --check 879cea8..HEAD`: exit 0.
+
+No graph, authority, grant, allocation, budget, recovery, provider, request-lock, Adapter Contract, retry, sleep, timeout, or assertion semantics changed. Independent review and a fresh hosted exact-SHA run remain required before acceptance.
