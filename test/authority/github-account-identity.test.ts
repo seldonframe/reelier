@@ -13,11 +13,9 @@ test("GitHub identity probe binds account/login, route digest, and one-use slot 
   assert.equal(identity.providerLogin, "octocat");
   assert.equal(identity.routeDigest, authorityDigest(route));
 });
-
 test("GitHub identity probe refuses lease-slot, account, and expiry substitution", async () => {
   const base: any = { route, now: () => new Date("2026-01-01T00:00:00.000Z"), secretLease: { credentialSlotId: "other", slotInstanceId: "instance", slotVersion: "1", slotExpiresAt: "2027-01-01T00:00:00.000Z", readOnce: () => "secret" }, transport: { async request() { return { status: 200, body: { id: 42, login: "octocat" } }; } } };
   await assert.rejects(() => probeGitHubAccountIdentity(base), /slot/i);
   await assert.rejects(() => probeGitHubAccountIdentity({ ...base, secretLease: { ...base.secretLease, credentialSlotId: "slot", slotExpiresAt: "2025-01-01T00:00:00.000Z" } }), /expired/i);
   await assert.rejects(() => probeGitHubAccountIdentity({ ...base, secretLease: { ...base.secretLease, credentialSlotId: "slot" }, transport: { async request() { return { status: 200, body: { id: 99, login: "attacker" } }; } } }), /mismatch/i);
 });
-
