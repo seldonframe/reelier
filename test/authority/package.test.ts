@@ -98,7 +98,13 @@ test("matrix verifies public factory evidence through a clean installed consumer
   assert.match(testJob, /test\/packed\/authority-factory-journey\.mjs --tarball .* --verify-evidence/);
   const harness = readFileSync(path.join(process.cwd(), "test", "packed", "authority-factory-journey.mjs"), "utf8");
   assert.match(harness, /reelier\/authority/);
+  assert.match(harness, /createHash/);
+  assert.match(harness, /tarballSha256/);
+  assert.match(harness, /AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST/);
+  assert.match(harness, /path\.resolve\(line\.graphPath\)/);
+  assert.match(harness, /Object\.keys\(summary\.reviewerPacket\)/);
   assert.match(testJob, /factory-evidence-metadata\.json/);
+  assert.match(testJob, /metadata\.workflowSourceSha.*github\.sha/);
 });
 
 test("packed boundary harness invokes npm with an argument array even from metacharacter paths", () => {
