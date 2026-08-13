@@ -3439,6 +3439,33 @@ test("warm preparation-stage crashes recover from both entry points and the root
   }));
 });
 
+test("a live fixed admission slot tolerates only unrelated released retirement residue",async t=>{
+  const assertPreserved=async(root:string,expected:Readonly<{ok:false;reason:"busy"|"corruption"}>,label:string)=>{
+    const before=await snapshotRootArtifacts(root);
+    let callbacks=0;
+    const ledger=new RawFsAuthorityLedger(root,{now:()=>t0+1_000,lockTimeoutMs:20,faultInjector:(point:string)=>{if(point==="before-ledger-operation-callback")callbacks++;}} as never);
+    const classifier=ledger as unknown as {classifyHybridCoordinationEpoch(token:unknown,permitWrite:boolean):Promise<"busy"|"corruption">};
+    assert.deepEqual({ok:false,reason:await classifier.classifyHybridCoordinationEpoch({},false)},expected,label);
+    assert.deepEqual(await snapshotRootArtifacts(root),before,`${label}: classification preserves byte-identically`);
+    assert.equal(callbacks,0,`${label}: classification invokes no ledger operation callback`);
+  };
+  await t.test("an unrelated released marker is inert bounded-busy residue",()=>withRoot(async root=>{
+    const slotOwner:AdmissionOwner={host:hostname(),nonce:"a7".repeat(32),pid:process.pid,v:1};
+    await writeAdmissionSlot(root,slotOwner);
+    await writeLegacyRetiredLock(root,{...slotOwner,nonce:"b8".repeat(32)},"released");
+    await assertPreserved(root,{ok:false,reason:"busy"},"unrelated released");
+  }));
+  for(const boundary of [
+    {name:"a same-owner released marker stays corruption",owner:(slotOwner:AdmissionOwner)=>slotOwner,disposition:"released" as const},
+    {name:"an unrelated recovery-pending marker stays corruption",owner:(slotOwner:AdmissionOwner):AdmissionOwner=>({...slotOwner,nonce:"c9".repeat(32)}),disposition:"recovery-pending" as const},
+  ])await t.test(boundary.name,()=>withRoot(async root=>{
+    const slotOwner:AdmissionOwner={host:hostname(),nonce:"d0".repeat(32),pid:process.pid,v:1};
+    await writeAdmissionSlot(root,slotOwner);
+    await writeLegacyRetiredLock(root,boundary.owner(slotOwner),boundary.disposition);
+    await assertPreserved(root,{ok:false,reason:"corruption"},boundary.name);
+  }));
+});
+
 // The reused-root discipline, institutionalized for the DEFAULT path. Every residue defect this
 // corpus has shipped (six by now) survived a green suite because fixtures used fresh roots; this
 // family runs one root through repeated default acquisitions interleaved with real hard-exit
