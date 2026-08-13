@@ -60,3 +60,9 @@ Verbatim tail:
 - RED commit `43b546fb30cf18fd62f0452114a10a86cebeaadb` proved the evidence producer lacked exact-SHA checkout/setup before it invoked the packed-only harness.
 - GREEN commit `d3bc1f19fe27aea9a6fb9f7f227e8acc8b951ad0` adds checkout at `github.sha`, Node setup, checkout build, frozen Adapter Contract comparison, and secret-canary scanning of the three public artifacts. It also hardens the installed harness's exact stdout/stderr/file-list/path-containment contract and keeps staging/root allocation within cleanup handling.
 - Round-two focused result: `tsc` plus package/factory suites: 7 pass, 0 fail. Hosted verification remains pending.
+
+## Round-three correction
+
+- RED commits `61760163bb0618b91392b1e4737d7681dae256b2` required closed producer metadata validation and a matrix clean-consumer verifier. The structural test failed for both missing requirements.
+- GREEN commits `e59fa452a3682b25955856eafca29640e487dd3e` and `76782ea500adeb36b01c0eb62ef2b5e8b926eee0` make the matrix call the packed harness in `--verify-evidence` mode. That mode installs the downloaded tarball into a fresh consumer, resolves `reelier/authority` only there, verifies the graph/trust pin, and validates the closed metadata field set and public evidence digests.
+- Current focused package result: 6 pass, 0 fail.
