@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { connect as netConnect } from "node:net";
 import { PassThrough } from "node:stream";
 import { createAuthorityEgressGateway, parseAuthorityEgressGatewayConfig } from "../../src/authority/host/egress-gateway.js";
+import { assertAllPublicAddresses } from "../../src/authority/client/ip.js";
 
 const config = {
   v: "reelier.egress-gateway-config/v1",
@@ -15,6 +16,10 @@ test("egress gateway configuration is closed and contains references, never valu
   assert.deepEqual(parsed.allowedHosts, ["api.github.com", "api.vercel.com"]);
   assert.throws(() => parseAuthorityEgressGatewayConfig({ ...config, bearer: "plaintext" }), /closed/);
   assert.throws(() => parseAuthorityEgressGatewayConfig({ ...config, allowedHosts: ["127.0.0.1"] }), /host/);
+});
+
+test("egress gateway shares the authority public-address classifier", () => {
+  assert.throws(() => assertAllPublicAddresses(["93.184.216.34", "::ffff:127.0.0.1"]), /public/i);
 });
 
 test("egress gateway refuses missing auth and undeclared destinations before dialing", async () => {
