@@ -62,6 +62,7 @@ export interface ReservationSnapshot {
   readonly sequence: number;
   readonly updatedAt: string;
   readonly resultDigest?: string;
+  readonly sendStarted?: boolean;
 }
 
 export type TransitionEvent =

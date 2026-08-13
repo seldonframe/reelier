@@ -7,7 +7,7 @@ import { connect as tlsConnect } from "node:tls";
 import type { TransportEffect } from "../types.js";
 import { assertAllPublicAddresses } from "../client/ip.js";
 import { createTotalDeadline, raceTotalDeadline, type TotalDeadline } from "../net/deadline.js";
-import type { JsonHttpsRouteV1 } from "../host/json-https-route.js";
+import { jsonHttpsRouteDigest, type JsonHttpsRouteV1 } from "../host/json-https-route.js";
 import { materializedHttpRequestDigest, type MaterializedHttpRequestProjectionV1 } from "../host/http-response-semantics.js";
 import { createPreparedDispatch, type PreparedDispatch } from "../host/prepared-dispatch.js";
 import { authorityDigest } from "../wire.js";
@@ -74,16 +74,17 @@ export async function prepareJsonHttpsEffect(effect: TransportEffect, endpoint: 
   const secret = await materializeSecret(endpoint, secrets, deadline);
   const proxySecret = runtimeEndpoint.egressProxy ? await secrets.resolve(runtimeEndpoint.egressProxy.bearerRef) : undefined;
   const projection = buildMaterializedHttpRequestProjection(runtimeEndpoint, effect.method, effect.path, effect.query, effect.headers, body);
+  const routeDigest = isNativeRoute(endpoint) ? jsonHttpsRouteDigest(endpoint) : authorityDigest({ v: "reelier.json-https-legacy-route/v1", endpointId: runtimeEndpoint.endpointId, baseUrl: runtimeEndpoint.baseUrl, allowedMethods: runtimeEndpoint.allowedMethods, allowedPathPrefixes: runtimeEndpoint.allowedPathPrefixes, accountIdentity: runtimeEndpoint.accountIdentity, secretRef: runtimeEndpoint.secretRef ?? null, egressProxy: runtimeEndpoint.egressProxy ?? null });
   const description = {
     v: "reelier.prepared-dispatch-description/v1" as const,
-    routeDigest: authorityDigest({ v: "reelier.json-https-route/v1", endpointId: runtimeEndpoint.endpointId, origin: runtimeEndpoint.baseUrl, allowedPathPrefixes: runtimeEndpoint.allowedPathPrefixes }),
+    routeDigest,
     materializedRequestDigest: materializedHttpRequestDigest(projection), projection,
     authorityGeneration: options.authorityGeneration ?? "legacy",
     authorityExpiresAt: options.authorityExpiresAt ?? new Date(Date.now() + (deadline.absoluteDeadlineMs - deadline.startedAtMs)).toISOString(),
     absoluteDeadlineMs: deadline.absoluteDeadlineMs,
     reservationId: options.reservationId ?? "unbound", allocationId: options.allocationId ?? "unbound",
   };
-  return createPreparedDispatch({ description, send: async () => { try { const response = await requestPinned(runtimeEndpoint, effect.method, effect.path, effect.query, effect.headers, body, secret, proxySecret, options, deadline, projection); const resultDigest = authorityDigest({ v: "reelier.https-response/v1", endpointId: runtimeEndpoint.endpointId, status: response.status, headers: response.headers, bodyDigest: authorityDigest(response.body.toString("base64")) }); return Object.freeze({ kind: response.status >= 200 && response.status < 300 ? "acknowledged" as const : "ambiguous" as const, resultDigest, providerStatus: response.status, responseDigest: resultDigest, materializedRequestDigest: response.materializedRequestDigest }); } finally { body.fill(0); } } });
+  return createPreparedDispatch({ description, monotonicNow: options.monotonicNow, send: async () => { try { const response = await requestPinned(runtimeEndpoint, effect.method, effect.path, effect.query, effect.headers, body, secret, proxySecret, options, deadline, projection); const resultDigest = authorityDigest({ v: "reelier.https-response/v1", endpointId: runtimeEndpoint.endpointId, status: response.status, headers: response.headers, bodyDigest: authorityDigest(response.body.toString("base64")) }); return Object.freeze({ kind: response.status >= 200 && response.status < 300 ? "acknowledged" as const : "ambiguous" as const, resultDigest, providerStatus: response.status, responseDigest: resultDigest, materializedRequestDigest: response.materializedRequestDigest }); } finally { body.fill(0); } } });
 }
 
 export async function executeJsonHttpsRead(read: JsonHttpsRead, endpoint: JsonHttpsEndpoint | JsonHttpsRouteV1, secrets: JsonHttpsSecretResolver, options: JsonHttpsOptions = {}): Promise<JsonHttpsResponse> {
@@ -254,6 +255,10 @@ export function buildMaterializedHttpRequestProjection(endpoint: JsonHttpsEndpoi
 }
 
 function buildProjection(endpoint: JsonHttpsEndpoint, method: "POST" | "PUT" | "PATCH" | "DELETE" | "GET", path: string, query: string, headers: Readonly<Record<string, string>>, body: Uint8Array): MaterializedHttpRequestProjectionV1 {
+  for (const pair of query ? query.split("&") : []) {
+    const key = pair.split("=", 1)[0]!.toLowerCase();
+    if (/(?:token|secret|password|credential|authorization|api[-_]?key)/.test(key)) throw new JsonHttpsSecurityError("materialized request projection contains a secret query field");
+  }
   const projectedHeaders: Record<string, string> = {};
   for (const [name, value] of Object.entries(headers)) if (!["authorization", "cookie", "host", "proxy-authorization"].includes(name.toLowerCase())) projectedHeaders[name.toLowerCase()] = value;
   const projection = { v: "reelier.materialized-http-request/v1" as const, method: method as MaterializedHttpRequestProjectionV1["method"], origin: new URL(endpoint.baseUrl).origin, normalizedPath: path, normalizedQuery: query ? query.split("&").sort().join("&") : "", reviewedHeaders: projectedHeaders, bodyDigest: `sha256:${createHash("sha256").update(body).digest("hex")}` };

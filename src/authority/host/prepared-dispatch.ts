@@ -22,7 +22,7 @@ export interface PreparedDispatchDescriptionV1 {
 export interface PreparedDispatch { readonly [preparedBrand]: true; readonly description: PreparedDispatchDescriptionV1 }
 export interface DispatchCommitLease { readonly [commitBrand]: true }
 
-type PreparedState = { readonly description: PreparedDispatchDescriptionV1; readonly send: () => Promise<DispatchOutcome> };
+type PreparedState = { readonly description: PreparedDispatchDescriptionV1; readonly send: () => Promise<DispatchOutcome>; readonly monotonicNow: () => number; readonly wallClockNow: () => number };
 type CommitState = {
   readonly reservationId: string; readonly allocationId: string; readonly preparedDigest: string;
   readonly authorityGeneration: string; readonly authorityExpiresAt: string; readonly absoluteDeadlineMs: number; readonly commitGeneration: string;
@@ -32,11 +32,11 @@ type CommitState = {
 const preparedStates = new WeakMap<object, PreparedState>();
 const commitStates = new WeakMap<object, CommitState>();
 
-export function createPreparedDispatch(input: Readonly<{ description: PreparedDispatchDescriptionV1; send: () => Promise<DispatchOutcome> }>): PreparedDispatch {
+export function createPreparedDispatch(input: Readonly<{ description: PreparedDispatchDescriptionV1; send: () => Promise<DispatchOutcome>; monotonicNow?: () => number; wallClockNow?: () => number }>): PreparedDispatch {
   if (!input || typeof input !== "object" || typeof input.send !== "function") throw new TypeError("prepared dispatch is invalid");
   const description = validateDescription(input.description);
   const capability = Object.freeze(Object.defineProperty({ [preparedBrand]: true as const } as { [preparedBrand]: true; description: PreparedDispatchDescriptionV1 }, "description", { value: description, enumerable: false, writable: false, configurable: false }));
-  preparedStates.set(capability, { description, send: input.send });
+  preparedStates.set(capability, { description, send: input.send, monotonicNow: input.monotonicNow ?? (() => performance.now()), wallClockNow: input.wallClockNow ?? (() => Date.now()) });
   return capability;
 }
 
@@ -61,12 +61,13 @@ export async function consumePreparedDispatch(prepared: PreparedDispatch, commit
   if (!state || !lease) throw new TypeError("prepared dispatch or commit lease is invalid or consumed");
   const description = state.description;
   if (lease.reservationId !== description.reservationId || lease.allocationId !== description.allocationId || lease.preparedDigest !== description.materializedRequestDigest || lease.authorityGeneration !== description.authorityGeneration || lease.authorityExpiresAt !== description.authorityExpiresAt || lease.absoluteDeadlineMs !== description.absoluteDeadlineMs) throw new TypeError("prepared dispatch and commit lease binding mismatch");
-  if (Date.parse(description.authorityExpiresAt) <= Date.now()) throw new Error("authority lease expired before send");
-  if (!Number.isFinite(description.absoluteDeadlineMs) || performance.now() >= description.absoluteDeadlineMs) throw new Error("dispatch deadline expired before send");
-  if (lease.commit) await lease.commit(description);
-  // Delete only after the durable boundary succeeds; there is no retry path that can invoke send twice.
+  if (Date.parse(description.authorityExpiresAt) <= state.wallClockNow()) throw new Error("authority lease expired before send");
+  if (!Number.isFinite(description.absoluteDeadlineMs) || state.monotonicNow() >= description.absoluteDeadlineMs) throw new Error("dispatch deadline expired before send");
+  // Claim both capabilities synchronously, before the first await. Promise races therefore
+  // leave exactly one winner and can never invoke the consequential send twice.
   preparedStates.delete(prepared as object);
   commitStates.delete(commitLease as object);
+  if (lease.commit) await lease.commit(description);
   try { return Object.freeze(await state.send()); }
   catch { return Object.freeze({ kind: "ambiguous" as const, resultDigest: materializedHttpRequestDigest({ ...description.projection, v: "reelier.materialized-http-request/v1" }) }); }
 }

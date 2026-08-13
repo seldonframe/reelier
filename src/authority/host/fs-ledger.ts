@@ -168,6 +168,7 @@ export type LedgerFaultPoint = (typeof ledgerFaultPoints)[number];
 
 export interface FsAuthorityLedgerOptions {
   readonly now?: () => number;
+  readonly monotonicNow?: () => number;
   // The parameter type names the frozen public ABI; at runtime the injector also receives the
   // 13 module-private internal boundary names (see `ledgerInternalBoundaries`) — longstanding
   // behavior. Treat unknown names as internal boundaries, never as errors; an exhaustive
@@ -308,6 +309,17 @@ interface TransitionJournalEvent {
   readonly resultDigest?: string;
 }
 
+interface SendStartedJournalEvent {
+  readonly v: "reelier.authority-ledger-event/v1";
+  readonly sequence: number;
+  readonly previousDigest: string | null;
+  readonly type: "send-started";
+  readonly reservationId: string;
+  readonly preparedDigest: string;
+  readonly authorityGeneration: string;
+  readonly at: string;
+}
+
 interface ClockEvent {
   readonly v: "reelier.authority-ledger-event/v1";
   readonly sequence: number;
@@ -316,10 +328,11 @@ interface ClockEvent {
   readonly observedAt: string;
 }
 
-type JournalEvent = ReserveEvent | TransitionJournalEvent | ClockEvent;
+type JournalEvent = ReserveEvent | TransitionJournalEvent | SendStartedJournalEvent | ClockEvent;
 type JournalBody =
   | Omit<ReserveEvent, "v" | "sequence" | "previousDigest">
   | Omit<TransitionJournalEvent, "v" | "sequence" | "previousDigest">
+  | Omit<SendStartedJournalEvent, "v" | "sequence" | "previousDigest">
   | Omit<ClockEvent, "v" | "sequence" | "previousDigest">;
 
 interface LedgerView {
@@ -425,11 +438,13 @@ export class FsAuthorityLedger implements AuthorityLedger {
   private initiatedPrepCleanupContinuation:PrepCleanupContinuation|null=null;
   private refusalOnlyK1ClassificationActive=false;
   private lockTail:Promise<void>=Promise.resolve();
+  private readonly monotonicClock: () => number;
 
   constructor(root: string, options: FsAuthorityLedgerOptions = {}) {
     const resolved = path.resolve(root);
     const internalOptions=options as InternalFsAuthorityLedgerOptions,injected=Object.prototype.hasOwnProperty.call(internalOptions,__testK1OperationFenceRuntimeOption),injectedRuntime=injected?parseK1OperationFenceRuntime(internalOptions[__testK1OperationFenceRuntimeOption]):undefined;
     this.options = { now: options.now ?? Date.now, faultInjector: options.faultInjector, lockTimeoutMs: options.lockTimeoutMs ?? 30_000 };
+    this.monotonicClock = options.monotonicNow ?? monotonicNow;
     this.admissionClock=internalOptions[__testAdmissionClockOption]??(()=>process.hrtime.bigint());
     // Assigned before the invalid-fence early return below, so the field is initialised on every
     // construction path. Only the two exact literals are recognised ({mode:"legacy"} disables,
@@ -557,14 +572,39 @@ export class FsAuthorityLedger implements AuthorityLedger {
   }
 
   async commitPreparedDispatch(input: Readonly<{ reservationId: string; allocationId: string; expectedAuthorityGeneration: string; preparedDescription: PreparedDispatchDescriptionV1; absoluteDeadlineMs: number }>): Promise<DispatchCommitLease> {
-    const reservation = await this.getReservation(input.reservationId);
-    if (!reservation || reservation.state !== "reserved") throw new Error("prepared dispatch reservation is not reserved");
-    const context = reservation.intent.executionContext;
-    if ((context?.allocationId ?? input.allocationId) !== input.allocationId) throw new Error("prepared dispatch allocation mismatch");
-    if (input.preparedDescription.authorityGeneration !== input.expectedAuthorityGeneration || input.preparedDescription.reservationId !== input.reservationId || input.preparedDescription.allocationId !== input.allocationId) throw new Error("prepared dispatch authority binding mismatch");
-    const transitioned = await this.transition(input.reservationId, "reserved", { to: "dispatched" });
-    if (!transitioned.ok) throw new Error(`prepared dispatch commit refused: ${transitioned.reason}`);
-    return createDispatchCommitLease({ reservationId: input.reservationId, allocationId: input.allocationId, preparedDigest: input.preparedDescription.materializedRequestDigest, authorityGeneration: input.expectedAuthorityGeneration, authorityExpiresAt: input.preparedDescription.authorityExpiresAt, absoluteDeadlineMs: input.absoluteDeadlineMs, commitGeneration: `commit:${input.reservationId}` });
+    const result = await this.withLock("dispatch", async reclaimed => {
+      const view = await this.prepare(reclaimed, false, "dispatch");
+      const reservation = view.reservations.get(input.reservationId);
+      if (!reservation || reservation.state !== "reserved") throw new Error("prepared dispatch reservation is not reserved");
+      const context = reservation.intent.executionContext;
+      if ((context?.allocationId ?? input.allocationId) !== input.allocationId) throw new Error("prepared dispatch allocation mismatch");
+      if (input.preparedDescription.authorityGeneration !== input.expectedAuthorityGeneration || input.preparedDescription.reservationId !== input.reservationId || input.preparedDescription.allocationId !== input.allocationId) throw new Error("prepared dispatch authority binding mismatch");
+      if (this.monotonicClock() >= input.absoluteDeadlineMs) throw new Error("prepared dispatch deadline expired");
+      if (this.options.now() >= Date.parse(input.preparedDescription.authorityExpiresAt)) throw new Error("prepared dispatch authority expired");
+      const now = this.options.now();
+      if (now >= parseIso(reservation.intent.expiresAt)) throw new Error("prepared dispatch reservation expired");
+      const withClock = await this.persistClock(view, now, "dispatch");
+      const at = new Date(now).toISOString();
+      const transition = await this.appendEvent(withClock, { type: "transition", reservationId: input.reservationId, from: "reserved", to: "dispatched", at }, "dispatch") as TransitionJournalEvent;
+      const next = applyTransition(reservation, transition);
+      return createDispatchCommitLease({ reservationId: input.reservationId, allocationId: input.allocationId, preparedDigest: input.preparedDescription.materializedRequestDigest, authorityGeneration: input.expectedAuthorityGeneration, authorityExpiresAt: input.preparedDescription.authorityExpiresAt, absoluteDeadlineMs: input.absoluteDeadlineMs, commitGeneration: `commit:${input.reservationId}`,
+        commit: async () => { await this.markPreparedDispatchStarted(input.reservationId, input.preparedDescription.materializedRequestDigest, input.expectedAuthorityGeneration); },
+      });
+    });
+    if (isLockFailure(result)) throw new Error(`prepared dispatch commit refused: ${result.reason}`);
+    return result as DispatchCommitLease;
+  }
+
+  private async markPreparedDispatchStarted(reservationId: string, preparedDigest: string, authorityGeneration: string): Promise<void> {
+    const result = await this.withLock("dispatch", async reclaimed => {
+      const view = await this.prepare(reclaimed, false, "dispatch");
+      const current = view.reservations.get(reservationId);
+      if (!current || current.state !== "dispatched" || current.sendStarted === true) throw new Error("prepared dispatch send boundary is unavailable");
+      const now = this.options.now();
+      const clocked = await this.persistClock(view, now, "dispatch");
+      await this.appendEvent(clocked, { type: "send-started", reservationId, preparedDigest, authorityGeneration, at: new Date(now).toISOString() }, "dispatch");
+    });
+    if (isLockFailure(result)) throw new Error(`send-started boundary refused: ${result.reason}`);
   }
 
   async recover(options: Readonly<{ deferTerminal?: boolean }> = {}): Promise<RecoverResult> {
@@ -3298,6 +3338,10 @@ export class FsAuthorityLedger implements AuthorityLedger {
           !hasValidResultDigest(event.to, event.resultDigest)
         ) throw new LedgerCorruption("illegal journal transition");
         reservations.set(event.reservationId, applyTransition(current, event));
+      } else if (event.type === "send-started") {
+        const current = reservations.get(event.reservationId);
+        if (!current || current.state !== "dispatched" || current.sendStarted === true || !SHA.test(event.preparedDigest) || !event.authorityGeneration || !isIso(event.at) || highWaterMark === null || event.at !== highWaterMark || parseIso(event.at) < parseIso(current.updatedAt)) throw new LedgerCorruption("invalid send-started journal event");
+        reservations.set(event.reservationId, frozen({ ...current, sendStarted: true, sequence: event.sequence, updatedAt: event.at }));
       } else throw new LedgerCorruption("unexpected journal record");
       events.push(event);
       eventDigests.push(named.digest);
@@ -3486,6 +3530,9 @@ function assertJournalEvent(event: JournalEvent): void {
       ? ["at", "from", "previousDigest", "reservationId", "sequence", "to", "type", "v"]
       : ["at", "from", "previousDigest", "reservationId", "resultDigest", "sequence", "to", "type", "v"]);
     if (!SHA.test(event.reservationId) || !isIso(event.at) || !hasValidResultDigest(event.to, event.resultDigest)) throw new LedgerCorruption("invalid transition event identity");
+  } else if (event.type === "send-started") {
+    assertExactKeys(event, ["at", "authorityGeneration", "preparedDigest", "previousDigest", "reservationId", "sequence", "type", "v"]);
+    if (!SHA.test(event.reservationId) || !SHA.test(event.preparedDigest) || typeof event.authorityGeneration !== "string" || !event.authorityGeneration || !isIso(event.at)) throw new LedgerCorruption("invalid send-started event identity");
   }
   else throw new LedgerCorruption("unexpected journal event type");
 }
