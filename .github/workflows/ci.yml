@@ -69,6 +69,15 @@ jobs:
     needs: pack-authority-host-boundary
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
       - uses: actions/download-artifact@v4
         with:
           name: authority-host-boundary-pack
@@ -79,8 +88,9 @@ jobs:
           set -euo pipefail
           test "$(cat authority-host-boundary-pack/authority-workflow-source.sha)" = '${{ github.sha }}'
           test "$(sha256sum authority-host-boundary-pack/*.tgz | awk '{print $1}')" = "$(cat authority-host-boundary-pack/authority-host-boundary.sha256)"
+          test "$(node --input-type=module -e 'import { AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST } from "./dist/authority/index.js"; console.log(AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST)')" = "$(cat authority-host-boundary-pack/authority-adapter-contract.digest)"
           node test/packed/authority-factory-journey.mjs --tarball "$(pwd)/authority-host-boundary-pack/$(basename authority-host-boundary-pack/*.tgz)" --out "$(pwd)/factory-evidence"
-          node --input-type=module -e 'import { createHash } from "node:crypto"; import { readFileSync, writeFileSync } from "node:fs"; const d=p=>"sha256:"+createHash("sha256").update(readFileSync(p)).digest("hex"); writeFileSync("factory-evidence/factory-evidence-metadata.json", JSON.stringify({v:"reelier.factory-evidence-metadata/v1",workflowSourceSha:"${{ github.sha }}",tarballSha256:readFileSync("authority-host-boundary-pack/authority-host-boundary.sha256","utf8").trim(),adapterContractDigest:readFileSync("authority-host-boundary-pack/authority-adapter-contract.digest","utf8").trim(),graphDigest:d("factory-evidence/graph.json"),trustPinDigest:d("factory-evidence/trust-pin.json"),summaryDigest:d("factory-evidence/factory-journey-summary.json"),secretCanaryResult:"empty"})+"\n")'
+          node --input-type=module -e 'import { createHash } from "node:crypto"; import { readFileSync, writeFileSync } from "node:fs"; const d=p=>"sha256:"+createHash("sha256").update(readFileSync(p)).digest("hex"), files=["factory-evidence/graph.json","factory-evidence/trust-pin.json","factory-evidence/factory-journey-summary.json"], bytes=Buffer.concat(files.map(readFileSync)); if(/(bearer|credential|privateKey|token)/i.test(bytes.toString("utf8"))) throw new Error("secret canary failed"); writeFileSync("factory-evidence/factory-evidence-metadata.json", JSON.stringify({v:"reelier.factory-evidence-metadata/v1",workflowSourceSha:"${{ github.sha }}",tarballSha256:readFileSync("authority-host-boundary-pack/authority-host-boundary.sha256","utf8").trim(),adapterContractDigest:readFileSync("authority-host-boundary-pack/authority-adapter-contract.digest","utf8").trim(),graphDigest:d(files[0]),trustPinDigest:d(files[1]),summaryDigest:d(files[2]),secretCanaryResult:"empty"})+"\n")'
       - uses: actions/upload-artifact@v4
         with:
           name: authority-factory-public-evidence
