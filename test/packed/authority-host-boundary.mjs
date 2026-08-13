@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
@@ -18,12 +18,14 @@ assert.equal(path.isAbsolute(tarball), true, "tarball path is absolute");
 assert.equal(existsSync(tarball), true, "tarball exists");
 assert.ok(["surface", "windows-native"].includes(mode), "known mode");
 if (mode === "windows-native") assert.equal(process.platform, "win32", "native Windows is required");
-const consumer = mkdtempSync(path.join(os.tmpdir(), "reelier-authority-host-boundary-"));
+const consumerParent = mkdtempSync(path.join(os.tmpdir(), "reelier authority & host-"));
+const consumer = path.join(consumerParent, "consumer");
+mkdirSync(consumer);
 try {
   const npmOptions = { cwd: consumer, stdio: "pipe" };
-  const runNpm = (npmArgs) => process.platform === "win32"
-    ? execFileSync(process.env.ComSpec ?? "cmd.exe", ["/d", "/c", `npm ${npmArgs.join(" ")}`], npmOptions)
-    : execFileSync("npm", npmArgs, npmOptions);
+  const npmCli = [process.env.npm_execpath, path.join(path.dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js"), path.resolve(path.dirname(process.execPath), "..", "lib", "node_modules", "npm", "bin", "npm-cli.js")].find(candidate => candidate && existsSync(candidate));
+  assert.ok(npmCli, "npm CLI module is resolvable");
+  const runNpm = (npmArgs) => execFileSync(process.execPath, [npmCli, ...npmArgs], npmOptions);
   runNpm(["init", "-y"]);
   runNpm(["install", "--ignore-scripts", "--no-package-lock", tarball]);
   const host = await import(pathToFileURL(createRequire(path.join(consumer, "consumer.cjs")).resolve("reelier/authority/host")).href);
@@ -61,5 +63,5 @@ try {
     for (const root of roots) rmSync(root, { recursive: true, force: true });
   }
 } finally {
-  rmSync(consumer, { recursive: true, force: true });
+  rmSync(consumerParent, { recursive: true, force: true });
 }

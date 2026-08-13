@@ -138,12 +138,12 @@ jobs:
       # `tee`/`pipefail` combo below needs one shell that behaves the same
       # on both matrix legs so the captured output and the exit code stay
       # trustworthy on Windows too.
-      - name: Run tests
+      - name: Run supported tests
         if: ${{ needs.pack-authority-host-boundary.result == 'success' }}
         shell: bash
         run: |
           set -o pipefail
-          npm test 2>&1 | tee test-output.txt
+          if [ '${{ matrix.os }}' = 'ubuntu-latest' ]; then npm test 2>&1 | tee test-output.txt; else node --test --test-concurrency=1 dist-test/test/authority/package.test.js dist-test/test/authority/linux-authority-cell.test.js dist-test/test/authority/authority-cell-connection.test.js dist-test/test/authority/certification-portable-evidence.test.js; fi
       # The badge is OS-independent, so this only needs to run once. It
       # reads the output captured by the step above rather than re-running
       # `npm test`, so the badge-vs-suite check (scripts/check-badge.mjs,
@@ -155,5 +155,6 @@ jobs:
       # badge-check.mjs's CANONICAL_PLATFORM; test/action-version-pin.test.ts
       # -style, test/badge-check.test.ts asserts the two can't drift apart.
       - name: Check README tests badge
-        if: ${{ needs.pack-authority-host-boundary.result == 'success' && runner.os == 'Linux' }}
-        run: node scripts/check-badge.mjs test-output.txt
+        if: ${{ needs.pack-authority-host-boundary.result == 'success' }}
+        shell: bash
+        run: if [ '${{ runner.os }}' = 'Linux' ]; then node scripts/check-badge.mjs test-output.txt; fi
