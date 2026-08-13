@@ -16,11 +16,12 @@ interface SpawnCall {
   shell: boolean | undefined;
   stdio: unknown;
   env: unknown;
+  cwd: unknown;
 }
 
 function captureSpawn(calls: SpawnCall[]) {
-  return (command: string, args: readonly string[], options: Readonly<{ shell?: boolean; stdio?: unknown; env?: unknown }>) => {
-    calls.push({ command, args: [...args], shell: options.shell, stdio: options.stdio, env: options.env });
+  return (command: string, args: readonly string[], options: Readonly<{ shell?: boolean; stdio?: unknown; env?: unknown; cwd?: unknown }>) => {
+    calls.push({ command, args: [...args], shell: options.shell, stdio: options.stdio, env: options.env, cwd: options.cwd });
     return { status: 0 };
   };
 }
@@ -57,10 +58,46 @@ test("each preflight profile dispatches its closed local Node commands with a co
     assert.equal(calls.every((call) => call.shell === false), true);
     assert.equal(calls.every((call) => call.stdio === "pipe"), true);
     assert.equal(calls.every((call) => JSON.stringify(call.env) === JSON.stringify({ PATH: path.dirname(process.execPath) })), true);
+    assert.equal(calls.every((call) => call.cwd === process.cwd()), true);
     assert.equal(result.commands.every((command: { commandId: string; exitCode: number | null; durationMs: number }) => (
       Object.keys(command).sort().join(",") === "commandId,durationMs,exitCode"
     )), true);
   }
+});
+
+test("local entrypoints resolve atomically before any command dispatch", () => {
+  const calls: SpawnCall[] = [];
+  assert.throws(() => runAccelerationPreflight({
+    profile: "provider-authority",
+    platform: "linux",
+    spawn: captureSpawn(calls),
+    exists: (target: string) => !target.replaceAll("\\", "/").endsWith("node_modules/typescript/bin/tsc"),
+  }), /^Error: local preflight unavailable$/);
+  assert.equal(calls.length, 0);
+});
+
+test("a failed command stops later preflight commands without forwarding child output", () => {
+  const calls: SpawnCall[] = [];
+  let attempt = 0;
+  const result = runAccelerationPreflight({
+    profile: "operator-evidence",
+    platform: "linux",
+    spawn: (command: string, args: readonly string[], options: Readonly<{ shell?: boolean; stdio?: unknown; env?: unknown; cwd?: unknown }>) => {
+      calls.push({ command, args: [...args], shell: options.shell, stdio: options.stdio, env: options.env, cwd: options.cwd });
+      attempt += 1;
+      return attempt === 2 ? { status: 17, stderr: "child secret stderr", stdout: "child output" } : { status: 0 };
+    },
+  });
+  assert.equal(calls.length, 2);
+  assert.deepEqual(result, {
+    evidenceClass: "preflight",
+    commands: [
+      { commandId: "operator-evidence:1", exitCode: 0, durationMs: result.commands[0].durationMs },
+      { commandId: "operator-evidence:2", exitCode: 17, durationMs: result.commands[1].durationMs },
+    ],
+  });
+  assert.equal(JSON.stringify(result).includes("child secret stderr"), false);
+  assert.equal(JSON.stringify(result).includes("child output"), false);
 });
 
 test("the runner refuses open profiles, environment control, and non-Linux clean runs before dispatch", () => {
@@ -107,6 +144,7 @@ test("the CLI emits exactly one preflight-only JSON line", () => {
     encoding: "utf8",
   });
   assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stderr, "");
   assert.equal(result.stdout.endsWith("\n"), true);
   const summary = JSON.parse(result.stdout) as { evidenceClass: string; commands: unknown[] };
   assert.equal(result.stdout, `${JSON.stringify(summary)}\n`);
