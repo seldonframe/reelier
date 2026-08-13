@@ -265,3 +265,99 @@ Open risks
 - Duplicate completeness is only as of the included signed journal checkpoint. Freshness after that checkpoint is explicitly unchecked.
 - A captured old graph plus its captured old journal is valid historical evidence and cannot satisfy a later-currentness claim.
 - Existing Windows filesystem/concurrency flakes remain recorded and unmasked; Linux CI is still required for the real host boundary.
+
+Round 5/5 zero-head checkpoint fix
+
+Files changed
+
+- `src/authority/certification/portable-evidence.ts`
+- `test/authority/certification-github-issue-labels-runner.test.ts`
+- `.superpowers/sdd/2026-08-12-windows-client-linux-authority-cell/task-4-1-report.md`
+
+What changed per file
+
+- `portable-evidence.ts`: requires the supplied signed duplicate head to match an included terminal journal checkpoint whenever either the head is nonzero or any checkpoint exists. A genuine initial zero head with no later checkpoint remains valid historical/current-as-of evidence with freshness unchecked.
+- `certification-github-issue-labels-runner.test.ts`: captures and verifies an honest initial zero graph, creates a genuine count-one checkpoint, restores the zero ledger and regenerates the terminal graph to prove rejection, then verifies the honest current graph and captured historical graphs.
+- `task-4-1-report.md`: records the Round 5 red/green commits, exact verification, deviations, and remaining risks.
+
+Deviations from the plan and why
+
+- None. No retry, sleep, timeout, contract, runner, journal, or unrelated behavior changed.
+
+Test results (verbatim tail)
+
+RED, commit `d704d03`:
+
+```text
+âœ– externally anchored duplicate head rejects canonical rollback after restart and concurrent attempts (2707.1178ms)
+â„¹ tests 1
+â„¹ suites 0
+â„¹ pass 0
+â„¹ fail 1
+â„¹ cancelled 0
+â„¹ skipped 0
+â„¹ todo 0
+â„¹ duration_ms 2929.8739
+
+âœ– failing tests:
+
+AssertionError [ERR_ASSERTION]: Missing expected exception.
+```
+
+GREEN, commit `182af78`:
+
+```text
+âœ” externally anchored duplicate head rejects canonical rollback after restart and concurrent attempts (2697.5202ms)
+â„¹ tests 1
+â„¹ suites 0
+â„¹ pass 1
+â„¹ fail 0
+â„¹ cancelled 0
+â„¹ skipped 0
+â„¹ todo 0
+â„¹ duration_ms 2889.2567
+```
+
+Focused runner and portable suite:
+
+```text
+âœ” externally anchored duplicate head rejects canonical rollback after restart and concurrent attempts (3928.1888ms)
+âœ” exhausted exact conflict replay records literal request id and operation kind without effect (1743.9967ms)
+âœ” portable export preserves dispatch history while reporting a current task revocation (1605.5912ms)
+âœ” offline portable verification rejects re-signed false claims with a fresh terminal commitment (1697.0668ms)
+â„¹ Error: Test "concurrent recovery cannot release a live dispatched request before its one write" at dist-test\test\authority\certification-github-issue-labels-runner.test.js:279:1 generated asynchronous activity after the test ended. This activity created the error "Error: ENOENT: no such file or directory, open 'C:\Users\maxim\AppData\Local\Temp\reelier-github-cell-myUuLp\certification\authority\github-label-runner\provider-state.json.2fa17e3d-b07c-411f-b2eb-69dec69aa8c9.tmp'" and would have caused the test to fail, but instead triggered an unhandledRejection event.
+âœ” portable task status binds the signed observation time without claiming later freshness (3.7858ms)
+âœ” partial post-state requires a reviewed observation with a real observed projection (0.249ms)
+â„¹ tests 46
+â„¹ suites 0
+â„¹ pass 44
+â„¹ fail 1
+â„¹ cancelled 0
+â„¹ skipped 1
+â„¹ todo 0
+â„¹ duration_ms 69658.2983
+
+âœ– failing tests:
+
+âœ– concurrent recovery cannot release a live dispatched request before its one write (702.4603ms)
+  AssertionError [ERR_ASSERTION]: Missing expected rejection.
+```
+
+Contract/build gates:
+
+```text
+> reelier@0.32.1 check:authority-contract
+> node scripts/build-authority-contract.mjs --check
+```
+
+`npx tsc --noEmit --pretty false`, `git diff --check`, and `git diff --exit-code 18b5351 -- contract/authority/v1` exited 0. The frozen Adapter Contract digest printed:
+
+```text
+sha256:7f46242b26d9c921f4e1ec9de6418ac5fc8c03d70c4415c25e799ae0e73a1512
+```
+
+Open risks
+
+- Duplicate completeness and the zero-head exception remain current only as of the included signed journal history; later freshness is explicitly unchecked.
+- A captured zero or nonzero graph paired with its captured journal remains valid historical evidence. Pairing an old head with a later included checkpoint now refuses.
+- The previously recorded Windows concurrent-recovery test flaked again in the combined focused suite. The new Round 5 targeted scenario passed in both its dedicated GREEN run and the combined run; no retry, sleep, timeout, or failing path was changed.
