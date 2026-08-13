@@ -442,7 +442,7 @@
       "type": "object", "additionalProperties": false,
       "required": ["v","requestId","dispatchRequestDigest","permitSnapshotDigest","expectedProjectionDigest","preSourceBundleDigest","projectionSchemaId","projectionSchemaDigest","preProjectionDigest","observedProjectionDigest","observationMethod","observedAt","confidence","signerId","signature"],
       "properties": {
-        "v": { "const": "reelier.certification-post-state-evidence/v1" }, "requestId": { "type": "string" }, "dispatchRequestDigest": { "$ref": "#/$defs/digest" }, "permitSnapshotDigest": { "$ref": "#/$defs/digest" }, "expectedProjectionDigest": { "$ref": "#/$defs/digest" }, "preSourceBundleDigest": { "$ref": "#/$defs/nullableDigest" }, "projectionSchemaId": { "type": "string" }, "projectionSchemaDigest": { "$ref": "#/$defs/digest" }, "preProjectionDigest": { "$ref": "#/$defs/nullableDigest" }, "observedProjectionDigest": { "$ref": "#/$defs/nullableDigest" }, "observationMethod": { "enum": ["hermetic-authoritative-read","provider-acknowledgment","not-observed"] }, "observedAt": { "type": "string" }, "confidence": { "enum": ["exact","partial","pending","absent"] }, "signerId": { "type": "string" }, "signature": { "$ref": "#/$defs/signature" }
+        "v": { "const": "reelier.certification-post-state-evidence/v1" }, "requestId": { "type": "string" }, "dispatchRequestDigest": { "$ref": "#/$defs/digest" }, "permitSnapshotDigest": { "$ref": "#/$defs/digest" }, "expectedProjectionDigest": { "$ref": "#/$defs/digest" }, "preSourceBundleDigest": { "$ref": "#/$defs/nullableDigest" }, "projectionSchemaId": { "type": "string" }, "projectionSchemaDigest": { "$ref": "#/$defs/digest" }, "preProjectionDigest": { "$ref": "#/$defs/nullableDigest" }, "observedProjectionDigest": { "$ref": "#/$defs/nullableDigest" }, "observationMethod": { "enum": ["hermetic-authoritative-read","provider-acknowledgment","not-observed"] }, "observedAt": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$" }, "confidence": { "enum": ["exact","partial"] }, "signerId": { "type": "string" }, "signature": { "$ref": "#/$defs/signature" }
       }
     },
     "policyEvidence": {
@@ -457,13 +457,18 @@
     },
     "duplicateDecision": {
       "type": "object", "additionalProperties": false,
-      "required": ["v","attemptRequestId","originalRequestId","originalRequestDigest","originalEffectDigest","observedAuthorityState","observedAuthorityStateDigest","observedAt","budgetDelta","providerWriteDelta","signerId","signature"],
-      "properties": { "v": { "const": "reelier.certification-duplicate-decision/v1" }, "attemptRequestId": { "type": "string" }, "originalRequestId": { "type": "string" }, "originalRequestDigest": { "$ref": "#/$defs/digest" }, "originalEffectDigest": { "$ref": "#/$defs/digest" }, "observedAuthorityState": { "type": "object" }, "observedAuthorityStateDigest": { "$ref": "#/$defs/digest" }, "observedAt": { "type": "string" }, "budgetDelta": { "const": 0 }, "providerWriteDelta": { "const": 0 }, "signerId": { "type": "string" }, "signature": { "$ref": "#/$defs/signature" } }
+      "required": ["v","attemptId","attemptRequestId","originalRequestId","originalRequestDigest","originalEffectDigest","observedAuthorityState","observedAuthorityStateDigest","observedAt","budgetDelta","providerWriteDelta","signerId","signature"],
+      "properties": { "v": { "const": "reelier.certification-duplicate-decision/v1" }, "attemptId": { "type": "string" }, "attemptRequestId": { "type": "string" }, "originalRequestId": { "type": "string" }, "originalRequestDigest": { "$ref": "#/$defs/digest" }, "originalEffectDigest": { "$ref": "#/$defs/digest" }, "observedAuthorityState": { "type": "object" }, "observedAuthorityStateDigest": { "$ref": "#/$defs/digest" }, "observedAt": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$" }, "budgetDelta": { "const": 0 }, "providerWriteDelta": { "const": 0 }, "signerId": { "type": "string" }, "signature": { "$ref": "#/$defs/signature" } }
     },
     "duplicateAttempt": {
       "type": "object", "additionalProperties": false,
       "required": ["v","attemptId","attemptRequestId","originalRequestId","observedAuthorityStateDigest","observedAt","signerId","signature"],
       "properties": { "v": { "const": "reelier.certification-duplicate-attempt/v1" }, "attemptId": { "type": "string" }, "attemptRequestId": { "type": "string" }, "originalRequestId": { "type": "string" }, "observedAuthorityStateDigest": { "$ref": "#/$defs/digest" }, "observedAt": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$" }, "signerId": { "type": "string" }, "signature": { "$ref": "#/$defs/signature" } }
+    },
+    "duplicateAttemptHead": {
+      "type": "object", "additionalProperties": false,
+      "required": ["v","count","historyDigest","signerId","signature"],
+      "properties": { "v": { "const": "reelier.certification-duplicate-attempt-head/v1" }, "count": { "type": "integer", "minimum": 0 }, "historyDigest": { "$ref": "#/$defs/digest" }, "signerId": { "type": "string" }, "signature": { "$ref": "#/$defs/signature" } }
     },
     "counts": {
       "type": "object",
@@ -594,6 +599,7 @@
     "postStateEvidence",
     "policyEvidence",
     "taskStatusEvidence",
+    "duplicateAttemptHead",
     "duplicateAttempts",
     "duplicateDecisions",
     "binding",
@@ -654,6 +660,7 @@
     "postStateEvidence": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/postStateEvidence" } },
     "policyEvidence": { "type": "array", "minItems": 2, "maxItems": 2, "items": { "$ref": "#/$defs/policyEvidence" } },
     "taskStatusEvidence": { "type": "array", "minItems": 2, "maxItems": 2, "items": { "$ref": "#/$defs/taskStatusEvidence" } },
+    "duplicateAttemptHead": { "$ref": "#/$defs/duplicateAttemptHead" },
     "duplicateAttempts": { "type": "array", "items": { "$ref": "#/$defs/duplicateAttempt" } },
     "duplicateDecisions": { "type": "array", "items": { "$ref": "#/$defs/duplicateDecision" } },
     "binding": { "$ref": "#/$defs/binding" },

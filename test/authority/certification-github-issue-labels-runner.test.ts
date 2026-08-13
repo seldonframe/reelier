@@ -544,6 +544,7 @@ test("portable export preserves dispatch history while reporting a current task 
 test("offline portable verification rejects re-signed false claims with a fresh terminal commitment", async () => {
   const f = await fixture(); try {
     await f.runner.run({ bearerToken: f.credential.token, requestId: "request_resigned" });
+    await f.runner.run({ bearerToken: f.credential.token, requestId: "request_resigned_duplicate" });
     const graph: any = await f.runner.exportGraph({ bearerToken: f.credential.token });
     const evidence = f.cell && certificationCellHostInternalState(f.cell).hermeticGitHubAuthority().lifecycle.direct.get("authority-evidence")!;
     const signer = { signerId: evidence.descriptor.keyId, sign: (digest: string) => signAuthorityDigest(evidence.privateKey, "authority-evidence", digest) };
