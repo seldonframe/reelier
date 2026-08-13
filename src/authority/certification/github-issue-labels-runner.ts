@@ -31,6 +31,13 @@ import { AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST } from "../adapter-contract.js";
 import { createCertificationDuplicateAttempt, createCertificationDuplicateAttemptHead, createCertificationDuplicateDecision, createCertificationPolicyEvidence, createCertificationPostStateEvidence, createCertificationTaskAuthorityEvidence, createCertificationTaskStatusEvidence } from "./portable-evidence.js";
 
 export type HermeticGitHubMode = "normal" | "source-drift" | "effect-drift" | "provider-503" | "accessor-response" | "cut-after-budget" | "cut-after-dispatched" | "cut-after-send-intent" | "cut-after-apply" | "cut-after-cleanup-publication" | "cut-after-conflict-publication" | "cut-after-conflict-receipt-before-extension" | "pause-after-dispatched";
+let testDispatchedBarrier: ((requestId: string) => Promise<void>) | undefined;
+/** Test-only, non-barrel scheduler seam for proving live-dispatch exclusion without wall-clock timing. */
+export function __testSetGitHubIssueLabelsRunnerBarrier(barrier: (requestId: string) => Promise<void>): () => void {
+  const prior = testDispatchedBarrier;
+  testDispatchedBarrier = barrier;
+  return () => { testDispatchedBarrier = prior; };
+}
 export interface GitHubHermeticRunnerResult {
   readonly requestId: string;
   readonly status: "acknowledged" | "refused" | "failed" | "pending-reconciliation" | "duplicate" | "conflict" | "cleaned";
@@ -224,6 +231,7 @@ export async function createGitHubIssueLabelsHermeticComposition(cell: Certifica
         const current = await loadJournal(journalRoot, requestId, journalAuthority);
         if (!current) throw new Error("dispatch journal missing");
         await saveJournal(journalRoot, { ...current, phase: "dispatched" }, journalAuthority);
+        await testDispatchedBarrier?.(requestId);
         if (mode === "cut-after-dispatched") {
           controlledCut = new ControlledCut();
           throw controlledCut;
