@@ -136,3 +136,16 @@ test("certified identity rejects a signed account-id mismatch", async () => {
     await assert.rejects(() => coordinator.dispatch(createReservedDispatchHandle({ reservation, effect: {}, effectCanonicalBase64: "e30=", effectDigest: sha("3") })), /identity/i);
   } finally { restore(); }
 });
+
+test("certified identity rejects a bogus signature with an otherwise valid namespaced identity", async () => {
+  const restore = __testSetAuthorityCellHostPlatform("linux");
+  try {
+    const route = { ...routeAuthority(), providerAccountIdentity: "github:octocat" };
+    const reservation: any = { reservationId: "r1", state: "reserved", intent: { effectDigest: sha("3"), routeAuthority: route } };
+    const ledger: any = { async getReservation() { return reservation; }, async commitPreparedDispatch() { throw new Error("must not commit"); } };
+    let prepared = false;
+    const coordinator = createDispatchCoordinator(ledger, { async dispatch() { throw new Error("must not send"); }, async prepare() { prepared = true; throw new Error("must not prepare"); } }, undefined, undefined, undefined, { identityProbe: async () => identityFor(route, { signature: { alg: "ed25519", sig: Buffer.alloc(64, 7).toString("base64") } }), verifyIdentity: verifier, revalidator: { async routeReread() { return route; }, async revalidate() { return { authorityGeneration: route.authorityGeneration, authorityExpiresAt: route.authorityExpiresAt, routeAuthorityDigest: authorityDigest(route) }; } } });
+    await assert.rejects(() => coordinator.dispatch(createReservedDispatchHandle({ reservation, effect: {}, effectCanonicalBase64: "e30=", effectDigest: sha("3") })), /identity/i);
+    assert.equal(prepared, false);
+  } finally { restore(); }
+});
