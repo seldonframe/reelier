@@ -55,6 +55,7 @@ export interface LocalAuthorityRuntimeOptions {
   readonly secretResolverOptions?: SecretResolverOptions;
   readonly routeAuthority?: (input: Readonly<{ tenant:string; requester:string; definitionAlias:string; connectorId:string; accountId:string; endpointId:string; authorityGeneration:string; authorityExpiresAt:string }>) => RouteAuthoritySnapshotV1 | undefined;
   readonly authenticatedProviderIdentity?: () => Promise<AuthenticatedProviderIdentityV1>;
+  readonly verifyAuthenticatedProviderIdentity?: (identity: AuthenticatedProviderIdentityV1) => Promise<boolean> | boolean;
   readonly certifiedDispatch?: CertifiedDispatchOptions;
 }
 
@@ -124,8 +125,11 @@ export async function createLocalAuthorityRuntime(config: AuthorityHostConfig, o
   const gate = createAuthorityGate({ trustRoots, packs, sources, connectors: connectorRegistry, state, ledger, ...(options.routeAuthority ? { routeAuthority: options.routeAuthority } : {}), ...(options.authenticatedProviderIdentity ? { authenticatedProviderIdentity: options.authenticatedProviderIdentity } : {}), localGatePolicyDigest: authorityDigest({ v: "reelier.local-gate-policy/v1", tenant: config.tenant }), decisionSink: decisions, signer: { async sign(input) { return { signerId: "local-gate", signature: signAuthorityDigest(privateKey, input.purpose, input.digest) }; } }, eventId: () => `evt_${randomUUID()}`, capabilityId: () => `cap_${randomUUID()}` });
   const publication = createFileReceiptPublication({ rootDir: config.receiptDir });
   const secrets = options.secretResolver ?? createSecretResolver(options.secretResolverOptions);
+  if (config.nativeHttpsRoutes && config.nativeHttpsRoutes.length > 0 && (!options.routeAuthority || !options.authenticatedProviderIdentity || !options.certifiedDispatch || !options.verifyAuthenticatedProviderIdentity)) throw new TypeError("native HTTPS routes require certified route, identity, verifier, and dispatch wiring");
+  const certifiedDispatch = options.certifiedDispatch ? { ...options.certifiedDispatch, verifyIdentity: options.verifyAuthenticatedProviderIdentity ?? options.certifiedDispatch.verifyIdentity } : undefined;
+  if (config.nativeHttpsRoutes && config.nativeHttpsRoutes.length > 0 && !certifiedDispatch?.verifyIdentity) throw new TypeError("native HTTPS routes require an identity verifier");
   const adapter = options.dispatchAdapter ?? createJsonHttpsDispatchAdapter({ endpoints: config.endpoints, routes: config.nativeHttpsRoutes, secrets });
-  const dispatch = createDispatchCoordinator(ledger, adapter, undefined, publication, options.delegation?.budget, options.certifiedDispatch);
+  const dispatch = createDispatchCoordinator(ledger, adapter, undefined, publication, options.delegation?.budget, certifiedDispatch);
   const runtime = createAuthorityHostRuntime({ gate, dispatch, ledger, decisions, delegation: options.delegation, ...(options.delegation ? { verifyRootGrant: (grant, tenant) => { verifyTrustedAuthority(trustRoots, { tenant, signerId: grant.signerId, purpose: "delegation-grant", advertisedDigest: grant.digest, value: grant.grant, signature: grant.signature }); } } : {}) });
   const jobs = deployment?.jobCard
     ? Object.freeze([Object.freeze({ jobId: deployment.jobCard.jobId, alias: deployment.jobCard.definitionAliases[0]! })])
