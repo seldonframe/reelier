@@ -1,5 +1,25 @@
 import { isIP } from "node:net";
 
+export type PublicAddressClassification = Readonly<{ ok: true; address: string; family: 4 | 6 }> | Readonly<{ ok: false; reason: "invalid" | "non-public" }>;
+
+/** Classifies literal DNS answers once for every authority-bound network path. */
+export function classifyPublicAddress(value: string): PublicAddressClassification {
+  const normalized = normalizeIpLiteral(value);
+  if (!normalized) return Object.freeze({ ok: false, reason: "invalid" });
+  const family = isIP(normalized);
+  if (!isPublicIpAddress(normalized)) return Object.freeze({ ok: false, reason: "non-public" });
+  return Object.freeze({ ok: true, address: normalized, family: family as 4 | 6 });
+}
+
+export function assertAllPublicAddresses(values: readonly string[]): readonly Readonly<{ address: string; family: 4 | 6 }>[] {
+  if (!values.length) throw new TypeError("at least one public address is required");
+  const classified = values.map(classifyPublicAddress);
+  if (classified.some(value => !value.ok)) throw new TypeError("all resolved addresses must be public");
+  const publicAddresses: Array<Readonly<{ address: string; family: 4 | 6 }>> = [];
+  for (const value of classified) if (value.ok) publicAddresses.push({ address: value.address, family: value.family });
+  return Object.freeze(publicAddresses);
+}
+
 export function normalizeIpLiteral(value: string): string | undefined {
   const source = value.startsWith("[") && value.endsWith("]") ? value.slice(1, -1) : value;
   const family = isIP(source);

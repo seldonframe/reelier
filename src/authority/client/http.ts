@@ -4,24 +4,32 @@ import { request as httpsRequest } from "node:https";
 import { request as httpRequest } from "node:http";
 import path from "node:path";
 import { parseAuthorityCellConnectionV1, type AuthorityCellConnectionV1 } from "./config.js";
-import { isLoopbackIpAddress, isPublicIpAddress, normalizeIpLiteral } from "./ip.js";
+import { assertAllPublicAddresses, normalizeIpLiteral } from "./ip.js";
+import { createTotalDeadline, type TotalDeadline } from "../net/deadline.js";
 
 export type AuthorityCellLiveResult = Readonly<{ state: "verified" | "failed" | "unchecked" | "absent"; reasonCode: string; cellId?: string; adapterContractDigest?: string }>;
-export interface AuthorityCellClientDependencies { readonly resolveToken?: (reference: AuthorityCellConnectionV1["bearerTokenRef"]) => Promise<string>; readonly request?: (url: string, init: RequestInit) => Promise<Response>; readonly credentialRoot?: string; readonly resolveAddresses?: (hostname: string) => Promise<readonly string[]>; }
+export interface AuthorityCellClientDependencies { readonly resolveToken?: (reference: AuthorityCellConnectionV1["bearerTokenRef"]) => Promise<string>; readonly request?: (url: string, init: RequestInit) => Promise<Response>; readonly credentialRoot?: string; readonly resolveAddresses?: (hostname: string) => Promise<readonly string[]>; readonly timeoutMs?: number; readonly monotonicNow?: () => number; }
 
 /** Client-only live identity check. The token is resolved only here and never returned or logged. */
 export async function checkAuthorityCellLive(value: unknown, dependencies: AuthorityCellClientDependencies = {}): Promise<AuthorityCellLiveResult> {
   let connection: AuthorityCellConnectionV1;
   try { connection = parseAuthorityCellConnectionV1(value); } catch { return { state: "failed", reasonCode: "connection-invalid" }; }
   try {
+    const deadline = createTotalDeadline({ timeoutMs: dependencies.timeoutMs ?? 15_000, monotonicNow: dependencies.monotonicNow });
+    deadline.remainingMs("dns");
     const addresses = await (dependencies.resolveAddresses ?? resolveAddresses)(new URL(connection.endpoint).hostname);
-    if (!addresses.length || addresses.some(address => !isPublicAddress(address)) && !isExplicitLoopbackHttp(connection.endpoint, addresses)) return { state: "failed", reasonCode: "endpoint-address-refused" };
+    let pinned: readonly Readonly<{ address: string; family: 4 | 6 }>[];
+    try { pinned = assertAllPublicAddresses(addresses); } catch { return { state: "failed", reasonCode: "endpoint-address-refused" }; }
+    deadline.remainingMs("credential");
     let token: string;
     try { token = await (dependencies.resolveToken ?? (reference => resolveToken(reference, dependencies.credentialRoot)))(connection.bearerTokenRef); }
     catch { return { state: "absent", reasonCode: "token-unavailable" }; }
+    deadline.remainingMs("identity");
     const response = dependencies.request
       ? await dependencies.request(`${connection.endpoint}/v1/identity`, { method: "GET", headers: { authorization: `Bearer ${token}`, accept: "application/json" }, redirect: "error" })
-      : await pinnedIdentityRequest(connection.endpoint, token, addresses[0]!);
+      : await pinnedIdentityRequest(connection.endpoint, token, pinned[0]!.address, deadline);
+    deadline.remainingMs("body");
+    if (response.status >= 300 && response.status < 400) return { state: "failed", reasonCode: "identity-unavailable" };
     if (!response.ok) return { state: "failed", reasonCode: response.status === 401 ? "authentication-failed" : "identity-unavailable" };
     const identity = await response.json() as Record<string, unknown>;
     if (identity.v !== "reelier.authority-cell-identity/v1" || typeof identity.cellId !== "string" || typeof identity.adapterContractDigest !== "string") return { state: "failed", reasonCode: "identity-invalid" };
@@ -48,10 +56,15 @@ async function resolveAddresses(hostname: string): Promise<readonly string[]> {
   if (literal) return [literal];
   return (await lookup(hostname, { all: true, verbatim: true })).map(entry => entry.address);
 }
-function isExplicitLoopbackHttp(endpoint: string, addresses: readonly string[]): boolean { const url = new URL(endpoint); return url.protocol === "http:" && (url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "::1") && addresses.every(isLoopbackAddress); }
-function isLoopbackAddress(address: string): boolean { return isLoopbackIpAddress(address); }
-function isPublicAddress(address: string): boolean { return isPublicIpAddress(address); }
-async function pinnedIdentityRequest(endpoint: string, token: string, address: string): Promise<Response> {
+async function pinnedIdentityRequest(endpoint: string, token: string, address: string, deadline: TotalDeadline): Promise<Response> {
   const url = new URL(`${endpoint}/v1/identity`);
-  return new Promise((resolve, reject) => { const request = url.protocol === "https:" ? httpsRequest : httpRequest; const options = { method: "GET", headers: { authorization: `Bearer ${token}`, accept: "application/json" }, ...(url.protocol === "https:" ? { servername: url.hostname } : {}), lookup: (_host: string, _options: unknown, callback: (error: Error | null, address: string, family: number) => void) => callback(null, address, address.includes(":") ? 6 : 4) }; const req = request(url, options, response => { const chunks: Buffer[] = []; response.on("data", chunk => chunks.push(Buffer.from(chunk))); response.on("end", () => resolve(new Response(Buffer.concat(chunks), { status: response.statusCode ?? 0 }))); }); req.once("error", reject); req.end(); });
+  return new Promise((resolve, reject) => {
+    const request = url.protocol === "https:" ? httpsRequest : httpRequest;
+    let settled = false;
+    const finish = (error?: Error, response?: Response) => { if (settled) return; settled = true; clearTimeout(timer); error ? reject(error) : resolve(response!); };
+    const options = { method: "GET", headers: { authorization: `Bearer ${token}`, accept: "application/json" }, ...(url.protocol === "https:" ? { servername: url.hostname } : {}), lookup: (_host: string, _options: unknown, callback: (error: Error | null, address: string, family: number) => void) => callback(null, address, address.includes(":") ? 6 : 4) };
+    const req = request(url, options, response => { const chunks: Buffer[] = []; let bytes = 0; response.on("data", chunk => { const value = Buffer.from(chunk); bytes += value.length; if (bytes > 1024 * 1024) req.destroy(new Error("identity response exceeds configured limit")); else chunks.push(value); }); response.on("end", () => finish(undefined, new Response(Buffer.concat(chunks), { status: response.statusCode ?? 0 }))); response.once("error", finish); });
+    const timer = setTimeout(() => { req.destroy(new Error("authority identity deadline expired")); finish(new Error("authority identity deadline expired")); }, deadline.remainingMs("connect"));
+    timer.unref(); req.once("error", finish); req.end();
+  });
 }
