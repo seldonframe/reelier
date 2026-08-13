@@ -3347,7 +3347,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
         reservations.set(event.reservationId, applyTransition(current, event));
       } else if (event.type === "send-started") {
         const current = reservations.get(event.reservationId);
-        if (!current || current.state !== "dispatched" || current.sendStarted === true || !SHA.test(event.preparedDigest) || !event.authorityGeneration || !isIso(event.at) || highWaterMark === null || event.at !== highWaterMark || parseIso(event.at) < parseIso(current.updatedAt)) throw new LedgerCorruption("invalid send-started journal event");
+        if (!current || current.state !== "dispatched" || current.sendStarted === true || !SHA.test(event.preparedDigest) || !SHA.test(event.authorityGeneration) || !isIso(event.at) || highWaterMark === null || event.at !== highWaterMark || parseIso(event.at) < parseIso(current.updatedAt)) throw new LedgerCorruption("invalid send-started journal event");
         reservations.set(event.reservationId, frozen({ ...current, sendStarted: true, sequence: event.sequence, updatedAt: event.at }));
       } else throw new LedgerCorruption("unexpected journal record");
       events.push(event);
@@ -3539,7 +3539,7 @@ function assertJournalEvent(event: JournalEvent): void {
     if (!SHA.test(event.reservationId) || !isIso(event.at) || !hasValidResultDigest(event.to, event.resultDigest)) throw new LedgerCorruption("invalid transition event identity");
   } else if (event.type === "send-started") {
     assertExactKeys(event, ["at", "authorityGeneration", "preparedDigest", "previousDigest", "reservationId", "sequence", "type", "v"]);
-    if (!SHA.test(event.reservationId) || !SHA.test(event.preparedDigest) || typeof event.authorityGeneration !== "string" || !event.authorityGeneration || !isIso(event.at)) throw new LedgerCorruption("invalid send-started event identity");
+    if (!SHA.test(event.reservationId) || !SHA.test(event.preparedDigest) || !SHA.test(event.authorityGeneration) || !isIso(event.at)) throw new LedgerCorruption("invalid send-started event identity");
   }
   else throw new LedgerCorruption("unexpected journal event type");
 }
