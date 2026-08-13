@@ -73,6 +73,32 @@ Fresh post-report Windows gate tail:
 SCOPE_OK=8
 ```
 
+Fix round 2 RED commit `e2e7f82`: `npx tsc -p tsconfig.test.json && node --test --test-concurrency=1 dist-test/test/authority/package.test.js` exited 1. Verbatim tail:
+
+```text
+ℹ tests 4
+ℹ pass 3
+ℹ fail 1
+AssertionError [ERR_ASSERTION]: - name: Compile test checkout
+```
+
+Fix round 2 GREEN commit `3080a70`: added guarded `npx tsc -p tsconfig.test.json --pretty false` after build and before artifact download or any `dist-test` invocation. The regression asserts the compile step exists, has the prerequisite-success guard, contains the exact compile command, and precedes the first `dist-test/` token. Focused GREEN exited 0: `tests 4`, `pass 4`, `fail 0`.
+
+Fresh workflow-equivalent command: `npm run check:authority-contract; npm run build; npx tsc -p tsconfig.test.json --pretty false; node --test --test-concurrency=1 dist-test/test/authority/package.test.js dist-test/test/authority/linux-authority-cell.test.js dist-test/test/authority/authority-cell-connection.test.js dist-test/test/authority/certification-portable-evidence.test.js; npm pack --ignore-scripts --json; packed surface; packed windows-native; git diff --check; scope audit`. Exit 0. Verbatim tail:
+
+```text
+ℹ tests 26
+ℹ suites 0
+ℹ pass 26
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1428.1727
+SHA256=8c7da130074f27a43940263157e17e3d7e103590080850349389c196a151fdd3
+SCOPE_OK=8
+```
+
 Diagnostic excluded complement (not frozen authority): count `96`; UTF-8 JCS sorted-name-array digest `sha256:7db00876f1f8ef4c9d05c3f1b985544e776ad0a293593e57eff1811e2f0b3b15`. Witness membership: `FsDelegationBudgetLedger=true`, `executeJsonHttpsEffect=true`, `launchCodexDogfood=true`, `runCertification=true`, `runCertificationSuite=true`.
 
 | Evidence | downloaded tarball | same-workflow checkout | native OS |
