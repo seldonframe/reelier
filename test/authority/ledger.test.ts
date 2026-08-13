@@ -260,6 +260,9 @@ test("prepared commit durably marks send-started and recovery never reopens it",
   const lease = await ledger.commitPreparedDispatch!({ reservationId: reservation.reservationId, allocationId: "unbound", expectedAuthorityGeneration: reservation.intent.authorityStateDigest, preparedDescription, absoluteDeadlineMs: 60_000 });
   const beforeSend = await ledger.getReservation(reservation.reservationId);
   assert.equal(beforeSend?.sendStarted, true, "send-started must be durable before the commit lease is returned");
+  const deferred = await ledger.recover({ deferTerminal: true });
+  assert.equal(deferred.ok, true);
+  if (deferred.ok) assert.equal(deferred.reservations[0]?.state, "dispatched", "deferTerminal preserves a marker-present dispatched reservation");
   const prepared = createPreparedDispatch({ description: preparedDescription, monotonicNow: () => 0, wallClockNow: () => t0, send: async () => ({ kind: "acknowledged" as const, resultDigest: digest("a") }) });
   await consumePreparedDispatch(prepared, lease);
   assert.ok(lease);

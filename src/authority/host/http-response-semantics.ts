@@ -54,9 +54,12 @@ function normalizeQuery(query: string): string {
   if (!query) return "";
   const pairs = query.split("&");
   for (const pair of pairs) {
+    const separator = pair.indexOf("=");
+    if (separator <= 0) throw new TypeError("materialized request projection query must use key=value pairs");
     const rawKey = pair.split("=", 1)[0]!;
+    const rawValue = pair.slice(separator + 1);
     let key: string;
-    try { key = decodeURIComponent(rawKey).toLowerCase(); } catch { throw new TypeError("materialized request projection contains malformed query encoding"); }
+    try { key = decodeURIComponent(rawKey).toLowerCase(); decodeURIComponent(rawValue); } catch { throw new TypeError("materialized request projection contains malformed query encoding"); }
     if (/(?:token|secret|password|credential|authorization|api[-_]?key)/.test(key)) throw new TypeError("materialized request projection contains a secret query field");
   }
   return pairs.sort().join("&");
