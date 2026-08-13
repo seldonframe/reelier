@@ -116,7 +116,7 @@ test("credential slot refuses a symlinked file root", async () => {
   const parent = await mkdtemp(path.join(tmpdir(), "reelier-secret-slot-"));
   const target = await mkdtemp(path.join(parent, "target-"));
   const linkedRoot = path.join(parent, "linked-root");
-  try { await symlink(target, linkedRoot, "junction"); } catch { return; }
+  await symlink(target, linkedRoot, "junction");
   await writeFile(path.join(target, "token"), "value");
   const resolver = createSecretResolver({ fileRoot: linkedRoot, slots: { token: { kind: "file", path: "token" } }, env: Object.freeze({}) });
   await assert.rejects(() => resolver.acquireSlot("token"), /unavailable|root|link/i);
