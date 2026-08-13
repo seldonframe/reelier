@@ -82,3 +82,23 @@ test("canonicalization sorts methods and path prefixes while rejecting duplicate
   assert.deepEqual(canonicalizeJsonHttpsRoute(route).allowedPathPrefixes, ["/a", "/z"]);
   assert.throws(() => parseJsonHttpsRouteV1({ ...routeInput(), allowedPathPrefixes: ["/a/", "/a"] }), /duplicate/i);
 });
+
+test("canonical HTTPS route arrays reject unexpected own keys without invoking accessors", () => {
+  const route = routeInput();
+  const methods = Object.assign(["PUT"], { secretRef: "env:TOKEN" });
+  const paths = ["/repos/example"] as string[];
+  const symbol = Symbol("secretRef");
+  Object.defineProperty(paths, symbol, { enumerable: true, value: "env:TOKEN" });
+  assert.throws(() => parseJsonHttpsRouteV1({ ...route, allowedMethods: methods }), /inert/i);
+  assert.throws(() => parseJsonHttpsRouteV1({ ...route, allowedPathPrefixes: paths }), /inert/i);
+
+  const accessor = ["PUT"] as string[];
+  Object.defineProperty(accessor, "secretRef", { enumerable: true, get() { throw new Error("getter invoked"); } });
+  assert.throws(() => parseJsonHttpsRouteV1({ ...route, allowedMethods: accessor }), /inert/i);
+});
+
+test("canonical HTTPS routes reject percent-encoded dot segments", () => {
+  for (const path of ["/repos/example/%2e%2e/admin", "/repos/example/%2E/admin", "/repos/example/%2e./admin"]) {
+    assert.throws(() => parseJsonHttpsRouteV1({ ...routeInput(), allowedPathPrefixes: [path] }), /path/i);
+  }
+});
