@@ -199,3 +199,21 @@ The full suite was not rerun in this fix round. Its last Windows result remains 
 - No graph semantics, Adapter Contract bytes/digest, retry/sleep/timeout behavior, or authority trust boundary changed.
 - Actual final recursive-delete failure was assessed but not injected: a genuine `rm` failure cannot also prove zero private residue without a second deletion attempt, while this task forbids adding retry behavior and forbids weakening refusal cleanup. The existing `cleanup` seam therefore remains a pre-cleanup refusal test and is not represented as proof of an actual `rm` failure.
 - Hosted Ubuntu and Windows required checks for the current workflow SHA remain mandatory before merge.
+
+## Hosted concurrency falsifier correction (2026-08-13)
+
+Hosted run `31708913570`, Ubuntu job `94476762922`, at exact SHA `879cea8` failed `concurrent recovery cannot release a live dispatched request before its one write` with `Missing expected rejection`. The same test had already appeared in the Task 4A baseline and the Task 5 local Windows authority batch, including the same post-test asynchronous `ENOENT`; those occurrences were reported but not yet causally closed.
+
+The root cause was the test scheduler, not authority recovery. The test observed the durable `dispatched` journal, then constructed a restarted composition before calling `recover()`, while the original dispatch was held only by the hermetic schedule's fixed 500 ms timer. Under full-suite filesystem contention, construction consumed that timer. The original `run()` therefore completed and its `withRequestLock` finally block closed and unlinked the request lock before recovery attempted acquisition. Recovery correctly resolved instead of rejecting. Because the failed `assert.rejects` branch never awaited `running`, fixture cleanup removed the workspace while that promise still published provider state, explaining the subsequent asynchronous `ENOENT` exactly.
+
+RED commit `e85c7e6` replaces polling and elapsed-time overlap with an awaited scheduler barrier placed after the signed `dispatched` journal is durable. It fails test compilation solely because the barrier seam is absent. GREEN commit `5391c4f` adds the minimal non-barrel test-only async seam at that exact boundary. It changes no recovery, request-lock, provider, budget, retry, sleep, timeout, or assertion semantics.
+
+Verification at `5391c4f`:
+
+- deterministic focused interleaving: 10/10 fresh executions passed;
+- complete GitHub certification runner: 43 passed, 0 failed, 1 skipped;
+- `npm run check:authority-contract`: exit 0;
+- `npm run build`: exit 0, including all ten pack builds;
+- `npx tsc -p tsconfig.test.json`: exit 0.
+
+Fresh hosted Ubuntu remains required for the exact corrected SHA; this local evidence makes no hosted-green claim.
