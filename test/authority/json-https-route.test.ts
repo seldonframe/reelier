@@ -37,7 +37,14 @@ test("canonical HTTPS routes freeze the GitHub labels write and independent read
   assert.equal(lookupJsonHttpsRoute(registry, "github.issue.labels.readback")?.allowedMethods[0], "GET");
   assert.equal(lookupJsonHttpsRoute(registry, "github.issue.get"), undefined);
   assert.equal(jsonHttpsRouteDigest(write), jsonHttpsRouteDigest(structuredClone(write)));
-  assert.notEqual(jsonHttpsRouteDigest(write), jsonHttpsRouteDigest({ ...write, credentialSlotId: "github.other" }));
+  for (const differingRoute of [
+    { ...write, providerId: "gitlab" }, { ...write, connectorId: "gitlab" }, { ...write, accountId: "other-account" },
+    { ...write, providerAccountIdentity: "github:other" }, { ...write, endpointId: "github.issue.labels.other" },
+    { ...write, origin: "https://uploads.github.com" }, { ...write, allowedMethods: ["PATCH"] as const },
+    { ...write, allowedPathPrefixes: ["/repos/example/tracer/issues/2/labels"] }, { ...write, credentialSlotId: "github.other" },
+    { ...write, responseSemanticsProfileId: "github.issue-labels.v2" }, { ...write, reconciliationRecipeId: "github.issue-labels.readback.v2" },
+    { ...write, readEndpointId: "github.issue.labels.readback.other" }, { ...write, egressPolicyDigest: sha("other-egress") },
+  ]) assert.notEqual(jsonHttpsRouteDigest(write), jsonHttpsRouteDigest(differingRoute));
 });
 
 test("canonical HTTPS route parsing is closed and inert", () => {
@@ -64,7 +71,7 @@ test("canonical HTTPS route parsing is closed and inert", () => {
 
   const nestedAccessor = { ...route, allowedMethods: ["PUT"] } as Record<string, unknown>;
   Object.defineProperty(nestedAccessor.allowedMethods as unknown as object, "0", { enumerable: true, get() { throw new Error("getter invoked"); } });
-  assert.throws(() => parseJsonHttpsRouteV1(nestedAccessor), /closed|accessor/i);
+  assert.throws(() => parseJsonHttpsRouteV1(nestedAccessor), /closed|accessor|inert/i);
 });
 
 test("canonicalization sorts methods and path prefixes while rejecting duplicate normalized entries", () => {

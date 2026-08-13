@@ -17,6 +17,7 @@ const SAFE_PUBLIC = (address: string) => {
   return !(normalized === "::1" || normalized === "::" || normalized.startsWith("fc") || normalized.startsWith("fd") || normalized.startsWith("fe8") || normalized.startsWith("fe9") || normalized.startsWith("fea") || normalized.startsWith("feb"));
 };
 
+/** Legacy runtime endpoint configuration; canonical route authority is separate. */
 export interface JsonHttpsEndpoint {
   readonly endpointId: string;
   readonly baseUrl: string;
