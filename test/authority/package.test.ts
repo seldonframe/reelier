@@ -58,6 +58,21 @@ test("CI keeps both required matrix contexts failing when authority pack prerequ
   assert.match(testJob, /if \[ '\$\{\{ matrix\.os \}\}' = 'ubuntu-latest' \]; then npm test[^\n]*else node --test --test-concurrency=1 dist-test\/test\/authority\/package\.test\.js dist-test\/test\/authority\/linux-authority-cell\.test\.js dist-test\/test\/authority\/authority-cell-connection\.test\.js dist-test\/test\/authority\/certification-portable-evidence\.test\.js/);
 });
 
+test("factory evidence producer is checkout-built but installs and runs only the downloaded packed artifact", () => {
+  const workflow = readFileSync(path.join(process.cwd(), ".github", "workflows", "ci.yml"), "utf8");
+  const producer = workflow.slice(workflow.indexOf("  produce-authority-factory-evidence:"), workflow.indexOf("  test:"));
+  assert.match(producer, /actions\/checkout@v4/);
+  assert.match(producer, /actions\/setup-node@v4/);
+  assert.match(producer, /authority-host-boundary-pack/);
+  assert.match(producer, /authority-adapter-contract\.digest/);
+  assert.match(producer, /test\/packed\/authority-factory-journey\.mjs/);
+  assert.match(producer, /secretCanaryResult/);
+  assert.match(producer, /factory-evidence-metadata\.json/);
+  assert.match(producer, /graph\.json/);
+  assert.match(producer, /trust-pin\.json/);
+  assert.match(producer, /factory-journey-summary\.json/);
+});
+
 test("packed boundary harness invokes npm with an argument array even from metacharacter paths", () => {
   const harness = readFileSync(path.join(process.cwd(), "test", "packed", "authority-host-boundary.mjs"), "utf8");
   assert.doesNotMatch(harness, /ComSpec|cmd\.exe|npmArgs\.join/);
