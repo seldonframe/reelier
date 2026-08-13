@@ -74,7 +74,8 @@ test("factory journey atomically publishes an exact verified packet derived from
     assert.deepEqual(packet.postStateConfidence, graph.postStateEvidence.map((item: any) => item.confidence));
     assert.deepEqual(packet.providerObservation, graph.receipts.map((item: any) => item.receipt.value.claims.providerAcknowledgment));
     assert.deepEqual(packet.reconciliationResult, graph.receipts.map((item: any) => item.evidence.value.reconciliation.verdict));
-    assert.deepEqual(packet.cleanupResult, graph.outcomes.filter((item: any) => item.requestId.endsWith(".cleanup")).map((item: any) => item.phase));
+    assert.deepEqual(packet.cleanupResult, graph.receipts.filter((item: any) => item.receipt.value.decisionContext.requestId.endsWith(".cleanup")).map((item: any) => item.evidence.value.reconciliation.verdict));
+    assert.ok(packet.cleanupResult.length > 0, "reviewer packet reports the signed cleanup result");
     assert.deepEqual(packet.duplicateDecisions, graph.duplicateDecisions);
     assert.deepEqual(packet.exceptions, graph.exceptions);
     assert.deepEqual(packet.receiptChain, graph.receipts.map((item: any) => ({ receiptDigest: authorityDigest(item.receipt.value), priorReceiptDigest: item.receipt.value.priorReceiptDigest })));
