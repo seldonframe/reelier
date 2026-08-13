@@ -341,7 +341,7 @@ test("N100 authority convergence: one committed reservation, exact-existing outc
     const dispatched=await ledger.transition(winner.reservation.reservationId,"reserved",{to:"dispatched"});
     assert.equal(dispatched.ok,true,dispatched.ok?undefined:`dispatch diagnostic: ${await n100TransitionFailureDiagnostic(root,dispatched)}`);
     if(!dispatched.ok)return;
-    const acknowledged=await ledger.transition(winner.reservation.reservationId,"dispatched",{to:"acknowledged",resultDigest:digest("n")});
+    const acknowledged=await ledger.transition(winner.reservation.reservationId,"dispatched",{to:"acknowledged",resultDigest:digest("a")});
     assert.equal(acknowledged.ok,true,acknowledged.ok?undefined:`acknowledge diagnostic: ${await n100TransitionFailureDiagnostic(root,acknowledged)}`);
     if(!acknowledged.ok)return;
     const recovered = await new FsAuthorityLedger(root, { now: () => t0 }).recover();
@@ -349,6 +349,20 @@ test("N100 authority convergence: one committed reservation, exact-existing outc
     if (recovered.ok) assert.deepEqual(recovered.reservations,[acknowledged.reservation]);
   });
 });
+
+test("an option-on warm ledger dispatches and immediately acknowledges in one process",()=>withRoot(async root=>{
+  const options={[k1AdmissionPreparationOption()]:K1_ADMISSION_PREPARATION_MODE,now:()=>t0,lockTimeoutMs:2_000} as never;
+  const ledger=new FsAuthorityLedger(root,options);
+  const reserved=await ledger.reserve(intent());
+  assert.equal(reserved.ok,true,"reservation succeeds through the option-on admission path");
+  if(!reserved.ok)return;
+  const dispatched=await ledger.transition(reserved.reservation.reservationId,"reserved",{to:"dispatched"});
+  assert.equal(dispatched.ok,true,"dispatch succeeds on the used root");
+  if(!dispatched.ok)return;
+  const acknowledged=await ledger.transition(reserved.reservation.reservationId,"dispatched",{to:"acknowledged",resultDigest:digest("a")});
+  assert.equal(acknowledged.ok,true,`the immediate acknowledge sees the prior released marker as inert: ${JSON.stringify(acknowledged)} entries=${JSON.stringify((await readdir(root)).sort())}`);
+  if(acknowledged.ok)assert.equal(acknowledged.reservation.state,"acknowledged");
+}));
 
 test("owned admission-preparation disappearance is corruption at every construction and promotion seam",async t=>{
   const boundaries=["after-admission-prep-create","after-admission-prep-owner-create","after-admission-prep-owner-partial-write","after-admission-prep-owner-sync","after-admission-prep-sync","before-admission-slot-rename","after-admission-prep-final-revalidation"] as const;
