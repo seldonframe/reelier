@@ -547,12 +547,27 @@ test("externally anchored duplicate head rejects canonical rollback after restar
   const f = await fixture(); try {
     await f.runner.run({ bearerToken: f.credential.token, requestId: "request_duplicate_anchor_original" });
     await f.runner.cleanup({ bearerToken: f.credential.token, requestId: "request_duplicate_anchor_original" });
-    await f.runner.run({ bearerToken: f.credential.token, requestId: "request_duplicate_anchor_old" });
     const portable = path.join(f.initialized.workspace, "authority", "github-label-runner", "portable-evidence"),
       ledgerPath = path.join(portable, "duplicate-ledger.json"),
+      zeroLedger = await readFile(ledgerPath),
+      zeroGraph: any = await f.runner.exportGraph({ bearerToken: f.credential.token });
+    assert.equal(zeroGraph.duplicateAttemptHead.count, 0);
+    assert.equal(verifyCertificationTaskReceiptGraph(zeroGraph, { trustPin: f.pin }).duplicateHistoryFreshness, "unchecked");
+
+    await f.runner.run({ bearerToken: f.credential.token, requestId: "request_duplicate_anchor_old" });
+    const
       oldLedger = await readFile(ledgerPath),
       oldGraph: any = await f.runner.exportGraph({ bearerToken: f.credential.token });
     assert.equal(oldGraph.duplicateAttemptHead.count, 1);
+
+    await writeFile(ledgerPath, zeroLedger);
+    const rolledBackZeroGraph: any = await f.runner.exportGraph({ bearerToken: f.credential.token });
+    assert.equal(rolledBackZeroGraph.duplicateAttemptHead.count, 0);
+    assert.throws(
+      () => verifyCertificationTaskReceiptGraph(rolledBackZeroGraph, { trustPin: f.pin }),
+      /duplicate.*current|head.*rollback|external.*anchor/i,
+    );
+    await writeFile(ledgerPath, oldLedger);
 
     const restarted = await createGitHubIssueLabelsHermeticComposition(f.cell);
     const [left, right] = await Promise.all([
