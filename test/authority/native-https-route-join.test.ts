@@ -1,0 +1,44 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { authorityDigest } from "../../src/authority/wire.js";
+import { createDispatchCoordinator, type DispatchRequestState } from "../../src/authority/host/dispatch.js";
+import { createPreparedDispatch, createDispatchCommitLease } from "../../src/authority/host/prepared-dispatch.js";
+import { createReservedDispatchHandle } from "../../src/authority/gate.js";
+import { __testSetAuthorityCellHostPlatform } from "../../src/authority/host/platform.js";
+import type { RouteAuthoritySnapshotV1 } from "../../src/authority/ledger.js";
+
+const sha = (c: string) => `sha256:${c.repeat(64)}`;
+const routeAuthority = (): RouteAuthoritySnapshotV1 => ({
+  v: "reelier.route-authority-snapshot/v1", connectorRegistrationDigest: sha("a"), operatorConfigurationDigest: sha("b"), routeDigest: sha("c"),
+  providerId: "github", connectorId: "github", accountId: "42", providerAccountIdentity: "octocat", endpointId: "github_labels", authenticatedProviderIdentityDigest: sha("d"),
+  sourceReadRouteDigest: sha("e"), projectionSchemaDigest: sha("f"), expectedMaterializedRequestDigest: sha("1"), authorityGeneration: sha("2"), authorityExpiresAt: "2027-01-01T00:00:00.000Z",
+});
+
+test("certified dispatch enforces route reread, double authority validation, commit, and send ordering", { skip: process.platform === "win32" }, async () => {
+  const restore = __testSetAuthorityCellHostPlatform("linux");
+  try {
+    const events: string[] = [];
+    let reservation: any = { reservationId: "r1", state: "reserved", intent: { effectDigest: sha("3"), routeAuthority: routeAuthority(), executionContext: { allocationId: "a1" } } };
+    const projection: any = { v: "reelier.materialized-http-request/v1", method: "PUT", origin: "https://api.github.com", normalizedPath: "/x", normalizedQuery: "", reviewedHeaders: {}, bodyDigest: sha("4") };
+    const digest = authorityDigest(projection);
+    const ledger: any = {
+      async getReservation() { return reservation; },
+      async commitPreparedDispatch(input: any) { events.push("dispatch-commit-cas"); reservation = { ...reservation, state: "dispatched" }; return createDispatchCommitLease({ reservationId: "r1", allocationId: "a1", preparedDigest: digest, authorityGeneration: input.expectedAuthorityGeneration, authorityExpiresAt: input.preparedDescription.authorityExpiresAt, absoluteDeadlineMs: input.absoluteDeadlineMs, commitGeneration: "g", commit: async () => { events.push("send-started"); } }); },
+      async transition(_id: string, _expected: string, event: any) { reservation = { ...reservation, state: event.to }; return { ok: true, status: "transitioned", reservation }; },
+    };
+    const adapter: any = { async prepare() { events.push("prepare"); return createPreparedDispatch({ description: { v: "reelier.prepared-dispatch-description/v1", routeDigest: routeAuthority().routeDigest, materializedRequestDigest: digest, projection, authorityGeneration: routeAuthority().authorityGeneration, authorityExpiresAt: routeAuthority().authorityExpiresAt, absoluteDeadlineMs: performance.now() + 60_000, reservationId: "r1", allocationId: "a1" }, send: async () => { events.push("send"); return { kind: "acknowledged", resultDigest: sha("5") }; } }); } };
+    const coordinator = createDispatchCoordinator(ledger, adapter, undefined, undefined, undefined, { revalidator: { async routeReread() { events.push("route-reread"); }, async revalidate() { events.push(events.includes("prepare") ? "authority-validation-after-prepare" : "authority-validation-before-prepare"); return { authorityGeneration: routeAuthority().authorityGeneration, authorityExpiresAt: routeAuthority().authorityExpiresAt, routeAuthorityDigest: authorityDigest(routeAuthority()) }; } }, onPhase: (phase: any) => { if (phase === "dispatch-commit-cas") events.push(phase); } });
+    await coordinator.dispatch(createReservedDispatchHandle({ reservation, effect: {}, effectCanonicalBase64: "e30=", effectDigest: sha("3") }));
+    assert.deepEqual(events, ["route-reread", "authority-validation-before-prepare", "prepare", "authority-validation-after-prepare", "dispatch-commit-cas", "send-started", "send"]);
+  } finally { restore(); }
+});
+
+test("certified mode refuses legacy dispatch and prepared route substitution", { skip: process.platform === "win32" }, async () => {
+  const restore = __testSetAuthorityCellHostPlatform("linux");
+  try {
+    const reservation: any = { reservationId: "r1", state: "reserved", intent: { effectDigest: sha("3"), routeAuthority: routeAuthority() } };
+    const ledger: any = { async getReservation() { return reservation; }, async transition() { throw new Error("must not transition"); } };
+    const coordinator = createDispatchCoordinator(ledger, { async dispatch() { throw new Error("legacy send"); } }, undefined, undefined, undefined, { revalidator: { async revalidate() { return { authorityGeneration: sha("2"), authorityExpiresAt: routeAuthority().authorityExpiresAt, routeAuthorityDigest: authorityDigest(routeAuthority()) }; } } });
+    await assert.rejects(() => coordinator.dispatch(createReservedDispatchHandle({ reservation, effect: {}, effectCanonicalBase64: "e30=", effectDigest: sha("3") })), /prepared commit boundary/i);
+  } finally { restore(); }
+});
