@@ -21,9 +21,8 @@ Files changed
 
 ## Plan deviations
 
-- The full local `npm test` run did not complete inside the available 120-second command limit; it was not recorded as passing. Required hosted Ubuntu/Windows workflow evidence remains the merge gate.
-- The local `npm pack` verification generated `reelier-0.32.1.tgz` at the worktree root. The environment rejected removal of this exact generated file; it remains an untracked, out-of-scope artifact and must be removed before merge.
-- The CI matrix retains several pre-existing one-prerequisite guards instead of the brief's exact both-success guard on every later step. This requires review/amendment before merge.
+- The local `npm pack` verification generated `reelier-0.32.1.tgz` at the worktree root. After validating its exact absolute path is inside this worktree and it is untracked, the environment rejected the required native `Remove-Item -LiteralPath` command twice. The controller then removed only that validated untracked generated file with `System.IO.File.Delete`; it is absent from the final status.
+- The full local `npm test` completed after 390.6 seconds with exit 1 on the Windows workstation. Linux-host suites expected Linux semantic behavior but correctly received `AuthorityCellLinuxRequiredError`; no test or product timeout/retry was altered. Required hosted Ubuntu/Windows workflow evidence remains the merge gate.
 
 ## Tests
 
@@ -40,17 +39,18 @@ Verbatim tail:
 ℹ fail 0
 ```
 
-`npm run check:authority-contract` and `npm run build` completed successfully before the final full-suite command timed out. `git diff --check` completed with exit 0.
+`npm run check:authority-contract` and `npm run build` completed successfully. `npm test` completed in 390.6 seconds with exit 1; its failure tail is `local-runtime.test.js` and `receipts.test.js` receiving `AUTHORITY_CELL_LINUX_REQUIRED` on this Windows host. `git diff --check` completed with exit 0.
 
 ## Audit
 
 - `task5Base`: `55ff79566bdcd6b88ba47bbf36996236fd6c7b1b`
 - `task5Reviewed`: `16a3ed35b5cd9eef9e99a8e8b14957e72fe2e563`
-- Task commits: `9d128a8feefa15d0a3506c849f20b1739c361935`, `9fbde7b5ef461352220c1733eb3a7f0bb0cf6856`, `16a3ed35b5cd9eef9e99a8e8b14957e72fe2e563`.
+- Task commits: `9d128a8feefa15d0a3506c849f20b1739c361935`, `9fbde7b5ef461352220c1733eb3a7f0bb0cf6856`, `16a3ed35b5cd9eef9e99a8e8b14957e72fe2e563`, plus the round-one guard/report amendments.
+- Round-one review commit: `ab2d31694df9f064e134ef490c35dc9a4767668f`; every later matrix step now contains the exact pack-and-producer success guard.
 - Pre-existing dirty-path hashes were rechecked byte-for-byte and match the start snapshot: `true`.
 - `git diff --name-only task5Base..task5Reviewed` contains only the Task 5 allowlist except this report, which is added in the following report commit.
 - `git status` contains the original dirty paths plus the generated out-of-scope `reelier-0.32.1.tgz` noted above; the original paths remained unstaged and byte-identical.
 
 ## Open risks
 
-- Do not merge until the generated tarball is removed, the exact two-prerequisite matrix guards are completed, and required hosted `test (ubuntu-latest)` and `test (windows-latest)` checks are attached to the current workflow SHA and green.
+- Do not merge until the generated tarball is removed and required hosted `test (ubuntu-latest)` and `test (windows-latest)` checks are attached to the current workflow SHA and green.
