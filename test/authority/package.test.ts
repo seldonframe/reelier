@@ -80,7 +80,7 @@ test("matrix verifies public factory evidence through a clean installed consumer
   const workflow = readFileSync(path.join(process.cwd(), ".github", "workflows", "ci.yml"), "utf8");
   const testJob = workflow.slice(workflow.indexOf("  test:"));
   assert.match(testJob, /authority-factory-public-evidence/);
-  assert.match(testJob, /test\/packed\/authority-factory-journey\.mjs --verify-evidence/);
+  assert.match(testJob, /test\/packed\/authority-factory-journey\.mjs --tarball .* --verify-evidence/);
   assert.match(testJob, /reelier\/authority/);
   assert.match(testJob, /factory-evidence-metadata\.json/);
 });
