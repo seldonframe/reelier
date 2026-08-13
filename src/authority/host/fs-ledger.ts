@@ -85,6 +85,9 @@ export const dispatchFaultPoints = Object.freeze([
   "dispatch-before-file-sync", "dispatch-after-file-sync", "dispatch-before-close", "dispatch-after-close",
   "dispatch-before-directory-sync", "dispatch-after-directory-sync",
   "dispatch-before-journal-transition", "dispatch-after-journal-transition",
+] as const);
+/** Prepared-dispatch-only cut points are intentionally outside the legacy transition ABI. */
+export const preparedDispatchFaultPoints = Object.freeze([
   "after-prepared-dispatch-transition",
 ] as const);
 export const resultFaultPoints = Object.freeze([
@@ -165,7 +168,7 @@ const ledgerInternalBoundaries = Object.freeze([
 ] as const);
 type LedgerInternalBoundary = (typeof ledgerInternalBoundaries)[number];
 export const ledgerFaultPoints = Object.freeze([...reservationFaultPoints, ...dispatchFaultPoints, ...resultFaultPoints, ...ingressFaultPoints, ...clockFaultPoints, ...ledgerLockFaultPoints]);
-export type LedgerFaultPoint = (typeof ledgerFaultPoints)[number];
+export type LedgerFaultPoint = (typeof ledgerFaultPoints | typeof preparedDispatchFaultPoints)[number];
 
 export interface FsAuthorityLedgerOptions {
   readonly now?: () => number;
