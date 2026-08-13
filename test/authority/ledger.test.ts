@@ -275,6 +275,16 @@ test("crash after durable dispatch but before send marker recovers ambiguous wit
   if (recovered.ok) assert.equal(recovered.reservations[0]?.state, "ambiguous");
 }));
 
+test("stale authority generation refuses before the reservation becomes dispatched", { skip: process.platform !== "linux" }, () => withRoot(async root => {
+  const { reservation } = await commitRawBoundIntent(root);
+  const projection: MaterializedHttpRequestProjectionV1 = { v: "reelier.materialized-http-request/v1", method: "PUT", origin: "https://api.github.com", normalizedPath: "/repos/a", normalizedQuery: "", reviewedHeaders: {}, bodyDigest: digest("1") };
+  const preparedDescription = { v: "reelier.prepared-dispatch-description/v1" as const, routeDigest: digest("route"), materializedRequestDigest: materializedHttpRequestDigest(projection), projection, authorityGeneration: digest("stale"), authorityExpiresAt: new Date(t0 + 60_000).toISOString(), absoluteDeadlineMs: 60_000, reservationId: reservation.reservationId, allocationId: "unbound" };
+  const ledger = new RawFsAuthorityLedger(root, { now: () => t0, monotonicNow: () => 0, authorityGeneration: () => digest("current") });
+  await assert.rejects(() => ledger.commitPreparedDispatch!({ reservationId: reservation.reservationId, allocationId: "unbound", expectedAuthorityGeneration: digest("stale"), preparedDescription, absoluteDeadlineMs: 60_000 }), /stale/i);
+  const current = await ledger.getReservation(reservation.reservationId);
+  assert.equal(current?.state, "reserved");
+}));
+
 test("reservation retains an exact transport effect commitment for restart evidence", async () => {
   await withRoot(async root => {
     const effect = { v: "reelier.transport-effect/v1", endpointId: "write", method: "POST", path: "/items", query: "", headers: { "Content-Type": "application/json" }, bodyBase64: Buffer.from("{}").toString("base64"), riskClass: "test", idempotency: "native", preconditions: [], reconciliation: { recipeId: "recipe" } } as const;
