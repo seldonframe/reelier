@@ -34,6 +34,7 @@ import { sealCertificationReadiness } from "./certification/readiness.js";
 import { exportCertificationEvidence, verifyCertificationExport } from "./certification/export.js";
 import { CERTIFICATION_SCENARIO_IDS } from "./certification/scenarios.js";
 import { signCertificationReadinessArtifact } from "./certification/authority.js";
+import { certifyFactoryJourney } from "./certification/factory-journey.js";
 import { assertLinuxAuthorityCellHost } from "./host/platform.js";
 import { authorityCellConnectionPathnameConfinement, defaultAuthorityCellConnectionFile, writeAuthorityCellConnection } from "./client/config.js";
 import { loadAuthorityCellConnection } from "./client/config.js";
@@ -326,6 +327,14 @@ async function authorityServe(args: Readonly<{ opts: Record<string, string> }>):
 
 async function authorityCertify(args: Readonly<{ positional: string[]; flags: Set<string>; opts: Record<string, string> }>): Promise<number> {
   const action = args.positional[1] ?? "preflight";
+  if (action === "factory-journey") {
+    try {
+      if (args.positional.length !== 2 || args.flags.size !== 0 || Object.keys(args.opts).join("\0") !== "out" || !path.isAbsolute(args.opts.out ?? "")) throw new TypeError("factory journey command is invalid");
+      const result = await certifyFactoryJourney(args.opts.out!);
+      console.log(JSON.stringify({ status: "verified", journey: "github-issue-labels", ...result }));
+      return 0;
+    } catch { console.error(JSON.stringify({ status: "refused", reasonCode: "factory-journey-refused" })); return 1; }
+  }
   if (action === "activate-codex" || (action === "run" && args.opts.adapter === "fly-topology")) assertLinuxAuthorityCellHost();
   if (action === "init") {
     if (args.positional.length !== 2 || args.flags.size !== 0 || Object.keys(args.opts).some(option => option !== "config")) { console.error(JSON.stringify({ status: "refused", reasonCode: "certification-command-invalid" })); return 1; }
