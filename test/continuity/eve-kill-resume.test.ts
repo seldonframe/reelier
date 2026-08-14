@@ -10,7 +10,8 @@ type Matrix = Readonly<{ scenarios: Readonly<Record<string, Scenario>> }>;
 
 test("real Eve 0.37.1 preserves Reelier continuity across process and session boundaries", async (t) => {
   const root = await mkdtemp(resolve(tmpdir(), "reelier-eve-kill-resume-"));
-  const resultPath = resolve(root, "matrix.json");
+  const externalResult = process.env.REELIER_EVE_MATRIX_RESULT_PATH;
+  const resultPath = externalResult ? resolve(externalResult) : resolve(root, "matrix.json");
   try {
     const run = spawn(process.execPath, [
       resolve("conformance/continuity-adapter/v1/eve-fixture/scripts/eve-process.mjs"),
@@ -33,13 +34,14 @@ test("real Eve 0.37.1 preserves Reelier continuity across process and session bo
       const value = matrix.scenarios.checkpointCut;
       assert.equal(value.cursor, 2);
       assert.equal(value.segmentCount, 2);
-      assert.equal(value.uncertainClaimCount, 0);
+      assert.equal(value.uncertainClaimCount, 1);
+      assert.equal(value.uncertainClaimStatus, "unchecked");
       assert.equal(value.noThirdSegmentAfterReplay, true);
       assert.deepEqual(value.counters, { outcomeRequests: 0, statusReads: 0, providerDispatches: 0, reservations: 0 });
     });
     await t.test("Path C apply survives process death without resend", () => {
       const value = matrix.scenarios.outcomeCut;
-      assert.equal(Number(value.outcomeRequests) >= 2, true);
+      assert.equal(Number(value.outcomeRequests) >= 2, true, JSON.stringify(value));
       assert.equal(value.providerDispatches, 1);
       assert.equal(value.reservations, 1);
       assert.equal(value.providerWrites, 1);
@@ -67,7 +69,7 @@ test("real Eve 0.37.1 preserves Reelier continuity across process and session bo
     });
     await t.test("cross-principal follow-up refuses before model work", () => {
       const value = matrix.scenarios.crossPrincipal;
-      assert.equal(value.failedBeforeStepStarted, true);
+      assert.equal(value.failedBeforeStepStarted, true, JSON.stringify(value));
       assert.equal(value.ledgerUnchanged, true);
       assert.equal(value.effectsUnchanged, true);
     });
@@ -77,6 +79,6 @@ test("real Eve 0.37.1 preserves Reelier continuity across process and session bo
       assert.equal(value.effectsUnchanged, true);
     });
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });

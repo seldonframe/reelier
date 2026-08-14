@@ -1,22 +1,19 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
-import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createGitHubIssueLabelsFixture } from "../../../../../dist-test/test/authority/fixtures/github-issue-labels.js";
 import { startPathCConformancePort } from "../../../../../dist-test/test/continuity/support/path-c-port.js";
+import { runEveCommand, startEveProcess, stopEveProcess } from "./eve-process.mjs";
 
 const eveRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const eveBin = resolve(eveRoot, "node_modules/eve/bin/eve.js");
 const fixture = await createGitHubIssueLabelsFixture();
 const port = await startPathCConformancePort({ fixture });
 const continuityRoot = await mkdtemp(resolve(tmpdir(), "reelier-eve-continuity-"));
 const routeToken = randomBytes(32).toString("base64url");
 const routeDigest = createHash("sha256").update(routeToken).digest("hex");
-const evePort = await unusedLoopbackPort();
 const env = localOnlyEnvironment({
   EVE_EVAL_AUTH_TOKEN: routeToken,
   REELIER_EVE_AUTH_REGISTRY_JSON: JSON.stringify({
@@ -29,13 +26,9 @@ const env = localOnlyEnvironment({
   REELIER_PATH_C_PORT_URL: port.url,
   REELIER_PATH_C_PORT_TOKEN: port.clientToken,
 });
-const server = launch(["dev", "--host", "127.0.0.1", "--port", String(evePort), "--no-ui"], env);
-server.stdout?.resume();
-server.stderr?.resume();
+const server = await startEveProcess({ cwd: eveRoot, env });
 try {
-  const eveUrl = `http://127.0.0.1:${evePort}`;
-  await waitForLoopback(eveUrl, server);
-  const evaluation = await run(["eval", "--url", eveUrl, "--skip-report", "--verbose"], env);
+  const evaluation = await runEveCommand({ cwd: eveRoot, env, args: ["eval", "--url", server.url, "--skip-report", "--verbose"] });
   assert.equal(evaluation.code, 0, redact(evaluation.output, routeToken, port.clientToken));
   const counters = port.counters();
   assert.deepEqual(counters, { outcomeRequests: 1, statusReads: 1, providerDispatches: 1, reservations: 1 });
@@ -45,7 +38,7 @@ try {
   console.log(`PATH_C_COUNTERS ${JSON.stringify(counters)}`);
   console.log(`VERIFIED_GRAPH_STATUS ${verified.status}`);
 } finally {
-  await stop(server);
+  await stopEveProcess(server.child);
   await port.close();
   await fixture.close();
   await rm(continuityRoot, { recursive: true, force: true });
@@ -59,54 +52,6 @@ function localOnlyEnvironment(required) {
     ["no_proxy", "127.0.0.1,localhost"],
     ...Object.entries(required),
   ]);
-}
-
-function launch(args, env) {
-  return spawn(process.execPath, [eveBin, ...args], { cwd: eveRoot, env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
-}
-
-async function run(args, env) {
-  const child = launch(args, env);
-  let output = "";
-  child.stdout?.on("data", chunk => { output += String(chunk); });
-  child.stderr?.on("data", chunk => { output += String(chunk); });
-  const code = await new Promise((resolveExit, reject) => {
-    child.once("error", reject);
-    child.once("close", resolveExit);
-  });
-  return { code, output };
-}
-
-async function waitForLoopback(url, child) {
-  for (let attempt = 0; attempt < 300; attempt += 1) {
-    if (child.exitCode !== null) throw new Error(`Eve dev exited before becoming ready (${child.exitCode})`);
-    try {
-      await fetch(url, { redirect: "error", signal: AbortSignal.timeout(500) });
-      return;
-    } catch {}
-    await new Promise(resolveWait => setTimeout(resolveWait, 100));
-  }
-  throw new Error("Eve dev did not become ready on loopback");
-}
-
-async function unusedLoopbackPort() {
-  const server = createServer();
-  await new Promise((resolveListen, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", resolveListen);
-  });
-  const value = server.address().port;
-  await new Promise((resolveClose, reject) => server.close(error => error ? reject(error) : resolveClose()));
-  return value;
-}
-
-async function stop(child) {
-  if (child.exitCode !== null) return;
-  child.kill();
-  await new Promise(resolveExit => {
-    child.once("close", resolveExit);
-    setTimeout(resolveExit, 5_000).unref();
-  });
 }
 
 function redact(output, ...secrets) {

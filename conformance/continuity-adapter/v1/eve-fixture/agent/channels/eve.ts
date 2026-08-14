@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
-import { eveChannel } from "eve/channels/eve";
+import { defaultEveAuth, eveChannel } from "eve/channels/eve";
 import { extractBearerToken, type AuthFn } from "eve/channels/auth";
-import { ContinuityConfigurationError } from "../lib/faults.js";
+import { ContinuityBindingError, ContinuityConfigurationError } from "../lib/faults.js";
 
-type RegistryEntry = Readonly<{ principalId: string; taskId: string; workloadId: string }>;
+type RegistryEntry = Readonly<{ principalId: string; taskId: string; taskOwnerPrincipalId?: string; workloadId: string }>;
 
 function registry(): Readonly<Record<string, RegistryEntry>> {
   const encoded = process.env.REELIER_EVE_AUTH_REGISTRY_JSON;
@@ -26,8 +26,19 @@ const bearerRegistryAuth: AuthFn<Request> = async (request) => {
     authenticator: "reelier-eve-conformance",
     principalId: entry.principalId,
     principalType: "user",
-    attributes: { taskId: entry.taskId, workloadId: entry.workloadId },
+    attributes: { taskId: entry.taskId, taskOwnerPrincipalId: entry.taskOwnerPrincipalId ?? entry.principalId, workloadId: entry.workloadId },
   };
 };
 
-export default eveChannel({ auth: bearerRegistryAuth, turnPolicy: "queue" });
+export default eveChannel({
+  auth: bearerRegistryAuth,
+  turnPolicy: "queue",
+  onMessage(ctx) {
+    const caller = defaultEveAuth(ctx);
+    if (caller === null) throw new ContinuityConfigurationError("authenticated inbound caller is required");
+    if (caller.attributes.taskOwnerPrincipalId !== caller.principalId) {
+      throw new ContinuityBindingError("cross-principal continuity follow-up refused before dispatch");
+    }
+    return { auth: caller };
+  },
+});
