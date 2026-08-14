@@ -73,6 +73,26 @@ test("loopback Path C binds a request ID to canonical request bytes before runne
   }
 });
 
+for (const [mode, expected] of [
+  ["cut-after-budget", { providerDispatches: 0, reservations: 1 }],
+  ["cut-after-apply", { providerDispatches: 1, reservations: 1 }],
+] as const) test(`${mode} failure counters expose real effects without duplicate action`, async () => {
+  const fixture = await createGitHubIssueLabelsFixture(mode as never);
+  const port = await startPathCConformancePort({ fixture });
+  try {
+    const headers = { authorization: `Bearer ${port.clientToken}`, "content-type": "application/json" };
+    const response = await fetch(`${port.url}/outcomes`, { method: "POST", headers, body: outcomeBody(`request_${mode}`) });
+    assert.equal(response.status, 500);
+    assert.deepEqual(port.counters(), { outcomeRequests: 1, statusReads: 0, ...expected });
+    const retry = await fetch(`${port.url}/outcomes`, { method: "POST", headers, body: outcomeBody(`request_${mode}`) });
+    assert.equal(retry.status, 202);
+    assert.deepEqual(port.counters(), { outcomeRequests: 2, statusReads: 0, ...expected });
+  } finally {
+    await port.close();
+    await fixture.close();
+  }
+});
+
 test("after-provider-apply latch withholds the first response until release", async () => {
   const fixture = await createGitHubIssueLabelsFixture();
   const port = await startPathCConformancePort({ fixture, fault: "after-provider-apply-before-response" });

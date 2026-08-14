@@ -35,6 +35,13 @@ export async function startPathCConformancePort(options: Readonly<{ fixture: Git
     providerDispatches = result.providerWrites;
     reservations = (await fixture.delegation.budget.get(fixture.activation.allocationId))?.consumed ?? 0;
   };
+  const refreshTruthAfterFailure = async (requestId: string): Promise<void> => {
+    try {
+      const status = await fixture.runner.status({ bearerToken: fixture.credential.token, requestId });
+      providerDispatches = status.providerWrites;
+    } catch {}
+    reservations = (await fixture.delegation.budget.get(fixture.activation.allocationId))?.consumed ?? 0;
+  };
   const server = createServer((request, response) => { void handle(request, response).catch(() => write(response, 500, refused("", "port-unavailable", "unavailable"))); });
 
   async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -51,7 +58,9 @@ export async function startPathCConformancePort(options: Readonly<{ fixture: Git
       const prior = requestBindings.get(body.requestId);
       if (prior !== undefined && prior !== canonicalBase64) return write(response, 409, refused(body.requestId, "request-id-conflict", "conflict"));
       requestBindings.set(body.requestId, canonicalBase64);
-      const result = await fixture.runner.run({ bearerToken: fixture.credential.token, requestId: body.requestId });
+      let result: GitHubHermeticRunnerResult;
+      try { result = await fixture.runner.run({ bearerToken: fixture.credential.token, requestId: body.requestId }); }
+      catch (error) { await refreshTruthAfterFailure(body.requestId); throw error; }
       await refreshTruth(result);
       if (options.fault === "after-provider-apply-before-response" && !faultUsed) {
         faultUsed = true;
