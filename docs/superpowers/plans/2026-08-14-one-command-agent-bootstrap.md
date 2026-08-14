@@ -21,6 +21,7 @@
 - Outcome Profile v1 references existing registered first-party packs. Do not add arbitrary expressions, callbacks, JavaScript, dynamic imports, or a second compiler.
 - Runtime launch adapters and Continuity adapters remain separate replaceable boundaries. Eve, Grok/Cursor, Codex, Claude Code, and future harnesses must pass the same public conformance contracts; do not add provider- or model-specific trust semantics to bootstrap or `up`.
 - Do not add profile artifacts to `AuthorityKind`, change Authority Contract v1, or widen `AuthorityReceiptBundle`. Use a separate versioned profile-governance contract and outer receipt wrapper.
+- The branch-only, unshipped Outcome Profile Contract v1 may change in place for the approved Task 2 independently signed Authority binding. Its generated digest must change with its eight-member descriptor; Authority Contract v1, `AuthorityReceiptBundle`, `src/authority/types.ts`, and the existing inner evidence/verifier remain byte-for-byte unchanged.
 - Do not widen `AuthoritySignaturePurpose` for profiles. Use the existing `authority-evidence` outer signature purpose over the closed profile-specific purpose preimage defined in Task 1.
 - Keep Path A fail-open recorder semantics, Path B fail-closed replay semantics, and Path C fail-closed gate semantics unchanged.
 - Keep provider credentials, workload private keys, operator keys, certifier keys, trust roots, and secret values out of bootstrap reports, runtime manifests, process arguments, environment snapshots, logs, and receipts.
@@ -368,10 +369,39 @@ git commit -m "feat(authority): separate profile certification and activation"
 - Modify: `test/authority/local-runtime.test.ts`
 - Modify: `test/authority/gate.test.ts`
 - Modify: `test/authority/package.test.ts`
+- Create: `contract/outcome-profile/v1/profile-authority-evidence.schema.json`
+- Modify: `contract/outcome-profile/v1/profile-activation.schema.json`
+- Modify: `contract/outcome-profile/v1/profile-governed-receipt.schema.json`
+- Modify: `contract/outcome-profile/v1/contract-descriptor.json`
+- Modify: `scripts/build-outcome-profile-contract.mjs`
+- Modify: `src/authority/outcome-profile-contract.ts`
+- Modify: `src/authority/outcome-profile.ts`
+- Modify: `src/authority/index.ts`
+- Modify: `src/authority/trust.ts`
+- Modify: `test/authority/outcome-profile.test.ts`
+- Modify: `test/authority/outcome-profile-package.test.ts`
+- Modify: `test/authority/trust.test.ts`
+- Create: `test/authority/profile-governance-fixture.ts`
+- Modify: `docs/superpowers/specs/2026-08-14-one-command-agent-bootstrap-design.md`
+- Modify: `docs/superpowers/plans/2026-08-14-one-command-agent-bootstrap.md`
+
+This is the exhaustive Task 2 fix-wave tracked allowlist: the original thirteen Task 2 paths plus
+the thirteen Outcome Profile/trust/test paths and these two governing documents. Explicitly
+forbidden even if a local implementation would be convenient: `contract/authority/v1/**`,
+`scripts/build-authority-contract.mjs`, `src/authority/types.ts`, `src/authority/evidence.ts`,
+`src/authority/verify.ts`, `src/authority/adapter-contract.ts`, `package.json`, and every lockfile.
+Stop and amend this plan again before touching any other tracked path.
 
 **Interfaces:**
-- Consumes: public inert profile artifacts and offline verification primitives, installed `StaticPackRegistry`, existing signed Job Card/deployment/contract/route/trust snapshots, and unchanged `AuthorityReceiptBundle` verifier.
-- Produces: host-only opaque `AdmittedProfileGovernanceV1`, `loadProfileGovernanceFromOperatorTrust`, internal `assertAdmittedProfileGovernance`, internal `profileGovernanceAdmissionSnapshot(admitted)` returning only profile/activation/trust-head digests, read-only `inspectProfileGovernanceStatus` returning sanitized four-state findings without a handle, public host composition root `createGovernedAuthorityCell`, `ProfileGovernedAuthorityReceiptV1`, and `verifyProfileGovernedAuthorityReceipt`.
+- Consumes: public inert profile artifacts and profile-only offline verification; installed `StaticPackRegistry`; an existing deployment that has already passed `loadAuthorityDeployment`; its exact signed Job Card, Job Card authority material, selected signed Outcome contract/state, connector registry, current Authority key descriptors/trust events, descriptors/adoptions/enforcement, and stable native route registration; the accepted request's persisted `RouteAuthoritySnapshotV1`; and the unchanged `AuthorityReceiptBundle` plus existing inner verifier.
+- Produces: host-only opaque `AdmittedProfileGovernanceV1`; a private branded/`WeakMap` runtime provenance containing the independently derived installed-pack, signed-authority, deployment-snapshot, route-scope, Authority-head, and signer bindings; `AuthorityRouteScopeV1`; `AuthorityDeploymentSnapshotV1`; standalone eighth Outcome Profile member `SignedProfileAuthorityBindingV1`; `loadProfileGovernanceFromOperatorTrust`; internal admission/runtime assertions and sanitized snapshots; read-only `inspectProfileGovernanceStatus`; public `createGovernedAuthorityCell`; an internal governed publication/receipt constructor; `ProfileGovernedAuthorityReceiptV1`; and `verifyProfileGovernedAuthorityReceipt` with external profile, Job Card, and Authority trust anchors.
+
+#### Approved Task 2 amendment — independently signed Authority binding
+
+**Approved:** 2026-08-14. The original Task 2 steps below are retained as implementation history.
+Where they name activation `routeAuthorityDigest`, a five-edge wrapper, self-contained profile-only
+verification, or the original thirteen-file allowlist, the executable fix wave after original Step 6
+supersedes them. No other task or invariant is broadened.
 
 - [ ] **Step 1: Write the failing no-dispatch admission matrix**
 
@@ -515,6 +545,388 @@ Commit:
 git add -- src/authority/host/profile-governance.ts src/authority/host/profile-governance-loader.ts src/authority/host/governed-cell.ts src/authority/host/profile-governed-receipt.ts src/authority/host/local.ts src/authority/host/index.ts test/authority/profile-governance.test.ts test/authority/profile-governance-loader.test.ts test/authority/governed-cell.test.ts test/authority/profile-governed-receipt.test.ts test/authority/local-runtime.test.ts test/authority/gate.test.ts test/authority/package.test.ts
 git commit -m "feat(authority): admit independently governed profiles"
 ```
+
+#### Executable Task 2 review fix wave
+
+This fix wave begins at candidate `cc529e5e4136eb9e58cd5f39816798f9636bb715` only after the
+docs-only amendment commit has passed independent review. It fixes all five review blockers as one
+trust-boundary unit. The original RED/GREEN commits remain in history; do not amend or squash them.
+
+- [ ] **Fix Step 1: Add the strict RED review-gap suite and fixture-only module**
+
+Move every shared governance builder, signing key fixture, operator-directory writer, valid inner
+bundle builder, real dependency counter, and child-process harness into
+`test/authority/profile-governance-fixture.ts`. This module exports helpers only and calls no
+`test()`/suite registration API. Change every Task 2 test to import it; assert each named test is
+registered exactly once.
+
+Write a real governed-admission matrix. Each row must mutate one independently signed artifact or
+runtime binding, invoke `createGovernedAuthorityCell`/the package-internal governed composition over
+the real local gate, and read the fixture's actual counters:
+
+```ts
+for (const mutation of [
+  "draft-only",
+  "conformance-only",
+  "activation-only",
+  "self-certified",
+  "revoked-activation",
+  "profile-pack-substitution",
+  "profile-contract-substitution",
+  "profile-job-card-substitution",
+  "profile-deployment-substitution",
+  "profile-route-scope-substitution",
+  "profile-authority-trust-head-substitution",
+  "profile-trust-head-substitution",
+  "configured-definition-substitution",
+] as const) {
+  const result = await assertProfileRefusesBeforeDispatch(mutation);
+  assert.deepEqual(result.counts, {
+    sourceReads: 0,
+    credentialReads: 0,
+    reservations: 0,
+    preparedSends: 0,
+    providerWrites: 0,
+  }, mutation);
+}
+```
+
+The counter fixture must increment at the real `SourceReadAdapter`, `SecretResolver`, ledger
+reservation, dispatch `prepare`, and dispatch/send boundary. A literal zero object is forbidden.
+Also assert no ledger/decision/receipt/key directory and no HTTP server exist after every refusal.
+
+Add loader tests for alternate physical root, root rename/replacement between every pair of the six
+reads, mixed-generation artifacts, child replacement before/open/after read, root/child file and
+directory symlinks, Windows junctions where supported, traversal, case aliases, missing file,
+accessor/symbol/non-enumerable/extra/prototype inputs, revoked/future/stale trust, reordered report
+checks, repeated vector/evidence digests, report-claim rewrite, certifier/operator/signature
+substitution, and a public self-rooted verification object attempted by cast/spread/freeze/proxy.
+Every hostile accessor/callback counter remains zero.
+
+Add governed-factory option tests for every allowed field, unknown/symbol/non-enumerable/accessor/
+prototype records, and every incomplete pair. Add the new `authorityBindingSigner` pair and prove
+its signer ID/public key/sign callback is not read or invoked before Linux, exact records, pairs,
+operator governance, deployment, and trust activity validate. In an actual Linux child process,
+set isolated `HOME` and `USERPROFILE`, let the child observe its current time, write validity around
+that observation, import only `reelier/authority/host`, call the public factory successfully, test
+an existing authenticated route, close the server, and assert no automatic listen/provisioning.
+This Task 2 positive is required in addition to Task 7's later packed proof.
+
+Build one fully valid `ProfileGovernedAuthorityReceiptV1` and mutation tables for every profile
+artifact, signed Job Card, deployment field, scope stable field, dynamic-only route field, current
+Authority trust event/key/status, binding scalar/digest/signature/signer/purpose, every edge, and
+every inner claim. Prove unrelated valid governance/inner bundles refuse, activation contract equals
+the inner contract digest, and no outer field can upgrade/rewrite an inner claim.
+
+Run:
+
+```powershell
+npx tsc -p tsconfig.test.json
+```
+
+Expected RED: compilation fails only on the new activation/scope/deployment/binding/evidence APIs
+and exact governed options, or focused tests fail on the five named review gaps. Commit tests and
+test fixtures only:
+
+```powershell
+git add -- test/authority/profile-governance-fixture.ts test/authority/profile-governance.test.ts test/authority/profile-governance-loader.test.ts test/authority/governed-cell.test.ts test/authority/profile-governed-receipt.test.ts test/authority/local-runtime.test.ts test/authority/gate.test.ts test/authority/package.test.ts test/authority/outcome-profile.test.ts test/authority/outcome-profile-package.test.ts test/authority/trust.test.ts
+git commit -m "test(authority): expose governed admission review gaps"
+```
+
+- [ ] **Fix Step 2: Amend the branch-only Outcome Profile contract without changing Authority Contract v1**
+
+Change `SignedTenantProfileActivationV1` and `profile-activation.schema.json`: retain
+`trustHeadDigest` with its current profile-governance meaning; add required
+`authorityTrustHeadDigest`; replace required `routeAuthorityDigest` with `routeScopeDigest`. Do not
+accept both route fields and do not add migration fallback because v1 is unshipped.
+
+Define and strictly parse these closed, detached, frozen records in `src/authority/outcome-profile.ts`:
+
+```ts
+export interface AuthorityRouteScopeV1 {
+  readonly v: "reelier.authority-route-scope/v1";
+  readonly tenant: string;
+  readonly definitionAlias: string;
+  readonly connectorRegistrationDigest: string;
+  readonly operatorConfigurationDigest: string;
+  readonly routeDigest: string;
+  readonly providerId: string;
+  readonly connectorId: string;
+  readonly accountId: string;
+  readonly providerAccountIdentity: string;
+  readonly endpointId: string;
+  readonly credentialSlotId: string;
+  readonly sourceReadRouteDigest: string;
+  readonly projectionSchemaDigest: string;
+}
+
+export interface AuthorityDeploymentSnapshotV1 {
+  readonly v: "reelier.authority-deployment-snapshot/v1";
+  readonly tenant: string;
+  readonly jobCardDigest: string;
+  readonly jobCardAuthorityDigest: string;
+  readonly authorityStateDigest: string;
+  readonly connectorRegistryDigest: string;
+  readonly trustRootSetDigest: string;
+  readonly connectionDescriptorsDigest: string;
+  readonly connectionAdoptionsDigest: string;
+  readonly enforcementDigest: string;
+  readonly routeScopeDigest: string;
+}
+
+export interface SignedProfileAuthorityBindingV1 {
+  readonly v: "reelier.profile-authority-binding/v1";
+  readonly purpose: "profile-authority-binding";
+  readonly tenant: string;
+  readonly profileDigest: string;
+  readonly activationDigest: string;
+  readonly innerReceiptDigest: string;
+  readonly jobCardDigest: string;
+  readonly contractDigest: string;
+  readonly deploymentDigest: string;
+  readonly routeScopeDigest: string;
+  readonly routeAuthoritySnapshotDigest: string;
+  readonly authorityTrustHeadDigest: string;
+  readonly observedAt: string;
+  readonly signerId: string;
+  readonly signature: AuthoritySignature;
+}
+```
+
+`profile-authority-evidence.schema.json` is the eighth standalone Outcome Profile contract member
+and freezes `SignedProfileAuthorityBindingV1` under absolute ID
+`https://reelier.dev/contracts/outcome-profile/v1/profile-authority-evidence.schema.json`.
+`contract-descriptor.json`, `scripts/build-outcome-profile-contract.mjs`, and generated
+`src/authority/outcome-profile-contract.ts` must sort/hash all eight members. Export only inert
+types/parsers and public offline verification helpers from `src/authority/index.ts`; no signer,
+host brand, private provenance, key object, or admission maker becomes public.
+
+Sign and verify the binding with existing crypto purpose `authority-evidence` over:
+
+```ts
+const preimageDigest = authorityDigest({
+  v: "reelier.profile-authority-binding-signature-preimage/v1",
+  purpose: "profile-authority-binding",
+  artifactDigest: authorityDigest(unsignedBinding),
+});
+```
+
+Do not change `AuthorityKind`, `AuthoritySignaturePurpose`, Authority schemas, or the inner bundle.
+
+- [ ] **Fix Step 3: Freeze externally anchored Authority trust and actual deployment provenance**
+
+Use the existing `AuthorityKeyDescriptorV1`/`TrustEventV1` replay semantics. Extend
+`src/authority/trust.ts` only with a narrow opaque Authority-binding trust view whose constructor
+takes independently supplied, already parsed key descriptors, current trust events, tenant, and
+external verification time. It stores public keys and active/revoked state in a private `WeakMap`,
+returns only the computed current head digest/status, and verifies that the selected binding signer
+has role `authority-cell`, purpose `authority-evidence`, exact signer ID/SPKI, and is active at the
+external time. The current head is the digest of the last parsed current Authority trust event; an
+empty, future, reordered, forked, unknown-key, or revoked selection refuses. Receipt verification
+receives this trust view/current observation and the existing external `JobCardTrustPinV1`; neither
+anchor may be sourced from `authorityBindingEvidence`.
+
+Refactor `src/authority/host/local.ts` into a load/core split without changing the public
+`createLocalAuthorityRuntime(config, options)` bytes or behavior:
+
+```ts
+loadLocalAuthorityComposition(config, options)
+  -> Promise<LoadedLocalAuthorityCompositionV1>
+
+createLocalAuthorityRuntimeCore(config, loaded, options)
+  -> Promise<LocalAuthorityRuntime>
+```
+
+The governed path calls the loader once. From the verified loaded deployment it selects exactly the
+activation's definition and one eligible signed contract at the host verification time, and derives:
+
+- installed pack/definition/registration digests from the same `StaticPackRegistry` passed to the gate;
+- `jobCardDigest` with `signedJobCardDigest(loaded.jobCard)`;
+- `jobCardAuthorityDigest` from the parsed verified Job Card authority material;
+- `authorityStateDigest` from the exact selected `AuthorityStateSnapshot` used by the gate;
+- `connectorRegistryDigest` from sorted installed connector-registration digests;
+- `trustRootSetDigest` via the existing trusted-root registry for the tenant;
+- descriptor/adoption/enforcement digests from their parsed detached arrays/record;
+- `AuthorityRouteScopeV1` from the same connector registration and reviewed native route data that can produce the request-time route snapshot.
+
+Call `parseAuthorityDeploymentSnapshot` and set `deploymentDigest = authorityDigest(snapshot)` only
+after those derivations. The activation must equal the actual profile, installed pack, configured
+single definition, selected contract, signed Job Card, deployment snapshot, route scope, profile
+head, and independent Authority head before `createAuthorityGate`, ledger directory creation,
+credential/source access, or server creation. Unsupported legacy/remote route substrates without a
+closed equivalent route scope refuse governed dispatch.
+
+Store the admitted profile, exact loaded objects/digests, binding-signer identity, and publication
+inputs in a new package-private branded object backed by `WeakMap`. Structural copies, casts,
+freezes, public offline results, caller digest records, callbacks, or project roots cannot mint it.
+Pass the same loaded pack/state/connector/trust objects into `createLocalAuthorityRuntimeCore`; do
+not reload or reconstruct equivalents.
+
+- [ ] **Fix Step 4: Pin the physical operator root and add the signer capability**
+
+Open/pin the physical operator governance directory before reading artifacts. Retain its canonical
+path plus device/inode (and Windows volume/file identity when available), verify it is a real
+directory and not a symlink/junction/reparse indirection, and revalidate that same identity before
+and after each of all six child reads and once after the complete set. Each child is opened with
+no-follow semantics where supported and receives pre-open/open-handle/post-open identity checks.
+Any root rename/replacement, mixed generation, child replacement, canonical-path change, or
+unsupported identity check refuses. `operatorRootDigest` commits the stable physical identity and
+canonical path only after the final revalidation.
+
+Add this exact governed option and no profile/path/clock/root alternative:
+
+```ts
+export interface AuthorityBindingSignerV1 {
+  readonly signerId: string;
+  readonly publicKey: KeyObject;
+  readonly sign: (input: Readonly<{
+    purpose: "authority-evidence";
+    digest: string;
+  }>) => Promise<AuthoritySignature>;
+}
+
+export interface GovernedAuthorityCellOptionsV1 {
+  // all original Task 2 fields remain byte-compatible
+  readonly authorityBindingSigner?: AuthorityBindingSignerV1;
+}
+```
+
+For governed dispatch, `authorityBindingSigner` is required and paired as one closed capability.
+Validate its exact own-data record and Ed25519 public key without invoking `sign`; require its SPKI/
+signer ID to match the active external Authority evidence descriptor and require it to differ from
+profile certifier/operator, Job Card human, local-gate, topology, lease, and identity keys. Invoke
+`sign` only when producing receipt evidence after an actual inner bundle and persisted dynamic
+route snapshot exist. The factory still asserts Linux first, derives `os.homedir()`/wall time
+internally, returns only `AuthorityHostServer`, and never provisions, listens, activates, or adds the
+Task 6 session endpoint.
+
+- [ ] **Fix Step 5: Produce and verify the independently joined outer receipt**
+
+Use this amended outer shape and update `profile-governed-receipt.schema.json` accordingly:
+
+```ts
+export interface ProfileGovernedAuthorityReceiptV1 {
+  readonly v: "reelier.profile-governed-authority-receipt/v1";
+  readonly profileDraft: OutcomeProfileDraftV1;
+  readonly profileConformanceReport: ProfileConformanceReportV1;
+  readonly profileConformance: SignedOutcomeProfileConformanceV1;
+  readonly profileActivation: SignedTenantProfileActivationV1;
+  readonly authorityReceiptBundle: AuthorityReceiptBundle;
+  readonly authorityBindingEvidence: Readonly<{
+    signedJobCard: SignedJobCardV1;
+    deploymentSnapshot: AuthorityDeploymentSnapshotV1;
+    routeScope: AuthorityRouteScopeV1;
+    routeAuthoritySnapshot: RouteAuthoritySnapshotV1;
+    binding: SignedProfileAuthorityBindingV1;
+  }>;
+  readonly edges: Readonly<{
+    profileDigest: string;
+    conformanceReportDigest: string;
+    conformanceDigest: string;
+    activationDigest: string;
+    innerReceiptDigest: string;
+    authorityBindingDigest: string;
+  }>;
+}
+```
+
+The accepted request must persist the exact dynamic `RouteAuthoritySnapshotV1` already carried by
+the reservation/dispatch state; do not reconstruct it from activation or provider response. A
+package-internal governed publication/constructor accepts only the private runtime provenance, the
+actual verified inner bundle, and that persisted snapshot. It derives the unsigned binding, asks
+the paired signer to sign the domain-separated digest, verifies the returned signature against the
+pinned public key before publishing, and creates the outer edges. Maker and verifier remain
+different roles; a verifier constructs the verified receipt graph rather than trusting maker flags.
+
+`verifyProfileGovernedAuthorityReceipt` takes external profile roots, external current Job Card
+trust, and external current Authority trust observation. It performs exactly this order:
+
+1. Run unchanged `verifyAuthorityReceiptBundle` and retain its exact claims/digest.
+2. Run profile governance verification using profile trust only.
+3. Verify `signedJobCard` with the existing current external Job Card trust pin.
+4. Strictly parse/digest `deploymentSnapshot` and `routeScope`.
+5. Strictly parse/digest the dynamic route snapshot; project its thirteen stable fields and require byte-equivalent canonical equality with `routeScope`. Dynamic slot instance/version, identity/materialized-request digests, generation, and expiry remain receipt-time only.
+6. Replay the external current Authority trust observation; require the binding signer active for role `authority-cell`/purpose `authority-evidence`, distinct from all forbidden signer roles, at `observedAt` and verifier time.
+7. Verify the domain-separated binding signature with that externally anchored key.
+8. Compare activation `jobCardDigest`, `contractDigest`, `deploymentDigest`, `routeScopeDigest`, and `authorityTrustHeadDigest` to the independently derived values; compare activation `trustHeadDigest` only to the profile head; compare activation contract directly to `inner.bundle.contract.digest`.
+9. Compare binding profile, activation, inner receipt, Job Card, contract, deployment, route scope, dynamic route snapshot, and Authority-head digests exactly, then compare all six outer edges including `authorityBindingDigest`.
+
+Return the unchanged inner verified claims alongside outer verification status. Never rewrite or
+upgrade authorization, dispatch, acknowledgment, reconciliation, topology, or completeness.
+
+- [ ] **Fix Step 6: Run exact gates, prove unchanged Authority ABI, and commit**
+
+Run all commands from repository root:
+
+```powershell
+npx tsc -p tsconfig.test.json
+node --test --test-concurrency=1 dist-test/test/authority/outcome-profile.test.js dist-test/test/authority/outcome-profile-package.test.js dist-test/test/authority/trust.test.js dist-test/test/authority/profile-governance.test.js dist-test/test/authority/profile-governance-loader.test.js dist-test/test/authority/governed-cell.test.js dist-test/test/authority/profile-governed-receipt.test.js dist-test/test/authority/local-runtime.test.js dist-test/test/authority/gate.test.js dist-test/test/authority/package.test.js
+npm run check:authority-contract
+npm run check:outcome-profile-contract
+npm run build
+node --test --test-concurrency=1 dist-test/test/authority/outcome-profile.test.js dist-test/test/authority/outcome-profile-package.test.js dist-test/test/authority/trust.test.js dist-test/test/authority/profile-governance.test.js dist-test/test/authority/profile-governance-loader.test.js dist-test/test/authority/governed-cell.test.js dist-test/test/authority/profile-governed-receipt.test.js dist-test/test/authority/local-runtime.test.js dist-test/test/authority/gate.test.js dist-test/test/authority/package.test.js
+git diff --exit-code cc529e5e4136eb9e58cd5f39816798f9636bb715 -- contract/authority/v1 scripts/build-authority-contract.mjs src/authority/types.ts src/authority/evidence.ts src/authority/verify.ts src/authority/adapter-contract.ts package.json package-lock.json pnpm-lock.yaml yarn.lock
+git diff --check
+```
+
+Record the Authority adapter digest before RED with
+`node -e "import('./dist/authority/adapter-contract.js').then(m=>console.log(m.AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST))"`
+and run the same command after the final build; require exact string equality. Require Authority
+Contract v1 check/digest unchanged, Outcome Profile Contract v1 check green with exactly eight
+members and its newly generated digest, no duplicate test registrations, and the Linux child
+positive to run rather than skip.
+
+Verify the exhaustive allowlist mechanically:
+
+```powershell
+$base = 'cc529e5e4136eb9e58cd5f39816798f9636bb715'
+$changed = @(git diff --name-only $base --)
+$allowed = @(
+  'contract/outcome-profile/v1/profile-authority-evidence.schema.json'
+  'contract/outcome-profile/v1/profile-activation.schema.json'
+  'contract/outcome-profile/v1/profile-governed-receipt.schema.json'
+  'contract/outcome-profile/v1/contract-descriptor.json'
+  'scripts/build-outcome-profile-contract.mjs'
+  'src/authority/outcome-profile-contract.ts'
+  'src/authority/outcome-profile.ts'
+  'src/authority/index.ts'
+  'src/authority/trust.ts'
+  'src/authority/host/profile-governance.ts'
+  'src/authority/host/profile-governance-loader.ts'
+  'src/authority/host/governed-cell.ts'
+  'src/authority/host/profile-governed-receipt.ts'
+  'src/authority/host/local.ts'
+  'src/authority/host/index.ts'
+  'test/authority/profile-governance-fixture.ts'
+  'test/authority/outcome-profile.test.ts'
+  'test/authority/outcome-profile-package.test.ts'
+  'test/authority/trust.test.ts'
+  'test/authority/profile-governance.test.ts'
+  'test/authority/profile-governance-loader.test.ts'
+  'test/authority/governed-cell.test.ts'
+  'test/authority/profile-governed-receipt.test.ts'
+  'test/authority/local-runtime.test.ts'
+  'test/authority/gate.test.ts'
+  'test/authority/package.test.ts'
+  'docs/superpowers/specs/2026-08-14-one-command-agent-bootstrap-design.md'
+  'docs/superpowers/plans/2026-08-14-one-command-agent-bootstrap.md'
+)
+$unexpected = @($changed | Where-Object { $_ -notin $allowed })
+$missing = @($allowed | Where-Object { $_ -notin $changed })
+if ($unexpected.Count -ne 0) { throw "Unexpected Task 2 paths: $($unexpected -join ', ')" }
+if ($missing.Count -ne 0) { throw "Missing Task 2 paths: $($missing -join ', ')" }
+```
+
+Commit only the expanded Task 2 allowlist with:
+
+```powershell
+git add -- contract/outcome-profile/v1/profile-authority-evidence.schema.json contract/outcome-profile/v1/profile-activation.schema.json contract/outcome-profile/v1/profile-governed-receipt.schema.json contract/outcome-profile/v1/contract-descriptor.json scripts/build-outcome-profile-contract.mjs src/authority/outcome-profile-contract.ts src/authority/outcome-profile.ts src/authority/index.ts src/authority/trust.ts src/authority/host/profile-governance.ts src/authority/host/profile-governance-loader.ts src/authority/host/governed-cell.ts src/authority/host/profile-governed-receipt.ts src/authority/host/local.ts src/authority/host/index.ts test/authority/profile-governance-fixture.ts test/authority/outcome-profile.test.ts test/authority/outcome-profile-package.test.ts test/authority/trust.test.ts test/authority/profile-governance.test.ts test/authority/profile-governance-loader.test.ts test/authority/governed-cell.test.ts test/authority/profile-governed-receipt.test.ts test/authority/local-runtime.test.ts test/authority/gate.test.ts test/authority/package.test.ts docs/superpowers/specs/2026-08-14-one-command-agent-bootstrap-design.md docs/superpowers/plans/2026-08-14-one-command-agent-bootstrap.md
+git commit -m "fix(authority): bind governed profiles to verified authority"
+```
+
+After the GREEN commit, run the same exact gates from the clean committed tree and dispatch a fresh
+read-only reviewer for ordered spec-compliance then code-quality verdicts. Do not begin Task 3 until
+both verdicts clear all five original blockers and the amendment joins.
 
 ---
 
