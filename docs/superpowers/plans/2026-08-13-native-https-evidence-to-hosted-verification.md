@@ -37,6 +37,7 @@
 - Modify: `src/authority/host/local.ts`
 - Modify: `src/authority/verify.ts`
 - Modify: `contract/certification/v1/task-receipt-graph.schema.json`
+- Modify: `contract/certification/v1/sanitized-portable-outcome-evidence.schema.json` (narrow closed-export signer-identity contract)
 - Create: `test/authority/portable-receipts.test.ts`
 - Modify: `test/authority/certification-github-issue-labels-runner.test.ts`
 - Modify: `test/authority/certification-factory-journey.test.ts` (factory verifier call-site behavior only)
@@ -56,6 +57,8 @@
 The hermetic runner's actual sealed response profile remains `github.issue-labels.hermetic-v1` with acknowledged statuses `[200]`; portable evidence binds that exact profile while the generic response-semantics parser retains its existing closed, sorted, unique 2xx behavior. An applied write whose initial 503/disconnect classifies as `ambiguous` may reach `exact` only through later authoritative matched reconciliation with one provider write and zero resends; the initial observation must never be relabeled `acknowledged`.
 
 **Immutable audit deviation:** strict before-edit provenance for the earlier retrospective scope amendments cannot be manufactured without rewriting existing commits. History will not be rewritten. The earlier RED/GREEN commits and ignored Task 9 report remain the audit record, and the independent reviewer/founder must decide whether this disclosed deviation is acceptable. This note is the first tracked ratification before any round-4 production edit.
+
+**Task 9 remaining-remediation ratification (2026-08-14):** The approved single remediation cycle is limited to the four final-review findings: cryptographically deriving the sanitized export signer identifier from the actual signing public-key/descriptor bytes and binding that derivation in creation and verification; making the declared focused gate deterministic and recording its real counts; adding integrated serialized-artifact mutation coverage across the graph/export verifier; and listing the sanitized export schema explicitly in this Task 9 file scope. No authority, provider, transport, lifecycle, or hosted-execution scope is added. This ratification is recorded before production edits; the historical audit deviation above remains unchanged.
 
 **Interfaces:**
 
