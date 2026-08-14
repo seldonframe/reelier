@@ -190,3 +190,45 @@ test("portable request projection binds a separate confidential materialized req
   const mismatched = { ...routeAuthority, portableMaterializedRequestDigest: DIGEST("wrong-portable-projection") };
   assert.throws(() => f.verify(f.create({ routeAuthority: mismatched })), /request|projection|digest|route/i);
 });
+
+test("signed portable evidence structurally refuses identifying and free-form request surfaces", () => {
+  const f = fixture();
+  const counterexamples: readonly Readonly<{ label: string; overrides: Record<string, unknown> }>[] = [
+    { label: "request id", overrides: { requestId: "request_maxime@example.com" } },
+    { label: "origin", overrides: { materializedRequest: { ...f.materializedRequest, origin: "https://maxime.example.test" } } },
+    { label: "query order", overrides: { materializedRequest: { ...f.materializedRequest, normalizedQuery: "z=1&a=2" } } },
+    { label: "header value", overrides: { materializedRequest: { ...f.materializedRequest, reviewedHeaders: { "x-login": "maxime@example.com" } } } },
+    { label: "profile id", overrides: { responseSemanticsProfile: { ...f.publication.responseSemanticsProfile, profileId: "maxime@example.com" } } },
+    { label: "account-like state", overrides: { preStateEvidence: { ...f.publication.preStateEvidence, projection: { labels: ["fixlyai"] } } } },
+    { label: "reviewer secret", overrides: { postStateEvidence: { ...f.publication.postStateEvidence, projection: { labels: ["ghp_real_secret"] } }, expectedPostProjectionDigest: authorityDigest({ labels: ["ghp_real_secret"] }), reconciliation: { ...f.publication.reconciliation, observedProjectionDigest: authorityDigest({ labels: ["ghp_real_secret"] }) } } },
+  ];
+  for (const counterexample of counterexamples) {
+    const signed = f.create(counterexample.overrides);
+    assert.throws(() => f.verify(signed), /portable|opaque|identif|request|origin|query|header|profile|projection|confidential/i, counterexample.label);
+  }
+});
+
+test("portable JSON exposes only opaque or closed canonical request, response, and state projections", () => {
+  const f = fixture();
+  const publication: any = f.publication;
+  assert.match(publication.requestId, /^sha256:[0-9a-f]{64}$/);
+  assert.deepEqual(publication.materializedRequest, {
+    v: "reelier.portable-materialized-http-request/v1",
+    method: "PUT",
+    originClass: "github-api",
+    pathTemplate: "/repos/{owner}/{repository}/issues/{issueNumber}/labels",
+    queryState: "absent",
+    reviewedHeaderNames: ["content-type"],
+    bodyDigest: DIGEST("body"),
+  });
+  assert.deepEqual(publication.responseSemanticsProfile, {
+    v: "reelier.portable-http-response-semantics/v1",
+    profileDigest: f.publication.routeAuthority.responseSemanticsProfileDigest,
+    acknowledgedStatuses: [200],
+  });
+  assert.deepEqual(Object.keys(publication.preStateEvidence), ["v", "readRouteDigest", "accountDigest", "projectionSchemaDigest", "projectionDigest", "complete", "observedAt"]);
+  assert.deepEqual(Object.keys(publication.postStateEvidence), ["v", "readRouteDigest", "accountDigest", "projectionSchemaDigest", "projectionDigest", "complete", "observedAt"]);
+  for (const forbidden of ["maxime@example.com", "fixlyai", "reelier-certification", "ghp_real_secret", "canary-private-token"]) {
+    assert.equal(JSON.stringify(publication).toLowerCase().includes(forbidden.toLowerCase()), false, `portable JSON leaked ${forbidden}`);
+  }
+});

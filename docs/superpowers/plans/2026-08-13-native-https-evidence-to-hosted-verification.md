@@ -28,6 +28,7 @@
 
 **Files:**
 
+- Modify: `docs/superpowers/plans/2026-08-13-native-https-evidence-to-hosted-verification.md` (tracked Task 9 scope-ratification and immutable audit-deviation record)
 - Create: `src/authority/host/portable-receipts.ts`
 - Modify: `src/authority/certification/lifecycle-receipts.ts`
 - Modify: `src/authority/certification/task-receipt-graph.ts`
@@ -47,6 +48,12 @@
 **Task 9 scope amendment (2026-08-13):** The certification GitHub runner is an unavoidable, narrowly bounded seam for portable provenance. Task 9 may change only its execution-provenance capture, durable provenance-state version/migration, and graph-input threading. It must not change provider behavior, authority policy, budgets, lifecycle semantics, or network behavior. This amendment exists because graph-time reconstruction cannot prove runtime provenance; every runtime fact consumed by the portable publication must instead arrive from the durable executed artifact.
 
 **Task 9 verifier call-site amendment (2026-08-13):** `factory-journey.ts` and its focused test are included only because the integrated graph verifier now requires caller-supplied current-trust and verification-time anchors. No factory packet shape, lifecycle, or publication behavior may change. Gate and ledger implementation files remain out of scope: the runner must use their existing route-authority injection and persisted reservation interfaces without modifying those public seams.
+
+**Task 9 remaining-remediation scope ratification (2026-08-13):** The user already approved Task 9 implementation. The two amendments above were recorded retrospectively after implementation exposed seams that the original file list omitted; this ratification governs the remaining Task 9 remediation and does not rewrite or squash that history. The actual implementation surface is: `github-issue-labels-runner.ts` for the sealed hermetic response profile, gate-accepted route/identity/request capture, durable signed provider provenance, initial response classification, reconciliation/no-resend counters, cleanup parent, and graph export; `factory-journey.ts` only for the externally supplied current-trust and verification-time call; `task-receipt-graph.ts`, `portable-receipts.ts`, `verify.ts`, `lifecycle-receipts.ts`, `local.ts`, and the certification graph schema for publication and verification; and the Task 9 tests named in this Files section, including the factory, native, artifact, and contract gates. The runner consumes, but Task 9 does not modify, `AuthorityGateDependencies.routeAuthority` and `authenticatedProviderIdentity` in `gate.ts`, the gate's accepted reservation handle, and `ReservationIntent.routeAuthority` plus durable reservation/journal lookups in `ledger.ts`. Provider policy, budgets, transport behavior, gate/ledger public contracts, and Adapter Contract v1 remain out of scope.
+
+The hermetic runner's actual sealed response profile remains `github.issue-labels.hermetic-v1` with acknowledged statuses `[200]`; portable evidence binds that exact profile while the generic response-semantics parser retains its existing closed, sorted, unique 2xx behavior. An applied write whose initial 503/disconnect classifies as `ambiguous` may reach `exact` only through later authoritative matched reconciliation with one provider write and zero resends; the initial observation must never be relabeled `acknowledged`.
+
+**Immutable audit deviation:** strict before-edit provenance for the earlier retrospective scope amendments cannot be manufactured without rewriting existing commits. History will not be rewritten. The earlier RED/GREEN commits and ignored Task 9 report remain the audit record, and the independent reviewer/founder must decide whether this disclosed deviation is acceptable. This note is the first tracked ratification before any round-4 production edit.
 
 **Interfaces:**
 
