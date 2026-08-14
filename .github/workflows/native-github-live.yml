@@ -1,0 +1,100 @@
+name: Native GitHub live runner (guarded)
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_path:
+        description: Absolute path to the immutable Task 10 candidate in the checked-out workspace
+        required: true
+        type: string
+      disposable_target:
+        description: Named disposable fixture target (must be explicitly disposable)
+        required: true
+        type: string
+      candidate_id:
+        description: Immutable candidate ID
+        required: true
+        default: sha256:e46498b6441a44e7de42264ebf243e4462aae6e4c4b3d33ed4276fcc50190e96
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  NATIVE_CANDIDATE_ID: sha256:e46498b6441a44e7de42264ebf243e4462aae6e4c4b3d33ed4276fcc50190e96
+  NATIVE_PUBLIC_COMMIT: 03ac48e
+  NATIVE_TARBALL_DIGEST: sha256:0659c2f402002d733dfd2621c5d8cce5df301975606a3fcb1b802e492bec5309
+  NATIVE_PACK_DIGEST: sha256:8101632acbacaf2738b8a7e698b0fb301539163edc713a37e74df0a6d233d689
+  NATIVE_TASK9_EVIDENCE_DIGEST: sha256:9999999999999999999999999999999999999999999999999999999999999999
+
+jobs:
+  preflight:
+    name: Immutable candidate preflight
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout the pinned public commit
+        uses: actions/checkout@v4
+        with:
+          ref: 03ac48e
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Verify candidate pins and disposable target
+        env:
+          CANDIDATE_PATH: ${{ inputs.candidate_path }}
+          DISPOSABLE_TARGET: ${{ inputs.disposable_target }}
+          EXPECTED_CANDIDATE_ID: ${{ inputs.candidate_id }}
+        shell: bash
+        run: node scripts/native-github-live-runner.mjs --candidate "$CANDIDATE_PATH" --mode preflight
+
+  guarded-verification:
+    name: Guarded disposable verification (${{ matrix.os }})
+    needs: preflight
+    if: ${{ needs.preflight.result == 'success' && vars.NATIVE_GITHUB_LIVE_APPROVED == 'true' }}
+    strategy:
+      fail-fast: true
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+    runs-on: ${{ matrix.os }}
+    environment:
+      name: native-github-live
+    permissions:
+      contents: read
+    env:
+      NATIVE_GITHUB_LIVE_APPROVED: ${{ vars.NATIVE_GITHUB_LIVE_APPROVED }}
+      NATIVE_GITHUB_LIVE_EXECUTE: ${{ vars.NATIVE_GITHUB_LIVE_EXECUTE }}
+      CANDIDATE_PATH: ${{ inputs.candidate_path }}
+      DISPOSABLE_TARGET: ${{ inputs.disposable_target }}
+    steps:
+      - name: Checkout the pinned public commit
+        uses: actions/checkout@v4
+        with:
+          ref: 03ac48e
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Verify immutable candidate and contract pins
+        shell: bash
+        run: |
+          test "$NATIVE_CANDIDATE_ID" = "sha256:e46498b6441a44e7de42264ebf243e4462aae6e4c4b3d33ed4276fcc50190e96"
+          test "$NATIVE_PUBLIC_COMMIT" = "03ac48e"
+          test "$NATIVE_TARBALL_DIGEST" = "sha256:0659c2f402002d733dfd2621c5d8cce5df301975606a3fcb1b802e492bec5309"
+          test "$NATIVE_PACK_DIGEST" = "sha256:8101632acbacaf2738b8a7e698b0fb301539163edc713a37e74df0a6d233d689"
+          test "$NATIVE_TASK9_EVIDENCE_DIGEST" = "sha256:9999999999999999999999999999999999999999999999999999999999999999"
+          test -n "$DISPOSABLE_TARGET"
+      - name: Run the approval-gated fail-closed runner
+        shell: bash
+        run: node scripts/native-github-live-runner.mjs --candidate "$CANDIDATE_PATH" --mode run
+      - name: Upload the private verification artifact after verification
+        if: ${{ success() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-github-live-${{ matrix.os }}
+          path: .superpowers/native-github-live-verification.json
+          if-no-files-found: error
