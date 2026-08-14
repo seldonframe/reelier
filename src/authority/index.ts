@@ -20,3 +20,24 @@ export {
   type TrustEventV1,
   type SignedCertificationReadinessV1,
 } from "./certification/authority.js";
+export { OUTCOME_PROFILE_CONTRACT_V1_DIGEST } from "./outcome-profile-contract.js";
+export {
+  createProfileVerificationRoots,
+  parseOutcomeProfileDraft,
+  parseProfileConformanceReport,
+  parseSignedOutcomeProfileConformance,
+  parseSignedTenantProfileActivation,
+  parseProfileTrustPin,
+  parseProfileGovernanceManifest,
+  verifyProfileGovernanceOffline,
+  type OutcomeProfileDraftV1,
+  type ProfileConformanceReportV1,
+  type SignedOutcomeProfileConformanceV1,
+  type SignedTenantProfileActivationV1,
+  type ProfileTrustPinV1,
+  type ProfileGovernanceManifestV1,
+  type ProfileVerificationAnchorV1,
+  type ProfileVerificationRootsV1,
+  type ProfileGovernanceVerificationV1,
+  type ProfileGovernanceVerificationInputV1,
+} from "./outcome-profile.js";
