@@ -223,3 +223,49 @@ The generic candidate checker also exited `0`; `git diff --check` exited `0`. Th
 ```
 
 Open risks are unchanged: the fixture uses a one-second supported ownership lease solely for bounded local recovery, dynamic free-port selection retains the inherent bind handoff race with bounded retry, and no live provider, deployment, Grok Bot, production-readiness, safety, topology, traffic-completeness, or content-correctness claim is made.
+
+# Second verifier-not-maker repair
+
+Commits after reviewed head `aa196cb`:
+
+- `2f7fcc2` — `test(continuity): reject maker-authored Eve evidence` (RED acceptance)
+- `5532ccc` — `fix(continuity): observe Eve recovery evidence`
+- `e379d8e` — `fix(continuity): retain Eve boundary evidence`
+
+The checkpoint recovery assertion now slices the actual observed HTTP traffic emitted after the restarted Eve process becomes reachable and before the original session settles. Every harness request—including health, info, stream, control, create, follow-up, and listener-close probes—passes through one request boundary. That boundary records method and absolute URL only after `fetch` has been invoked. The recovery proof filters those rows for exact `POST /eve/v1/session...` traffic and observes none; the manual semantic counter was deleted. A committed static falsifier allows the single raw `fetch` call only inside that observable boundary and forbids raw fetch sites in the process harness.
+
+The outcome cut no longer appends reserved, dispatched, or ambiguous events and no longer hardcodes a desired lifecycle/verdict. Its pre-reconciliation evidence is the actual 202 session submission, a real pre-crash `step.started`, absence of any terminal stream event, and an unchanged ledger with no consequence state. Restart produces the distinct same-coordinate retry. The real status tool crosses the Path C GET route exactly once, and its accumulated Eve message proves `accepted` / `outcome-acknowledged`; the native status reports `acknowledged`. Only the existing native verifier path can then append the authority import, after which exactly one verified consequence is observed. A clean-checkout run exposed and closed a polling race by accumulating every absolute-cursor stream row until the terminal boundary instead of retaining only the final poll.
+
+The hostile identity probe now sends principal, task, workload, and authority substitutions in both prompt text and request-body fields. After that request settles, a fresh authenticated Eve session performs a real continuity checkpoint. The matrix reads the newly appended segment, compares its actor against the host-authenticated task/principal/workload binding, compares its authority digest with the projection, enumerates the ledger root to prove only the legitimate task directory exists, and verifies the hostile authority digest is absent. The subsequent cross-principal request still refuses before `step.started` without ledger or Path C effects.
+
+## Second repair RED
+
+The static transport falsifier initially failed because `eve-process.mjs` contained raw fetch sites and `stream.mjs` did not expose an observed client. The new status-response assertion later failed under the clean-checkout command with `statusToolMessages: []`, demonstrating that the old boundary waiter discarded earlier polling rows. The hostile durable-write assertion also first exposed a truthful `ContinuityFoldError: continuity history contains more than one task.opened event`; the probe was corrected to append an unchecked claim rather than an invalid second task-open event.
+
+## Second repair GREEN
+
+Focused Eve matrix:
+
+```text
+ℹ tests 10
+ℹ pass 10
+ℹ fail 0
+ℹ duration_ms 63751.158
+```
+
+Fresh root build, test compilation, and all continuity tests:
+
+```text
+ℹ tests 64
+ℹ pass 64
+ℹ fail 0
+ℹ duration_ms 75065.7298
+```
+
+The generic candidate checker exited `0`. The fresh clean-checkout command `npm run check:continuity-eve` exited `0` and emitted:
+
+```json
+{"artifacts":{"ledgerHeadDigest":"sha256:a760889b79898d1a31d5d99eadc0b99970ac31368e6d106807c4d6e6b93ffbb3","receiptGraphDigest":"sha256:aad5b02abb590035488b059dcecf13a2a06d03464001280d88845d669f0de0ed","reportDigest":"sha256:cb6335936600bfeaae423e2005769bb1ff03809e50a0852d5b8867af085fa648"},"authorityAdapterContractDigest":"sha256:7f46242b26d9c921f4e1ec9de6418ac5fc8c03d70c4415c25e799ae0e73a1512","checks":[{"detail":"public continuity adapter candidate checks passed","id":"generic-candidate","status":"passed"},{"detail":"real Eve kill, resume, stream, control, identity, and model matrix passed","id":"eve-process-matrix","status":"passed"},{"detail":"focused Path C and Continuity suites passed","id":"focused-continuity","status":"passed"}],"eveVersion":"0.37.1","maturity":"reproduced","nodeVersion":"v24.9.0","nonClaims":{"contentCorrectness":"not-proved","grokBot":"not-tested","productionReadiness":"not-proved","safety":"not-proved","topology":"not-proved","trafficCompleteness":"not-proved"},"reelierCommit":"e379d8eb2d348e43f49c488fdb59bcfdf6070e27","status":"passed","v":"reelier.continuity-eve-conformance-report/v1"}
+```
+
+`git diff --check` passed. The only remaining environment limitation is unchanged: Docker/Linux verification is unavailable on this host. No external provider, workflow, deployment, Grok Bot, credential, merge, push, or network write was performed.
