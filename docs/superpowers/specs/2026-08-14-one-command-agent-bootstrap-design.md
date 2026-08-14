@@ -346,6 +346,71 @@ an explicit platform-gated skip with exact reason
 already available Linux Node executor or Docker daemon, and no install/start/download is authorized;
 Linux execution remains mandatory Task 7/CI evidence and a final-report limitation.
 
+### Approved Task 2 third amendment — governed prepared-dispatch publication
+
+**Approved:** 2026-08-14. The first two amendments remain immutable decision history. This third
+amendment supersedes only their incomplete prepared-dispatch publication and artifact-subkey
+authorization details. Authority Contract v1, `AuthorityKeyDescriptorV1`, every Authority schema,
+`AuthorityReceiptBundle`, its parser/verifier, the ledger and reservation wire records, provider-send
+semantics, and every inner claim remain unchanged. The general constructor and governed publisher
+continue to delegate to the one existing receipt kernel and verifier.
+
+The certified prepared-dispatch coordinator gains one optional compatibility seam on
+`DispatchPublication`: `publishReservation`. Legacy publishers that omit it behave byte- and
+trace-identically. A governed publisher must implement it. After `commitPreparedDispatch` succeeds
+and makes the attempt non-resendable, but before `consumePreparedDispatch` can call the provider,
+the coordinator asks the governed publisher to construct, verify, and immutably store a reservation
+inner bundle plus outer governed root. Any construction, signing, verification, or storage failure
+propagates before provider send. The later terminal publication runs after the actual effect and
+before terminal ledger transition, uses the durable reservation inner receipt as `priorReceipt`, and
+reconciliation chains to the terminal inner receipt. On restart, the governed publisher loads and
+verifies the stored reservation root by exact reservation/effect/route/foundation joins, restores
+its static foundations, and reconciles without resend. A cut before root storage produces no
+provider call; a cut after root storage but before send, after provider apply but before terminal
+storage, or after terminal storage preserves a single unforked chain wherever an effect/evidence
+node exists.
+
+The general `AuthorityReceiptBundleConstructionInputV1.phase` therefore includes
+`"reservation"`. That phase is byte-semantic compatibility, not a new Authority kind: it uses the
+existing lifecycle result preimage `authorityDigest({ reservationId, phase: "reservation" })`,
+receipt ID derivation over that result, one `reserved` timeline node, `dispatchedRequestDigest:
+null`, reconciliation `not-attempted`/null projection, dispatch claim `absent`, unchecked provider
+acknowledgment/reconciliation/topology/completeness, exact recovered static foundations, exact
+signatures, and `priorReceiptDigest: null`. The certification lifecycle delegates this phase and all
+later phases to the general constructor while preserving its current local-first/storage/recovery/
+extension/cut bytes and three-node/restart/no-resend behavior.
+
+Four generated artifact keys are not direct Authority descriptors and must never be made so.
+`source-bundle`, `compiled-capability`, `transport-effect`, and `pack-manifest` callbacks are
+authorized by the existing `CertificationArtifactKeyBindingV1` and its human-signed
+`CertificationArtifactKeyBindingCommitmentV1`. The binding is signed by an active direct
+`authority-evidence` parent, commits exactly four unique purpose/key-ID/SPKI/digest entries, links the
+exact signed readiness, Cell, task, Adapter Contract, schedule, issuance, and expiry, and is verified
+with existing `verifyCertificationArtifactKeyBinding`. The direct inner `authority-evidence` and
+`authority-receipt` signers and the separate outer binding signer continue to use current direct
+descriptor/event replay. Neither `AuthorityKeyDescriptorV1` nor Authority Contract v1 widens.
+
+The governed signing bundle contains the six callbacks plus an all-or-nothing artifact
+authorization `{ binding, commitment }`. The four artifact callbacks must match the binding entries;
+the direct evidence callback must match the active parent descriptor; the receipt and outer binding
+callbacks must match their separately active direct descriptors; and every required key is distinct
+where its purpose requires segregation. Admission checks the portable authorization against the
+fixed Job Card signed-readiness material and current external trust. Publication repeats validity,
+parent activity, commitment, entry, callback, and distinctness checks at its single `observedAt`.
+Offline verification repeats them at binding `observedAt` and verifier time. The binding and
+commitment travel in private provenance and in `authorityBindingEvidence`, so restart and an open
+verifier never depend on caller assertions or process memory. `SignedProfileAuthorityBindingV1`
+adds required `artifactKeyBindingDigest` and `artifactKeyBindingCommitmentDigest`, so neither
+portable authorization object can be substituted independently of the signed outer join.
+
+`DispatchPublication` compatibility is exact even when an outer receipt is stored:
+`receiptRef = authorityDigest(inner.receipt.value)` and
+`evidenceDigest = inner.evidence.digest`. Only an inner receipt-value digest may become the next
+inner `priorReceiptDigest`. The immutable outer object is indexed by reservation/effect and that
+inner reference; its own digest is an outer storage/evidence identity exposed only through outer
+edges and verification, never a coordinator result or inner prior. Two-node and restart falsifiers
+must fail any implementation that substitutes the outer digest.
+
 ## Why this does not require thousands of Reelier integrations
 
 Reelier does not become the tool catalog, OAuth broker, or universal transport SDK. Existing MCP servers, host plugins, OpenAPI catalogs, Composio-style tool providers, Vercel Connect, and native provider adapters may describe or carry routes. A provider-neutral discovery adapter turns those descriptions into the same closed route rows; it does not confer trust.
