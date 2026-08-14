@@ -16,6 +16,35 @@ export interface HttpResponseSemanticsProfileV1 {
   readonly acknowledgedStatuses: readonly number[];
 }
 
+export interface HttpResponseSemanticsProfileRegistry {
+  readonly profile: (profileId: string) => HttpResponseSemanticsProfileV1 | undefined;
+}
+
+/** Builds a closed registry so a route cannot silently select unreviewed behavior. */
+export function createHttpResponseSemanticsProfileRegistry(profiles: readonly HttpResponseSemanticsProfileV1[]): HttpResponseSemanticsProfileRegistry {
+  if (!Array.isArray(profiles) || Object.getPrototypeOf(profiles) !== Array.prototype) throw new TypeError("HTTP response semantics profile registry is invalid");
+  const descriptors = Object.getOwnPropertyDescriptors(profiles);
+  const names = Object.keys(descriptors);
+  if (Object.getOwnPropertySymbols(profiles).length > 0 || names.length !== profiles.length + 1 || !names.includes("length") || names.some(name => name !== "length" && (!/^(?:0|[1-9]\d*)$/.test(name) || Number(name) >= profiles.length)) || Object.values(descriptors).some(descriptor => !("value" in descriptor) || descriptor.get || descriptor.set)) throw new TypeError("HTTP response semantics profile registry is invalid");
+  const indexed = new Map<string, HttpResponseSemanticsProfileV1>();
+  for (const value of profiles) {
+    const profile = parseHttpResponseSemanticsProfileV1(value);
+    if (indexed.has(profile.profileId)) throw new TypeError("duplicate HTTP response semantics profile");
+    indexed.set(profile.profileId, profile);
+  }
+  return Object.freeze({ profile: (profileId: string) => typeof profileId === "string" ? indexed.get(profileId) : undefined });
+}
+
+export function lookupHttpResponseSemanticsProfile(registry: HttpResponseSemanticsProfileRegistry, profileId: string): HttpResponseSemanticsProfileV1 | undefined {
+  if (!registry || typeof registry.profile !== "function" || typeof profileId !== "string") throw new TypeError("HTTP response semantics profile lookup is invalid");
+  return registry.profile(profileId);
+}
+
+/** Digest commits both profile identity and the exact acknowledged-status behavior. */
+export function httpResponseSemanticsProfileDigest(profile: HttpResponseSemanticsProfileV1): string {
+  return authorityDigest(parseHttpResponseSemanticsProfileV1(profile));
+}
+
 export type HttpResponseObservation =
   | Readonly<{ kind: "response"; status: number }>
   | Readonly<{ kind: "disconnect" | "malformed" | "overflow" | "deadline" }>;
@@ -26,9 +55,14 @@ export function materializedHttpRequestDigest(projection: MaterializedHttpReques
 
 export function parseHttpResponseSemanticsProfileV1(value: unknown): HttpResponseSemanticsProfileV1 {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("HTTP response semantics profile is invalid");
-  const raw = value as Record<string, unknown>;
-  if (Object.getPrototypeOf(value) !== Object.prototype || Object.keys(raw).sort().join(",") !== "acknowledgedStatuses,profileId,v") throw new TypeError("HTTP response semantics profile contains unknown fields");
-  if (raw.v !== "reelier.http-response-semantics/v1" || typeof raw.profileId !== "string" || !Array.isArray(raw.acknowledgedStatuses) || raw.acknowledgedStatuses.length === 0) throw new TypeError("HTTP response semantics profile is invalid");
+  if (Object.getPrototypeOf(value) !== Object.prototype || Object.getOwnPropertySymbols(value).length > 0) throw new TypeError("HTTP response semantics profile contains unknown fields");
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  if (Object.keys(descriptors).sort().join(",") !== "acknowledgedStatuses,profileId,v" || Object.values(descriptors).some(descriptor => !("value" in descriptor) || descriptor.get || descriptor.set)) throw new TypeError("HTTP response semantics profile contains unknown or accessor fields");
+  const raw = Object.fromEntries(Object.entries(descriptors).map(([key, descriptor]) => [key, (descriptor as PropertyDescriptor).value])) as Record<string, unknown>;
+  if (raw.v !== "reelier.http-response-semantics/v1" || typeof raw.profileId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(raw.profileId) || !Array.isArray(raw.acknowledgedStatuses) || raw.acknowledgedStatuses.length === 0 || Object.getPrototypeOf(raw.acknowledgedStatuses) !== Array.prototype) throw new TypeError("HTTP response semantics profile is invalid");
+  const statusDescriptors = Object.getOwnPropertyDescriptors(raw.acknowledgedStatuses);
+  const statusNames = Object.keys(statusDescriptors);
+  if (Object.getOwnPropertySymbols(raw.acknowledgedStatuses).length > 0 || statusNames.some(key => key !== "length" && !/^(?:0|[1-9]\d*)$/.test(key)) || Object.values(statusDescriptors).some(descriptor => !("value" in descriptor) || descriptor.get || descriptor.set)) throw new TypeError("HTTP response semantics statuses are invalid");
   const statuses = raw.acknowledgedStatuses;
   if (statuses.some(status => !Number.isInteger(status) || (status as number) < 200 || (status as number) > 299) || new Set(statuses as number[]).size !== statuses.length) throw new TypeError("HTTP response semantics statuses are invalid");
   return Object.freeze({ v: raw.v, profileId: raw.profileId, acknowledgedStatuses: Object.freeze([...(statuses as number[])].sort((a, b) => a - b)) });

@@ -119,6 +119,12 @@ async function materializeSecret(endpoint: JsonHttpsEndpoint | JsonHttpsRouteV1,
 
 function validatePath(path: string, endpoint: JsonHttpsEndpoint): void {
   if (!path.startsWith("/") || path.startsWith("//") || path.includes("..") || path.includes("\\") || /[?#]/.test(path)) throw new JsonHttpsSecurityError("path must be a relative normalized path");
+  // Validate escapes before any credential or DNS work.  WHATWG URL parsing can
+  // normalize encoded dot segments, so inspect the decoded segments explicitly
+  // and reject malformed escapes and encoded separators.
+  let decoded: string;
+  try { decoded = decodeURIComponent(path); } catch { throw new JsonHttpsSecurityError("path contains invalid escaping"); }
+  if (/%(?:2e|2f|5c)/i.test(path) || decoded.includes("\\") || decoded.split("/").some((part, index) => index > 0 && (part === "." || part === ".."))) throw new JsonHttpsSecurityError("path contains encoded dot or separator segments");
   if (!endpoint.allowedPathPrefixes.some(prefix => path === prefix || path.startsWith(prefix.endsWith("/") ? prefix : `${prefix}/`))) throw new JsonHttpsSecurityError("path is not allowed for endpoint");
 }
 
