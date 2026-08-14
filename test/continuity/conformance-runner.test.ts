@@ -95,12 +95,16 @@ test("uncertainty checks reject swapped and conflated consequence lifecycles", a
   }
 });
 
-test("candidate schema accepts semantic versions and rejects numeric prerelease leading zero", async () => {
+test("candidate schema accepts SemVer build metadata and rejects malformed identifiers", async () => {
   const schema = JSON.parse(await readFile("conformance/continuity-adapter/v1/candidate.schema.json", "utf8"));
   const { default: Ajv2020 } = await import("ajv/dist/2020.js");
   const validate = new (Ajv2020 as unknown as new (options: { strict: boolean }) => { compile(value: unknown): (value: unknown) => boolean })({ strict: true }).compile(schema);
   const candidate = (harnessVersion: string) => ({ v: "reelier.continuity-adapter-candidate/v1", adapterId: "core", harnessId: "core", harnessVersion, reelierCommit: "44d512263b3e77a301b4d875ab03217712b17c37", authorityAdapterContractDigest: "sha256:7f46242b26d9c921f4e1ec9de6418ac5fc8c03d70c4415c25e799ae0e73a1512" });
   assert.equal(validate(candidate("1.2.3")), true);
   assert.equal(validate(candidate("1.2.3-alpha.1")), true);
+  assert.equal(validate(candidate("1.2.3+build.1")), true);
+  assert.equal(validate(candidate("1.2.3-alpha.1+build.1")), true);
   assert.equal(validate(candidate("1.2.3-01")), false);
+  assert.equal(validate(candidate("1.2.3+build..1")), false);
+  assert.equal(validate(candidate("1.2.3+build_1")), false);
 });

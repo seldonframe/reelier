@@ -14,7 +14,7 @@ const opened = Object.freeze({ type: "task.opened", eventId: "event_1", outcome:
 const checkpoint = (actor, cursor, events) => Object.freeze({ v: "reelier.continuity-checkpoint/v1", taskId: actor.taskId, expectedCursor: cursor, actorPrincipalId: actor.principalId, workloadId: actor.workloadId, jobCardDigest: digest("a"), authoritySnapshotDigest: digest("b"), proposedEvents: events, evidenceRefs: [] });
 const pass = (id, detail) => Object.freeze({ id, status: "passed", detail });
 const fail = (id, detail) => Object.freeze({ id, status: "failed", detail });
-const SEMVER = /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-(?:(?:0|[1-9][0-9]*)|(?:[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))(?:\.(?:(?:0|[1-9][0-9]*)|(?:[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)))*)?$/;
+const SEMVER = /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-(?:(?:0|[1-9][0-9]*)|(?:[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))(?:\.(?:(?:0|[1-9][0-9]*)|(?:[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)))*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 const textOrNull = (value) => typeof value === "string" ? value : null;
 
 function closedReport(descriptor, checks) {
