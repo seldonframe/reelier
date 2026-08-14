@@ -82,7 +82,7 @@ test("resume projection refuses an empty ledger snapshot", () => {
     jobCardDigest: null,
     authoritySnapshotDigest: null,
     state: null,
-  }), /empty.*snapshot|nothing to resume/i);
+  }), /snapshot.*provenance|exact.*snapshot|nothing to resume/i);
 });
 
 test("resume projection refuses a structurally fabricated folded snapshot", async () => {
@@ -116,5 +116,36 @@ test("resume projection refuses a structurally fabricated folded snapshot", asyn
     status: "verified",
     evidenceDigest: digest("f"),
   });
-  assert.throws(() => createResumeProjection(mutated), /fold.*integrity|integrity.*fold/i);
+  const mutationProjection = createResumeProjection(mutated);
+  assert.equal(mutationProjection.sections.evidenceAndUncertainty.uncertainClaims.some((item) => item.claimId === "forged"), false);
+});
+
+test("resume projection never reads prototype accessors from a registered snapshot or state", async () => {
+  const snapshotAccessor = await snapshot([opened]);
+  const originalTaskId = snapshotAccessor.taskId;
+  delete (snapshotAccessor as { taskId?: string }).taskId;
+  let snapshotAccessorReads = 0;
+  Object.setPrototypeOf(snapshotAccessor, {
+    get taskId() {
+      snapshotAccessorReads += 1;
+      return snapshotAccessorReads === 1 ? originalTaskId : "task_substituted";
+    },
+  });
+  assert.throws(() => createResumeProjection(snapshotAccessor), /snapshot.*provenance|exact.*snapshot|inert/i);
+  assert.equal(snapshotAccessorReads, 0);
+
+  const stateAccessor = await snapshot([opened]);
+  const state = stateAccessor.state! as { outcome?: string };
+  const originalOutcome = state.outcome!;
+  delete state.outcome;
+  let stateAccessorReads = 0;
+  Object.setPrototypeOf(state, {
+    get outcome() {
+      stateAccessorReads += 1;
+      return stateAccessorReads <= 2 ? originalOutcome : "Substituted outcome";
+    },
+  });
+  const projection = createResumeProjection(stateAccessor);
+  assert.equal(projection.sections.outcomeOwed.outcome, originalOutcome);
+  assert.equal(stateAccessorReads, 0);
 });

@@ -86,6 +86,17 @@ test("replay envelope rejects accessors and symbols without executing them", () 
     [Symbol("hidden")]: "field",
   };
   assert.throws(() => decodeNativeOutcomeReplayArtifact(symbolCapsule), /symbol fields/i);
+
+  const nonEnumerableCapsule = {
+    authoritySnapshotDigest: digest("a"),
+    graphJsonBase64: "e30=",
+    v: "reelier.verified-native-outcome-replay/v1",
+  };
+  Object.defineProperty(nonEnumerableCapsule, "unexpected", {
+    value: "hidden",
+    enumerable: false,
+  });
+  assert.throws(() => decodeNativeOutcomeReplayArtifact(nonEnumerableCapsule), /exact canonical object/i);
 });
 
 test("the bridge preserves the verifier-produced native outcome proof edges", async () => {

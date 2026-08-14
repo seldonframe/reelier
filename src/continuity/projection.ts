@@ -1,7 +1,7 @@
 import type { ClaimStatus } from "../authority/types.js";
 import type { VerifiedNativeOutcomeProjectionV1 } from "../authority/certification/task-receipt-graph.js";
-import { assertFoldedContinuityState, type ObligationStateV1 } from "./fold.js";
-import { assertLedgerContinuitySnapshot, type ContinuitySnapshotV1 } from "./fs-ledger.js";
+import type { ObligationStateV1 } from "./fold.js";
+import { readLedgerContinuitySnapshot, type ContinuitySnapshotV1 } from "./fs-ledger.js";
 import type { UncheckedConsequenceProofV1 } from "./types.js";
 
 export interface OutcomeOwedProjectionV1 {
@@ -123,18 +123,17 @@ function nextSafeActions(
 }
 
 export function createResumeProjection(snapshot: ContinuitySnapshotV1): ResumeProjectionV1 {
+  const trustedSnapshot = readLedgerContinuitySnapshot(snapshot);
   if (
-    snapshot.cursor === 0
-    || snapshot.segmentDigest === null
-    || snapshot.jobCardDigest === null
-    || snapshot.authoritySnapshotDigest === null
-    || snapshot.state === null
+    trustedSnapshot.cursor === 0
+    || trustedSnapshot.segmentDigest === null
+    || trustedSnapshot.jobCardDigest === null
+    || trustedSnapshot.authoritySnapshotDigest === null
+    || trustedSnapshot.state === null
   ) {
     throw new TypeError("empty continuity snapshot has nothing to resume");
   }
-  assertLedgerContinuitySnapshot(snapshot);
-  assertFoldedContinuityState(snapshot.state);
-  const state = snapshot.state;
+  const state = trustedSnapshot.state;
   const obligations = [...state.obligations.values()].map(obligationProjection);
   const workState: WorkStateProjectionV1 = {
     open: obligations.filter((item) => item.state === "open"),
@@ -163,11 +162,11 @@ export function createResumeProjection(snapshot: ContinuitySnapshotV1): ResumePr
   };
   return {
     v: "reelier.resume-projection/v1",
-    taskId: snapshot.taskId,
-    cursor: snapshot.cursor,
-    segmentDigest: snapshot.segmentDigest,
-    jobCardDigest: snapshot.jobCardDigest,
-    authoritySnapshotDigest: snapshot.authoritySnapshotDigest,
+    taskId: trustedSnapshot.taskId,
+    cursor: trustedSnapshot.cursor,
+    segmentDigest: trustedSnapshot.segmentDigest,
+    jobCardDigest: trustedSnapshot.jobCardDigest,
+    authoritySnapshotDigest: trustedSnapshot.authoritySnapshotDigest,
     sections: {
       outcomeOwed: {
         outcome: state.outcome,
