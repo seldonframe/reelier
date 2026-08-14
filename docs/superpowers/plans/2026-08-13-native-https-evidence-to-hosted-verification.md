@@ -31,6 +31,7 @@
 - Create: `src/authority/host/portable-receipts.ts`
 - Modify: `src/authority/certification/lifecycle-receipts.ts`
 - Modify: `src/authority/certification/task-receipt-graph.ts`
+- Modify: `src/authority/certification/github-issue-labels-runner.ts` (narrow scope amendment: this is the durable hermetic execution boundary that must persist and pass the actual authorized route snapshot, signed authenticated identity, materialized request, sealed response profile, executed reconciliation/no-resend counters, and cleanup parent into the Task 9 graph; its provenance state format must be explicitly migrated/versioned rather than reconstructed by the graph)
 - Modify: `src/authority/host/local.ts`
 - Modify: `src/authority/verify.ts`
 - Modify: `contract/certification/v1/task-receipt-graph.schema.json`
@@ -40,6 +41,8 @@
 - Modify: `test/authority/artifacts.test.ts`
 - Modify: `test/authority/contract.test.ts`
 - Create: `.superpowers/sdd/2026-08-13-native-https-evidence-to-hosted-verification/task-9-report.md`
+
+**Task 9 scope amendment (2026-08-13):** The certification GitHub runner is an unavoidable, narrowly bounded seam for portable provenance. Task 9 may change only its execution-provenance capture, durable provenance-state version/migration, and graph-input threading. It must not change provider behavior, authority policy, budgets, lifecycle semantics, or network behavior. This amendment exists because graph-time reconstruction cannot prove runtime provenance; every runtime fact consumed by the portable publication must instead arrive from the durable executed artifact.
 
 **Interfaces:**
 
