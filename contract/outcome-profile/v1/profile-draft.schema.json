@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "reelier.outcome-profile/profile-draft/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["v", "profileId", "profileVersion", "status", "authorization", "conformance", "dispatchable", "provider", "packAlias", "packDigest", "definitionDigest", "definitionRegistrationDigest", "accountProbeDigest", "sourceAuthorityDigest", "argumentAuthorityDigest", "semanticIdentityDigest", "responseSemanticsProfileDigest", "reconciliationRecipeDigest", "topologyRequirementsDigest", "conformanceVectorSetDigest", "nonClaims"],
+  "properties": {
+    "v": { "const": "reelier.outcome-profile-draft/v1" },
+    "profileId": { "$ref": "#/$defs/id" },
+    "profileVersion": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[A-Za-z0-9.-]+)?$" },
+    "status": { "const": "draft" },
+    "authorization": { "const": "absent" },
+    "conformance": { "const": "unchecked" },
+    "dispatchable": { "const": false },
+    "provider": { "$ref": "#/$defs/id" },
+    "packAlias": { "$ref": "#/$defs/id" },
+    "packDigest": { "$ref": "#/$defs/digest" },
+    "definitionDigest": { "$ref": "#/$defs/digest" },
+    "definitionRegistrationDigest": { "$ref": "#/$defs/digest" },
+    "accountProbeDigest": { "$ref": "#/$defs/digest" },
+    "sourceAuthorityDigest": { "$ref": "#/$defs/digest" },
+    "argumentAuthorityDigest": { "$ref": "#/$defs/digest" },
+    "semanticIdentityDigest": { "$ref": "#/$defs/digest" },
+    "responseSemanticsProfileDigest": { "$ref": "#/$defs/digest" },
+    "reconciliationRecipeDigest": { "$ref": "#/$defs/digest" },
+    "topologyRequirementsDigest": { "$ref": "#/$defs/digest" },
+    "conformanceVectorSetDigest": { "$ref": "#/$defs/digest" },
+    "nonClaims": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contentCorrectness", "providerCertification", "safety", "trafficCompleteness"],
+      "properties": {
+        "contentCorrectness": { "const": "not-proved" },
+        "providerCertification": { "const": "not-proved" },
+        "safety": { "const": "not-proved" },
+        "trafficCompleteness": { "const": "not-proved" }
+      }
+    }
+  },
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[A-Za-z0-9._~-]{1,128}$" },
+    "digest": { "type": "string", "pattern": "^sha256:(?!0{64}$)[0-9a-f]{64}$" }
+  }
+}

@@ -126,7 +126,7 @@ function signActivation(draft: OutcomeProfileDraftV1, conformance: SignedOutcome
     jobCardDigest: sha("e"),
     contractDigest: OUTCOME_PROFILE_CONTRACT_V1_DIGEST,
     deploymentDigest: sha("f"),
-    routeAuthorityDigest: sha("0"),
+    routeAuthorityDigest: sha("7"),
     trustHeadDigest: fixtureTrustState().trustHeadDigest,
     validFrom: "2026-08-14T11:00:00.000Z",
     validUntil: "2026-08-14T13:00:00.000Z",
@@ -414,4 +414,13 @@ test("canonical profile artifacts contain no hidden data after parsing", () => {
   const parsed = parseOutcomeProfileDraft(fixtureDraft());
   assert.deepEqual(JSON.parse(authorityCanonicalBytes(parsed).toString("utf8")), parsed);
   assert.equal(Object.isFrozen(parsed.nonClaims), true);
+});
+
+test("inert parsers reject impossible canonical times and reused trust keys", () => {
+  const bundle = fixtureBundle();
+  assert.throws(() => parseSignedTenantProfileActivation({ ...bundle.activation, validFrom: "2026-02-31T11:00:00.000Z" }), TypeError);
+  assert.throws(() => parseSignedTenantProfileActivation({ ...bundle.activation, validFrom: bundle.activation.validUntil }), TypeError);
+  const pin = fixtureTrustPin();
+  assert.throws(() => parseProfileTrustPin({ ...pin, currentTrustEvents: pin.currentTrustEvents.map((event, index) => index === 0 ? { ...event, at: "2026-02-31T10:00:00.000Z" } : event) }), TypeError);
+  assert.throws(() => parseProfileTrustPin({ ...pin, operator: { ...pin.operator, publicKeySpkiBase64: pin.certifier.publicKeySpkiBase64 } }), TypeError);
 });

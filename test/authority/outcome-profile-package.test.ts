@@ -25,6 +25,9 @@ test("Outcome Profile contract is a separate exact seven-schema digest", () => {
   assert.deepEqual(readdirSync(contractDirectory).sort(), ["contract-descriptor.json", ...members].sort());
   const authorityDescriptor = readFileSync(path.join(process.cwd(), "contract", "authority", "v1", "adapter-contract-v1.json"), "utf8");
   assert.equal(authorityDescriptor.includes("outcome-profile"), false, "Authority Contract v1 membership is unchanged");
+  assert.equal(Object.isFrozen(OUTCOME_PROFILE_CONTRACT_V1), true);
+  assert.equal(Object.isFrozen(OUTCOME_PROFILE_CONTRACT_V1.members), true);
+  assert.equal(Object.isFrozen(OUTCOME_PROFILE_CONTRACT_V1.members[0]), true);
 });
 
 test("profile schema contract members are closed and descriptor digests normalize LF bytes", () => {

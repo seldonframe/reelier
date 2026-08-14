@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "reelier.outcome-profile/profile-governed-receipt/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["v", "profileDraft", "profileConformanceReport", "profileConformance", "profileActivation", "authorityReceiptBundle", "edges"],
+  "properties": {
+    "v": { "const": "reelier.profile-governed-authority-receipt/v1" },
+    "profileDraft": { "$ref": "profile-draft.schema.json" },
+    "profileConformanceReport": { "$ref": "profile-conformance-report.schema.json" },
+    "profileConformance": { "$ref": "profile-conformance.schema.json" },
+    "profileActivation": { "$ref": "profile-activation.schema.json" },
+    "authorityReceiptBundle": { "$ref": "../../authority/v1/authority-receipt-bundle.schema.json" },
+    "edges": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["profileDigest", "conformanceReportDigest", "conformanceDigest", "activationDigest", "innerReceiptDigest"],
+      "properties": {
+        "profileDigest": { "$ref": "#/$defs/digest" },
+        "conformanceReportDigest": { "$ref": "#/$defs/digest" },
+        "conformanceDigest": { "$ref": "#/$defs/digest" },
+        "activationDigest": { "$ref": "#/$defs/digest" },
+        "innerReceiptDigest": { "$ref": "#/$defs/digest" }
+      }
+    }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:(?!0{64}$)[0-9a-f]{64}$" }
+  }
+}

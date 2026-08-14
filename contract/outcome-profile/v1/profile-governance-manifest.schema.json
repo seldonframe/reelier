@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "reelier.outcome-profile/profile-governance-manifest/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["v", "tenant", "governanceRef", "profileDigest", "conformanceDigest", "activationDigest", "conformanceReportDigest", "trustPinDigest", "trustHeadDigest"],
+  "properties": {
+    "v": { "const": "reelier.outcome-profile-governance-manifest/v1" },
+    "tenant": { "$ref": "#/$defs/id" },
+    "governanceRef": { "$ref": "#/$defs/id" },
+    "profileDigest": { "$ref": "#/$defs/digest" },
+    "conformanceDigest": { "$ref": "#/$defs/digest" },
+    "activationDigest": { "$ref": "#/$defs/digest" },
+    "conformanceReportDigest": { "$ref": "#/$defs/digest" },
+    "trustPinDigest": { "$ref": "#/$defs/digest" },
+    "trustHeadDigest": { "$ref": "#/$defs/digest" }
+  },
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[A-Za-z0-9._~-]{1,128}$" },
+    "digest": { "type": "string", "pattern": "^sha256:(?!0{64}$)[0-9a-f]{64}$" }
+  }
+}
