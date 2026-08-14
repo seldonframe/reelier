@@ -28,6 +28,8 @@ import { createCertificationLifecycleReceiptPublication, loadCertificationReceip
 import { createCertificationTaskReceiptGraph, type CertificationTaskReceiptGraphV1 } from "./task-receipt-graph.js";
 import { createPortableOutcomeEvidencePublication } from "../host/portable-receipts.js";
 import { buildMaterializedHttpRequestProjection } from "../drivers/json-https.js";
+import { canonicalizeJsonHttpsRoute, jsonHttpsRouteDigest, type JsonHttpsRouteV1 } from "../host/json-https-route.js";
+import { classifyHttpResponse, httpResponseSemanticsProfileDigest, parseHttpResponseSemanticsProfileV1, type HttpResponseSemanticsProfileV1 } from "../host/http-response-semantics.js";
 import { parseAuthorityReceiptBundle } from "../evidence.js";
 import { AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST } from "../adapter-contract.js";
 import { createCertificationDuplicateAttempt, createCertificationDuplicateAttemptHead, createCertificationDuplicateDecision, createCertificationPolicyEvidence, createCertificationPostStateEvidence, createCertificationTaskAuthorityEvidence, createCertificationTaskStatusEvidence } from "./portable-evidence.js";
@@ -149,7 +151,8 @@ export async function createGitHubIssueLabelsHermeticComposition(cell: Certifica
   const localGatePolicyDigest = authorityDigest({
     v: "reelier.github-certification-gate-policy/v1",
   });
-  const provider = await createBrandedProvider(journalRoot, resource, desired, mode, state.now, evidenceSigner, descriptorPublicKey(evidenceAuthority.descriptor));
+  const responseSemanticsProfile = parseHttpResponseSemanticsProfileV1({ v: "reelier.http-response-semantics/v1", profileId: "github.issue-labels.hermetic-v1", acknowledgedStatuses: [200] });
+  const provider = await createBrandedProvider(journalRoot, resource, desired, mode, state.now, evidenceSigner, descriptorPublicKey(evidenceAuthority.descriptor), responseSemanticsProfile);
   const gateRuntime = await buildGate({
     state,
     activation,
@@ -159,6 +162,7 @@ export async function createGitHubIssueLabelsHermeticComposition(cell: Certifica
     decisionRoot,
     resource,
     desired,
+    responseSemanticsProfile,
   });
   const cleanupGateRuntime = await buildGate({
     state,
@@ -169,6 +173,7 @@ export async function createGitHubIssueLabelsHermeticComposition(cell: Certifica
     decisionRoot,
     resource,
     desired: ["before"],
+    responseSemanticsProfile,
   });
   const requestIdsByReservation = new Map<string, string>(),
     cleanupRequestIdsByReservation = new Map<string, string>();
@@ -259,7 +264,7 @@ export async function createGitHubIssueLabelsHermeticComposition(cell: Certifica
           throw controlledCut;
         }
         const response = normalizeProviderAcknowledgment(rawResponse);
-        if (response.status < 200 || response.status >= 300)
+        if (await provider.classifyResponse(requestId, response.status) !== "acknowledged")
           return {
             kind: "ambiguous" as const,
             resultDigest: authorityDigest(response),
@@ -604,13 +609,11 @@ export async function createGitHubIssueLabelsHermeticComposition(cell: Certifica
     await provider.authorizeExecution({
       requestId: value.requestId,
       effect: effect2,
-      permitSnapshotDigest,
-      connectorRegistration: gateRuntime.connectorRegistration,
-      projectionSchemaDigest,
+      routeAuthoritySnapshot: reservation.intent.routeAuthority,
+      authenticatedIdentity: gateRuntime.authenticatedIdentityFor(reservation.intent.routeAuthority),
+      responseSemanticsProfile,
       expectedPostProjectionDigest: authorityDigest([...desired].sort()),
       preLabels: read2.labels,
-      authorityGeneration: reservation.intent.authorityStateDigest,
-      authorityExpiresAt: reservation.intent.expiresAt,
     });
     await state.revalidateHermeticGitHubPermit(permit);
     journal = { ...journal, phase: "budget-intent" };
@@ -780,6 +783,7 @@ export async function createGitHubIssueLabelsHermeticComposition(cell: Certifica
     async exportGraph(value: Readonly<{ bearerToken: string }>) {
       closed(value, ["bearerToken"], "GitHub graph export call");
       await state.principalRegistry.resolve(value.bearerToken, state.now?.() ?? new Date());
+      const providerSnapshot = await provider.snapshot();
       const portable = await confinedExistingDirectory(receiptRoot, ["portable"]);
       if (!portable) throw new TypeError("portable receipt store is absent");
       const unorderedReceipts = await Promise.all((await listConfinedFileNames(receiptRoot, portable)).filter((name) => name.endsWith(".json")).map(async (name) => parseAuthorityReceiptBundle(JSON.parse((await readConfinedFile(receiptRoot, portable, name)).toString("utf8")))));
@@ -884,13 +888,13 @@ export async function createGitHubIssueLabelsHermeticComposition(cell: Certifica
         duplicateAttempts = duplicateLedger.attempts,
         duplicateDecisions = duplicateLedger.decisions,
         duplicateAttemptHead = duplicateLedger.head;
-      const providerSnapshot = await provider.snapshot(), currentTrustPin = inertRecord(JSON.parse((await readUnlinkedFile(state.currentTrustPinPath)).toString("utf8")), "GitHub current trust pin") as any,
+      const currentTrustPin = inertRecord(JSON.parse((await readUnlinkedFile(state.currentTrustPinPath)).toString("utf8")), "GitHub current trust pin") as any,
         currentTrustEvents = inertArray(currentTrustPin.currentTrustEvents, "GitHub current trust events") as readonly any[], latestTrustEvent = currentTrustEvents.at(-1);
       if (!latestTrustEvent || typeof latestTrustEvent.occurredAt !== "string") throw new TypeError("GitHub current trust observation is absent");
       const priorReceiptLinks = Object.freeze(receipts.map(bundle => Object.freeze({ receiptDigest: authorityDigest(bundle.receipt.value), priorReceiptDigest: bundle.receipt.value.priorReceiptDigest })));
       const portableOutcomeEvidence = Object.freeze(postStateEvidence.map((post: any) => {
         const execution = providerSnapshot.executions.find((item: any) => item.requestId === post.requestId), outcome = [...terminalOutcomes].reverse().find(item => item.requestId === post.requestId);
-        if (!execution || !outcome || execution.status !== "reconciled" || !execution.routeAuthoritySnapshot || !execution.authenticatedIdentity || !execution.portableRouteAuthority || !execution.portableAuthenticatedIdentity || !execution.materializedRequest || !execution.responseSemanticsProfile || !execution.preStateEvidence || !execution.postStateEvidence || !execution.reconciliation || !execution.responseSemanticsProfile.acknowledgedStatuses?.includes(execution.responseStatus) || authorityDigest(execution.postStateEvidence.projection) !== post.observedProjectionDigest || execution.expectedPostProjectionDigest !== post.expectedProjectionDigest) throw new TypeError("durable executed portable runtime provenance is absent or inconsistent");
+        if (!execution || !outcome || execution.status !== "reconciled" || !execution.routeAuthoritySnapshot || !execution.authenticatedIdentity || !execution.portableRouteAuthority || !execution.portableAuthenticatedIdentity || !execution.materializedRequest || !execution.portableMaterializedRequest || !execution.responseSemanticsProfile || !execution.preStateEvidence || !execution.postStateEvidence || !execution.reconciliation || classifyHttpResponse(execution.responseSemanticsProfile, { kind: "response", status: execution.responseStatus }) !== "acknowledged" || authorityDigest(execution.postStateEvidence.projection) !== post.observedProjectionDigest || execution.expectedPostProjectionDigest !== post.expectedProjectionDigest) throw new TypeError("durable executed portable runtime provenance is absent or inconsistent");
         const receiptChain = Object.freeze(receipts.filter(bundle => {
           const requestId = bundle.receipt.value.decisionContext.requestId;
           return requestId === post.requestId || requestId === `${post.requestId}.cleanup`;
@@ -898,7 +902,7 @@ export async function createGitHubIssueLabelsHermeticComposition(cell: Certifica
         const collectionCounts = Object.freeze({ receipts: receipts.length, receiptExtensions: receiptExtensions.length, portableOutcomeEvidence: postStateEvidence.length, postStateEvidence: postStateEvidence.length, outcomes: outcomes.length, requestReceipts: receiptChain.length });
         const terminalDigest = authorityDigest({ v: "reelier.portable-terminal-anchor/v1", taskId: activation.taskId, rootGrantDigest: activation.signedRootGrant.digest, receiptLinksDigest: authorityDigest(priorReceiptLinks), postStateEvidenceDigest: authorityDigest(postStateEvidence), collectionCountsDigest: authorityDigest(collectionCounts) });
         const currentTrustObservation = Object.freeze({ v: "reelier.portable-current-trust-observation/v1" as const, observedAt: latestTrustEvent.occurredAt, expiresAt: activation.signedChildGrant.grant.expiresAt, activeAuthorityEvidenceSignerIds: Object.freeze([evidenceSigner.signerId]) });
-        return createPortableOutcomeEvidencePublication({ requestId: post.requestId, routeAuthority: execution.portableRouteAuthority, authenticatedIdentity: execution.portableAuthenticatedIdentity, materializedRequest: execution.materializedRequest, responseSemanticsProfile: execution.responseSemanticsProfile, preStateEvidence: execution.preStateEvidence, postStateEvidence: execution.postStateEvidence, expectedPostProjectionDigest: execution.expectedPostProjectionDigest, confidence: post.confidence, authoritativeStateSource: "hermetic-github-fixture", reconciliation: execution.reconciliation, cleanupParentReceiptDigest: execution.cleanupParentReceiptDigest, receiptChain, collectionCounts, terminalDigest, currentTrustObservation, executionSigner: evidenceSigner, reconciliationSigner: evidenceSigner });
+        return createPortableOutcomeEvidencePublication({ requestId: post.requestId, routeAuthority: execution.portableRouteAuthority, authenticatedIdentity: execution.portableAuthenticatedIdentity, materializedRequest: execution.portableMaterializedRequest, responseSemanticsProfile: execution.responseSemanticsProfile, preStateEvidence: execution.preStateEvidence, postStateEvidence: execution.postStateEvidence, expectedPostProjectionDigest: execution.expectedPostProjectionDigest, confidence: post.confidence, authoritativeStateSource: "hermetic-github-fixture", reconciliation: execution.reconciliation, cleanupParentReceiptDigest: execution.cleanupParentReceiptDigest, receiptChain, collectionCounts, terminalDigest, currentTrustObservation, executionSigner: evidenceSigner, reconciliationSigner: evidenceSigner });
       }));
       return createCertificationTaskReceiptGraph({
         taskId: activation.taskId,
@@ -1225,8 +1229,16 @@ async function buildGate(input: any) {
         riskClasses: [githubIssueLabelsRiskClass],
         operatorConfigurationDigest: authorityDigest({
           resource: input.resource,
+          responseSemanticsProfileDigest: httpResponseSemanticsProfileDigest(input.responseSemanticsProfile),
         }),
       });
+  const egressPolicyDigest = authorityDigest({ v: "reelier.github-hermetic-egress-policy/v1", origin: input.resource.apiBaseUrl });
+  const readRoute = canonicalizeJsonHttpsRoute({ v: "reelier.json-https-route/v1", providerId: "github", connectorId: connectorRegistration.connectorId, accountId: connectorRegistration.accountId, providerAccountIdentity: connectorRegistration.providerAccountIdentity, endpointId: githubIssueLabelsReadEndpointId, origin: input.resource.apiBaseUrl, allowedMethods: ["GET"], allowedPathPrefixes: [`/repos/${input.resource.owner}/${input.resource.repository}/issues/${input.resource.issueNumber}`], credentialSlotId: "github-hermetic-provider", responseSemanticsProfileId: input.responseSemanticsProfile.profileId, reconciliationRecipeId: "github_issue_labels_read_v1", readEndpointId: githubIssueLabelsReadEndpointId, egressPolicyDigest });
+  const writeRoute = canonicalizeJsonHttpsRoute({ v: "reelier.json-https-route/v1", providerId: "github", connectorId: connectorRegistration.connectorId, accountId: connectorRegistration.accountId, providerAccountIdentity: connectorRegistration.providerAccountIdentity, endpointId: githubIssueLabelsWriteEndpointId, origin: input.resource.apiBaseUrl, allowedMethods: ["PUT"], allowedPathPrefixes: [`/repos/${input.resource.owner}/${input.resource.repository}/issues/${input.resource.issueNumber}/labels`], credentialSlotId: "github-hermetic-provider", responseSemanticsProfileId: input.responseSemanticsProfile.profileId, reconciliationRecipeId: "github_issue_labels_set_v1", readEndpointId: githubIssueLabelsReadEndpointId, egressPolicyDigest });
+  const projectionSchemaDigest = authorityDigest({ schemaId: "github_issue_labels_projection_v1", pointers: ["/labels"] });
+  const routeEffect = githubIssueLabelsDefinition.compile({ source: { projection: { owner: input.resource.owner, repo: input.resource.repository, issueNumber: input.resource.issueNumber, issueState: "open", labels: ["before"] } }, policy: parseGitHubIssueLabelsPolicy({ desiredLabels: input.desired }), choices: {} } as any) as any;
+  const expectedMaterializedRequest = buildMaterializedHttpRequestProjection({ baseUrl: input.resource.apiBaseUrl } as any, routeEffect.method, routeEffect.path, routeEffect.query, routeEffect.headers, Buffer.from(routeEffect.bodyBase64, "base64"));
+  const authenticatedIdentities = new Map<string, any>();
   const packs = createStaticPackRegistry([githubIssueLabelsDefinition]),
     sources = createSourceRegistry([createGitHubIssueLabelsSourceResolver(input.activation.authorityCellId)]),
     connectors = createConnectorRegistry([connectorRegistration]);
@@ -1283,6 +1295,17 @@ async function buildGate(input: any) {
     state: statePort,
     ledger,
     localGatePolicyDigest,
+    authenticatedProviderIdentity: async () => {
+      const identity = await input.provider.observeAuthenticatedIdentity(writeRoute, new Date((input.state.now?.() ?? new Date()).getTime() + 60_000).toISOString());
+      const { signerId: _signerId, signature: _signature, ...body } = identity;
+      authenticatedIdentities.set(authorityDigest(body), identity);
+      return identity;
+    },
+    routeAuthority: (routeInput) => {
+      if (routeInput.connectorId !== writeRoute.connectorId || routeInput.accountId !== writeRoute.accountId || routeInput.endpointId !== writeRoute.endpointId || !routeInput.authenticatedProviderIdentity) throw new TypeError("GitHub gate route authority input is inconsistent");
+      const { signerId: _signerId, signature: _signature, ...identityBody } = routeInput.authenticatedProviderIdentity;
+      return Object.freeze({ v: "reelier.route-authority-snapshot/v1" as const, connectorRegistrationDigest: authorityDigest(connectorRegistration), operatorConfigurationDigest: connectorRegistration.operatorConfigurationDigest, routeDigest: jsonHttpsRouteDigest(writeRoute), providerId: writeRoute.providerId, connectorId: writeRoute.connectorId, accountId: writeRoute.accountId, providerAccountIdentity: writeRoute.providerAccountIdentity, endpointId: writeRoute.endpointId, credentialSlotId: writeRoute.credentialSlotId, slotInstanceId: routeInput.authenticatedProviderIdentity.slotInstanceId, slotVersion: routeInput.authenticatedProviderIdentity.slotVersion, authenticatedProviderIdentityDigest: authorityDigest(identityBody), sourceReadRouteDigest: jsonHttpsRouteDigest(readRoute), projectionSchemaDigest, expectedMaterializedRequestDigest: authorityDigest(expectedMaterializedRequest), authorityGeneration: routeInput.authorityGeneration, authorityExpiresAt: routeInput.authorityExpiresAt });
+    },
     decisionSink: createFileGateDecisionSink(input.decisionRoot),
     signer: {
       async sign(value) {
@@ -1296,15 +1319,20 @@ async function buildGate(input: any) {
     eventId: () => `evt_${randomUUID()}`,
     capabilityId: () => `cap_${randomUUID()}`,
   });
-  return { gate, ledger, sourceFor, authorityStatePreimage, connectorRegistration };
+  return { gate, ledger, sourceFor, authorityStatePreimage, authenticatedIdentityFor(routeAuthority: any) { const identity = routeAuthority && authenticatedIdentities.get(routeAuthority.authenticatedProviderIdentityDigest); if (!identity) throw new TypeError("GitHub gate-accepted authenticated identity observation is absent"); return identity; } };
 }
 
-async function createBrandedProvider(root: string, resource: any, desired: readonly string[], mode: HermeticGitHubMode, now: (() => Date) | undefined, signer: Readonly<{ signerId: string; sign(digest: string): any }>, signerPublicKey: ReturnType<typeof createPublicKey>) {
+async function createBrandedProvider(root: string, resource: any, desired: readonly string[], mode: HermeticGitHubMode, now: (() => Date) | undefined, signer: Readonly<{ signerId: string; sign(digest: string): any }>, signerPublicKey: ReturnType<typeof createPublicKey>, responseSemanticsProfile: HttpResponseSemanticsProfileV1) {
   const file = path.join(root, "provider-state.json");
   let reads = 0;
-  const profile = Object.freeze({ v: "reelier.http-response-semantics/v1" as const, profileId: "github.issue-labels.hermetic-v1", acknowledgedStatuses: Object.freeze([200]) });
   function seal(body: any) { return Object.freeze({ ...body, signerId: signer.signerId, signature: signer.sign(authorityDigest(body)) }); }
-  function verifyExecution(value: any): any { const { signerId, signature, ...body } = value ?? {}; if (signerId !== signer.signerId || !signature || !verifyAuthoritySignature(signerPublicKey, "authority-evidence", authorityDigest(body), signature)) throw new TypeError("GitHub execution provenance signature is invalid or tampered"); return value; }
+  function verifyExecution(value: any): any {
+    const { signerId, signature, ...body } = value ?? {};
+    if (signerId !== signer.signerId || !signature || !verifyAuthoritySignature(signerPublicKey, "authority-evidence", authorityDigest(body), signature)) throw new TypeError("GitHub execution provenance signature is invalid or tampered");
+    const { signerId: identitySignerId, signature: identitySignature, ...identityBody } = body.authenticatedIdentity ?? {};
+    if (identitySignerId !== signer.signerId || !identitySignature || !verifyAuthoritySignature(signerPublicKey, "authority-evidence", authorityDigest(identityBody), identitySignature) || body.routeAuthoritySnapshot?.authenticatedProviderIdentityDigest !== authorityDigest(identityBody) || body.acceptedRouteAuthorityCanonicalBase64 !== authorityCanonicalBytes(body.routeAuthoritySnapshot).toString("base64") || body.acceptedAuthenticatedIdentityCanonicalBase64 !== authorityCanonicalBytes(body.authenticatedIdentity).toString("base64") || body.routeAuthoritySnapshot?.expectedMaterializedRequestDigest !== authorityDigest(body.materializedRequest) || body.portableRouteAuthority?.portableMaterializedRequestDigest !== authorityDigest(body.portableMaterializedRequest) || body.portableRouteAuthority?.expectedMaterializedRequestDigest !== body.routeAuthoritySnapshot?.expectedMaterializedRequestDigest || body.portableRouteAuthority?.responseSemanticsProfileDigest !== httpResponseSemanticsProfileDigest(body.responseSemanticsProfile)) throw new TypeError("GitHub gate-accepted execution provenance is inconsistent or reminted");
+    return value;
+  }
   async function load() {
     try {
       const raw = inertRecord(JSON.parse((await readUnlinkedFile(file)).toString("utf8")), "GitHub provider state");
@@ -1337,6 +1365,11 @@ async function createBrandedProvider(root: string, resource: any, desired: reado
   await load();
   async function replaceExecution(requestId: string, update: (value: any) => any): Promise<any> { const state = await load(), index = state.executions.findIndex((item: any) => item.requestId === requestId); if (index < 0) throw new TypeError("GitHub signed execution provenance is absent"); const executions = [...state.executions], next = seal(update(executions[index])); executions[index] = next; await persist({ ...state, executions: Object.freeze(executions) }); return next; }
   return Object.freeze({
+    async observeAuthenticatedIdentity(route: JsonHttpsRouteV1, slotExpiresAt: string) {
+      const routeDigest = jsonHttpsRouteDigest(route);
+      const body = Object.freeze({ v: "reelier.authenticated-provider-identity/v1" as const, providerId: "github" as const, credentialSlotId: route.credentialSlotId, slotInstanceId: authorityDigest({ v: "reelier.github-hermetic-provider-session/v1", routeDigest, signerId: signer.signerId }), slotVersion: "1", slotExpiresAt, providerAccountId: route.accountId, providerLogin: resource.owner, routeDigest, observedAt: (now?.() ?? new Date()).toISOString() });
+      return Object.freeze({ ...body, signerId: signer.signerId, signature: signer.sign(authorityDigest(body)) });
+    },
     async readIssue() {
       reads += 1;
       const state = await load();
@@ -1354,14 +1387,19 @@ async function createBrandedProvider(root: string, resource: any, desired: reado
       const effect = inertRecord(input.effect, "GitHub authorized transport effect") as any;
       exact(effect, ["v", "endpointId", "method", "path", "query", "headers", "bodyBase64", "riskClass", "idempotency", "preconditions", "reconciliation"], "GitHub executed transport effect");
       const body = Buffer.from(String(effect.bodyBase64), "base64"), materializedRequest = buildMaterializedHttpRequestProjection({ baseUrl: resource.apiBaseUrl } as any, effect.method, effect.path, effect.query, effect.headers, body);
-      const observedAt = (now?.() ?? new Date()).toISOString(), routeDescriptor = Object.freeze({ v: "reelier.github-hermetic-authorized-route/v1", providerId: "github", connectorId: input.connectorRegistration.connectorId, accountId: input.connectorRegistration.accountId, providerAccountIdentity: input.connectorRegistration.providerAccountIdentity, endpointId: effect.endpointId, origin: materializedRequest.origin, method: materializedRequest.method, path: materializedRequest.normalizedPath, responseSemanticsProfileDigest: authorityDigest(profile) }), routeDigest = authorityDigest(routeDescriptor), readRouteDigest = authorityDigest({ v: "reelier.github-hermetic-authorized-read-route/v1", providerId: "github", endpointId: githubIssueLabelsReadEndpointId, origin: resource.apiBaseUrl, owner: resource.owner, repository: resource.repository, issueNumber: resource.issueNumber, projectionSchemaDigest: input.projectionSchemaDigest }), credentialSlotId = "github-hermetic-provider", slotInstanceId = authorityDigest({ v: "reelier.github-hermetic-provider-session/v1", requestId: input.requestId, permitSnapshotDigest: input.permitSnapshotDigest }), slotVersion = "1";
-      const identityBody = Object.freeze({ v: "reelier.authenticated-provider-identity/v1" as const, providerId: "github" as const, credentialSlotId, slotInstanceId, slotVersion, slotExpiresAt: input.authorityExpiresAt, providerAccountId: input.connectorRegistration.accountId, providerLogin: resource.owner, routeDigest, observedAt }), authenticatedIdentity = Object.freeze({ ...identityBody, signerId: signer.signerId, signature: signer.sign(authorityDigest(identityBody)) });
-      const routeAuthoritySnapshot = Object.freeze({ v: "reelier.route-authority-snapshot/v1" as const, connectorRegistrationDigest: authorityDigest(input.connectorRegistration), operatorConfigurationDigest: input.connectorRegistration.operatorConfigurationDigest, routeDigest, providerId: "github", connectorId: input.connectorRegistration.connectorId, accountId: input.connectorRegistration.accountId, providerAccountIdentity: input.connectorRegistration.providerAccountIdentity, endpointId: effect.endpointId, credentialSlotId, slotInstanceId, slotVersion, authenticatedProviderIdentityDigest: authorityDigest(identityBody), sourceReadRouteDigest: readRouteDigest, projectionSchemaDigest: input.projectionSchemaDigest, expectedMaterializedRequestDigest: authorityDigest(materializedRequest), authorityGeneration: input.authorityGeneration, authorityExpiresAt: input.authorityExpiresAt });
+      const routeAuthoritySnapshot = input.routeAuthoritySnapshot, authenticatedIdentity = input.authenticatedIdentity;
+      if (!routeAuthoritySnapshot || routeAuthoritySnapshot.v !== "reelier.route-authority-snapshot/v1" || !authenticatedIdentity || authenticatedIdentity.v !== "reelier.authenticated-provider-identity/v1" || routeAuthoritySnapshot.expectedMaterializedRequestDigest !== authorityDigest(materializedRequest)) throw new TypeError("GitHub gate-accepted route or materialized request provenance is absent");
+      const { signerId: identitySignerId, signature: identitySignature, ...identityBody } = authenticatedIdentity;
+      if (identitySignerId !== signer.signerId || !identitySignature || !verifyAuthoritySignature(signerPublicKey, "authority-evidence", authorityDigest(identityBody), identitySignature) || routeAuthoritySnapshot.authenticatedProviderIdentityDigest !== authorityDigest(identityBody)) throw new TypeError("GitHub gate-accepted authenticated identity is invalid");
+      const profile = parseHttpResponseSemanticsProfileV1(input.responseSemanticsProfile);
+      if (httpResponseSemanticsProfileDigest(profile) !== httpResponseSemanticsProfileDigest(responseSemanticsProfile)) throw new TypeError("GitHub adapter-sealed response profile changed after authorization");
+      const observedAt = authenticatedIdentity.observedAt;
       const accountDigest = authorityDigest({ v: "reelier.portable-provider-account/v1", providerId: "github", connectorId: routeAuthoritySnapshot.connectorId, accountId: routeAuthoritySnapshot.accountId, providerAccountIdentity: routeAuthoritySnapshot.providerAccountIdentity });
-      const portableRouteAuthority = Object.freeze({ v: "reelier.portable-route-authority/v1" as const, writeRouteDigest: routeAuthoritySnapshot.routeDigest, readRouteDigest: routeAuthoritySnapshot.sourceReadRouteDigest, accountDigest, authenticatedProviderIdentityDigest: routeAuthoritySnapshot.authenticatedProviderIdentityDigest, expectedMaterializedRequestDigest: routeAuthoritySnapshot.expectedMaterializedRequestDigest, responseSemanticsProfileDigest: authorityDigest(profile), projectionSchemaDigest: routeAuthoritySnapshot.projectionSchemaDigest });
+      const portableMaterializedRequest = Object.freeze({ ...materializedRequest, normalizedPath: "/repos/{owner}/{repository}/issues/{issueNumber}/labels" });
+      const portableRouteAuthority = Object.freeze({ v: "reelier.portable-route-authority/v1" as const, writeRouteDigest: routeAuthoritySnapshot.routeDigest, readRouteDigest: routeAuthoritySnapshot.sourceReadRouteDigest, accountDigest, authenticatedProviderIdentityDigest: routeAuthoritySnapshot.authenticatedProviderIdentityDigest, expectedMaterializedRequestDigest: routeAuthoritySnapshot.expectedMaterializedRequestDigest, portableMaterializedRequestDigest: authorityDigest(portableMaterializedRequest), responseSemanticsProfileDigest: httpResponseSemanticsProfileDigest(profile), projectionSchemaDigest: routeAuthoritySnapshot.projectionSchemaDigest });
       const portableAuthenticatedIdentity = Object.freeze({ v: "reelier.portable-authenticated-identity/v1" as const, identityDigest: routeAuthoritySnapshot.authenticatedProviderIdentityDigest, providerId: "github" as const, accountDigest, routeDigest: routeAuthoritySnapshot.routeDigest, observedAt: authenticatedIdentity.observedAt });
-      const preStateEvidence = Object.freeze({ v: "reelier.portable-comparable-state/v1" as const, readRouteDigest, accountDigest, projectionSchemaDigest: input.projectionSchemaDigest, projection: Object.freeze([...input.preLabels]), complete: true as const, observedAt });
-      const execution = seal({ v: "reelier.github-executed-runtime-provenance/v2", requestId: input.requestId, status: "authorized", routeAuthoritySnapshot, authenticatedIdentity, portableRouteAuthority, portableAuthenticatedIdentity, materializedRequest, responseSemanticsProfile: profile, preStateEvidence, postStateEvidence: null, expectedPostProjectionDigest: input.expectedPostProjectionDigest, reconciliation: null, cleanupParentReceiptDigest: null, beforeWriteCount: state.writes, afterWriteCount: state.writes, sendCount: 0, responseStatus: null });
+      const preStateEvidence = Object.freeze({ v: "reelier.portable-comparable-state/v1" as const, readRouteDigest: routeAuthoritySnapshot.sourceReadRouteDigest, accountDigest, projectionSchemaDigest: routeAuthoritySnapshot.projectionSchemaDigest, projection: Object.freeze([...input.preLabels]), complete: true as const, observedAt });
+      const execution = seal({ v: "reelier.github-executed-runtime-provenance/v3", requestId: input.requestId, status: "authorized", acceptedRouteAuthorityCanonicalBase64: authorityCanonicalBytes(routeAuthoritySnapshot).toString("base64"), acceptedAuthenticatedIdentityCanonicalBase64: authorityCanonicalBytes(authenticatedIdentity).toString("base64"), routeAuthoritySnapshot, authenticatedIdentity, portableRouteAuthority, portableAuthenticatedIdentity, materializedRequest, portableMaterializedRequest, responseSemanticsProfile: profile, preStateEvidence, postStateEvidence: null, expectedPostProjectionDigest: input.expectedPostProjectionDigest, reconciliation: null, cleanupParentReceiptDigest: null, beforeWriteCount: state.writes, afterWriteCount: state.writes, sendCount: 0, responseStatus: null });
       await persist({ ...state, executions: Object.freeze([...state.executions, execution]) });
       return execution;
     },
@@ -1389,6 +1427,7 @@ async function createBrandedProvider(root: string, resource: any, desired: reado
         acknowledgmentId: "ack_1",
       };
     },
+    async classifyResponse(requestId: string, status: number) { const state = await load(), execution = state.executions.find((item: any) => item.requestId === requestId); if (!execution) throw new TypeError("GitHub execution response profile is absent"); return classifyHttpResponse(execution.responseSemanticsProfile, { kind: "response", status }); },
     async recordReconciliation(requestId: string, observed: Issue) {
       return replaceExecution(requestId, current => { const reconciliation = Object.freeze({ verdict: authorityDigest(observed.labels) === current.expectedPostProjectionDigest ? "matched" : "conflict", providerWriteCount: current.afterWriteCount - current.beforeWriteCount, resendCount: Math.max(0, current.sendCount - 1), observedProjectionDigest: authorityDigest(observed.labels) }), postStateEvidence = Object.freeze({ v: "reelier.portable-comparable-state/v1" as const, readRouteDigest: current.portableRouteAuthority.readRouteDigest, accountDigest: current.portableRouteAuthority.accountDigest, projectionSchemaDigest: current.portableRouteAuthority.projectionSchemaDigest, projection: observed.labels, complete: true as const, observedAt: (now?.() ?? new Date()).toISOString() }); return { ...withoutSeal(current), status: "reconciled", postStateEvidence, reconciliation }; });
     },

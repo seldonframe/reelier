@@ -18,7 +18,7 @@ function fixture() {
     v: "reelier.materialized-http-request/v1" as const,
     method: "PUT" as const,
     origin: "https://api.github.test",
-    normalizedPath: "/repos/1/issues/2/labels",
+    normalizedPath: "/repos/{owner}/{repository}/issues/{issueNumber}/labels",
     normalizedQuery: "",
     reviewedHeaders: { accept: "application/vnd.github+json" },
     bodyDigest: DIGEST("body"),
@@ -31,7 +31,8 @@ function fixture() {
     readRouteDigest: DIGEST("independent-read-route"),
     accountDigest: DIGEST("opaque-account"),
     authenticatedProviderIdentityDigest: DIGEST("authenticated-identity"),
-    expectedMaterializedRequestDigest: authorityDigest(materializedRequest),
+    expectedMaterializedRequestDigest: DIGEST("confidential-exact-request"),
+    portableMaterializedRequestDigest: authorityDigest(materializedRequest),
     responseSemanticsProfileDigest: authorityDigest(responseSemanticsProfile),
     projectionSchemaDigest,
   };

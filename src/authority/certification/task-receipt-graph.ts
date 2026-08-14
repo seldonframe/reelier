@@ -128,6 +128,15 @@ function verifyPortableOutcomeCollection(g: any, evidenceRoot: AuthorityKeyDescr
     const currentTrustObservation = options.currentTrustObservation, verificationTime = options.now;
     const outcome = g.outcomes.find((item: any) => item.requestId === post.requestId && item.phase === "acknowledged") ?? [...g.outcomes].reverse().find((item: any) => item.requestId === post.requestId);
     if (!outcome || publication.requestId !== post.requestId || publication.expectedPostProjectionDigest !== post.expectedProjectionDigest || publication.reconciliation?.observedProjectionDigest !== post.observedProjectionDigest || publication.reconciliation?.providerWriteCount !== outcome.providerWrites) throw new TypeError("portable runtime provenance is not bound to the executed outcome");
+    const cleanupReceipts = g.receipts.filter((bundle: any) => bundle.receipt?.value?.decisionContext?.requestId === `${post.requestId}.cleanup`);
+    let expectedCleanupParent: string | null = null;
+    if (cleanupReceipts.length > 0) {
+      const referencedParents = new Set(cleanupReceipts.map((bundle: any) => bundle.receipt.value.priorReceiptDigest).filter((digest: unknown) => typeof digest === "string"));
+      const terminals = cleanupReceipts.filter((bundle: any) => !referencedParents.has(authorityDigest(bundle.receipt.value)));
+      if (terminals.length !== 1 || terminals[0].receipt.value.priorReceiptDigest === null) throw new TypeError("portable durable cleanup receipt chain has no exact terminal parent");
+      expectedCleanupParent = terminals[0].receipt.value.priorReceiptDigest;
+    }
+    if (publication.evidence?.cleanupParentReceiptDigest !== expectedCleanupParent) throw new TypeError("portable cleanup parent does not equal the independently verified durable cleanup chain parent");
     verifyPortableOutcomeEvidencePublication(publication, { executionVerifier: verifier, reconciliationVerifier: verifier, currentTrustObservation, receiptChain, collectionCounts, terminalDigest, now: verificationTime });
   }
 }
