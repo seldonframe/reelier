@@ -109,10 +109,10 @@ async function checkpointScenario(context) {
     first = undefined;
     const restarted = await startEveProcess({ cwd: state.appRoot, env: state.env });
     try {
-      await waitForAnyBoundary(restarted.url, sessionId, state.token, beforeCrash.cursor);
+      const recovered = await waitForAnyBoundary(restarted.url, sessionId, state.token, beforeCrash.cursor);
       const replay = await post(restarted.url, `/eve/v1/session/${encodeURIComponent(sessionId)}`, state.token, { message: "checkpoint" });
       assert.equal(replay.status, 202, JSON.stringify(replay.body));
-      await waitForBoundary(restarted.url, sessionId, state.token, beforeCrash.cursor);
+      await waitForBoundary(restarted.url, sessionId, state.token, recovered.cursor);
     } finally { await stopEveProcess(restarted.child); }
     const snapshot = await state.ledger.read(state.taskId);
     const projection = context.continuity.createResumeProjection(snapshot);
