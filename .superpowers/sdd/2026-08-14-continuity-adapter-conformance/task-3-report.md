@@ -149,3 +149,137 @@ Verbatim tail:
 # Open risks
 
 - None identified within the scoped hermetic test boundary. The single skipped authority assertion remains the pre-existing Windows symlink-privilege skip and is unrelated to this task.
+
+# Fix round 1
+
+## Review findings addressed
+
+- Thrown controlled cuts now refresh counter truth from the real allocation and, when readable, the authoritative runner status before the HTTP 500 is written. The refresh does not increment the public `statusReads` counter and does not dispatch or reserve.
+- Fixture construction is exception-safe. Any failure before the fixture is returned recursively removes only the exact minted root, restores the exact prior platform seam, and rethrows the original construction error even if best-effort cleanup itself fails.
+
+## RED — controlled-cut counter truth and rejecting fixture cleanup
+
+Command:
+
+```powershell
+npx tsc -p tsconfig.test.json
+node --test --test-concurrency=1 --test-name-pattern="failure counters expose real effects" dist-test/test/continuity/path-c-port.test.js
+node --test --test-concurrency=1 --test-name-pattern="rejecting fixture construction removes" dist-test/test/authority/certification-github-issue-labels-runner.test.js
+```
+
+Verbatim failure summaries:
+
+```text
+✖ cut-after-budget failure counters expose real effects without duplicate action (796.2598ms)
+✖ cut-after-apply failure counters expose real effects without duplicate action (658.4173ms)
+ℹ tests 2
+ℹ suites 0
+ℹ pass 0
+ℹ fail 2
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1678.1266
+
+cut-after-budget actual: { outcomeRequests: 1, statusReads: 0, providerDispatches: 0, reservations: 0 }
+cut-after-budget expected: { outcomeRequests: 1, statusReads: 0, providerDispatches: 0, reservations: 1 }
+cut-after-apply actual: { outcomeRequests: 1, statusReads: 0, providerDispatches: 0, reservations: 0 }
+cut-after-apply expected: { outcomeRequests: 1, statusReads: 0, providerDispatches: 1, reservations: 1 }
+
+✖ rejecting fixture construction removes its exact root and restores the platform seam (72.894ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 260.0237
+
+AssertionError [ERR_ASSERTION]: Missing expected exception.
+```
+
+## GREEN — controlled-cut counter truth
+
+Command:
+
+```powershell
+npx tsc -p tsconfig.test.json
+node --test --test-concurrency=1 --test-name-pattern="failure counters expose real effects" dist-test/test/continuity/path-c-port.test.js
+```
+
+Output:
+
+```text
+✔ cut-after-budget failure counters expose real effects without duplicate action (756.5408ms)
+✔ cut-after-apply failure counters expose real effects without duplicate action (726.3775ms)
+ℹ tests 2
+ℹ suites 0
+ℹ pass 2
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1674.0842
+```
+
+## GREEN — rejecting fixture cleanup and seam restoration
+
+Command:
+
+```powershell
+npx tsc -p tsconfig.test.json
+node --test --test-concurrency=1 --test-name-pattern="rejecting fixture construction removes" dist-test/test/authority/certification-github-issue-labels-runner.test.js
+```
+
+Output:
+
+```text
+✔ rejecting fixture construction removes its exact root and restores the platform seam (223.6998ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 1
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 486.4523
+```
+
+## Final fix-round gate
+
+Command:
+
+```powershell
+npx tsc -p tsconfig.test.json
+node --test --test-concurrency=1 dist-test/test/continuity/path-c-port.test.js dist-test/test/authority/certification-github-issue-labels-runner.test.js
+```
+
+Verbatim tail:
+
+```text
+✔ cut-after-budget failure counters expose real effects without duplicate action (565.2001ms)
+✔ cut-after-apply failure counters expose real effects without duplicate action (695.4753ms)
+✔ after-provider-apply latch withholds the first response until release (697.0391ms)
+✔ closing the port releases an unreached fault latch (89.6954ms)
+ℹ tests 57
+ℹ suites 0
+ℹ pass 56
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 1
+ℹ todo 0
+ℹ duration_ms 46080.9762
+```
+
+## Fix-round self-review
+
+- Failure counter refresh calls only `runner.status` and `delegation.budget.get`; neither path dispatches, reserves, or derives truth from HTTP request counts.
+- The exact retry after each controlled cut returns through the real runner while provider writes and consumed reservations remain unchanged, proving no duplicate action.
+- Constructor cleanup tracks only the root returned by that invocation's `mkdtemp`; no parent, glob, shared temp directory, or unresolved variable is removed.
+- Cleanup exceptions cannot replace the expected authority-construction error. The platform restoration runs after cleanup on every rejecting path.
+- No production runner semantics, gates, providers, external services, workflows, or deployment state changed.
+
+## Fix-round concerns
+
+- None. The one skipped test remains the existing Windows symlink-privilege case.
