@@ -98,9 +98,10 @@ test("real Eve 0.37.1 preserves Reelier continuity across process and session bo
 
 test("closed Eve report rejects active and hidden structures before reading them", async () => {
   const moduleUrl = pathToFileURL(resolve("conformance/continuity-adapter/v1/eve-fixture/scripts/run-conformance.mjs")).href;
-  const { assertClosedInertReport } = await import(moduleUrl) as { assertClosedInertReport(value: unknown): void };
+  const { assertClosedInertReport, assertClosedReport } = await import(moduleUrl) as { assertClosedInertReport(value: unknown): void; assertClosedReport(value: unknown): void };
   const valid = reportFixture();
   assert.doesNotThrow(() => assertClosedInertReport(valid));
+  assert.throws(() => assertClosedReport(valid), /closed report validation/i);
 
   let getterReads = 0;
   const accessor = structuredClone(valid);
@@ -119,6 +120,16 @@ test("closed Eve report rejects active and hidden structures before reading them
   const altered = structuredClone(valid);
   Object.setPrototypeOf(altered.checks[0], { inherited: true });
   assert.throws(() => assertClosedInertReport(altered), /prototype/i);
+
+  const validShape = reportFixture();
+  validShape.checks.push({ id: "eve-process-matrix", status: "passed", detail: "passed" }, { id: "focused-continuity", status: "passed", detail: "passed" });
+  assert.doesNotThrow(() => assertClosedReport(validShape));
+  const badDigest = structuredClone(validShape);
+  badDigest.artifacts.reportDigest = "sha256:not-a-digest";
+  assert.throws(() => assertClosedReport(badDigest), /closed report validation/i);
+  const missingField = structuredClone(validShape) as Partial<typeof validShape>;
+  delete missingField.nonClaims;
+  assert.throws(() => assertClosedReport(missingField), /closed report validation/i);
 });
 
 function reportFixture() {
