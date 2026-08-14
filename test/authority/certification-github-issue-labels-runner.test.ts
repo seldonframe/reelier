@@ -646,6 +646,38 @@ test("portable graph consumes signed durable execution provenance without graph-
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
+test("an applied 503 remains ambiguous while matched authoritative reconciliation exports exact no-resend evidence", async () => {
+  const f = await fixture("provider-503"); try {
+    const initial = await f.runner.run({ bearerToken: f.credential.token, requestId: "request_503_exact_portable" });
+    assert.equal(initial.status, "pending-reconciliation");
+    assert.equal(initial.providerWrites, 1);
+    const restarted = await createGitHubIssueLabelsHermeticComposition(f.cell);
+    assert.deepEqual(await restarted.recover(), ["request_503_exact_portable"]);
+    const graph: any = await restarted.exportGraph({ bearerToken: f.credential.token });
+    const publication = graph.portableOutcomeEvidence[0];
+    assert.equal(publication.evidence.confidence, "exact");
+    assert.deepEqual(publication.responseObservation, {
+      v: "reelier.portable-http-response-observation/v1",
+      status: 503,
+      classification: "ambiguous",
+    });
+    assert.deepEqual(publication.responseSemanticsProfile.acknowledgedStatuses, [200]);
+    assert.deepEqual(publication.reconciliation, {
+      verdict: "matched",
+      providerWriteCount: 1,
+      resendCount: 0,
+      observedProjectionDigest: graph.postStateEvidence[0].observedProjectionDigest,
+    });
+    assert.equal(verifyCertificationTaskReceiptGraph(graph, graphVerification(f.pin)).status, "verified");
+    const providerState: any = JSON.parse(await readFile(path.join(f.initialized.workspace, "authority", "github-label-runner", "provider-state.json"), "utf8"));
+    const execution = providerState.executions.find((item: any) => item.requestId === "request_503_exact_portable");
+    assert.equal(execution.responseStatus, 503);
+    assert.equal(execution.initialResponseClassification, "ambiguous");
+    assert.equal(execution.afterWriteCount - execution.beforeWriteCount, 1);
+    assert.equal(execution.sendCount, 1);
+  } finally { await rm(f.root, { recursive: true, force: true }); }
+});
+
 test("persisted provider v2 restart refuses before reconstruction or provider action", async () => {
   const f = await fixture(); try {
     const providerPath = path.join(f.initialized.workspace, "authority", "github-label-runner", "provider-state.json");
