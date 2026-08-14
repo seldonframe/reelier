@@ -165,7 +165,8 @@ async function outcomeScenario(context) {
     const verifiedConsequence = projection.sections.consequentialState.some((item) => item.verification.status === "verified");
     const counters = state.port.counters();
     const receiptGraphDigest = context.authority.authorityDigest(verified);
-    return Object.freeze({ ...counters, providerWrites: nativeStatus.providerWrites, verifierProducedConsequence: verifiedConsequence, ambiguousRequiresReconcile: nativeStatus.status !== "ambiguous" || projection.sections.nextSafeActions.includes("reconcile-before-retry"), ledgerHeadDigest: after.segmentDigest, receiptGraphDigest });
+    const retryEvidence = proveRetryEvents(beforeCrash.rows, settled.rows);
+    return Object.freeze({ ...counters, providerWrites: nativeStatus.providerWrites, verifierProducedConsequence: verifiedConsequence, ambiguousRequiresReconcile: nativeStatus.status !== "ambiguous" || projection.sections.nextSafeActions.includes("reconcile-before-retry"), retryEvidence, ledgerHeadDigest: after.segmentDigest, receiptGraphDigest });
   } finally {
     state.port.release();
     await stopEveProcess(processHandle?.child);
@@ -253,7 +254,7 @@ async function createScenario(context, name, options) {
     [createHash("sha256").update(token).digest("hex")]: { principalId: actor.principalId, taskId, taskOwnerPrincipalId: actor.principalId, workloadId: actor.workloadId },
     [createHash("sha256").update(otherToken).digest("hex")]: { principalId: "principal_eve_2", taskId, taskOwnerPrincipalId: actor.principalId, workloadId: actor.workloadId },
   };
-  const env = localOnlyEnvironment({ EVE_EVAL_AUTH_TOKEN: token, ...(options.patchCheckpoint ? { REELIER_CHECKPOINT_CUT_MARKER: join(root, "after-checkpoint-commit-before-return.marker") } : {}), REELIER_EVE_AUTH_REGISTRY_JSON: JSON.stringify(registry), REELIER_CONTINUITY_ROOT: ledgerRoot, REELIER_CONTINUITY_PROTOCOL_V: "reelier.continuity-checkpoint/v1", REELIER_JOB_CARD_DIGEST: `sha256:${"a".repeat(64)}`, REELIER_AUTHORITY_SNAPSHOT_DIGEST: `sha256:${"b".repeat(64)}`, REELIER_PATH_C_PORT_URL: port.url, REELIER_PATH_C_PORT_TOKEN: port.clientToken });
+  const env = localOnlyEnvironment({ EVE_EVAL_AUTH_TOKEN: token, WORKFLOW_INLINE_OWNERSHIP_LEASE_SECONDS: "1", ...(options.patchCheckpoint ? { REELIER_CHECKPOINT_CUT_MARKER: join(root, "after-checkpoint-commit-before-return.marker") } : {}), REELIER_EVE_AUTH_REGISTRY_JSON: JSON.stringify(registry), REELIER_CONTINUITY_ROOT: ledgerRoot, REELIER_CONTINUITY_PROTOCOL_V: "reelier.continuity-checkpoint/v1", REELIER_JOB_CARD_DIGEST: `sha256:${"a".repeat(64)}`, REELIER_AUTHORITY_SNAPSHOT_DIGEST: `sha256:${"b".repeat(64)}`, REELIER_PATH_C_PORT_URL: port.url, REELIER_PATH_C_PORT_TOKEN: port.clientToken });
   return { root, appRoot, ledgerRoot, ledger, taskId, actor, token, otherToken, env, fixture, port, close: async () => { await port.close(); await fixture.close(); await rm(appRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); } };
 }
 
@@ -322,6 +323,20 @@ async function waitForAnyBoundary(baseUrl, sessionId, token, cursor) {
   throw new Error("Eve session did not settle");
 }
 function sameCounters(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
+function proveRetryEvents(before, after) {
+  for (const first of before) {
+    const coordinates = [first?.data?.turnId, first?.data?.stepIndex, first?.data?.sequence];
+    if (coordinates.some((value) => value === undefined)) continue;
+    const repeated = after.find((event) => event.type === first.type
+      && event?.data?.turnId === coordinates[0]
+      && event?.data?.stepIndex === coordinates[1]
+      && event?.data?.sequence === coordinates[2]
+      && typeof event?.meta?.id === "string"
+      && event.meta.id !== first?.meta?.id);
+    if (repeated && typeof first?.meta?.id === "string") return Object.freeze({ sameCoordinates: true, distinctMetaIds: true, type: first.type });
+  }
+  return Object.freeze({ sameCoordinates: false, distinctMetaIds: false, type: null });
+}
 function localOnlyEnvironment(required) {
   const inherited = ["PATH", "Path", "PATHEXT", "SystemRoot", "COMSPEC", "TEMP", "TMP", "USERPROFILE", "APPDATA", "LOCALAPPDATA"];
   return Object.fromEntries([...inherited.flatMap((key) => process.env[key] === undefined ? [] : [[key, process.env[key]]]), ["NO_PROXY", "127.0.0.1,localhost"], ["no_proxy", "127.0.0.1,localhost"], ...Object.entries(required)]);
