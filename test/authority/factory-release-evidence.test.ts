@@ -51,4 +51,7 @@ test("factory release evidence rejects unclosed, incoherent, and dishonest laten
   assert.throws(() => createFactoryReleaseEvidence({ ...measured, latency: { ...measured.latency, v: "wrong" } } as any), /latency/i);
   assert.throws(() => createFactoryReleaseEvidence({ ...measured, latency: { ...measured.latency, sampleCount: 0 } }), /sample/i);
   assert.throws(() => createFactoryReleaseEvidence({ ...measured, latency: { ...measured.latency, percentiles: { p50Ms: 5, p95Ms: 3, p99Ms: 4 } } }), /percentile/i);
+  assert.throws(() => createFactoryReleaseEvidence({ ...measured, runner: { ...measured.runner, hardwareClass: "env:REELIER_TOKEN" } }), /runner|hardware/i);
+  assert.throws(() => createFactoryReleaseEvidence({ ...measured, runner: { ...measured.runner, hardwareClass: "C:\\secrets\\token" } }), /runner|hardware/i);
+  assert.throws(() => createFactoryReleaseEvidence({ ...measured, runner: { ...measured.runner, nodeVersion: "v22.0.0 token=secret" } }), /runner|node/i);
 });
