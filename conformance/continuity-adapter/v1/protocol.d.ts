@@ -9,4 +9,4 @@ export interface ContinuityAdapterCandidateV1 {
   counters(): Promise<CandidateCountersV1>;
   close(): Promise<void>;
 }
-export function createCandidate(input: Readonly<{ scenarioId: string; mutation?: "dispatch-on-open" | "identity-from-input" | "unchecked-as-verified" | "replacement-state-loss" | "reserve-on-repeat-open" | "ambiguous-open-resend" | "status-side-effects" | "mutate-then-throw" | "missing-close" | "rejecting-close" | "zero-digest" | "malformed-semver"; }>): Promise<ContinuityAdapterCandidateV1>;
+export function createCandidate(input: Readonly<{ scenarioId: string; mutation?: "dispatch-on-open" | "identity-from-input" | "unchecked-as-verified"; }>): Promise<ContinuityAdapterCandidateV1>;

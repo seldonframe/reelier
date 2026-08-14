@@ -31,7 +31,7 @@ export async function createCandidate({ scenarioId, mutation }) {
     return outcomes.get(input.requestId)?.outcome ?? Object.freeze({ requestId: input.requestId, verdict: "refused", reasonCode: "status-absent", lifecycleState: "absent" });
   };
   return Object.freeze({
-    descriptor: Object.freeze({ v: "reelier.continuity-adapter-candidate/v1", adapterId: "core", harnessId: "core", harnessVersion: mutation === "malformed-semver" ? "1.2.3-." : "1.0.0", reelierCommit: "44d512263b3e77a301b4d875ab03217712b17c37", authorityAdapterContractDigest: mutation === "zero-digest" ? digest("0") : AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST }),
+    descriptor: Object.freeze((mutation ?? "").startsWith("malformed-") ? { v: "reelier.continuity-adapter-candidate/v1", adapterId: 1, harnessId: "core", harnessVersion: "1.0.0", reelierCommit: "44d512263b3e77a301b4d875ab03217712b17c37", authorityAdapterContractDigest: AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST } : { v: "reelier.continuity-adapter-candidate/v1", adapterId: "core", harnessId: "core", harnessVersion: mutation === "malformed-semver" ? "1.2.3-." : mutation === "numeric-prerelease-zero" ? "1.2.3-01" : "1.0.0", reelierCommit: "44d512263b3e77a301b4d875ab03217712b17c37", authorityAdapterContractDigest: mutation === "zero-digest" ? digest("0") : AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST }),
     async provision(next) { events = [...next]; },
     async adapter(binding) {
       adapterCalls += 1;
@@ -44,8 +44,10 @@ export async function createCandidate({ scenarioId, mutation }) {
         async open(taskId) {
           if (mutation === "dispatch-on-open" || (mutation === "reserve-on-repeat-open" && adapterCalls > 0)) counters.providerDispatches += 1;
           if (mutation === "reserve-on-repeat-open" || (mutation === "ambiguous-open-resend" && scenarioId === "ambiguity-blocks-resend")) counters.reservations += 1;
+          if (scenarioId === "ambiguity-blocks-resend" && mutation === "ambiguous-open-status") await statusOutcome(host, { requestId: "request_1" });
+          if (scenarioId === "ambiguity-blocks-resend" && mutation === "ambiguous-open-outcome") await requestOutcome(host, { v: "reelier.outcome-request/v1", requestId: "request_1", sourceRefs: { issue: "issue_1" }, choices: { label: "ready" } });
           const projection = await originalOpen(taskId);
-          if (mutation === "unchecked-as-verified") return Object.freeze({ ...projection, sections: { ...projection.sections, evidenceAndUncertainty: { ...projection.sections.evidenceAndUncertainty, uncertainClaims: [], uncertainConsequences: [] } } });
+          if (mutation === "unchecked-as-verified") return Object.freeze({ ...projection, sections: { ...projection.sections, evidenceAndUncertainty: { ...projection.sections.evidenceAndUncertainty, uncertainClaims: projection.sections.evidenceAndUncertainty.uncertainClaims.map((claim) => ({ ...claim, status: "verified" })), uncertainConsequences: projection.sections.evidenceAndUncertainty.uncertainConsequences.map((consequence) => ({ ...consequence, verification: { ...consequence.verification, status: "verified" } })) } } });
           return projection;
         },
         async checkpoint(input) {
@@ -55,6 +57,6 @@ export async function createCandidate({ scenarioId, mutation }) {
       });
     },
     async counters() { return Object.freeze({ ...counters }); },
-    ...(mutation === "missing-close" ? {} : { async close() { await rm(root, { recursive: true, force: true }); if (mutation === "rejecting-close") throw new Error("cleanup refused"); } }),
+    ...((mutation === "missing-close" || mutation === "malformed-missing-close") ? {} : { async close() { await rm(root, { recursive: true, force: true }); if (mutation === "rejecting-close" || mutation === "malformed-rejecting-close") throw new Error("cleanup refused"); } }),
   });
 }

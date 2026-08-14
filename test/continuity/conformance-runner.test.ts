@@ -2,6 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { pathToFileURL } from "node:url";
 import { resolve } from "node:path";
+import { readFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
 
 const { checkContinuityAdapterCandidate } = await import(pathToFileURL(resolve("conformance/continuity-adapter/v1/check.mjs")).href);
 
@@ -54,9 +56,34 @@ test("runner rejects adversarial lifecycle and cleanup candidates", async () => 
 });
 
 test("runner rejects zero authority digests and malformed semantic versions", async () => {
-  for (const mutation of ["zero-digest", "malformed-semver"] as const) {
+  for (const mutation of ["zero-digest", "malformed-semver", "numeric-prerelease-zero"] as const) {
     const report = await checkContinuityAdapterCandidate(candidate, { mutation });
     assert.equal(report.status, "failed", mutation);
     assert.equal(report.checks[0]?.id, "closed-schema");
   }
+});
+
+test("ambiguity resume cannot invoke either authority port", async () => {
+  for (const mutation of ["ambiguous-open-status", "ambiguous-open-outcome"] as const) {
+    const report = await checkContinuityAdapterCandidate(candidate, { mutation });
+    assert.equal(report.checks.find((item: { id: string }) => item.id === "ambiguity-blocks-resend")?.status, "failed", mutation);
+  }
+});
+
+test("malformed descriptors and cleanup faults remain closed reports", async () => {
+  for (const mutation of ["malformed-missing-close", "malformed-rejecting-close"] as const) {
+    const report = await checkContinuityAdapterCandidate(candidate, { mutation });
+    assert.equal(report.status, "failed");
+    assert.equal(report.v, "reelier.continuity-adapter-conformance-report/v1");
+  }
+  const cli = spawnSync(process.execPath, ["conformance/continuity-adapter/v1/check.mjs", "./missing-candidate.mjs"], { encoding: "utf8" });
+  assert.equal(cli.status, 1);
+  assert.equal(JSON.parse(cli.stdout).status, "failed");
+  assert.equal(cli.stderr, "");
+});
+
+test("public protocol exposes exactly the three specified mutations", async () => {
+  const protocol = await readFile("conformance/continuity-adapter/v1/protocol.d.ts", "utf8");
+  assert.match(protocol, /"dispatch-on-open" \| "identity-from-input" \| "unchecked-as-verified"/);
+  assert.doesNotMatch(protocol, /replacement-state-loss|missing-close|malformed-semver/);
 });
