@@ -5,12 +5,13 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import path from "node:path";
 
-const SUPPORTED_LINUX_HOST_ROOTS = ["createAuthorityEgressGateway", "createAuthorityHostRuntime", "createAuthorityHostServer", "createCertificationCellHost", "createDelegationAuthority", "createDispatchCoordinator", "createFileReceiptPublication", "createLocalAuthorityRuntime"] as const;
+const SUPPORTED_LINUX_HOST_ROOTS = ["createAuthorityEgressGateway", "createAuthorityHostRuntime", "createAuthorityHostServer", "createCertificationCellHost", "createDelegationAuthority", "createDispatchCoordinator", "createFileReceiptPublication", "createGovernedAuthorityCell", "createLocalAuthorityRuntime"] as const;
 
 test("declared authority host barrel exposes only supported composition roots as Gate 0 claims", async () => {
   const host = await import("reelier/authority/host");
   for (const root of SUPPORTED_LINUX_HOST_ROOTS) assert.equal(Object.hasOwn(host, root), true, root);
   assert.equal(Object.hasOwn(host, "FsAuthorityLedger"), false, "the raw ledger is not a declared host-barrel export");
+  for (const internal of ["loadProfileGovernanceFromOperatorTrust", "assertAdmittedProfileGovernance", "profileGovernanceAdmissionSnapshot", "createAdmittedLocalAuthorityRuntime"]) assert.equal(Object.hasOwn(host, internal), false, internal);
   const exportsMap = JSON.parse(readFileSync(path.join(process.cwd(), "package.json"), "utf8")) as { exports: Record<string, string> };
   assert.equal(exportsMap.exports["./authority/host"], "./dist/authority/host/index.js");
   assert.equal(Object.hasOwn(exportsMap.exports, "./authority/host/fs-ledger"), false);
