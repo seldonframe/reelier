@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { createServer } from "node:http";
-import { cp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { access, cp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createStreamIngestor, readEveStream } from "./stream.mjs";
@@ -63,6 +63,20 @@ export async function stopEveProcess(child) {
   await waitForExit(child, 5_000);
 }
 
+export async function crashEveProcess(processHandle) {
+  const { child, pid: exactPid, url } = processHandle;
+  if (!child || child.exitCode !== null || exactPid === undefined) return;
+  if (process.platform === "win32") {
+    const forceTree = spawn("taskkill", ["/PID", String(exactPid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
+    const code = await new Promise((resolveExit, reject) => { forceTree.once("error", reject); forceTree.once("close", resolveExit); });
+    assert.equal(code, 0, `taskkill failed for exact Eve PID ${exactPid}`);
+  } else {
+    try { process.kill(exactPid, "SIGKILL"); } catch (error) { if (error?.code !== "ESRCH") throw error; }
+  }
+  assert.equal(await waitForExit(child, 5_000), true, `exact Eve PID ${exactPid} survived the crash cut`);
+  await waitForListenerClosed(url);
+}
+
 async function runMatrix(resultPath, runtimeRoot) {
   const [{ createGitHubIssueLabelsFixture }, { startPathCConformancePort }, continuity, authority] = await Promise.all([
     import(dist("dist-test/test/authority/fixtures/github-issue-labels.js")),
@@ -89,16 +103,16 @@ async function checkpointScenario(context) {
     const created = await post(first.url, "/eve/v1/session", state.token, { message: "checkpoint", operationId: "checkpoint-cut" });
     assert.equal(created.status, 202, `${JSON.stringify(created.body)}\n${first.diagnostics()}`);
     const sessionId = created.body.sessionId;
-    const observed = await waitForEvent(first.url, sessionId, state.token, 0, (event) => event.type === "action.result");
-    assert.equal(observed.event.data?.result?.output?.ok, true, JSON.stringify(observed.event));
-    await writeFile(join(state.root, "after-checkpoint-commit-before-return.marker"), "ok\n", "utf8");
-    await stopEveProcess(first.child);
+    await waitForPath(join(state.root, "after-checkpoint-commit-before-return.marker"));
+    const beforeCrash = await readEveStream({ baseUrl: first.url, sessionId, token: state.token, startIndex: 0 });
+    await crashEveProcess(first);
     first = undefined;
     const restarted = await startEveProcess({ cwd: state.appRoot, env: state.env });
     try {
+      await waitForAnyBoundary(restarted.url, sessionId, state.token, beforeCrash.cursor);
       const replay = await post(restarted.url, `/eve/v1/session/${encodeURIComponent(sessionId)}`, state.token, { message: "checkpoint" });
       assert.equal(replay.status, 202, JSON.stringify(replay.body));
-      await waitForBoundary(restarted.url, sessionId, state.token, observed.cursor);
+      await waitForBoundary(restarted.url, sessionId, state.token, beforeCrash.cursor);
     } finally { await stopEveProcess(restarted.child); }
     const snapshot = await state.ledger.read(state.taskId);
     const projection = context.continuity.createResumeProjection(snapshot);
@@ -118,15 +132,19 @@ async function outcomeScenario(context) {
     assert.equal(created.status, 202, `${JSON.stringify(created.body)}\n${processHandle.diagnostics()}`);
     const sessionId = created.body.sessionId;
     await state.port.faultReached;
-    await stopEveProcess(processHandle.child);
+    const beforeCrash = await readEveStream({ baseUrl: processHandle.url, sessionId, token: state.token, startIndex: 0 });
+    await crashEveProcess(processHandle);
     processHandle = undefined;
     state.port.release();
     const restarted = await startEveProcess({ cwd: state.appRoot, env: state.env });
     processHandle = restarted;
-    const replay = await post(restarted.url, "/eve/v1/session", state.token, { message: "request outcome", operationId: "outcome-cut-retry" });
-    assert.equal(replay.status, 202, JSON.stringify(replay.body));
-    const recoveredSessionId = replay.body.sessionId;
-    const settled = await waitForBoundary(restarted.url, recoveredSessionId, state.token, 0);
+    let settled;
+    try {
+      settled = await waitForAnyBoundary(restarted.url, sessionId, state.token, beforeCrash.cursor);
+    } catch (error) {
+      throw new Error(`${error.message}\n${restarted.diagnostics()}`, { cause: error });
+    }
+    const recoveredSessionId = sessionId;
     const statusSend = await post(restarted.url, `/eve/v1/session/${encodeURIComponent(recoveredSessionId)}`, state.token, { message: "read status" });
     assert.equal(statusSend.status, 202);
     await waitForBoundary(restarted.url, recoveredSessionId, state.token, settled.cursor);
@@ -235,7 +253,7 @@ async function createScenario(context, name, options) {
     [createHash("sha256").update(token).digest("hex")]: { principalId: actor.principalId, taskId, taskOwnerPrincipalId: actor.principalId, workloadId: actor.workloadId },
     [createHash("sha256").update(otherToken).digest("hex")]: { principalId: "principal_eve_2", taskId, taskOwnerPrincipalId: actor.principalId, workloadId: actor.workloadId },
   };
-  const env = localOnlyEnvironment({ EVE_EVAL_AUTH_TOKEN: token, REELIER_EVE_AUTH_REGISTRY_JSON: JSON.stringify(registry), REELIER_CONTINUITY_ROOT: ledgerRoot, REELIER_CONTINUITY_PROTOCOL_V: "reelier.continuity-checkpoint/v1", REELIER_JOB_CARD_DIGEST: `sha256:${"a".repeat(64)}`, REELIER_AUTHORITY_SNAPSHOT_DIGEST: `sha256:${"b".repeat(64)}`, REELIER_PATH_C_PORT_URL: port.url, REELIER_PATH_C_PORT_TOKEN: port.clientToken });
+  const env = localOnlyEnvironment({ EVE_EVAL_AUTH_TOKEN: token, ...(options.patchCheckpoint ? { REELIER_CHECKPOINT_CUT_MARKER: join(root, "after-checkpoint-commit-before-return.marker") } : {}), REELIER_EVE_AUTH_REGISTRY_JSON: JSON.stringify(registry), REELIER_CONTINUITY_ROOT: ledgerRoot, REELIER_CONTINUITY_PROTOCOL_V: "reelier.continuity-checkpoint/v1", REELIER_JOB_CARD_DIGEST: `sha256:${"a".repeat(64)}`, REELIER_AUTHORITY_SNAPSHOT_DIGEST: `sha256:${"b".repeat(64)}`, REELIER_PATH_C_PORT_URL: port.url, REELIER_PATH_C_PORT_TOKEN: port.clientToken });
   return { root, appRoot, ledgerRoot, ledger, taskId, actor, token, otherToken, env, fixture, port, close: async () => { await port.close(); await fixture.close(); await rm(appRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); } };
 }
 
@@ -252,6 +270,13 @@ async function copyFixture(target, patchCheckpoint) {
   source = source.replace(/\n  \}\),\n\}\);\s*$/u, "\n  }}),\n});\n");
   if (patchCheckpoint) source = source.replace("events: [{\n    type: \"task.opened\",\n    eventId: \"event_eve_opened\",\n    outcome: \"Eve checkpoint outcome\",\n    completionProjection: \"The deterministic Eve conformance run completes without a failed action.\",\n    nonGoals: [\"external model calls\"],\n  }],", "events: [{ type: \"claim.recorded\", eventId: \"event_eve_checkpoint\", claimId: \"claim_eve_checkpoint\", statement: \"Checkpoint survived process termination.\", status: \"unchecked\", evidenceDigest: null }],").replace("expectedCursor: 0,", "expectedCursor: 1,");
   await writeFile(agentPath, source, "utf8");
+  if (patchCheckpoint) {
+    const toolPath = resolve(target, "agent/tools/continuity_checkpoint.ts");
+    let toolSource = await readFile(toolPath, "utf8");
+    toolSource = toolSource.replace('import { defineTool } from "eve/tools";', 'import { access, writeFile } from "node:fs/promises";\nimport { defineTool } from "eve/tools";')
+      .replace("    const result = await continuityRuntime(ctx).checkpoint(checkpoint);", "    const result = await continuityRuntime(ctx).checkpoint(checkpoint);\n    if (process.env.REELIER_CHECKPOINT_CUT_MARKER) {\n      let cutAlreadyReached = false;\n      try { await access(process.env.REELIER_CHECKPOINT_CUT_MARKER); cutAlreadyReached = true; } catch {}\n      if (!cutAlreadyReached) {\n        await writeFile(process.env.REELIER_CHECKPOINT_CUT_MARKER, \"committed\\n\", \"utf8\");\n        await new Promise<never>(() => {});\n      }\n    }");
+    await writeFile(toolPath, toolSource, "utf8");
+  }
 }
 
 async function projectionBytes(state, context) {
@@ -304,6 +329,8 @@ function localOnlyEnvironment(required) {
 function capture(stream, lines) { let buffered = ""; stream?.on("data", (chunk) => { buffered += String(chunk); const split = buffered.split(/\r?\n/u); buffered = split.pop() ?? ""; lines.push(...split); if (lines.length > 80) lines.splice(0, lines.length - 80); }); }
 async function unusedLoopbackPort() { const server = createServer(); await new Promise((resolveListen, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolveListen); }); const address = server.address(); const port = address.port; await new Promise((resolveClose, reject) => server.close((error) => error ? reject(error) : resolveClose())); return port; }
 async function waitForHealth(baseUrl, child, token) { for (let attempt = 0; attempt < 600; attempt += 1) { if (child.exitCode !== null) throw new Error(`Eve dev exited before health (${child.exitCode})`); try { const health = await fetch(new URL("/eve/v1/health", baseUrl), { redirect: "error", signal: AbortSignal.timeout(500) }); const info = health.ok && token ? await fetch(new URL("/eve/v1/info", baseUrl), { redirect: "error", headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(500) }) : null; if (health.ok && info?.ok) return; } catch {} await delay(100); } throw new Error("Eve health timeout"); }
+async function waitForListenerClosed(baseUrl) { for (let attempt = 0; attempt < 100; attempt += 1) { try { await fetch(new URL("/eve/v1/health", baseUrl), { redirect: "error", signal: AbortSignal.timeout(200) }); } catch { return; } await delay(50); } throw new Error(`Eve listener survived exact tree termination at ${baseUrl}`); }
+async function waitForPath(path) { for (let attempt = 0; attempt < 600; attempt += 1) { try { await access(path); return; } catch {} await delay(50); } throw new Error(`expected crash-cut marker was not written: ${path}`); }
 async function waitForExit(child, timeout) { if (child.exitCode !== null) return true; return new Promise((resolveExit) => { const timer = setTimeout(() => { child.off("close", close); resolveExit(false); }, timeout); timer.unref(); const close = () => { clearTimeout(timer); resolveExit(true); }; child.once("close", close); }); }
 const delay = (ms) => new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
 
