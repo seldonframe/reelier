@@ -83,7 +83,7 @@ function bundle(source: "offline-fixture" | "hosted-run" = "offline-fixture"): {
   return { value, bytes: { ubuntu: ubuntu.bytes, windows: windows.bytes } };
 }
 
-const inputs = () => ({ candidate, now: "2026-08-14T13:00:00.000Z", verifier: { signerId, publicKey: signer.publicKey }, execution: "offline-fixture" as const });
+const inputs = () => ({ candidate, now: "2026-08-14T13:00:00.000Z", verifier: { signerId, publicKey: signer.publicKey }, execution: "offline-fixture" as const, expectedRunnerSourceCommitSha: candidate.publicCommitSha });
 
 test("valid Ubuntu and Windows artifact pair remains explicitly insufficient offline", () => {
   const fixture = bundle();
@@ -118,7 +118,26 @@ test("hosted evidence separates the candidate public commit from the runner sour
     Object.assign(item, { ...body, signature: signAuthorityDigest(signer.privateKey, "authority-evidence", authorityDigest(body)) });
     bytes[item.os === "ubuntu-latest" ? "ubuntu" : "windows"] = Buffer.from(JSON.stringify(item), "utf8");
   }
-  assert.doesNotThrow(() => verifyGate4Bundle(value, { ...inputs(), execution: "hosted-run", artifactBytes: bytes }));
+  assert.doesNotThrow(() => verifyGate4Bundle(value, { ...inputs(), execution: "hosted-run", expectedRunnerSourceCommitSha: runnerSourceCommit, artifactBytes: bytes }));
+});
+
+test("runner source cannot be substituted when the hosted execution SHA differs", () => {
+  const fixture = bundle("hosted-run");
+  const runnerSourceCommit = "ce33b20";
+  const value = structuredClone(fixture.value) as any;
+  value.workflow.workflowSha = runnerSourceCommit;
+  const bytes = {} as { ubuntu: Uint8Array; windows: Uint8Array };
+  for (const item of value.jobs) {
+    item.repo.workflowSha = runnerSourceCommit;
+    item.repo.checkoutSha = runnerSourceCommit;
+    item.repo.verifierSourceCommitSha = runnerSourceCommit;
+    item.repo.runnerSourceCommitSha = runnerSourceCommit;
+    const { signature: _oldSignature, artifactDigest: _oldDigest, signerId: _oldSigner, ...payload } = item;
+    const body = { ...payload, artifactDigest: authorityDigest(payload), signerId };
+    Object.assign(item, { ...body, signature: signAuthorityDigest(signer.privateKey, "authority-evidence", authorityDigest(body)) });
+    bytes[item.os === "ubuntu-latest" ? "ubuntu" : "windows"] = Buffer.from(JSON.stringify(item), "utf8");
+  }
+  assert.throws(() => verifyGate4Bundle(value, { ...inputs(), execution: "hosted-run", expectedRunnerSourceCommitSha: "deadbee", artifactBytes: bytes }), /runner|source|commit|refus/i);
 });
 
 test("candidate, artifact, provenance, signature, parity, stale, and skip mutations refuse", () => {

@@ -59,6 +59,7 @@ export interface Gate4VerificationInputs {
   readonly now: string;
   readonly verifier: Readonly<{ signerId: string; publicKey: KeyObject }>;
   readonly execution: "offline-fixture" | "hosted-run";
+  readonly expectedRunnerSourceCommitSha: string;
 }
 
 export interface Gate4VerificationResult {
