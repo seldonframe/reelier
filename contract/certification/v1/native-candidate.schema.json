@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "reelier.native-github-candidate/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["v", "candidateId", "publicCommitSha", "tarballDigest", "laneCommits", "packDigest", "task8BaselineDigest", "portableEvidenceContractDigest", "checkerIdentities", "provenance"],
+  "properties": {
+    "v": { "const": "reelier.native-github-candidate/v1" },
+    "candidateId": { "$ref": "#/$defs/digest" },
+    "publicCommitSha": { "type": "string", "pattern": "^[0-9a-fA-F]{7,64}$" },
+    "tarballDigest": { "$ref": "#/$defs/digest" },
+    "laneCommits": {
+      "type": "array", "minItems": 3, "maxItems": 3,
+      "items": { "type": "object", "additionalProperties": false, "required": ["laneId", "commitSha"], "properties": { "laneId": { "enum": ["operator-evidence", "provider-authority", "reconciliation-verifier"] }, "commitSha": { "type": "string", "pattern": "^[0-9a-fA-F]{7,64}$" } } }
+    },
+    "packDigest": { "$ref": "#/$defs/digest" },
+    "task8BaselineDigest": { "$ref": "#/$defs/digest" },
+    "portableEvidenceContractDigest": { "$ref": "#/$defs/digest" },
+    "checkerIdentities": {
+      "type": "array", "minItems": 4, "maxItems": 4,
+      "items": { "type": "object", "additionalProperties": false, "required": ["role", "signerId", "publicKeyDigest", "verifierVersion", "verdictDigest"], "properties": { "role": { "enum": ["contract", "pack", "task8", "task9"] }, "signerId": { "type": "string", "pattern": "^[a-z][a-z0-9-]{2,127}$" }, "publicKeyDigest": { "$ref": "#/$defs/digest" }, "verifierVersion": { "type": "string", "pattern": "^[a-z][a-z0-9-]{1,63}/v[0-9]+$" }, "verdictDigest": { "$ref": "#/$defs/digest" } } }
+    },
+    "provenance": {
+      "type": "object", "additionalProperties": false,
+      "required": ["v", "source", "reproducibility", "liveProviderStatus", "credentialStatus", "workflowDispatch"],
+      "properties": { "v": { "const": "reelier.native-candidate-provenance/v1" }, "source": { "const": "clean-export" }, "reproducibility": { "const": "hermetic-offline" }, "liveProviderStatus": { "const": "absent" }, "credentialStatus": { "const": "absent" }, "workflowDispatch": { "const": "absent" } }
+    }
+  },
+  "$defs": { "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" } }
+}

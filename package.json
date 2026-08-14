@@ -87,6 +87,7 @@
     "test:e2e": "node scripts/e2e-local.mjs",
     "test:packed-factory-journey": "node test/packed/authority-factory-journey.mjs",
     "test:packed-native-github-labels": "node test/packed/native-github-labels.mjs",
+    "pack:native-candidate": "npm pack --json",
     "test:mutation": "stryker run",
     "preflight": "node scripts/preflight.mjs",
     "preflight:acceleration": "node scripts/run-acceleration-preflight.mjs",
