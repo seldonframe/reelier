@@ -7,6 +7,8 @@ import { createPinnedLookup, executeJsonHttpsEffect, executeJsonHttpsRead } from
 import { createTotalDeadline } from "../../src/authority/net/deadline.js";
 
 const driverUrl = new URL("../../src/authority/drivers/json-https.js", import.meta.url).href;
+const preparedUrl = new URL("../../src/authority/host/prepared-dispatch.js", import.meta.url).href;
+const wireUrl = new URL("../../src/authority/wire.js", import.meta.url).href;
 
 const transportHarness = String.raw`
 import assert from "node:assert/strict";
@@ -39,7 +41,9 @@ mock.module("node:dns/promises", { namedExports: { lookup: (...args) => state.lo
 mock.module("node:https", { namedExports: { request: (...args) => state.httpsRequest(...args) } });
 mock.module("node:http", { namedExports: { request: (...args) => state.httpRequest(...args) } });
 mock.module("node:tls", { namedExports: { connect: (...args) => state.tlsConnect(...args) } });
-const { executeJsonHttpsRead } = await import(process.env.REELIER_DRIVER_URL);
+const { executeJsonHttpsRead, prepareJsonHttpsEffect } = await import(process.env.REELIER_DRIVER_URL);
+const { createDispatchCommitLease, consumePreparedDispatch } = await import(process.env.REELIER_PREPARED_URL);
+const { authorityDigest } = await import(process.env.REELIER_WIRE_URL);
 const endpoint = { endpointId: "endpoint", baseUrl: "https://localhost", allowedMethods: ["GET"], allowedPathPrefixes: ["/read"], accountIdentity: "account" };
 let nowMs = 0;
 const read = (configuredEndpoint = endpoint, secrets = { async resolve() { throw new Error("unexpected credential resolution"); } }, extra = {}) => executeJsonHttpsRead(
@@ -105,6 +109,36 @@ if (process.env.REELIER_SCENARIO === "hung-dns") {
   const response = new FakeResponse(200); respond(response); response.emit("data", Buffer.from("partial"));
   await advance(100); await assert.rejects(pending, /deadline/i); assert.equal(request.destroyed, true);
   response.emit("end"); assert.equal(request.destroyed, true);
+} else if (process.env.REELIER_SCENARIO === "prepared-profile") {
+  const route = { v: "reelier.json-https-route/v1", providerId: "github", connectorId: "github", accountId: "acct", providerAccountIdentity: "github:acct", endpointId: "write", origin: "https://localhost", allowedMethods: ["PUT"], allowedPathPrefixes: ["/write"], credentialSlotId: "slot", responseSemanticsProfileId: "reviewed", reconciliationRecipeId: "recipe", readEndpointId: "read", egressPolicyDigest: authorityDigest("egress") };
+  const effect = { endpointId: "write", method: "PUT", path: "/write", query: "", headers: {}, bodyBase64: Buffer.from("{}").toString("base64") };
+  const prepare = async statuses => {
+    const pendingResponse = { callback: undefined };
+    state.httpsRequest = (_options, callback) => { pendingResponse.callback = callback; return new FakeRequest(); };
+    const prepared = await prepareJsonHttpsEffect(effect, route, { async acquireSlot() { return { readOnce: () => "secret" }; } }, { responseSemanticsProfiles: [{ v: "reelier.http-response-semantics/v1", profileId: "reviewed", acknowledgedStatuses: statuses }], reservationId: "r", allocationId: "a", authorityGeneration: "g", authorityExpiresAt: new Date(Date.now() + 60_000).toISOString() });
+    const lease = createDispatchCommitLease({ reservationId: "r", allocationId: "a", preparedDigest: prepared.description.materializedRequestDigest, authorityGeneration: "g", authorityExpiresAt: prepared.description.authorityExpiresAt, absoluteDeadlineMs: prepared.description.absoluteDeadlineMs, commitGeneration: "c" });
+    const outcome = consumePreparedDispatch(prepared, lease);
+    await waitFor(() => pendingResponse.callback !== undefined);
+    const response = new FakeResponse(200); pendingResponse.callback(response); response.emit("end");
+    return { description: prepared.description, outcome: await outcome };
+  };
+  const first = await prepare([201]); const second = await prepare([200]);
+  assert.equal(first.outcome.kind, "ambiguous"); assert.equal(second.outcome.kind, "acknowledged");
+  assert.notEqual(first.description.behaviorDigest, second.description.behaviorDigest);
+  assert.notEqual(first.outcome.resultDigest, second.outcome.resultDigest);
+} else if (process.env.REELIER_SCENARIO === "legacy-prepared") {
+  const endpoint = { endpointId: "endpoint", baseUrl: "https://localhost", allowedMethods: ["PUT"], allowedPathPrefixes: ["/write"], accountIdentity: "account" };
+  const effect = { endpointId: "endpoint", method: "PUT", path: "/write", query: "", headers: {}, bodyBase64: Buffer.from("{}").toString("base64") };
+  const request = new FakeRequest(); let respond;
+  state.httpsRequest = (_options, callback) => { respond = callback; return request; };
+  const prepared = await prepareJsonHttpsEffect(effect, endpoint, { async resolve() { return "secret"; } }, { reservationId: "r", allocationId: "a", authorityGeneration: "g", authorityExpiresAt: new Date(Date.now() + 60_000).toISOString() });
+  assert.equal(prepared.description.behaviorDigest, undefined);
+  const lease = createDispatchCommitLease({ reservationId: "r", allocationId: "a", preparedDigest: prepared.description.materializedRequestDigest, authorityGeneration: "g", authorityExpiresAt: prepared.description.authorityExpiresAt, absoluteDeadlineMs: prepared.description.absoluteDeadlineMs, commitGeneration: "c" });
+  const outcome = consumePreparedDispatch(prepared, lease); await waitFor(() => respond !== undefined);
+  const response = new FakeResponse(200); respond(response); response.emit("end");
+  const result = await outcome;
+  const expected = authorityDigest({ v: "reelier.https-response/v1", endpointId: "endpoint", status: 200, headers: {}, bodyDigest: authorityDigest("") });
+  assert.equal(result.resultDigest, expected);
 } else {
   const stage = process.env.REELIER_SCENARIO;
   const connectRequest = new FakeRequest(); const rawSocket = new FakeSocket(); const secureSocket = new FakeSocket(); const tunneledRequest = new FakeRequest();
@@ -131,7 +165,7 @@ if (process.env.REELIER_SCENARIO === "hung-dns") {
 
 async function runTransportScenario(scenario: string): Promise<void> {
   const child = spawn(process.execPath, ["--experimental-test-module-mocks", "--input-type=module", "--eval", transportHarness], {
-    env: { ...process.env, REELIER_DRIVER_URL: driverUrl, REELIER_SCENARIO: scenario },
+    env: { ...process.env, REELIER_DRIVER_URL: driverUrl, REELIER_PREPARED_URL: preparedUrl, REELIER_WIRE_URL: wireUrl, REELIER_SCENARIO: scenario },
     stdio: ["ignore", "pipe", "pipe"],
   });
   let stdout = ""; let stderr = "";
@@ -213,3 +247,5 @@ test("native HTTPS destroys an active body stream at expiry and suppresses its l
 test("proxy transport destroys active CONNECT resources at expiry", () => runTransportScenario("proxy-connect"));
 test("proxy transport destroys active TLS resources at expiry", () => runTransportScenario("proxy-tls"));
 test("proxy transport contains a response delivered after terminal failure", () => runTransportScenario("proxy-late"));
+test("native prepared send applies the sealed response profile and binds its behavior digest", () => runTransportScenario("prepared-profile"));
+test("legacy prepared send preserves its historical result digest preimage", () => runTransportScenario("legacy-prepared"));
