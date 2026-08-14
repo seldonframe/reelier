@@ -12,12 +12,13 @@ import { classifyHttpResponse, createHttpResponseSemanticsProfileRegistry, httpR
 import type { RouteAuthoritySnapshotV1 } from "../ledger.js";
 import { createPreparedDispatch, type PreparedDispatch } from "../host/prepared-dispatch.js";
 import { authorityDigest } from "../wire.js";
+import type { AuthorityLatencyPhase, AuthorityLatencyRecorder } from "../host/latency.js";
 
 const FORBIDDEN = new Set(["authorization", "cookie", "host"]);
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 const MAX_REQUEST_BYTES = 10 * 1024 * 1024;
 const DIGEST = /^sha256:(?!0{64}$)[0-9a-f]{64}$/;
-type JsonHttpsOptions = Readonly<{ timeoutMs?: number; maxResponseBytes?: number; maxRequestBytes?: number; monotonicNow?: () => number; responseSemanticsProfiles?: HttpResponseSemanticsProfileRegistry | readonly HttpResponseSemanticsProfileV1[]; operatorConfigurationDigest?: string; routeAuthority?: RouteAuthoritySnapshotV1 }>;
+export type JsonHttpsOptions = Readonly<{ timeoutMs?: number; maxResponseBytes?: number; maxRequestBytes?: number; monotonicNow?: () => number; latencyRecorder?: AuthorityLatencyRecorder; responseSemanticsProfiles?: HttpResponseSemanticsProfileRegistry | readonly HttpResponseSemanticsProfileV1[]; operatorConfigurationDigest?: string; routeAuthority?: RouteAuthoritySnapshotV1 }>;
 
 /** Legacy runtime endpoint configuration; canonical route authority is separate. */
 export interface JsonHttpsEndpoint {
@@ -58,7 +59,7 @@ export async function executeJsonHttpsEffect(effect: TransportEffect, endpoint: 
   validateHeaders(effect.headers);
   if (base64DecodedBytes(effect.bodyBase64) > MAX_REQUEST_BYTES) throw new JsonHttpsSecurityError("request exceeds configured limit");
   const body = Buffer.from(effect.bodyBase64, "base64");
-  const secret = await materializeSecret(endpoint, secrets, deadline);
+  const secret = await measureLatency(options, "credential", () => materializeSecret(endpoint, secrets, deadline));
   deadline.remainingMs("credential"); const proxySecret = runtimeEndpoint.egressProxy ? await secrets.resolve(runtimeEndpoint.egressProxy.bearerRef) : undefined;
   const projection = buildMaterializedHttpRequestProjection(runtimeEndpoint, effect.method, effect.path, effect.query, effect.headers, body);
   return requestPinned(runtimeEndpoint, effect.method, effect.path, effect.query, effect.headers, body, secret, proxySecret, options, deadline, projection);
@@ -78,7 +79,7 @@ export async function prepareJsonHttpsEffect(effect: TransportEffect, endpoint: 
   if (nativeRoute) validateNativeAuthority(nativeRoute, routeDigest, options.operatorConfigurationDigest, options.routeAuthority);
   const behaviorDigest = nativeRoute ? authorityDigest({ v: "reelier.json-https-behavior/v1", routeDigest, operatorConfigurationDigest: options.operatorConfigurationDigest ?? options.routeAuthority?.operatorConfigurationDigest ?? null, responseSemanticsProfileDigest: httpResponseSemanticsProfileDigest(profile!) }) : undefined;
   const body = Buffer.from(effect.bodyBase64, "base64");
-  const secret = await materializeSecret(endpoint, secrets, deadline);
+  const secret = await measureLatency(options, "credential", () => materializeSecret(endpoint, secrets, deadline));
   const proxySecret = runtimeEndpoint.egressProxy ? await secrets.resolve(runtimeEndpoint.egressProxy.bearerRef) : undefined;
   const projection = buildMaterializedHttpRequestProjection(runtimeEndpoint, effect.method, effect.path, effect.query, effect.headers, body);
   const description = {
@@ -118,7 +119,7 @@ export async function executeJsonHttpsRead(read: JsonHttpsRead, endpoint: JsonHt
   validatePath(read.path, runtimeEndpoint);
   validateQuery(read.query ?? "");
   validateHeaders(read.headers ?? {});
-  const secret = await materializeSecret(endpoint, secrets, deadline);
+  const secret = await measureLatency(options, "credential", () => materializeSecret(endpoint, secrets, deadline));
   deadline.remainingMs("credential"); const proxySecret = runtimeEndpoint.egressProxy ? await secrets.resolve(runtimeEndpoint.egressProxy.bearerRef) : undefined;
   const body = Buffer.alloc(0);
   const projection = buildMaterializedHttpRequestProjection(runtimeEndpoint, "GET", read.path, read.query ?? "", read.headers ?? {}, body);
@@ -170,6 +171,9 @@ function validateQuery(query: string): void {
 function dispatchDeadline(options: JsonHttpsOptions): TotalDeadline {
   return createTotalDeadline({ timeoutMs: options.timeoutMs ?? 15_000, monotonicNow: options.monotonicNow });
 }
+async function measureLatency<T>(options: JsonHttpsOptions, phase: AuthorityLatencyPhase, operation: () => T | Promise<T>): Promise<T> {
+  return options.latencyRecorder ? options.latencyRecorder.measure(phase, operation) : operation();
+}
 function base64DecodedBytes(value: string): number { return Math.floor(value.length * 3 / 4) - (value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0); }
 
 async function requestPinned(endpoint: JsonHttpsEndpoint, method: string, path: string, query: string, headers: Readonly<Record<string, string>>, body: Buffer, secret: string | undefined, proxySecret: string | undefined, options: JsonHttpsOptions, deadline: TotalDeadline, projection?: MaterializedHttpRequestProjectionV1): Promise<JsonHttpsResponse> {
@@ -184,10 +188,10 @@ async function requestPinned(endpoint: JsonHttpsEndpoint, method: string, path: 
   const requestBytesDigest = `sha256:${createHash("sha256").update(body).digest("hex")}`;
   if (endpoint.egressProxy) {
     if (!proxySecret) throw new JsonHttpsSecurityError("egress proxy credential is unavailable");
-    return requestThroughProxy(endpoint.egressProxy, base, target, method, requestHeaders, body, proxySecret, maxResponseBytes, requestBytesDigest, deadline, projection);
+    return requestThroughProxy(endpoint.egressProxy, base, target, method, requestHeaders, body, proxySecret, maxResponseBytes, requestBytesDigest, deadline, options, projection);
   }
   deadline.remainingMs("dns");
-  const addresses = await raceTotalDeadline(deadline, "dns", dnsLookup(base.hostname, { all: true, verbatim: true }));
+  const addresses = await measureLatency(options, "dns", () => raceTotalDeadline(deadline, "dns", dnsLookup(base.hostname, { all: true, verbatim: true })));
   let pinned: readonly Readonly<{ address: string; family: 4 | 6 }>[];
   try { pinned = assertAllPublicAddresses(addresses.map(item => item.address)); } catch { throw new JsonHttpsSecurityError("endpoint resolved to a non-public address"); }
   const chosen = pinned[0]!.address;
@@ -227,12 +231,12 @@ export async function executeJsonHttpsConfidentialRequest(request: JsonHttpsConf
   finally { body.fill(0); }
 }
 
-async function requestThroughProxy(proxy: NonNullable<JsonHttpsEndpoint["egressProxy"]>, base: URL, target: URL, method: string, headers: Readonly<Record<string, string>>, body: Buffer, proxySecret: string, maxResponseBytes: number, requestBytesDigest: string, deadline: TotalDeadline, projection?: MaterializedHttpRequestProjectionV1): Promise<JsonHttpsResponse> {
+async function requestThroughProxy(proxy: NonNullable<JsonHttpsEndpoint["egressProxy"]>, base: URL, target: URL, method: string, headers: Readonly<Record<string, string>>, body: Buffer, proxySecret: string, maxResponseBytes: number, requestBytesDigest: string, deadline: TotalDeadline, options: JsonHttpsOptions, projection?: MaterializedHttpRequestProjectionV1): Promise<JsonHttpsResponse> {
   let origin: URL;
   try { origin = new URL(proxy.baseUrl); } catch { throw new JsonHttpsSecurityError("invalid egress proxy URL"); }
   if (origin.protocol !== "http:" || origin.username || origin.password || origin.pathname !== "/" || origin.search || origin.hash || !origin.hostname.endsWith(".internal")) throw new JsonHttpsSecurityError("egress proxy must be a credential-free Fly internal HTTP origin");
   if (!/^(?:env:[A-Za-z_][A-Za-z0-9_]{0,127}|file:.+)$/.test(proxy.bearerRef)) throw new JsonHttpsSecurityError("egress proxy credential reference is invalid");
-  deadline.remainingMs("dns"); const addresses = await raceTotalDeadline(deadline, "dns", dnsLookup(origin.hostname, { all: true, verbatim: true }));
+  deadline.remainingMs("dns"); const addresses = await measureLatency(options, "dns", () => raceTotalDeadline(deadline, "dns", dnsLookup(origin.hostname, { all: true, verbatim: true })));
   let pinned: readonly Readonly<{ address: string; family: 4 | 6 }>[];
   try { pinned = assertAllPublicAddresses(addresses.map(item => item.address)); } catch { throw new JsonHttpsSecurityError("egress proxy resolved to a non-public address"); }
   const chosen = pinned[0]!.address;

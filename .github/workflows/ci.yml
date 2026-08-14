@@ -175,6 +175,10 @@ jobs:
         shell: bash
         run: |
           if [ '${{ matrix.os }}' = 'ubuntu-latest' ]; then node test/packed/authority-host-boundary.mjs --tarball "$(pwd)/authority-host-boundary-pack/$(basename authority-host-boundary-pack/*.tgz)" --mode surface; else node test/packed/authority-host-boundary.mjs --tarball "$(pwd)/authority-host-boundary-pack/$(basename authority-host-boundary-pack/*.tgz)" --mode windows-native; fi
+      - name: Verify packed native GitHub label baseline claims
+        if: ${{ needs.pack-authority-host-boundary.result == 'success' && needs.produce-authority-factory-evidence.result == 'success' }}
+        shell: bash
+        run: node test/packed/native-github-labels.mjs "$(pwd)/authority-host-boundary-pack/$(basename authority-host-boundary-pack/*.tgz)"
       - name: Run native authority platform evidence
         if: ${{ needs.pack-authority-host-boundary.result == 'success' && needs.produce-authority-factory-evidence.result == 'success' }}
         shell: bash
