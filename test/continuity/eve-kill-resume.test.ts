@@ -56,6 +56,7 @@ test("real Eve 0.37.1 preserves Reelier continuity across process and session bo
       assert.deepEqual(value.preImportConsequenceStates, []);
       assert.equal(value.statusReads, 1);
       assert.equal(value.nativeStatusLifecycle, "acknowledged");
+      assert.equal(Array.isArray(value.statusToolMessages) && value.statusToolMessages.some((message) => typeof message === "string" && message.includes("outcome-acknowledged") && message.includes("accepted")), true, JSON.stringify(value));
       assert.equal(value.postImportVerifiedConsequenceCount, 1);
       assert.deepEqual(value.retryEvidence, { sameCoordinates: true, distinctMetaIds: true, type: "step.started" });
     });
@@ -84,12 +85,15 @@ test("real Eve 0.37.1 preserves Reelier continuity across process and session bo
       assert.equal(value.failedBeforeStepStarted, true, JSON.stringify(value));
       assert.equal(value.ledgerUnchanged, true);
       assert.equal(value.effectsUnchanged, true);
-      assert.equal(value.hostileToolActivityObserved, true);
+      assert.equal(Number(value.hostileEventCount) > 0, true);
+      assert.equal(value.hostileLedgerCursorAfter, Number(value.hostileLedgerCursorBefore) + 1, JSON.stringify(value));
+      assert.equal(value.appendedSegmentCursor, value.hostileLedgerCursorAfter);
       assert.deepEqual(value.taskDirectories, [value.legitimateTaskId]);
       assert.equal(value.appendedSegmentActorTaskId, value.legitimateTaskId);
       assert.equal(value.appendedSegmentActorPrincipalId, value.legitimatePrincipalId);
       assert.equal(value.appendedSegmentActorWorkloadId, value.legitimateWorkloadId);
       assert.equal(value.projectionTaskId, value.legitimateTaskId);
+      assert.equal(value.projectionAuthoritySnapshotDigest, value.appendedAuthoritySnapshotDigest);
       assert.equal(value.hostileAuthorityAbsent, true);
     });
     await t.test("changed mock model leaves projection bytes unchanged", () => {

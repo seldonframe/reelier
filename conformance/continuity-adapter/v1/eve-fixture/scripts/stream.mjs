@@ -21,11 +21,27 @@ export function createStreamIngestor() {
   });
 }
 
-export async function readEveStream({ baseUrl, sessionId, token, startIndex = 0 }) {
+export function createObservedEveClient() {
+  const traffic = [];
+  return Object.freeze({
+    async request(input, init = {}) {
+      const url = input instanceof URL ? input : new URL(input);
+      const method = String(init.method ?? "GET").toUpperCase();
+      const response = fetch(url, init);
+      traffic.push(Object.freeze({ method, url: url.href }));
+      return response;
+    },
+    traffic() {
+      return Object.freeze(traffic.map((entry) => Object.freeze({ ...entry })));
+    },
+  });
+}
+
+export async function readEveStream({ client, baseUrl, sessionId, token, startIndex = 0 }) {
   const url = new URL(`/eve/v1/session/${encodeURIComponent(sessionId)}/stream`, baseUrl);
   url.searchParams.set("startIndex", String(startIndex));
   url.searchParams.set("includeTailIndex", "1");
-  const response = await fetch(url, { redirect: "error", headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(10_000) });
+  const response = await client.request(url, { redirect: "error", headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(10_000) });
   if (!response.ok || !response.body) throw new Error(`Eve stream refused with HTTP ${response.status}`);
   const tail = Number(response.headers.get("x-eve-stream-tail-index"));
   if (!Number.isInteger(tail) || tail < -1) throw new Error("Eve stream omitted its absolute tail index");
