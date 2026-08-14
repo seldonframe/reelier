@@ -4,24 +4,26 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 const EXPECTED_CANDIDATE = Object.freeze({
+  v: "reelier.native-github-candidate/v1",
   candidateId: "sha256:e46498b6441a44e7de42264ebf243e4462aae6e4c4b3d33ed4276fcc50190e96",
   publicCommitSha: "03ac48e",
   tarballDigest: "sha256:0659c2f402002d733dfd2621c5d8cce5df301975606a3fcb1b802e492bec5309",
+  laneCommits: [
+    { laneId: "operator-evidence", commitSha: "c".repeat(40) },
+    { laneId: "provider-authority", commitSha: "a".repeat(40) },
+    { laneId: "reconciliation-verifier", commitSha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
+  ],
   packDigest: "sha256:8101632acbacaf2738b8a7e698b0fb301539163edc713a37e74df0a6d233d689",
   task8BaselineDigest: `sha256:${"8".repeat(64)}`,
   task9VerificationDigest: `sha256:${"9".repeat(64)}`,
   portableEvidenceContractDigest: `sha256:${"e".repeat(64)}`,
-  laneCommits: [
-    { laneId: "operator-evidence", commitSha: "c".repeat(40) },
-    { laneId: "provider-authority", commitSha: "a".repeat(40) },
-    { laneId: "reconciliation-verifier", commitSha: "b".repeat(40) },
-  ],
   checkerIdentities: [
-    { role: "contract", signerId: "checker-contract", verdictDigest: `sha256:${"e".repeat(64)}` },
-    { role: "pack", signerId: "checker-pack", verdictDigest: `sha256:${"b".repeat(64)}` },
-    { role: "task8", signerId: "checker-task8", verdictDigest: `sha256:${"8".repeat(64)}` },
-    { role: "task9", signerId: "checker-task9", verdictDigest: `sha256:${"9".repeat(64)}` },
+    { role: "contract", signerId: "checker-contract", publicKeyDigest: `sha256:${"c".repeat(64)}`, verifierVersion: "authority-contract-checker/v1", verdictDigest: `sha256:${"e".repeat(64)}` },
+    { role: "pack", signerId: "checker-pack", publicKeyDigest: `sha256:${"d".repeat(64)}`, verifierVersion: "packed-consumer/v1", verdictDigest: "sha256:8101632acbacaf2738b8a7e698b0fb301539163edc713a37e74df0a6d233d689" },
+    { role: "task8", signerId: "checker-task8", publicKeyDigest: `sha256:${"8".repeat(64)}`, verifierVersion: "task8-baseline-verifier/v1", verdictDigest: `sha256:${"8".repeat(64)}` },
+    { role: "task9", signerId: "checker-task9", publicKeyDigest: `sha256:${"9".repeat(64)}`, verifierVersion: "portable-evidence-verifier/v1", verdictDigest: `sha256:${"9".repeat(64)}` },
   ],
+  provenance: { v: "reelier.native-candidate-provenance/v1", source: "clean-export", reproducibility: "hermetic-offline", liveProviderStatus: "absent", credentialStatus: "absent", workflowDispatch: "absent" },
 });
 
 function fail(message) { throw new Error(`refused: ${message}`); }
