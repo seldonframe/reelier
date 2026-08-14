@@ -70,7 +70,6 @@ export interface VerifiedCertificationTaskReceiptGraphV1 {
 export interface VerifiedNativeOutcomeReplayArtifactV1 {
   readonly v: "reelier.verified-native-outcome-replay/v1";
   readonly graphJsonBase64: string;
-  readonly verificationTime: string;
   readonly authoritySnapshotDigest: string;
 }
 
@@ -78,6 +77,12 @@ export interface NativeOutcomeReplayAnchorsV1 {
   readonly trustPin: JobCardTrustPinV1;
   readonly currentTrustObservation: Readonly<Record<string, unknown>>;
   readonly expectedResponseSemanticsProfile: HttpResponseSemanticsProfileV1;
+  readonly verificationTime: string;
+}
+
+export interface DecodedNativeOutcomeReplayArtifactV1 {
+  readonly artifact: VerifiedNativeOutcomeReplayArtifactV1;
+  readonly graph: unknown;
 }
 
 interface VerifiedNativeOutcomeRecordV1 {
@@ -105,12 +110,23 @@ export function verifyNativeOutcomeReplayArtifact(
   value: unknown,
   anchors: NativeOutcomeReplayAnchorsV1,
 ): VerifiedCertificationTaskReceiptGraphV1 {
-  const artifact = exactRecord(value, ["authoritySnapshotDigest", "graphJsonBase64", "v", "verificationTime"], "verified native outcome replay artifact") as unknown as VerifiedNativeOutcomeReplayArtifactV1;
-  if (artifact.v !== "reelier.verified-native-outcome-replay/v1" || typeof artifact.verificationTime !== "string" || typeof artifact.graphJsonBase64 !== "string") throw new TypeError("verified native outcome replay artifact is invalid");
-  if (!anchors?.trustPin || !anchors.currentTrustObservation || !anchors.expectedResponseSemanticsProfile) throw new TypeError("external native outcome replay anchors are required");
-  const verificationTime = new Date(artifact.verificationTime);
-  if (!Number.isFinite(verificationTime.getTime()) || verificationTime.toISOString() !== artifact.verificationTime) throw new TypeError("verified native outcome replay time is invalid");
+  const decoded = decodeNativeOutcomeReplayArtifact(value);
+  const artifact = decoded.artifact;
+  if (!anchors?.trustPin || !anchors.currentTrustObservation || !anchors.expectedResponseSemanticsProfile || typeof anchors.verificationTime !== "string") throw new TypeError("external native outcome replay anchors are required");
+  const verificationTime = new Date(anchors.verificationTime);
+  if (!Number.isFinite(verificationTime.getTime()) || verificationTime.toISOString() !== anchors.verificationTime) throw new TypeError("external native outcome replay time is invalid");
   if (artifact.authoritySnapshotDigest !== authorityDigest(anchors)) throw new TypeError("verified native outcome replay authority snapshot changed");
+  return verifyCertificationTaskReceiptGraph(decoded.graph, {
+    trustPin: anchors.trustPin,
+    currentTrustObservation: anchors.currentTrustObservation,
+    now: verificationTime,
+    expectedResponseSemanticsProfile: anchors.expectedResponseSemanticsProfile,
+  });
+}
+
+export function decodeNativeOutcomeReplayArtifact(value: unknown): DecodedNativeOutcomeReplayArtifactV1 {
+  const artifact = exactRecord(value, ["authoritySnapshotDigest", "graphJsonBase64", "v"], "verified native outcome replay artifact") as unknown as VerifiedNativeOutcomeReplayArtifactV1;
+  if (artifact.v !== "reelier.verified-native-outcome-replay/v1" || typeof artifact.graphJsonBase64 !== "string") throw new TypeError("verified native outcome replay artifact is invalid");
   const graphBytes = Buffer.from(artifact.graphJsonBase64, "base64");
   if (graphBytes.toString("base64") !== artifact.graphJsonBase64) throw new TypeError("verified native outcome replay graph encoding is invalid");
   let graph: unknown;
@@ -121,12 +137,7 @@ export function verifyNativeOutcomeReplayArtifact(
   } catch (error) {
     throw new TypeError(`verified native outcome replay graph JSON is invalid: ${(error as Error).message}`);
   }
-  return verifyCertificationTaskReceiptGraph(graph, {
-    trustPin: anchors.trustPin,
-    currentTrustObservation: anchors.currentTrustObservation,
-    now: verificationTime,
-    expectedResponseSemanticsProfile: anchors.expectedResponseSemanticsProfile,
-  });
+  return Object.freeze({ artifact, graph });
 }
 
 interface GraphTerminalCommitmentV1 {
@@ -201,8 +212,7 @@ export function verifyCertificationTaskReceiptGraph(value: unknown, options: Rea
   const replayArtifact = canonicalFrozenCopy({
     v: "reelier.verified-native-outcome-replay/v1" as const,
     graphJsonBase64: Buffer.from(JSON.stringify(g), "utf8").toString("base64"),
-    verificationTime: options.now.toISOString(),
-    authoritySnapshotDigest: authorityDigest({ trustPin: options.trustPin, currentTrustObservation: options.currentTrustObservation, expectedResponseSemanticsProfile: options.expectedResponseSemanticsProfile }),
+    authoritySnapshotDigest: authorityDigest({ trustPin: options.trustPin, currentTrustObservation: options.currentTrustObservation, expectedResponseSemanticsProfile: options.expectedResponseSemanticsProfile, verificationTime: options.now.toISOString() }),
   });
   verifiedNativeOutcomeRecords.set(result, Object.freeze({ projections: projectVerifiedNativeOutcomes(g, digest), replayArtifact }));
   return result;
@@ -356,6 +366,11 @@ function exactRecord(value: unknown, fields: readonly string[], label: string): 
   }
   if (Object.keys(value).join("\0") !== fields.join("\0")) {
     throw new TypeError(`${label} is not an exact canonical object`);
+  }
+  if (Object.getOwnPropertySymbols(value).length !== 0) throw new TypeError(`${label} must not contain symbol fields`);
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  if (fields.some((field) => descriptors[field] === undefined || !("value" in descriptors[field]))) {
+    throw new TypeError(`${label} must contain inert data properties only`);
   }
   return value as any;
 }

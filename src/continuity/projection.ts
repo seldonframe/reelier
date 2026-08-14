@@ -1,7 +1,7 @@
 import type { ClaimStatus } from "../authority/types.js";
 import type { VerifiedNativeOutcomeProjectionV1 } from "../authority/certification/task-receipt-graph.js";
 import { assertFoldedContinuityState, type ObligationStateV1 } from "./fold.js";
-import type { ContinuitySnapshotV1 } from "./fs-ledger.js";
+import { assertLedgerContinuitySnapshot, type ContinuitySnapshotV1 } from "./fs-ledger.js";
 import type { UncheckedConsequenceProofV1 } from "./types.js";
 
 export interface OutcomeOwedProjectionV1 {
@@ -132,6 +132,7 @@ export function createResumeProjection(snapshot: ContinuitySnapshotV1): ResumePr
   ) {
     throw new TypeError("empty continuity snapshot has nothing to resume");
   }
+  assertLedgerContinuitySnapshot(snapshot);
   assertFoldedContinuityState(snapshot.state);
   const state = snapshot.state;
   const obligations = [...state.obligations.values()].map(obligationProjection);

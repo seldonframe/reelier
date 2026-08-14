@@ -4,7 +4,7 @@ import { readFile, readdir, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { VerifiedAuthorityReceiptBundle } from "../../src/authority/verify.js";
 import { runAuthorityCommand } from "../../src/authority/cli.js";
-import { verifyCertificationTaskReceiptGraph } from "../../src/authority/certification/task-receipt-graph.js";
+import { decodeNativeOutcomeReplayArtifact, verifyCertificationTaskReceiptGraph } from "../../src/authority/certification/task-receipt-graph.js";
 import { __testSetAuthorityCellHostPlatform } from "../../src/authority/host/platform.js";
 import { authorityCanonicalBytes, authorityDigest } from "../../src/authority/wire.js";
 import { continuityEventsFromVerifiedAuthorityReceipt } from "../../src/continuity/authority-bridge.js";
@@ -67,6 +67,25 @@ test("a frozen self-hashed structural receipt cannot impersonate verifier-produc
     () => continuityEventsFromVerifiedAuthorityReceipt(verifiedReceipt() as never),
     /native|verifier-produced|provenance|brand/i,
   );
+});
+
+test("replay envelope rejects accessors and symbols without executing them", () => {
+  let accessorReads = 0;
+  const accessorCapsule = Object.defineProperties({}, {
+    authoritySnapshotDigest: { value: digest("a"), enumerable: true },
+    graphJsonBase64: { get: () => { accessorReads += 1; return "e30="; }, enumerable: true },
+    v: { value: "reelier.verified-native-outcome-replay/v1", enumerable: true },
+  });
+  assert.throws(() => decodeNativeOutcomeReplayArtifact(accessorCapsule), /inert data properties/i);
+  assert.equal(accessorReads, 0);
+
+  const symbolCapsule = {
+    authoritySnapshotDigest: digest("a"),
+    graphJsonBase64: "e30=",
+    v: "reelier.verified-native-outcome-replay/v1",
+    [Symbol("hidden")]: "field",
+  };
+  assert.throws(() => decodeNativeOutcomeReplayArtifact(symbolCapsule), /symbol fields/i);
 });
 
 test("the bridge preserves the verifier-produced native outcome proof edges", async () => {
@@ -161,21 +180,42 @@ test("the bridge preserves the verifier-produced native outcome proof edges", as
       () => new FsContinuityLedger(join(root, "continuity")).read(graph.taskId),
       /external.*anchor|anchor.*resolver/i,
     );
+    let resolverCalls = 0;
+    const verificationTime = "2026-08-11T20:10:00.000Z";
     const ledgerOptions = {
-      resolveAuthorityAnchors: async (request: { taskId: string; authoritySnapshotDigest: string }) => {
+      resolveAuthorityAnchors: async (request: { taskId: string; cursor: number; importIndex: number }) => {
+        resolverCalls += 1;
         assert.equal(request.taskId, graph.taskId);
-        assert.equal(request.authoritySnapshotDigest, authorityDigest({ trustPin, currentTrustObservation, expectedResponseSemanticsProfile }));
-        return { trustPin, currentTrustObservation, expectedResponseSemanticsProfile };
+        assert.equal(request.cursor, 2);
+        assert.equal(request.importIndex, 0);
+        return { trustPin, currentTrustObservation, expectedResponseSemanticsProfile, verificationTime };
       },
     };
     const restarted = await new FsContinuityLedger(join(root, "continuity"), ledgerOptions).read(graph.taskId);
     assert.equal((restarted.state?.consequences.values().next().value as any)?.verification.status, "verified");
+    assert.equal(restarted.authoritySnapshotDigest, authorityDigest({ trustPin, currentTrustObservation, expectedResponseSemanticsProfile, verificationTime }));
 
     const taskDirectory = join(root, "continuity", graph.taskId);
     const segmentNames = (await readdir(taskDirectory)).filter((name) => name.endsWith(".json")).sort();
     const authoritySegmentName = segmentNames.at(-1)!;
     const authoritySegmentPath = join(taskDirectory, authoritySegmentName);
     const authoritySegment = JSON.parse(await readFile(authoritySegmentPath, "utf8"));
+
+    const malformedSegment = structuredClone(authoritySegment);
+    malformedSegment.authorityImports[0].unexpected = "must refuse before resolver";
+    const malformedDigest = authorityDigest(malformedSegment);
+    const malformedPath = join(taskDirectory, `${authoritySegmentName.slice(0, 16)}-${malformedDigest.slice("sha256:".length)}.json`);
+    const retainedForMalformedPath = join(root, "retained-for-malformed-check.json");
+    const callsBeforeMalformedRead = resolverCalls;
+    await writeFile(malformedPath, authorityCanonicalBytes(malformedSegment));
+    await rename(authoritySegmentPath, retainedForMalformedPath);
+    await assert.rejects(
+      () => new FsContinuityLedger(join(root, "continuity"), ledgerOptions).read(graph.taskId),
+      /exact canonical object|invalid segment payload/i,
+    );
+    assert.equal(resolverCalls, callsBeforeMalformedRead);
+    await rename(malformedPath, join(root, "rejected-malformed-authority-segment.json"));
+    await rename(retainedForMalformedPath, authoritySegmentPath);
 
     const substitutedSegment = structuredClone(authoritySegment);
     substitutedSegment.authoritySnapshotDigest = digest("f");
