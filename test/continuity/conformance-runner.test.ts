@@ -34,3 +34,29 @@ test("runner fails identity override and evidence upgrade candidates", async () 
     assert.equal(report.status, "failed");
   }
 });
+
+test("runner rejects adversarial lifecycle and cleanup candidates", async () => {
+  const cases = [
+    ["replacement-state-loss", "replacement-projection"],
+    ["reserve-on-repeat-open", "resume-is-read-only"],
+    ["ambiguous-open-resend", "ambiguity-blocks-resend"],
+    ["status-side-effects", "status-does-not-dispatch"],
+    ["mutate-then-throw", "identity-isolation-refuses"],
+    ["unchecked-as-verified", "uncertainty-is-honest"],
+    ["missing-close", "candidate-cleanup"],
+    ["rejecting-close", "candidate-cleanup"],
+  ] as const;
+  for (const [mutation, check] of cases) {
+    const report = await checkContinuityAdapterCandidate(candidate, { mutation });
+    assert.equal(report.status, "failed", mutation);
+    assert.equal(report.checks.find((item: { id: string }) => item.id === check)?.status, "failed", mutation);
+  }
+});
+
+test("runner rejects zero authority digests and malformed semantic versions", async () => {
+  for (const mutation of ["zero-digest", "malformed-semver"] as const) {
+    const report = await checkContinuityAdapterCandidate(candidate, { mutation });
+    assert.equal(report.status, "failed", mutation);
+    assert.equal(report.checks[0]?.id, "closed-schema");
+  }
+});
