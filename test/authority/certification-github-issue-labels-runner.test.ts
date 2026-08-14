@@ -9,7 +9,7 @@ import { authorityCanonicalBytes, authorityDigest } from "../../src/authority/wi
 import { signedJobCardDigest } from "../../src/authority/job.js";
 import { createCertificationCellHost, certificationCellHostInternalState } from "../../src/authority/certification/cell.js";
 import { __testSetGitHubIssueLabelsRunnerBarrier, createGitHubIssueLabelsHermeticComposition, type GitHubIssueLabelsHermeticComposition } from "../../src/authority/certification/github-issue-labels-runner.js";
-import { __testSetAuthorityCellHostPlatform } from "../../src/authority/host/platform.js";
+import { __testSetAuthorityCellHostPlatform, assertLinuxAuthorityCellHost } from "../../src/authority/host/platform.js";
 import { verifyAuthorityReceiptBundle } from "../../src/authority/verify.js";
 import { verifyCertificationSanitizedPortableOutcomeEvidenceExport, verifyCertificationTaskReceiptGraph } from "../../src/authority/certification/task-receipt-graph.js";
 import { AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST } from "../../src/authority/adapter-contract.js";
@@ -46,6 +46,21 @@ test("only a genuine Cell host can compose the fixed runner", async () => {
 test("runner refuses absent or caller-substituted contract and gate authority", async () => {
   await assert.rejects(() => createGitHubIssueLabelsFixture("normal", "absent"), /activated|descriptor|signer|authority|closed/i);
   await assert.rejects(() => createGitHubIssueLabelsFixture("normal", "substituted"), /match|descriptor|signer|authority/i);
+});
+
+test("rejecting fixture construction removes its exact root and restores the platform seam", async () => {
+  for (const authorityMode of ["absent", "substituted", "contract-substituted"] as const) {
+    const rootsBefore = new Set((await readdir(tmpdir())).filter(name => name.startsWith("reelier-github-cell-")));
+    const restoreSentinel = __testSetAuthorityCellHostPlatform("darwin");
+    try {
+      await assert.rejects(() => createGitHubIssueLabelsFixture("normal", authorityMode), /activated|descriptor|signer|authority|match|adapter|contract|binding|signature|closed/i);
+      assert.throws(() => assertLinuxAuthorityCellHost(), /Linux|AUTHORITY_CELL_LINUX_REQUIRED/i);
+    } finally {
+      restoreSentinel();
+    }
+    const rootsAfter = new Set((await readdir(tmpdir())).filter(name => name.startsWith("reelier-github-cell-")));
+    assert.deepEqual(rootsAfter, rootsBefore, authorityMode);
+  }
 });
 
 test("real Cell permit, gate reservation, exact plan and budget precede one fixed provider write", async () => {
