@@ -10,17 +10,24 @@ export type OutcomeRequesterV1 = (
   input: OutcomeRequest,
 ) => Promise<AuthorityIngressOutcome>;
 
+export type OutcomeStatusRequesterV1 = (
+  actor: AuthenticatedWorkloadV1,
+  input: Readonly<{ requestId: string }>,
+) => Promise<AuthorityIngressOutcome>;
+
 export interface ContinuityRuntimeAdapterV1 {
   identify(): Promise<AuthenticatedWorkloadV1>;
   open(taskId: string): Promise<ResumeProjectionV1>;
   checkpoint(input: ContinuityCheckpointV1): Promise<ContinuityAppendResultV1>;
   requestOutcome(input: OutcomeRequest): Promise<AuthorityIngressOutcome>;
+  statusOutcome(input: Readonly<{ requestId: string }>): Promise<AuthorityIngressOutcome>;
 }
 
 export interface ContinuityRuntimeAdapterOptionsV1 {
   readonly ledger: FsContinuityLedger;
   readonly identify: () => Promise<AuthenticatedWorkloadV1>;
   readonly requestOutcome: OutcomeRequesterV1;
+  readonly statusOutcome: OutcomeStatusRequesterV1;
 }
 
 export function createContinuityRuntimeAdapter(
@@ -43,6 +50,9 @@ export function createContinuityRuntimeAdapter(
     },
     async requestOutcome(input) {
       return options.requestOutcome(await identify(), input);
+    },
+    async statusOutcome(input) {
+      return options.statusOutcome(await identify(), input);
     },
   };
 }

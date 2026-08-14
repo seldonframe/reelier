@@ -14,14 +14,20 @@ import {
 test("a replacement harness resumes ambiguity without issuing another Outcome", async () => {
   await withRoot(async root => {
     let requests = 0;
+    let statuses = 0;
     const requestOutcome = async () => {
       requests += 1;
       throw new Error("replacement must reconcile, never redispatch");
+    };
+    const statusOutcome = async () => {
+      statuses += 1;
+      throw new Error("replacement must reconcile, never read Outcome status");
     };
     const first = createContinuityRuntimeAdapter({
       ledger: new FsContinuityLedger(root),
       identify: async () => actor,
       requestOutcome,
+      statusOutcome,
     });
     await first.checkpoint(checkpoint(0, [
       opened,
@@ -34,12 +40,13 @@ test("a replacement harness resumes ambiguity without issuing another Outcome", 
       ledger: new FsContinuityLedger(root),
       identify: async () => successorActor,
       requestOutcome,
+      statusOutcome,
     });
     const resumed = await successor.open("task_1");
     assert.equal(resumed.taskId, "task_1");
     assert.deepEqual(resumed.sections.nextSafeActions, ["reconcile-before-retry"]);
     assert.equal(resumed.sections.evidenceAndUncertainty.uncertainConsequences[0]?.verification.status, "unchecked");
-    assert.equal(requests, 0);
+    assert.deepEqual({ requests, statuses }, { requests: 0, statuses: 0 });
   });
 });
 
@@ -49,6 +56,7 @@ test("adapter refuses a host identity from another task", async () => {
       ledger: new FsContinuityLedger(root),
       identify: async () => actor,
       requestOutcome: async () => { throw new Error("unused"); },
+      statusOutcome: async () => { throw new Error("unused Outcome status requester"); },
     });
     await first.checkpoint(checkpoint(0, [opened]));
     const otherTaskActor = { ...successorActor, taskId: "task_2" };
@@ -56,6 +64,7 @@ test("adapter refuses a host identity from another task", async () => {
       ledger: new FsContinuityLedger(root),
       identify: async () => otherTaskActor,
       requestOutcome: async () => { throw new Error("unused"); },
+      statusOutcome: async () => { throw new Error("unused Outcome status requester"); },
     });
     await assert.rejects(() => successor.open("task_1"), /cross-task|authenticated task/i);
   });
