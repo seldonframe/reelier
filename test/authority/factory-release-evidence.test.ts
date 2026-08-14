@@ -28,3 +28,27 @@ test("factory release evidence closes an offline tarball baseline without a live
   assert.equal(JSON.stringify(evidence).includes("credential"), false);
   assert.throws(() => verifyFactoryReleaseEvidence({ ...evidence, tarballDigest: digest("b") }, { tarballDigest: digest("a") }), /tarball/i);
 });
+
+test("factory release evidence rejects unclosed, incoherent, and dishonest latency claims", () => {
+  const measured = {
+    v: "reelier.factory-release-evidence/v1" as const,
+    tarballDigest: digest("a"),
+    commit: "5f6eed5",
+    runner: { os: "linux" as const, nodeVersion: "v22.0.0", hardwareClass: "hermetic-test" },
+    liveProviderStatus: "absent" as const,
+    namedHostConformance: "unchecked" as const,
+    latency: {
+      v: "reelier.authority-latency-evaluation/v1" as const,
+      baselineStatus: "measured" as const,
+      sampleCount: 3,
+      minimumSampleCount: 3,
+      sloStatus: "absent" as const,
+      regressionBudgetStatus: "absent" as const,
+      percentiles: { p50Ms: 2, p95Ms: 3, p99Ms: 4 },
+    },
+  };
+  assert.throws(() => createFactoryReleaseEvidence({ ...measured, secret: "must-not-pass" } as any), /closed/i);
+  assert.throws(() => createFactoryReleaseEvidence({ ...measured, latency: { ...measured.latency, v: "wrong" } } as any), /latency/i);
+  assert.throws(() => createFactoryReleaseEvidence({ ...measured, latency: { ...measured.latency, sampleCount: 0 } }), /sample/i);
+  assert.throws(() => createFactoryReleaseEvidence({ ...measured, latency: { ...measured.latency, percentiles: { p50Ms: 5, p95Ms: 3, p99Ms: 4 } } }), /percentile/i);
+});
