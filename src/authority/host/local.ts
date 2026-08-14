@@ -14,6 +14,7 @@ import { FsAuthorityLedger } from "./fs-ledger.js";
 import { createDispatchCoordinator, type DispatchAdapter, type DispatchPublication } from "./dispatch.js";
 import { createJsonHttpsDispatchAdapter } from "./json-https-connector.js";
 import { createFileReceiptPublication } from "./receipts.js";
+import { createPortableAuthorityReceiptPublication } from "./portable-receipts.js";
 import { createAuthorityHostRuntime } from "./runtime.js";
 import type { AuthorityHostConfig } from "./config.js";
 import type { AuthorityHostRuntime } from "./server.js";
@@ -68,6 +69,12 @@ export interface LocalAuthorityRuntimeOptions {
 export interface LocalAuthorityRuntime extends AuthorityHostRuntime {
   /** Explicitly opens an adopted host-owned route. Loading the deployment never calls this. */
   resolveAdoptedConnection(connectionId: string): Promise<DownstreamConnection>;
+}
+
+/** Local-host composition seam: durable file evidence is always committed first. */
+export function createLocalAuthorityReceiptPublication(input: Readonly<{ localPublication: DispatchPublication; portablePublication?: DispatchPublication }>): DispatchPublication {
+  if (!input?.localPublication || typeof input.localPublication.publish !== "function") throw new TypeError("local receipt publication is invalid");
+  return input.portablePublication ? createPortableAuthorityReceiptPublication({ localPublication: input.localPublication, portablePublication: input.portablePublication }) : input.localPublication;
 }
 
 export async function createLocalAuthorityRuntime(config: AuthorityHostConfig, options: LocalAuthorityRuntimeOptions = {}): Promise<LocalAuthorityRuntime> {
@@ -129,7 +136,7 @@ export async function createLocalAuthorityRuntime(config: AuthorityHostConfig, o
     },
   });
   const gate = createAuthorityGate({ trustRoots, packs, sources, connectors: connectorRegistry, state, ledger, ...(options.routeAuthority ? { routeAuthority: options.routeAuthority } : {}), ...(options.authenticatedProviderIdentity ? { authenticatedProviderIdentity: options.authenticatedProviderIdentity } : {}), ...(options.latencyRecorder ? { latencyRecorder: options.latencyRecorder } : {}), localGatePolicyDigest: authorityDigest({ v: "reelier.local-gate-policy/v1", tenant: config.tenant }), decisionSink: decisions, signer: { async sign(input) { return { signerId: "local-gate", signature: signAuthorityDigest(privateKey, input.purpose, input.digest) }; } }, eventId: () => `evt_${randomUUID()}`, capabilityId: () => `cap_${randomUUID()}` });
-  const publication = options.portableReceiptPublication ?? createFileReceiptPublication({ rootDir: config.receiptDir });
+  const publication = createLocalAuthorityReceiptPublication({ localPublication: createFileReceiptPublication({ rootDir: config.receiptDir }), ...(options.portableReceiptPublication ? { portablePublication: options.portableReceiptPublication } : {}) });
   const secrets = options.secretResolver ?? createSecretResolver(options.secretResolverOptions);
   if (config.nativeHttpsRoutes && config.nativeHttpsRoutes.length > 0 && (!options.routeAuthority || !options.authenticatedProviderIdentity || !options.certifiedDispatch || !options.verifyAuthenticatedProviderIdentity)) throw new TypeError("native HTTPS routes require certified route, identity, verifier, and dispatch wiring");
   const certifiedDispatch = options.certifiedDispatch ? { ...options.certifiedDispatch, ...(options.latencyRecorder ? { latencyRecorder: options.latencyRecorder } : {}), verifyIdentity: options.verifyAuthenticatedProviderIdentity ?? options.certifiedDispatch.verifyIdentity } : undefined;

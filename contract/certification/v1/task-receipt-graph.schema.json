@@ -545,6 +545,7 @@
         "receiptExtensions",
         "taskAuthorities",
         "postStateEvidence",
+        "portableOutcomeEvidence",
         "policyEvidence",
         "taskStatusEvidence",
         "duplicateAttempts",
@@ -566,6 +567,7 @@
         "receiptExtensions": { "type": "integer", "minimum": 0 },
         "taskAuthorities": { "type": "integer", "minimum": 0 },
         "postStateEvidence": { "type": "integer", "minimum": 0 },
+        "portableOutcomeEvidence": { "type": "integer", "minimum": 0 },
         "policyEvidence": { "type": "integer", "minimum": 0 },
         "taskStatusEvidence": { "type": "integer", "minimum": 0 },
         "duplicateAttempts": { "type": "integer", "minimum": 0 },
@@ -645,6 +647,7 @@
   "required": [
     "v",
     "adapterContractDigest",
+    "portableOutcomeEvidenceVersion",
     "taskId",
     "authorityCellId",
     "rootGrant",
@@ -676,6 +679,7 @@
   "properties": {
     "v": { "const": "reelier.certification-task-receipt-graph/v1" },
     "adapterContractDigest": { "$ref": "#/$defs/digest" },
+    "portableOutcomeEvidenceVersion": { "const": "reelier.portable-outcome-graph-extension/v1" },
     "taskId": { "type": "string" },
     "authorityCellId": { "type": "string" },
     "rootGrant": { "$ref": "#/$defs/signedGrant" },

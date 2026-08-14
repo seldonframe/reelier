@@ -461,7 +461,7 @@ test("closed graph of the declared durable fixture collections exports canonical
     for (let index = 1; index < graph.budgetEvents.length; index += 1) assert.equal(graph.budgetEvents[index].priorBudgetEventDigest, authorityDigest(graph.budgetEvents[index - 1]));
     assert.deepEqual(graph.topology, { status: "unchecked" });
     assert.deepEqual(graph.leases, { status: "absent", entries: [] });
-    assert.deepEqual(graph.terminalCommitment.counts, { grants: 2, principals: 2, allocations: 2, budgetEvents: 4, outcomes: 14, exceptions: 0, topologyEvidence: 0, leases: 0, receipts: 6, receiptExtensions: 6, taskAuthorities: 1, postStateEvidence: 1, policyEvidence: 2, taskStatusEvidence: 2, duplicateAttempts: 0, duplicateDecisions: 0, priorReceiptLinks: 6, keyDescriptors: 8, bindingEntries: 4 });
+    assert.deepEqual(graph.terminalCommitment.counts, { grants: 2, principals: 2, allocations: 2, budgetEvents: 4, outcomes: 14, exceptions: 0, topologyEvidence: 0, leases: 0, receipts: 6, receiptExtensions: 6, taskAuthorities: 1, postStateEvidence: 1, portableOutcomeEvidence: 1, policyEvidence: 2, taskStatusEvidence: 2, duplicateAttempts: 0, duplicateDecisions: 0, priorReceiptLinks: 6, keyDescriptors: 8, bindingEntries: 4 });
     for (const key of ["grants", "principals", "allocations", "budgetEvents", "outcomes", "exceptions", "receipts", "receiptExtensions", "taskAuthorities", "postStateEvidence", "policyEvidence", "taskStatusEvidence", "duplicateAttempts", "duplicateDecisions", "priorReceiptLinks", "keyDescriptors"] as const) assert.equal(graph.terminalCommitment.collectionDigests[key], authorityDigest(graph[key]));
     assert.equal(verifyCertificationTaskReceiptGraph(graph, { trustPin: f.pin }).status, "verified");
   } finally { await rm(f.root, { recursive: true, force: true }); }
@@ -569,9 +569,9 @@ test("portable evidence links the approved task, exact post-state, policy status
     assert.throws(() => verifyCertificationTaskReceiptGraph(missingCleanup, { trustPin: f.pin }), /portable|cleanup|closed|terminal|digest/i);
     assert.throws(() => verifyCertificationTaskReceiptGraph(graph, {
       trustPin: f.pin,
-      currentTrustObservation: graph.portableOutcomeEvidence[0].currentTrustObservation,
+      currentTrustObservation: { v: "reelier.portable-current-trust-observation/v1", observedAt: at, expiresAt: expiry, activeAuthorityEvidenceSignerIds: [graph.portableOutcomeEvidence[0].evidence.executionAttestationSignerId] },
       now: new Date("2100-01-01T00:00:00.000Z"),
-    } as any), /stale|expired|current trust/i);
+    }), /stale|expired|current trust/i);
     for (const mutate of [
       (g: any) => { g.taskAuthorities[0].instructionsDigest = `sha256:${"9".repeat(64)}`; },
       (g: any) => { g.taskAuthorities[0].dispatchSnapshotPreimage.runner = `sha256:${"8".repeat(64)}`; },
