@@ -200,6 +200,12 @@ test("authoritative workflow is manual, protected, matrixed, and never dispatche
   assert.doesNotMatch(workflow, /git rev-parse HEAD\)\" = \"\$NATIVE_PUBLIC_COMMIT/);
   assert.doesNotMatch(workflow, /secrets\./);
   assert.doesNotMatch(workflow, /gh api|curl|fetch\(/i);
+  assert.match(workflow, /npm ci/);
+  assert.match(workflow, /npm run build/);
+  assert.match(workflow, /Stage retained signed evidence/);
+  assert.match(workflow, /test -f "\$BUNDLE_PATH"/);
+  assert.match(workflow, /test -f "\$CHECKER_PUBLIC_KEY_PATH"/);
+  assert.match(workflow, /\.superpowers\/input/);
   const verifier = await readFile(path.join(process.cwd(), "scripts/verify-native-github-hosted.mjs"), "utf8");
   assert.doesNotMatch(verifier, /workflow_dispatch|gh api|child_process|fetch\(|http:\/\//i);
 });
