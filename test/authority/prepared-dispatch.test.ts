@@ -10,6 +10,9 @@ import {
 import { createDispatchCoordinator } from "../../src/authority/host/dispatch.js";
 import { createReservedDispatchHandle } from "../../src/authority/gate.js";
 import { prepareJsonHttpsEffect } from "../../src/authority/drivers/json-https.js";
+import { createHttpResponseSemanticsProfileRegistry, parseHttpResponseSemanticsProfileV1 } from "../../src/authority/host/http-response-semantics.js";
+import { createJsonHttpsDispatchAdapter } from "../../src/authority/host/json-https-connector.js";
+import { jsonHttpsRouteDigest } from "../../src/authority/host/json-https-route.js";
 
 const digest = (value: unknown) => authorityDigest(value);
 const projection: MaterializedHttpRequestProjectionV1 = Object.freeze({
@@ -101,6 +104,52 @@ test("native route digest binds every canonical route authority field", async ()
   const first = await prepareJsonHttpsEffect(effect as never, route, secrets, { reservationId: "r", allocationId: "a", authorityGeneration: "g", authorityExpiresAt: new Date(Date.now() + 60_000).toISOString() });
   const second = await prepareJsonHttpsEffect(effect as never, changed, secrets, { reservationId: "r", allocationId: "a", authorityGeneration: "g", authorityExpiresAt: new Date(Date.now() + 60_000).toISOString() });
   assert.notEqual(first.description.routeDigest, second.description.routeDigest);
+});
+
+test("native preparation rejects an unknown response profile before slot acquisition", async () => {
+  const route = { v: "reelier.json-https-route/v1" as const, providerId: "github", connectorId: "github", accountId: "acct", providerAccountIdentity: "github:acct", endpointId: "write", origin: "https://api.github.com", allowedMethods: ["PUT" as const], allowedPathPrefixes: ["/repos"], credentialSlotId: "slot", responseSemanticsProfileId: "unreviewed", reconciliationRecipeId: "recipe", readEndpointId: "read", egressPolicyDigest: digest("egress") };
+  const effect = { endpointId: "write", method: "PUT" as const, path: "/repos/a", query: "", headers: {}, bodyBase64: Buffer.from("{}").toString("base64") };
+  let acquired = false;
+  await assert.rejects(() => prepareJsonHttpsEffect(effect as never, route, { async resolve() { throw new Error("must not resolve"); }, async acquireSlot() { acquired = true; return { readOnce: () => "secret" }; } }, { responseSemanticsProfiles: createHttpResponseSemanticsProfileRegistry([{ v: "reelier.http-response-semantics/v1", profileId: "reviewed", acknowledgedStatuses: [200] }]) } as never), /profile/i);
+  assert.equal(acquired, false);
+});
+
+test("native preparation rejects sealed operator and route authority drift before secret materialization", async () => {
+  const route = { v: "reelier.json-https-route/v1" as const, providerId: "github", connectorId: "github", accountId: "acct", providerAccountIdentity: "github:acct", endpointId: "write", origin: "https://api.github.com", allowedMethods: ["PUT" as const], allowedPathPrefixes: ["/repos"], credentialSlotId: "slot", responseSemanticsProfileId: "reviewed", reconciliationRecipeId: "recipe", readEndpointId: "read", egressPolicyDigest: digest("egress") };
+  const effect = { endpointId: "write", method: "PUT" as const, path: "/repos/a", query: "", headers: {}, bodyBase64: Buffer.from("{}").toString("base64") };
+  const profiles = createHttpResponseSemanticsProfileRegistry([{ v: "reelier.http-response-semantics/v1", profileId: "reviewed", acknowledgedStatuses: [200] }]);
+  let acquired = false;
+  const secrets = { async resolve() { acquired = true; throw new Error("must not resolve"); }, async acquireSlot() { acquired = true; return { readOnce: () => "secret" }; } };
+  const common = { responseSemanticsProfiles: profiles, operatorConfigurationDigest: digest("sealed-config"), routeAuthority: { operatorConfigurationDigest: digest("drifted-config"), routeDigest: jsonHttpsRouteDigest(route) } };
+  await assert.rejects(() => prepareJsonHttpsEffect(effect as never, route, secrets, common as never), /operator|configuration|authority/i);
+  assert.equal(acquired, false);
+  await assert.rejects(() => prepareJsonHttpsEffect(effect as never, { ...route, origin: "https://other.example" }, secrets, { ...common, routeAuthority: { operatorConfigurationDigest: digest("sealed-config"), routeDigest: jsonHttpsRouteDigest(route) } } as never), /route|authority|origin/i);
+  assert.equal(acquired, false);
+});
+
+test("certified adapter preparation passes and validates durable route authority before acquiring a slot", async () => {
+  const route = { v: "reelier.json-https-route/v1" as const, providerId: "github", connectorId: "github", accountId: "acct", providerAccountIdentity: "github:acct", endpointId: "write", origin: "https://api.github.com", allowedMethods: ["PUT" as const], allowedPathPrefixes: ["/repos"], credentialSlotId: "slot", responseSemanticsProfileId: "reviewed", reconciliationRecipeId: "recipe", readEndpointId: "read", egressPolicyDigest: digest("egress") };
+  const read = { ...route, endpointId: "read", allowedMethods: ["GET" as const] };
+  let acquired = false;
+  const adapter = createJsonHttpsDispatchAdapter({ endpoints: [], routes: [route, read], operatorConfigurationDigest: digest("sealed-config"), responseSemanticsProfiles: [{ v: "reelier.http-response-semantics/v1", profileId: "reviewed", acknowledgedStatuses: [200] }], secrets: { async resolve() { acquired = true; throw new Error("must not resolve"); }, async acquireSlot() { acquired = true; return { readOnce: () => "secret" }; } } });
+  const state: any = { reservation: { reservationId: "r", state: "reserved", intent: { effectDigest: digest("effect"), routeAuthority: { operatorConfigurationDigest: digest("sealed-config"), routeDigest: digest("drifted-route") }, executionContext: { allocationId: "a" } } }, effect: { endpointId: "write", method: "PUT", path: "/repos/a", query: "", headers: {}, bodyBase64: Buffer.from("{}").toString("base64") }, effectCanonicalBase64: "e30=", effectDigest: digest("effect") };
+  await assert.rejects(() => adapter.prepare!(state), /route|authority/i);
+  assert.equal(acquired, false);
+});
+
+test("response semantics profiles reject sparse status arrays before canonicalization", () => {
+  const statuses = new Array<number>(1);
+  assert.throws(() => parseHttpResponseSemanticsProfileV1({ v: "reelier.http-response-semantics/v1", profileId: "sparse", acknowledgedStatuses: statuses }), /status/i);
+});
+
+test("prepared native behavior digest binds route, operator configuration, and response profile", async () => {
+  const route = { v: "reelier.json-https-route/v1" as const, providerId: "github", connectorId: "github", accountId: "acct", providerAccountIdentity: "github:acct", endpointId: "write", origin: "https://api.github.com", allowedMethods: ["PUT" as const], allowedPathPrefixes: ["/repos"], credentialSlotId: "slot", responseSemanticsProfileId: "reviewed", reconciliationRecipeId: "recipe", readEndpointId: "read", egressPolicyDigest: digest("egress") };
+  const effect = { endpointId: "write", method: "PUT" as const, path: "/repos/a", query: "", headers: {}, bodyBase64: Buffer.from("{}").toString("base64") };
+  const profiles = createHttpResponseSemanticsProfileRegistry([{ v: "reelier.http-response-semantics/v1", profileId: "reviewed", acknowledgedStatuses: [200] }]);
+  const options = { responseSemanticsProfiles: profiles, operatorConfigurationDigest: digest("sealed-config"), routeAuthority: { operatorConfigurationDigest: digest("sealed-config"), routeDigest: jsonHttpsRouteDigest(route) }, reservationId: "r", allocationId: "a", authorityGeneration: "g", authorityExpiresAt: new Date(Date.now() + 60_000).toISOString() };
+  const secrets = { async resolve() { return "unused"; }, async acquireSlot() { return { readOnce: () => "secret" }; } };
+  const prepared = await prepareJsonHttpsEffect(effect as never, route, secrets, options as never);
+  assert.match((prepared.description as any).behaviorDigest, /^sha256:[0-9a-f]{64}$/);
 });
 
 test("coordinator uses durable prepared commit boundary and recovery never resends", { skip: process.platform !== "linux" }, async () => {
