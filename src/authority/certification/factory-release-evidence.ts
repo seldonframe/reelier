@@ -1,6 +1,7 @@
 import type { AuthorityLatencyEvaluationV1 } from "./evaluation.js";
 
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
+const HARDWARE_CLASSES = new Set(["hermetic-test", "local-hermetic-injected-clock", "github-actions-linux-hermetic", "github-actions-windows-offline"]);
 const isRecord = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === "object" && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype;
 function closed(value: unknown, keys: readonly string[], label: string): Record<string, unknown> {
   if (!isRecord(value) || Object.keys(value).length !== keys.length || keys.some(key => !(key in value))) throw new TypeError(`${label} is not closed`);
@@ -22,7 +23,7 @@ export function createFactoryReleaseEvidence(value: FactoryReleaseEvidenceV1): F
   const raw = closed(value, ["v", "tarballDigest", "commit", "runner", "liveProviderStatus", "namedHostConformance", "latency"], "factory release evidence");
   if (raw.v !== "reelier.factory-release-evidence/v1" || typeof raw.tarballDigest !== "string" || !DIGEST.test(raw.tarballDigest) || typeof raw.commit !== "string" || !/^[0-9a-f]{7,64}$/i.test(raw.commit)) throw new TypeError("factory release evidence is invalid");
   const runner = closed(raw.runner, ["os", "nodeVersion", "hardwareClass"], "factory runner");
-  if ((runner.os !== "linux" && runner.os !== "windows") || typeof runner.nodeVersion !== "string" || !/^v?\d+\.\d+\.\d+/.test(runner.nodeVersion) || typeof runner.hardwareClass !== "string" || !runner.hardwareClass || raw.liveProviderStatus !== "absent" || raw.namedHostConformance !== "unchecked") throw new TypeError("factory release evidence claims are invalid");
+  if ((runner.os !== "linux" && runner.os !== "windows") || typeof runner.nodeVersion !== "string" || !/^v(?:20|22|24)\.\d+\.\d+$/.test(runner.nodeVersion) || typeof runner.hardwareClass !== "string" || !HARDWARE_CLASSES.has(runner.hardwareClass) || raw.liveProviderStatus !== "absent" || raw.namedHostConformance !== "unchecked") throw new TypeError("factory release evidence runner claims are invalid");
   const latency = parseLatency(raw.latency);
   return Object.freeze({ v: raw.v, tarballDigest: raw.tarballDigest, commit: raw.commit, runner: Object.freeze({ os: runner.os, nodeVersion: runner.nodeVersion, hardwareClass: runner.hardwareClass }), liveProviderStatus: "absent", namedHostConformance: "unchecked", latency });
 }
