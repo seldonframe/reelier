@@ -41,7 +41,9 @@ const descriptor = (keyId: string, role: "human-sponsor" | "authority-cell", pur
 
 export async function createGitHubIssueLabelsFixture(mode: GitHubIssueLabelsFixtureMode = "normal", authorityMode: GitHubIssueLabelsAuthorityMode = "valid") {
   const restorePlatform = __testSetAuthorityCellHostPlatform("linux");
-  const root = await mkdtemp(path.join(tmpdir(), "reelier-github-cell-"));
+  let root = "";
+  try {
+  root = await mkdtemp(path.join(tmpdir(), "reelier-github-cell-"));
   const configPath = path.join(root, "certification.local.json");
   await writeFile(configPath, JSON.stringify({ v: "reelier.certification-operator-config/v3", authorityConfigPath: "authority/authority.yml", evidenceDirectory: "authority/receipts/certification", scenarios: ["github-issue-labels"], resources: { "github-issue-labels": { apiBaseUrl: "https://api.github.com", owner: "fixlyai", repository: "reelier-certification", issueNumber: 1 } }, cleanup: { "github-issue-labels": ["restore-github-labels"] }, desiredState: { "github-issue-labels": { labels: ["certification-after"] } }, metadata: {}, secretReferences: { githubCredential: "env:REELIER_GITHUB_TOKEN" } }), "utf8");
   const initialized = await initializeCertification({ configPath }); await writeCertificationInputManifests(initialized.workspace, ["github-issue-labels"]);
@@ -72,6 +74,11 @@ export async function createGitHubIssueLabelsFixture(mode: GitHubIssueLabelsFixt
     try { await rm(root, { recursive: true, force: true }); }
     finally { restorePlatform(); }
   } };
+  } catch (error) {
+    try { if (root) await rm(root, { recursive: true, force: true }); } catch {}
+    restorePlatform();
+    throw error;
+  }
 }
 
 export type GitHubIssueLabelsFixture = Awaited<
