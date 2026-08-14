@@ -172,3 +172,54 @@ error during connect: Get "http://%2F%2F.%2Fpipe%2FdockerDesktopLinuxEngine/v1.5
 - Confirmed every fetch is loopback-only with `redirect: "error"`; no live provider/model/deployment/workflow dispatch, credentials, ACP, or Grok Bot is reachable.
 - Confirmed exact-PID tree termination only; absolute cursors; `meta.id`-only deduplication; native verifier-only authority import; and ledger/projection/counter/event assertions rather than assistant prose.
 - No Stripe call site, charge/credit path, secret, merge, push, deployment, or external service was added or used.
+
+# Review repair evidence
+
+Commits after reviewed head `59c79cf`:
+
+- `77de28d` â€” `test(continuity): harden Eve recovery evidence` (RED acceptance)
+- `c2f9872` â€” `fix(continuity): reject active Eve reports`
+- `9ffb8af` â€” `fix(continuity): prove Eve retry boundaries`
+- `21d6480` â€” `test(continuity): falsify closed Eve reports`
+- `e90dfe5` â€” `fix(continuity): combine hostile identity probe`
+
+The repaired checkpoint cut captures the original `step.started` before death. Restart uses the same session and absolute cursor without a POST, requires a second `step.started` with a distinct `meta.id` and identical `turnId`/`stepIndex`/`sequence`, and refuses `session.failed`; only after `session.waiting` does the optional stale-cursor follow-up run.
+
+The post-apply cut now records the exact unresolved continuity lifecycle as `ambiguous`/`unresolved`, projects exactly `reconcile-before-retry`, and asserts that no consequence is prematurely represented as `complete`, `acknowledged`, or `success`. Reconciliation/status and verifier-produced authority import happen afterward as a separate proof.
+
+The overlap proof intersects raw event rows from both reads and requires at least one repeated `meta.id` before checking the ingestor's deduplicated set. The identity proof sends the hostile principal/task/workload/authority strings both in user text and as body-shaped fields, then proves host identity, ledger task, projection bytes, and authority/provider counters did not change.
+
+The report decoder now walks the complete nested value through property descriptors before schema validation or canonicalization. Arrays and records require their ordinary prototypes and exact own-key forms; symbols, hidden extras, accessors, altered prototypes, non-JSON values, malformed digests, and missing required fields refuse. The accessor falsifier observed `getterReads === 0`.
+
+Graceful shutdown and crash shutdown both wait for the exact child PID to exit and then require the captured loopback listener to refuse connections. POSIX remains an implementation proof in this Windows run; Linux execution was unavailable because Docker Desktop's Linux engine was not present.
+
+## Review RED
+
+```text
+AssertionError: Eve session did not reach a boundary
+    at waitForBoundary (.../eve-process.mjs:374:9)
+    at async boundaryScenarios (.../eve-process.mjs:273:9)
+```
+
+This exposed a duplicate two-turn hostile-body probe. It was reduced to one request that carries both prompt-shaped and body-shaped hostile fields, preserving the requested boundary falsifier without creating an unrelated second-turn timing race.
+
+## Review GREEN
+
+```text
+â„¹ tests 63
+â„¹ suites 0
+â„¹ pass 63
+â„¹ fail 0
+â„¹ cancelled 0
+â„¹ skipped 0
+â„¹ todo 0
+â„¹ duration_ms 70837.3898
+```
+
+The generic candidate checker also exited `0`; `git diff --check` exited `0`. The final clean command before this report-only update exited `0` and emitted:
+
+```json
+{"artifacts":{"ledgerHeadDigest":"sha256:712f0773e20c51a972e1eeb7a70af8800d41a6d58f0bd8fc171bbeebfeb65ee9","receiptGraphDigest":"sha256:81cab01d788c79a52d735e6d8998bae45f8a6ab6fa599b96a2779dffdb636bd0","reportDigest":"sha256:a0a5a3d8f9986b5a902d0804636a5e7d1db02b553d0363a1cd06cb088be673d9"},"authorityAdapterContractDigest":"sha256:7f46242b26d9c921f4e1ec9de6418ac5fc8c03d70c4415c25e799ae0e73a1512","checks":[{"detail":"public continuity adapter candidate checks passed","id":"generic-candidate","status":"passed"},{"detail":"real Eve kill, resume, stream, control, identity, and model matrix passed","id":"eve-process-matrix","status":"passed"},{"detail":"focused Path C and Continuity suites passed","id":"focused-continuity","status":"passed"}],"eveVersion":"0.37.1","maturity":"reproduced","nodeVersion":"v24.9.0","nonClaims":{"contentCorrectness":"not-proved","grokBot":"not-tested","productionReadiness":"not-proved","safety":"not-proved","topology":"not-proved","trafficCompleteness":"not-proved"},"reelierCommit":"21d6480c798a40a73b00e096c5d552028b71b507","status":"passed","v":"reelier.continuity-eve-conformance-report/v1"}
+```
+
+Open risks are unchanged: the fixture uses a one-second supported ownership lease solely for bounded local recovery, dynamic free-port selection retains the inherent bind handoff race with bounded retry, and no live provider, deployment, Grok Bot, production-readiness, safety, topology, traffic-completeness, or content-correctness claim is made.
