@@ -2,7 +2,8 @@ import type { LedgerState } from "../authority/ledger.js";
 import type { ClaimStatus } from "../authority/types.js";
 import type { VerifiedNativeOutcomeProjectionV1 } from "../authority/certification/task-receipt-graph.js";
 import { authorityDigest } from "../authority/wire.js";
-import type { ContinuityEventV1, UncheckedConsequenceProofV1 } from "./types.js";
+import { assertVerifierProducedConsequenceEvent } from "./authority-bridge.js";
+import type { ContinuityFoldEventV1, UncheckedConsequenceProofV1 } from "./types.js";
 
 export class ContinuityFoldError extends Error {
   constructor(message: string) {
@@ -56,7 +57,7 @@ export interface ExceptionStateV1 {
 }
 
 export interface ContinuityStateV1 {
-  readonly events: readonly ContinuityEventV1[];
+  readonly events: readonly ContinuityFoldEventV1[];
   readonly outcome: string;
   readonly completionProjection: string;
   readonly nonGoals: readonly string[];
@@ -68,6 +69,49 @@ export interface ContinuityStateV1 {
   readonly exceptions: ReadonlyMap<string, ExceptionStateV1>;
   readonly resolvedExceptions: readonly ExceptionStateV1[];
   readonly evidenceRefs: readonly string[];
+}
+
+const foldedContinuityStateCommitments = new WeakMap<object, string>();
+
+function continuityStateCommitment(state: ContinuityStateV1): string {
+  return authorityDigest({
+    events: state.events,
+    outcome: state.outcome,
+    completionProjection: state.completionProjection,
+    nonGoals: state.nonGoals,
+    decisions: [...state.decisions.entries()],
+    activeDecisions: state.activeDecisions,
+    obligations: [...state.obligations.entries()],
+    claims: [...state.claims.entries()],
+    consequences: [...state.consequences.entries()],
+    exceptions: [...state.exceptions.entries()],
+    resolvedExceptions: state.resolvedExceptions,
+    evidenceRefs: state.evidenceRefs,
+  });
+}
+
+export function assertFoldedContinuityState(value: unknown): asserts value is ContinuityStateV1 {
+  if (value === null || typeof value !== "object") throw new TypeError("folded continuity state provenance is required");
+  const commitment = foldedContinuityStateCommitments.get(value);
+  if (commitment === undefined || commitment !== continuityStateCommitment(value as ContinuityStateV1)) {
+    throw new TypeError("folded continuity state provenance or integrity is invalid");
+  }
+}
+
+function registerFoldedContinuityState(state: ContinuityStateV1): ContinuityStateV1 {
+  foldedContinuityStateCommitments.set(state, continuityStateCommitment(state));
+  return state;
+}
+
+export function extendFoldedContinuityEvidence(
+  state: ContinuityStateV1,
+  evidenceRefs: readonly string[],
+): ContinuityStateV1 {
+  assertFoldedContinuityState(state);
+  return registerFoldedContinuityState({
+    ...state,
+    evidenceRefs: [...new Set([...state.evidenceRefs, ...evidenceRefs])].sort(),
+  });
 }
 
 const CONSEQUENCE_EDGES: Readonly<Record<Exclude<LedgerState, "issued">, readonly Exclude<LedgerState, "issued">[]>> = {
@@ -88,7 +132,7 @@ function addEvidence(target: Set<string>, ...values: readonly (string | null)[])
   for (const value of values) if (value !== null) target.add(value);
 }
 
-export function foldContinuity(events: readonly ContinuityEventV1[]): ContinuityStateV1 {
+export function foldContinuity(events: readonly ContinuityFoldEventV1[]): ContinuityStateV1 {
   if (events.length === 0 || events[0]?.type !== "task.opened") {
     throw new ContinuityFoldError("continuity history must begin with exactly one task.opened event");
   }
@@ -155,11 +199,13 @@ export function foldContinuity(events: readonly ContinuityEventV1[]): Continuity
         break;
       }
       case "claim.recorded":
+        if ((event as { status: string }).status === "verified") throw new ContinuityFoldError("verified claim requires verifier provenance");
         if (claims.has(event.claimId)) throw new ContinuityFoldError(`duplicate claim: ${event.claimId}`);
         claims.set(event.claimId, { claimId: event.claimId, statement: event.statement, status: event.status, evidenceDigest: event.evidenceDigest });
         addEvidence(evidenceRefs, event.evidenceDigest);
         break;
       case "claim.updated": {
+        if ((event as { status: string }).status === "verified") throw new ContinuityFoldError("verified claim requires verifier provenance");
         const prior = claims.get(event.claimId);
         if (prior === undefined) throw new ContinuityFoldError(`cannot update missing claim: ${event.claimId}`);
         claims.set(event.claimId, { ...prior, status: event.status, evidenceDigest: event.evidenceDigest });
@@ -189,6 +235,7 @@ export function foldContinuity(events: readonly ContinuityEventV1[]): Continuity
         break;
       }
       case "consequence.observed": {
+        assertVerifierProducedConsequenceEvent(event);
         const prior = consequences.get(event.semanticOperationId);
         if (prior === undefined) {
           if (event.state !== "reserved") throw new ContinuityFoldError(`consequence must begin reserved: ${event.semanticOperationId}`);
@@ -242,7 +289,7 @@ export function foldContinuity(events: readonly ContinuityEventV1[]): Continuity
 
   const orderedDecisions = sortedMap(decisions);
   const orderedExceptions = sortedMap(exceptions);
-  return {
+  const state: ContinuityStateV1 = {
     events: [...events],
     outcome: opened.outcome,
     completionProjection: opened.completionProjection,
@@ -256,4 +303,5 @@ export function foldContinuity(events: readonly ContinuityEventV1[]): Continuity
     resolvedExceptions: [...orderedExceptions.values()].filter((item) => item.state === "resolved"),
     evidenceRefs: [...evidenceRefs].sort(),
   };
+  return registerFoldedContinuityState(state);
 }

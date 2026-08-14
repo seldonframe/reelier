@@ -93,15 +93,16 @@ test("the bridge preserves the verifier-produced native outcome proof edges", as
       expiresAt: "2026-08-11T21:00:00.000Z",
       activeAuthorityEvidenceSignerIds: [signerId],
     };
+    const expectedResponseSemanticsProfile = {
+      v: "reelier.http-response-semantics/v1" as const,
+      profileId: "github.issue-labels.hermetic-v1",
+      acknowledgedStatuses: [200],
+    };
     const verified = verifyCertificationTaskReceiptGraph(graph, {
       trustPin,
       currentTrustObservation,
       now: new Date("2026-08-11T20:10:00.000Z"),
-      expectedResponseSemanticsProfile: {
-        v: "reelier.http-response-semantics/v1",
-        profileId: "github.issue-labels.hermetic-v1",
-        acknowledgedStatuses: [200],
-      },
+      expectedResponseSemanticsProfile,
     });
     const events = continuityEventsFromVerifiedAuthorityReceipt(verified as never);
     assert.ok(events.length > 0);
@@ -156,7 +157,18 @@ test("the bridge preserves the verifier-produced native outcome proof edges", as
       jobCardDigest: digest("a"),
     }, verified);
     assert.equal(appended.ok, true);
-    const restarted = await new FsContinuityLedger(join(root, "continuity")).read(graph.taskId);
+    await assert.rejects(
+      () => new FsContinuityLedger(join(root, "continuity")).read(graph.taskId),
+      /external.*anchor|anchor.*resolver/i,
+    );
+    const ledgerOptions = {
+      resolveAuthorityAnchors: async (request: { taskId: string; authoritySnapshotDigest: string }) => {
+        assert.equal(request.taskId, graph.taskId);
+        assert.equal(request.authoritySnapshotDigest, authorityDigest({ trustPin, currentTrustObservation, expectedResponseSemanticsProfile }));
+        return { trustPin, currentTrustObservation, expectedResponseSemanticsProfile };
+      },
+    };
+    const restarted = await new FsContinuityLedger(join(root, "continuity"), ledgerOptions).read(graph.taskId);
     assert.equal((restarted.state?.consequences.values().next().value as any)?.verification.status, "verified");
 
     const taskDirectory = join(root, "continuity", graph.taskId);
@@ -164,13 +176,31 @@ test("the bridge preserves the verifier-produced native outcome proof edges", as
     const authoritySegmentName = segmentNames.at(-1)!;
     const authoritySegmentPath = join(taskDirectory, authoritySegmentName);
     const authoritySegment = JSON.parse(await readFile(authoritySegmentPath, "utf8"));
-    authoritySegment.authorityImports[0].graph.taskId = `${graph.taskId}_tampered`;
+
+    const substitutedSegment = structuredClone(authoritySegment);
+    substitutedSegment.authoritySnapshotDigest = digest("f");
+    substitutedSegment.authorityImports[0].authoritySnapshotDigest = digest("f");
+    const substitutedDigest = authorityDigest(substitutedSegment);
+    const substitutedPath = join(taskDirectory, `${authoritySegmentName.slice(0, 16)}-${substitutedDigest.slice("sha256:".length)}.json`);
+    const retainedOriginalPath = join(root, "retained-original-authority-segment.json");
+    await writeFile(substitutedPath, authorityCanonicalBytes(substitutedSegment));
+    await rename(authoritySegmentPath, retainedOriginalPath);
+    await assert.rejects(
+      () => new FsContinuityLedger(join(root, "continuity"), ledgerOptions).read(graph.taskId),
+      /expected values|authority snapshot|anchor/i,
+    );
+    await rename(substitutedPath, join(root, "rejected-substituted-authority-segment.json"));
+    await rename(retainedOriginalPath, authoritySegmentPath);
+
+    const replayGraph = JSON.parse(Buffer.from(authoritySegment.authorityImports[0].graphJsonBase64, "base64").toString("utf8"));
+    replayGraph.taskId = `${graph.taskId}_tampered`;
+    authoritySegment.authorityImports[0].graphJsonBase64 = Buffer.from(JSON.stringify(replayGraph), "utf8").toString("base64");
     const tamperedDigest = authorityDigest(authoritySegment);
     const tamperedPath = join(taskDirectory, `${authoritySegmentName.slice(0, 16)}-${tamperedDigest.slice("sha256:".length)}.json`);
     await writeFile(tamperedPath, authorityCanonicalBytes(authoritySegment));
     await rename(authoritySegmentPath, join(root, "replaced-authority-segment.json"));
     await assert.rejects(
-      () => new FsContinuityLedger(join(root, "continuity")).read(graph.taskId),
+      () => new FsContinuityLedger(join(root, "continuity"), ledgerOptions).read(graph.taskId),
       /corruption.*(signature|lineage|task|portable|graph)/i,
     );
   });

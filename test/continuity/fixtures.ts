@@ -6,6 +6,7 @@ import type {
   AuthenticatedWorkloadV1,
   ContinuityCheckpointV1,
   ContinuityEventV1,
+  VerifierProducedConsequenceEventV1,
 } from "../../src/continuity/types.js";
 
 export const digest = (character: string): string => `sha256:${character.repeat(64)}`;
@@ -48,7 +49,7 @@ export function consequence(
   eventId: string,
   state: Exclude<LedgerState, "issued">,
   receiptDigest: string = digest("c"),
-): Extract<ContinuityEventV1, { type: "consequence.observed" }> {
+): VerifierProducedConsequenceEventV1 {
   const receiptChain = [receiptDigest];
   const priorReceiptLinks = [{ receiptDigest, priorReceiptDigest: null }];
   return {
@@ -100,7 +101,7 @@ export function consequence(
       terminalDigest: digest("c"),
       currentTrustObservationDigest: digest("d"),
     },
-  };
+  } as unknown as VerifierProducedConsequenceEventV1;
 }
 
 export const reservedConsequence = consequence("event_2", "reserved");

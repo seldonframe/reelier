@@ -45,7 +45,7 @@ test("checkpoint normalization refuses ungrounded binding and verified claims", 
     statement: "Deployment passed",
     status: "verified",
     evidenceDigest: null,
-  }]), actor), /verified.*evidence/i);
+  } as never]), actor), /verified.*evidence/i);
   assert.throws(() => normalizeContinuityCheckpoint(checkpoint(0, [{
     type: "claim.recorded",
     eventId: "event_3",
@@ -53,12 +53,12 @@ test("checkpoint normalization refuses ungrounded binding and verified claims", 
     statement: "Deployment passed",
     status: "verified",
     evidenceDigest: digest("c"),
-  }]), actor), /verified.*verifier|public checkpoint.*verified/i);
+  } as never]), actor), /verified.*verifier|public checkpoint.*verified/i);
 });
 
 test("public checkpoints cannot construct authority-verified consequences", () => {
   assert.throws(
-    () => normalizeContinuityCheckpoint(checkpoint(0, [reservedConsequence]), actor),
+    () => normalizeContinuityCheckpoint(checkpoint(0, [reservedConsequence as never]), actor),
     /consequence.*verifier|public checkpoint.*authority/i,
   );
 });

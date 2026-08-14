@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { foldContinuity } from "../../src/continuity/fold.js";
-import { consequence, digest, opened } from "./fixtures.js";
+import { consequence, consequenceNote, digest, opened } from "./fixtures.js";
 
 test("fold exposes only active decisions and preserves terminal obligations", () => {
   const events = [
@@ -26,16 +26,16 @@ test("fold exposes only active decisions and preserves terminal obligations", ()
 });
 
 test("fold follows Path C consequence lifecycle and refuses resend-shaped regressions", () => {
-  const reserved = consequence("e2", "reserved");
-  const dispatched = consequence("e3", "dispatched");
-  const ambiguous = consequence("e4", "ambiguous");
-  const reconciled = consequence("e5", "reconciled");
+  const reserved = consequenceNote("e2", "reserved");
+  const dispatched = consequenceNote("e3", "dispatched");
+  const ambiguous = consequenceNote("e4", "ambiguous");
+  const reconciled = consequenceNote("e5", "reconciled");
   assert.equal(
     foldContinuity([opened, reserved, dispatched, ambiguous, reconciled]).consequences.get("operation_1")?.state,
     "reconciled",
   );
   assert.throws(
-    () => foldContinuity([opened, reserved, dispatched, ambiguous, consequence("e5", "dispatched")]),
+    () => foldContinuity([opened, reserved, dispatched, ambiguous, consequenceNote("e5", "dispatched")]),
     /illegal consequence transition/i,
   );
 });
@@ -58,8 +58,8 @@ test("fold refuses duplicate creations, missing references, and reservation swap
   }]), /missing decision/i);
   assert.throws(() => foldContinuity([
     opened,
-    consequence("e2", "reserved"),
-    { ...consequence("e3", "dispatched"), reservationId: "reservation_2" },
+    consequenceNote("e2", "reserved"),
+    { ...consequenceNote("e3", "dispatched"), reservationId: "reservation_2" },
   ]), /reservation/i);
 });
 
@@ -70,4 +70,19 @@ test("fold returns maps and active arrays in stable identifier order", () => {
     { type: "claim.recorded", eventId: "e3", claimId: "a", statement: "First", status: "absent", evidenceDigest: null },
   ]);
   assert.deepEqual([...state.claims.keys()], ["a", "z"]);
+});
+
+test("public fold refuses structural objects that impersonate verifier-produced state", () => {
+  assert.throws(() => foldContinuity([opened, {
+    type: "claim.recorded",
+    eventId: "e_verified_claim",
+    claimId: "claim_forged",
+    statement: "Forged verified memory",
+    status: "verified",
+    evidenceDigest: digest("f"),
+  } as never]), /verified.*provenance|provenance.*verified/i);
+  assert.throws(
+    () => foldContinuity([opened, consequence("e_forged_consequence", "reserved")]),
+    /verified.*provenance|provenance.*verified/i,
+  );
 });
