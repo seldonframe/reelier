@@ -6,7 +6,7 @@ import { createReservedDispatchHandle } from "../../../dist/authority/gate.js";
 
 function ledger() {
   let state: any = { reservationId: "r1", state: "reserved", intent: { effectDigest: "sha256:" + "1".repeat(64) } };
-  return { get: () => state, getReservation: async () => state, transition: async (id: string, expected: string, event: any) => { if (id !== "r1" || state.state !== expected) return { ok: false, reason: "state-conflict" as const }; state = { ...state, state: event.to, resultDigest: event.resultDigest }; return { ok: true, status: "transitioned" as const, reservation: state }; }, recover: async () => ({ ok: true as const, reservations: [state], highWaterMark: null, topology: { directorySync: "verified" as const } }) } as any;
+  return { get: () => state, getReservation: async () => state, transition: async (id: string, expected: string, event: any) => { if (id !== "r1" || state.state !== expected) return { ok: false, reason: "state-conflict" as const }; if (event.to === "ambiguous" && "resultDigest" in event) return { ok: false, reason: "corruption" as const }; state = { ...state, state: event.to, resultDigest: event.resultDigest }; return { ok: true, status: "transitioned" as const, reservation: state }; }, recover: async () => ({ ok: true as const, reservations: [state], highWaterMark: null, topology: { directorySync: "verified" as const } }) } as any;
 }
 
 test("dispatch consumes an opaque handle once and records ambiguity on restart", async () => {
@@ -56,11 +56,11 @@ test("dispatch performs authoritative read-back before publishing the terminal r
 test("ambiguous reservations reconcile without invoking dispatch", async () => {
   const l = ledger();
   await l.transition("r1", "reserved", { to: "dispatched" });
-  await l.transition("r1", "dispatched", { to: "ambiguous", resultDigest: "sha256:" + "3".repeat(64) });
+  await l.transition("r1", "dispatched", { to: "ambiguous" });
   let dispatchCalls = 0;
   const publication = { async publish(input: { phase: string; priorReceiptDigest?: string | null }) {
     assert.equal(input.phase, "reconcile");
-    assert.equal(input.priorReceiptDigest, "sha256:" + "3".repeat(64));
+    assert.equal(input.priorReceiptDigest, null);
     return { receiptRef: "sha256:" + "4".repeat(64), evidenceDigest: "sha256:" + "5".repeat(64) };
   } };
   const coordinator = createDispatchCoordinator(l, {
