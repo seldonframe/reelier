@@ -391,12 +391,12 @@ test("trust replay refuses every invalid transition and linkage mutation", () =>
       fixtureProfileTrust("tenant_1", "certifier_1", "profile-conformance", certifier.publicKey, events),
       fixtureProfileTrust("tenant_1", "operator_1", "profile-activation", operator.publicKey, events),
     ];
-    if (name === "declared events digest") anchors[1] = { ...anchors[1], currentTrustEventsDigest: sha("a") };
-    if (name === "declared head digest") anchors[1] = { ...anchors[1], trustHeadDigest: sha("a") };
+    if (name === "declared events digest") for (let index = 0; index < anchors.length; index++) anchors[index] = { ...anchors[index], currentTrustEventsDigest: sha("a") };
+    if (name === "declared head digest") for (let index = 0; index < anchors.length; index++) anchors[index] = { ...anchors[index], trustHeadDigest: sha("a") };
     assert.throws(() => {
       const trustRoots = createProfileVerificationRoots(anchors);
       verifyProfileGovernanceOffline({ ...fixtureBundle(), trustRoots });
-    }, TypeError, name);
+    }, name === "declared events digest" ? /profile trust events digest mismatch/ : name === "declared head digest" ? /profile trust final head is not admissible/ : TypeError, name);
   }
 });
 
@@ -406,8 +406,35 @@ test("a caller-self-authored verification is inert and cannot become host admiss
   assert.equal(Object.getOwnPropertySymbols(verified).length, 0);
   assert.equal("governance" in verified, false);
   assert.equal("admitted" in verified, false);
-  const host = await import("../../src/authority/host/index.js");
-  for (const forbidden of ["assertAdmittedProfileGovernance", "createAdmittedProfileGovernance", "loadProfileGovernanceFromOperatorTrust"]) assert.equal(forbidden in host, false);
+  for (const candidate of [verified, { ...verified }, Object.freeze({ ...verified })]) {
+    assert.equal(Object.getOwnPropertySymbols(candidate).length, 0);
+    assert.equal(candidate.authorization, "not-conferred");
+    assert.equal(candidate.dispatchable, false);
+  }
+  const publicAuthority = await import("../../src/authority/index.js");
+  for (const forbidden of ["assertAdmittedProfileGovernance", "createAdmittedProfileGovernance", "loadProfileGovernanceFromOperatorTrust"]) assert.equal(forbidden in publicAuthority, false);
+});
+
+test("offline verification captures one intrinsic epoch without invoking caller Date methods", () => {
+  let subclassCalls = 0;
+  class AdversarialDate extends Date {
+    override getTime(): number { subclassCalls++; throw new Error("subclass getTime invoked"); }
+    override toISOString(): string { subclassCalls++; throw new Error("subclass toISOString invoked"); }
+  }
+  const subclassDate = new AdversarialDate("2026-08-14T12:00:00.000Z");
+  const subclassVerified = verifyProfileGovernanceOffline({ ...fixtureBundle(), now: subclassDate });
+  assert.equal(subclassVerified.verifiedAt, "2026-08-14T12:00:00.000Z");
+  assert.equal(subclassCalls, 0);
+
+  let ownCalls = 0;
+  const ownMethodDate = new Date("2026-08-14T12:00:00.000Z");
+  Object.defineProperties(ownMethodDate, {
+    getTime: { value: () => { ownCalls++; throw new Error("own getTime invoked"); } },
+    toISOString: { value: () => { ownCalls++; throw new Error("own toISOString invoked"); } },
+  });
+  const ownVerified = verifyProfileGovernanceOffline({ ...fixtureBundle(), now: ownMethodDate });
+  assert.equal(ownVerified.verifiedAt, "2026-08-14T12:00:00.000Z");
+  assert.equal(ownCalls, 0);
 });
 
 test("canonical profile artifacts contain no hidden data after parsing", () => {
