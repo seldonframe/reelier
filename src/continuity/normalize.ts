@@ -8,6 +8,7 @@ import type {
 
 const DIGEST = /^sha256:[0-9a-f]{64}$/u;
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/u;
+const HARNESS_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:@-]{0,255}$/u;
 const CLAIM_STATUSES = new Set<ClaimStatus>(["verified", "failed", "unchecked", "absent"]);
 const CONSEQUENCE_STATES = new Set([
   "reserved",
@@ -49,6 +50,13 @@ function exactKeys(
 function identifier(value: unknown, label: string): string {
   if (typeof value !== "string" || !IDENTIFIER.test(value)) {
     throw new ContinuityValidationError(`${label} must be a bounded identifier`);
+  }
+  return value;
+}
+
+function harnessIdentifier(value: unknown, label: string): string {
+  if (typeof value !== "string" || !HARNESS_IDENTIFIER.test(value)) {
+    throw new ContinuityValidationError(`${label} must be a bounded harness identifier`);
   }
   return value;
 }
@@ -188,7 +196,7 @@ export function normalizeAuthenticatedWorkload(value: unknown): AuthenticatedWor
     principalId: identifier(record.principalId, "authenticated actor.principalId"),
     workloadId: identifier(record.workloadId, "authenticated actor.workloadId"),
     runtimeSessionId: identifier(record.runtimeSessionId, "authenticated actor.runtimeSessionId"),
-    harnessId: identifier(record.harnessId, "authenticated actor.harnessId"),
+    harnessId: harnessIdentifier(record.harnessId, "authenticated actor.harnessId"),
   };
 }
 
