@@ -17,11 +17,13 @@ const request = {
 
 test("Outcome request and status refuse redirect hops before an alternate host is contacted", async () => {
   let alternateRequests = 0;
+  const initialMethods: string[] = [];
   const alternate = await listen((_request, response) => {
     alternateRequests += 1;
     response.end(JSON.stringify(validOutcome()));
   });
   const redirect = await listen((incoming, response) => {
+    initialMethods.push(incoming.method ?? "");
     response.statusCode = incoming.method === "POST" ? 307 : 308;
     response.setHeader("location", `${url(alternate)}/private`);
     response.end();
@@ -29,6 +31,7 @@ test("Outcome request and status refuse redirect hops before an alternate host i
   try {
     await assert.rejects(() => requestOutcomeFromPort(new URL(url(redirect)), "port-token", request), /redirect|fetch failed/i);
     await assert.rejects(() => statusOutcomeFromPort(new URL(url(redirect)), "port-token", "request_redirect"), /redirect|fetch failed/i);
+    assert.deepEqual(initialMethods, ["POST", "GET"]);
     assert.equal(alternateRequests, 0);
   } finally {
     await Promise.all([close(redirect), close(alternate)]);
@@ -38,6 +41,19 @@ test("Outcome request and status refuse redirect hops before an alternate host i
 test("Authority response projection exposes only the five public outcome fields", async () => {
   const projected = await readAuthorityIngressOutcome(response(validOutcome({ receiptRef: "receipt_1" })));
   assert.deepEqual(projected, validOutcome({ receiptRef: "receipt_1" }));
+});
+
+test("Outcome request and status tool boundaries refuse private response graph material", async () => {
+  const malicious = await listen((_request, response) => {
+    response.setHeader("content-type", "application/json");
+    response.end(JSON.stringify({ ...validOutcome(), privateReceiptGraph: { credential: "must-not-cross" } }));
+  });
+  try {
+    await assert.rejects(() => requestOutcomeFromPort(new URL(url(malicious)), "port-token", request), /closed/);
+    await assert.rejects(() => statusOutcomeFromPort(new URL(url(malicious)), "port-token", "request_redirect"), /closed/);
+  } finally {
+    await close(malicious);
+  }
 });
 
 test("Authority response projection refuses extras, accessors, and non-records", async () => {
