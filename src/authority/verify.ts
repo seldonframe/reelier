@@ -6,7 +6,8 @@ import { verifyTrustedAuthority, createTrustRoots, type TrustRoots, type TrustRo
 import { validateDelegationChain } from "./delegation.js";
 import { verifyStoredContract } from "./contract.js";
 import { verifyAuthoritySignature } from "./crypto.js";
-import { assertPortableInertRecord, portableExecutionStatementDigest, portableReconciliationStatementDigest, type PortableOutcomeEvidencePublicationV1 } from "./host/portable-receipts.js";
+import { assertPortableInertRecord, portableExecutionStatementDigest, portableReconciliationStatementDigest, type PortableOutcomeEvidencePublicationV1, type SanitizedPortableOutcomeEvidenceExportV1 } from "./host/portable-receipts.js";
+import { httpResponseSemanticsProfileDigest, parseHttpResponseSemanticsProfileV1, type HttpResponseSemanticsProfileV1 } from "./host/http-response-semantics.js";
 
 export interface AuthorityReceiptVerificationOptions {
   readonly trustRoots: TrustRoots | readonly TrustRootEntry[];
@@ -114,6 +115,7 @@ export interface PortableOutcomeEvidenceVerificationOptions {
   readonly collectionCounts: Readonly<Record<string, number>>;
   readonly terminalDigest: string;
   readonly now: Date;
+  readonly expectedResponseSemanticsProfile: HttpResponseSemanticsProfileV1;
 }
 
 /** Strict offline verifier for the native HTTPS outcome extension. Trust and
@@ -131,6 +133,8 @@ export function verifyPortableOutcomeEvidencePublication(value: unknown, options
   const identity = portableExact(publication.authenticatedIdentity, ["v", "identityDigest", "providerId", "accountDigest", "routeDigest", "observedAt"], "authenticated identity");
   const request = portableExact(publication.materializedRequest, ["v", "method", "originClass", "pathTemplate", "queryState", "reviewedHeaderNames", "bodyDigest"], "materialized request");
   const profile = portableExact(publication.responseSemanticsProfile, ["v", "profileDigest", "acknowledgedStatuses"], "response semantics profile");
+  if (!options?.expectedResponseSemanticsProfile) throw new TypeError("externally trusted response semantics profile is required");
+  const expectedProfile = parseHttpResponseSemanticsProfileV1(options.expectedResponseSemanticsProfile);
   const responseObservation = portableExact(publication.responseObservation, ["v", "status", "classification"], "response observation");
   const pre = portableExact(publication.preStateEvidence, ["v", "readRouteDigest", "accountDigest", "projectionSchemaDigest", "projectionDigest", "complete", "observedAt"], "pre-state evidence");
   const post = portableExact(publication.postStateEvidence, ["v", "readRouteDigest", "accountDigest", "projectionSchemaDigest", "projectionDigest", "complete", "observedAt"], "post-state evidence");
@@ -149,6 +153,8 @@ export function verifyPortableOutcomeEvidencePublication(value: unknown, options
   if (route.portableMaterializedRequestDigest !== authorityDigest(request) || route.responseSemanticsProfileDigest !== profile.profileDigest) throw new TypeError("portable materialized request projection or response profile is not route-authorized");
   if (request.v !== "reelier.portable-materialized-http-request/v1" || request.method !== "PUT" || request.originClass !== "github-api" || request.pathTemplate !== "/repos/{owner}/{repository}/issues/{issueNumber}/labels" || request.queryState !== "absent" || !Array.isArray(request.reviewedHeaderNames) || Object.getPrototypeOf(request.reviewedHeaderNames) !== Array.prototype || request.reviewedHeaderNames.length !== 1 || request.reviewedHeaderNames[0] !== "content-type" || typeof request.bodyDigest !== "string" || !digest.test(request.bodyDigest)) throw new TypeError("portable non-identifying canonical materialized request projection is invalid");
   if (profile.v !== "reelier.portable-http-response-semantics/v1" || typeof profile.profileDigest !== "string" || !digest.test(profile.profileDigest) || !Array.isArray(profile.acknowledgedStatuses) || profile.acknowledgedStatuses.length === 0 || profile.acknowledgedStatuses.some((status: unknown) => !Number.isInteger(status) || (status as number) < 200 || (status as number) > 299) || new Set(profile.acknowledgedStatuses).size !== profile.acknowledgedStatuses.length || profile.acknowledgedStatuses.some((status: number, index: number) => index > 0 && status <= profile.acknowledgedStatuses[index - 1])) throw new TypeError("portable response semantics profile statuses are invalid, unordered, or duplicated");
+  if (evidence.authoritativeStateSource === "hermetic-github-fixture" && (expectedProfile.profileId !== "github.issue-labels.hermetic-v1" || expectedProfile.acknowledgedStatuses.length !== 1 || expectedProfile.acknowledgedStatuses[0] !== 200)) throw new TypeError("hermetic response semantics profile is not the ratified external profile");
+  if (profile.profileDigest !== httpResponseSemanticsProfileDigest(expectedProfile) || authorityDigest(profile.acknowledgedStatuses) !== authorityDigest(expectedProfile.acknowledgedStatuses)) throw new TypeError("portable response semantics are not bound to the externally trusted profile");
   const expectedResponseClassification = profile.acknowledgedStatuses.includes(responseObservation.status) ? "acknowledged" : "ambiguous";
   if (responseObservation.v !== "reelier.portable-http-response-observation/v1" || !Number.isInteger(responseObservation.status) || responseObservation.status < 100 || responseObservation.status > 599 || responseObservation.classification !== expectedResponseClassification) throw new TypeError("portable initial response classification is inconsistent with the sealed profile");
   for (const [label, state] of [["pre-state", pre], ["post-state", post]] as const) if (state.v !== "reelier.portable-comparable-state/v1" || state.readRouteDigest !== route.readRouteDigest || state.accountDigest !== route.accountDigest || state.projectionSchemaDigest !== route.projectionSchemaDigest || typeof state.complete !== "boolean" || !portableTime(state.observedAt)) throw new TypeError(`portable ${label} route/account/schema join is invalid`);
@@ -167,6 +173,23 @@ export function verifyPortableOutcomeEvidencePublication(value: unknown, options
   const trust = portableExact(options.currentTrustObservation, ["v", "observedAt", "expiresAt", "activeAuthorityEvidenceSignerIds"], "current trust observation");
   if (publication.currentTrustObservationDigest !== authorityDigest(trust) || trust.v !== "reelier.portable-current-trust-observation/v1" || !portableTime(trust.observedAt) || !portableTime(trust.expiresAt) || !Array.isArray(trust.activeAuthorityEvidenceSignerIds) || !trust.activeAuthorityEvidenceSignerIds.includes(execution.signerId) || options.now.getTime() > Date.parse(trust.expiresAt) || options.now.getTime() < Date.parse(trust.observedAt)) throw new TypeError("portable current trust observation is stale, expired, or missing the signer");
   return Object.freeze({ status: "verified", digest: authorityDigest(publication) });
+}
+
+export function verifySanitizedPortableOutcomeEvidenceExport(value: unknown, options: Readonly<{ privateGraph: Readonly<Record<string, unknown>>; verifier: PortableOutcomeEvidenceVerifier }>): Readonly<{ status: "verified"; digest: string }> {
+  const item = portableExact(value, ["v", "privateGraphDigest", "outcomeCollectionDigest", "outcomeCount", "responseSemanticsProfilesDigest", "verifiedAt", "signerId", "signature"], "sanitized outcome export") as unknown as SanitizedPortableOutcomeEvidenceExportV1;
+  assertPortableDeepInert(item);
+  if (portableContainsConfidential(item)) throw new TypeError("sanitized portable export contains confidential material");
+  const digest = /^sha256:[0-9a-f]{64}$/;
+  if (item.v !== "reelier.sanitized-portable-outcome-evidence/v1" || !digest.test(item.privateGraphDigest) || !digest.test(item.outcomeCollectionDigest) || !digest.test(item.responseSemanticsProfilesDigest) || !Number.isSafeInteger(item.outcomeCount) || item.outcomeCount < 1 || !portableTime(item.verifiedAt) || !digest.test(item.signerId)) throw new TypeError("sanitized portable export is not closed and opaque");
+  assertPortableInertRecord(options?.privateGraph, "private receipt graph");
+  const collection = options.privateGraph.portableOutcomeEvidence;
+  if (!Array.isArray(collection) || collection.length !== item.outcomeCount || item.privateGraphDigest !== authorityDigest(options.privateGraph) || item.outcomeCollectionDigest !== authorityDigest(collection)) throw new TypeError("sanitized portable export private graph digest/count join is invalid");
+  const profileDigests = collection.map((publication: any) => publication?.evidence?.responseSemanticsProfileDigest);
+  if (profileDigests.some(candidate => typeof candidate !== "string" || !digest.test(candidate)) || item.responseSemanticsProfilesDigest !== authorityDigest(profileDigests)) throw new TypeError("sanitized portable export response profile join is invalid");
+  if (!options.verifier || options.verifier.signerId !== item.signerId || options.verifier.purpose !== "authority-evidence") throw new TypeError("sanitized portable export signer is not externally trusted");
+  const { signature, ...body } = item;
+  if (!verifyAuthoritySignature(options.verifier.publicKey, "authority-evidence", authorityDigest(body), signature)) throw new TypeError("sanitized portable export signature is invalid");
+  return Object.freeze({ status: "verified", digest: authorityDigest(item) });
 }
 
 function verifyTimeline(bundle: AuthorityReceiptBundle): void {

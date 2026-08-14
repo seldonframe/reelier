@@ -18,12 +18,12 @@ import { __testSetGitHubIssueLabelsRunnerBarrier, createGitHubIssueLabelsHermeti
 import { __testSetAuthorityCellHostPlatform } from "../../src/authority/host/platform.js";
 import { createCertificationArtifactKeyBinding, createCertificationLifecycleAuthorityCeremony } from "../../src/authority/certification/lifecycle-authority.js";
 import { verifyAuthorityReceiptBundle } from "../../src/authority/verify.js";
-import { verifyCertificationTaskReceiptGraph } from "../../src/authority/certification/task-receipt-graph.js";
+import { verifyCertificationSanitizedPortableOutcomeEvidenceExport, verifyCertificationTaskReceiptGraph } from "../../src/authority/certification/task-receipt-graph.js";
 import { writeCertificationInputManifests } from "./certification-input-fixture.js";
 import { AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST } from "../../src/authority/adapter-contract.js";
 import { signAuthorityDigest } from "../../src/authority/crypto.js";
 import { createCertificationTaskReceiptGraph } from "../../src/authority/certification/task-receipt-graph.js";
-import { createPortableOutcomeEvidencePublication } from "../../src/authority/host/portable-receipts.js";
+import { createPortableOutcomeEvidencePublication, createSanitizedPortableOutcomeEvidenceExport } from "../../src/authority/host/portable-receipts.js";
 import { httpResponseSemanticsProfileDigest } from "../../src/authority/host/http-response-semantics.js";
 
 const at = "2026-08-11T20:00:00.000Z", expiry = "2026-08-11T21:00:00.000Z";
@@ -582,6 +582,7 @@ test("portable evidence links the approved task, exact post-state, policy status
       trustPin: f.pin,
       currentTrustObservation: { v: "reelier.portable-current-trust-observation/v1", observedAt: at, expiresAt: expiry, activeAuthorityEvidenceSignerIds: [graph.portableOutcomeEvidence[0].evidence.executionAttestationSignerId] },
       now: new Date("2100-01-01T00:00:00.000Z"),
+      expectedResponseSemanticsProfile: hermeticResponseSemanticsProfile,
     }), /stale|expired|current trust/i);
     for (const mutate of [
       (g: any) => { g.taskAuthorities[0].instructionsDigest = `sha256:${"9".repeat(64)}`; },
@@ -598,7 +599,7 @@ test("portable evidence links the approved task, exact post-state, policy status
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
-test("portable graph consumes signed durable execution provenance without graph-time reconstruction", async () => {
+test("private graph consumes signed durable execution provenance without graph-time reconstruction", async () => {
   const f = await fixture(); try {
     await f.runner.run({ bearerToken: f.credential.token, requestId: "request_runtime_provenance" });
     await f.runner.cleanup({ bearerToken: f.credential.token, requestId: "request_runtime_provenance" });
@@ -630,6 +631,12 @@ test("portable graph consumes signed durable execution provenance without graph-
     assert.deepEqual(publication.responseSemanticsProfile, executed.portableResponseSemanticsProfile);
     assert.deepEqual(publication.reconciliation, executed.reconciliation);
     assert.equal(publication.evidence.cleanupParentReceiptDigest, executed.cleanupParentReceiptDigest);
+
+    const portableKeys = generateKeyPairSync("ed25519");
+    const portableSignerId = authorityDigest({ publicKeySpkiBase64: portableKeys.publicKey.export({ type: "spki", format: "der" }).toString("base64") });
+    const sanitized = createSanitizedPortableOutcomeEvidenceExport({ privateGraph: graph, verifiedAt: "2026-08-11T20:10:00.000Z", signer: { signerId: portableSignerId, sign: digest => signAuthorityDigest(portableKeys.privateKey, "authority-evidence", digest) } });
+    assert.equal(verifyCertificationSanitizedPortableOutcomeEvidenceExport(sanitized, graph, { ...graphVerification(f.pin), portableVerifier: { signerId: portableSignerId, publicKey: portableKeys.publicKey, purpose: "authority-evidence" } }).status, "verified");
+    assert.doesNotMatch(JSON.stringify(sanitized), /fixlyai|reelier-certification|maxime@example\.com|account_fixlyai|jobCard|sourceReceipt|accountId|principalId/i);
 
     const evidence = certificationCellHostInternalState(f.cell).hermeticGitHubAuthority().lifecycle.direct.get("authority-evidence")!;
     const signer = { signerId: evidence.descriptor.keyId, sign: (digest: string) => signAuthorityDigest(evidence.privateKey, "authority-evidence", digest) };
