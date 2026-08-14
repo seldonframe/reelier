@@ -11,7 +11,7 @@ import { authorityDigest } from "../../src/authority/wire.js";
 const contractDirectory = path.join(process.cwd(), "contract", "outcome-profile", "v1");
 const require = createRequire(import.meta.url);
 const Ajv = require("ajv/dist/2020").default as new (options: object) => {
-  addSchema(schema: object): void;
+  addSchema(schema: object, key?: string): void;
   compile(schema: object): (value: unknown) => boolean;
 };
 const members = [
@@ -51,7 +51,8 @@ test("the complete governed receipt schema graph compiles under declared identif
   const schemas = members.map(member => JSON.parse(readFileSync(path.join(contractDirectory, member), "utf8")) as object);
   const authorityReceiptBundle = JSON.parse(readFileSync(path.join(process.cwd(), "contract", "authority", "v1", "authority-receipt-bundle.schema.json"), "utf8")) as object;
   const governedReceipt = schemas[members.indexOf("profile-governed-receipt.schema.json")];
-  for (const schema of [...schemas.filter(schema => schema !== governedReceipt), authorityReceiptBundle]) ajv.addSchema(schema);
+  for (const schema of schemas.filter(schema => schema !== governedReceipt)) ajv.addSchema(schema);
+  ajv.addSchema(authorityReceiptBundle, "https://reelier.dev/contracts/authority/v1/authority-receipt-bundle.schema.json");
   assert.equal(typeof ajv.compile(governedReceipt), "function");
 });
 

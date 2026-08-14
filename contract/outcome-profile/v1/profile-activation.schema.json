@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "reelier.outcome-profile/profile-activation/v1",
+  "$id": "https://reelier.dev/contracts/outcome-profile/v1/profile-activation.schema.json",
   "type": "object",
   "additionalProperties": false,
   "required": ["v", "tenant", "activationId", "profileDigest", "conformanceDigest", "jobCardDigest", "contractDigest", "deploymentDigest", "routeAuthorityDigest", "trustHeadDigest", "validFrom", "validUntil", "state", "signerId", "signature"],

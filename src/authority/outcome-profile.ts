@@ -240,14 +240,17 @@ export function verifyProfileGovernanceOffline(input: ProfileGovernanceVerificat
   const values = exactInput(input);
   const state = profileVerificationRootStates.get(values.trustRoots as object);
   if (!state) throw new TypeError("unrecognized caller-supplied profile verification roots");
-  if (!(values.now instanceof Date) || !Number.isFinite(values.now.getTime())) throw new TypeError("profile verification time is invalid");
-  const verifiedAt = values.now.toISOString();
+  let verificationEpoch: number;
+  try { verificationEpoch = Date.prototype.getTime.call(values.now); }
+  catch { throw new TypeError("profile verification time is invalid"); }
+  if (!Number.isFinite(verificationEpoch)) throw new TypeError("profile verification time is invalid");
+  const verifiedAt = new Date(verificationEpoch).toISOString();
   const draft = parseOutcomeProfileDraft(values.draft);
   const report = parseProfileConformanceReport(values.report);
   const conformance = parseSignedOutcomeProfileConformance(values.conformance);
   const activation = parseSignedTenantProfileActivation(values.activation);
   if (values.tenant !== state.pin.tenant || conformance.tenant !== values.tenant || activation.tenant !== values.tenant) throw new TypeError("profile governance tenant mismatch");
-  replayProfileTrust(state.pin, values.now);
+  replayProfileTrust(state.pin, verificationEpoch);
 
   const definition = lookupStaticPackDefinition(values.packs, draft.packAlias);
   if (!definition || definition.packDigest !== draft.packDigest || definition.definitionDigest !== draft.definitionDigest || definitionRegistrationDigest(values.packs, draft.packAlias) !== draft.definitionRegistrationDigest) throw new TypeError("profile does not join the installed first-party pack registration");
@@ -261,7 +264,7 @@ export function verifyProfileGovernanceOffline(input: ProfileGovernanceVerificat
 
   const conformanceDigest = authorityDigest(conformance);
   if (activation.profileDigest !== profileDigest || activation.conformanceDigest !== conformanceDigest || activation.trustHeadDigest !== state.pin.trustHeadDigest) throw new TypeError("profile activation linkage mismatch");
-  if (activation.state !== "activated" || parseCanonicalTime(activation.validFrom) > values.now.getTime() || parseCanonicalTime(activation.validUntil) < values.now.getTime() || parseCanonicalTime(activation.validUntil) <= parseCanonicalTime(activation.validFrom)) throw new TypeError("profile activation is not current and active");
+  if (activation.state !== "activated" || parseCanonicalTime(activation.validFrom) > verificationEpoch || parseCanonicalTime(activation.validUntil) < verificationEpoch || parseCanonicalTime(activation.validUntil) <= parseCanonicalTime(activation.validFrom)) throw new TypeError("profile activation is not current and active");
   if (activation.signerId !== state.pin.operator.signerId || !verifyProfileSignature(state.operatorKey, "profile-activation", activation)) throw new TypeError("profile activation signature is invalid");
 
   return deepFreeze({
@@ -305,7 +308,7 @@ function parseAnchor(value: ProfileVerificationAnchorV1): ProfileVerificationAnc
   return deepFreeze(JSON.parse(authorityCanonicalBytes(value).toString("utf8")) as ProfileVerificationAnchorV1);
 }
 
-function replayProfileTrust(pin: ProfileTrustPinV1, now?: Date): void {
+function replayProfileTrust(pin: ProfileTrustPinV1, verificationEpoch?: number): void {
   const expectedKeys = new Map<ProfileTrustPurposeV1, string>([
     ["profile-conformance", profileTrustKeyDigest(pin, pin.certifier)],
     ["profile-activation", profileTrustKeyDigest(pin, pin.operator)],
@@ -320,7 +323,7 @@ function replayProfileTrust(pin: ProfileTrustPinV1, now?: Date): void {
     const event = pin.currentTrustEvents[index];
     if (event.index !== index || event.previousHeadDigest !== priorHead) throw new TypeError("profile trust event chain is not contiguous");
     const eventTime = parseCanonicalTime(event.at);
-    if (eventTime <= priorTime || (now && eventTime > now.getTime())) throw new TypeError("profile trust event time is invalid");
+    if (eventTime <= priorTime || (verificationEpoch !== undefined && eventTime > verificationEpoch)) throw new TypeError("profile trust event time is invalid");
     priorTime = eventTime;
     if (event.keyDigest !== expectedKeys.get(event.keyPurpose)) throw new TypeError("profile trust event key is not declared");
     if (event.action === "activate") {
