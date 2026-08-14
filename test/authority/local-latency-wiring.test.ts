@@ -24,7 +24,7 @@ test("local runtime forwards the injected recorder into the real gate path", asy
     let ticks = 0;
     const recorder = createAuthorityLatencyRecorder({ monotonicNow: () => ++ticks });
     const runtime = await createLocalAuthorityRuntime({ version: 1, tenant: "tenant_1", requester: "operator", definitions: ["gmail_reply_send_v1"], ledgerDir: path.join(root, "ledger"), decisionDir: path.join(root, "decisions"), receiptDir: path.join(root, "receipts"), endpoints: [] }, { latencyRecorder: recorder });
-    const result = await runtime.outcome("gmail_reply_send_v1", { v: "reelier.outcome-request/v1", requestId: "latency_gate_1", sourceRefs: {}, choices: {} }, { tenant: "tenant_1", requester: "operator" });
+    const result = await runtime.outcome("gmail_reply_send_v1", { v: "reelier.outcome-request/v1", requestId: "latency_gate_1", sourceRefs: { message: "fixture_1" }, choices: {} }, { tenant: "tenant_1", requester: "operator" });
     assert.equal(result.verdict, "refused");
     assert.deepEqual(recorder.observedPhases(), ["authority-load"]);
   } finally { restore(); await rm(root, { recursive: true, force: true }); }

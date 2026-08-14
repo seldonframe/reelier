@@ -20,6 +20,8 @@ export interface AuthorityLatencyTraceV1 {
 }
 export interface AuthorityLatencyRecorder {
   measure<T>(phase: AuthorityLatencyPhase, operation: () => T | Promise<T>): Promise<T>;
+  /** In-memory inspection for the active dispatch; it exposes no timing payload. */
+  observedPhases(): readonly AuthorityLatencyPhase[];
   finish(): AuthorityLatencyTraceV1;
 }
 
@@ -45,6 +47,7 @@ export function createAuthorityLatencyRecorder(input: Readonly<{ monotonicNow: (
         lastPhase = index;
       }
     },
+    observedPhases(): readonly AuthorityLatencyPhase[] { return Object.freeze(phases.map(phase => phase.name)); },
     finish(): AuthorityLatencyTraceV1 {
       if (active) throw new Error("cannot finish an active latency phase");
       if (lastPhase !== AUTHORITY_LATENCY_PHASES.length - 1) throw new Error("terminal transition must be recorded before publishing latency evidence");
