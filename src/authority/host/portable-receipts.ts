@@ -1,6 +1,7 @@
 import { createHash, type KeyObject } from "node:crypto";
 import type { AuthoritySignature } from "../types.js";
 import { authorityDigest } from "../wire.js";
+import { verifyAuthoritySignature } from "../crypto.js";
 import type { DispatchPublication } from "./dispatch.js";
 
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
@@ -127,7 +128,9 @@ export function createSanitizedPortableOutcomeEvidenceExport(input: Readonly<{ p
     verifiedAt: input.verifiedAt,
     signerId: input.signer.signerId,
   });
-  return Object.freeze({ ...body, signature: input.signer.sign(authorityDigest(body)) });
+  const signature = input.signer.sign(authorityDigest(body));
+  if (!verifyAuthoritySignature(input.signer.publicKey, "authority-evidence", authorityDigest(body), signature)) throw new TypeError("sanitized portable export signer signature does not match its public key");
+  return Object.freeze({ ...body, signature });
 }
 
 /** Composes durable local publication with a portable publication. The local
