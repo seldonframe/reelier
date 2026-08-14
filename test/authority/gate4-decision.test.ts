@@ -60,8 +60,8 @@ function job(os: "ubuntu-latest" | "windows-latest", source: "offline-fixture" |
     skips: { count: 0, reviewed: true },
     secretsScan: "clean",
   };
-  const body = { ...payload, artifactDigest: authorityDigest(payload) };
-  const signed = { ...body, signerId, signature: signAuthorityDigest(signer.privateKey, "authority-evidence", authorityDigest(body)) };
+  const body = { ...payload, artifactDigest: authorityDigest(payload), signerId };
+  const signed = { ...body, signature: signAuthorityDigest(signer.privateKey, "authority-evidence", authorityDigest(body)) };
   const bytes = Buffer.from(JSON.stringify(signed), "utf8");
   return { signed, bytes };
 }

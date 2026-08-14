@@ -1,0 +1,134 @@
+name: Native GitHub authoritative verification (Gate 4)
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_id:
+        description: Immutable Task 10 candidate ID
+        required: true
+        type: string
+      bundle_path:
+        description: Path to the exact retained workflow bundle
+        required: true
+        type: string
+      checker_public_key_path:
+        description: Path to the retained public key for offline signature verification
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  NATIVE_CANDIDATE_ID: sha256:e46498b6441a44e7de42264ebf243e4462aae6e4c4b3d33ed4276fcc50190e96
+  NATIVE_PUBLIC_COMMIT: 03ac48e
+  NATIVE_TARBALL_DIGEST: sha256:0659c2f402002d733dfd2621c5d8cce5df301975606a3fcb1b802e492bec5309
+  NATIVE_PACK_DIGEST: sha256:8101632acbacaf2738b8a7e698b0fb301539163edc713a37e74df0a6d233d689
+  NATIVE_TASK8_BASELINE_DIGEST: sha256:8888888888888888888888888888888888888888888888888888888888888888
+  NATIVE_TASK9_EVIDENCE_DIGEST: sha256:9999999999999999999999999999999999999999999999999999999999999999
+  NATIVE_PORTABLE_CONTRACT_DIGEST: sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+  NATIVE_OPERATOR_EVIDENCE_LANE: cccccccccccccccccccccccccccccccccccccccc
+  NATIVE_PROVIDER_AUTHORITY_LANE: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  NATIVE_RECONCILIATION_VERIFIER_LANE: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+
+jobs:
+  preflight:
+    name: Verify immutable candidate input
+    runs-on: ubuntu-latest
+    environment:
+      name: native-github-live
+    steps:
+      - name: Checkout pinned source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Refuse mutable candidate inputs
+        env:
+          EXPECTED_CANDIDATE_ID: ${{ inputs.candidate_id }}
+          BUNDLE_PATH: ${{ inputs.bundle_path }}
+        shell: bash
+        run: |
+          test "$EXPECTED_CANDIDATE_ID" = "$NATIVE_CANDIDATE_ID"
+          test "$NATIVE_PUBLIC_COMMIT" = "03ac48e"
+          test "$NATIVE_TARBALL_DIGEST" = "sha256:0659c2f402002d733dfd2621c5d8cce5df301975606a3fcb1b802e492bec5309"
+          test "$NATIVE_PACK_DIGEST" = "sha256:8101632acbacaf2738b8a7e698b0fb301539163edc713a37e74df0a6d233d689"
+          test "$NATIVE_TASK8_BASELINE_DIGEST" = "sha256:8888888888888888888888888888888888888888888888888888888888888888"
+          test "$NATIVE_TASK9_EVIDENCE_DIGEST" = "sha256:9999999999999999999999999999999999999999999999999999999999999999"
+          test "$NATIVE_PORTABLE_CONTRACT_DIGEST" = "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+          test "$NATIVE_OPERATOR_EVIDENCE_LANE" = "cccccccccccccccccccccccccccccccccccccccc"
+          test "$NATIVE_PROVIDER_AUTHORITY_LANE" = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          test "$NATIVE_RECONCILIATION_VERIFIER_LANE" = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          test -n "$BUNDLE_PATH"
+
+  ubuntu-authoritative:
+    name: Ubuntu authoritative lifecycle verification
+    needs: preflight
+    if: ${{ needs.preflight.result == 'success' }}
+    runs-on: ubuntu-latest
+    environment:
+      name: native-github-live
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout pinned source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Verify retained Ubuntu and Windows artifacts offline
+        env:
+          BUNDLE_PATH: ${{ inputs.bundle_path }}
+          CHECKER_PUBLIC_KEY_PATH: ${{ inputs.checker_public_key_path }}
+        shell: bash
+        run: node scripts/verify-native-github-hosted.mjs --bundle "$BUNDLE_PATH" --execution hosted-run --public-key "$CHECKER_PUBLIC_KEY_PATH"
+      - name: Upload private Gate 4 evidence
+        if: ${{ success() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-github-gate4-ubuntu
+          path: .superpowers/native-github-gate4-decision.json
+          retention-days: 7
+          if-no-files-found: error
+
+  windows-offline:
+    name: Windows offline/native-host refusal verification
+    needs: preflight
+    if: ${{ needs.preflight.result == 'success' }}
+    runs-on: windows-latest
+    environment:
+      name: native-github-live
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout pinned source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Verify retained artifacts without native execution
+        env:
+          BUNDLE_PATH: ${{ inputs.bundle_path }}
+          CHECKER_PUBLIC_KEY_PATH: ${{ inputs.checker_public_key_path }}
+        shell: pwsh
+        run: node scripts/verify-native-github-hosted.mjs --bundle "$env:BUNDLE_PATH" --execution hosted-run --public-key "$env:CHECKER_PUBLIC_KEY_PATH"
+      - name: Upload private Windows evidence
+        if: ${{ success() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-github-gate4-windows
+          path: .superpowers/native-github-gate4-decision.json
+          retention-days: 7
+          if-no-files-found: error
