@@ -463,8 +463,8 @@
         },
         "routeAuthority": {
           "type": "object", "additionalProperties": false,
-          "required": ["v","writeRouteDigest","readRouteDigest","accountDigest","authenticatedProviderIdentityDigest","expectedMaterializedRequestDigest","responseSemanticsProfileDigest","projectionSchemaDigest"],
-          "properties": { "v": { "const": "reelier.portable-route-authority/v1" }, "writeRouteDigest": { "$ref": "#/$defs/digest" }, "readRouteDigest": { "$ref": "#/$defs/digest" }, "accountDigest": { "$ref": "#/$defs/digest" }, "authenticatedProviderIdentityDigest": { "$ref": "#/$defs/digest" }, "expectedMaterializedRequestDigest": { "$ref": "#/$defs/digest" }, "responseSemanticsProfileDigest": { "$ref": "#/$defs/digest" }, "projectionSchemaDigest": { "$ref": "#/$defs/digest" } }
+          "required": ["v","writeRouteDigest","readRouteDigest","accountDigest","authenticatedProviderIdentityDigest","expectedMaterializedRequestDigest","portableMaterializedRequestDigest","responseSemanticsProfileDigest","projectionSchemaDigest"],
+          "properties": { "v": { "const": "reelier.portable-route-authority/v1" }, "writeRouteDigest": { "$ref": "#/$defs/digest" }, "readRouteDigest": { "$ref": "#/$defs/digest" }, "accountDigest": { "$ref": "#/$defs/digest" }, "authenticatedProviderIdentityDigest": { "$ref": "#/$defs/digest" }, "expectedMaterializedRequestDigest": { "$ref": "#/$defs/digest" }, "portableMaterializedRequestDigest": { "$ref": "#/$defs/digest" }, "responseSemanticsProfileDigest": { "$ref": "#/$defs/digest" }, "projectionSchemaDigest": { "$ref": "#/$defs/digest" } }
         },
         "authenticatedIdentity": {
           "type": "object", "additionalProperties": false,
@@ -474,7 +474,7 @@
         "materializedRequest": {
           "type": "object", "additionalProperties": false,
           "required": ["v","method","origin","normalizedPath","normalizedQuery","reviewedHeaders","bodyDigest"],
-          "properties": { "v": { "const": "reelier.materialized-http-request/v1" }, "method": { "enum": ["POST","PUT","PATCH","DELETE"] }, "origin": { "type": "string" }, "normalizedPath": { "type": "string" }, "normalizedQuery": { "type": "string" }, "reviewedHeaders": { "type": "object", "additionalProperties": { "type": "string" } }, "bodyDigest": { "$ref": "#/$defs/digest" } }
+          "properties": { "v": { "const": "reelier.materialized-http-request/v1" }, "method": { "enum": ["POST","PUT","PATCH","DELETE"] }, "origin": { "type": "string" }, "normalizedPath": { "const": "/repos/{owner}/{repository}/issues/{issueNumber}/labels" }, "normalizedQuery": { "type": "string" }, "reviewedHeaders": { "type": "object", "additionalProperties": { "type": "string" } }, "bodyDigest": { "$ref": "#/$defs/digest" } }
         },
         "responseSemanticsProfile": {
           "type": "object", "additionalProperties": false,

@@ -650,6 +650,7 @@ test("persisted provider v2 restart refuses before reconstruction or provider ac
   const f = await fixture(); try {
     const providerPath = path.join(f.initialized.workspace, "authority", "github-label-runner", "provider-state.json");
     await writeFile(providerPath, `${JSON.stringify({ v: "reelier.github-hermetic-provider/v2", before: ["before"], labels: ["before"], writes: 0, executions: [] })}\n`);
+    await assert.rejects(() => f.runner.exportGraph({ bearerToken: f.credential.token }), /provider v2|cannot be migrated|rerun|provenance/i);
     await assert.rejects(() => createGitHubIssueLabelsHermeticComposition(f.cell), /provider v2|cannot be migrated|rerun|provenance/i);
     const persisted = JSON.parse(await readFile(providerPath, "utf8"));
     assert.deepEqual({ version: persisted.v, labels: persisted.labels, writes: persisted.writes, executions: persisted.executions }, { version: "reelier.github-hermetic-provider/v2", labels: ["before"], writes: 0, executions: [] });
