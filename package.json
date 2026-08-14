@@ -86,6 +86,7 @@
     "test:fuzz": "tsc -p tsconfig.test.json && node scripts/run-fuzz.mjs",
     "test:e2e": "node scripts/e2e-local.mjs",
     "test:packed-factory-journey": "node test/packed/authority-factory-journey.mjs",
+    "test:packed-native-github-labels": "node test/packed/native-github-labels.mjs",
     "test:mutation": "stryker run",
     "preflight": "node scripts/preflight.mjs",
     "preflight:acceleration": "node scripts/run-acceleration-preflight.mjs",

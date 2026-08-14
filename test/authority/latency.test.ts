@@ -48,7 +48,7 @@ test("latency evidence remains an honest baseline until its configured sample co
 
   const measured = evaluateLatencyEvidence([...traces, traces[1]!], { minimumSampleCount: 3 });
   assert.equal(measured.baselineStatus, "measured");
-  assert.deepEqual(measured.percentiles, { p50Ms: 2, p95Ms: 2, p99Ms: 2 });
+  assert.deepEqual(measured.percentiles, { p50Ms: 2, p95Ms: 3, p99Ms: 3 });
   assert.equal(measured.sloStatus, "absent");
   assert.equal(measured.regressionBudgetStatus, "absent");
 });

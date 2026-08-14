@@ -3,6 +3,7 @@ import { executeJsonHttpsEffect, prepareJsonHttpsEffect, type JsonHttpsEndpoint,
 import { classifyHttpResponse, createHttpResponseSemanticsProfileRegistry, httpResponseSemanticsProfileDigest, lookupHttpResponseSemanticsProfile, type HttpResponseSemanticsProfileRegistry, type HttpResponseSemanticsProfileV1 } from "./http-response-semantics.js";
 import { createJsonHttpsRouteRegistry, lookupJsonHttpsRoute, type JsonHttpsRouteRegistry, type JsonHttpsRouteV1 } from "./json-https-route.js";
 import type { DispatchAdapter, DispatchOutcome, DispatchRequestState } from "./dispatch.js";
+import type { AuthorityLatencyRecorder } from "./latency.js";
 
 const DIGEST = /^sha256:(?!0{64}$)[0-9a-f]{64}$/;
 
@@ -16,6 +17,7 @@ export interface JsonHttpsDispatchAdapterOptions {
   readonly timeoutMs?: number;
   readonly maxResponseBytes?: number;
   readonly monotonicNow?: () => number;
+  readonly latencyRecorder?: AuthorityLatencyRecorder;
 }
 
 /** Dispatches only to the operator-pinned HTTPS endpoint named by the sealed effect. */
@@ -44,7 +46,7 @@ export function createJsonHttpsDispatchAdapter(options: JsonHttpsDispatchAdapter
         if (routeAuthority?.routeDigest && routeAuthority.routeDigest !== authorityDigest(route)) return Object.freeze({ kind: "definitive-failure" as const, resultDigest: authorityDigest({ v: "reelier.https-dispatch/v1", status: "route-authority-digest-mismatch", endpointId }) });
       }
       try {
-        const response = await executeJsonHttpsEffect(state.effect as never, endpoint, options.secrets, { timeoutMs: options.timeoutMs, maxResponseBytes: options.maxResponseBytes });
+        const response = await executeJsonHttpsEffect(state.effect as never, endpoint, options.secrets, { timeoutMs: options.timeoutMs, maxResponseBytes: options.maxResponseBytes, latencyRecorder: options.latencyRecorder });
         const profile = route ? lookupHttpResponseSemanticsProfile(profiles, route.responseSemanticsProfileId)! : { v: "reelier.http-response-semantics/v1" as const, profileId: "legacy.2xx", acknowledgedStatuses: [200, 201, 202, 203, 204, 205, 206, 207, 208, 226] };
         const resultDigest = authorityDigest({ v: "reelier.https-response/v1", endpointId, status: response.status, headers: response.headers, bodyDigest: authorityDigest(response.body.toString("base64")), ...(route ? { responseSemanticsProfileDigest: httpResponseSemanticsProfileDigest(profile) } : {}) });
         const kind = malformedJsonResponse(response) ? "ambiguous" as const : classifyHttpResponse(profile, { kind: "response", status: response.status });
@@ -62,7 +64,7 @@ export function createJsonHttpsDispatchAdapter(options: JsonHttpsDispatchAdapter
       const routeAuthority = state.reservation.intent.routeAuthority;
       const expiresAt = typeof (state.reservation.intent as Record<string, unknown>).expiresAt === "string" ? String((state.reservation.intent as Record<string, unknown>).expiresAt) : new Date(Date.now() + (options.timeoutMs ?? 15_000)).toISOString();
       const authorityGeneration = typeof (state.reservation.intent as Record<string, unknown>).authorityStateDigest === "string" ? String((state.reservation.intent as Record<string, unknown>).authorityStateDigest) : "legacy";
-      return prepareJsonHttpsEffect(state.effect as never, endpoint, options.secrets, { timeoutMs: options.timeoutMs, maxResponseBytes: options.maxResponseBytes, monotonicNow: options.monotonicNow, responseSemanticsProfiles: profiles, ...(options.operatorConfigurationDigest ? { operatorConfigurationDigest: options.operatorConfigurationDigest } : {}), ...(routeAuthority ? { routeAuthority } : {}), reservationId: state.reservation.reservationId, allocationId: context?.allocationId ?? "unbound", authorityGeneration, authorityExpiresAt: expiresAt });
+      return prepareJsonHttpsEffect(state.effect as never, endpoint, options.secrets, { timeoutMs: options.timeoutMs, maxResponseBytes: options.maxResponseBytes, monotonicNow: options.monotonicNow, latencyRecorder: options.latencyRecorder, responseSemanticsProfiles: profiles, ...(options.operatorConfigurationDigest ? { operatorConfigurationDigest: options.operatorConfigurationDigest } : {}), ...(routeAuthority ? { routeAuthority } : {}), reservationId: state.reservation.reservationId, allocationId: context?.allocationId ?? "unbound", authorityGeneration, authorityExpiresAt: expiresAt });
     },
   });
 }
