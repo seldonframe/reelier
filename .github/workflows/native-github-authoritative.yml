@@ -53,6 +53,7 @@ jobs:
           BUNDLE_PATH: ${{ inputs.bundle_path }}
         shell: bash
         run: |
+          test "$(git rev-parse HEAD)" = "$NATIVE_PUBLIC_COMMIT"
           test "$EXPECTED_CANDIDATE_ID" = "$NATIVE_CANDIDATE_ID"
           test "$NATIVE_PUBLIC_COMMIT" = "03ac48e"
           test "$NATIVE_TARBALL_DIGEST" = "sha256:0659c2f402002d733dfd2621c5d8cce5df301975606a3fcb1b802e492bec5309"
