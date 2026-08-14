@@ -1,9 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFile, readdir, rename, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import type { VerifiedAuthorityReceiptBundle } from "../../src/authority/verify.js";
-import { authorityDigest } from "../../src/authority/wire.js";
+import { runAuthorityCommand } from "../../src/authority/cli.js";
+import { verifyCertificationTaskReceiptGraph } from "../../src/authority/certification/task-receipt-graph.js";
+import { __testSetAuthorityCellHostPlatform } from "../../src/authority/host/platform.js";
+import { authorityCanonicalBytes, authorityDigest } from "../../src/authority/wire.js";
 import { continuityEventsFromVerifiedAuthorityReceipt } from "../../src/continuity/authority-bridge.js";
-import { digest } from "./fixtures.js";
+import { FsContinuityLedger } from "../../src/continuity/fs-ledger.js";
+import { digest, withRoot } from "./fixtures.js";
 
 function deepFreeze<T>(value: T): T {
   if (value && typeof value === "object" && !Object.isFrozen(value)) {
@@ -56,87 +62,116 @@ function verifiedReceipt(): VerifiedAuthorityReceiptBundle {
   }) as unknown as VerifiedAuthorityReceiptBundle;
 }
 
-test("verified Path C evidence becomes a deterministic continuity consequence timeline", () => {
-  const verified = verifiedReceipt();
-  const evidenceDigest = verified.bundle.evidence.digest;
-  const receiptDigest = verified.bundle.receipt.digest;
-  assert.deepEqual(continuityEventsFromVerifiedAuthorityReceipt(verified), [
-    {
-      type: "consequence.observed",
-      eventId: digest("1"),
-      semanticOperationId: digest("4"),
-      reservationId: "reservation_1",
-      state: "reserved",
-      authorityEvidenceDigest: evidenceDigest,
-      receiptDigest,
-    },
-    {
-      type: "consequence.observed",
-      eventId: digest("2"),
-      semanticOperationId: digest("4"),
-      reservationId: "reservation_1",
-      state: "dispatched",
-      authorityEvidenceDigest: evidenceDigest,
-      receiptDigest,
-    },
-    {
-      type: "consequence.observed",
-      eventId: digest("3"),
-      semanticOperationId: digest("4"),
-      reservationId: "reservation_1",
-      state: "ambiguous",
-      authorityEvidenceDigest: evidenceDigest,
-      receiptDigest,
-    },
-  ]);
-});
-
-test("the continuity bridge refuses a substituted verified-bundle digest", () => {
-  const verified = verifiedReceipt();
-  const substituted = Object.freeze({ ...verified, digest: digest("0") });
+test("a frozen self-hashed structural receipt cannot impersonate verifier-produced native evidence", () => {
   assert.throws(
-    () => continuityEventsFromVerifiedAuthorityReceipt(substituted),
-    /verified authority receipt bundle digest mismatch/i,
+    () => continuityEventsFromVerifiedAuthorityReceipt(verifiedReceipt() as never),
+    /native|verifier-produced|provenance|brand/i,
   );
 });
 
-test("the continuity bridge refuses a broken receipt-to-evidence edge", () => {
-  const verified = verifiedReceipt();
-  const receiptValue = { ...verified.bundle.receipt.value, evidenceDigest: digest("0") };
-  const bundle = deepFreeze({
-    ...verified.bundle,
-    receipt: {
-      ...verified.bundle.receipt,
-      digest: authorityDigest(receiptValue),
-      value: receiptValue,
-    },
+test("the bridge preserves the verifier-produced native outcome proof edges", async () => {
+  await withRoot(async root => {
+    const output = join(root, "factory-evidence");
+    const stdout: string[] = [];
+    const originalLog = console.log;
+    const restorePlatform = __testSetAuthorityCellHostPlatform("linux");
+    console.log = (...values: unknown[]) => { stdout.push(values.join(" ")); };
+    try {
+      const code = await runAuthorityCommand({ positional: ["certify", "factory-journey"], flags: new Set(), opts: { out: output } });
+      assert.equal(code, 0);
+    } finally {
+      console.log = originalLog;
+      restorePlatform();
+    }
+    const line = JSON.parse(stdout.at(-1) ?? "null") as { graphPath: string; trustPath: string };
+    const graph = JSON.parse(await readFile(line.graphPath, "utf8"));
+    const trustPin = JSON.parse(await readFile(line.trustPath, "utf8"));
+    const signerId = trustPin.keyDescriptors.find((item: any) => item.role === "authority-cell" && item.purpose === "authority-evidence")?.keyId;
+    const currentTrustObservation = {
+      v: "reelier.portable-current-trust-observation/v1",
+      observedAt: "2026-08-11T20:00:00.000Z",
+      expiresAt: "2026-08-11T21:00:00.000Z",
+      activeAuthorityEvidenceSignerIds: [signerId],
+    };
+    const verified = verifyCertificationTaskReceiptGraph(graph, {
+      trustPin,
+      currentTrustObservation,
+      now: new Date("2026-08-11T20:10:00.000Z"),
+      expectedResponseSemanticsProfile: {
+        v: "reelier.http-response-semantics/v1",
+        profileId: "github.issue-labels.hermetic-v1",
+        acknowledgedStatuses: [200],
+      },
+    });
+    const events = continuityEventsFromVerifiedAuthorityReceipt(verified as never);
+    assert.ok(events.length > 0);
+    const event = events.at(-1)! as any;
+    const publication = graph.portableOutcomeEvidence[0];
+    const requestId = graph.postStateEvidence[0].requestId;
+    const requestReceipts = graph.receipts.filter((item: any) => item.receipt.value.decisionContext.requestId === requestId);
+    const terminalReceipt = requestReceipts.at(-1);
+    assert.equal(event.semanticOperationId, publication.requestId);
+    assert.equal(event.reservationId, terminalReceipt.evidence.value.reservationId);
+    assert.equal(event.verification.status, "verified");
+    assert.equal(event.verification.graphDigest, authorityDigest(graph));
+    assert.equal(event.verification.routeAuthorityDigest, publication.evidence.routeAuthorityDigest);
+    assert.equal(event.verification.authenticatedIdentityDigest, authorityDigest(publication.authenticatedIdentity));
+    assert.equal(event.verification.materializedRequestDigest, publication.evidence.materializedRequestDigest);
+    assert.equal(event.verification.responseSemanticsProfileDigest, publication.evidence.responseSemanticsProfileDigest);
+    assert.equal(event.verification.preStateEvidenceDigest, publication.evidence.preStateEvidenceDigest);
+    assert.equal(event.verification.postStateEvidenceDigest, publication.evidence.postStateEvidenceDigest);
+    assert.deepEqual(event.verification.claimStatuses, terminalReceipt.receipt.value.claims);
+    assert.deepEqual(event.verification.noResend, { status: "verified", resendCount: 0 });
+    assert.equal(event.verification.receiptChainDigest, publication.receiptChainDigest);
+    assert.equal(event.verification.cleanupParentReceiptDigest, publication.evidence.cleanupParentReceiptDigest);
+    assert.equal(event.verification.terminalDigest, publication.terminalDigest);
+    assert.equal(event.verification.currentTrustObservationDigest, publication.currentTrustObservationDigest);
+
+    const actor = {
+      v: "reelier.authenticated-workload/v1" as const,
+      taskId: graph.taskId,
+      principalId: "principal_continuity",
+      workloadId: "workload_continuity",
+      runtimeSessionId: "session_continuity",
+      harnessId: "codex",
+    };
+    const ledger = new FsContinuityLedger(join(root, "continuity"));
+    const opened = await ledger.append(actor, {
+      v: "reelier.continuity-checkpoint/v1",
+      taskId: graph.taskId,
+      expectedCursor: 0,
+      actorPrincipalId: actor.principalId,
+      workloadId: actor.workloadId,
+      jobCardDigest: digest("a"),
+      authoritySnapshotDigest: digest("b"),
+      proposedEvents: [{ type: "task.opened", eventId: "event_opened", outcome: "Complete the governed task", completionProjection: "Verified provider projection", nonGoals: [] }],
+      evidenceRefs: [],
+    });
+    assert.equal(opened.ok, true);
+    const appended = await (ledger as any).appendVerifiedAuthority(actor, {
+      taskId: graph.taskId,
+      expectedCursor: 1,
+      actorPrincipalId: actor.principalId,
+      workloadId: actor.workloadId,
+      jobCardDigest: digest("a"),
+    }, verified);
+    assert.equal(appended.ok, true);
+    const restarted = await new FsContinuityLedger(join(root, "continuity")).read(graph.taskId);
+    assert.equal((restarted.state?.consequences.values().next().value as any)?.verification.status, "verified");
+
+    const taskDirectory = join(root, "continuity", graph.taskId);
+    const segmentNames = (await readdir(taskDirectory)).filter((name) => name.endsWith(".json")).sort();
+    const authoritySegmentName = segmentNames.at(-1)!;
+    const authoritySegmentPath = join(taskDirectory, authoritySegmentName);
+    const authoritySegment = JSON.parse(await readFile(authoritySegmentPath, "utf8"));
+    authoritySegment.authorityImports[0].graph.taskId = `${graph.taskId}_tampered`;
+    const tamperedDigest = authorityDigest(authoritySegment);
+    const tamperedPath = join(taskDirectory, `${authoritySegmentName.slice(0, 16)}-${tamperedDigest.slice("sha256:".length)}.json`);
+    await writeFile(tamperedPath, authorityCanonicalBytes(authoritySegment));
+    await rename(authoritySegmentPath, join(root, "replaced-authority-segment.json"));
+    await assert.rejects(
+      () => new FsContinuityLedger(join(root, "continuity")).read(graph.taskId),
+      /corruption.*(signature|lineage|task|portable|graph)/i,
+    );
   });
-  const substituted = Object.freeze({ ...verified, bundle, digest: authorityDigest(bundle) });
-  assert.throws(
-    () => continuityEventsFromVerifiedAuthorityReceipt(substituted),
-    /receipt evidence digest mismatch/i,
-  );
-});
-
-test("the continuity bridge refuses a substituted decision context", () => {
-  const verified = verifiedReceipt();
-  const decisionContext = { ...verified.bundle.receipt.value.decisionContext, requestKey: digest("6") };
-  const receiptValue = {
-    ...verified.bundle.receipt.value,
-    decisionContext,
-    decisionContextDigest: authorityDigest(decisionContext),
-  };
-  const bundle = deepFreeze({
-    ...verified.bundle,
-    receipt: {
-      ...verified.bundle.receipt,
-      digest: authorityDigest(receiptValue),
-      value: receiptValue,
-    },
-  });
-  const substituted = Object.freeze({ ...verified, bundle, digest: authorityDigest(bundle) });
-  assert.throws(
-    () => continuityEventsFromVerifiedAuthorityReceipt(substituted),
-    /decision context edge mismatch/i,
-  );
 });

@@ -1,5 +1,6 @@
 import type { LedgerState } from "../authority/ledger.js";
 import type { ClaimStatus } from "../authority/types.js";
+import type { VerifiedNativeOutcomeProjectionV1 } from "../authority/certification/task-receipt-graph.js";
 
 export interface AuthenticatedWorkloadV1 {
   readonly v: "reelier.authenticated-workload/v1";
@@ -10,6 +11,12 @@ export interface AuthenticatedWorkloadV1 {
   readonly harnessId: string;
 }
 
+export interface UncheckedConsequenceProofV1 {
+  readonly v: "reelier.unchecked-consequence-proof/v1";
+  readonly status: "unchecked";
+  readonly evidenceDigest: string | null;
+}
+
 export type ContinuityEventV1 =
   | Readonly<{ type: "task.opened"; eventId: string; outcome: string; completionProjection: string; nonGoals: readonly string[] }>
   | Readonly<{ type: "decision.recorded"; eventId: string; decisionId: string; statement: string; decidedBy: string; binding: boolean; evidenceDigest: string | null }>
@@ -18,7 +25,8 @@ export type ContinuityEventV1 =
   | Readonly<{ type: "obligation.transitioned"; eventId: string; obligationId: string; to: "blocked" | "satisfied" | "abandoned"; reason: string; evidenceDigest: string | null }>
   | Readonly<{ type: "claim.recorded"; eventId: string; claimId: string; statement: string; status: ClaimStatus; evidenceDigest: string | null }>
   | Readonly<{ type: "claim.updated"; eventId: string; claimId: string; status: ClaimStatus; evidenceDigest: string | null }>
-  | Readonly<{ type: "consequence.observed"; eventId: string; semanticOperationId: string; reservationId: string; state: Exclude<LedgerState, "issued">; authorityEvidenceDigest: string; receiptDigest: string | null }>
+  | Readonly<{ type: "consequence.noted"; eventId: string; semanticOperationId: string; reservationId: string; state: Exclude<LedgerState, "issued">; evidenceDigest: string | null }>
+  | Readonly<{ type: "consequence.observed"; eventId: string; semanticOperationId: string; reservationId: string; state: Exclude<LedgerState, "issued">; authorityEvidenceDigest: string; receiptDigest: string; verification: VerifiedNativeOutcomeProjectionV1["verification"] }>
   | Readonly<{ type: "exception.opened"; eventId: string; exceptionId: string; reason: string; evidenceDigest: string | null }>
   | Readonly<{ type: "exception.resolved"; eventId: string; exceptionId: string; resolution: string; evidenceDigest: string }>;
 

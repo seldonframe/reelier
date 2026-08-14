@@ -18,7 +18,7 @@ function obligation(item: ObligationProjectionV1): string {
 }
 
 function consequence(item: ConsequenceProjectionV1): string {
-  return `${item.semanticOperationId} [${item.state}]: reservation ${item.reservationId}; authority evidence ${item.authorityEvidenceDigest}; receipt ${item.receiptDigest ?? "absent"}`;
+  return `${item.semanticOperationId} [${item.state}; ${item.verification.status}]: reservation ${item.reservationId}; authority evidence ${item.authorityEvidenceDigest ?? "absent"}; receipt ${item.receiptDigest ?? "absent"}`;
 }
 
 function claim(item: ClaimProjectionV1): string {
@@ -35,6 +35,7 @@ export function renderResumeMarkdown(projection: ResumeProjectionV1): string {
   ];
   const uncertainty = [
     ...sections.evidenceAndUncertainty.uncertainClaims.map(claim),
+    ...sections.evidenceAndUncertainty.uncertainConsequences.map(consequence),
     ...sections.evidenceAndUncertainty.unresolvedExceptions.map((item) => `${item.exceptionId} [open]: ${item.reason}; evidence ${item.evidenceDigest ?? "absent"}`),
   ];
   return [

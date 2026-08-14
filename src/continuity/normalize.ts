@@ -141,17 +141,29 @@ function normalizeEvent(value: unknown, index: number): ContinuityEventV1 {
     case "claim.recorded": {
       const eventId = eventBase(record, ["claimId", "statement", "status", "evidenceDigest"], label);
       const status = claimStatus(record.status, `${label}.status`);
+      if (status === "verified") throw new ContinuityValidationError("public checkpoint verified claim evidence requires verifier provenance");
       return { type, eventId, claimId: identifier(record.claimId, `${label}.claimId`), statement: text(record.statement, `${label}.statement`), status, evidenceDigest: claimEvidence(status, record.evidenceDigest, `${label}.evidenceDigest`) };
     }
     case "claim.updated": {
       const eventId = eventBase(record, ["claimId", "status", "evidenceDigest"], label);
       const status = claimStatus(record.status, `${label}.status`);
+      if (status === "verified") throw new ContinuityValidationError("public checkpoint verified claim evidence requires verifier provenance");
       return { type, eventId, claimId: identifier(record.claimId, `${label}.claimId`), status, evidenceDigest: claimEvidence(status, record.evidenceDigest, `${label}.evidenceDigest`) };
     }
     case "consequence.observed": {
-      const eventId = eventBase(record, ["semanticOperationId", "reservationId", "state", "authorityEvidenceDigest", "receiptDigest"], label);
+      throw new ContinuityValidationError("public checkpoint authority consequences require verifier provenance");
+    }
+    case "consequence.noted": {
+      const eventId = eventBase(record, ["semanticOperationId", "reservationId", "state", "evidenceDigest"], label);
       if (typeof record.state !== "string" || !CONSEQUENCE_STATES.has(record.state)) throw new ContinuityValidationError(`${label}.state is invalid`);
-      return { type, eventId, semanticOperationId: identifier(record.semanticOperationId, `${label}.semanticOperationId`), reservationId: identifier(record.reservationId, `${label}.reservationId`), state: record.state as Exclude<import("../authority/ledger.js").LedgerState, "issued">, authorityEvidenceDigest: digest(record.authorityEvidenceDigest, `${label}.authorityEvidenceDigest`), receiptDigest: nullableDigest(record.receiptDigest, `${label}.receiptDigest`) };
+      return {
+        type,
+        eventId,
+        semanticOperationId: identifier(record.semanticOperationId, `${label}.semanticOperationId`),
+        reservationId: identifier(record.reservationId, `${label}.reservationId`),
+        state: record.state as Exclude<import("../authority/ledger.js").LedgerState, "issued">,
+        evidenceDigest: nullableDigest(record.evidenceDigest, `${label}.evidenceDigest`),
+      };
     }
     case "exception.opened": {
       const eventId = eventBase(record, ["exceptionId", "reason", "evidenceDigest"], label);

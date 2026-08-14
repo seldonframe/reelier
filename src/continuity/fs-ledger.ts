@@ -11,13 +11,22 @@ import {
   rmdir,
 } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
+import {
+  createVerifiedNativeOutcomeReplayArtifact,
+  readVerifiedNativeOutcomeProjections,
+  verifyNativeOutcomeReplayArtifact,
+  type VerifiedCertificationTaskReceiptGraphV1,
+  type VerifiedNativeOutcomeReplayArtifactV1,
+} from "../authority/certification/task-receipt-graph.js";
 import { authorityCanonicalBytes, authorityDigest } from "../authority/wire.js";
+import { continuityEventsFromVerifiedAuthorityReceipt } from "./authority-bridge.js";
 import { foldContinuity, type ContinuityStateV1 } from "./fold.js";
 import { normalizeContinuityCheckpoint } from "./normalize.js";
 import type {
   AuthenticatedWorkloadV1,
   ContinuityCheckpointV1,
   ContinuityEventV1,
+  NormalizedCheckpointV1,
 } from "./types.js";
 
 const TASK_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/u;
@@ -54,8 +63,17 @@ export interface ContinuitySegmentV1 {
   readonly jobCardDigest: string;
   readonly authoritySnapshotDigest: string;
   readonly events: readonly ContinuityEventV1[];
+  readonly authorityImports: readonly VerifiedNativeOutcomeReplayArtifactV1[];
   readonly evidenceRefs: readonly string[];
   readonly agentMemo?: Readonly<{ status: "unchecked"; text: string }>;
+}
+
+export interface VerifiedAuthorityContinuityAppendV1 {
+  readonly taskId: string;
+  readonly expectedCursor: number;
+  readonly actorPrincipalId: string;
+  readonly workloadId: string;
+  readonly jobCardDigest: string;
 }
 
 export interface ContinuitySnapshotV1 {
@@ -105,6 +123,21 @@ function record(value: unknown): Record<string, unknown> {
 
 function withEvidence(state: ContinuityStateV1, segmentEvidence: readonly string[]): ContinuityStateV1 {
   return { ...state, evidenceRefs: [...new Set([...state.evidenceRefs, ...segmentEvidence])].sort() };
+}
+
+function digestValues(value: unknown, target = new Set<string>()): Set<string> {
+  if (typeof value === "string") {
+    if (DIGEST.test(value)) target.add(value);
+    return target;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) digestValues(item, target);
+    return target;
+  }
+  if (value !== null && typeof value === "object") {
+    for (const item of Object.values(value)) digestValues(item, target);
+  }
+  return target;
 }
 
 async function syncDirectoryBestEffort(directory: string): Promise<void> {
@@ -188,14 +221,16 @@ export class FsContinuityLedger {
       if (segmentDigest !== `sha256:${match[2]}`) throw new ContinuityLedgerCorruptionError(`segment digest mismatch: ${name}`);
 
       const body = record(parsed);
-      exactKeys(body, ["v", "taskId", "cursor", "previousSegmentDigest", "actor", "jobCardDigest", "authoritySnapshotDigest", "events", "evidenceRefs"], ["agentMemo"]);
+      exactKeys(body, ["v", "taskId", "cursor", "previousSegmentDigest", "actor", "jobCardDigest", "authoritySnapshotDigest", "events", "authorityImports", "evidenceRefs"], ["agentMemo"]);
       if (body.v !== "reelier.continuity-segment/v1" || body.taskId !== taskId || body.cursor !== cursor) {
         throw new ContinuityLedgerCorruptionError(`segment identity mismatch: ${name}`);
       }
       if (body.previousSegmentDigest !== previousSegmentDigest) throw new ContinuityLedgerCorruptionError(`broken previous digest chain: ${name}`);
       if (previousSegmentDigest !== null && !DIGEST.test(previousSegmentDigest)) throw new ContinuityLedgerCorruptionError(`invalid previous segment digest: ${name}`);
 
-      let normalized;
+      let normalized: NormalizedCheckpointV1;
+      let authorityImports: readonly VerifiedNativeOutcomeReplayArtifactV1[];
+      let importedEvents: readonly ContinuityEventV1[];
       try {
         normalized = normalizeContinuityCheckpoint({
           v: "reelier.continuity-checkpoint/v1",
@@ -209,6 +244,21 @@ export class FsContinuityLedger {
           evidenceRefs: body.evidenceRefs,
           ...(body.agentMemo === undefined ? {} : { agentMemo: body.agentMemo }),
         }, body.actor);
+        if (!Array.isArray(body.authorityImports)) throw new TypeError("authority imports must be an array");
+        const verifiedImports = body.authorityImports.map((item) => {
+          const verified = verifyNativeOutcomeReplayArtifact(item);
+          const projections = readVerifiedNativeOutcomeProjections(verified);
+          if (projections.length === 0 || projections.some((projection) => projection.taskId !== taskId)) {
+            throw new TypeError("verified native outcome task does not match continuity task");
+          }
+          const replay = createVerifiedNativeOutcomeReplayArtifact(verified);
+          if (replay.authoritySnapshotDigest !== normalized.checkpoint.authoritySnapshotDigest) {
+            throw new TypeError("verified native outcome authority snapshot does not match segment");
+          }
+          return { replay, events: continuityEventsFromVerifiedAuthorityReceipt(verified) };
+        });
+        authorityImports = Object.freeze(verifiedImports.map((item) => item.replay));
+        importedEvents = Object.freeze(verifiedImports.flatMap((item) => item.events));
       } catch (error) {
         throw new ContinuityLedgerCorruptionError(`invalid segment payload ${name}: ${(error as Error).message}`);
       }
@@ -221,13 +271,14 @@ export class FsContinuityLedger {
         jobCardDigest: normalized.checkpoint.jobCardDigest,
         authoritySnapshotDigest: normalized.checkpoint.authoritySnapshotDigest,
         events: normalized.checkpoint.proposedEvents,
+        authorityImports,
         evidenceRefs: normalized.checkpoint.evidenceRefs,
         ...(normalized.checkpoint.agentMemo === undefined ? {} : { agentMemo: normalized.checkpoint.agentMemo }),
       };
       if (authorityCanonicalBytes(normalizedSegment).compare(authorityCanonicalBytes(parsed)) !== 0) {
         throw new ContinuityLedgerCorruptionError(`segment is not in normalized form: ${name}`);
       }
-      allEvents.push(...normalizedSegment.events);
+      allEvents.push(...normalizedSegment.events, ...importedEvents);
       for (const evidence of normalizedSegment.evidenceRefs) allEvidence.add(evidence);
       previousSegmentDigest = segmentDigest;
       latestJobCardDigest = normalizedSegment.jobCardDigest;
@@ -255,6 +306,36 @@ export class FsContinuityLedger {
 
   async append(actor: AuthenticatedWorkloadV1, checkpointValue: ContinuityCheckpointV1): Promise<ContinuityAppendResultV1> {
     const normalized = normalizeContinuityCheckpoint(checkpointValue, actor);
+    return this.#appendNormalized(normalized, [], []);
+  }
+
+  async appendVerifiedAuthority(
+    actor: AuthenticatedWorkloadV1,
+    checkpoint: VerifiedAuthorityContinuityAppendV1,
+    verified: VerifiedCertificationTaskReceiptGraphV1,
+  ): Promise<ContinuityAppendResultV1> {
+    const projections = readVerifiedNativeOutcomeProjections(verified);
+    if (projections.length === 0 || projections.some((projection) => projection.taskId !== checkpoint.taskId)) {
+      throw new ContinuityLedgerError("verified native outcome task does not match continuity task");
+    }
+    const replay = createVerifiedNativeOutcomeReplayArtifact(verified);
+    const events = continuityEventsFromVerifiedAuthorityReceipt(verified);
+    const evidenceRefs = [...digestValues(projections)].sort();
+    const normalized = normalizeContinuityCheckpoint({
+      v: "reelier.continuity-checkpoint/v1",
+      ...checkpoint,
+      authoritySnapshotDigest: replay.authoritySnapshotDigest,
+      proposedEvents: [],
+      evidenceRefs,
+    }, actor);
+    return this.#appendNormalized(normalized, [replay], events);
+  }
+
+  async #appendNormalized(
+    normalized: NormalizedCheckpointV1,
+    authorityImports: readonly VerifiedNativeOutcomeReplayArtifactV1[],
+    importedEvents: readonly ContinuityEventV1[],
+  ): Promise<ContinuityAppendResultV1> {
     const taskId = normalized.checkpoint.taskId;
     validateTaskId(taskId);
     const taskDirectory = join(this.#root, taskId);
@@ -286,7 +367,7 @@ export class FsContinuityLedger {
           actualCursor: current.cursor,
         };
       }
-      const allEvents = [...(current.state?.events ?? []), ...normalized.checkpoint.proposedEvents];
+      const allEvents = [...(current.state?.events ?? []), ...normalized.checkpoint.proposedEvents, ...importedEvents];
       const state = withEvidence(
         foldContinuity(allEvents),
         [...(current.state?.evidenceRefs ?? []), ...normalized.checkpoint.evidenceRefs],
@@ -301,6 +382,7 @@ export class FsContinuityLedger {
         jobCardDigest: normalized.checkpoint.jobCardDigest,
         authoritySnapshotDigest: normalized.checkpoint.authoritySnapshotDigest,
         events: normalized.checkpoint.proposedEvents,
+        authorityImports,
         evidenceRefs: normalized.checkpoint.evidenceRefs,
         ...(normalized.checkpoint.agentMemo === undefined ? {} : { agentMemo: normalized.checkpoint.agentMemo }),
       };

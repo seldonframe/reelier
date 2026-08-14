@@ -4,11 +4,9 @@ import { createContinuityRuntimeAdapter } from "../../src/continuity/adapter.js"
 import { FsContinuityLedger } from "../../src/continuity/fs-ledger.js";
 import {
   actor,
-  ambiguousConsequence,
   checkpoint,
-  dispatchedConsequence,
+  consequenceNote,
   opened,
-  reservedConsequence,
   successorActor,
   withRoot,
 } from "./fixtures.js";
@@ -27,9 +25,9 @@ test("a replacement harness resumes ambiguity without issuing another Outcome", 
     });
     await first.checkpoint(checkpoint(0, [
       opened,
-      reservedConsequence,
-      dispatchedConsequence,
-      ambiguousConsequence,
+      consequenceNote("event_2", "reserved"),
+      consequenceNote("event_3", "dispatched"),
+      consequenceNote("event_4", "ambiguous"),
     ]));
 
     const successor = createContinuityRuntimeAdapter({
@@ -40,6 +38,7 @@ test("a replacement harness resumes ambiguity without issuing another Outcome", 
     const resumed = await successor.open("task_1");
     assert.equal(resumed.taskId, "task_1");
     assert.deepEqual(resumed.sections.nextSafeActions, ["reconcile-before-retry"]);
+    assert.equal(resumed.sections.evidenceAndUncertainty.uncertainConsequences[0]?.verification.status, "unchecked");
     assert.equal(requests, 0);
   });
 });

@@ -1,6 +1,8 @@
 import type { ClaimStatus } from "../authority/types.js";
+import type { VerifiedNativeOutcomeProjectionV1 } from "../authority/certification/task-receipt-graph.js";
 import type { ObligationStateV1 } from "./fold.js";
 import type { ContinuitySnapshotV1 } from "./fs-ledger.js";
+import type { UncheckedConsequenceProofV1 } from "./types.js";
 
 export interface OutcomeOwedProjectionV1 {
   readonly outcome: string;
@@ -36,8 +38,9 @@ export interface ConsequenceProjectionV1 {
   readonly semanticOperationId: string;
   readonly reservationId: string;
   readonly state: string;
-  readonly authorityEvidenceDigest: string;
+  readonly authorityEvidenceDigest: string | null;
   readonly receiptDigest: string | null;
+  readonly verification: VerifiedNativeOutcomeProjectionV1["verification"] | UncheckedConsequenceProofV1;
 }
 
 export interface RemainingEnvelopeProjectionV1 {
@@ -63,6 +66,7 @@ export interface ExceptionProjectionV1 {
 export interface EvidenceProjectionV1 {
   readonly evidenceRefs: readonly string[];
   readonly uncertainClaims: readonly ClaimProjectionV1[];
+  readonly uncertainConsequences: readonly ConsequenceProjectionV1[];
   readonly unresolvedExceptions: readonly ExceptionProjectionV1[];
 }
 
@@ -142,6 +146,7 @@ export function createResumeProjection(snapshot: ContinuitySnapshotV1): ResumePr
     state: item.state,
     authorityEvidenceDigest: item.authorityEvidenceDigest,
     receiptDigest: item.receiptDigest,
+    verification: item.verification,
   }));
   const unresolvedExceptions = [...state.exceptions.values()]
     .filter((item) => item.state === "open")
@@ -151,6 +156,7 @@ export function createResumeProjection(snapshot: ContinuitySnapshotV1): ResumePr
     uncertainClaims: [...state.claims.values()]
       .filter((item) => item.status !== "verified")
       .map((item): ClaimProjectionV1 => ({ claimId: item.claimId, statement: item.statement, status: item.status, evidenceDigest: item.evidenceDigest })),
+    uncertainConsequences: consequentialState.filter((item) => item.verification.status !== "verified"),
     unresolvedExceptions,
   };
   return {
