@@ -61,6 +61,7 @@ export function createJsonHttpsRouteRegistry(routes: readonly JsonHttpsRouteV1[]
   for (const route of parsed) {
     const readRoute = byEndpointId.get(route.readEndpointId);
     if (!readRoute || !readRoute.allowedMethods.includes("GET")) throw new TypeError("JSON HTTPS route read endpoint must be a registered GET route");
+    if (readRoute.providerId !== route.providerId || readRoute.connectorId !== route.connectorId || readRoute.accountId !== route.accountId || readRoute.providerAccountIdentity !== route.providerAccountIdentity || readRoute.origin !== route.origin || readRoute.credentialSlotId !== route.credentialSlotId || readRoute.egressPolicyDigest !== route.egressPolicyDigest) throw new TypeError("JSON HTTPS route read endpoint equivalence mismatch");
   }
   return Object.freeze({ route: (endpointId: string) => typeof endpointId === "string" ? byEndpointId.get(endpointId) : undefined });
 }
