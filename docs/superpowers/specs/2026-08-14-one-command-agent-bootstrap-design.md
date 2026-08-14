@@ -223,12 +223,14 @@ the receipt cannot declare its own signer current.
 `ProfileGovernedAuthorityReceiptV1` retains the four profile artifacts and the unchanged inner
 `AuthorityReceiptBundle`. It adds `authorityBindingEvidence` containing the exact signed Job Card,
 the parsed deployment snapshot, stable route scope, exact persisted dynamic
-`RouteAuthoritySnapshotV1`, and `SignedProfileAuthorityBindingV1`. Existing outer edges remain and
-add `authorityBindingDigest`. The verifier runs, in order: the existing inner verifier; the profile
-verifier against profile trust only; signed Job Card verification against current external Job Card
-trust; closed deployment/scope parsing; dynamic-snapshot parsing and stable projection equality;
-external Authority trust replay and evidence-signer activity; binding signature verification; then
-every activation, inner-contract, binding, artifact, and edge digest join. It compares activation
+`RouteAuthoritySnapshotV1`, the later-amendment artifact-key binding/commitment, and
+`SignedProfileAuthorityBindingV1`. Existing outer edges remain and add `authorityBindingDigest`.
+The verifier preserves the original inner-kernel-first trust requirement through the executable
+fourth-amendment order: strictly parse the outer envelope only to derive four provisional artifact
+roots; run the unchanged inner verifier; externally authorize those roots plus profile, Job Card,
+readiness, and current Authority trust; verify exact signed artifact and outer-binding identities;
+then perform deployment/scope projection and every activation, inner-contract, binding, artifact,
+and edge digest join. It compares activation
 `contractDigest` directly to `inner.bundle.contract.digest` and never upgrades or rewrites an inner
 claim.
 
@@ -266,8 +268,9 @@ type-only: `ProducedReceiptKindV1`, `PurposeBoundReceiptSignerV1<K>`, and
 `sourceBundle`/`source-bundle`, `compiledCapability`/`compiled-capability`,
 `transportEffect`/`transport-effect`, `evidence`/`authority-evidence`,
 `receipt`/`authority-receipt`, and `packManifest`/`pack-manifest`. Every signer is an exact own-data
-record `{ purpose, signerId, publicKey, sign({ purpose, digest }) }`; the six keys are current for
-their exact purpose under external Authority trust and distinct across purposes. Private keys never
+record `{ purpose, signerId, publicKey, sign({ purpose, digest }) }`; the six keys are authorized for
+their exact purpose under the third-amendment artifact binding or direct external Authority trust,
+as applicable, and distinct across purposes. Private keys never
 enter Reelier. The existing profile binding signer remains separately purpose-bound to
 `authority-evidence` and distinct from the six receipt keys. All seven are distinct from profile
 operator/certifier, Job Card human, local-gate, topology, lease, and identity keys. Governed
@@ -277,8 +280,8 @@ all-or-nothing option pair.
 A package-private `AuthorityReceiptFoundationsV1` carries the exact already signed selected
 contract, exact signed delegation chain, exact signed gate event, and parsed pack manifest.
 `constructAuthorityReceiptBundle` takes only exact phase, dispatch state, outcome, one intrinsic
-`observedAt`, those foundations, the six-signer authority, and optional prior/recovered receipt
-state. It generates and signs only source bundle, compiled capability, transport effect, evidence,
+`observedAt`, those foundations, the fourth-amendment opaque validated six-signer handle, and
+optional prior/recovered receipt state. It generates and signs only source bundle, compiled capability, transport effect, evidence,
 receipt, and pack manifest artifacts; parses and verifies every returned signature; and delegates
 assembly to the existing `createAuthorityReceiptBundle`. It does not publish, recover, send,
 verify a completed bundle, or create trust roots. The certification lifecycle keeps its public API,
@@ -325,7 +328,7 @@ snapshot/intent exists and immediately before `ledger.reserve`. With no hook, le
 traces, and behavior are unchanged. Each check uses one intrinsic observation time, cold reloads the
 fixed profile governance, rereads external Job Card trust/current Authority events, requires
 unchanged physical root/manifest/profile/activation bindings and both fresh trust heads, requires
-all receipt/binding signers current and distinct, and enforces
+all receipt/binding signers externally authorized through the validated handoff and distinct, and enforces
 `activation.validFrom <= observedAt < activation.validUntil`. The pre-reserve check also projects
 the exact intent route scope. The observation is stored only behind private capability provenance
 for same-process publication; restart recovery relies on stored signed evidence plus fresh
@@ -390,14 +393,17 @@ with existing `verifyCertificationArtifactKeyBinding`. The direct inner `authori
 `authority-receipt` signers and the separate outer binding signer continue to use current direct
 descriptor/event replay. Neither `AuthorityKeyDescriptorV1` nor Authority Contract v1 widens.
 
-The governed signing bundle contains the six callbacks plus an all-or-nothing artifact
-authorization `{ binding, commitment }`. The four artifact callbacks must match the binding entries;
-the direct evidence callback must match the active parent descriptor; the receipt and outer binding
-callbacks must match their separately active direct descriptors; and every required key is distinct
-where its purpose requires segregation. Admission checks the portable authorization against the
-fixed Job Card signed-readiness material and current external trust. Publication repeats validity,
-parent activity, commitment, entry, callback, and distinctness checks at its single `observedAt`.
-Offline verification repeats them at binding `observedAt` and verifier time. The binding and
+The governed structural signing input contains the six callbacks plus an all-or-nothing artifact
+authorization `{ binding, commitment }`; it confers no authority by itself. The package-private
+validator specified by the fourth amendment matches the four artifact callbacks to binding entries,
+the direct evidence callback to the active parent descriptor, and the receipt and outer binding
+callbacks to separately active direct descriptors, and enforces every segregation rule before
+minting the opaque handle used by construction. Admission validates the portable authorization
+against fixed Job Card signed-readiness material and current external trust. Publication consumes
+only a freshly validated handle bound to its single `observedAt`.
+Offline verification has no callbacks: it matches the four actual signed inner artifacts to the
+externally validated entries and replays direct signer activity at binding `observedAt` and verifier
+time in the exact fourth-amendment order. The binding and
 commitment travel in private provenance and in `authorityBindingEvidence`, so restart and an open
 verifier never depend on caller assertions or process memory. `SignedProfileAuthorityBindingV1`
 adds required `artifactKeyBindingDigest` and `artifactKeyBindingCommitmentDigest`, so neither
@@ -410,6 +416,72 @@ inner `priorReceiptDigest`. The immutable outer object is indexed by reservation
 inner reference; its own digest is an outer storage/evidence identity exposed only through outer
 edges and verification, never a coordinator result or inner prior. Two-node and restart falsifiers
 must fail any implementation that substitutes the outer digest.
+
+### Approved Task 2 fourth amendment — durable-head recovery and validated trust handoff
+
+**Approved:** 2026-08-14. This amendment preserves all three earlier amendments and closes their two
+remaining execution gaps without widening the 47-path Task 2 allowlist. Authority Contract v1,
+`AuthorityKeyDescriptorV1`, Authority schemas, `AuthorityReceiptBundle`, its parser and verifier,
+ledger records, provider-send semantics, Paths A/B/C, Continuity, Cloud ownership, no-resend, and
+Linux-evidence rulings remain unchanged.
+
+`DispatchPublication` gains a second optional read-only compatibility seam, `loadDurableHead`.
+Legacy publishers that omit it retain byte-, trace-, and behavior-identical recovery. The governed
+publisher strictly parses and verifies its immutable stored inner/outer chain against fresh external
+anchors before returning a detached closed head containing its reservation/effect/route identity,
+tenant/request/capability identity, phase, ledger terminal kind, inner `receiptRef`, inner
+`evidenceDigest`, dispatched-request digest,
+and exact inner prior reference. It never reads or mutates the ledger. The coordinator remains the
+single ledger lifecycle owner.
+
+During certified restart, a dispatched ledger reservation is handled in this order. A verified
+durable terminal head whose reservation, effect, route, request, root, and prior identities match
+the recovered reservation causes the coordinator to perform only the matching ledger terminal
+transition; it publishes no sibling and never resends. A verified reservation-only root may publish
+one ambiguity child and transition to ambiguous. Absence of a durable root, multiple/forked heads,
+tamper, invalid signatures, a phase/terminal mismatch, or any identity conflict each refuses recovery without
+publication, transition, reconciliation, or send. The terminal mapping is closed: dispatch plus
+`acknowledged` maps to ledger `acknowledged`; dispatch plus `definitive-failure` maps to
+`definitive-failure`; dispatch or ambiguity publication plus `ambiguous` maps to `ambiguous`; and a
+reconciliation publication maps to `reconciled`. Cancellation is never a dispatched-recovery head.
+An ambiguous recovered head is written to the ledger with its inner `receiptRef`, so subsequent
+reconciliation uses that exact inner head as prior. Outer digests never become ledger results or
+inner priors.
+
+The required crash matrix is therefore unambiguous: before reservation-root storage means zero send
+and recovery refusal; after root storage/before send and after provider apply/before terminal storage
+recover from the root by publishing one ambiguity child; after terminal storage/before ledger
+transition adopts the verified terminal head with no sibling; after ledger transition is already
+terminal. Optional portable forwarding cannot become another lifecycle owner: a failure after the
+governed terminal is durable is recovered through the same terminal-head adoption.
+
+Raw signing callbacks and receipt-carried artifact bindings never confer authority. A
+package-private validator in the already allowed trust/receipt-authority/lifecycle-authority
+modules consumes the exact external signed readiness, strictly parsed current descriptors and
+contiguous trust events, expected tenant/Cell/task and one observation time, exact binding and human
+commitment, six purpose-bound signer capabilities, and—when governed outer publication is
+requested—the distinct outer binding signer. It replays current activity/revocation; calls the
+existing artifact-binding verifier; verifies the human commitment and validity interval; matches
+IDs, SPKIs, purposes, parent, readiness, Cell/task, and Adapter Contract; enforces cross-purpose key
+uniqueness; and returns only a module-private branded/`WeakMap` handle. The general inner-bundle
+constructor accepts that handle, never raw callbacks or `{ binding, commitment }`. Governed outer
+signing consumes the same handle. The lifecycle adapter can obtain one only while holding its
+already verified opaque lifecycle material, whose binding and commitment are retained as exact
+detached copies; casts, spreads, freezes, and structural lookalikes cannot mint it.
+
+Offline verification is explicitly non-self-anchoring. It first strictly parses the closed outer
+envelope, outer signed binding, artifact-key binding, and human commitment. It derives candidate
+trust roots only for the four artifact kinds named by the binding entries and combines those
+candidates with the caller's external direct roots solely to run the unchanged inner verifier. It
+then verifies the binding and commitment against external signed readiness and current descriptor/
+event anchors, matches the exact signed inner source-bundle, compiled-capability, transport-effect,
+and pack-manifest signer IDs, SPKIs, purposes, and signatures to the four authorized entries,
+verifies every direct-authority inner artifact and the outer binding under external current
+descriptors, and only then joins all profile, activation, deployment, route, inner, binding, and edge
+digests. No callback exists offline. Candidate receipt-carried roots are provisional inputs to the
+unchanged cryptographic kernel and can never authorize themselves or escape in a verified result. A
+self-consistent forged binding and inner bundle without valid external readiness/current-parent
+authorization must fail.
 
 ## Why this does not require thousands of Reelier integrations
 
