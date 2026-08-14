@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "reelier.outcome-profile/profile-conformance/v1",
+  "$id": "https://reelier.dev/contracts/outcome-profile/v1/profile-conformance.schema.json",
   "type": "object",
   "additionalProperties": false,
   "required": ["v", "tenant", "profileDigest", "packDigest", "definitionDigest", "definitionRegistrationDigest", "harnessId", "harnessDigest", "vectorSetDigest", "reportDigest", "sourceRevision", "claims", "signerId", "signature"],

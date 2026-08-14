@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "reelier.outcome-profile/profile-trust-pin/v1",
+  "$id": "https://reelier.dev/contracts/outcome-profile/v1/profile-trust-pin.schema.json",
   "type": "object",
   "additionalProperties": false,
   "required": ["v", "tenant", "governanceRef", "certifier", "operator", "currentTrustEvents", "currentTrustEventsDigest", "trustHeadDigest"],

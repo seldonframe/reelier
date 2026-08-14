@@ -12,34 +12,34 @@ const generatedContract: OutcomeProfileContractV1 = {
   "members": [
     {
       "path": "profile-activation.schema.json",
-      "digest": "sha256:7dedd304f3544be0c44e41abaf6ec9f980ded985c2c429a49518125f9a9c06a4"
+      "digest": "sha256:2b8a3dc22995a992afe83c38e25898c48c34153df0af1e45235103d5d567ec62"
     },
     {
       "path": "profile-conformance-report.schema.json",
-      "digest": "sha256:4fb7e762b21b8d476681991847c7cb0b44693c3596204abc090048d6159c5e01"
+      "digest": "sha256:d425be27427796b33a8bb719d1520422a142339ca7ec5a35b0d5441ed4201a0c"
     },
     {
       "path": "profile-conformance.schema.json",
-      "digest": "sha256:8cd0ef4941f9f62d8555dfaa24ddb546ff307acc595118894d3dfbc0b453673c"
+      "digest": "sha256:969c6813748fba5157bfcaa099fdcf7039c1399a49651eac6876047da396dd70"
     },
     {
       "path": "profile-draft.schema.json",
-      "digest": "sha256:0f5fd709479dce9c5238c4e5903740272625551b7062ef88db25beecca8f0504"
+      "digest": "sha256:c8961833963d0a2cae98d9616b5fecc53ee07785695732f7c61694f5b7130cdf"
     },
     {
       "path": "profile-governance-manifest.schema.json",
-      "digest": "sha256:a371027dcbdd48c405f3c70bba88537ac752576828339b3a489fe7d5657c7652"
+      "digest": "sha256:d56b0f66d2d70e86c299a516211e36849cf436eb654325e85da5d03a83c25618"
     },
     {
       "path": "profile-governed-receipt.schema.json",
-      "digest": "sha256:1ce428b5ccf6c983325a1a531e90c3df3e76d30dd9da2f9e29c6c6d9a6ac32da"
+      "digest": "sha256:3ae86c002318bfd6021d54a0193c7270906d58b08b0e0efd164da02d243f31bc"
     },
     {
       "path": "profile-trust-pin.schema.json",
-      "digest": "sha256:59574f3408c4d8f77b6ddc9e8abe10463ab7aea20eae898e524159770d77523c"
+      "digest": "sha256:644669e9589e293249055b9840a84feb9d4a8cc0bfe0fed203fcba6ca9d3d5af"
     }
   ],
-  "digest": "sha256:3c66eb15acade77fa257691d13d19dd0290a2f551afa915347fd266928930df4"
+  "digest": "sha256:80f3a2a799ac84a0ad11a6ef0b363b2c54ea7ce13c70c508d6e998c455b26a5e"
 };
 export const OUTCOME_PROFILE_CONTRACT_V1: OutcomeProfileContractV1 = Object.freeze({ ...generatedContract, members: Object.freeze(generatedContract.members.map(member => Object.freeze({ ...member }))) });
 export const OUTCOME_PROFILE_CONTRACT_V1_DIGEST = OUTCOME_PROFILE_CONTRACT_V1.digest;

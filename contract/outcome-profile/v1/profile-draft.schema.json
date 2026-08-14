@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "reelier.outcome-profile/profile-draft/v1",
+  "$id": "https://reelier.dev/contracts/outcome-profile/v1/profile-draft.schema.json",
   "type": "object",
   "additionalProperties": false,
   "required": ["v", "profileId", "profileVersion", "status", "authorization", "conformance", "dispatchable", "provider", "packAlias", "packDigest", "definitionDigest", "definitionRegistrationDigest", "accountProbeDigest", "sourceAuthorityDigest", "argumentAuthorityDigest", "semanticIdentityDigest", "responseSemanticsProfileDigest", "reconciliationRecipeDigest", "topologyRequirementsDigest", "conformanceVectorSetDigest", "nonClaims"],
