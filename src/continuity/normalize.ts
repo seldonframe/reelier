@@ -166,7 +166,7 @@ function normalizeEvent(value: unknown, index: number): ContinuityEventV1 {
   }
 }
 
-function normalizeActor(value: unknown): AuthenticatedWorkloadV1 {
+export function normalizeAuthenticatedWorkload(value: unknown): AuthenticatedWorkloadV1 {
   const record = object(value, "authenticated actor");
   exactKeys(record, ["v", "taskId", "principalId", "workloadId", "runtimeSessionId", "harnessId"], [], "authenticated actor");
   if (record.v !== "reelier.authenticated-workload/v1") throw new ContinuityValidationError("authenticated actor version is invalid");
@@ -181,7 +181,7 @@ function normalizeActor(value: unknown): AuthenticatedWorkloadV1 {
 }
 
 export function normalizeContinuityCheckpoint(value: unknown, actorValue: unknown): NormalizedCheckpointV1 {
-  const actor = normalizeActor(actorValue);
+  const actor = normalizeAuthenticatedWorkload(actorValue);
   const record = object(value, "continuity checkpoint");
   exactKeys(record, ["v", "taskId", "expectedCursor", "actorPrincipalId", "workloadId", "jobCardDigest", "authoritySnapshotDigest", "proposedEvents", "evidenceRefs"], ["agentMemo"], "continuity checkpoint");
   if (record.v !== "reelier.continuity-checkpoint/v1") throw new ContinuityValidationError("continuity checkpoint version is invalid");
