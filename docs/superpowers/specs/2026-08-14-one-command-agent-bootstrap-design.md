@@ -131,6 +131,126 @@ OSS exposes one narrow Linux host composition root that performs that cold load 
 
 Existing reviewed executable packs remain the deterministic compiler. They become reference implementations and escape hatches only after at least two materially different operations prove that a future closed declarative compiler can replace them without provider-specific escape hatches. This project does not prematurely delete or weaken static packs.
 
+## Approved Task 2 amendment — independently signed Authority binding
+
+**Approved:** 2026-08-14. This section preserves the original Outcome Profile rationale above and
+corrects the authority-evidence gap found during Task 2 review. It supersedes the original Task 2
+receipt/binding shape where the two conflict. The Outcome Profile contract is branch-only and
+unshipped, so its v1 schemas and digest may change in place. `AuthorityReceiptBundle`, Authority
+Contract v1, Path C gate/compiler/ledger/dispatch semantics, and the existing inner verifier remain
+byte-for-byte unchanged.
+
+Profile trust and Authority trust are separate domains. The existing activation
+`trustHeadDigest` continues to mean the profile-governance replay head. A new required
+`authorityTrustHeadDigest` commits the independently replayed current Path C Authority trust head.
+No producer or verifier may substitute one for the other: their keys, purposes, event preimages,
+and head algorithms differ.
+
+Activation binds a stable route scope, never a future request. Replace activation-time
+`routeAuthorityDigest` with `routeScopeDigest`, the digest of this closed record:
+
+```ts
+export interface AuthorityRouteScopeV1 {
+  readonly v: "reelier.authority-route-scope/v1";
+  readonly tenant: string;
+  readonly definitionAlias: string;
+  readonly connectorRegistrationDigest: string;
+  readonly operatorConfigurationDigest: string;
+  readonly routeDigest: string;
+  readonly providerId: string;
+  readonly connectorId: string;
+  readonly accountId: string;
+  readonly providerAccountIdentity: string;
+  readonly endpointId: string;
+  readonly credentialSlotId: string;
+  readonly sourceReadRouteDigest: string;
+  readonly projectionSchemaDigest: string;
+}
+```
+
+Dynamic slot instance/version, authenticated-identity digest, expected materialized-request digest,
+authority generation, and authority expiry remain receipt-time fields of the existing
+`RouteAuthoritySnapshotV1`. At verification time its stable-field projection must equal the exact
+`AuthorityRouteScopeV1`. A route substrate without an equivalent stable scope refuses governed
+dispatch; broad observation or replay remains available through Paths A/B.
+
+After the existing deployment loader has verified its signed Job Card, trust, states, connectors,
+descriptors, adoptions, and enforcement, the host derives a path-free/key-object-free snapshot:
+
+```ts
+export interface AuthorityDeploymentSnapshotV1 {
+  readonly v: "reelier.authority-deployment-snapshot/v1";
+  readonly tenant: string;
+  readonly jobCardDigest: string;
+  readonly jobCardAuthorityDigest: string;
+  readonly authorityStateDigest: string;
+  readonly connectorRegistryDigest: string;
+  readonly trustRootSetDigest: string;
+  readonly connectionDescriptorsDigest: string;
+  readonly connectionAdoptionsDigest: string;
+  readonly enforcementDigest: string;
+  readonly routeScopeDigest: string;
+}
+```
+
+`deploymentDigest` is `authorityDigest(parsedDeploymentSnapshot)`, never a digest of a caller
+record, path, raw deployment JSON, loaded key object, or self-asserted activation field.
+
+Outcome Profile Contract v1 gains an eighth standalone member,
+`SignedProfileAuthorityBindingV1`, discriminator
+`reelier.profile-authority-binding/v1`. It carries purpose
+`profile-authority-binding`, tenant, profile/activation/inner-receipt digests, exact Job Card,
+contract, deployment, route-scope, dynamic route-snapshot, and Authority-trust-head digests,
+`observedAt`, signer ID, and Ed25519 signature. Its signature uses the existing crypto purpose
+`authority-evidence` over this domain-separated preimage; neither `AuthorityKind` nor
+`AuthoritySignaturePurpose` widens:
+
+```ts
+const preimageDigest = authorityDigest({
+  v: "reelier.profile-authority-binding-signature-preimage/v1",
+  purpose: "profile-authority-binding",
+  artifactDigest: authorityDigest(unsignedBinding),
+});
+```
+
+The signer is an active Authority Cell key descriptor whose role is `authority-cell` and purpose is
+`authority-evidence`. Its SPKI and signer ID must match the narrowly injected
+`authorityBindingSigner`. It must be distinct from the profile certifier, profile operator, human
+Job Card signer, local gate, topology, lease, and authenticated-provider-identity signers. Current
+Authority key descriptors/trust events and the Job Card trust pin are external verifier anchors;
+the receipt cannot declare its own signer current.
+
+`ProfileGovernedAuthorityReceiptV1` retains the four profile artifacts and the unchanged inner
+`AuthorityReceiptBundle`. It adds `authorityBindingEvidence` containing the exact signed Job Card,
+the parsed deployment snapshot, stable route scope, exact persisted dynamic
+`RouteAuthoritySnapshotV1`, and `SignedProfileAuthorityBindingV1`. Existing outer edges remain and
+add `authorityBindingDigest`. The verifier runs, in order: the existing inner verifier; the profile
+verifier against profile trust only; signed Job Card verification against current external Job Card
+trust; closed deployment/scope parsing; dynamic-snapshot parsing and stable projection equality;
+external Authority trust replay and evidence-signer activity; binding signature verification; then
+every activation, inner-contract, binding, artifact, and edge digest join. It compares activation
+`contractDigest` directly to `inner.bundle.contract.digest` and never upgrades or rewrites an inner
+claim.
+
+The governed runtime uses a load/core split. It loads the actual deployment once and derives the
+actual installed pack, one exact eligible signed contract, signed Job Card, deployment snapshot,
+route scope, and current Authority head before constructing the gate/runtime. Those objects and
+digests are stored behind a private brand/`WeakMap`; no caller digest record, profile-root callback,
+or cast can mint the binding. The accepted request persists its actual dynamic route snapshot, and
+the governed publication creates outer evidence only from that private provenance, the actual inner
+bundle, and the persisted snapshot. The governed factory accepts one additional paired capability:
+`authorityBindingSigner` with `signerId`, Ed25519 public key, and signing function. It performs no
+provisioning, listening, activation, or session-endpoint work.
+
+The amendment also closes the five review evidence gaps: the no-dispatch matrix observes real
+source/credential/reservation/prepare/provider counters; the physical operator-root identity is
+pinned and revalidated across all six reads and replacement/symlink/junction races; Task 2 runs a
+real public-factory positive in a Linux child with isolated `HOME`/`USERPROFILE`; hostile input,
+artifact, trust, route, authority, receipt, and claim mutations are exhaustive; and shared fixtures
+live in a helper that registers no tests. Maker remains different from verifier, the verifier
+produces the receipt graph, and the existing Path A/B/C, Continuity, Cloud ownership, Task 6
+session-binding, and Task 7 packed-consumer boundaries remain intact.
+
 ## Why this does not require thousands of Reelier integrations
 
 Reelier does not become the tool catalog, OAuth broker, or universal transport SDK. Existing MCP servers, host plugins, OpenAPI catalogs, Composio-style tool providers, Vercel Connect, and native provider adapters may describe or carry routes. A provider-neutral discovery adapter turns those descriptions into the same closed route rows; it does not confer trust.
@@ -191,7 +311,7 @@ The `@latest` selector is permitted only for the initial bootstrap fetch. Initia
 - Bare `reelier init` and `reelier init --dry-run` retain their current inspection-only behavior and artifact versions.
 - Existing `install`, `mcp --wrap`, `run`, `authority`, `connections`, `connect`, `deploy`, `doctor`, `coverage`, and Continuity APIs remain available as advanced/debugging commands.
 - Existing Path A/B records remain byte-compatible.
-- Existing Path C contracts, packs, receipts, gate behavior, and offline verification remain byte-compatible.
+- Existing Authority Contract v1, `AuthorityReceiptBundle`, Path C packs, inner receipts, gate behavior, and inner offline verification remain byte-compatible. The branch-only unshipped Outcome Profile v1 contract changes in place only as specified by the approved Task 2 amendment.
 - Existing runtime adapters and conformance contracts remain replaceable; the bootstrap project references them by exact digest rather than importing private implementations.
 - Managed Cell is the default UX on every founder platform. Existing self-hosted Linux Cell commands remain available as advanced operations and are never run by `init` or `up`.
 
