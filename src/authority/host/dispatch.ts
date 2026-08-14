@@ -166,7 +166,7 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
           const state = recoveredState(reservation);
           const outcome = Object.freeze({ kind: "ambiguous" as const, resultDigest });
           const published = publication ? await publication.publish({ phase: "ambiguous", state, outcome, dispatchedRequestDigest: authorityDigest({ v: "reelier.dispatched-request/v1", reservationId: reservation.reservationId, effectDigest: reservation.intent.effectDigest }) }) : undefined;
-          const transitioned = await ledger.transition(reservation.reservationId, "dispatched", { to: "ambiguous", resultDigest: published?.receiptRef ?? resultDigest });
+          const transitioned = await ledger.transition(reservation.reservationId, "dispatched", { to: "ambiguous" });
           if (!transitioned.ok) throw new Error(`ambiguity transition refused: ${transitioned.reason}`);
           ambiguous.push(reservation.reservationId);
         }
