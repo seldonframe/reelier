@@ -67,3 +67,5 @@ export type { JsonHttpsEndpoint, JsonHttpsRead, JsonHttpsResponse, JsonHttpsSecr
 export { JsonHttpsSecurityError, executeJsonHttpsEffect, executeJsonHttpsRead, prepareJsonHttpsEffect, buildMaterializedHttpRequestProjection } from "../drivers/json-https.js";
 export { createCertificationCellHost, certificationTaskShapeDigest, type CertificationCellHost, type CertificationCellActivationV1, type CertificationDispatchPermit } from "../certification/cell.js";
 export { verifyCertificationOperatorConfigV3, verifyCertificationEndpointManifestV2, verifyCertificationRunnerManifestV2, verifyCertificationScenarioPlanV1 } from "../certification/semantic-verification.js";
+export { createGovernedAuthorityCell, type GovernedAuthorityCellReferenceV1, type GovernedAuthorityCellOptionsV1 } from "./governed-cell.js";
+export { verifyProfileGovernedAuthorityReceipt, type ProfileGovernedAuthorityReceiptV1, type ProfileGovernedAuthorityReceiptVerificationOptionsV1 } from "./profile-governed-receipt.js";

@@ -34,6 +34,9 @@ import type { RouteAuthoritySnapshotV1 } from "../ledger.js";
 import type { CertifiedDispatchOptions, CertifiedIdentityVerifier } from "./dispatch.js";
 import type { AuthenticatedProviderIdentityV1 } from "./github-account-identity.js";
 import type { AuthorityLatencyRecorder } from "./latency.js";
+import type { AdmittedProfileGovernanceV1 } from "./profile-governance.js";
+import { admittedProfileGovernanceState, assertAdmittedProfileGovernance, assertProfileRuntimeBinding } from "./profile-governance.js";
+import { definitionRegistrationDigest } from "../pack.js";
 
 /** Builds the local host from signed-artifact boundaries. An empty workspace is intentionally
  * usable for discovery and status, but every Outcome refuses until a signed contract is installed. */
@@ -182,4 +185,19 @@ export async function createLocalAuthorityRuntime(config: AuthorityHostConfig, o
       return runtime.outcome(job.alias, request, context);
     },
   });
+}
+
+/** Package-internal governed composition seam. Deliberately absent from the host barrel. */
+export async function createAdmittedLocalAuthorityRuntime(config: AuthorityHostConfig, admitted: AdmittedProfileGovernanceV1, options: LocalAuthorityRuntimeOptions = {}): Promise<LocalAuthorityRuntime> {
+  assertAdmittedProfileGovernance(admitted);
+  const state = admittedProfileGovernanceState(admitted);
+  const installedPack = firstPartyPackForAlias(state.draft.packAlias);
+  if (!installedPack) throw new TypeError("profile governance installed pack binding mismatch");
+  const installedRegistry = createStaticPackRegistry(firstPartyPacks.map(pack => pack.definition));
+  assertProfileRuntimeBinding(
+    { governance: admitted, expectedProfileDigest: state.manifest.profileDigest, expectedActivationDigest: state.manifest.activationDigest },
+    { packDigest: installedPack.definition.packDigest, definitionDigest: installedPack.definition.definitionDigest, registrationDigest: definitionRegistrationDigest(installedRegistry, state.draft.packAlias) },
+    { contractDigest: state.activation.contractDigest, jobCardDigest: state.activation.jobCardDigest, deploymentDigest: state.activation.deploymentDigest, routeAuthorityDigest: state.activation.routeAuthorityDigest, trustHeadDigest: state.activation.trustHeadDigest },
+  );
+  return createLocalAuthorityRuntime(config, options);
 }

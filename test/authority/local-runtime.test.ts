@@ -13,6 +13,11 @@ import { createTopologyProbe, runTopologyProbe, signTopologyEvidence } from "../
 import { signAuthorityLease } from "../../src/authority/host/lease.js";
 import type { DelegationGrant } from "../../src/authority/types.js";
 import { createAdmittedLocalAuthorityRuntime } from "../../src/authority/host/local.js";
+import { __testSetAuthorityCellHostPlatform } from "../../src/authority/host/platform.js";
+
+let restorePlatform: (() => void) | undefined;
+test.before(() => { restorePlatform = __testSetAuthorityCellHostPlatform("linux"); });
+test.after(() => { restorePlatform?.(); });
 
 test("local authority serve uses the real gate and refuses an unsigned empty deployment", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "reelier-local-runtime-"));
