@@ -74,7 +74,7 @@ test("factory journey atomically publishes an exact verified packet derived from
     const trustPin = JSON.parse(await readFile(line.trustPath, "utf8"));
     const summary = JSON.parse(await readFile(line.summaryPath, "utf8"));
     const evidenceSignerId = trustPin.keyDescriptors.find((item: any) => item.role === "authority-cell" && item.purpose === "authority-evidence")?.keyId;
-    assert.equal(verifyCertificationTaskReceiptGraph(graph, { trustPin, currentTrustObservation: { v: "reelier.portable-current-trust-observation/v1", observedAt: "2026-08-11T20:00:00.000Z", expiresAt: "2026-08-11T21:00:00.000Z", activeAuthorityEvidenceSignerIds: [evidenceSignerId] }, now: new Date("2026-08-11T20:10:00.000Z") }).status, "verified");
+    assert.equal(verifyCertificationTaskReceiptGraph(graph, { trustPin, currentTrustObservation: { v: "reelier.portable-current-trust-observation/v1", observedAt: "2026-08-11T20:00:00.000Z", expiresAt: "2026-08-11T21:00:00.000Z", activeAuthorityEvidenceSignerIds: [evidenceSignerId] }, now: new Date("2026-08-11T20:10:00.000Z"), expectedResponseSemanticsProfile: { v: "reelier.http-response-semantics/v1", profileId: "github.issue-labels.hermetic-v1", acknowledgedStatuses: [200] } }).status, "verified");
     assert.equal(line.graphDigest, authorityDigest(graph));
     assert.equal(line.summaryDigest, authorityDigest(summary));
     assert.deepEqual(Object.keys(summary), ["v", "journey", "graphDigest", "stages", "authorityBoundaryCeremonies", "fixtureOperatorConfirmations", "liveHumanReview", "providerCredentialValueHandling", "clientBearerResolution", "providerSdkCalls", "externalSockets", "unsupportedCategories", "nonClaims", "logicalOperatorSteps", "elapsedMs", "reviewerPacket"]);

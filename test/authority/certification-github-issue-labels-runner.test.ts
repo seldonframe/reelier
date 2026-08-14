@@ -24,10 +24,12 @@ import { AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST } from "../../src/authority/adapte
 import { signAuthorityDigest } from "../../src/authority/crypto.js";
 import { createCertificationTaskReceiptGraph } from "../../src/authority/certification/task-receipt-graph.js";
 import { createPortableOutcomeEvidencePublication } from "../../src/authority/host/portable-receipts.js";
+import { httpResponseSemanticsProfileDigest } from "../../src/authority/host/http-response-semantics.js";
 
 const at = "2026-08-11T20:00:00.000Z", expiry = "2026-08-11T21:00:00.000Z";
 const descriptor = (keyId: string, role: "human-sponsor" | "authority-cell", purpose: string, publicKey: ReturnType<typeof generateKeyPairSync>["publicKey"]) => ({ v: "reelier.authority-key-descriptor/v1", keyId, role, purpose, algorithm: "ed25519", publicKeySpkiBase64: publicKey.export({ type: "spki", format: "der" }).toString("base64") });
-const graphVerification = (pin: any, overrides: Record<string, unknown> = {}) => ({ trustPin: pin, currentTrustObservation: { v: "reelier.portable-current-trust-observation/v1", observedAt: at, expiresAt: expiry, activeAuthorityEvidenceSignerIds: [pin.keyDescriptors.find((item: any) => item.role === "authority-cell" && item.purpose === "authority-evidence")?.keyId] }, now: new Date("2026-08-11T20:10:00.000Z"), ...overrides });
+const hermeticResponseSemanticsProfile = { v: "reelier.http-response-semantics/v1" as const, profileId: "github.issue-labels.hermetic-v1", acknowledgedStatuses: [200] };
+const graphVerification = (pin: any, overrides: Record<string, unknown> = {}) => ({ trustPin: pin, currentTrustObservation: { v: "reelier.portable-current-trust-observation/v1", observedAt: at, expiresAt: expiry, activeAuthorityEvidenceSignerIds: [pin.keyDescriptors.find((item: any) => item.role === "authority-cell" && item.purpose === "authority-evidence")?.keyId] }, now: new Date("2026-08-11T20:10:00.000Z"), expectedResponseSemanticsProfile: hermeticResponseSemanticsProfile, ...overrides });
 const restorePlatform = __testSetAuthorityCellHostPlatform("linux");
 test.after(() => restorePlatform());
 
@@ -567,6 +569,7 @@ test("portable evidence links the approved task, exact post-state, policy status
     delete legacyV1.portableOutcomeEvidenceVersion;
     assert.throws(() => verifyCertificationTaskReceiptGraph(legacyV1, graphVerification(f.pin)), /extension|version|closed|exact canonical/i);
     assert.throws(() => verifyCertificationTaskReceiptGraph(graph, { trustPin: f.pin } as any), /current trust|verification time|external.*anchor|required/i);
+    assert.throws(() => verifyCertificationTaskReceiptGraph(graph, graphVerification(f.pin, { expectedResponseSemanticsProfile: undefined })), /response|profile|external.*anchor|required/i);
     for (const key of ["routeAuthority", "authenticatedIdentity", "materializedRequest", "responseSemanticsProfile", "reconciliation"] as const) {
       const missingBinding = structuredClone(graph);
       delete missingBinding.portableOutcomeEvidence[0][key];
@@ -640,6 +643,12 @@ test("portable graph consumes signed durable execution provenance without graph-
     assert.throws(() => verifyCertificationTaskReceiptGraph(rebuild(republish(null)), graphVerification(f.pin)), /cleanup|parent/i);
     const arbitraryMember = receiptChain.find((digest: string) => digest !== executed.cleanupParentReceiptDigest)!;
     assert.throws(() => verifyCertificationTaskReceiptGraph(rebuild(republish(arbitraryMember)), graphVerification(f.pin)), /cleanup|parent/i);
+    const attackerProfile = { ...publication.responseSemanticsProfile, acknowledgedStatuses: [201] };
+    const attackerRoute = { ...publication.routeAuthority, responseSemanticsProfileDigest: attackerProfile.profileDigest };
+    const attackerObservation = { ...publication.responseObservation, status: 201, classification: "acknowledged" };
+    const attackerPublication = createPortableOutcomeEvidencePublication({ requestId: publication.requestId, routeAuthority: attackerRoute, authenticatedIdentity: publication.authenticatedIdentity, materializedRequest: publication.materializedRequest, responseSemanticsProfile: attackerProfile, responseObservation: attackerObservation, preStateEvidence: publication.preStateEvidence, postStateEvidence: publication.postStateEvidence, expectedPostProjectionDigest: publication.expectedPostProjectionDigest, confidence: publication.evidence.confidence, authoritativeStateSource: publication.evidence.authoritativeStateSource, reconciliation: publication.reconciliation, cleanupParentReceiptDigest: publication.evidence.cleanupParentReceiptDigest, receiptChain, collectionCounts, terminalDigest, currentTrustObservation: trustObservation, executionSigner: signer, reconciliationSigner: signer });
+    assert.equal(attackerProfile.profileDigest, httpResponseSemanticsProfileDigest(hermeticResponseSemanticsProfile));
+    assert.throws(() => verifyCertificationTaskReceiptGraph(rebuild(attackerPublication), graphVerification(f.pin)), /response|profile|extern|ratified|semantics/i);
 
     providerState.executions[0].routeAuthoritySnapshot.routeDigest = `sha256:${"f".repeat(64)}`;
     await writeFile(providerPath, `${JSON.stringify(providerState)}\n`);
