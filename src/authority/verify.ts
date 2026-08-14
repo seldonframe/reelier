@@ -6,7 +6,7 @@ import { verifyTrustedAuthority, createTrustRoots, type TrustRoots, type TrustRo
 import { validateDelegationChain } from "./delegation.js";
 import { verifyStoredContract } from "./contract.js";
 import { verifyAuthoritySignature } from "./crypto.js";
-import { assertPortableInertRecord, portableExecutionStatementDigest, portableReconciliationStatementDigest, type PortableOutcomeEvidencePublicationV1, type SanitizedPortableOutcomeEvidenceExportV1 } from "./host/portable-receipts.js";
+import { assertPortableInertRecord, portableExecutionStatementDigest, portableReconciliationStatementDigest, portableSignerIdFromPublicKey, type PortableOutcomeEvidencePublicationV1, type SanitizedPortableOutcomeEvidenceExportV1 } from "./host/portable-receipts.js";
 import { httpResponseSemanticsProfileDigest, parseHttpResponseSemanticsProfileV1, type HttpResponseSemanticsProfileV1 } from "./host/http-response-semantics.js";
 
 export interface AuthorityReceiptVerificationOptions {
@@ -179,6 +179,7 @@ export function verifySanitizedPortableOutcomeEvidenceExport(value: unknown, opt
   const item = portableExact(value, ["v", "privateGraphDigest", "outcomeCollectionDigest", "outcomeCount", "responseSemanticsProfilesDigest", "verifiedAt", "signerId", "signature"], "sanitized outcome export") as unknown as SanitizedPortableOutcomeEvidenceExportV1;
   assertPortableDeepInert(item);
   if (portableContainsConfidential(item)) throw new TypeError("sanitized portable export contains confidential material");
+  portableExact(item.signature, ["alg", "sig"], "sanitized outcome export signature");
   const digest = /^sha256:[0-9a-f]{64}$/;
   if (item.v !== "reelier.sanitized-portable-outcome-evidence/v1" || !digest.test(item.privateGraphDigest) || !digest.test(item.outcomeCollectionDigest) || !digest.test(item.responseSemanticsProfilesDigest) || !Number.isSafeInteger(item.outcomeCount) || item.outcomeCount < 1 || !portableTime(item.verifiedAt) || !digest.test(item.signerId)) throw new TypeError("sanitized portable export is not closed and opaque");
   assertPortableInertRecord(options?.privateGraph, "private receipt graph");
@@ -186,7 +187,7 @@ export function verifySanitizedPortableOutcomeEvidenceExport(value: unknown, opt
   if (!Array.isArray(collection) || collection.length !== item.outcomeCount || item.privateGraphDigest !== authorityDigest(options.privateGraph) || item.outcomeCollectionDigest !== authorityDigest(collection)) throw new TypeError("sanitized portable export private graph digest/count join is invalid");
   const profileDigests = collection.map((publication: any) => publication?.evidence?.responseSemanticsProfileDigest);
   if (profileDigests.some(candidate => typeof candidate !== "string" || !digest.test(candidate)) || item.responseSemanticsProfilesDigest !== authorityDigest(profileDigests)) throw new TypeError("sanitized portable export response profile join is invalid");
-  if (!options.verifier || options.verifier.signerId !== item.signerId || options.verifier.purpose !== "authority-evidence") throw new TypeError("sanitized portable export signer is not externally trusted");
+  if (!options.verifier || options.verifier.purpose !== "authority-evidence" || item.signerId !== portableSignerIdFromPublicKey(options.verifier.publicKey) || options.verifier.signerId !== item.signerId) throw new TypeError("sanitized portable export signer is not externally trusted or key-derived");
   const { signature, ...body } = item;
   if (!verifyAuthoritySignature(options.verifier.publicKey, "authority-evidence", authorityDigest(body), signature)) throw new TypeError("sanitized portable export signature is invalid");
   return Object.freeze({ status: "verified", digest: authorityDigest(item) });

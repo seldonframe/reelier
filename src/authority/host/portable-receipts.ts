@@ -1,3 +1,4 @@
+import { createHash, type KeyObject } from "node:crypto";
 import type { AuthoritySignature } from "../types.js";
 import { authorityDigest } from "../wire.js";
 import type { DispatchPublication } from "./dispatch.js";
@@ -63,7 +64,27 @@ export interface SanitizedPortableOutcomeEvidenceExportV1 {
 
 export interface PortableOutcomeSigner {
   readonly signerId: string;
+  /** Public key used to derive the nonidentifying portable signer identity.
+   * Evidence attestations may retain their existing authority-cell key id;
+   * sanitized exports require this binding explicitly. */
+  readonly publicKey?: KeyObject;
   sign(digest: string): AuthoritySignature;
+}
+
+/** Derives the portable signer identity from the actual Ed25519 SPKI bytes.
+ * The domain prefix prevents this identifier from being confused with an
+ * ordinary artifact digest or a human/account identifier. */
+export function portableSignerIdFromPublicKey(publicKey: KeyObject): string {
+  if (!publicKey || publicKey.type !== "public") throw new TypeError("portable signer public key is required");
+  let bytes: Buffer;
+  try {
+    const exported = publicKey.export({ type: "spki", format: "der" });
+    bytes = Buffer.isBuffer(exported) ? exported : Buffer.from(exported);
+  } catch {
+    throw new TypeError("portable signer public key must export as SPKI bytes");
+  }
+  if (bytes.length === 0) throw new TypeError("portable signer public key bytes are empty");
+  return `sha256:${createHash("sha256").update("reelier-portable-signer/v1\0", "utf8").update(bytes).digest("hex")}`;
 }
 
 export type PortableOutcomeEvidencePublicationInput = Readonly<{
@@ -88,12 +109,13 @@ export type PortableOutcomeEvidencePublicationInput = Readonly<{
   reconciliationSigner: PortableOutcomeSigner;
 }>;
 
-export function createSanitizedPortableOutcomeEvidenceExport(input: Readonly<{ privateGraph: Readonly<Record<string, unknown>>; verifiedAt: string; signer: PortableOutcomeSigner }>): SanitizedPortableOutcomeEvidenceExportV1 {
+export function createSanitizedPortableOutcomeEvidenceExport(input: Readonly<{ privateGraph: Readonly<Record<string, unknown>>; verifiedAt: string; signer: PortableOutcomeSigner & { readonly publicKey: KeyObject } }>): SanitizedPortableOutcomeEvidenceExportV1 {
   assertInertRecord(input?.privateGraph, "private receipt graph");
   const collection = input.privateGraph.portableOutcomeEvidence;
   if (!Array.isArray(collection) || collection.length === 0) throw new TypeError("private receipt graph portable outcome collection is absent");
   if (!portableTimestamp(input.verifiedAt)) throw new TypeError("sanitized portable export timestamp is invalid");
-  if (!DIGEST.test(input.signer?.signerId) || typeof input.signer.sign !== "function") throw new TypeError("sanitized portable export signer must be an opaque digest-derived id");
+  if (typeof input.signer?.sign !== "function" || !input.signer.publicKey) throw new TypeError("sanitized portable export signer public key is required");
+  if (input.signer.signerId !== portableSignerIdFromPublicKey(input.signer.publicKey)) throw new TypeError("sanitized portable export signer id is not derived from its public key");
   const profileDigests = collection.map((item: any) => item?.evidence?.responseSemanticsProfileDigest);
   if (profileDigests.some(value => typeof value !== "string" || !DIGEST.test(value))) throw new TypeError("sanitized portable export response profile commitment is invalid");
   const body = Object.freeze({

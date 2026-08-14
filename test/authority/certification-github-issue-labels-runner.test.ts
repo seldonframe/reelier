@@ -564,7 +564,7 @@ test("portable evidence links the approved task, exact post-state, policy status
     assert.equal(verifyCertificationTaskReceiptGraph(graph, graphVerification(f.pin)).status, "verified");
     const missingNative = structuredClone(graph);
     delete missingNative.portableOutcomeEvidence;
-    assert.throws(() => verifyCertificationTaskReceiptGraph(missingNative, graphVerification(f.pin)), /portable|outcome|closed|collection/i);
+    assert.throws(() => verifyCertificationTaskReceiptGraph(missingNative, graphVerification(f.pin)), /portable|outcome|closed|collection|private certification receipt graph/i);
     const legacyV1 = structuredClone(graph);
     delete legacyV1.portableOutcomeEvidenceVersion;
     assert.throws(() => verifyCertificationTaskReceiptGraph(legacyV1, graphVerification(f.pin)), /extension|version|closed|exact canonical/i);
@@ -644,14 +644,14 @@ test("private graph consumes signed durable execution provenance without graph-t
       value => { value.responseSemanticsProfilesDigest = authorityDigest({ substituted: true }); },
       value => { value.verifiedAt = "2026-08-11T20:10:01.000Z"; },
       value => { value.signerId = portableSignerIdFromPublicKey(generateKeyPairSync("ed25519").publicKey); },
-      value => { value.signature.sig = `${value.signature.sig.slice(0, -1)}A`; },
+      value => { value.signature.sig = "A".repeat(value.signature.sig.length); },
       value => { delete value.outcomeCount; },
       value => { value.signature.extra = "nested"; },
     ];
-    for (const mutate of serializedMutations) {
+    for (const [index, mutate] of serializedMutations.entries()) {
       const changed = JSON.parse(JSON.stringify(sanitized));
       mutate(changed);
-      assert.throws(() => verifyCertificationSanitizedPortableOutcomeEvidenceExport(changed, graph, { ...graphVerification(f.pin), portableVerifier: { signerId: portableSignerId, publicKey: portableKeys.publicKey, purpose: "authority-evidence" } }), /portable|digest|count|timestamp|signer|signature|closed|canonical|graph/i);
+      assert.throws(() => verifyCertificationSanitizedPortableOutcomeEvidenceExport(changed, graph, { ...graphVerification(f.pin), portableVerifier: { signerId: portableSignerId, publicKey: portableKeys.publicKey, purpose: "authority-evidence" } }), /portable|digest|count|timestamp|signer|signature|closed|canonical|graph/i, `serialized mutation ${index}`);
     }
     const reordered = JSON.parse(JSON.stringify(sanitized));
     const orderedEntries = Object.entries(reordered).reverse();
