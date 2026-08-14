@@ -138,15 +138,18 @@ test("runner refuses schema, contract, lane, checker, and provenance mutations",
 test("workflow policy parser refuses unsafe mutations", async () => {
   const { workflow } = await source();
   const unsafe = [
-    workflow.replace("workflow_dispatch:", "push:\n  branches: [main]\n  workflow_dispatch:"),
-    workflow.replace("contents: read", "contents: write"),
-    workflow.replace("name: native-github-live", "name: unprotected"),
-    workflow.replace("ubuntu-latest\n          - windows-latest", "ubuntu-latest"),
-    workflow.replaceAll(candidateId, "sha256:deadbeef"),
-    workflow.replace("if: ${{ success() }}", "if: ${{ success() }}\n        continue-on-error: true"),
-    workflow.replace("disposable fixture target", "production target"),
+    ["automatic trigger", workflow.replace("workflow_dispatch:", "push:\n  branches: [main]\n  workflow_dispatch:")],
+    ["write permission", workflow.replace("contents: read", "contents: write")],
+    ["unprotected environment", workflow.replace("name: native-github-live", "name: unprotected")],
+    ["missing Windows lane", workflow.replace(/\r?\n\s*-\s*windows-latest/, "")],
+    ["candidate substitution", workflow.replaceAll(candidateId, "sha256:deadbeef")],
+    ["continue on error", workflow.replace("if: ${{ success() }}", "if: ${{ success() }}\n        continue-on-error: true")],
+    ["production target", workflow.replace("disposable fixture target", "production target")],
   ];
-  for (const variant of unsafe) assert.ok(validateWorkflowText(variant).length > 0);
+  for (const [name, variant] of unsafe) {
+    assert.notEqual(variant, workflow, `${name} mutation must change the workflow fixture`);
+    assert.ok(validateWorkflowText(variant).length > 0, `${name} mutation must refuse`);
+  }
   assert.deepEqual(validateWorkflowText(workflow), [], "the authored workflow itself must pass the same parser");
   assert.match(workflow, /ref:\s*\$\{\{\s*github\.sha\s*\}\}/, "runner source must come from the workflow revision");
   assert.match(workflow, /NATIVE_PUBLIC_COMMIT:\s*03ac48e/);
