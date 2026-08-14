@@ -538,8 +538,8 @@ test("portable evidence links the approved task, exact post-state, policy status
     assert.equal(graph.portableOutcomeEvidence.length, 1, "removing the native portable outcome collection must fail closed");
     assert.equal(graph.portableOutcomeEvidence[0].evidence.confidence, "exact");
     assert.equal(graph.terminalCommitment.counts.portableOutcomeEvidence, 1);
-    assert.equal(graph.portableOutcomeEvidence[0].materializedRequest.origin, "https://api.github.com");
-    assert.equal(graph.portableOutcomeEvidence[0].materializedRequest.normalizedPath, "/repos/{owner}/{repository}/issues/{issueNumber}/labels");
+    assert.equal(graph.portableOutcomeEvidence[0].materializedRequest.originClass, "github-api");
+    assert.equal(graph.portableOutcomeEvidence[0].materializedRequest.pathTemplate, "/repos/{owner}/{repository}/issues/{issueNumber}/labels");
     const portableJson = JSON.stringify(graph.portableOutcomeEvidence);
     for (const canary of ["fixlyai", "reelier-certification", "github_fixlyai_reelier", "canary-private-token"]) assert.equal(portableJson.toLowerCase().includes(canary.toLowerCase()), false, `portable evidence leaked ${canary}`);
     assert.equal(graph.portableOutcomeEvidence[0].reconciliation.providerWriteCount, 1);
@@ -602,7 +602,7 @@ test("portable graph consumes signed durable execution provenance without graph-
     const graph: any = await f.runner.exportGraph({ bearerToken: f.credential.token });
     const providerPath = path.join(f.initialized.workspace, "authority", "github-label-runner", "provider-state.json");
     const providerState: any = JSON.parse(await readFile(providerPath, "utf8"));
-    assert.equal(providerState.v, "reelier.github-hermetic-provider/v3");
+    assert.equal(providerState.v, "reelier.github-hermetic-provider/v4");
     const executed = providerState.executions.find((item: any) => item.requestId === "request_runtime_provenance");
     assert.equal(executed.routeAuthoritySnapshot.v, "reelier.route-authority-snapshot/v1");
     assert.equal(executed.authenticatedIdentity.v, "reelier.authenticated-provider-identity/v1");
@@ -624,17 +624,18 @@ test("portable graph consumes signed durable execution provenance without graph-
     assert.deepEqual(publication.materializedRequest, executed.portableMaterializedRequest);
     assert.equal(publication.routeAuthority.expectedMaterializedRequestDigest, authorityDigest(executed.materializedRequest));
     assert.equal(publication.routeAuthority.portableMaterializedRequestDigest, authorityDigest(publication.materializedRequest));
-    assert.deepEqual(publication.responseSemanticsProfile, executed.responseSemanticsProfile);
+    assert.deepEqual(publication.responseSemanticsProfile, executed.portableResponseSemanticsProfile);
     assert.deepEqual(publication.reconciliation, executed.reconciliation);
     assert.equal(publication.evidence.cleanupParentReceiptDigest, executed.cleanupParentReceiptDigest);
 
     const evidence = certificationCellHostInternalState(f.cell).hermeticGitHubAuthority().lifecycle.direct.get("authority-evidence")!;
     const signer = { signerId: evidence.descriptor.keyId, sign: (digest: string) => signAuthorityDigest(evidence.privateKey, "authority-evidence", digest) };
-    const receiptChain = graph.receipts.filter((bundle: any) => [publication.requestId, `${publication.requestId}.cleanup`].includes(bundle.receipt.value.decisionContext.requestId)).map((bundle: any) => authorityDigest(bundle.receipt.value));
+    const originalRequestId = graph.postStateEvidence[0].requestId;
+    const receiptChain = graph.receipts.filter((bundle: any) => [originalRequestId, `${originalRequestId}.cleanup`].includes(bundle.receipt.value.decisionContext.requestId)).map((bundle: any) => authorityDigest(bundle.receipt.value));
     const collectionCounts = { receipts: graph.receipts.length, receiptExtensions: graph.receiptExtensions.length, portableOutcomeEvidence: graph.portableOutcomeEvidence.length, postStateEvidence: graph.postStateEvidence.length, outcomes: graph.outcomes.length, requestReceipts: receiptChain.length };
     const terminalDigest = authorityDigest({ v: "reelier.portable-terminal-anchor/v1", taskId: graph.taskId, rootGrantDigest: graph.rootGrant.digest, receiptLinksDigest: authorityDigest(graph.priorReceiptLinks), postStateEvidenceDigest: authorityDigest(graph.postStateEvidence), collectionCountsDigest: authorityDigest(collectionCounts) });
     const trustObservation = graphVerification(f.pin).currentTrustObservation;
-    const republish = (cleanupParentReceiptDigest: string | null) => createPortableOutcomeEvidencePublication({ requestId: publication.requestId, routeAuthority: publication.routeAuthority, authenticatedIdentity: publication.authenticatedIdentity, materializedRequest: publication.materializedRequest, responseSemanticsProfile: publication.responseSemanticsProfile, preStateEvidence: publication.preStateEvidence, postStateEvidence: publication.postStateEvidence, expectedPostProjectionDigest: publication.expectedPostProjectionDigest, confidence: publication.evidence.confidence, authoritativeStateSource: publication.evidence.authoritativeStateSource, reconciliation: publication.reconciliation, cleanupParentReceiptDigest, receiptChain, collectionCounts, terminalDigest, currentTrustObservation: trustObservation, executionSigner: signer, reconciliationSigner: signer });
+    const republish = (cleanupParentReceiptDigest: string | null) => createPortableOutcomeEvidencePublication({ requestId: publication.requestId, routeAuthority: publication.routeAuthority, authenticatedIdentity: publication.authenticatedIdentity, materializedRequest: publication.materializedRequest, responseSemanticsProfile: publication.responseSemanticsProfile, responseObservation: publication.responseObservation, preStateEvidence: publication.preStateEvidence, postStateEvidence: publication.postStateEvidence, expectedPostProjectionDigest: publication.expectedPostProjectionDigest, confidence: publication.evidence.confidence, authoritativeStateSource: publication.evidence.authoritativeStateSource, reconciliation: publication.reconciliation, cleanupParentReceiptDigest, receiptChain, collectionCounts, terminalDigest, currentTrustObservation: trustObservation, executionSigner: signer, reconciliationSigner: signer });
     const rebuild = (replacement: any) => { const { v: _v, adapterContractDigest: _adapter, topology: _topology, leases: _leases, priorReceiptLinks: _links, terminalCommitment: _terminal, ...content } = graph; return createCertificationTaskReceiptGraph({ ...content, portableOutcomeEvidence: [replacement], terminalSigner: signer }); };
     assert.throws(() => verifyCertificationTaskReceiptGraph(rebuild(republish(null)), graphVerification(f.pin)), /cleanup|parent/i);
     const arbitraryMember = receiptChain.find((digest: string) => digest !== executed.cleanupParentReceiptDigest)!;
