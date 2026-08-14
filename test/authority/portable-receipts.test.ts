@@ -147,6 +147,7 @@ test("sanitized signer identity is derived from the actual signing key and rejec
   const portable = createSanitizedPortableOutcomeEvidenceExport({ privateGraph, verifiedAt: "2026-08-13T12:04:00.000Z", signer });
   assert.equal(verifySanitizedPortableOutcomeEvidenceExport(portable, { privateGraph, verifier: { signerId, publicKey: exportKeys.publicKey, purpose: "authority-evidence" } }).status, "verified");
   assert.throws(() => createSanitizedPortableOutcomeEvidenceExport({ privateGraph, verifiedAt: "2026-08-13T12:04:00.000Z", signer: { ...signer, publicKey: otherKeys.publicKey } }), /derived|public|signer|key/i);
+  assert.throws(() => createSanitizedPortableOutcomeEvidenceExport({ privateGraph, verifiedAt: "2026-08-13T12:04:00.000Z", signer: { ...signer, sign: (digest: string) => signAuthorityDigest(otherKeys.privateKey, "authority-evidence", digest) } }), /signature|public|key/i);
   assert.throws(() => verifySanitizedPortableOutcomeEvidenceExport(portable, { privateGraph, verifier: { signerId: portableSignerIdFromPublicKey(otherKeys.publicKey), publicKey: otherKeys.publicKey, purpose: "authority-evidence" } }), /derived|public|signer|signature|invalid/i);
   assert.throws(() => verifySanitizedPortableOutcomeEvidenceExport({ ...portable, signerId: DIGEST("unrelated-key") }, { privateGraph, verifier: { signerId, publicKey: exportKeys.publicKey, purpose: "authority-evidence" } }), /derived|public|signer|signature|invalid/i);
 });
