@@ -30,6 +30,7 @@ export interface NativeCandidateV1 {
   readonly laneCommits: readonly Readonly<{ laneId: string; commitSha: string }>[];
   readonly packDigest: string;
   readonly task8BaselineDigest: string;
+  readonly task9VerificationDigest: string;
   readonly portableEvidenceContractDigest: string;
   readonly checkerIdentities: readonly NativeCandidateCheckerV1[];
   readonly provenance: NativeCandidateProvenanceV1;
@@ -50,6 +51,7 @@ export interface NativeCandidateVerificationInputs {
   readonly tarballBytes: Uint8Array;
   readonly publicCommitSha: string;
   readonly task8BaselineDigest: string;
+  readonly task9VerificationDigest: string;
   readonly portableEvidenceContractDigest: string;
 }
 
@@ -59,7 +61,7 @@ export function createNativeCandidate(input: NativeCandidateCreationInput): Read
   const laneCommits = normalizeLanes(input.laneCommits);
   const expectedPack = nativePackDigest(input.publicCommitSha, tarballDigest, laneCommits);
   if (input.packDigest !== expectedPack) throw new TypeError("pack digest is not bound to the clean export and lane commits");
-  const checkerIdentities = normalizeCheckers(input.checkerIdentities, input.task8Verification.digest, input.portableEvidenceContractDigest, input.packDigest, input.portableEvidenceContractDigest);
+  const checkerIdentities = normalizeCheckers(input.checkerIdentities, input.task8Verification.digest, input.task9Verification.digest, input.packDigest, input.portableEvidenceContractDigest);
   const body = {
     v: "reelier.native-github-candidate/v1" as const,
     publicCommitSha: input.publicCommitSha,
@@ -67,12 +69,13 @@ export function createNativeCandidate(input: NativeCandidateCreationInput): Read
     laneCommits,
     packDigest: input.packDigest,
     task8BaselineDigest: input.task8Verification.digest,
+    task9VerificationDigest: input.task9Verification.digest,
     portableEvidenceContractDigest: input.portableEvidenceContractDigest,
     checkerIdentities,
     provenance: provenance(),
   };
   const digest = authorityDigest(body);
-  const candidate = Object.freeze({ v: body.v, candidateId: digest, publicCommitSha: body.publicCommitSha, tarballDigest: body.tarballDigest, laneCommits: body.laneCommits, packDigest: body.packDigest, task8BaselineDigest: body.task8BaselineDigest, portableEvidenceContractDigest: body.portableEvidenceContractDigest, checkerIdentities: body.checkerIdentities, provenance: body.provenance }) as NativeCandidateV1;
+  const candidate = Object.freeze({ v: body.v, candidateId: digest, publicCommitSha: body.publicCommitSha, tarballDigest: body.tarballDigest, laneCommits: body.laneCommits, packDigest: body.packDigest, task8BaselineDigest: body.task8BaselineDigest, task9VerificationDigest: body.task9VerificationDigest, portableEvidenceContractDigest: body.portableEvidenceContractDigest, checkerIdentities: body.checkerIdentities, provenance: body.provenance }) as NativeCandidateV1;
   return Object.freeze({ candidate, digest });
 }
 
@@ -82,6 +85,7 @@ export function verifyNativeCandidate(value: unknown, inputs: NativeCandidateVer
   if (!inputs || !(inputs.tarballBytes instanceof Uint8Array)) throw new TypeError("native candidate tarball bytes are required");
   if (candidate.publicCommitSha !== inputs.publicCommitSha) throw new TypeError("native candidate public commit mismatch");
   if (candidate.task8BaselineDigest !== inputs.task8BaselineDigest) throw new TypeError("native candidate Task 8 baseline digest mismatch");
+  if (candidate.task9VerificationDigest !== inputs.task9VerificationDigest) throw new TypeError("native candidate Task 9 verification digest mismatch");
   if (candidate.portableEvidenceContractDigest !== inputs.portableEvidenceContractDigest) throw new TypeError("native candidate portable evidence contract digest mismatch");
   if (candidate.tarballDigest !== bytesDigest(inputs.tarballBytes)) throw new TypeError("native candidate tarball digest mismatch");
   validateCandidate(candidate);
@@ -109,16 +113,16 @@ function parseCandidate(value: unknown): NativeCandidateV1 {
     if (!bytes.equals(authorityCanonicalBytes(parsed))) throw new TypeError("native candidate bytes are not RFC 8785/JCS canonical");
   }
   if (!plain(parsed)) throw new TypeError("native candidate must be a closed plain object");
-  const keys = ["v", "candidateId", "publicCommitSha", "tarballDigest", "laneCommits", "packDigest", "task8BaselineDigest", "portableEvidenceContractDigest", "checkerIdentities", "provenance"];
+  const keys = ["v", "candidateId", "publicCommitSha", "tarballDigest", "laneCommits", "packDigest", "task8BaselineDigest", "task9VerificationDigest", "portableEvidenceContractDigest", "checkerIdentities", "provenance"];
   if (Object.keys(parsed).join("\0") !== keys.join("\0")) throw new TypeError("native candidate is not a closed canonical object");
   scanSecrets(parsed);
   return parsed as NativeCandidateV1;
 }
 
 function validateCandidate(candidate: NativeCandidateV1): void {
-  if (candidate.v !== "reelier.native-github-candidate/v1" || !COMMIT.test(candidate.publicCommitSha) || !DIGEST.test(candidate.tarballDigest) || !DIGEST.test(candidate.packDigest) || !DIGEST.test(candidate.task8BaselineDigest) || !DIGEST.test(candidate.portableEvidenceContractDigest)) throw new TypeError("native candidate commitments are invalid");
+  if (candidate.v !== "reelier.native-github-candidate/v1" || !COMMIT.test(candidate.publicCommitSha) || !DIGEST.test(candidate.tarballDigest) || !DIGEST.test(candidate.packDigest) || !DIGEST.test(candidate.task8BaselineDigest) || !DIGEST.test(candidate.task9VerificationDigest) || !DIGEST.test(candidate.portableEvidenceContractDigest)) throw new TypeError("native candidate commitments are invalid");
   normalizeLanes(candidate.laneCommits);
-  normalizeCheckers(candidate.checkerIdentities, candidate.task8BaselineDigest, candidate.portableEvidenceContractDigest, candidate.packDigest, candidate.portableEvidenceContractDigest);
+  normalizeCheckers(candidate.checkerIdentities, candidate.task8BaselineDigest, candidate.task9VerificationDigest, candidate.packDigest, candidate.portableEvidenceContractDigest);
   const p = candidate.provenance;
   if (!plain(p) || Object.keys(p).join("\0") !== ["v", "source", "reproducibility", "liveProviderStatus", "credentialStatus", "workflowDispatch"].join("\0") || p.v !== "reelier.native-candidate-provenance/v1" || p.source !== "clean-export" || p.reproducibility !== "hermetic-offline" || p.liveProviderStatus !== "absent" || p.credentialStatus !== "absent" || p.workflowDispatch !== "absent") throw new TypeError("native candidate provenance is stale or non-hermetic");
 }

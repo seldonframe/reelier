@@ -17,7 +17,7 @@ const checkers = [
   { role: "contract", signerId: "checker-contract", publicKeyDigest: digest("c"), verifierVersion: "authority-contract-checker/v1", verdictDigest: digest("e") },
   { role: "pack", signerId: "checker-pack", publicKeyDigest: digest("d"), verifierVersion: "packed-consumer/v1", verdictDigest: packDigest },
   { role: "task8", signerId: "checker-task8", publicKeyDigest: digest("8"), verifierVersion: "task8-baseline-verifier/v1", verdictDigest: digest("8") },
-  { role: "task9", signerId: "checker-task9", publicKeyDigest: digest("9"), verifierVersion: "portable-evidence-verifier/v1", verdictDigest: digest("e") },
+  { role: "task9", signerId: "checker-task9", publicKeyDigest: digest("9"), verifierVersion: "portable-evidence-verifier/v1", verdictDigest: digest("9") },
 ] as const;
 
 function input() {
@@ -44,7 +44,7 @@ test("native candidate creation is hermetic and verification is content addresse
 
 test("candidate identity binds the exact accepted Task 9 verification verdict", () => {
   const first = createNativeCandidate(input());
-  const second = createNativeCandidate({ ...input(), task9Verification: { status: "verified", digest: digest("a") } });
+  const second = createNativeCandidate({ ...input(), task9Verification: { status: "verified", digest: digest("a") }, checkerIdentities: input().checkerIdentities.map(item => item.role === "task9" ? { ...item, verdictDigest: digest("a") } : item) });
   assert.notEqual(second.digest, first.digest);
   const expected = { tarballBytes: bytes, publicCommitSha: "03ac48e", task8BaselineDigest: digest("8"), task9VerificationDigest: digest("9"), portableEvidenceContractDigest: digest("e") };
   assert.throws(() => verifyNativeCandidate(second.candidate, expected), /Task 9|verdict|digest/i);
