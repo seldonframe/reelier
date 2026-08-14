@@ -48,7 +48,7 @@ export function consequence(
   eventId: string,
   state: Exclude<LedgerState, "issued">,
   receiptDigest: string | null = null,
-): ContinuityEventV1 {
+): Extract<ContinuityEventV1, { type: "consequence.observed" }> {
   return {
     type: "consequence.observed",
     eventId,
