@@ -102,6 +102,25 @@ test("hosted-shaped evidence can only reach founder-decision readiness with an e
   assert.equal(result.liveProviderClaim, "verified");
 });
 
+test("hosted evidence separates the candidate public commit from the runner source commit", () => {
+  const fixture = bundle("hosted-run");
+  const runnerSourceCommit = "ce33b20";
+  const value = structuredClone(fixture.value) as any;
+  value.workflow.workflowSha = runnerSourceCommit;
+  const bytes = {} as { ubuntu: Uint8Array; windows: Uint8Array };
+  for (const item of value.jobs) {
+    item.repo.workflowSha = runnerSourceCommit;
+    item.repo.checkoutSha = runnerSourceCommit;
+    item.repo.verifierSourceCommitSha = runnerSourceCommit;
+    item.repo.runnerSourceCommitSha = runnerSourceCommit;
+    const { signature: _oldSignature, artifactDigest: _oldDigest, signerId: _oldSigner, ...payload } = item;
+    const body = { ...payload, artifactDigest: authorityDigest(payload), signerId };
+    Object.assign(item, { ...body, signature: signAuthorityDigest(signer.privateKey, "authority-evidence", authorityDigest(body)) });
+    bytes[item.os === "ubuntu-latest" ? "ubuntu" : "windows"] = Buffer.from(JSON.stringify(item), "utf8");
+  }
+  assert.doesNotThrow(() => verifyGate4Bundle(value, { ...inputs(), execution: "hosted-run", artifactBytes: bytes }));
+});
+
 test("candidate, artifact, provenance, signature, parity, stale, and skip mutations refuse", () => {
   const fixture = bundle("hosted-run");
   const expected = { ...inputs(), execution: "hosted-run" as const, artifactBytes: fixture.bytes };
