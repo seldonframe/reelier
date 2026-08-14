@@ -71,7 +71,9 @@ export async function certifyFactoryJourney(out: string): Promise<Readonly<{ gra
     const activation = await cell.activateRootTask({ jobCard, jobCardTrustPin: pin, constraints, effects: 2, issuedAt: AT, expiresAt: EXPIRY });
     const credential = await cell.activatePrincipalSession(), runner = await createGitHubIssueLabelsHermeticComposition(cell);
     await runner.run({ bearerToken: credential.token, requestId: "factory_journey" }); await runner.cleanup({ bearerToken: credential.token, requestId: "factory_journey" });
-    const graph = await runner.exportGraph({ bearerToken: credential.token }); verifyCertificationTaskReceiptGraph(graph, { trustPin: pin });
+    const graph = await runner.exportGraph({ bearerToken: credential.token });
+    const evidenceSignerId = pin.keyDescriptors.find((item: any) => item.role === "authority-cell" && item.purpose === "authority-evidence")?.keyId;
+    verifyCertificationTaskReceiptGraph(graph, { trustPin: pin, currentTrustObservation: { v: "reelier.portable-current-trust-observation/v1", observedAt: AT, expiresAt: EXPIRY, activeAuthorityEvidenceSignerIds: [evidenceSignerId] }, now: new Date("2026-08-11T20:10:00.000Z") });
     const graphDigest = authorityDigest(graph);
     const taskAuthority = graph.taskAuthorities[0] as any, readinessArtifact = graph.signedReadiness as any;
     const nonClaims = ["semantic-correctness", "general-software-factory-capability", "live-human-review"];

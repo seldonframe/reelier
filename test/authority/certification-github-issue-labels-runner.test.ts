@@ -123,9 +123,9 @@ test("Adapter Contract digest is bound before dispatch and by every portable rec
     assert.equal(graph.receiptExtensions.length, graph.receipts.length);
     assert.equal(graph.receiptExtensions.every((item: any) => item.adapterContractDigest === AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST), true);
     assert.deepEqual(graph.receiptExtensions.map((item: any) => item.receiptDigest), graph.receipts.map((item: any) => authorityDigest(item.receipt.value)));
-    assert.equal(verifyCertificationTaskReceiptGraph(graph, { trustPin: f.pin }).status, "verified");
+    assert.equal(verifyCertificationTaskReceiptGraph(graph, graphVerification(f.pin)).status, "verified");
     const changed = structuredClone(graph); changed.receiptExtensions[0].adapterContractDigest = `sha256:${"0".repeat(64)}`;
-    assert.throws(() => verifyCertificationTaskReceiptGraph(changed, { trustPin: f.pin }), /adapter|contract|extension|terminal|digest/i);
+    assert.throws(() => verifyCertificationTaskReceiptGraph(changed, graphVerification(f.pin)), /adapter|contract|extension|terminal|digest/i);
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
@@ -288,7 +288,7 @@ test("semantic duplicate and conflicting bytes do not write or consume additiona
     assert.equal((await f.delegation.budget.get(f.activation.allocationId))?.consumed, 1);
     const graph = await f.runner.exportGraph({ bearerToken: f.credential.token });
     assert.equal(graph.exceptions.some((item: any) => item.kind === "conflict" && item.exactBytesDigest === (conflict as any).exactBytesDigest), true);
-    assert.equal(verifyCertificationTaskReceiptGraph(graph, { trustPin: f.pin }).status, "verified");
+    assert.equal(verifyCertificationTaskReceiptGraph(graph, graphVerification(f.pin)).status, "verified");
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
@@ -315,7 +315,7 @@ test("conflict receipt publication is recoverable and cannot verify ahead of its
     assert.ok(receipt);
     assert.equal(receipt.evidence.value.reconciliation.verdict, "conflict");
     assert.equal(receipt.evidence.value.reconciliation.normalizedProjectionDigest, exception.exactBytesDigest);
-    assert.equal(verifyCertificationTaskReceiptGraph(graph, { trustPin: f.pin }).status, "verified");
+    assert.equal(verifyCertificationTaskReceiptGraph(graph, graphVerification(f.pin)).status, "verified");
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
@@ -354,7 +354,7 @@ test("conflict recovery repairs the signed extension after a receipt-before-exte
     const restarted = await createGitHubIssueLabelsHermeticComposition(f.cell);
     assert.deepEqual(await restarted.recover(), ["request_conflict_extension_cut"]);
     assert.equal((await readdir(portable)).length, (await readdir(extensions)).length);
-    assert.equal(verifyCertificationTaskReceiptGraph(await restarted.exportGraph({ bearerToken: f.credential.token }), { trustPin: f.pin }).status, "verified");
+    assert.equal(verifyCertificationTaskReceiptGraph(await restarted.exportGraph({ bearerToken: f.credential.token }), graphVerification(f.pin)).status, "verified");
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
@@ -397,8 +397,8 @@ test("closed task receipt graph verifies offline and rejects tampering, omission
     await f.runner.run({ bearerToken: f.credential.token, requestId: "request_graph" });
     await f.runner.cleanup({ bearerToken: f.credential.token, requestId: "request_graph" });
     const graph = await f.runner.exportGraph({ bearerToken: f.credential.token });
-    assert.throws(() => verifyCertificationTaskReceiptGraph(graph), /external|trust pin|operator/i);
-    assert.equal(verifyCertificationTaskReceiptGraph(graph, { trustPin: f.pin }).status, "verified");
+    assert.throws(() => (verifyCertificationTaskReceiptGraph as any)(graph), /external|trust pin|operator/i);
+    assert.equal(verifyCertificationTaskReceiptGraph(graph, graphVerification(f.pin)).status, "verified");
     for (const mutate of [
       (g: any) => { g.adapterContractDigest = `sha256:${"0".repeat(64)}`; },
       (g: any) => { g.receipts.pop(); },
@@ -408,9 +408,9 @@ test("closed task receipt graph verifies offline and rejects tampering, omission
       (g: any) => { g.receipts[0].contract.value.contractId = "substituted"; },
       (g: any) => { g.secretToken = "canary-private-token"; },
       (g: any) => { g.receipts.pop(); g.priorReceiptLinks.pop(); g.outcomes.pop(); g.budgetEvents.pop(); },
-    ]) { const changed = structuredClone(graph); mutate(changed); assert.throws(() => verifyCertificationTaskReceiptGraph(changed, { trustPin: f.pin }), /graph|receipt|contract|budget|confidential|closed|digest|chain/i); }
+    ]) { const changed = structuredClone(graph); mutate(changed); assert.throws(() => verifyCertificationTaskReceiptGraph(changed, graphVerification(f.pin)), /graph|receipt|contract|budget|confidential|closed|digest|chain/i); }
     const attacker: any = structuredClone(graph); attacker.keyDescriptors = attacker.keyDescriptors.map((item: any) => ({ ...item, keyId: `attacker_${item.keyId}` }));
-    assert.throws(() => verifyCertificationTaskReceiptGraph(attacker, { trustPin: f.pin }), /trust|descriptor|activated|readiness|graph/i);
+    assert.throws(() => verifyCertificationTaskReceiptGraph(attacker, graphVerification(f.pin)), /trust|descriptor|activated|readiness|graph/i);
     assert.equal(JSON.stringify(graph).includes("canary-private-token"), false);
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
@@ -464,7 +464,7 @@ test("closed graph of the declared durable fixture collections exports canonical
     assert.deepEqual(graph.leases, { status: "absent", entries: [] });
     assert.deepEqual(graph.terminalCommitment.counts, { grants: 2, principals: 2, allocations: 2, budgetEvents: 4, outcomes: 14, exceptions: 0, topologyEvidence: 0, leases: 0, receipts: 6, receiptExtensions: 6, taskAuthorities: 1, postStateEvidence: 1, portableOutcomeEvidence: 1, policyEvidence: 2, taskStatusEvidence: 2, duplicateAttempts: 0, duplicateDecisions: 0, priorReceiptLinks: 6, keyDescriptors: 8, bindingEntries: 4 });
     for (const key of ["grants", "principals", "allocations", "budgetEvents", "outcomes", "exceptions", "receipts", "receiptExtensions", "taskAuthorities", "postStateEvidence", "policyEvidence", "taskStatusEvidence", "duplicateAttempts", "duplicateDecisions", "priorReceiptLinks", "keyDescriptors"] as const) assert.equal(graph.terminalCommitment.collectionDigests[key], authorityDigest(graph[key]));
-    assert.equal(verifyCertificationTaskReceiptGraph(graph, { trustPin: f.pin }).status, "verified");
+    assert.equal(verifyCertificationTaskReceiptGraph(graph, graphVerification(f.pin)).status, "verified");
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
@@ -513,7 +513,7 @@ test("offline graph verification refuses an evidence root revoked by the externa
     const previous = f.pin.currentTrustEvents[f.pin.currentTrustEvents.length - 1];
     const revoke = { v: "reelier.authority-trust-event/v1", eventId: "trust_revoke_evidence", sequence: f.pin.currentTrustEvents.length, action: "revoke", keyDescriptorDigest: authorityDigest(evidence), occurredAt: new Date(Date.parse(previous.occurredAt) + 1).toISOString(), previousEventDigest: authorityDigest(previous) };
     const revoked = { ...f.pin, currentTrustEvents: [...f.pin.currentTrustEvents, revoke] };
-    assert.throws(() => verifyCertificationTaskReceiptGraph(graph, { trustPin: revoked }), /evidence.*revoked|currently active|current trust/i);
+    assert.throws(() => verifyCertificationTaskReceiptGraph(graph, graphVerification(revoked)), /evidence.*revoked|currently active|current trust/i);
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
@@ -556,10 +556,10 @@ test("portable evidence links the approved task, exact post-state, policy status
     assert.equal(graph.duplicateAttempts[0].attemptRequestId, "request_portable_duplicate");
     assert.equal(graph.duplicateAttempts[0].operationKind, "run");
     assert.deepEqual({ budget: graph.duplicateDecisions[0].budgetDelta, writes: graph.duplicateDecisions[0].providerWriteDelta }, { budget: 0, writes: 0 });
-    assert.equal(verifyCertificationTaskReceiptGraph(graph, { trustPin: f.pin }).status, "verified");
+    assert.equal(verifyCertificationTaskReceiptGraph(graph, graphVerification(f.pin)).status, "verified");
     const missingNative = structuredClone(graph);
     delete missingNative.portableOutcomeEvidence;
-    assert.throws(() => verifyCertificationTaskReceiptGraph(missingNative, { trustPin: f.pin }), /portable|outcome|closed|collection/i);
+    assert.throws(() => verifyCertificationTaskReceiptGraph(missingNative, graphVerification(f.pin)), /portable|outcome|closed|collection/i);
     const legacyV1 = structuredClone(graph);
     delete legacyV1.portableOutcomeEvidenceVersion;
     assert.throws(() => verifyCertificationTaskReceiptGraph(legacyV1, graphVerification(f.pin)), /extension|version|closed|exact canonical/i);
@@ -567,11 +567,11 @@ test("portable evidence links the approved task, exact post-state, policy status
     for (const key of ["routeAuthority", "authenticatedIdentity", "materializedRequest", "responseSemanticsProfile", "reconciliation"] as const) {
       const missingBinding = structuredClone(graph);
       delete missingBinding.portableOutcomeEvidence[0][key];
-      assert.throws(() => verifyCertificationTaskReceiptGraph(missingBinding, { trustPin: f.pin }), /portable|runtime|route|identity|request|response|reconciliation|closed|terminal|digest/i);
+      assert.throws(() => verifyCertificationTaskReceiptGraph(missingBinding, graphVerification(f.pin)), /portable|runtime|route|identity|request|response|reconciliation|closed|terminal|digest/i);
     }
     const missingCleanup = structuredClone(graph);
     delete missingCleanup.portableOutcomeEvidence[0].evidence.cleanupParentReceiptDigest;
-    assert.throws(() => verifyCertificationTaskReceiptGraph(missingCleanup, { trustPin: f.pin }), /portable|cleanup|closed|terminal|digest/i);
+    assert.throws(() => verifyCertificationTaskReceiptGraph(missingCleanup, graphVerification(f.pin)), /portable|cleanup|closed|terminal|digest/i);
     assert.throws(() => verifyCertificationTaskReceiptGraph(graph, {
       trustPin: f.pin,
       currentTrustObservation: { v: "reelier.portable-current-trust-observation/v1", observedAt: at, expiresAt: expiry, activeAuthorityEvidenceSignerIds: [graph.portableOutcomeEvidence[0].evidence.executionAttestationSignerId] },
@@ -588,7 +588,7 @@ test("portable evidence links the approved task, exact post-state, policy status
       (g: any) => { g.taskStatusEvidence[1].allocationRevoked = true; },
       (g: any) => { g.duplicateDecisions.pop(); },
       (g: any) => { g.duplicateDecisions[0].providerWriteDelta = 1; },
-    ]) { const changed = structuredClone(graph); mutate(changed); assert.throws(() => verifyCertificationTaskReceiptGraph(changed, { trustPin: f.pin }), /portable|task|post-state|policy|status|duplicate|signature|terminal|digest|closed/i); }
+    ]) { const changed = structuredClone(graph); mutate(changed); assert.throws(() => verifyCertificationTaskReceiptGraph(changed, graphVerification(f.pin)), /portable|task|post-state|policy|status|duplicate|signature|terminal|digest|closed/i); }
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
@@ -608,7 +608,8 @@ test("portable graph consumes signed durable execution provenance without graph-
     assert.equal(executed.materializedRequest.v, "reelier.materialized-http-request/v1");
     assert.equal(executed.responseSemanticsProfile.v, "reelier.http-response-semantics/v1");
     assert.deepEqual(executed.reconciliation, { verdict: "matched", providerWriteCount: 1, resendCount: 0, observedProjectionDigest: graph.postStateEvidence[0].observedProjectionDigest });
-    assert.equal(executed.cleanupParentReceiptDigest, graph.receipts.find((item: any) => item.receipt.value.decisionContext.requestId === "request_runtime_provenance.cleanup").receipt.value.priorReceiptDigest);
+    const cleanupReceipt = graph.receipts.filter((item: any) => item.receipt.value.decisionContext.requestId === "request_runtime_provenance.cleanup").at(-1);
+    assert.equal(executed.cleanupParentReceiptDigest, cleanupReceipt.receipt.value.priorReceiptDigest);
     const publication = graph.portableOutcomeEvidence[0];
     assert.deepEqual(publication.routeAuthority, executed.portableRouteAuthority);
     assert.deepEqual(publication.authenticatedIdentity, executed.portableAuthenticatedIdentity);
@@ -639,7 +640,7 @@ test("duplicate ledger serializes concurrent exhausted attempts and ignores lexi
     await writeFile(path.join(portable, "duplicate-head.zzzzzzzz.json"), `${JSON.stringify({ ...first.duplicateAttemptHead, count: 0 })}\n`);
     const exported: any = await f.runner.exportGraph({ bearerToken: f.credential.token });
     assert.equal(exported.duplicateAttemptHead.count, 2);
-    assert.equal(verifyCertificationTaskReceiptGraph(exported, { trustPin: f.pin }).status, "verified");
+    assert.equal(verifyCertificationTaskReceiptGraph(exported, graphVerification(f.pin)).status, "verified");
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
@@ -652,7 +653,7 @@ test("externally anchored duplicate head rejects canonical rollback after restar
       zeroLedger = await readFile(ledgerPath),
       zeroGraph: any = await f.runner.exportGraph({ bearerToken: f.credential.token });
     assert.equal(zeroGraph.duplicateAttemptHead.count, 0);
-    assert.equal(verifyCertificationTaskReceiptGraph(zeroGraph, { trustPin: f.pin }).duplicateHistoryFreshness, "unchecked");
+    assert.equal(verifyCertificationTaskReceiptGraph(zeroGraph, graphVerification(f.pin)).duplicateHistoryFreshness, "unchecked");
 
     await f.runner.run({ bearerToken: f.credential.token, requestId: "request_duplicate_anchor_old" });
     const
@@ -664,7 +665,7 @@ test("externally anchored duplicate head rejects canonical rollback after restar
     const rolledBackZeroGraph: any = await f.runner.exportGraph({ bearerToken: f.credential.token });
     assert.equal(rolledBackZeroGraph.duplicateAttemptHead.count, 0);
     assert.throws(
-      () => verifyCertificationTaskReceiptGraph(rolledBackZeroGraph, { trustPin: f.pin }),
+      () => verifyCertificationTaskReceiptGraph(rolledBackZeroGraph, graphVerification(f.pin)),
       /duplicate.*current|head.*rollback|external.*anchor/i,
     );
     await writeFile(ledgerPath, oldLedger);
@@ -678,16 +679,16 @@ test("externally anchored duplicate head rejects canonical rollback after restar
     const currentGraph: any = await restarted.exportGraph({ bearerToken: f.credential.token });
     assert.equal(currentGraph.duplicateAttemptHead.count, 3);
     const currentDuplicateAttemptHeadDigest = authorityDigest(currentGraph.duplicateAttemptHead);
-    assert.equal(verifyCertificationTaskReceiptGraph(currentGraph, { trustPin: f.pin }).duplicateHistoryFreshness, "unchecked");
+    assert.equal(verifyCertificationTaskReceiptGraph(currentGraph, graphVerification(f.pin)).duplicateHistoryFreshness, "unchecked");
 
     await writeFile(ledgerPath, oldLedger);
     const rolledBackGraph: any = await restarted.exportGraph({ bearerToken: f.credential.token });
     assert.equal(rolledBackGraph.duplicateAttemptHead.count, 1);
     assert.throws(
-      () => verifyCertificationTaskReceiptGraph(rolledBackGraph, { trustPin: f.pin }),
+      () => verifyCertificationTaskReceiptGraph(rolledBackGraph, graphVerification(f.pin)),
       /duplicate.*current|head.*rollback|external.*anchor/i,
     );
-    assert.equal(verifyCertificationTaskReceiptGraph(oldGraph, { trustPin: f.pin }).duplicateHistoryFreshness, "unchecked");
+    assert.equal(verifyCertificationTaskReceiptGraph(oldGraph, graphVerification(f.pin)).duplicateHistoryFreshness, "unchecked");
     assert.notEqual(authorityDigest(oldGraph.duplicateAttemptHead), currentDuplicateAttemptHeadDigest);
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
@@ -714,7 +715,7 @@ test("portable export preserves dispatch history while reporting a current task 
     await f.delegation.revoke(f.initialized.identifiers.authorityCellId, f.initialized.identifiers.taskId);
     const graph: any = await f.runner.exportGraph({ bearerToken: f.credential.token });
     assert.deepEqual(graph.taskStatusEvidence.map((item: any) => [item.phase, item.lifecycleState, item.allocationRevoked]), [["dispatch", "active", false], ["export", "revoked", true]]);
-    assert.equal(verifyCertificationTaskReceiptGraph(graph, { trustPin: f.pin }).status, "verified");
+    assert.equal(verifyCertificationTaskReceiptGraph(graph, graphVerification(f.pin)).status, "verified");
     const evidence = certificationCellHostInternalState(f.cell).hermeticGitHubAuthority().lifecycle.direct.get("authority-evidence")!;
     const signer = { signerId: evidence.descriptor.keyId, sign: (digest: string) => signAuthorityDigest(evidence.privateKey, "authority-evidence", digest) };
     const resign = (record: any) => { const { signature: _old, ...body } = record; return { ...body, signature: signer.sign(authorityDigest(body)) }; };
@@ -722,14 +723,14 @@ test("portable export preserves dispatch history while reporting a current task 
     for (const [index, allocationRevoked, lifecycleState] of [[0, true, "revoked"], [1, false, "active"]] as const) {
       const changed = structuredClone(graph), previous = changed.taskStatusEvidence[index];
       changed.taskStatusEvidence[index] = resign({ ...previous, allocationRevoked, lifecycleState, currentActiveClaim: !allocationRevoked });
-      assert.throws(() => verifyCertificationTaskReceiptGraph(rebuild(changed), { trustPin: f.pin }), /task status|history|observation/i);
+      assert.throws(() => verifyCertificationTaskReceiptGraph(rebuild(changed), graphVerification(f.pin)), /task status|history|observation/i);
     }
     for (const index of [0, 1]) {
       const changed = structuredClone(graph), previous = changed.taskStatusEvidence[index], lifecycleState = "inactive", allocationRevoked = index === 0 ? false : true;
       const budgetEvents = changed.budgetEvents.map((node: any) => node.event).slice(0, index === 0 ? 2 : undefined);
       const durableHistoryDigest = authorityDigest({ task: { taskId: changed.taskId, authorityCellId: changed.authorityCellId, lifecycleState, grantExpiresAt: previous.grantExpiresAt, allocationRevoked }, budgetEvents });
       changed.taskStatusEvidence[index] = resign({ ...previous, lifecycleState, allocationRevoked, currentActiveClaim: false, durableHistoryDigest });
-      assert.throws(() => verifyCertificationTaskReceiptGraph(rebuild(changed), { trustPin: f.pin }), /task status|history|lifecycle|observation/i);
+      assert.throws(() => verifyCertificationTaskReceiptGraph(rebuild(changed), graphVerification(f.pin)), /task status|history|lifecycle|observation/i);
     }
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
@@ -750,6 +751,6 @@ test("offline portable verification rejects re-signed false claims with a fresh 
       (g: any) => { g.taskStatusEvidence[1] = resign({ ...g.taskStatusEvidence[1], taskId: "WRONG_TASK" }); },
       (g: any) => { g.policyEvidence[1] = resign({ ...g.policyEvidence[1], policyDigest: `sha256:${"a".repeat(64)}` }); },
       (g: any) => { g.duplicateAttempts = []; g.duplicateDecisions = []; },
-    ]) { const changed: any = structuredClone(graph); mutate(changed); assert.throws(() => verifyCertificationTaskReceiptGraph(rebuild(changed), { trustPin: f.pin }), /post-state|projection|task status|policy|duplicate|authority/i); }
+    ]) { const changed: any = structuredClone(graph); mutate(changed); assert.throws(() => verifyCertificationTaskReceiptGraph(rebuild(changed), graphVerification(f.pin)), /post-state|projection|task status|policy|duplicate|authority/i); }
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
