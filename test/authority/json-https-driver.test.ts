@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import * as jsonHttps from "../../src/authority/drivers/json-https.js";
 import * as deadlineModule from "../../src/authority/net/deadline.js";
-import { createPinnedLookup, executeJsonHttpsEffect } from "../../src/authority/drivers/json-https.js";
+import { createPinnedLookup, executeJsonHttpsEffect, executeJsonHttpsRead } from "../../src/authority/drivers/json-https.js";
 import { createTotalDeadline } from "../../src/authority/net/deadline.js";
 
 const driverUrl = new URL("../../src/authority/drivers/json-https.js", import.meta.url).href;
@@ -165,6 +165,15 @@ test("normal HTTPS effects reject oversized uploads before resolving credentials
   let credentialResolved = false;
   await assert.rejects(() => executeJsonHttpsEffect({ endpointId: "endpoint", method: "POST", path: "/write", query: "", headers: {}, bodyBase64: Buffer.alloc(10 * 1024 * 1024 + 1).toString("base64") } as never, { endpointId: "endpoint", baseUrl: "https://api.example", allowedMethods: ["POST"], allowedPathPrefixes: ["/write"], secretRef: "env:SECRET", accountIdentity: "account" }, { async resolve() { credentialResolved = true; throw new Error("must not resolve"); } }), /configured limit/i);
   assert.equal(credentialResolved, false);
+});
+
+test("native HTTPS rejects encoded dot segments and malformed path escapes before credential resolution", async () => {
+  const endpoint = { endpointId: "endpoint", baseUrl: "https://api.example", allowedMethods: ["GET"] as const, allowedPathPrefixes: ["/read"], accountIdentity: "account" };
+  for (const path of ["/read/%2e%2e/admin", "/read/%2E/admin", "/read/%2e./admin", "/read/%ZZ"]) {
+    let resolved = false;
+    await assert.rejects(() => executeJsonHttpsRead({ endpointId: "endpoint", path }, endpoint, { async resolve() { resolved = true; return "unused"; } }), /path|escaping|encoding/i);
+    assert.equal(resolved, false, `credential resolution must not occur for ${path}`);
+  }
 });
 
 test("native canonical routes resolve a one-use credential slot and reject legacy references", async () => {

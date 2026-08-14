@@ -53,3 +53,37 @@ test("canonical HTTPS dispatch acquires and consumes the slot before transport, 
   assert.equal(consumed, true);
   assert.equal(JSON.stringify(result).includes("CANARY_SLOT_VALUE"), false);
 });
+
+test("canonical HTTPS dispatch refuses unknown response semantics profiles before acquiring a credential slot", async () => {
+  const route = {
+    v: "reelier.json-https-route/v1" as const, providerId: "github", connectorId: "github", accountId: "acct",
+    providerAccountIdentity: "github:acct", endpointId: "github.write", origin: "https://127.0.0.1",
+    allowedMethods: ["PUT" as const], allowedPathPrefixes: ["/labels"], credentialSlotId: "github.tracer",
+    responseSemanticsProfileId: "unknown.profile", reconciliationRecipeId: "github.labels.read", readEndpointId: "github.read",
+    egressPolicyDigest: "sha256:" + "1".repeat(64),
+  };
+  const read = { ...route, endpointId: "github.read", allowedMethods: ["GET" as const] };
+  let acquired = false;
+  const adapter = createJsonHttpsDispatchAdapter({ routes: [route, read], endpoints: [], secrets: {
+    async resolve() { throw new Error("legacy resolver must not be used"); },
+    async acquireSlot() { acquired = true; return { readOnce: () => "secret" }; },
+  } });
+  const result = await adapter.dispatch({ reservation: { reservationId: "r", state: "reserved", intent: { effectDigest: "sha256:" + "1".repeat(64) } }, effect: { endpointId: "github.write", method: "PUT", path: "/labels", query: "", headers: {}, bodyBase64: Buffer.from("{}").toString("base64") }, effectCanonicalBase64: "e30=", effectDigest: "sha256:" + "1".repeat(64) });
+  assert.equal(result.kind, "definitive-failure");
+  assert.equal(acquired, false);
+});
+
+test("canonical HTTPS dispatch binds the sealed operator configuration digest", async () => {
+  const route = {
+    v: "reelier.json-https-route/v1" as const, providerId: "github", connectorId: "github", accountId: "acct",
+    providerAccountIdentity: "github:acct", endpointId: "github.write", origin: "https://127.0.0.1",
+    allowedMethods: ["PUT" as const], allowedPathPrefixes: ["/labels"], credentialSlotId: "github.tracer",
+    responseSemanticsProfileId: "github.labels.v1", reconciliationRecipeId: "github.labels.read", readEndpointId: "github.read",
+    egressPolicyDigest: "sha256:" + "1".repeat(64),
+  };
+  const read = { ...route, endpointId: "github.read", allowedMethods: ["GET" as const] };
+  const adapter = createJsonHttpsDispatchAdapter({ routes: [route, read], endpoints: [], operatorConfigurationDigest: "sha256:" + "2".repeat(64), secrets: { async resolve() { throw new Error("legacy resolver must not be used"); }, async acquireSlot() { return { readOnce: () => "secret" }; } } } as any);
+  const base = { reservationId: "r", state: "reserved" as const, intent: { effectDigest: "sha256:" + "1".repeat(64), routeAuthority: { operatorConfigurationDigest: "sha256:" + "3".repeat(64) } as any } };
+  const result = await adapter.dispatch({ reservation: base, effect: { endpointId: "github.write", method: "PUT", path: "/labels", query: "", headers: {}, bodyBase64: Buffer.from("{}").toString("base64") }, effectCanonicalBase64: "e30=", effectDigest: "sha256:" + "1".repeat(64) });
+  assert.equal(result.kind, "definitive-failure");
+});

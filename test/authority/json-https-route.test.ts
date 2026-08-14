@@ -102,3 +102,11 @@ test("canonical HTTPS routes reject percent-encoded dot segments", () => {
     assert.throws(() => parseJsonHttpsRouteV1({ ...routeInput(), allowedPathPrefixes: [path] }), /path/i);
   }
 });
+
+test("canonical route registry rejects a readback route from another account or origin", () => {
+  const write = parseJsonHttpsRouteV1(routeInput());
+  const read = parseJsonHttpsRouteV1({ ...routeInput(), endpointId: "github.issue.labels.readback", allowedMethods: ["GET"], readEndpointId: "github.issue.labels.readback" });
+  assert.throws(() => createJsonHttpsRouteRegistry([write, { ...read, accountId: "other-account" }]), /read endpoint|equivalence|account/i);
+  assert.throws(() => createJsonHttpsRouteRegistry([write, { ...read, origin: "https://uploads.github.com" }]), /read endpoint|equivalence|origin/i);
+  assert.throws(() => createJsonHttpsRouteRegistry([write, { ...read, credentialSlotId: "other-slot" }]), /read endpoint|equivalence|slot/i);
+});
