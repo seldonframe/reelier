@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdir, readdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { FsContinuityLedger } from "../../src/continuity/fs-ledger.js";
-import { actor, checkpoint, decision, opened, withRoot } from "./fixtures.js";
+import { actor, checkpoint, decision, digest, opened, withRoot } from "./fixtures.js";
 
 test("ledger persists canonical digest-chained checkpoints across restart", async () => {
   await withRoot(async root => {
@@ -70,5 +70,17 @@ test("ledger refuses a task path that is a directory link", async () => {
     const ledger = new FsContinuityLedger(root);
     await assert.rejects(() => ledger.append(actor, checkpoint(0, [opened])), /symbolic link|directory link/i);
     assert.deepEqual(await readdir(target), []);
+  });
+});
+
+test("append responses preserve evidence references from every prior segment", async () => {
+  await withRoot(async root => {
+    const ledger = new FsContinuityLedger(root);
+    await ledger.append(actor, { ...checkpoint(0, [opened]), evidenceRefs: [digest("e")] });
+    const second = await ledger.append(actor, { ...checkpoint(1, []), evidenceRefs: [digest("f")] });
+    assert.equal(second.ok, true);
+    if (!second.ok) return;
+    assert.deepEqual(second.state.evidenceRefs, [digest("e"), digest("f")]);
+    assert.deepEqual((await new FsContinuityLedger(root).read("task_1")).state?.evidenceRefs, [digest("e"), digest("f")]);
   });
 });

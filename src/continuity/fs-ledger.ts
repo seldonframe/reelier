@@ -287,7 +287,10 @@ export class FsContinuityLedger {
         };
       }
       const allEvents = [...(current.state?.events ?? []), ...normalized.checkpoint.proposedEvents];
-      const state = withEvidence(foldContinuity(allEvents), normalized.checkpoint.evidenceRefs);
+      const state = withEvidence(
+        foldContinuity(allEvents),
+        [...(current.state?.evidenceRefs ?? []), ...normalized.checkpoint.evidenceRefs],
+      );
       const cursor = current.cursor + 1;
       const segment: ContinuitySegmentV1 = {
         v: "reelier.continuity-segment/v1",
