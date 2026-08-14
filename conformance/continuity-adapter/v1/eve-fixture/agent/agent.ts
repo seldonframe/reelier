@@ -23,7 +23,9 @@ const outcomeInput = {
 export default defineAgent({
   modelContextWindowTokens: 128_000,
   model: mockModel(({ lastUserMessage, messages, toolResults }) => {
-    if (toolResults.length > 0) return { text: JSON.stringify(toolResults.at(-1)?.output) };
+    if (toolResults.length > 0 && messages.at(-1)?.role === "tool") {
+      return { text: JSON.stringify(toolResults.at(-1)?.output) };
+    }
     if (lastUserMessage === "checkpoint") return { toolCalls: [{ name: "continuity_checkpoint", input: checkpointInput }] };
     if (lastUserMessage === "request outcome") return { toolCalls: [{ name: "reelier_outcome_request", input: outcomeInput }] };
     if (lastUserMessage === "read status") return { toolCalls: [{ name: "reelier_outcome_status", input: { requestId: "request_eve_1" } }] };

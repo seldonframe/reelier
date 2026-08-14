@@ -48,6 +48,14 @@ export default defineTool({
       evidenceRefs: input.evidenceRefs,
       ...(input.agentMemo === undefined ? {} : { agentMemo: { status: "unchecked", text: input.agentMemo } }),
     };
-    return continuityRuntime(ctx).checkpoint(checkpoint);
+    const result = await continuityRuntime(ctx).checkpoint(checkpoint);
+    return result.ok
+      ? { ok: true as const, cursor: result.cursor, segmentDigest: result.segmentDigest }
+      : {
+          ok: false as const,
+          reason: result.reason,
+          expectedCursor: result.expectedCursor,
+          actualCursor: result.actualCursor,
+        };
   },
 });
