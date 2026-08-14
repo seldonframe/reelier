@@ -532,6 +532,8 @@ test("portable evidence links the approved task, exact post-state, policy status
     const duplicate = await f.runner.run({ bearerToken: f.credential.token, requestId: "request_portable_duplicate" });
     assert.equal(duplicate.status, "duplicate");
     const graph: any = await f.runner.exportGraph({ bearerToken: f.credential.token });
+    assert.equal(graph.portableOutcomeEvidence.length, 1, "removing the native portable outcome collection must fail closed");
+    assert.equal(graph.portableOutcomeEvidence[0].evidence.confidence, "exact");
     assert.equal(graph.taskAuthorities.length, 1);
     assert.equal(graph.taskAuthorities[0].signedJobCardDigest, signedJobCardDigest(f.jobCard));
     assert.equal(graph.taskAuthorities[0].adapterContractDigest, AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST);
@@ -548,6 +550,9 @@ test("portable evidence links the approved task, exact post-state, policy status
     assert.equal(graph.duplicateAttempts[0].operationKind, "run");
     assert.deepEqual({ budget: graph.duplicateDecisions[0].budgetDelta, writes: graph.duplicateDecisions[0].providerWriteDelta }, { budget: 0, writes: 0 });
     assert.equal(verifyCertificationTaskReceiptGraph(graph, { trustPin: f.pin }).status, "verified");
+    const missingNative = structuredClone(graph);
+    delete missingNative.portableOutcomeEvidence;
+    assert.throws(() => verifyCertificationTaskReceiptGraph(missingNative, { trustPin: f.pin }), /portable|outcome|closed|collection/i);
     for (const mutate of [
       (g: any) => { g.taskAuthorities[0].instructionsDigest = `sha256:${"9".repeat(64)}`; },
       (g: any) => { g.taskAuthorities[0].dispatchSnapshotPreimage.runner = `sha256:${"8".repeat(64)}`; },
