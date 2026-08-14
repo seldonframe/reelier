@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import test from "node:test";
 
 type Scenario = Readonly<Record<string, unknown>>;
@@ -37,6 +38,9 @@ test("real Eve 0.37.1 preserves Reelier continuity across process and session bo
       assert.equal(value.uncertainClaimCount, 1);
       assert.equal(value.uncertainClaimStatus, "unchecked");
       assert.equal(value.noThirdSegmentAfterReplay, true);
+      assert.deepEqual(value.retryEvidence, { sameCoordinates: true, distinctMetaIds: true, type: "step.started" });
+      assert.equal(value.recoveryBoundary, "session.waiting");
+      assert.equal(value.recoveryPostCount, 0);
       assert.deepEqual(value.counters, { outcomeRequests: 0, statusReads: 0, providerDispatches: 0, reservations: 0 });
     });
     await t.test("Path C apply survives process death without resend", () => {
@@ -46,12 +50,17 @@ test("real Eve 0.37.1 preserves Reelier continuity across process and session bo
       assert.equal(value.reservations, 1);
       assert.equal(value.providerWrites, 1);
       assert.equal(value.verifierProducedConsequence, true);
-      assert.equal(value.ambiguousRequiresReconcile, true);
+      assert.equal(value.cutLifecycleState, "duplicate");
+      assert.equal(value.cutVerdict, "accepted");
+      assert.equal(value.ambiguousState, "ambiguous");
+      assert.deepEqual(value.ambiguousNextSafeActions, ["reconcile-before-retry"]);
+      assert.equal(value.prematureSuccessProjected, false);
       assert.deepEqual(value.retryEvidence, { sameCoordinates: true, distinctMetaIds: true, type: "step.started" });
     });
     await t.test("overlapping stream cursor deduplicates by event id", () => {
       const value = matrix.scenarios.streamOverlap;
       assert.equal(Number(value.overlapCount) > 0, true);
+      assert.equal(Number(value.rawRepeatedMetaIdCount) > 0, true, JSON.stringify(value));
       assert.equal(value.duplicateInstrumentationIds, 0);
       assert.equal(value.ledgerUnchanged, true);
     });
@@ -60,6 +69,9 @@ test("real Eve 0.37.1 preserves Reelier continuity across process and session bo
       assert.equal(value.compactProjectionUnchanged, true);
       assert.equal(value.clearProjectionUnchanged, true);
       assert.equal(value.effectsUnchanged, true);
+      assert.equal(value.hostIdentityUnchanged, true);
+      assert.equal(value.ledgerTaskUnchanged, true);
+      assert.equal(value.hostileAuthorityNotProjected, true);
     });
     await t.test("reset session can be replaced for the same task", () => {
       const value = matrix.scenarios.resetAndReplace;
@@ -83,3 +95,43 @@ test("real Eve 0.37.1 preserves Reelier continuity across process and session bo
     await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
+
+test("closed Eve report rejects active and hidden structures before reading them", async () => {
+  const moduleUrl = pathToFileURL(resolve("conformance/continuity-adapter/v1/eve-fixture/scripts/run-conformance.mjs")).href;
+  const { assertClosedInertReport } = await import(moduleUrl) as { assertClosedInertReport(value: unknown): void };
+  const valid = reportFixture();
+  assert.doesNotThrow(() => assertClosedInertReport(valid));
+
+  let getterReads = 0;
+  const accessor = structuredClone(valid);
+  Object.defineProperty(accessor.artifacts, "ledgerHeadDigest", { enumerable: true, get() { getterReads += 1; return `sha256:${"a".repeat(64)}`; } });
+  assert.throws(() => assertClosedInertReport(accessor), /inert|descriptor/i);
+  assert.equal(getterReads, 0);
+
+  const symbol = structuredClone(valid);
+  Object.defineProperty(symbol.nonClaims, Symbol("hidden"), { value: "not-proved", enumerable: true });
+  assert.throws(() => assertClosedInertReport(symbol), /symbol|exact/i);
+
+  const hidden = structuredClone(valid);
+  Object.defineProperty(hidden.artifacts, "unexpected", { value: "hidden", enumerable: false });
+  assert.throws(() => assertClosedInertReport(hidden), /enumerable|exact/i);
+
+  const altered = structuredClone(valid);
+  Object.setPrototypeOf(altered.checks[0], { inherited: true });
+  assert.throws(() => assertClosedInertReport(altered), /prototype/i);
+});
+
+function reportFixture() {
+  return {
+    v: "reelier.continuity-eve-conformance-report/v1",
+    status: "passed",
+    maturity: "reproduced",
+    reelierCommit: "a".repeat(40),
+    authorityAdapterContractDigest: `sha256:${"b".repeat(64)}`,
+    eveVersion: "0.37.1",
+    nodeVersion: "v24.9.0",
+    checks: [{ id: "generic-candidate", status: "passed", detail: "passed" }],
+    artifacts: { ledgerHeadDigest: `sha256:${"c".repeat(64)}`, receiptGraphDigest: `sha256:${"d".repeat(64)}`, reportDigest: `sha256:${"e".repeat(64)}` },
+    nonClaims: { contentCorrectness: "not-proved", grokBot: "not-tested", productionReadiness: "not-proved", safety: "not-proved", topology: "not-proved", trafficCompleteness: "not-proved" },
+  };
+}
