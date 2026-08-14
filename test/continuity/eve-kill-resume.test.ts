@@ -47,6 +47,7 @@ test("real Eve 0.37.1 preserves Reelier continuity across process and session bo
       assert.equal(value.providerWrites, 1);
       assert.equal(value.verifierProducedConsequence, true);
       assert.equal(value.ambiguousRequiresReconcile, true);
+      assert.deepEqual(value.retryEvidence, { sameCoordinates: true, distinctMetaIds: true, type: "step.started" });
     });
     await t.test("overlapping stream cursor deduplicates by event id", () => {
       const value = matrix.scenarios.streamOverlap;
