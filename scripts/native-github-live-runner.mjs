@@ -3,12 +3,28 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 export const NATIVE_LIVE_PINS = Object.freeze({
+  schema: "reelier.native-github-candidate/v1",
   candidateId: "sha256:e46498b6441a44e7de42264ebf243e4462aae6e4c4b3d33ed4276fcc50190e96",
   publicCommitSha: "03ac48e",
   tarballDigest: "sha256:0659c2f402002d733dfd2621c5d8cce5df301975606a3fcb1b802e492bec5309",
   packDigest: "sha256:8101632acbacaf2738b8a7e698b0fb301539163edc713a37e74df0a6d233d689",
+  task8BaselineDigest: "sha256:8888888888888888888888888888888888888888888888888888888888888888",
   task9VerificationDigest: "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+  portableEvidenceContractDigest: "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
 });
+
+const EXPECTED_LANES = Object.freeze([
+  { laneId: "operator-evidence", commitSha: "cccccccccccccccccccccccccccccccccccccccc" },
+  { laneId: "provider-authority", commitSha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+  { laneId: "reconciliation-verifier", commitSha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
+]);
+const EXPECTED_CHECKERS = Object.freeze([
+  { role: "contract", signerId: "checker-contract", publicKeyDigest: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", verifierVersion: "authority-contract-checker/v1", verdictDigest: NATIVE_LIVE_PINS.portableEvidenceContractDigest },
+  { role: "pack", signerId: "checker-pack", publicKeyDigest: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", verifierVersion: "packed-consumer/v1", verdictDigest: NATIVE_LIVE_PINS.packDigest },
+  { role: "task8", signerId: "checker-task8", publicKeyDigest: NATIVE_LIVE_PINS.task8BaselineDigest, verifierVersion: "task8-baseline-verifier/v1", verdictDigest: NATIVE_LIVE_PINS.task8BaselineDigest },
+  { role: "task9", signerId: "checker-task9", publicKeyDigest: NATIVE_LIVE_PINS.task9VerificationDigest, verifierVersion: "portable-evidence-verifier/v1", verdictDigest: NATIVE_LIVE_PINS.task9VerificationDigest },
+]);
+const EXPECTED_PROVENANCE = Object.freeze({ v: "reelier.native-candidate-provenance/v1", source: "clean-export", reproducibility: "hermetic-offline", liveProviderStatus: "absent", credentialStatus: "absent", workflowDispatch: "absent" });
 
 const WORKFLOW_ENVIRONMENT = "native-github-live";
 const AMBIGUOUS_SEND_POLICY = "ambiguous-send-no-resend";
@@ -27,7 +43,19 @@ function parseArgs(argv) {
 
 function candidateMatchesPins(candidate) {
   if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return false;
-  return Object.entries(NATIVE_LIVE_PINS).every(([key, expected]) => candidate[key] === expected);
+  const expectedKeys = ["v", "candidateId", "publicCommitSha", "tarballDigest", "packDigest", "task8BaselineDigest", "task9VerificationDigest", "portableEvidenceContractDigest", "laneCommits", "checkerIdentities", "provenance"];
+  if (Object.keys(candidate).sort().join("\0") !== expectedKeys.slice().sort().join("\0")) return false;
+  if (candidate.v !== NATIVE_LIVE_PINS.schema) return false;
+  for (const [key, expected] of Object.entries(NATIVE_LIVE_PINS)) {
+    if (key === "schema") continue;
+    if (candidate[key] !== expected) return false;
+  }
+  if (JSON.stringify(candidate.laneCommits) !== JSON.stringify(EXPECTED_LANES)) return false;
+  if (JSON.stringify(candidate.checkerIdentities) !== JSON.stringify(EXPECTED_CHECKERS)) return false;
+  const provenance = candidate.provenance;
+  if (!provenance || typeof provenance !== "object" || Array.isArray(provenance)) return false;
+  if (Object.keys(provenance).sort().join("\0") !== Object.keys(EXPECTED_PROVENANCE).sort().join("\0")) return false;
+  return Object.entries(EXPECTED_PROVENANCE).every(([key, expected]) => provenance[key] === expected);
 }
 
 export function validateWorkflowText(text) {
@@ -65,7 +93,9 @@ async function loadCandidate(candidatePath) {
   } catch {
     fail("candidate is not JSON");
   }
-  if (!candidateMatchesPins(candidate)) fail("candidate does not match the immutable Task 10 pins");
+  const expectedCandidateId = process.env.EXPECTED_CANDIDATE_ID ?? NATIVE_LIVE_PINS.candidateId;
+  if (expectedCandidateId !== NATIVE_LIVE_PINS.candidateId) fail("workflow candidate_id input is not the immutable candidate");
+  if (!candidateMatchesPins(candidate) || candidate.candidateId !== expectedCandidateId) fail("candidate does not match the immutable Task 10 pins");
   return candidate;
 }
 
