@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "imports": { "#*": "./agent/*", "#evals/*": "./evals/*" },
-  "scripts": { "build": "eve build", "dev": "eve dev", "typecheck": "tsc --noEmit", "test:runtime": "tsc -p tests/tsconfig.json && node --test dist/tests/runtime.test.js", "test:no-crash": "node ../../../../node_modules/typescript/bin/tsc -p ../../../../tsconfig.test.json && node scripts/no-crash.mjs", "eval": "eve eval" },
+  "scripts": { "build": "eve build", "conformance": "node scripts/run-conformance.mjs", "dev": "eve dev", "typecheck": "tsc --noEmit", "test:runtime": "tsc -p tests/tsconfig.json && node --test dist/tests/runtime.test.js", "test:no-crash": "node ../../../../node_modules/typescript/bin/tsc -p ../../../../tsconfig.test.json && node scripts/no-crash.mjs", "eval": "eve eval" },
   "dependencies": { "eve": "0.37.1", "reelier": "file:../../../..", "zod": "4.4.3" },
   "devDependencies": { "@types/node": "24.13.3", "typescript": "7.0.2" },
   "engines": { "node": "24.x" }
