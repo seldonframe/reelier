@@ -1,0 +1,14 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "../dist",
+    "rootDir": ".."
+  },
+  "include": [
+    "../agent/lib/runtime.ts",
+    "../agent/lib/binding.ts",
+    "../agent/lib/faults.ts",
+    "./runtime.test.ts"
+  ]
+}

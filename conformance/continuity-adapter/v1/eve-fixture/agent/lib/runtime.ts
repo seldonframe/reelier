@@ -23,29 +23,83 @@ function portUrl(): URL {
 type OutcomeRequest = Parameters<OutcomeRequesterV1>[1];
 type AuthorityIngressOutcome = Awaited<ReturnType<OutcomeRequesterV1>>;
 
-async function responseJson(response: Response): Promise<AuthorityIngressOutcome> {
-  const output = await response.json() as AuthorityIngressOutcome;
+export async function readAuthorityIngressOutcome(response: Response): Promise<AuthorityIngressOutcome> {
   if (!response.ok) throw new Error(`Path C port refused request with HTTP ${response.status}`);
-  return output;
+  const output = inertRecord(await response.json());
+  const keys = Reflect.ownKeys(output);
+  const allowed = new Set(["requestId", "verdict", "reasonCode", "lifecycleState", "receiptRef"]);
+  if (keys.length < 4 || keys.length > 5 || keys.some(key => typeof key !== "string" || !allowed.has(key))) {
+    throw new TypeError("Path C outcome response must be closed");
+  }
+  if (
+    typeof output.requestId !== "string"
+    || (output.verdict !== "accepted" && output.verdict !== "refused")
+    || typeof output.reasonCode !== "string"
+    || typeof output.lifecycleState !== "string"
+    || ("receiptRef" in output && typeof output.receiptRef !== "string")
+  ) {
+    throw new TypeError("Path C outcome response is invalid");
+  }
+  const receiptRef = output.receiptRef as string | undefined;
+  return Object.freeze({
+    requestId: output.requestId,
+    verdict: output.verdict,
+    reasonCode: output.reasonCode,
+    lifecycleState: output.lifecycleState,
+    ...(receiptRef === undefined ? {} : { receiptRef }),
+  });
+}
+
+function inertRecord(value: unknown): Record<string, unknown> {
+  if (
+    !value
+    || typeof value !== "object"
+    || Array.isArray(value)
+    || Object.getPrototypeOf(value) !== Object.prototype
+    || Reflect.ownKeys(value).some(key => {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      return typeof key !== "string" || !descriptor || descriptor.get !== undefined || descriptor.set !== undefined;
+    })
+  ) {
+    throw new TypeError("Path C outcome response must be an inert plain object");
+  }
+  return value as Record<string, unknown>;
+}
+
+export async function requestOutcomeFromPort(
+  baseUrl: URL,
+  token: string,
+  input: OutcomeRequest,
+): Promise<AuthorityIngressOutcome> {
+  return readAuthorityIngressOutcome(await fetch(new URL("/outcomes", baseUrl), {
+    method: "POST",
+    redirect: "error",
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+    body: JSON.stringify({ choices: input.choices, requestId: input.requestId, sourceRefs: input.sourceRefs }),
+  }));
+}
+
+export async function statusOutcomeFromPort(
+  baseUrl: URL,
+  token: string,
+  requestId: string,
+): Promise<AuthorityIngressOutcome> {
+  return readAuthorityIngressOutcome(await fetch(new URL(`/outcomes/${encodeURIComponent(requestId)}`, baseUrl), {
+    method: "GET",
+    redirect: "error",
+    headers: { authorization: `Bearer ${token}` },
+  }));
 }
 
 export function continuityRuntime(ctx: ManagedContext) {
   const root = required("REELIER_CONTINUITY_ROOT");
   const baseUrl = portUrl();
   const token = required("REELIER_PATH_C_PORT_TOKEN");
-  const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
   return createContinuityRuntimeAdapter({
     ledger: new FsContinuityLedger(root),
     identify: async () => identifyAuthenticatedWorkload(ctx),
-    requestOutcome: async (_actor, input: OutcomeRequest) => responseJson(await fetch(new URL("/outcomes", baseUrl), {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ choices: input.choices, requestId: input.requestId, sourceRefs: input.sourceRefs }),
-    })),
-    statusOutcome: async (_actor, input) => responseJson(await fetch(new URL(`/outcomes/${encodeURIComponent(input.requestId)}`, baseUrl), {
-      method: "GET",
-      headers: { authorization: `Bearer ${token}` },
-    })),
+    requestOutcome: async (_actor, input: OutcomeRequest) => requestOutcomeFromPort(baseUrl, token, input),
+    statusOutcome: async (_actor, input) => statusOutcomeFromPort(baseUrl, token, input.requestId),
   });
 }
 
