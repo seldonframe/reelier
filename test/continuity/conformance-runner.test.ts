@@ -87,3 +87,20 @@ test("public protocol exposes exactly the three specified mutations", async () =
   assert.match(protocol, /"dispatch-on-open" \| "identity-from-input" \| "unchecked-as-verified"/);
   assert.doesNotMatch(protocol, /replacement-state-loss|missing-close|malformed-semver/);
 });
+
+test("uncertainty checks reject swapped and conflated consequence lifecycles", async () => {
+  for (const mutation of ["swap-uncertain-states", "conflate-uncertain-states"] as const) {
+    const report = await checkContinuityAdapterCandidate(candidate, { mutation });
+    assert.equal(report.checks.find((item: { id: string }) => item.id === "uncertainty-is-honest")?.status, "failed", mutation);
+  }
+});
+
+test("candidate schema accepts semantic versions and rejects numeric prerelease leading zero", async () => {
+  const schema = JSON.parse(await readFile("conformance/continuity-adapter/v1/candidate.schema.json", "utf8"));
+  const { default: Ajv2020 } = await import("ajv/dist/2020.js");
+  const validate = new (Ajv2020 as unknown as new (options: { strict: boolean }) => { compile(value: unknown): (value: unknown) => boolean })({ strict: true }).compile(schema);
+  const candidate = (harnessVersion: string) => ({ v: "reelier.continuity-adapter-candidate/v1", adapterId: "core", harnessId: "core", harnessVersion, reelierCommit: "44d512263b3e77a301b4d875ab03217712b17c37", authorityAdapterContractDigest: "sha256:7f46242b26d9c921f4e1ec9de6418ac5fc8c03d70c4415c25e799ae0e73a1512" });
+  assert.equal(validate(candidate("1.2.3")), true);
+  assert.equal(validate(candidate("1.2.3-alpha.1")), true);
+  assert.equal(validate(candidate("1.2.3-01")), false);
+});
