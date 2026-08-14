@@ -6,20 +6,12 @@ import { mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from "node
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { authorityCanonicalBytes, authorityDigest } from "../../src/authority/wire.js";
-import { signJobCard, signedJobCardDigest } from "../../src/authority/job.js";
-import { createSignedCertificationReadiness } from "../../src/authority/certification/authority.js";
-import { initializeCertification } from "../../src/authority/certification/initializer.js";
-import { preflightCertification } from "../../src/authority/certification/preflight.js";
-import { sealCertificationReadiness } from "../../src/authority/certification/readiness.js";
-import { createCertificationCellHost, certificationCellHostInternalState, certificationTaskShapeDigest } from "../../src/authority/certification/cell.js";
-import { createDelegationAuthority } from "../../src/authority/host/delegation-service.js";
-import { createFilePrincipalRegistry } from "../../src/authority/host/principal-registry.js";
+import { signedJobCardDigest } from "../../src/authority/job.js";
+import { createCertificationCellHost, certificationCellHostInternalState } from "../../src/authority/certification/cell.js";
 import { __testSetGitHubIssueLabelsRunnerBarrier, createGitHubIssueLabelsHermeticComposition, type GitHubIssueLabelsHermeticComposition } from "../../src/authority/certification/github-issue-labels-runner.js";
 import { __testSetAuthorityCellHostPlatform } from "../../src/authority/host/platform.js";
-import { createCertificationArtifactKeyBinding, createCertificationLifecycleAuthorityCeremony } from "../../src/authority/certification/lifecycle-authority.js";
 import { verifyAuthorityReceiptBundle } from "../../src/authority/verify.js";
 import { verifyCertificationSanitizedPortableOutcomeEvidenceExport, verifyCertificationTaskReceiptGraph } from "../../src/authority/certification/task-receipt-graph.js";
-import { writeCertificationInputManifests } from "./certification-input-fixture.js";
 import { AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST } from "../../src/authority/adapter-contract.js";
 import { signAuthorityDigest } from "../../src/authority/crypto.js";
 import { createCertificationTaskReceiptGraph } from "../../src/authority/certification/task-receipt-graph.js";
@@ -28,7 +20,6 @@ import { httpResponseSemanticsProfileDigest } from "../../src/authority/host/htt
 import { createGitHubIssueLabelsFixture, type GitHubIssueLabelsFixture } from "./fixtures/github-issue-labels.js";
 
 const at = "2026-08-11T20:00:00.000Z", expiry = "2026-08-11T21:00:00.000Z";
-const descriptor = (keyId: string, role: "human-sponsor" | "authority-cell", purpose: string, publicKey: ReturnType<typeof generateKeyPairSync>["publicKey"]) => ({ v: "reelier.authority-key-descriptor/v1", keyId, role, purpose, algorithm: "ed25519", publicKeySpkiBase64: publicKey.export({ type: "spki", format: "der" }).toString("base64") });
 const hermeticResponseSemanticsProfile = { v: "reelier.http-response-semantics/v1" as const, profileId: "github.issue-labels.hermetic-v1", acknowledgedStatuses: [200] };
 const graphVerification = (pin: any, overrides: Record<string, unknown> = {}) => ({ trustPin: pin, currentTrustObservation: { v: "reelier.portable-current-trust-observation/v1", observedAt: at, expiresAt: expiry, activeAuthorityEvidenceSignerIds: [pin.keyDescriptors.find((item: any) => item.role === "authority-cell" && item.purpose === "authority-evidence")?.keyId] }, now: new Date("2026-08-11T20:10:00.000Z"), expectedResponseSemanticsProfile: hermeticResponseSemanticsProfile, ...overrides });
 const restorePlatform = __testSetAuthorityCellHostPlatform("linux");
