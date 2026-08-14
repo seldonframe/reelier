@@ -3,7 +3,7 @@ import {
   readVerifiedNativeOutcomeProjections,
   type VerifiedCertificationTaskReceiptGraphV1,
 } from "../authority/certification/task-receipt-graph.js";
-import type { ContinuityEventV1 } from "./types.js";
+import type { VerifierProducedConsequenceEventV1 } from "./types.js";
 
 type ConsequenceState = Exclude<LedgerState, "issued">;
 
@@ -18,6 +18,16 @@ const NEXT: Readonly<Record<"issued" | ConsequenceState, readonly ConsequenceSta
   reconciled: [],
 };
 
+const verifierProducedConsequenceEvents = new WeakSet<object>();
+
+export function assertVerifierProducedConsequenceEvent(
+  value: unknown,
+): asserts value is VerifierProducedConsequenceEventV1 {
+  if (value === null || typeof value !== "object" || !verifierProducedConsequenceEvents.has(value)) {
+    throw new TypeError("verified consequence requires verifier provenance");
+  }
+}
+
 /**
  * Projects verifier-produced native Path C proof into the continuity kernel.
  * The verifier result is registered opaquely by the full signed task-graph
@@ -26,7 +36,7 @@ const NEXT: Readonly<Record<"issued" | ConsequenceState, readonly ConsequenceSta
  */
 export function continuityEventsFromVerifiedAuthorityReceipt(
   verified: VerifiedCertificationTaskReceiptGraphV1,
-): readonly Extract<ContinuityEventV1, { type: "consequence.observed" }>[] {
+): readonly VerifierProducedConsequenceEventV1[] {
   const eventIds = new Set<string>();
   const events = readVerifiedNativeOutcomeProjections(verified).flatMap((projection) => {
     let prior: "issued" | ConsequenceState = "issued";
@@ -36,7 +46,7 @@ export function continuityEventsFromVerifiedAuthorityReceipt(
       if (eventIds.has(entry.eventDigest)) throw new TypeError("verified native outcome timeline event digest is duplicated");
       eventIds.add(entry.eventDigest);
       prior = state;
-      return Object.freeze({
+      const event = Object.freeze({
         type: "consequence.observed" as const,
         eventId: entry.eventDigest,
         semanticOperationId: projection.semanticOperationId,
@@ -45,7 +55,9 @@ export function continuityEventsFromVerifiedAuthorityReceipt(
         authorityEvidenceDigest: projection.authorityEvidenceDigest,
         receiptDigest: projection.receiptDigest,
         verification: projection.verification,
-      });
+      }) as VerifierProducedConsequenceEventV1;
+      verifierProducedConsequenceEvents.add(event);
+      return event;
     });
   });
   return Object.freeze(events);

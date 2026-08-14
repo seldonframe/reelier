@@ -5,11 +5,9 @@ import type { ContinuitySnapshotV1 } from "../../src/continuity/fs-ledger.js";
 import { renderResumeMarkdown } from "../../src/continuity/markdown.js";
 import { createResumeProjection } from "../../src/continuity/projection.js";
 import {
-  ambiguousConsequence,
+  consequenceNote,
   digest,
-  dispatchedConsequence,
   opened,
-  reservedConsequence,
 } from "./fixtures.js";
 
 function snapshot(events: Parameters<typeof foldContinuity>[0]): ContinuitySnapshotV1 {
@@ -26,9 +24,9 @@ function snapshot(events: Parameters<typeof foldContinuity>[0]): ContinuitySnaps
 test("resume projection answers the seven continuity questions in stable order", () => {
   const projection = createResumeProjection(snapshot([
     opened,
-    reservedConsequence,
-    dispatchedConsequence,
-    ambiguousConsequence,
+    consequenceNote("event_2", "reserved"),
+    consequenceNote("event_3", "dispatched"),
+    consequenceNote("event_4", "ambiguous"),
   ]));
   assert.deepEqual(Object.keys(projection.sections), [
     "outcomeOwed",
@@ -84,4 +82,30 @@ test("resume projection refuses an empty ledger snapshot", () => {
     authoritySnapshotDigest: null,
     state: null,
   }), /empty.*snapshot|nothing to resume/i);
+});
+
+test("resume projection refuses a structurally fabricated folded snapshot", () => {
+  const legitimate = snapshot([opened]);
+  const fabricated = {
+    ...legitimate,
+    state: {
+      ...legitimate.state!,
+      claims: new Map([["forged", {
+        claimId: "forged",
+        statement: "Fabricated verified state",
+        status: "verified",
+        evidenceDigest: digest("f"),
+      }]]),
+    },
+  };
+  assert.throws(() => createResumeProjection(fabricated as never), /fold.*provenance|provenance.*fold/i);
+
+  const mutated = snapshot([opened]);
+  (mutated.state!.claims as Map<string, unknown>).set("forged", {
+    claimId: "forged",
+    statement: "Mutated verified state",
+    status: "verified",
+    evidenceDigest: digest("f"),
+  });
+  assert.throws(() => createResumeProjection(mutated), /fold.*integrity|integrity.*fold/i);
 });

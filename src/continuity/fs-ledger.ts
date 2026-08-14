@@ -15,17 +15,19 @@ import {
   createVerifiedNativeOutcomeReplayArtifact,
   readVerifiedNativeOutcomeProjections,
   verifyNativeOutcomeReplayArtifact,
+  type NativeOutcomeReplayAnchorsV1,
   type VerifiedCertificationTaskReceiptGraphV1,
   type VerifiedNativeOutcomeReplayArtifactV1,
 } from "../authority/certification/task-receipt-graph.js";
 import { authorityCanonicalBytes, authorityDigest } from "../authority/wire.js";
 import { continuityEventsFromVerifiedAuthorityReceipt } from "./authority-bridge.js";
-import { foldContinuity, type ContinuityStateV1 } from "./fold.js";
+import { extendFoldedContinuityEvidence, foldContinuity, type ContinuityStateV1 } from "./fold.js";
 import { normalizeContinuityCheckpoint } from "./normalize.js";
 import type {
   AuthenticatedWorkloadV1,
   ContinuityCheckpointV1,
   ContinuityEventV1,
+  ContinuityFoldEventV1,
   NormalizedCheckpointV1,
 } from "./types.js";
 
@@ -76,6 +78,18 @@ export interface VerifiedAuthorityContinuityAppendV1 {
   readonly jobCardDigest: string;
 }
 
+export interface AuthorityReplayAnchorRequestV1 {
+  readonly taskId: string;
+  readonly authoritySnapshotDigest: string;
+  readonly verificationTime: string;
+}
+
+export interface FsContinuityLedgerOptionsV1 {
+  readonly resolveAuthorityAnchors?: (
+    request: AuthorityReplayAnchorRequestV1,
+  ) => NativeOutcomeReplayAnchorsV1 | Promise<NativeOutcomeReplayAnchorsV1>;
+}
+
 export interface ContinuitySnapshotV1 {
   readonly taskId: string;
   readonly cursor: number;
@@ -122,7 +136,7 @@ function record(value: unknown): Record<string, unknown> {
 }
 
 function withEvidence(state: ContinuityStateV1, segmentEvidence: readonly string[]): ContinuityStateV1 {
-  return { ...state, evidenceRefs: [...new Set([...state.evidenceRefs, ...segmentEvidence])].sort() };
+  return extendFoldedContinuityEvidence(state, segmentEvidence);
 }
 
 function digestValues(value: unknown, target = new Set<string>()): Set<string> {
@@ -155,12 +169,14 @@ async function syncDirectoryBestEffort(directory: string): Promise<void> {
 
 export class FsContinuityLedger {
   readonly #root: string;
+  readonly #resolveAuthorityAnchors: FsContinuityLedgerOptionsV1["resolveAuthorityAnchors"];
 
-  constructor(root: string) {
+  constructor(root: string, options: FsContinuityLedgerOptionsV1 = {}) {
     if (typeof root !== "string" || root.length === 0 || !isAbsolute(root)) {
       throw new ContinuityLedgerError("continuity ledger root must be an absolute path");
     }
     this.#root = resolve(root);
+    this.#resolveAuthorityAnchors = options.resolveAuthorityAnchors;
   }
 
   async read(taskId: string): Promise<ContinuitySnapshotV1> {
@@ -196,7 +212,7 @@ export class FsContinuityLedger {
     }
     segmentNames.sort();
 
-    const allEvents: ContinuityEventV1[] = [];
+    const allEvents: ContinuityFoldEventV1[] = [];
     const allEvidence = new Set<string>();
     let previousSegmentDigest: string | null = null;
     let latestJobCardDigest: string | null = null;
@@ -230,7 +246,7 @@ export class FsContinuityLedger {
 
       let normalized: NormalizedCheckpointV1;
       let authorityImports: readonly VerifiedNativeOutcomeReplayArtifactV1[];
-      let importedEvents: readonly ContinuityEventV1[];
+      let importedEvents: readonly ContinuityFoldEventV1[];
       try {
         normalized = normalizeContinuityCheckpoint({
           v: "reelier.continuity-checkpoint/v1",
@@ -245,8 +261,18 @@ export class FsContinuityLedger {
           ...(body.agentMemo === undefined ? {} : { agentMemo: body.agentMemo }),
         }, body.actor);
         if (!Array.isArray(body.authorityImports)) throw new TypeError("authority imports must be an array");
-        const verifiedImports = body.authorityImports.map((item) => {
-          const verified = verifyNativeOutcomeReplayArtifact(item);
+        const verifiedImports = await Promise.all(body.authorityImports.map(async (item) => {
+          if (this.#resolveAuthorityAnchors === undefined) throw new TypeError("external authority anchor resolver is required for verified continuity replay");
+          const replayBody = record(item);
+          if (typeof replayBody.verificationTime !== "string") throw new TypeError("verified native outcome replay time is invalid");
+          const authoritySnapshotDigest = replayBody.authoritySnapshotDigest;
+          if (typeof authoritySnapshotDigest !== "string" || !DIGEST.test(authoritySnapshotDigest)) throw new TypeError("verified native outcome replay authority snapshot is invalid");
+          const anchors = await this.#resolveAuthorityAnchors(Object.freeze({
+            taskId,
+            authoritySnapshotDigest,
+            verificationTime: replayBody.verificationTime,
+          }));
+          const verified = verifyNativeOutcomeReplayArtifact(item, anchors);
           const projections = readVerifiedNativeOutcomeProjections(verified);
           if (projections.length === 0 || projections.some((projection) => projection.taskId !== taskId)) {
             throw new TypeError("verified native outcome task does not match continuity task");
@@ -256,7 +282,7 @@ export class FsContinuityLedger {
             throw new TypeError("verified native outcome authority snapshot does not match segment");
           }
           return { replay, events: continuityEventsFromVerifiedAuthorityReceipt(verified) };
-        });
+        }));
         authorityImports = Object.freeze(verifiedImports.map((item) => item.replay));
         importedEvents = Object.freeze(verifiedImports.flatMap((item) => item.events));
       } catch (error) {
@@ -334,7 +360,7 @@ export class FsContinuityLedger {
   async #appendNormalized(
     normalized: NormalizedCheckpointV1,
     authorityImports: readonly VerifiedNativeOutcomeReplayArtifactV1[],
-    importedEvents: readonly ContinuityEventV1[],
+    importedEvents: readonly ContinuityFoldEventV1[],
   ): Promise<ContinuityAppendResultV1> {
     const taskId = normalized.checkpoint.taskId;
     validateTaskId(taskId);
