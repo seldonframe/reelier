@@ -419,7 +419,7 @@ Stop and amend this plan again before touching any other tracked path.
 
 **Interfaces:**
 - Consumes: public inert profile artifacts and profile-only offline verification; installed `StaticPackRegistry`; an existing deployment that has passed `loadAuthorityDeployment`; the exact signed Job Card, `JobCardTrustPinV1.signedReadiness`, and parsed `JobCardTrustMaterialV1`; existing `CertificationArtifactKeyBindingV1` plus human commitment; exact parsed state candidates; connector/source/pack/trust registries; canonical native read/write routes with route-owned projection commitment; current profile, Job Card, and Authority trust events; actual prepared-dispatch state/outcome plus the accepted request's persisted `RouteAuthoritySnapshotV1`; exact already signed contract/delegation/gate foundations; six external purpose-bound receipt signers; the separate binding signer; and the unchanged Authority bundle constructor/parser/verifier.
-- Produces: host-only opaque `AdmittedProfileGovernanceV1`; a private branded/`WeakMap` runtime provenance containing independently derived installed-pack, eligible-contract, signed-authority, deployment-snapshot, stable-route-scope, current-observation, receipt foundations, artifact-key binding/commitment, and signer bindings; package-internal `selectEligibleAuthorityContract` and `projectRouteScope`; public type-only `ProducedReceiptKindV1`, `PurposeBoundReceiptSignerV1<K>`, `AuthorityReceiptSigningAuthorityV1`, `CertificationArtifactKeyBindingV1`, and `CertificationArtifactKeyBindingCommitmentV1`; package-private `AuthorityReceiptFoundationsV1`, `AuthorityReceiptBundleConstructionInputV1`, and async `constructAuthorityReceiptBundle`; an optional compatible `DispatchPublication.publishReservation`; `AuthorityRouteScopeV1`; `AuthorityDeploymentSnapshotV1`; standalone eighth Outcome Profile member `SignedProfileAuthorityBindingV1`; cold load plus pre-invoke/pre-reserve revalidation; read-only `inspectProfileGovernanceStatus`; public `createGovernedAuthorityCell`; a governed immutable reservation/terminal/reconciliation publication and recovery chain; `ProfileGovernedAuthorityReceiptV1`; and `verifyProfileGovernedAuthorityReceipt` with external profile, Job Card, and Authority trust anchors.
+- Produces: host-only opaque `AdmittedProfileGovernanceV1`; a private branded/`WeakMap` runtime provenance containing independently derived installed-pack, eligible-contract, signed-authority, deployment-snapshot, stable-route-scope, current-observation, receipt foundations, artifact-key binding/commitment, and signer bindings; package-internal `selectEligibleAuthorityContract` and `projectRouteScope`; public type-only `ProducedReceiptKindV1`, `PurposeBoundReceiptSignerV1<K>`, `AuthorityReceiptSigningAuthorityV1`, `CertificationArtifactKeyBindingV1`, and `CertificationArtifactKeyBindingCommitmentV1`; package-private `ValidatedAuthorityReceiptSigningAuthorityV1`, its sole validator, `AuthorityReceiptFoundationsV1`, `AuthorityReceiptBundleConstructionInputV1`, and async `constructAuthorityReceiptBundle`; optional compatible `DispatchPublication.publishReservation` and read-only `loadDurableHead`; `AuthorityRouteScopeV1`; `AuthorityDeploymentSnapshotV1`; standalone eighth Outcome Profile member `SignedProfileAuthorityBindingV1`; cold load plus pre-invoke/pre-reserve revalidation; read-only `inspectProfileGovernanceStatus`; public `createGovernedAuthorityCell`; a governed immutable reservation/terminal/reconciliation publication and recovery chain; `ProfileGovernedAuthorityReceiptV1`; and `verifyProfileGovernedAuthorityReceipt` with external profile, Job Card, and Authority trust anchors.
 
 #### Approved Task 2 amendment — independently signed Authority binding
 
@@ -443,6 +443,14 @@ amendment supersedes their unreachable certified-publication seam, four-artifact
 authorization, missing reservation phase, non-durable first-receipt window, and ambiguous publisher
 return semantics. The 47-path executable fix wave below is authoritative. It preserves every prior
 Task 2 and amendment commit; none may be amended or squashed.
+
+##### Approved Task 2 fourth amendment — durable-head recovery and validated trust handoff
+
+**Approved:** 2026-08-14. All earlier amendments remain immutable decision history. This fourth
+amendment supersedes their terminal-storage recovery gap and structural signing-authority handoff,
+and freezes the non-self-anchoring offline verifier order. The same 47-path executable fix wave is
+authoritative; no implementation, schema, ABI, ledger, package, or test path is added. Preserve every
+earlier Task 2 and amendment commit without amend or squash.
 
 - [ ] **Step 1: Write the failing no-dispatch admission matrix**
 
@@ -564,7 +572,12 @@ export interface ProfileGovernedAuthorityReceiptV1 {
 }
 ```
 
-The verifier first runs the existing authority receipt verifier, then profile governance verification, then exact edge comparisons. Mutation tests must prove the wrapper cannot upgrade or rewrite an inner claim.
+The original requirement remains that the unchanged authority receipt verifier must succeed before
+any outer claim is returned, followed by profile governance and exact edge comparisons. Because the
+four artifact roots are carried provisionally by the outer envelope, the executable fourth-amendment
+order in Fix Step 7 strictly parses that envelope first solely to derive candidate roots, runs the
+unchanged inner verifier, then externally authorizes those roots before any verified result escapes.
+Mutation tests must prove the wrapper cannot self-anchor, upgrade, or rewrite an inner claim.
 
 - [ ] **Step 6: Run kernel regression and commit**
 
@@ -590,10 +603,10 @@ git commit -m "feat(authority): admit independently governed profiles"
 #### Executable Task 2 review fix wave
 
 This fix wave begins at candidate `cc529e5e4136eb9e58cd5f39816798f9636bb715` only after the
-three docs-only amendment commits have passed independent review. It fixes the five original Task 2
-blockers, all eight first-amendment review findings, and all five second-amendment review findings as
-one trust-boundary unit. The original RED/GREEN and all three amendment commits remain in history;
-do not amend or squash them.
+four docs-only amendment commits have passed independent review. It fixes the five original Task 2
+blockers, all eight first-amendment review findings, all five second-amendment review findings, and
+both third-amendment Critical findings as one trust-boundary unit. The original RED/GREEN and all
+four amendment commits remain in history; do not amend or squash them.
 
 - [ ] **Fix Step 1: Add the strict RED review-gap suite and fixture-only module**
 
@@ -685,13 +698,27 @@ certification lifecycle authority and lifecycle receipt assertion and registrati
 the retained-copy/substitution cases only to the authority test, and continue running the receipt
 three-node/restart/no-resend cases once as regression gates.
 
+Add receipt-authority brand falsifiers: raw callbacks plus a valid binding cannot construct;
+cast/spread/freeze/proxy/structural copies of a validated handle cannot construct; changing current
+events, observation time, expected Cell/task, signed readiness, any signer ID/SPKI/purpose, or any
+distinctness relation before validation refuses without invoking `sign`. Only the sole validator may
+mint a handle, and a handle is consumed only through its private `WeakMap` state. Prove the lifecycle
+adapter can mint through the same validator only from its already consumed opaque lifecycle material
+and exact retained binding/commitment copies.
+
 In `test/authority/dispatch-coordinator.test.ts`, add the canonical certified prepared path and cuts:
 before reservation-root storage, after root storage/before `consumePreparedDispatch`, after provider
-apply/before terminal storage, and after terminal storage. Assert pre-send construction/signature/
+apply/before terminal storage, after terminal storage/before ledger transition, and after ledger
+transition. Assert pre-send construction/signature/
 verification/storage failure produces zero provider calls; once the prepared CAS succeeds, restart
-never resends. Require terminal and reconciliation nodes to join the stored reservation root into one
-unforked chain. Add two-node and restart falsifiers whose inner prior comparison fails if any outer
-receipt digest is returned or used as `priorReceiptDigest`. With `publishReservation` absent, assert
+never resends. Before-root recovery refuses; root-only recovery publishes exactly one ambiguity;
+terminal-head recovery performs the matching ledger transition without publishing; and an already
+terminal ledger is unchanged. Require terminal and reconciliation nodes to join the stored
+reservation root into one unforked chain. Add phase/terminal mismatch, identity conflict, wrong
+reservation/effect/route/request/root/prior, tamper, invalid signature, multiple-head, fork, and
+publisher-throws cases; all refuse without transition, publication, reconciliation, or send. Add
+two-node and restart falsifiers whose inner prior comparison fails if any outer receipt digest is
+returned or used as `priorReceiptDigest`. With `publishReservation`/`loadDurableHead` absent, assert
 legacy certified trace bytes/call order remain unchanged.
 
 Add expiry/revocation-after-server-start cases at both freshness boundaries. Before local
@@ -706,7 +733,12 @@ artifact, signed Job Card, artifact-key binding and human commitment field, sign
 deployment field, scope stable field, dynamic-only route field, current Authority trust
 event/key/status, binding scalar/digest/signature/signer/purpose, every edge, and
 every inner claim. Prove unrelated valid governance/inner bundles refuse, activation contract equals
-the inner contract digest, and no outer field can upgrade/rewrite an inner claim.
+the inner contract digest, and no outer field can upgrade/rewrite an inner claim. Add a
+self-consistent forged artifact binding/commitment plus four matching forged inner signatures; it
+may satisfy candidate-root cryptography but must fail external readiness/current-parent
+authorization. Independently substitute every signed inner artifact signer ID/SPKI/purpose, revoke
+or expire the human/parent/direct receipt/outer signer at binding time or verifier time, and prove no
+candidate receipt-carried root escapes as verified authority.
 
 Run:
 
@@ -714,8 +746,9 @@ Run:
 npx tsc -p tsconfig.test.json
 ```
 
-Expected RED: compilation fails only on the new activation/scope/deployment/binding/evidence APIs
-and exact governed options, or focused tests fail on the five named review gaps. Commit tests and
+Expected RED: compilation fails only on the new activation/scope/deployment/binding/evidence,
+validated-signing-authority, and durable-head APIs and exact governed options, or focused tests fail
+on the approved review gaps. Commit tests and
 test fixtures only:
 
 ```powershell
@@ -859,20 +892,74 @@ export interface AuthorityReceiptSigningAuthorityV1 {
 }
 ```
 
-`AuthorityReceiptSigningAuthorityV1` is itself an exact own-data record with
+`AuthorityReceiptSigningAuthorityV1` is a public type-only structural input. It is itself an exact own-data record with
 `artifactAuthorization` plus those six signer keys and no symbols/accessors/non-enumerable/extra/
 inherited fields. `artifactAuthorization` is an exact own-data `{ binding, commitment }` record.
 Each signer is an exact own-data record
-containing only `purpose`, `signerId`, `publicKey`, and `sign`. Validate an Ed25519 public key without exporting or accepting private keys. Match every
-signer ID/SPKI to its correct authorization without parsing the four artifact subkeys as
-`AuthorityKeyDescriptorV1`: `sourceBundle`, `compiledCapability`, `transportEffect`, and
-`packManifest` must match the binding's exact unique purpose/key-ID/SPKI/key-digest entries;
-`evidence` must match the binding's active direct `authority-evidence` parent descriptor; and
-`receipt` must match a separately active direct `authority-receipt` descriptor. Require all six
-SPKIs and signer IDs distinct across purposes. Validate the binding and human commitment with the
-existing `verifyCertificationArtifactKeyBinding` against the exact external signed readiness, then
-independently replay current events to require the parent evidence and human readiness descriptors
-active. Never invoke `sign` until preflight/current-trust validation is complete.
+containing only `purpose`, `signerId`, `publicKey`, and `sign`. It is never sufficient to construct or
+sign an artifact.
+
+Define these package-private interfaces/functions in the already allowed
+`src/authority/trust.ts`, `src/authority/host/receipt-authority.ts`, and
+`src/authority/certification/lifecycle-authority.ts`. Do not export them from any barrel:
+
+```ts
+declare const validatedSigningAuthorityBrand: unique symbol;
+type ValidatedAuthorityReceiptSigningAuthorityV1 = Readonly<{
+  readonly [validatedSigningAuthorityBrand]: true;
+}>;
+
+interface AuthorityReceiptSigningAuthorityValidationInputV1 {
+  readonly tenant: string;
+  readonly authorityCellId: string;
+  readonly taskId: string;
+  readonly observedAt: Date;
+  readonly jobCardTrustPin: JobCardTrustPinV1;
+  readonly signingAuthority: AuthorityReceiptSigningAuthorityV1;
+  readonly authorityBindingSigner?: AuthorityBindingSignerV1;
+}
+
+function validateAuthorityReceiptSigningAuthority(
+  input: AuthorityReceiptSigningAuthorityValidationInputV1,
+): ValidatedAuthorityReceiptSigningAuthorityV1;
+```
+
+The validator strictly parses `jobCardTrustPin.signedReadiness`, `keyDescriptors`,
+`readinessTrustEvents`, and `currentTrustEvents`, and first runs existing
+`verifySignedCertificationReadiness` with the pin's exact readiness candidate, preflight, and human
+root. Those pin fields are the required external signed readiness plus current descriptors/events;
+none may be sourced from the binding or signer capabilities. The validator
+requires every relevant descriptor active and unrevoked at the single intrinsic `observedAt`; calls
+existing `verifyCertificationArtifactKeyBinding` with the exact retained binding/commitment and
+readiness; requires binding/commitment validity, human signer activity, expected tenant/Cell/task,
+Adapter Contract, readiness, active direct parent, and signature joins; and validates each Ed25519
+public key without accepting a private key. Match `sourceBundle`, `compiledCapability`,
+`transportEffect`, and `packManifest` ID/SPKI/purpose/key digest to the four exact unique binding
+entries without parsing them as `AuthorityKeyDescriptorV1`. Match `evidence` to the active direct
+`authority-evidence` parent and `receipt` to a separately active direct `authority-receipt`
+descriptor. When `authorityBindingSigner` is present, require a separately active direct
+role-`authority-cell`/purpose-`authority-evidence` descriptor and all governed segregation rules.
+All six inner keys are unique by ID and SPKI, and the optional outer key is distinct from them and
+all already forbidden roles. Reject future/expired/revoked/missing/duplicate/substituted material
+before invoking a callback.
+
+Successful validation creates a fresh frozen proxy handle and stores the exact detached parsed
+authorization plus six callbacks and optional outer signer only in a module-private `WeakMap`.
+Casts, spreads, freezes, proxies, structural copies, and caller-created brands cannot populate the
+map. No public assertion or snapshot exposes this state. The governed factory calls this sole
+validator after its fresh external trust observation; the lifecycle adapter may call it only while
+holding already consumed genuine `CertificationLifecycleAuthorityMaterial` with exact detached
+binding/commitment copies. Raw callback/binding records never reach a constructor.
+
+Ownership is exact: `src/authority/trust.ts` owns the current descriptor/event replay view;
+`src/authority/host/receipt-authority.ts` owns the brand, handle `WeakMap`, sole validator, and
+constructor lookup; `src/authority/certification/lifecycle-authority.ts` registers each genuine
+material object returned by `consumeCertificationLifecycleAuthority` in its existing private
+authority state and exposes only a package-internal adapter that can derive the six structural
+capabilities plus exact detached binding/commitment from such a registered object. The lifecycle
+receipt producer passes that derived input and external validation context to the same validator.
+Unregistered structural maps/material are rejected. This adds no public lifecycle API, signing
+shortcut, second validator, or importable handle assertion.
 
 Keep these construction types package-private:
 
@@ -890,7 +977,7 @@ export interface AuthorityReceiptBundleConstructionInputV1 {
   readonly outcome: DispatchOutcome;
   readonly observedAt: string;
   readonly foundations: AuthorityReceiptFoundationsV1;
-  readonly signingAuthority: AuthorityReceiptSigningAuthorityV1;
+  readonly signingAuthority: ValidatedAuthorityReceiptSigningAuthorityV1;
   readonly priorReceipt?: AuthorityReceipt;
   readonly recovered?: AuthorityReceiptBundle;
 }
@@ -900,13 +987,18 @@ export async function constructAuthorityReceiptBundle(
 ): Promise<AuthorityReceiptBundle>;
 ```
 
-The constructor uses `observedAt` for every generated timeline time. It recovers exact static
+The constructor first requires the handle in the module-private `WeakMap`; no raw signer record or
+`{ binding, commitment }` overload exists. It uses `observedAt` for every generated timeline time. It recovers exact static
 contract/delegation/gate foundations only when their digests and effect/prior joins match. It builds
 the source bundle, compiled capability, transport effect, authority evidence, receipt, and pack
 manifest using existing parsers/constructors, asks only the matching signer to sign each parsed
 artifact digest, verifies every returned signature against that signer's public key, and calls the
 existing `createAuthorityReceiptBundle`. It does not publish, persist, recover storage, send,
 reconcile, verify a completed bundle, or create trust roots.
+
+The governed outer-binding publisher retrieves the separately validated outer signer from the same
+private handle. It cannot accept `AuthorityBindingSignerV1` directly. Inner construction rejects a
+handle validated for lifecycle-only use if governed outer publication is requested.
 
 For `phase: "reservation"`, preserve the existing certification lifecycle bytes exactly:
 
@@ -938,7 +1030,9 @@ claim, signature, or prior semantics.
 Refactor `src/authority/certification/lifecycle-receipts.ts` without changing its exported API,
 local-first composition, storage/recovery, extensions, controlled cuts, or receipt ID/prior-chain
 semantics. Adapt its existing lifecycle keys to the six public signer capabilities and delegate only
-the pure bundle construction above, including its synthetic reservation root. Modify
+after the same validator has minted the private handle from the already consumed genuine lifecycle
+material, its external readiness/descriptors/events, expected Cell/task, and observation time; then
+delegate only the pure bundle construction above, including its synthetic reservation root. Modify
 `src/authority/certification/lifecycle-authority.ts` only so its already opaque consumed
 `CertificationLifecycleAuthorityMaterial` retains the exact binding and human commitment alongside
 the existing `bindingDigest`; do not change the ceremony/consume/public-descriptor API or any
@@ -1055,10 +1149,12 @@ external time. The same view uses direct current descriptor/event replay only fo
 or admit the four artifact subkeys as `AuthorityKeyDescriptorV1`. Instead, call existing
 `verifyCertificationArtifactKeyBinding(binding, commitment, { descriptors:
 jobCardTrustPin.keyDescriptors, signedReadiness: jobCardTrustPin.signedReadiness, now })`, match its
-four unique entries to the four signer callbacks, and require the parent evidence descriptor and
-human readiness descriptor active under the external current events. Require the six inner signer
-keys mutually distinct and the outer binding signer distinct from all six, and never return a
-signing handle or public key object. The current head is the digest of the last parsed current Authority trust event; an
+four unique entries to the four structural signer capabilities only inside the sole validator, and
+require the parent evidence descriptor and human readiness descriptor active under the external
+current events. Require the six inner signer keys mutually distinct and the outer binding signer
+distinct from all six. The trust view itself never returns a signing handle or public key object;
+only `validateAuthorityReceiptSigningAuthority` may consume it internally and mint the private
+handle described in Fix Step 3. The current head is the digest of the last parsed current Authority trust event; an
 empty, future, reordered, forked, unknown-key, or revoked selection refuses. Receipt verification
 receives this trust view/current observation and the existing external `JobCardTrustPinV1`; neither
 anchor may be sourced from `authorityBindingEvidence`. The receipt-carried binding/commitment are
@@ -1148,11 +1244,13 @@ record and do not modify `src/authority/ledger.ts`. Each invocation captures one
 profile directory with its physical-root checks, rereads the external Job Card trust pin/current
 Authority key descriptors and trust events, and requires unchanged root/manifest/profile/
 activation/deployment/route bindings, both current trust heads, activation validity, and all six
-receipt-signing callbacks plus the binding signer properly authorized and distinct at that same
-time: replay the human-signed artifact-key commitment against its exact current signed readiness;
-require the four artifact callbacks to match the binding entries and its active direct
-`authority-evidence` parent; and require the receipt and outer-binding signers current under their
-separate direct Authority descriptors. The pre-reserve call also
+receipt-signing capabilities plus the binding signer properly authorized and distinct at that same
+time by rerunning the sole validator: replay the human-signed artifact-key commitment against its
+exact current signed readiness; require the four artifact capabilities to match the binding entries
+and its active direct `authority-evidence` parent; and require the receipt and outer-binding signers
+current under their separate direct Authority descriptors. Replace the prior private handle with
+the newly validated handle keyed to this exact capability/observation; never mutate a handle or
+invoke `sign` during revalidation. The pre-reserve call also
 requires `projectRouteScope(intent.routeAuthority!, { tenant: intent.tenant,
 definitionAlias: intent.definitionAlias })` to match activated scope canonically and by digest.
 Require `activation.validFrom <= observedAt < activation.validUntil`; receipt verification also
@@ -1219,14 +1317,14 @@ export interface GovernedAuthorityCellOptionsV1 {
 
 For governed dispatch, `receiptSigningAuthority` and `authorityBindingSigner` are required as an
 all-or-nothing pair. Exact option validation rejects either alone before filesystem reads or
-callbacks. Validate all exact own-data signer records and Ed25519 public keys without invoking
-`sign`; require the four artifact signer ID/SPKIs to match the verified binding entries, the inner
-evidence signer to match the binding's active direct parent, and the receipt/outer-binding signers to
-match their separately active direct Authority descriptors at one observation time. The six receipt keys are distinct across purposes and the binding key is distinct
-from those six; all seven are also distinct from profile certifier/operator, Job Card human,
-local-gate, topology, lease, and identity keys. Invoke the six receipt signers only inside pure inner-bundle construction; invoke the
-binding signer only after the actual inner bundle has passed the unchanged verifier and the exact
-persisted dynamic route snapshot is available. The factory still asserts Linux first, derives
+callbacks. After cold external governance/readiness/descriptors/events validate, pass both raw
+options exactly once to `validateAuthorityReceiptSigningAuthority`; store only its opaque handle in
+private governed provenance. The validator enforces the four binding-entry matches, active direct
+parent/receipt/outer descriptors, all time/revocation/uniqueness rules, and segregation from profile
+certifier/operator, Job Card human, local-gate, topology, lease, and identity keys. Invoke the six
+receipt signers only through the handle inside pure inner-bundle construction; invoke the binding
+signer only through that same governed handle after the actual inner bundle has passed the unchanged
+verifier and the exact persisted dynamic route snapshot is available. The factory still asserts Linux first, derives
 `os.homedir()`/wall time internally, returns only `AuthorityHostServer`, and never provisions,
 listens, activates, or adds the Task 6 session endpoint.
 
@@ -1262,10 +1360,50 @@ export interface ProfileGovernedAuthorityReceiptV1 {
 }
 ```
 
-Preserve the existing `publish` method exactly and add only this optional pre-send compatibility
-seam in `src/authority/host/dispatch.ts`:
+Preserve the existing `publish` method exactly and add these two optional compatibility seams in
+`src/authority/host/dispatch.ts`:
 
 ```ts
+export type DurableDispatchPublicationHeadV1 = Readonly<{
+  v: "reelier.durable-dispatch-publication-head/v1";
+  reservationId: string;
+  tenant: string;
+  requestDigest: string;
+  capabilityDigest: string;
+  effectDigest: string;
+  routeAuthorityDigest: string;
+  receiptRef: string;
+  evidenceDigest: string;
+  reservationReceiptRef: string;
+  dispatchedRequestDigest: string | null;
+  priorReceiptRef: string | null;
+} & (
+  | Readonly<{
+      phase: "reservation";
+      terminalKind: null;
+      dispatchedRequestDigest: null;
+      priorReceiptRef: null;
+    }>
+  | Readonly<{
+      phase: "dispatch";
+      terminalKind: "acknowledged" | "definitive-failure" | "ambiguous";
+      dispatchedRequestDigest: string;
+      priorReceiptRef: string;
+    }>
+  | Readonly<{
+      phase: "ambiguous";
+      terminalKind: "ambiguous";
+      dispatchedRequestDigest: string;
+      priorReceiptRef: string;
+    }>
+  | Readonly<{
+      phase: "reconcile";
+      terminalKind: "reconciled";
+      dispatchedRequestDigest: string;
+      priorReceiptRef: string;
+    }>
+)>;
+
 export interface DispatchPublication {
   publish(input: Readonly<{
     phase: "dispatch" | "cancelled" | "ambiguous" | "reconcile";
@@ -1281,22 +1419,42 @@ export interface DispatchPublication {
     dispatchedRequestDigest: null;
     priorReceiptDigest: null;
   }>): Promise<Readonly<{ receiptRef: string; evidenceDigest: string }>>;
+  loadDurableHead?(input: Readonly<{
+    state: DispatchRequestState;
+  }>): Promise<DurableDispatchPublicationHeadV1 | null>;
 }
 ```
 
-Legacy publishers omit `publishReservation` and retain exact behavior. The governed factory requires
-its private publisher to implement it. On the certified `adapter.prepare &&
+Every scalar is an exact own-data property; parse with `Reflect.ownKeys` and reject symbols,
+accessors, extras, inherited/non-enumerable fields, invalid discriminated pairs, noncanonical or zero
+digests, and prototype substitution. `reservationReceiptRef === receiptRef` for a reservation head;
+every terminal head's `reservationReceiptRef` identifies the verified root and
+`priorReceiptRef` identifies the immediately preceding inner receipt. `routeAuthorityDigest` is
+`authorityDigest(state.reservation.intent.routeAuthority)`. `loadDurableHead` is read-only: before
+returning it, the governed publisher strictly verifies the unique immutable inner/outer chain and
+fresh external profile, Job Card, readiness, and Authority anchors. It never calls a signer,
+publisher, adapter, reconciler, ledger method, source, credential, or provider.
+
+Legacy publishers omit both optional methods and retain exact behavior. The governed factory requires
+its private publisher to implement both. On the certified `adapter.prepare &&
 ledger.commitPreparedDispatch` branch, call it only after successful prepared CAS and before
 `consumePreparedDispatch`. Supply the exact synthetic reservation outcome defined in Fix Step 3.
 Construction/signature/unchanged-inner-verifier/outer-verifier/immutable-store failure propagates
 before `consumePreparedDispatch`, so provider send count remains zero. Do not call this method on any
 legacy/non-certified/cancel path.
 
+Recovery branches on `loadDurableHead` presence. When it is absent, the coordinator executes the
+pre-amendment recovery path with identical calls, transitions, results, and traces; it never probes a
+store or synthesizes a head. `publishReservation` presence alone does not enable durable-head
+adoption.
+
 The accepted request must persist the exact dynamic `RouteAuthoritySnapshotV1` already carried by
 `state.reservation.intent.routeAuthority`; do not reconstruct it from activation or provider
 response. The governed publication consumes the exact capability-keyed private provenance/current
-observation, including the artifact-key binding/commitment, calls
-`constructAuthorityReceiptBundle`, immediately runs unchanged `verifyAuthorityReceiptBundle`,
+observation and its freshly minted `ValidatedAuthorityReceiptSigningAuthorityV1`; it calls
+`constructAuthorityReceiptBundle` with that handle, immediately runs unchanged
+`verifyAuthorityReceiptBundle` using only external direct roots plus the four roots held in validated
+private state,
 creates and verifies the signed outer binding, and stores the complete outer receipt immutably. For
 the reservation phase, durable outer storage must succeed before provider send. For terminal
 dispatch, publish after the provider outcome/evidence is known and before terminal ledger
@@ -1304,14 +1462,42 @@ transition, with `priorReceiptDigest` equal to the reservation inner receipt-val
 durable outer storage succeeds may it forward the optional existing
 `portableReceiptPublication`; the portable result cannot replace or verify the governed receipt.
 
-At restart, scan stored governed receipts by exact reservation/effect/route identity, require one
-unforked inner/outer prior chain rooted at the reservation node, re-run the unchanged inner verifier
-and outer verifier against fresh external anchors, and recover the exact static foundations plus
-artifact-key binding/commitment. If the effect may have crossed the prepared send boundary but the
-terminal node is absent, publish an ambiguity node chained to the reservation root and reconcile;
-never resend. Reconciliation chains to the terminal/ambiguity inner receipt. Publication/storage/
-signing failure never triggers a provider retry. Maker and verifier remain different roles; a
-verifier constructs the verified receipt graph rather than trusting maker flags.
+At certified restart, the coordinator calls `loadDurableHead({ state })` only for a ledger
+reservation still in `dispatched` or `ambiguous`. It independently compares reservation ID, capability/effect/route
+digests, tenant/request and dispatched-request identity, root reference, and exact prior chain to recovered ledger
+state. A verified terminal head performs only the matching ledger transition with
+`resultDigest: head.receiptRef`; no publication or resend occurs. The closed mapping is:
+
+- `phase: "dispatch"` plus terminal kind `acknowledged`, `definitive-failure`, or `ambiguous` maps to
+  that exact ledger state;
+- `phase: "ambiguous"` requires and maps only `ambiguous`;
+- `phase: "reconcile"` requires and maps only `reconciled`, and is adoptable only from an
+  `ambiguous` ledger row whose stored inner result is its exact prior;
+- `phase: "reservation"` has `terminalKind: null` and is never itself adopted as terminal;
+- `cancelled` is not a legal dispatched durable head.
+
+From `dispatched`, only a verified root-only reservation head may cause the coordinator to publish one ambiguity child
+and then transition `dispatched -> ambiguous` with that child's inner `receiptRef` as result. A null
+head, missing root, multiple heads, fork, invalid outer/inner verification, phase/terminal mismatch,
+wrong reservation/capability/effect/route/request/root/prior identity, stale/revoked anchors, or any
+read failure refuses recovery without publishing, transitioning, reconciling, or sending. An
+already-terminal ledger row is untouched. A reconcile head presented for `dispatched`, or a
+dispatch/root head presented for `ambiguous`, is a state/phase conflict and refuses. The coordinator is the sole ledger lifecycle owner;
+`publishReservation`, `publish`, and `loadDurableHead` never transition it.
+
+For an adopted ambiguous terminal head, later `reconcile(reservationId)` reads
+`reservation.resultDigest === head.receiptRef` and uses that exact inner reference as
+`priorReceiptDigest`. For a root-only ambiguity child it similarly uses the child's inner reference.
+An acknowledged/definitive terminal head gets no ambiguity sibling. Maker and verifier remain
+different roles; a verifier constructs the verified receipt graph rather than trusting maker flags.
+
+Freeze the crash behavior exactly: a cut before root storage leaves no send and recovery refuses; a
+cut after root storage/before send or after provider apply/before terminal storage sees a verified
+root only and publishes one ambiguity child; a cut after terminal storage/before ledger transition
+adopts that terminal head with no new receipt; a cut after ledger transition is a no-op. A cut after
+reconciliation storage/before its ledger transition similarly adopts the verified reconcile head
+from `ambiguous`. Failure of optional portable forwarding after governed storage is treated as the
+matching after-storage cut, never as permission to publish a sibling or resend.
 
 Every `publishReservation`/`publish` result is exactly:
 
@@ -1328,21 +1514,55 @@ it in a ledger result, or use it as an inner `priorReceiptDigest`. A terminal no
 reservation `receiptRef`; a reconciliation node uses the immediately preceding inner `receiptRef`.
 
 `verifyProfileGovernedAuthorityReceipt` takes external profile roots, external current Job Card
-trust, and external current Authority trust observation. It performs exactly this order:
+trust/readiness, external direct Authority trust roots, and external current Authority descriptors/
+events. It performs exactly this order:
 
-1. Run unchanged `verifyAuthorityReceiptBundle` and retain its exact claims/digest.
-2. Run profile governance verification using profile trust only.
-3. Verify `signedJobCard` with the existing current external Job Card trust pin.
-4. Strictly parse the receipt-carried artifact-key binding and commitment; call existing `verifyCertificationArtifactKeyBinding` against the external pin's exact signed readiness at binding `observedAt` and verifier time. Require exact Cell/task/Adapter Contract/readiness/parent/entry/callback joins.
-5. Strictly parse/digest `deploymentSnapshot` and `routeScope`.
-6. Strictly parse/digest the dynamic route snapshot; call `projectRouteScope(snapshot, { tenant: verifiedTenant, definitionAlias: verifiedDefinitionAlias })` and require byte-equivalent canonical equality and digest equality with `routeScope`. Dynamic slot instance/version, identity/materialized-request digests, generation, and expiry remain receipt-time only.
-7. Replay the external current Authority trust observation; require the binding's direct parent evidence signer and the receipt signer active for their exact purposes, its human readiness signer active under the external pin, all four artifact callbacks exactly authorized by unique binding entries, and the separate outer binding signer active for role `authority-cell`/purpose `authority-evidence` and distinct from all forbidden signer roles, at `observedAt` and verifier time. Require `activation.validFrom <= observedAt < activation.validUntil`.
-8. Verify the domain-separated outer binding signature with that externally anchored key.
-9. Compare activation `jobCardDigest`, `contractDigest`, `deploymentDigest`, `routeScopeDigest`, and `authorityTrustHeadDigest` to the independently derived values; compare activation `trustHeadDigest` only to the profile head; compare activation contract directly to `inner.bundle.contract.digest`.
-10. Compare binding profile, activation, inner receipt, Job Card, artifact-key binding/commitment, contract, deployment, route scope, dynamic route snapshot, and Authority-head digests exactly, then compare all six outer edges including `authorityBindingDigest`.
+1. Strictly parse the closed outer envelope, its signed profile-authority binding, the artifact-key
+   binding, and the human commitment. Parse only; none is trusted and no verified result or roots
+   escape.
+2. From the four closed binding entries, derive provisional `TrustRootEntry` candidates only for
+   `source-bundle`, `compiled-capability`, `transport-effect`, and `pack-manifest`, with the verified
+   envelope tenant. Combine them with caller-supplied external direct roots solely as the input to
+   the unchanged inner verifier. Never derive candidate roots for contract, delegation, gate,
+   evidence, receipt, or outer binding.
+3. Run unchanged `verifyAuthorityReceiptBundle` with that temporary combined set and retain its
+   exact claims/digest provisionally. Failure stops. Success does not authorize the four candidates.
+4. Run profile governance verification using profile trust only, then verify `signedJobCard` and its
+   exact `signedReadiness` against the existing external current Job Card pin.
+5. Call existing `verifyCertificationArtifactKeyBinding` against that external signed readiness at
+   binding `observedAt` and verifier time. Replay external current descriptors/events and require the
+   human readiness signer and direct parent evidence descriptor active/unrevoked at both times;
+   require exact Cell/task/Adapter Contract/readiness/validity/parent/commitment joins.
+6. For each of the four signed inner artifacts, match its actual kind/purpose, `signerId`, signature,
+   and the candidate root's exact SPKI to the one unique authorized binding entry. Reverify its
+   signature with that SPKI. Missing, duplicate, reordered-purpose, substituted, or extra matches
+   refuse. There are no callbacks in an offline receipt.
+7. Prove every other inner artifact was verified only by caller-supplied external direct roots.
+   Replay current external Authority descriptors/events for the inner direct evidence/receipt keys
+   and the separate outer binding key, require all activity/revocation/time/segregation rules at
+   binding `observedAt` and verifier time, and verify the domain-separated outer binding signature.
+   Candidate roots cannot satisfy this step.
+8. Strictly parse/digest `deploymentSnapshot` and `routeScope`; parse/digest the dynamic route
+   snapshot; call `projectRouteScope(snapshot, { tenant: verifiedTenant, definitionAlias:
+   verifiedDefinitionAlias })`; and require canonical equality/digest equality with `routeScope`.
+   Dynamic slot instance/version, identity/materialized-request digests, generation, and expiry
+   remain receipt-time only. Require `activation.validFrom <= observedAt < activation.validUntil`.
+9. Compare activation `jobCardDigest`, `contractDigest`, `deploymentDigest`, `routeScopeDigest`, and
+   `authorityTrustHeadDigest` to independently derived values; compare activation
+   `trustHeadDigest` only to the profile head; compare activation contract directly to
+   `inner.bundle.contract.digest`.
+10. Compare binding profile, activation, inner receipt, Job Card, artifact-key binding/commitment,
+    contract, deployment, route scope, dynamic route snapshot, and Authority-head digests exactly,
+    then compare all six outer edges including `authorityBindingDigest`. Only now return the
+    unchanged inner verified claims and outer verification status.
 
-Return the unchanged inner verified claims alongside outer verification status. Never rewrite or
-upgrade authorization, dispatch, acknowledgment, reconciliation, topology, or completeness.
+The four provisional receipt-carried roots are implementation-local candidate material, never an
+external anchor or returned trust view. A self-consistent forged binding/commitment and inner bundle
+must fail Steps 5–7 without valid external readiness, current parent/human authority, and exact signed
+inner-artifact authorization.
+
+Never rewrite or upgrade authorization, dispatch, acknowledgment, reconciliation, topology, or
+completeness.
 
 - [ ] **Fix Step 8: Run exact gates, prove unchanged Authority ABI, and commit**
 
@@ -1444,6 +1664,7 @@ $subjects = @(
   'docs: amend governed authority evidence'
   'docs: complete governed authority execution seams'
   'docs: complete governed dispatch publication'
+  'docs: close governed recovery and trust handoff'
   'test(authority): expose governed admission review gaps'
   'fix(authority): bind governed profiles to verified authority'
 )
@@ -1461,7 +1682,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Task 2 range whitespace failure' }
 
 Dispatch a fresh read-only reviewer for ordered spec-compliance then code-quality verdicts. Do not
 begin Task 3 until both verdicts clear all five original blockers, all eight first-amendment review
-findings, and every second-amendment execution seam.
+findings, every second-amendment execution seam, and both third-amendment Critical findings.
 
 ---
 
