@@ -385,11 +385,13 @@ async function waitForEvent(processHandle, sessionId, token, cursor, predicate) 
 }
 async function waitForBoundary(processHandle, sessionId, token, cursor, requiredType) {
   let foundRequired = requiredType === undefined;
+  const rows = [];
   for (let attempt = 0; attempt < 600; attempt += 1) {
     const read = await readEveStream({ client: processHandle.http, baseUrl: processHandle.url, sessionId, token, startIndex: cursor });
     cursor = read.cursor;
     foundRequired ||= read.rows.some((event) => event.type === requiredType);
-    if (foundRequired && read.rows.some((event) => event.type === "session.waiting" || event.type === "session.failed")) return { cursor, rows: read.rows };
+    rows.push(...read.rows);
+    if (foundRequired && rows.some((event) => event.type === "session.waiting" || event.type === "session.failed")) return { cursor, rows };
     await delay(50);
   }
   throw new Error("Eve session did not reach a boundary");
