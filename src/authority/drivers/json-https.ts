@@ -8,14 +8,16 @@ import type { TransportEffect } from "../types.js";
 import { assertAllPublicAddresses } from "../client/ip.js";
 import { createTotalDeadline, raceTotalDeadline, type TotalDeadline } from "../net/deadline.js";
 import { jsonHttpsRouteDigest, type JsonHttpsRouteV1 } from "../host/json-https-route.js";
-import { materializedHttpRequestDigest, type MaterializedHttpRequestProjectionV1 } from "../host/http-response-semantics.js";
+import { createHttpResponseSemanticsProfileRegistry, httpResponseSemanticsProfileDigest, lookupHttpResponseSemanticsProfile, materializedHttpRequestDigest, type HttpResponseSemanticsProfileRegistry, type HttpResponseSemanticsProfileV1, type MaterializedHttpRequestProjectionV1 } from "../host/http-response-semantics.js";
+import type { RouteAuthoritySnapshotV1 } from "../ledger.js";
 import { createPreparedDispatch, type PreparedDispatch } from "../host/prepared-dispatch.js";
 import { authorityDigest } from "../wire.js";
 
 const FORBIDDEN = new Set(["authorization", "cookie", "host"]);
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 const MAX_REQUEST_BYTES = 10 * 1024 * 1024;
-type JsonHttpsOptions = Readonly<{ timeoutMs?: number; maxResponseBytes?: number; maxRequestBytes?: number; monotonicNow?: () => number }>;
+const DIGEST = /^sha256:(?!0{64}$)[0-9a-f]{64}$/;
+type JsonHttpsOptions = Readonly<{ timeoutMs?: number; maxResponseBytes?: number; maxRequestBytes?: number; monotonicNow?: () => number; responseSemanticsProfiles?: HttpResponseSemanticsProfileRegistry | readonly HttpResponseSemanticsProfileV1[]; operatorConfigurationDigest?: string; routeAuthority?: RouteAuthoritySnapshotV1 }>;
 
 /** Legacy runtime endpoint configuration; canonical route authority is separate. */
 export interface JsonHttpsEndpoint {
@@ -70,11 +72,15 @@ export async function prepareJsonHttpsEffect(effect: TransportEffect, endpoint: 
   if (effect.endpointId !== runtimeEndpoint.endpointId || !runtimeEndpoint.allowedMethods.includes(effect.method)) throw new JsonHttpsSecurityError("effect is not allowed for endpoint");
   validatePath(effect.path, runtimeEndpoint); validateQuery(effect.query); validateHeaders(effect.headers);
   if (base64DecodedBytes(effect.bodyBase64) > MAX_REQUEST_BYTES) throw new JsonHttpsSecurityError("request exceeds configured limit");
+  const nativeRoute = isNativeRoute(endpoint) ? endpoint : undefined;
+  const profile = nativeRoute ? resolveNativeProfile(nativeRoute, options.responseSemanticsProfiles) : undefined;
+  const routeDigest = nativeRoute ? jsonHttpsRouteDigest(nativeRoute) : authorityDigest({ v: "reelier.json-https-legacy-route/v1", endpointId: runtimeEndpoint.endpointId, baseUrl: runtimeEndpoint.baseUrl, allowedMethods: runtimeEndpoint.allowedMethods, allowedPathPrefixes: runtimeEndpoint.allowedPathPrefixes, accountIdentity: runtimeEndpoint.accountIdentity, secretRef: runtimeEndpoint.secretRef ?? null, egressProxy: runtimeEndpoint.egressProxy ?? null });
+  if (nativeRoute) validateNativeAuthority(nativeRoute, routeDigest, options.operatorConfigurationDigest, options.routeAuthority);
+  const behaviorDigest = authorityDigest({ v: "reelier.json-https-behavior/v1", routeDigest, operatorConfigurationDigest: options.operatorConfigurationDigest ?? options.routeAuthority?.operatorConfigurationDigest ?? null, responseSemanticsProfileDigest: profile ? httpResponseSemanticsProfileDigest(profile) : null });
   const body = Buffer.from(effect.bodyBase64, "base64");
   const secret = await materializeSecret(endpoint, secrets, deadline);
   const proxySecret = runtimeEndpoint.egressProxy ? await secrets.resolve(runtimeEndpoint.egressProxy.bearerRef) : undefined;
   const projection = buildMaterializedHttpRequestProjection(runtimeEndpoint, effect.method, effect.path, effect.query, effect.headers, body);
-  const routeDigest = isNativeRoute(endpoint) ? jsonHttpsRouteDigest(endpoint) : authorityDigest({ v: "reelier.json-https-legacy-route/v1", endpointId: runtimeEndpoint.endpointId, baseUrl: runtimeEndpoint.baseUrl, allowedMethods: runtimeEndpoint.allowedMethods, allowedPathPrefixes: runtimeEndpoint.allowedPathPrefixes, accountIdentity: runtimeEndpoint.accountIdentity, secretRef: runtimeEndpoint.secretRef ?? null, egressProxy: runtimeEndpoint.egressProxy ?? null });
   const description = {
     v: "reelier.prepared-dispatch-description/v1" as const,
     routeDigest,
@@ -83,8 +89,24 @@ export async function prepareJsonHttpsEffect(effect: TransportEffect, endpoint: 
     authorityExpiresAt: options.authorityExpiresAt ?? new Date(Date.now() + (deadline.absoluteDeadlineMs - deadline.startedAtMs)).toISOString(),
     absoluteDeadlineMs: deadline.absoluteDeadlineMs,
     reservationId: options.reservationId ?? "unbound", allocationId: options.allocationId ?? "unbound",
+    behaviorDigest,
   };
-  return createPreparedDispatch({ description, monotonicNow: options.monotonicNow, send: async () => { try { const response = await requestPinned(runtimeEndpoint, effect.method, effect.path, effect.query, effect.headers, body, secret, proxySecret, options, deadline, projection); const resultDigest = authorityDigest({ v: "reelier.https-response/v1", endpointId: runtimeEndpoint.endpointId, status: response.status, headers: response.headers, bodyDigest: authorityDigest(response.body.toString("base64")) }); const malformed = Object.entries(response.headers).some(([name, value]) => name.toLowerCase() === "content-type" && value.toLowerCase().includes("json")) && response.body.length > 0 && (() => { try { JSON.parse(response.body.toString("utf8")); return false; } catch { return true; } })(); return Object.freeze({ kind: !malformed && response.status >= 200 && response.status < 300 ? "acknowledged" as const : "ambiguous" as const, resultDigest, providerStatus: response.status, responseDigest: resultDigest, materializedRequestDigest: response.materializedRequestDigest }); } finally { body.fill(0); } } });
+  return createPreparedDispatch({ description, monotonicNow: options.monotonicNow, send: async () => { try { const response = await requestPinned(runtimeEndpoint, effect.method, effect.path, effect.query, effect.headers, body, secret, proxySecret, options, deadline, projection); const resultDigest = authorityDigest({ v: "reelier.https-response/v1", endpointId: runtimeEndpoint.endpointId, status: response.status, headers: response.headers, bodyDigest: authorityDigest(response.body.toString("base64")), behaviorDigest }); const malformed = Object.entries(response.headers).some(([name, value]) => name.toLowerCase() === "content-type" && value.toLowerCase().includes("json")) && response.body.length > 0 && (() => { try { JSON.parse(response.body.toString("utf8")); return false; } catch { return true; } })(); return Object.freeze({ kind: !malformed && response.status >= 200 && response.status < 300 ? "acknowledged" as const : "ambiguous" as const, resultDigest, providerStatus: response.status, responseDigest: resultDigest, materializedRequestDigest: response.materializedRequestDigest }); } finally { body.fill(0); } } });
+}
+
+function resolveNativeProfile(route: JsonHttpsRouteV1, configured: JsonHttpsOptions["responseSemanticsProfiles"]): HttpResponseSemanticsProfileV1 {
+  const registry = configured === undefined ? undefined : Array.isArray(configured) ? createHttpResponseSemanticsProfileRegistry(configured as readonly HttpResponseSemanticsProfileV1[]) : configured as HttpResponseSemanticsProfileRegistry;
+  const profile = registry ? lookupHttpResponseSemanticsProfile(registry, route.responseSemanticsProfileId) : undefined;
+  if (!profile) throw new JsonHttpsSecurityError(`response semantics profile is not configured: ${route.responseSemanticsProfileId}`);
+  return profile;
+}
+
+function validateNativeAuthority(route: JsonHttpsRouteV1, routeDigest: string, operatorConfigurationDigest: string | undefined, routeAuthority: RouteAuthoritySnapshotV1 | undefined): void {
+  if (operatorConfigurationDigest !== undefined && !DIGEST.test(operatorConfigurationDigest)) throw new JsonHttpsSecurityError("operator configuration digest is invalid");
+  if (routeAuthority && !DIGEST.test(routeAuthority.operatorConfigurationDigest)) throw new JsonHttpsSecurityError("route authority operator configuration digest is invalid");
+  if (routeAuthority && !DIGEST.test(routeAuthority.routeDigest)) throw new JsonHttpsSecurityError("route authority route digest is invalid");
+  if (operatorConfigurationDigest !== undefined && routeAuthority?.operatorConfigurationDigest !== operatorConfigurationDigest) throw new JsonHttpsSecurityError("operator configuration digest does not match route authority");
+  if (routeAuthority !== undefined && routeAuthority.routeDigest !== routeDigest) throw new JsonHttpsSecurityError("route authority digest does not match native route");
 }
 
 export async function executeJsonHttpsRead(read: JsonHttpsRead, endpoint: JsonHttpsEndpoint | JsonHttpsRouteV1, secrets: JsonHttpsSecretResolver, options: JsonHttpsOptions = {}): Promise<JsonHttpsResponse> {

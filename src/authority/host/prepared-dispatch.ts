@@ -17,6 +17,8 @@ export interface PreparedDispatchDescriptionV1 {
   readonly absoluteDeadlineMs: number;
   readonly reservationId: string;
   readonly allocationId: string;
+  /** Commits the reviewed route, operator configuration, and response behavior. */
+  readonly behaviorDigest?: string;
 }
 
 export interface PreparedDispatch { readonly [preparedBrand]: true; readonly description: PreparedDispatchDescriptionV1 }
@@ -75,6 +77,7 @@ export async function consumePreparedDispatch(prepared: PreparedDispatch, commit
 function validateDescription(value: PreparedDispatchDescriptionV1): PreparedDispatchDescriptionV1 {
   if (!value || typeof value !== "object" || value.v !== "reelier.prepared-dispatch-description/v1") throw new TypeError("prepared dispatch description is invalid");
   if (!DIGEST.test(value.routeDigest) || !DIGEST.test(value.materializedRequestDigest) || !value.reservationId || !value.allocationId || !value.authorityGeneration || !Number.isFinite(value.absoluteDeadlineMs)) throw new TypeError("prepared dispatch description is invalid");
+  if (value.behaviorDigest !== undefined && !DIGEST.test(value.behaviorDigest)) throw new TypeError("prepared dispatch behavior digest is invalid");
   const projection = Object.freeze({ ...value.projection, reviewedHeaders: Object.freeze({ ...value.projection.reviewedHeaders }) });
   if (materializedHttpRequestDigest(projection) !== value.materializedRequestDigest) throw new TypeError("prepared request digest does not match projection");
   if (!Number.isFinite(Date.parse(value.authorityExpiresAt))) throw new TypeError("prepared dispatch expiry is invalid");

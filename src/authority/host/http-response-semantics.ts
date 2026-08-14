@@ -60,10 +60,11 @@ export function parseHttpResponseSemanticsProfileV1(value: unknown): HttpRespons
   if (Object.keys(descriptors).sort().join(",") !== "acknowledgedStatuses,profileId,v" || Object.values(descriptors).some(descriptor => !("value" in descriptor) || descriptor.get || descriptor.set)) throw new TypeError("HTTP response semantics profile contains unknown or accessor fields");
   const raw = Object.fromEntries(Object.entries(descriptors).map(([key, descriptor]) => [key, (descriptor as PropertyDescriptor).value])) as Record<string, unknown>;
   if (raw.v !== "reelier.http-response-semantics/v1" || typeof raw.profileId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(raw.profileId) || !Array.isArray(raw.acknowledgedStatuses) || raw.acknowledgedStatuses.length === 0 || Object.getPrototypeOf(raw.acknowledgedStatuses) !== Array.prototype) throw new TypeError("HTTP response semantics profile is invalid");
-  const statusDescriptors = Object.getOwnPropertyDescriptors(raw.acknowledgedStatuses);
+  const statusValues = raw.acknowledgedStatuses as readonly unknown[];
+  const statusDescriptors = Object.getOwnPropertyDescriptors(statusValues);
   const statusNames = Object.keys(statusDescriptors);
-  if (Object.getOwnPropertySymbols(raw.acknowledgedStatuses).length > 0 || statusNames.some(key => key !== "length" && !/^(?:0|[1-9]\d*)$/.test(key)) || Object.values(statusDescriptors).some(descriptor => !("value" in descriptor) || descriptor.get || descriptor.set)) throw new TypeError("HTTP response semantics statuses are invalid");
-  const statuses = raw.acknowledgedStatuses;
+  if (Object.getOwnPropertySymbols(statusValues).length > 0 || statusNames.length !== statusValues.length + 1 || !statusNames.includes("length") || statusNames.some(key => key !== "length" && (!/^(?:0|[1-9]\d*)$/.test(key) || Number(key) >= statusValues.length)) || Object.values(statusDescriptors).some(descriptor => !("value" in descriptor) || descriptor.get || descriptor.set)) throw new TypeError("HTTP response semantics statuses are invalid");
+  const statuses = statusValues;
   if (statuses.some(status => !Number.isInteger(status) || (status as number) < 200 || (status as number) > 299) || new Set(statuses as number[]).size !== statuses.length) throw new TypeError("HTTP response semantics statuses are invalid");
   return Object.freeze({ v: raw.v, profileId: raw.profileId, acknowledgedStatuses: Object.freeze([...(statuses as number[])].sort((a, b) => a - b)) });
 }
