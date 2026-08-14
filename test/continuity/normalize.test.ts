@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { normalizeContinuityCheckpoint } from "../../src/continuity/normalize.js";
-import { actor, checkpoint, digest, opened } from "./fixtures.js";
+import { actor, checkpoint, digest, opened, reservedConsequence } from "./fixtures.js";
 
 test("checkpoint normalization binds the host-authenticated actor", () => {
   const result = normalizeContinuityCheckpoint({
@@ -46,6 +46,21 @@ test("checkpoint normalization refuses ungrounded binding and verified claims", 
     status: "verified",
     evidenceDigest: null,
   }]), actor), /verified.*evidence/i);
+  assert.throws(() => normalizeContinuityCheckpoint(checkpoint(0, [{
+    type: "claim.recorded",
+    eventId: "event_3",
+    claimId: "claim_2",
+    statement: "Deployment passed",
+    status: "verified",
+    evidenceDigest: digest("c"),
+  }]), actor), /verified.*verifier|public checkpoint.*verified/i);
+});
+
+test("public checkpoints cannot construct authority-verified consequences", () => {
+  assert.throws(
+    () => normalizeContinuityCheckpoint(checkpoint(0, [reservedConsequence]), actor),
+    /consequence.*verifier|public checkpoint.*authority/i,
+  );
 });
 
 test("checkpoint normalization rejects malformed digests and duplicate event IDs", () => {

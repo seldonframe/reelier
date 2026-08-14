@@ -29,7 +29,7 @@ test("fold follows Path C consequence lifecycle and refuses resend-shaped regres
   const reserved = consequence("e2", "reserved");
   const dispatched = consequence("e3", "dispatched");
   const ambiguous = consequence("e4", "ambiguous");
-  const reconciled = consequence("e5", "reconciled", digest("9"));
+  const reconciled = consequence("e5", "reconciled");
   assert.equal(
     foldContinuity([opened, reserved, dispatched, ambiguous, reconciled]).consequences.get("operation_1")?.state,
     "reconciled",

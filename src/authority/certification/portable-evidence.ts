@@ -539,7 +539,9 @@ function signedExact(value: unknown, fields: readonly string[], verifier: Certif
   return record;
 }
 function exact(value: unknown, fields: readonly string[], label: string): Record<string, any> {
-  if (!value || typeof value !== "object" || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype || Object.keys(value).join("\0") !== fields.join("\0")) throw new TypeError(`${label} is not an exact canonical object`);
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype) throw new TypeError(`${label} is not an exact canonical object`);
+  const keys = Object.keys(value);
+  if (keys.length !== fields.length || fields.some((field) => !Object.hasOwn(value, field))) throw new TypeError(`${label} is not an exact canonical object`);
   return value as Record<string, any>;
 }
 function validTime(value: unknown): value is string {

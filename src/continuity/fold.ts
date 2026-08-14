@@ -1,6 +1,8 @@
 import type { LedgerState } from "../authority/ledger.js";
 import type { ClaimStatus } from "../authority/types.js";
-import type { ContinuityEventV1 } from "./types.js";
+import type { VerifiedNativeOutcomeProjectionV1 } from "../authority/certification/task-receipt-graph.js";
+import { authorityDigest } from "../authority/wire.js";
+import type { ContinuityEventV1, UncheckedConsequenceProofV1 } from "./types.js";
 
 export class ContinuityFoldError extends Error {
   constructor(message: string) {
@@ -39,8 +41,9 @@ export interface ConsequenceStateV1 {
   readonly semanticOperationId: string;
   readonly reservationId: string;
   readonly state: Exclude<LedgerState, "issued">;
-  readonly authorityEvidenceDigest: string;
+  readonly authorityEvidenceDigest: string | null;
   readonly receiptDigest: string | null;
+  readonly verification: VerifiedNativeOutcomeProjectionV1["verification"] | UncheckedConsequenceProofV1;
 }
 
 export interface ExceptionStateV1 {
@@ -163,12 +166,42 @@ export function foldContinuity(events: readonly ContinuityEventV1[]): Continuity
         addEvidence(evidenceRefs, event.evidenceDigest);
         break;
       }
-      case "consequence.observed": {
+      case "consequence.noted": {
         const prior = consequences.get(event.semanticOperationId);
         if (prior === undefined) {
           if (event.state !== "reserved") throw new ContinuityFoldError(`consequence must begin reserved: ${event.semanticOperationId}`);
         } else {
+          if (prior.verification.status === "verified") throw new ContinuityFoldError(`verified consequence cannot be downgraded: ${event.semanticOperationId}`);
           if (prior.reservationId !== event.reservationId) throw new ContinuityFoldError(`consequence reservation changed: ${event.semanticOperationId}`);
+          if (!CONSEQUENCE_EDGES[prior.state].includes(event.state)) {
+            throw new ContinuityFoldError(`illegal consequence transition: ${prior.state} -> ${event.state}`);
+          }
+        }
+        consequences.set(event.semanticOperationId, {
+          semanticOperationId: event.semanticOperationId,
+          reservationId: event.reservationId,
+          state: event.state,
+          authorityEvidenceDigest: event.evidenceDigest,
+          receiptDigest: null,
+          verification: Object.freeze({ v: "reelier.unchecked-consequence-proof/v1", status: "unchecked", evidenceDigest: event.evidenceDigest }),
+        });
+        addEvidence(evidenceRefs, event.evidenceDigest);
+        break;
+      }
+      case "consequence.observed": {
+        const prior = consequences.get(event.semanticOperationId);
+        if (prior === undefined) {
+          if (event.state !== "reserved") throw new ContinuityFoldError(`consequence must begin reserved: ${event.semanticOperationId}`);
+        } else if (prior.verification.status === "unchecked") {
+          if (prior.reservationId !== event.reservationId) throw new ContinuityFoldError(`consequence reservation changed: ${event.semanticOperationId}`);
+          if (event.state !== "reserved") throw new ContinuityFoldError(`verified consequence upgrade must replay from reserved: ${event.semanticOperationId}`);
+        } else {
+          if (prior.reservationId !== event.reservationId) throw new ContinuityFoldError(`consequence reservation changed: ${event.semanticOperationId}`);
+          if (
+            prior.authorityEvidenceDigest !== event.authorityEvidenceDigest
+            || prior.receiptDigest !== event.receiptDigest
+            || authorityDigest(prior.verification) !== authorityDigest(event.verification)
+          ) throw new ContinuityFoldError(`consequence verification proof changed: ${event.semanticOperationId}`);
           if (!CONSEQUENCE_EDGES[prior.state].includes(event.state)) {
             throw new ContinuityFoldError(`illegal consequence transition: ${prior.state} -> ${event.state}`);
           }
@@ -179,6 +212,7 @@ export function foldContinuity(events: readonly ContinuityEventV1[]): Continuity
           state: event.state,
           authorityEvidenceDigest: event.authorityEvidenceDigest,
           receiptDigest: event.receiptDigest,
+          verification: event.verification,
         });
         addEvidence(evidenceRefs, event.authorityEvidenceDigest, event.receiptDigest);
         break;

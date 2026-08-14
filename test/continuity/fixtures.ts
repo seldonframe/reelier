@@ -47,22 +47,79 @@ export const decision: ContinuityEventV1 = {
 export function consequence(
   eventId: string,
   state: Exclude<LedgerState, "issued">,
-  receiptDigest: string | null = null,
+  receiptDigest: string = digest("c"),
 ): Extract<ContinuityEventV1, { type: "consequence.observed" }> {
+  const receiptChain = [receiptDigest];
+  const priorReceiptLinks = [{ receiptDigest, priorReceiptDigest: null }];
   return {
     type: "consequence.observed",
     eventId,
     semanticOperationId: "operation_1",
     reservationId: "reservation_1",
     state,
-    authorityEvidenceDigest: digest(eventId.at(-1) ?? "e"),
+    authorityEvidenceDigest: digest("e"),
     receiptDigest,
+    verification: {
+      v: "reelier.verified-native-outcome-proof/v1",
+      status: "verified",
+      graphDigest: digest("a"),
+      publicationDigest: digest("b"),
+      journalReservationId: "journal_reservation_1",
+      routeAuthorityDigest: digest("c"),
+      writeRouteDigest: digest("d"),
+      readRouteDigest: digest("e"),
+      accountDigest: digest("f"),
+      authenticatedProviderIdentityDigest: digest("1"),
+      authenticatedIdentityDigest: digest("2"),
+      materializedRequestDigest: digest("3"),
+      responseSemanticsProfileDigest: digest("4"),
+      responseObservationDigest: digest("5"),
+      preStateEvidenceDigest: digest("6"),
+      postStateEvidenceDigest: digest("7"),
+      expectedPostProjectionDigest: digest("7"),
+      claimStatuses: {
+        authorization: "verified",
+        sourceCompleteness: "verified",
+        dispatch: "verified",
+        providerAcknowledgment: "verified",
+        reconciliation: "verified",
+        topology: "unchecked",
+        completeness: "unchecked",
+      },
+      confidence: "exact",
+      authoritativeStateSource: "hermetic-github-fixture",
+      reconciliationVerdict: "matched",
+      reconciliationDigest: digest("8"),
+      noResend: { status: "verified", resendCount: 0 },
+      receiptChain,
+      receiptChainDigest: digest("9"),
+      priorReceiptLinks,
+      priorReceiptLinksDigest: digest("a"),
+      collectionCountsDigest: digest("b"),
+      cleanupParentReceiptDigest: null,
+      terminalDigest: digest("c"),
+      currentTrustObservationDigest: digest("d"),
+    },
   };
 }
 
 export const reservedConsequence = consequence("event_2", "reserved");
 export const dispatchedConsequence = consequence("event_3", "dispatched");
 export const ambiguousConsequence = consequence("event_4", "ambiguous");
+
+export function consequenceNote(
+  eventId: string,
+  state: Exclude<LedgerState, "issued">,
+): Extract<ContinuityEventV1, { type: "consequence.noted" }> {
+  return {
+    type: "consequence.noted",
+    eventId,
+    semanticOperationId: "operation_1",
+    reservationId: "reservation_1",
+    state,
+    evidenceDigest: null,
+  };
+}
 
 export function checkpoint(
   expectedCursor: number,
