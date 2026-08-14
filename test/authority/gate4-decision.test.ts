@@ -15,10 +15,11 @@ import {
 
 const digest = (char: string) => `sha256:${char.repeat(64)}`;
 const candidate: Gate4CandidateBindingV1 = {
+  v: "reelier.native-github-candidate/v1",
   candidateId: "sha256:e46498b6441a44e7de42264ebf243e4462aae6e4c4b3d33ed4276fcc50190e96",
   publicCommitSha: "03ac48e",
-  tarballDigest: digest("a"),
-  packDigest: digest("b"),
+  tarballDigest: "sha256:0659c2f402002d733dfd2621c5d8cce5df301975606a3fcb1b802e492bec5309",
+  packDigest: "sha256:8101632acbacaf2738b8a7e698b0fb301539163edc713a37e74df0a6d233d689",
   task8BaselineDigest: digest("8"),
   task9VerificationDigest: digest("9"),
   portableEvidenceContractDigest: digest("e"),
@@ -28,12 +29,13 @@ const candidate: Gate4CandidateBindingV1 = {
     { laneId: "reconciliation-verifier", commitSha: "b".repeat(40) },
   ],
   checkerIdentities: [
-    { role: "contract", signerId: "checker-contract", verdictDigest: digest("e") },
-    { role: "pack", signerId: "checker-pack", verdictDigest: digest("b") },
-    { role: "task8", signerId: "checker-task8", verdictDigest: digest("8") },
-    { role: "task9", signerId: "checker-task9", verdictDigest: digest("9") },
+    { role: "contract", signerId: "checker-contract", publicKeyDigest: digest("c"), verifierVersion: "authority-contract-checker/v1", verdictDigest: digest("e") },
+    { role: "pack", signerId: "checker-pack", publicKeyDigest: digest("d"), verifierVersion: "packed-consumer/v1", verdictDigest: "sha256:8101632acbacaf2738b8a7e698b0fb301539163edc713a37e74df0a6d233d689" },
+    { role: "task8", signerId: "checker-task8", publicKeyDigest: digest("8"), verifierVersion: "task8-baseline-verifier/v1", verdictDigest: digest("8") },
+    { role: "task9", signerId: "checker-task9", publicKeyDigest: digest("9"), verifierVersion: "portable-evidence-verifier/v1", verdictDigest: digest("9") },
   ],
-};
+  provenance: { v: "reelier.native-candidate-provenance/v1", source: "clean-export", reproducibility: "hermetic-offline", liveProviderStatus: "absent", credentialStatus: "absent", workflowDispatch: "absent" },
+} as unknown as Gate4CandidateBindingV1;
 
 const signer = generateKeyPairSync("ed25519");
 const signerId = "hosted-checker";
@@ -54,10 +56,12 @@ function job(os: "ubuntu-latest" | "windows-latest", source: "offline-fixture" |
     lifecycle: { terminal: true, reconciliation: "matched", noResendCount: 0, cleanupReceipt: digest("c") },
     providerClaim: os === "ubuntu-latest" && source === "hosted-run" ? "verified" : "absent",
     nativeHostRefusedBeforeMutation: os === "windows-latest",
-    repo: { publicCommitSha: candidate.publicCommitSha, workflowRef: "refs/heads/codex/reelier-acceleration-design", workflowSha: "03ac48e" },
+    repo: { publicCommitSha: candidate.publicCommitSha, workflowRef: "refs/heads/codex/reelier-acceleration-design", workflowSha: "03ac48e", checkoutSha: "03ac48e", verifierSourceCommitSha: "03ac48e" },
     toolchain: { nodeMajor: 20, npmVersion: "10.8.2", runnerImage: os },
     provenance: { source, createdAt: "2026-08-14T12:00:00.000Z", expiresAt: "2026-08-15T12:00:00.000Z", jobId: `${os}-job` },
     skips: { count: 0, reviewed: true },
+    status: "completed",
+    conclusion: "success",
     secretsScan: "clean",
   };
   const body = { ...payload, artifactDigest: authorityDigest(payload), signerId };
@@ -110,12 +114,23 @@ test("candidate, artifact, provenance, signature, parity, stale, and skip mutati
     ["skip", value => { value.jobs[1] = { ...value.jobs[1], skips: { count: 1, reviewed: false } }; }],
     ["secret", value => { value.jobs[0] = { ...value.jobs[0], canary: "canary-private-token" }; }],
     ["os", value => { value.jobs[1] = { ...value.jobs[1], os: "ubuntu-latest" }; }],
+    ["duplicate-job", value => { value.jobs[1] = { ...value.jobs[1], provenance: { ...value.jobs[1].provenance, jobId: value.jobs[0].provenance.jobId } }; }],
+    ["failed-job", value => { value.jobs[1] = { ...value.jobs[1], conclusion: "failure" }; }],
+    ["skipped-job", value => { value.jobs[1] = { ...value.jobs[1], status: "completed", conclusion: "skipped" }; }],
+    ["checkout", value => { value.jobs[0] = { ...value.jobs[0], repo: { ...value.jobs[0].repo, checkoutSha: "deadbee" } }; }],
   ];
   for (const [label, mutate] of mutations) {
     const mutated = structuredClone(fixture.value);
     mutate(mutated);
     assert.throws(() => verifyGate4Bundle(mutated, expected), /refus|invalid|mismatch|stale|secret|signature|candidate|platform|skip/i, label);
   }
+});
+
+test("offline fixtures cannot carry a verified provider claim", () => {
+  const fixture = bundle();
+  const mutated = structuredClone(fixture.value);
+  (mutated.jobs as any)[0] = { ...mutated.jobs[0], providerClaim: "verified" };
+  assert.throws(() => verifyGate4Bundle(mutated, { ...inputs(), artifactBytes: fixture.bytes }), /offline|provider|claim|refus/i);
 });
 
 test("signed Gate 4 decision refuses approval without live evidence and verifies a blocked decision", () => {
