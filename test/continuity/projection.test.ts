@@ -1,28 +1,29 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { foldContinuity } from "../../src/continuity/fold.js";
-import type { ContinuitySnapshotV1 } from "../../src/continuity/fs-ledger.js";
+import { FsContinuityLedger, type ContinuitySnapshotV1 } from "../../src/continuity/fs-ledger.js";
+import type { ContinuityEventV1 } from "../../src/continuity/types.js";
 import { renderResumeMarkdown } from "../../src/continuity/markdown.js";
 import { createResumeProjection } from "../../src/continuity/projection.js";
 import {
+  actor,
+  checkpoint,
   consequenceNote,
   digest,
   opened,
+  withRoot,
 } from "./fixtures.js";
 
-function snapshot(events: Parameters<typeof foldContinuity>[0]): ContinuitySnapshotV1 {
-  return {
-    taskId: "task_1",
-    cursor: 1,
-    segmentDigest: digest("c"),
-    jobCardDigest: digest("a"),
-    authoritySnapshotDigest: digest("b"),
-    state: foldContinuity(events),
-  };
+async function snapshot(events: readonly ContinuityEventV1[]): Promise<ContinuitySnapshotV1> {
+  return withRoot(async root => {
+    const ledger = new FsContinuityLedger(root);
+    const appended = await ledger.append(actor, checkpoint(0, events));
+    assert.equal(appended.ok, true);
+    return ledger.read(actor.taskId);
+  });
 }
 
-test("resume projection answers the seven continuity questions in stable order", () => {
-  const projection = createResumeProjection(snapshot([
+test("resume projection answers the seven continuity questions in stable order", async () => {
+  const projection = createResumeProjection(await snapshot([
     opened,
     consequenceNote("event_2", "reserved"),
     consequenceNote("event_3", "dispatched"),
@@ -41,8 +42,8 @@ test("resume projection answers the seven continuity questions in stable order",
   assert.match(renderResumeMarkdown(projection), /## 7\. Next safe actions[\s\S]*reconcile-before-retry/);
 });
 
-test("resume projection never decorates unchecked or absent claims as complete", () => {
-  const markdown = renderResumeMarkdown(createResumeProjection(snapshot([opened, {
+test("resume projection never decorates unchecked or absent claims as complete", async () => {
+  const markdown = renderResumeMarkdown(createResumeProjection(await snapshot([opened, {
     type: "claim.recorded",
     eventId: "e_claim",
     claimId: "claim_1",
@@ -62,8 +63,8 @@ test("resume projection never decorates unchecked or absent claims as complete",
   assert.doesNotMatch(markdown, /✅|passed|complete\b/i);
 });
 
-test("resume projection sorts binding decisions and exposes supersession count", () => {
-  const projection = createResumeProjection(snapshot([
+test("resume projection sorts binding decisions and exposes supersession count", async () => {
+  const projection = createResumeProjection(await snapshot([
     opened,
     { type: "decision.recorded", eventId: "e1", decisionId: "z", statement: "Old", decidedBy: "human", binding: true, evidenceDigest: digest("1") },
     { type: "decision.recorded", eventId: "e2", decisionId: "a", statement: "Current", decidedBy: "human", binding: true, evidenceDigest: digest("2") },
@@ -84,8 +85,8 @@ test("resume projection refuses an empty ledger snapshot", () => {
   }), /empty.*snapshot|nothing to resume/i);
 });
 
-test("resume projection refuses a structurally fabricated folded snapshot", () => {
-  const legitimate = snapshot([opened]);
+test("resume projection refuses a structurally fabricated folded snapshot", async () => {
+  const legitimate = await snapshot([opened]);
   const fabricated = {
     ...legitimate,
     state: {
@@ -98,9 +99,17 @@ test("resume projection refuses a structurally fabricated folded snapshot", () =
       }]]),
     },
   };
-  assert.throws(() => createResumeProjection(fabricated as never), /fold.*provenance|provenance.*fold/i);
+  assert.throws(() => createResumeProjection(fabricated as never), /snapshot.*provenance|provenance.*snapshot/i);
 
-  const mutated = snapshot([opened]);
+  assert.throws(() => createResumeProjection({
+    ...legitimate,
+    taskId: "task_fabricated",
+    cursor: 777,
+    jobCardDigest: digest("e"),
+    authoritySnapshotDigest: digest("f"),
+  }), /snapshot.*envelope|envelope.*snapshot/i);
+
+  const mutated = await snapshot([opened]);
   (mutated.state!.claims as Map<string, unknown>).set("forged", {
     claimId: "forged",
     statement: "Mutated verified state",
