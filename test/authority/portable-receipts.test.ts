@@ -3,10 +3,12 @@ import { generateKeyPairSync } from "node:crypto";
 import test from "node:test";
 import { signAuthorityDigest } from "../../src/authority/crypto.js";
 import {
+  createSanitizedPortableOutcomeEvidenceExport,
   createPortableOutcomeEvidencePublication,
   type PortableOutcomeEvidencePublicationV1,
 } from "../../src/authority/host/portable-receipts.js";
-import { verifyPortableOutcomeEvidencePublication } from "../../src/authority/verify.js";
+import { verifyPortableOutcomeEvidencePublication, verifySanitizedPortableOutcomeEvidenceExport } from "../../src/authority/verify.js";
+import { httpResponseSemanticsProfileDigest } from "../../src/authority/host/http-response-semantics.js";
 import { authorityDigest } from "../../src/authority/wire.js";
 
 const DIGEST = (label: string) => authorityDigest({ label });
@@ -14,6 +16,7 @@ const DIGEST = (label: string) => authorityDigest({ label });
 function fixture() {
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
   const signer = { signerId: "cell_evidence", sign: (digest: string) => signAuthorityDigest(privateKey, "authority-evidence", digest) };
+  const expectedResponseSemanticsProfile = { v: "reelier.http-response-semantics/v1" as const, profileId: "github.issue-labels.hermetic-v1", acknowledgedStatuses: [200] };
   const materializedRequest = {
     v: "reelier.portable-materialized-http-request/v1" as const,
     method: "PUT" as const,
@@ -23,7 +26,7 @@ function fixture() {
     reviewedHeaderNames: ["content-type"],
     bodyDigest: DIGEST("body"),
   };
-  const responseSemanticsProfile = { v: "reelier.portable-http-response-semantics/v1" as const, profileDigest: DIGEST("sealed-response-profile"), acknowledgedStatuses: [200] };
+  const responseSemanticsProfile = { v: "reelier.portable-http-response-semantics/v1" as const, profileDigest: httpResponseSemanticsProfileDigest(expectedResponseSemanticsProfile), acknowledgedStatuses: [200] };
   const responseObservation = { v: "reelier.portable-http-response-observation/v1" as const, status: 200, classification: "acknowledged" as const };
   const projectionSchemaDigest = authorityDigest({ schemaId: "github-labels/v1", pointers: ["/labels"] });
   const routeAuthority = {
@@ -89,11 +92,46 @@ function fixture() {
     collectionCounts,
     terminalDigest,
     now: new Date("2026-08-13T12:04:00.000Z"),
+    expectedResponseSemanticsProfile,
     ...overrides,
   });
   const create = (overrides: Record<string, unknown>) => createPortableOutcomeEvidencePublication({ ...input, ...overrides } as Parameters<typeof createPortableOutcomeEvidencePublication>[0]);
-  return { publication, verify, create, signer, publicKey, materializedRequest, currentTrustObservation, receiptChain, collectionCounts, terminalDigest };
+  return { publication, verify, create, signer, publicKey, materializedRequest, currentTrustObservation, receiptChain, collectionCounts, terminalDigest, expectedResponseSemanticsProfile };
 }
+
+test("response semantics are externally ratified rather than authenticated by the artifact itself", () => {
+  const f = fixture();
+  for (const acknowledgedStatuses of [[201], [200, 201], [204, 226]]) {
+    const responseSemanticsProfile = { ...f.publication.responseSemanticsProfile, profileDigest: f.publication.responseSemanticsProfile.profileDigest as string, acknowledgedStatuses };
+    const routeAuthority = { ...f.publication.routeAuthority, responseSemanticsProfileDigest: responseSemanticsProfile.profileDigest };
+    const responseObservation = { ...f.publication.responseObservation, status: acknowledgedStatuses[0], classification: "acknowledged" };
+    assert.throws(() => f.verify(f.create({ responseSemanticsProfile, routeAuthority, responseObservation })), /extern|trusted|ratified|profile|semantics/i);
+  }
+  const responseSemanticsProfile = { ...f.publication.responseSemanticsProfile, profileDigest: DIGEST("attacker-profile") };
+  const routeAuthority = { ...f.publication.routeAuthority, responseSemanticsProfileDigest: responseSemanticsProfile.profileDigest };
+  assert.throws(() => f.verify(f.create({ responseSemanticsProfile, routeAuthority })), /extern|trusted|ratified|profile|semantics/i);
+  assert.throws(() => f.verify(f.publication, { expectedResponseSemanticsProfile: undefined }), /extern|trusted|ratified|profile|semantics|required/i);
+});
+
+test("the sanitized portable export joins the private graph without copying identities", () => {
+  const f = fixture();
+  const exportKeys = generateKeyPairSync("ed25519");
+  const exportSigner = { signerId: DIGEST("portable-export-key"), sign: (digest: string) => signAuthorityDigest(exportKeys.privateKey, "authority-evidence", digest) };
+  const privateGraph = {
+    jobCard: { sponsor: "maxime@example.com", accountId: "account_fixlyai" },
+    sourceReceipt: { login: "maxime", repository: "reelier-certification" },
+    portableOutcomeEvidence: [f.publication],
+  };
+  const portable = createSanitizedPortableOutcomeEvidenceExport({ privateGraph, verifiedAt: "2026-08-13T12:04:00.000Z", signer: exportSigner });
+  const json = JSON.stringify(portable);
+  assert.deepEqual(Object.keys(portable), ["v", "privateGraphDigest", "outcomeCollectionDigest", "outcomeCount", "responseSemanticsProfilesDigest", "verifiedAt", "signerId", "signature"]);
+  for (const forbidden of ["maxime@example.com", "account_fixlyai", "reelier-certification", "jobCard", "sourceReceipt", "accountId", "login"]) assert.equal(json.includes(forbidden), false, `sanitized portable export leaked ${forbidden}`);
+  assert.equal(verifySanitizedPortableOutcomeEvidenceExport(portable, { privateGraph, verifier: { signerId: exportSigner.signerId, publicKey: exportKeys.publicKey, purpose: "authority-evidence" } }).status, "verified");
+  assert.throws(() => verifySanitizedPortableOutcomeEvidenceExport(portable, { privateGraph: { ...privateGraph, jobCard: { sponsor: "attacker@example.com" } }, verifier: { signerId: exportSigner.signerId, publicKey: exportKeys.publicKey, purpose: "authority-evidence" } }), /graph|digest|join/i);
+  for (const signerId of ["maxime@example.com", "account_fixlyai", "github-login", "free form reviewer"]) {
+    assert.throws(() => createSanitizedPortableOutcomeEvidenceExport({ privateGraph, verifiedAt: "2026-08-13T12:04:00.000Z", signer: { ...exportSigner, signerId } }), /opaque|digest|signer/i);
+  }
+});
 
 test("removing the route/request/native post-state extension makes offline verification refuse", () => {
   const f = fixture();
