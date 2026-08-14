@@ -16,7 +16,7 @@ test("governed Cell rejects non-data and unpaired capabilities before invocation
   const restore = __testSetAuthorityCellHostPlatform("linux");
   let getters = 0;
   const reference = Object.defineProperty({ v: "reelier.governed-authority-cell-reference/v1", tenant: "tenant_1", governanceRef: "governance_1", expectedManifestDigest: `sha256:${"0".repeat(64)}` }, "expectedTrustHeadDigest", { enumerable: true, get() { getters += 1; return `sha256:${"0".repeat(64)}`; } });
-  const config = { version: 1, tenant: "tenant_1", requester: "operator", definitions: [], ledgerDir: "ledger", decisionDir: "decisions", receiptDir: "receipts", endpoints: [] };
+  const config = { version: 1 as const, tenant: "tenant_1", requester: "operator", definitions: [], ledgerDir: "ledger", decisionDir: "decisions", receiptDir: "receipts", endpoints: [] };
   try {
     await assert.rejects(() => createGovernedAuthorityCell(config, reference as never, {}), /own data|exact fields|plain record/i);
     await assert.rejects(() => createGovernedAuthorityCell(config, { v: "reelier.governed-authority-cell-reference/v1", tenant: "tenant_1", governanceRef: "governance_1", expectedManifestDigest: `sha256:${"0".repeat(64)}`, expectedTrustHeadDigest: `sha256:${"0".repeat(64)}` }, { signedTopologyEvidence: {} as never }), /topology signer|paired/i);
