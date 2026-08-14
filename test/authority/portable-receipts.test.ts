@@ -167,6 +167,9 @@ test("every confidence rejects malformed reconciliation and normalized query cre
     const materializedRequest = { ...f.materializedRequest, normalizedQuery };
     assert.throws(() => f.verify(f.create({ materializedRequest })), /secret|credential|query|confidential/i);
   }
+  const duplicateStatuses = { ...f.publication.responseSemanticsProfile, acknowledgedStatuses: [200, 200] };
+  const duplicateStatusRoute = { ...f.publication.routeAuthority, responseSemanticsProfileDigest: authorityDigest(duplicateStatuses) };
+  assert.throws(() => f.verify(f.create({ responseSemanticsProfile: duplicateStatuses, routeAuthority: duplicateStatusRoute })), /response|status|duplicate|semantics/i);
 });
 
 test("the exact PortableOutcomeEvidenceV1 surface remains closed", () => {
@@ -177,4 +180,12 @@ test("the exact PortableOutcomeEvidenceV1 surface remains closed", () => {
     "executionAttestationSignerId", "reconciliationAttestationSignerId", "attestationSignerRelationship",
     "cleanupParentReceiptDigest",
   ]);
+});
+
+test("portable request projection binds a separate confidential materialized request commitment", () => {
+  const f = fixture();
+  const routeAuthority = { ...f.publication.routeAuthority, expectedMaterializedRequestDigest: DIGEST("confidential-exact-request"), portableMaterializedRequestDigest: authorityDigest(f.materializedRequest) };
+  assert.equal(f.verify(f.create({ routeAuthority })).status, "verified");
+  const mismatched = { ...routeAuthority, portableMaterializedRequestDigest: DIGEST("wrong-portable-projection") };
+  assert.throws(() => f.verify(f.create({ routeAuthority: mismatched })), /request|projection|digest|route/i);
 });
