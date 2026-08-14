@@ -19,15 +19,15 @@ const candidate: Gate4CandidateBindingV1 = {
   candidateId: "sha256:e46498b6441a44e7de42264ebf243e4462aae6e4c4b3d33ed4276fcc50190e96",
   publicCommitSha: "03ac48e",
   tarballDigest: "sha256:0659c2f402002d733dfd2621c5d8cce5df301975606a3fcb1b802e492bec5309",
+  laneCommits: [
+    { laneId: "operator-evidence", commitSha: "c".repeat(40) },
+    { laneId: "provider-authority", commitSha: "a".repeat(40) },
+    { laneId: "reconciliation-verifier", commitSha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
+  ],
   packDigest: "sha256:8101632acbacaf2738b8a7e698b0fb301539163edc713a37e74df0a6d233d689",
   task8BaselineDigest: digest("8"),
   task9VerificationDigest: digest("9"),
   portableEvidenceContractDigest: digest("e"),
-  laneCommits: [
-    { laneId: "operator-evidence", commitSha: "c".repeat(40) },
-    { laneId: "provider-authority", commitSha: "a".repeat(40) },
-    { laneId: "reconciliation-verifier", commitSha: "b".repeat(40) },
-  ],
   checkerIdentities: [
     { role: "contract", signerId: "checker-contract", publicKeyDigest: digest("c"), verifierVersion: "authority-contract-checker/v1", verdictDigest: digest("e") },
     { role: "pack", signerId: "checker-pack", publicKeyDigest: digest("d"), verifierVersion: "packed-consumer/v1", verdictDigest: "sha256:8101632acbacaf2738b8a7e698b0fb301539163edc713a37e74df0a6d233d689" },
@@ -107,6 +107,10 @@ test("candidate, artifact, provenance, signature, parity, stale, and skip mutati
   const expected = { ...inputs(), execution: "hosted-run" as const, artifactBytes: fixture.bytes };
   const mutations: Array<[string, (value: any) => void]> = [
     ["candidate", value => { value.candidate = { ...value.candidate, candidateId: digest("0") }; }],
+    ["candidate-version", value => { value.candidate = { ...value.candidate, v: "reelier.native-github-candidate/v0" }; }],
+    ["candidate-pack", value => { value.candidate = { ...value.candidate, packDigest: digest("0") }; }],
+    ["candidate-checker", value => { value.candidate = { ...value.candidate, checkerIdentities: value.candidate.checkerIdentities.map((item: any) => item.role === "task9" ? { ...item, publicKeyDigest: digest("0") } : item) }; }],
+    ["candidate-provenance", value => { value.candidate = { ...value.candidate, provenance: { ...value.candidate.provenance, workflowDispatch: "present" } }; }],
     ["artifact", value => { value.jobs[0] = { ...value.jobs[0], artifactDigest: digest("0") }; }],
     ["signature", value => { value.jobs[1] = { ...value.jobs[1], signature: { ...value.jobs[1].signature, sig: Buffer.alloc(64).toString("base64") } }; }],
     ["parity", value => { value.jobs[1] = { ...value.jobs[1], portable: { ...value.jobs[1].portable, graphDigest: digest("0") } }; }],

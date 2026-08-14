@@ -5,13 +5,14 @@ import type { AuthoritySignature } from "../types.js";
 
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
 const COMMIT = /^[0-9a-f]{7,64}$/i;
-const JOB_KEYS = ["v", "candidate", "os", "portable", "lifecycle", "providerClaim", "nativeHostRefusedBeforeMutation", "repo", "toolchain", "provenance", "skips", "secretsScan", "artifactDigest", "signerId", "signature"];
+const JOB_KEYS = ["v", "candidate", "os", "portable", "lifecycle", "providerClaim", "nativeHostRefusedBeforeMutation", "repo", "toolchain", "provenance", "skips", "status", "conclusion", "secretsScan", "artifactDigest", "signerId", "signature"];
 const DECISION_KEYS = ["v", "state", "candidateDigest", "ubuntuArtifactDigest", "windowsArtifactDigest", "workflowRunId", "ubuntuJobId", "windowsJobId", "decision", "reasons", "liveProviderClaim", "signedAt", "signerId", "signature"];
 
 export type Gate4State = "not-run" | "insufficient" | "failed" | "ready-for-founder-decision";
 export type Gate4DecisionStatus = "approved" | "refused" | "blocked";
 
 export interface Gate4CandidateBindingV1 {
+  readonly v: "reelier.native-github-candidate/v1";
   readonly candidateId: string;
   readonly publicCommitSha: string;
   readonly tarballDigest: string;
@@ -20,7 +21,8 @@ export interface Gate4CandidateBindingV1 {
   readonly task9VerificationDigest: string;
   readonly portableEvidenceContractDigest: string;
   readonly laneCommits: readonly Readonly<{ laneId: string; commitSha: string }>[];
-  readonly checkerIdentities: readonly Readonly<{ role: string; signerId: string; verdictDigest: string }>[];
+  readonly checkerIdentities: readonly Readonly<{ role: string; signerId: string; publicKeyDigest: string; verifierVersion: string; verdictDigest: string }>[];
+  readonly provenance: Readonly<{ v: "reelier.native-candidate-provenance/v1"; source: "clean-export"; reproducibility: "hermetic-offline"; liveProviderStatus: "absent"; credentialStatus: "absent"; workflowDispatch: "absent" }>;
 }
 
 export interface Gate4HostedArtifactV1 {
@@ -31,10 +33,12 @@ export interface Gate4HostedArtifactV1 {
   readonly lifecycle: Readonly<{ terminal: true; reconciliation: "matched"; noResendCount: 0; cleanupReceipt: string }>;
   readonly providerClaim: "absent" | "verified";
   readonly nativeHostRefusedBeforeMutation: boolean;
-  readonly repo: Readonly<{ publicCommitSha: string; workflowRef: string; workflowSha: string }>;
+  readonly repo: Readonly<{ publicCommitSha: string; workflowRef: string; workflowSha: string; checkoutSha: string; verifierSourceCommitSha: string }>;
   readonly toolchain: Readonly<{ nodeMajor: 20; npmVersion: string; runnerImage: string }>;
   readonly provenance: Readonly<{ source: "offline-fixture" | "hosted-run"; createdAt: string; expiresAt: string; jobId: string }>;
   readonly skips: Readonly<{ count: 0; reviewed: true }>;
+  readonly status: "completed";
+  readonly conclusion: "success";
   readonly secretsScan: "clean";
   readonly artifactDigest: string;
   readonly signerId: string;
@@ -93,6 +97,7 @@ export function verifyGate4Bundle(value: unknown, inputs: Gate4VerificationInput
   if (jobs.length !== 2 || jobs.map(job => job.os).sort().join("\0") !== "ubuntu-latest\0windows-latest") throw new TypeError("refused: Ubuntu and Windows artifact pair is incomplete or asymmetric");
   const ubuntu = jobs.find(job => job.os === "ubuntu-latest")!;
   const windows = jobs.find(job => job.os === "windows-latest")!;
+  if (ubuntu.provenance.jobId === windows.provenance.jobId) throw new TypeError("refused: Ubuntu and Windows job IDs must be distinct");
   const bytesByOs = inputs.artifactBytes;
   verifyHostedArtifact(ubuntu, bytesByOs.ubuntu, inputs, now);
   verifyHostedArtifact(windows, bytesByOs.windows, inputs, now);
@@ -155,8 +160,8 @@ function parseBundle(value: unknown): Gate4HostedBundleV1 {
 
 function verifyHostedArtifact(job: Gate4HostedArtifactV1, bytes: Uint8Array, inputs: Gate4VerificationInputs, now: number): void {
   if (!isPlain(job as unknown) || keys(job as unknown as Record<string, unknown>).join("\0") !== JOB_KEYS.join("\0")) throw new TypeError("refused: hosted artifact has unknown, missing, or reordered fields");
-  if (keys(job.portable).join("\0") !== "schema\0graphDigest\0graphCount\0outcomeCollectionDigest\0outcomeCount" || keys(job.lifecycle).join("\0") !== "terminal\0reconciliation\0noResendCount\0cleanupReceipt" || keys(job.repo).join("\0") !== "publicCommitSha\0workflowRef\0workflowSha" || keys(job.toolchain).join("\0") !== "nodeMajor\0npmVersion\0runnerImage" || keys(job.provenance).join("\0") !== "source\0createdAt\0expiresAt\0jobId" || keys(job.skips).join("\0") !== "count\0reviewed") throw new TypeError("refused: hosted artifact provenance records are not closed");
-  if (job.v !== "reelier.native-github-hosted-artifact/v1" || !["ubuntu-latest", "windows-latest"].includes(job.os) || authorityDigest(job.candidate) !== authorityDigest(inputs.candidate) || job.repo.publicCommitSha !== inputs.candidate.publicCommitSha || job.repo.workflowSha !== inputs.candidate.publicCommitSha || job.toolchain.nodeMajor !== 20 || job.toolchain.runnerImage !== job.os || job.secretsScan !== "clean" || job.skips.count !== 0 || job.skips.reviewed !== true || job.lifecycle.terminal !== true || job.lifecycle.reconciliation !== "matched" || job.lifecycle.noResendCount !== 0 || !isDigest(job.lifecycle.cleanupReceipt) || !isDigest(job.portable.graphDigest) || !isDigest(job.portable.outcomeCollectionDigest) || job.portable.schema !== "reelier.sanitized-portable-outcome-evidence/v1" || !Number.isInteger(job.portable.graphCount) || job.portable.graphCount < 1 || !Number.isInteger(job.portable.outcomeCount) || job.portable.outcomeCount < 1 || !COMMIT.test(job.repo.publicCommitSha) || !COMMIT.test(job.repo.workflowSha) || job.provenance.source !== inputs.execution) throw new TypeError("refused: hosted artifact provenance or portable evidence binding is invalid");
+  if (keys(job.portable).join("\0") !== "schema\0graphDigest\0graphCount\0outcomeCollectionDigest\0outcomeCount" || keys(job.lifecycle).join("\0") !== "terminal\0reconciliation\0noResendCount\0cleanupReceipt" || keys(job.repo).join("\0") !== "publicCommitSha\0workflowRef\0workflowSha\0checkoutSha\0verifierSourceCommitSha" || keys(job.toolchain).join("\0") !== "nodeMajor\0npmVersion\0runnerImage" || keys(job.provenance).join("\0") !== "source\0createdAt\0expiresAt\0jobId" || keys(job.skips).join("\0") !== "count\0reviewed") throw new TypeError("refused: hosted artifact provenance records are not closed");
+  if (job.v !== "reelier.native-github-hosted-artifact/v1" || !["ubuntu-latest", "windows-latest"].includes(job.os) || authorityDigest(job.candidate) !== authorityDigest(inputs.candidate) || job.repo.publicCommitSha !== inputs.candidate.publicCommitSha || job.repo.workflowSha !== inputs.candidate.publicCommitSha || job.repo.checkoutSha !== inputs.candidate.publicCommitSha || job.repo.verifierSourceCommitSha !== inputs.candidate.publicCommitSha || job.toolchain.nodeMajor !== 20 || job.toolchain.runnerImage !== job.os || job.status !== "completed" || job.conclusion !== "success" || job.secretsScan !== "clean" || job.skips.count !== 0 || job.skips.reviewed !== true || job.lifecycle.terminal !== true || job.lifecycle.reconciliation !== "matched" || job.lifecycle.noResendCount !== 0 || !isDigest(job.lifecycle.cleanupReceipt) || !isDigest(job.portable.graphDigest) || !isDigest(job.portable.outcomeCollectionDigest) || !isDigest(job.artifactDigest) || job.portable.schema !== "reelier.sanitized-portable-outcome-evidence/v1" || !Number.isInteger(job.portable.graphCount) || job.portable.graphCount < 1 || !Number.isInteger(job.portable.outcomeCount) || job.portable.outcomeCount < 1 || !COMMIT.test(job.repo.publicCommitSha) || !COMMIT.test(job.repo.workflowSha) || !COMMIT.test(job.repo.checkoutSha) || !COMMIT.test(job.repo.verifierSourceCommitSha) || job.provenance.source !== inputs.execution || (inputs.execution === "offline-fixture" && job.providerClaim !== "absent")) throw new TypeError("refused: hosted artifact provenance or portable evidence binding is invalid");
   const created = Date.parse(job.provenance.createdAt), expires = Date.parse(job.provenance.expiresAt);
   if (!Number.isFinite(created) || !Number.isFinite(expires) || created > now || expires <= now || expires - created > 48 * 60 * 60 * 1000 || job.provenance.jobId === "") throw new TypeError("refused: hosted artifact is stale or has invalid time provenance");
   let parsed: unknown;
@@ -171,12 +176,14 @@ function verifyHostedArtifact(job: Gate4HostedArtifactV1, bytes: Uint8Array, inp
 }
 
 function validateCandidateBinding(candidate: Gate4CandidateBindingV1): void {
-  if (keys(candidate as unknown as Record<string, unknown>).join("\0") !== "candidateId\0publicCommitSha\0tarballDigest\0packDigest\0task8BaselineDigest\0task9VerificationDigest\0portableEvidenceContractDigest\0laneCommits\0checkerIdentities") throw new TypeError("refused: candidate binding is not closed");
-  if (!COMMIT.test(candidate.publicCommitSha) || !isDigest(candidate.tarballDigest) || !isDigest(candidate.packDigest) || !isDigest(candidate.task8BaselineDigest) || !isDigest(candidate.task9VerificationDigest) || !isDigest(candidate.portableEvidenceContractDigest) || !Array.isArray(candidate.laneCommits) || candidate.laneCommits.length !== 3 || !Array.isArray(candidate.checkerIdentities) || candidate.checkerIdentities.length !== 4) throw new TypeError("refused: candidate commit or digest binding is incomplete");
+  if (keys(candidate as unknown as Record<string, unknown>).join("\0") !== "v\0candidateId\0publicCommitSha\0tarballDigest\0laneCommits\0packDigest\0task8BaselineDigest\0task9VerificationDigest\0portableEvidenceContractDigest\0checkerIdentities\0provenance") throw new TypeError("refused: candidate binding is not a complete NativeCandidateV1 record");
+  if (candidate.v !== "reelier.native-github-candidate/v1" || !COMMIT.test(candidate.publicCommitSha) || !isDigest(candidate.tarballDigest) || !isDigest(candidate.packDigest) || !isDigest(candidate.task8BaselineDigest) || !isDigest(candidate.task9VerificationDigest) || !isDigest(candidate.portableEvidenceContractDigest) || !Array.isArray(candidate.laneCommits) || candidate.laneCommits.length !== 3 || !Array.isArray(candidate.checkerIdentities) || candidate.checkerIdentities.length !== 4 || !isPlain(candidate.provenance) || keys(candidate.provenance).join("\0") !== "v\0source\0reproducibility\0liveProviderStatus\0credentialStatus\0workflowDispatch" || candidate.provenance.v !== "reelier.native-candidate-provenance/v1" || candidate.provenance.source !== "clean-export" || candidate.provenance.reproducibility !== "hermetic-offline" || candidate.provenance.liveProviderStatus !== "absent" || candidate.provenance.credentialStatus !== "absent" || candidate.provenance.workflowDispatch !== "absent") throw new TypeError("refused: candidate commit, digest, or hermetic provenance binding is incomplete");
   const laneIds = candidate.laneCommits.map(item => item.laneId);
   if (laneIds.join("\0") !== ["operator-evidence", "provider-authority", "reconciliation-verifier"].join("\0") || new Set(laneIds).size !== laneIds.length || candidate.laneCommits.some(item => !isPlain(item) || keys(item).join("\0") !== "laneId\0commitSha" || !COMMIT.test(item.commitSha))) throw new TypeError("refused: candidate lane commits are missing, reordered, or duplicated");
   const checkerRoles = candidate.checkerIdentities.map(item => item.role);
-  if (checkerRoles.join("\0") !== ["contract", "pack", "task8", "task9"].join("\0") || new Set(checkerRoles).size !== checkerRoles.length || candidate.checkerIdentities.some(item => !isPlain(item) || keys(item).join("\0") !== "role\0signerId\0verdictDigest" || typeof item.signerId !== "string" || !isDigest(item.verdictDigest))) throw new TypeError("refused: candidate checker identities are missing, reordered, or duplicated");
+  if (checkerRoles.join("\0") !== ["contract", "pack", "task8", "task9"].join("\0") || new Set(checkerRoles).size !== checkerRoles.length || candidate.checkerIdentities.some(item => !isPlain(item) || keys(item).join("\0") !== "role\0signerId\0publicKeyDigest\0verifierVersion\0verdictDigest" || typeof item.signerId !== "string" || !isDigest(item.publicKeyDigest) || typeof item.verifierVersion !== "string" || !/^[a-z0-9-]+\/v[0-9]+$/.test(item.verifierVersion) || !isDigest(item.verdictDigest))) throw new TypeError("refused: candidate checker identities are missing, reordered, or duplicated");
+  const { candidateId, ...body } = candidate;
+  if (!isDigest(candidateId) || authorityDigest(body) !== candidateId) throw new TypeError("refused: candidate ID is not the digest of the complete canonical NativeCandidateV1 record");
 }
 
 function isDigest(value: unknown): value is string { return typeof value === "string" && DIGEST.test(value); }
