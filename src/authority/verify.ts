@@ -1,9 +1,12 @@
-import type { AuthorityReceipt, AuthorityReceiptBundle, ClaimStatus } from "./types.js";
+import type { KeyObject } from "node:crypto";
+import type { AuthorityReceipt, AuthorityReceiptBundle, AuthoritySignature, ClaimStatus } from "./types.js";
 import { authorityDigest } from "./wire.js";
 import { parseAuthorityReceiptBundle } from "./evidence.js";
 import { verifyTrustedAuthority, createTrustRoots, type TrustRoots, type TrustRootEntry } from "./trust.js";
 import { validateDelegationChain } from "./delegation.js";
 import { verifyStoredContract } from "./contract.js";
+import { verifyAuthoritySignature } from "./crypto.js";
+import { assertPortableInertRecord, portableExecutionStatementDigest, portableReconciliationStatementDigest, type PortableOutcomeEvidencePublicationV1 } from "./host/portable-receipts.js";
 
 export interface AuthorityReceiptVerificationOptions {
   readonly trustRoots: TrustRoots | readonly TrustRootEntry[];
@@ -97,6 +100,69 @@ export function verifyAuthorityReceipt(value: unknown, options: AuthorityReceipt
   return verifyAuthorityReceiptBundle(value, options);
 }
 
+export interface PortableOutcomeEvidenceVerifier {
+  readonly signerId: string;
+  readonly publicKey: KeyObject;
+  readonly purpose: "authority-evidence";
+}
+
+export interface PortableOutcomeEvidenceVerificationOptions {
+  readonly executionVerifier: PortableOutcomeEvidenceVerifier;
+  readonly reconciliationVerifier: PortableOutcomeEvidenceVerifier;
+  readonly currentTrustObservation: Readonly<Record<string, unknown>>;
+  readonly receiptChain: readonly string[];
+  readonly collectionCounts: Readonly<Record<string, number>>;
+  readonly terminalDigest: string;
+  readonly now: Date;
+}
+
+/** Strict offline verifier for the native HTTPS outcome extension. Trust and
+ * graph anchors are supplied by the caller; the publication cannot anchor
+ * itself by asserting that its own signer or terminal is current. */
+export function verifyPortableOutcomeEvidencePublication(value: unknown, options: PortableOutcomeEvidenceVerificationOptions): Readonly<{ status: "verified"; digest: string }> {
+  const fields = ["v", "requestId", "evidence", "routeAuthority", "authenticatedIdentity", "materializedRequest", "responseSemanticsProfile", "preStateEvidence", "postStateEvidence", "expectedPostProjectionDigest", "reconciliation", "receiptChainDigest", "collectionCountsDigest", "terminalDigest", "currentTrustObservationDigest", "executionAttestation", "reconciliationAttestation"];
+  const publication = portableExact(value, fields, "outcome publication") as unknown as PortableOutcomeEvidencePublicationV1;
+  if (publication.v !== "reelier.portable-outcome-evidence-publication/v1" || typeof publication.requestId !== "string" || !publication.requestId) throw new TypeError("portable outcome publication is invalid");
+  assertPortableDeepInert(publication);
+  if (portableContainsConfidential(publication)) throw new TypeError("portable outcome evidence contains secret or confidential material");
+  const evidenceFields = ["v", "routeAuthorityDigest", "materializedRequestDigest", "responseSemanticsProfileDigest", "preStateEvidenceDigest", "postStateEvidenceDigest", "confidence", "authoritativeStateSource", "executionAttestationSignerId", "reconciliationAttestationSignerId", "attestationSignerRelationship", "cleanupParentReceiptDigest"];
+  const evidence = portableExact(publication.evidence, evidenceFields, "outcome evidence");
+  const route = portableExact(publication.routeAuthority, ["v", "writeRouteDigest", "readRouteDigest", "accountDigest", "authenticatedProviderIdentityDigest", "expectedMaterializedRequestDigest", "responseSemanticsProfileDigest", "projectionSchemaDigest"], "route authority");
+  const identity = portableExact(publication.authenticatedIdentity, ["v", "identityDigest", "providerId", "accountDigest", "routeDigest", "observedAt"], "authenticated identity");
+  const request = portableExact(publication.materializedRequest, ["v", "method", "origin", "normalizedPath", "normalizedQuery", "reviewedHeaders", "bodyDigest"], "materialized request");
+  const profile = portableExact(publication.responseSemanticsProfile, ["v", "profileId", "acknowledgedStatuses"], "response semantics profile");
+  const pre = portableExact(publication.preStateEvidence, ["v", "readRouteDigest", "accountDigest", "projectionSchemaDigest", "projection", "complete", "observedAt"], "pre-state evidence");
+  const post = portableExact(publication.postStateEvidence, ["v", "readRouteDigest", "accountDigest", "projectionSchemaDigest", "projection", "complete", "observedAt"], "post-state evidence");
+  const reconciliation = portableExact(publication.reconciliation, ["verdict", "providerWriteCount", "resendCount", "observedProjectionDigest"], "reconciliation evidence");
+  const execution = portableAttestation(publication.executionAttestation, "execution"), reconciled = portableAttestation(publication.reconciliationAttestation, "reconciliation");
+  const digest = /^sha256:[0-9a-f]{64}$/;
+  for (const candidate of [evidence.routeAuthorityDigest, evidence.materializedRequestDigest, evidence.responseSemanticsProfileDigest, evidence.preStateEvidenceDigest, evidence.postStateEvidenceDigest, publication.expectedPostProjectionDigest, publication.receiptChainDigest, publication.collectionCountsDigest, publication.terminalDigest, publication.currentTrustObservationDigest]) if (typeof candidate !== "string" || !digest.test(candidate)) throw new TypeError("portable outcome digest is invalid");
+  if (evidence.v !== "reelier.portable-outcome-evidence/v1" || !["exact", "partial", "pending", "absent"].includes(evidence.confidence) || !["hermetic-github-fixture", "github-api"].includes(evidence.authoritativeStateSource) || evidence.attestationSignerRelationship !== "same-authority-cell") throw new TypeError("portable outcome evidence is invalid");
+  if (evidence.confidence === "pending" || evidence.confidence === "absent") throw new TypeError("portable outcome pending or absent evidence cannot pass");
+  if (authorityDigest(route) !== evidence.routeAuthorityDigest || authorityDigest(request) !== evidence.materializedRequestDigest || authorityDigest(profile) !== evidence.responseSemanticsProfileDigest || authorityDigest(pre) !== evidence.preStateEvidenceDigest || authorityDigest(post) !== evidence.postStateEvidenceDigest) throw new TypeError("portable exact comparable route, request, profile, or post-state digest is substituted");
+  if (route.v !== "reelier.portable-route-authority/v1" || identity.v !== "reelier.portable-authenticated-identity/v1" || ![route.writeRouteDigest, route.readRouteDigest, route.accountDigest, route.authenticatedProviderIdentityDigest, route.expectedMaterializedRequestDigest, route.responseSemanticsProfileDigest, route.projectionSchemaDigest].every(item => typeof item === "string" && digest.test(item))) throw new TypeError("portable route authority is invalid");
+  if (route.writeRouteDigest === route.readRouteDigest) throw new TypeError("portable exact evidence requires an independently joined read route");
+  if (identity.identityDigest !== route.authenticatedProviderIdentityDigest || identity.routeDigest !== route.writeRouteDigest || identity.accountDigest !== route.accountDigest || identity.providerId !== "github" || !portableTime(identity.observedAt)) throw new TypeError("portable authenticated identity route or account join is invalid");
+  if (route.expectedMaterializedRequestDigest !== authorityDigest(request) || route.responseSemanticsProfileDigest !== authorityDigest(profile)) throw new TypeError("portable materialized request or response profile is not route-authorized");
+  if (request.v !== "reelier.materialized-http-request/v1" || !["POST", "PUT", "PATCH", "DELETE"].includes(request.method) || typeof request.origin !== "string" || typeof request.normalizedPath !== "string" || typeof request.normalizedQuery !== "string" || !request.reviewedHeaders || typeof request.reviewedHeaders !== "object" || typeof request.bodyDigest !== "string" || !digest.test(request.bodyDigest)) throw new TypeError("portable materialized request is invalid");
+  if (profile.v !== "reelier.http-response-semantics/v1" || typeof profile.profileId !== "string" || !Array.isArray(profile.acknowledgedStatuses) || profile.acknowledgedStatuses.length === 0 || profile.acknowledgedStatuses.some((status: unknown) => !Number.isInteger(status) || (status as number) < 200 || (status as number) > 299)) throw new TypeError("portable response semantics profile is invalid");
+  for (const [label, state] of [["pre-state", pre], ["post-state", post]] as const) if (state.v !== "reelier.portable-comparable-state/v1" || state.readRouteDigest !== route.readRouteDigest || state.accountDigest !== route.accountDigest || state.projectionSchemaDigest !== route.projectionSchemaDigest || typeof state.complete !== "boolean" || !portableTime(state.observedAt)) throw new TypeError(`portable ${label} route/account/schema join is invalid`);
+  const observedProjectionDigest = authorityDigest(post.projection);
+  if (publication.expectedPostProjectionDigest !== observedProjectionDigest || reconciliation.observedProjectionDigest !== observedProjectionDigest) throw new TypeError("portable post-state projection is substituted");
+  if (evidence.confidence === "exact" && (!pre.complete || !post.complete || reconciliation.verdict !== "matched" || reconciliation.providerWriteCount !== 1 || reconciliation.resendCount !== 0 || Date.parse(post.observedAt) < Date.parse(pre.observedAt))) throw new TypeError("portable exact evidence requires complete comparable authoritative pre/post state and no resend");
+  if (evidence.authoritativeStateSource !== "hermetic-github-fixture" && evidence.authoritativeStateSource !== "github-api") throw new TypeError("portable authoritative source is invalid");
+  if (evidence.executionAttestationSignerId !== options.executionVerifier.signerId || evidence.reconciliationAttestationSignerId !== options.reconciliationVerifier.signerId || evidence.executionAttestationSignerId !== evidence.reconciliationAttestationSignerId || execution.signerId !== evidence.executionAttestationSignerId || reconciled.signerId !== evidence.reconciliationAttestationSignerId) throw new TypeError("portable authority-cell signer relationship is invalid");
+  if (execution.statementDigest !== portableExecutionStatementDigest(publication) || reconciled.statementDigest !== portableReconciliationStatementDigest(publication)) throw new TypeError("portable cleanup-bound attestation signature statement digest is invalid");
+  verifyPortableAttestation(execution, options.executionVerifier); verifyPortableAttestation(reconciled, options.reconciliationVerifier);
+  if (!Array.isArray(options.receiptChain) || publication.receiptChainDigest !== authorityDigest(options.receiptChain)) throw new TypeError("portable receipt chain order or digest is invalid");
+  if (publication.collectionCountsDigest !== authorityDigest(options.collectionCounts)) throw new TypeError("portable collection counts digest is invalid");
+  if (publication.terminalDigest !== options.terminalDigest) throw new TypeError("portable terminal digest is invalid");
+  if (evidence.cleanupParentReceiptDigest !== null && (!options.receiptChain.includes(evidence.cleanupParentReceiptDigest) || evidence.cleanupParentReceiptDigest === authorityDigest(publication))) throw new TypeError("portable cleanup parent is missing or self-anchored");
+  const trust = portableExact(options.currentTrustObservation, ["v", "observedAt", "expiresAt", "activeAuthorityEvidenceSignerIds"], "current trust observation");
+  if (publication.currentTrustObservationDigest !== authorityDigest(trust) || trust.v !== "reelier.portable-current-trust-observation/v1" || !portableTime(trust.observedAt) || !portableTime(trust.expiresAt) || !Array.isArray(trust.activeAuthorityEvidenceSignerIds) || !trust.activeAuthorityEvidenceSignerIds.includes(execution.signerId) || options.now.getTime() > Date.parse(trust.expiresAt) || options.now.getTime() < Date.parse(trust.observedAt)) throw new TypeError("portable current trust observation is stale, expired, or missing the signer");
+  return Object.freeze({ status: "verified", digest: authorityDigest(publication) });
+}
+
 function verifyTimeline(bundle: AuthorityReceiptBundle): void {
   const timeline = bundle.evidence.value.timeline;
   if (timeline.length === 0 || timeline[0].state !== "reserved") throw new TypeError("authority evidence timeline must begin reserved");
@@ -121,3 +187,10 @@ function verifyTimeline(bundle: AuthorityReceiptBundle): void {
 }
 
 export type AuthorityReceiptClaimStatus = ClaimStatus;
+
+function portableExact(value: unknown, fields: readonly string[], label: string): Record<string, any> { assertPortableInertRecord(value, label); if (Object.keys(value).join("\0") !== fields.join("\0")) throw new TypeError(`portable ${label} is not closed or canonical`); return value; }
+function portableAttestation(value: unknown, purpose: "execution" | "reconciliation"): Record<string, any> { const item = portableExact(value, ["v", "purpose", "statementDigest", "signerId", "signature"], `${purpose} attestation`); if (item.v !== "reelier.portable-outcome-attestation/v1" || item.purpose !== purpose || typeof item.statementDigest !== "string" || typeof item.signerId !== "string") throw new TypeError(`portable ${purpose} attestation is invalid`); return item; }
+function verifyPortableAttestation(item: Record<string, any>, verifier: PortableOutcomeEvidenceVerifier): void { const body = { v: item.v, purpose: item.purpose, statementDigest: item.statementDigest, signerId: item.signerId }; if (verifier.purpose !== "authority-evidence" || item.signerId !== verifier.signerId || !verifyAuthoritySignature(verifier.publicKey, "authority-evidence", authorityDigest(body), item.signature as AuthoritySignature)) throw new TypeError("portable purpose-bound authority attestation signature is invalid"); }
+function portableTime(value: unknown): value is string { return typeof value === "string" && Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value; }
+function assertPortableDeepInert(value: unknown): void { if (!value || typeof value !== "object") return; if (Object.getOwnPropertySymbols(value).length > 0 || Object.values(Object.getOwnPropertyDescriptors(value)).some(descriptor => !("value" in descriptor) || descriptor.get || descriptor.set)) throw new TypeError("portable evidence contains accessor-backed data"); for (const child of Object.values(value as Record<string, unknown>)) assertPortableDeepInert(child); }
+function portableContainsConfidential(value: unknown): boolean { if (typeof value === "string") return /canary-private-token/i.test(value); if (!value || typeof value !== "object") return false; for (const [key, child] of Object.entries(value as Record<string, unknown>)) if (/^(authorization|cookie|proxy-authorization|bearerToken|credential|credentials|credentialSlotId|slotInstanceId|slotVersion|privateKey|secret|secretRef|secretToken|token)$/i.test(key) || portableContainsConfidential(child)) return true; return false; }

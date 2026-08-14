@@ -11,15 +11,14 @@ import type { CertificationLifecycleAuthorityMaterial } from "./lifecycle-author
 import { certificationWorkspaceRoot, confinedExistingDirectory, ensureConfinedDirectory, listConfinedFileNames, publishPrivateContentAddressed, readConfinedFile } from "./filesystem.js";
 import { AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST } from "../adapter-contract.js";
 import { verifyAuthorityReceiptBundle } from "../verify.js";
+import { createPortableAuthorityReceiptPublication } from "../host/portable-receipts.js";
 
 export interface CertificationReceiptExtensionV1 { readonly v: "reelier.certification-receipt-extension/v1"; readonly receiptDigest: string; readonly adapterContractDigest: string; readonly signerId: string; readonly signature: Readonly<{ alg: "ed25519"; sig: string }> }
 
 export function createCertificationLifecycleReceiptPublication(input: Readonly<{ rootDir: string; lifecycle: CertificationLifecycleAuthorityMaterial; signedGrants: readonly any[]; now: () => Date }>): DispatchPublication {
   const local = createFileReceiptPublication({ rootDir: path.join(input.rootDir, "local") });
   const prior = new Map<string, AuthorityReceipt>();
-  return Object.freeze({ async publish(value: Parameters<DispatchPublication["publish"]>[0]) {
-    await certificationWorkspaceRoot(input.rootDir);
-    await local.publish(value);
+  const portablePublication: DispatchPublication = Object.freeze({ async publish(value: Parameters<DispatchPublication["publish"]>[0]) {
     const recovered = (value.state as any).contract ? undefined : await priorBundle(input.rootDir, value.state.effectDigest, input.lifecycle, input.signedGrants);
     if (recovered && recovered.receipt.value.receiptId === portableReceiptId(value.state.reservation.reservationId, value.phase, value.outcome.resultDigest)) {
       const reconciliation = recovered.evidence.value.reconciliation;
@@ -39,6 +38,7 @@ export function createCertificationLifecycleReceiptPublication(input: Readonly<{
     await ensureExtension(input.rootDir, bundle, input.lifecycle);
     return Object.freeze({ receiptRef: authorityDigest(bundle.receipt.value), evidenceDigest: bundle.evidence.digest });
   } });
+  return createPortableAuthorityReceiptPublication({ localPublication: local, portablePublication, beforePublish: async () => { await certificationWorkspaceRoot(input.rootDir); } });
 }
 
 function portable(state: DispatchRequestState, outcome: DispatchOutcome, phase: string, input: Readonly<{ lifecycle: CertificationLifecycleAuthorityMaterial; signedGrants: readonly any[]; now: () => Date }>, prior?: AuthorityReceipt, recovered?: AuthorityReceiptBundle): AuthorityReceiptBundle {
