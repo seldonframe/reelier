@@ -32,6 +32,7 @@ import { assertLinuxAuthorityCellHost } from "./platform.js";
 import type { RouteAuthoritySnapshotV1 } from "../ledger.js";
 import type { CertifiedDispatchOptions, CertifiedIdentityVerifier } from "./dispatch.js";
 import type { AuthenticatedProviderIdentityV1 } from "./github-account-identity.js";
+import type { AuthorityLatencyRecorder } from "./latency.js";
 
 /** Builds the local host from signed-artifact boundaries. An empty workspace is intentionally
  * usable for discovery and status, but every Outcome refuses until a signed contract is installed. */
@@ -57,6 +58,8 @@ export interface LocalAuthorityRuntimeOptions {
   readonly authenticatedProviderIdentity?: () => Promise<AuthenticatedProviderIdentityV1>;
   readonly verifyAuthenticatedProviderIdentity?: CertifiedIdentityVerifier;
   readonly certifiedDispatch?: CertifiedDispatchOptions;
+  /** In-memory aggregate-only critical-path recorder; never persisted by the runtime. */
+  readonly latencyRecorder?: AuthorityLatencyRecorder;
 }
 
 export interface LocalAuthorityRuntime extends AuthorityHostRuntime {
@@ -122,13 +125,13 @@ export async function createLocalAuthorityRuntime(config: AuthorityHostConfig, o
       } catch { return { ok: false as const, reason: "unavailable" as const }; }
     },
   });
-  const gate = createAuthorityGate({ trustRoots, packs, sources, connectors: connectorRegistry, state, ledger, ...(options.routeAuthority ? { routeAuthority: options.routeAuthority } : {}), ...(options.authenticatedProviderIdentity ? { authenticatedProviderIdentity: options.authenticatedProviderIdentity } : {}), localGatePolicyDigest: authorityDigest({ v: "reelier.local-gate-policy/v1", tenant: config.tenant }), decisionSink: decisions, signer: { async sign(input) { return { signerId: "local-gate", signature: signAuthorityDigest(privateKey, input.purpose, input.digest) }; } }, eventId: () => `evt_${randomUUID()}`, capabilityId: () => `cap_${randomUUID()}` });
+  const gate = createAuthorityGate({ trustRoots, packs, sources, connectors: connectorRegistry, state, ledger, ...(options.routeAuthority ? { routeAuthority: options.routeAuthority } : {}), ...(options.authenticatedProviderIdentity ? { authenticatedProviderIdentity: options.authenticatedProviderIdentity } : {}), ...(options.latencyRecorder ? { latencyRecorder: options.latencyRecorder } : {}), localGatePolicyDigest: authorityDigest({ v: "reelier.local-gate-policy/v1", tenant: config.tenant }), decisionSink: decisions, signer: { async sign(input) { return { signerId: "local-gate", signature: signAuthorityDigest(privateKey, input.purpose, input.digest) }; } }, eventId: () => `evt_${randomUUID()}`, capabilityId: () => `cap_${randomUUID()}` });
   const publication = createFileReceiptPublication({ rootDir: config.receiptDir });
   const secrets = options.secretResolver ?? createSecretResolver(options.secretResolverOptions);
   if (config.nativeHttpsRoutes && config.nativeHttpsRoutes.length > 0 && (!options.routeAuthority || !options.authenticatedProviderIdentity || !options.certifiedDispatch || !options.verifyAuthenticatedProviderIdentity)) throw new TypeError("native HTTPS routes require certified route, identity, verifier, and dispatch wiring");
-  const certifiedDispatch = options.certifiedDispatch ? { ...options.certifiedDispatch, verifyIdentity: options.verifyAuthenticatedProviderIdentity ?? options.certifiedDispatch.verifyIdentity } : undefined;
+  const certifiedDispatch = options.certifiedDispatch ? { ...options.certifiedDispatch, ...(options.latencyRecorder ? { latencyRecorder: options.latencyRecorder } : {}), verifyIdentity: options.verifyAuthenticatedProviderIdentity ?? options.certifiedDispatch.verifyIdentity } : undefined;
   if (config.nativeHttpsRoutes && config.nativeHttpsRoutes.length > 0 && !certifiedDispatch?.verifyIdentity) throw new TypeError("native HTTPS routes require an identity verifier");
-  const adapter = options.dispatchAdapter ?? createJsonHttpsDispatchAdapter({ endpoints: config.endpoints, routes: config.nativeHttpsRoutes, secrets });
+  const adapter = options.dispatchAdapter ?? createJsonHttpsDispatchAdapter({ endpoints: config.endpoints, routes: config.nativeHttpsRoutes, secrets, ...(options.latencyRecorder ? { latencyRecorder: options.latencyRecorder } : {}) });
   const dispatch = createDispatchCoordinator(ledger, adapter, undefined, publication, options.delegation?.budget, certifiedDispatch);
   const runtime = createAuthorityHostRuntime({ gate, dispatch, ledger, decisions, delegation: options.delegation, ...(options.delegation ? { verifyRootGrant: (grant, tenant) => { verifyTrustedAuthority(trustRoots, { tenant, signerId: grant.signerId, purpose: "delegation-grant", advertisedDigest: grant.digest, value: grant.grant, signature: grant.signature }); } } : {}) });
   const jobs = deployment?.jobCard
