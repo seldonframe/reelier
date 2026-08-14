@@ -15,15 +15,16 @@ function fixture() {
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
   const signer = { signerId: "cell_evidence", sign: (digest: string) => signAuthorityDigest(privateKey, "authority-evidence", digest) };
   const materializedRequest = {
-    v: "reelier.materialized-http-request/v1" as const,
+    v: "reelier.portable-materialized-http-request/v1" as const,
     method: "PUT" as const,
-    origin: "https://api.github.test",
-    normalizedPath: "/repos/{owner}/{repository}/issues/{issueNumber}/labels",
-    normalizedQuery: "",
-    reviewedHeaders: { accept: "application/vnd.github+json" },
+    originClass: "github-api" as const,
+    pathTemplate: "/repos/{owner}/{repository}/issues/{issueNumber}/labels" as const,
+    queryState: "absent" as const,
+    reviewedHeaderNames: ["content-type"],
     bodyDigest: DIGEST("body"),
   };
-  const responseSemanticsProfile = { v: "reelier.http-response-semantics/v1" as const, profileId: "github-label-put-v1", acknowledgedStatuses: [200] };
+  const responseSemanticsProfile = { v: "reelier.portable-http-response-semantics/v1" as const, profileDigest: DIGEST("sealed-response-profile"), acknowledgedStatuses: [200] };
+  const responseObservation = { v: "reelier.portable-http-response-observation/v1" as const, status: 200, classification: "acknowledged" as const };
   const projectionSchemaDigest = authorityDigest({ schemaId: "github-labels/v1", pointers: ["/labels"] });
   const routeAuthority = {
     v: "reelier.portable-route-authority/v1" as const,
@@ -33,7 +34,7 @@ function fixture() {
     authenticatedProviderIdentityDigest: DIGEST("authenticated-identity"),
     expectedMaterializedRequestDigest: DIGEST("confidential-exact-request"),
     portableMaterializedRequestDigest: authorityDigest(materializedRequest),
-    responseSemanticsProfileDigest: authorityDigest(responseSemanticsProfile),
+    responseSemanticsProfileDigest: responseSemanticsProfile.profileDigest,
     projectionSchemaDigest,
   };
   const authenticatedIdentity = {
@@ -49,27 +50,28 @@ function fixture() {
     readRouteDigest: routeAuthority.readRouteDigest,
     accountDigest: routeAuthority.accountDigest,
     projectionSchemaDigest,
-    projection: { labels: ["before"] },
+    projectionDigest: authorityDigest({ labels: ["before"] }),
     complete: true as const,
     observedAt: "2026-08-13T12:00:01.000Z",
   };
-  const postStateEvidence = { ...preStateEvidence, projection: { labels: ["after"] }, observedAt: "2026-08-13T12:00:03.000Z" };
+  const postStateEvidence = { ...preStateEvidence, projectionDigest: authorityDigest({ labels: ["after"] }), observedAt: "2026-08-13T12:00:03.000Z" };
   const receiptChain = [DIGEST("dispatch-receipt"), DIGEST("reconciliation-receipt")];
   const collectionCounts = { receipts: 2, receiptExtensions: 2, portableOutcomeEvidence: 1 };
   const terminalDigest = DIGEST("terminal");
   const currentTrustObservation = { v: "reelier.portable-current-trust-observation/v1" as const, observedAt: "2026-08-13T12:00:04.000Z", expiresAt: "2026-08-13T12:05:04.000Z", activeAuthorityEvidenceSignerIds: [signer.signerId] };
   const input: Parameters<typeof createPortableOutcomeEvidencePublication>[0] = {
-    requestId: "request_native_labels",
+    requestId: DIGEST("request_native_labels"),
     routeAuthority,
     authenticatedIdentity,
     materializedRequest,
     responseSemanticsProfile,
+    responseObservation,
     preStateEvidence,
     postStateEvidence,
-    expectedPostProjectionDigest: authorityDigest(postStateEvidence.projection),
+    expectedPostProjectionDigest: postStateEvidence.projectionDigest,
     confidence: "exact",
     authoritativeStateSource: "hermetic-github-fixture",
-    reconciliation: { verdict: "matched", providerWriteCount: 1, resendCount: 0, observedProjectionDigest: authorityDigest(postStateEvidence.projection) },
+    reconciliation: { verdict: "matched", providerWriteCount: 1, resendCount: 0, observedProjectionDigest: postStateEvidence.projectionDigest },
     cleanupParentReceiptDigest: receiptChain[0]!,
     receiptChain,
     collectionCounts,
@@ -144,7 +146,7 @@ test("false exact, pending, absent, self-anchored, accessor-backed, extra-key, s
   assert.throws(() => f.verify(extra), /extra|closed|canonical/i);
   assert.throws(() => f.verify(f.publication, { now: new Date("2026-08-13T12:06:00.000Z") }), /stale|expired|trust/i);
   const secret: any = structuredClone(f.publication);
-  secret.materializedRequest.reviewedHeaders.authorization = "canary-private-token";
+  secret.materializedRequest.authorization = "canary-private-token";
   assert.throws(() => f.verify(secret), /secret|confidential|authorization|header/i);
 });
 
@@ -169,7 +171,7 @@ test("every confidence rejects malformed reconciliation and normalized query cre
     assert.throws(() => f.verify(f.create({ materializedRequest })), /secret|credential|query|confidential/i);
   }
   const duplicateStatuses = { ...f.publication.responseSemanticsProfile, acknowledgedStatuses: [200, 200] };
-  const duplicateStatusRoute = { ...f.publication.routeAuthority, responseSemanticsProfileDigest: authorityDigest(duplicateStatuses) };
+  const duplicateStatusRoute = { ...f.publication.routeAuthority };
   assert.throws(() => f.verify(f.create({ responseSemanticsProfile: duplicateStatuses, routeAuthority: duplicateStatusRoute })), /response|status|duplicate|semantics/i);
 });
 
@@ -203,8 +205,10 @@ test("signed portable evidence structurally refuses identifying and free-form re
     { label: "reviewer secret", overrides: { postStateEvidence: { ...f.publication.postStateEvidence, projection: { labels: ["ghp_real_secret"] } }, expectedPostProjectionDigest: authorityDigest({ labels: ["ghp_real_secret"] }), reconciliation: { ...f.publication.reconciliation, observedProjectionDigest: authorityDigest({ labels: ["ghp_real_secret"] }) } } },
   ];
   for (const counterexample of counterexamples) {
-    const signed = f.create(counterexample.overrides);
-    assert.throws(() => f.verify(signed), /portable|opaque|identif|request|origin|query|header|profile|projection|confidential/i, counterexample.label);
+    assert.throws(() => {
+      const signed = f.create(counterexample.overrides);
+      f.verify(signed);
+    }, /portable|opaque|identif|request|origin|query|header|profile|projection|confidential/i, counterexample.label);
   }
 });
 

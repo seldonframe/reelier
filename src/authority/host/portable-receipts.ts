@@ -35,6 +35,7 @@ export interface PortableOutcomeEvidencePublicationV1 {
   readonly authenticatedIdentity: Readonly<Record<string, unknown>>;
   readonly materializedRequest: Readonly<Record<string, unknown>>;
   readonly responseSemanticsProfile: Readonly<Record<string, unknown>>;
+  readonly responseObservation: Readonly<Record<string, unknown>>;
   readonly preStateEvidence: Readonly<Record<string, unknown>>;
   readonly postStateEvidence: Readonly<Record<string, unknown>>;
   readonly expectedPostProjectionDigest: string;
@@ -58,6 +59,7 @@ export type PortableOutcomeEvidencePublicationInput = Readonly<{
   authenticatedIdentity: Readonly<Record<string, unknown>>;
   materializedRequest: Readonly<Record<string, unknown>>;
   responseSemanticsProfile: Readonly<Record<string, unknown>>;
+  responseObservation: Readonly<Record<string, unknown>>;
   preStateEvidence: Readonly<Record<string, unknown>>;
   postStateEvidence: Readonly<Record<string, unknown>>;
   expectedPostProjectionDigest: string;
@@ -87,8 +89,8 @@ export function createPortableAuthorityReceiptPublication(input: Readonly<{ loca
 }
 
 export function createPortableOutcomeEvidencePublication(input: PortableOutcomeEvidencePublicationInput): PortableOutcomeEvidencePublicationV1 {
-  if (!input || typeof input.requestId !== "string" || input.requestId.length === 0) throw new TypeError("portable outcome request is invalid");
-  for (const [label, value] of [["route authority", input.routeAuthority], ["authenticated identity", input.authenticatedIdentity], ["materialized request", input.materializedRequest], ["response semantics", input.responseSemanticsProfile], ["pre-state", input.preStateEvidence], ["post-state", input.postStateEvidence], ["reconciliation", input.reconciliation], ["trust observation", input.currentTrustObservation]] as const) assertInertRecord(value, label);
+  if (!input || typeof input.requestId !== "string" || !DIGEST.test(input.requestId)) throw new TypeError("portable outcome request must be an opaque digest");
+  for (const [label, value] of [["route authority", input.routeAuthority], ["authenticated identity", input.authenticatedIdentity], ["materialized request", input.materializedRequest], ["response semantics", input.responseSemanticsProfile], ["response observation", input.responseObservation], ["pre-state", input.preStateEvidence], ["post-state", input.postStateEvidence], ["reconciliation", input.reconciliation], ["trust observation", input.currentTrustObservation]] as const) assertInertRecord(value, label);
   if (!DIGEST.test(input.expectedPostProjectionDigest) || !DIGEST.test(input.terminalDigest) || input.cleanupParentReceiptDigest !== null && !DIGEST.test(input.cleanupParentReceiptDigest)) throw new TypeError("portable outcome digest is invalid");
   if (!Array.isArray(input.receiptChain) || input.receiptChain.some(value => !DIGEST.test(value))) throw new TypeError("portable outcome receipt chain is invalid");
   if (!input.executionSigner?.signerId || typeof input.executionSigner.sign !== "function" || !input.reconciliationSigner?.signerId || typeof input.reconciliationSigner.sign !== "function") throw new TypeError("portable outcome attestation signer is invalid");
@@ -108,14 +110,14 @@ export function createPortableOutcomeEvidencePublication(input: PortableOutcomeE
     cleanupParentReceiptDigest: input.cleanupParentReceiptDigest,
   });
   const anchors = Object.freeze({ receiptChainDigest: authorityDigest(input.receiptChain), collectionCountsDigest: authorityDigest(input.collectionCounts), terminalDigest: input.terminalDigest, currentTrustObservationDigest: authorityDigest(input.currentTrustObservation) });
-  const executionStatement = executionStatementDigest({ requestId: input.requestId, evidence, routeAuthority: input.routeAuthority, authenticatedIdentity: input.authenticatedIdentity, materializedRequest: input.materializedRequest, responseSemanticsProfile: input.responseSemanticsProfile, preStateEvidence: input.preStateEvidence, expectedPostProjectionDigest: input.expectedPostProjectionDigest, ...anchors });
+  const executionStatement = executionStatementDigest({ requestId: input.requestId, evidence, routeAuthority: input.routeAuthority, authenticatedIdentity: input.authenticatedIdentity, materializedRequest: input.materializedRequest, responseSemanticsProfile: input.responseSemanticsProfile, responseObservation: input.responseObservation, preStateEvidence: input.preStateEvidence, expectedPostProjectionDigest: input.expectedPostProjectionDigest, ...anchors });
   const executionAttestation = attestation("execution", executionStatement, input.executionSigner);
   const reconciliationStatement = reconciliationStatementDigest({ requestId: input.requestId, evidence, postStateEvidence: input.postStateEvidence, reconciliation: input.reconciliation, executionAttestation, ...anchors });
   const reconciliationAttestation = attestation("reconciliation", reconciliationStatement, input.reconciliationSigner);
-  return Object.freeze({ v: "reelier.portable-outcome-evidence-publication/v1", requestId: input.requestId, evidence, routeAuthority: input.routeAuthority, authenticatedIdentity: input.authenticatedIdentity, materializedRequest: input.materializedRequest, responseSemanticsProfile: input.responseSemanticsProfile, preStateEvidence: input.preStateEvidence, postStateEvidence: input.postStateEvidence, expectedPostProjectionDigest: input.expectedPostProjectionDigest, reconciliation: input.reconciliation, ...anchors, executionAttestation, reconciliationAttestation });
+  return Object.freeze({ v: "reelier.portable-outcome-evidence-publication/v1", requestId: input.requestId, evidence, routeAuthority: input.routeAuthority, authenticatedIdentity: input.authenticatedIdentity, materializedRequest: input.materializedRequest, responseSemanticsProfile: input.responseSemanticsProfile, responseObservation: input.responseObservation, preStateEvidence: input.preStateEvidence, postStateEvidence: input.postStateEvidence, expectedPostProjectionDigest: input.expectedPostProjectionDigest, reconciliation: input.reconciliation, ...anchors, executionAttestation, reconciliationAttestation });
 }
 
-export function portableExecutionStatementDigest(value: Pick<PortableOutcomeEvidencePublicationV1, "requestId" | "evidence" | "routeAuthority" | "authenticatedIdentity" | "materializedRequest" | "responseSemanticsProfile" | "preStateEvidence" | "expectedPostProjectionDigest" | "receiptChainDigest" | "collectionCountsDigest" | "terminalDigest" | "currentTrustObservationDigest">): string { const { requestId, evidence, routeAuthority, authenticatedIdentity, materializedRequest, responseSemanticsProfile, preStateEvidence, expectedPostProjectionDigest, receiptChainDigest, collectionCountsDigest, terminalDigest, currentTrustObservationDigest } = value; return executionStatementDigest({ requestId, evidence, routeAuthority, authenticatedIdentity, materializedRequest, responseSemanticsProfile, preStateEvidence, expectedPostProjectionDigest, receiptChainDigest, collectionCountsDigest, terminalDigest, currentTrustObservationDigest }); }
+export function portableExecutionStatementDigest(value: Pick<PortableOutcomeEvidencePublicationV1, "requestId" | "evidence" | "routeAuthority" | "authenticatedIdentity" | "materializedRequest" | "responseSemanticsProfile" | "responseObservation" | "preStateEvidence" | "expectedPostProjectionDigest" | "receiptChainDigest" | "collectionCountsDigest" | "terminalDigest" | "currentTrustObservationDigest">): string { const { requestId, evidence, routeAuthority, authenticatedIdentity, materializedRequest, responseSemanticsProfile, responseObservation, preStateEvidence, expectedPostProjectionDigest, receiptChainDigest, collectionCountsDigest, terminalDigest, currentTrustObservationDigest } = value; return executionStatementDigest({ requestId, evidence, routeAuthority, authenticatedIdentity, materializedRequest, responseSemanticsProfile, responseObservation, preStateEvidence, expectedPostProjectionDigest, receiptChainDigest, collectionCountsDigest, terminalDigest, currentTrustObservationDigest }); }
 export function portableReconciliationStatementDigest(value: Pick<PortableOutcomeEvidencePublicationV1, "requestId" | "evidence" | "postStateEvidence" | "reconciliation" | "executionAttestation" | "receiptChainDigest" | "collectionCountsDigest" | "terminalDigest" | "currentTrustObservationDigest">): string { const { requestId, evidence, postStateEvidence, reconciliation, executionAttestation, receiptChainDigest, collectionCountsDigest, terminalDigest, currentTrustObservationDigest } = value; return reconciliationStatementDigest({ requestId, evidence, postStateEvidence, reconciliation, executionAttestation, receiptChainDigest, collectionCountsDigest, terminalDigest, currentTrustObservationDigest }); }
 
 function executionStatementDigest(value: object): string { return authorityDigest({ v: "reelier.portable-execution-statement/v1", ...value }); }

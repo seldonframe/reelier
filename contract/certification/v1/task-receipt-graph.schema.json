@@ -450,10 +450,10 @@
     "portableOutcomeEvidence": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["v","requestId","evidence","routeAuthority","authenticatedIdentity","materializedRequest","responseSemanticsProfile","preStateEvidence","postStateEvidence","expectedPostProjectionDigest","reconciliation","receiptChainDigest","collectionCountsDigest","terminalDigest","currentTrustObservationDigest","executionAttestation","reconciliationAttestation"],
+      "required": ["v","requestId","evidence","routeAuthority","authenticatedIdentity","materializedRequest","responseSemanticsProfile","responseObservation","preStateEvidence","postStateEvidence","expectedPostProjectionDigest","reconciliation","receiptChainDigest","collectionCountsDigest","terminalDigest","currentTrustObservationDigest","executionAttestation","reconciliationAttestation"],
       "properties": {
         "v": { "const": "reelier.portable-outcome-evidence-publication/v1" },
-        "requestId": { "type": "string", "minLength": 1 },
+        "requestId": { "$ref": "#/$defs/digest" },
         "evidence": {
           "type": "object", "additionalProperties": false,
           "required": ["v","routeAuthorityDigest","materializedRequestDigest","responseSemanticsProfileDigest","preStateEvidenceDigest","postStateEvidenceDigest","confidence","authoritativeStateSource","executionAttestationSignerId","reconciliationAttestationSignerId","attestationSignerRelationship","cleanupParentReceiptDigest"],
@@ -473,13 +473,18 @@
         },
         "materializedRequest": {
           "type": "object", "additionalProperties": false,
-          "required": ["v","method","origin","normalizedPath","normalizedQuery","reviewedHeaders","bodyDigest"],
-          "properties": { "v": { "const": "reelier.materialized-http-request/v1" }, "method": { "enum": ["POST","PUT","PATCH","DELETE"] }, "origin": { "type": "string" }, "normalizedPath": { "const": "/repos/{owner}/{repository}/issues/{issueNumber}/labels" }, "normalizedQuery": { "type": "string" }, "reviewedHeaders": { "type": "object", "additionalProperties": { "type": "string" } }, "bodyDigest": { "$ref": "#/$defs/digest" } }
+          "required": ["v","method","originClass","pathTemplate","queryState","reviewedHeaderNames","bodyDigest"],
+          "properties": { "v": { "const": "reelier.portable-materialized-http-request/v1" }, "method": { "const": "PUT" }, "originClass": { "const": "github-api" }, "pathTemplate": { "const": "/repos/{owner}/{repository}/issues/{issueNumber}/labels" }, "queryState": { "const": "absent" }, "reviewedHeaderNames": { "type": "array", "prefixItems": [{ "const": "content-type" }], "items": false, "minItems": 1, "maxItems": 1 }, "bodyDigest": { "$ref": "#/$defs/digest" } }
         },
         "responseSemanticsProfile": {
           "type": "object", "additionalProperties": false,
-          "required": ["v","profileId","acknowledgedStatuses"],
-          "properties": { "v": { "const": "reelier.http-response-semantics/v1" }, "profileId": { "type": "string" }, "acknowledgedStatuses": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "integer", "minimum": 200, "maximum": 299 } } }
+          "required": ["v","profileDigest","acknowledgedStatuses"],
+          "properties": { "v": { "const": "reelier.portable-http-response-semantics/v1" }, "profileDigest": { "$ref": "#/$defs/digest" }, "acknowledgedStatuses": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "integer", "minimum": 200, "maximum": 299 } } }
+        },
+        "responseObservation": {
+          "type": "object", "additionalProperties": false,
+          "required": ["v","status","classification"],
+          "properties": { "v": { "const": "reelier.portable-http-response-observation/v1" }, "status": { "type": "integer", "minimum": 100, "maximum": 599 }, "classification": { "enum": ["acknowledged","ambiguous"] } }
         },
         "preStateEvidence": { "$ref": "#/$defs/portableComparableState" },
         "postStateEvidence": { "$ref": "#/$defs/portableComparableState" },
@@ -496,8 +501,8 @@
     },
     "portableComparableState": {
       "type": "object", "additionalProperties": false,
-      "required": ["v","readRouteDigest","accountDigest","projectionSchemaDigest","projection","complete","observedAt"],
-          "properties": { "v": { "const": "reelier.portable-comparable-state/v1" }, "readRouteDigest": { "$ref": "#/$defs/digest" }, "accountDigest": { "$ref": "#/$defs/digest" }, "projectionSchemaDigest": { "$ref": "#/$defs/digest" }, "projection": { "type": ["object","array"] }, "complete": { "type": "boolean" }, "observedAt": { "type": "string" } }
+      "required": ["v","readRouteDigest","accountDigest","projectionSchemaDigest","projectionDigest","complete","observedAt"],
+          "properties": { "v": { "const": "reelier.portable-comparable-state/v1" }, "readRouteDigest": { "$ref": "#/$defs/digest" }, "accountDigest": { "$ref": "#/$defs/digest" }, "projectionSchemaDigest": { "$ref": "#/$defs/digest" }, "projectionDigest": { "$ref": "#/$defs/digest" }, "complete": { "type": "boolean" }, "observedAt": { "type": "string" } }
     },
     "portableOutcomeAttestation": {
       "type": "object", "additionalProperties": false,
