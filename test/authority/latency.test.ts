@@ -42,7 +42,7 @@ test("latency recorder publishes only executed chronological phases after a term
     { name: "terminal-transition", durationMs: 1 },
   ]);
   assert.equal(trace.totalMs, 6);
-  assert.throws(() => recorder.measure("reserve", () => undefined), /terminal|chronological/i);
+  await assert.rejects(() => recorder.measure("reserve", () => undefined), /terminal|chronological/i);
 });
 
 test("latency recorder rejects out-of-order and nested double-counted phase instrumentation", async () => {
@@ -58,6 +58,7 @@ test("latency evidence remains an honest baseline until its configured sample co
   const traces = await Promise.all([1, 2].map(async duration => {
     const recorder = createAuthorityLatencyRecorder({ monotonicNow: () => now });
     await recorder.measure("authority-load", () => { now += duration; });
+    await recorder.measure("terminal-transition", () => undefined);
     return recorder.finish();
   }));
 

@@ -68,7 +68,7 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
         const dispatchedRequestDigest = outcome.materializedRequestDigest ?? description.materializedRequestDigest;
         if (evidence) await evidence.persist({ state, outcome, dispatchedRequestDigest });
         const terminal = outcome.kind;
-        const result = await ledger.transition(reservationId, "dispatched", terminal === "ambiguous" ? { to: "ambiguous" } : { to: terminal, resultDigest: outcome.resultDigest });
+        const result = await measureLatency(certified?.latencyRecorder, "terminal-transition", () => ledger.transition(reservationId, "dispatched", terminal === "ambiguous" ? { to: "ambiguous" } : { to: terminal, resultDigest: outcome.resultDigest }));
         if (!result.ok) throw new Error(`dispatch result transition refused: ${result.reason}`);
         return Object.freeze({ ...outcome, materializedRequestDigest: dispatchedRequestDigest });
       }
@@ -93,9 +93,9 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
       let published: Readonly<{ receiptRef: string; evidenceDigest: string }> | undefined;
       if (publication) { published = await publication.publish({ phase: "dispatch", state, outcome, dispatchedRequestDigest, priorReceiptDigest: null }); outcome = Object.freeze({ ...outcome, providerResultDigest: outcome.resultDigest, resultDigest: published.receiptRef, receiptRef: published.receiptRef, evidenceDigest: published.evidenceDigest }); }
       const terminal: LedgerState = outcome.kind;
-      const result = outcome.kind === "ambiguous"
-        ? await ledger.transition(reservationId, "dispatched", { to: "ambiguous" })
-        : await ledger.transition(reservationId, "dispatched", { to: terminal as "acknowledged" | "definitive-failure", resultDigest: outcome.resultDigest });
+      const result = await measureLatency(undefined, "terminal-transition", () => outcome.kind === "ambiguous"
+        ? ledger.transition(reservationId, "dispatched", { to: "ambiguous" })
+        : ledger.transition(reservationId, "dispatched", { to: terminal as "acknowledged" | "definitive-failure", resultDigest: outcome.resultDigest }));
       if (!result.ok) throw new Error(`dispatch result transition refused: ${result.reason}`);
       if (publication && published && outcome.reconciliationStatus && outcome.reconciliationStatus !== "not-attempted") {
         const reconciledState = { ...state, reservation: result.reservation } as DispatchRequestState;

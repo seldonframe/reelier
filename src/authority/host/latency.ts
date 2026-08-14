@@ -10,8 +10,10 @@ export const AUTHORITY_LATENCY_PHASES = [
 export type AuthorityLatencyPhase = typeof AUTHORITY_LATENCY_PHASES[number];
 export interface AuthorityLatencyTraceV1 {
   readonly v: "reelier.authority-latency-trace/v1";
+  /** Only production hooks that actually ran, in critical-path order. */
   readonly phases: readonly Readonly<{ name: AuthorityLatencyPhase; durationMs: number }>[];
   readonly totalMs: number;
+  /** Recorder-owned invariants: this recorder has no model/reviewer/graph API. */
   readonly modelCalls: 0;
   readonly reviewerCalls: 0;
   readonly graphExportsOnCriticalPath: 0;
@@ -23,23 +25,32 @@ export interface AuthorityLatencyRecorder {
 
 export function createAuthorityLatencyRecorder(input: Readonly<{ monotonicNow: () => number }>): AuthorityLatencyRecorder {
   if (!input || typeof input.monotonicNow !== "function") throw new TypeError("monotonic clock is required");
-  const totals = new Map<AuthorityLatencyPhase, number>(AUTHORITY_LATENCY_PHASES.map(phase => [phase, 0]));
-  let previous = readNow(input.monotonicNow, -Infinity);
-  const now = () => {
-    const value = readNow(input.monotonicNow, previous);
-    previous = value;
-    return value;
-  };
+  const phases: Array<Readonly<{ name: AuthorityLatencyPhase; durationMs: number }>> = [];
+  let previous = readNow(input.monotonicNow, -Infinity), lastPhase = -1, active = false, finished = false;
+  const now = () => { const value = readNow(input.monotonicNow, previous); previous = value; return value; };
   return Object.freeze({
     async measure<T>(phase: AuthorityLatencyPhase, operation: () => T | Promise<T>): Promise<T> {
-      if (!totals.has(phase) || typeof operation !== "function") throw new TypeError("latency phase is invalid");
+      const index = AUTHORITY_LATENCY_PHASES.indexOf(phase);
+      if (index < 0 || typeof operation !== "function") throw new TypeError("latency phase is invalid");
+      if (finished || lastPhase === AUTHORITY_LATENCY_PHASES.length - 1) throw new Error("terminal transition already recorded");
+      if (active) throw new Error("nested latency phase instrumentation is forbidden");
+      if (index <= lastPhase) throw new Error("latency phases must be chronological");
+      active = true;
       const started = now();
       try { return await operation(); }
-      finally { totals.set(phase, totals.get(phase)! + Math.max(0, now() - started)); }
+      finally {
+        const durationMs = now() - started;
+        active = false;
+        phases.push(Object.freeze({ name: phase, durationMs }));
+        lastPhase = index;
+      }
     },
     finish(): AuthorityLatencyTraceV1 {
-      const phases = Object.freeze(AUTHORITY_LATENCY_PHASES.map(name => Object.freeze({ name, durationMs: totals.get(name)! })));
-      return Object.freeze({ v: "reelier.authority-latency-trace/v1", phases, totalMs: phases.reduce((total, phase) => total + phase.durationMs, 0), modelCalls: 0, reviewerCalls: 0, graphExportsOnCriticalPath: 0 });
+      if (active) throw new Error("cannot finish an active latency phase");
+      if (lastPhase !== AUTHORITY_LATENCY_PHASES.length - 1) throw new Error("terminal transition must be recorded before publishing latency evidence");
+      finished = true;
+      const observed = Object.freeze([...phases]);
+      return Object.freeze({ v: "reelier.authority-latency-trace/v1", phases: observed, totalMs: observed.reduce((total, phase) => total + phase.durationMs, 0), modelCalls: 0, reviewerCalls: 0, graphExportsOnCriticalPath: 0 });
     },
   });
 }
