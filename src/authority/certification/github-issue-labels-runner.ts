@@ -26,6 +26,8 @@ import { confinedExistingDirectory, ensureConfinedDirectory, listConfinedFileNam
 import { assertLinuxAuthorityCellHost } from "../host/platform.js";
 import { createCertificationLifecycleReceiptPublication, loadCertificationReceiptExtensions } from "./lifecycle-receipts.js";
 import { createCertificationTaskReceiptGraph, type CertificationTaskReceiptGraphV1 } from "./task-receipt-graph.js";
+import { createPortableOutcomeEvidencePublication } from "../host/portable-receipts.js";
+import { buildMaterializedHttpRequestProjection } from "../drivers/json-https.js";
 import { parseAuthorityReceiptBundle } from "../evidence.js";
 import { AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST } from "../adapter-contract.js";
 import { createCertificationDuplicateAttempt, createCertificationDuplicateAttemptHead, createCertificationDuplicateDecision, createCertificationPolicyEvidence, createCertificationPostStateEvidence, createCertificationTaskAuthorityEvidence, createCertificationTaskStatusEvidence } from "./portable-evidence.js";
@@ -147,7 +149,7 @@ export async function createGitHubIssueLabelsHermeticComposition(cell: Certifica
   const localGatePolicyDigest = authorityDigest({
     v: "reelier.github-certification-gate-policy/v1",
   });
-  const provider = await createBrandedProvider(journalRoot, resource, desired, mode);
+  const provider = await createBrandedProvider(journalRoot, resource, desired, mode, state.now);
   const gateRuntime = await buildGate({
     state,
     activation,
@@ -242,7 +244,7 @@ export async function createGitHubIssueLabelsHermeticComposition(cell: Certifica
           controlledCut = new ControlledCut();
           throw controlledCut;
         }
-        const rawResponse = await provider.replaceLabels(dispatchState.effect);
+        const rawResponse = await provider.replaceLabels(dispatchState.effect, requestId, current.permitSnapshotDigest);
         await saveJournal(
           journalRoot,
           {
@@ -865,6 +867,29 @@ export async function createGitHubIssueLabelsHermeticComposition(cell: Certifica
         duplicateAttempts = duplicateLedger.attempts,
         duplicateDecisions = duplicateLedger.decisions,
         duplicateAttemptHead = duplicateLedger.head;
+      const providerSnapshot = await provider.snapshot(), currentTrustPin = inertRecord(JSON.parse((await readUnlinkedFile(state.currentTrustPinPath)).toString("utf8")), "GitHub current trust pin") as any,
+        currentTrustEvents = inertArray(currentTrustPin.currentTrustEvents, "GitHub current trust events") as readonly any[], latestTrustEvent = currentTrustEvents.at(-1);
+      if (!latestTrustEvent || typeof latestTrustEvent.occurredAt !== "string") throw new TypeError("GitHub current trust observation is absent");
+      const priorReceiptLinks = Object.freeze(receipts.map(bundle => Object.freeze({ receiptDigest: authorityDigest(bundle.receipt.value), priorReceiptDigest: bundle.receipt.value.priorReceiptDigest })));
+      const portableOutcomeEvidence = Object.freeze(postStateEvidence.map((post: any) => {
+        const executions = providerSnapshot.executions.filter((item: any) => item.requestId === post.requestId), execution = executions[0], lastExecution = executions.at(-1), outcome = [...terminalOutcomes].reverse().find(item => item.requestId === post.requestId);
+        if (!execution || !lastExecution || !outcome || !execution.responseSemanticsProfile.acknowledgedStatuses?.includes(execution.responseStatus) || executions.some((item: any) => item.endpointId !== execution.endpointId || item.authenticatedIdentityDigest !== execution.authenticatedIdentityDigest || authorityDigest(item.materializedRequest) !== authorityDigest(execution.materializedRequest) || authorityDigest(item.responseSemanticsProfile) !== authorityDigest(execution.responseSemanticsProfile))) throw new TypeError("durable executed portable runtime provenance is absent or inconsistent");
+        const connectorAccount = activation.signedChildGrant.grant.constraints.connectorAccounts.find((item: any) => item.connectorId === "github");
+        if (!connectorAccount) throw new TypeError("durable GitHub connector account authority is absent");
+        const accountDigest = authorityDigest({ v: "reelier.portable-provider-account/v1", connectorId: connectorAccount.connectorId, accountId: connectorAccount.accountId, owner: resource.owner, repository: resource.repository });
+        const writeRouteDigest = authorityDigest({ v: "reelier.portable-executed-write-route/v1", endpointId: execution.endpointId, origin: execution.materializedRequest.origin, method: execution.materializedRequest.method, path: execution.materializedRequest.normalizedPath, query: execution.materializedRequest.normalizedQuery });
+        const readRouteDigest = authorityDigest({ v: "reelier.portable-executed-read-route/v1", endpointId: githubIssueLabelsReadEndpointId, origin: resource.apiBaseUrl, owner: resource.owner, repository: resource.repository, issueNumber: resource.issueNumber, projectionSchemaDigest: post.projectionSchemaDigest });
+        const authenticatedIdentity = Object.freeze({ v: "reelier.portable-authenticated-identity/v1" as const, identityDigest: execution.authenticatedIdentityDigest, providerId: "github" as const, accountDigest, routeDigest: writeRouteDigest, observedAt: execution.observedAt });
+        const routeAuthority = Object.freeze({ v: "reelier.portable-route-authority/v1" as const, writeRouteDigest, readRouteDigest, accountDigest, authenticatedProviderIdentityDigest: authenticatedIdentity.identityDigest, expectedMaterializedRequestDigest: authorityDigest(execution.materializedRequest), responseSemanticsProfileDigest: authorityDigest(execution.responseSemanticsProfile), projectionSchemaDigest: post.projectionSchemaDigest });
+        const preStateEvidence = Object.freeze({ v: "reelier.portable-comparable-state/v1" as const, readRouteDigest, accountDigest, projectionSchemaDigest: post.projectionSchemaDigest, projection: execution.preLabels, complete: true as const, observedAt: execution.observedAt });
+        const postState = Object.freeze({ v: "reelier.portable-comparable-state/v1" as const, readRouteDigest, accountDigest, projectionSchemaDigest: post.projectionSchemaDigest, projection: lastExecution.postLabels, complete: true as const, observedAt: post.observedAt });
+        const receiptChain = Object.freeze(receipts.filter(bundle => bundle.receipt.value.decisionContext.requestId === post.requestId).map(bundle => authorityDigest(bundle.receipt.value)));
+        const collectionCounts = Object.freeze({ receipts: receipts.length, receiptExtensions: receiptExtensions.length, portableOutcomeEvidence: postStateEvidence.length, postStateEvidence: postStateEvidence.length, outcomes: outcomes.length, requestReceipts: receiptChain.length });
+        const terminalDigest = authorityDigest({ v: "reelier.portable-terminal-anchor/v1", taskId: activation.taskId, rootGrantDigest: activation.signedRootGrant.digest, receiptLinksDigest: authorityDigest(priorReceiptLinks), postStateEvidenceDigest: authorityDigest(postStateEvidence), collectionCountsDigest: authorityDigest(collectionCounts) });
+        const currentTrustObservation = Object.freeze({ v: "reelier.portable-current-trust-observation/v1" as const, observedAt: latestTrustEvent.occurredAt, expiresAt: activation.signedChildGrant.grant.expiresAt, activeAuthorityEvidenceSignerIds: Object.freeze([evidenceSigner.signerId]) });
+        const hasCleanup = receipts.some(bundle => bundle.receipt.value.decisionContext.requestId === `${post.requestId}.cleanup`);
+        return createPortableOutcomeEvidencePublication({ requestId: post.requestId, routeAuthority, authenticatedIdentity, materializedRequest: execution.materializedRequest, responseSemanticsProfile: execution.responseSemanticsProfile, preStateEvidence, postStateEvidence: postState, expectedPostProjectionDigest: post.expectedProjectionDigest, confidence: post.confidence, authoritativeStateSource: "hermetic-github-fixture", reconciliation: Object.freeze({ verdict: post.observedProjectionDigest === post.expectedProjectionDigest ? "matched" : "conflict", providerWriteCount: lastExecution.afterWriteCount - execution.beforeWriteCount, resendCount: executions.length - 1, observedProjectionDigest: post.observedProjectionDigest }), cleanupParentReceiptDigest: hasCleanup ? receiptChain.at(-1) ?? null : null, receiptChain, collectionCounts, terminalDigest, currentTrustObservation, executionSigner: evidenceSigner, reconciliationSigner: evidenceSigner });
+      }));
       return createCertificationTaskReceiptGraph({
         taskId: activation.taskId,
         authorityCellId: activation.authorityCellId,
@@ -888,6 +913,7 @@ export async function createGitHubIssueLabelsHermeticComposition(cell: Certifica
         receiptExtensions,
         taskAuthorities,
         postStateEvidence,
+        portableOutcomeEvidence,
         policyEvidence,
         taskStatusEvidence,
         duplicateAttemptHead,
@@ -1263,17 +1289,19 @@ async function buildGate(input: any) {
   return { gate, ledger, sourceFor, authorityStatePreimage };
 }
 
-async function createBrandedProvider(root: string, resource: any, desired: readonly string[], mode: HermeticGitHubMode) {
+async function createBrandedProvider(root: string, resource: any, desired: readonly string[], mode: HermeticGitHubMode, now?: () => Date) {
   const file = path.join(root, "provider-state.json");
   let reads = 0;
   async function load() {
     try {
       const raw = inertRecord(JSON.parse((await readUnlinkedFile(file)).toString("utf8")), "GitHub provider state");
-      exact(raw, ["v", "before", "labels", "writes"], "GitHub provider state");
+      exact(raw, ["v", "before", "labels", "writes", "executions"], "GitHub provider state");
+      if (raw.v !== "reelier.github-hermetic-provider/v2") throw new TypeError("GitHub provider state provenance version is unsupported");
       return {
         before: normalizeLabels(raw.before),
         labels: normalizeLabels(raw.labels),
         writes: raw.writes as number,
+        executions: inertArray(raw.executions, "GitHub provider executions") as readonly any[],
       };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
@@ -1281,14 +1309,15 @@ async function createBrandedProvider(root: string, resource: any, desired: reado
         before: Object.freeze(["before"]),
         labels: Object.freeze(["before"]),
         writes: 0,
+        executions: Object.freeze([]),
       };
       await persist(initial);
       return initial;
     }
   }
-  async function persist(state: { before: readonly string[]; labels: readonly string[]; writes: number }) {
+  async function persist(state: { before: readonly string[]; labels: readonly string[]; writes: number; executions: readonly any[] }) {
     const temp = `${file}.${randomUUID()}.tmp`;
-    await writeFile(temp, `${JSON.stringify({ v: "reelier.github-hermetic-provider/v1", ...state })}\n`, { flag: "wx", mode: 0o600 });
+    await writeFile(temp, `${JSON.stringify({ v: "reelier.github-hermetic-provider/v2", ...state })}\n`, { flag: "wx", mode: 0o600 });
     await rename(temp, file);
   }
   await load();
@@ -1304,12 +1333,20 @@ async function createBrandedProvider(root: string, resource: any, desired: reado
         labels: mode === "source-drift" && reads === 2 ? ["drifted"] : state.labels,
       });
     },
-    async replaceLabels(_effect: unknown) {
+    async replaceLabels(effectValue: unknown, requestId: string, authenticatedIdentityDigest: string) {
       const state = await load();
+      const effect = inertRecord(effectValue, "GitHub executed transport effect") as any;
+      exact(effect, ["v", "endpointId", "method", "path", "query", "headers", "bodyBase64", "riskClass", "idempotency", "preconditions", "reconciliation"], "GitHub executed transport effect");
+      const body = Buffer.from(String(effect.bodyBase64), "base64"), materializedRequest = buildMaterializedHttpRequestProjection({ baseUrl: resource.apiBaseUrl } as any, effect.method, effect.path, effect.query, effect.headers, body);
+      const responseSemanticsProfile = Object.freeze({ v: "reelier.http-response-semantics/v1" as const, profileId: `${effect.endpointId}-v1`, acknowledgedStatuses: Object.freeze([200]) });
+      const status = mode === "provider-503" ? 503 : 200;
+      if (!/^sha256:[0-9a-f]{64}$/.test(authenticatedIdentityDigest)) throw new TypeError("GitHub executed authenticated identity digest is invalid");
+      const execution = Object.freeze({ v: "reelier.github-executed-runtime-provenance/v1", requestId, endpointId: effect.endpointId, authenticatedIdentityDigest, materializedRequest, responseSemanticsProfile, responseStatus: status, beforeWriteCount: state.writes, afterWriteCount: state.writes + 1, preLabels: state.labels, postLabels: Object.freeze([...desired].sort()), observedAt: (now?.() ?? new Date()).toISOString() });
       await persist({
         ...state,
         labels: Object.freeze([...desired].sort()),
         writes: state.writes + 1,
+        executions: Object.freeze([...state.executions, execution]),
       });
       if (mode === "accessor-response")
         return Object.create(Object.prototype, {
@@ -1322,7 +1359,7 @@ async function createBrandedProvider(root: string, resource: any, desired: reado
           acknowledgmentId: { enumerable: true, value: "ack" },
         });
       return {
-        status: mode === "provider-503" ? 503 : 200,
+        status,
         acknowledgmentId: "ack_1",
       };
     },
