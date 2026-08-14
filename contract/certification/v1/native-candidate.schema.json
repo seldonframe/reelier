@@ -3,7 +3,7 @@
   "$id": "reelier.native-github-candidate/v1",
   "type": "object",
   "additionalProperties": false,
-  "required": ["v", "candidateId", "publicCommitSha", "tarballDigest", "laneCommits", "packDigest", "task8BaselineDigest", "portableEvidenceContractDigest", "checkerIdentities", "provenance"],
+  "required": ["v", "candidateId", "publicCommitSha", "tarballDigest", "laneCommits", "packDigest", "task8BaselineDigest", "task9VerificationDigest", "portableEvidenceContractDigest", "checkerIdentities", "provenance"],
   "properties": {
     "v": { "const": "reelier.native-github-candidate/v1" },
     "candidateId": { "$ref": "#/$defs/digest" },
@@ -15,6 +15,7 @@
     },
     "packDigest": { "$ref": "#/$defs/digest" },
     "task8BaselineDigest": { "$ref": "#/$defs/digest" },
+    "task9VerificationDigest": { "$ref": "#/$defs/digest" },
     "portableEvidenceContractDigest": { "$ref": "#/$defs/digest" },
     "checkerIdentities": {
       "type": "array", "minItems": 4, "maxItems": 4,

@@ -25,17 +25,18 @@ try {
     laneCommits: lanes,
     packDigest,
     task8BaselineDigest: `sha256:${"8".repeat(64)}`,
+    task9VerificationDigest: `sha256:${"9".repeat(64)}`,
     portableEvidenceContractDigest: `sha256:${"e".repeat(64)}`,
     checkerIdentities: [
       { role: "contract", signerId: "checker-contract", publicKeyDigest: `sha256:${"c".repeat(64)}`, verifierVersion: "authority-contract-checker/v1", verdictDigest: `sha256:${"e".repeat(64)}` },
       { role: "pack", signerId: "checker-pack", publicKeyDigest: `sha256:${"d".repeat(64)}`, verifierVersion: "packed-consumer/v1", verdictDigest: packDigest },
       { role: "task8", signerId: "checker-task8", publicKeyDigest: `sha256:${"8".repeat(64)}`, verifierVersion: "task8-baseline-verifier/v1", verdictDigest: `sha256:${"8".repeat(64)}` },
-      { role: "task9", signerId: "checker-task9", publicKeyDigest: `sha256:${"9".repeat(64)}`, verifierVersion: "portable-evidence-verifier/v1", verdictDigest: `sha256:${"e".repeat(64)}` },
+      { role: "task9", signerId: "checker-task9", publicKeyDigest: `sha256:${"9".repeat(64)}`, verifierVersion: "portable-evidence-verifier/v1", verdictDigest: `sha256:${"9".repeat(64)}` },
     ],
     provenance: { v: "reelier.native-candidate-provenance/v1", source: "clean-export", reproducibility: "hermetic-offline", liveProviderStatus: "absent", credentialStatus: "absent", workflowDispatch: "absent" },
   };
   const candidate = { v: candidateBody.v, candidateId: api.authorityDigest(candidateBody), ...candidateBody };
-  const verified = api.verifyNativeCandidate(candidate, { tarballBytes: bytes, publicCommitSha: "03ac48e", task8BaselineDigest: candidate.task8BaselineDigest, portableEvidenceContractDigest: candidate.portableEvidenceContractDigest });
+  const verified = api.verifyNativeCandidate(candidate, { tarballBytes: bytes, publicCommitSha: "03ac48e", task8BaselineDigest: candidate.task8BaselineDigest, task9VerificationDigest: candidate.task9VerificationDigest, portableEvidenceContractDigest: candidate.portableEvidenceContractDigest });
   console.log("verified");
   console.log(`candidateDigest=${verified.candidateDigest}`);
   console.log("nonClaims=live-provider,credentials,workflow-dispatch");
