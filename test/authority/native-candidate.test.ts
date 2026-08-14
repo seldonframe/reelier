@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { authorityDigest, verifyNativeCandidate, createNativeCandidate, type NativeCandidateV1 } from "../../src/authority/certification/native-candidate.js";
+import { authorityDigest } from "../../src/authority/wire.js";
+import { verifyNativeCandidate, createNativeCandidate } from "../../src/authority/certification/native-candidate.js";
 
 const digest = (character: string) => `sha256:${character.repeat(64)}`;
 const bytes = Buffer.from("hermetic-native-tarball-v1", "utf8");
@@ -14,9 +15,9 @@ const lanes = [
 const packDigest = authorityDigest({ v: "reelier.native-pack/v1", publicCommitSha: "03ac48e", tarballDigest, laneCommits: lanes });
 const checkers = [
   { role: "contract", signerId: "checker-contract", publicKeyDigest: digest("c"), verifierVersion: "authority-contract-checker/v1", verdictDigest: digest("e") },
-  { role: "pack", signerId: "checker-pack", publicKeyDigest: digest("p"), verifierVersion: "packed-consumer/v1", verdictDigest: packDigest },
+  { role: "pack", signerId: "checker-pack", publicKeyDigest: digest("d"), verifierVersion: "packed-consumer/v1", verdictDigest: packDigest },
   { role: "task8", signerId: "checker-task8", publicKeyDigest: digest("8"), verifierVersion: "task8-baseline-verifier/v1", verdictDigest: digest("8") },
-  { role: "task9", signerId: "checker-task9", publicKeyDigest: digest("9"), verifierVersion: "portable-evidence-verifier/v1", verdictDigest: digest("9") },
+  { role: "task9", signerId: "checker-task9", publicKeyDigest: digest("9"), verifierVersion: "portable-evidence-verifier/v1", verdictDigest: digest("e") },
 ] as const;
 
 function input() {

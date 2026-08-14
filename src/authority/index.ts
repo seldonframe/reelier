@@ -6,6 +6,7 @@ export { signAuthorityDigest, verifyAuthoritySignature } from "./crypto.js";
 export { createAuthorityEvidence, createAuthorityReceipt, createAuthorityReceiptBundle, parseAuthorityReceiptBundle, digestAuthorityReceiptBundle, authorityEvidenceCanonicalBytes } from "./evidence.js";
 export { verifyAuthorityReceiptBundle, verifyAuthorityReceipt, type AuthorityReceiptVerificationOptions, type VerifiedAuthorityReceiptBundle } from "./verify.js";
 export { verifyCertificationTaskReceiptGraph } from "./certification/task-receipt-graph.js";
+export { verifyNativeCandidate, type NativeCandidateV1, type NativeCandidateVerificationInputs } from "./certification/native-candidate.js";
 export { normalizeSignedJobCard, signJobCard, signedJobCardDigest, verifySignedJobCard, type SignedJobCardV1, type UnsignedJobCardV1, type OutcomeSemanticClass } from "./job.js";
 export {
   parseAuthorityKeyDescriptor,
