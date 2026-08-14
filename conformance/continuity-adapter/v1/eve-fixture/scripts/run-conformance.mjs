@@ -14,6 +14,11 @@ export function assertClosedInertReport(value) {
   assertInertJson(value, "report");
 }
 
+export function assertClosedReport(value) {
+  assertClosedInertReport(value);
+  if (!validate(value)) throw new TypeError(`closed report validation failed: ${JSON.stringify(validate.errors)}`);
+}
+
 function assertInertJson(value, path) {
   if (value === null || typeof value === "string" || typeof value === "boolean") return;
   if (typeof value === "number" && Number.isFinite(value)) return;
@@ -76,8 +81,7 @@ try {
   assertClosedInertReport(base);
   const reportDigest = authorityDigest(base);
   const report = Object.freeze({ ...base, artifacts: Object.freeze({ ...base.artifacts, reportDigest }) });
-  assertClosedInertReport(report);
-  if (!validate(report)) throw new Error(`closed report validation failed: ${JSON.stringify(validate.errors)}`);
+  assertClosedReport(report);
   process.stdout.write(`${authorityCanonicalBytes(report).toString("utf8")}\n`);
   await rm(logsRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 } catch (error) {
