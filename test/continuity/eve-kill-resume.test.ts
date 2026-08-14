@@ -50,8 +50,8 @@ test("real Eve 0.37.1 preserves Reelier continuity across process and session bo
       assert.equal(value.reservations, 1);
       assert.equal(value.providerWrites, 1);
       assert.equal(value.verifierProducedConsequence, true);
-      assert.equal(value.cutLifecycleState, "duplicate");
-      assert.equal(value.cutVerdict, "accepted");
+      assert.equal(value.cutLifecycleState, "ambiguous");
+      assert.equal(value.cutVerdict, "unresolved");
       assert.equal(value.ambiguousState, "ambiguous");
       assert.deepEqual(value.ambiguousNextSafeActions, ["reconcile-before-retry"]);
       assert.equal(value.prematureSuccessProjected, false);
@@ -69,9 +69,6 @@ test("real Eve 0.37.1 preserves Reelier continuity across process and session bo
       assert.equal(value.compactProjectionUnchanged, true);
       assert.equal(value.clearProjectionUnchanged, true);
       assert.equal(value.effectsUnchanged, true);
-      assert.equal(value.hostIdentityUnchanged, true);
-      assert.equal(value.ledgerTaskUnchanged, true);
-      assert.equal(value.hostileAuthorityNotProjected, true);
     });
     await t.test("reset session can be replaced for the same task", () => {
       const value = matrix.scenarios.resetAndReplace;
@@ -85,6 +82,9 @@ test("real Eve 0.37.1 preserves Reelier continuity across process and session bo
       assert.equal(value.failedBeforeStepStarted, true, JSON.stringify(value));
       assert.equal(value.ledgerUnchanged, true);
       assert.equal(value.effectsUnchanged, true);
+      assert.equal(value.hostIdentityUnchanged, true);
+      assert.equal(value.ledgerTaskUnchanged, true);
+      assert.equal(value.hostileAuthorityNotProjected, true);
     });
     await t.test("changed mock model leaves projection bytes unchanged", () => {
       const value = matrix.scenarios.modelNeutrality;
