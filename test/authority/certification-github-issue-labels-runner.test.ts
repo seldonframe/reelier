@@ -532,8 +532,14 @@ test("portable evidence links the approved task, exact post-state, policy status
     const duplicate = await f.runner.run({ bearerToken: f.credential.token, requestId: "request_portable_duplicate" });
     assert.equal(duplicate.status, "duplicate");
     const graph: any = await f.runner.exportGraph({ bearerToken: f.credential.token });
+    assert.equal(graph.portableOutcomeEvidenceVersion, "reelier.portable-outcome-graph-extension/v1");
     assert.equal(graph.portableOutcomeEvidence.length, 1, "removing the native portable outcome collection must fail closed");
     assert.equal(graph.portableOutcomeEvidence[0].evidence.confidence, "exact");
+    assert.equal(graph.terminalCommitment.counts.portableOutcomeEvidence, 1);
+    assert.equal(graph.portableOutcomeEvidence[0].materializedRequest.origin, "https://api.github.com");
+    assert.equal(graph.portableOutcomeEvidence[0].materializedRequest.normalizedPath, "/repos/fixlyai/reelier-certification/issues/1/labels");
+    assert.equal(graph.portableOutcomeEvidence[0].reconciliation.providerWriteCount, 1);
+    assert.equal(graph.portableOutcomeEvidence[0].reconciliation.resendCount, 0);
     assert.equal(graph.taskAuthorities.length, 1);
     assert.equal(graph.taskAuthorities[0].signedJobCardDigest, signedJobCardDigest(f.jobCard));
     assert.equal(graph.taskAuthorities[0].adapterContractDigest, AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST);
@@ -553,6 +559,19 @@ test("portable evidence links the approved task, exact post-state, policy status
     const missingNative = structuredClone(graph);
     delete missingNative.portableOutcomeEvidence;
     assert.throws(() => verifyCertificationTaskReceiptGraph(missingNative, { trustPin: f.pin }), /portable|outcome|closed|collection/i);
+    for (const key of ["routeAuthority", "authenticatedIdentity", "materializedRequest", "responseSemanticsProfile", "reconciliation"] as const) {
+      const missingBinding = structuredClone(graph);
+      delete missingBinding.portableOutcomeEvidence[0][key];
+      assert.throws(() => verifyCertificationTaskReceiptGraph(missingBinding, { trustPin: f.pin }), /portable|runtime|route|identity|request|response|reconciliation|closed|terminal|digest/i);
+    }
+    const missingCleanup = structuredClone(graph);
+    delete missingCleanup.portableOutcomeEvidence[0].evidence.cleanupParentReceiptDigest;
+    assert.throws(() => verifyCertificationTaskReceiptGraph(missingCleanup, { trustPin: f.pin }), /portable|cleanup|closed|terminal|digest/i);
+    assert.throws(() => verifyCertificationTaskReceiptGraph(graph, {
+      trustPin: f.pin,
+      currentTrustObservation: graph.portableOutcomeEvidence[0].currentTrustObservation,
+      now: new Date("2100-01-01T00:00:00.000Z"),
+    } as any), /stale|expired|current trust/i);
     for (const mutate of [
       (g: any) => { g.taskAuthorities[0].instructionsDigest = `sha256:${"9".repeat(64)}`; },
       (g: any) => { g.taskAuthorities[0].dispatchSnapshotPreimage.runner = `sha256:${"8".repeat(64)}`; },

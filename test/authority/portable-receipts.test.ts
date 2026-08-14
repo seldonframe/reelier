@@ -57,7 +57,7 @@ function fixture() {
   const collectionCounts = { receipts: 2, receiptExtensions: 2, portableOutcomeEvidence: 1 };
   const terminalDigest = DIGEST("terminal");
   const currentTrustObservation = { v: "reelier.portable-current-trust-observation/v1" as const, observedAt: "2026-08-13T12:00:04.000Z", expiresAt: "2026-08-13T12:05:04.000Z", activeAuthorityEvidenceSignerIds: [signer.signerId] };
-  const publication = createPortableOutcomeEvidencePublication({
+  const input: Parameters<typeof createPortableOutcomeEvidencePublication>[0] = {
     requestId: "request_native_labels",
     routeAuthority,
     authenticatedIdentity,
@@ -76,7 +76,8 @@ function fixture() {
     currentTrustObservation,
     executionSigner: signer,
     reconciliationSigner: signer,
-  });
+  };
+  const publication = createPortableOutcomeEvidencePublication(input);
   const verify = (value: unknown, overrides: Record<string, unknown> = {}) => verifyPortableOutcomeEvidencePublication(value, {
     executionVerifier: { signerId: signer.signerId, publicKey, purpose: "authority-evidence" },
     reconciliationVerifier: { signerId: signer.signerId, publicKey, purpose: "authority-evidence" },
@@ -87,7 +88,8 @@ function fixture() {
     now: new Date("2026-08-13T12:04:00.000Z"),
     ...overrides,
   });
-  return { publication, verify, signer, publicKey, materializedRequest, currentTrustObservation, receiptChain, collectionCounts, terminalDigest };
+  const create = (overrides: Record<string, unknown>) => createPortableOutcomeEvidencePublication({ ...input, ...overrides } as Parameters<typeof createPortableOutcomeEvidencePublication>[0]);
+  return { publication, verify, create, signer, publicKey, materializedRequest, currentTrustObservation, receiptChain, collectionCounts, terminalDigest };
 }
 
 test("removing the route/request/native post-state extension makes offline verification refuse", () => {
@@ -143,6 +145,27 @@ test("false exact, pending, absent, self-anchored, accessor-backed, extra-key, s
   const secret: any = structuredClone(f.publication);
   secret.materializedRequest.reviewedHeaders.authorization = "canary-private-token";
   assert.throws(() => f.verify(secret), /secret|confidential|authorization|header/i);
+});
+
+test("every confidence rejects malformed reconciliation and normalized query credentials", () => {
+  const f = fixture();
+  const observedProjectionDigest = f.publication.reconciliation.observedProjectionDigest;
+  const malformed = [
+    { verdict: "invented", providerWriteCount: 1, resendCount: 0, observedProjectionDigest },
+    { verdict: "matched", providerWriteCount: -1, resendCount: 0, observedProjectionDigest },
+    { verdict: "matched", providerWriteCount: 1.5, resendCount: 0, observedProjectionDigest },
+    { verdict: "matched", providerWriteCount: 1, resendCount: -1, observedProjectionDigest },
+    { verdict: "matched", providerWriteCount: 1, resendCount: 1, observedProjectionDigest },
+  ];
+  for (const confidence of ["exact", "partial", "pending", "absent"] as const) {
+    for (const reconciliation of malformed) {
+      assert.throws(() => f.verify(f.create({ confidence, reconciliation })), /reconciliation|verdict|count|resend/i);
+    }
+  }
+  for (const normalizedQuery of ["access_token=canary-private-token", "access%5Ftoken=canary-private-token", "safe=access%5Ftoken%3Dcanary-private-token"]) {
+    const materializedRequest = { ...f.materializedRequest, normalizedQuery };
+    assert.throws(() => f.verify(f.create({ materializedRequest })), /secret|credential|query|confidential/i);
+  }
 });
 
 test("the exact PortableOutcomeEvidenceV1 surface remains closed", () => {
