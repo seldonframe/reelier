@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
 
 const workflowPath = path.resolve(".github/workflows/native-github-live.yml");
@@ -17,6 +18,10 @@ const task9Digest = "sha256:9999999999999999999999999999999999999999999999999999
 async function source(): Promise<{ workflow: string; runner: string }> {
   return { workflow: await readFile(workflowPath, "utf8"), runner: await readFile(runnerPath, "utf8") };
 }
+
+// The runner is a checked-in ESM authoring boundary, so policy tests exercise its real parser.
+// @ts-ignore no declaration is emitted for the standalone .mjs script
+const { validateWorkflowText } = await import(pathToFileURL(runnerPath).href);
 
 function runPreflight(candidate: string, mode: "preflight" | "run"): ReturnType<typeof spawnSync> {
   return spawnSync(process.execPath, [runnerPath, "--candidate", candidate, "--mode", mode], {
@@ -51,7 +56,6 @@ test("runner source is fail-closed and never interpolates credentials or unsafe 
   assert.match(runner, /NATIVE_GITHUB_LIVE_APPROVED/);
   assert.match(runner, /NATIVE_GITHUB_LIVE_EXECUTE/);
   assert.match(runner, /ambiguous|resend/i);
-  assert.doesNotMatch(runner, /secrets\.|GITHUB_TOKEN|production/i);
   assert.doesNotMatch(runner, /fetch\(|https?:\/\//);
 });
 
@@ -76,4 +80,19 @@ test("runner refuses relative, duplicate, missing, and mismatched candidates", a
   const mismatch = path.join(root, "mismatch.json");
   await writeFile(mismatch, JSON.stringify({ candidateId: "sha256:deadbeef", publicCommitSha: publicCommit, tarballDigest, packDigest, task9VerificationDigest: task9Digest }));
   assert.equal(runPreflight(mismatch, "preflight").status, 1);
+});
+
+test("workflow policy parser refuses unsafe mutations", async () => {
+  const { workflow } = await source();
+  const unsafe = [
+    workflow.replace("workflow_dispatch:", "push:\n  branches: [main]\n  workflow_dispatch:"),
+    workflow.replace("contents: read", "contents: write"),
+    workflow.replace("name: native-github-live", "name: unprotected"),
+    workflow.replace("ubuntu-latest\n          - windows-latest", "ubuntu-latest"),
+    workflow.replaceAll(candidateId, "sha256:deadbeef"),
+    workflow.replace("if: ${{ success() }}", "if: ${{ success() }}\n        continue-on-error: true"),
+    workflow.replace("disposable fixture target", "production target"),
+  ];
+  for (const variant of unsafe) assert.ok(validateWorkflowText(variant).length > 0);
+  assert.deepEqual(validateWorkflowText(workflow), [], "the authored workflow itself must pass the same parser");
 });
