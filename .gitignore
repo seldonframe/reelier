@@ -44,3 +44,9 @@ reports/
 # material do not.
 authority/certification.local.json
 authority/secrets/
+
+# Isolated Eve continuity conformance fixture output.
+conformance/continuity-adapter/v1/eve-fixture/.eve/
+conformance/continuity-adapter/v1/eve-fixture/.output/
+conformance/continuity-adapter/v1/eve-fixture/dist/
+conformance/continuity-adapter/v1/eve-fixture/node_modules/
