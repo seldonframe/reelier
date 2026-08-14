@@ -26,6 +26,7 @@ import { createCertificationTaskReceiptGraph } from "../../src/authority/certifi
 
 const at = "2026-08-11T20:00:00.000Z", expiry = "2026-08-11T21:00:00.000Z";
 const descriptor = (keyId: string, role: "human-sponsor" | "authority-cell", purpose: string, publicKey: ReturnType<typeof generateKeyPairSync>["publicKey"]) => ({ v: "reelier.authority-key-descriptor/v1", keyId, role, purpose, algorithm: "ed25519", publicKeySpkiBase64: publicKey.export({ type: "spki", format: "der" }).toString("base64") });
+const graphVerification = (pin: any, overrides: Record<string, unknown> = {}) => ({ trustPin: pin, currentTrustObservation: { v: "reelier.portable-current-trust-observation/v1", observedAt: at, expiresAt: expiry, activeAuthorityEvidenceSignerIds: [pin.keyDescriptors.find((item: any) => item.role === "authority-cell" && item.purpose === "authority-evidence")?.keyId] }, now: new Date("2026-08-11T20:10:00.000Z"), ...overrides });
 const restorePlatform = __testSetAuthorityCellHostPlatform("linux");
 test.after(() => restorePlatform());
 
@@ -559,6 +560,10 @@ test("portable evidence links the approved task, exact post-state, policy status
     const missingNative = structuredClone(graph);
     delete missingNative.portableOutcomeEvidence;
     assert.throws(() => verifyCertificationTaskReceiptGraph(missingNative, { trustPin: f.pin }), /portable|outcome|closed|collection/i);
+    const legacyV1 = structuredClone(graph);
+    delete legacyV1.portableOutcomeEvidenceVersion;
+    assert.throws(() => verifyCertificationTaskReceiptGraph(legacyV1, graphVerification(f.pin)), /extension|version|closed|exact canonical/i);
+    assert.throws(() => verifyCertificationTaskReceiptGraph(graph, { trustPin: f.pin } as any), /current trust|verification time|external.*anchor|required/i);
     for (const key of ["routeAuthority", "authenticatedIdentity", "materializedRequest", "responseSemanticsProfile", "reconciliation"] as const) {
       const missingBinding = structuredClone(graph);
       delete missingBinding.portableOutcomeEvidence[0][key];
@@ -584,6 +589,37 @@ test("portable evidence links the approved task, exact post-state, policy status
       (g: any) => { g.duplicateDecisions.pop(); },
       (g: any) => { g.duplicateDecisions[0].providerWriteDelta = 1; },
     ]) { const changed = structuredClone(graph); mutate(changed); assert.throws(() => verifyCertificationTaskReceiptGraph(changed, { trustPin: f.pin }), /portable|task|post-state|policy|status|duplicate|signature|terminal|digest|closed/i); }
+  } finally { await rm(f.root, { recursive: true, force: true }); }
+});
+
+test("portable graph consumes signed durable execution provenance without graph-time reconstruction", async () => {
+  const f = await fixture(); try {
+    await f.runner.run({ bearerToken: f.credential.token, requestId: "request_runtime_provenance" });
+    await f.runner.cleanup({ bearerToken: f.credential.token, requestId: "request_runtime_provenance" });
+    const graph: any = await f.runner.exportGraph({ bearerToken: f.credential.token });
+    const providerPath = path.join(f.initialized.workspace, "authority", "github-label-runner", "provider-state.json");
+    const providerState: any = JSON.parse(await readFile(providerPath, "utf8"));
+    assert.equal(providerState.v, "reelier.github-hermetic-provider/v3");
+    const executed = providerState.executions.find((item: any) => item.requestId === "request_runtime_provenance");
+    assert.equal(executed.routeAuthoritySnapshot.v, "reelier.route-authority-snapshot/v1");
+    assert.equal(executed.authenticatedIdentity.v, "reelier.authenticated-provider-identity/v1");
+    assert.equal(typeof executed.authenticatedIdentity.signerId, "string");
+    assert.equal(typeof executed.authenticatedIdentity.signature?.sig, "string");
+    assert.equal(executed.materializedRequest.v, "reelier.materialized-http-request/v1");
+    assert.equal(executed.responseSemanticsProfile.v, "reelier.http-response-semantics/v1");
+    assert.deepEqual(executed.reconciliation, { verdict: "matched", providerWriteCount: 1, resendCount: 0, observedProjectionDigest: graph.postStateEvidence[0].observedProjectionDigest });
+    assert.equal(executed.cleanupParentReceiptDigest, graph.receipts.find((item: any) => item.receipt.value.decisionContext.requestId === "request_runtime_provenance.cleanup").receipt.value.priorReceiptDigest);
+    const publication = graph.portableOutcomeEvidence[0];
+    assert.deepEqual(publication.routeAuthority, executed.portableRouteAuthority);
+    assert.deepEqual(publication.authenticatedIdentity, executed.portableAuthenticatedIdentity);
+    assert.deepEqual(publication.materializedRequest, executed.materializedRequest);
+    assert.deepEqual(publication.responseSemanticsProfile, executed.responseSemanticsProfile);
+    assert.deepEqual(publication.reconciliation, executed.reconciliation);
+    assert.equal(publication.evidence.cleanupParentReceiptDigest, executed.cleanupParentReceiptDigest);
+
+    providerState.executions[0].routeAuthoritySnapshot.routeDigest = `sha256:${"f".repeat(64)}`;
+    await writeFile(providerPath, `${JSON.stringify(providerState)}\n`);
+    await assert.rejects(() => f.runner.exportGraph({ bearerToken: f.credential.token }), /execution provenance|signature|route authority|tamper/i);
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 

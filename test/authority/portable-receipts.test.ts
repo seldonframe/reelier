@@ -152,6 +152,7 @@ test("every confidence rejects malformed reconciliation and normalized query cre
   const observedProjectionDigest = f.publication.reconciliation.observedProjectionDigest;
   const malformed = [
     { verdict: "invented", providerWriteCount: 1, resendCount: 0, observedProjectionDigest },
+    { verdict: "not-attempted", providerWriteCount: 1, resendCount: 0, observedProjectionDigest },
     { verdict: "matched", providerWriteCount: -1, resendCount: 0, observedProjectionDigest },
     { verdict: "matched", providerWriteCount: 1.5, resendCount: 0, observedProjectionDigest },
     { verdict: "matched", providerWriteCount: 1, resendCount: -1, observedProjectionDigest },
@@ -162,7 +163,7 @@ test("every confidence rejects malformed reconciliation and normalized query cre
       assert.throws(() => f.verify(f.create({ confidence, reconciliation })), /reconciliation|verdict|count|resend/i);
     }
   }
-  for (const normalizedQuery of ["access_token=canary-private-token", "access%5Ftoken=canary-private-token", "safe=access%5Ftoken%3Dcanary-private-token"]) {
+  for (const normalizedQuery of ["access_token=canary-private-token", "access%5Ftoken=canary-private-token", "safe=access%5Ftoken%3Dcanary-private-token", "access+token=canary", "safe=api+key", "AcCeSs%5fToKeN=canary", "access%ZZtoken=canary"]) {
     const materializedRequest = { ...f.materializedRequest, normalizedQuery };
     assert.throws(() => f.verify(f.create({ materializedRequest })), /secret|credential|query|confidential/i);
   }
