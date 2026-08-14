@@ -28,6 +28,31 @@ test("latency recorder emits only the closed critical-path phase order with mono
   assert.deepEqual(Object.keys(trace).sort(), ["graphExportsOnCriticalPath", "modelCalls", "phases", "reviewerCalls", "totalMs", "v"]);
 });
 
+test("latency recorder publishes only executed chronological phases after a terminal transition", async () => {
+  let now = 0;
+  const recorder = createAuthorityLatencyRecorder({ monotonicNow: () => now });
+  await recorder.measure("authority-load", () => { now += 2; });
+  await recorder.measure("compile", () => { now += 3; });
+  assert.throws(() => recorder.finish(), /terminal/i);
+  await recorder.measure("terminal-transition", () => { now += 1; });
+  const trace = recorder.finish();
+  assert.deepEqual(trace.phases, [
+    { name: "authority-load", durationMs: 2 },
+    { name: "compile", durationMs: 3 },
+    { name: "terminal-transition", durationMs: 1 },
+  ]);
+  assert.equal(trace.totalMs, 6);
+  assert.throws(() => recorder.measure("reserve", () => undefined), /terminal|chronological/i);
+});
+
+test("latency recorder rejects out-of-order and nested double-counted phase instrumentation", async () => {
+  let now = 0;
+  const recorder = createAuthorityLatencyRecorder({ monotonicNow: () => now });
+  await recorder.measure("compile", () => { now += 1; });
+  await assert.rejects(() => recorder.measure("authority-load", () => undefined), /chronological/i);
+  await assert.rejects(() => recorder.measure("reserve", async () => recorder.measure("credential", () => undefined)), /nested/i);
+});
+
 test("latency evidence remains an honest baseline until its configured sample count is met", async () => {
   let now = 0;
   const traces = await Promise.all([1, 2].map(async duration => {
