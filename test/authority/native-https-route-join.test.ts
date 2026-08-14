@@ -7,6 +7,7 @@ import { createDispatchCoordinator, type DispatchRequestState } from "../../src/
 import { createPreparedDispatch, createDispatchCommitLease } from "../../src/authority/host/prepared-dispatch.js";
 import { createReservedDispatchHandle } from "../../src/authority/gate.js";
 import { __testSetAuthorityCellHostPlatform } from "../../src/authority/host/platform.js";
+import { createAuthorityLatencyRecorder } from "../../src/authority/host/latency.js";
 import type { RouteAuthoritySnapshotV1 } from "../../src/authority/ledger.js";
 
 const sha = (c: string) => `sha256:${c.repeat(64)}`;
@@ -31,6 +32,8 @@ test("certified dispatch enforces route reread, double authority validation, com
     let reservation: any = { reservationId: "r1", state: "reserved", intent: { effectDigest: sha("3"), routeAuthority: routeAuthority(), executionContext: { allocationId: "a1" } } };
     const projection: any = { v: "reelier.materialized-http-request/v1", method: "PUT", origin: "https://api.github.com", normalizedPath: "/x", normalizedQuery: "", reviewedHeaders: {}, bodyDigest: sha("4") };
     const digest = authorityDigest(projection);
+    let ticks = 0;
+    const latencyRecorder = createAuthorityLatencyRecorder({ monotonicNow: () => ++ticks });
     const durableRoute = { ...routeAuthority(), expectedMaterializedRequestDigest: digest };
     reservation = { ...reservation, intent: { ...reservation.intent, routeAuthority: durableRoute } };
     const ledger: any = {
@@ -39,9 +42,10 @@ test("certified dispatch enforces route reread, double authority validation, com
       async transition(_id: string, _expected: string, event: any) { reservation = { ...reservation, state: event.to }; return { ok: true, status: "transitioned", reservation }; },
     };
     const adapter: any = { async prepare() { events.push("prepare"); return createPreparedDispatch({ description: { v: "reelier.prepared-dispatch-description/v1", routeDigest: durableRoute.routeDigest, materializedRequestDigest: digest, projection, authorityGeneration: durableRoute.authorityGeneration, authorityExpiresAt: durableRoute.authorityExpiresAt, absoluteDeadlineMs: performance.now() + 60_000, reservationId: "r1", allocationId: "a1" }, send: async () => { events.push("send"); return { kind: "acknowledged", resultDigest: sha("5") }; } }); } };
-    const coordinator = createDispatchCoordinator(ledger, adapter, undefined, undefined, undefined, { identityProbe: async () => identityFor(durableRoute), verifyIdentity: verifier, revalidator: { async routeReread() { events.push("route-reread"); return durableRoute; }, async revalidate() { events.push(events.includes("prepare") ? "authority-validation-after-prepare" : "authority-validation-before-prepare"); return { authorityGeneration: durableRoute.authorityGeneration, authorityExpiresAt: durableRoute.authorityExpiresAt, routeAuthorityDigest: authorityDigest(durableRoute) }; } } });
+    const coordinator = createDispatchCoordinator(ledger, adapter, undefined, undefined, undefined, { latencyRecorder, identityProbe: async () => identityFor(durableRoute), verifyIdentity: verifier, revalidator: { async routeReread() { events.push("route-reread"); return durableRoute; }, async revalidate() { events.push(events.includes("prepare") ? "authority-validation-after-prepare" : "authority-validation-before-prepare"); return { authorityGeneration: durableRoute.authorityGeneration, authorityExpiresAt: durableRoute.authorityExpiresAt, routeAuthorityDigest: authorityDigest(durableRoute) }; } } });
     await coordinator.dispatch(createReservedDispatchHandle({ reservation, effect: {}, effectCanonicalBase64: "e30=", effectDigest: sha("3") }));
     assert.deepEqual(events, ["route-reread", "authority-validation-before-prepare", "prepare", "authority-validation-after-prepare", "dispatch-commit-cas", "send-started", "send"]);
+    assert.deepEqual(latencyRecorder.finish().phases.map(item => item.name), ["identity-probe", "route-reread", "authority-validation-before-prepare", "prepare", "authority-validation-after-prepare", "dispatch-commit-cas", "authority-send-boundary", "terminal-transition"]);
   } finally { restore(); }
 });
 
