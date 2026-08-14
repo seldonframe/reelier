@@ -24,6 +24,7 @@
     "./tools": "./dist/tools.js",
     "./serve": "./dist/serve.js",
     "./authority": "./dist/authority/index.js",
+    "./continuity": "./dist/continuity/index.js",
     "./authority/pack": "./dist/authority/pack/index.js",
     "./authority/host": "./dist/authority/host/index.js",
     "./observation": "./dist/observation/index.js",
