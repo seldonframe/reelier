@@ -12,6 +12,7 @@ import { signAuthorityDigest } from "../../src/authority/crypto.js";
 import { createTopologyProbe, runTopologyProbe, signTopologyEvidence } from "../../src/authority/host/topology.js";
 import { signAuthorityLease } from "../../src/authority/host/lease.js";
 import type { DelegationGrant } from "../../src/authority/types.js";
+import { createAdmittedLocalAuthorityRuntime } from "../../src/authority/host/local.js";
 
 test("local authority serve uses the real gate and refuses an unsigned empty deployment", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "reelier-local-runtime-"));
@@ -22,6 +23,15 @@ test("local authority serve uses the real gate and refuses an unsigned empty dep
     assert.equal(result.reasonCode, "contract-not-found");
     const status = await runtime.status({ requestId: "local-1" }, { tenant: "tenant_1", requester: "operator" });
     assert.equal(status.reasonCode, "contract-not-found");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("package-internal admitted runtime rejects a forged profile handle before creating host directories", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-local-forged-profile-"));
+  try {
+    const config = { version: 1 as const, tenant: "tenant_1", requester: "operator", definitions: [], ledgerDir: path.join(root, "ledger"), decisionDir: path.join(root, "decisions"), receiptDir: path.join(root, "receipts"), endpoints: [] };
+    await assert.rejects(() => createAdmittedLocalAuthorityRuntime(config, Object.freeze({}) as never, {}), /admitted profile governance/i);
+    assert.deepEqual(await (await import("node:fs/promises")).readdir(root), []);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

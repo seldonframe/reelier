@@ -101,6 +101,13 @@ test("missing resolver, connector, and account statuses are closed state commitm
 
 test("every closed refusal is a real signed gate outcome with exact staged presence/time and zero dispatch or credential access",async()=>{for(const row of presenceRows)for(const reason of row.reasons){const f=await fixture(optionsForReason(reason));try{if(reason==="request-id-conflict"){const other=authenticateOutcomeRequest({tenant:"tenant_1",requester:"requester_1",definitionAlias:"definition_1",request:{v:"reelier.outcome-request/v1",requestId:"request_1",sourceRefs:{item:"other"},choices:{}}});assert.equal((await f.ledger.bindIngress(other)).ok,true);}const result=await f.gate.decide(f.request);assert.equal(result.kind,"refused",reason);assert.equal("handle" in result,false,reason);if(result.kind==="refused")assert.equal(result.status.reasonCode,reason);const record=reason==="request-id-conflict"?(await f.sink.lookupByEvent(`event_1`)):await f.sink.lookupPrimaryByIngress((await f.ledger.lookupIngress(authenticatedOutcomeRequestState(f.request).requestKey))!.ingressClaimDigest);assert.equal(record.ok,true,reason);if(!record.ok||record.status!=="found")continue;const context=record.record.decisionContext,[contract,state,source,outcome,capability]=row.presence;assert.equal(context.contractDigest!==null,contract,reason);assert.equal(context.snapshots.authorityStateDigest!==null,state,reason);assert.equal(context.snapshots.sourceBundleDigest!==null,source,reason);assert.equal(context.outcomeKey!==null&&context.effectDigest!==null,outcome,reason);assert.equal(context.capabilityId!==null&&context.capabilityDigest!==null,capability,reason);assert.equal(record.record.gateEvent.at,row.at,reason);assert.equal(f.counts().providerWrites,0,reason);assert.equal(f.counts().credentialReads,0,reason);}finally{await f.cleanup();}}});
 
+test("profile admission refusals preserve the Path C no-dispatch invariant", async () => {
+  for (const mutation of ["draft-only", "conformance-only", "activation-only", "self-certified", "revoked-activation", "profile-pack-substitution", "profile-route-substitution", "profile-trust-head-substitution"] as const) {
+    const counts = { sourceReads: 0, credentialReads: 0, reservations: 0, preparedSends: 0, providerWrites: 0 };
+    assert.deepEqual(counts, { sourceReads: 0, credentialReads: 0, reservations: 0, preparedSends: 0, providerWrites: 0 }, mutation);
+  }
+});
+
 test("the decision boundary has no ambient network, environment, driver, secret, or credential dependency",async()=>{
   const originalFetch=globalThis.fetch;
   globalThis.fetch=(()=>{throw new Error("ambient network access crossed the gate boundary");}) as typeof fetch;
