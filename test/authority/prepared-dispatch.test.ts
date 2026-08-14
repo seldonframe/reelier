@@ -101,8 +101,12 @@ test("native route digest binds every canonical route authority field", async ()
   const changed = { ...route, responseSemanticsProfileId: "profile-b" };
   const secrets = { async resolve() { return "unused"; }, async acquireSlot() { return { readOnce: () => "secret" }; } };
   const effect = { endpointId: "write", method: "PUT" as const, path: "/repos/a", query: "", headers: {}, bodyBase64: Buffer.from("{}").toString("base64") };
-  const first = await prepareJsonHttpsEffect(effect as never, route, secrets, { reservationId: "r", allocationId: "a", authorityGeneration: "g", authorityExpiresAt: new Date(Date.now() + 60_000).toISOString() });
-  const second = await prepareJsonHttpsEffect(effect as never, changed, secrets, { reservationId: "r", allocationId: "a", authorityGeneration: "g", authorityExpiresAt: new Date(Date.now() + 60_000).toISOString() });
+  const responseSemanticsProfiles = createHttpResponseSemanticsProfileRegistry([
+    { v: "reelier.http-response-semantics/v1", profileId: "profile-a", acknowledgedStatuses: [200] },
+    { v: "reelier.http-response-semantics/v1", profileId: "profile-b", acknowledgedStatuses: [200] },
+  ]);
+  const first = await prepareJsonHttpsEffect(effect as never, route, secrets, { responseSemanticsProfiles, reservationId: "r", allocationId: "a", authorityGeneration: "g", authorityExpiresAt: new Date(Date.now() + 60_000).toISOString() });
+  const second = await prepareJsonHttpsEffect(effect as never, changed, secrets, { responseSemanticsProfiles, reservationId: "r", allocationId: "a", authorityGeneration: "g", authorityExpiresAt: new Date(Date.now() + 60_000).toISOString() });
   assert.notEqual(first.description.routeDigest, second.description.routeDigest);
 });
 
