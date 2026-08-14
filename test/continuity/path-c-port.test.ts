@@ -14,8 +14,8 @@ test("loopback Path C port keeps provider credentials inside the port and dedupl
     const body = outcomeBody("request_eve_retry");
     const first = await fetch(`${port.url}/outcomes`, { method: "POST", headers, body }).then(value => value.json()) as Record<string, unknown>;
     const retry = await fetch(`${port.url}/outcomes`, { method: "POST", headers, body }).then(value => value.json()) as Record<string, unknown>;
-    assert.equal(first.providerWrites, 1);
-    assert.equal(retry.providerWrites, 1);
+    assert.equal(first.lifecycleState, "acknowledged");
+    assert.deepEqual(retry, first);
     assert.deepEqual(port.counters(), { outcomeRequests: 2, statusReads: 0, providerDispatches: 1, reservations: 1 });
     assert.equal(JSON.stringify(first).includes(fixture.credential.token), false);
     const verified = await port.exportVerifiedGraph();
@@ -106,7 +106,8 @@ test("after-provider-apply latch withholds the first response until release", as
     assert.deepEqual(port.counters(), { outcomeRequests: 1, statusReads: 0, providerDispatches: 1, reservations: 1 });
     port.release();
     const result = await pending as Record<string, unknown>;
-    assert.equal(result.providerWrites, 1);
+    assert.equal(result.lifecycleState, "acknowledged");
+    assert.deepEqual(port.counters(), { outcomeRequests: 1, statusReads: 0, providerDispatches: 1, reservations: 1 });
   } finally {
     await port.close();
     await fixture.close();
