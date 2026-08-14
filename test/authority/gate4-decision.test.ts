@@ -154,6 +154,8 @@ test("authoritative workflow is manual, protected, matrixed, and never dispatche
   assert.match(workflow, /ubuntu-latest/);
   assert.match(workflow, /windows-latest/);
   assert.match(workflow, /contents:\s*read/);
+  assert.match(workflow, /git rev-parse HEAD/);
+  assert.match(workflow, /NATIVE_PUBLIC_COMMIT/);
   assert.doesNotMatch(workflow, /secrets\./);
   assert.doesNotMatch(workflow, /gh api|curl|fetch\(/i);
   const verifier = await readFile(path.join(process.cwd(), "scripts/verify-native-github-hosted.mjs"), "utf8");
