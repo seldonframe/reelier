@@ -91,6 +91,7 @@ jobs:
         env:
           BUNDLE_PATH: ${{ inputs.bundle_path }}
           CHECKER_PUBLIC_KEY_PATH: ${{ inputs.checker_public_key_path }}
+          EXPECTED_RUNNER_SOURCE_COMMIT: ${{ github.sha }}
         shell: bash
         run: node scripts/verify-native-github-hosted.mjs --bundle "$BUNDLE_PATH" --execution hosted-run --public-key "$CHECKER_PUBLIC_KEY_PATH"
       - name: Upload private Gate 4 evidence
@@ -125,6 +126,7 @@ jobs:
         env:
           BUNDLE_PATH: ${{ inputs.bundle_path }}
           CHECKER_PUBLIC_KEY_PATH: ${{ inputs.checker_public_key_path }}
+          EXPECTED_RUNNER_SOURCE_COMMIT: ${{ github.sha }}
         shell: pwsh
         run: node scripts/verify-native-github-hosted.mjs --bundle "$env:BUNDLE_PATH" --execution hosted-run --public-key "$env:CHECKER_PUBLIC_KEY_PATH"
       - name: Upload private Windows evidence

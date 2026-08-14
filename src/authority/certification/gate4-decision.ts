@@ -84,7 +84,7 @@ export interface Gate4DecisionV1 extends Gate4VerificationResult {
 
 export function verifyGate4Bundle(value: unknown, inputs: Gate4VerificationInputs): Gate4VerificationResult {
   const bundle = parseBundle(value);
-  if (!inputs || !isPlain(inputs.candidate) || !isDigest(inputs.candidate.candidateId)) throw new TypeError("refused: expected candidate binding is missing");
+  if (!inputs || !isPlain(inputs.candidate) || !isDigest(inputs.candidate.candidateId) || !COMMIT.test(inputs.expectedRunnerSourceCommitSha)) throw new TypeError("refused: expected candidate or runner source binding is missing");
   validateCandidateBinding(inputs.candidate);
   if (bundle.workflow.source !== inputs.execution) throw new TypeError("refused: workflow execution provenance does not match verifier context");
   if (bundle.signerId !== inputs.verifier.signerId) throw new TypeError("refused: bundle signer is not the trusted checker");
@@ -100,7 +100,7 @@ export function verifyGate4Bundle(value: unknown, inputs: Gate4VerificationInput
   const windows = jobs.find(job => job.os === "windows-latest")!;
   if (ubuntu.provenance.jobId === windows.provenance.jobId) throw new TypeError("refused: Ubuntu and Windows job IDs must be distinct");
   const runnerSourceCommit = ubuntu.repo.runnerSourceCommitSha;
-  if (!COMMIT.test(runnerSourceCommit) || bundle.workflow.workflowSha !== runnerSourceCommit || windows.repo.runnerSourceCommitSha !== runnerSourceCommit) throw new TypeError("refused: workflow and runner source provenance are inconsistent");
+  if (!COMMIT.test(runnerSourceCommit) || runnerSourceCommit !== inputs.expectedRunnerSourceCommitSha || bundle.workflow.workflowSha !== runnerSourceCommit || windows.repo.runnerSourceCommitSha !== runnerSourceCommit) throw new TypeError("refused: workflow and runner source provenance are inconsistent with the hosted execution SHA");
   const bytesByOs = inputs.artifactBytes;
   verifyHostedArtifact(ubuntu, bytesByOs.ubuntu, inputs, now);
   verifyHostedArtifact(windows, bytesByOs.windows, inputs, now);

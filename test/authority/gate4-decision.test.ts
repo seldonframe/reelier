@@ -195,6 +195,7 @@ test("authoritative workflow is manual, protected, matrixed, and never dispatche
   assert.match(workflow, /git rev-parse HEAD/);
   assert.match(workflow, /GITHUB_SHA/);
   assert.match(workflow, /RUNNER_SOURCE_COMMIT/);
+  assert.match(workflow, /EXPECTED_RUNNER_SOURCE_COMMIT/);
   assert.match(workflow, /NATIVE_PUBLIC_COMMIT/);
   assert.doesNotMatch(workflow, /git rev-parse HEAD\)\" = \"\$NATIVE_PUBLIC_COMMIT/);
   assert.doesNotMatch(workflow, /secrets\./);

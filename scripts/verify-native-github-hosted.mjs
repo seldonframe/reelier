@@ -41,6 +41,8 @@ export async function verifyHostedBundleFile(bundlePath, execution, publicKey) {
   try { value = JSON.parse(await readFile(bundlePath, "utf8")); } catch { fail("bundle cannot be read as JSON"); }
   if (!publicKey) fail("an out-of-band hosted checker public key is required");
   const key = createPublicKey(publicKey);
+  const expectedRunnerSourceCommitSha = execution === "hosted-run" ? (process.env.EXPECTED_RUNNER_SOURCE_COMMIT ?? process.env.GITHUB_SHA) : EXPECTED_CANDIDATE.publicCommitSha;
+  if (!expectedRunnerSourceCommitSha) fail("hosted runner source commit is not available");
   const jobs = value?.jobs;
   if (!Array.isArray(jobs) || jobs.length !== 2) fail("bundle must contain exactly Ubuntu and Windows job artifacts");
   const result = api.verifyGate4Bundle(value, {
@@ -49,6 +51,7 @@ export async function verifyHostedBundleFile(bundlePath, execution, publicKey) {
     now: new Date().toISOString(),
     verifier: { signerId: value.signerId, publicKey: key },
     execution,
+    expectedRunnerSourceCommitSha,
   });
   const output = JSON.stringify({ v: "reelier.native-github-gate4-offline-result/v1", ...result });
   await mkdir(path.resolve(".superpowers"), { recursive: true });
