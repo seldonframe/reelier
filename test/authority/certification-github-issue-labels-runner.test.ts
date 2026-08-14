@@ -23,7 +23,7 @@ import { writeCertificationInputManifests } from "./certification-input-fixture.
 import { AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST } from "../../src/authority/adapter-contract.js";
 import { signAuthorityDigest } from "../../src/authority/crypto.js";
 import { createCertificationTaskReceiptGraph } from "../../src/authority/certification/task-receipt-graph.js";
-import { createPortableOutcomeEvidencePublication, createSanitizedPortableOutcomeEvidenceExport } from "../../src/authority/host/portable-receipts.js";
+import { createPortableOutcomeEvidencePublication, createSanitizedPortableOutcomeEvidenceExport, portableSignerIdFromPublicKey } from "../../src/authority/host/portable-receipts.js";
 import { httpResponseSemanticsProfileDigest } from "../../src/authority/host/http-response-semantics.js";
 
 const at = "2026-08-11T20:00:00.000Z", expiry = "2026-08-11T21:00:00.000Z";
@@ -633,10 +633,31 @@ test("private graph consumes signed durable execution provenance without graph-t
     assert.equal(publication.evidence.cleanupParentReceiptDigest, executed.cleanupParentReceiptDigest);
 
     const portableKeys = generateKeyPairSync("ed25519");
-    const portableSignerId = authorityDigest({ publicKeySpkiBase64: portableKeys.publicKey.export({ type: "spki", format: "der" }).toString("base64") });
-    const sanitized = createSanitizedPortableOutcomeEvidenceExport({ privateGraph: graph, verifiedAt: "2026-08-11T20:10:00.000Z", signer: { signerId: portableSignerId, sign: digest => signAuthorityDigest(portableKeys.privateKey, "authority-evidence", digest) } });
+    const portableSignerId = portableSignerIdFromPublicKey(portableKeys.publicKey);
+    const sanitized = createSanitizedPortableOutcomeEvidenceExport({ privateGraph: graph, verifiedAt: "2026-08-11T20:10:00.000Z", signer: { signerId: portableSignerId, publicKey: portableKeys.publicKey, sign: digest => signAuthorityDigest(portableKeys.privateKey, "authority-evidence", digest) } });
     assert.equal(verifyCertificationSanitizedPortableOutcomeEvidenceExport(sanitized, graph, { ...graphVerification(f.pin), portableVerifier: { signerId: portableSignerId, publicKey: portableKeys.publicKey, purpose: "authority-evidence" } }).status, "verified");
     assert.doesNotMatch(JSON.stringify(sanitized), /fixlyai|reelier-certification|maxime@example\.com|account_fixlyai|jobCard|sourceReceipt|accountId|principalId/i);
+    const serializedMutations: readonly ((value: any) => void)[] = [
+      value => { value.privateGraphDigest = authorityDigest({ substituted: true }); },
+      value => { value.outcomeCollectionDigest = authorityDigest({ substituted: true }); },
+      value => { value.outcomeCount += 1; },
+      value => { value.responseSemanticsProfilesDigest = authorityDigest({ substituted: true }); },
+      value => { value.verifiedAt = "2026-08-11T20:10:01.000Z"; },
+      value => { value.signerId = portableSignerIdFromPublicKey(generateKeyPairSync("ed25519").publicKey); },
+      value => { value.signature.sig = `${value.signature.sig.slice(0, -1)}A`; },
+      value => { delete value.outcomeCount; },
+      value => { value.signature.extra = "nested"; },
+    ];
+    for (const mutate of serializedMutations) {
+      const changed = JSON.parse(JSON.stringify(sanitized));
+      mutate(changed);
+      assert.throws(() => verifyCertificationSanitizedPortableOutcomeEvidenceExport(changed, graph, { ...graphVerification(f.pin), portableVerifier: { signerId: portableSignerId, publicKey: portableKeys.publicKey, purpose: "authority-evidence" } }), /portable|digest|count|timestamp|signer|signature|closed|canonical|graph/i);
+    }
+    const reordered = JSON.parse(JSON.stringify(sanitized));
+    const orderedEntries = Object.entries(reordered).reverse();
+    for (const key of Object.keys(reordered)) delete reordered[key];
+    Object.assign(reordered, Object.fromEntries(orderedEntries));
+    assert.throws(() => verifyCertificationSanitizedPortableOutcomeEvidenceExport(reordered, graph, { ...graphVerification(f.pin), portableVerifier: { signerId: portableSignerId, publicKey: portableKeys.publicKey, purpose: "authority-evidence" } }), /canonical|closed|portable/i);
 
     const evidence = certificationCellHostInternalState(f.cell).hermeticGitHubAuthority().lifecycle.direct.get("authority-evidence")!;
     const signer = { signerId: evidence.descriptor.keyId, sign: (digest: string) => signAuthorityDigest(evidence.privateKey, "authority-evidence", digest) };

@@ -8,6 +8,7 @@ import { signAuthorityDigest } from "../../src/authority/crypto.js";
 import {
   createSanitizedPortableOutcomeEvidenceExport,
   createPortableOutcomeEvidencePublication,
+  portableSignerIdFromPublicKey,
   type PortableOutcomeEvidencePublicationV1,
 } from "../../src/authority/host/portable-receipts.js";
 import { verifyPortableOutcomeEvidencePublication, verifySanitizedPortableOutcomeEvidenceExport } from "../../src/authority/verify.js";
@@ -119,7 +120,7 @@ test("response semantics are externally ratified rather than authenticated by th
 test("the sanitized portable export joins the private graph without copying identities", () => {
   const f = fixture();
   const exportKeys = generateKeyPairSync("ed25519");
-  const exportSigner = { signerId: DIGEST("portable-export-key"), sign: (digest: string) => signAuthorityDigest(exportKeys.privateKey, "authority-evidence", digest) };
+  const exportSigner = { signerId: portableSignerIdFromPublicKey(exportKeys.publicKey), publicKey: exportKeys.publicKey, sign: (digest: string) => signAuthorityDigest(exportKeys.privateKey, "authority-evidence", digest) };
   const privateGraph = {
     jobCard: { sponsor: "maxime@example.com", accountId: "account_fixlyai" },
     sourceReceipt: { login: "maxime", repository: "reelier-certification" },
@@ -136,11 +137,25 @@ test("the sanitized portable export joins the private graph without copying iden
   }
 });
 
+test("sanitized signer identity is derived from the actual signing key and rejects key or signature substitution", () => {
+  const f = fixture();
+  const exportKeys = generateKeyPairSync("ed25519");
+  const otherKeys = generateKeyPairSync("ed25519");
+  const privateGraph = { portableOutcomeEvidence: [f.publication] };
+  const signerId = portableSignerIdFromPublicKey(exportKeys.publicKey);
+  const signer = { signerId, publicKey: exportKeys.publicKey, sign: (digest: string) => signAuthorityDigest(exportKeys.privateKey, "authority-evidence", digest) };
+  const portable = createSanitizedPortableOutcomeEvidenceExport({ privateGraph, verifiedAt: "2026-08-13T12:04:00.000Z", signer });
+  assert.equal(verifySanitizedPortableOutcomeEvidenceExport(portable, { privateGraph, verifier: { signerId, publicKey: exportKeys.publicKey, purpose: "authority-evidence" } }).status, "verified");
+  assert.throws(() => createSanitizedPortableOutcomeEvidenceExport({ privateGraph, verifiedAt: "2026-08-13T12:04:00.000Z", signer: { ...signer, publicKey: otherKeys.publicKey } }), /derived|public|signer|key/i);
+  assert.throws(() => verifySanitizedPortableOutcomeEvidenceExport(portable, { privateGraph, verifier: { signerId: portableSignerIdFromPublicKey(otherKeys.publicKey), publicKey: otherKeys.publicKey, purpose: "authority-evidence" } }), /derived|public|signer|signature|invalid/i);
+  assert.throws(() => verifySanitizedPortableOutcomeEvidenceExport({ ...portable, signerId: DIGEST("unrelated-key") }, { privateGraph, verifier: { signerId, publicKey: exportKeys.publicKey, purpose: "authority-evidence" } }), /derived|public|signer|signature|invalid/i);
+});
+
 test("the complete sanitized portable artifact satisfies its closed nonidentifying schema", async () => {
   const f = fixture();
   const keys = generateKeyPairSync("ed25519");
   const privateGraph = { jobCard: { sponsor: "maxime@example.com", accountId: "account_fixlyai" }, portableOutcomeEvidence: [f.publication] };
-  const portable = createSanitizedPortableOutcomeEvidenceExport({ privateGraph, verifiedAt: "2026-08-13T12:04:00.000Z", signer: { signerId: DIGEST("portable-schema-signer"), sign: digest => signAuthorityDigest(keys.privateKey, "authority-evidence", digest) } });
+  const portable = createSanitizedPortableOutcomeEvidenceExport({ privateGraph, verifiedAt: "2026-08-13T12:04:00.000Z", signer: { signerId: portableSignerIdFromPublicKey(keys.publicKey), publicKey: keys.publicKey, sign: digest => signAuthorityDigest(keys.privateKey, "authority-evidence", digest) } });
   const schema = JSON.parse(await readFile(path.resolve("contract/certification/v1/sanitized-portable-outcome-evidence.schema.json"), "utf8"));
   const Ajv2020 = createRequire(import.meta.url)("ajv/dist/2020").default;
   const validate = new Ajv2020({ strict: false }).compile(schema);
