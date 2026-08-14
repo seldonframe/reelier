@@ -17,7 +17,7 @@ const routeDigest = createHash("sha256").update(routeToken).digest("hex");
 const env = localOnlyEnvironment({
   EVE_EVAL_AUTH_TOKEN: routeToken,
   REELIER_EVE_AUTH_REGISTRY_JSON: JSON.stringify({
-    [routeDigest]: { principalId: "principal_eve_1", taskId: "task_eve_1", workloadId: "workload_eve_1" },
+    [routeDigest]: { principalId: "principal_eve_1", taskId: "task_eve_1", taskOwnerPrincipalId: "principal_eve_1", workloadId: "workload_eve_1" },
   }),
   REELIER_CONTINUITY_ROOT: continuityRoot,
   REELIER_CONTINUITY_PROTOCOL_V: "reelier.continuity-checkpoint/v1",
