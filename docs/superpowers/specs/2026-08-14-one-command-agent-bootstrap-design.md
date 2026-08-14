@@ -251,6 +251,101 @@ live in a helper that registers no tests. Maker remains different from verifier,
 produces the receipt graph, and the existing Path A/B/C, Continuity, Cloud ownership, Task 6
 session-binding, and Task 7 packed-consumer boundaries remain intact.
 
+### Approved Task 2 second amendment — complete governed execution seams
+
+**Approved:** 2026-08-14. The first amendment and the rationale that led to it remain decision
+history. This second amendment supersedes only its incomplete execution seams: full inner-bundle
+production, eligible-contract selection, stable route projection, dispatch-time freshness, and the
+local Linux evidence claim. Authority Contract v1, every Authority schema, `AuthorityReceiptBundle`,
+the existing bundle parser/verifier, reservation intent/ledger records, dispatch semantics, and
+inner claims remain byte-for-byte unchanged. There is one receipt kernel and one verifier.
+
+The host gains a general, purpose-separated receipt construction authority. Its public surface is
+type-only: `ProducedReceiptKindV1`, `PurposeBoundReceiptSignerV1<K>`, and
+`AuthorityReceiptSigningAuthorityV1`. The authority contains exactly six Ed25519 signer capabilities:
+`sourceBundle`/`source-bundle`, `compiledCapability`/`compiled-capability`,
+`transportEffect`/`transport-effect`, `evidence`/`authority-evidence`,
+`receipt`/`authority-receipt`, and `packManifest`/`pack-manifest`. Every signer is an exact own-data
+record `{ purpose, signerId, publicKey, sign({ purpose, digest }) }`; the six keys are current for
+their exact purpose under external Authority trust and distinct across purposes. Private keys never
+enter Reelier. The existing profile binding signer remains separately purpose-bound to
+`authority-evidence` and distinct from the six receipt keys. All seven are distinct from profile
+operator/certifier, Job Card human, local-gate, topology, lease, and identity keys. Governed
+dispatch requires the complete six-signer receipt authority and the binding signer as one
+all-or-nothing option pair.
+
+A package-private `AuthorityReceiptFoundationsV1` carries the exact already signed selected
+contract, exact signed delegation chain, exact signed gate event, and parsed pack manifest.
+`constructAuthorityReceiptBundle` takes only exact phase, dispatch state, outcome, one intrinsic
+`observedAt`, those foundations, the six-signer authority, and optional prior/recovered receipt
+state. It generates and signs only source bundle, compiled capability, transport effect, evidence,
+receipt, and pack manifest artifacts; parses and verifies every returned signature; and delegates
+assembly to the existing `createAuthorityReceiptBundle`. It does not publish, recover, send,
+verify a completed bundle, or create trust roots. The certification lifecycle keeps its public API,
+local-first/storage/recovery/extensions/cuts and delegates only this pure construction step to the
+general module.
+
+The governed host wraps its existing `DispatchPublication`. At publication it receives the actual
+phase/state/outcome, private admitted provenance, and the exact durable
+`state.reservation.intent.routeAuthority`; constructs the real inner bundle; immediately runs the
+unchanged inner verifier; creates and signs the outer profile binding; immutably stores the outer
+receipt; and only then forwards any configured portable publication. Restart recovery accepts only
+an exact stored outer/inner/effect/prior chain, reuses recovered static artifacts, and reconciles
+without automatic resend. Publication failure never causes a second provider effect.
+
+Contract eligibility has one owner. A package-internal
+`selectEligibleAuthorityContract({ snapshot, tenant, requester, definitionAlias, now, trustRoots,
+packs, sources, connectors })` contains the existing gate `evaluate`/`evaluateCandidate` semantics
+without byte-semantic change. `createAuthorityGate` calls it at both existing planning and
+within-current-state sites. Governed preflight calls the same selector for every exact Job Card
+audience and requires one unique shared digest equal to activation `contractDigest`. It is not
+exported through any barrel.
+
+Stable projection authority is route-owned. Closed `JsonHttpsRouteV1` gains a required nonzero
+SHA-256 `projectionSchemaDigest`, included in parsing, canonical route digest, and read/write route
+equivalence. It is never derived from a schema ID, pointer list, callback, or request snapshot. The
+GitHub certification path computes its existing projection-schema digest first and writes that
+exact value onto both routes; the dynamic snapshot copies the write route's field. Stable and
+dynamic scope use the existing
+`connectorRegistrationDigest(registry, tenant, connectorId, accountId)` algorithm.
+
+The stable route scope is derived only from verified tenant, the Job Card's single definition alias,
+the shared selected contract, the same installed definition/connector registry used by the gate,
+and canonical native routes. Governed preflight requires exactly one write endpoint and exact
+profile/provider/contract/connector/account/definition/write-endpoint/read-endpoint/projection joins.
+`projectRouteScope(snapshot, { tenant, definitionAlias })` supplies the two verified contextual
+fields absent from `RouteAuthoritySnapshotV1`; all other fields come from the parsed dynamic
+snapshot. Canonical equality and digest agreement are checked immediately before reservation, and
+the driver independently requires the snapshot projection digest to equal the canonical route.
+
+Long-lived servers revalidate current authority twice per invocation: once before local
+`outcome`/`invoke`, with every source/credential/reservation/prepare/provider counter still zero,
+and again through a package-internal `beforeReserve(intent)` gate hook after the actual dynamic
+snapshot/intent exists and immediately before `ledger.reserve`. With no hook, legacy gate bytes,
+traces, and behavior are unchanged. Each check uses one intrinsic observation time, cold reloads the
+fixed profile governance, rereads external Job Card trust/current Authority events, requires
+unchanged physical root/manifest/profile/activation bindings and both fresh trust heads, requires
+all receipt/binding signers current and distinct, and enforces
+`activation.validFrom <= observedAt < activation.validUntil`. The pre-reserve check also projects
+the exact intent route scope. The observation is stored only behind private capability provenance
+for same-process publication; restart recovery relies on stored signed evidence plus fresh
+reconciliation and never on that process map.
+
+Digest derivations are fixed: `jobCardDigest = signedJobCardDigest(jobCard)`;
+`jobCardAuthorityDigest = authorityDigest(parsed JobCardTrustMaterialV1)`;
+`authorityStateDigest = authorityDigest(exact selected parsed AuthorityStateSnapshot)`;
+`connectorRegistryDigest = authorityDigest(sorted exact connectorRegistrationDigest strings)`;
+`trustRootSetDigest` uses the existing helper; descriptor and adoption digests are
+`authorityDigest` of their parsed arrays in parsed order; enforcement is `authorityDigest` of its
+parsed record; deployment is `authorityDigest(parsed AuthorityDeploymentSnapshotV1)`; and route
+scope is `authorityDigest(parsed AuthorityRouteScopeV1)`.
+
+The Task 2 Linux public-factory test is registered everywhere. On Linux it runs; on non-Linux it is
+an explicit platform-gated skip with exact reason
+`requires an already-available Linux Node executor`. A skip is not a pass. This Windows host has no
+already available Linux Node executor or Docker daemon, and no install/start/download is authorized;
+Linux execution remains mandatory Task 7/CI evidence and a final-report limitation.
+
 ## Why this does not require thousands of Reelier integrations
 
 Reelier does not become the tool catalog, OAuth broker, or universal transport SDK. Existing MCP servers, host plugins, OpenAPI catalogs, Composio-style tool providers, Vercel Connect, and native provider adapters may describe or carry routes. A provider-neutral discovery adapter turns those descriptions into the same closed route rows; it does not confer trust.
