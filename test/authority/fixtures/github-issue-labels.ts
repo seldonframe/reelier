@@ -13,6 +13,7 @@ import { createDelegationAuthority } from "../../../src/authority/host/delegatio
 import { createFilePrincipalRegistry } from "../../../src/authority/host/principal-registry.js";
 import { createGitHubIssueLabelsHermeticComposition } from "../../../src/authority/certification/github-issue-labels-runner.js";
 import { createCertificationArtifactKeyBinding, createCertificationLifecycleAuthorityCeremony } from "../../../src/authority/certification/lifecycle-authority.js";
+import { __testSetAuthorityCellHostPlatform } from "../../../src/authority/host/platform.js";
 import { writeCertificationInputManifests } from "../certification-input-fixture.js";
 
 export type GitHubIssueLabelsFixtureMode =
@@ -39,6 +40,7 @@ const at = "2026-08-11T20:00:00.000Z", expiry = "2026-08-11T21:00:00.000Z";
 const descriptor = (keyId: string, role: "human-sponsor" | "authority-cell", purpose: string, publicKey: ReturnType<typeof generateKeyPairSync>["publicKey"]) => ({ v: "reelier.authority-key-descriptor/v1", keyId, role, purpose, algorithm: "ed25519", publicKeySpkiBase64: publicKey.export({ type: "spki", format: "der" }).toString("base64") });
 
 export async function createGitHubIssueLabelsFixture(mode: GitHubIssueLabelsFixtureMode = "normal", authorityMode: GitHubIssueLabelsAuthorityMode = "valid") {
+  const restorePlatform = __testSetAuthorityCellHostPlatform("linux");
   const root = await mkdtemp(path.join(tmpdir(), "reelier-github-cell-"));
   const configPath = path.join(root, "certification.local.json");
   await writeFile(configPath, JSON.stringify({ v: "reelier.certification-operator-config/v3", authorityConfigPath: "authority/authority.yml", evidenceDirectory: "authority/receipts/certification", scenarios: ["github-issue-labels"], resources: { "github-issue-labels": { apiBaseUrl: "https://api.github.com", owner: "fixlyai", repository: "reelier-certification", issueNumber: 1 } }, cleanup: { "github-issue-labels": ["restore-github-labels"] }, desiredState: { "github-issue-labels": { labels: ["certification-after"] } }, metadata: {}, secretReferences: { githubCredential: "env:REELIER_GITHUB_TOKEN" } }), "utf8");
@@ -63,7 +65,13 @@ export async function createGitHubIssueLabelsFixture(mode: GitHubIssueLabelsFixt
   const activation = await cell.activateRootTask({ jobCard, jobCardTrustPin: pin, constraints, effects: 2, issuedAt: at, expiresAt: expiry });
   const credential = await cell.activatePrincipalSession();
   const runner = await createGitHubIssueLabelsHermeticComposition(cell);
-  return { root, initialized, cell, runner, credential, delegation, pin, lifecycle, activation, jobCard, constraints, close: () => rm(root, { recursive: true, force: true }) };
+  let closed = false;
+  return { root, initialized, cell, runner, credential, delegation, pin, lifecycle, activation, jobCard, constraints, close: async () => {
+    if (closed) return;
+    closed = true;
+    try { await rm(root, { recursive: true, force: true }); }
+    finally { restorePlatform(); }
+  } };
 }
 
 export type GitHubIssueLabelsFixture = Awaited<
