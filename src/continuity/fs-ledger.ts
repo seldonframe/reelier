@@ -142,12 +142,27 @@ function withEvidence(state: ContinuityStateV1, segmentEvidence: readonly string
 
 interface ContinuitySnapshotProvenanceV1 {
   readonly envelopeDigest: string;
-  readonly state: ContinuityStateV1;
+  readonly sourceState: ContinuityStateV1;
+  readonly trustedSnapshot: ContinuitySnapshotV1 & { readonly state: ContinuityStateV1 };
 }
 
 const continuitySnapshotProvenance = new WeakMap<object, ContinuitySnapshotProvenanceV1>();
+const CONTINUITY_SNAPSHOT_FIELDS = ["taskId", "cursor", "segmentDigest", "jobCardDigest", "authoritySnapshotDigest", "state"] as const;
 
-function snapshotEnvelopeDigest(snapshot: ContinuitySnapshotV1): string {
+function inertSnapshotEnvelope(value: object): Readonly<Record<(typeof CONTINUITY_SNAPSHOT_FIELDS)[number], unknown>> {
+  if (Object.getPrototypeOf(value) !== Object.prototype) throw new TypeError("ledger continuity snapshot must be an exact inert object");
+  const ownKeys = Reflect.ownKeys(value);
+  if (ownKeys.some((key) => typeof key === "symbol") || (ownKeys as string[]).join("\0") !== CONTINUITY_SNAPSHOT_FIELDS.join("\0")) {
+    throw new TypeError("ledger continuity snapshot must have an exact inert shape");
+  }
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  if (CONTINUITY_SNAPSHOT_FIELDS.some((field) => descriptors[field] === undefined || !("value" in descriptors[field]))) {
+    throw new TypeError("ledger continuity snapshot must contain inert own data properties only");
+  }
+  return Object.fromEntries(CONTINUITY_SNAPSHOT_FIELDS.map((field) => [field, descriptors[field]!.value])) as Readonly<Record<(typeof CONTINUITY_SNAPSHOT_FIELDS)[number], unknown>>;
+}
+
+function snapshotEnvelopeDigest(snapshot: Readonly<Record<(typeof CONTINUITY_SNAPSHOT_FIELDS)[number], unknown>>): string {
   return authorityDigest({
     taskId: snapshot.taskId,
     cursor: snapshot.cursor,
@@ -158,23 +173,27 @@ function snapshotEnvelopeDigest(snapshot: ContinuitySnapshotV1): string {
 }
 
 function registerContinuitySnapshot(snapshot: ContinuitySnapshotV1 & { readonly state: ContinuityStateV1 }): ContinuitySnapshotV1 {
+  assertFoldedContinuityState(snapshot.state);
+  const envelope = inertSnapshotEnvelope(snapshot);
+  const trustedSnapshot = structuredClone(snapshot) as ContinuitySnapshotV1 & { readonly state: ContinuityStateV1 };
   continuitySnapshotProvenance.set(snapshot, Object.freeze({
-    envelopeDigest: snapshotEnvelopeDigest(snapshot),
-    state: snapshot.state,
+    envelopeDigest: snapshotEnvelopeDigest(envelope),
+    sourceState: snapshot.state,
+    trustedSnapshot,
   }));
   return snapshot;
 }
 
-export function assertLedgerContinuitySnapshot(value: unknown): asserts value is ContinuitySnapshotV1 & { readonly state: ContinuityStateV1 } {
+export function readLedgerContinuitySnapshot(value: unknown): ContinuitySnapshotV1 & { readonly state: ContinuityStateV1 } {
   if (value === null || typeof value !== "object") throw new TypeError("ledger continuity snapshot provenance is required");
-  const snapshot = value as ContinuitySnapshotV1;
   const provenance = continuitySnapshotProvenance.get(value);
+  const envelope = inertSnapshotEnvelope(value);
   if (
     provenance === undefined
-    || provenance.state !== snapshot.state
-    || provenance.envelopeDigest !== snapshotEnvelopeDigest(snapshot)
+    || provenance.sourceState !== envelope.state
+    || provenance.envelopeDigest !== snapshotEnvelopeDigest(envelope)
   ) throw new TypeError("ledger continuity snapshot provenance or envelope integrity is invalid");
-  assertFoldedContinuityState(snapshot.state);
+  return structuredClone(provenance.trustedSnapshot);
 }
 
 function digestValues(value: unknown, target = new Set<string>()): Set<string> {

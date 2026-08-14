@@ -364,10 +364,9 @@ function exactRecord(value: unknown, fields: readonly string[], label: string): 
   if (!value || typeof value !== "object" || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype) {
     throw new TypeError(`${label} is not an exact canonical object`);
   }
-  if (Object.keys(value).join("\0") !== fields.join("\0")) {
-    throw new TypeError(`${label} is not an exact canonical object`);
-  }
-  if (Object.getOwnPropertySymbols(value).length !== 0) throw new TypeError(`${label} must not contain symbol fields`);
+  const ownKeys = Reflect.ownKeys(value);
+  if (ownKeys.some((key) => typeof key === "symbol")) throw new TypeError(`${label} must not contain symbol fields`);
+  if ((ownKeys as string[]).join("\0") !== fields.join("\0")) throw new TypeError(`${label} is not an exact canonical object`);
   const descriptors = Object.getOwnPropertyDescriptors(value);
   if (fields.some((field) => descriptors[field] === undefined || !("value" in descriptors[field]))) {
     throw new TypeError(`${label} must contain inert data properties only`);
