@@ -9,7 +9,6 @@ import type { GitHubIssueLabelsFixture } from "../../authority/fixtures/github-i
 
 type PathCFault = "after-provider-apply-before-response";
 type CounterSnapshot = Readonly<{ outcomeRequests: number; statusReads: number; providerDispatches: number; reservations: number }>;
-type PublicRunnerOutcome = AuthorityIngressOutcome & Readonly<{ providerWrites: number }>;
 
 export interface PathCConformancePort {
   readonly url: string;
@@ -126,7 +125,7 @@ function parseRequest(value: unknown): Readonly<{ requestId: string; sourceRefs:
 function plainRecord(value: unknown): value is Record<string, unknown> { return Boolean(value && typeof value === "object" && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype); }
 function exactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean { const keys = Object.keys(value).sort(); return keys.length === expected.length && keys.every((key, index) => key === [...expected].sort()[index]); }
 function authorized(header: string | undefined, token: string): boolean { if (!header?.startsWith("Bearer ")) return false; const supplied = Buffer.from(header.slice(7)), expected = Buffer.from(token); return supplied.length === expected.length && timingSafeEqual(supplied, expected); }
-function publicOutcome(result: GitHubHermeticRunnerResult): PublicRunnerOutcome { const accepted = result.status === "acknowledged" || result.status === "duplicate" || result.status === "cleaned"; return Object.freeze({ requestId: result.requestId, verdict: accepted ? "accepted" : "refused", reasonCode: `outcome-${result.status}`, lifecycleState: result.status, providerWrites: result.providerWrites }); }
+function publicOutcome(result: GitHubHermeticRunnerResult): AuthorityIngressOutcome { const accepted = result.status === "acknowledged" || result.status === "duplicate" || result.status === "cleaned"; return Object.freeze({ requestId: result.requestId, verdict: accepted ? "accepted" : "refused", reasonCode: `outcome-${result.status}`, lifecycleState: result.status }); }
 function refused(requestId: string, reasonCode: string, lifecycleState: string): AuthorityIngressOutcome { return Object.freeze({ requestId, verdict: "refused", reasonCode, lifecycleState }); }
 async function readBody(request: IncomingMessage): Promise<string> { const chunks: Buffer[] = []; let total = 0; for await (const chunk of request) { const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk); total += bytes.length; if (total > 64 * 1024) throw new Error("request too large"); chunks.push(bytes); } return Buffer.concat(chunks).toString("utf8"); }
 function write(response: ServerResponse, status: number, value: unknown): void { if (response.headersSent || response.destroyed) return; response.statusCode = status; response.setHeader("content-type", "application/json"); response.setHeader("connection", "close"); response.end(JSON.stringify(value)); }
