@@ -56,7 +56,7 @@ function job(os: "ubuntu-latest" | "windows-latest", source: "offline-fixture" |
     lifecycle: { terminal: true, reconciliation: "matched", noResendCount: 0, cleanupReceipt: digest("c") },
     providerClaim: os === "ubuntu-latest" && source === "hosted-run" ? "verified" : "absent",
     nativeHostRefusedBeforeMutation: os === "windows-latest",
-    repo: { publicCommitSha: candidate.publicCommitSha, workflowRef: "refs/heads/codex/reelier-acceleration-design", workflowSha: "03ac48e", checkoutSha: "03ac48e", verifierSourceCommitSha: "03ac48e" },
+    repo: { publicCommitSha: candidate.publicCommitSha, workflowRef: "refs/heads/codex/reelier-acceleration-design", workflowSha: "03ac48e", runnerSourceCommitSha: "03ac48e", checkoutSha: "03ac48e", verifierSourceCommitSha: "03ac48e" },
     toolchain: { nodeMajor: 20, npmVersion: "10.8.2", runnerImage: os },
     provenance: { source, createdAt: "2026-08-14T12:00:00.000Z", expiresAt: "2026-08-15T12:00:00.000Z", jobId: `${os}-job` },
     skips: { count: 0, reviewed: true },
@@ -174,7 +174,10 @@ test("authoritative workflow is manual, protected, matrixed, and never dispatche
   assert.match(workflow, /windows-latest/);
   assert.match(workflow, /contents:\s*read/);
   assert.match(workflow, /git rev-parse HEAD/);
+  assert.match(workflow, /GITHUB_SHA/);
+  assert.match(workflow, /RUNNER_SOURCE_COMMIT/);
   assert.match(workflow, /NATIVE_PUBLIC_COMMIT/);
+  assert.doesNotMatch(workflow, /git rev-parse HEAD\)\" = \"\$NATIVE_PUBLIC_COMMIT/);
   assert.doesNotMatch(workflow, /secrets\./);
   assert.doesNotMatch(workflow, /gh api|curl|fetch\(/i);
   const verifier = await readFile(path.join(process.cwd(), "scripts/verify-native-github-hosted.mjs"), "utf8");
