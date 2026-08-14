@@ -36,8 +36,9 @@ Base: `50cf8834b85b85d06eeafde1ef13a798ac9eba6d`
 - `89226ef` — `fix(continuity): bind eve task owner`
 - `06b73c1` — `test(continuity): require original Eve run recovery`
 - `7529cac` — `fix(continuity): reclaim interrupted Eve steps`
+- `922b51f` — `test(continuity): await stale checkpoint replay`
 
-Implementation evidence commit: `7529cac5404743aedde6ba928c918603d28ebcbc`.
+Implementation evidence commit: `922b51f4e44dc7d44f2f63a961f002f83e61ab2a`.
 
 # TDD evidence
 
@@ -123,7 +124,7 @@ npm run check:continuity-eve
 Exit `0`; verbatim report line:
 
 ```json
-{"artifacts":{"ledgerHeadDigest":"sha256:df0dcafc0c6f659953e1c45c91923cdc9ba76f8292a92611cd535978dd2adab9","receiptGraphDigest":"sha256:32522cad0274be00d91482f49fd46604283f9aeabd64d6bb8f1efbf9c7ebec74","reportDigest":"sha256:933b09eeaebb60ccd8c455986a8f432406c9a7d43f067c110dc412f95d68d234"},"authorityAdapterContractDigest":"sha256:7f46242b26d9c921f4e1ec9de6418ac5fc8c03d70c4415c25e799ae0e73a1512","checks":[{"detail":"public continuity adapter candidate checks passed","id":"generic-candidate","status":"passed"},{"detail":"real Eve kill, resume, stream, control, identity, and model matrix passed","id":"eve-process-matrix","status":"passed"},{"detail":"focused Path C and Continuity suites passed","id":"focused-continuity","status":"passed"}],"eveVersion":"0.37.1","maturity":"reproduced","nodeVersion":"v24.9.0","nonClaims":{"contentCorrectness":"not-proved","grokBot":"not-tested","productionReadiness":"not-proved","safety":"not-proved","topology":"not-proved","trafficCompleteness":"not-proved"},"reelierCommit":"7529cac5404743aedde6ba928c918603d28ebcbc","status":"passed","v":"reelier.continuity-eve-conformance-report/v1"}
+{"artifacts":{"ledgerHeadDigest":"sha256:946dace69cb571a6e3b91f5ffb5ca7b2b3ec94a68195f286f4990f4b38cb43f7","receiptGraphDigest":"sha256:e89e4a44fe1a0eff6d3499b41dab11f62020d929622823242b15141be9cef434","reportDigest":"sha256:85268558f4b55046ba9ad58cfc965b5e1a97da59de96f58553e9e6fe77fe8474"},"authorityAdapterContractDigest":"sha256:7f46242b26d9c921f4e1ec9de6418ac5fc8c03d70c4415c25e799ae0e73a1512","checks":[{"detail":"public continuity adapter candidate checks passed","id":"generic-candidate","status":"passed"},{"detail":"real Eve kill, resume, stream, control, identity, and model matrix passed","id":"eve-process-matrix","status":"passed"},{"detail":"focused Path C and Continuity suites passed","id":"focused-continuity","status":"passed"}],"eveVersion":"0.37.1","maturity":"reproduced","nodeVersion":"v24.9.0","nonClaims":{"contentCorrectness":"not-proved","grokBot":"not-tested","productionReadiness":"not-proved","safety":"not-proved","topology":"not-proved","trafficCompleteness":"not-proved"},"reelierCommit":"922b51f4e44dc7d44f2f63a961f002f83e61ab2a","status":"passed","v":"reelier.continuity-eve-conformance-report/v1"}
 ```
 
 # Complete verification
