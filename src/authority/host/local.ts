@@ -11,7 +11,7 @@ import { createAuthorityStatePort } from "../state.js";
 import { createStaticPackRegistry } from "../pack.js";
 import { createFileGateDecisionSink } from "../decision.js";
 import { FsAuthorityLedger } from "./fs-ledger.js";
-import { createDispatchCoordinator, type DispatchAdapter } from "./dispatch.js";
+import { createDispatchCoordinator, type DispatchAdapter, type DispatchPublication } from "./dispatch.js";
 import { createJsonHttpsDispatchAdapter } from "./json-https-connector.js";
 import { createFileReceiptPublication } from "./receipts.js";
 import { createAuthorityHostRuntime } from "./runtime.js";
@@ -58,6 +58,9 @@ export interface LocalAuthorityRuntimeOptions {
   readonly authenticatedProviderIdentity?: () => Promise<AuthenticatedProviderIdentityV1>;
   readonly verifyAuthenticatedProviderIdentity?: CertifiedIdentityVerifier;
   readonly certifiedDispatch?: CertifiedDispatchOptions;
+  /** Externally rooted portable publication. The local runtime never mints a
+   * trust root for this evidence from its own deployment or receipt key. */
+  readonly portableReceiptPublication?: DispatchPublication;
   /** In-memory aggregate-only critical-path recorder; never persisted by the runtime. */
   readonly latencyRecorder?: AuthorityLatencyRecorder;
 }
@@ -126,7 +129,7 @@ export async function createLocalAuthorityRuntime(config: AuthorityHostConfig, o
     },
   });
   const gate = createAuthorityGate({ trustRoots, packs, sources, connectors: connectorRegistry, state, ledger, ...(options.routeAuthority ? { routeAuthority: options.routeAuthority } : {}), ...(options.authenticatedProviderIdentity ? { authenticatedProviderIdentity: options.authenticatedProviderIdentity } : {}), ...(options.latencyRecorder ? { latencyRecorder: options.latencyRecorder } : {}), localGatePolicyDigest: authorityDigest({ v: "reelier.local-gate-policy/v1", tenant: config.tenant }), decisionSink: decisions, signer: { async sign(input) { return { signerId: "local-gate", signature: signAuthorityDigest(privateKey, input.purpose, input.digest) }; } }, eventId: () => `evt_${randomUUID()}`, capabilityId: () => `cap_${randomUUID()}` });
-  const publication = createFileReceiptPublication({ rootDir: config.receiptDir });
+  const publication = options.portableReceiptPublication ?? createFileReceiptPublication({ rootDir: config.receiptDir });
   const secrets = options.secretResolver ?? createSecretResolver(options.secretResolverOptions);
   if (config.nativeHttpsRoutes && config.nativeHttpsRoutes.length > 0 && (!options.routeAuthority || !options.authenticatedProviderIdentity || !options.certifiedDispatch || !options.verifyAuthenticatedProviderIdentity)) throw new TypeError("native HTTPS routes require certified route, identity, verifier, and dispatch wiring");
   const certifiedDispatch = options.certifiedDispatch ? { ...options.certifiedDispatch, ...(options.latencyRecorder ? { latencyRecorder: options.latencyRecorder } : {}), verifyIdentity: options.verifyAuthenticatedProviderIdentity ?? options.certifiedDispatch.verifyIdentity } : undefined;
