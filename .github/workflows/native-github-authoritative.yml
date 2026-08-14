@@ -47,6 +47,9 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
+      - name: Install and build verifier from tracked source
+        shell: bash
+        run: npm ci --ignore-scripts --no-audit --no-fund && npm run build
       - name: Refuse mutable candidate inputs
         env:
           EXPECTED_CANDIDATE_ID: ${{ inputs.candidate_id }}
@@ -87,15 +90,34 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-      - name: Verify retained Ubuntu and Windows artifacts offline
+      - name: Install and build verifier from tracked source
+        shell: bash
+        run: npm ci --ignore-scripts --no-audit --no-fund && npm run build
+      - name: Stage retained signed evidence
         env:
           BUNDLE_PATH: ${{ inputs.bundle_path }}
           CHECKER_PUBLIC_KEY_PATH: ${{ inputs.checker_public_key_path }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .superpowers/input
+          case "$BUNDLE_PATH" in /*) ;; *) printf '{"v":"reelier.native-github-gate4-decision/v1","state":"insufficient","decision":"blocked","reason":"bundle path must be absolute"}\n' > .superpowers/native-github-gate4-decision.json; exit 78 ;; esac
+          case "$CHECKER_PUBLIC_KEY_PATH" in /*) ;; *) printf '{"v":"reelier.native-github-gate4-decision/v1","state":"insufficient","decision":"blocked","reason":"checker key path must be absolute"}\n' > .superpowers/native-github-gate4-decision.json; exit 78 ;; esac
+          if ! test -f "$BUNDLE_PATH" || ! test -s "$BUNDLE_PATH" || ! test -f "$CHECKER_PUBLIC_KEY_PATH" || ! test -s "$CHECKER_PUBLIC_KEY_PATH"; then
+            printf '{"v":"reelier.native-github-gate4-decision/v1","state":"insufficient","decision":"blocked","reason":"retained signed evidence bundle or checker key is unavailable"}\n' > .superpowers/native-github-gate4-decision.json
+            exit 78
+          fi
+          cp -- "$BUNDLE_PATH" .superpowers/input/bundle.json
+          cp -- "$CHECKER_PUBLIC_KEY_PATH" .superpowers/input/checker-public-key.pem
+      - name: Verify retained Ubuntu and Windows artifacts offline
+        env:
+          BUNDLE_PATH: ${{ github.workspace }}/.superpowers/input/bundle.json
+          CHECKER_PUBLIC_KEY_PATH: ${{ github.workspace }}/.superpowers/input/checker-public-key.pem
           EXPECTED_RUNNER_SOURCE_COMMIT: ${{ github.sha }}
         shell: bash
         run: node scripts/verify-native-github-hosted.mjs --bundle "$BUNDLE_PATH" --execution hosted-run --public-key "$CHECKER_PUBLIC_KEY_PATH"
       - name: Upload private Gate 4 evidence
-        if: ${{ success() }}
+        if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
           name: native-github-gate4-ubuntu
@@ -122,15 +144,35 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-      - name: Verify retained artifacts without native execution
+      - name: Install and build verifier from tracked source
+        shell: pwsh
+        run: npm ci --ignore-scripts --no-audit --no-fund; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; npm run build
+      - name: Stage retained signed evidence
         env:
           BUNDLE_PATH: ${{ inputs.bundle_path }}
           CHECKER_PUBLIC_KEY_PATH: ${{ inputs.checker_public_key_path }}
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path .superpowers/input | Out-Null
+          if (-not [System.IO.Path]::IsPathFullyQualified($env:BUNDLE_PATH) -or -not [System.IO.Path]::IsPathFullyQualified($env:CHECKER_PUBLIC_KEY_PATH)) {
+            '{"v":"reelier.native-github-gate4-decision/v1","state":"insufficient","decision":"blocked","reason":"retained evidence paths must be absolute"}' | Set-Content -Encoding utf8 .superpowers/native-github-gate4-decision.json
+            exit 78
+          }
+          if (-not (Test-Path -LiteralPath $env:BUNDLE_PATH -PathType Leaf) -or -not (Test-Path -LiteralPath $env:CHECKER_PUBLIC_KEY_PATH -PathType Leaf)) {
+            '{"v":"reelier.native-github-gate4-decision/v1","state":"insufficient","decision":"blocked","reason":"retained signed evidence bundle or checker key is unavailable"}' | Set-Content -Encoding utf8 .superpowers/native-github-gate4-decision.json
+            exit 78
+          }
+          Copy-Item -LiteralPath $env:BUNDLE_PATH -Destination .superpowers/input/bundle.json -Force
+          Copy-Item -LiteralPath $env:CHECKER_PUBLIC_KEY_PATH -Destination .superpowers/input/checker-public-key.pem -Force
+      - name: Verify retained artifacts without native execution
+        env:
+          BUNDLE_PATH: ${{ github.workspace }}\.superpowers\input\bundle.json
+          CHECKER_PUBLIC_KEY_PATH: ${{ github.workspace }}\.superpowers\input\checker-public-key.pem
           EXPECTED_RUNNER_SOURCE_COMMIT: ${{ github.sha }}
         shell: pwsh
         run: node scripts/verify-native-github-hosted.mjs --bundle "$env:BUNDLE_PATH" --execution hosted-run --public-key "$env:CHECKER_PUBLIC_KEY_PATH"
       - name: Upload private Windows evidence
-        if: ${{ success() }}
+        if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
           name: native-github-gate4-windows
