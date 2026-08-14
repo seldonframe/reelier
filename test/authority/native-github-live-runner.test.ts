@@ -14,6 +14,19 @@ const publicCommit = "03ac48e";
 const tarballDigest = "sha256:0659c2f402002d733dfd2621c5d8cce5df301975606a3fcb1b802e492bec5309";
 const packDigest = "sha256:8101632acbacaf2738b8a7e698b0fb301539163edc713a37e74df0a6d233d689";
 const task9Digest = "sha256:9999999999999999999999999999999999999999999999999999999999999999";
+const task8BaselineDigest = "sha256:8888888888888888888888888888888888888888888888888888888888888888";
+const portableContractDigest = "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+const lanes = [
+  { laneId: "operator-evidence", commitSha: "cccccccccccccccccccccccccccccccccccccccc" },
+  { laneId: "provider-authority", commitSha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+  { laneId: "reconciliation-verifier", commitSha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
+];
+const checkers = [
+  { role: "contract", signerId: "checker-contract", publicKeyDigest: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", verifierVersion: "authority-contract-checker/v1", verdictDigest: portableContractDigest },
+  { role: "pack", signerId: "checker-pack", publicKeyDigest: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", verifierVersion: "packed-consumer/v1", verdictDigest: packDigest },
+  { role: "task8", signerId: "checker-task8", publicKeyDigest: task8BaselineDigest, verifierVersion: "task8-baseline-verifier/v1", verdictDigest: task8BaselineDigest },
+  { role: "task9", signerId: "checker-task9", publicKeyDigest: task9Digest, verifierVersion: "portable-evidence-verifier/v1", verdictDigest: task9Digest },
+];
 
 async function source(): Promise<{ workflow: string; runner: string }> {
   return { workflow: await readFile(workflowPath, "utf8"), runner: await readFile(runnerPath, "utf8") };
@@ -30,6 +43,23 @@ function runPreflight(candidate: string, mode: "preflight" | "run"): ReturnType<
   });
 }
 
+function validCandidate(extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    v: "reelier.native-github-candidate/v1",
+    candidateId,
+    publicCommitSha: publicCommit,
+    tarballDigest,
+    packDigest,
+    task8BaselineDigest,
+    task9VerificationDigest: task9Digest,
+    portableEvidenceContractDigest: portableContractDigest,
+    laneCommits: lanes,
+    checkerIdentities: checkers,
+    provenance: { v: "reelier.native-candidate-provenance/v1", source: "clean-export", reproducibility: "hermetic-offline", liveProviderStatus: "absent", credentialStatus: "absent", workflowDispatch: "absent" },
+    ...extra,
+  };
+}
+
 test("guarded workflow is manual-only, approval-protected, least-privilege, and explicitly pinned", async () => {
   const { workflow } = await source();
   assert.match(workflow, /workflow_dispatch:/);
@@ -39,6 +69,7 @@ test("guarded workflow is manual-only, approval-protected, least-privilege, and 
   assert.match(workflow, /matrix:\s*\n[\s\S]*os:\s*\n\s+-\s*ubuntu-latest\s*\n\s+-\s*windows-latest/);
   for (const pin of [candidateId, publicCommit, tarballDigest, packDigest, task9Digest]) assert.match(workflow, new RegExp(pin.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   assert.match(workflow, /disposable[_-]?target|target/i);
+  assert.match(workflow, /EXPECTED_CANDIDATE_ID/);
   assert.doesNotMatch(workflow, /production/i);
   assert.doesNotMatch(workflow, /continue-on-error|retry|timeout-minutes:\s*0/i);
   assert.doesNotMatch(workflow, /\$\{\{\s*secrets\.[^}]+\s*\}\}/);
@@ -55,6 +86,7 @@ test("runner source is fail-closed and never interpolates credentials or unsafe 
   assert.match(runner, /preflight/);
   assert.match(runner, /NATIVE_GITHUB_LIVE_APPROVED/);
   assert.match(runner, /NATIVE_GITHUB_LIVE_EXECUTE/);
+  assert.match(runner, /EXPECTED_CANDIDATE_ID/);
   assert.match(runner, /ambiguous|resend/i);
   assert.doesNotMatch(runner, /fetch\(|https?:\/\//);
 });
@@ -62,24 +94,45 @@ test("runner source is fail-closed and never interpolates credentials or unsafe 
 test("preflight emits deterministic sanitized status and local run refuses", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "reelier-native-live-runner-"));
   const candidate = path.join(root, "candidate.json");
-  await writeFile(candidate, JSON.stringify({ candidateId, publicCommitSha: publicCommit, tarballDigest, packDigest, task9VerificationDigest: task9Digest, canary: "canary-private-token" }));
+  await writeFile(candidate, JSON.stringify(validCandidate()));
   const preflight = runPreflight(candidate, "preflight");
   assert.equal(preflight.status, 0, String(preflight.stderr));
   assert.match(String(preflight.stdout), /preflight|candidate/i);
-  assert.doesNotMatch(String(preflight.stdout), /canary-private-token|candidate\.json|03ac48e/);
+  assert.doesNotMatch(String(preflight.stdout), /candidate\.json|03ac48e/);
+  const canary = path.join(root, "canary.json");
+  await writeFile(canary, JSON.stringify(validCandidate({ secret: "canary-private-token" })));
+  const refusedCanary = runPreflight(canary, "preflight");
+  assert.equal(refusedCanary.status, 1);
+  assert.doesNotMatch(`${String(refusedCanary.stdout)}${String(refusedCanary.stderr)}`, /canary-private-token/);
   assert.equal(runPreflight(candidate, "run").status, 1);
 });
 
 test("runner refuses relative, duplicate, missing, and mismatched candidates", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "reelier-native-live-runner-invalid-"));
   const candidate = path.join(root, "candidate.json");
-  await writeFile(candidate, JSON.stringify({ candidateId, publicCommitSha: publicCommit, tarballDigest, packDigest, task9VerificationDigest: task9Digest }));
+  await writeFile(candidate, JSON.stringify(validCandidate()));
   assert.equal(runPreflight("candidate.json", "preflight").status, 1);
   const duplicate = spawnSync(process.execPath, [runnerPath, "--candidate", candidate, "--candidate", candidate, "--mode", "preflight"], { encoding: "utf8" });
   assert.equal(duplicate.status, 1);
   const mismatch = path.join(root, "mismatch.json");
-  await writeFile(mismatch, JSON.stringify({ candidateId: "sha256:deadbeef", publicCommitSha: publicCommit, tarballDigest, packDigest, task9VerificationDigest: task9Digest }));
+  await writeFile(mismatch, JSON.stringify(validCandidate({ candidateId: "sha256:deadbeef" })));
   assert.equal(runPreflight(mismatch, "preflight").status, 1);
+});
+
+test("runner refuses schema, contract, lane, checker, and provenance mutations", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "reelier-native-live-runner-bindings-"));
+  const mutations: Record<string, unknown>[] = [
+    { v: "reelier.native-github-candidate/v2" },
+    { portableEvidenceContractDigest: "sha256:deadbeef" },
+    { laneCommits: [{ ...lanes[0], commitSha: "d".repeat(40) }, ...lanes.slice(1)] },
+    { checkerIdentities: [{ ...checkers[0], signerId: "substituted" }, ...checkers.slice(1)] },
+    { provenance: { ...(validCandidate().provenance as Record<string, unknown>), workflowDispatch: "verified" } },
+  ];
+  for (const [index, mutation] of mutations.entries()) {
+    const candidate = path.join(root, `candidate-${Math.random().toString(16).slice(2)}.json`);
+    await writeFile(candidate, JSON.stringify(validCandidate(mutation)));
+    assert.equal(runPreflight(candidate, "preflight").status, 1, `mutation ${index} must refuse`);
+  }
 });
 
 test("workflow policy parser refuses unsafe mutations", async () => {
@@ -95,4 +148,6 @@ test("workflow policy parser refuses unsafe mutations", async () => {
   ];
   for (const variant of unsafe) assert.ok(validateWorkflowText(variant).length > 0);
   assert.deepEqual(validateWorkflowText(workflow), [], "the authored workflow itself must pass the same parser");
+  assert.match(workflow, /ref:\s*\$\{\{\s*github\.sha\s*\}\}/, "runner source must come from the workflow revision");
+  assert.match(workflow, /NATIVE_PUBLIC_COMMIT:\s*03ac48e/);
 });
