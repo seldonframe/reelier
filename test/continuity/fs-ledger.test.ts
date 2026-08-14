@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { FsContinuityLedger } from "../../src/continuity/fs-ledger.js";
 import { actor, checkpoint, decision, opened, withRoot } from "./fixtures.js";
@@ -59,5 +59,16 @@ test("ledger rejects unknown task-directory entries", async () => {
     await ledger.append(actor, checkpoint(0, [opened]));
     await writeFile(join(root, "task_1", "notes.txt"), "not a segment");
     await assert.rejects(() => ledger.read("task_1"), /unknown.*entry/i);
+  });
+});
+
+test("ledger refuses a task path that is a directory link", async () => {
+  await withRoot(async root => {
+    const target = join(root, "outside");
+    await mkdir(target);
+    await symlink(target, join(root, "task_1"), "junction");
+    const ledger = new FsContinuityLedger(root);
+    await assert.rejects(() => ledger.append(actor, checkpoint(0, [opened])), /symbolic link|directory link/i);
+    assert.deepEqual(await readdir(target), []);
   });
 });
