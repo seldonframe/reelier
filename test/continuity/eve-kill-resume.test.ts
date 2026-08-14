@@ -40,7 +40,7 @@ test("real Eve 0.37.1 preserves Reelier continuity across process and session bo
       assert.equal(value.noThirdSegmentAfterReplay, true);
       assert.deepEqual(value.retryEvidence, { sameCoordinates: true, distinctMetaIds: true, type: "step.started" });
       assert.equal(value.recoveryBoundary, "session.waiting");
-      assert.equal(value.recoveryPostCount, 0);
+      assert.deepEqual(value.recoverySessionPosts, []);
       assert.deepEqual(value.counters, { outcomeRequests: 0, statusReads: 0, providerDispatches: 0, reservations: 0 });
     });
     await t.test("Path C apply survives process death without resend", () => {
@@ -50,11 +50,13 @@ test("real Eve 0.37.1 preserves Reelier continuity across process and session bo
       assert.equal(value.reservations, 1);
       assert.equal(value.providerWrites, 1);
       assert.equal(value.verifierProducedConsequence, true);
-      assert.equal(value.cutLifecycleState, "ambiguous");
-      assert.equal(value.cutVerdict, "unresolved");
-      assert.equal(value.ambiguousState, "ambiguous");
-      assert.deepEqual(value.ambiguousNextSafeActions, ["reconcile-before-retry"]);
-      assert.equal(value.prematureSuccessProjected, false);
+      assert.equal(value.cutSubmissionStatus, 202);
+      assert.equal(value.cutStepStarted, true);
+      assert.equal(value.cutTerminalEventObserved, false);
+      assert.deepEqual(value.preImportConsequenceStates, []);
+      assert.equal(value.statusReads, 1);
+      assert.equal(value.nativeStatusLifecycle, "acknowledged");
+      assert.equal(value.postImportVerifiedConsequenceCount, 1);
       assert.deepEqual(value.retryEvidence, { sameCoordinates: true, distinctMetaIds: true, type: "step.started" });
     });
     await t.test("overlapping stream cursor deduplicates by event id", () => {
@@ -82,9 +84,13 @@ test("real Eve 0.37.1 preserves Reelier continuity across process and session bo
       assert.equal(value.failedBeforeStepStarted, true, JSON.stringify(value));
       assert.equal(value.ledgerUnchanged, true);
       assert.equal(value.effectsUnchanged, true);
-      assert.equal(value.hostIdentityUnchanged, true);
-      assert.equal(value.ledgerTaskUnchanged, true);
-      assert.equal(value.hostileAuthorityNotProjected, true);
+      assert.equal(value.hostileToolActivityObserved, true);
+      assert.deepEqual(value.taskDirectories, [value.legitimateTaskId]);
+      assert.equal(value.appendedSegmentActorTaskId, value.legitimateTaskId);
+      assert.equal(value.appendedSegmentActorPrincipalId, value.legitimatePrincipalId);
+      assert.equal(value.appendedSegmentActorWorkloadId, value.legitimateWorkloadId);
+      assert.equal(value.projectionTaskId, value.legitimateTaskId);
+      assert.equal(value.hostileAuthorityAbsent, true);
     });
     await t.test("changed mock model leaves projection bytes unchanged", () => {
       const value = matrix.scenarios.modelNeutrality;
@@ -94,6 +100,15 @@ test("real Eve 0.37.1 preserves Reelier continuity across process and session bo
   } finally {
     await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
+});
+
+test("Eve matrix routes every HTTP request through one observable boundary", async () => {
+  const processSource = await readFile(resolve("conformance/continuity-adapter/v1/eve-fixture/scripts/eve-process.mjs"), "utf8");
+  const streamSource = await readFile(resolve("conformance/continuity-adapter/v1/eve-fixture/scripts/stream.mjs"), "utf8");
+  assert.doesNotMatch(processSource, /\bfetch\s*\(/u);
+  assert.equal([...streamSource.matchAll(/\bfetch\s*\(/gu)].length, 1);
+  assert.match(streamSource, /export function createObservedEveClient/u);
+  assert.doesNotMatch(processSource, /recoveryPostCount|ambiguousAppend|event_eve_outcome_(?:reserved|dispatched|ambiguous)/u);
 });
 
 test("closed Eve report rejects active and hidden structures before reading them", async () => {
