@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
+import { createRequire } from "node:module";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import test from "node:test";
 import { signAuthorityDigest } from "../../src/authority/crypto.js";
 import {
@@ -131,6 +134,20 @@ test("the sanitized portable export joins the private graph without copying iden
   for (const signerId of ["maxime@example.com", "account_fixlyai", "github-login", "free form reviewer"]) {
     assert.throws(() => createSanitizedPortableOutcomeEvidenceExport({ privateGraph, verifiedAt: "2026-08-13T12:04:00.000Z", signer: { ...exportSigner, signerId } }), /opaque|digest|signer/i);
   }
+});
+
+test("the complete sanitized portable artifact satisfies its closed nonidentifying schema", async () => {
+  const f = fixture();
+  const keys = generateKeyPairSync("ed25519");
+  const privateGraph = { jobCard: { sponsor: "maxime@example.com", accountId: "account_fixlyai" }, portableOutcomeEvidence: [f.publication] };
+  const portable = createSanitizedPortableOutcomeEvidenceExport({ privateGraph, verifiedAt: "2026-08-13T12:04:00.000Z", signer: { signerId: DIGEST("portable-schema-signer"), sign: digest => signAuthorityDigest(keys.privateKey, "authority-evidence", digest) } });
+  const schema = JSON.parse(await readFile(path.resolve("contract/certification/v1/sanitized-portable-outcome-evidence.schema.json"), "utf8"));
+  const Ajv2020 = createRequire(import.meta.url)("ajv/dist/2020").default;
+  const validate = new Ajv2020({ strict: false }).compile(schema);
+  assert.equal(validate(JSON.parse(JSON.stringify(portable))), true, JSON.stringify(validate.errors));
+  const leaked: any = { ...portable, accountId: "account_fixlyai" };
+  assert.equal(validate(leaked), false);
+  assert.doesNotMatch(JSON.stringify(portable), /maxime@example\.com|account_fixlyai|jobCard|accountId/i);
 });
 
 test("removing the route/request/native post-state extension makes offline verification refuse", () => {

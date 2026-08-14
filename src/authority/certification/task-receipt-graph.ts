@@ -1,7 +1,7 @@
 import { createPublicKey } from "node:crypto";
 import type { AuthorityReceiptBundle, AuthoritySignature } from "../types.js";
 import { authorityDigest } from "../wire.js";
-import { verifyAuthorityReceiptBundle, verifyPortableOutcomeEvidencePublication } from "../verify.js";
+import { verifyAuthorityReceiptBundle, verifyPortableOutcomeEvidencePublication, verifySanitizedPortableOutcomeEvidenceExport, type PortableOutcomeEvidenceVerifier } from "../verify.js";
 import { AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST } from "../adapter-contract.js";
 import { verifyCertificationArtifactKeyBinding, type CertificationArtifactKeyBindingCommitmentV1, type CertificationArtifactKeyBindingV1 } from "./lifecycle-authority.js";
 import type { AuthorityKeyDescriptorV1 } from "./authority.js";
@@ -10,7 +10,8 @@ import type { JobCardTrustPinV1 } from "../host/deployment.js";
 import { verifyAuthoritySignature } from "../crypto.js";
 import type { CertificationReceiptExtensionV1 } from "./lifecycle-receipts.js";
 import { verifyCertificationPortableEvidence, type CertificationDuplicateAttemptHeadV1, type CertificationDuplicateAttemptV1, type CertificationDuplicateDecisionV1, type CertificationPolicyEvidenceV1, type CertificationPostStateEvidenceV1, type CertificationTaskAuthorityEvidenceV1, type CertificationTaskStatusEvidenceV1 } from "./portable-evidence.js";
-import type { PortableOutcomeEvidencePublicationV1 } from "../host/portable-receipts.js";
+import type { PortableOutcomeEvidencePublicationV1, SanitizedPortableOutcomeEvidenceExportV1 } from "../host/portable-receipts.js";
+import type { HttpResponseSemanticsProfileV1 } from "../host/http-response-semantics.js";
 
 const COLLECTIONS = ["grants", "principals", "allocations", "budgetEvents", "outcomes", "exceptions", "receipts", "receiptExtensions", "taskAuthorities", "postStateEvidence", "portableOutcomeEvidence", "policyEvidence", "taskStatusEvidence", "duplicateAttempts", "duplicateDecisions", "priorReceiptLinks", "keyDescriptors"] as const;
 const COUNT_FIELDS = ["grants", "principals", "allocations", "budgetEvents", "outcomes", "exceptions", "topologyEvidence", "leases", "receipts", "receiptExtensions", "taskAuthorities", "postStateEvidence", "portableOutcomeEvidence", "policyEvidence", "taskStatusEvidence", "duplicateAttempts", "duplicateDecisions", "priorReceiptLinks", "keyDescriptors", "bindingEntries"] as const;
@@ -41,10 +42,10 @@ export function createCertificationTaskReceiptGraph(input: Omit<CertificationTas
   return Object.freeze({ ...content, terminalCommitment });
 }
 
-export function verifyCertificationTaskReceiptGraph(value: unknown, options: Readonly<{ trustPin: JobCardTrustPinV1; currentTrustObservation: Readonly<Record<string, unknown>>; now: Date }>): Readonly<{ status: "verified"; digest: string; duplicateHistoryFreshness: "unchecked" }> {
-  if (!options?.trustPin || !options.currentTrustObservation || !(options.now instanceof Date) || !Number.isFinite(options.now.getTime())) throw new TypeError("external current trust observation and verification time anchors are required for graph verification");
+export function verifyCertificationTaskReceiptGraph(value: unknown, options: Readonly<{ trustPin: JobCardTrustPinV1; currentTrustObservation: Readonly<Record<string, unknown>>; now: Date; expectedResponseSemanticsProfile: HttpResponseSemanticsProfileV1 }>): Readonly<{ status: "verified"; digest: string; duplicateHistoryFreshness: "unchecked" }> {
+  if (!options?.trustPin || !options.currentTrustObservation || !(options.now instanceof Date) || !Number.isFinite(options.now.getTime()) || !options.expectedResponseSemanticsProfile) throw new TypeError("external current trust, verification time, and response profile anchors are required for graph verification");
   const fields = ["v","adapterContractDigest","portableOutcomeEvidenceVersion","taskId","authorityCellId","rootGrant","grants","principals","allocations","budgetEvents","outcomes","exceptions","receipts","receiptExtensions","taskAuthorities","postStateEvidence","portableOutcomeEvidence","policyEvidence","taskStatusEvidence","duplicateAttemptHead","duplicateAttempts","duplicateDecisions","binding","commitment","keyDescriptors","signedReadiness","topology","leases","priorReceiptLinks","terminalCommitment"];
-  const g = exactRecord(value, fields, "portable receipt graph");
+  const g = exactRecord(value, fields, "private certification receipt graph");
   if (g.v !== "reelier.certification-task-receipt-graph/v1" || g.adapterContractDigest !== AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST || g.portableOutcomeEvidenceVersion !== "reelier.portable-outcome-graph-extension/v1" || typeof g.taskId !== "string" || typeof g.authorityCellId !== "string") throw new TypeError("receipt graph is closed, extension-versioned, or contract mismatched");
   if (containsConfidential(g)) throw new TypeError("receipt graph contains confidential fields");
   for (const key of COLLECTIONS) if (!Array.isArray(g[key])) throw new TypeError(`receipt graph ${key} collection is invalid`);
@@ -120,7 +121,7 @@ function verifyReceiptChains(g: any, pin: JobCardTrustPinV1, root: any, child: a
 
 function verifyReceiptExtensions(g: any, pin: JobCardTrustPinV1, active: Map<string, boolean>): void { const descriptor = pin.keyDescriptors.find(item => item.role === "authority-cell" && item.purpose === "authority-receipt"); if (!descriptor || !active.get(authorityDigest(descriptor)) || g.receiptExtensions.length !== g.receipts.length) throw new TypeError("receipt graph Adapter Contract extensions are incomplete or signer is inactive"); for (const [index, extension] of g.receiptExtensions.entries()) { exactRecord(extension, ["v","receiptDigest","adapterContractDigest","signerId","signature"], "receipt graph Adapter Contract extension"); const body = { v: extension.v, receiptDigest: extension.receiptDigest, adapterContractDigest: extension.adapterContractDigest, signerId: extension.signerId }; if (extension.v !== "reelier.certification-receipt-extension/v1" || extension.receiptDigest !== authorityDigest(g.receipts[index].receipt.value) || extension.adapterContractDigest !== AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST || extension.adapterContractDigest !== g.adapterContractDigest || extension.signerId !== descriptor.keyId || !verifyAuthoritySignature(publicKey(descriptor), "authority-receipt", authorityDigest(body), extension.signature)) throw new TypeError("receipt graph Adapter Contract extension is invalid"); } }
 
-function verifyPortableOutcomeCollection(g: any, evidenceRoot: AuthorityKeyDescriptorV1, options: Readonly<{ trustPin: JobCardTrustPinV1; currentTrustObservation: Readonly<Record<string, unknown>>; now: Date }>): void {
+function verifyPortableOutcomeCollection(g: any, evidenceRoot: AuthorityKeyDescriptorV1, options: Readonly<{ trustPin: JobCardTrustPinV1; currentTrustObservation: Readonly<Record<string, unknown>>; now: Date; expectedResponseSemanticsProfile: HttpResponseSemanticsProfileV1 }>): void {
   if (g.portableOutcomeEvidence.length !== g.postStateEvidence.length || g.portableOutcomeEvidence.length === 0) throw new TypeError("portable native outcome evidence collection is omitted or duplicated");
   const verifier = { signerId: evidenceRoot.keyId, publicKey: publicKey(evidenceRoot), purpose: "authority-evidence" as const };
   for (const [index, publication] of g.portableOutcomeEvidence.entries()) {
@@ -137,8 +138,21 @@ function verifyPortableOutcomeCollection(g: any, evidenceRoot: AuthorityKeyDescr
       expectedCleanupParent = terminals[0].receipt.value.priorReceiptDigest;
     }
     if (publication.evidence?.cleanupParentReceiptDigest !== expectedCleanupParent) throw new TypeError("portable cleanup parent does not equal the independently verified durable cleanup chain parent");
-    verifyPortableOutcomeEvidencePublication(publication, { executionVerifier: verifier, reconciliationVerifier: verifier, currentTrustObservation, receiptChain, collectionCounts, terminalDigest, now: verificationTime });
+    verifyPortableOutcomeEvidencePublication(publication, { executionVerifier: verifier, reconciliationVerifier: verifier, currentTrustObservation, receiptChain, collectionCounts, terminalDigest, now: verificationTime, expectedResponseSemanticsProfile: options.expectedResponseSemanticsProfile });
   }
+}
+
+/** Verifies the identity-bearing graph privately, then verifies the separate
+ * sanitized export's digest/count join. No private graph field is copied into
+ * the returned portable result. */
+export function verifyCertificationSanitizedPortableOutcomeEvidenceExport(
+  portable: SanitizedPortableOutcomeEvidenceExportV1,
+  privateGraph: unknown,
+  options: Readonly<{ trustPin: JobCardTrustPinV1; currentTrustObservation: Readonly<Record<string, unknown>>; now: Date; expectedResponseSemanticsProfile: HttpResponseSemanticsProfileV1; portableVerifier: PortableOutcomeEvidenceVerifier }>,
+): Readonly<{ status: "verified"; graphDigest: string; portableDigest: string }> {
+  const graph = verifyCertificationTaskReceiptGraph(privateGraph, options);
+  const verified = verifySanitizedPortableOutcomeEvidenceExport(portable, { privateGraph: privateGraph as Readonly<Record<string, unknown>>, verifier: options.portableVerifier });
+  return Object.freeze({ status: "verified", graphDigest: graph.digest, portableDigest: verified.digest });
 }
 
 function portableCollectionCounts(graph: any, post: any): Readonly<Record<string, number>> { return Object.freeze({ receipts: graph.receipts.length, receiptExtensions: graph.receiptExtensions.length, portableOutcomeEvidence: Array.isArray(graph.portableOutcomeEvidence) ? graph.portableOutcomeEvidence.length : graph.postStateEvidence.length, postStateEvidence: graph.postStateEvidence.length, outcomes: graph.outcomes.length, requestReceipts: graph.receipts.filter((bundle: any) => { const requestId = bundle.receipt?.value?.decisionContext?.requestId; return requestId === post.requestId || requestId === `${post.requestId}.cleanup`; }).length }); }

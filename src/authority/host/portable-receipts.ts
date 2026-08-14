@@ -48,6 +48,19 @@ export interface PortableOutcomeEvidencePublicationV1 {
   readonly reconciliationAttestation: PortableOutcomeAttestationV1;
 }
 
+/** Public, nonidentifying join artifact. The receipt graph that supplies these
+ * commitments remains private and may contain principal/account identity. */
+export interface SanitizedPortableOutcomeEvidenceExportV1 {
+  readonly v: "reelier.sanitized-portable-outcome-evidence/v1";
+  readonly privateGraphDigest: string;
+  readonly outcomeCollectionDigest: string;
+  readonly outcomeCount: number;
+  readonly responseSemanticsProfilesDigest: string;
+  readonly verifiedAt: string;
+  readonly signerId: string;
+  readonly signature: AuthoritySignature;
+}
+
 export interface PortableOutcomeSigner {
   readonly signerId: string;
   sign(digest: string): AuthoritySignature;
@@ -74,6 +87,26 @@ export type PortableOutcomeEvidencePublicationInput = Readonly<{
   executionSigner: PortableOutcomeSigner;
   reconciliationSigner: PortableOutcomeSigner;
 }>;
+
+export function createSanitizedPortableOutcomeEvidenceExport(input: Readonly<{ privateGraph: Readonly<Record<string, unknown>>; verifiedAt: string; signer: PortableOutcomeSigner }>): SanitizedPortableOutcomeEvidenceExportV1 {
+  assertInertRecord(input?.privateGraph, "private receipt graph");
+  const collection = input.privateGraph.portableOutcomeEvidence;
+  if (!Array.isArray(collection) || collection.length === 0) throw new TypeError("private receipt graph portable outcome collection is absent");
+  if (!portableTimestamp(input.verifiedAt)) throw new TypeError("sanitized portable export timestamp is invalid");
+  if (!DIGEST.test(input.signer?.signerId) || typeof input.signer.sign !== "function") throw new TypeError("sanitized portable export signer must be an opaque digest-derived id");
+  const profileDigests = collection.map((item: any) => item?.evidence?.responseSemanticsProfileDigest);
+  if (profileDigests.some(value => typeof value !== "string" || !DIGEST.test(value))) throw new TypeError("sanitized portable export response profile commitment is invalid");
+  const body = Object.freeze({
+    v: "reelier.sanitized-portable-outcome-evidence/v1" as const,
+    privateGraphDigest: authorityDigest(input.privateGraph),
+    outcomeCollectionDigest: authorityDigest(collection),
+    outcomeCount: collection.length,
+    responseSemanticsProfilesDigest: authorityDigest(profileDigests),
+    verifiedAt: input.verifiedAt,
+    signerId: input.signer.signerId,
+  });
+  return Object.freeze({ ...body, signature: input.signer.sign(authorityDigest(body)) });
+}
 
 /** Composes durable local publication with a portable publication. The local
  * write must complete before portable evidence can become externally visible. */
@@ -129,3 +162,4 @@ function assertInertRecord(value: unknown, label: string): asserts value is Reco
   if (!value || typeof value !== "object" || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype || Object.getOwnPropertySymbols(value).length !== 0) throw new TypeError(`portable ${label} is not a canonical object`);
   if (Object.values(Object.getOwnPropertyDescriptors(value)).some(descriptor => !("value" in descriptor) || descriptor.get || descriptor.set)) throw new TypeError(`portable ${label} contains an accessor`);
 }
+function portableTimestamp(value: unknown): value is string { return typeof value === "string" && Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value; }
