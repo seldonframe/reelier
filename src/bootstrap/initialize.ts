@@ -6,6 +6,7 @@ import { authorityDigest } from "../authority/wire.js";
 import type { InitializationDependencies } from "../initialization.js";
 import { normalizeRouteCoverageV1 } from "../routes/normalize.js";
 import { createBootstrapNativeSessionFactory, type BootstrapNativeSession, type BootstrapNativeSessionFactory } from "./native-helper.js";
+import { LocalMcpConsentRequiredError, planLocalMcpPreparation, publishLocalMcpPreparation, rollbackLocalMcpPreparation, type LocalMcpPreparationPlan, type LocalMcpPreparationSummary } from "./local-mcp-config.js";
 
 export const PREPARATION_STATES = Object.freeze(["absent", "locked", "prepared", "committing", "complete", "rolling-back", "recovery-required"] as const);
 export type PreparationState = (typeof PREPARATION_STATES)[number];
@@ -21,7 +22,7 @@ export interface InitializeAgentProjectOptions {
   /** Deterministic crash seam for transaction tests; leaves the durable lock and journal in place. */
   readonly interruptAfterState?: "locked" | "prepared" | "committing";
   /** Deterministic filesystem-fault seam used to prove post-publication rollback. */
-  readonly failAt?: "after-publication" | "final-reread";
+  readonly failAt?: "after-publication" | "after-configuration-publication" | "final-reread";
   /** Test seam; production always selects the verified packaged native helper. */
   readonly nativeSessionFactory?: BootstrapNativeSessionFactory;
 }
@@ -46,6 +47,8 @@ export interface BootstrapPreparationReport {
   readonly completeness: "not-proved";
   readonly recoveryCommand: string;
   readonly up: "unavailable";
+  /** Runtime-only preparation disclosure; persisted report bytes remain the closed v1 shape. */
+  readonly configuration?: LocalMcpPreparationSummary;
 }
 
 interface CanonicalTarget {
@@ -133,6 +136,8 @@ export async function initializeAgentProject(options: InitializeAgentProjectOpti
   let rollbackAuthorized = false;
   let claimRestored = false;
   let lockReplaced = false;
+  let localConfigPlan: LocalMcpPreparationPlan | undefined;
+  let localConfigPublished = false;
   let resourcesClosed = false;
   try {
     const rawJournal = await readOptionalJson(journalPath);
@@ -143,6 +148,8 @@ export async function initializeAgentProject(options: InitializeAgentProjectOpti
       throw new Error("named bootstrap is busy: lock owner has no closed recovery journal");
     }
     const routeSnapshotDigest = await existingRouteSnapshotDigest(bootstrapRoot);
+    localConfigPlan = await planLocalMcpPreparation(canonicalTarget.projectRoot, bootstrapRoot, canonicalTarget.reelierVersion);
+    if (localConfigPlan?.changed && options.yes !== true) throw new LocalMcpConsentRequiredError();
     await assertProjectIdentity(canonicalTarget.projectRoot, rootHandle, rootIdentity.dev, rootIdentity.ino);
     await assertDirectoryIdentity(bootstrapRoot, retainedBootstrapHandle, retainedBootstrapIdentity.dev, retainedBootstrapIdentity.ino, "bootstrap root");
     const target = Object.freeze({ ...canonicalTarget, routeSnapshotDigest });
@@ -155,7 +162,7 @@ export async function initializeAgentProject(options: InitializeAgentProjectOpti
           assertTransactionIdentity(journal, target, planDigest);
           if (journal.state === "complete") {
             const report = await readVerifiedComplete(bootstrapRoot, journal);
-            return report;
+            return withConfiguration(report, localConfigPlan?.summary);
           }
           const recoveryRequired = journal.state === "recovery-required";
           await retainedNativeSession.replaceLock(Buffer.from(canonicalBytes(acquired.lock)));
@@ -180,7 +187,7 @@ export async function initializeAgentProject(options: InitializeAgentProjectOpti
         }
       }
       assertTransactionIdentity(journal, target, planDigest);
-      if (journal.state === "complete") return await readVerifiedComplete(bootstrapRoot, journal);
+      if (journal.state === "complete") return withConfiguration(await readVerifiedComplete(bootstrapRoot, journal), localConfigPlan?.summary);
       throw new Error("named bootstrap journal exists without an exclusively claimed recovery lock");
     }
     if (journal === undefined) {
@@ -241,13 +248,26 @@ export async function initializeAgentProject(options: InitializeAgentProjectOpti
     const completing = Object.freeze({ ...journal, state: "complete" as const, publishedGeneration: generation });
     await readVerifiedComplete(bootstrapRoot, completing);
     if (options.failAt === "final-reread") throw new Error("injected final reread failure");
+    if (localConfigPlan !== undefined) {
+      await publishLocalMcpPreparation(localConfigPlan, retainedNativeSession);
+      localConfigPublished = localConfigPlan.changed;
+      if (options.failAt === "after-configuration-publication") throw new Error("injected failure after configuration publication");
+    }
     await writeJournal(canonicalTarget.projectRoot, journalPath, completing, retainedNativeSession);
     journal = completing;
     await assertProjectIdentity(canonicalTarget.projectRoot, rootHandle, rootIdentity.dev, rootIdentity.ino);
-    return await readVerifiedComplete(bootstrapRoot, journal);
+    return withConfiguration(await readVerifiedComplete(bootstrapRoot, journal), localConfigPlan?.summary);
   } catch (error) {
     if (resourcesClosed) throw error;
     if (error instanceof InterruptedInitialization) throw error;
+    if (localConfigPublished && localConfigPlan !== undefined) {
+      try { await rollbackLocalMcpPreparation(localConfigPlan, retainedNativeSession); localConfigPublished = false; }
+      catch {
+        if (journal !== undefined) await writeJournal(canonicalTarget.projectRoot, journalPath, Object.freeze({ ...journal, state: "recovery-required" as const }), retainedNativeSession).catch(() => {});
+        retainLock = true;
+        throw error;
+      }
+    }
     if (!claimRestored && rollbackAuthorized && journal !== undefined && journal.state !== "complete") {
       try {
         const rollingBack = Object.freeze({ ...journal, state: "rolling-back" as const });
@@ -500,6 +520,12 @@ function plannedDigest(target: CanonicalTarget, initializedAt: string): string {
   });
 }
 function canonicalBytes(value: unknown): string { return `${JSON.stringify(value, null, 2)}\n`; }
+function withConfiguration(report: BootstrapPreparationReport, configuration: LocalMcpPreparationSummary | undefined): BootstrapPreparationReport {
+  if (configuration === undefined) return report;
+  const result = { ...report } as BootstrapPreparationReport;
+  Object.defineProperty(result, "configuration", { value: configuration, enumerable: false });
+  return Object.freeze(result);
+}
 function digest(value: unknown): string { return authorityDigest(value); }
 function sha256(value: string | Buffer): string { return `sha256:${createHash("sha256").update(value).digest("hex")}`; }
 function isRecord(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === "object" && Object.getPrototypeOf(value) === Object.prototype; }

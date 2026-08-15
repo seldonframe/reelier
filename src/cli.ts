@@ -4251,6 +4251,8 @@ export interface CmdInitOverrides {
   readonly homedir?: string;
   readonly authorityRoot?: string;
   readonly dependencies?: InitializationDependencies;
+  readonly nativeSessionFactory?: InitializeAgentProjectOptions["nativeSessionFactory"];
+  readonly failAt?: InitializeAgentProjectOptions["failAt"];
 }
 
 export async function cmdInit(args: ParsedArgs, overrides: CmdInitOverrides = {}): Promise<number> {
@@ -4286,15 +4288,19 @@ export async function cmdInit(args: ParsedArgs, overrides: CmdInitOverrides = {}
         yes: args.flags.has("yes"),
         exactVersion: pkg.version,
         ...(overrides.dependencies === undefined ? {} : { dependencies: overrides.dependencies }),
+        ...(overrides.nativeSessionFactory === undefined ? {} : { nativeSessionFactory: overrides.nativeSessionFactory }),
+        ...(overrides.failAt === undefined ? {} : { failAt: overrides.failAt }),
       });
       console.log(`Prepared '${args.positional[0]}' for local observation.`);
       console.log("Authority absent");
       console.log("Completeness not-proved");
       console.log(report.recoveryCommand);
+      if (report.configuration !== undefined) console.log(`MCP preparation: wrapped=${report.configuration.wrapped} already-wrapped=${report.configuration.alreadyWrapped} unwrappable=${report.configuration.unwrappable} unsupported=${report.configuration.unsupported}`);
       console.log("Runtime unavailable until the pinned up supervisor ships.");
       return 0;
-    } catch {
-      console.error("Initialization refused: named bootstrap preparation failed.");
+    } catch (error) {
+      if (error instanceof Error && error.name === "LocalMcpConsentRequiredError") console.error("Initialization refused: named local MCP preparation requires explicit --yes consent.");
+      else console.error("Initialization refused: named bootstrap preparation failed.");
       return 1;
     }
   }

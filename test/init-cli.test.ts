@@ -247,7 +247,10 @@ test("named init applies one sealed local MCP config transaction idempotently an
     assert.equal(second.result, 0);
     assert.deepEqual(await readFile(config), applied);
 
-    const competing = { ...overrides, nativeSessionFactory: filesystemNativeFactory(true) };
+    const concurrentRoot = path.join(root, "concurrent");
+    await mkdir(concurrentRoot);
+    await writeTask5bFixture(concurrentRoot);
+    const competing = { ...overrides, cwd: concurrentRoot, nativeSessionFactory: filesystemNativeFactory(true) };
     const concurrent = await Promise.all([
       capture(() => cmdInit(named("concurrent", ["yes"]), competing as never)),
       capture(() => cmdInit(named("concurrent", ["yes"]), competing as never)),
