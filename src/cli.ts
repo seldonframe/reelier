@@ -129,6 +129,7 @@ import {
   type InitializationDependencies,
 } from "./initialization.js";
 import { initializeAgentProject, type InitializeAgentProjectOptions } from "./bootstrap/initialize.js";
+import { BootstrapNativeSessionError } from "./bootstrap/native-helper.js";
 
 // Exported (alongside cmdPush below) so test/push-cli.test.ts can drive
 // cmdPush's console output directly with a fake ParsedArgs + monkeypatched
@@ -4331,6 +4332,45 @@ export async function cmdInit(args: ParsedArgs, overrides: CmdInitOverrides = {}
 
 }
 
+export type CmdUpOverrides = Pick<CmdInitOverrides, "cwd" | "homedir" | "nativeSessionFactory">;
+
+/** Verification-only named preparation check. It starts no runtime or authority component. */
+export async function cmdUp(args: ParsedArgs, overrides: CmdUpOverrides = {}): Promise<number> {
+  if (args.positional.length !== 1 || args.flags.size !== 0 || Object.keys(args.opts).length !== 0 || Object.keys(args.vars).length !== 0 || args.wraps.length !== 0 || args.fails.length !== 0) {
+    console.error("Usage: reelier up <agent-name>");
+    return 1;
+  }
+  const agentName = args.positional[0]!;
+  const cwd = overrides.cwd ?? process.cwd();
+  const homedir = overrides.homedir ?? os.homedir();
+  try {
+    const exactVersion = await executingPackageVersion();
+    const report = await initializeAgentProject({
+      cwd, homedir, agentName, exactVersion, yes: true,
+      ...(overrides.nativeSessionFactory === undefined ? {} : { nativeSessionFactory: overrides.nativeSessionFactory }),
+    });
+    console.log(JSON.stringify({
+      v: "reelier.named-up-result/v1", status: "verified", agentName,
+      configuration: report.configuration === undefined ? "absent" : "verified",
+      authority: "absent", completeness: "not-proved",
+    }));
+    return 0;
+  } catch (error) {
+    if (error instanceof BootstrapNativeSessionError && error.code === "artifact-unavailable") console.error(`Up refused: ${error.message}`);
+    else console.error(`Up refused: ${error instanceof Error ? error.message : "named project verification failed"}`);
+    return 1;
+  }
+}
+
+async function executingPackageVersion(): Promise<string> {
+  let bytes: string;
+  try { bytes = await readFile(new URL("../package.json", import.meta.url), "utf8"); }
+  catch { bytes = await readFile(new URL("../../package.json", import.meta.url), "utf8"); }
+  const version = (JSON.parse(bytes) as { version?: unknown }).version;
+  if (typeof version !== "string") throw new TypeError("installed version unavailable");
+  return version;
+}
+
 /** env -> config file -> DEFAULT_CLOUD_URL — same chain resolvePushConfig uses to resolve a base URL. */
 async function resolveBaseUrl(): Promise<string> {
   const fileConfig = await readCliConfig();
@@ -4499,7 +4539,7 @@ async function cmdDoctor(args: ParsedArgs): Promise<number> {
 }
 
 const USAGE =
-  "Usage: reelier <run|bench|baseline|cost|prices|mcp|serve|trace|compile|manifest|approve|push|get|verify|diff|ci|policy|init|discover|connections|connect|deploy|doctor|bridge|from-session|scan|install|uninstall|login|logout|whoami> [options]\n" +
+  "Usage: reelier <run|bench|baseline|cost|prices|mcp|serve|trace|compile|manifest|approve|push|get|verify|diff|ci|policy|init|up|discover|connections|connect|deploy|doctor|bridge|from-session|scan|install|uninstall|login|logout|whoami> [options]\n" +
   "  discover â€” rank observed workflow opportunities locally; use --upload to preview and explicitly send one sanitized bundle to Arena Cloud.\n" +
   "  bridge  — reelier bridge --port 4777: expose nonce-gated local capabilities and Work Card handoff metadata; never executes Cloud plugin code.\n" +
   "  login  — reelier login: connect this machine to Reelier Cloud via a device-code browser handshake; writes ~/.reelier/config.json.\n" +
@@ -4522,6 +4562,7 @@ const USAGE =
   "           candidates, and Path C connections/candidates. It does not deploy, gate, dispatch, upload, or rewrite configs.\n" +
   "           --dry-run performs the same local inspection without writing .reelier/init artifacts.\n" +
   "  init --signing — generate (or print the existing) Ed25519 signing key at ~/.reelier/signing/; idempotent.\n" +
+  "  up     - reelier up <agent-name>: verify a completed named preparation against its exact package build, route snapshot, and consented local configuration; starts nothing.\n" +
   "  authority certify — private expert workflow: init --config <v2>, then require --scenario <id> or --all for preflight,\n" +
   "           seal-readiness, export, and offline verify --input <export>. seal-readiness remains unsigned.\n" +
   "           sign-readiness requires a pre-existing human key, descriptors, trust events, and an exact interactive digest confirmation;\n" +
@@ -4610,6 +4651,8 @@ async function main(): Promise<number> {
       return runAuthorityCommand(args);
     case "init":
       return cmdInit(args);
+    case "up":
+      return cmdUp(args);
     case "discover":
       return cmdDiscover(args);
     case "connections":
