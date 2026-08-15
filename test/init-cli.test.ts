@@ -162,7 +162,7 @@ test("reelier init my-agent uses named bootstrap while bare init retains its ins
   await withTempDir(async root => {
     const bare = await capture(() => cmdInit(parsed(), { cwd: root, homedir: root, dependencies: localDependencies() }));
     assert.equal(bare.result, 0);
-    const namedResult = await capture(() => cmdInit(named("my-agent", ["yes"]), { cwd: root, homedir: root, dependencies: localDependencies() }));
+    const namedResult = await capture(() => cmdInit(named("my-agent", ["yes"]), { cwd: root, homedir: root, dependencies: localDependencies(), nativeSessionFactory: filesystemNativeFactory() }));
     assert.equal(namedResult.result, 0);
     assert.match(namedResult.output, /npx reelier@0\.32\.1 up/);
     assert.match(namedResult.output, /Authority absent/);
@@ -174,16 +174,16 @@ test("reelier init my-agent uses named bootstrap while bare init retains its ins
   });
 });
 
-test("named init leaves MCP host configuration byte-identical", async () => {
+test("named init refuses an MCP config without sealed route evidence and leaves it byte-identical", async () => {
   await withTempDir(async root => {
     await writeFile(path.join(root, ".mcp.json"), JSON.stringify({ mcpServers: {
       local: { command: "npx", args: ["-y", "@example/server"] },
       legacy: { command: "npx", args: ["-y", "reelier", "mcp", "--wrap", "npx -y @example/legacy"] },
       remote: { url: "https://example.invalid/mcp" },
     } }), "utf8");
-    const { result, output } = await capture(() => cmdInit(named("my-agent", ["yes"]), { cwd: root, homedir: root, dependencies: localDependencies() }));
-    assert.equal(result, 0);
-    assert.doesNotMatch(output, /MCP surface|managed Cell|activated/i);
+    const { result, output } = await capture(() => cmdInit(named("my-agent", ["yes"]), { cwd: root, homedir: root, dependencies: localDependencies(), nativeSessionFactory: filesystemNativeFactory() }));
+    assert.equal(result, 1);
+    assert.match(output, /refused/i);
     assert.equal(await readFile(path.join(root, ".mcp.json"), "utf8"), JSON.stringify({ mcpServers: {
       local: { command: "npx", args: ["-y", "@example/server"] },
       legacy: { command: "npx", args: ["-y", "reelier", "mcp", "--wrap", "npx -y @example/legacy"] },
@@ -204,7 +204,7 @@ test("named init does not spawn a package manager or any other process", async (
     const previous = process.env.npm_execpath;
     process.env.npm_execpath = fakeNpm;
     try {
-      const { result } = await capture(() => cmdInit(named("no-spawn-agent"), { cwd: root, homedir: root, dependencies: localDependencies() }));
+      const { result } = await capture(() => cmdInit(named("no-spawn-agent"), { cwd: root, homedir: root, dependencies: localDependencies(), nativeSessionFactory: filesystemNativeFactory() }));
       assert.equal(result, 0);
       await assert.rejects(readFile(marker, "utf8"), { code: "ENOENT" });
     } finally {
@@ -251,11 +251,11 @@ test("named init applies one sealed local MCP config transaction idempotently an
     await mkdir(concurrentRoot);
     await writeTask5bFixture(concurrentRoot);
     const competing = { ...overrides, cwd: concurrentRoot, nativeSessionFactory: filesystemNativeFactory(true) };
-    const concurrent = await Promise.all([
-      capture(() => cmdInit(named("concurrent", ["yes"]), competing as never)),
-      capture(() => cmdInit(named("concurrent", ["yes"]), competing as never)),
-    ]);
-    assert.deepEqual(concurrent.map(value => value.result).sort(), [0, 1]);
+    const concurrent = await capture(() => Promise.all([
+      cmdInit(named("concurrent", ["yes"]), competing as never),
+      cmdInit(named("concurrent", ["yes"]), competing as never),
+    ]));
+    assert.deepEqual(concurrent.result.sort(), [0, 1]);
 
     await rm(path.join(root, ".reelier", "bootstrap"), { recursive: true, force: true });
     await writeTask5bFixture(root);
