@@ -134,6 +134,17 @@ test("persisted project, runtime, and report form exact semantic digest joins", 
   });
 });
 
+test("installed build provenance comes from the Reelier package rather than the project cwd", async () => {
+  await withFixture(async options => {
+    const original = process.cwd();
+    try {
+      process.chdir(options.cwd);
+      const report = await initializeAgentProject(options);
+      assert.match(report.projectDigest, /^sha256:/);
+    } finally { process.chdir(original); }
+  });
+});
+
 test("named initialization refuses an active or stale bootstrap lock instead of racing a second transaction", async () => {
   await withFixture(async options => {
     const bootstrap = path.join(options.cwd, ".reelier", "bootstrap");
