@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 type Platform = "linux" | "win32";
 type RefusalReason = "unsupported-platform" | "unsupported-architecture" | "manifest-invalid" | "artifact-missing" | "artifact-unsafe" | "artifact-format-mismatch" | "artifact-digest-mismatch";
 type Selection =
-  | Readonly<{ status: "verified"; protocol: "reelier.bootstrap-native-helper/v1"; platform: Platform; architecture: "x64"; target: string; absolutePath: string; sha256: string }>
+  | Readonly<{ status: "verified"; protocol: "reelier.bootstrap-native-helper/v2"; platform: Platform; architecture: "x64"; target: string; absolutePath: string; sha256: string }>
   | Readonly<{ status: "refused"; reason: RefusalReason }>;
 type Loader = (options?: Readonly<{ packageRoot?: string; platform?: NodeJS.Platform; architecture?: string }>) => Promise<Selection>;
 
@@ -50,7 +50,7 @@ async function fixture(mutator?: (manifest: Record<string, unknown>, files: Map<
     { platform: "linux", architecture: "x64", target: "x86_64-unknown-linux-gnu", path: "native/bootstrap-helper/linux-x64/reelier-bootstrap-helper", sha256: sha256(files.get("native/bootstrap-helper/linux-x64/reelier-bootstrap-helper")!) },
     { platform: "win32", architecture: "x64", target: "x86_64-pc-windows-msvc", path: "native/bootstrap-helper/win32-x64/reelier-bootstrap-helper.exe", sha256: sha256(files.get("native/bootstrap-helper/win32-x64/reelier-bootstrap-helper.exe")!) },
   ];
-  const manifest: Record<string, unknown> = { v: "reelier.bootstrap-native-artifacts/v1", protocol: "reelier.bootstrap-native-helper/v1", artifacts };
+  const manifest: Record<string, unknown> = { v: "reelier.bootstrap-native-artifacts/v1", protocol: "reelier.bootstrap-native-helper/v2", artifacts };
   mutator?.(manifest, files);
   for (const [relative, bytes] of files) { const absolute = path.join(root, ...relative.split("/")); await mkdir(path.dirname(absolute), { recursive: true }); await writeFile(absolute, bytes); }
   const manifestPath = path.join(root, "native", "bootstrap-helper", "manifest.json");
@@ -64,7 +64,7 @@ test("loader selects only the exact digest- and format-verified host artifact", 
   const fx = await fixture();
   try {
     const linux = await load({ packageRoot: fx.root, platform: "linux", architecture: "x64" });
-    assert.deepEqual(linux, { status: "verified", protocol: "reelier.bootstrap-native-helper/v1", platform: "linux", architecture: "x64", target: "x86_64-unknown-linux-gnu", absolutePath: path.join(fx.root, "native", "bootstrap-helper", "linux-x64", "reelier-bootstrap-helper"), sha256: sha256(nativeHeader("linux")) });
+    assert.deepEqual(linux, { status: "verified", protocol: "reelier.bootstrap-native-helper/v2", platform: "linux", architecture: "x64", target: "x86_64-unknown-linux-gnu", absolutePath: path.join(fx.root, "native", "bootstrap-helper", "linux-x64", "reelier-bootstrap-helper"), sha256: sha256(nativeHeader("linux")) });
     const windows = await load({ packageRoot: fx.root, platform: "win32", architecture: "x64" });
     assert.equal(windows.status, "verified");
     if (windows.status === "verified") assert.match(windows.absolutePath, /win32-x64[\\/]reelier-bootstrap-helper\.exe$/);
