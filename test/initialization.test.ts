@@ -25,6 +25,12 @@ test("checkpointed initialization exposes a local dry-run inspection API", async
   ]);
 });
 
+test("route discovery integration cannot change the frozen initialization plan bytes", async () => {
+  const initialization = await import("../src/initialization.js") as Record<string, unknown>;
+  assert.equal(canonicalJson(initialization.INIT_CHECKPOINT_IDS), '["config-surfaces","path-a-coverage","path-b-candidates","path-c-candidates","inspection-report"]');
+  assert.deepEqual(Object.keys(initialization).sort(), ["INIT_CHECKPOINT_IDS", "initializeInspection", "renderInitializationReport"]);
+});
+
 async function withTempDir<T>(run: (root: string) => Promise<T>): Promise<T> {
   const root = await mkdtemp(path.join(os.tmpdir(), "reelier-inspection-"));
   try {

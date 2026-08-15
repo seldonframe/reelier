@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { normalizeRouteCoverageV1, parseRouteCoverageV1 } from "../src/routes/normalize.js";
+import { refreshRouteCoverage } from "../src/routes/discovery.js";
 
 const digest = (char: string) => `sha256:${char.repeat(64)}`;
 const route = (routeId = "route_1") => ({
@@ -44,4 +45,12 @@ test("route evidence references are opaque and never endpoint URLs", () => {
   for (const evidenceRef of ["https://provider.example/token", "artifact:https://provider.example/private"]) {
     assert.throws(() => parseRouteCoverageV1({ ...route(), evidenceRefs: [evidenceRef] }), TypeError, evidenceRef);
   }
+});
+
+test("route refresh uses the injected clock at the exact freshness boundary", () => {
+  const stale = route("route_stale");
+  const refreshed = refreshRouteCoverage({ baseline: [stale], current: [], now: new Date(stale.freshUntil) });
+  assert.equal(refreshed[0]?.observation, "unknown");
+  assert.equal(refreshed[0]?.enforcement, "absent");
+  assert.equal(refreshed[0]?.topologyEvidenceDigest, null);
 });
