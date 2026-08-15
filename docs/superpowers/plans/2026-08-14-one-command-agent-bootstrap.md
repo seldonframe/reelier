@@ -2141,26 +2141,132 @@ Expected: all focused tests and the bootstrap contract check pass. Stage only th
 
 ---
 
-### Task 5: Add named initialization as a reversible preparation transaction
+### Task 5: Reset named initialization to the smallest reversible vertical slice
+
+**Approved reset amendment (2026-08-15):** this Task 5 section supersedes the original six-step
+Task 5 wherever they conflict. Existing Task 5 implementation commits are historical evidence,
+not approval to retain behavior outside this reset. Do not begin Task 6 from an implementation
+that merely passes the earlier focused suite.
 
 **Files:**
-- Create: `src/bootstrap/initialize.ts`
-- Create: `src/bootstrap/workload-registration.ts`
-- Create: `src/bootstrap/profile-drafts.ts`
-- Create: `src/bootstrap/install.ts`
-- Modify: `src/init.ts`
-- Modify: `src/wrap.ts`
+- Modify: `src/bootstrap/initialize.ts`
 - Modify: `src/cli.ts`
-- Create: `test/bootstrap-initialize.test.ts`
-- Create: `test/bootstrap-install.test.ts`
+- Modify: `test/bootstrap-initialize.test.ts`
 - Modify: `test/init-cli.test.ts`
 - Modify: `test/init-signing-cli.test.ts`
-- Modify: `test/wrap.test.ts`
 - Modify: `test/cli-entrypoint.test.ts`
 
+This six-path list is the exhaustive Task 5 reset implementation allowlist. The superseded broad
+Task 5 paths may remain in history or untouched on the branch, but 5A–5C must neither edit nor rely
+on their deferred behavior. Any necessary seventh path is a stop condition requiring approval.
+
 **Interfaces:**
-- Consumes: unchanged `initializeInspection`, route discovery, bootstrap contract parsers, `planInstall`/`applyInstall`, installed pack registry, and read-only governance references resolved from the fixed operator-owned trust directory.
-- Produces: `initializeAgentProject(options): Promise<BootstrapReportV1>` and CLI behavior for `reelier init <agent-name>`.
+- Consumes: unchanged `initializeInspection`, the frozen Task 3 bootstrap parsers/build-identity
+  calculation, and an already-valid Task 4 route-snapshot digest when present.
+- Produces: a minimal observation-ready named-project descriptor, preparation report, persisted
+  exact-version recovery command, and CLI behavior for `reelier init <agent-name>`.
+
+**Essential slice:** canonical name/root validation; exact version/build pinning; one confined
+artifact generation; explicit lock/checkpoint/rollback/restart semantics; exact CLI recovery copy;
+legacy bare/signing compatibility.
+
+**Deferred follow-up:** profile/governance/Authority work; broad MCP and plugin install/interception;
+workload keys or registration; provider/network canaries; managed-Cell connection; runtime, fleet,
+or subagent supervision. Do not create placeholder artifacts or synthetic claims for these areas.
+
+#### Task 5A: Freeze the minimal contract and legacy boundary
+
+- [ ] Replace the prior broad RED expectations with failing tests for only the closed minimal
+  descriptor/report/recovery-command set and the transaction-state vocabulary. Freeze canonical
+  agent-name comparison, physical project-root confinement, exact executing version, canonical
+  installed-build digest, `authority: "absent"`, `completeness: "not-proved"`, and an exact
+  `npx reelier@<exact-version> up` recovery command.
+- [ ] Prove bare `init`, dry-run inspection, and `init --signing` retain their existing output and
+  file set. Prove named init performs no network, provider, process-spawn, host-config, MCP/plugin,
+  governance, Authority, or key-generation call.
+- [ ] Commit this failing-test-only unit before production changes. The Task 5 reset RED subject is
+  `test(cli): reset named initialization contract`.
+
+#### Task 5B: Implement the closed preparation transaction
+
+- [ ] Implement exactly these durable states and no implicit aliases:
+
+  ```text
+  absent -> locked -> prepared -> committing -> complete
+                      |             |
+                      +-------> rolling-back
+                                    |       ^
+                           proved --+       +-- restart with exclusive lock
+                                    |       |
+                         absent/prior-complete   recovery-required
+  ```
+
+  `rolling-back -> recovery-required` is the only transition when rollback cannot be proved;
+  `recovery-required -> rolling-back` is the only permitted restart transition.
+
+- [ ] Acquire an exclusive project-scoped lock before any mutable inspection. Bind it to a random
+  owner token and transaction ID; retain PID only as diagnostics. A live concurrent owner refuses
+  with zero writes. Orphan recovery requires exclusive ownership and a valid closed journal; age,
+  PID death, or lock-file presence alone is insufficient.
+- [ ] In `prepared`, stage the entire closed artifact generation under the confined bootstrap root.
+  Each checkpoint binds transaction ID, owner-token commitment, plan digest, canonical target,
+  proven prior digest/absence, staged artifact name, and staged byte digest. Checkpoints are an
+  ordered state proof, not a list of strings that permits arbitrary resume.
+- [ ] Before publication persist `committing`. Publish once through an atomic generation/pointer
+  replacement. Reread and rehash the project, report, recovery command, checkpoint, and committed
+  generation before writing/returning `complete`.
+- [ ] On pre-publication failure remove only owned staging. On or after publication failure record
+  `rolling-back`, restore the exact prior generation or proven absence, and reread/rehash it. If
+  rollback cannot be proved, retain `recovery-required`; every restart may attempt only that
+  rollback and may not proceed forward, regenerate, adopt drifted bytes, or report success.
+- [ ] Same-name/same-plan restart may return an already verified `complete` result. Any root, name,
+  case-fold, version, build, plan, checkpoint, target, prior-state, or artifact digest mismatch
+  refuses. Release the lock only after verified completion or verified rollback.
+- [ ] Implement the CLI branch and exact output. Named initialization does not call
+  `planInstall`/`applyInstall`, rewrite MCP configuration, inspect plugin-private manifests, import
+  governance, create workload keys, connect to a Cell, run a network canary, or supervise anything.
+  Commit the bounded production unit as `feat(cli): prepare minimal named project`.
+
+#### Task 5C: Prove the real vertical slice
+
+- [ ] Add exactly three load-bearing end-to-end scenarios through the real CLI entrypoint and real
+  filesystem transaction boundary:
+  1. clean first initialization from an empty project produces only the declared artifacts, exact
+     version/build pins, honest absent/not-proved claims, and exact persisted/printed recovery
+     command, with every deferred call counter remaining zero;
+  2. forced termination/restart at every durable transition converges to one byte-identical
+     committed generation without checkpoint adoption, duplicate publication, or changed claims;
+  3. injected publication/final-reread failure performs byte-exact rollback to the prior generation
+     or proven absence, then a retry succeeds; a concurrent second CLI invocation refuses and
+     changes no bytes.
+- [ ] These tests must execute the CLI parser and production transaction implementation. Unit-only
+  helper tests, mocked success paths, constant assertions, and schema validation are supporting
+  evidence but do not count among the three.
+- [ ] Run the focused Task 5 suite, frozen contract checks, build, and `git diff --check`; record the
+  verbatim result tails and exact artifact digests in the progress ledger. Obtain independent
+  review of 5A–5C. Commit proof-only changes as `test(cli): prove minimal named initialization`.
+
+**Task 6 hard gate:** Task 6 remains blocked until all three load-bearing Task 5C scenarios pass
+from a clean tree and independent review approves the complete reset slice. No prior Task 5 commit,
+focused unit count, TypeScript pass, or contract check satisfies this gate.
+
+**Task 5 reset verification commands:**
+
+```powershell
+npx tsc -p tsconfig.test.json
+node --test --test-concurrency=1 dist-test/test/bootstrap-initialize.test.js dist-test/test/init-cli.test.js dist-test/test/init-signing-cli.test.js dist-test/test/cli-entrypoint.test.js
+npm run check:authority-contract
+npm run check:outcome-profile-contract
+npm run check:bootstrap-contract
+npm run build
+git diff --check
+```
+
+Expected: the three real CLI/filesystem scenarios pass; legacy init modes remain unchanged; no
+deferred capability executes or appears as present; exact rollback/restart evidence is retained.
+
+<details>
+<summary>Superseded original Task 5 steps (history only; not executable)</summary>
 
 - [ ] **Step 1: Pin backward compatibility before adding named mode**
 
@@ -2237,9 +2343,16 @@ git diff --check
 
 Expected: bare init remains green, named mode prints and persists the exact pinned command without executing it, and named mode produces no activated authority. Stage only the Task 5 allowlist and commit with `feat(cli): prepare an agent with one init command`.
 
+</details>
+
 ---
 
 ### Task 6: Implement the pinned runtime-neutral `up` supervisor
+
+**Blocked by the Task 5 reset gate.** Do not write Task 6 RED tests or production code until the
+three Task 5C real CLI/filesystem end-to-end scenarios pass from a clean tree and independent review
+approves the full 5A–5C slice. This gate is in addition to, not replaced by, Task 6's own RED/GREEN
+and review requirements.
 
 **Files:**
 - Create: `src/runtime/adapters.ts`

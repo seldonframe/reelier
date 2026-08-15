@@ -599,6 +599,116 @@ writes/renames/removes anything. Governed composition compares that public key t
 anchor and passes the same preloaded signer into the internal runtime core without reopening it.
 Public `loadOrCreateLocalGateSigner` and legacy runtime behavior remain byte-compatible.
 
+## Approved Task 5 reset amendment — smallest named-initialization outcome
+
+**Approved:** 2026-08-15. This amendment supersedes the original Task 5 named-initialization
+scope wherever the two conflict. It does not retract the larger product direction above; it
+separates the first load-bearing vertical slice from follow-up onboarding automation.
+
+The smallest useful outcome of `reelier init <agent-name>` is now frozen as one local,
+reversible preparation transaction that:
+
+1. preserves bare `reelier init` and `reelier init --signing` byte-for-byte and behavior-for-behavior;
+2. validates one canonical agent name and one physically confined project root before writing;
+3. records the exact executing Reelier version and canonical installed-build digest;
+4. writes one closed minimal project descriptor, one closed preparation report, and the exact
+   persisted recovery command `npx reelier@<exact-version> up` beneath `.reelier/bootstrap/`; and
+5. creates no authority and performs no external, provider, host-configuration, plugin, MCP,
+   runtime, or network action.
+
+The minimal descriptor is observation-ready only. Its report must say that Path C authority is
+`absent`, that completeness is `not-proved`, and that `up` is not yet available until the Task 6
+supervisor ships. A successful preparation is not installation, activation, certification,
+connection, conformance, or runtime readiness.
+
+### Essential now versus governed follow-up
+
+The reset slice includes only canonical naming and confinement, exact build pinning, the minimal
+descriptor/report/recovery-command artifact set, and durable transaction behavior. Existing route
+discovery may be referenced by digest only when an already-valid Task 4 snapshot is available; a
+missing or stale snapshot is reported as `unknown` and never causes discovery, installation, or a
+coverage upgrade during this slice.
+
+The following are explicitly deferred and must not be partially implemented behind placeholders,
+empty files, synthetic digests, or optimistic report fields:
+
+- governance import, profile drafting/certification/activation, managed-Cell connection, and all
+  Authority admission or dispatch;
+- broad MCP host rewriting, plugin installation or interception, remote transport wrapping, and
+  any claim that equivalent routes are comprehensively covered;
+- workload private/public key generation, registration requests, identity certification, and key
+  recovery or rotation;
+- installation canaries beyond parsing and rereading the exact local artifacts written by this
+  transaction; and
+- runtime launch, fleet coordination, subagent spawning or supervision, process adoption, and
+  cross-machine lifecycle management.
+
+Each deferred capability requires its own authority boundary, threat model, rollback evidence,
+and independently approved plan amendment. No deferred field is reserved in the minimal wire
+artifacts merely to make a future implementation convenient.
+
+### Closed preparation transaction state machine
+
+The transaction has the following closed durable states:
+
+```text
+absent -> locked -> prepared -> committing -> complete
+                    |             |
+                    +-------> rolling-back
+                                  |       ^
+                         proved --+       +-- restart with exclusive lock
+                                  |       |
+                       absent/prior-complete   recovery-required
+```
+
+`rolling-back -> recovery-required` is the only transition when rollback cannot be proved;
+`recovery-required -> rolling-back` is the only permitted restart transition. There is no direct
+transition from `recovery-required` to `prepared`, `committing`, or `complete`.
+
+- **`absent`**: no committed named project exists. Temporary residue is not a project.
+- **`locked`**: the initializer owns an exclusive project-scoped lock with a fresh random owner
+  token and transaction ID. A PID is diagnostic only and never sufficient proof of ownership or
+  liveness. A concurrent live owner refuses without writes.
+- **`prepared`**: every candidate artifact exists only in a confined transaction staging
+  directory. A closed checkpoint record binds the transaction ID, owner token commitment, plan
+  digest, canonical target name, prior-target digest or proven absence, staged artifact name, and
+  staged byte digest. No target has changed.
+- **`committing`**: the durable journal records intent before the single publication boundary.
+  Publication atomically replaces the closed bootstrap generation/pointer; individual target
+  files are never treated as independently committed.
+- **`complete`**: the committed generation, checkpoint record, project descriptor, report, and
+  recovery command all reread and rehash to the same plan. Only this state returns success.
+- **`rolling-back`**: failure before publication removes only the transaction's staging state;
+  failure after publication restores the exact prior generation or proven absence, then rereads
+  and rehashes it before removing the transaction record.
+- **`recovery-required`**: rollback or final reread could not be proved. The durable record remains
+  non-successful. Every restart must attempt only the recorded rollback; it may not start a new
+  plan, regenerate artifacts, adopt current bytes, or report success.
+
+Lock release occurs only after `complete` is reread successfully or rollback has proved `absent`/
+the exact prior generation. Restart under the same requested name and plan returns the already
+verified complete result. Any name, root, version, build, plan, checkpoint, target, or prior-state
+digest mismatch refuses. Orphan recovery requires exclusive lock acquisition plus a valid closed
+journal; age, PID death, or file presence alone never authorizes deletion or adoption.
+
+### Three-task vertical slice and promotion gate
+
+Task 5 is reset into three sequential, independently reviewable units:
+
+1. **5A — contract:** freeze the minimal artifact schemas, canonical name/root rules, state
+   vocabulary, plan digest, and legacy CLI invariants with failing tests only.
+2. **5B — transaction:** implement the lock/checkpoint/publication/rollback/restart state machine
+   and exact CLI output, with no deferred capability.
+3. **5C — proof:** run three load-bearing end-to-end tests through the real CLI boundary: clean
+   first initialization; crash/restart at every durable transition without drift or duplicate
+   publication; and commit failure followed by byte-exact rollback plus successful retry, while a
+   concurrent initializer refuses without writes.
+
+Task 6 is blocked until all three end-to-end tests pass from a clean tree, their exact outputs and
+artifact digests are recorded, and independent review approves the whole 5A–5C slice. Focused unit
+tests, mocked helper calls, schema-only checks, or a green TypeScript build cannot substitute for
+these three proofs.
+
 ## Why this does not require thousands of Reelier integrations
 
 Reelier does not become the tool catalog, OAuth broker, or universal transport SDK. Existing MCP servers, host plugins, OpenAPI catalogs, Composio-style tool providers, Vercel Connect, and native provider adapters may describe or carry routes. One built-in read-only adapter per supported harness translates that harness's existing collector outputs into the same closed route rows; it does not confer trust. Reelier does not maintain a manual per-tool registry or global provider catalog, and project/model input cannot register executable discovery code.
