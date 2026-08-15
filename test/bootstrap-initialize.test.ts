@@ -150,3 +150,61 @@ test("partial imported governance is refused rather than relabeled absent", asyn
     await assert.rejects(() => initializeAgentProject(options), /governance|partial|invalid/i);
   });
 });
+
+test("a stale named-bootstrap lock is recovered only when its owner is provably dead", async () => {
+  await withFixture(async options => {
+    await initializeAgentProject(options);
+    const lock = path.join(options.cwd, ".reelier", "bootstrap", ".lock");
+    await writeFile(lock, JSON.stringify({ v: "reelier.bootstrap-lock/v1", pid: -1, nonce: "dead-owner" }), "utf8");
+    const resumed = await initializeAgentProject(options);
+    assert.equal(resumed.pathC, "unavailable-no-activation");
+    await assert.rejects(lstat(lock), { code: "ENOENT" });
+  });
+});
+
+test("checkpoint state binds every declared artifact digest and restart refuses an unlisted or substituted artifact", async () => {
+  await withFixture(async options => {
+    await initializeAgentProject(options);
+    const bootstrap = path.join(options.cwd, ".reelier", "bootstrap");
+    const state = JSON.parse(await readFile(path.join(bootstrap, "state.json"), "utf8"));
+    assert.deepEqual(state.completed.map((entry: { id: string }) => entry.id), [
+      "inspection-link", "runtime-descriptor", "route-coverage", "workload-registration-request", "profile-drafts", "imported-governance", "configuration-plan", "installation-canary", "project", "report",
+    ]);
+    assert.ok(state.completed.every((entry: { artifact?: unknown; digest?: unknown }) => typeof entry.artifact === "string" && /^sha256:[0-9a-f]{64}$/.test(String(entry.digest))));
+    await writeFile(path.join(bootstrap, "profile-drafts.json"), "{}\n", "utf8");
+    await assert.rejects(() => initializeAgentProject(options), /checkpoint|artifact|digest/i);
+  });
+});
+
+test("concurrent named initialization creates exactly one workload key and both callers resume the same project", async () => {
+  await withFixture(async options => {
+    const [first, second] = await Promise.all([initializeAgentProject(options), initializeAgentProject(options)]);
+    assert.equal(first.projectDigest, second.projectDigest);
+    const keyDir = path.join(options.homedir, ".reelier", "workloads", options.agentName);
+    assert.equal((await readdir(keyDir)).filter(name => /^[0-9a-f]{16}\.pem$/.test(name)).length, 1);
+  });
+});
+
+test("named init applies a consented project config plan with backup and records a truthful canary", async () => {
+  await withFixture(async options => {
+    const config = path.join(options.cwd, ".mcp.json");
+    const original = JSON.stringify({ mcpServers: { local: { command: "npx", args: ["-y", "@example/server"] } } });
+    await writeFile(config, original, "utf8");
+    const report = await initializeAgentProject(options);
+    assert.equal(report.canary, "verified");
+    assert.deepEqual(JSON.parse(await readFile(config, "utf8")).mcpServers.local.args, ["-y", "reelier@0.32.1", "mcp", "--wrap", "npx -y @example/server"]);
+    assert.equal((await readdir(options.cwd)).some(name => name.startsWith(".mcp.json.backup-")), true);
+  });
+});
+
+test("a complete operator governance import is verified and reported without copying roots into the project", async () => {
+  await withFixture(async options => {
+    const governance = path.join(options.homedir, ".reelier", "governance");
+    await mkdir(governance, { recursive: true });
+    await writeFile(path.join(governance, "profile-governance.json"), JSON.stringify({ governanceRef: "operator-governance", manifestDigest: `sha256:${"a".repeat(64)}`, trustHeadDigest: `sha256:${"b".repeat(64)}`, verificationStatus: "verified" }), "utf8");
+    await initializeAgentProject(options);
+    const imported = JSON.parse(await readFile(path.join(options.cwd, ".reelier", "bootstrap", "imported-governance.json"), "utf8"));
+    assert.deepEqual(imported, { v: "reelier.imported-governance/v1", governanceRef: "operator-governance", manifestDigest: `sha256:${"a".repeat(64)}`, trustHeadDigest: `sha256:${"b".repeat(64)}`, verificationStatus: "verified" });
+    assert.equal((await readdir(path.join(options.cwd, ".reelier", "bootstrap"))).some(name => /trust|root|public.*key/i.test(name)), false);
+  });
+});
