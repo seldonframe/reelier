@@ -569,15 +569,24 @@ governed mode from admitted private provenance.
 Offline verification accepts an exact closed options record whose direct Authority roots are an
 enumerable `readonly TrustRootEntry[]`, never opaque `TrustRoots`. Every direct entry must match the
 external Authority as-of view by tenant, signer, SPKI, and exact direct-purpose set; duplicate,
-self-carried, extra, or wrong-purpose roots refuse. Only after artifact binding authorization are
-the four exact subkey entries appended to make one temporary root set for the unchanged verifier.
+self-carried, missing, extra, or wrong-purpose roots refuse. No Job Card descriptor contains a
+`principalId` mapping, so none is inferred or required from that view. After the external evidence
+key verifies the outer signature, the parsed deployment snapshot digest must equal the signed
+binding's `deploymentDigest`. The verifier then constructs the direct-only five-purpose root set,
+recomputes `trustRootSetDigest` for the expected tenant, and requires exact equality to the
+authenticated deployment snapshot. That full-set commitment binds each declared principal without
+pretending the Job Card descriptor supplied it. Only after this equality and artifact binding
+authorization are the four exact subkey entries appended to make the final temporary root set for
+the unchanged verifier.
 
 Offline verification order is fixed: strictly parse all closed records; verify profile artifacts
 against external profile trust as of `observedAt`; verify external Authority readiness/event prefixes
 and signed Job Card into the as-of trust view; verify the outer binding signature with the same
-external direct evidence signer; verify binding/human commitment/current parent; only now construct
-the exact trust roots from external direct roots plus the four externally authorized artifact
-subkeys; run the unchanged inner verifier; match all four signed inner artifact signer IDs/SPKIs/
+external direct evidence signer and authenticate the exact deployment snapshot digest; validate the
+five direct purposes and their as-of signer/SPKI joins; require their recomputed root-set digest to
+equal the authenticated deployment snapshot; verify binding/human commitment/current parent; only
+now append the four externally authorized artifact subkeys; run the unchanged inner verifier; match
+all four signed inner artifact signer IDs/SPKIs/
 purposes; then verify deployment, route, activation, receipt, and edge joins and produce the graph.
 Verifier-time status is attached separately. Receipt-carried keys never become provisional or
 self-authorizing roots.

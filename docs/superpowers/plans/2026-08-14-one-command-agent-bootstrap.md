@@ -625,12 +625,12 @@ git commit -m "feat(authority): admit independently governed profiles"
 #### Executable Task 2 review fix wave
 
 This fix wave begins at candidate `cc529e5e4136eb9e58cd5f39816798f9636bb715` only after the
-five docs-only amendment commits and the bounded `docs: close first-principles review gaps` fix have
-passed independent review. It fixes the five original Task 2
+five docs-only amendment commits plus the bounded `docs: close first-principles review gaps` and
+`docs: bind governed direct root set` fixes have passed independent review. It fixes the five original Task 2
 blockers, all eight first-amendment review findings, all five second-amendment review findings, and
 both third-amendment Critical findings as one trust-boundary unit. The original RED/GREEN and all
-five amendment commits and the bounded review-fix commit remain in history; do not amend or squash
-them.
+five amendment commits and both bounded review-fix commits remain in history; do not amend or
+squash them.
 
 - [ ] **Fix Step 1: Add the strict RED review-gap suite and fixture-only module**
 
@@ -787,12 +787,19 @@ expire the human/parent/direct receipt/evidence signer after signed `observedAt`
 historical proof remains verified while current status reports the change. Mutations at or before
 `observedAt` refuse. Prove no receipt-carried key or stored verified flag becomes authority.
 Add exact verification-options mutations: opaque `TrustRoots` in `directAuthorityRoots`,
-self-carried roots, duplicate entries/purposes, extra roots, wrong tenant/signer/principal/SPKI/
-purpose, mismatched separately supplied current events, wrong expected tenant/Cell/task/time,
+self-carried roots, duplicate entries/purposes, missing/extra roots, wrong tenant/signer/SPKI/
+purpose, wrong direct-root-set digest, mismatched separately supplied current events, wrong expected
+tenant/Cell/task/time,
 accessors, symbols, non-enumerable extras, and prototype substitution all refuse before inner
 verification. Prove the implementation validates the external direct array, appends exactly the
-four externally authorized subkeys, constructs one temporary root set, and never enumerates or
-merges an opaque Authority root handle.
+four externally authorized subkeys only after constructing/digesting the direct-only set, then
+constructs the final temporary root set, and never enumerates or merges an opaque Authority root
+handle. Mutate only a direct root's `principalId`: it must refuse
+because recomputed `trustRootSetDigest` no longer equals the outer-authenticated deployment
+snapshot, never because the Job Card descriptor view inferred or supplied a principal mapping.
+Also mutate the deployment snapshot, binding `deploymentDigest`, outer signature, and every
+direct-root field independently to prove the deployment digest is authenticated before the
+five-direct-purpose root-set comparison and before artifact-root authorization/inner verification.
 
 In `test/authority/gate-signer.test.ts`, prove `loadExistingLocalGateSigner` leaves a missing parent
 absent on typed ENOENT refusal, leaves malformed bytes unchanged, performs a successful stable-handle
@@ -1030,16 +1037,28 @@ non-enumerable/inherited properties, prototype substitution, and invalid optiona
 reading any root/event/key. `profileTrustRoots` remains the profile-only opaque handle and never
 enters Authority verification. `directAuthorityRoots` must be an enumerable array of exact
 `TrustRootEntry` records; opaque `TrustRoots`, receipt-carried roots, duplicate tenant/signer/SPKI/
-purpose tuples, duplicate purposes, or roots with extra/wrong tenant, signer, SPKI, principal, or
-purpose refuse. Direct roots may cover only the exact independently anchored inner purposes
+purpose tuples, duplicate purposes, or roots with extra/wrong tenant, signer, SPKI, or
+purpose refuse. Direct roots must cover exactly the signers required by the receipt's five
+independently anchored inner purposes
 `outcome-contract`, `delegation-grant`, `gate-event`, `authority-evidence`, and
 `authority-receipt`; the four artifact-subkey purposes cannot appear in this array. Validate every
-direct entry against the independently derived Job Card Authority
-as-of view for `expectedTenant`, `expectedAuthorityCellId`, `expectedTaskId`, and `now`. Only after
-the binding and human commitment authorize the four artifact entries may the verifier append
-exactly those four to the validated direct array, call `createTrustRoots` once for a temporary set,
-and pass that set to unchanged `verifyAuthorityReceiptBundle`. No opaque-root enumeration/merge,
-trust ABI change, or `verify.ts` change is permitted.
+direct entry's tenant, signer ID, SPKI, purpose, and as-of activity against the independently derived
+Job Card Authority view for `expectedTenant`, `expectedAuthorityCellId`, `expectedTaskId`, and
+`now`. `JobCardTrustPinV1`/`AuthorityKeyDescriptorV1` supplies no `principalId` mapping: never infer
+or require one from that view. Accept a principal claim only when some independently authenticated
+input explicitly supplies it.
+
+After the externally authorized evidence key verifies the outer signature, require
+`authorityDigest(parsedDeploymentSnapshot) === binding.deploymentDigest`. Build
+`validatedDirectTrustRoots = createTrustRoots(validatedDirectAuthorityRoots)` from the exact direct
+array alone, then require
+`trustRootSetDigest(validatedDirectTrustRoots, expectedTenant) ===
+parsedDeploymentSnapshot.trustRootSetDigest`. This authenticated deployment commitment—not an
+inferred descriptor mapping—binds the complete direct-root records, including their declared
+`principalId` values. Only after this equality and the binding/human commitment authorize the four
+artifact entries may the verifier append exactly those four, call `createTrustRoots` once more for
+the final temporary set, and pass it to unchanged `verifyAuthorityReceiptBundle`. No opaque-root
+enumeration/merge, trust ABI change, or `verify.ts` change is permitted.
 
 `currentAuthorityTrustEvents` is independently supplied verifier context, never copied from the
 receipt. Strict replay must join it to the readiness/history in `jobCardTrustPin` as one contiguous,
@@ -1703,9 +1722,9 @@ the full Job Card pin, separately supplied current Authority events, enumerable 
 roots, expected tenant/Cell/task, verifier time, and optional prior inner receipt remain distinct
 fields. It performs exactly this order:
 
-1. Strictly parse the closed outer envelope, its signed profile-authority binding, the artifact-key
-   binding, and the human commitment. Parse only; none is trusted and no verified result or roots
-   escape.
+1. Strictly parse the closed outer envelope, its signed profile-authority binding, deployment
+   snapshot, artifact-key binding, and human commitment. Parse only; none is trusted and no verified
+   result or roots escape.
 2. Run profile governance verification using external profile trust only. Retain the exact profile
    certifier/operator ID+SPKI and prove the recorded profile head as a valid as-of prefix. Profile
    trust never authorizes Authority evidence.
@@ -1715,29 +1734,41 @@ fields. It performs exactly this order:
    advancement becomes separate verifier-time status rather than erasing historical proof.
 4. Verify the domain-separated outer binding signature with the externally authorized direct
    `authority-evidence` key at its signed `observedAt`. Do not use a receipt-carried key for this.
-5. Call existing `verifyCertificationArtifactKeyBinding` against the external readiness/current
+   Require `authorityDigest(parsedDeploymentSnapshot) === binding.deploymentDigest`, so the verified
+   signature authenticates the envelope's exact deployment snapshot before it authorizes any root.
+5. Validate exactly the direct root entries required by the receipt's five direct purposes against
+   the external Authority as-of view by tenant, signer ID, SPKI, purpose, and activity. Reject
+   missing, duplicate, extra, wrong-tenant/purpose/signer/SPKI entries. Never derive or compare
+   `principalId` from `JobCardTrustPinV1`/`AuthorityKeyDescriptorV1`; no such mapping exists. Create
+   the direct-only `TrustRoots`, recompute
+   `trustRootSetDigest(createTrustRoots(validatedDirectAuthorityRoots), expectedTenant)`, and require
+   exact equality to the now-
+   authenticated `parsedDeploymentSnapshot.trustRootSetDigest`. Any changed declared principal is
+   caught only by this full-set digest unless another independent anchor explicitly supplies that
+   principal claim.
+6. Call existing `verifyCertificationArtifactKeyBinding` against the external readiness/current
    parent and verify the human commitment. Require exact tenant/Cell/task/Adapter Contract/
    readiness/validity/parent joins. Only after this succeeds are the four exact artifact-subkey
    entries authorized; a self-consistent forged binding cannot create roots.
-6. Construct the inner verifier root set from caller-supplied direct roots plus those four now-
+7. Construct the final temporary inner verifier root set from the already digest-bound direct roots plus those four now-
    authorized subkeys for `source-bundle`, `compiled-capability`, `transport-effect`, and
    `pack-manifest`. Never derive roots for contract, delegation, gate, evidence, receipt, or outer
    binding. Run unchanged `verifyAuthorityReceiptBundle`; failure stops.
-7. Match each of the four signed inner artifact's actual kind/purpose, `signerId`, signature, and
+8. Match each of the four signed inner artifact's actual kind/purpose, `signerId`, signature, and
    exact SPKI to its one authorized binding entry. Match direct evidence and receipt artifacts to
    external direct descriptors, with the same evidence key used by Step 4. Missing, duplicate,
    reordered-purpose, substituted, extra, wrong-parent, expired-at-signing, or revoked-at-signing
    matches refuse. There are no callbacks or stored `verified` flags in an offline receipt.
-8. Strictly parse/digest `deploymentSnapshot` and `routeScope`; parse/digest the dynamic route
-   snapshot; call `projectRouteScope(snapshot, { tenant: verifiedTenant, definitionAlias:
+9. Reuse the strictly parsed and outer-authenticated `deploymentSnapshot`; strictly parse/digest
+   `routeScope` and the dynamic route snapshot; call `projectRouteScope(snapshot, { tenant: verifiedTenant, definitionAlias:
    verifiedDefinitionAlias })`; and require canonical equality/digest equality with `routeScope`.
    Dynamic slot instance/version, identity/materialized-request digests, generation, and expiry
    remain receipt-time only. Require `activation.validFrom <= observedAt < activation.validUntil`.
-9. Compare activation `jobCardDigest`, `contractDigest`, `deploymentDigest`, `routeScopeDigest`, and
+10. Compare activation `jobCardDigest`, `contractDigest`, `deploymentDigest`, `routeScopeDigest`, and
    `authorityTrustHeadDigest` to independently derived values; compare activation
    `trustHeadDigest` only to the profile head; compare activation contract directly to
    `inner.bundle.contract.digest`.
-10. Compare binding profile, activation, inner receipt, Job Card, artifact-key binding/commitment,
+11. Compare binding profile, activation, inner receipt, Job Card, artifact-key binding/commitment,
     contract, deployment, route scope, dynamic route snapshot, and Authority-head digests exactly,
     then compare all six outer edges including `authorityBindingDigest`. Only now return the
     unchanged inner verified claims and outer verification status.
@@ -1875,6 +1906,13 @@ if (-not $reviewFixCommit -or (git show -s --format=%s $reviewFixCommit) -ne $re
 }
 git show --check --oneline $reviewFixCommit
 if ($LASTEXITCODE -ne 0) { throw "Whitespace failure in $reviewFixCommit ($reviewFixSubject)" }
+$directRootFixSubject = 'docs: bind governed direct root set'
+$directRootFixCommit = git log --format=%H --fixed-strings --grep=$directRootFixSubject -1 "$base..HEAD"
+if (-not $directRootFixCommit -or (git show -s --format=%s $directRootFixCommit) -ne $directRootFixSubject) {
+  throw "Missing immutable Task 2 direct-root fix commit: $directRootFixSubject"
+}
+git show --check --oneline $directRootFixCommit
+if ($LASTEXITCODE -ne 0) { throw "Whitespace failure in $directRootFixCommit ($directRootFixSubject)" }
 git diff --check "$base..HEAD"
 if ($LASTEXITCODE -ne 0) { throw 'Task 2 range whitespace failure' }
 ```
