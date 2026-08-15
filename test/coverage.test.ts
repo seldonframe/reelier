@@ -205,7 +205,8 @@ test("collectCodexCoverage finds a manifest one level below the payload root —
     const evidence = report.routeEvidence.find((item: { readonly sourceRef: string }) => item.sourceRef === plugin?.manifestPath);
     assert.match(evidence?.sourceInstanceIdentityDigest ?? "", /^sha256:[0-9a-f]{64}$/);
     assert.match(evidence?.fileIdentityDigest ?? "", /^sha256:[0-9a-f]{64}$/);
-    assert.match(evidence?.canonicalBytes ?? "", /playwright/);
+    assert.match(evidence?.canonicalBytes ?? "", /contentDigest/);
+    assert.doesNotMatch(evidence?.canonicalBytes ?? "", /playwright-mcp/);
   } finally {
     await rm(home, { recursive: true, force: true });
   }

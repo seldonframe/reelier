@@ -272,7 +272,8 @@ test("collectClaudeCodeCoverage joins installed_plugins.json with enabledPlugins
     const evidence = view.routeEvidence.find((item: { readonly sourceRef: string }) => item.sourceRef === locatedManifest);
     assert.match(evidence?.sourceInstanceIdentityDigest ?? "", /^sha256:[0-9a-f]{64}$/);
     assert.match(evidence?.fileIdentityDigest ?? "", /^sha256:[0-9a-f]{64}$/);
-    assert.match(evidence?.canonicalBytes ?? "", /playwright/);
+    assert.match(evidence?.canonicalBytes ?? "", /contentDigest/);
+    assert.doesNotMatch(evidence?.canonicalBytes ?? "", /playwright-mcp/);
   } finally {
     await rm(fx.root, { recursive: true, force: true });
   }
@@ -427,6 +428,9 @@ test("collectClaudeCodeCoverage gives every projects[<key>].mcpServers map its o
     const theirs = scoped.find((s) => s !== mine)!;
     assert.deepEqual(theirs.servers.map((s) => s.name), ["other_project_scoped"]);
     assert.match(theirs.detail ?? "", /does not rewrite/i);
+    const scopedEvidence = scoped.map(source => view.routeEvidence.find(item => item.sourceRef === source.path));
+    assert.ok(scopedEvidence.every(Boolean), "each logical project source retains static evidence");
+    assert.equal(new Set(scopedEvidence.map(item => item?.sourceInstanceIdentityDigest)).size, 2);
 
     // Never merged into the top-level count.
     const top = view.sources.find((s) => s.path === path.join(fx.home, ".claude.json"));
