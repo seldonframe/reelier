@@ -381,7 +381,9 @@ git commit -m "feat(authority): separate profile certification and activation"
 - Create: `src/authority/host/receipt-authority.ts`
 - Modify: `src/authority/certification/lifecycle-receipts.ts`
 - Modify: `src/authority/certification/lifecycle-authority.ts`
+- Modify: `src/authority/certification/cell.ts`
 - Modify: `src/authority/host/dispatch.ts`
+- Modify: `src/authority/host/gate-signer.ts`
 - Modify: `src/authority/gate.ts`
 - Modify: `src/authority/host/json-https-route.ts`
 - Modify: `src/authority/drivers/json-https.ts`
@@ -393,6 +395,8 @@ git commit -m "feat(authority): separate profile certification and activation"
 - Create: `test/authority/receipt-authority.test.ts`
 - Modify: `test/authority/dispatch-coordinator.test.ts`
 - Modify: `test/authority/certification-lifecycle-authority.test.ts`
+- Modify: `test/authority/certification-cell.test.ts`
+- Modify: `test/authority/gate-signer.test.ts`
 - Modify: `test/authority/json-https-route.test.ts`
 - Modify: `test/authority/config.test.ts`
 - Modify: `test/authority/github-account-identity.test.ts`
@@ -404,22 +408,25 @@ git commit -m "feat(authority): separate profile certification and activation"
 - Modify: `docs/superpowers/specs/2026-08-14-one-command-agent-bootstrap-design.md`
 - Modify: `docs/superpowers/plans/2026-08-14-one-command-agent-bootstrap.md`
 
-This is the exhaustive 47-path Task 2 fix-wave tracked allowlist: the prior 43 paths plus the
-third-amendment prepared-dispatch source/test and lifecycle-authorization source/test paths. The
+This is the exhaustive 51-path Task 2 fix-wave tracked allowlist: the prior 47 paths plus
+`src/authority/certification/cell.ts`, `test/authority/certification-cell.test.ts`,
+`src/authority/host/gate-signer.ts`, and `test/authority/gate-signer.test.ts`. The
 lifecycle-authorization edit is required to retain the existing lifecycle publication API while
 carrying the exact binding and commitment—not merely their digest—from its opaque ceremony material
-into the shared constructor. Explicitly
+into the shared constructor; `cell.ts` is the sole full-pin/genuine-material handoff; and the
+gate-signer pair owns a read-only governed preload without changing the public mutating loader. Explicitly
 forbidden even if a local implementation would be convenient: `contract/authority/v1/**`,
 `scripts/build-authority-contract.mjs`, `src/authority/types.ts`, `src/authority/evidence.ts`,
-`src/authority/verify.ts`, `src/authority/adapter-contract.ts`, `src/authority/ledger.ts`, `src/authority/host/receipts.ts`,
+`src/authority/verify.ts`, `src/authority/adapter-contract.ts`, `src/authority/ledger.ts`,
+`src/authority/host/fs-ledger.ts`, `src/authority/host/fs-ledger-coordination.ts`, `src/authority/host/receipts.ts`,
 `src/authority/host/portable-receipts.ts`, `package.json`, and every lockfile. Do not add or edit
 `src/authority/host/config.ts`; the allowed `test/authority/config.test.ts` covers the closed route
 surface without authorizing a configuration-module change.
 Stop and amend this plan again before touching any other tracked path.
 
 **Interfaces:**
-- Consumes: public inert profile artifacts and profile-only offline verification; installed `StaticPackRegistry`; an existing deployment that has passed `loadAuthorityDeployment`; the exact signed Job Card, `JobCardTrustPinV1.signedReadiness`, and parsed `JobCardTrustMaterialV1`; existing `CertificationArtifactKeyBindingV1` plus human commitment; exact parsed state candidates; connector/source/pack/trust registries; canonical native read/write routes with route-owned projection commitment; current profile, Job Card, and Authority trust events; actual prepared-dispatch state/outcome plus the accepted request's persisted `RouteAuthoritySnapshotV1`; exact already signed contract/delegation/gate foundations; six external purpose-bound receipt signers; the separate binding signer; and the unchanged Authority bundle constructor/parser/verifier.
-- Produces: host-only opaque `AdmittedProfileGovernanceV1`; a private branded/`WeakMap` runtime provenance containing independently derived installed-pack, eligible-contract, signed-authority, deployment-snapshot, stable-route-scope, current-observation, receipt foundations, artifact-key binding/commitment, and signer bindings; package-internal `selectEligibleAuthorityContract` and `projectRouteScope`; public type-only `ProducedReceiptKindV1`, `PurposeBoundReceiptSignerV1<K>`, `AuthorityReceiptSigningAuthorityV1`, `CertificationArtifactKeyBindingV1`, and `CertificationArtifactKeyBindingCommitmentV1`; package-private `ValidatedAuthorityReceiptSigningAuthorityV1`, its sole validator, `AuthorityReceiptFoundationsV1`, `AuthorityReceiptBundleConstructionInputV1`, and async `constructAuthorityReceiptBundle`; optional compatible `DispatchPublication.publishReservation` and read-only `loadDurableHead`; `AuthorityRouteScopeV1`; `AuthorityDeploymentSnapshotV1`; standalone eighth Outcome Profile member `SignedProfileAuthorityBindingV1`; cold load plus pre-invoke/pre-reserve revalidation; read-only `inspectProfileGovernanceStatus`; public `createGovernedAuthorityCell`; a governed immutable reservation/terminal/reconciliation publication and recovery chain; `ProfileGovernedAuthorityReceiptV1`; and `verifyProfileGovernedAuthorityReceipt` with external profile, Job Card, and Authority trust anchors.
+- Consumes: public inert profile artifacts and profile-only offline verification; installed `StaticPackRegistry`; an existing deployment that has passed `loadAuthorityDeployment`; the full external `JobCardTrustPinV1` and parsed `JobCardTrustMaterialV1`; existing `CertificationArtifactKeyBindingV1` plus human commitment; exact parsed state candidates; connector/source/pack/trust registries; canonical native read/write routes with route-owned projection commitment; as-of profile and Authority trust event chains; actual prepared-dispatch state/outcome plus the accepted request's persisted `RouteAuthoritySnapshotV1`; exact already signed contract/delegation/gate foundations; six external purpose-bound receipt signers whose `evidence` signer also signs the domain-separated outer binding; private governed/lifecycle segregation anchors; and the unchanged Authority bundle constructor/parser/verifier.
+- Produces: host-only opaque `AdmittedProfileGovernanceV1` retaining private certifier/operator ID+SPKI; private branded/`WeakMap` runtime provenance containing independently derived installed-pack, eligible-contract, signed-authority, deployment-snapshot, stable-route-scope, as-of/current observations, receipt foundations, artifact-key binding/commitment, segregation anchors, and signer bindings; package-internal `selectEligibleAuthorityContract`, `projectRouteScope`, `CurrentAuthorityTrustViewV1`, `ValidatedAuthorityReceiptSigningAuthorityV1`, their sole factories, and `loadExistingLocalGateSigner`; public type-only `ProducedReceiptKindV1`, `PurposeBoundReceiptSignerV1<K>`, `AuthorityReceiptSigningAuthorityV1`, `CertificationArtifactKeyBindingV1`, and `CertificationArtifactKeyBindingCommitmentV1`; package-private `AuthorityReceiptFoundationsV1`, `AuthorityReceiptBundleConstructionInputV1`, and async `constructAuthorityReceiptBundle`; optional all-or-none durable `DispatchPublication.publishReservation`/`loadDurableHead` compatibility pair over dedicated closed query/head records; `AuthorityRouteScopeV1`; `AuthorityDeploymentSnapshotV1`; standalone eighth Outcome Profile member `SignedProfileAuthorityBindingV1`; cold load plus pre-invoke/pre-reserve revalidation; read-only `inspectProfileGovernanceStatus`; public `createGovernedAuthorityCell`; a governed semantic-CAS receipt store and immutable reservation/terminal/ambiguity/reconciliation chain; `ProfileGovernedAuthorityReceiptV1`; and `verifyProfileGovernedAuthorityReceipt` with separate historical proof and verifier-time current status.
 
 #### Approved Task 2 amendment — independently signed Authority binding
 
@@ -441,16 +448,31 @@ squashed.
 **Approved:** 2026-08-14. The first two amendments remain immutable decision history. This third
 amendment supersedes their unreachable certified-publication seam, four-artifact direct-descriptor
 authorization, missing reservation phase, non-durable first-receipt window, and ambiguous publisher
-return semantics. The 47-path executable fix wave below is authoritative. It preserves every prior
+return semantics. The then-47-path executable fix wave below was authoritative until the fifth
+amendment expanded and cumulatively replaced it with the 51-path wave. It preserves every prior
 Task 2 and amendment commit; none may be amended or squashed.
 
 ##### Approved Task 2 fourth amendment — durable-head recovery and validated trust handoff
 
 **Approved:** 2026-08-14. All earlier amendments remain immutable decision history. This fourth
 amendment supersedes their terminal-storage recovery gap and structural signing-authority handoff,
-and freezes the non-self-anchoring offline verifier order. The same 47-path executable fix wave is
+and freezes the non-self-anchoring offline verifier order. That 47-path wave is historical; the
+fifth amendment's 51-path executable wave is now authoritative and
 authoritative; no implementation, schema, ABI, ledger, package, or test path is added. Preserve every
 earlier Task 2 and amendment commit without amend or squash.
+
+##### Approved Task 2 fifth amendment — first-principles cumulative reset
+
+**Approved:** 2026-08-14. This is the sole cumulative authority for Task 2 implementation. It
+supersedes every conflicting sentence in the four amendment narratives and original steps while
+retaining their rationale as decision history. The rewritten 51-path fix wave below is authoritative:
+the filesystem ledger/API/wire and Authority receipt kernel stay frozen; the governed receipt store
+owns receipt-chain/prior truth; historical and current trust are separate; one direct
+`authority-evidence` signer signs both inner evidence and the domain-separated outer binding; the
+certification Cell owns the full-pin lifecycle handoff; and governed gate signing is read-only.
+No implementer may revive ambiguous result digests, a distinct outer evidence signer, latest-head
+equality, verifier-time invalidation of historical proof, provisional self-declared roots,
+post-CAS casts, raw-callback construction, or mutating governed gate-key setup.
 
 - [ ] **Step 1: Write the failing no-dispatch admission matrix**
 
@@ -573,11 +595,11 @@ export interface ProfileGovernedAuthorityReceiptV1 {
 ```
 
 The original requirement remains that the unchanged authority receipt verifier must succeed before
-any outer claim is returned, followed by profile governance and exact edge comparisons. Because the
-four artifact roots are carried provisionally by the outer envelope, the executable fourth-amendment
-order in Fix Step 7 strictly parses that envelope first solely to derive candidate roots, runs the
-unchanged inner verifier, then externally authorizes those roots before any verified result escapes.
-Mutation tests must prove the wrapper cannot self-anchor, upgrade, or rewrite an inner claim.
+any outer claim is returned, followed by exact edge comparisons. The fifth-amendment Fix Step 7
+order is authoritative: parse first; verify external profile and Authority anchors plus outer
+signature; externally authorize the artifact binding and human commitment; only then construct the
+four artifact roots and run the unchanged inner verifier. Mutation tests must prove the wrapper
+cannot self-anchor, upgrade, or rewrite an inner claim.
 
 - [ ] **Step 6: Run kernel regression and commit**
 
@@ -660,9 +682,9 @@ substitution, and a public self-rooted verification object attempted by cast/spr
 Every hostile accessor/callback counter remains zero.
 
 Add governed-factory option tests for every allowed field, unknown/symbol/non-enumerable/accessor/
-prototype records, and every incomplete pair. Add `receiptSigningAuthority` and
-`authorityBindingSigner` as one all-or-nothing pair. Prove all seven signer IDs/public keys/sign
-callbacks remain unread/uninvoked before Linux, exact records, pair completeness, operator
+prototype records, and every incomplete pair. Add `receiptSigningAuthority` as the sole receipt/
+outer signing input; its `evidence` capability must sign both inner evidence and the domain-separated
+outer binding. Prove all six signer IDs/public keys/sign callbacks remain unread/uninvoked before Linux, exact records, operator
 governance, deployment, route joins, and current trust validate. Register the public-factory Linux
 test on every platform. On Linux, run a child with isolated `HOME`/`USERPROFILE`, let it observe its
 current time, write validity around that observation, import only `reelier/authority/host`, call the
@@ -693,7 +715,10 @@ parent evidence descriptor/status, human signer/readiness digest, Adapter Contra
 schedule, callback key ID/SPKI/purpose, missing/duplicate entries and keys, reordered entries,
 revocation, restart recovery, and every outer-evidence copy. Prove the four artifact purposes are
 never passed to `parseAuthorityKeyDescriptor`, while direct current descriptor replay remains
-mandatory for inner evidence/receipt and the separate outer binding signer. Preserve every existing
+mandatory for inner evidence/receipt and the same evidence signer verifies the outer binding. Add
+historical-as-of cases: later revocation/expiry/latest-head advance changes only current status;
+recorded non-prefix head, rollback, fork, unknown key, or future event refuses historical proof.
+Preserve every existing
 certification lifecycle authority and lifecycle receipt assertion and registration unchanged; add
 the retained-copy/substitution cases only to the authority test, and continue running the receipt
 three-node/restart/no-resend cases once as regression gates.
@@ -706,17 +731,27 @@ mint a handle, and a handle is consumed only through its private `WeakMap` state
 adapter can mint through the same validator only from its already consumed opaque lifecycle material
 and exact retained binding/commitment copies.
 
+In `test/authority/certification-cell.test.ts`, prove `cell.ts` alone combines the complete external
+pin with genuine lifecycle material, registers the private refresh/validated context, and permits
+lifecycle-mode validation without governed-only anchors. Structural or substituted material, wrong
+Cell/task, changed binding/commitment, stale refresh, future/forked/rolled-back events, and revoked
+current readiness refuse. The public runner options and return shape remain unchanged.
+
 In `test/authority/dispatch-coordinator.test.ts`, add the canonical certified prepared path and cuts:
-before reservation-root storage, after root storage/before `consumePreparedDispatch`, after provider
+pre-CAS reserved recovery, post-CAS before reservation-root storage, after root storage/before `consumePreparedDispatch`, after provider
 apply/before terminal storage, after terminal storage/before ledger transition, and after ledger
-transition. Assert pre-send construction/signature/
+transition, after ambiguity storage/before result-less transition, after result-less ambiguity, after
+reconciliation storage/before transition, and after reconciled transition. Assert pre-send construction/signature/
 verification/storage failure produces zero provider calls; once the prepared CAS succeeds, restart
-never resends. Before-root recovery refuses; root-only recovery publishes exactly one ambiguity;
-terminal-head recovery performs the matching ledger transition without publishing; and an already
-terminal ledger is unchanged. Require terminal and reconciliation nodes to join the stored
-reservation root into one unforked chain. Add phase/terminal mismatch, identity conflict, wrong
-reservation/effect/route/request/root/prior, tamper, invalid signature, multiple-head, fork, and
-publisher-throws cases; all refuse without transition, publication, reconciliation, or send. Add
+never resends. Pre-CAS reserved recovery keeps current bytes. Post-CAS/no-root refuses; R-only
+semantic-CAS publishes exactly one A; T/A adoption performs the matching result-bearing or
+result-less ledger transition without siblings; `L=ambiguous,H=T(ambiguous)|A` is a no-op; and Q is
+adopted as reconciled. Reconciliation obtains its exact prior only from verified H, never an
+ambiguous ledger result. Require one unforked store chain. Add query/head phase-state mismatch,
+identity conflict, wrong reservation-intent/tenant/request/capability/effect/route/dispatched/root/
+prior identity, tamper, invalid signature, unreadable store, false-null, multiple heads, semantic
+CAS race, fork, and publisher-throws cases; all refuse without transition, publication,
+reconciliation, or send. Add
 two-node and restart falsifiers whose inner prior comparison fails if any outer receipt digest is
 returned or used as `priorReceiptDigest`. With `publishReservation`/`loadDurableHead` absent, assert
 legacy certified trace bytes/call order remain unchanged.
@@ -735,10 +770,18 @@ event/key/status, binding scalar/digest/signature/signer/purpose, every edge, an
 every inner claim. Prove unrelated valid governance/inner bundles refuse, activation contract equals
 the inner contract digest, and no outer field can upgrade/rewrite an inner claim. Add a
 self-consistent forged artifact binding/commitment plus four matching forged inner signatures; it
-may satisfy candidate-root cryptography but must fail external readiness/current-parent
-authorization. Independently substitute every signed inner artifact signer ID/SPKI/purpose, revoke
-or expire the human/parent/direct receipt/outer signer at binding time or verifier time, and prove no
-candidate receipt-carried root escapes as verified authority.
+must fail before trust-root construction because external readiness/current-parent authorization is
+absent. Independently substitute every signed inner artifact signer ID/SPKI/purpose; revoke or
+expire the human/parent/direct receipt/evidence signer after signed `observedAt`; and prove
+historical proof remains verified while current status reports the change. Mutations at or before
+`observedAt` refuse. Prove no receipt-carried key or stored verified flag becomes authority.
+
+In `test/authority/gate-signer.test.ts`, prove `loadExistingLocalGateSigner` leaves a missing parent
+absent on typed ENOENT refusal, leaves malformed bytes unchanged, performs a successful stable-handle
+read with no metadata/content mutation, and cannot switch keys across replace/delete races. Governed
+composition compares the derived public key to the pinned gate signer and reuses the exact preloaded
+object; every mismatch keeps source/credential/reservation/prepare/send/store/server/filesystem
+counters and state at zero. Existing public create-on-missing tests remain byte-identical.
 
 Run:
 
@@ -747,12 +790,13 @@ npx tsc -p tsconfig.test.json
 ```
 
 Expected RED: compilation fails only on the new activation/scope/deployment/binding/evidence,
-validated-signing-authority, and durable-head APIs and exact governed options, or focused tests fail
+validated-signing-authority, durable-head, current-view, and read-only gate-signer APIs and exact
+governed options, or focused tests fail
 on the approved review gaps. Commit tests and
-test fixtures only:
+test fixtures only. This RED allowlist contains exactly 24 paths:
 
 ```powershell
-git add -- test/authority/profile-governance-fixture.ts test/authority/profile-governance.test.ts test/authority/profile-governance-loader.test.ts test/authority/governed-cell.test.ts test/authority/profile-governed-receipt.test.ts test/authority/receipt-authority.test.ts test/authority/dispatch-coordinator.test.ts test/authority/certification-lifecycle-authority.test.ts test/authority/local-runtime.test.ts test/authority/gate.test.ts test/authority/package.test.ts test/authority/outcome-profile.test.ts test/authority/outcome-profile-package.test.ts test/authority/trust.test.ts test/authority/json-https-route.test.ts test/authority/config.test.ts test/authority/github-account-identity.test.ts test/authority/json-https-driver.test.ts test/authority/json-https-connector.test.ts test/authority/prepared-dispatch.test.ts test/authority/native-https-route-join.test.ts test/authority/certification-github-issue-labels-runner.test.ts
+git add -- test/authority/profile-governance-fixture.ts test/authority/profile-governance.test.ts test/authority/profile-governance-loader.test.ts test/authority/governed-cell.test.ts test/authority/profile-governed-receipt.test.ts test/authority/receipt-authority.test.ts test/authority/dispatch-coordinator.test.ts test/authority/certification-lifecycle-authority.test.ts test/authority/certification-cell.test.ts test/authority/gate-signer.test.ts test/authority/local-runtime.test.ts test/authority/gate.test.ts test/authority/package.test.ts test/authority/outcome-profile.test.ts test/authority/outcome-profile-package.test.ts test/authority/trust.test.ts test/authority/json-https-route.test.ts test/authority/config.test.ts test/authority/github-account-identity.test.ts test/authority/json-https-driver.test.ts test/authority/json-https-connector.test.ts test/authority/prepared-dispatch.test.ts test/authority/native-https-route-join.test.ts test/authority/certification-github-issue-labels-runner.test.ts
 git commit -m "test(authority): expose governed admission review gaps"
 ```
 
@@ -909,14 +953,39 @@ type ValidatedAuthorityReceiptSigningAuthorityV1 = Readonly<{
   readonly [validatedSigningAuthorityBrand]: true;
 }>;
 
+declare const currentAuthorityTrustViewBrand: unique symbol;
+type CurrentAuthorityTrustViewV1 = Readonly<{
+  readonly [currentAuthorityTrustViewBrand]: true;
+}>;
+
+type ReceiptSigningSegregationV1 =
+  | Readonly<{
+      mode: "lifecycle";
+      lifecycleContext: CertificationLifecycleTrustContextV1;
+    }>
+  | Readonly<{
+      mode: "governed";
+      profileCertifier: Readonly<{ signerId: string; publicKeySpkiBase64: string }>;
+      profileOperator: Readonly<{ signerId: string; publicKeySpkiBase64: string }>;
+      jobCardHuman: Readonly<{ signerId: string; publicKeySpkiBase64: string }>;
+      localGate: Readonly<{ signerId: string; publicKeySpkiBase64: string }>;
+      topology?: Readonly<{ signerId: string; publicKeySpkiBase64: string }>;
+      lease?: Readonly<{ signerId: string; publicKeySpkiBase64: string }>;
+      providerIdentity?: Readonly<{ signerId: string; publicKeySpkiBase64: string }>;
+    }>;
+
+function createCurrentAuthorityTrustView(input: Readonly<{
+  tenant: string;
+  authorityCellId: string;
+  taskId: string;
+  observedAt: Date;
+  jobCardTrustPin: JobCardTrustPinV1;
+}>): CurrentAuthorityTrustViewV1;
+
 interface AuthorityReceiptSigningAuthorityValidationInputV1 {
-  readonly tenant: string;
-  readonly authorityCellId: string;
-  readonly taskId: string;
-  readonly observedAt: Date;
-  readonly jobCardTrustPin: JobCardTrustPinV1;
+  readonly trustView: CurrentAuthorityTrustViewV1;
   readonly signingAuthority: AuthorityReceiptSigningAuthorityV1;
-  readonly authorityBindingSigner?: AuthorityBindingSignerV1;
+  readonly segregation: ReceiptSigningSegregationV1;
 }
 
 function validateAuthorityReceiptSigningAuthority(
@@ -924,12 +993,17 @@ function validateAuthorityReceiptSigningAuthority(
 ): ValidatedAuthorityReceiptSigningAuthorityV1;
 ```
 
-The validator strictly parses `jobCardTrustPin.signedReadiness`, `keyDescriptors`,
-`readinessTrustEvents`, and `currentTrustEvents`, and first runs existing
+The trust-view factory strictly parses `jobCardTrustPin.signedReadiness`, `keyDescriptors`,
+`readinessTrustEvents`, and time-filtered `currentTrustEvents`, and first runs existing
 `verifySignedCertificationReadiness` with the pin's exact readiness candidate, preflight, and human
 root. Those pin fields are the required external signed readiness plus current descriptors/events;
-none may be sourced from the binding or signer capabilities. The validator
-requires every relevant descriptor active and unrevoked at the single intrinsic `observedAt`; calls
+none may be sourced from the binding or signer capabilities. It rejects future events, rollback,
+reordering, and forks, and proves the recorded Authority head as a valid as-of prefix rather than
+requiring equality to the verifier's latest head. It stores the detached full pin and replay result
+in a module-private `WeakMap`; no public structural value can reproduce the view.
+
+The signing-authority validator consumes only that opaque view. It requires every relevant
+descriptor active and unrevoked at the single intrinsic `observedAt`; calls
 existing `verifyCertificationArtifactKeyBinding` with the exact retained binding/commitment and
 readiness; requires binding/commitment validity, human signer activity, expected tenant/Cell/task,
 Adapter Contract, readiness, active direct parent, and signature joins; and validates each Ed25519
@@ -937,29 +1011,36 @@ public key without accepting a private key. Match `sourceBundle`, `compiledCapab
 `transportEffect`, and `packManifest` ID/SPKI/purpose/key digest to the four exact unique binding
 entries without parsing them as `AuthorityKeyDescriptorV1`. Match `evidence` to the active direct
 `authority-evidence` parent and `receipt` to a separately active direct `authority-receipt`
-descriptor. When `authorityBindingSigner` is present, require a separately active direct
-role-`authority-cell`/purpose-`authority-evidence` descriptor and all governed segregation rules.
-All six inner keys are unique by ID and SPKI, and the optional outer key is distinct from them and
-all already forbidden roles. Reject future/expired/revoked/missing/duplicate/substituted material
-before invoking a callback.
+descriptor. The same unique direct `evidence` capability signs the inner evidence artifact and the
+domain-separated outer profile-authority binding; current readiness cannot activate a second
+direct evidence key for the same Cell/purpose. All six inner-purpose capabilities are unique by ID
+and SPKI; the outer binding intentionally reuses the evidence capability.
+
+Segregation is mode-specific. Lifecycle mode is available only through a genuine registered
+`CertificationLifecycleTrustContextV1` and explicitly excludes governed-only profile, route,
+local-gate, topology, lease, and provider-identity anchors. Governed mode compares the exact
+privately retained profile certifier/operator, Job Card human, preloaded local-gate, topology,
+lease, and provider-identity signer ID+SPKI anchors wherever those roles are present. Reject
+future/expired/revoked/missing/duplicate/substituted material before invoking a callback.
 
 Successful validation creates a fresh frozen proxy handle and stores the exact detached parsed
-authorization plus six callbacks and optional outer signer only in a module-private `WeakMap`.
+authorization plus six callbacks only in a module-private `WeakMap`.
 Casts, spreads, freezes, proxies, structural copies, and caller-created brands cannot populate the
 map. No public assertion or snapshot exposes this state. The governed factory calls this sole
 validator after its fresh external trust observation; the lifecycle adapter may call it only while
 holding already consumed genuine `CertificationLifecycleAuthorityMaterial` with exact detached
 binding/commitment copies. Raw callback/binding records never reach a constructor.
 
-Ownership is exact: `src/authority/trust.ts` owns the current descriptor/event replay view;
+Ownership is exact: `src/authority/trust.ts` owns the as-of/current descriptor/event replay view;
 `src/authority/host/receipt-authority.ts` owns the brand, handle `WeakMap`, sole validator, and
-constructor lookup; `src/authority/certification/lifecycle-authority.ts` registers each genuine
-material object returned by `consumeCertificationLifecycleAuthority` in its existing private
-authority state and exposes only a package-internal adapter that can derive the six structural
-capabilities plus exact detached binding/commitment from such a registered object. The lifecycle
-receipt producer passes that derived input and external validation context to the same validator.
-Unregistered structural maps/material are rejected. This adds no public lifecycle API, signing
-shortcut, second validator, or importable handle assertion.
+constructor lookup. `src/authority/certification/cell.ts` is the only place holding the complete
+external pin and genuine lifecycle material; it registers a private refresh/validated
+`CertificationLifecycleTrustContextV1` against that material without widening the public runner
+API. `src/authority/certification/lifecycle-authority.ts` retains exact detached
+binding/commitment copies and exposes only a package-internal adapter that consumes that registered
+context to derive the lifecycle-mode trust view and six capabilities. Unregistered structural
+maps/material are rejected. This adds no public lifecycle API, signing shortcut, second validator,
+raw callback path, or importable handle assertion.
 
 Keep these construction types package-private:
 
@@ -996,9 +1077,10 @@ artifact digest, verifies every returned signature against that signer's public 
 existing `createAuthorityReceiptBundle`. It does not publish, persist, recover storage, send,
 reconcile, verify a completed bundle, or create trust roots.
 
-The governed outer-binding publisher retrieves the separately validated outer signer from the same
-private handle. It cannot accept `AuthorityBindingSignerV1` directly. Inner construction rejects a
-handle validated for lifecycle-only use if governed outer publication is requested.
+The governed outer-binding publisher reuses the validated `evidence` signer from the same private
+handle with the domain-separated profile-authority-binding preimage. It cannot accept a separate
+outer signer or raw callback. Inner construction rejects a handle validated for lifecycle-only use
+if governed outer publication is requested.
 
 For `phase: "reservation"`, preserve the existing certification lifecycle bytes exactly:
 
@@ -1103,7 +1185,7 @@ connectorRegistrationDigest(registry, tenant, connectorId, accountId)
 
 Update `src/authority/drivers/json-https.ts` to require the dynamic snapshot's
 `projectionSchemaDigest` to equal the parsed canonical write route before materialization or send.
-All affected closed-route fixtures named in the 47-path allowlist receive the explicit field; no
+All affected closed-route fixtures named in the 51-path allowlist receive the explicit field; no
 default or compatibility fallback exists because the route contract is branch-only.
 
 Derive stable scope only from verified tenant, the Job Card's single definition alias, the one
@@ -1139,26 +1221,24 @@ and never call this a thirteen-field projection of the snapshot alone.
 - [ ] **Fix Step 5: Freeze externally anchored Authority trust and actual deployment provenance**
 
 Use the existing `AuthorityKeyDescriptorV1`/`TrustEventV1` replay semantics. Extend
-`src/authority/trust.ts` only with a narrow opaque Authority-binding trust view whose constructor
-takes independently supplied, already parsed key descriptors, current trust events, tenant, and
-external verification time. It stores public keys and active/revoked state in a private `WeakMap`,
-returns only the computed current head digest/status, and verifies that the selected binding signer
-has role `authority-cell`, purpose `authority-evidence`, exact signer ID/SPKI, and is active at the
-external time. The same view uses direct current descriptor/event replay only for the inner `authority-evidence` parent, inner
-`authority-receipt` signer, and separate outer `authority-evidence` binding signer. It must not parse
-or admit the four artifact subkeys as `AuthorityKeyDescriptorV1`. Instead, call existing
-`verifyCertificationArtifactKeyBinding(binding, commitment, { descriptors:
-jobCardTrustPin.keyDescriptors, signedReadiness: jobCardTrustPin.signedReadiness, now })`, match its
-four unique entries to the four structural signer capabilities only inside the sole validator, and
-require the parent evidence descriptor and human readiness descriptor active under the external
-current events. Require the six inner signer keys mutually distinct and the outer binding signer
-distinct from all six. The trust view itself never returns a signing handle or public key object;
-only `validateAuthorityReceiptSigningAuthority` may consume it internally and mint the private
-handle described in Fix Step 3. The current head is the digest of the last parsed current Authority trust event; an
-empty, future, reordered, forked, unknown-key, or revoked selection refuses. Receipt verification
-receives this trust view/current observation and the existing external `JobCardTrustPinV1`; neither
-anchor may be sourced from `authorityBindingEvidence`. The receipt-carried binding/commitment are
-portable claims checked against those anchors, never self-anchoring roots.
+`src/authority/trust.ts` only with the opaque `CurrentAuthorityTrustViewV1` factory declared in Fix
+Step 3. It consumes the full external `JobCardTrustPinV1`, expected tenant/Cell/task, and one
+intrinsic observation time; strictly verifies signed readiness; time-filters current events; and
+rejects future events, rollback, reordering, forks, unknown keys, and invalid prefixes. Historical
+cryptographic authority is evaluated at each signed artifact's `observedAt`. A recorded head must be
+a valid as-of prefix of the externally replayed chain, not equal its latest head forever.
+Verifier-time expiry/revocation/head advancement is returned as separate current status and never
+erases valid historical proof.
+
+The view uses direct descriptors only for the unique Cell `authority-evidence` signer and the
+`authority-receipt` signer. The same direct evidence capability signs both inner evidence and the
+domain-separated outer binding; a second direct evidence key for the same Cell/purpose refuses.
+The view must not parse the four artifact subkeys as `AuthorityKeyDescriptorV1`. The sole signing
+validator first authorizes their exact binding and human-signed commitment against the view's
+external readiness/current parent, then matches the four signer capabilities by ID/SPKI/purpose.
+The view itself never returns a signing handle or public key object. Receipt verification receives
+the full external pin/as-of view independently; no anchor may be sourced from
+`authorityBindingEvidence`, and profile trust remains a separate domain.
 
 Refactor `src/authority/host/local.ts` into a load/core split without changing the public
 `createLocalAuthorityRuntime(config, options)` bytes or behavior:
@@ -1193,10 +1273,14 @@ exact-vector tests for every function/preimage above; do not substitute `digestA
 the declared snapshot digest. The activation must equal the actual profile, installed pack, configured
 single definition, selected contract, signed Job Card, deployment snapshot, route scope, profile
 head, and independent Authority head before `createAuthorityGate`, ledger directory creation,
-credential/source access, or server creation. Unsupported legacy/remote route substrates without a
+credential/source access, or server creation. Load the local gate signer once with package-private
+`loadExistingLocalGateSigner(file)`, compare its exact public-key SPKI to governed segregation
+anchors, and pass the same in-memory signer into `createLocalAuthorityRuntimeCore`; never reopen it.
+Unsupported legacy/remote route substrates without a
 closed equivalent route scope refuse governed dispatch.
 
-Store the admitted profile, exact loaded objects/digests, binding-signer identity, and publication
+Store the admitted profile, exact loaded objects/digests, private profile certifier/operator
+ID+SPKI, direct evidence-signer identity, and publication
 inputs in a new package-private branded object backed by `WeakMap`. Structural copies, casts,
 freezes, public offline results, caller digest records, callbacks, or project roots cannot mint it.
 Pass the same loaded pack/state/connector/trust objects into `createLocalAuthorityRuntimeCore`; do
@@ -1243,18 +1327,21 @@ path and never reserves. Do not widen `ReservationIntent`, `StoredReservationInt
 record and do not modify `src/authority/ledger.ts`. Each invocation captures one intrinsic `observedAt`, cold reloads the fixed
 profile directory with its physical-root checks, rereads the external Job Card trust pin/current
 Authority key descriptors and trust events, and requires unchanged root/manifest/profile/
-activation/deployment/route bindings, both current trust heads, activation validity, and all six
-receipt-signing capabilities plus the binding signer properly authorized and distinct at that same
-time by rerunning the sole validator: replay the human-signed artifact-key commitment against its
+activation/deployment/route bindings, both as-of/current trust observations, activation validity,
+and all six receipt-signing capabilities at that same time by rerunning the sole validator: replay
+the human-signed artifact-key commitment against its
 exact current signed readiness; require the four artifact capabilities to match the binding entries
-and its active direct `authority-evidence` parent; and require the receipt and outer-binding signers
-current under their separate direct Authority descriptors. Replace the prior private handle with
+and its active direct `authority-evidence` parent; and require the receipt signer current under its
+direct descriptor and the shared evidence signer current under its one direct descriptor. Apply
+governed-mode segregation against the exact profile certifier/operator, Job Card human, preloaded
+local-gate, topology, lease, and provider-identity anchors. Replace the prior private handle with
 the newly validated handle keyed to this exact capability/observation; never mutate a handle or
 invoke `sign` during revalidation. The pre-reserve call also
 requires `projectRouteScope(intent.routeAuthority!, { tenant: intent.tenant,
 definitionAlias: intent.definitionAlias })` to match activated scope canonically and by digest.
-Require `activation.validFrom <= observedAt < activation.validUntil`; receipt verification also
-requires every signer active at binding `observedAt` and verifier time.
+Require `activation.validFrom <= observedAt < activation.validUntil`; receipt verification requires
+every signer historically active at binding `observedAt` and separately reports verifier-time
+current activity/revocation/expiry without invalidating that historical proof.
 
 Store the accepted observation behind the private runtime provenance keyed to the exact capability
 digest so same-process publication can consume it once. Do not claim restart durability for this
@@ -1272,18 +1359,10 @@ Any root rename/replacement, mixed generation, child replacement, canonical-path
 unsupported identity check refuses. `operatorRootDigest` commits the stable physical identity and
 canonical path only after the final revalidation.
 
-Add these exact governed options and no profile/path/clock/root alternative:
+Add this exact governed option surface and no profile/path/clock/root alternative. All original
+fields remain; there is one receipt-signing authority and no separate outer-binding signer:
 
 ```ts
-export interface AuthorityBindingSignerV1 {
-  readonly signerId: string;
-  readonly publicKey: KeyObject;
-  readonly sign: (input: Readonly<{
-    purpose: "authority-evidence";
-    digest: string;
-  }>) => Promise<AuthoritySignature>;
-}
-
 export interface GovernedAuthorityCellOptionsV1 {
   readonly principalRegistry?: PrincipalRegistry;
   readonly dispatchAdapter?: DispatchAdapter;
@@ -1311,20 +1390,29 @@ export interface GovernedAuthorityCellOptionsV1 {
   readonly portableReceiptPublication?: DispatchPublication;
   readonly latencyRecorder?: AuthorityLatencyRecorder;
   readonly receiptSigningAuthority?: AuthorityReceiptSigningAuthorityV1;
-  readonly authorityBindingSigner?: AuthorityBindingSignerV1;
 }
 ```
 
-For governed dispatch, `receiptSigningAuthority` and `authorityBindingSigner` are required as an
-all-or-nothing pair. Exact option validation rejects either alone before filesystem reads or
-callbacks. After cold external governance/readiness/descriptors/events validate, pass both raw
-options exactly once to `validateAuthorityReceiptSigningAuthority`; store only its opaque handle in
-private governed provenance. The validator enforces the four binding-entry matches, active direct
-parent/receipt/outer descriptors, all time/revocation/uniqueness rules, and segregation from profile
-certifier/operator, Job Card human, local-gate, topology, lease, and identity keys. Invoke the six
-receipt signers only through the handle inside pure inner-bundle construction; invoke the binding
-signer only through that same governed handle after the actual inner bundle has passed the unchanged
-verifier and the exact persisted dynamic route snapshot is available. The factory still asserts Linux first, derives
+Governed dispatch requires `receiptSigningAuthority`; absence refuses before any dispatch side
+effect. After cold external governance/readiness/descriptors/events validate, pass it exactly once
+with the opaque current trust view and governed segregation anchors to
+`validateAuthorityReceiptSigningAuthority`; store only the returned opaque handle in private
+provenance. The validator enforces the four binding-entry matches, active direct parent/receipt
+descriptors, same evidence signer for inner and outer, all time/revocation/uniqueness rules, and
+segregation from profile certifier/operator, Job Card human, local-gate, topology, lease, and
+identity keys. Invoke all sign operations only through the handle. The domain-separated outer
+binding uses its `evidence` capability only after the actual inner bundle passes the unchanged
+verifier and the exact persisted dynamic route snapshot is available.
+
+Add package-private `loadExistingLocalGateSigner(file)` in
+`src/authority/host/gate-signer.ts`; never barrel-export it. It resolves and opens an existing exact
+Ed25519 private-key file read-only, returns a typed refusal for `ENOENT`, and never calls mkdir,
+generate, write, rename, or remove. Handle-based/no-follow identity checks pin the successful read;
+replace/delete races cannot switch the key. Missing files leave even the parent absent, malformed
+files are unchanged, and successful reads cause no filesystem mutation. Public
+`loadOrCreateLocalGateSigner` and the legacy runtime retain byte/behavior compatibility.
+
+The factory still asserts Linux first, derives
 `os.homedir()`/wall time internally, returns only `AuthorityHostServer`, and never provisions,
 listens, activates, or adds the Task 6 session endpoint.
 
@@ -1360,46 +1448,57 @@ export interface ProfileGovernedAuthorityReceiptV1 {
 }
 ```
 
-Preserve the existing `publish` method exactly and add these two optional compatibility seams in
-`src/authority/host/dispatch.ts`:
+Preserve the existing `publish` method exactly and add these two optional, all-or-none compatibility
+seams in `src/authority/host/dispatch.ts`:
 
 ```ts
-export type DurableDispatchPublicationHeadV1 = Readonly<{
-  v: "reelier.durable-dispatch-publication-head/v1";
+export type DurableDispatchPublicationQueryV1 = Readonly<{
+  v: "reelier.durable-dispatch-publication-query/v1";
   reservationId: string;
+  ledgerState: "dispatched" | "ambiguous";
+  sendStarted: true;
+  reservationIntentDigest: string;
   tenant: string;
   requestDigest: string;
   capabilityDigest: string;
   effectDigest: string;
   routeAuthorityDigest: string;
+  expectedDispatchedRequestDigest: string;
+}>;
+
+export type DurableDispatchPublicationHeadV1 = Readonly<{
+  v: "reelier.durable-dispatch-publication-head/v1";
+  reservationId: string;
+  reservationIntentDigest: string;
+  tenant: string;
+  requestDigest: string;
+  capabilityDigest: string;
+  effectDigest: string;
+  routeAuthorityDigest: string;
+  expectedDispatchedRequestDigest: string;
   receiptRef: string;
   evidenceDigest: string;
   reservationReceiptRef: string;
-  dispatchedRequestDigest: string | null;
   priorReceiptRef: string | null;
 } & (
   | Readonly<{
       phase: "reservation";
       terminalKind: null;
-      dispatchedRequestDigest: null;
       priorReceiptRef: null;
     }>
   | Readonly<{
       phase: "dispatch";
-      terminalKind: "acknowledged" | "definitive-failure" | "ambiguous";
-      dispatchedRequestDigest: string;
+      terminalKind: "acknowledged" | "definitive-failure";
       priorReceiptRef: string;
     }>
   | Readonly<{
       phase: "ambiguous";
       terminalKind: "ambiguous";
-      dispatchedRequestDigest: string;
       priorReceiptRef: string;
     }>
   | Readonly<{
       phase: "reconcile";
       terminalKind: "reconciled";
-      dispatchedRequestDigest: string;
       priorReceiptRef: string;
     }>
 )>;
@@ -1419,42 +1518,47 @@ export interface DispatchPublication {
     dispatchedRequestDigest: null;
     priorReceiptDigest: null;
   }>): Promise<Readonly<{ receiptRef: string; evidenceDigest: string }>>;
-  loadDurableHead?(input: Readonly<{
-    state: DispatchRequestState;
-  }>): Promise<DurableDispatchPublicationHeadV1 | null>;
+  loadDurableHead?(
+    query: DurableDispatchPublicationQueryV1,
+  ): Promise<DurableDispatchPublicationHeadV1 | null>;
 }
 ```
 
 Every scalar is an exact own-data property; parse with `Reflect.ownKeys` and reject symbols,
 accessors, extras, inherited/non-enumerable fields, invalid discriminated pairs, noncanonical or zero
-digests, and prototype substitution. `reservationReceiptRef === receiptRef` for a reservation head;
-every terminal head's `reservationReceiptRef` identifies the verified root and
-`priorReceiptRef` identifies the immediately preceding inner receipt. `routeAuthorityDigest` is
-`authorityDigest(state.reservation.intent.routeAuthority)`. `loadDurableHead` is read-only: before
-returning it, the governed publisher strictly verifies the unique immutable inner/outer chain and
-fresh external profile, Job Card, readiness, and Authority anchors. It never calls a signer,
-publisher, adapter, reconciler, ledger method, source, credential, or provider.
+digests, and prototype substitution. The dedicated query is constructed from the ledger's already
+validated reservation and commits its state, `sendStarted`, exact canonical reservation-intent
+digest, tenant/request/capability/effect/route identities, and expected dispatched-request digest;
+it is never a `DispatchRequestState` cast. A reservation head is the unique root and has
+`reservationReceiptRef === receiptRef` and no prior. Each successor identifies that root and its
+immediate verified inner prior. `loadDurableHead` returns `null` only after a readable, verified
+store proves no chain for the query. Unreadable storage, tamper, fork, multiple heads, query mismatch,
+or invalid inner/outer evidence throws. It is read-only and never invokes signers, adapters,
+reconcilers, ledger, sources, credentials, or providers.
 
-Legacy publishers omit both optional methods and retain exact behavior. The governed factory requires
-its private publisher to implement both. On the certified `adapter.prepare &&
+Legacy publishers omit both methods and retain exact calls, transitions, results, and traces. A
+configuration exposing exactly one method refuses at construction. The governed factory requires
+both. On the certified `adapter.prepare &&
 ledger.commitPreparedDispatch` branch, call it only after successful prepared CAS and before
 `consumePreparedDispatch`. Supply the exact synthetic reservation outcome defined in Fix Step 3.
 Construction/signature/unchanged-inner-verifier/outer-verifier/immutable-store failure propagates
 before `consumePreparedDispatch`, so provider send count remains zero. Do not call this method on any
 legacy/non-certified/cancel path.
 
-Recovery branches on `loadDurableHead` presence. When it is absent, the coordinator executes the
-pre-amendment recovery path with identical calls, transitions, results, and traces; it never probes a
-store or synthesizes a head. `publishReservation` presence alone does not enable durable-head
-adoption.
+The governed store uses semantic CAS/idempotency: exactly one reservation root per exact query and
+at most one successor per exact prior and semantic phase. A byte-identical replay returns the same
+head; any competing successor/fork throws. Concurrent live/recovery attempts therefore cannot
+create siblings. The publisher owns only immutable receipt-chain/prior state and never reads or
+mutates the ledger. The coordinator is the sole ledger lifecycle owner. Portable forwarding never
+owns either lifecycle.
 
 The accepted request must persist the exact dynamic `RouteAuthoritySnapshotV1` already carried by
 `state.reservation.intent.routeAuthority`; do not reconstruct it from activation or provider
 response. The governed publication consumes the exact capability-keyed private provenance/current
 observation and its freshly minted `ValidatedAuthorityReceiptSigningAuthorityV1`; it calls
 `constructAuthorityReceiptBundle` with that handle, immediately runs unchanged
-`verifyAuthorityReceiptBundle` using only external direct roots plus the four roots held in validated
-private state,
+`verifyAuthorityReceiptBundle` using external direct roots plus the four already externally
+authorized binding roots held in private state,
 creates and verifies the signed outer binding, and stores the complete outer receipt immutably. For
 the reservation phase, durable outer storage must succeed before provider send. For terminal
 dispatch, publish after the provider outcome/evidence is known and before terminal ledger
@@ -1462,42 +1566,36 @@ transition, with `priorReceiptDigest` equal to the reservation inner receipt-val
 durable outer storage succeeds may it forward the optional existing
 `portableReceiptPublication`; the portable result cannot replace or verify the governed receipt.
 
-At certified restart, the coordinator calls `loadDurableHead({ state })` only for a ledger
-reservation still in `dispatched` or `ambiguous`. It independently compares reservation ID, capability/effect/route
-digests, tenant/request and dispatched-request identity, root reference, and exact prior chain to recovered ledger
-state. A verified terminal head performs only the matching ledger transition with
-`resultDigest: head.receiptRef`; no publication or resend occurs. The closed mapping is:
+At certified restart, the coordinator constructs the dedicated query only for a ledger row in
+`dispatched` or `ambiguous`, then independently joins every query/head/root/prior identity. This
+state table is exhaustive:
 
-- `phase: "dispatch"` plus terminal kind `acknowledged`, `definitive-failure`, or `ambiguous` maps to
-  that exact ledger state;
-- `phase: "ambiguous"` requires and maps only `ambiguous`;
-- `phase: "reconcile"` requires and maps only `reconciled`, and is adoptable only from an
-  `ambiguous` ledger row whose stored inner result is its exact prior;
-- `phase: "reservation"` has `terminalKind: null` and is never itself adopted as terminal;
-- `cancelled` is not a legal dispatched durable head.
+| Ledger `L` | Verified durable head `H` | Only permitted action |
+|---|---|---|
+| `reserved` (pre-CAS) | not queried | Preserve the existing prepared-dispatch recovery semantics byte-for-byte. |
+| `dispatched` | `null` | Refuse: the post-CAS reservation root is absent; do not publish or send. |
+| `dispatched` | root `R` only | Append exactly one ambiguity successor `A`, verify/store it, then transition to result-less `ambiguous`. |
+| `dispatched` | terminal `T` acknowledged or definitive-failure | Adopt `T`: transition with `T.receiptRef` as the ledger result, without sibling or resend. |
+| `dispatched` | terminal `T` ambiguous or ambiguity `A` | Adopt it with a result-less `ambiguous` transition. |
+| `ambiguous` | exact matching ambiguous `T` or `A` | No-op. The filesystem ledger has no ambiguous `resultDigest`. |
+| `ambiguous` | reconciliation `Q` | Adopt `Q`: transition to `reconciled` with `Q.receiptRef`. |
+| either queried state | conflict, tamper, fork, multiple heads, unreadable store, wrong prior/root/query | Refuse with no publish, transition, reconcile, or send. |
 
-From `dispatched`, only a verified root-only reservation head may cause the coordinator to publish one ambiguity child
-and then transition `dispatched -> ambiguous` with that child's inner `receiptRef` as result. A null
-head, missing root, multiple heads, fork, invalid outer/inner verification, phase/terminal mismatch,
-wrong reservation/capability/effect/route/request/root/prior identity, stale/revoked anchors, or any
-read failure refuses recovery without publishing, transitioning, reconciling, or sending. An
-already-terminal ledger row is untouched. A reconcile head presented for `dispatched`, or a
-dispatch/root head presented for `ambiguous`, is a state/phase conflict and refuses. The coordinator is the sole ledger lifecycle owner;
-`publishReservation`, `publish`, and `loadDurableHead` never transition it.
+Live acknowledged/definitive terminal publication stores `T` before the matching result-bearing
+ledger transition. Live ambiguous terminal publication stores `T` before a result-less ambiguous
+transition. Reconciliation asks the verified store head for its exact immediate inner prior,
+appends and verifies/stores `Q` through semantic CAS, and only then records `Q.receiptRef` in the
+reconciled ledger transition. It never obtains an ambiguous prior from a ledger result. An
+acknowledged/definitive terminal gets no ambiguity sibling. Maker and verifier remain different
+roles; a verifier constructs the verified receipt graph rather than trusting maker flags.
 
-For an adopted ambiguous terminal head, later `reconcile(reservationId)` reads
-`reservation.resultDigest === head.receiptRef` and uses that exact inner reference as
-`priorReceiptDigest`. For a root-only ambiguity child it similarly uses the child's inner reference.
-An acknowledged/definitive terminal head gets no ambiguity sibling. Maker and verifier remain
-different roles; a verifier constructs the verified receipt graph rather than trusting maker flags.
-
-Freeze the crash behavior exactly: a cut before root storage leaves no send and recovery refuses; a
-cut after root storage/before send or after provider apply/before terminal storage sees a verified
-root only and publishes one ambiguity child; a cut after terminal storage/before ledger transition
-adopts that terminal head with no new receipt; a cut after ledger transition is a no-op. A cut after
-reconciliation storage/before its ledger transition similarly adopts the verified reconcile head
-from `ambiguous`. Failure of optional portable forwarding after governed storage is treated as the
-matching after-storage cut, never as permission to publish a sibling or resend.
+Freeze the crash behavior exactly: a cut before certified CAS remains existing reserved/pre-CAS
+recovery; a cut after CAS but before root storage leaves no send and recovery refuses; a cut after
+root storage/before send or after provider apply/before terminal storage sees `R` and appends one
+`A`; a cut after terminal storage/before ledger transition adopts `T` with no new receipt; a cut
+after ledger transition is a no-op. A cut after reconciliation storage/before its ledger transition
+adopts `Q` from ambiguous. Failure of optional portable forwarding after governed storage is the
+matching after-storage cut, never permission to publish a sibling or resend.
 
 Every `publishReservation`/`publish` result is exactly:
 
@@ -1520,28 +1618,28 @@ events. It performs exactly this order:
 1. Strictly parse the closed outer envelope, its signed profile-authority binding, the artifact-key
    binding, and the human commitment. Parse only; none is trusted and no verified result or roots
    escape.
-2. From the four closed binding entries, derive provisional `TrustRootEntry` candidates only for
-   `source-bundle`, `compiled-capability`, `transport-effect`, and `pack-manifest`, with the verified
-   envelope tenant. Combine them with caller-supplied external direct roots solely as the input to
-   the unchanged inner verifier. Never derive candidate roots for contract, delegation, gate,
-   evidence, receipt, or outer binding.
-3. Run unchanged `verifyAuthorityReceiptBundle` with that temporary combined set and retain its
-   exact claims/digest provisionally. Failure stops. Success does not authorize the four candidates.
-4. Run profile governance verification using profile trust only, then verify `signedJobCard` and its
-   exact `signedReadiness` against the existing external current Job Card pin.
-5. Call existing `verifyCertificationArtifactKeyBinding` against that external signed readiness at
-   binding `observedAt` and verifier time. Replay external current descriptors/events and require the
-   human readiness signer and direct parent evidence descriptor active/unrevoked at both times;
-   require exact Cell/task/Adapter Contract/readiness/validity/parent/commitment joins.
-6. For each of the four signed inner artifacts, match its actual kind/purpose, `signerId`, signature,
-   and the candidate root's exact SPKI to the one unique authorized binding entry. Reverify its
-   signature with that SPKI. Missing, duplicate, reordered-purpose, substituted, or extra matches
-   refuse. There are no callbacks in an offline receipt.
-7. Prove every other inner artifact was verified only by caller-supplied external direct roots.
-   Replay current external Authority descriptors/events for the inner direct evidence/receipt keys
-   and the separate outer binding key, require all activity/revocation/time/segregation rules at
-   binding `observedAt` and verifier time, and verify the domain-separated outer binding signature.
-   Candidate roots cannot satisfy this step.
+2. Run profile governance verification using external profile trust only. Retain the exact profile
+   certifier/operator ID+SPKI and prove the recorded profile head as a valid as-of prefix. Profile
+   trust never authorizes Authority evidence.
+3. From the full external Job Card trust pin, verify signed readiness and the exact signed Job Card;
+   construct the external Authority as-of/current view, time-filter events, reject future/fork/
+   rollback, and prove the recorded Authority head is a valid prefix. Current revocation/expiry/head
+   advancement becomes separate verifier-time status rather than erasing historical proof.
+4. Verify the domain-separated outer binding signature with the externally authorized direct
+   `authority-evidence` key at its signed `observedAt`. Do not use a receipt-carried key for this.
+5. Call existing `verifyCertificationArtifactKeyBinding` against the external readiness/current
+   parent and verify the human commitment. Require exact tenant/Cell/task/Adapter Contract/
+   readiness/validity/parent joins. Only after this succeeds are the four exact artifact-subkey
+   entries authorized; a self-consistent forged binding cannot create roots.
+6. Construct the inner verifier root set from caller-supplied direct roots plus those four now-
+   authorized subkeys for `source-bundle`, `compiled-capability`, `transport-effect`, and
+   `pack-manifest`. Never derive roots for contract, delegation, gate, evidence, receipt, or outer
+   binding. Run unchanged `verifyAuthorityReceiptBundle`; failure stops.
+7. Match each of the four signed inner artifact's actual kind/purpose, `signerId`, signature, and
+   exact SPKI to its one authorized binding entry. Match direct evidence and receipt artifacts to
+   external direct descriptors, with the same evidence key used by Step 4. Missing, duplicate,
+   reordered-purpose, substituted, extra, wrong-parent, expired-at-signing, or revoked-at-signing
+   matches refuse. There are no callbacks or stored `verified` flags in an offline receipt.
 8. Strictly parse/digest `deploymentSnapshot` and `routeScope`; parse/digest the dynamic route
    snapshot; call `projectRouteScope(snapshot, { tenant: verifiedTenant, definitionAlias:
    verifiedDefinitionAlias })`; and require canonical equality/digest equality with `routeScope`.
@@ -1556,9 +1654,10 @@ events. It performs exactly this order:
     then compare all six outer edges including `authorityBindingDigest`. Only now return the
     unchanged inner verified claims and outer verification status.
 
-The four provisional receipt-carried roots are implementation-local candidate material, never an
-external anchor or returned trust view. A self-consistent forged binding/commitment and inner bundle
-must fail Steps 5–7 without valid external readiness, current parent/human authority, and exact signed
+The four receipt-carried subkeys become verifier inputs only after external binding/commitment
+authorization. They are never provisional self-declared roots, an external anchor, or a returned
+trust view. A self-consistent forged binding/commitment and inner bundle fails before unchanged
+inner verification without valid external readiness, as-of parent/human authority, and exact signed
 inner-artifact authorization.
 
 Never rewrite or upgrade authorization, dispatch, acknowledgment, reconciliation, topology, or
@@ -1570,12 +1669,12 @@ Run all commands from repository root:
 
 ```powershell
 npx tsc -p tsconfig.test.json
-node --test --test-concurrency=1 dist-test/test/authority/outcome-profile.test.js dist-test/test/authority/outcome-profile-package.test.js dist-test/test/authority/trust.test.js dist-test/test/authority/profile-governance.test.js dist-test/test/authority/profile-governance-loader.test.js dist-test/test/authority/governed-cell.test.js dist-test/test/authority/profile-governed-receipt.test.js dist-test/test/authority/receipt-authority.test.js dist-test/test/authority/dispatch-coordinator.test.js dist-test/test/authority/certification-lifecycle-authority.test.js dist-test/test/authority/local-runtime.test.js dist-test/test/authority/gate.test.js dist-test/test/authority/package.test.js dist-test/test/authority/json-https-route.test.js dist-test/test/authority/config.test.js dist-test/test/authority/github-account-identity.test.js dist-test/test/authority/json-https-driver.test.js dist-test/test/authority/json-https-connector.test.js dist-test/test/authority/prepared-dispatch.test.js dist-test/test/authority/native-https-route-join.test.js dist-test/test/authority/certification-github-issue-labels-runner.test.js
+node --test --test-concurrency=1 dist-test/test/authority/outcome-profile.test.js dist-test/test/authority/outcome-profile-package.test.js dist-test/test/authority/trust.test.js dist-test/test/authority/profile-governance.test.js dist-test/test/authority/profile-governance-loader.test.js dist-test/test/authority/governed-cell.test.js dist-test/test/authority/profile-governed-receipt.test.js dist-test/test/authority/receipt-authority.test.js dist-test/test/authority/dispatch-coordinator.test.js dist-test/test/authority/certification-lifecycle-authority.test.js dist-test/test/authority/certification-cell.test.js dist-test/test/authority/gate-signer.test.js dist-test/test/authority/local-runtime.test.js dist-test/test/authority/gate.test.js dist-test/test/authority/package.test.js dist-test/test/authority/json-https-route.test.js dist-test/test/authority/config.test.js dist-test/test/authority/github-account-identity.test.js dist-test/test/authority/json-https-driver.test.js dist-test/test/authority/json-https-connector.test.js dist-test/test/authority/prepared-dispatch.test.js dist-test/test/authority/native-https-route-join.test.js dist-test/test/authority/certification-github-issue-labels-runner.test.js
 npm run check:authority-contract
 npm run check:outcome-profile-contract
 npm run build
-node --test --test-concurrency=1 dist-test/test/authority/outcome-profile.test.js dist-test/test/authority/outcome-profile-package.test.js dist-test/test/authority/trust.test.js dist-test/test/authority/profile-governance.test.js dist-test/test/authority/profile-governance-loader.test.js dist-test/test/authority/governed-cell.test.js dist-test/test/authority/profile-governed-receipt.test.js dist-test/test/authority/receipt-authority.test.js dist-test/test/authority/dispatch-coordinator.test.js dist-test/test/authority/certification-lifecycle-authority.test.js dist-test/test/authority/local-runtime.test.js dist-test/test/authority/gate.test.js dist-test/test/authority/package.test.js dist-test/test/authority/json-https-route.test.js dist-test/test/authority/config.test.js dist-test/test/authority/github-account-identity.test.js dist-test/test/authority/json-https-driver.test.js dist-test/test/authority/json-https-connector.test.js dist-test/test/authority/prepared-dispatch.test.js dist-test/test/authority/native-https-route-join.test.js dist-test/test/authority/certification-github-issue-labels-runner.test.js
-git diff --exit-code cc529e5e4136eb9e58cd5f39816798f9636bb715 -- contract/authority/v1 scripts/build-authority-contract.mjs src/authority/types.ts src/authority/evidence.ts src/authority/verify.ts src/authority/adapter-contract.ts src/authority/ledger.ts src/authority/host/receipts.ts src/authority/host/portable-receipts.ts src/authority/host/config.ts package.json package-lock.json pnpm-lock.yaml yarn.lock
+node --test --test-concurrency=1 dist-test/test/authority/outcome-profile.test.js dist-test/test/authority/outcome-profile-package.test.js dist-test/test/authority/trust.test.js dist-test/test/authority/profile-governance.test.js dist-test/test/authority/profile-governance-loader.test.js dist-test/test/authority/governed-cell.test.js dist-test/test/authority/profile-governed-receipt.test.js dist-test/test/authority/receipt-authority.test.js dist-test/test/authority/dispatch-coordinator.test.js dist-test/test/authority/certification-lifecycle-authority.test.js dist-test/test/authority/certification-cell.test.js dist-test/test/authority/gate-signer.test.js dist-test/test/authority/local-runtime.test.js dist-test/test/authority/gate.test.js dist-test/test/authority/package.test.js dist-test/test/authority/json-https-route.test.js dist-test/test/authority/config.test.js dist-test/test/authority/github-account-identity.test.js dist-test/test/authority/json-https-driver.test.js dist-test/test/authority/json-https-connector.test.js dist-test/test/authority/prepared-dispatch.test.js dist-test/test/authority/native-https-route-join.test.js dist-test/test/authority/certification-github-issue-labels-runner.test.js
+git diff --exit-code cc529e5e4136eb9e58cd5f39816798f9636bb715 -- contract/authority/v1 scripts/build-authority-contract.mjs src/authority/types.ts src/authority/evidence.ts src/authority/verify.ts src/authority/adapter-contract.ts src/authority/ledger.ts src/authority/host/fs-ledger.ts src/authority/host/fs-ledger-coordination.ts src/authority/host/receipts.ts src/authority/host/portable-receipts.ts src/authority/host/config.ts package.json package-lock.json pnpm-lock.yaml yarn.lock
 git diff --check
 git diff --check cc529e5e4136eb9e58cd5f39816798f9636bb715..HEAD
 ```
@@ -1606,9 +1705,11 @@ $allowed = @(
   'src/authority/index.ts'
   'src/authority/trust.ts'
   'src/authority/host/receipt-authority.ts'
+  'src/authority/certification/cell.ts'
   'src/authority/certification/lifecycle-authority.ts'
   'src/authority/certification/lifecycle-receipts.ts'
   'src/authority/host/dispatch.ts'
+  'src/authority/host/gate-signer.ts'
   'src/authority/gate.ts'
   'src/authority/host/json-https-route.ts'
   'src/authority/drivers/json-https.ts'
@@ -1623,6 +1724,8 @@ $allowed = @(
   'test/authority/receipt-authority.test.ts'
   'test/authority/dispatch-coordinator.test.ts'
   'test/authority/certification-lifecycle-authority.test.ts'
+  'test/authority/certification-cell.test.ts'
+  'test/authority/gate-signer.test.ts'
   'test/authority/outcome-profile.test.ts'
   'test/authority/outcome-profile-package.test.ts'
   'test/authority/trust.test.ts'
@@ -1651,7 +1754,7 @@ if ($unexpected.Count -ne 0) { throw "Unexpected Task 2 paths: $($unexpected -jo
 Commit only the expanded Task 2 allowlist with:
 
 ```powershell
-git add -- contract/outcome-profile/v1/profile-authority-evidence.schema.json contract/outcome-profile/v1/profile-activation.schema.json contract/outcome-profile/v1/profile-governed-receipt.schema.json contract/outcome-profile/v1/contract-descriptor.json scripts/build-outcome-profile-contract.mjs src/authority/outcome-profile-contract.ts src/authority/outcome-profile.ts src/authority/index.ts src/authority/trust.ts src/authority/host/receipt-authority.ts src/authority/certification/lifecycle-authority.ts src/authority/certification/lifecycle-receipts.ts src/authority/host/dispatch.ts src/authority/gate.ts src/authority/host/json-https-route.ts src/authority/drivers/json-https.ts src/authority/certification/github-issue-labels-runner.ts src/authority/host/profile-governance.ts src/authority/host/profile-governance-loader.ts src/authority/host/governed-cell.ts src/authority/host/profile-governed-receipt.ts src/authority/host/local.ts src/authority/host/index.ts test/authority/profile-governance-fixture.ts test/authority/receipt-authority.test.ts test/authority/dispatch-coordinator.test.ts test/authority/certification-lifecycle-authority.test.ts test/authority/outcome-profile.test.ts test/authority/outcome-profile-package.test.ts test/authority/trust.test.ts test/authority/profile-governance.test.ts test/authority/profile-governance-loader.test.ts test/authority/governed-cell.test.ts test/authority/profile-governed-receipt.test.ts test/authority/local-runtime.test.ts test/authority/gate.test.ts test/authority/package.test.ts test/authority/json-https-route.test.ts test/authority/config.test.ts test/authority/github-account-identity.test.ts test/authority/json-https-driver.test.ts test/authority/json-https-connector.test.ts test/authority/prepared-dispatch.test.ts test/authority/native-https-route-join.test.ts test/authority/certification-github-issue-labels-runner.test.ts docs/superpowers/specs/2026-08-14-one-command-agent-bootstrap-design.md docs/superpowers/plans/2026-08-14-one-command-agent-bootstrap.md
+git add -- contract/outcome-profile/v1/profile-authority-evidence.schema.json contract/outcome-profile/v1/profile-activation.schema.json contract/outcome-profile/v1/profile-governed-receipt.schema.json contract/outcome-profile/v1/contract-descriptor.json scripts/build-outcome-profile-contract.mjs src/authority/outcome-profile-contract.ts src/authority/outcome-profile.ts src/authority/index.ts src/authority/trust.ts src/authority/host/receipt-authority.ts src/authority/certification/cell.ts src/authority/certification/lifecycle-authority.ts src/authority/certification/lifecycle-receipts.ts src/authority/host/dispatch.ts src/authority/host/gate-signer.ts src/authority/gate.ts src/authority/host/json-https-route.ts src/authority/drivers/json-https.ts src/authority/certification/github-issue-labels-runner.ts src/authority/host/profile-governance.ts src/authority/host/profile-governance-loader.ts src/authority/host/governed-cell.ts src/authority/host/profile-governed-receipt.ts src/authority/host/local.ts src/authority/host/index.ts test/authority/profile-governance-fixture.ts test/authority/receipt-authority.test.ts test/authority/dispatch-coordinator.test.ts test/authority/certification-lifecycle-authority.test.ts test/authority/certification-cell.test.ts test/authority/gate-signer.test.ts test/authority/outcome-profile.test.ts test/authority/outcome-profile-package.test.ts test/authority/trust.test.ts test/authority/profile-governance.test.ts test/authority/profile-governance-loader.test.ts test/authority/governed-cell.test.ts test/authority/profile-governed-receipt.test.ts test/authority/local-runtime.test.ts test/authority/gate.test.ts test/authority/package.test.ts test/authority/json-https-route.test.ts test/authority/config.test.ts test/authority/github-account-identity.test.ts test/authority/json-https-driver.test.ts test/authority/json-https-connector.test.ts test/authority/prepared-dispatch.test.ts test/authority/native-https-route-join.test.ts test/authority/certification-github-issue-labels-runner.test.ts docs/superpowers/specs/2026-08-14-one-command-agent-bootstrap-design.md docs/superpowers/plans/2026-08-14-one-command-agent-bootstrap.md
 git commit -m "fix(authority): bind governed profiles to verified authority"
 ```
 
@@ -1665,6 +1768,7 @@ $subjects = @(
   'docs: complete governed authority execution seams'
   'docs: complete governed dispatch publication'
   'docs: close governed recovery and trust handoff'
+  'docs: rederive governed authority from first principles'
   'test(authority): expose governed admission review gaps'
   'fix(authority): bind governed profiles to verified authority'
 )
