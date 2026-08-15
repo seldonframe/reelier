@@ -1,4 +1,4 @@
-import { digestSha256 } from "../canonical-json.js";
+import { canonicalJson, digestSha256 } from "../canonical-json.js";
 import { assertOwnDataTree } from "../bootstrap/normalize.js";
 import { staticCoverageEvidenceDigest } from "../coverage.js";
 import type { CodexCoverageReport, CoverageRouteSourceEvidence, CoverageView } from "../coverage.js";
@@ -191,24 +191,38 @@ function createPayload(
   assertOwnDataTree(collector, `${harnessId} coverage collector result`);
   assertEnvelope(observedAt, freshnessMs, digestSha256(sanitizeCollector(collector)), contractIdentityDigest);
   if (!Array.isArray(findings)) throw new TypeError("route findings must be an array");
-  const routeEvidence = collector.routeEvidence ?? [];
+  const detachedCollector = detachAndFreeze(collector);
+  const detachedFindings = detachAndFreeze(findings);
+  const routeEvidence = detachedCollector.routeEvidence ?? [];
   const sourceRefs = new Set<string>([
     ...routeEvidence.map(value => value.sourceRef),
-    ...collectorOrigins(collector),
-    ...findings.map(value => value.sourceRef),
+    ...collectorOrigins(detachedCollector),
+    ...detachedFindings.map(value => value.sourceRef),
   ]);
-  const sourceInstances = Object.freeze([...sourceRefs].map(sourceRef => sourceEvidence(harnessId, sourceRef, routeEvidence, collector, findings)));
-  const surfaces = Object.freeze(findings.map(value => surfaceFromFinding(harnessId, value)));
+  const sourceInstances = Object.freeze([...sourceRefs].map(sourceRef => sourceEvidence(harnessId, sourceRef, routeEvidence, detachedCollector, detachedFindings)));
+  const surfaces = Object.freeze(detachedFindings.map(value => surfaceFromFinding(harnessId, value)));
   const common = {
-    observedAt, freshnessMs, contractIdentityDigest, sourceDigest: digestSha256({ v: "reelier.route-collector-evidence/v1", harnessId, collector: sanitizeCollector(collector), routeEvidence }),
+    observedAt, freshnessMs, contractIdentityDigest, sourceDigest: digestSha256({ v: "reelier.route-collector-evidence/v1", harnessId, collector: sanitizeCollector(detachedCollector), routeEvidence }),
     sourceInstances, surfaces,
   };
   if (harnessId === "codex") {
-    const report = collector as CodexCoverageReport;
-    const configEvidence = sourceInstances.find(value => value.sourceRef === report.configPath) ?? sourceEvidence(harnessId, report.configPath, routeEvidence, collector, findings);
-    return Object.freeze({ report, ...common, canonicalConfigBytes: configEvidence.canonicalBytes, fileIdentityDigest: configEvidence.fileIdentityDigest });
+    const report = detachedCollector as CodexCoverageReport;
+    const configEvidence = sourceInstances.find(value => value.sourceRef === report.configPath) ?? sourceEvidence(harnessId, report.configPath, routeEvidence, detachedCollector, detachedFindings);
+    return deepFreeze({ report, ...common, canonicalConfigBytes: configEvidence.canonicalBytes, fileIdentityDigest: configEvidence.fileIdentityDigest });
   }
-  return Object.freeze({ view: collector as CoverageView, ...common });
+  return deepFreeze({ view: detachedCollector as CoverageView, ...common });
+}
+
+function detachAndFreeze<T>(value: T): T {
+  return deepFreeze(JSON.parse(canonicalJson(value)) as T);
+}
+
+function deepFreeze<T>(value: T): T {
+  if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
+    for (const child of Object.values(value as Record<string, unknown>)) deepFreeze(child);
+    Object.freeze(value);
+  }
+  return value;
 }
 
 function surfaceFromFinding(harnessId: "codex" | "claude-code", finding: HarnessRouteFindingV1): HarnessRouteSurfaceV1 {
@@ -241,7 +255,10 @@ function collectorOrigins(collector: CodexCoverageReport | CoverageView): string
 function sourceEvidence(harnessId: "codex" | "claude-code", sourceRef: string, evidence: readonly CoverageRouteSourceEvidence[], collector: CodexCoverageReport | CoverageView, findings: readonly HarnessRouteFindingV1[]): HarnessSourceInstanceV1 {
   const exact = evidence.find(value => value.sourceRef === sourceRef);
   const sourceInstanceIdentityDigest = digestSha256({ v: "reelier.route-source-instance/v1", harnessId, sourceRef });
-  if (exact) return Object.freeze({ ...exact, sourceInstanceIdentityDigest });
+  if (exact) {
+    if (!SHA256.test(exact.sourceInstanceIdentityDigest) || !SHA256.test(exact.fileIdentityDigest)) throw new TypeError("route source evidence identity is invalid");
+    return Object.freeze({ ...exact });
+  }
   return Object.freeze({ sourceRef, sourceInstanceIdentityDigest, canonicalBytes: JSON.stringify({ v: "reelier.sanitized-route-source/v1", harnessId, sourceKnown: collectorOrigins(collector).includes(sourceRef), findingKinds: findings.filter(value => value.sourceRef === sourceRef).map(value => value.kind).sort() }), fileIdentityDigest: digestSha256({ v: "reelier.unreadable-route-source/v1", harnessId, sourceInstanceIdentityDigest }) });
 }
 
