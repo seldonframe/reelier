@@ -1,12 +1,52 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { authorityDigest } from "../src/authority/wire.js";
 import { computeInstalledBuildDigest } from "../src/bootstrap/build-identity.js";
 import { initializeAgentProject, type InitializeAgentProjectOptions } from "../src/bootstrap/initialize.js";
+
+type TestNativeFactory = (input: Readonly<{ root: string; lockName: ".reelier-bootstrap.lock"; lockBytes: Buffer }>) => Promise<{
+  readonly acquisition: Readonly<{ status: "created" } | { status: "recovered"; priorBytes: Buffer }>;
+  replaceLock(bytes: Buffer): Promise<void>;
+  mkdir(relative: string): Promise<void>;
+  writeExclusive(relative: string, bytes: Buffer): Promise<void>;
+  writeAtomic(relative: string, bytes: Buffer): Promise<void>;
+  rename(from: string, to: string): Promise<void>;
+  remove(relative: string, options: Readonly<{ recursive: boolean; missingOk: boolean }>): Promise<void>;
+  close(options: Readonly<{ removeLock: boolean }>): Promise<void>;
+}>;
+
+function recordingNativeFactory(operations: string[]): TestNativeFactory {
+  return async ({ root, lockName, lockBytes }) => {
+    const resolve = (relative: string): string => {
+      assert.equal(path.isAbsolute(relative), false);
+      assert.equal(relative.split("/").some(part => part === "" || part === "." || part === ".."), false);
+      return path.join(root, ...relative.split("/"));
+    };
+    const lockPath = resolve(lockName);
+    let acquisition: { status: "created" } | { status: "recovered"; priorBytes: Buffer };
+    try { acquisition = { status: "recovered", priorBytes: await readFile(lockPath) }; }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      await writeFile(lockPath, lockBytes, { flag: "wx" });
+      acquisition = { status: "created" };
+    }
+    operations.push(`open-session:${acquisition.status}`);
+    return {
+      acquisition,
+      async replaceLock(bytes) { operations.push("replace-lock"); await writeFile(lockPath, bytes); },
+      async mkdir(relative) { operations.push(`mkdir:${relative}`); await mkdir(resolve(relative)); },
+      async writeExclusive(relative, bytes) { operations.push(`write-exclusive:${relative}`); await writeFile(resolve(relative), bytes, { flag: "wx" }); },
+      async writeAtomic(relative, bytes) { operations.push(`write-atomic:${relative}`); await writeFile(resolve(relative), bytes); },
+      async rename(from, to) { operations.push(`rename:${from}->${to}`); await rename(resolve(from), resolve(to)); },
+      async remove(relative, options) { operations.push(`remove:${relative}`); await rm(resolve(relative), { recursive: options.recursive, force: options.missingOk }); },
+      async close(options) { operations.push(`close:${options.removeLock}`); if (options.removeLock) await unlink(lockPath).catch(() => {}); },
+    };
+  };
+}
 
 async function withFixture<T>(run: (options: InitializeAgentProjectOptions) => Promise<T>): Promise<T> {
   const root = await mkdtemp(path.join(os.tmpdir(), "reelier-reset-init-"));
@@ -70,6 +110,28 @@ test("an orphan lock is recovered only when its closed journal and exact plan ar
     const before = await readdir(bootstrap);
     await assert.rejects(() => initializeAgentProject(options), /orphan|journal|recovery/i);
     assert.deepEqual(await readdir(bootstrap), before);
+  });
+});
+
+test("named preparation refuses before its first project write when verified native support is unavailable", async () => {
+  await withFixture(async options => {
+    const unavailable: TestNativeFactory = async () => { throw new Error("verified native bootstrap helper unavailable: artifact-missing"); };
+    await assert.rejects(() => initializeAgentProject({ ...options, nativeSessionFactory: unavailable } as InitializeAgentProjectOptions), /verified native.*artifact-missing/i);
+    assert.deepEqual(await readdir(options.cwd), []);
+  });
+});
+
+test("named preparation owns its lock and every child mutation through one relative native session", async () => {
+  await withFixture(async options => {
+    const operations: string[] = [];
+    const report = await initializeAgentProject({ ...options, nativeSessionFactory: recordingNativeFactory(operations) } as InitializeAgentProjectOptions);
+    assert.equal(report.state, "complete");
+    assert.equal(operations[0], "open-session:created");
+    assert.ok(operations.some(value => value === "mkdir:.reelier"));
+    assert.ok(operations.some(value => /^rename:\.reelier\/bootstrap\/staging\/[0-9a-f]{32}->\.reelier\/bootstrap\/generations\/[0-9a-f]{32}$/.test(value)));
+    assert.ok(operations.some(value => value === "write-atomic:.reelier/bootstrap/current.json"));
+    assert.equal(operations.at(-1), "close:true");
+    assert.equal(operations.some(value => value.includes("heartbeat")), false);
   });
 });
 
