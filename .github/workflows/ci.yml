@@ -279,7 +279,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          if [ '${{ matrix.os }}' = 'ubuntu-latest' ]; then timeout --signal=TERM --kill-after=30s 20m npm test 2>&1 | tee test-output.txt; else node --test --test-concurrency=1 dist-test/test/authority/package.test.js dist-test/test/authority/linux-authority-cell.test.js dist-test/test/authority/authority-cell-connection.test.js dist-test/test/authority/certification-portable-evidence.test.js; fi
+          if [ '${{ matrix.os }}' = 'ubuntu-latest' ]; then REELIER_EVE_MATRIX_DIAGNOSTICS=1 timeout --signal=TERM --kill-after=30s 20m npm test 2>&1 | tee test-output.txt; else node --test --test-concurrency=1 dist-test/test/authority/package.test.js dist-test/test/authority/linux-authority-cell.test.js dist-test/test/authority/authority-cell-connection.test.js dist-test/test/authority/certification-portable-evidence.test.js; fi
       - name: Upload Ubuntu test output
         if: ${{ always() && matrix.os == 'ubuntu-latest' }}
         uses: actions/upload-artifact@v4

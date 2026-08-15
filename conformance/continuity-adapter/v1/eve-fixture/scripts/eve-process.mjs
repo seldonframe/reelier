@@ -115,6 +115,7 @@ export async function crashEveProcess(processHandle) {
 }
 
 async function runMatrix(resultPath, runtimeRoot) {
+  diagnostic("matrix:start");
   const [{ createGitHubIssueLabelsFixture }, { startPathCConformancePort }, continuity, authority] = await Promise.all([
     import(dist("dist-test/test/authority/fixtures/github-issue-labels.js")),
     import(dist("dist-test/test/continuity/support/path-c-port.js")),
@@ -123,16 +124,21 @@ async function runMatrix(resultPath, runtimeRoot) {
   ]);
   const context = { createGitHubIssueLabelsFixture, startPathCConformancePort, continuity, authority, runtimeRoot };
   const checkpointCut = await checkpointScenario(context);
+  diagnostic("matrix:checkpoint-done");
   const outcomeCut = await outcomeScenario(context);
+  diagnostic("matrix:outcome-done");
   const boundaries = await boundaryScenarios(context);
+  diagnostic("matrix:boundaries-done");
   const matrix = Object.freeze({
     scenarios: Object.freeze({ checkpointCut, outcomeCut, ...boundaries }),
     artifacts: Object.freeze({ ledgerHeadDigest: outcomeCut.ledgerHeadDigest, receiptGraphDigest: outcomeCut.receiptGraphDigest }),
   });
   await writeFile(resultPath, JSON.stringify(matrix), "utf8");
+  diagnostic("matrix:result-written");
 }
 
 async function checkpointScenario(context) {
+  diagnostic("checkpoint:start");
   const state = await createScenario(context, "checkpoint", { patchCheckpoint: true });
   let first;
   try {
@@ -159,17 +165,20 @@ async function checkpointScenario(context) {
       const replay = await post(restarted, `/eve/v1/session/${encodeURIComponent(sessionId)}`, state.token, { message: "checkpoint" });
       assert.equal(replay.status, 202, JSON.stringify(replay.body));
       await waitForBoundary(restarted, sessionId, state.token, recovered.cursor);
-    } finally { await stopEveProcess(restarted.child); }
+    } finally { diagnostic("checkpoint:recovery-stop:start"); await stopEveProcess(restarted.child); diagnostic("checkpoint:recovery-stop:done"); }
     const snapshot = await state.ledger.read(state.taskId);
     const projection = context.continuity.createResumeProjection(snapshot);
     return Object.freeze({ cursor: snapshot.cursor, segmentCount: await segmentCount(state.ledgerRoot, state.taskId), uncertainClaimCount: projection.sections.evidenceAndUncertainty.uncertainClaims.length, uncertainClaimStatus: projection.sections.evidenceAndUncertainty.uncertainClaims[0]?.status, noThirdSegmentAfterReplay: snapshot.cursor === 2, retryEvidence: checkpointRetryEvidence, recoveryBoundary: "session.waiting", recoverySessionPosts, counters: state.port.counters() });
   } finally {
+    diagnostic("checkpoint:close:start");
     await stopEveProcess(first?.child);
     await state.close();
+    diagnostic("checkpoint:close:done");
   }
 }
 
 async function outcomeScenario(context) {
+  diagnostic("outcome:start");
   const state = await createScenario(context, "outcome", { fault: "after-provider-apply-before-response" });
   let processHandle;
   try {
@@ -224,13 +233,16 @@ async function outcomeScenario(context) {
     const retryEvidence = proveRetryEvents(beforeCrash.rows, settled.rows);
     return Object.freeze({ ...counters, providerWrites: nativeStatus.providerWrites, verifierProducedConsequence: postImportVerifiedConsequenceCount > 0, cutSubmissionStatus: created.status, cutStepStarted, cutTerminalEventObserved, preImportConsequenceStates, nativeStatusLifecycle: nativeStatus.status, statusToolMessages, postImportVerifiedConsequenceCount, retryEvidence, ledgerHeadDigest: after.segmentDigest, receiptGraphDigest });
   } finally {
+    diagnostic("outcome:close:start");
     state.port.release();
     await stopEveProcess(processHandle?.child);
     await state.close();
+    diagnostic("outcome:close:done");
   }
 }
 
 async function boundaryScenarios(context) {
+  diagnostic("boundaries:start");
   const state = await createScenario(context, "boundaries", {});
   let processHandle;
   try {
@@ -325,8 +337,10 @@ async function boundaryScenarios(context) {
     const modelNeutrality = Object.freeze({ projectionBytesUnchanged: beforeModelRestart.equals(await projectionBytes(state, context)), effectsUnchanged: sameCounters(modelEffects, state.port.counters()) });
     return Object.freeze({ streamOverlap, compactAndClear, resetAndReplace, crossPrincipal, modelNeutrality });
   } finally {
+    diagnostic("boundaries:close:start");
     await stopEveProcess(processHandle?.child);
     await state.close();
+    diagnostic("boundaries:close:done");
   }
 }
 
@@ -468,6 +482,7 @@ function localOnlyEnvironment(required) {
   return Object.fromEntries([...inherited.flatMap((key) => process.env[key] === undefined ? [] : [[key, process.env[key]]]), ["NO_PROXY", "127.0.0.1,localhost"], ["no_proxy", "127.0.0.1,localhost"], ...Object.entries(required)]);
 }
 function capture(stream, lines) { let buffered = ""; stream?.on("data", (chunk) => { buffered += String(chunk); const split = buffered.split(/\r?\n/u); buffered = split.pop() ?? ""; lines.push(...split); if (lines.length > 80) lines.splice(0, lines.length - 80); }); }
+function diagnostic(message) { if (process.env.REELIER_EVE_MATRIX_DIAGNOSTICS === "1") process.stderr.write(`[eve-matrix] ${message}\n`); }
 async function unusedLoopbackPort() { const server = createServer(); await new Promise((resolveListen, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolveListen); }); const address = server.address(); const port = address.port; await new Promise((resolveClose, reject) => server.close((error) => error ? reject(error) : resolveClose())); return port; }
 async function waitForHealth(baseUrl, child, token, http) { for (let attempt = 0; attempt < 600; attempt += 1) { if (child.exitCode !== null) throw new Error(`Eve dev exited before health (${child.exitCode})`); try { const health = await http.request(new URL("/eve/v1/health", baseUrl), { redirect: "error", signal: AbortSignal.timeout(500) }); const info = health.ok && token ? await http.request(new URL("/eve/v1/info", baseUrl), { redirect: "error", headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(500) }) : null; if (health.ok && info?.ok) return; } catch {} await delay(100); } throw new Error("Eve health timeout"); }
 async function waitForListenerClosed(baseUrl, http) { for (let attempt = 0; attempt < 100; attempt += 1) { try { await http.request(new URL("/eve/v1/health", baseUrl), { redirect: "error", signal: AbortSignal.timeout(200) }); } catch { return; } await delay(50); } throw new Error(`Eve listener survived exact tree termination at ${baseUrl}`); }
