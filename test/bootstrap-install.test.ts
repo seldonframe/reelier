@@ -25,7 +25,7 @@ test("named bootstrap plans an exact-version proxy without changing legacy wrapp
     });
     assert.equal(plan.entries.find((entry: { name: string; action: string }) => entry.name === "remote")?.action, "skip-unwrappable");
     assert.equal(await readFile(config, "utf8"), JSON.stringify({ mcpServers: {
-      local: { command: "npx", args: ["-y", "@example/server"] }, remote: { type: "http", url: "https://example.test/mcp" },
+      local: { command: "npx", args: ["-y", "@example/server"] }, legacy: { command: "npx", args: ["-y", "reelier", "mcp", "--wrap", "npx -y @legacy/server"] }, remote: { type: "http", url: "https://example.test/mcp" },
     } }));
   } finally {
     await rm(root, { recursive: true, force: true });
