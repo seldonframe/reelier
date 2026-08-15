@@ -50,14 +50,61 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
       const routeAuthority = state.reservation.intent.routeAuthority;
       if (certified && !routeAuthority) throw new Error("certified dispatch requires a durable route authority snapshot");
       let authorityBefore: CurrentDispatchAuthorityV1 | undefined;
-      if (certified) { certified.onPhase?.("identity-probe"); const identity = await measureLatency(certified.latencyRecorder, "identity-probe", () => certified.identityProbe()); const expectedIdentity = routeAuthority!.providerAccountIdentity; const loginMatches = identity && (expectedIdentity === `github:${identity.providerLogin}` || expectedIdentity === identity.providerAccountId); const verifier = certified.verifyIdentity; const identityDigest = identity && authorityDigest(identityUnsigned(identity)); let verified = false; if (identity && verifier && verifier.purpose === "authority-evidence" && typeof verifier.signerId === "string" && verifier.signerId.length > 0 && verifier.publicKey?.type === "public" && verifier.publicKey.asymmetricKeyType === "ed25519" && identity.signerId === verifier.signerId && identity.signature && typeof identity.signature === "object") { try { const signature = identity.signature as AuthoritySignature; authoritySignatureDigest(signature); verified = verifyAuthoritySignature(verifier.publicKey, "authority-evidence", identityDigest!, signature); } catch { verified = false; } } if (!identity || !verified || identityDigest !== routeAuthority!.authenticatedProviderIdentityDigest || identity.credentialSlotId !== routeAuthority!.credentialSlotId || identity.slotInstanceId !== routeAuthority!.slotInstanceId || identity.slotVersion !== routeAuthority!.slotVersion || Date.parse(identity.slotExpiresAt) < Date.parse(routeAuthority!.authorityExpiresAt) || identity.providerAccountId !== routeAuthority!.accountId || !loginMatches || identity.routeDigest !== routeAuthority!.routeDigest) throw new Error("authenticated provider identity binding mismatch"); certified.onPhase?.("route-reread"); const reread = inertRouteSnapshot(await measureLatency(certified.latencyRecorder, "route-reread", () => certified.revalidator.routeReread(state))); if (authorityDigest(reread) !== authorityDigest(routeAuthority!)) throw new Error("route authority snapshot mismatch"); certified.onPhase?.("authority-validation-before-prepare"); authorityBefore = await measureLatency(certified.latencyRecorder, "authority-validation-before-prepare", () => certified.revalidator.revalidate(state)); if (authorityBefore.routeAuthorityDigest !== authorityDigest(routeAuthority!) || authorityBefore.authorityExpiresAt !== routeAuthority!.authorityExpiresAt || authorityBefore.providerId !== undefined && authorityBefore.providerId !== routeAuthority!.providerId || authorityBefore.connectorId !== undefined && authorityBefore.connectorId!==routeAuthority!.connectorId || authorityBefore.accountId !== undefined && authorityBefore.accountId !== routeAuthority!.accountId || authorityBefore.endpointId !== undefined && authorityBefore.endpointId !== routeAuthority!.endpointId) throw new Error("route authority binding mismatch"); }
+      if (certified) {
+        certified.onPhase?.("identity-probe");
+        const identity = await measureLatency(certified.latencyRecorder, "identity-probe", () => certified.identityProbe());
+        const expectedIdentity = routeAuthority!.providerAccountIdentity;
+        const loginMatches = identity && (expectedIdentity === `github:${identity.providerLogin}` || expectedIdentity === identity.providerAccountId);
+        const verifier = certified.verifyIdentity;
+        const identityDigest = identity && authorityDigest(identityUnsigned(identity));
+        let verified = false;
+        if (identity && verifier && verifier.purpose === "authority-evidence" && typeof verifier.signerId === "string" && verifier.signerId.length > 0 && verifier.publicKey?.type === "public" && verifier.publicKey.asymmetricKeyType === "ed25519" && identity.signerId === verifier.signerId && identity.signature && typeof identity.signature === "object") {
+          try {
+            const signature = identity.signature as AuthoritySignature;
+            authoritySignatureDigest(signature);
+            verified = verifyAuthoritySignature(verifier.publicKey, "authority-evidence", identityDigest!, signature);
+          } catch { verified = false; }
+        }
+        if (!identity || !verified || identityDigest !== routeAuthority!.authenticatedProviderIdentityDigest || identity.credentialSlotId !== routeAuthority!.credentialSlotId || identity.slotInstanceId !== routeAuthority!.slotInstanceId || identity.slotVersion !== routeAuthority!.slotVersion || Date.parse(identity.slotExpiresAt) < Date.parse(routeAuthority!.authorityExpiresAt) || identity.providerAccountId !== routeAuthority!.accountId || !loginMatches || identity.routeDigest !== routeAuthority!.routeDigest) throw new Error("authenticated provider identity binding mismatch");
+        certified.onPhase?.("route-reread");
+        const reread = inertRouteSnapshot(await measureLatency(certified.latencyRecorder, "route-reread", () => certified.revalidator.routeReread(state)));
+        if (authorityDigest(reread) !== authorityDigest(routeAuthority!)) throw new Error("route authority snapshot mismatch");
+        certified.onPhase?.("authority-validation-before-prepare");
+        authorityBefore = await measureLatency(certified.latencyRecorder, "authority-validation-before-prepare", () => certified.revalidator.revalidate(state));
+        if (
+          authorityBefore.authorityGeneration !== routeAuthority!.authorityGeneration
+          || authorityBefore.routeAuthorityDigest !== authorityDigest(routeAuthority!)
+          || authorityBefore.authorityExpiresAt !== routeAuthority!.authorityExpiresAt
+          || authorityBefore.providerId !== undefined && authorityBefore.providerId !== routeAuthority!.providerId
+          || authorityBefore.connectorId !== undefined && authorityBefore.connectorId !== routeAuthority!.connectorId
+          || authorityBefore.accountId !== undefined && authorityBefore.accountId !== routeAuthority!.accountId
+          || authorityBefore.endpointId !== undefined && authorityBefore.endpointId !== routeAuthority!.endpointId
+        ) throw new Error("route authority generation or binding mismatch");
+      }
       if (adapter.prepare && ledger.commitPreparedDispatch) {
         certified?.onPhase?.("prepare");
         const context = state.reservation.intent.executionContext;
         const prepared = await measureLatency(certified?.latencyRecorder, "prepare", () => adapter.prepare!(state));
         const description: PreparedDispatchDescriptionV1 = prepared.description;
         if (routeAuthority && (description.routeDigest !== routeAuthority.routeDigest || description.materializedRequestDigest !== routeAuthority.expectedMaterializedRequestDigest)) throw new Error("prepared dispatch does not match durable route authority");
-        if (certified) { certified.onPhase?.("authority-validation-after-prepare"); const authorityAfter = await measureLatency(certified.latencyRecorder, "authority-validation-after-prepare", () => certified.revalidator.revalidate(state)); if (!authorityBefore || authorityAfter.authorityGeneration !== authorityBefore.authorityGeneration || authorityAfter.routeAuthorityDigest !== authorityBefore.routeAuthorityDigest || authorityAfter.authorityExpiresAt !== routeAuthority!.authorityExpiresAt || description.authorityGeneration !== authorityAfter.authorityGeneration || description.authorityExpiresAt !== routeAuthority!.authorityExpiresAt || authorityAfter.providerId !== undefined && authorityAfter.providerId !== routeAuthority!.providerId || authorityAfter.connectorId !== undefined && authorityAfter.connectorId !== routeAuthority!.connectorId || authorityAfter.accountId !== undefined && authorityAfter.accountId !== routeAuthority!.accountId || authorityAfter.endpointId !== undefined && authorityAfter.endpointId !== routeAuthority!.endpointId) throw new Error("dispatch authority changed during preparation"); }
+        if (certified) {
+          certified.onPhase?.("authority-validation-after-prepare");
+          const authorityAfter = await measureLatency(certified.latencyRecorder, "authority-validation-after-prepare", () => certified.revalidator.revalidate(state));
+          if (
+            !authorityBefore
+            || authorityAfter.authorityGeneration !== routeAuthority!.authorityGeneration
+            || authorityAfter.authorityGeneration !== authorityBefore.authorityGeneration
+            || authorityAfter.routeAuthorityDigest !== authorityBefore.routeAuthorityDigest
+            || authorityAfter.authorityExpiresAt !== routeAuthority!.authorityExpiresAt
+            || description.authorityGeneration !== routeAuthority!.authorityGeneration
+            || description.authorityGeneration !== authorityAfter.authorityGeneration
+            || description.authorityExpiresAt !== routeAuthority!.authorityExpiresAt
+            || authorityAfter.providerId !== undefined && authorityAfter.providerId !== routeAuthority!.providerId
+            || authorityAfter.connectorId !== undefined && authorityAfter.connectorId !== routeAuthority!.connectorId
+            || authorityAfter.accountId !== undefined && authorityAfter.accountId !== routeAuthority!.accountId
+            || authorityAfter.endpointId !== undefined && authorityAfter.endpointId !== routeAuthority!.endpointId
+          ) throw new Error("dispatch authority changed during preparation");
+        }
         const budgetClaim = budgetFor(state);
         if (budget && budgetClaim) await budget.consumeOnce(budgetClaim);
         let lease: import("./prepared-dispatch.js").DispatchCommitLease;
