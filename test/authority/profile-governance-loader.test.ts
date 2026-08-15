@@ -1,9 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, unlink, writeFile } from "node:fs/promises";
+import { mkdtemp, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { inspectProfileGovernanceStatus, loadProfileGovernanceFromOperatorTrust } from "../../src/authority/host/profile-governance-loader.js";
+import { admittedProfileGovernanceState } from "../../src/authority/host/profile-governance.js";
+import { authorityDigest } from "../../src/authority/wire.js";
 import { governanceRef, tenant, verificationTime, writeProfileGovernanceFixture } from "./profile-governance-fixture.js";
 
 test("cold loader admits the fixed operator-owned governance directory deterministically", async t => {
@@ -15,6 +17,18 @@ test("cold loader admits the fixed operator-owned governance directory determini
   const second = await loadProfileGovernanceFromOperatorTrust(input);
   assert.notEqual(first, second, "each cold load mints a fresh opaque admission");
   assert.deepEqual(await inspectProfileGovernanceStatus(input), { status: "verified", profileDigest: fixture.manifest.profileDigest, activationDigest: fixture.manifest.activationDigest, trustHeadDigest: fixture.manifest.trustHeadDigest });
+});
+
+test("operator-root commitment includes the accepted physical directory identity", async t => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "reelier-profile-physical-root-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const fixture = await writeProfileGovernanceFixture(home);
+  const admitted = await loadProfileGovernanceFromOperatorTrust({ tenant, governanceRef, expectedManifestDigest: fixture.manifestDigest, expectedTrustHeadDigest: fixture.manifest.trustHeadDigest, homedir: home, verificationTime });
+  const physical = await (await import("node:fs/promises")).lstat(fixture.root);
+  assert.equal(admittedProfileGovernanceState(admitted).operatorRootDigest, authorityDigest({
+    v: "reelier.profile-governance-operator-root/v1", tenant, governanceRef,
+    canonicalRoot: fixture.root, device: String(physical.dev), inode: String(physical.ino),
+  }));
 });
 
 test("loader refuses missing, substituted, traversing, and malformed operator trust", async t => {
@@ -37,6 +51,17 @@ test("loader refuses an accessor without invoking it", async () => {
   const input = Object.defineProperty({ tenant, governanceRef, expectedManifestDigest: `sha256:${"0".repeat(64)}`, expectedTrustHeadDigest: `sha256:${"0".repeat(64)}`, verificationTime }, "homedir", { enumerable: true, get() { getters += 1; return os.homedir(); } });
   await assert.rejects(() => loadProfileGovernanceFromOperatorTrust(input as never), /own data|exact fields|plain record/i);
   assert.equal(getters, 0);
+});
+
+test("loader refuses a governance-root junction even when it contains a complete valid generation", async t => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "reelier-profile-junction-home-"));
+  const outside = await mkdtemp(path.join(os.tmpdir(), "reelier-profile-junction-target-"));
+  t.after(() => Promise.all([rm(home, { recursive: true, force: true }), rm(outside, { recursive: true, force: true })]));
+  const fixture = await writeProfileGovernanceFixture(home);
+  const moved = path.join(outside, "generation");
+  await rename(fixture.root, moved);
+  await symlink(moved, fixture.root, process.platform === "win32" ? "junction" : "dir");
+  await assert.rejects(() => loadProfileGovernanceFromOperatorTrust({ tenant, governanceRef, expectedManifestDigest: fixture.manifestDigest, expectedTrustHeadDigest: fixture.manifest.trustHeadDigest, homedir: home, verificationTime }), /link|junction|physical|canonical/i);
 });
 
 test("status inspection is sanitized and never returns an admission handle", async t => {

@@ -7,6 +7,10 @@ import type {
   DurableDispatchPublicationQueryV1,
 } from "../../src/authority/host/dispatch.js";
 import { sha } from "./profile-governance-fixture.js";
+// @ts-ignore built imports share opaque capability brands with the public package under test.
+import { createDispatchCommitLease, createPreparedDispatch } from "../../../dist/authority/host/prepared-dispatch.js";
+// @ts-ignore built helper shares the public package's projection contract.
+import { materializedHttpRequestDigest } from "../../../dist/authority/host/http-response-semantics.js";
 // @ts-ignore test-only import uses the built module so the opaque WeakMap brand is shared.
 import { createReservedDispatchHandle } from "../../../dist/authority/gate.js";
 // @ts-ignore test-only import uses the built platform seam shared by the public package import.
@@ -151,4 +155,45 @@ test("durable publication identity is closed over the full persisted reservation
   const head: DurableDispatchPublicationHeadV1 = { v: "reelier.durable-dispatch-publication-head/v1", identity, receiptRef: sha("7"), evidenceDigest: sha("8"), reservationReceiptRef: sha("7"), priorReceiptRef: null, phase: "reservation", terminalKind: null };
   assert.equal(query.identity.reservationIntentDigest, sha("6"));
   assert.equal(head.priorReceiptRef, null);
+});
+
+test("prepared dispatch carries accepted gate provenance into the durable reservation root before provider send", async () => {
+  const projection = { v: "reelier.materialized-http-request/v1" as const, method: "POST" as const, origin: "https://provider.example", normalizedPath: "/write", normalizedQuery: "", reviewedHeaders: {}, bodyDigest: sha("0") };
+  const materializedRequestDigest = materializedHttpRequestDigest(projection);
+  let persisted: any = { reservationId: "r1", state: "reserved", intent: { tenant: "tenant_1", requestDigest: sha("1"), requestKey: sha("d"), outcomeKey: sha("e"), capabilityId: "capability_1", capabilityDigest: sha("2"), effectDigest: sha("3"), effectCanonicalBase64: "e30=", executionContext: { allocationId: "allocation_1" }, routeAuthority: { routeDigest: sha("f"), expectedMaterializedRequestDigest: materializedRequestDigest } } };
+  const signedDecision = Object.freeze({ gateEventDigest: sha("6"), decisionContextDigest: sha("7") });
+  const source = Object.freeze({ bundle: Object.freeze({ v: "reelier.source-bundle/v1", marker: "accepted-source" }) });
+  const capability = Object.freeze({ v: "reelier.compiled-capability/v1", marker: "accepted-capability" });
+  const state = {
+    reservation: persisted, effect: { marker: "accepted-effect" }, effectCanonicalBase64: "e30=", effectDigest: sha("3"),
+    signedDecision, source, capability,
+  };
+  const order: string[] = [];
+  const ledgerWithPreparedCommit = {
+    async getReservation() { return persisted; },
+    async commitPreparedDispatch(input: any) {
+      persisted = { ...persisted, state: "dispatched", sendStarted: true, intent: { ...persisted.intent, routeAuthority: { ...persisted.intent.routeAuthority, expectedMaterializedRequestDigest: materializedRequestDigest } } };
+      return createDispatchCommitLease({ reservationId: input.reservationId, allocationId: input.allocationId, preparedDigest: input.preparedDescription.materializedRequestDigest, authorityGeneration: input.expectedAuthorityGeneration, authorityExpiresAt: input.preparedDescription.authorityExpiresAt, absoluteDeadlineMs: input.absoluteDeadlineMs, commitGeneration: "commit_1" });
+    },
+    async transition(_id: string, expected: string, event: any) { if (persisted.state !== expected) return { ok: false, reason: "state-conflict" }; persisted = { ...persisted, state: event.to, resultDigest: event.resultDigest }; return { ok: true, status: "transitioned", reservation: persisted }; },
+    async recover() { return { ok: true, reservations: [persisted], highWaterMark: null, topology: { directorySync: "verified" } }; },
+  } as any;
+  const publication = {
+    async publishReservation(input: { state: any }) {
+      order.push("reservation");
+      assert.equal(input.state.signedDecision, signedDecision);
+      assert.equal(input.state.source, source);
+      assert.equal(input.state.capability, capability);
+      return { receiptRef: sha("8"), evidenceDigest: sha("9") };
+    },
+    async loadDurableHead() { return null; },
+    async publish() { order.push("terminal"); return { receiptRef: sha("a"), evidenceDigest: sha("b") }; },
+  };
+  const coordinator = createDispatchCoordinator(ledgerWithPreparedCommit, {
+    async prepare() { return createPreparedDispatch({ description: { v: "reelier.prepared-dispatch-description/v1", routeDigest: sha("f"), materializedRequestDigest, projection, authorityGeneration: "generation_1", authorityExpiresAt: new Date(Date.now() + 60_000).toISOString(), absoluteDeadlineMs: performance.now() + 60_000, reservationId: "r1", allocationId: "allocation_1" }, send: async () => { order.push("provider"); return { kind: "acknowledged", resultDigest: sha("c") }; } }); },
+    async dispatch() { throw new Error("legacy provider path must not run"); },
+  }, undefined, publication);
+  const outcome = await coordinator.dispatch(createReservedDispatchHandle(state));
+  assert.equal(outcome.kind, "acknowledged");
+  assert.deepEqual(order.slice(0, 2), ["reservation", "provider"]);
 });
