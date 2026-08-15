@@ -120,6 +120,19 @@ test("restart revalidates every checkpoint artifact and refuses a tampered compl
   });
 });
 
+test("partial checkpoint recovery revalidates its completed prefix before continuing", async () => {
+  await withFixture(async options => {
+    await initializeAgentProject(options);
+    const bootstrap = path.join(options.cwd, ".reelier", "bootstrap");
+    const statePath = path.join(bootstrap, "state.json");
+    const state = JSON.parse(await readFile(statePath, "utf8"));
+    state.completed = state.completed.slice(0, 1);
+    await writeFile(statePath, JSON.stringify(state), "utf8");
+    await writeFile(path.join(bootstrap, "inspection-link.json"), "{}\n", "utf8");
+    await assert.rejects(() => initializeAgentProject(options), /checkpoint|artifact|digest/i);
+  });
+});
+
 test("persisted project, runtime, and report form exact semantic digest joins", async () => {
   await withFixture(async options => {
     await initializeAgentProject(options);
