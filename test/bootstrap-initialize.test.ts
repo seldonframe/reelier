@@ -6,6 +6,7 @@ import path from "node:path";
 import { dispatchFromBootstrap, initializeAgentProject, type InitializeAgentProjectOptions } from "../src/bootstrap/initialize.js";
 import { digestAgentProjectV1 } from "../src/bootstrap/project.js";
 import { parseRuntimeDescriptorV1 } from "../src/runtime/manifest.js";
+import { authorityDigest } from "../src/authority/wire.js";
 
 async function withFixture<T>(run: (options: InitializeAgentProjectOptions) => Promise<T>): Promise<T> {
   const root = await mkdtemp(path.join(os.tmpdir(), "reelier-named-init-"));
@@ -126,7 +127,7 @@ test("persisted project, runtime, and report form exact semantic digest joins", 
     const runtime = JSON.parse(await readFile(path.join(bootstrap, "runtime-descriptor.json"), "utf8"));
     assert.equal(report.projectDigest, digestAgentProjectV1(project));
     assert.equal(project.runtimeDescriptorDigest, report.runtimeDescriptorDigest);
-    assert.equal(project.runtimeDescriptorDigest, `sha256:${(await import("node:crypto")).createHash("sha256").update(JSON.stringify(runtime)).digest("hex")}`);
+    assert.equal(project.runtimeDescriptorDigest, authorityDigest(runtime));
     assert.doesNotThrow(() => parseRuntimeDescriptorV1(runtime));
   });
 });
