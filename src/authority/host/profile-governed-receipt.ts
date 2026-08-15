@@ -57,7 +57,7 @@ function spki(key:import("node:crypto").KeyObject){return key.export({type:"spki
 type CurrentReceiptAuthority=Readonly<{signingAuthority:ValidatedAuthorityReceiptSigningAuthorityV1;jobCardTrustPin:JobCardTrustPinV1;observedAt:string}>;
 interface GovernedReceiptPublicationInputV1{readonly rootDir:string;readonly governance:AdmittedProfileGovernanceV1;readonly signedJobCard:SignedJobCardV1;readonly deploymentSnapshot:AuthorityDeploymentSnapshotV1;readonly expectedRouteScopeDigest:string;readonly foundations:Omit<AuthorityReceiptFoundationsV1,"gateEvent">;readonly signingAuthority:ValidatedAuthorityReceiptSigningAuthorityV1;readonly currentAuthority?:(capabilityDigest:string)=>CurrentReceiptAuthority;readonly verification:Omit<ProfileGovernedAuthorityReceiptVerificationOptionsV1,"now"|"priorAuthorityReceipt">;readonly portablePublication?:DispatchPublication}
 type StoredGovernedNode=Readonly<{v:"reelier.governed-receipt-store-node/v1";identity:DurableDispatchPublicationIdentityV1;phase:"reservation"|"dispatch"|"ambiguous"|"reconcile";terminalKind:null|"acknowledged"|"definitive-failure"|"ambiguous"|"reconciled";reservationReceiptRef:string;priorReceiptRef:string|null;receipt:ProfileGovernedAuthorityReceiptV1}>;
-type GovernedStoreOpenEvent=Readonly<{phase:"parent-retained"|"before-child-open"|"child-opened"|"after-child-write";root:string;governedDirectory:string;reservationDirectory:string;file:string}>;
+type GovernedStoreOpenEvent=Readonly<{phase:"parent-retained"|"before-child-open"|"child-opened"|"after-child-write"|"load-directory-observed";root:string;governedDirectory:string;reservationDirectory:string;file:string}>;
 type GovernedStoreFilesystemBarrier=(event:GovernedStoreOpenEvent)=>Promise<void>;
 let governedStoreFilesystemBarrier:GovernedStoreFilesystemBarrier|undefined;
 
@@ -132,12 +132,12 @@ async function findIdentity(root:string,reservationId:string):Promise<DurableDis
 
 async function loadStoredChain(input:GovernedReceiptPublicationInputV1,identity:DurableDispatchPublicationIdentityV1):Promise<readonly StoredGovernedNode[]>{
   const governed=path.join(input.rootDir,"governed"),directory=path.join(governed,identity.reservationId);
-  let anchors:StoreAnchors;
+  const anchors=await captureLoadStoreAnchors(input.rootDir,governed,directory,identity.reservationId);
+  if(!anchors)return Object.freeze([]);
   try{
     await assertConfinedStoreDirectory(input.rootDir,directory);
-    anchors=await captureStoreAnchors(input.rootDir,governed,directory);
-  }catch(error){if((error as NodeJS.ErrnoException).code==="ENOENT")return Object.freeze([]);throw error;}
-  try{
+    await governedStoreFilesystemBarrier?.(Object.freeze({phase:"load-directory-observed",root:anchors.root.path,governedDirectory:anchors.governed.path,reservationDirectory:anchors.reservation.path,file:directory}));
+    for(const anchor of [anchors.root,anchors.governed,anchors.reservation])await assertDirectoryAnchor(anchor);
     const directoryPath=await anchoredDirectoryPath(anchors),names=(await readdir(directoryPath)).filter(name=>name.endsWith(".json"));
     if(names.length===0)return Object.freeze([]);
     const nodes:StoredGovernedNode[]=[];
@@ -162,6 +162,9 @@ async function loadStoredChain(input:GovernedReceiptPublicationInputV1,identity:
       prior=node.receipt.authorityReceiptBundle.receipt.value;
     }
     return Object.freeze(ordered);
+  }catch(error){
+    if((error as NodeJS.ErrnoException).code==="ENOENT")throw new TypeError("governed receipt observed store became unreadable",{cause:error});
+    throw error;
   }finally{await closeStoreAnchors(anchors);}
 }
 
@@ -186,10 +189,49 @@ async function captureDirectoryAnchor(directory:string):Promise<DirectoryAnchor>
   if(process.platform==="linux"){
     const flags=constants.O_RDONLY|constants.O_DIRECTORY|(typeof constants.O_NOFOLLOW==="number"?constants.O_NOFOLLOW:0);
     handle=await open(resolved,flags);
-    const opened=await handle.stat();
-    if(!opened.isDirectory()||opened.dev!==stat.dev||opened.ino!==stat.ino){await handle.close();throw new TypeError("governed receipt directory changed before retention");}
+    try{
+      const opened=await handle.stat();
+      if(!opened.isDirectory()||opened.dev!==stat.dev||opened.ino!==stat.ino)throw new TypeError("governed receipt directory changed before retention");
+    }catch(error){await handle.close().catch(()=>undefined);throw error;}
   }
   return{path:resolved,dev:stat.dev,ino:stat.ino,canonical,...(handle?{handle}:{})};
+}
+
+async function captureLoadStoreAnchors(root:string,governed:string,reservation:string,reservationId:string):Promise<StoreAnchors|null>{
+  const captured:DirectoryAnchor[]=[];
+  let transferred=false;
+  try{
+    const rootAnchor=await captureDirectoryAnchor(root);
+    captured.push(rootAnchor);
+    if(!await retainedDirectoryContains(rootAnchor,path.basename(governed)))return null;
+    const governedAnchor=await captureObservedDirectoryAnchor(governed);
+    captured.push(governedAnchor);
+    await assertDirectoryAnchor(rootAnchor);
+    if(!await retainedDirectoryContains(governedAnchor,reservationId))return null;
+    const reservationAnchor=await captureObservedDirectoryAnchor(reservation);
+    captured.push(reservationAnchor);
+    await assertDirectoryAnchor(rootAnchor);
+    await assertDirectoryAnchor(governedAnchor);
+    transferred=true;
+    return Object.freeze({root:rootAnchor,governed:governedAnchor,reservation:reservationAnchor});
+  }finally{
+    if(!transferred)await Promise.all(captured.map(anchor=>anchor.handle?.close().catch(()=>undefined)));
+  }
+}
+
+async function captureObservedDirectoryAnchor(directory:string):Promise<DirectoryAnchor>{
+  try{return await captureDirectoryAnchor(directory);}
+  catch(error){
+    if((error as NodeJS.ErrnoException).code==="ENOENT")throw new TypeError("governed receipt observed store became unreadable",{cause:error});
+    throw error;
+  }
+}
+
+async function retainedDirectoryContains(parent:DirectoryAnchor,child:string):Promise<boolean>{
+  const retained=parent.handle?`/proc/self/fd/${parent.handle.fd}`:parent.path;
+  const contains=(await readdir(retained)).includes(child);
+  await assertDirectoryAnchor(parent);
+  return contains;
 }
 
 async function captureStoreAnchors(root:string,governed:string,reservation:string):Promise<StoreAnchors>{
