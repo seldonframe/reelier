@@ -138,6 +138,8 @@ export async function initializeAgentProject(options: InitializeAgentProjectOpti
     const rawJournal = await readOptionalJson(journalPath);
     if (rawJournal === undefined && acquired.priorLock !== undefined) {
       claimRestored = true;
+      if (acquired.priorBytes === undefined) throw new TypeError("named bootstrap recovery lock bytes are unavailable");
+      await retainedNativeSession.replaceLock(acquired.priorBytes);
       throw new Error("named bootstrap is busy: lock owner has no closed recovery journal");
     }
     const routeSnapshotDigest = await existingRouteSnapshotDigest(bootstrapRoot);
