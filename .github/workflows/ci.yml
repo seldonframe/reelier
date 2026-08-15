@@ -79,6 +79,8 @@ jobs:
           pattern: native-bootstrap-*
           path: native/bootstrap-helper
           merge-multiple: true
+      - name: Restore Linux helper executable bit
+        run: chmod +x native/bootstrap-helper/linux-x64/reelier-bootstrap-helper
       - name: Assemble exact universal manifest
         run: node scripts/assemble-bootstrap-native-artifacts.mjs
       - name: Verify both artifacts and current-host probe
