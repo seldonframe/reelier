@@ -10,6 +10,10 @@ function parsed(flags: string[] = []): ParsedArgs {
   return { positional: [], flags: new Set(flags), vars: {}, wraps: [], opts: {}, fails: [] };
 }
 
+function named(agentName: string, flags: string[] = []): ParsedArgs {
+  return { ...parsed(flags), positional: [agentName] };
+}
+
 async function withTempDir<T>(run: (root: string) => Promise<T>): Promise<T> {
   const root = await mkdtemp(path.join(os.tmpdir(), "reelier-init-cli-"));
   try { return await run(root); }
@@ -103,4 +107,21 @@ test("reelier init refuses malformed checkpoints with a sanitized exit code", as
     assert.equal(output, "Initialization refused: checkpoint state is malformed, unknown, or stale.");
     assert.doesNotMatch(output, /credential|never-print/);
   });
+});
+
+test("reelier init my-agent uses named bootstrap while bare init retains its inspection artifact", async () => {
+  await withTempDir(async root => {
+    const bare = await capture(() => cmdInit(parsed(), { cwd: root, homedir: root, dependencies: localDependencies() }));
+    assert.equal(bare.result, 0);
+    const namedResult = await capture(() => cmdInit(named("my-agent", ["yes"]), { cwd: root, homedir: root, dependencies: localDependencies() }));
+    assert.equal(namedResult.result, 0);
+    assert.match(namedResult.output, /npx reelier@0\.32\.1 up/);
+    assert.equal(JSON.parse(await readFile(path.join(root, ".reelier", "bootstrap", "report.json"), "utf8")).authority, "unavailable");
+  });
+});
+
+test("reelier init rejects more than one agent name", async () => {
+  const result = await capture(() => cmdInit({ ...named("one"), positional: ["one", "two"] }));
+  assert.equal(result.result, 1);
+  assert.match(result.output, /at most one agent name/i);
 });
