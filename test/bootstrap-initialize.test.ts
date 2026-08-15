@@ -253,7 +253,7 @@ test("completed checkpoints bind their canonical artifact names and reject linke
     const outside = path.join(options.cwd, "inspection-link-outside.json");
     await writeFile(outside, await readFile(source, "utf8"), "utf8");
     await rm(source);
-    await symlink(outside, source, "file");
+    try { await symlink(outside, source, "file"); } catch (error) { if ((error as NodeJS.ErrnoException).code === "EPERM") return; throw error; }
     await assert.rejects(() => initializeAgentProject(options), /checkpoint|artifact|linked/i);
   });
 });
