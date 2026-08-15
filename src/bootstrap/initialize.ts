@@ -98,7 +98,63 @@ function digest(value: unknown): string { return authorityDigest(value); }
 function sha256(value: string): string { return `sha256:${createHash("sha256").update(value, "utf8").digest("hex")}`; }
 
 async function ensureRealDirectory(directory: string, label: string): Promise<void> { await mkdir(directory, { recursive: true }); const info = await lstat(directory); if (!info.isDirectory() || info.isSymbolicLink()) throw new TypeError(`${label} is unsafe or linked`); }
-async function acquireBootstrapLock(file: string): Promise<() => Promise<void>> { const owner = JSON.stringify({ v: "reelier.bootstrap-lock/v1", pid: process.pid, processStartedAt: BOOTSTRAP_PROCESS_STARTED_AT, nonce: `${process.pid}-${Date.now()}` }); try { const handle = await open(file, "wx"); await handle.writeFile(owner); await handle.close(); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; let raw: { pid?: unknown; processStartedAt?: unknown }; try { raw = JSON.parse(await readFile(file, "utf8")) as { pid?: unknown; processStartedAt?: unknown }; } catch { throw new Error("named bootstrap is busy: lock present"); } if (typeof raw.pid === "number" && (!isLivePid(raw.pid) || raw.pid === process.pid && typeof raw.processStartedAt === "number" && raw.processStartedAt !== BOOTSTRAP_PROCESS_STARTED_AT)) { await unlink(file); return acquireBootstrapLock(file); } if (raw.pid === process.pid && raw.processStartedAt === BOOTSTRAP_PROCESS_STARTED_AT) { await new Promise(resolve => setTimeout(resolve, 10)); return acquireBootstrapLock(file); } throw new Error("named bootstrap is busy: lock present"); } return async () => { if (await readFile(file, "utf8").catch(() => "") === owner) await unlink(file).catch(() => {}); }; }
+async function acquireBootstrapLock(file: string): Promise<() => Promise<void>> {
+  const recoveryFile = `${file}.recovery`;
+  if (await fileIsPresent(recoveryFile)) throw new Error("named bootstrap is busy: lock recovery present");
+  const owner = JSON.stringify({ v: "reelier.bootstrap-lock/v1", pid: process.pid, processStartedAt: BOOTSTRAP_PROCESS_STARTED_AT, nonce: `${process.pid}-${Date.now()}` });
+  try {
+    const handle = await open(file, "wx");
+    await handle.writeFile(owner);
+    await handle.close();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    let ownerBytes: string;
+    let parsed: { pid?: unknown; processStartedAt?: unknown };
+    try { ownerBytes = await readFile(file, "utf8"); parsed = JSON.parse(ownerBytes) as { pid?: unknown; processStartedAt?: unknown }; }
+    catch { throw new Error("named bootstrap is busy: lock present"); }
+    if (isStaleBootstrapLockOwner(parsed)) {
+      if (await retireStaleBootstrapLock(file, recoveryFile, ownerBytes)) return acquireBootstrapLock(file);
+      return acquireBootstrapLock(file);
+    }
+    if (parsed.pid === process.pid && parsed.processStartedAt === BOOTSTRAP_PROCESS_STARTED_AT) { await new Promise(resolve => setTimeout(resolve, 10)); return acquireBootstrapLock(file); }
+    throw new Error("named bootstrap is busy: lock present");
+  }
+  return async () => { if (await readFile(file, "utf8").catch(() => "") === owner) await unlink(file).catch(() => {}); };
+}
+
+function isStaleBootstrapLockOwner(owner: { pid?: unknown; processStartedAt?: unknown }): boolean {
+  return typeof owner.pid === "number" && (!isLivePid(owner.pid) || owner.pid === process.pid && typeof owner.processStartedAt === "number" && owner.processStartedAt !== BOOTSTRAP_PROCESS_STARTED_AT);
+}
+
+async function retireStaleBootstrapLock(file: string, recoveryFile: string, expectedOwnerBytes: string): Promise<boolean> {
+  const recoveryOwner = JSON.stringify({ v: "reelier.bootstrap-lock-recovery/v1", pid: process.pid, processStartedAt: BOOTSTRAP_PROCESS_STARTED_AT, nonce: `${process.pid}-${Date.now()}` });
+  let handle;
+  try {
+    handle = await open(recoveryFile, "wx");
+    await handle.writeFile(recoveryOwner);
+    await handle.close();
+    handle = undefined;
+  } catch (error) {
+    await handle?.close().catch(() => {});
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new Error("named bootstrap is busy: lock recovery present");
+    throw error;
+  }
+  try {
+    if (await readFile(file, "utf8").catch(() => "") !== expectedOwnerBytes) return false;
+    let current: { pid?: unknown; processStartedAt?: unknown };
+    try { current = JSON.parse(expectedOwnerBytes) as { pid?: unknown; processStartedAt?: unknown }; } catch { return false; }
+    if (!isStaleBootstrapLockOwner(current)) return false;
+    await unlink(file);
+    return true;
+  } finally {
+    if (await readFile(recoveryFile, "utf8").catch(() => "") === recoveryOwner) await unlink(recoveryFile).catch(() => {});
+  }
+}
+
+async function fileIsPresent(file: string): Promise<boolean> {
+  try { await access(file); return true; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
+}
 async function loadImportedGovernance(options: InitializeAgentProjectOptions): Promise<unknown> { if (!options.governance) { try { await access(path.join(options.homedir, ".reelier", "governance", "profile-governance.json")); throw new TypeError("self-authored governance summary is not authority"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; } return { v: "reelier.imported-governance/v1", tenant: null, governanceRef: null, manifestDigest: null, trustHeadDigest: null, verificationStatus: "absent" }; } const admitted = await loadProfileGovernanceFromOperatorTrust({ ...options.governance, homedir: options.homedir }); const state = admittedProfileGovernanceState(admitted); return { v: "reelier.imported-governance/v1", tenant: options.governance.tenant, governanceRef: options.governance.governanceRef, manifestDigest: options.governance.expectedManifestDigest, trustHeadDigest: options.governance.expectedTrustHeadDigest, verificationStatus: state.manifest.profileDigest ? "verified" : "absent" }; }
 function isLivePid(pid: number): boolean { if (!Number.isInteger(pid) || pid < 1) return false; try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; } }
 async function validateCompletedArtifacts(root: string, state: BootstrapState): Promise<void> { for (const entry of state.completed) { if (entry.artifact !== CHECKPOINT_ARTIFACT_NAMES[entry.id] || path.basename(entry.artifact) !== entry.artifact || entry.artifact.includes("\\") || entry.artifact.includes("/")) throw new TypeError("named bootstrap checkpoint artifact path is invalid"); const info = await lstat(path.join(root, entry.artifact)).catch(() => undefined); if (!info?.isFile() || info.isSymbolicLink()) throw new TypeError("named bootstrap checkpoint artifact is unsafe or linked"); const value = await readJson(root, entry.artifact); if (digest(value) !== entry.digest) throw new TypeError("named bootstrap checkpoint artifact digest is invalid"); if (entry.id === "route-coverage" && (value as { digest?: unknown }).digest !== sha256(await readFile(path.join(root, "route-coverage.json"), "utf8"))) throw new TypeError("named bootstrap route coverage digest join is invalid"); } if (state.completed.length === BOOTSTRAP_CHECKPOINT_IDS.length) { const [project, report, runtime] = await Promise.all([readJson(root, "project.json"), readJson(root, "report.json"), readJson(root, "runtime-descriptor.json")]); parseAgentProjectV1(project); parseBootstrapReportV1(report); parseRuntimeDescriptorV1(runtime); if ((report as BootstrapReportV1).projectDigest !== digestAgentProjectV1(project)) throw new TypeError("named bootstrap project/report digest join is invalid"); } }
