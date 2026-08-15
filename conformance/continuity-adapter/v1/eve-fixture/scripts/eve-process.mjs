@@ -66,23 +66,32 @@ export async function stopEveProcess(child) {
   if (!child || child.pid === undefined) return;
   const exactPid = child.pid;
   let exited = false;
-  if (process.platform === "win32") {
-    const treeStop = spawn("taskkill", ["/PID", String(exactPid), "/T"], { stdio: "ignore", windowsHide: true });
-    await new Promise((resolveExit) => treeStop.once("close", resolveExit));
-    exited = await waitForExit(child, 5_000);
-    if (!exited) {
-      const forceTree = spawn("taskkill", ["/PID", String(exactPid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
-      await new Promise((resolveExit) => forceTree.once("close", resolveExit));
+  try {
+    if (process.platform === "win32") {
+      const treeStop = spawn("taskkill", ["/PID", String(exactPid), "/T"], { stdio: "ignore", windowsHide: true });
+      await new Promise((resolveExit) => treeStop.once("close", resolveExit));
+      exited = await waitForExit(child, 5_000);
+      if (!exited) {
+        const forceTree = spawn("taskkill", ["/PID", String(exactPid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
+        await new Promise((resolveExit) => forceTree.once("close", resolveExit));
+      }
+    } else {
+      signalProcessGroup(exactPid, "SIGTERM");
+      if (!await waitForProcessGroupExit(exactPid, 5_000)) {
+        signalProcessGroup(exactPid, "SIGKILL");
+      }
+      assert.equal(await waitForProcessGroupExit(exactPid, 5_000), true, `Eve process group ${exactPid} survived forced stop`);
+      exited = await waitForExit(child, 5_000);
     }
-  } else {
-    signalProcessGroup(exactPid, "SIGTERM");
-    if (!await waitForProcessGroupExit(exactPid, 5_000)) {
-      signalProcessGroup(exactPid, "SIGKILL");
-    }
-    assert.equal(await waitForProcessGroupExit(exactPid, 5_000), true, `Eve process group ${exactPid} survived forced stop`);
-    exited = await waitForExit(child, 5_000);
+    assert.equal(exited || await waitForExit(child, 5_000), true, `exact Eve PID ${exactPid} survived graceful stop`);
+  } finally {
+    // A descendant can inherit the launcher's pipes even after the leader and
+    // its process group are gone. Close our handles so the supervising matrix
+    // process can observe the launcher's `close` event and finish cleanup.
+    child.stdin?.destroy();
+    child.stdout?.destroy();
+    child.stderr?.destroy();
   }
-  assert.equal(exited || await waitForExit(child, 5_000), true, `exact Eve PID ${exactPid} survived graceful stop`);
   const listener = listenerByChild.get(child);
   if (listener) await waitForListenerClosed(listener.url, listener.http);
 }
