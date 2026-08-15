@@ -39,3 +39,9 @@ test("route evidence is inert, non-secret, ordered, and temporally bounded", () 
     { ...route(), topologyEvidenceDigest: digest("2") },
   ]) assert.throws(() => parseRouteCoverageV1(value), TypeError);
 });
+
+test("route evidence references are opaque and never endpoint URLs", () => {
+  for (const evidenceRef of ["https://provider.example/token", "artifact:https://provider.example/private"]) {
+    assert.throws(() => parseRouteCoverageV1({ ...route(), evidenceRefs: [evidenceRef] }), TypeError, evidenceRef);
+  }
+});

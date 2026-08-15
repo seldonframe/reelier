@@ -39,6 +39,27 @@ test("runtime manifest refuses floating versions, shell strings, traversal, and 
   ]) assert.throws(() => parseRuntimeDescriptorV1(value), TypeError);
 });
 
+test("runtime manifest refuses shell executables and command modes", () => {
+  for (const [command, args] of [
+    ["cmd.exe", ["/c", "whoami"]],
+    ["cmd", ["/k", "whoami"]],
+    ["powershell.exe", ["-Command", "whoami"]],
+    ["pwsh", ["-EncodedCommand", "ZQBjAGgAbwA="]],
+    ["sh", ["-c", "whoami"]],
+    ["bash", ["--command", "whoami"]],
+  ] as const) assert.throws(() => parseRuntimeDescriptorV1({ ...local(), command, args }), TypeError, `${command} ${args[0]}`);
+  for (const args of [["/c", "whoami"], ["-c", "whoami"], ["-Command", "whoami"]]) {
+    assert.throws(() => parseRuntimeDescriptorV1({ ...local(), args }), TypeError, args[0]);
+  }
+});
+
+test("runtime manifest refuses credential-bearing and embedded endpoint arguments", () => {
+  for (const argument of [
+    "--token=sk_test_secret", "--api-key=abc123", "--password=hunter2", "Bearer abc123",
+    "--endpoint=https://provider.example/private", "callback=wss://provider.example/socket",
+  ]) assert.throws(() => parseRuntimeDescriptorV1({ ...local(), args: [argument] }), TypeError, argument);
+});
+
 test("local and externally managed descriptor fields cannot be mixed", () => {
   assert.throws(() => parseRuntimeDescriptorV1({ ...local(), launchMode: "externally-managed" }), TypeError);
   const external = { ...local(), launchMode: "externally-managed", command: null, args: [], cwd: null, connectionRef: "runtime_1", environmentAllowlist: [], authenticatedBinding: "host-private", shutdown: "external" };

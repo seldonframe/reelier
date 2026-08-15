@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { types as utilTypes } from "node:util";
 import {
   BOOTSTRAP_CONTRACT_V1,
   parseAgentProjectV1,
@@ -138,4 +139,46 @@ test("bootstrap contract verification binds the exact six schemas and evaluates 
   Object.defineProperty(accessor, "digest", { enumerable: true, get() { reads++; return BOOTSTRAP_CONTRACT_V1.digest; } });
   assert.throws(() => verifyBootstrapContractV1(accessor, files), TypeError);
   assert.equal(reads, 0);
+});
+
+test("bootstrap parsing rejects top-level proxies without executing any proxy trap", () => {
+  let traps = 0;
+  const proxied = new Proxy(project(), {
+    getPrototypeOf() { traps++; return Object.prototype; },
+    ownKeys(target) { traps++; return Reflect.ownKeys(target); },
+    getOwnPropertyDescriptor(target, key) { traps++; return Reflect.getOwnPropertyDescriptor(target, key); },
+    get(target, key, receiver) { traps++; return Reflect.get(target, key, receiver); },
+  });
+  assert.equal(utilTypes.isProxy(proxied), true, "test witness is a real proxy");
+  assert.throws(() => parseAgentProjectV1(proxied), TypeError);
+  assert.equal(traps, 0);
+});
+
+test("bootstrap parsing rejects nested proxies without executing any proxy trap", () => {
+  let traps = 0;
+  const proxiedSession = new Proxy(expectedBinding().principalSession, {
+    getPrototypeOf() { traps++; return Object.prototype; },
+    ownKeys(target) { traps++; return Reflect.ownKeys(target); },
+    getOwnPropertyDescriptor(target, key) { traps++; return Reflect.getOwnPropertyDescriptor(target, key); },
+    get(target, key, receiver) { traps++; return Reflect.get(target, key, receiver); },
+  });
+  assert.equal(utilTypes.isProxy(proxiedSession), true, "nested witness is a real proxy");
+  assert.throws(() => verifyAuthorityCellSessionBindingV1(binding(), { ...expectedBinding(), principalSession: proxiedSession }), TypeError);
+  assert.equal(traps, 0);
+});
+
+test("supervisor status accepts uncovered-only rows and rejects impossible cross-lane aggregates", () => {
+  const uncoveredOnly = {
+    v: "reelier.supervisor-status/v1", observedAt: "2026-08-15T12:00:00.000Z",
+    observedRoutes: 0, partialRoutes: 0, uncoveredRoutes: 1, unknownRoutes: 0,
+    replayAvailable: 0, replayCandidates: 0, outcomesActivated: 0, outcomesUnavailable: 1, outcomesEnforced: 0,
+    runtime: "externally-managed", completeness: "not-proved",
+  };
+  assert.deepEqual(parseSupervisorStatusV1(uncoveredOnly), uncoveredOnly);
+  for (const value of [
+    { ...uncoveredOnly, replayAvailable: 1, replayCandidates: 1 },
+    { ...uncoveredOnly, outcomesActivated: 1, outcomesUnavailable: 1 },
+    { ...uncoveredOnly, outcomesActivated: 0, outcomesUnavailable: 0 },
+    { ...uncoveredOnly, outcomesEnforced: 1 },
+  ]) assert.throws(() => parseSupervisorStatusV1(value), TypeError);
 });
