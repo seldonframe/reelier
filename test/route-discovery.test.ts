@@ -44,7 +44,11 @@ test("route discovery preserves bypasses and same-name routes as separate opaque
     surface({ sourceInstanceIdentityDigest: digest("d"), routeKey: "registry", discoverySource: "plugin-manifest", observation: "unknown", reasonCodes: ["registry-unreadable"] }),
   ] })] });
 
-  const gmail = rows.filter((row: RouteCoverageV1) => row.evidenceRefs.includes("route:gmail.send"));
+  const gmail = rows.filter((row: RouteCoverageV1) =>
+    (row.discoverySource === "direct-http" && row.reasonCodes.includes("direct-http-bypass")) ||
+    (row.discoverySource === "host-config" && row.reasonCodes.includes("wrapped-route-observed")) ||
+    (row.discoverySource === "plugin-manifest" && row.reasonCodes.includes("plugin-private")),
+  );
   assert.deepEqual(gmail.map(row => [row.discoverySource, row.observation, row.enforcement]), [["direct-http", "uncovered", "absent"], ["host-config", "observed", "unchecked"], ["plugin-manifest", "uncovered", "absent"]]);
   assert.equal(rows.length, 9);
   assert.equal(new Set(rows.map(row => row.routeId)).size, rows.length);
