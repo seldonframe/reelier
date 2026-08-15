@@ -208,3 +208,58 @@ test("a complete operator governance import is verified and reported without cop
     assert.equal((await readdir(path.join(options.cwd, ".reelier", "bootstrap"))).some(name => /trust|root|public.*key/i.test(name)), false);
   });
 });
+
+test("a stale positive PID lock is recovered only after its owner is unavailable", async () => {
+  await withFixture(async options => {
+    await initializeAgentProject(options);
+    const lock = path.join(options.cwd, ".reelier", "bootstrap", ".lock");
+    await writeFile(lock, JSON.stringify({ v: "reelier.bootstrap-lock/v1", pid: 999999, nonce: "dead-positive-owner" }), "utf8");
+    await initializeAgentProject(options);
+    await assert.rejects(lstat(lock), { code: "ENOENT" });
+  });
+});
+
+test("checkpoint artifact paths are closed basenames and cannot redirect validation outside bootstrap", async () => {
+  await withFixture(async options => {
+    await initializeAgentProject(options);
+    const bootstrap = path.join(options.cwd, ".reelier", "bootstrap");
+    const outside = path.join(options.cwd, ".reelier", "outside.json");
+    const value = { v: "outside" };
+    await writeFile(outside, JSON.stringify(value), "utf8");
+    const statePath = path.join(bootstrap, "state.json");
+    const state = JSON.parse(await readFile(statePath, "utf8"));
+    state.completed[0].artifact = "../outside.json";
+    state.completed[0].digest = authorityDigest(value);
+    await writeFile(statePath, JSON.stringify(state), "utf8");
+    await assert.rejects(() => initializeAgentProject(options), /checkpoint|artifact|path/i);
+  });
+});
+
+test("the same agent name in separate projects receives separate project-scoped workload keys", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-workload-project-scope-"));
+  try {
+    const home = path.join(root, "home");
+    const projectA = path.join(root, "a");
+    const projectB = path.join(root, "b");
+    await Promise.all([mkdir(home, { recursive: true }), mkdir(projectA, { recursive: true }), mkdir(projectB, { recursive: true })]);
+    await initializeAgentProject({ cwd: projectA, homedir: home, agentName: "agent", exactVersion: "0.32.1" });
+    await initializeAgentProject({ cwd: projectB, homedir: home, agentName: "agent", exactVersion: "0.32.1" });
+    const workloadRoot = path.join(home, ".reelier", "workloads", "agent");
+    assert.equal((await readdir(workloadRoot)).filter(name => /^[0-9a-f]{16}\.pem$/.test(name)).length, 2);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("verified imported governance joins exact pins into the project descriptor", async () => {
+  await withFixture(async options => {
+    const governance = path.join(options.homedir, ".reelier", "governance");
+    const manifestDigest = `sha256:${"c".repeat(64)}`;
+    const trustHeadDigest = `sha256:${"d".repeat(64)}`;
+    await mkdir(governance, { recursive: true });
+    await writeFile(path.join(governance, "profile-governance.json"), JSON.stringify({ governanceRef: "operator-governance", manifestDigest, trustHeadDigest, verificationStatus: "verified" }), "utf8");
+    await initializeAgentProject(options);
+    const project = JSON.parse(await readFile(path.join(options.cwd, ".reelier", "bootstrap", "project.json"), "utf8"));
+    assert.equal(project.profileGovernanceRef, "operator-governance");
+    assert.equal(project.profileGovernanceManifestDigest, manifestDigest);
+    assert.equal(project.profileTrustHeadDigest, trustHeadDigest);
+  });
+});
