@@ -73,6 +73,57 @@ test("an orphan lock is recovered only when its closed journal and exact plan ar
   });
 });
 
+test("a recovered owner can crash again and the next owner still recovers", async () => {
+  await withFixture(async options => {
+    await assert.rejects(() => initializeAgentProject({ ...options, interruptAfterState: "prepared" }), /interrupted/i);
+    await assert.rejects(() => initializeAgentProject({ ...options, interruptAfterState: "committing" }), /interrupted/i);
+    const report = await initializeAgentProject(options);
+    assert.equal(report.state, "complete");
+  });
+});
+
+test("orphan recovery rolls back the closed generation instead of adopting it", async () => {
+  await withFixture(async options => {
+    await assert.rejects(() => initializeAgentProject({ ...options, interruptAfterState: "prepared" }), /interrupted/i);
+    const bootstrap = path.join(options.cwd, ".reelier", "bootstrap");
+    const interrupted = JSON.parse(await readFile(path.join(bootstrap, "transaction.json"), "utf8"));
+    await initializeAgentProject(options);
+    const committed = await committedFiles(options.cwd);
+    assert.notEqual(committed.generation, interrupted.transactionId);
+  });
+});
+
+test("identity drift refuses without deleting journal or staged evidence", async () => {
+  await withFixture(async options => {
+    await assert.rejects(() => initializeAgentProject({ ...options, interruptAfterState: "prepared" }), /interrupted/i);
+    const bootstrap = path.join(options.cwd, ".reelier", "bootstrap");
+    const journalPath = path.join(bootstrap, "transaction.json");
+    const journalBefore = await readFile(journalPath, "utf8");
+    const journal = JSON.parse(journalBefore);
+    const checkpointPath = path.join(bootstrap, "staging", journal.transactionId, "checkpoint.json");
+    const checkpointBefore = await readFile(checkpointPath, "utf8");
+
+    await assert.rejects(() => initializeAgentProject({ ...options, agentName: "MY-AGENT" }), /plan|identity|case/i);
+    assert.equal(await readFile(journalPath, "utf8"), journalBefore);
+    assert.equal(await readFile(checkpointPath, "utf8"), checkpointBefore);
+  });
+});
+
+test("recovery-required performs rollback only and requires a clean retry", async () => {
+  await withFixture(async options => {
+    await assert.rejects(() => initializeAgentProject({ ...options, interruptAfterState: "prepared" }), /interrupted/i);
+    const bootstrap = path.join(options.cwd, ".reelier", "bootstrap");
+    const journalPath = path.join(bootstrap, "transaction.json");
+    const journal = JSON.parse(await readFile(journalPath, "utf8"));
+    await writeFile(journalPath, `${JSON.stringify({ ...journal, state: "recovery-required" }, null, 2)}\n`);
+
+    await assert.rejects(() => initializeAgentProject(options), /rollback|recovery/i);
+    await assert.rejects(readFile(journalPath, "utf8"), { code: "ENOENT" });
+    await assert.rejects(readFile(path.join(bootstrap, "staging", journal.transactionId, "checkpoint.json"), "utf8"), { code: "ENOENT" });
+    assert.equal((await initializeAgentProject(options)).state, "complete");
+  });
+});
+
 test("restart refuses a self-consistent rewrite of staged bytes instead of adopting it", async () => {
   await withFixture(async options => {
     await assert.rejects(() => initializeAgentProject({ ...options, interruptAfterState: "prepared" }), /interrupted/i);
@@ -133,13 +184,28 @@ test("a held project lock refuses before mutable route or journal inspection", a
     const bootstrap = path.join(options.cwd, ".reelier", "bootstrap");
     await mkdir(bootstrap, { recursive: true });
     await writeFile(path.join(bootstrap, "route-coverage.json"), "not-json\n");
-    await writeFile(path.join(bootstrap, ".lock"), `${JSON.stringify({
+    await writeFile(path.join(options.cwd, ".reelier-bootstrap.lock"), `${JSON.stringify({
       v: "reelier.bootstrap-lock/v2", pid: process.pid, ownerToken: "a".repeat(64), transactionId: "b".repeat(32),
     })}\n`);
 
     await assert.rejects(() => initializeAgentProject(options), /busy|lock owner/i);
     assert.equal(await readFile(path.join(bootstrap, "route-coverage.json"), "utf8"), "not-json\n");
     await assert.rejects(readFile(path.join(bootstrap, "transaction.json"), "utf8"), { code: "ENOENT" });
+  });
+});
+
+test("a held project lock does not create the bootstrap root", async () => {
+  await withFixture(async options => {
+    await writeFile(path.join(options.cwd, ".reelier-bootstrap.lock"), "occupied\n");
+    await assert.rejects(() => initializeAgentProject(options), /busy|lock owner/i);
+    await assert.rejects(readFile(path.join(options.cwd, ".reelier", "bootstrap", "transaction.json"), "utf8"), { code: "ENOENT" });
+  });
+});
+
+test("the requested exact version must equal the executing package version before writes", async () => {
+  await withFixture(async options => {
+    await assert.rejects(() => initializeAgentProject({ ...options, exactVersion: "0.32.2" }), /version|executing package/i);
+    await assert.rejects(readFile(path.join(options.cwd, ".reelier", "bootstrap", "transaction.json"), "utf8"), { code: "ENOENT" });
   });
 });
 
