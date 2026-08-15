@@ -132,7 +132,7 @@ test("independent governed publishers deterministically adopt equal reservation 
 });
 
 type GovernedStoreOpenEvent = Readonly<{
-  phase: "parent-retained" | "before-child-open" | "child-opened" | "after-child-write";
+  phase: "parent-retained" | "before-child-open" | "child-opened" | "after-child-write" | "load-directory-observed";
   root: string;
   governedDirectory: string;
   reservationDirectory: string;
@@ -161,6 +161,71 @@ async function realReservationPublication(home: string, rootDir: string, reserva
   const identity = { v: "reelier.durable-dispatch-publication-identity/v1" as const, reservationId, tenant, requestDigest: built.requestDigest, capabilityDigest: built.capabilityDigest, effectDigest: built.effectDigest, routeAuthorityDigest: authorityDigest(fixture.routeAuthority), expectedDispatchedRequestDigest: sha("b"), reservationIntentDigest: sha("c") };
   return { publication, value: { phase: "reservation" as const, identity, state: built.state, outcome: { kind: "ambiguous" as const, resultDigest: sha("d"), reconciliationStatus: "not-attempted" as const }, dispatchedRequestDigest: null, priorReceiptDigest: null } };
 }
+
+test("a genuinely absent or readable empty governed reservation has no durable head", async t => {
+  for (const initialState of ["absent", "empty"] as const) {
+    const home = await mkdtemp(path.join(os.tmpdir(), `reelier-governed-${initialState}-`));
+    t.after(() => rm(home, { recursive: true, force: true }));
+    const rootDir = path.join(home, "receipt-store");
+    const reservationId = `reservation_${initialState}`;
+    const { publication, value } = await realReservationPublication(home, rootDir, reservationId);
+    if (initialState === "empty") await mkdir(path.join(rootDir, "governed", reservationId), { recursive: true });
+
+    const head = await publication.loadDurableHead!({
+      v: "reelier.durable-dispatch-publication-query/v1",
+      identity: value.identity,
+      ledgerState: "dispatched",
+      sendStarted: true,
+    });
+
+    assert.equal(head, null, `${initialState} under the readable receipt-store parent is genuine absence`);
+  }
+});
+
+test("an observed governed store that disappears or is swapped during anchor capture is never absence", async t => {
+  for (const attack of ["root-removed", "root-swapped", "governed-swapped", "reservation-removed", "reservation-swapped"] as const) {
+    await t.test(attack, async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), `reelier-governed-load-${attack}-`));
+    t.after(() => rm(home, { recursive: true, force: true }));
+    const rootDir = path.join(home, "receipt-store");
+    const reservationId = `reservation_load_${attack.replaceAll("-", "_")}`;
+    const { publication, value } = await realReservationPublication(home, rootDir, reservationId);
+    await publication.publishReservation!(value);
+    let attacked = false;
+    const restore = await installGovernedStoreOpenBarrier(async event => {
+      if (event.phase !== "load-directory-observed" || attacked) return;
+      const target = attack.startsWith("root-")
+        ? event.root
+        : attack.startsWith("governed-")
+          ? event.governedDirectory
+          : event.reservationDirectory;
+      await rename(target, `${target}.observed`);
+      if (attack.endsWith("swapped")) await mkdir(target, { recursive: true });
+      attacked = true;
+    });
+    let outcome: "head" | "null" | "rejected" = "head";
+    try {
+      try {
+        const head = await publication.loadDurableHead!({
+          v: "reelier.durable-dispatch-publication-query/v1",
+          identity: value.identity,
+          ledgerState: "dispatched",
+          sendStarted: true,
+        });
+        outcome = head === null ? "null" : "head";
+      } catch (error) {
+        outcome = "rejected";
+        assert.match(String(error), /tamper|unreadable|disappear|changed|physical|confined|store|anchor|enoent/i, attack);
+      }
+    } finally {
+      restore();
+    }
+
+    assert.equal(attacked, true, `${attack}: load must expose the post-observation anchor-capture boundary`);
+    assert.equal(outcome, "rejected", `${attack}: an observed store must not be normalized to ${outcome}`);
+    });
+  }
+});
 
 test("live root and reservation swaps cannot redirect a real reservation publication", async t => {
   for (const targetKind of ["root", "reservation"] as const) {
