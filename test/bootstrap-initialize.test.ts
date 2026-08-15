@@ -30,6 +30,8 @@ test("minimal named preparation freezes the exact descriptor, honest report, and
     const persisted = JSON.parse(await readFile(path.join(root, "report.json"), "utf8"));
 
     assert.deepEqual(files, ["checkpoint.json", "project.json", "recovery-command.txt", "report.json"]);
+    assert.deepEqual(Object.keys(project).sort(), ["agentName", "authority", "completeness", "installedBuildDigest", "projectRoot", "reelierVersion", "routeSnapshotDigest", "v"]);
+    assert.deepEqual(Object.keys(persisted).sort(), ["authority", "completeness", "initializedAt", "projectDigest", "recoveryCommand", "state", "up", "v"]);
     assert.equal(project.agentName, "my-agent");
     assert.equal(project.projectRoot, await (await import("node:fs/promises")).realpath(options.cwd));
     assert.equal(project.reelierVersion, "0.32.1");
