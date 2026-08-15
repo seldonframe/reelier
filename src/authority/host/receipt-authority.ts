@@ -4,10 +4,11 @@ import { authorityDigest, parseAuthorityWire } from "../wire.js";
 import { signAuthorityDigest, verifyAuthoritySignature } from "../crypto.js";
 import { createAuthorityEvidence, createAuthorityReceipt, createAuthorityReceiptBundle } from "../evidence.js";
 import type { DispatchOutcome, DispatchRequestState } from "./dispatch.js";
-import { currentAuthorityTrustViewState, type CurrentAuthorityTrustViewV1 } from "../trust.js";
-import { assertCertificationLifecycleTrustContext, verifyCertificationArtifactKeyBinding, type CertificationArtifactKeyBindingCommitmentV1, type CertificationArtifactKeyBindingV1, type CertificationLifecycleAuthorityMaterial } from "../certification/lifecycle-authority.js";
+import { createCurrentAuthorityTrustView, currentAuthorityTrustViewState, type CurrentAuthorityTrustViewV1 } from "../trust.js";
+import type { JobCardTrustPinV1 } from "./deployment.js";
+import { assertCertificationLifecycleTrustContext, certificationLifecycleTrustContext, verifyCertificationArtifactKeyBinding, type CertificationArtifactKeyBindingCommitmentV1, type CertificationArtifactKeyBindingV1, type CertificationLifecycleAuthorityMaterial } from "../certification/lifecycle-authority.js";
 
-export type ProducedReceiptKindV1="source-bundle"|"compiled-capability"|"transport-effect"|"authority-evidence"|"authority-receipt"|"pack-manifest";
+export type ProducedReceiptKindV1=keyof SignerPurpose;
 type SignerPurpose={sourceBundle:"source-bundle";compiledCapability:"compiled-capability";transportEffect:"transport-effect";evidence:"authority-evidence";receipt:"authority-receipt";packManifest:"pack-manifest"};
 export type PurposeBoundReceiptSignerV1<K extends keyof SignerPurpose>=Readonly<{purpose:SignerPurpose[K];signerId:string;publicKey:KeyObject;sign(input:Readonly<{purpose:SignerPurpose[K];digest:string}>):Promise<AuthoritySignature>}>;
 export interface AuthorityReceiptSigningAuthorityV1{readonly artifactAuthorization:Readonly<{binding:CertificationArtifactKeyBindingV1;commitment:CertificationArtifactKeyBindingCommitmentV1}>;readonly sourceBundle:PurposeBoundReceiptSignerV1<"sourceBundle">;readonly compiledCapability:PurposeBoundReceiptSignerV1<"compiledCapability">;readonly transportEffect:PurposeBoundReceiptSignerV1<"transportEffect">;readonly evidence:PurposeBoundReceiptSignerV1<"evidence">;readonly receipt:PurposeBoundReceiptSignerV1<"receipt">;readonly packManifest:PurposeBoundReceiptSignerV1<"packManifest">}
@@ -20,7 +21,9 @@ const validatedStates=new WeakMap<object,ValidatedState>();
 export function validateAuthorityReceiptSigningAuthority(input:Readonly<{trustView:CurrentAuthorityTrustViewV1;signingAuthority:AuthorityReceiptSigningAuthorityV1;segregation:ReceiptSigningSegregationV1}>):ValidatedAuthorityReceiptSigningAuthorityV1{
   exact(input,["trustView","signingAuthority","segregation"],"receipt signing validation input");
   const trust=currentAuthorityTrustViewState(input.trustView),authority=input.signingAuthority;exact(authority,["artifactAuthorization","sourceBundle","compiledCapability","transportEffect","evidence","receipt","packManifest"],"receipt signing authority");exact(authority.artifactAuthorization,["binding","commitment"],"artifact authorization");
-  verifyCertificationArtifactKeyBinding(authority.artifactAuthorization.binding,authority.artifactAuthorization.commitment,{descriptors:trust.descriptors,signedReadiness:trust.pin.signedReadiness,now:new Date(trust.observedAt)});
+  const evidenceDescriptor=trust.descriptors.find(item=>item.keyId===authority.evidence.signerId&&item.purpose==="authority-evidence"&&item.publicKeySpkiBase64===spki(authority.evidence.publicKey));
+  if(!evidenceDescriptor)throw new TypeError("receipt evidence signer is not present in current Authority trust");
+  verifyCertificationArtifactKeyBinding(authority.artifactAuthorization.binding,authority.artifactAuthorization.commitment,{descriptors:trust.descriptors,signedReadiness:trust.pin.signedReadiness,now:new Date(trust.observedAt),expectedParentEvidenceDescriptor:evidenceDescriptor,activeDescriptorDigests:trust.activeDescriptorDigests});
   const signers=[authority.sourceBundle,authority.compiledCapability,authority.transportEffect,authority.evidence,authority.receipt,authority.packManifest] as readonly PurposeBoundReceiptSignerV1<any>[];
   const expected:SignerPurpose[keyof SignerPurpose][]=["source-bundle","compiled-capability","transport-effect","authority-evidence","authority-receipt","pack-manifest"];
   for(let index=0;index<signers.length;index++){const signer=signers[index]!;exact(signer,["purpose","signerId","publicKey","sign"],`receipt signer ${expected[index]}`);if(signer.purpose!==expected[index]||signer.publicKey.type!=="public"||signer.publicKey.asymmetricKeyType!=="ed25519"||typeof signer.sign!=="function")throw new TypeError("receipt signer purpose or Ed25519 key is invalid");}
@@ -32,11 +35,11 @@ export function validateAuthorityReceiptSigningAuthority(input:Readonly<{trustVi
   const handle=Object.freeze(new Proxy(Object.freeze(Object.create(null)),{})) as ValidatedAuthorityReceiptSigningAuthorityV1;validatedStates.set(handle,Object.freeze({trustView:input.trustView,signingAuthority:authority,segregation:input.segregation}));return handle;
 }
 
-export function validateLifecycleAuthorityReceiptSigningAuthority(material:CertificationLifecycleAuthorityMaterial):ValidatedAuthorityReceiptSigningAuthorityV1{
+export function validateLifecycleAuthorityReceiptSigningAuthority(material:CertificationLifecycleAuthorityMaterial,current?:Readonly<{jobCardTrustPin:JobCardTrustPinV1;expectedAuthorityCellId:string;expectedTaskId:string;observedAt:Date}>):ValidatedAuthorityReceiptSigningAuthorityV1{
   assertCertificationLifecycleTrustContext(material);if(!material.artifactAuthorization)throw new TypeError("lifecycle artifact authorization is absent");
   const signer=(purpose:any,key:any)=>Object.freeze({purpose,signerId:key.descriptor.keyId,publicKey:createPublicKey(key.privateKey),async sign(input:any){return signAuthorityDigest(key.privateKey,input.purpose,input.digest);}});
   const authority:AuthorityReceiptSigningAuthorityV1=Object.freeze({artifactAuthorization:material.artifactAuthorization,sourceBundle:signer("source-bundle",material.artifacts.get("source-bundle")!),compiledCapability:signer("compiled-capability",material.artifacts.get("compiled-capability")!),transportEffect:signer("transport-effect",material.artifacts.get("transport-effect")!),evidence:signer("authority-evidence",material.direct.get("authority-evidence")!),receipt:signer("authority-receipt",material.direct.get("authority-receipt")!),packManifest:signer("pack-manifest",material.artifacts.get("pack-manifest")!)});
-  const handle=Object.freeze(new Proxy(Object.freeze(Object.create(null)),{})) as ValidatedAuthorityReceiptSigningAuthorityV1;validatedStates.set(handle,Object.freeze({signingAuthority:authority,segregation:Object.freeze({mode:"lifecycle",lifecycleContext:material})}));return handle;
+  const fullContext=current??certificationLifecycleTrustContext(material),trustView=createCurrentAuthorityTrustView({tenant:fullContext.expectedAuthorityCellId,authorityCellId:fullContext.expectedAuthorityCellId,taskId:fullContext.expectedTaskId,observedAt:fullContext.observedAt,jobCardTrustPin:fullContext.jobCardTrustPin});return validateAuthorityReceiptSigningAuthority({trustView,signingAuthority:authority,segregation:Object.freeze({mode:"lifecycle",lifecycleContext:material})});
 }
 
 export interface AuthorityReceiptFoundationsV1{readonly contract:SignedAuthorityArtifact<"outcome-contract">;readonly delegation:readonly SignedAuthorityArtifact<"delegation-grant">[];readonly gateEvent:SignedAuthorityArtifact<"gate-event">;readonly packManifest:AuthorityWireByKind["pack-manifest"]}

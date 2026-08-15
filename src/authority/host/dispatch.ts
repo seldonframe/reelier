@@ -75,7 +75,9 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
           const persisted=await ledger.getReservation(reservationId);
           if(!persisted||persisted.state!=="dispatched"||persisted.sendStarted!==true)throw new Error("prepared commit did not persist send-started before publication");
           const identity=durableIdentity(persisted);
-          const rootState=recoveredState(persisted);
+          // Receipt construction needs the accepted gate/source/capability provenance, while
+          // durable identity must come from the reservation reread after the prepared CAS.
+          const rootState=Object.freeze({...state,reservation:persisted}) as DispatchRequestState;
           const rootOutcome=Object.freeze({kind:"ambiguous" as const,resultDigest:authorityDigest({reservationId,phase:"reservation"})});
           reservationRoot=await publication.publishReservation({phase:"reservation",identity,state:rootState,outcome:rootOutcome,dispatchedRequestDigest:null,priorReceiptDigest:null});
         }

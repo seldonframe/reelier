@@ -6,21 +6,13 @@ import path from "node:path";
 import { generateKeyPairSync } from "node:crypto";
 import { createProfileGovernedAuthorityReceiptPublication, verifyProfileGovernedAuthorityReceipt, type ProfileGovernedAuthorityReceiptVerificationOptionsV1 } from "../../src/authority/host/profile-governed-receipt.js";
 import { loadProfileGovernanceFromOperatorTrust } from "../../src/authority/host/profile-governance-loader.js";
-import { createCertificationArtifactKeyBinding, createCertificationLifecycleAuthorityCeremony, consumeCertificationLifecycleAuthority, registerCertificationLifecycleTrustContext } from "../../src/authority/certification/lifecycle-authority.js";
 import { validateLifecycleAuthorityReceiptSigningAuthority } from "../../src/authority/host/receipt-authority.js";
 import { signJobCard } from "../../src/authority/job.js";
 import { authorityDigest } from "../../src/authority/wire.js";
-import { governanceRef, profileGovernanceFixture, sha, spki, tenant, verificationTime, writeProfileGovernanceFixture } from "./profile-governance-fixture.js";
+import { governanceRef, governedReceiptSigningFixture, profileGovernanceFixture, sha, tenant, verificationTime, writeProfileGovernanceFixture } from "./profile-governance-fixture.js";
 
 function lifecycleSigningAuthority() {
-  const ceremony = createCertificationLifecycleAuthorityCeremony();
-  const humanKey = generateKeyPairSync("ed25519");
-  const human: any = { v: "reelier.authority-key-descriptor/v1", keyId: "human_ready", role: "human-sponsor", purpose: "certification-readiness", algorithm: "ed25519", publicKeySpkiBase64: spki(humanKey.publicKey) };
-  const signedReadiness = { fixture: "readiness" }, readinessDigest = authorityDigest(signedReadiness);
-  const authorization = createCertificationArtifactKeyBinding(ceremony.opaqueHandle, { authorityCellId: "cell_1", taskId: "task_1", readinessDigest, humanDescriptor: human, humanPrivateKey: humanKey.privateKey, issuedAt: "2026-08-14T10:00:00.000Z", expiresAt: "2026-08-14T14:00:00.000Z" });
-  const material = consumeCertificationLifecycleAuthority(ceremony.opaqueHandle, authorization.binding, authorization.humanCommitment, { authorityCellId: "cell_1", taskId: "task_1", readinessDigest, descriptors: ceremony.publicDescriptors, humanDescriptor: human, now: verificationTime });
-  registerCertificationLifecycleTrustContext(material);
-  return validateLifecycleAuthorityReceiptSigningAuthority(material);
+  return validateLifecycleAuthorityReceiptSigningAuthority(governedReceiptSigningFixture(verificationTime).material);
 }
 
 test("profile-governed receipt verifies the unchanged inner authority bundle before profile edges", () => {

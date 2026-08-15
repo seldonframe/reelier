@@ -4,6 +4,7 @@ import type { AuthoritySignature, AuthoritySignaturePurpose } from "../types.js"
 import { authorityDigest } from "../wire.js";
 import { parseAuthorityKeyDescriptor, type AuthorityKeyDescriptorV1 } from "./authority.js";
 import { AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST } from "../adapter-contract.js";
+import type { JobCardTrustPinV1 } from "../host/deployment.js";
 
 const DIRECT_PURPOSES = ["authority-evidence", "authority-journal", "authority-receipt", "delegation-grant", "gate-event", "outcome-contract"] as const;
 const ARTIFACT_PURPOSES = ["compiled-capability", "pack-manifest", "source-bundle", "transport-effect"] as const;
@@ -16,7 +17,8 @@ type KeyMaterial = Readonly<{ descriptor: AuthorityKeyDescriptorV1; privateKey: 
 export type CertificationLifecycleAuthorityMaterial = Readonly<{ direct: ReadonlyMap<DirectPurpose, KeyMaterial>; artifacts: ReadonlyMap<ArtifactPurpose, KeyMaterial>; schedule: string; bindingDigest?: string; artifactAuthorization?: Readonly<{ binding: CertificationArtifactKeyBindingV1; commitment: CertificationArtifactKeyBindingCommitmentV1 }> }>;
 type CeremonyMaterial = CertificationLifecycleAuthorityMaterial;
 const handles = new WeakMap<object, CeremonyMaterial>();
-const validatedLifecycleContexts=new WeakSet<object>();
+export type CertificationLifecycleTrustContextV1=Readonly<{jobCardTrustPin:JobCardTrustPinV1;expectedAuthorityCellId:string;expectedTaskId:string;observedAt:Date}>;
+const lifecycleTrustContexts=new WeakMap<object,CertificationLifecycleTrustContextV1>();
 
 export interface CertificationArtifactKeyBindingV1 {
   readonly v: "reelier.certification-artifact-key-binding/v1";
@@ -102,18 +104,21 @@ export function consumeCertificationLifecycleAuthority(handle: CertificationLife
   return material;
 }
 
-export function verifyCertificationArtifactKeyBinding(binding: CertificationArtifactKeyBindingV1, commitment: CertificationArtifactKeyBindingCommitmentV1, input: Readonly<{ descriptors: readonly AuthorityKeyDescriptorV1[]; signedReadiness: unknown; now?: Date }>): void {
+export function verifyCertificationArtifactKeyBinding(binding: CertificationArtifactKeyBindingV1, commitment: CertificationArtifactKeyBindingCommitmentV1, input: Readonly<{ descriptors: readonly AuthorityKeyDescriptorV1[]; signedReadiness: unknown; now?: Date; expectedParentEvidenceDescriptor?: AuthorityKeyDescriptorV1; activeDescriptorDigests?: ReadonlySet<string> }>): void {
   const readinessDigest = authorityDigest(input.signedReadiness), evidence = input.descriptors.find(item => authorityDigest(item) === binding.parentEvidenceDescriptorDigest), human = input.descriptors.find(item => item.role === "human-sponsor" && item.keyId === commitment.humanSignerId);
   if (!evidence || evidence.purpose !== "authority-evidence" || !human || human.purpose !== "certification-readiness" || binding.adapterContractDigest !== AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST || commitment.adapterContractDigest !== AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST || binding.readinessDigest !== readinessDigest || commitment.readinessDigest !== readinessDigest || commitment.bindingDigest !== authorityDigest(binding)) throw new TypeError("artifact key binding trust, Adapter Contract, or readiness link is invalid");
   const { signature, ...body } = binding, { signature: humanSignature, ...humanBody } = commitment;
   if (!verifyDomain(evidence, "authority-evidence", "reelier.certification-artifact-key-binding/v1\0", authorityDigest(body), signature) || !verifyDomain(human, "certification-readiness", "reelier.certification-artifact-key-binding-commitment/v1\0", authorityDigest(humanBody), humanSignature)) throw new TypeError("artifact key binding signature is invalid");
+  if (input.expectedParentEvidenceDescriptor && (authorityDigest(input.expectedParentEvidenceDescriptor) !== binding.parentEvidenceDescriptorDigest || input.expectedParentEvidenceDescriptor.keyId !== binding.signerId)) throw new TypeError("artifact key binding parent evidence signer mismatch");
+  if (input.activeDescriptorDigests && !input.activeDescriptorDigests.has(binding.parentEvidenceDescriptorDigest)) throw new TypeError("artifact key binding parent evidence authority is inactive or revoked");
   if (binding.entries.length !== 4 || authorityDigest(binding.entries.map(item => item.artifactPurpose)) !== authorityDigest(ARTIFACT_PURPOSES) || new Set(binding.entries.map(item => item.keyId)).size !== 4 || binding.entries.some(item => item.publicKeyDigest !== publicKeyDigest(item.publicKeySpkiBase64))) throw new TypeError("artifact key binding entries are invalid");
   const now = (input.now ?? new Date(binding.issuedAt)).getTime(); if (Date.parse(binding.issuedAt) > now || Date.parse(binding.expiresAt) <= now) throw new TypeError("artifact key binding validity is invalid");
 }
 
 /** Cell-only handoff after the complete external pin has been verified. Not barrel-exported. */
-export function registerCertificationLifecycleTrustContext(material:CertificationLifecycleAuthorityMaterial):void{if(!material.artifactAuthorization||!material.bindingDigest||material.bindingDigest!==authorityDigest(material.artifactAuthorization.binding))throw new TypeError("certification lifecycle authority is not fully bound");validatedLifecycleContexts.add(material as object);}
-export function assertCertificationLifecycleTrustContext(material:CertificationLifecycleAuthorityMaterial):void{if(!validatedLifecycleContexts.has(material as object))throw new TypeError("registered certification lifecycle trust context required");}
+export function registerCertificationLifecycleTrustContext(material:CertificationLifecycleAuthorityMaterial,context:CertificationLifecycleTrustContextV1):void{if(!material.artifactAuthorization||!material.bindingDigest||material.bindingDigest!==authorityDigest(material.artifactAuthorization.binding))throw new TypeError("certification lifecycle authority is not fully bound");const observedAt=new Date(context.observedAt.getTime());if(!Number.isFinite(observedAt.getTime()))throw new TypeError("certification lifecycle trust observation is invalid");lifecycleTrustContexts.set(material as object,Object.freeze({...context,jobCardTrustPin:structuredClone(context.jobCardTrustPin),observedAt}));}
+export function assertCertificationLifecycleTrustContext(material:CertificationLifecycleAuthorityMaterial):void{if(!lifecycleTrustContexts.has(material as object))throw new TypeError("registered full-pin certification lifecycle trust context required");}
+export function certificationLifecycleTrustContext(material:CertificationLifecycleAuthorityMaterial):CertificationLifecycleTrustContextV1{assertCertificationLifecycleTrustContext(material);return lifecycleTrustContexts.get(material as object)!;}
 
 function requireMaterial(handle: CertificationLifecycleAuthorityHandle): CeremonyMaterial { const material = handles.get(handle as object); if (!material) throw new TypeError("genuine opaque certification lifecycle authority handle required"); return material; }
 function keyFor(purpose: DirectPurpose): KeyMaterial { const pair = generateKeyPairSync("ed25519"); const descriptor = parseAuthorityKeyDescriptor({ v: "reelier.authority-key-descriptor/v1", keyId: `cell_${purpose.replaceAll("-", "_")}_${randomUUID().slice(0, 8)}`, role: "authority-cell", purpose, algorithm: "ed25519", publicKeySpkiBase64: pair.publicKey.export({ type: "spki", format: "der" }).toString("base64") }); return Object.freeze({ descriptor, privateKey: pair.privateKey }); }
