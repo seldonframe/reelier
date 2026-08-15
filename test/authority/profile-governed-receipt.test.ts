@@ -1,7 +1,27 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { verifyProfileGovernedAuthorityReceipt, type ProfileGovernedAuthorityReceiptVerificationOptionsV1 } from "../../src/authority/host/profile-governed-receipt.js";
-import { profileGovernanceFixture, sha } from "./profile-governance-fixture.js";
+import { mkdtemp, mkdir, rm, symlink } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { generateKeyPairSync } from "node:crypto";
+import { createProfileGovernedAuthorityReceiptPublication, verifyProfileGovernedAuthorityReceipt, type ProfileGovernedAuthorityReceiptVerificationOptionsV1 } from "../../src/authority/host/profile-governed-receipt.js";
+import { loadProfileGovernanceFromOperatorTrust } from "../../src/authority/host/profile-governance-loader.js";
+import { createCertificationArtifactKeyBinding, createCertificationLifecycleAuthorityCeremony, consumeCertificationLifecycleAuthority, registerCertificationLifecycleTrustContext } from "../../src/authority/certification/lifecycle-authority.js";
+import { validateLifecycleAuthorityReceiptSigningAuthority } from "../../src/authority/host/receipt-authority.js";
+import { signJobCard } from "../../src/authority/job.js";
+import { authorityDigest } from "../../src/authority/wire.js";
+import { governanceRef, profileGovernanceFixture, sha, spki, tenant, verificationTime, writeProfileGovernanceFixture } from "./profile-governance-fixture.js";
+
+function lifecycleSigningAuthority() {
+  const ceremony = createCertificationLifecycleAuthorityCeremony();
+  const humanKey = generateKeyPairSync("ed25519");
+  const human: any = { v: "reelier.authority-key-descriptor/v1", keyId: "human_ready", role: "human-sponsor", purpose: "certification-readiness", algorithm: "ed25519", publicKeySpkiBase64: spki(humanKey.publicKey) };
+  const signedReadiness = { fixture: "readiness" }, readinessDigest = authorityDigest(signedReadiness);
+  const authorization = createCertificationArtifactKeyBinding(ceremony.opaqueHandle, { authorityCellId: "cell_1", taskId: "task_1", readinessDigest, humanDescriptor: human, humanPrivateKey: humanKey.privateKey, issuedAt: "2026-08-14T10:00:00.000Z", expiresAt: "2026-08-14T14:00:00.000Z" });
+  const material = consumeCertificationLifecycleAuthority(ceremony.opaqueHandle, authorization.binding, authorization.humanCommitment, { authorityCellId: "cell_1", taskId: "task_1", readinessDigest, descriptors: ceremony.publicDescriptors, humanDescriptor: human, now: verificationTime });
+  registerCertificationLifecycleTrustContext(material);
+  return validateLifecycleAuthorityReceiptSigningAuthority(material);
+}
 
 test("profile-governed receipt verifies the unchanged inner authority bundle before profile edges", () => {
   const fixture = profileGovernanceFixture();
@@ -27,4 +47,20 @@ test("durable outer identity mutations cannot become an inner receipt prior", ()
   assert.notEqual(inner, outer);
   const envelope = { receiptRef: inner, outerDigest: outer, priorReceiptDigest: inner };
   for (const field of ["receiptRef", "priorReceiptDigest"] as const) assert.notEqual({ ...envelope, [field]: outer }[field], inner);
+});
+
+test("durable governed store refuses a reservation directory redirected outside its physical root", async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-governed-store-"));
+  const outside = await mkdtemp(path.join(os.tmpdir(), "reelier-governed-outside-"));
+  t.after(() => Promise.all([rm(root, { recursive: true, force: true }), rm(outside, { recursive: true, force: true })]));
+  await mkdir(path.join(root, "governed"), { recursive: true });
+  await symlink(outside, path.join(root, "governed", "r1"), process.platform === "win32" ? "junction" : "dir");
+  const profile = await writeProfileGovernanceFixture(root);
+  const governance = await loadProfileGovernanceFromOperatorTrust({ tenant, governanceRef, expectedManifestDigest: profile.manifestDigest, expectedTrustHeadDigest: profile.manifest.trustHeadDigest, homedir: root, verificationTime });
+  const jobKey = generateKeyPairSync("ed25519");
+  const signedJobCard = signJobCard({ v: "reelier.signed-job-card/v1", jobId: "job_1", title: "Governed", taskShapeDigest: sha("1"), semanticClasses: ["record_state_set_v1"], definitionAliases: ["github_issue_labels_v1"], connectorIds: ["github"], accountIdentities: ["github:acct"], connectionDescriptorDigests: [sha("2")], adoptionCommitmentDigests: [sha("3")], sourceRefs: ["source"], audiences: ["operator"], limitsDigest: sha("4"), instructionsDigest: sha("5"), packDigests: [sha("6")], exceptionPolicy: ["ambiguous-reconcile"], coverage: "declared-surface" }, "human_job", jobKey.privateKey);
+  const deploymentSnapshot = { v: "reelier.authority-deployment-snapshot/v1" as const, tenant, jobCardDigest: authorityDigest(signedJobCard), jobCardAuthorityDigest: sha("7"), authorityStateDigest: sha("8"), connectorRegistryDigest: sha("9"), trustRootSetDigest: sha("a"), connectionDescriptorsDigest: sha("b"), connectionAdoptionsDigest: sha("c"), enforcementDigest: sha("d"), routeScopeDigest: sha("e") };
+  const publication = createProfileGovernedAuthorityReceiptPublication({ rootDir: root, governance, signedJobCard, deploymentSnapshot, expectedRouteScopeDigest: sha("e"), foundations: {} as never, signingAuthority: lifecycleSigningAuthority(), verification: {} as never });
+  const identity = { v: "reelier.durable-dispatch-publication-identity/v1" as const, reservationId: "r1", tenant: "tenant_1", requestDigest: sha("1"), capabilityDigest: sha("2"), effectDigest: sha("3"), routeAuthorityDigest: sha("4"), expectedDispatchedRequestDigest: sha("5"), reservationIntentDigest: sha("6") };
+  await assert.rejects(() => publication.loadDurableHead!({ v: "reelier.durable-dispatch-publication-query/v1", identity, ledgerState: "dispatched", sendStarted: true }), /physical|confined|link|junction|symlink|escape/i);
 });
