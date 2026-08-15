@@ -454,8 +454,11 @@ test("project continuity provenance is the digest of the installed public Contin
   await withFixture(async options => {
     await initializeAgentProject(options);
     const project = JSON.parse(await readFile(path.join(options.cwd, ".reelier", "bootstrap", "project.json"), "utf8"));
-    const declaration = await readFile(path.join(process.cwd(), "dist", "continuity", "index.d.ts"));
-    const expected = `sha256:${createHash("sha256").update(declaration).digest("hex")}`;
+    const declarationRoot = path.join(process.cwd(), "dist", "continuity");
+    const declarations = (await readdir(declarationRoot)).filter(file => file.endsWith(".d.ts")).sort();
+    const hash = createHash("sha256");
+    for (const file of declarations) hash.update(file, "utf8").update("\0").update(await readFile(path.join(declarationRoot, file))).update("\0");
+    const expected = `sha256:${hash.digest("hex")}`;
     assert.equal(project.continuityContractDigest, expected);
   });
 });
@@ -476,7 +479,7 @@ test("every durable checkpoint crash cut rolls project artifacts back without le
       const bootstrap = path.join(project, ".reelier", "bootstrap");
       assert.deepEqual((await readdir(bootstrap)).filter(name => name !== ".lock"), [], checkpoint);
       const workloadFiles = await readdir(path.join(home, ".reelier", "workloads", `agent-${index}`));
-      assert.equal(workloadFiles.filter(name => name.endsWith(".pem")).length, 1, checkpoint);
+      assert.equal(workloadFiles.filter(name => /^[0-9a-f]{16}\.pem$/.test(name)).length, 1, checkpoint);
       assert.doesNotMatch(JSON.stringify(workloadFiles), /BEGIN PRIVATE KEY|private-crash-canary/i, checkpoint);
     }
   } finally { await rm(root, { recursive: true, force: true }); }

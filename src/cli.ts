@@ -4291,6 +4291,7 @@ export async function cmdInit(args: ParsedArgs, overrides: CmdInitOverrides = {}
         ...(overrides.governance === undefined ? {} : { governance: overrides.governance }),
       });
       console.log(`Prepared '${args.positional[0]}' for observation; Path C is unavailable until independent activation.`);
+      for (const surface of report.configurationSurfaces) console.log(`MCP surface ${surface.name}: ${surface.status}${surface.detail === undefined ? "" : ` (${surface.detail})`}`);
       console.log(report.recoveryCommand);
       console.log("Managed Cell connection (after your operator provisions it): reelier authority connect --endpoint <https-url> --token-ref <opaque-ref> --cell-id <cell-id> --adapter-contract-digest <sha256:digest>");
       return 0;
