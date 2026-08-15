@@ -47,9 +47,9 @@ export async function initializeAgentProject(options: InitializeAgentProjectOpti
   const info = await lstat(bootstrapDir);
   if (!info.isDirectory() || info.isSymbolicLink()) throw new TypeError("named bootstrap directory is unsafe");
   const statePath = path.join(bootstrapDir, "state.json");
-  const existing = await readState(statePath, planDigest);
   const importedGovernance = await loadImportedGovernance(options);
   const registration = await prepareWorkloadRegistration(options.homedir, options.agentName, projectRoot);
+  const existing = await readState(statePath, planDigest);
   if (existing !== undefined && existing.completed.length === BOOTSTRAP_CHECKPOINT_IDS.length) {
     await validateCompletedArtifacts(bootstrapDir, existing);
     const report = parseBootstrapReportV1(await readJson(bootstrapDir, "report.json"));
