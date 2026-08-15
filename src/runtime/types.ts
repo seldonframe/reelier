@@ -5,6 +5,7 @@ export interface RuntimeDescriptorV1 {
   readonly adapterDigest: string;
   readonly launchMode: "local-process" | "externally-managed";
   readonly command: string | null;
+  /** Structurally safe flags/scalars/confined paths; the installed adapter validates its exact option set. */
   readonly args: readonly string[];
   readonly cwd: string | null;
   readonly connectionRef: string | null;

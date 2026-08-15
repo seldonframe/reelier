@@ -20,12 +20,12 @@
     },
     {
       "path": "runtime-descriptor.schema.json",
-      "digest": "sha256:086701c02d45986c5c5ee9e2c0e57e1c01536bd4baaa0d6dd336bcde7ca9dcd8"
+      "digest": "sha256:e3616306e6a50c33a9c3a33ffa1ca5dc9302b8503ed651215244d31bba74a177"
     },
     {
       "path": "supervisor-status.schema.json",
       "digest": "sha256:be84bfcb0ce711402ccd427c06556c81c28a1708fccb2a311d81fa6da2956afc"
     }
   ],
-  "digest": "sha256:8be3d4307c6cc265a3d1b6702b71f0ff4d09687a72e3813c5fb3df36abb9fb24"
+  "digest": "sha256:e2cdd789b8dbc375e6cee7dd6109742780d6f26c1be73f980e640907d030a8ec"
 }
