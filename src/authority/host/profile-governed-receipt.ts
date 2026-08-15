@@ -18,7 +18,7 @@ import { assertExactDataRecord } from "./profile-governance.js";
 import { admittedProfileGovernanceState, assertAdmittedProfileGovernance, type AdmittedProfileGovernanceV1 } from "./profile-governance.js";
 import { constructAuthorityReceiptBundle, validatedAuthorityReceiptSigningState, type AuthorityReceiptFoundationsV1, type ValidatedAuthorityReceiptSigningAuthorityV1 } from "./receipt-authority.js";
 import type { DispatchOutcome, DispatchPublication, DispatchRequestState, DurableDispatchPublicationHeadV1, DurableDispatchPublicationIdentityV1, DurableDispatchPublicationQueryV1 } from "./dispatch.js";
-import { lstat, mkdir, open, readdir, realpath, unlink } from "node:fs/promises";
+import { lstat, mkdir, open, readdir, realpath, unlink, type FileHandle } from "node:fs/promises";
 import { constants } from "node:fs";
 import path from "node:path";
 
@@ -57,6 +57,17 @@ function spki(key:import("node:crypto").KeyObject){return key.export({type:"spki
 type CurrentReceiptAuthority=Readonly<{signingAuthority:ValidatedAuthorityReceiptSigningAuthorityV1;jobCardTrustPin:JobCardTrustPinV1;observedAt:string}>;
 interface GovernedReceiptPublicationInputV1{readonly rootDir:string;readonly governance:AdmittedProfileGovernanceV1;readonly signedJobCard:SignedJobCardV1;readonly deploymentSnapshot:AuthorityDeploymentSnapshotV1;readonly expectedRouteScopeDigest:string;readonly foundations:Omit<AuthorityReceiptFoundationsV1,"gateEvent">;readonly signingAuthority:ValidatedAuthorityReceiptSigningAuthorityV1;readonly currentAuthority?:(capabilityDigest:string)=>CurrentReceiptAuthority;readonly verification:Omit<ProfileGovernedAuthorityReceiptVerificationOptionsV1,"now"|"priorAuthorityReceipt">;readonly portablePublication?:DispatchPublication}
 type StoredGovernedNode=Readonly<{v:"reelier.governed-receipt-store-node/v1";identity:DurableDispatchPublicationIdentityV1;phase:"reservation"|"dispatch"|"ambiguous"|"reconcile";terminalKind:null|"acknowledged"|"definitive-failure"|"ambiguous"|"reconciled";reservationReceiptRef:string;priorReceiptRef:string|null;receipt:ProfileGovernedAuthorityReceiptV1}>;
+type GovernedStoreOpenEvent=Readonly<{phase:"parent-retained"|"before-child-open"|"child-opened"|"after-child-write";root:string;governedDirectory:string;reservationDirectory:string;file:string}>;
+type GovernedStoreFilesystemBarrier=(event:GovernedStoreOpenEvent)=>Promise<void>;
+let governedStoreFilesystemBarrier:GovernedStoreFilesystemBarrier|undefined;
+
+/** Package-private deterministic race seam. Deliberately omitted from the public host barrel. */
+export function __testSetGovernedReceiptFilesystemBarrier(barrier:GovernedStoreFilesystemBarrier):()=>void{
+  if(typeof barrier!=="function")throw new TypeError("governed receipt filesystem barrier must be callable");
+  const previous=governedStoreFilesystemBarrier;
+  governedStoreFilesystemBarrier=barrier;
+  return()=>{if(governedStoreFilesystemBarrier===barrier)governedStoreFilesystemBarrier=previous;};
+}
 
 /** Package-internal governed publication. All signer callbacks remain behind the validated handle. */
 export function createProfileGovernedAuthorityReceiptPublication(input:GovernedReceiptPublicationInputV1):DispatchPublication{
@@ -85,14 +96,185 @@ export function createProfileGovernedAuthorityReceiptPublication(input:GovernedR
 
 function projectScope(route:RouteAuthoritySnapshotV1,tenant:string,definitionAlias:string):AuthorityRouteScopeV1{return parseAuthorityRouteScope({v:"reelier.authority-route-scope/v1",tenant,definitionAlias,connectorRegistrationDigest:route.connectorRegistrationDigest,operatorConfigurationDigest:route.operatorConfigurationDigest,routeDigest:route.routeDigest,providerId:route.providerId,connectorId:route.connectorId,accountId:route.accountId,providerAccountIdentity:route.providerAccountIdentity,endpointId:route.endpointId,credentialSlotId:route.credentialSlotId,sourceReadRouteDigest:route.sourceReadRouteDigest,projectionSchemaDigest:route.projectionSchemaDigest});}
 function innerRef(receipt:ProfileGovernedAuthorityReceiptV1):string{return authorityDigest(receipt.authorityReceiptBundle.receipt.value);}
-async function storeNode(root:string,node:StoredGovernedNode,existing:readonly StoredGovernedNode[]):Promise<boolean>{if(node.phase==="reservation"&&existing.length!==0){if(authorityDigest(existing[0])===authorityDigest(node))return true;throw new TypeError("governed reservation root already exists");}if(node.phase!=="reservation"&&existing.some(item=>item.priorReceiptRef===node.priorReceiptRef)){const same=existing.find(item=>item.priorReceiptRef===node.priorReceiptRef)!;if(authorityDigest(same)===authorityDigest(node))return true;throw new TypeError("governed receipt semantic CAS conflict");}const governed=path.join(root,"governed"),directory=path.join(governed,node.identity.reservationId);await mkdir(governed).catch(error=>{if((error as NodeJS.ErrnoException).code!=="EEXIST")throw error;});await assertConfinedStoreDirectory(root,governed);await mkdir(directory).catch(error=>{if((error as NodeJS.ErrnoException).code!=="EEXIST")throw error;});await assertConfinedStoreDirectory(root,directory);const anchors=await Promise.all([captureDirectoryAnchor(root),captureDirectoryAnchor(governed),captureDirectoryAnchor(directory)]),slot=node.phase==="reservation"?"root.json":`${node.priorReceiptRef!.slice(7)}.successor.json`,file=path.join(directory,slot),bytes=Buffer.from(`${JSON.stringify(node)}\n`),flags=constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|(typeof constants.O_NOFOLLOW==="number"?constants.O_NOFOLLOW:0);let created:Readonly<{dev:number;ino:number}>|undefined,handle:Awaited<ReturnType<typeof open>>|undefined;try{handle=await open(file,flags,0o600);const before=await handle.stat();created=Object.freeze({dev:before.dev,ino:before.ino});await handle.writeFile(bytes);await handle.sync();const after=await handle.stat();if(!after.isFile()||after.dev!==before.dev||after.ino!==before.ino||after.size!==bytes.length)throw new TypeError("governed receipt node identity changed during write");await handle.close();handle=undefined;for(const anchor of anchors)await assertDirectoryAnchor(anchor);const pathStat=await lstat(file);if(pathStat.isSymbolicLink()||!pathStat.isFile()||pathStat.dev!==before.dev||pathStat.ino!==before.ino||await realpath(file)!==path.resolve(file))throw new TypeError("governed receipt node escaped its anchored directory");const raw=await readConfinedNode(file);if(authorityDigest(raw)!==authorityDigest(node))throw new TypeError("governed receipt bytes changed after write");return false;}catch(error){await handle?.close().catch(()=>undefined);if((error as NodeJS.ErrnoException).code==="EEXIST"&&!created){for(const anchor of anchors)await assertDirectoryAnchor(anchor);const raw=await readConfinedNode(file);if(authorityDigest(raw)!==authorityDigest(node))throw new TypeError("governed receipt semantic CAS conflict");return true;}if(created){try{const current=await lstat(file);if(!current.isSymbolicLink()&&current.isFile()&&current.dev===created.dev&&current.ino===created.ino)await unlink(file);}catch{/* The path no longer names the artifact opened by this publication. */}}throw error;}}
-async function findIdentity(root:string,reservationId:string):Promise<DurableDispatchPublicationIdentityV1>{assertCanonicalStoreId(reservationId,"reservation");const directory=path.join(root,"governed",reservationId);await assertConfinedStoreDirectory(root,directory);const names=await readdir(directory);if(names.length===0)throw new TypeError("governed reservation root is absent");const raw=await readConfinedNode(path.join(directory,names.sort()[0]!));return raw.identity;}
-async function loadStoredChain(input:GovernedReceiptPublicationInputV1,identity:DurableDispatchPublicationIdentityV1):Promise<readonly StoredGovernedNode[]>{const directory=path.join(input.rootDir,"governed",identity.reservationId);let names:string[];try{await assertConfinedStoreDirectory(input.rootDir,directory);names=(await readdir(directory)).filter(name=>name.endsWith(".json"));}catch(error){if((error as NodeJS.ErrnoException).code==="ENOENT")return Object.freeze([]);throw error;}if(names.length===0)return Object.freeze([]);const nodes:StoredGovernedNode[]=[];for(const name of names){const raw=await readConfinedNode(path.join(directory,name));assertExactDataRecord(raw,["v","identity","phase","terminalKind","reservationReceiptRef","priorReceiptRef","receipt"],"stored governed receipt node");if(raw.v!=="reelier.governed-receipt-store-node/v1"||authorityDigest(raw.identity)!==authorityDigest(identity))throw new TypeError("stored governed receipt identity mismatch");nodes.push(raw);}const roots=nodes.filter(node=>node.phase==="reservation"&&node.priorReceiptRef===null);if(roots.length!==1)throw new TypeError("governed receipt store has no unique root");const ordered=[roots[0]!];while(ordered.length<nodes.length){const prior=innerRef(ordered.at(-1)!.receipt),next=nodes.filter(node=>node.priorReceiptRef===prior);if(next.length!==1)throw new TypeError("governed receipt store is forked or incomplete");ordered.push(next[0]!);}let prior:AuthorityReceipt|undefined;for(const node of ordered){verifyProfileGovernedAuthorityReceipt(node.receipt,{...input.verification,now:new Date(),...(prior?{priorAuthorityReceipt:prior}:{})});if(node.reservationReceiptRef!==innerRef(ordered[0]!.receipt))throw new TypeError("governed receipt root identity mismatch");prior=node.receipt.authorityReceiptBundle.receipt.value;}return Object.freeze(ordered);}
-async function readConfinedNode(file:string):Promise<StoredGovernedNode>{const flags=constants.O_RDONLY|(typeof constants.O_NOFOLLOW==="number"?constants.O_NOFOLLOW:0),handle=await open(file,flags);try{const before=await handle.stat();if(!before.isFile())throw new TypeError("governed receipt node is not a regular file");const bytes=await handle.readFile(),after=await handle.stat(),pathStat=await lstat(file);if(pathStat.isSymbolicLink()||!pathStat.isFile()||before.dev!==after.dev||before.ino!==after.ino||before.dev!==pathStat.dev||before.ino!==pathStat.ino||before.size!==after.size||before.mtimeMs!==after.mtimeMs||await realpath(file)!==path.resolve(file))throw new TypeError("governed receipt node identity changed during read");return JSON.parse(bytes.toString("utf8")) as StoredGovernedNode;}finally{await handle.close();}}
+async function storeNode(root:string,node:StoredGovernedNode,existing:readonly StoredGovernedNode[]):Promise<boolean>{
+  if(node.phase==="reservation"&&existing.length!==0){
+    if(authorityDigest(existing[0])===authorityDigest(node))return true;
+    throw new TypeError("governed reservation root already exists");
+  }
+  if(node.phase!=="reservation"&&existing.some(item=>item.priorReceiptRef===node.priorReceiptRef)){
+    const same=existing.find(item=>item.priorReceiptRef===node.priorReceiptRef)!;
+    if(authorityDigest(same)===authorityDigest(node))return true;
+    throw new TypeError("governed receipt semantic CAS conflict");
+  }
+  const governed=path.join(root,"governed"),directory=path.join(governed,node.identity.reservationId);
+  await mkdir(governed).catch(error=>{if((error as NodeJS.ErrnoException).code!=="EEXIST")throw error;});
+  await assertConfinedStoreDirectory(root,governed);
+  await mkdir(directory).catch(error=>{if((error as NodeJS.ErrnoException).code!=="EEXIST")throw error;});
+  await assertConfinedStoreDirectory(root,directory);
+  const anchors=await captureStoreAnchors(root,governed,directory);
+  const slot=node.phase==="reservation"?"root.json":`${node.priorReceiptRef!.slice(7)}.successor.json`;
+  const file=path.join(directory,slot),bytes=Buffer.from(`${JSON.stringify(node)}\n`);
+  try{return await createAnchoredNode(anchors,file,slot,bytes,node);}
+  finally{await closeStoreAnchors(anchors);}
+}
+async function findIdentity(root:string,reservationId:string):Promise<DurableDispatchPublicationIdentityV1>{
+  assertCanonicalStoreId(reservationId,"reservation");
+  const governed=path.join(root,"governed"),directory=path.join(governed,reservationId);
+  await assertConfinedStoreDirectory(root,directory);
+  const anchors=await captureStoreAnchors(root,governed,directory);
+  try{
+    const directoryPath=await anchoredDirectoryPath(anchors),names=await readdir(directoryPath);
+    if(names.length===0)throw new TypeError("governed reservation root is absent");
+    const raw=await readConfinedNode(path.join(directoryPath,names.sort()[0]!),path.join(directory,names.sort()[0]!));
+    return raw.identity;
+  }finally{await closeStoreAnchors(anchors);}
+}
+
+async function loadStoredChain(input:GovernedReceiptPublicationInputV1,identity:DurableDispatchPublicationIdentityV1):Promise<readonly StoredGovernedNode[]>{
+  const governed=path.join(input.rootDir,"governed"),directory=path.join(governed,identity.reservationId);
+  let anchors:StoreAnchors;
+  try{
+    await assertConfinedStoreDirectory(input.rootDir,directory);
+    anchors=await captureStoreAnchors(input.rootDir,governed,directory);
+  }catch(error){if((error as NodeJS.ErrnoException).code==="ENOENT")return Object.freeze([]);throw error;}
+  try{
+    const directoryPath=await anchoredDirectoryPath(anchors),names=(await readdir(directoryPath)).filter(name=>name.endsWith(".json"));
+    if(names.length===0)return Object.freeze([]);
+    const nodes:StoredGovernedNode[]=[];
+    for(const name of names){
+      const raw=await readConfinedNode(path.join(directoryPath,name),path.join(directory,name));
+      assertExactDataRecord(raw,["v","identity","phase","terminalKind","reservationReceiptRef","priorReceiptRef","receipt"],"stored governed receipt node");
+      if(raw.v!=="reelier.governed-receipt-store-node/v1"||authorityDigest(raw.identity)!==authorityDigest(identity))throw new TypeError("stored governed receipt identity mismatch");
+      nodes.push(raw);
+    }
+    const roots=nodes.filter(node=>node.phase==="reservation"&&node.priorReceiptRef===null);
+    if(roots.length!==1)throw new TypeError("governed receipt store has no unique root");
+    const ordered=[roots[0]!];
+    while(ordered.length<nodes.length){
+      const prior=innerRef(ordered.at(-1)!.receipt),next=nodes.filter(node=>node.priorReceiptRef===prior);
+      if(next.length!==1)throw new TypeError("governed receipt store is forked or incomplete");
+      ordered.push(next[0]!);
+    }
+    let prior:AuthorityReceipt|undefined;
+    for(const node of ordered){
+      verifyProfileGovernedAuthorityReceipt(node.receipt,{...input.verification,now:new Date(),...(prior?{priorAuthorityReceipt:prior}:{})});
+      if(node.reservationReceiptRef!==innerRef(ordered[0]!.receipt))throw new TypeError("governed receipt root identity mismatch");
+      prior=node.receipt.authorityReceiptBundle.receipt.value;
+    }
+    return Object.freeze(ordered);
+  }finally{await closeStoreAnchors(anchors);}
+}
+
+async function readConfinedNode(file:string,canonicalFile:string=path.resolve(file)):Promise<StoredGovernedNode>{
+  const flags=constants.O_RDONLY|(typeof constants.O_NOFOLLOW==="number"?constants.O_NOFOLLOW:0),handle=await open(file,flags);
+  try{
+    const before=await handle.stat();
+    if(!before.isFile())throw new TypeError("governed receipt node is not a regular file");
+    const bytes=await handle.readFile(),after=await handle.stat(),pathStat=await lstat(file);
+    if(pathStat.isSymbolicLink()||!pathStat.isFile()||before.dev!==after.dev||before.ino!==after.ino||before.dev!==pathStat.dev||before.ino!==pathStat.ino||before.size!==after.size||before.mtimeMs!==after.mtimeMs||await realpath(file)!==canonicalFile)throw new TypeError("governed receipt node identity changed during read");
+    return JSON.parse(bytes.toString("utf8")) as StoredGovernedNode;
+  }finally{await handle.close();}
+}
 async function assertConfinedStoreDirectory(root:string,directory:string):Promise<void>{const resolvedRoot=path.resolve(root);if(await realpath(resolvedRoot)!==resolvedRoot)throw new TypeError("governed receipt physical root is not canonical");let current=resolvedRoot;for(const part of path.relative(resolvedRoot,directory).split(path.sep)){current=path.join(current,part);const stat=await lstat(current);if(!stat.isDirectory()||stat.isSymbolicLink()||await realpath(current)!==current)throw new TypeError("governed receipt directory link or junction escape is prohibited");}}
-type DirectoryAnchor=Readonly<{path:string;dev:number;ino:number;canonical:string}>;
-async function captureDirectoryAnchor(directory:string):Promise<DirectoryAnchor>{const resolved=path.resolve(directory),stat=await lstat(resolved),canonical=await realpath(resolved);if(!stat.isDirectory()||stat.isSymbolicLink()||canonical!==resolved)throw new TypeError("governed receipt directory is not physically canonical");return Object.freeze({path:resolved,dev:stat.dev,ino:stat.ino,canonical});}
-async function assertDirectoryAnchor(anchor:DirectoryAnchor):Promise<void>{const stat=await lstat(anchor.path),canonical=await realpath(anchor.path);if(!stat.isDirectory()||stat.isSymbolicLink()||stat.dev!==anchor.dev||stat.ino!==anchor.ino||canonical!==anchor.canonical)throw new TypeError("governed receipt directory identity changed during publication");}
+type DirectoryAnchor={readonly path:string;readonly dev:number;readonly ino:number;readonly canonical:string;readonly handle?:FileHandle};
+type StoreAnchors=Readonly<{root:DirectoryAnchor;governed:DirectoryAnchor;reservation:DirectoryAnchor}>;
+
+async function captureDirectoryAnchor(directory:string):Promise<DirectoryAnchor>{
+  const resolved=path.resolve(directory),stat=await lstat(resolved),canonical=await realpath(resolved);
+  if(!stat.isDirectory()||stat.isSymbolicLink()||canonical!==resolved)throw new TypeError("governed receipt directory is not physically canonical");
+  let handle:FileHandle|undefined;
+  if(process.platform==="linux"){
+    const flags=constants.O_RDONLY|constants.O_DIRECTORY|(typeof constants.O_NOFOLLOW==="number"?constants.O_NOFOLLOW:0);
+    handle=await open(resolved,flags);
+    const opened=await handle.stat();
+    if(!opened.isDirectory()||opened.dev!==stat.dev||opened.ino!==stat.ino){await handle.close();throw new TypeError("governed receipt directory changed before retention");}
+  }
+  return{path:resolved,dev:stat.dev,ino:stat.ino,canonical,...(handle?{handle}:{})};
+}
+
+async function captureStoreAnchors(root:string,governed:string,reservation:string):Promise<StoreAnchors>{
+  const captured:DirectoryAnchor[]=[];
+  try{
+    for(const directory of [root,governed,reservation])captured.push(await captureDirectoryAnchor(directory));
+    return Object.freeze({root:captured[0]!,governed:captured[1]!,reservation:captured[2]!});
+  }catch(error){await Promise.all(captured.map(anchor=>anchor.handle?.close().catch(()=>undefined)));throw error;}
+}
+
+async function closeStoreAnchors(anchors:StoreAnchors):Promise<void>{
+  await Promise.all([anchors.reservation.handle,anchors.governed.handle,anchors.root.handle].filter((handle):handle is FileHandle=>Boolean(handle)).map(handle=>handle.close()));
+}
+
+async function assertDirectoryAnchor(anchor:DirectoryAnchor):Promise<void>{
+  const stat=await lstat(anchor.path),canonical=await realpath(anchor.path);
+  if(!stat.isDirectory()||stat.isSymbolicLink()||stat.dev!==anchor.dev||stat.ino!==anchor.ino||canonical!==anchor.canonical)throw new TypeError("governed receipt directory identity changed during publication");
+  if(anchor.handle){const opened=await anchor.handle.stat();if(!opened.isDirectory()||opened.dev!==anchor.dev||opened.ino!==anchor.ino)throw new TypeError("governed receipt retained directory identity changed");}
+}
+
+async function createAnchoredNode(anchors:StoreAnchors,canonicalFile:string,slot:string,bytes:Buffer,node:StoredGovernedNode):Promise<boolean>{
+  const event=(phase:GovernedStoreOpenEvent["phase"]):GovernedStoreOpenEvent=>Object.freeze({phase,root:anchors.root.path,governedDirectory:anchors.governed.path,reservationDirectory:anchors.reservation.path,file:canonicalFile});
+  await governedStoreFilesystemBarrier?.(event("parent-retained"));
+  await governedStoreFilesystemBarrier?.(event("before-child-open"));
+  const fallback=process.platform!=="linux"&&Boolean(governedStoreFilesystemBarrier);
+  const anchoredDirectory=await anchoredDirectoryPath(anchors),file=path.join(anchoredDirectory,slot);
+  const flags=constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|(typeof constants.O_NOFOLLOW==="number"?constants.O_NOFOLLOW:0);
+  let created:Readonly<{dev:number;ino:number}>|undefined,handle:FileHandle|undefined;
+  try{
+    handle=await open(file,flags,0o600);
+    const before=await handle.stat();
+    created=Object.freeze({dev:before.dev,ino:before.ino});
+    if(fallback){
+      await handle.writeFile(bytes);await handle.sync();await handle.close();handle=undefined;
+      await governedStoreFilesystemBarrier!(event("child-opened"));
+    }else{
+      await governedStoreFilesystemBarrier?.(event("child-opened"));
+      await handle.writeFile(bytes);await handle.sync();
+    }
+    const after=handle?await handle.stat():await lstat(await currentNodePath(anchors,slot));
+    if(!after.isFile()||after.dev!==before.dev||after.ino!==before.ino||after.size!==bytes.length)throw new TypeError("governed receipt node identity changed during write");
+    await handle?.close();handle=undefined;
+    await governedStoreFilesystemBarrier?.(event("after-child-write"));
+    for(const anchor of [anchors.root,anchors.governed,anchors.reservation])await assertDirectoryAnchor(anchor);
+    const currentFile=await currentNodePath(anchors,slot),pathStat=await lstat(currentFile);
+    if(pathStat.isSymbolicLink()||!pathStat.isFile()||pathStat.dev!==before.dev||pathStat.ino!==before.ino||await realpath(currentFile)!==canonicalFile)throw new TypeError("governed receipt node escaped its anchored directory");
+    const raw=await readConfinedNode(currentFile,canonicalFile);
+    if(authorityDigest(raw)!==authorityDigest(node))throw new TypeError("governed receipt bytes changed after write");
+    return false;
+  }catch(error){
+    await handle?.close().catch(()=>undefined);
+    if((error as NodeJS.ErrnoException).code==="EEXIST"&&!created){
+      for(const anchor of [anchors.root,anchors.governed,anchors.reservation])await assertDirectoryAnchor(anchor);
+      const raw=await readConfinedNode(await currentNodePath(anchors,slot),canonicalFile);
+      if(authorityDigest(raw)!==authorityDigest(node))throw new TypeError("governed receipt semantic CAS conflict");
+      return true;
+    }
+    if(created){
+      try{
+        const currentFile=await currentNodePath(anchors,slot),current=await lstat(currentFile);
+        if(!current.isSymbolicLink()&&current.isFile()&&current.dev===created.dev&&current.ino===created.ino)await unlink(currentFile);
+      }catch{/* The anchored slot no longer names the artifact opened by this publication. */}
+    }
+    throw error;
+  }
+}
+
+async function anchoredDirectoryPath(anchors:StoreAnchors):Promise<string>{
+  if(anchors.reservation.handle)return`/proc/self/fd/${anchors.reservation.handle.fd}`;
+  if(!governedStoreFilesystemBarrier)return anchors.reservation.path;
+  const root=await locateDirectoryAnchor(anchors.root,path.dirname(anchors.root.path));
+  const governed=await locateDirectoryAnchor(anchors.governed,root);
+  return locateDirectoryAnchor(anchors.reservation,governed);
+}
+
+async function currentNodePath(anchors:StoreAnchors,slot:string):Promise<string>{return path.join(await anchoredDirectoryPath(anchors),slot);}
+
+async function locateDirectoryAnchor(anchor:DirectoryAnchor,parent:string):Promise<string>{
+  for(const name of await readdir(parent)){
+    const candidate=path.join(parent,name);
+    try{const stat=await lstat(candidate);if(stat.isDirectory()&&!stat.isSymbolicLink()&&stat.dev===anchor.dev&&stat.ino===anchor.ino)return candidate;}
+    catch{/* A deterministic test mutation may move the candidate between listing and stat. */}
+  }
+  throw new TypeError("governed receipt retained directory is unavailable");
+}
 function assertCanonicalStoreId(value:unknown,label:string):asserts value is string{if(typeof value!=="string"||!/^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/.test(value)||value==="."||value===".."||/%(?:2e|2f|5c)/iu.test(value))throw new TypeError(`durable publication ${label} identity is not canonical`);}
 function physicalReservationId(value:string):string{return /^sha256:[0-9a-f]{64}$/.test(value)?`reservation_${value.slice(7)}`:value;}
 function assertDurableIdentity(value:DurableDispatchPublicationIdentityV1,expectedTenant?:string):void{assertExactDataRecord(value,["v","reservationId","tenant","requestDigest","capabilityDigest","effectDigest","routeAuthorityDigest","expectedDispatchedRequestDigest","reservationIntentDigest"],"durable publication identity");assertCanonicalStoreId(value.reservationId,"reservation");assertCanonicalStoreId(value.tenant,"tenant");if(value.v!=="reelier.durable-dispatch-publication-identity/v1"||expectedTenant!==undefined&&value.tenant!==expectedTenant||[value.requestDigest,value.capabilityDigest,value.effectDigest,value.routeAuthorityDigest,value.expectedDispatchedRequestDigest,value.reservationIntentDigest].some(item=>!/^sha256:(?!0{64}$)[0-9a-f]{64}$/.test(item)))throw new TypeError("durable publication identity is invalid");}
