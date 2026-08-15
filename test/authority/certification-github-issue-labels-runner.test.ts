@@ -79,6 +79,48 @@ test("real Cell permit, gate reservation, exact plan and budget precede one fixe
   } finally { await f.close(); }
 });
 
+test("each lifecycle publication refreshes the Cell-owned full pin before signing or storing", async () => {
+  const f = await createGitHubIssueLabelsFixture("normal");
+  try {
+    const first = await f.runner.run({ bearerToken: f.credential.token, requestId: "request_before_evidence_revocation" });
+    assert.equal(first.status, "acknowledged");
+    assert.equal(first.providerWrites, 1);
+
+    const receiptRoot = path.join(f.initialized.workspace, "authority", "github-label-runner", "receipts");
+    const countReceiptFiles = async () => {
+      let count = 0;
+      for (const directory of ["local", "portable", "extensions"]) {
+        const target = path.join(receiptRoot, directory);
+        try { count += (await readdir(target)).filter(name => name.endsWith(".json")).length; }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+      }
+      return count;
+    };
+    const receiptsBefore = await countReceiptFiles();
+    const evidence = f.pin.keyDescriptors.find((item: any) => item.purpose === "authority-evidence");
+    assert.ok(evidence);
+    const prior = f.pin.currentTrustEvents.at(-1)!;
+    const revoke = {
+      v: "reelier.authority-trust-event/v1",
+      eventId: `trust_revoke_${"e".repeat(12)}`,
+      sequence: prior.sequence + 1,
+      action: "revoke",
+      keyDescriptorDigest: authorityDigest(evidence),
+      occurredAt: "2026-08-11T20:09:00.000Z",
+      previousEventDigest: authorityDigest(prior),
+    };
+    await writeFile(path.join(f.root, "operator-current-trust.json"), `${JSON.stringify({ ...f.pin, currentTrustEvents: [...f.pin.currentTrustEvents, revoke] })}\n`);
+
+    await assert.rejects(
+      () => f.runner.run({ bearerToken: f.credential.token, requestId: "request_after_evidence_revocation" }),
+      /revok|inactive|current trust|evidence/i,
+    );
+    assert.equal(await countReceiptFiles(), receiptsBefore, "no signature-backed receipt or extension may be stored");
+    const status = await f.runner.status({ bearerToken: f.credential.token, requestId: "request_after_evidence_revocation" });
+    assert.equal(status.providerWrites, 0, "the provider effect boundary must remain untouched");
+  } finally { await f.close(); }
+});
+
 for (const mode of ["source-drift", "effect-drift"] as const) test(`${mode} refuses with zero writes and no budget consumption`, async () => { const f = await createGitHubIssueLabelsFixture(mode); try { const result = await f.runner.run({ bearerToken: f.credential.token, requestId: `request_${mode}` }); assert.equal(result.status, "refused"); assert.equal(result.providerWrites, 0); const budget = await f.delegation.budget.get(f.activation.allocationId); assert.equal(budget?.consumed, 0); assert.equal(budget?.remaining, 2); } finally { await f.close(); } });
 
 for (const mode of ["provider-503", "accessor-response"] as const) test(`${mode} is never acknowledged`, async () => { const f = await createGitHubIssueLabelsFixture(mode); try { const result = await f.runner.run({ bearerToken: f.credential.token, requestId: `request_${mode}` }); assert.notEqual(result.status, "acknowledged"); assert.equal(result.success, false); assert.equal(result.providerWrites, 1); } finally { await f.close(); } });

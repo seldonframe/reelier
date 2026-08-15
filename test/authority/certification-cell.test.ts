@@ -17,7 +17,6 @@ import { createCertificationArtifactKeyBinding, createCertificationLifecycleAuth
 import { __testSetAuthorityCellHostPlatform } from "../../src/authority/host/platform.js";
 import { writeCertificationInputManifests } from "./certification-input-fixture.js";
 import { profileGovernanceFixture } from "./profile-governance-fixture.js";
-import { validateLifecycleAuthorityReceiptSigningAuthority } from "../../src/authority/host/receipt-authority.js";
 
 const at = "2026-08-11T20:00:00.000Z";
 const expiry = "2026-08-11T21:00:00.000Z";
@@ -169,20 +168,5 @@ test("host runtime owns the immutable trust path and activation only commits its
     await assert.rejects(() => host.verifyDispatchReadiness({ scenario: "github-issue-labels", bearerToken: credential.token }), /trust.*path|commitment|substitut/i);
     assert.equal("activateCertificationRootTask" in cell, false);
     assert.equal("verifyCertificationDispatchReadiness" in cell, false);
-  } finally { await rm(f.root, { recursive: true, force: true }); }
-});
-
-test("the Cell hands the sole receipt validator a fresh full pin and revocation makes the startup lifecycle handle stale", async () => {
-  const f = await fixture();
-  try {
-    const authority = cell.certificationCellHostInternalState(f.host).hermeticGitHubAuthority();
-    const evidence = authority.keyDescriptors.find(item => item.purpose === "authority-evidence")!;
-    const prior = f.pin.currentTrustEvents.at(-1)!;
-    const observedAt = "2026-08-11T20:12:00.000Z";
-    const revoke = { v: "reelier.authority-trust-event/v1", eventId: `trust_revoke_${"e".repeat(12)}`, sequence: prior.sequence + 1, action: "revoke", keyDescriptorDigest: authorityDigest(evidence), occurredAt: observedAt, previousEventDigest: authorityDigest(prior) };
-    const refreshedPin = { ...f.pin, currentTrustEvents: [...f.pin.currentTrustEvents, revoke] };
-    await writeFile(f.currentTrustPinPath, `${JSON.stringify(refreshedPin)}\n`);
-    const validate = validateLifecycleAuthorityReceiptSigningAuthority as any;
-    assert.throws(() => validate(authority.lifecycle, { jobCardTrustPin: refreshedPin, expectedAuthorityCellId: f.initialized.identifiers.authorityCellId, expectedTaskId: f.initialized.identifiers.taskId, observedAt: new Date(observedAt) }), /revok|inactive|stale|current trust/i);
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
