@@ -143,6 +143,28 @@ test("named init leaves MCP host configuration byte-identical", async () => {
   });
 });
 
+test("named init does not spawn a package manager or any other process", async () => {
+  await withTempDir(async root => {
+    const fakeNpm = path.join(root, "fake-npm.mjs");
+    const marker = path.join(root, "spawned.txt");
+    await writeFile(fakeNpm, [
+      'import { writeFileSync } from "node:fs";',
+      `writeFileSync(${JSON.stringify(marker)}, "spawned\\n");`,
+      'process.stdout.write(JSON.stringify([{ files: [{ path: "package.json" }] }]));',
+    ].join("\n"));
+    const previous = process.env.npm_execpath;
+    process.env.npm_execpath = fakeNpm;
+    try {
+      const { result } = await capture(() => cmdInit(named("no-spawn-agent"), { cwd: root, homedir: root, dependencies: localDependencies() }));
+      assert.equal(result, 0);
+      await assert.rejects(readFile(marker, "utf8"), { code: "ENOENT" });
+    } finally {
+      if (previous === undefined) delete process.env.npm_execpath;
+      else process.env.npm_execpath = previous;
+    }
+  });
+});
+
 test("reelier init rejects more than one agent name", async () => {
   const result = await capture(() => cmdInit({ ...named("one"), positional: ["one", "two"] }));
   assert.equal(result.result, 1);

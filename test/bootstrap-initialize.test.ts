@@ -1,8 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { authorityDigest } from "../src/authority/wire.js";
 import { computeInstalledBuildDigest } from "../src/bootstrap/build-identity.js";
 import { initializeAgentProject, type InitializeAgentProjectOptions } from "../src/bootstrap/initialize.js";
 
@@ -50,11 +52,12 @@ test("minimal named preparation freezes the exact descriptor, honest report, and
 test("an orphan lock is recovered only when its closed journal and exact plan are valid", async () => {
   await withFixture(async options => {
     await assert.rejects(() => initializeAgentProject({ ...options, interruptAfterState: "prepared" }), /interrupted/i);
-    const bootstrap = path.join(options.cwd, ".reelier", "bootstrap");
-    const lockPath = path.join(bootstrap, ".lock");
+    // The prior call has returned and no longer owns anything, even though a
+    // diagnostic PID in its residue necessarily names this still-live test
+    // process. PID liveness must not turn valid crash recovery into a refusal.
+    const lockPath = path.join(options.cwd, ".reelier", "bootstrap", ".lock");
     const lock = JSON.parse(await readFile(lockPath, "utf8"));
-    await writeFile(lockPath, `${JSON.stringify({ ...lock, pid: 2147483647 })}\n`);
-
+    await writeFile(lockPath, `${JSON.stringify({ ...lock, pid: process.pid })}\n`);
     const resumed = await initializeAgentProject(options);
     assert.equal(resumed.state, "complete");
     assert.equal((await committedFiles(options.cwd)).files.length, 4);
@@ -67,6 +70,87 @@ test("an orphan lock is recovered only when its closed journal and exact plan ar
     const before = await readdir(bootstrap);
     await assert.rejects(() => initializeAgentProject(options), /orphan|journal|recovery/i);
     assert.deepEqual(await readdir(bootstrap), before);
+  });
+});
+
+test("restart refuses a self-consistent rewrite of staged bytes instead of adopting it", async () => {
+  await withFixture(async options => {
+    await assert.rejects(() => initializeAgentProject({ ...options, interruptAfterState: "prepared" }), /interrupted/i);
+    const bootstrap = path.join(options.cwd, ".reelier", "bootstrap");
+    const journalPath = path.join(bootstrap, "transaction.json");
+    const journal = JSON.parse(await readFile(journalPath, "utf8"));
+    const staged = path.join(bootstrap, "staging", journal.transactionId);
+    const commandPath = path.join(staged, "recovery-command.txt");
+    const checkpointPath = path.join(staged, "checkpoint.json");
+    const changedCommand = "npx attacker-controlled up\n";
+    await writeFile(commandPath, changedCommand);
+    const checkpoint = JSON.parse(await readFile(checkpointPath, "utf8"));
+    checkpoint.artifacts = checkpoint.artifacts.map((entry: { name: string; digest: string }) => entry.name === "recovery-command.txt"
+      ? { ...entry, digest: `sha256:${createHash("sha256").update(changedCommand).digest("hex")}` }
+      : entry);
+    await writeFile(checkpointPath, `${JSON.stringify(checkpoint, null, 2)}\n`);
+    journal.checkpointDigest = authorityDigest(checkpoint);
+    await writeFile(journalPath, `${JSON.stringify(journal, null, 2)}\n`);
+
+    const before = await readFile(commandPath, "utf8");
+    await assert.rejects(() => initializeAgentProject(options), /checkpoint|artifact|plan|drift/i);
+    assert.equal(await readFile(commandPath, "utf8"), before);
+    await assert.rejects(readFile(path.join(bootstrap, "current.json"), "utf8"), { code: "ENOENT" });
+  });
+});
+
+test("a stale route snapshot is reported as unknown instead of being pinned", async () => {
+  await withFixture(async options => {
+    const bootstrap = path.join(options.cwd, ".reelier", "bootstrap");
+    await mkdir(bootstrap, { recursive: true });
+    await writeFile(path.join(bootstrap, "route-coverage.json"), `${JSON.stringify([{
+      v: "reelier.route-coverage/v1",
+      routeId: `route_${"1".repeat(64)}`,
+      hostId: "codex",
+      discoverySource: "host-config",
+      transport: "mcp-stdio",
+      observation: "observed",
+      replay: "candidate",
+      outcome: "unknown",
+      enforcement: "absent",
+      observedAt: "2020-01-01T00:00:00.000Z",
+      freshUntil: "2020-01-01T00:01:00.000Z",
+      evidenceDigest: `sha256:${"2".repeat(64)}`,
+      topologyEvidenceDigest: null,
+      evidenceRefs: [],
+      reasonCodes: [],
+    }], null, 2)}\n`);
+
+    await initializeAgentProject(options);
+    const { generation } = await committedFiles(options.cwd);
+    const project = JSON.parse(await readFile(path.join(bootstrap, "generations", generation, "project.json"), "utf8"));
+    assert.equal(project.routeSnapshotDigest, null);
+  });
+});
+
+test("a held project lock refuses before mutable route or journal inspection", async () => {
+  await withFixture(async options => {
+    const bootstrap = path.join(options.cwd, ".reelier", "bootstrap");
+    await mkdir(bootstrap, { recursive: true });
+    await writeFile(path.join(bootstrap, "route-coverage.json"), "not-json\n");
+    await writeFile(path.join(bootstrap, ".lock"), `${JSON.stringify({
+      v: "reelier.bootstrap-lock/v2", pid: process.pid, ownerToken: "a".repeat(64), transactionId: "b".repeat(32),
+    })}\n`);
+
+    await assert.rejects(() => initializeAgentProject(options), /busy|lock owner/i);
+    assert.equal(await readFile(path.join(bootstrap, "route-coverage.json"), "utf8"), "not-json\n");
+    await assert.rejects(readFile(path.join(bootstrap, "transaction.json"), "utf8"), { code: "ENOENT" });
+  });
+});
+
+test("a final-reread fault never leaves or returns a completed project", async () => {
+  await withFixture(async options => {
+    const injected = { ...options, failAt: "final-reread" } as InitializeAgentProjectOptions & { failAt: "final-reread" };
+    await assert.rejects(() => initializeAgentProject(injected), /final reread|injected/i);
+    const bootstrap = path.join(options.cwd, ".reelier", "bootstrap");
+    const journal = JSON.parse(await readFile(path.join(bootstrap, "transaction.json"), "utf8"));
+    assert.notEqual(journal.state, "complete");
+    await assert.rejects(readFile(path.join(bootstrap, "current.json"), "utf8"), { code: "ENOENT" });
   });
 });
 
