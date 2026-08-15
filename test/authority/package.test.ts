@@ -61,7 +61,7 @@ test("CI keeps both required matrix contexts failing when authority pack prerequ
   const firstDistTestPosition = testJob.indexOf("dist-test/");
   assert.ok(compilePosition > 0 && compilePosition < firstDistTestPosition, "test checkout compiles before the first dist-test invocation");
   assert.match(testJob.slice(compilePosition, firstDistTestPosition), /run: npx tsc -p tsconfig\.test\.json --pretty false/);
-  assert.match(testJob, /if \[ '\$\{\{ matrix\.os \}\}' = 'ubuntu-latest' \]; then timeout[^\n]*npm test/);
+  assert.match(testJob, /if \[ '\$\{\{ matrix\.os \}\}' = 'ubuntu-latest' \]; then (?:[A-Z0-9_]+=1 )?timeout[^\n]*npm test/);
   assert.match(testJob, /else node --test --test-concurrency=1 dist-test\/test\/authority\/package\.test\.js dist-test\/test\/authority\/linux-authority-cell\.test\.js dist-test\/test\/authority\/authority-cell-connection\.test\.js dist-test\/test\/authority\/certification-portable-evidence\.test\.js/);
 });
 
