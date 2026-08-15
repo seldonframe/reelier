@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { generateKeyPairSync } from "node:crypto";
 import { createDispatchCoordinator } from "reelier/authority/host";
 import type {
   DurableDispatchPublicationHeadV1,
@@ -7,6 +8,8 @@ import type {
   DurableDispatchPublicationQueryV1,
 } from "../../src/authority/host/dispatch.js";
 import { sha } from "./profile-governance-fixture.js";
+import { authorityDigest } from "../../src/authority/wire.js";
+import { signAuthorityDigest } from "../../src/authority/crypto.js";
 // @ts-ignore built imports share opaque capability brands with the public package under test.
 import { createDispatchCommitLease, createPreparedDispatch } from "../../../dist/authority/host/prepared-dispatch.js";
 // @ts-ignore built helper shares the public package's projection contract.
@@ -196,4 +199,70 @@ test("prepared dispatch carries accepted gate provenance into the durable reserv
   const outcome = await coordinator.dispatch(createReservedDispatchHandle(state));
   assert.equal(outcome.kind, "acknowledged");
   assert.deepEqual(order.slice(0, 2), ["reservation", "provider"]);
+});
+
+test("a stale colluding revalidator cannot cross credential, prepare, store, or provider boundaries", async () => {
+  const generation = sha("1"), staleGeneration = sha("2");
+  const expiresAt = new Date(Date.now() + 60_000).toISOString();
+  const projection = { v: "reelier.materialized-http-request/v1" as const, method: "POST" as const, origin: "https://provider.example", normalizedPath: "/write", normalizedQuery: "", reviewedHeaders: {}, bodyDigest: sha("3") };
+  const materializedRequestDigest = materializedHttpRequestDigest(projection);
+  const identityKeys = generateKeyPairSync("ed25519");
+  const identityBody = {
+    v: "reelier.authenticated-provider-identity/v1" as const,
+    providerId: "github" as const,
+    credentialSlotId: "slot_1",
+    slotInstanceId: "instance_1",
+    slotVersion: "version_1",
+    slotExpiresAt: expiresAt,
+    providerAccountId: "account_1",
+    providerLogin: "account_1",
+    routeDigest: sha("4"),
+    observedAt: new Date().toISOString(),
+  };
+  const identity = Object.freeze({
+    ...identityBody,
+    signerId: "identity_1",
+    signature: signAuthorityDigest(identityKeys.privateKey, "authority-evidence", authorityDigest(identityBody)),
+  });
+  const routeAuthority = Object.freeze({
+    v: "reelier.route-authority-snapshot/v1" as const,
+    connectorRegistrationDigest: sha("5"), operatorConfigurationDigest: sha("6"), routeDigest: identityBody.routeDigest,
+    providerId: "github", connectorId: "github", accountId: "account_1", providerAccountIdentity: "github:account_1",
+    endpointId: "write", credentialSlotId: identityBody.credentialSlotId, slotInstanceId: identityBody.slotInstanceId,
+    slotVersion: identityBody.slotVersion, authenticatedProviderIdentityDigest: authorityDigest(identityBody),
+    sourceReadRouteDigest: sha("7"), projectionSchemaDigest: sha("8"), expectedMaterializedRequestDigest: materializedRequestDigest,
+    authorityGeneration: generation, authorityExpiresAt: expiresAt,
+  });
+  let persisted: any = {
+    reservationId: "reservation_stale_generation",
+    state: "reserved",
+    intent: { tenant: "tenant_1", requestDigest: sha("9"), requestKey: sha("a"), outcomeKey: sha("b"), capabilityId: "capability_1", capabilityDigest: sha("c"), effectDigest: sha("d"), effectCanonicalBase64: "e30=", executionContext: { allocationId: "allocation_1" }, routeAuthority },
+  };
+  const effects = { credential: 0, prepare: 0, store: 0, provider: 0, commit: 0 };
+  const testLedger = {
+    async getReservation() { return persisted; },
+    async commitPreparedDispatch() { effects.commit += 1; throw new Error("stale generation reached the ledger"); },
+    async transition() { throw new Error("stale generation reached a ledger transition"); },
+    async recover() { return { ok: true, reservations: [], highWaterMark: null, topology: { directorySync: "verified" } }; },
+  } as any;
+  const staleCurrent = { authorityGeneration: staleGeneration, authorityExpiresAt: expiresAt, routeAuthorityDigest: authorityDigest(routeAuthority), providerId: "github", connectorId: "github", accountId: "account_1", endpointId: "write" };
+  const coordinator = createDispatchCoordinator(testLedger, {
+    async prepare() {
+      effects.prepare += 1;
+      effects.credential += 1;
+      return createPreparedDispatch({ description: { v: "reelier.prepared-dispatch-description/v1", routeDigest: routeAuthority.routeDigest, materializedRequestDigest, projection, authorityGeneration: staleGeneration, authorityExpiresAt: expiresAt, absoluteDeadlineMs: performance.now() + 60_000, reservationId: persisted.reservationId, allocationId: "allocation_1" }, send: async () => { effects.provider += 1; return { kind: "acknowledged", resultDigest: sha("e") }; } });
+    },
+    async dispatch() { effects.provider += 1; throw new Error("legacy provider path reached"); },
+  }, undefined, {
+    async publish() { effects.store += 1; return { receiptRef: sha("e"), evidenceDigest: sha("f") }; },
+    async publishReservation() { effects.store += 1; return { receiptRef: sha("e"), evidenceDigest: sha("f") }; },
+    async loadDurableHead() { return null; },
+  }, undefined, {
+    identityProbe: async () => identity,
+    verifyIdentity: { purpose: "authority-evidence", signerId: identity.signerId, publicKey: identityKeys.publicKey },
+    revalidator: { revalidate: async () => staleCurrent, routeReread: async () => routeAuthority },
+  });
+  const state = { reservation: persisted, effect: {}, effectCanonicalBase64: "e30=", effectDigest: persisted.intent.effectDigest };
+  await assert.rejects(() => coordinator.dispatch(createReservedDispatchHandle(state)), /generation|route authority|binding|stale/i);
+  assert.deepEqual(effects, { credential: 0, prepare: 0, store: 0, provider: 0, commit: 0 });
 });

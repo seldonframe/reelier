@@ -121,6 +121,66 @@ test("each lifecycle publication refreshes the Cell-owned full pin before signin
   } finally { await f.close(); }
 });
 
+async function countLifecyclePublicationFiles(fixture: GitHubIssueLabelsFixture): Promise<Readonly<{ receipts: number; extensions: number }>> {
+  const receiptRoot = path.join(fixture.initialized.workspace, "authority", "github-label-runner", "receipts");
+  const count = async (directory: string) => {
+    try { return (await readdir(path.join(receiptRoot, directory))).filter(name => name.endsWith(".json")).length; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return 0; throw error; }
+  };
+  return Object.freeze({ receipts: await count("local") + await count("portable"), extensions: await count("extensions") });
+}
+
+async function lifecycleProviderWriteCount(fixture: GitHubIssueLabelsFixture): Promise<number> {
+  const provider = JSON.parse(await readFile(path.join(fixture.initialized.workspace, "authority", "github-label-runner", "provider-state.json"), "utf8"));
+  return provider.writes;
+}
+
+test("an expired principal crosses the actual runner with zero receipt, extension, or provider effects", async () => {
+  const f = await createGitHubIssueLabelsFixture("normal");
+  try {
+    const internal = certificationCellHostInternalState(f.cell);
+    const expired = await internal.principalRegistry.issue({
+      principalId: `${f.activation.principalId}_expired`, taskId: f.activation.taskId,
+      grantId: f.activation.grantId, grantDigest: f.activation.signedChildGrant.digest,
+      allocationId: f.activation.allocationId, runtimeSessionId: "session_expired_runner",
+      jobId: f.jobCard.jobId, authorityCellId: f.initialized.identifiers.authorityCellId,
+      expiresAt: "2026-08-11T20:09:59.000Z",
+    });
+    const before = await countLifecyclePublicationFiles(f), providerWritesBefore = await lifecycleProviderWriteCount(f);
+    await assert.rejects(() => f.runner.run({ bearerToken: expired.token, requestId: "request_expired_runner" }), /expired|credential|principal|session|stale/i);
+    assert.deepEqual(await countLifecyclePublicationFiles(f), before);
+    assert.equal(await lifecycleProviderWriteCount(f), providerWritesBefore);
+  } finally { await f.close(); }
+});
+
+test("a current-event head advance preserves historical verification while current verification refuses stale evidence", async () => {
+  const f = await createGitHubIssueLabelsFixture("normal");
+  try {
+    const first = await f.runner.run({ bearerToken: f.credential.token, requestId: "request_before_head_advance" });
+    assert.equal(first.status, "acknowledged");
+    const historicalGraph = await f.runner.exportGraph({ bearerToken: f.credential.token });
+    assert.doesNotThrow(() => verifyCertificationTaskReceiptGraph(historicalGraph, graphVerification(f.pin)));
+    const before = await countLifecyclePublicationFiles(f);
+    const advancedDescriptor = f.pin.keyDescriptors.find((item: any) => item.purpose === "outcome-contract");
+    assert.ok(advancedDescriptor);
+    const prior = f.pin.currentTrustEvents.at(-1)!;
+    const revoke = {
+      v: "reelier.authority-trust-event/v1", eventId: `trust_advance_${"a".repeat(12)}`,
+      sequence: prior.sequence + 1, action: "revoke", keyDescriptorDigest: authorityDigest(advancedDescriptor),
+      occurredAt: "2026-08-11T20:09:00.000Z", previousEventDigest: authorityDigest(prior),
+    };
+    const advancedPin = { ...f.pin, currentTrustEvents: [...f.pin.currentTrustEvents, revoke] };
+    await writeFile(path.join(f.root, "operator-current-trust.json"), `${JSON.stringify(advancedPin)}\n`);
+    const second = await f.runner.run({ bearerToken: f.credential.token, requestId: "request_after_head_advance" });
+    assert.equal(second.status, "duplicate");
+    assert.equal(second.providerWrites, 1);
+    const after = await countLifecyclePublicationFiles(f);
+    assert.deepEqual(after, before, "a duplicate remains zero-effect while still crossing current trust validation");
+    const graph = await f.runner.exportGraph({ bearerToken: f.credential.token });
+    assert.throws(() => verifyCertificationTaskReceiptGraph(graph, graphVerification(advancedPin)), /current trust|stale|expired|missing the signer/i);
+  } finally { await f.close(); }
+});
+
 for (const mode of ["source-drift", "effect-drift"] as const) test(`${mode} refuses with zero writes and no budget consumption`, async () => { const f = await createGitHubIssueLabelsFixture(mode); try { const result = await f.runner.run({ bearerToken: f.credential.token, requestId: `request_${mode}` }); assert.equal(result.status, "refused"); assert.equal(result.providerWrites, 0); const budget = await f.delegation.budget.get(f.activation.allocationId); assert.equal(budget?.consumed, 0); assert.equal(budget?.remaining, 2); } finally { await f.close(); } });
 
 for (const mode of ["provider-503", "accessor-response"] as const) test(`${mode} is never acknowledged`, async () => { const f = await createGitHubIssueLabelsFixture(mode); try { const result = await f.runner.run({ bearerToken: f.credential.token, requestId: `request_${mode}` }); assert.notEqual(result.status, "acknowledged"); assert.equal(result.success, false); assert.equal(result.providerWrites, 1); } finally { await f.close(); } });

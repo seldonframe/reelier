@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import os from "node:os";
 import path from "node:path";
 import { inspectProfileGovernanceStatus, loadProfileGovernanceFromOperatorTrust } from "../../src/authority/host/profile-governance-loader.js";
@@ -103,4 +105,80 @@ test("status inspection is sanitized and never returns an admission handle", asy
   assert.equal(status.status, "failed");
   assert.equal("governance" in status, false);
   assert.equal("handle" in status, false);
+});
+
+type LoaderOpenEvent = Readonly<{
+  name: string;
+  phase: "before-child-open" | "child-opened" | "after-child-read";
+}>;
+
+async function installLoaderOpenBarrier(barrier: (event: LoaderOpenEvent) => Promise<void>): Promise<() => void> {
+  const implementation = await import("../../src/authority/host/profile-governance-loader.js") as Record<string, unknown>;
+  const install = implementation.__testSetProfileGovernanceFilesystemBarrier;
+  assert.equal(typeof install, "function", "the package-private loader open barrier is required for deterministic physical-root races");
+  return (install as (value: typeof barrier) => () => void)(barrier);
+}
+
+test("all six child opens remain bound to the retained operator root through swap and restore", async t => {
+  const names = ["trust-pin.json", "manifest.json", "profile.json", "conformance-report.json", "conformance.json", "activation.json"] as const;
+  for (const name of names) {
+    const home = await mkdtemp(path.join(os.tmpdir(), `reelier-profile-root-open-${name.replace(".json", "")}-`));
+    t.after(() => rm(home, { recursive: true, force: true }));
+    const fixture = await writeProfileGovernanceFixture(home);
+    const accepted = `${fixture.root}.accepted`;
+    const replacement = `${fixture.root}.replacement`;
+    let swapped = false;
+    const restore = await installLoaderOpenBarrier(async event => {
+      if (event.name !== name) return;
+      if (event.phase === "before-child-open") {
+        await rename(fixture.root, accepted);
+        await mkdir(fixture.root);
+        await writeFile(path.join(fixture.root, name), "{}\n", { flag: "wx" });
+        swapped = true;
+      } else if (event.phase === "child-opened" && swapped) {
+        await rename(fixture.root, replacement);
+        await rename(accepted, fixture.root);
+      }
+    });
+    try {
+      const admitted = await loadProfileGovernanceFromOperatorTrust({ tenant, governanceRef, expectedManifestDigest: fixture.manifestDigest, expectedTrustHeadDigest: fixture.manifest.trustHeadDigest, homedir: home, verificationTime });
+      assert.equal(admittedProfileGovernanceState(admitted).manifestDigest, fixture.manifestDigest, name);
+      assert.equal(await (await import("node:fs/promises")).readFile(path.join(replacement, name), "utf8"), "{}\n", `${name} must not be sourced from the pathname replacement`);
+    } finally {
+      restore();
+    }
+  }
+});
+
+test("child replacement before, during, and after open is refused without a mixed generation", async t => {
+  for (const attackPhase of ["before-child-open", "child-opened", "after-child-read"] as const) {
+    const home = await mkdtemp(path.join(os.tmpdir(), `reelier-profile-child-${attackPhase}-`));
+    t.after(() => rm(home, { recursive: true, force: true }));
+    const fixture = await writeProfileGovernanceFixture(home);
+    const target = path.join(fixture.root, "activation.json"), accepted = `${target}.accepted`, replacement = `${target}.replacement`;
+    const restore = await installLoaderOpenBarrier(async event => {
+      if (event.name !== "activation.json" || event.phase !== attackPhase) return;
+      await rename(target, accepted);
+      await writeFile(target, "{}\n", { flag: "wx" });
+      await rename(target, replacement);
+      await rename(accepted, target);
+    });
+    try {
+      await assert.rejects(
+        () => loadProfileGovernanceFromOperatorTrust({ tenant, governanceRef, expectedManifestDigest: fixture.manifestDigest, expectedTrustHeadDigest: fixture.manifest.trustHeadDigest, homedir: home, verificationTime }),
+        /identity|generation|changed|replacement|physical|open/i,
+        attackPhase,
+      );
+    } finally {
+      restore();
+    }
+  }
+});
+
+test("Linux child opens governance artifacts relative to a retained directory fd", { skip: process.platform === "linux" ? false : "requires an already-available Linux Node executor" }, async t => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "reelier-linux-openat-loader-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const script = `import {mkdir,mkdtemp,open,readFile,rename,rm,writeFile} from 'node:fs/promises';import os from 'node:os';import path from 'node:path';const root=await mkdtemp(path.join(os.tmpdir(),'reelier-openat-'));const accepted=path.join(root,'accepted'),replacement=path.join(root,'replacement'),moved=path.join(root,'moved');await mkdir(accepted);await writeFile(path.join(accepted,'child.json'),'accepted');const handle=await open(accepted,'r');await rename(accepted,moved);await mkdir(accepted);await writeFile(path.join(accepted,'child.json'),'replacement');const value=await readFile('/proc/self/fd/'+handle.fd+'/child.json','utf8');await handle.close();process.stdout.write(JSON.stringify({value,replacement:await readFile(path.join(accepted,'child.json'),'utf8')}));await rm(root,{recursive:true,force:true});`;
+  const child = await promisify(execFile)(process.execPath, ["--input-type=module", "--eval", script], { cwd: process.cwd(), env: { ...process.env, HOME: home, USERPROFILE: home } });
+  assert.deepEqual(JSON.parse(child.stdout), { value: "accepted", replacement: "replacement" });
 });
