@@ -1,4 +1,3 @@
-import { canonicalJson, digestSha256 } from "../../canonical-json.js";
 import type { CodexCoverageReport, CoverageServer, PluginCoverage } from "../../coverage.js";
 import { BUILTIN_ROUTE_ADAPTERS, buildHarnessRouteRow, type HarnessRouteSurfaceV1, type HarnessSourceInstanceV1 } from "../adapters.js";
 import type { RouteCoverageV1 } from "../types.js";
@@ -33,13 +32,14 @@ export function translateCodexCoverage(input: TranslateCodexCoverageInputV1): re
 
 function serverRow(input: TranslateCodexCoverageInputV1, server: CoverageServer, discoverySource: "host-config" | "plugin-manifest", evidence: HarnessSourceInstanceV1): RouteCoverageV1 {
   const wrapped = server.location === "parsed" && server.routing === "wrapped";
-  const unreadable = server.location === "unreadable" || server.routing === undefined;
+  const staticEvidenceAbsent = evidence.evidenceKind === "absent";
+  const unreadable = server.location === "unreadable" || server.routing === undefined || staticEvidenceAbsent;
   return row(input, {
     sourceInstanceIdentityDigest: evidence.sourceInstanceIdentityDigest, routeKey: server.name, discoverySource,
     transport: server.transport === "url" ? "mcp-http" : server.transport === "stdio" ? "mcp-stdio" : "unknown",
     observation: unreadable ? "unknown" : wrapped ? "observed" : "uncovered", replay: "unknown", outcome: "unknown",
-    enforcement: wrapped ? "unchecked" : "absent", topologyEvidenceDigest: null,
-    evidenceRefs: [`source:codex:${discoverySource}`], reasonCodes: unreadable ? ["entry-unreadable"] : wrapped ? ["wrapped-route-observed"] : [discoverySource === "plugin-manifest" ? "plugin-private" : "route-unwrapped"], catalogMetadata: false,
+    enforcement: wrapped && !unreadable ? "unchecked" : "absent", topologyEvidenceDigest: null,
+    evidenceRefs: [`source:codex:${discoverySource}`], reasonCodes: staticEvidenceAbsent ? ["static-evidence-absent"] : unreadable ? ["entry-unreadable"] : wrapped ? ["wrapped-route-observed"] : [discoverySource === "plugin-manifest" ? "plugin-private" : "route-unwrapped"], catalogMetadata: false,
   }, evidence);
 }
 
@@ -50,13 +50,13 @@ function row(input: TranslateCodexCoverageInputV1, surface: HarnessRouteSurfaceV
 function source(input: TranslateCodexCoverageInputV1, sourceRef: string): HarnessSourceInstanceV1 {
   const found = input.sourceInstances.find(value => value.sourceRef === sourceRef);
   if (found) return found;
-  if (sourceRef === input.report.configPath) return { sourceRef, sourceInstanceIdentityDigest: digestSha256({ v: "reelier.route-source-instance/v1", harnessId: "codex", sourceRef }), canonicalBytes: input.canonicalConfigBytes, fileIdentityDigest: input.fileIdentityDigest };
   throw new TypeError("Codex route source instance evidence is missing");
 }
 
 function surfaceEvidence(input: TranslateCodexCoverageInputV1, surface: HarnessRouteSurfaceV1): HarnessSourceInstanceV1 {
   const found = input.sourceInstances.find(value => value.sourceInstanceIdentityDigest === surface.sourceInstanceIdentityDigest);
-  return found ?? { sourceRef: "sanitized-harness-surface", sourceInstanceIdentityDigest: surface.sourceInstanceIdentityDigest, canonicalBytes: canonicalJson({ discoverySource: surface.discoverySource, transport: surface.transport, observation: surface.observation, replay: surface.replay, outcome: surface.outcome, enforcement: surface.enforcement, topologyEvidenceDigest: surface.topologyEvidenceDigest, evidenceRefs: surface.evidenceRefs, reasonCodes: surface.reasonCodes, catalogMetadata: surface.catalogMetadata }), fileIdentityDigest: surface.sourceInstanceIdentityDigest };
+  if (!found) throw new TypeError("Codex harness surface evidence is missing");
+  return found;
 }
 
 function unknownSurface(evidence: HarnessSourceInstanceV1, discoverySource: "host-config", routeKey: string, reason: string): HarnessRouteSurfaceV1 {

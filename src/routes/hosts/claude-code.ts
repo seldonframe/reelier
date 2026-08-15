@@ -1,4 +1,4 @@
-import { canonicalJson, digestSha256 } from "../../canonical-json.js";
+import { digestSha256 } from "../../canonical-json.js";
 import type { CoverageServer, CoverageView } from "../../coverage.js";
 import { BUILTIN_ROUTE_ADAPTERS, buildHarnessRouteRow, type HarnessRouteSurfaceV1, type HarnessSourceInstanceV1 } from "../adapters.js";
 import type { RouteCoverageV1 } from "../types.js";
@@ -21,7 +21,7 @@ export function translateClaudeCodeCoverage(input: TranslateClaudeCodeCoverageIn
     for (const server of sourceView.servers) rows.push(serverRow(input, server, "host-config", source(input, server.origin)));
   }
   if (input.view.pluginRegistry && input.view.pluginRegistry.location !== "parsed") {
-    const evidence = source(input, "plugin-registry");
+    const evidence = source(input, input.view.pluginSource ?? "plugin-registry", "plugin-registry");
     rows.push(row(input, unknownSurface(evidence, "plugin-manifest", "registry", input.view.pluginRegistry.location === "unreadable" ? "registry-unreadable" : "registry-absent"), evidence));
   }
   for (const plugin of input.view.plugins) {
@@ -38,23 +38,25 @@ export function translateClaudeCodeCoverage(input: TranslateClaudeCodeCoverageIn
 
 function serverRow(input: TranslateClaudeCodeCoverageInputV1, server: CoverageServer, discoverySource: "host-config" | "plugin-manifest", evidence: HarnessSourceInstanceV1): RouteCoverageV1 {
   const wrapped = server.location === "parsed" && server.routing === "wrapped";
-  const unreadable = server.location === "unreadable" || server.routing === undefined;
-  return row(input, { sourceInstanceIdentityDigest: evidence.sourceInstanceIdentityDigest, routeKey: server.name, discoverySource, transport: server.transport === "url" ? "mcp-http" : server.transport === "stdio" ? "mcp-stdio" : "unknown", observation: unreadable ? "unknown" : wrapped ? "observed" : "uncovered", replay: "unknown", outcome: "unknown", enforcement: wrapped ? "unchecked" : "absent", topologyEvidenceDigest: null, evidenceRefs: [`source:claude-code:${discoverySource}`], reasonCodes: unreadable ? ["entry-unreadable"] : wrapped ? ["wrapped-route-observed"] : [discoverySource === "plugin-manifest" ? "plugin-private" : "route-unwrapped"], catalogMetadata: false }, evidence);
+  const staticEvidenceAbsent = evidence.evidenceKind === "absent";
+  const unreadable = server.location === "unreadable" || server.routing === undefined || staticEvidenceAbsent;
+  return row(input, { sourceInstanceIdentityDigest: evidence.sourceInstanceIdentityDigest, routeKey: server.name, discoverySource, transport: server.transport === "url" ? "mcp-http" : server.transport === "stdio" ? "mcp-stdio" : "unknown", observation: unreadable ? "unknown" : wrapped ? "observed" : "uncovered", replay: "unknown", outcome: "unknown", enforcement: wrapped && !unreadable ? "unchecked" : "absent", topologyEvidenceDigest: null, evidenceRefs: [`source:claude-code:${discoverySource}`], reasonCodes: staticEvidenceAbsent ? ["static-evidence-absent"] : unreadable ? ["entry-unreadable"] : wrapped ? ["wrapped-route-observed"] : [discoverySource === "plugin-manifest" ? "plugin-private" : "route-unwrapped"], catalogMetadata: false }, evidence);
 }
 
 function row(input: TranslateClaudeCodeCoverageInputV1, surface: HarnessRouteSurfaceV1, evidence: HarnessSourceInstanceV1): RouteCoverageV1 {
   return buildHarnessRouteRow({ adapter: BUILTIN_ROUTE_ADAPTERS.claudeCode, harnessId: "claude-code", observedAt: input.observedAt, freshnessMs: input.freshnessMs, observationSourceDigest: input.sourceDigest, contractIdentityDigest: input.contractIdentityDigest, surface, evidence });
 }
 
-function source(input: TranslateClaudeCodeCoverageInputV1, sourceRef: string): HarnessSourceInstanceV1 {
-  const found = input.sourceInstances.find(value => value.sourceRef === sourceRef);
+function source(input: TranslateClaudeCodeCoverageInputV1, sourceRef: string, fallbackSourceRef?: string): HarnessSourceInstanceV1 {
+  const found = input.sourceInstances.find(value => value.sourceRef === sourceRef) ?? (fallbackSourceRef ? input.sourceInstances.find(value => value.sourceRef === fallbackSourceRef) : undefined);
   if (found) return found;
   throw new TypeError("Claude Code route source instance evidence is missing");
 }
 
 function surfaceEvidence(input: TranslateClaudeCodeCoverageInputV1, surface: HarnessRouteSurfaceV1): HarnessSourceInstanceV1 {
   const found = input.sourceInstances.find(value => value.sourceInstanceIdentityDigest === surface.sourceInstanceIdentityDigest);
-  return found ?? { sourceRef: "sanitized-harness-surface", sourceInstanceIdentityDigest: surface.sourceInstanceIdentityDigest, canonicalBytes: canonicalJson({ discoverySource: surface.discoverySource, transport: surface.transport, observation: surface.observation, replay: surface.replay, outcome: surface.outcome, enforcement: surface.enforcement, topologyEvidenceDigest: surface.topologyEvidenceDigest, evidenceRefs: surface.evidenceRefs, reasonCodes: surface.reasonCodes, catalogMetadata: surface.catalogMetadata }), fileIdentityDigest: surface.sourceInstanceIdentityDigest };
+  if (!found) throw new TypeError("Claude Code harness surface evidence is missing");
+  return found;
 }
 
 function unknownSurface(evidence: HarnessSourceInstanceV1, discoverySource: "host-config" | "plugin-manifest", routeKey: string, reason: string): HarnessRouteSurfaceV1 {

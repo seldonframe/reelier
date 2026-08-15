@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { mkdir, open, readFile, readdir, rename, unlink } from "node:fs/promises";
+import { lstat, mkdir, open, readFile, readdir, realpath, rename, unlink } from "node:fs/promises";
 import path from "node:path";
 import { canonicalJson } from "./canonical-json.js";
 import { collectClaudeCodeCoverage, collectCodexCoverage, type CodexCoverageReport, type CoverageServer, type CoverageView } from "./coverage.js";
@@ -703,9 +703,37 @@ async function writeNamedBootstrapRouteCoverage(options: InitializeInspectionOpt
     createClaudeCodeRouteDiscoverySnapshotV1({ view: claude, observedAt: named.now.toISOString(), freshnessMs: 5 * 60_000, contractIdentityDigest: named.contractIdentityDigest, findings: [] }),
   ];
   const rows = await discoverRouteCoverage({ registry: createRouteDiscoveryAdapterRegistryV1(), now: named.now, snapshots });
-  const bootstrapDir = path.join(options.cwd, ".reelier", "bootstrap");
-  await mkdir(bootstrapDir, { recursive: true });
-  await writeDurableAtomic(path.join(bootstrapDir, "route-coverage.json"), canonicalFile(rows));
+  const { bootstrapDir, device, inode } = await ensureConfinedBootstrapDirectory(options.cwd);
+  const artifactPath = path.join(bootstrapDir, "route-coverage.json");
+  const artifactInfo = await lstat(artifactPath).catch(error => (error as NodeJS.ErrnoException).code === "ENOENT" ? undefined : Promise.reject(error));
+  if (artifactInfo?.isSymbolicLink() || (artifactInfo && !artifactInfo.isFile())) throw new TypeError("named bootstrap route artifact is linked or not a regular file");
+  await assertBootstrapDirectoryIdentity(bootstrapDir, device, inode);
+  await writeDurableAtomic(artifactPath, canonicalFile(rows));
+  await assertBootstrapDirectoryIdentity(bootstrapDir, device, inode);
+}
+
+async function ensureConfinedBootstrapDirectory(cwd: string): Promise<Readonly<{ bootstrapDir: string; device: number; inode: number }>> {
+  const projectRoot = await realpath(path.resolve(cwd));
+  const reelierDir = path.join(projectRoot, ".reelier");
+  await mkdir(reelierDir).catch(error => { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; });
+  await assertExactRealDirectory(reelierDir, projectRoot, ".reelier");
+  const bootstrapDir = path.join(reelierDir, "bootstrap");
+  await mkdir(bootstrapDir).catch(error => { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; });
+  const identity = await assertExactRealDirectory(bootstrapDir, reelierDir, "bootstrap");
+  return Object.freeze({ bootstrapDir, device: identity.dev, inode: identity.ino });
+}
+
+async function assertExactRealDirectory(directory: string, parent: string, basename: string) {
+  const info = await lstat(directory);
+  if (!info.isDirectory() || info.isSymbolicLink()) throw new TypeError("named bootstrap route directory is linked or not confined");
+  const actual = await realpath(directory);
+  if (path.relative(parent, actual) !== basename) throw new TypeError("named bootstrap route directory is linked or not confined");
+  return info;
+}
+
+async function assertBootstrapDirectoryIdentity(directory: string, device: number, inode: number): Promise<void> {
+  const info = await lstat(directory);
+  if (!info.isDirectory() || info.isSymbolicLink() || info.dev !== device || info.ino !== inode || await realpath(directory) !== directory) throw new TypeError("named bootstrap route directory changed during publication");
 }
 
 function inspectionRouteFindings(report: InitializationReportV1): HarnessRouteFindingV1[] {

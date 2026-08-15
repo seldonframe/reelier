@@ -1,6 +1,6 @@
 import { canonicalJson, digestSha256 } from "../canonical-json.js";
 import { assertOwnDataTree } from "../bootstrap/normalize.js";
-import { staticCoverageEvidenceDigest } from "../coverage.js";
+import { liveCoverageEvidenceDigest, staticCoverageEvidenceDigest } from "../coverage.js";
 import type { CodexCoverageReport, CoverageRouteSourceEvidence, CoverageView } from "../coverage.js";
 import type { RouteCoverageV1 } from "./types.js";
 import { translateCodexCoverage, type TranslateCodexCoverageInputV1 } from "./hosts/codex.js";
@@ -29,6 +29,7 @@ export interface HarnessSourceInstanceV1 {
   readonly sourceInstanceIdentityDigest: string;
   readonly canonicalBytes: string;
   readonly fileIdentityDigest: string;
+  readonly evidenceKind?: "static" | "live" | "absent";
 }
 
 export interface CodexRouteDiscoverySnapshotV1 { readonly v: "reelier.route-discovery-snapshot/v1"; readonly harnessId: "codex" }
@@ -148,13 +149,22 @@ export function buildHarnessRouteRow(input: Readonly<{
     evidenceDigest: digestSha256({
       v: "reelier.route-evidence/v1", adapterSourceId: input.adapter.sourceId, adapterSourceVersion: input.adapter.sourceVersion,
       adapterSourceDigest: input.adapter.sourceDigest, observationSourceDigest: input.observationSourceDigest,
-      contractIdentityDigest: input.contractIdentityDigest, staticEvidenceDigest: staticCoverageEvidenceDigest({
-        sourceId: input.adapter.sourceId, sourceVersion: input.adapter.sourceVersion, sourceDigest: input.observationSourceDigest,
-        canonicalBytes: input.evidence.canonicalBytes, fileIdentityDigest: input.evidence.fileIdentityDigest,
-      }), routeId, observation, replay, outcome, enforcement, topologyEvidenceDigest,
+      contractIdentityDigest: input.contractIdentityDigest, sourceEvidenceDigest: sourceEvidenceDigest(input.adapter, input.observationSourceDigest, input.evidence),
+      routeId, observation, replay, outcome, enforcement, topologyEvidenceDigest,
     }),
     topologyEvidenceDigest, evidenceRefs: Object.freeze([...input.surface.evidenceRefs].sort()),
     reasonCodes: Object.freeze([...new Set(reasonCodes)].sort()),
+  });
+}
+
+function sourceEvidenceDigest(adapter: RouteAdapterIdentityV1, observationSourceDigest: string, evidence: HarnessSourceInstanceV1): string {
+  if ((evidence.evidenceKind ?? "static") === "static") return staticCoverageEvidenceDigest({
+    sourceId: adapter.sourceId, sourceVersion: adapter.sourceVersion, sourceDigest: observationSourceDigest,
+    canonicalBytes: evidence.canonicalBytes, fileIdentityDigest: evidence.fileIdentityDigest,
+  });
+  return liveCoverageEvidenceDigest({
+    sourceId: adapter.sourceId, sourceVersion: adapter.sourceVersion, sourceDigest: observationSourceDigest,
+    observation: { evidenceKind: evidence.evidenceKind, canonicalObservation: evidence.canonicalBytes },
   });
 }
 
@@ -200,7 +210,7 @@ function createPayload(
     ...detachedFindings.map(value => value.sourceRef),
   ]);
   const sourceInstances = Object.freeze([...sourceRefs].map(sourceRef => sourceEvidence(harnessId, sourceRef, routeEvidence, detachedCollector, detachedFindings)));
-  const surfaces = Object.freeze(detachedFindings.map(value => surfaceFromFinding(harnessId, value)));
+  const surfaces = Object.freeze(detachedFindings.map(value => surfaceFromFinding(harnessId, value, sourceInstances)));
   const common = {
     observedAt, freshnessMs, contractIdentityDigest, sourceDigest: digestSha256({ v: "reelier.route-collector-evidence/v1", harnessId, collector: sanitizeCollector(detachedCollector), routeEvidence }),
     sourceInstances, surfaces,
@@ -225,10 +235,11 @@ function deepFreeze<T>(value: T): T {
   return value;
 }
 
-function surfaceFromFinding(harnessId: "codex" | "claude-code", finding: HarnessRouteFindingV1): HarnessRouteSurfaceV1 {
+function surfaceFromFinding(harnessId: "codex" | "claude-code", finding: HarnessRouteFindingV1, sourceInstances: readonly HarnessSourceInstanceV1[]): HarnessRouteSurfaceV1 {
   assertExactRecord(finding, ["kind", "routeKey", "sourceRef"], "route finding");
   if (!/^[A-Za-z0-9._~-]{1,128}$/.test(finding.routeKey) || typeof finding.sourceRef !== "string" || finding.sourceRef.length === 0) throw new TypeError("route finding identity is invalid");
-  const sourceInstanceIdentityDigest = digestSha256({ v: "reelier.route-source-instance/v1", harnessId, sourceRef: finding.sourceRef });
+  const sourceInstanceIdentityDigest = sourceInstances.find(value => value.sourceRef === finding.sourceRef)?.sourceInstanceIdentityDigest;
+  if (!sourceInstanceIdentityDigest) throw new TypeError("route finding source instance evidence is missing");
   const fixed: Record<HarnessRouteFindingKindV1, Omit<HarnessRouteSurfaceV1, "sourceInstanceIdentityDigest" | "routeKey">> = {
     "direct-http": { discoverySource: "direct-http", transport: "https", observation: "uncovered", replay: "unknown", outcome: "unknown", enforcement: "absent", topologyEvidenceDigest: null, evidenceRefs: [`source:${harnessId}:direct-http`], reasonCodes: ["direct-http-bypass"], catalogMetadata: false },
     "writable-browser": { discoverySource: "writable-browser", transport: "browser", observation: "uncovered", replay: "unknown", outcome: "unknown", enforcement: "absent", topologyEvidenceDigest: null, evidenceRefs: [`source:${harnessId}:writable-browser`], reasonCodes: ["writable-browser-bypass"], catalogMetadata: false },
@@ -257,9 +268,15 @@ function sourceEvidence(harnessId: "codex" | "claude-code", sourceRef: string, e
   const sourceInstanceIdentityDigest = digestSha256({ v: "reelier.route-source-instance/v1", harnessId, sourceRef });
   if (exact) {
     if (!SHA256.test(exact.sourceInstanceIdentityDigest) || !SHA256.test(exact.fileIdentityDigest)) throw new TypeError("route source evidence identity is invalid");
-    return Object.freeze({ ...exact });
+    return Object.freeze({ ...exact, evidenceKind: "static" as const });
   }
-  return Object.freeze({ sourceRef, sourceInstanceIdentityDigest, canonicalBytes: JSON.stringify({ v: "reelier.sanitized-route-source/v1", harnessId, sourceKnown: collectorOrigins(collector).includes(sourceRef), findingKinds: findings.filter(value => value.sourceRef === sourceRef).map(value => value.kind).sort() }), fileIdentityDigest: digestSha256({ v: "reelier.unreadable-route-source/v1", harnessId, sourceInstanceIdentityDigest }) });
+  const findingKinds = findings.filter(value => value.sourceRef === sourceRef).map(value => value.kind).sort();
+  const evidenceKind = findingKinds.length > 0 ? "live" : "absent";
+  return Object.freeze({
+    sourceRef, sourceInstanceIdentityDigest, evidenceKind,
+    canonicalBytes: canonicalJson({ v: "reelier.sanitized-route-source/v1", harnessId, sourceKnown: collectorOrigins(collector).includes(sourceRef), findingKinds }),
+    fileIdentityDigest: digestSha256({ v: "reelier.route-source-without-static-evidence/v1", harnessId, sourceInstanceIdentityDigest, evidenceKind }),
+  });
 }
 
 function sanitizeCollector(collector: CodexCoverageReport | CoverageView): unknown {
