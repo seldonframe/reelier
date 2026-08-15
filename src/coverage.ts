@@ -15,9 +15,9 @@
 // validated — the probe is an inventory, not a linter. (The JSON-only
 // constraint in src/init.ts binds the config WRITER; reading TOML is fine.)
 
-import { readdir, readFile, stat } from "node:fs/promises";
+import { open, readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
-import { digestSha256 } from "./canonical-json.js";
+import { canonicalJson, digestSha256 } from "./canonical-json.js";
 import { knownMcpConfigPaths } from "./init.js";
 import { sameProjectDirectory } from "./project-scope.js";
 
@@ -1097,7 +1097,7 @@ export async function collectClaudeCodeCoverage(
     pluginSource,
     pluginRegistry,
     inspectedLocations,
-    routeEvidence: await collectRouteSourceEvidence("claude-code", inspectedLocations),
+    routeEvidence: await collectRouteSourceEvidence("claude-code", [...inspectedLocations, ...sources.map(source => source.path)]),
     notes: [
       ...notes,
       "Plugin-delivered servers load from the plugin's own manifest, not from a config `reelier install` rewrites; listing one here is not a claim that it is covered.",
@@ -1110,20 +1110,37 @@ export async function collectClaudeCodeCoverage(
 async function collectRouteSourceEvidence(harnessId: "codex" | "claude-code", sourceRefs: readonly string[]): Promise<readonly CoverageRouteSourceEvidence[]> {
   const evidence: CoverageRouteSourceEvidence[] = [];
   const seen = new Set<string>();
+  const reads = new Map<string, Readonly<{ contentDigest: string; device: number; inode: number; size: number; modifiedMs: number }> | null>();
   for (const sourceRef of sourceRefs) {
-    const filePath = sourceRef.split("#projects/", 1)[0];
-    if (seen.has(filePath)) continue;
-    seen.add(filePath);
+    const projectMarker = sourceRef.indexOf("#projects/");
+    const filePath = projectMarker < 0 ? sourceRef : sourceRef.slice(0, projectMarker);
+    if (seen.has(sourceRef)) continue;
+    seen.add(sourceRef);
     try {
-      const [canonicalBytes, identity] = await Promise.all([readFile(filePath, "utf8"), stat(filePath)]);
-      if (!identity.isFile()) continue;
+      let captured = reads.get(filePath);
+      if (captured === undefined) {
+        const handle = await open(filePath, "r");
+        try {
+          const before = await handle.stat();
+          const raw = await handle.readFile("utf8");
+          const after = await handle.stat();
+          if (!before.isFile() || !after.isFile() || before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size || before.mtimeMs !== after.mtimeMs) throw new TypeError("coverage source changed during read");
+          captured = Object.freeze({ contentDigest: digestSha256(raw), device: after.dev, inode: after.ino, size: after.size, modifiedMs: after.mtimeMs });
+          reads.set(filePath, captured);
+        } finally {
+          await handle.close();
+        }
+      }
+      if (captured === null) continue;
+      const sourceInstanceIdentityDigest = digestSha256({ v: "reelier.route-source-instance/v1", harnessId, sourceRef });
       evidence.push(Object.freeze({
         sourceRef,
-        sourceInstanceIdentityDigest: digestSha256({ v: "reelier.route-source-instance/v1", harnessId, sourceRef }),
-        canonicalBytes,
-        fileIdentityDigest: digestSha256({ v: "reelier.route-file-identity/v1", harnessId, sourceRefDigest: digestSha256(sourceRef), device: identity.dev, inode: identity.ino, size: identity.size, modifiedMs: identity.mtimeMs }),
+        sourceInstanceIdentityDigest,
+        canonicalBytes: canonicalJson({ v: "reelier.sanitized-route-source/v1", contentDigest: captured.contentDigest }),
+        fileIdentityDigest: digestSha256({ v: "reelier.route-file-identity/v1", harnessId, sourceRefDigest: digestSha256(sourceRef), device: captured.device, inode: captured.inode, size: captured.size, modifiedMs: captured.modifiedMs }),
       }));
     } catch {
+      reads.set(filePath, null);
       // Missing and unreadable sources remain explicit collector findings; no
       // static evidence is invented for a file whose bytes were not read.
     }
