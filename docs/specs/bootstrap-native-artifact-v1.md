@@ -24,7 +24,7 @@ The loader never returns a path for an unavailable artifact.
 ```json
 {
   "v": "reelier.bootstrap-native-artifacts/v1",
-  "protocol": "reelier.bootstrap-native-helper/v1",
+  "protocol": "reelier.bootstrap-native-helper/v2",
   "artifacts": [
     {
       "platform": "linux",
@@ -66,7 +66,7 @@ The loader verifies ELF64 little-endian x86-64 (`e_machine = 62`) or PE32+ AMD64
 before spawning. A successful helper `probe` writes exactly one UTF-8 JSON line:
 
 ```json
-{"v":"reelier.bootstrap-native-helper/v1","status":"ready","platform":"linux|win32","architecture":"x64","operations":["create-lock","remove-owned-relative"]}
+{"v":"reelier.bootstrap-native-helper/v2","status":"ready","platform":"linux|win32","architecture":"x64","operations":["persistent-lock","mkdir","write-exclusive","write-atomic","rename","remove"]}
 ```
 
 Anything else is an unverified refusal. The protocol's two mutations accept one canonical absolute
@@ -80,4 +80,3 @@ Linux x64 and Windows x64 jobs build, test, execute `probe`, and compare the res
 the checked-in manifest digest. A separate universal-pack check proves both exact files are in the
 same npm tarball. A digest may be committed only from a binary that completed its matching-host
 job. Cross-compilation alone is not release evidence.
-

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
 
-export const PROTOCOL = "reelier.bootstrap-native-helper/v1";
+export const PROTOCOL = "reelier.bootstrap-native-helper/v2";
 export const MANIFEST_VERSION = "reelier.bootstrap-native-artifacts/v1";
 export const TARGETS = Object.freeze([
   Object.freeze({ platform: "linux", architecture: "x64", target: "x86_64-unknown-linux-gnu", path: "native/bootstrap-helper/linux-x64/reelier-bootstrap-helper" }),
@@ -38,7 +38,6 @@ export function parseClosedManifest(value) {
   return Object.freeze({ v: MANIFEST_VERSION, protocol: PROTOCOL, artifacts: Object.freeze(artifacts) });
 }
 
-export function expectedProbe(entry) { return { v: PROTOCOL, status: "ready", platform: entry.platform, architecture: "x64", operations: ["create-lock", "remove-owned-relative"] }; }
+export function expectedProbe(entry) { return { v: PROTOCOL, status: "ready", platform: entry.platform, architecture: "x64", operations: ["persistent-lock", "mkdir", "write-exclusive", "write-atomic", "rename", "remove"] }; }
 function plain(value) { return value !== null && typeof value === "object" && Object.getPrototypeOf(value) === Object.prototype; }
 function keys(value, expected) { const actual = Object.keys(value); return actual.length === expected.length && actual.every(key => expected.includes(key)); }
-
