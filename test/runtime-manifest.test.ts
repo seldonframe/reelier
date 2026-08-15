@@ -32,6 +32,7 @@ test("runtime manifest refuses floating versions, shell strings, traversal, and 
   for (const value of [
     { ...local(), adapterVersion: "latest" }, { ...local(), command: "bin/eve && whoami" },
     { ...local(), command: "../eve" }, { ...local(), args: ["--serve; whoami"] }, { ...local(), args: ["$(whoami)"] },
+    { ...local(), args: ["https://provider.example/private"] },
     { ...local(), cwd: "C:\\outside" }, { ...local(), cwd: "../outside" },
     { ...local(), environmentAllowlist: ["TOKEN=secret"] }, { ...local(), environmentAllowlist: ["API_TOKEN"] },
     { ...local(), authenticatedBinding: "none" }, { ...local(), shutdown: "kill-any" },

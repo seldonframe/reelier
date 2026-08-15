@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://reelier.dev/contracts/bootstrap/v1/agent-project.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["v", "agentName", "projectId", "tenant", "reelierVersion", "installedBuildDigest", "packageTarballIntegrityDigest", "authorityContractDigest", "continuityContractDigest", "outcomeProfileContractDigest", "bootstrapContractDigest", "initializationReportDigest", "runtimeDescriptorDigest", "routeCoverageDigest", "profileGovernanceRef", "profileGovernanceManifestDigest", "profileTrustHeadDigest", "authorityMode"],
+  "properties": {
+    "v": { "const": "reelier.agent-project/v1" },
+    "agentName": { "$ref": "#/$defs/id" }, "projectId": { "$ref": "#/$defs/id" },
+    "tenant": { "anyOf": [{ "$ref": "#/$defs/id" }, { "type": "null" }] },
+    "reelierVersion": { "$ref": "#/$defs/version" },
+    "installedBuildDigest": { "$ref": "#/$defs/digest" },
+    "packageTarballIntegrityDigest": { "anyOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }] },
+    "authorityContractDigest": { "$ref": "#/$defs/digest" }, "continuityContractDigest": { "$ref": "#/$defs/digest" },
+    "outcomeProfileContractDigest": { "$ref": "#/$defs/digest" }, "bootstrapContractDigest": { "$ref": "#/$defs/digest" },
+    "initializationReportDigest": { "$ref": "#/$defs/digest" }, "runtimeDescriptorDigest": { "$ref": "#/$defs/digest" },
+    "routeCoverageDigest": { "$ref": "#/$defs/digest" },
+    "profileGovernanceRef": { "anyOf": [{ "$ref": "#/$defs/id" }, { "type": "null" }] },
+    "profileGovernanceManifestDigest": { "anyOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }] },
+    "profileTrustHeadDigest": { "anyOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }] },
+    "authorityMode": { "enum": ["unconfigured", "managed-cell", "self-hosted-linux-cell"] }
+  },
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[A-Za-z0-9._~-]{1,128}$" },
+    "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[A-Za-z0-9.-]+)?$" },
+    "digest": { "type": "string", "pattern": "^sha256:(?!0{64}$)[0-9a-f]{64}$" }
+  }
+}

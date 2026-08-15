@@ -1,0 +1,31 @@
+{
+  "v": "reelier.bootstrap-contract/v1",
+  "domain": "reelier.bootstrap-contract/v1\\0",
+  "members": [
+    {
+      "path": "agent-project.schema.json",
+      "digest": "sha256:cdf8092df8c1d56be63fefb18722302376a967d3e9fc1a10a74d81ef6e28dd9c"
+    },
+    {
+      "path": "authority-cell-session-binding.schema.json",
+      "digest": "sha256:ba74a8325d870b8d805a3e50e8dd2b4bbb26d7aee2f286b637697dff35834079"
+    },
+    {
+      "path": "bootstrap-report.schema.json",
+      "digest": "sha256:f24ca25ef9e374b002bc32f890cf7ad09f2f515fab8ceff447ea91c2712c47b2"
+    },
+    {
+      "path": "route-coverage.schema.json",
+      "digest": "sha256:2aff854dbc8984b313d7ef1e0fd6e566eb52c88a455c0543863433bb3ac716c3"
+    },
+    {
+      "path": "runtime-descriptor.schema.json",
+      "digest": "sha256:e533b0e13dcec9ec02ce334f48a594274761e7b567cfa5579daeb43a93467600"
+    },
+    {
+      "path": "supervisor-status.schema.json",
+      "digest": "sha256:619ac0abee08e7997df3fd2df54082e149e421cc90394e94603e72db43b8dac2"
+    }
+  ],
+  "digest": "sha256:3b161491c1a8c0edb69e58b5d6c97713aa481778c30843127360e5188ebb20b6"
+}

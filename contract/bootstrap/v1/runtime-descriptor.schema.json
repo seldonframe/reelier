@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://reelier.dev/contracts/bootstrap/v1/runtime-descriptor.schema.json",
+  "type": "object", "additionalProperties": false,
+  "required": ["v", "adapterId", "adapterVersion", "adapterDigest", "launchMode", "command", "args", "cwd", "connectionRef", "environmentAllowlist", "authenticatedBinding", "shutdown"],
+  "properties": {
+    "v": { "const": "reelier.runtime-descriptor/v1" }, "adapterId": { "$ref": "#/$defs/id" },
+    "adapterVersion": { "$ref": "#/$defs/version" }, "adapterDigest": { "$ref": "#/$defs/digest" },
+    "launchMode": { "enum": ["local-process", "externally-managed"] }, "command": { "anyOf": [{ "$ref": "#/$defs/path" }, { "type": "null" }] },
+    "args": { "type": "array", "items": { "type": "string", "minLength": 1, "maxLength": 512 }, "maxItems": 128 },
+    "cwd": { "anyOf": [{ "$ref": "#/$defs/path" }, { "type": "null" }] },
+    "connectionRef": { "anyOf": [{ "$ref": "#/$defs/id" }, { "type": "null" }] },
+    "environmentAllowlist": { "type": "array", "items": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,127}$" }, "uniqueItems": true, "maxItems": 128 },
+    "authenticatedBinding": { "enum": ["bearer-file", "loopback-session", "host-private"] }, "shutdown": { "enum": ["signal-owned-child", "external"] }
+  },
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[A-Za-z0-9._~-]{1,128}$" }, "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[A-Za-z0-9.-]+)?$" },
+    "digest": { "type": "string", "pattern": "^sha256:(?!0{64}$)[0-9a-f]{64}$" }, "path": { "type": "string", "pattern": "^(?:\\.|[A-Za-z0-9._~-]+)(?:/[A-Za-z0-9._~-]+)*$", "maxLength": 512 }
+  }
+}
