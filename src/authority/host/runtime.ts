@@ -44,7 +44,7 @@ export function createAuthorityHostRuntime(deps: AuthorityHostRuntimeDependencie
       const dispatchResult = await deps.dispatch.dispatch(result.handle);
       const linkage = result.signedDecision.reservationId ? await deps.ledger.lookupReservationLinkage(result.signedDecision.reservationId) : undefined;
       const state = linkage?.state ?? dispatchLifecycle(dispatchResult.kind);
-      return accepted(requestId, state, linkage?.receiptRef);
+      return accepted(requestId, state, linkage?.receiptRef ?? dispatchResult.receiptRef);
     } catch { return refusal(requestId, "dispatch-unavailable", "unavailable"); }
   }
 

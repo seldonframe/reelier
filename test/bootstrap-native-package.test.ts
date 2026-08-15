@@ -14,9 +14,22 @@ test("npm packaging declares the universal native artifact directory and refuses
   assert.equal(manifest.scripts?.prepack, "node scripts/verify-bootstrap-native-artifacts.mjs");
   const npmCli = [process.env.npm_execpath, path.join(process.execPath, "..", "node_modules", "npm", "bin", "npm-cli.js"), path.join(process.execPath, "..", "..", "lib", "node_modules", "npm", "bin", "npm-cli.js")].find(value => value && existsSync(value));
   assert.ok(npmCli, "npm CLI path is available");
+  const hasCertifiedArtifacts = existsSync(path.join(root, "native", "bootstrap-helper", "manifest.json"));
   const packed = spawnSync(process.execPath, [npmCli, "pack", "--dry-run", "--json"], { cwd: root, encoding: "utf8" });
-  assert.notEqual(packed.status, 0);
-  assert.match(`${packed.stdout}\n${packed.stderr}`, /native bootstrap artifacts unavailable: manifest\.json is missing/i);
+  if (!hasCertifiedArtifacts) {
+    assert.notEqual(packed.status, 0);
+    assert.match(`${packed.stdout}\n${packed.stderr}`, /native bootstrap artifacts unavailable: manifest\.json is missing/i);
+    return;
+  }
+  assert.equal(packed.status, 0, packed.stderr);
+  const jsonStart = packed.stdout.indexOf("[");
+  assert.notEqual(jsonStart, -1, packed.stdout);
+  const files = JSON.parse(packed.stdout.slice(jsonStart)) as [{ files: Array<{ path: string }> }];
+  assert.deepEqual(files[0]?.files.map(file => file.path).filter(file => file.startsWith("native/bootstrap-helper/")).sort(), [
+    "native/bootstrap-helper/linux-x64/reelier-bootstrap-helper",
+    "native/bootstrap-helper/manifest.json",
+    "native/bootstrap-helper/win32-x64/reelier-bootstrap-helper.exe",
+  ]);
 });
 
 test("native build and workflow gates reject an unsupported target without guessing", () => {
