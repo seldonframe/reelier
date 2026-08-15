@@ -175,7 +175,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            node: 24
+          - os: windows-latest
+            node: 22
     runs-on: ${{ matrix.os }}
     steps:
       - name: Enforce authority pack and factory evidence prerequisites
@@ -190,7 +194,7 @@ jobs:
       - uses: actions/setup-node@v4
         if: ${{ needs.pack-authority-host-boundary.result == 'success' && needs.produce-authority-factory-evidence.result == 'success' }}
         with:
-          node-version: 22
+          node-version: ${{ matrix.node }}
           cache: npm
       - run: npm ci
         if: ${{ needs.pack-authority-host-boundary.result == 'success' && needs.produce-authority-factory-evidence.result == 'success' }}
@@ -260,6 +264,10 @@ jobs:
         shell: bash
         run: |
           if [ '${{ matrix.os }}' = 'ubuntu-latest' ]; then node --test --test-concurrency=1 --test-name-pattern='^N100 authority convergence:' dist-test/test/authority/ledger.test.js; else node --test --test-concurrency=1 dist-test/test/authority/linux-authority-cell.test.js dist-test/test/authority/authority-cell-connection.test.js dist-test/test/authority/certification-portable-evidence.test.js; fi
+      - name: Install Eve continuity fixture dependencies
+        if: ${{ needs.pack-authority-host-boundary.result == 'success' && needs.produce-authority-factory-evidence.result == 'success' }}
+        shell: bash
+        run: if [ '${{ matrix.os }}' = 'ubuntu-latest' ]; then npm --prefix conformance/continuity-adapter/v1/eve-fixture ci --ignore-scripts; fi
       # `shell: bash` is explicit (not just the Linux default) because it
       # also runs on windows-latest via the runner's bundled Git Bash — the
       # `tee`/`pipefail` combo below needs one shell that behaves the same

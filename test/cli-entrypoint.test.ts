@@ -73,7 +73,11 @@ test("real CLI restart recovers an interrupted exact plan and refuses later iden
   const root = await mkdtemp(path.join(tmpdir(), "reelier-cli-restart-"));
   const project = path.join(root, "project");
   await mkdir(project);
-  const cliPath = path.join(CLI_DIR, "cli.js");
+    // Use the shipped build for the child process so its package root is the
+    // checkout root that contains the certified native helper. The test
+    // source remains compiled from dist-test, but a real CLI restart must
+    // exercise the same package layout users receive.
+  const cliPath = path.resolve(CLI_DIR, "../../dist/cli.js");
   const transactionPath = path.join(project, ".reelier", "bootstrap", "transaction.json");
   try {
     const bootstrap = path.join(project, ".reelier", "bootstrap");
