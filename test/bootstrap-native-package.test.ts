@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,7 +12,9 @@ test("npm packaging declares the universal native artifact directory and refuses
   const manifest = JSON.parse(await readFile(path.join(root, "package.json"), "utf8")) as { files?: unknown; scripts?: Record<string, string> };
   assert.ok(Array.isArray(manifest.files) && manifest.files.includes("native/bootstrap-helper/manifest.json") && manifest.files.includes("native/bootstrap-helper/linux-x64/reelier-bootstrap-helper") && manifest.files.includes("native/bootstrap-helper/win32-x64/reelier-bootstrap-helper.exe"));
   assert.equal(manifest.scripts?.prepack, "node scripts/verify-bootstrap-native-artifacts.mjs");
-  const packed = spawnSync("npm", ["pack", "--dry-run", "--json"], { cwd: root, encoding: "utf8", shell: process.platform === "win32" });
+  const npmCli = [process.env.npm_execpath, path.join(process.execPath, "..", "node_modules", "npm", "bin", "npm-cli.js"), path.join(process.execPath, "..", "..", "lib", "node_modules", "npm", "bin", "npm-cli.js")].find(value => value && existsSync(value));
+  assert.ok(npmCli, "npm CLI path is available");
+  const packed = spawnSync(process.execPath, [npmCli, "pack", "--dry-run", "--json"], { cwd: root, encoding: "utf8" });
   assert.notEqual(packed.status, 0);
   assert.match(`${packed.stdout}\n${packed.stderr}`, /native bootstrap artifacts unavailable: manifest\.json is missing/i);
 });

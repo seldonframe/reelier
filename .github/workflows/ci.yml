@@ -36,7 +36,64 @@ on:
   workflow_dispatch:
 
 jobs:
+  build-bootstrap-native:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux-x64
+          - os: windows-latest
+            target: win32-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.97.1 --profile minimal
+      - name: Build, test, and probe matching-host helper
+        run: node scripts/build-bootstrap-native.mjs --target ${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-bootstrap-${{ matrix.target }}
+          path: |
+            native/bootstrap-helper/${{ matrix.target }}/reelier-bootstrap-helper*
+            native/bootstrap-helper/evidence/${{ matrix.target }}.json
+          if-no-files-found: error
+
+  assemble-bootstrap-native:
+    needs: build-bootstrap-native
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: native-bootstrap-*
+          path: native/bootstrap-helper
+          merge-multiple: true
+      - name: Assemble exact universal manifest
+        run: node scripts/assemble-bootstrap-native-artifacts.mjs
+      - name: Verify both artifacts and current-host probe
+        run: node scripts/verify-bootstrap-native-artifacts.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-bootstrap-universal
+          path: |
+            native/bootstrap-helper/manifest.json
+            native/bootstrap-helper/linux-x64/reelier-bootstrap-helper
+            native/bootstrap-helper/win32-x64/reelier-bootstrap-helper.exe
+          if-no-files-found: error
+
   pack-authority-host-boundary:
+    needs: assemble-bootstrap-native
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -47,7 +104,12 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-bootstrap-universal
+          path: native/bootstrap-helper
       - run: npm run build
+      - run: node scripts/verify-bootstrap-native-artifacts.mjs
       - run: npm run check:authority-contract
       - name: Pack authority host boundary once
         shell: bash

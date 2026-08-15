@@ -1,6 +1,11 @@
 node_modules/
 dist/
 dist-test/
+native/bootstrap-helper/target/
+native/bootstrap-helper/evidence/
+native/bootstrap-helper/manifest.json
+native/bootstrap-helper/linux-x64/
+native/bootstrap-helper/win32-x64/
 coverage/
 # Written by ci.yml's "Run tests" step (`npm test 2>&1 | tee test-output.txt`)
 # for the badge-check step to read. Reproducing that command locally

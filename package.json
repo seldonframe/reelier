@@ -45,7 +45,10 @@
     "LICENSE",
     "CHANGELOG.md",
     "integrations",
-    "contract"
+    "contract",
+    "native/bootstrap-helper/manifest.json",
+    "native/bootstrap-helper/linux-x64/reelier-bootstrap-helper",
+    "native/bootstrap-helper/win32-x64/reelier-bootstrap-helper.exe"
   ],
   "repository": {
     "type": "git",
@@ -94,9 +97,13 @@
     "test:packed-factory-journey": "node test/packed/authority-factory-journey.mjs",
     "test:packed-native-github-labels": "node test/packed/native-github-labels.mjs",
     "pack:native-candidate": "npm pack --json",
+    "build:native-bootstrap": "node scripts/build-bootstrap-native.mjs",
+    "assemble:native-bootstrap": "node scripts/assemble-bootstrap-native-artifacts.mjs",
+    "verify:native-bootstrap": "node scripts/verify-bootstrap-native-artifacts.mjs",
     "test:mutation": "stryker run",
     "preflight": "node scripts/preflight.mjs",
     "preflight:acceleration": "node scripts/run-acceleration-preflight.mjs",
+    "prepack": "node scripts/verify-bootstrap-native-artifacts.mjs",
     "prepublishOnly": "npm run check:authority-contract && npm run build && npm test",
     "hooks:install": "git config core.hooksPath .githooks"
   },
