@@ -12,7 +12,11 @@ const generatedContract: OutcomeProfileContractV1 = {
   "members": [
     {
       "path": "profile-activation.schema.json",
-      "digest": "sha256:2b8a3dc22995a992afe83c38e25898c48c34153df0af1e45235103d5d567ec62"
+      "digest": "sha256:b022b575fa87250c91edc8ff08d9cc9f2b7fbc99af1a416ee15899fbf48a3cf4"
+    },
+    {
+      "path": "profile-authority-evidence.schema.json",
+      "digest": "sha256:5fb960e28ede67afe7ea09ba51934a238a3ad9ac85d3ca786b027f7ef8b49b17"
     },
     {
       "path": "profile-conformance-report.schema.json",
@@ -32,14 +36,14 @@ const generatedContract: OutcomeProfileContractV1 = {
     },
     {
       "path": "profile-governed-receipt.schema.json",
-      "digest": "sha256:3ae86c002318bfd6021d54a0193c7270906d58b08b0e0efd164da02d243f31bc"
+      "digest": "sha256:f66cb40f9b1cb668c627d8521aab12ec01f8daef59a3f060e1ba4a22316c4832"
     },
     {
       "path": "profile-trust-pin.schema.json",
       "digest": "sha256:644669e9589e293249055b9840a84feb9d4a8cc0bfe0fed203fcba6ca9d3d5af"
     }
   ],
-  "digest": "sha256:80f3a2a799ac84a0ad11a6ef0b363b2c54ea7ce13c70c508d6e998c455b26a5e"
+  "digest": "sha256:591d623ea7d0efe3e33a87bac114baa0ca66180b8bae6ad292cb0a6399ae66e2"
 };
 export const OUTCOME_PROFILE_CONTRACT_V1: OutcomeProfileContractV1 = Object.freeze({ ...generatedContract, members: Object.freeze(generatedContract.members.map(member => Object.freeze({ ...member }))) });
 export const OUTCOME_PROFILE_CONTRACT_V1_DIGEST = OUTCOME_PROFILE_CONTRACT_V1.digest;

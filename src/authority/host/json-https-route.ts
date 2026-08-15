@@ -1,7 +1,7 @@
 import { authorityDigest } from "../wire.js";
 
 const VERSION = "reelier.json-https-route/v1" as const;
-const KEYS = ["v", "providerId", "connectorId", "accountId", "providerAccountIdentity", "endpointId", "origin", "allowedMethods", "allowedPathPrefixes", "credentialSlotId", "responseSemanticsProfileId", "reconciliationRecipeId", "readEndpointId", "egressPolicyDigest"] as const;
+const KEYS = ["v", "providerId", "connectorId", "accountId", "providerAccountIdentity", "endpointId", "origin", "allowedMethods", "allowedPathPrefixes", "credentialSlotId", "responseSemanticsProfileId", "reconciliationRecipeId", "readEndpointId", "egressPolicyDigest", "projectionSchemaDigest"] as const;
 const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const DIGEST = /^sha256:(?!0{64}$)[0-9a-f]{64}$/;
@@ -23,6 +23,7 @@ export interface JsonHttpsRouteV1 {
   readonly reconciliationRecipeId: string;
   readonly readEndpointId: string;
   readonly egressPolicyDigest: string;
+  readonly projectionSchemaDigest: string;
 }
 
 export type CanonicalJsonHttpsRouteV1 = Readonly<JsonHttpsRouteV1>;
@@ -39,10 +40,11 @@ export function parseJsonHttpsRouteV1(value: unknown): CanonicalJsonHttpsRouteV1
   for (const key of strings) if (typeof raw[key] !== "string" || !IDENTIFIER.test(raw[key] as string)) throw new TypeError(`JSON HTTPS route ${key} is invalid`);
   if (typeof raw.origin !== "string") throw new TypeError("JSON HTTPS route origin is invalid");
   if (typeof raw.egressPolicyDigest !== "string" || !DIGEST.test(raw.egressPolicyDigest)) throw new TypeError("JSON HTTPS route egress policy digest is invalid");
+  if (typeof raw.projectionSchemaDigest !== "string" || !DIGEST.test(raw.projectionSchemaDigest)) throw new TypeError("JSON HTTPS route projection schema digest is invalid");
   const origin = canonicalOrigin(raw.origin);
   const allowedMethods = canonicalMethods(raw.allowedMethods);
   const allowedPathPrefixes = canonicalPaths(raw.allowedPathPrefixes);
-  return Object.freeze({ v: VERSION, providerId: raw.providerId as string, connectorId: raw.connectorId as string, accountId: raw.accountId as string, providerAccountIdentity: raw.providerAccountIdentity as string, endpointId: raw.endpointId as string, origin, allowedMethods, allowedPathPrefixes, credentialSlotId: raw.credentialSlotId as string, responseSemanticsProfileId: raw.responseSemanticsProfileId as string, reconciliationRecipeId: raw.reconciliationRecipeId as string, readEndpointId: raw.readEndpointId as string, egressPolicyDigest: raw.egressPolicyDigest });
+  return Object.freeze({ v: VERSION, providerId: raw.providerId as string, connectorId: raw.connectorId as string, accountId: raw.accountId as string, providerAccountIdentity: raw.providerAccountIdentity as string, endpointId: raw.endpointId as string, origin, allowedMethods, allowedPathPrefixes, credentialSlotId: raw.credentialSlotId as string, responseSemanticsProfileId: raw.responseSemanticsProfileId as string, reconciliationRecipeId: raw.reconciliationRecipeId as string, readEndpointId: raw.readEndpointId as string, egressPolicyDigest: raw.egressPolicyDigest, projectionSchemaDigest: raw.projectionSchemaDigest });
 }
 
 export function canonicalizeJsonHttpsRoute(value: JsonHttpsRouteV1): CanonicalJsonHttpsRouteV1 {
@@ -61,7 +63,7 @@ export function createJsonHttpsRouteRegistry(routes: readonly JsonHttpsRouteV1[]
   for (const route of parsed) {
     const readRoute = byEndpointId.get(route.readEndpointId);
     if (!readRoute || !readRoute.allowedMethods.includes("GET")) throw new TypeError("JSON HTTPS route read endpoint must be a registered GET route");
-    if (readRoute.providerId !== route.providerId || readRoute.connectorId !== route.connectorId || readRoute.accountId !== route.accountId || readRoute.providerAccountIdentity !== route.providerAccountIdentity || readRoute.origin !== route.origin || readRoute.credentialSlotId !== route.credentialSlotId || readRoute.egressPolicyDigest !== route.egressPolicyDigest) throw new TypeError("JSON HTTPS route read endpoint equivalence mismatch");
+    if (readRoute.providerId !== route.providerId || readRoute.connectorId !== route.connectorId || readRoute.accountId !== route.accountId || readRoute.providerAccountIdentity !== route.providerAccountIdentity || readRoute.origin !== route.origin || readRoute.credentialSlotId !== route.credentialSlotId || readRoute.egressPolicyDigest !== route.egressPolicyDigest || readRoute.projectionSchemaDigest !== route.projectionSchemaDigest) throw new TypeError("JSON HTTPS route read endpoint equivalence mismatch");
   }
   return Object.freeze({ route: (endpointId: string) => typeof endpointId === "string" ? byEndpointId.get(endpointId) : undefined });
 }
@@ -74,7 +76,9 @@ export function lookupJsonHttpsRoute(registry: JsonHttpsRouteRegistry, endpointI
 function closedObject(value: unknown, label: string): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype) throw new TypeError(`${label} is invalid`);
   const descriptors = Object.getOwnPropertyDescriptors(value);
-  if (Object.keys(descriptors).length !== KEYS.length || KEYS.some(key => !(key in descriptors)) || Object.keys(descriptors).some(key => !KEYS.includes(key as typeof KEYS[number])) || Object.values(descriptors).some(descriptor => !("value" in descriptor) || descriptor.get || descriptor.set)) throw new TypeError(`${label} contains unknown or accessor fields`);
+  const missing=KEYS.filter(key=>!(key in descriptors));
+  if(missing.length)throw new TypeError(`${label} missing ${missing.join(", ")}`);
+  if (Object.keys(descriptors).length !== KEYS.length || Object.keys(descriptors).some(key => !KEYS.includes(key as typeof KEYS[number])) || Object.values(descriptors).some(descriptor => !("value" in descriptor) || descriptor.get || descriptor.set)) throw new TypeError(`${label} contains unknown or accessor fields`);
   return Object.fromEntries(KEYS.map(key => [key, descriptors[key]!.value]));
 }
 

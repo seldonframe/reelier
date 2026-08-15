@@ -20,8 +20,8 @@ import type { AuthorityHostConfig } from "./config.js";
 import type { AuthorityHostRuntime } from "./server.js";
 import { createSecretResolver, type SecretResolver, type SecretResolverOptions } from "./secret-resolver.js";
 import { firstPartyPacks, firstPartyPackForAlias, createFirstPartySourceRegistry } from "../../packs/index.js";
-import { loadAuthorityDeployment, type JobCardTrustPinV1 } from "./deployment.js";
-import { loadOrCreateLocalGateSigner } from "./gate-signer.js";
+import { loadAuthorityDeployment, type JobCardTrustPinV1, type LoadedAuthorityDeployment } from "./deployment.js";
+import { loadExistingLocalGateSigner, loadOrCreateLocalGateSigner, type LocalGateSigner } from "./gate-signer.js";
 import type { DelegationAuthority } from "./delegation-service.js";
 import { assertFreshManagedTopologyEvidence, assertManagedTopologyEvidence, type SignedTopologyEvidenceV1, type TopologyEvidenceV1 } from "./topology.js";
 import { verifyAuthorityLease } from "./lease.js";
@@ -37,6 +37,7 @@ import type { AuthorityLatencyRecorder } from "./latency.js";
 import type { AdmittedProfileGovernanceV1 } from "./profile-governance.js";
 import { admittedProfileGovernanceState, assertAdmittedProfileGovernance, assertProfileRuntimeBinding } from "./profile-governance.js";
 import { definitionRegistrationDigest } from "../pack.js";
+import { loadProfileGovernanceFromOperatorTrust } from "./profile-governance-loader.js";
 
 /** Builds the local host from signed-artifact boundaries. An empty workspace is intentionally
  * usable for discovery and status, but every Outcome refuses until a signed contract is installed. */
@@ -82,6 +83,12 @@ export function createLocalAuthorityReceiptPublication(input: Readonly<{ localPu
 
 export async function createLocalAuthorityRuntime(config: AuthorityHostConfig, options: LocalAuthorityRuntimeOptions = {}): Promise<LocalAuthorityRuntime> {
   assertLinuxAuthorityCellHost();
+  assertLocalRuntimeOptions(options);
+  return createLocalAuthorityRuntimeCore(config,options,{});
+}
+
+interface LocalAuthorityRuntimeInternalOptions {readonly gateSigner?:LocalGateSigner;readonly beforeReserve?:(intent:Readonly<import("../ledger.js").ReservationIntent>)=>Promise<void>;readonly governedPublication?:DispatchPublication;readonly deployment?:LoadedAuthorityDeployment}
+async function createLocalAuthorityRuntimeCore(config:AuthorityHostConfig,options:LocalAuthorityRuntimeOptions,internal:LocalAuthorityRuntimeInternalOptions):Promise<LocalAuthorityRuntime>{
   if (config.cloud && config.topology !== "isolated") throw new TypeError("managed authority requires isolated topology");
   if (config.cloud) {
     if (!options.signedTopologyEvidence || !options.topologySigner) throw new TypeError("managed authority requires signed topology evidence");
@@ -102,7 +109,7 @@ export async function createLocalAuthorityRuntime(config: AuthorityHostConfig, o
   }
   await mkdir(config.ledgerDir, { recursive: true }); await mkdir(config.decisionDir, { recursive: true }); await mkdir(config.receiptDir, { recursive: true });
   const jobCardTrustPin = options.jobCardTrustPin ?? (config.jobCardTrustPinPath ? JSON.parse(await readFile(config.jobCardTrustPinPath, "utf8")) as JobCardTrustPinV1 : undefined);
-  const deployment = config.deploymentPath ? await loadAuthorityDeployment(config.deploymentPath, { jobCardTrustPin }) : undefined;
+  const deployment = internal.deployment??(config.deploymentPath ? await loadAuthorityDeployment(config.deploymentPath, { jobCardTrustPin }) : undefined);
   if (deployment && deployment.tenant !== config.tenant) throw new TypeError("authority deployment tenant does not match host config");
   if (deployment && !deployment.jobCard) throw new TypeError("production authority deployment requires a signed Job Card");
   if (deployment?.jobCard) {
@@ -116,7 +123,7 @@ export async function createLocalAuthorityRuntime(config: AuthorityHostConfig, o
   }
   const ledger = new FsAuthorityLedger(config.ledgerDir);
   const decisions = createFileGateDecisionSink(config.decisionDir);
-  const gateSigner = await loadOrCreateLocalGateSigner(config.gateKeyFile ?? path.join(config.receiptDir, "..", "keys", "local-gate.pem"));
+  const gateSigner = internal.gateSigner ?? await loadOrCreateLocalGateSigner(config.gateKeyFile ?? path.join(config.receiptDir, "..", "keys", "local-gate.pem"));
   const { privateKey, publicKey } = gateSigner;
   const deploymentGate = deployment?.trustEntries.find(entry => entry.signerId === "local-gate");
   if (deploymentGate && !deploymentGate.publicKey.export({ type: "spki", format: "der" }).equals(publicKey.export({ type: "spki", format: "der" }))) throw new TypeError("deployment local gate key does not match host gate key");
@@ -138,8 +145,8 @@ export async function createLocalAuthorityRuntime(config: AuthorityHostConfig, o
       } catch { return { ok: false as const, reason: "unavailable" as const }; }
     },
   });
-  const gate = createAuthorityGate({ trustRoots, packs, sources, connectors: connectorRegistry, state, ledger, ...(options.routeAuthority ? { routeAuthority: options.routeAuthority } : {}), ...(options.authenticatedProviderIdentity ? { authenticatedProviderIdentity: options.authenticatedProviderIdentity } : {}), ...(options.latencyRecorder ? { latencyRecorder: options.latencyRecorder } : {}), localGatePolicyDigest: authorityDigest({ v: "reelier.local-gate-policy/v1", tenant: config.tenant }), decisionSink: decisions, signer: { async sign(input) { return { signerId: "local-gate", signature: signAuthorityDigest(privateKey, input.purpose, input.digest) }; } }, eventId: () => `evt_${randomUUID()}`, capabilityId: () => `cap_${randomUUID()}` });
-  const publication = createLocalAuthorityReceiptPublication({ localPublication: createFileReceiptPublication({ rootDir: config.receiptDir }), ...(options.portableReceiptPublication ? { portablePublication: options.portableReceiptPublication } : {}) });
+  const gate = createAuthorityGate({ trustRoots, packs, sources, connectors: connectorRegistry, state, ledger, ...(options.routeAuthority ? { routeAuthority: options.routeAuthority } : {}), ...(options.authenticatedProviderIdentity ? { authenticatedProviderIdentity: options.authenticatedProviderIdentity } : {}), ...(internal.beforeReserve?{beforeReserve:internal.beforeReserve}:{}), ...(options.latencyRecorder ? { latencyRecorder: options.latencyRecorder } : {}), localGatePolicyDigest: authorityDigest({ v: "reelier.local-gate-policy/v1", tenant: config.tenant }), decisionSink: decisions, signer: { async sign(input) { return { signerId: "local-gate", signature: signAuthorityDigest(privateKey, input.purpose, input.digest) }; } }, eventId: () => `evt_${randomUUID()}`, capabilityId: () => `cap_${randomUUID()}` });
+  const publication = internal.governedPublication??createLocalAuthorityReceiptPublication({ localPublication: createFileReceiptPublication({ rootDir: config.receiptDir }), ...(options.portableReceiptPublication ? { portablePublication: options.portableReceiptPublication } : {}) });
   const secrets = options.secretResolver ?? createSecretResolver(options.secretResolverOptions);
   if (config.nativeHttpsRoutes && config.nativeHttpsRoutes.length > 0 && (!options.routeAuthority || !options.authenticatedProviderIdentity || !options.certifiedDispatch || !options.verifyAuthenticatedProviderIdentity)) throw new TypeError("native HTTPS routes require certified route, identity, verifier, and dispatch wiring");
   const certifiedDispatch = options.certifiedDispatch ? { ...options.certifiedDispatch, ...(options.latencyRecorder ? { latencyRecorder: options.latencyRecorder } : {}), verifyIdentity: options.verifyAuthenticatedProviderIdentity ?? options.certifiedDispatch.verifyIdentity } : undefined;
@@ -187,8 +194,11 @@ export async function createLocalAuthorityRuntime(config: AuthorityHostConfig, o
   });
 }
 
+const LOCAL_RUNTIME_OPTION_FIELDS=["dispatchAdapter","delegation","topologyEvidence","signedTopologyEvidence","topologySigner","signedLease","leaseSigner","sourceReadAdapter","connectionRoutes","jobCardTrustPin","secretResolver","secretResolverOptions","routeAuthority","authenticatedProviderIdentity","verifyAuthenticatedProviderIdentity","certifiedDispatch","portableReceiptPublication","latencyRecorder"] as const;
+function assertLocalRuntimeOptions(value:unknown):asserts value is LocalAuthorityRuntimeOptions{if(!value||typeof value!=="object"||Object.getPrototypeOf(value)!==Object.prototype)throw new TypeError("local authority runtime options must be a plain record");const descriptors=Object.getOwnPropertyDescriptors(value);for(const key of Reflect.ownKeys(value)){if(typeof key!=="string"||!LOCAL_RUNTIME_OPTION_FIELDS.includes(key as any))throw new TypeError("local authority runtime options contain an unknown field");const descriptor=descriptors[key];if(!descriptor||!("value" in descriptor)||!descriptor.enumerable)throw new TypeError("local authority runtime options must use enumerable own data fields");}}
+
 /** Package-internal governed composition seam. Deliberately absent from the host barrel. */
-export async function createAdmittedLocalAuthorityRuntime(config: AuthorityHostConfig, admitted: AdmittedProfileGovernanceV1, options: LocalAuthorityRuntimeOptions = {}): Promise<LocalAuthorityRuntime> {
+export async function createAdmittedLocalAuthorityRuntime(config: AuthorityHostConfig, admitted: AdmittedProfileGovernanceV1, options: LocalAuthorityRuntimeOptions = {},internal:Readonly<{gateSigner?:LocalGateSigner;deployment?:LoadedAuthorityDeployment;governedPublication?:DispatchPublication;externalRevalidate?:(intent?:Readonly<import("../ledger.js").ReservationIntent>)=>Promise<void>}>={}): Promise<LocalAuthorityRuntime> {
   assertAdmittedProfileGovernance(admitted);
   const state = admittedProfileGovernanceState(admitted);
   const installedPack = firstPartyPackForAlias(state.draft.packAlias);
@@ -197,7 +207,10 @@ export async function createAdmittedLocalAuthorityRuntime(config: AuthorityHostC
   assertProfileRuntimeBinding(
     { governance: admitted, expectedProfileDigest: state.manifest.profileDigest, expectedActivationDigest: state.manifest.activationDigest },
     { packDigest: installedPack.definition.packDigest, definitionDigest: installedPack.definition.definitionDigest, registrationDigest: definitionRegistrationDigest(installedRegistry, state.draft.packAlias) },
-    { contractDigest: state.activation.contractDigest, jobCardDigest: state.activation.jobCardDigest, deploymentDigest: state.activation.deploymentDigest, routeAuthorityDigest: state.activation.routeAuthorityDigest, trustHeadDigest: state.activation.trustHeadDigest },
+    { contractDigest: state.activation.contractDigest, jobCardDigest: state.activation.jobCardDigest, deploymentDigest: state.activation.deploymentDigest, routeScopeDigest: state.activation.routeScopeDigest, trustHeadDigest: state.activation.trustHeadDigest, authorityTrustHeadDigest: state.activation.authorityTrustHeadDigest },
   );
-  return createLocalAuthorityRuntime(config, options);
+  const revalidate=async(intent?:Readonly<import("../ledger.js").ReservationIntent>)=>{const original=admittedProfileGovernanceState(admitted),freshHandle=await loadProfileGovernanceFromOperatorTrust({...original.reload,verificationTime:new Date()}),fresh=admittedProfileGovernanceState(freshHandle);if(authorityDigest(fresh.manifest)!==authorityDigest(original.manifest)||fresh.operatorRootDigest!==original.operatorRootDigest)throw new TypeError("profile governance changed after admission");assertProfileRuntimeBinding({governance:freshHandle,expectedProfileDigest:original.manifest.profileDigest,expectedActivationDigest:original.manifest.activationDigest},{packDigest:installedPack.definition.packDigest,definitionDigest:installedPack.definition.definitionDigest,registrationDigest:definitionRegistrationDigest(installedRegistry,fresh.draft.packAlias)},{contractDigest:fresh.activation.contractDigest,jobCardDigest:fresh.activation.jobCardDigest,deploymentDigest:fresh.activation.deploymentDigest,routeScopeDigest:fresh.activation.routeScopeDigest,trustHeadDigest:fresh.activation.trustHeadDigest,authorityTrustHeadDigest:fresh.activation.authorityTrustHeadDigest});await internal.externalRevalidate?.(intent);};
+  const gateSigner=internal.gateSigner??await loadExistingLocalGateSigner(config.gateKeyFile ?? path.join(config.receiptDir,"..","keys","local-gate.pem"));
+  const runtime=await createLocalAuthorityRuntimeCore(config,options,{gateSigner,beforeReserve:async intent=>revalidate(intent),...(internal.deployment?{deployment:internal.deployment}:{}),...(internal.governedPublication?{governedPublication:internal.governedPublication}:{})});
+  return Object.freeze({...runtime,async outcome(alias:string,input:unknown,context:{readonly tenant:string;readonly requester:string}){await revalidate();return runtime.outcome(alias,input,context);},async invoke(input:unknown,context:{readonly tenant:string;readonly requester:string}){await revalidate();return runtime.invoke!(input,context);}});
 }

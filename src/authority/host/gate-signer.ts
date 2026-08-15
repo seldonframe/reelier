@@ -1,5 +1,6 @@
 import { createPrivateKey, createPublicKey, generateKeyPairSync, type KeyObject } from "node:crypto";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 export interface LocalGateSigner {
@@ -48,6 +49,28 @@ export async function loadOrCreateLocalGateSigner(file: string): Promise<LocalGa
     throw new TypeError(`local gate key could not be created: ${error instanceof Error ? error.message : String(error)}`);
   }
   return Object.freeze({ privateKey, publicKey: createPublicKey(privateKey), keyFile: resolved });
+}
+
+/** Package-internal governed loader: read-only, non-creating, and stable-handle pinned. */
+export async function loadExistingLocalGateSigner(file: string): Promise<LocalGateSigner> {
+  if (typeof file !== "string" || file.length === 0) throw new TypeError("local gate key file is invalid");
+  const resolved = path.resolve(file);
+  let handle;
+  try {
+    handle = await open(resolved, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const before = await handle.stat();
+    if (!before.isFile()) throw new TypeError("local gate key must be a regular file");
+    const bytes = await handle.readFile();
+    const after = await handle.stat();
+    if (before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size || before.mtimeMs !== after.mtimeMs) throw new TypeError("local gate key changed during read");
+    const privateKey = parsePrivateKey(bytes);
+    return Object.freeze({ privateKey, publicKey: createPublicKey(privateKey), keyFile: resolved });
+  } catch (error) {
+    if (isMissing(error)) throw error;
+    throw new TypeError(`local gate key is invalid: ${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    await handle?.close();
+  }
 }
 
 function parsePrivateKey(bytes: Uint8Array): KeyObject {

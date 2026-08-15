@@ -1,4 +1,4 @@
-import type { OutcomeProfileDraftV1, ProfileConformanceReportV1, ProfileGovernanceManifestV1, SignedOutcomeProfileConformanceV1, SignedTenantProfileActivationV1 } from "../outcome-profile.js";
+import type { OutcomeProfileDraftV1, ProfileConformanceReportV1, ProfileGovernanceManifestV1, ProfileTrustPinV1, SignedOutcomeProfileConformanceV1, SignedTenantProfileActivationV1 } from "../outcome-profile.js";
 
 declare const admittedProfileGovernanceBrand: unique symbol;
 export interface AdmittedProfileGovernanceV1 { readonly [admittedProfileGovernanceBrand]: true }
@@ -15,8 +15,12 @@ export interface ProfileGovernanceAdmissionStateV1 {
   readonly conformance: SignedOutcomeProfileConformanceV1;
   readonly activation: SignedTenantProfileActivationV1;
   readonly manifest: ProfileGovernanceManifestV1;
+  readonly trustPin:ProfileTrustPinV1;
   readonly manifestDigest: string;
   readonly operatorRootDigest: string;
+  readonly certifier: Readonly<{ signerId: string; publicKeySpkiBase64: string }>;
+  readonly operator: Readonly<{ signerId: string; publicKeySpkiBase64: string }>;
+  readonly reload: Readonly<{ tenant:string;governanceRef:string;expectedManifestDigest:string;expectedTrustHeadDigest:string;homedir:string }>;
 }
 
 const admissions = new WeakMap<object, ProfileGovernanceAdmissionStateV1>();
@@ -24,7 +28,7 @@ const admissions = new WeakMap<object, ProfileGovernanceAdmissionStateV1>();
 /** Loader-only minting seam. This module is deliberately absent from every public barrel. */
 export function createAdmittedProfileGovernance(state: ProfileGovernanceAdmissionStateV1): AdmittedProfileGovernanceV1 {
   const admitted = Object.freeze(Object.create(null)) as AdmittedProfileGovernanceV1;
-  admissions.set(admitted, Object.freeze({ ...state }));
+  admissions.set(admitted, Object.freeze({ ...state, certifier: Object.freeze({ ...state.certifier }), operator: Object.freeze({ ...state.operator }),reload:Object.freeze({...state.reload}) }));
   return admitted;
 }
 
@@ -45,11 +49,11 @@ export function profileGovernanceAdmissionSnapshot(admitted: AdmittedProfileGove
 export function assertProfileRuntimeBinding(
   input: ProfileGovernedRuntimeInputV1,
   installed: Readonly<{ packDigest: string; definitionDigest: string; registrationDigest: string }>,
-  authority: Readonly<{ contractDigest: string; jobCardDigest: string; deploymentDigest: string; routeAuthorityDigest: string; trustHeadDigest: string }>,
+  authority: Readonly<{ contractDigest: string; jobCardDigest: string; deploymentDigest: string; routeScopeDigest: string; trustHeadDigest: string; authorityTrustHeadDigest: string }>,
 ): void {
   assertExactDataRecord(input, ["governance", "expectedProfileDigest", "expectedActivationDigest"], "profile runtime input");
   assertExactDataRecord(installed, ["packDigest", "definitionDigest", "registrationDigest"], "installed profile binding");
-  assertExactDataRecord(authority, ["contractDigest", "jobCardDigest", "deploymentDigest", "routeAuthorityDigest", "trustHeadDigest"], "authority profile binding");
+  assertExactDataRecord(authority, ["contractDigest", "jobCardDigest", "deploymentDigest", "routeScopeDigest", "trustHeadDigest", "authorityTrustHeadDigest"], "authority profile binding");
   assertAdmittedProfileGovernance(input.governance);
   const state = admittedProfileGovernanceState(input.governance);
   const matches = input.expectedProfileDigest === state.manifest.profileDigest
@@ -60,8 +64,9 @@ export function assertProfileRuntimeBinding(
     && authority.contractDigest === state.activation.contractDigest
     && authority.jobCardDigest === state.activation.jobCardDigest
     && authority.deploymentDigest === state.activation.deploymentDigest
-    && authority.routeAuthorityDigest === state.activation.routeAuthorityDigest
-    && authority.trustHeadDigest === state.activation.trustHeadDigest;
+    && authority.routeScopeDigest === state.activation.routeScopeDigest
+    && authority.trustHeadDigest === state.activation.trustHeadDigest
+    && authority.authorityTrustHeadDigest === state.activation.authorityTrustHeadDigest;
   if (!matches) throw new TypeError("profile governance runtime binding mismatch");
 }
 

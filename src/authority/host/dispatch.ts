@@ -15,7 +15,19 @@ export type ReconciliationStatus = "matched" | "not-applied" | "conflict" | "una
 export interface DispatchOutcome { readonly kind: "acknowledged" | "definitive-failure" | "ambiguous"; readonly resultDigest: string; readonly providerResultDigest?: string; readonly providerStatus?: number; readonly responseDigest?: string; /** Digest of the exact provider request bytes when confidential material was inserted inside the Authority Cell. */ readonly materializedRequestDigest?: string; readonly reconciliationStatus?: ReconciliationStatus; readonly normalizedProjectionDigest?: string | null; readonly receiptRef?: string; readonly evidenceDigest?: string; readonly priorReceiptDigest?: string; }
 export interface DispatchAdapter { dispatch(state: DispatchRequestState): Promise<DispatchOutcome>; prepare?(state: DispatchRequestState): Promise<PreparedDispatch>; reconcile?(state: DispatchRequestState, outcome: DispatchOutcome): Promise<DispatchOutcome>; }
 export interface DispatchEvidenceWriter { persist(input: Readonly<{ state: DispatchRequestState; outcome: DispatchOutcome; dispatchedRequestDigest: string; }>): Promise<void>; }
-export interface DispatchPublication { publish(input: Readonly<{ phase: "dispatch" | "cancelled" | "ambiguous" | "reconcile"; state: DispatchRequestState; outcome: DispatchOutcome; dispatchedRequestDigest: string | null; priorReceiptDigest?: string | null; }>): Promise<Readonly<{ receiptRef: string; evidenceDigest: string }>>; }
+export type DurableDispatchPublicationIdentityV1 = Readonly<{ v:"reelier.durable-dispatch-publication-identity/v1";reservationId:string;tenant:string;requestDigest:string;capabilityDigest:string;effectDigest:string;routeAuthorityDigest:string;expectedDispatchedRequestDigest:string;reservationIntentDigest:string }>;
+export type DurableDispatchPublicationQueryV1 = Readonly<{v:"reelier.durable-dispatch-publication-query/v1";identity:DurableDispatchPublicationIdentityV1;ledgerState:"dispatched"|"ambiguous";sendStarted:true}>;
+export type DurableDispatchPublicationHeadV1 = Readonly<{v:"reelier.durable-dispatch-publication-head/v1";identity:DurableDispatchPublicationIdentityV1;receiptRef:string;evidenceDigest:string;reservationReceiptRef:string;priorReceiptRef:string|null}&(
+  |Readonly<{phase:"reservation";terminalKind:null;priorReceiptRef:null}>
+  |Readonly<{phase:"dispatch";terminalKind:"acknowledged"|"definitive-failure";priorReceiptRef:string}>
+  |Readonly<{phase:"ambiguous";terminalKind:"ambiguous";priorReceiptRef:string}>
+  |Readonly<{phase:"reconcile";terminalKind:"reconciled";priorReceiptRef:string}>
+)>;
+export interface DispatchPublication {
+  publish(input: Readonly<{ phase: "dispatch" | "cancelled" | "ambiguous" | "reconcile"; state: DispatchRequestState; outcome: DispatchOutcome; dispatchedRequestDigest: string | null; priorReceiptDigest?: string | null; }>): Promise<Readonly<{ receiptRef: string; evidenceDigest: string }>>;
+  publishReservation?(input:Readonly<{phase:"reservation";identity:DurableDispatchPublicationIdentityV1;state:DispatchRequestState;outcome:DispatchOutcome;dispatchedRequestDigest:null;priorReceiptDigest:null}>):Promise<Readonly<{receiptRef:string;evidenceDigest:string}>>;
+  loadDurableHead?(query:DurableDispatchPublicationQueryV1):Promise<DurableDispatchPublicationHeadV1|null>;
+}
 export interface DispatchCoordinator { dispatch(handle: ReservedDispatchHandle): Promise<DispatchOutcome>; cancel(handle: ReservedDispatchHandle, reason?: string): Promise<DispatchOutcome>; reconcile(reservationId: string): Promise<DispatchOutcome>; recover(): Promise<readonly string[]>; }
 export interface DispatchBudget { consumeOnce(input: Readonly<{ allocationId: string; reservationId: string; effects: number }>): Promise<unknown>; returnOnce(input: Readonly<{ allocationId: string; reservationId: string; effects: number }>): Promise<unknown>; releaseConsumedOnce?(input: Readonly<{ allocationId: string; reservationId: string; effects: number }>): Promise<unknown>; }
 export interface CurrentDispatchAuthorityV1 { readonly authorityGeneration: string; readonly authorityExpiresAt: string; readonly authorityStateDigest?: string; readonly sourceBundleDigest?: string; readonly grantDigest?: string; readonly runtimeSessionId?: string; readonly routeAuthorityDigest: string; readonly providerId?: string; readonly connectorId?: string; readonly accountId?: string; readonly endpointId?: string; }
@@ -25,6 +37,7 @@ export interface CertifiedDispatchOptions { readonly identityProbe: () => Promis
 
 export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: DispatchAdapter, evidence?: DispatchEvidenceWriter, publication?: DispatchPublication, budget?: DispatchBudget, certified?: CertifiedDispatchOptions): DispatchCoordinator {
   assertLinuxAuthorityCellHost();
+  if(publication&&Boolean(publication.publishReservation)!==Boolean(publication.loadDurableHead))throw new TypeError("durable dispatch publication methods must be configured as a pair");
   const budgetFor = (state: DispatchRequestState): { allocationId: string; reservationId: string; effects: number } | undefined => {
     const context = state.reservation.intent.executionContext;
     return context ? { allocationId: context.allocationId, reservationId: state.reservation.reservationId, effects: 1 } : undefined;
@@ -57,6 +70,15 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
           }
           throw error;
         }
+        let reservationRoot:Readonly<{receiptRef:string;evidenceDigest:string}>|undefined;
+        if(publication?.publishReservation){
+          const persisted=await ledger.getReservation(reservationId);
+          if(!persisted||persisted.state!=="dispatched"||persisted.sendStarted!==true)throw new Error("prepared commit did not persist send-started before publication");
+          const identity=durableIdentity(persisted);
+          const rootState=recoveredState(persisted);
+          const rootOutcome=Object.freeze({kind:"ambiguous" as const,resultDigest:authorityDigest({reservationId,phase:"reservation"})});
+          reservationRoot=await publication.publishReservation({phase:"reservation",identity,state:rootState,outcome:rootOutcome,dispatchedRequestDigest:null,priorReceiptDigest:null});
+        }
         let outcome: DispatchOutcome;
         try { certified?.onPhase?.("authority-send-boundary"); outcome = await measureLatency(certified?.latencyRecorder, "authority-send-boundary", () => consumePreparedDispatch(prepared, lease)); certified?.onPhase?.("send"); }
         catch { outcome = { kind: "ambiguous", resultDigest: authorityDigest({ v: "reelier.dispatch-result/v1", reservationId, status: "ambiguous" }) }; }
@@ -67,10 +89,12 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
         }
         const dispatchedRequestDigest = outcome.materializedRequestDigest ?? description.materializedRequestDigest;
         if (evidence) await evidence.persist({ state, outcome, dispatchedRequestDigest });
+        let terminalPublication:Readonly<{receiptRef:string;evidenceDigest:string}>|undefined;
+        if(publication){terminalPublication=await publication.publish({phase:outcome.kind==="ambiguous"?"ambiguous":"dispatch",state,outcome,dispatchedRequestDigest,priorReceiptDigest:reservationRoot?.receiptRef??null});if(outcome.kind!=="ambiguous")outcome=Object.freeze({...outcome,providerResultDigest:outcome.resultDigest,resultDigest:terminalPublication.receiptRef,receiptRef:terminalPublication.receiptRef,evidenceDigest:terminalPublication.evidenceDigest,priorReceiptDigest:reservationRoot?.receiptRef});}
         const terminal = outcome.kind;
         const result = await measureLatency(certified?.latencyRecorder, "terminal-transition", () => ledger.transition(reservationId, "dispatched", terminal === "ambiguous" ? { to: "ambiguous" } : { to: terminal, resultDigest: outcome.resultDigest }));
         if (!result.ok) throw new Error(`dispatch result transition refused: ${result.reason}`);
-        return Object.freeze({ ...outcome, materializedRequestDigest: dispatchedRequestDigest });
+        return Object.freeze({ ...outcome, materializedRequestDigest: dispatchedRequestDigest, ...(terminalPublication&&outcome.kind==="ambiguous"?{receiptRef:terminalPublication.receiptRef,evidenceDigest:terminalPublication.evidenceDigest,priorReceiptDigest:reservationRoot?.receiptRef}:{}) });
       }
       if (certified) throw new Error("certified dispatch requires prepared commit boundary");
       const transitioned = await ledger.transition(reservationId, "reserved", { to: "dispatched" });
@@ -125,7 +149,19 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
       if (!reservation) throw new Error("reservation not found");
       if (reservation.state !== "ambiguous") throw new Error("only ambiguous reservations can be reconciled");
       const state = recoveredState(reservation);
-      const priorReceiptDigest = reservation.resultDigest ?? null;
+      let priorReceiptDigest = reservation.resultDigest ?? null;
+      if(publication?.loadDurableHead){
+        if(reservation.sendStarted!==true)throw new Error("ambiguous reservation is missing send-started marker");
+        const identity=durableIdentity(reservation),head=assertDurableHead(await publication.loadDurableHead(durableQuery(identity,"ambiguous")),identity);
+        if(!head)throw new Error("durable governed receipt chain is absent");
+        if(head.phase==="reconcile"){
+          const adopted=await ledger.transition(reservationId,"ambiguous",{to:"reconciled",resultDigest:head.receiptRef});
+          if(!adopted.ok)throw new Error(`reconciliation adoption refused: ${adopted.reason}`);
+          return Object.freeze({kind:"acknowledged",resultDigest:head.receiptRef,receiptRef:head.receiptRef,evidenceDigest:head.evidenceDigest,priorReceiptDigest:head.priorReceiptRef??undefined,reconciliationStatus:"matched"});
+        }
+        if(head.phase!=="ambiguous")throw new Error("durable governed receipt head is not reconcilable");
+        priorReceiptDigest=head.receiptRef;
+      }
       const pending = Object.freeze({
         kind: "ambiguous" as const,
         resultDigest: authorityDigest({ v: "reelier.ambiguous-result/v1", reservationId }),
@@ -162,13 +198,40 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
           continue;
         }
         if (reservation.state === "dispatched") {
+          if(publication?.loadDurableHead&&reservation.sendStarted!==true)throw new Error("dispatched reservation is missing send-started marker");
           const resultDigest = authorityDigest({ v: "reelier.ambiguous-result/v1", reservationId: reservation.reservationId });
           const state = recoveredState(reservation);
           const outcome = Object.freeze({ kind: "ambiguous" as const, resultDigest });
-          const published = publication ? await publication.publish({ phase: "ambiguous", state, outcome, dispatchedRequestDigest: authorityDigest({ v: "reelier.dispatched-request/v1", reservationId: reservation.reservationId, effectDigest: reservation.intent.effectDigest }) }) : undefined;
+          let published:Readonly<{receiptRef:string;evidenceDigest:string}>|undefined;
+          if(publication?.loadDurableHead){
+            const identity=durableIdentity(reservation),head=assertDurableHead(await publication.loadDurableHead(durableQuery(identity,"dispatched")),identity);
+            if(!head)throw new Error("send-started reservation is missing durable reservation root");
+            if(head.phase==="dispatch"&&(head.terminalKind==="acknowledged"||head.terminalKind==="definitive-failure")){
+              const adopted=await ledger.transition(reservation.reservationId,"dispatched",{to:head.terminalKind,resultDigest:head.receiptRef});
+              if(!adopted.ok)throw new Error(`durable terminal adoption refused: ${adopted.reason}`);
+              continue;
+            }
+            if(head.phase==="ambiguous"){
+              const adopted=await ledger.transition(reservation.reservationId,"dispatched",{to:"ambiguous"});
+              if(!adopted.ok)throw new Error(`durable ambiguity adoption refused: ${adopted.reason}`);
+              ambiguous.push(reservation.reservationId);continue;
+            }
+            if(head.phase!=="reservation")throw new Error("durable governed receipt head is incompatible with dispatched recovery");
+            published=await publication.publish({phase:"ambiguous",state,outcome,dispatchedRequestDigest:identity.expectedDispatchedRequestDigest,priorReceiptDigest:head.receiptRef});
+          }else if(publication)published=await publication.publish({ phase: "ambiguous", state, outcome, dispatchedRequestDigest: authorityDigest({ v: "reelier.dispatched-request/v1", reservationId: reservation.reservationId, effectDigest: reservation.intent.effectDigest }) });
           const transitioned = await ledger.transition(reservation.reservationId, "dispatched", { to: "ambiguous" });
           if (!transitioned.ok) throw new Error(`ambiguity transition refused: ${transitioned.reason}`);
           ambiguous.push(reservation.reservationId);
+          continue;
+        }
+        if(reservation.state==="ambiguous"&&publication?.loadDurableHead){
+          if(reservation.sendStarted!==true)throw new Error("ambiguous reservation is missing send-started marker");
+          const identity=durableIdentity(reservation),head=assertDurableHead(await publication.loadDurableHead(durableQuery(identity,"ambiguous")),identity);
+          if(!head)throw new Error("ambiguous reservation is missing durable governed receipt chain");
+          if(head.phase==="reconcile"){
+            const adopted=await ledger.transition(reservation.reservationId,"ambiguous",{to:"reconciled",resultDigest:head.receiptRef});
+            if(!adopted.ok)throw new Error(`durable reconciliation adoption refused: ${adopted.reason}`);
+          }else if(head.phase!=="ambiguous")throw new Error("durable governed receipt head is incompatible with ambiguous recovery");
         }
       }
       return Object.freeze(ambiguous);
@@ -192,6 +255,25 @@ function recoveredState(reservation: DispatchRequestState["reservation"]): Dispa
     try { effect = JSON.parse(Buffer.from(encoded, "base64").toString("utf8")); } catch { effect = {}; }
   }
   return { reservation, effect, effectCanonicalBase64: encoded ?? "", effectDigest: reservation.intent.effectDigest } as DispatchRequestState;
+}
+
+function durableIdentity(reservation:import("../ledger.js").ReservationSnapshot):DurableDispatchPublicationIdentityV1{
+  const intent=reservation.intent;
+  const route=intent.routeAuthority;
+  if(!route)throw new TypeError("durable publication requires route authority");
+  const required=[intent.requestDigest,intent.capabilityDigest,intent.effectDigest,route.expectedMaterializedRequestDigest];
+  if(typeof intent.tenant!=="string"||intent.tenant.length===0||required.some(value=>typeof value!=="string"||!/^sha256:(?!0{64}$)[0-9a-f]{64}$/.test(value)))throw new TypeError("durable publication identity is invalid");
+  return Object.freeze({v:"reelier.durable-dispatch-publication-identity/v1",reservationId:reservation.reservationId,tenant:intent.tenant,requestDigest:intent.requestDigest,capabilityDigest:intent.capabilityDigest,effectDigest:intent.effectDigest,routeAuthorityDigest:authorityDigest(route),expectedDispatchedRequestDigest:route.expectedMaterializedRequestDigest,reservationIntentDigest:authorityDigest({v:"reelier.dispatch-reservation-intent/v1",intent})});
+}
+
+function durableQuery(identity:DurableDispatchPublicationIdentityV1,ledgerState:"dispatched"|"ambiguous"):DurableDispatchPublicationQueryV1{return Object.freeze({v:"reelier.durable-dispatch-publication-query/v1",identity,ledgerState,sendStarted:true});}
+function assertDurableHead(value:DurableDispatchPublicationHeadV1|null,identity:DurableDispatchPublicationIdentityV1):DurableDispatchPublicationHeadV1|null{
+  if(value===null)return null;
+  if(!value||typeof value!=="object"||Object.getPrototypeOf(value)!==Object.prototype||authorityDigest(value.identity)!==authorityDigest(identity))throw new TypeError("durable governed receipt head identity mismatch");
+  if(value.v!=="reelier.durable-dispatch-publication-head/v1"||!/^sha256:(?!0{64}$)[0-9a-f]{64}$/.test(value.receiptRef)||!/^sha256:(?!0{64}$)[0-9a-f]{64}$/.test(value.evidenceDigest)||value.reservationReceiptRef!==((value.phase==="reservation")?value.receiptRef:value.reservationReceiptRef))throw new TypeError("durable governed receipt head is invalid");
+  if(value.phase==="reservation"&&(value.terminalKind!==null||value.priorReceiptRef!==null||value.reservationReceiptRef!==value.receiptRef))throw new TypeError("durable reservation root is invalid");
+  if(value.phase!=="reservation"&&(typeof value.priorReceiptRef!=="string"||!/^sha256:(?!0{64}$)[0-9a-f]{64}$/.test(value.priorReceiptRef)))throw new TypeError("durable governed receipt prior is invalid");
+  return value;
 }
 
 async function measureLatency<T>(recorder: AuthorityLatencyRecorder | undefined, phase: AuthorityLatencyPhase, operation: () => T | Promise<T>): Promise<T> {
