@@ -92,3 +92,40 @@ Remaining review risks
 - Checkpoint validation is strongest for the semantic project/report/runtime join; every artifact is not yet digest-bound in the state file.
 - Named install application is exposed as a consent-gated helper but is not yet wired into `initializeAgentProject`'s configuration checkpoint/canary path.
 - Installed-build digest, Continuity contract digest provenance, crash-cut injection, concurrent workload-key creation, process-argument/environment snapshot instrumentation, and trust-root admission non-promotion need dedicated follow-up witnesses before claiming the whole review matrix is closed.
+
+Review-fix round 2
+
+- `5ce53dc` adds RED tests for dead-owner lock recovery, digest-bound artifacts for every checkpoint, concurrent initializer/key behavior, consented pinned config installation with backup/canary, and valid operator-governance import without project trust-root copies.
+- `458504d` adds atomic `wx` bootstrap lock ownership with a narrow negative-PID stale-lock recovery witness, digest-bearing checkpoint state plus restart revalidation, same-process wait/retry for concurrent initializers, named pinned installer application under `--yes`, truthful verified/unchecked canary status, and closed valid-governance import.
+
+Round-2 test results (verbatim tail)
+
+```text
+✔ planWrapOffer: a malformed config never crashes init's closing step — honest skip note, file untouched (3.1777ms)
+ℹ tests 57
+ℹ suites 0
+ℹ pass 57
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 3300.6363
+```
+
+Round-2 gate results
+
+```text
+> reelier@0.32.1 check:authority-contract
+> node scripts/build-authority-contract.mjs --check
+
+> reelier@0.32.1 check:outcome-profile-contract
+> node scripts/build-outcome-profile-contract.mjs --check
+
+> reelier@0.32.1 check:bootstrap-contract
+> node scripts/build-bootstrap-contract.mjs --check
+```
+
+Round-2 open risks
+
+- Stale-lock recovery is deliberately limited to a deterministic invalid/dead negative PID test marker; portable liveness verification for arbitrary crashed-process PIDs remains a follow-up.
+- The canary validates only that the pinned config transformation was applied; it does not launch a real MCP child or prove provider/authority behavior.
