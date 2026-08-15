@@ -248,7 +248,7 @@ impl Session {
         if !valid_relative(relative) {
             return "refused";
         }
-        let Ok(bytes) = decode_bytes(bytes_hex) else {
+        let Ok(_bytes) = decode_bytes(bytes_hex) else {
             return "refused";
         };
         let path = Path::new(relative);
@@ -353,7 +353,7 @@ fn replace_open_file(file: &mut std::fs::File, bytes: &[u8]) -> std::io::Result<
     file.sync_all()
 }
 fn decode_bytes(value: &str) -> Result<Vec<u8>, ()> {
-    if value.len() > MAX_BYTES * 2 || value.len() % 2 != 0 {
+    if value.len() > MAX_BYTES * 2 || !value.len().is_multiple_of(2) {
         return Err(());
     }
     hex::decode(value).map_err(|_| ())
