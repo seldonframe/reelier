@@ -24,13 +24,13 @@ export interface InitializeAgentProjectOptions { readonly cwd: string; readonly 
 export type BootstrapPreparationReport = BootstrapReportV1 & Readonly<{ actions: { profileDrafted: boolean; profileCertified: boolean; authorityActivated: boolean }; pathC: "unavailable-no-activation"; }>;
 interface BootstrapCompleted { id: BootstrapCheckpointId; artifact: string; digest: string; }
 interface BootstrapState { v: "reelier.bootstrap-state/v1"; planDigest: string; completed: readonly BootstrapCompleted[]; }
-const planDigest = digest({ v: "reelier.bootstrap-plan/v1", checkpoints: BOOTSTRAP_CHECKPOINT_IDS });
 
 export async function initializeAgentProject(options: InitializeAgentProjectOptions): Promise<BootstrapPreparationReport> {
   if (!path.isAbsolute(options.cwd) || !path.isAbsolute(options.homedir) || !/^[A-Za-z0-9._~-]{1,128}$/.test(options.agentName) || options.agentName === "." || options.agentName === ".." || !/^[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?$/.test(options.exactVersion)) throw new TypeError("named bootstrap options are invalid");
   const homeInfo = await lstat(options.homedir);
   if (!homeInfo.isDirectory() || homeInfo.isSymbolicLink() || await realpath(options.homedir) !== path.resolve(options.homedir)) throw new TypeError("named bootstrap home directory is unsafe or linked");
   const projectRoot = await realpath(options.cwd);
+  const planDigest = digest({ v: "reelier.bootstrap-plan/v1", checkpoints: BOOTSTRAP_CHECKPOINT_IDS, agentName: options.agentName, exactVersion: options.exactVersion, cwd: projectRoot, yes: options.yes === true });
   const reelierDir = path.join(projectRoot, ".reelier");
   await ensureRealDirectory(reelierDir, "project Reelier directory");
   const bootstrapParent = path.join(reelierDir, "bootstrap");
@@ -43,7 +43,7 @@ export async function initializeAgentProject(options: InitializeAgentProjectOpti
   const info = await lstat(bootstrapDir);
   if (!info.isDirectory() || info.isSymbolicLink()) throw new TypeError("named bootstrap directory is unsafe");
   const statePath = path.join(bootstrapDir, "state.json");
-  const existing = await readState(statePath);
+  const existing = await readState(statePath, planDigest);
   const importedGovernance = await loadImportedGovernance(options);
   const registration = await prepareWorkloadRegistration(options.homedir, options.agentName, projectRoot);
   if (existing !== undefined && existing.completed.length === BOOTSTRAP_CHECKPOINT_IDS.length) {
@@ -74,7 +74,7 @@ export async function initializeAgentProject(options: InitializeAgentProjectOpti
 }
 
 export async function dispatchFromBootstrap(_report: BootstrapPreparationReport): Promise<never> { throw new Error("validated profile activation required"); }
-async function readState(file: string): Promise<BootstrapState | undefined> { try { const raw = JSON.parse(await readFile(file, "utf8")) as BootstrapState; if (raw.v !== "reelier.bootstrap-state/v1" || raw.planDigest !== planDigest || !Array.isArray(raw.completed) || raw.completed.some((entry, index) => !entry || entry.id !== BOOTSTRAP_CHECKPOINT_IDS[index] || typeof entry.artifact !== "string" || !/^sha256:[0-9a-f]{64}$/.test(entry.digest))) throw new Error("invalid"); return raw; } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw new Error("named bootstrap checkpoint state is malformed"); } }
+async function readState(file: string, expectedPlanDigest: string): Promise<BootstrapState | undefined> { try { const raw = JSON.parse(await readFile(file, "utf8")) as BootstrapState; if (raw.v !== "reelier.bootstrap-state/v1" || raw.planDigest !== expectedPlanDigest || !Array.isArray(raw.completed) || raw.completed.some((entry, index) => !entry || entry.id !== BOOTSTRAP_CHECKPOINT_IDS[index] || typeof entry.artifact !== "string" || !/^sha256:[0-9a-f]{64}$/.test(entry.digest))) throw new Error("invalid"); return raw; } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw new Error("named bootstrap checkpoint state is malformed"); } }
 function digest(value: unknown): string { return authorityDigest(value); }
 function sha256(value: string): string { return `sha256:${createHash("sha256").update(value, "utf8").digest("hex")}`; }
 
