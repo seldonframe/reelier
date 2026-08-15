@@ -5,7 +5,7 @@ export async function planBootstrapInstall(configPath: string, exactVersion: str
   const plan = await planInstall(configPath, cwd);
   if (!plan.changed) return plan;
   const after = JSON.parse(plan.after) as Record<string, unknown>;
-  replaceLegacyProxyPackage(after, exactVersion);
+  pinNewProxyPackages(after, exactVersion, new Set(plan.entries.filter(entry => entry.action === "wrap").map(entry => entry.name)));
   return { ...plan, after: `${JSON.stringify(after, null, 2)}\n` };
 }
 
@@ -14,10 +14,12 @@ export async function applyBootstrapInstall(plan: InstallPlan, options: Readonly
   return applyInstall(plan);
 }
 
-function replaceLegacyProxyPackage(value: unknown, exactVersion: string): void {
+function pinNewProxyPackages(value: unknown, exactVersion: string, names: ReadonlySet<string>): void {
   if (value === null || typeof value !== "object") return;
-  if (Array.isArray(value)) { for (const child of value) replaceLegacyProxyPackage(child, exactVersion); return; }
+  if (Array.isArray(value)) { for (const child of value) pinNewProxyPackages(child, exactVersion, names); return; }
   const record = value as Record<string, unknown>;
-  if (record.command === "npx" && Array.isArray(record.args) && record.args[0] === "-y" && record.args[1] === "reelier" && record.args[2] === "mcp" && record.args[3] === "--wrap") record.args[1] = `reelier@${exactVersion}`;
-  for (const child of Object.values(record)) replaceLegacyProxyPackage(child, exactVersion);
+  for (const [name, child] of Object.entries(record)) {
+    if (names.has(name) && child !== null && typeof child === "object") { const entry = child as Record<string, unknown>; if (entry.command === "npx" && Array.isArray(entry.args) && entry.args[0] === "-y" && entry.args[1] === "reelier" && entry.args[2] === "mcp" && entry.args[3] === "--wrap") entry.args[1] = `reelier@${exactVersion}`; }
+    pinNewProxyPackages(child, exactVersion, names);
+  }
 }
