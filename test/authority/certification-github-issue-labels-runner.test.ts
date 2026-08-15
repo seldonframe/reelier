@@ -18,6 +18,7 @@ import { createCertificationTaskReceiptGraph } from "../../src/authority/certifi
 import { createPortableOutcomeEvidencePublication, createSanitizedPortableOutcomeEvidenceExport, portableSignerIdFromPublicKey } from "../../src/authority/host/portable-receipts.js";
 import { httpResponseSemanticsProfileDigest } from "../../src/authority/host/http-response-semantics.js";
 import { createGitHubIssueLabelsFixture, type GitHubIssueLabelsFixture } from "./fixtures/github-issue-labels.js";
+import { profileGovernanceFixture } from "./profile-governance-fixture.js";
 
 const at = "2026-08-11T20:00:00.000Z", expiry = "2026-08-11T21:00:00.000Z";
 const hermeticResponseSemanticsProfile = { v: "reelier.http-response-semantics/v1" as const, profileId: "github.issue-labels.hermetic-v1", acknowledgedStatuses: [200] };
@@ -40,6 +41,7 @@ async function settleLiveRunBeforeFixtureRemoval(fixture: Pick<GitHubIssueLabels
 }
 
 test("only a genuine Cell host can compose the fixed runner", async () => {
+  profileGovernanceFixture();
   await assert.rejects(() => createGitHubIssueLabelsHermeticComposition({ verifyDispatchReadiness: async () => ({}), revalidateDispatchPermit: async () => undefined } as never), /genuine|brand|Cell/i);
 });
 

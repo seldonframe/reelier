@@ -1,8 +1,19 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createDispatchCoordinator } from "reelier/authority/host";
+import type {
+  DurableDispatchPublicationHeadV1,
+  DurableDispatchPublicationIdentityV1,
+  DurableDispatchPublicationQueryV1,
+} from "../../src/authority/host/dispatch.js";
+import { sha } from "./profile-governance-fixture.js";
 // @ts-ignore test-only import uses the built module so the opaque WeakMap brand is shared.
 import { createReservedDispatchHandle } from "../../../dist/authority/gate.js";
+// @ts-ignore test-only import uses the built platform seam shared by the public package import.
+import { __testSetAuthorityCellHostPlatform } from "../../../dist/authority/host/platform.js";
+
+const restorePlatform = __testSetAuthorityCellHostPlatform("linux");
+test.after(() => restorePlatform());
 
 function ledger() {
   let state: any = { reservationId: "r1", state: "reserved", intent: { effectDigest: "sha256:" + "1".repeat(64) } };
@@ -102,4 +113,42 @@ test("confidential dispatch evidence uses the exact materialized request digest"
   const handle = createReservedDispatchHandle({ reservation: l.get(), effect: { x: 1 }, effectCanonicalBase64: "e30=", effectDigest: "sha256:" + "1".repeat(64) });
   await coordinator.dispatch(handle);
   assert.equal(evidenceDigest, "sha256:" + "7".repeat(64));
+});
+
+test("markerless dispatched recovery refuses before constructing a durable query", async () => {
+  const l = ledger();
+  await l.transition("r1", "reserved", { to: "dispatched" });
+  const calls = { load: 0, reservation: 0, terminal: 0, transition: 0, reconcile: 0, provider: 0, portable: 0 };
+  const originalTransition = l.transition;
+  l.transition = async (...args: any[]) => { calls.transition += 1; return originalTransition(...args); };
+  const publication = {
+    async publish() { calls.terminal += 1; return { receiptRef: sha("1"), evidenceDigest: sha("2") }; },
+    async publishReservation() { calls.reservation += 1; return { receiptRef: sha("3"), evidenceDigest: sha("4") }; },
+    async loadDurableHead(_query: DurableDispatchPublicationQueryV1) { calls.load += 1; return null; },
+  };
+  const coordinator = createDispatchCoordinator(l, {
+    async dispatch() { calls.provider += 1; throw new Error("must not send"); },
+    async reconcile() { calls.reconcile += 1; throw new Error("must not reconcile"); },
+  }, undefined, publication);
+  calls.transition = 0;
+  await assert.rejects(() => coordinator.recover(), /send-started|marker|integrity/i);
+  assert.deepEqual(calls, { load: 0, reservation: 0, terminal: 0, transition: 0, reconcile: 0, provider: 0, portable: 0 });
+});
+
+test("durable publication identity is closed over the full persisted reservation intent", () => {
+  const identity: DurableDispatchPublicationIdentityV1 = {
+    v: "reelier.durable-dispatch-publication-identity/v1",
+    reservationId: "r1",
+    tenant: "tenant_1",
+    requestDigest: sha("1"),
+    capabilityDigest: sha("2"),
+    effectDigest: sha("3"),
+    routeAuthorityDigest: sha("4"),
+    expectedDispatchedRequestDigest: sha("5"),
+    reservationIntentDigest: sha("6"),
+  };
+  const query: DurableDispatchPublicationQueryV1 = { v: "reelier.durable-dispatch-publication-query/v1", identity, ledgerState: "dispatched", sendStarted: true };
+  const head: DurableDispatchPublicationHeadV1 = { v: "reelier.durable-dispatch-publication-head/v1", identity, receiptRef: sha("7"), evidenceDigest: sha("8"), reservationReceiptRef: sha("7"), priorReceiptRef: null, phase: "reservation", terminalKind: null };
+  assert.equal(query.identity.reservationIntentDigest, sha("6"));
+  assert.equal(head.priorReceiptRef, null);
 });

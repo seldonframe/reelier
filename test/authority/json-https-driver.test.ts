@@ -5,6 +5,7 @@ import * as jsonHttps from "../../src/authority/drivers/json-https.js";
 import * as deadlineModule from "../../src/authority/net/deadline.js";
 import { createPinnedLookup, executeJsonHttpsEffect, executeJsonHttpsRead } from "../../src/authority/drivers/json-https.js";
 import { createTotalDeadline } from "../../src/authority/net/deadline.js";
+import { profileGovernanceFixture } from "./profile-governance-fixture.js";
 
 const driverUrl = new URL("../../src/authority/drivers/json-https.js", import.meta.url).href;
 const preparedUrl = new URL("../../src/authority/host/prepared-dispatch.js", import.meta.url).href;
@@ -110,7 +111,7 @@ if (process.env.REELIER_SCENARIO === "hung-dns") {
   await advance(100); await assert.rejects(pending, /deadline/i); assert.equal(request.destroyed, true);
   response.emit("end"); assert.equal(request.destroyed, true);
 } else if (process.env.REELIER_SCENARIO === "prepared-profile") {
-  const route = { v: "reelier.json-https-route/v1", providerId: "github", connectorId: "github", accountId: "acct", providerAccountIdentity: "github:acct", endpointId: "write", origin: "https://localhost", allowedMethods: ["PUT"], allowedPathPrefixes: ["/write"], credentialSlotId: "slot", responseSemanticsProfileId: "reviewed", reconciliationRecipeId: "recipe", readEndpointId: "read", egressPolicyDigest: authorityDigest("egress") };
+  const route = { v: "reelier.json-https-route/v1", providerId: "github", connectorId: "github", accountId: "acct", providerAccountIdentity: "github:acct", endpointId: "write", origin: "https://localhost", allowedMethods: ["PUT"], allowedPathPrefixes: ["/write"], credentialSlotId: "slot", responseSemanticsProfileId: "reviewed", reconciliationRecipeId: "recipe", readEndpointId: "read", egressPolicyDigest: authorityDigest("egress"), projectionSchemaDigest: authorityDigest("projection") };
   const effect = { endpointId: "write", method: "PUT", path: "/write", query: "", headers: {}, bodyBase64: Buffer.from("{}").toString("base64") };
   const prepare = async statuses => {
     const pendingResponse = { callback: undefined };
@@ -196,6 +197,7 @@ test("pinned DNS lookup refuses a non-IP pin", () => {
 });
 
 test("normal HTTPS effects reject oversized uploads before resolving credentials", async () => {
+  profileGovernanceFixture();
   let credentialResolved = false;
   await assert.rejects(() => executeJsonHttpsEffect({ endpointId: "endpoint", method: "POST", path: "/write", query: "", headers: {}, bodyBase64: Buffer.alloc(10 * 1024 * 1024 + 1).toString("base64") } as never, { endpointId: "endpoint", baseUrl: "https://api.example", allowedMethods: ["POST"], allowedPathPrefixes: ["/write"], secretRef: "env:SECRET", accountIdentity: "account" }, { async resolve() { credentialResolved = true; throw new Error("must not resolve"); } }), /configured limit/i);
   assert.equal(credentialResolved, false);
@@ -217,7 +219,7 @@ test("native canonical routes resolve a one-use credential slot and reject legac
     providerAccountIdentity: "github:acct", endpointId: "github.write", origin: "https://api.github.com",
     allowedMethods: ["PUT" as const], allowedPathPrefixes: ["/repos/acct/repo/issues/1/labels"], credentialSlotId: "github.tracer",
     responseSemanticsProfileId: "github.labels.v1", reconciliationRecipeId: "github.labels.read.v1", readEndpointId: "github.read",
-    egressPolicyDigest: "sha256:" + "1".repeat(64),
+    egressPolicyDigest: "sha256:" + "1".repeat(64), projectionSchemaDigest: "sha256:" + "2".repeat(64),
   };
   await assert.rejects(() => executeJsonHttpsEffect({ endpointId: "github.write", method: "PUT", path: "/repos/acct/repo/issues/1/labels", query: "", headers: {}, bodyBase64: Buffer.alloc(10 * 1024 * 1024 + 1).toString("base64") } as never, route as never, {
     async resolve() { throw new Error("legacy resolver must not be called"); },

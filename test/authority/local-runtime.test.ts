@@ -14,12 +14,14 @@ import { signAuthorityLease } from "../../src/authority/host/lease.js";
 import type { DelegationGrant } from "../../src/authority/types.js";
 import { createAdmittedLocalAuthorityRuntime } from "../../src/authority/host/local.js";
 import { __testSetAuthorityCellHostPlatform } from "../../src/authority/host/platform.js";
+import { profileGovernanceFixture } from "./profile-governance-fixture.js";
 
 let restorePlatform: (() => void) | undefined;
 test.before(() => { restorePlatform = __testSetAuthorityCellHostPlatform("linux"); });
 test.after(() => { restorePlatform?.(); });
 
 test("local authority serve uses the real gate and refuses an unsigned empty deployment", async () => {
+  profileGovernanceFixture();
   const root = await mkdtemp(path.join(os.tmpdir(), "reelier-local-runtime-"));
   try {
     const runtime = await createLocalAuthorityRuntime({ version: 1, tenant: "tenant_1", requester: "operator", definitions: ["gmail_reply_send_v1"], ledgerDir: path.join(root, "ledger"), decisionDir: path.join(root, "decisions"), receiptDir: path.join(root, "receipts"), endpoints: [] });
@@ -28,6 +30,13 @@ test("local authority serve uses the real gate and refuses an unsigned empty dep
     assert.equal(result.reasonCode, "contract-not-found");
     const status = await runtime.status({ requestId: "local-1" }, { tenant: "tenant_1", requester: "operator" });
     assert.equal(status.reasonCode, "contract-not-found");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("public local runtime options do not accept governed signing authority", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-local-public-options-"));
+  try {
+    await assert.rejects(() => createLocalAuthorityRuntime({ version: 1, tenant: "tenant_1", requester: "operator", definitions: [], ledgerDir: path.join(root, "ledger"), decisionDir: path.join(root, "decisions"), receiptDir: path.join(root, "receipts"), endpoints: [] }, { receiptSigningAuthority: {} } as never), /unknown|options|receipt signing/i);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

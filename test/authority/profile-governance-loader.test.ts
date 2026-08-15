@@ -4,7 +4,7 @@ import { mkdtemp, rm, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { inspectProfileGovernanceStatus, loadProfileGovernanceFromOperatorTrust } from "../../src/authority/host/profile-governance-loader.js";
-import { governanceRef, tenant, verificationTime, writeProfileGovernanceFixture } from "./profile-governance.test.js";
+import { governanceRef, tenant, verificationTime, writeProfileGovernanceFixture } from "./profile-governance-fixture.js";
 
 test("cold loader admits the fixed operator-owned governance directory deterministically", async t => {
   const home = await mkdtemp(path.join(os.tmpdir(), "reelier-profile-loader-"));

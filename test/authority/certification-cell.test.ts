@@ -16,6 +16,7 @@ import * as cell from "../../src/authority/certification/cell.js";
 import { createCertificationArtifactKeyBinding, createCertificationLifecycleAuthorityCeremony } from "../../src/authority/certification/lifecycle-authority.js";
 import { __testSetAuthorityCellHostPlatform } from "../../src/authority/host/platform.js";
 import { writeCertificationInputManifests } from "./certification-input-fixture.js";
+import { profileGovernanceFixture } from "./profile-governance-fixture.js";
 
 const at = "2026-08-11T20:00:00.000Z";
 const expiry = "2026-08-11T21:00:00.000Z";
@@ -57,6 +58,7 @@ async function fixture(scenarios: readonly ("github-issue-labels" | "slack-topic
 }
 
 test("signed Job Card activates exact durable root state and a derived restart-safe principal", async () => {
+  profileGovernanceFixture();
   const f = await fixture();
   try {
     const input = { jobCard: f.jobCard, jobCardTrustPin: f.pin, constraints: f.constraints, effects: 2, issuedAt: at, expiresAt: expiry };

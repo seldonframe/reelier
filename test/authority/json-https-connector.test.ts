@@ -1,8 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createJsonHttpsDispatchAdapter } from "../../src/authority/host/json-https-connector.js";
+import { profileGovernanceFixture } from "./profile-governance-fixture.js";
 
 test("HTTPS dispatch refuses an effect whose endpoint is not operator configured", async () => {
+  profileGovernanceFixture();
   const adapter = createJsonHttpsDispatchAdapter({ endpoints: [], secrets: { async resolve() { return "never"; } } });
   const result = await adapter.dispatch({ reservation: { reservationId: "r", state: "reserved", intent: { effectDigest: "sha256:" + "1".repeat(64) } }, effect: { endpointId: "agent-chosen" }, effectCanonicalBase64: "e30=", effectDigest: "sha256:" + "1".repeat(64) });
   assert.equal(result.kind, "definitive-failure");
@@ -20,7 +22,7 @@ test("canonical HTTPS dispatch joins routes to opaque slot leases, never legacy 
     providerAccountIdentity: "github:acct", endpointId: "github.write", origin: "https://api.github.com",
     allowedMethods: ["PUT" as const], allowedPathPrefixes: ["/repos/acct/repo/issues/1/labels"], credentialSlotId: "github.tracer",
     responseSemanticsProfileId: "github.labels.v1", reconciliationRecipeId: "github.labels.read.v1", readEndpointId: "github.read",
-    egressPolicyDigest: "sha256:" + "1".repeat(64),
+    egressPolicyDigest: "sha256:" + "1".repeat(64), projectionSchemaDigest: "sha256:" + "2".repeat(64),
   };
   const read = { ...route, endpointId: "github.read", allowedMethods: ["GET" as const] };
   let acquired = "";
@@ -39,7 +41,7 @@ test("canonical HTTPS dispatch acquires and consumes the slot before transport, 
     providerAccountIdentity: "github:acct", endpointId: "github.write", origin: "https://127.0.0.1",
     allowedMethods: ["PUT" as const], allowedPathPrefixes: ["/labels"], credentialSlotId: "github.tracer",
     responseSemanticsProfileId: "github.labels.v1", reconciliationRecipeId: "github.labels.read.v1", readEndpointId: "github.read",
-    egressPolicyDigest: "sha256:" + "1".repeat(64),
+    egressPolicyDigest: "sha256:" + "1".repeat(64), projectionSchemaDigest: "sha256:" + "2".repeat(64),
   };
   const read = { ...route, endpointId: "github.read", allowedMethods: ["GET" as const] };
   let acquired = "";
@@ -60,7 +62,7 @@ test("canonical HTTPS dispatch refuses unknown response semantics profiles befor
     providerAccountIdentity: "github:acct", endpointId: "github.write", origin: "https://127.0.0.1",
     allowedMethods: ["PUT" as const], allowedPathPrefixes: ["/labels"], credentialSlotId: "github.tracer",
     responseSemanticsProfileId: "unknown.profile", reconciliationRecipeId: "github.labels.read", readEndpointId: "github.read",
-    egressPolicyDigest: "sha256:" + "1".repeat(64),
+    egressPolicyDigest: "sha256:" + "1".repeat(64), projectionSchemaDigest: "sha256:" + "2".repeat(64),
   };
   const read = { ...route, endpointId: "github.read", allowedMethods: ["GET" as const] };
   let acquired = false;
@@ -79,7 +81,7 @@ test("canonical HTTPS dispatch binds the sealed operator configuration digest", 
     providerAccountIdentity: "github:acct", endpointId: "github.write", origin: "https://127.0.0.1",
     allowedMethods: ["PUT" as const], allowedPathPrefixes: ["/labels"], credentialSlotId: "github.tracer",
     responseSemanticsProfileId: "github.labels.v1", reconciliationRecipeId: "github.labels.read", readEndpointId: "github.read",
-    egressPolicyDigest: "sha256:" + "1".repeat(64),
+    egressPolicyDigest: "sha256:" + "1".repeat(64), projectionSchemaDigest: "sha256:" + "2".repeat(64),
   };
   const read = { ...route, endpointId: "github.read", allowedMethods: ["GET" as const] };
   const adapter = createJsonHttpsDispatchAdapter({ routes: [route, read], endpoints: [], operatorConfigurationDigest: "sha256:" + "2".repeat(64), secrets: { async resolve() { throw new Error("legacy resolver must not be used"); }, async acquireSlot() { return { readOnce: () => "secret" }; } } } as any);

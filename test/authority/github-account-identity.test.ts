@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { probeGitHubAccountIdentity } from "../../src/authority/host/github-account-identity.js";
 import { authorityDigest } from "../../src/authority/wire.js";
+import { profileGovernanceFixture } from "./profile-governance-fixture.js";
 
-const route: any = { v: "reelier.json-https-route/v1", providerId: "github", connectorId: "github", accountId: "42", providerAccountIdentity: "octocat", endpointId: "github", origin: "https://api.github.com", allowedMethods: ["GET"], allowedPathPrefixes: ["/user"], credentialSlotId: "slot", responseSemanticsProfileId: "github", reconciliationRecipeId: "github", readEndpointId: "github", egressPolicyDigest: `sha256:${"a".repeat(64)}` };
+const route: any = { v: "reelier.json-https-route/v1", providerId: "github", connectorId: "github", accountId: "42", providerAccountIdentity: "octocat", endpointId: "github", origin: "https://api.github.com", allowedMethods: ["GET"], allowedPathPrefixes: ["/user"], credentialSlotId: "slot", responseSemanticsProfileId: "github", reconciliationRecipeId: "github", readEndpointId: "github", egressPolicyDigest: `sha256:${"a".repeat(64)}`, projectionSchemaDigest: `sha256:${"b".repeat(64)}` };
 
 test("GitHub identity probe binds account/login, route digest, and one-use slot descriptor", async () => {
+  profileGovernanceFixture();
   let reads = 0;
   const identity = await probeGitHubAccountIdentity({ route, now: () => new Date("2026-01-01T00:00:00.000Z"), secretLease: { credentialSlotId: "slot", slotInstanceId: "instance", slotVersion: "1", slotExpiresAt: "2027-01-01T00:00:00.000Z", readOnce: () => { reads++; return "secret"; } }, transport: { async request(input) { assert.equal(input.route.endpointId, "github"); assert.equal(input.path, "/user"); return { status: 200, body: JSON.stringify({ id: 42, login: "octocat" }) }; } } });
   assert.equal(reads, 1);
