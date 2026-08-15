@@ -52,7 +52,7 @@ export async function runEveCommand({ cwd, env, args }) {
 }
 
 export async function stopEveProcess(child) {
-  if (!child || child.exitCode !== null || child.pid === undefined) return;
+  if (!child || child.pid === undefined) return;
   const exactPid = child.pid;
   let exited = false;
   if (process.platform === "win32") {
