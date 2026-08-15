@@ -25,7 +25,7 @@ test("produced receipt kinds name the six generated bundle properties, not wire 
   assert.deepEqual(kinds, producedProperties);
 });
 
-test("real lifecycle construction preserves reservation, dispatch, ambiguity, and reconciliation byte/prior semantics", async () => {
+test("real lifecycle construction preserves reservation, dispatch, cancelled, ambiguity, and reconciliation byte/prior semantics", async () => {
   const normal = await createGitHubIssueLabelsFixture("normal");
   try {
     await normal.runner.run({ bearerToken: normal.credential.token, requestId: "receipt_phase_normal" });

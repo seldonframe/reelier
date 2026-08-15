@@ -12,15 +12,15 @@ import { certificationWorkspaceRoot, confinedExistingDirectory, ensureConfinedDi
 import { AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST } from "../adapter-contract.js";
 import { verifyAuthorityReceiptBundle } from "../verify.js";
 import { createPortableAuthorityReceiptPublication } from "../host/portable-receipts.js";
-import { constructAuthorityReceiptBundle, validateLifecycleAuthorityReceiptSigningAuthority, type ValidatedAuthorityReceiptSigningAuthorityV1 } from "../host/receipt-authority.js";
+import { constructAuthorityReceiptBundle, refreshLifecycleAuthorityReceiptSigningAuthority, type ValidatedAuthorityReceiptSigningAuthorityV1 } from "../host/receipt-authority.js";
 
 export interface CertificationReceiptExtensionV1 { readonly v: "reelier.certification-receipt-extension/v1"; readonly receiptDigest: string; readonly adapterContractDigest: string; readonly signerId: string; readonly signature: Readonly<{ alg: "ed25519"; sig: string }> }
 
 export function createCertificationLifecycleReceiptPublication(input: Readonly<{ rootDir: string; lifecycle: CertificationLifecycleAuthorityMaterial; signedGrants: readonly any[]; now: () => Date }>): DispatchPublication {
-  const signingAuthority=validateLifecycleAuthorityReceiptSigningAuthority(input.lifecycle);
   const local = createFileReceiptPublication({ rootDir: path.join(input.rootDir, "local") });
   const prior = new Map<string, AuthorityReceipt>();
   const portablePublication: DispatchPublication = Object.freeze({ async publish(value: Parameters<DispatchPublication["publish"]>[0]) {
+    const signingAuthority=await refreshLifecycleAuthorityReceiptSigningAuthority(input.lifecycle);
     const recovered = (value.state as any).contract ? undefined : await priorBundle(input.rootDir, value.state.effectDigest, input.lifecycle, input.signedGrants);
     if (recovered && recovered.receipt.value.receiptId === portableReceiptId(value.state.reservation.reservationId, value.phase, value.outcome.resultDigest)) {
       const reconciliation = recovered.evidence.value.reconciliation;
