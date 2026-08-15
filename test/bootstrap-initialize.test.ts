@@ -75,6 +75,26 @@ test("named initialization resumes an exact checkpoint plan and rejects traversa
   });
 });
 
+test("a completed rerun preserves the route coverage bytes committed by its report", async () => {
+  await withFixture(async options => {
+    await initializeAgentProject(options);
+    const routeCoverage = path.join(options.cwd, ".reelier", "bootstrap", "route-coverage.json");
+    const before = await readFile(routeCoverage, "utf8");
+    await initializeAgentProject(options);
+    assert.equal(await readFile(routeCoverage, "utf8"), before);
+  });
+});
+
+test("a refused plan mismatch preserves the prior route coverage bytes", async () => {
+  await withFixture(async options => {
+    await initializeAgentProject(options);
+    const routeCoverage = path.join(options.cwd, ".reelier", "bootstrap", "route-coverage.json");
+    const before = await readFile(routeCoverage, "utf8");
+    await assert.rejects(() => initializeAgentProject({ ...options, exactVersion: "0.32.2" }), /checkpoint|plan|identity/i);
+    assert.equal(await readFile(routeCoverage, "utf8"), before);
+  });
+});
+
 test("named initialization rejects dot names, separators, and case-colliding workload identities before writes", async () => {
   await withFixture(async options => {
     for (const agentName of [".", "..", "a/b", "a\\b"]) {
@@ -238,10 +258,13 @@ test("named install rolls back when a later checkpoint artifact write fails", as
     const config = path.join(options.cwd, ".mcp.json");
     const original = JSON.stringify({ mcpServers: { local: { command: "npx", args: ["-y", "@example/server"] } } });
     await writeFile(config, original, "utf8");
-    await mkdir(path.join(options.cwd, ".reelier", "bootstrap", "project.json"), { recursive: true });
+    const bootstrap = path.join(options.cwd, ".reelier", "bootstrap");
+    await mkdir(path.join(bootstrap, "project.json"), { recursive: true });
+    const beforeEntries = await readdir(bootstrap);
 
     await assert.rejects(() => initializeAgentProject(options));
     assert.equal(await readFile(config, "utf8"), original);
+    assert.deepEqual(await readdir(bootstrap), beforeEntries, "rollback removes every artifact and state claim written by the refused attempt");
   });
 });
 
