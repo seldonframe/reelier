@@ -1,0 +1,28 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { planBootstrapInstall } from "../src/bootstrap/install.js";
+
+test("named bootstrap plans an exact-version proxy without changing legacy wrapping", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-bootstrap-install-"));
+  try {
+    const config = path.join(root, ".mcp.json");
+    await writeFile(config, JSON.stringify({ mcpServers: {
+      local: { command: "npx", args: ["-y", "@example/server"] },
+      remote: { type: "http", url: "https://example.test/mcp" },
+    } }), "utf8");
+    const plan = await planBootstrapInstall(config, "0.32.1");
+    assert.equal(plan.changed, true);
+    assert.deepEqual(JSON.parse(plan.after).mcpServers.local, {
+      command: "npx", args: ["-y", "reelier@0.32.1", "mcp", "--wrap", "npx -y @example/server"],
+    });
+    assert.equal(plan.entries.find((entry: { name: string; action: string }) => entry.name === "remote")?.action, "skip-unwrappable");
+    assert.equal(await readFile(config, "utf8"), JSON.stringify({ mcpServers: {
+      local: { command: "npx", args: ["-y", "@example/server"] }, remote: { type: "http", url: "https://example.test/mcp" },
+    } }));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

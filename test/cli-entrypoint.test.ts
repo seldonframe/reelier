@@ -6,6 +6,7 @@ import { mkdtemp, symlink, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseArgv } from "../src/cli.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -56,4 +57,11 @@ test("cli.ts's entrypoint guard still runs main() when invoked through a symlink
   } finally {
     await rm(workDir, { recursive: true, force: true });
   }
+});
+
+test("root parser retains authority connection values required by the existing connection contract", () => {
+  const parsed = parseArgv(["--endpoint", "https://cell.example", "--token-ref", "env:CELL_TOKEN", "--cell-id", "cell_1", "--adapter-contract-digest", `sha256:${"a".repeat(64)}`]);
+  assert.deepEqual(parsed.opts, {
+    endpoint: "https://cell.example", "token-ref": "env:CELL_TOKEN", "cell-id": "cell_1", "adapter-contract-digest": `sha256:${"a".repeat(64)}`,
+  });
 });
