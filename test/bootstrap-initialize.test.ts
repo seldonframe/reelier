@@ -18,7 +18,7 @@ type TestNativeFactory = (input: Readonly<{ root: string; lockName: ".reelier-bo
   close(options: Readonly<{ removeLock: boolean }>): Promise<void>;
 }>;
 
-function recordingNativeFactory(operations: string[]): TestNativeFactory {
+function recordingNativeFactory(operations: string[], replaceRecoveredLock = false): TestNativeFactory {
   return async ({ root, lockName, lockBytes }) => {
     const resolve = (relative: string): string => {
       assert.equal(path.isAbsolute(relative), false);
@@ -27,7 +27,11 @@ function recordingNativeFactory(operations: string[]): TestNativeFactory {
     };
     const lockPath = resolve(lockName);
     let acquisition: { status: "created" } | { status: "recovered"; priorBytes: Buffer };
-    try { acquisition = { status: "recovered", priorBytes: await readFile(lockPath) }; }
+    try {
+      const priorBytes = await readFile(lockPath);
+      acquisition = { status: "recovered", priorBytes };
+      if (replaceRecoveredLock) await writeFile(lockPath, lockBytes);
+    }
     catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       await writeFile(lockPath, lockBytes, { flag: "wx" });
@@ -131,6 +135,25 @@ test("named preparation owns its lock and every child mutation through one relat
     assert.ok(operations.some(value => value === "write-atomic:.reelier/bootstrap/current.json"));
     assert.equal(operations.at(-1), "close:true");
     assert.equal(operations.some(value => value.includes("heartbeat")), false);
+  });
+});
+
+test("a recovered lock without a journal is restored byte-identically across retries", async () => {
+  await withFixture(async options => {
+    const priorBytes = Buffer.from(`${JSON.stringify({
+      v: "reelier.bootstrap-lock/v2",
+      pid: 2147483647,
+      ownerToken: "a".repeat(64),
+      transactionId: "b".repeat(32),
+    })}\n`);
+    const lockPath = path.join(options.cwd, ".reelier-bootstrap.lock");
+    await writeFile(lockPath, priorBytes);
+    const nativeSessionFactory = recordingNativeFactory([], true);
+
+    await assert.rejects(() => initializeAgentProject({ ...options, nativeSessionFactory }), /busy|journal/i);
+    assert.deepEqual(await readFile(lockPath), priorBytes);
+    await assert.rejects(() => initializeAgentProject({ ...options, nativeSessionFactory }), /busy|journal/i);
+    assert.deepEqual(await readFile(lockPath), priorBytes);
   });
 });
 
