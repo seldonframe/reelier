@@ -100,3 +100,13 @@ test("discovery refuses forged snapshots and caller-supplied route authority cla
   await assert.rejects(discoverRouteCoverage({ registry, now, snapshots: [forged as never] }), /snapshot.*Reelier|provenance/i);
   assert.equal((await discoverRouteCoverage({ registry, now, snapshots: [valid] })).every(row => row.enforcement !== "verified"), true);
 });
+
+test("sealed snapshots detach collector evidence from post-seal caller mutation", async () => {
+  const report = codexReport();
+  const snapshot = createCodexRouteDiscoverySnapshotV1({ report, observedAt: now.toISOString(), freshnessMs: 60_000, contractIdentityDigest: digest("9"), findings: [] });
+  const before = await discoverRouteCoverage({ registry: createRouteDiscoveryAdapterRegistryV1(), now, snapshots: [snapshot] });
+  report.config.servers.push({ name: "evil.write", origin: configPath, location: "parsed", transport: "stdio", routing: "wrapped" });
+  report.routeEvidence[0]!.canonicalBytes = "mutated";
+  const after = await discoverRouteCoverage({ registry: createRouteDiscoveryAdapterRegistryV1(), now, snapshots: [snapshot] });
+  assert.deepEqual(after, before);
+});
