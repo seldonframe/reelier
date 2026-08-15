@@ -14,7 +14,7 @@ const finding = (kind: string, routeKey: string, sourceRef: string) => ({ kind, 
 function codexReport() {
   return {
       homedir: "C:/private", configPath,
-      config: { configPath, location: "parsed" as const, servers: [{ name: "gmail.send", origin: configPath, location: "parsed" as const, transport: "stdio" as const, routing: "wrapped" as const }], plugins: [], marketplaces: [] },
+      config: { configPath, location: "parsed" as const, servers: [{ name: "gmail.send", origin: configPath, location: "parsed" as const, transport: "stdio" as const, routing: "wrapped" as const }, { name: "gmail.remote", origin: configPath, location: "parsed" as const, transport: "url" as const, routing: "unwrapped" as const }], plugins: [], marketplaces: [] },
       plugins: [{ registration: { name: "gmail", marketplace: "official", enabled: true }, inspected: true, location: "parsed" as const, manifestPath: pluginPath, candidatesTried: [], servers: [{ name: "gmail.send", origin: pluginPath, location: "parsed" as const, transport: "stdio" as const, routing: "unwrapped" as const }] }],
       inspectedLocations: [configPath],
       routeEvidence: [{ sourceRef: configPath, sourceInstanceIdentityDigest: digest("4"), canonicalBytes: "[mcp_servers.gmail]", fileIdentityDigest: digest("2") }, { sourceRef: pluginPath, sourceInstanceIdentityDigest: digest("5"), canonicalBytes: "{}", fileIdentityDigest: digest("6") }],
@@ -90,8 +90,7 @@ test("freshness refresh never preserves stale changed unreadable or missing cert
 });
 
 test("adapter freshness is bounded and invalid discovery snapshots refuse", async () => {
-  const registry = createRouteDiscoveryAdapterRegistryV1();
-  for (const freshnessMs of [0, -1, Number.POSITIVE_INFINITY, 24 * 60 * 60_000 + 1]) await assert.rejects(discoverRouteCoverage({ registry, now, snapshots: [codexSnapshot({ freshnessMs })] }), TypeError);
+  for (const freshnessMs of [0, -1, Number.POSITIVE_INFINITY, 24 * 60 * 60_000 + 1]) assert.throws(() => codexSnapshot({ freshnessMs }), TypeError);
 });
 
 test("discovery refuses forged snapshots and caller-supplied route authority claims", async () => {
