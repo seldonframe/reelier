@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
@@ -177,6 +177,20 @@ test("named bootstrap route discovery writes only the bootstrap artifact after f
     assert.ok(routes.length > 0 && routes.every(row => /^route_[0-9a-f]{64}$/.test(row.routeId)));
     assert.deepEqual(INIT_CHECKPOINT_IDS, ["config-surfaces", "path-a-coverage", "path-b-candidates", "path-c-candidates", "inspection-report"]);
     assert.equal(Object.keys(await filesBelow(path.join(root, ".reelier", "init"))).includes("route-coverage.json"), false);
+  });
+});
+
+test("named bootstrap route discovery refuses a linked artifact directory", async () => {
+  await withTempDir(async root => {
+    const escape = path.join(root, "escape");
+    await mkdir(path.join(root, ".reelier"), { recursive: true });
+    await mkdir(escape);
+    await symlink(escape, path.join(root, ".reelier", "bootstrap"), "junction");
+    await assert.rejects(initializeInspection({
+      cwd: root, homedir: path.join(root, "home"), dependencies: dependencies(),
+      namedBootstrapRouteDiscovery: { agentName: "route-agent", now: new Date("2026-08-15T12:00:00.000Z"), contractIdentityDigest: `sha256:${"9".repeat(64)}`, findings: [] },
+    }), /linked|confined|symlink/i);
+    await assert.rejects(readFile(path.join(escape, "route-coverage.json"), "utf8"), { code: "ENOENT" });
   });
 });
 

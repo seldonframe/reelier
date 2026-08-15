@@ -110,3 +110,26 @@ test("sealed snapshots detach collector evidence from post-seal caller mutation"
   const after = await discoverRouteCoverage({ registry: createRouteDiscoveryAdapterRegistryV1(), now, snapshots: [snapshot] });
   assert.deepEqual(after, before);
 });
+
+test("parsed collector rows without sealed static evidence downgrade instead of inventing observation", async () => {
+  const report = codexReport();
+  const rows = await discoverRouteCoverage({
+    registry: createRouteDiscoveryAdapterRegistryV1(), now,
+    snapshots: [codexSnapshot({ report: { ...report, routeEvidence: [] } })],
+  });
+  assert.equal(rows.length, 3);
+  assert.ok(rows.every(row => row.observation === "unknown" && row.enforcement === "absent"));
+  assert.ok(rows.every(row => row.reasonCodes.includes("static-evidence-absent")));
+});
+
+test("findings reuse the collector's sealed source-instance commitment", async () => {
+  const rows = await discoverRouteCoverage({ registry: createRouteDiscoveryAdapterRegistryV1(), now, snapshots: [codexSnapshot({ findings: [finding("direct-http", "gmail.send", configPath)] })] });
+  const configRows = rows.filter(row => row.discoverySource === "host-config");
+  const direct = rows.find(row => row.discoverySource === "direct-http");
+  assert.ok(direct);
+  assert.ok(configRows.some(row => row.routeId !== direct.routeId));
+  const changed = codexReport();
+  changed.routeEvidence[0] = { ...changed.routeEvidence[0]!, sourceInstanceIdentityDigest: digest("a") };
+  const changedRows = await discoverRouteCoverage({ registry: createRouteDiscoveryAdapterRegistryV1(), now, snapshots: [codexSnapshot({ report: changed, findings: [finding("direct-http", "gmail.send", configPath)] })] });
+  assert.notEqual(direct.routeId, changedRows.find(row => row.discoverySource === "direct-http")?.routeId);
+});
