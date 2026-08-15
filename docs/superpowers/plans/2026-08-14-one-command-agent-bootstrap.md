@@ -2089,20 +2089,26 @@ Commit the listed Task 3 files with `feat(bootstrap): freeze project and runtime
 - Modify: `test/initialization.test.ts`
 
 **Interfaces:**
-- Consumes: existing `CoverageServer`, `PluginCoverage`, `CoverageView`, connection inventory, Path B candidates, and Path C classifications.
+- Consumes: harness-wide snapshots produced by existing `CoverageServer`, `PluginCoverage`, `CoverageView`, connection-inventory, Path B candidate, and Path C classification collectors.
 - Produces: opaque `RouteDiscoveryAdapterRegistryV1`, `discoverRouteCoverage(input): Promise<readonly RouteCoverageV1[]>`, and a named-bootstrap-only route artifact. Existing initialization checkpoints and report remain unchanged.
+
+**Approved Task 4 route-identity amendment:** Keep the frozen Task 3 `RouteCoverageV1` schema, parser, generated Bootstrap Contract, and contract digest unchanged. Install exactly one read-only discovery adapter per supported harness, not one adapter per provider, tool, route, or discovery source. A harness adapter consumes only that harness's existing sanitized collector snapshot; neither a project/model-provided adapter nor a manual/global tool catalog is an extension point.
+
+`routeId` is generated as `route_` plus the full lowercase SHA-256 digest of the canonical closed tuple `{ v: "reelier.route-identity/v1", harnessId, adapterSourceId, sourceInstanceIdentityDigest, discoverySource, routeKey, transport }`. `sourceInstanceIdentityDigest` is a stable non-secret commitment to the collector origin, so two manifests or catalog installations exposing the same method remain distinct without serializing private paths. Adapter version/code digest, observation source/content digest, file evidence identity, and contract/evidence identity are committed by `evidenceDigest` and MUST NOT enter route identity. `discoverySource` remains its own route field; display metadata remains in the collector/view layer and is not added to frozen `RouteCoverageV1`. No runtime, test, refresh path, UI, or downstream consumer may parse `routeId`.
 
 - [ ] **Step 1: Write the bypass and unreadable-surface RED tests**
 
-Fixtures must include: same-name config and plugin routes, remote URL MCP, plugin-private MCP, direct HTTP, writable browser, unreadable registry, OpenAPI-only route, host-private connection, reviewed MCP route, and activated native route. Assert every fixture remains a separate row and conservative aggregate.
+Fixtures must include: same-name config and plugin routes, same-name routes from two distinct source instances, remote URL MCP, plugin-private MCP, direct HTTP, writable browser, unreadable registry, OpenAPI-only route, host-private connection, reviewed MCP route, and activated native route. Construct these as sanitized outputs inside a harness snapshot, never as manually registered route adapters. Assert every fixture remains a separate row and conservative aggregate.
 
 ```ts
 assert.deepEqual(rows.map(row => [row.routeId, row.observation, row.enforcement]), [
-  ["config:gmail.send", "observed", "unchecked"],
-  ["plugin:gmail.send", "uncovered", "absent"],
-  ["direct-http:gmail.send", "uncovered", "absent"],
+  [expectedOpaqueRouteId(configIdentity), "observed", "unchecked"],
+  [expectedOpaqueRouteId(pluginIdentity), "uncovered", "absent"],
+  [expectedOpaqueRouteId(directHttpIdentity), "uncovered", "absent"],
 ]);
 ```
+
+Assert every ID matches `^route_[0-9a-f]{64}$`, contains no route key or discovery-source text, is stable when only adapter/evidence version or digest changes, changes when any stable identity-tuple member changes, and remains unique for the same method exposed by distinct source-instance identities. Tests compare `discoverySource` directly for source semantics and never split or suffix-match `routeId`.
 
 Use an injected wall clock. Assert expired evidence, a changed host-config digest, an unreadable previously observed source, and a missing previously observed route all produce a current `unknown` or `uncovered` row rather than preserving the initialization-time status.
 
@@ -2110,9 +2116,9 @@ Run `npx tsc -p tsconfig.test.json`; expect missing route discovery adapter/modu
 
 - [ ] **Step 2: Implement host adapters over existing collectors**
 
-Define a closed `RouteDiscoveryAdapterV1` with pinned `sourceId`, `sourceVersion`, `sourceDigest`, and a read-only `discover` method that returns inert route candidates without credentials or provider bodies. Store installed adapters in a private registry; models and project files cannot register executable discovery code. Do not copy parsers from `coverage.ts`. Built-in host adapters translate existing collector results into `RouteCoverageV1`. Unknown/unreadable inputs become `unknown`, never zero. OpenAPI or third-party catalog metadata may create a discovery row through a future independently installed adapter, but cannot create a verified `ConnectionDescriptorV1` or activated Outcome.
+Define a closed `RouteDiscoveryAdapterV1` with pinned `sourceId`, `sourceVersion`, `sourceDigest`, one harness ID, and a read-only `discover` method that returns inert route candidates without credentials or provider bodies. Store the built-in harness adapters in a private registry; models and project files cannot register executable discovery code. Do not add generic static-route/catalog adapters and do not copy parsers from `coverage.ts`. Built-in harness adapters translate existing collector results into `RouteCoverageV1`. Unknown/unreadable inputs become `unknown`, never zero. OpenAPI or third-party catalog metadata discovered by a harness may add a non-authorizing row through that harness adapter; it cannot register executable code, create a verified `ConnectionDescriptorV1`, or activate an Outcome.
 
-Tests must prove two different adapter sources that describe the same provider method remain separate evidence rows, and that importing a route catalog cannot upgrade observation, enforcement, identity, topology, or profile activation. This is the extension point for large tool ecosystems; do not add a provider-specific connector catalog to Reelier core.
+Tests must prove two different source instances observed by harness adapters that describe the same provider method remain separate evidence rows, and that importing catalog metadata cannot upgrade observation, enforcement, identity, topology, or profile activation. The harness collector boundary is the extension point for large tool ecosystems; do not add a provider-specific connector catalog to Reelier core.
 
 - [ ] **Step 3: Preserve existing initialization state**
 
