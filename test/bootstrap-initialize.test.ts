@@ -148,8 +148,7 @@ test("a final-reread fault never leaves or returns a completed project", async (
     const injected = { ...options, failAt: "final-reread" } as InitializeAgentProjectOptions & { failAt: "final-reread" };
     await assert.rejects(() => initializeAgentProject(injected), /final reread|injected/i);
     const bootstrap = path.join(options.cwd, ".reelier", "bootstrap");
-    const journal = JSON.parse(await readFile(path.join(bootstrap, "transaction.json"), "utf8"));
-    assert.notEqual(journal.state, "complete");
+    await assert.rejects(readFile(path.join(bootstrap, "transaction.json"), "utf8"), { code: "ENOENT" });
     await assert.rejects(readFile(path.join(bootstrap, "current.json"), "utf8"), { code: "ENOENT" });
   });
 });
