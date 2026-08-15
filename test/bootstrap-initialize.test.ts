@@ -7,6 +7,7 @@ import { dispatchFromBootstrap, initializeAgentProject, type InitializeAgentProj
 import { digestAgentProjectV1 } from "../src/bootstrap/project.js";
 import { parseRuntimeDescriptorV1 } from "../src/runtime/manifest.js";
 import { authorityDigest } from "../src/authority/wire.js";
+import { computeInstalledBuildDigest } from "../src/bootstrap/build-identity.js";
 
 async function withFixture<T>(run: (options: InitializeAgentProjectOptions) => Promise<T>): Promise<T> {
   const root = await mkdtemp(path.join(os.tmpdir(), "reelier-named-init-"));
@@ -261,5 +262,22 @@ test("verified imported governance joins exact pins into the project descriptor"
     assert.equal(project.profileGovernanceRef, "operator-governance");
     assert.equal(project.profileGovernanceManifestDigest, manifestDigest);
     assert.equal(project.profileTrustHeadDigest, trustHeadDigest);
+  });
+});
+
+test("project records the canonical installed build digest rather than a synthetic version hash", async () => {
+  await withFixture(async options => {
+    await initializeAgentProject(options);
+    const project = JSON.parse(await readFile(path.join(options.cwd, ".reelier", "bootstrap", "project.json"), "utf8"));
+    assert.equal(project.installedBuildDigest, await computeInstalledBuildDigest(process.cwd()));
+  });
+});
+
+test("a self-asserted governance summary without fixed-root admission artifacts is refused", async () => {
+  await withFixture(async options => {
+    const governance = path.join(options.homedir, ".reelier", "governance");
+    await mkdir(governance, { recursive: true });
+    await writeFile(path.join(governance, "profile-governance.json"), JSON.stringify({ governanceRef: "forged", manifestDigest: `sha256:${"e".repeat(64)}`, trustHeadDigest: `sha256:${"f".repeat(64)}`, verificationStatus: "verified" }), "utf8");
+    await assert.rejects(() => initializeAgentProject(options), /governance|operator|trust|admission/i);
   });
 });
