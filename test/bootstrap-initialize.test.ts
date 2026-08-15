@@ -258,11 +258,22 @@ test("a complete operator governance import is verified and reported without cop
 test("a completed absent-governance plan cannot resume when fixed-root governance is supplied", async () => {
   await withFixture(async options => {
     await initializeAgentProject(options);
+    const bootstrap = path.join(options.cwd, ".reelier", "bootstrap");
+    const before = await Promise.all([
+      readFile(path.join(bootstrap, "imported-governance.json"), "utf8"),
+      readFile(path.join(bootstrap, "project.json"), "utf8"),
+      readFile(path.join(bootstrap, "state.json"), "utf8"),
+    ]);
     const fixture = await writeProfileGovernanceFixture(options.homedir);
-    const report = await initializeAgentProject({ ...options, governance: { tenant, governanceRef, expectedManifestDigest: fixture.manifestDigest, expectedTrustHeadDigest: fixture.manifest.trustHeadDigest, verificationTime } });
-    const project = JSON.parse(await readFile(path.join(options.cwd, ".reelier", "bootstrap", "project.json"), "utf8"));
-    assert.equal(project.tenant, tenant);
-    assert.match(report.projectDigest, /^sha256:/);
+    await assert.rejects(
+      () => initializeAgentProject({ ...options, governance: { tenant, governanceRef, expectedManifestDigest: fixture.manifestDigest, expectedTrustHeadDigest: fixture.manifest.trustHeadDigest, verificationTime } }),
+      /checkpoint|plan|identity/i,
+    );
+    assert.deepEqual(await Promise.all([
+      readFile(path.join(bootstrap, "imported-governance.json"), "utf8"),
+      readFile(path.join(bootstrap, "project.json"), "utf8"),
+      readFile(path.join(bootstrap, "state.json"), "utf8"),
+    ]), before);
   });
 });
 
