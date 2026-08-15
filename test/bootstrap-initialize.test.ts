@@ -8,6 +8,7 @@ import { digestAgentProjectV1 } from "../src/bootstrap/project.js";
 import { parseRuntimeDescriptorV1 } from "../src/runtime/manifest.js";
 import { authorityDigest } from "../src/authority/wire.js";
 import { computeInstalledBuildDigest } from "../src/bootstrap/build-identity.js";
+import { governanceRef, tenant, verificationTime, writeProfileGovernanceFixture } from "./authority/profile-governance-fixture.js";
 
 async function withFixture<T>(run: (options: InitializeAgentProjectOptions) => Promise<T>): Promise<T> {
   const root = await mkdtemp(path.join(os.tmpdir(), "reelier-named-init-"));
@@ -200,12 +201,10 @@ test("named init applies a consented project config plan with backup and records
 
 test("a complete operator governance import is verified and reported without copying roots into the project", async () => {
   await withFixture(async options => {
-    const governance = path.join(options.homedir, ".reelier", "governance");
-    await mkdir(governance, { recursive: true });
-    await writeFile(path.join(governance, "profile-governance.json"), JSON.stringify({ governanceRef: "operator-governance", manifestDigest: `sha256:${"a".repeat(64)}`, trustHeadDigest: `sha256:${"b".repeat(64)}`, verificationStatus: "verified" }), "utf8");
-    await initializeAgentProject(options);
+    const fixture = await writeProfileGovernanceFixture(options.homedir);
+    await initializeAgentProject({ ...options, governance: { tenant, governanceRef, expectedManifestDigest: fixture.manifestDigest, expectedTrustHeadDigest: fixture.manifest.trustHeadDigest, verificationTime } });
     const imported = JSON.parse(await readFile(path.join(options.cwd, ".reelier", "bootstrap", "imported-governance.json"), "utf8"));
-    assert.deepEqual(imported, { v: "reelier.imported-governance/v1", governanceRef: "operator-governance", manifestDigest: `sha256:${"a".repeat(64)}`, trustHeadDigest: `sha256:${"b".repeat(64)}`, verificationStatus: "verified" });
+    assert.deepEqual(imported, { v: "reelier.imported-governance/v1", governanceRef, manifestDigest: fixture.manifestDigest, trustHeadDigest: fixture.manifest.trustHeadDigest, verificationStatus: "verified" });
     assert.equal((await readdir(path.join(options.cwd, ".reelier", "bootstrap"))).some(name => /trust|root|public.*key/i.test(name)), false);
   });
 });
@@ -252,16 +251,12 @@ test("the same agent name in separate projects receives separate project-scoped 
 
 test("verified imported governance joins exact pins into the project descriptor", async () => {
   await withFixture(async options => {
-    const governance = path.join(options.homedir, ".reelier", "governance");
-    const manifestDigest = `sha256:${"c".repeat(64)}`;
-    const trustHeadDigest = `sha256:${"d".repeat(64)}`;
-    await mkdir(governance, { recursive: true });
-    await writeFile(path.join(governance, "profile-governance.json"), JSON.stringify({ governanceRef: "operator-governance", manifestDigest, trustHeadDigest, verificationStatus: "verified" }), "utf8");
-    await initializeAgentProject(options);
+    const fixture = await writeProfileGovernanceFixture(options.homedir);
+    await initializeAgentProject({ ...options, governance: { tenant, governanceRef, expectedManifestDigest: fixture.manifestDigest, expectedTrustHeadDigest: fixture.manifest.trustHeadDigest, verificationTime } });
     const project = JSON.parse(await readFile(path.join(options.cwd, ".reelier", "bootstrap", "project.json"), "utf8"));
-    assert.equal(project.profileGovernanceRef, "operator-governance");
-    assert.equal(project.profileGovernanceManifestDigest, manifestDigest);
-    assert.equal(project.profileTrustHeadDigest, trustHeadDigest);
+    assert.equal(project.profileGovernanceRef, governanceRef);
+    assert.equal(project.profileGovernanceManifestDigest, fixture.manifestDigest);
+    assert.equal(project.profileTrustHeadDigest, fixture.manifest.trustHeadDigest);
   });
 });
 
