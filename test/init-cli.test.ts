@@ -116,11 +116,16 @@ test("reelier init my-agent uses named bootstrap while bare init retains its ins
     const namedResult = await capture(() => cmdInit(named("my-agent", ["yes"]), { cwd: root, homedir: root, dependencies: localDependencies() }));
     assert.equal(namedResult.result, 0);
     assert.match(namedResult.output, /npx reelier@0\.32\.1 up/);
-    assert.equal(JSON.parse(await readFile(path.join(root, ".reelier", "bootstrap", "report.json"), "utf8")).authority, "unavailable");
+    assert.match(namedResult.output, /Authority absent/);
+    assert.match(namedResult.output, /Completeness not-proved/);
+    const pointer = JSON.parse(await readFile(path.join(root, ".reelier", "bootstrap", "current.json"), "utf8"));
+    const report = JSON.parse(await readFile(path.join(root, ".reelier", "bootstrap", "generations", pointer.generation, "report.json"), "utf8"));
+    assert.equal(report.authority, "absent");
+    assert.equal(report.completeness, "not-proved");
   });
 });
 
-test("named init discloses wrapped, already-wrapped, and unwrappable MCP surfaces", async () => {
+test("named init leaves MCP host configuration byte-identical", async () => {
   await withTempDir(async root => {
     await writeFile(path.join(root, ".mcp.json"), JSON.stringify({ mcpServers: {
       local: { command: "npx", args: ["-y", "@example/server"] },
@@ -129,9 +134,12 @@ test("named init discloses wrapped, already-wrapped, and unwrappable MCP surface
     } }), "utf8");
     const { result, output } = await capture(() => cmdInit(named("my-agent", ["yes"]), { cwd: root, homedir: root, dependencies: localDependencies() }));
     assert.equal(result, 0);
-    assert.match(output, /local: wrapped/i);
-    assert.match(output, /legacy: wrapped.*already/i);
-    assert.match(output, /remote: unwrappable/i);
+    assert.doesNotMatch(output, /MCP surface|managed Cell|activated/i);
+    assert.equal(await readFile(path.join(root, ".mcp.json"), "utf8"), JSON.stringify({ mcpServers: {
+      local: { command: "npx", args: ["-y", "@example/server"] },
+      legacy: { command: "npx", args: ["-y", "reelier", "mcp", "--wrap", "npx -y @example/legacy"] },
+      remote: { url: "https://example.invalid/mcp" },
+    } }));
   });
 });
 

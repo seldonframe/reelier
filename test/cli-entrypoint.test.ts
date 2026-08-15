@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtemp, symlink, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, symlink, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -64,4 +64,35 @@ test("root parser retains authority connection values required by the existing c
   assert.deepEqual(parsed.opts, {
     endpoint: "https://cell.example", "token-ref": "env:CELL_TOKEN", "cell-id": "cell_1", "adapter-contract-digest": `sha256:${"a".repeat(64)}`,
   });
+});
+
+test("real CLI restart recovers an interrupted exact plan and refuses later identity drift", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "reelier-cli-restart-"));
+  const project = path.join(root, "project");
+  await mkdir(project);
+  const cliPath = path.join(CLI_DIR, "cli.js");
+  const transactionPath = path.join(project, ".reelier", "bootstrap", "transaction.json");
+  try {
+    const child = spawn(process.execPath, [cliPath, "init", "restart-agent"], { cwd: project, stdio: "ignore" });
+    const deadline = Date.now() + 20_000;
+    while (Date.now() < deadline) {
+      try { if (JSON.parse(await readFile(transactionPath, "utf8")).state === "locked") break; } catch {}
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    assert.equal(JSON.parse(await readFile(transactionPath, "utf8")).state, "locked");
+    child.kill("SIGKILL");
+    await new Promise<void>(resolve => child.once("exit", () => resolve()));
+
+    const restarted = await execFileAsync(process.execPath, [cliPath, "init", "restart-agent"], { cwd: project });
+    assert.match(restarted.stdout, /npx reelier@0\.32\.1 up/);
+    const bootstrap = path.join(project, ".reelier", "bootstrap");
+    const pointer = JSON.parse(await readFile(path.join(bootstrap, "current.json"), "utf8"));
+    assert.deepEqual((await readdir(path.join(bootstrap, "generations", pointer.generation))).sort(), ["checkpoint.json", "project.json", "recovery-command.txt", "report.json"]);
+
+    const journal = JSON.parse(await readFile(transactionPath, "utf8"));
+    await writeFile(transactionPath, `${JSON.stringify({ ...journal, planDigest: `sha256:${"f".repeat(64)}` }, null, 2)}\n`);
+    const before = await readFile(path.join(bootstrap, "current.json"), "utf8");
+    await assert.rejects(execFileAsync(process.execPath, [cliPath, "init", "restart-agent"], { cwd: project }));
+    assert.equal(await readFile(path.join(bootstrap, "current.json"), "utf8"), before);
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
