@@ -128,7 +128,7 @@ import {
   renderInitializationReport,
   type InitializationDependencies,
 } from "./initialization.js";
-import { initializeAgentProject } from "./bootstrap/initialize.js";
+import { initializeAgentProject, type InitializeAgentProjectOptions } from "./bootstrap/initialize.js";
 
 // Exported (alongside cmdPush below) so test/push-cli.test.ts can drive
 // cmdPush's console output directly with a fake ParsedArgs + monkeypatched
@@ -4251,6 +4251,8 @@ export interface CmdInitOverrides {
   readonly homedir?: string;
   readonly authorityRoot?: string;
   readonly dependencies?: InitializationDependencies;
+  /** Internal host-provisioned governance reference; deliberately not a CLI flag. */
+  readonly governance?: InitializeAgentProjectOptions["governance"];
 }
 
 export async function cmdInit(args: ParsedArgs, overrides: CmdInitOverrides = {}): Promise<number> {
@@ -4286,6 +4288,7 @@ export async function cmdInit(args: ParsedArgs, overrides: CmdInitOverrides = {}
         yes: args.flags.has("yes"),
         exactVersion: pkg.version,
         ...(overrides.dependencies === undefined ? {} : { dependencies: overrides.dependencies }),
+        ...(overrides.governance === undefined ? {} : { governance: overrides.governance }),
       });
       console.log(`Prepared '${args.positional[0]}' for observation; Path C is unavailable until independent activation.`);
       console.log(report.recoveryCommand);
