@@ -79,7 +79,7 @@ export async function loadBootstrapNativeArtifact(options: LoadBootstrapNativeAr
   const packageRoot = path.resolve(options.packageRoot ?? defaultPackageRoot());
   const manifestPath = path.join(packageRoot, "native", "bootstrap-helper", "manifest.json");
   let manifest: NativeArtifactManifest;
-  try { manifest = parseManifest(JSON.parse(await readFile(manifestPath, "utf8"))); }
+  try { manifest = parseManifest(JSON.parse(await readVerifiedRegularFile(manifestPath, packageRoot, "utf8") as string)); }
   catch { return refusal("manifest-invalid"); }
 
   const artifact = manifest.artifacts.find(entry => entry.platform === platform && entry.architecture === architecture);
@@ -116,6 +116,23 @@ export async function loadBootstrapNativeArtifact(options: LoadBootstrapNativeAr
   });
 }
 
+async function readVerifiedRegularFile(file: string, confinedRoot: string, encoding?: BufferEncoding): Promise<string | Buffer> {
+  const before = await lstat(file);
+  if (!before.isFile() || before.isSymbolicLink()) throw new TypeError("unsafe regular file");
+  const resolved = await realpath(file);
+  const relative = path.relative(confinedRoot, resolved);
+  if (relative === "" || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative) || resolved !== file) throw new TypeError("unconfined regular file");
+  const handle = await open(file, "r");
+  try {
+    const opened = await handle.stat();
+    if (!opened.isFile() || !sameIdentity(before, opened)) throw new TypeError("regular file identity changed");
+    const bytes = await handle.readFile();
+    const after = await lstat(file);
+    if (!after.isFile() || after.isSymbolicLink() || !sameIdentity(opened, after) || await realpath(file) !== resolved) throw new TypeError("regular file identity changed");
+    return encoding === undefined ? bytes : bytes.toString(encoding);
+  } finally { await handle.close(); }
+}
+
 function parseManifest(value: unknown): NativeArtifactManifest {
   if (!isRecord(value) || !hasExactKeys(value, ["v", "protocol", "artifacts"]) || value.v !== MANIFEST_VERSION || value.protocol !== PROTOCOL || !Array.isArray(value.artifacts) || value.artifacts.length !== ARTIFACTS.length) throw new TypeError("invalid native artifact manifest");
   const artifacts = value.artifacts.map((entry, index) => parseArtifact(entry, ARTIFACTS[index]!));
@@ -143,4 +160,3 @@ function sha256(bytes: Buffer): string { return `sha256:${createHash("sha256").u
 function refusal(reason: BootstrapNativeArtifactRefusalReason): Readonly<{ status: "refused"; reason: BootstrapNativeArtifactRefusalReason }> { return Object.freeze({ status: "refused", reason }); }
 function isRecord(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === "object" && Object.getPrototypeOf(value) === Object.prototype; }
 function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean { const actual = Object.keys(value); return actual.length === keys.length && actual.every(key => keys.includes(key)); }
-
