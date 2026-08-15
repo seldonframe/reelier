@@ -1,11 +1,11 @@
 import { createHash, randomBytes } from "node:crypto";
-import { access, lstat, mkdir, open, readFile, realpath, rename, rm, unlink } from "node:fs/promises";
+import { access, lstat, open, readFile, realpath } from "node:fs/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import path from "node:path";
 import { authorityDigest } from "../authority/wire.js";
 import type { InitializationDependencies } from "../initialization.js";
 import { normalizeRouteCoverageV1 } from "../routes/normalize.js";
-import { writeFileAtomic } from "../writeback.js";
+import { createBootstrapNativeSessionFactory, type BootstrapNativeSession, type BootstrapNativeSessionFactory } from "./native-helper.js";
 
 export const PREPARATION_STATES = Object.freeze(["absent", "locked", "prepared", "committing", "complete", "rolling-back", "recovery-required"] as const);
 export type PreparationState = (typeof PREPARATION_STATES)[number];
@@ -22,6 +22,8 @@ export interface InitializeAgentProjectOptions {
   readonly interruptAfterState?: "locked" | "prepared" | "committing";
   /** Deterministic filesystem-fault seam used to prove post-publication rollback. */
   readonly failAt?: "after-publication" | "final-reread";
+  /** Test seam; production always selects the verified packaged native helper. */
+  readonly nativeSessionFactory?: BootstrapNativeSessionFactory;
 }
 
 export interface MinimalNamedProjectV1 {
@@ -92,48 +94,49 @@ const NAME = /^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/;
 const SHA256 = /^sha256:[0-9a-f]{64}$/;
 const TOKEN = /^[0-9a-f]{64}$/;
 const TRANSACTION_ID = /^[0-9a-f]{32}$/;
-const activeLockTokens = new Set<string>();
-const heartbeatTimers = new Map<string, NodeJS.Timeout>();
-const heartbeatCounters = new Map<string, number>();
 
 export async function initializeAgentProject(options: InitializeAgentProjectOptions): Promise<BootstrapPreparationReport> {
   const canonicalTarget = await canonicalizeTarget(options);
   const rootHandle = await open(canonicalTarget.projectRoot, "r");
   const rootIdentity = await rootHandle.stat();
-  const lockPath = path.join(canonicalTarget.projectRoot, ".reelier-bootstrap.lock");
   const journalPath = path.join(canonicalTarget.projectRoot, ".reelier", "bootstrap", "transaction.json");
   let bootstrapRoot: string;
-  let acquired!: Awaited<ReturnType<typeof acquireLock>>;
+  const freshLock: LockRecord = Object.freeze({ v: "reelier.bootstrap-lock/v2", pid: process.pid, ownerToken: randomBytes(32).toString("hex"), transactionId: randomBytes(16).toString("hex") });
+  let acquired!: Readonly<{ lock: LockRecord; priorLock?: LockRecord; priorBytes?: Buffer }>;
+  let nativeSession: BootstrapNativeSession | undefined;
   let lockAcquired = false;
   let bootstrapHandle: Awaited<ReturnType<typeof open>> | undefined;
   let bootstrapIdentity: Awaited<ReturnType<typeof lstat>> | undefined;
   try {
     await assertProjectIdentity(canonicalTarget.projectRoot, rootHandle, rootIdentity.dev, rootIdentity.ino);
-    acquired = await acquireLock(lockPath, journalPath);
+    const factory = options.nativeSessionFactory ?? createBootstrapNativeSessionFactory();
+    nativeSession = await factory({ root: canonicalTarget.projectRoot, lockName: ".reelier-bootstrap.lock", lockBytes: Buffer.from(canonicalBytes(freshLock)) });
+    acquired = nativeSession.acquisition.status === "created" ? Object.freeze({ lock: freshLock }) : recoveredLock(freshLock, nativeSession.acquisition.priorBytes);
     lockAcquired = true;
-    bootstrapRoot = await ensureBootstrapRoot(canonicalTarget.projectRoot);
+    bootstrapRoot = await ensureBootstrapRoot(canonicalTarget.projectRoot, nativeSession);
     await assertProjectIdentity(canonicalTarget.projectRoot, rootHandle, rootIdentity.dev, rootIdentity.ino);
     bootstrapHandle = await open(bootstrapRoot, "r");
     bootstrapIdentity = await bootstrapHandle.stat();
     await assertDirectoryIdentity(bootstrapRoot, bootstrapHandle, bootstrapIdentity.dev, bootstrapIdentity.ino, "bootstrap root");
   } catch (error) {
-    if (lockAcquired) await releaseLock(lockPath, acquired.lock);
+    if (lockAcquired) await nativeSession?.close({ removeLock: acquired.priorLock === undefined }).catch(() => {});
     await bootstrapHandle?.close();
     await rootHandle.close();
     throw error;
   }
   const retainedBootstrapHandle = bootstrapHandle;
   const retainedBootstrapIdentity = bootstrapIdentity;
-  if (retainedBootstrapHandle === undefined || retainedBootstrapIdentity === undefined) throw new TypeError("named bootstrap physical identity is unavailable");
+  const retainedNativeSession = nativeSession;
+  if (retainedBootstrapHandle === undefined || retainedBootstrapIdentity === undefined || retainedNativeSession === undefined) throw new TypeError("named bootstrap physical identity is unavailable");
   let journal: TransactionRecord | undefined;
   let retainLock = false;
   let rollbackAuthorized = false;
   let claimRestored = false;
+  let lockReplaced = false;
   let resourcesClosed = false;
   try {
     const rawJournal = await readOptionalJson(journalPath);
-    if (rawJournal === undefined && acquired.recoveryClaim !== undefined) {
-      await restoreRecoveryClaim(lockPath, acquired.lock, acquired.recoveryClaim);
+    if (rawJournal === undefined && acquired.priorLock !== undefined) {
       claimRestored = true;
       throw new Error("named bootstrap is busy: lock owner has no closed recovery journal");
     }
@@ -141,25 +144,24 @@ export async function initializeAgentProject(options: InitializeAgentProjectOpti
     await assertProjectIdentity(canonicalTarget.projectRoot, rootHandle, rootIdentity.dev, rootIdentity.ino);
     await assertDirectoryIdentity(bootstrapRoot, retainedBootstrapHandle, retainedBootstrapIdentity.dev, retainedBootstrapIdentity.ino, "bootstrap root");
     const target = Object.freeze({ ...canonicalTarget, routeSnapshotDigest });
-    await assertOwnLock(lockPath, acquired.lock);
     if (rawJournal !== undefined) {
       journal = parseTransaction(rawJournal);
       const planDigest = plannedDigest(target, journal.initializedAt);
-      if (acquired.recoveryClaim !== undefined) {
+      if (acquired.priorLock !== undefined) {
         try {
-          if (journal.transactionId !== acquired.recoveryClaim.previousLock.transactionId || journal.ownerTokenCommitment !== sha256(acquired.recoveryClaim.previousLock.ownerToken)) throw new Error("named bootstrap recovery lock and journal identity mismatch");
+          if (journal.transactionId !== acquired.priorLock.transactionId || journal.ownerTokenCommitment !== sha256(acquired.priorLock.ownerToken)) throw new Error("named bootstrap recovery lock and journal identity mismatch");
           assertTransactionIdentity(journal, target, planDigest);
           if (journal.state === "complete") {
             const report = await readVerifiedComplete(bootstrapRoot, journal);
-            await finalizeRecoveryClaim(acquired.recoveryClaim);
             return report;
           }
           const recoveryRequired = journal.state === "recovery-required";
-          journal = await rebindForRollback(bootstrapRoot, journal, acquired.lock);
+          await retainedNativeSession.replaceLock(Buffer.from(canonicalBytes(acquired.lock)));
+          lockReplaced = true;
+          journal = await rebindForRollback(canonicalTarget.projectRoot, bootstrapRoot, journal, acquired.lock, retainedNativeSession);
           rollbackAuthorized = true;
-          await rollbackAbsent(bootstrapRoot, journal);
-          await finalizeRecoveryClaim(acquired.recoveryClaim);
-          await releaseLock(lockPath, acquired.lock);
+          await rollbackAbsent(canonicalTarget.projectRoot, bootstrapRoot, journal, retainedNativeSession);
+          await retainedNativeSession.close({ removeLock: true });
           lockAcquired = false;
           await retainedBootstrapHandle.close();
           await rootHandle.close();
@@ -168,7 +170,7 @@ export async function initializeAgentProject(options: InitializeAgentProjectOpti
           return await initializeAgentProject(options);
         } catch (error) {
           if (!rollbackAuthorized) {
-            await restoreRecoveryClaim(lockPath, acquired.lock, acquired.recoveryClaim);
+            if (lockReplaced && acquired.priorBytes !== undefined) await retainedNativeSession.replaceLock(acquired.priorBytes);
             claimRestored = true;
             journal = undefined;
           }
@@ -196,49 +198,48 @@ export async function initializeAgentProject(options: InitializeAgentProjectOpti
         reboundCheckpointDigest: null,
         publishedGeneration: null,
       });
-      await assertOwnLock(lockPath, acquired.lock); await writeJournal(journalPath, journal);
+      await writeJournal(canonicalTarget.projectRoot, journalPath, journal, retainedNativeSession);
       rollbackAuthorized = true;
-      if (options.interruptAfterState === "locked") { await markSimulatedOrphan(lockPath, acquired.lock); retainLock = true; throw new InterruptedInitialization("locked"); }
+      if (options.interruptAfterState === "locked") { retainLock = true; throw new InterruptedInitialization("locked"); }
     }
 
     if (journal.state === "locked") {
       // A crash in `locked` may leave only transaction-owned, uncommitted
       // staging bytes. They carry no checkpoint and are never adoptable.
-      await rm(stagingPath(bootstrapRoot, journal.transactionId), { recursive: true, force: true });
-      const prepared = await prepareGeneration(bootstrapRoot, journal);
+      await retainedNativeSession.remove(relativePath(canonicalTarget.projectRoot, stagingPath(bootstrapRoot, journal.transactionId)), { recursive: true, missingOk: true });
+      const prepared = await prepareGeneration(canonicalTarget.projectRoot, bootstrapRoot, journal, retainedNativeSession);
       journal = Object.freeze({ ...journal, state: "prepared", checkpointDigest: prepared.checkpointDigest });
-      await assertOwnLock(lockPath, acquired.lock); await writeJournal(journalPath, journal);
-      if (options.interruptAfterState === "prepared") { await markSimulatedOrphan(lockPath, acquired.lock); retainLock = true; throw new InterruptedInitialization("prepared"); }
+      await writeJournal(canonicalTarget.projectRoot, journalPath, journal, retainedNativeSession);
+      if (options.interruptAfterState === "prepared") { retainLock = true; throw new InterruptedInitialization("prepared"); }
     } else if (journal.state === "prepared") {
       await validateStagedGeneration(bootstrapRoot, journal);
     } else if (journal.state === "committing") {
       await validateStagedOrPublishedGeneration(bootstrapRoot, journal);
     } else if (journal.state === "rolling-back") {
-      await rollbackAbsent(bootstrapRoot, journal);
+      await rollbackAbsent(canonicalTarget.projectRoot, bootstrapRoot, journal, retainedNativeSession);
       throw new Error("named bootstrap recovered the interrupted rollback; retry initialization");
     }
 
     if (journal.state === "prepared") {
       journal = Object.freeze({ ...journal, state: "committing" });
-      await assertOwnLock(lockPath, acquired.lock); await writeJournal(journalPath, journal);
-      if (options.interruptAfterState === "committing") { await markSimulatedOrphan(lockPath, acquired.lock); retainLock = true; throw new InterruptedInitialization("committing"); }
+      await writeJournal(canonicalTarget.projectRoot, journalPath, journal, retainedNativeSession);
+      if (options.interruptAfterState === "committing") { retainLock = true; throw new InterruptedInitialization("committing"); }
     }
 
     if (journal.state !== "committing") throw new Error("named bootstrap transaction state is not forward-recoverable");
     const generation = journal.transactionId;
     const staging = stagingPath(bootstrapRoot, generation);
     const generationPath = path.join(bootstrapRoot, "generations", generation);
-    await assertOwnLock(lockPath, acquired.lock);
-    if (!await exists(generationPath)) await rename(staging, generationPath);
+    if (!await exists(generationPath)) await retainedNativeSession.rename(relativePath(canonicalTarget.projectRoot, staging), relativePath(canonicalTarget.projectRoot, generationPath));
     await assertProjectIdentity(canonicalTarget.projectRoot, rootHandle, rootIdentity.dev, rootIdentity.ino);
     await validateGeneration(generationPath, journal);
     const pointer = Object.freeze({ v: "reelier.bootstrap-current/v1", generation, generationDigest: await generationDigest(generationPath) });
-    await assertOwnLock(lockPath, acquired.lock); await writeFileAtomic(path.join(bootstrapRoot, "current.json"), canonicalBytes(pointer));
+    await retainedNativeSession.writeAtomic(relativePath(canonicalTarget.projectRoot, path.join(bootstrapRoot, "current.json")), Buffer.from(canonicalBytes(pointer)));
     if (options.failAt === "after-publication") throw new Error("injected failure after publication");
     const completing = Object.freeze({ ...journal, state: "complete" as const, publishedGeneration: generation });
     await readVerifiedComplete(bootstrapRoot, completing);
     if (options.failAt === "final-reread") throw new Error("injected final reread failure");
-    await assertOwnLock(lockPath, acquired.lock); await writeJournal(journalPath, completing);
+    await writeJournal(canonicalTarget.projectRoot, journalPath, completing, retainedNativeSession);
     journal = completing;
     await assertProjectIdentity(canonicalTarget.projectRoot, rootHandle, rootIdentity.dev, rootIdentity.ino);
     return await readVerifiedComplete(bootstrapRoot, journal);
@@ -248,29 +249,29 @@ export async function initializeAgentProject(options: InitializeAgentProjectOpti
     if (!claimRestored && rollbackAuthorized && journal !== undefined && journal.state !== "complete") {
       try {
         const rollingBack = Object.freeze({ ...journal, state: "rolling-back" as const });
-        await assertOwnLock(lockPath, acquired.lock); await writeJournal(journalPath, rollingBack);
-        await rollbackAbsent(bootstrapRoot, rollingBack);
+        await writeJournal(canonicalTarget.projectRoot, journalPath, rollingBack, retainedNativeSession);
+        await rollbackAbsent(canonicalTarget.projectRoot, bootstrapRoot, rollingBack, retainedNativeSession);
       } catch {
         const recoveryRequired = Object.freeze({ ...journal, state: "recovery-required" as const });
-        await writeJournal(journalPath, recoveryRequired).catch(() => {});
+        await writeJournal(canonicalTarget.projectRoot, journalPath, recoveryRequired, retainedNativeSession).catch(() => {});
         retainLock = true;
       }
     }
     throw error;
   } finally {
     if (!resourcesClosed) {
-      if (!retainLock && lockAcquired && !claimRestored) await releaseLock(lockPath, acquired.lock);
+      if (lockAcquired) await retainedNativeSession.close({ removeLock: !retainLock && !claimRestored });
       await retainedBootstrapHandle.close();
       await rootHandle.close();
     }
   }
 }
 
-async function rebindForRollback(bootstrapRoot: string, journal: TransactionRecord, lock: LockRecord): Promise<TransactionRecord> {
+async function rebindForRollback(projectRoot: string, bootstrapRoot: string, journal: TransactionRecord, lock: LockRecord, nativeSession: BootstrapNativeSession): Promise<TransactionRecord> {
   const commitment = sha256(lock.ownerToken);
   if (journal.checkpointDigest === null) {
     const rolling = Object.freeze({ ...journal, state: "rolling-back" as const, ownerTokenCommitment: commitment, reboundCheckpointDigest: null });
-    await writeJournal(path.join(bootstrapRoot, "transaction.json"), rolling);
+    await writeJournal(projectRoot, path.join(bootstrapRoot, "transaction.json"), rolling, nativeSession);
     return rolling;
   }
   const staged = stagingPath(bootstrapRoot, journal.transactionId);
@@ -282,10 +283,10 @@ async function rebindForRollback(bootstrapRoot: string, journal: TransactionReco
   const rebound = Object.freeze({ ...checkpoint, ownerTokenCommitment: commitment });
   const reboundDigest = digest(rebound);
   const transitional = Object.freeze({ ...journal, state: "rolling-back" as const, ownerTokenCommitment: commitment, reboundCheckpointDigest: reboundDigest });
-  await writeJournal(path.join(bootstrapRoot, "transaction.json"), transitional);
-  await writeFileAtomic(checkpointPath, canonicalBytes(rebound));
+  await writeJournal(projectRoot, path.join(bootstrapRoot, "transaction.json"), transitional, nativeSession);
+  await nativeSession.writeAtomic(relativePath(projectRoot, checkpointPath), Buffer.from(canonicalBytes(rebound)));
   const rolling = Object.freeze({ ...transitional, checkpointDigest: reboundDigest, reboundCheckpointDigest: null });
-  await writeJournal(path.join(bootstrapRoot, "transaction.json"), rolling);
+  await writeJournal(projectRoot, path.join(bootstrapRoot, "transaction.json"), rolling, nativeSession);
   return rolling;
 }
 
@@ -298,25 +299,6 @@ async function validateRecoverableGeneration(root: string, journal: TransactionR
     if (!info.isFile() || info.isSymbolicLink() || sha256(await readFile(file)) !== artifact.digest) throw new Error("named bootstrap recovery artifact digest mismatch");
   }
   for (const [name, expected] of plannedArtifacts(journal.canonicalTarget, journal.initializedAt)) if (!Buffer.from(await readFile(path.join(root, name))).equals(Buffer.from(expected))) throw new Error("named bootstrap recovery artifact plan mismatch");
-}
-
-async function restoreRecoveryClaim(lockPath: string, lock: LockRecord, claim: RecoveryClaim): Promise<void> {
-  stopHeartbeat(lock);
-  await unlink(lockPath).catch(() => {});
-  await unlink(`${lockPath}.heartbeat`).catch(() => {});
-  await rename(claim.retiredLockPath, lockPath);
-  if (claim.retiredHeartbeatPath !== null) await rename(claim.retiredHeartbeatPath, `${lockPath}.heartbeat`);
-}
-
-async function finalizeRecoveryClaim(claim: RecoveryClaim): Promise<void> {
-  await unlink(claim.retiredLockPath).catch(() => {});
-  if (claim.retiredHeartbeatPath !== null) await unlink(claim.retiredHeartbeatPath).catch(() => {});
-}
-
-interface RecoveryClaim {
-  readonly previousLock: LockRecord;
-  readonly retiredLockPath: string;
-  readonly retiredHeartbeatPath: string | null;
 }
 
 async function canonicalizeTarget(options: InitializeAgentProjectOptions): Promise<Omit<CanonicalTarget, "routeSnapshotDigest">> {
@@ -339,16 +321,16 @@ async function canonicalizeTarget(options: InitializeAgentProjectOptions): Promi
   });
 }
 
-async function ensureBootstrapRoot(projectRoot: string): Promise<string> {
+async function ensureBootstrapRoot(projectRoot: string, nativeSession: BootstrapNativeSession): Promise<string> {
   const reelier = path.join(projectRoot, ".reelier");
-  await ensureExactDirectory(reelier, projectRoot, ".reelier");
+  await ensureExactDirectory(projectRoot, reelier, projectRoot, ".reelier", nativeSession);
   const bootstrap = path.join(reelier, "bootstrap");
-  await ensureExactDirectory(bootstrap, reelier, "bootstrap");
+  await ensureExactDirectory(projectRoot, bootstrap, reelier, "bootstrap", nativeSession);
   return bootstrap;
 }
 
-async function ensureExactDirectory(directory: string, parent: string, basename: string): Promise<void> {
-  await mkdir(directory).catch(error => { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; });
+async function ensureExactDirectory(projectRoot: string, directory: string, parent: string, basename: string, nativeSession: BootstrapNativeSession): Promise<void> {
+  await nativeSession.mkdir(relativePath(projectRoot, directory));
   const info = await lstat(directory);
   if (!info.isDirectory() || info.isSymbolicLink() || path.relative(parent, await realpath(directory)) !== basename) throw new TypeError(`named bootstrap ${basename} directory is unsafe or linked`);
 }
@@ -366,60 +348,13 @@ async function existingRouteSnapshotDigest(bootstrapRoot: string): Promise<strin
   return sha256(bytes);
 }
 
-async function acquireLock(lockPath: string, _journalPath: string): Promise<{ lock: LockRecord; recoveryClaim?: RecoveryClaim }> {
-  const ownerToken = randomBytes(32).toString("hex");
-  const fresh: LockRecord = Object.freeze({ v: "reelier.bootstrap-lock/v2", pid: process.pid, ownerToken, transactionId: randomBytes(16).toString("hex") });
-  try {
-    const handle = await open(lockPath, "wx");
-    await handle.writeFile(canonicalBytes(fresh));
-    await handle.sync();
-    await handle.close();
-    await startHeartbeat(lockPath, fresh);
-    return { lock: fresh };
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
-      if (await sameLock(lockPath, fresh)) await unlink(lockPath).catch(() => {});
-      throw error;
-    }
-  }
-
-  let current: LockRecord;
-  try { current = parseLock(await readJsonFile(lockPath, "named bootstrap orphan lock is malformed")); }
-  catch { throw new Error("named bootstrap is busy: lock owner cannot be proved recoverable"); }
-  if (activeLockTokens.has(current.ownerToken) || await heartbeatAdvanced(lockPath, current)) throw new Error("named bootstrap is busy: live lock owner");
-  if (!await exists(lockPath)) return acquireLock(lockPath, _journalPath);
-  const checked = parseLock(await readJsonFile(lockPath, "named bootstrap orphan lock changed during recovery"));
-  if (digest(checked) !== digest(current)) return acquireLock(lockPath, _journalPath);
-  const retired = `${lockPath}.orphan-${randomBytes(12).toString("hex")}`;
-  await rename(lockPath, retired);
-  const heartbeatPath = `${lockPath}.heartbeat`;
-  const retiredHeartbeat = `${retired}.heartbeat`;
-  let heartbeatRetired = false;
-  try { await rename(heartbeatPath, retiredHeartbeat); heartbeatRetired = true; }
-  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") { await rename(retired, lockPath).catch(() => {}); throw error; } }
-  const resumed: LockRecord = Object.freeze({ ...fresh, transactionId: current.transactionId });
-  try {
-    const handle = await open(lockPath, "wx");
-    await handle.writeFile(canonicalBytes(resumed));
-    await handle.sync();
-    await handle.close();
-    await startHeartbeat(lockPath, resumed);
-    return { lock: resumed, recoveryClaim: { previousLock: current, retiredLockPath: retired, retiredHeartbeatPath: heartbeatRetired ? retiredHeartbeat : null } };
-  } catch (error) {
-    await unlink(lockPath).catch(() => {});
-    await rename(retired, lockPath).catch(() => {});
-    if (heartbeatRetired) await rename(retiredHeartbeat, heartbeatPath).catch(() => {});
-    throw error;
-  }
-}
-
-async function prepareGeneration(bootstrapRoot: string, journal: TransactionRecord): Promise<{ checkpointDigest: string }> {
-  await ensureExactDirectory(path.join(bootstrapRoot, "staging"), bootstrapRoot, "staging");
-  await ensureExactDirectory(path.join(bootstrapRoot, "generations"), bootstrapRoot, "generations");
+async function prepareGeneration(projectRoot: string, bootstrapRoot: string, journal: TransactionRecord, nativeSession: BootstrapNativeSession): Promise<{ checkpointDigest: string }> {
+  await ensureExactDirectory(projectRoot, path.join(bootstrapRoot, "staging"), bootstrapRoot, "staging", nativeSession);
+  await ensureExactDirectory(projectRoot, path.join(bootstrapRoot, "generations"), bootstrapRoot, "generations", nativeSession);
   const root = stagingPath(bootstrapRoot, journal.transactionId);
-  await mkdir(root);
+  await nativeSession.mkdir(relativePath(projectRoot, root));
   const artifacts = plannedArtifacts(journal.canonicalTarget, journal.initializedAt);
-  for (const [name, bytes] of artifacts) await writeExclusiveFile(path.join(root, name), bytes);
+  for (const [name, bytes] of artifacts) await writeExclusiveFile(projectRoot, path.join(root, name), bytes, nativeSession);
   const checkpoint: CheckpointRecord = Object.freeze({
     v: "reelier.bootstrap-checkpoint/v2",
     transactionId: journal.transactionId,
@@ -429,7 +364,7 @@ async function prepareGeneration(bootstrapRoot: string, journal: TransactionReco
     priorTargetDigest: null,
     artifacts: Object.freeze(artifacts.map(([name, bytes]) => Object.freeze({ name, digest: sha256(bytes) }))),
   });
-  await writeExclusiveFile(path.join(root, "checkpoint.json"), canonicalBytes(checkpoint));
+  await writeExclusiveFile(projectRoot, path.join(root, "checkpoint.json"), canonicalBytes(checkpoint), nativeSession);
   return { checkpointDigest: digest(checkpoint) };
 }
 
@@ -480,13 +415,13 @@ async function readVerifiedComplete(bootstrapRoot: string, journal: TransactionR
   return await readJsonFile(path.join(root, "report.json"), "named preparation report is malformed") as BootstrapPreparationReport;
 }
 
-async function rollbackAbsent(bootstrapRoot: string, journal: TransactionRecord): Promise<void> {
+async function rollbackAbsent(projectRoot: string, bootstrapRoot: string, journal: TransactionRecord, nativeSession: BootstrapNativeSession): Promise<void> {
   if (journal.priorGeneration !== null || journal.priorGenerationDigest !== null) throw new Error("named bootstrap prior generation is unsupported by the minimal transaction");
-  await rm(stagingPath(bootstrapRoot, journal.transactionId), { recursive: true, force: true });
-  await rm(path.join(bootstrapRoot, "generations", journal.transactionId), { recursive: true, force: true });
+  await nativeSession.remove(relativePath(projectRoot, stagingPath(bootstrapRoot, journal.transactionId)), { recursive: true, missingOk: true });
+  await nativeSession.remove(relativePath(projectRoot, path.join(bootstrapRoot, "generations", journal.transactionId)), { recursive: true, missingOk: true });
   const pointer = path.join(bootstrapRoot, "current.json");
-  if (await exists(pointer)) await unlink(pointer);
-  await unlink(path.join(bootstrapRoot, "transaction.json"));
+  await nativeSession.remove(relativePath(projectRoot, pointer), { recursive: false, missingOk: true });
+  await nativeSession.remove(relativePath(projectRoot, path.join(bootstrapRoot, "transaction.json")), { recursive: false, missingOk: false });
   if (await exists(stagingPath(bootstrapRoot, journal.transactionId)) || await exists(path.join(bootstrapRoot, "generations", journal.transactionId)) || await exists(pointer)) throw new Error("named bootstrap rollback could not prove prior absence");
 }
 
@@ -520,62 +455,23 @@ function isCanonicalTarget(value: unknown): value is CanonicalTarget {
   return isRecord(value) && hasExactKeys(value, ["agentName", "agentNameFold", "projectRoot", "reelierVersion", "installedBuildDigest", "routeSnapshotDigest"]) && NAME.test(String(value.agentName)) && value.agentNameFold === String(value.agentName).toLocaleLowerCase("en-US") && path.isAbsolute(String(value.projectRoot)) && VERSION.test(String(value.reelierVersion)) && SHA256.test(String(value.installedBuildDigest)) && (value.routeSnapshotDigest === null || SHA256.test(String(value.routeSnapshotDigest)));
 }
 
-async function writeJournal(file: string, journal: TransactionRecord): Promise<void> { await writeFileAtomic(file, canonicalBytes(journal)); }
-async function writeExclusiveFile(file: string, bytes: string): Promise<void> { const handle = await open(file, "wx"); try { await handle.writeFile(bytes); } finally { await handle.close(); } }
+async function writeJournal(projectRoot: string, file: string, journal: TransactionRecord, nativeSession: BootstrapNativeSession): Promise<void> { await nativeSession.writeAtomic(relativePath(projectRoot, file), Buffer.from(canonicalBytes(journal))); }
+async function writeExclusiveFile(projectRoot: string, file: string, bytes: string, nativeSession: BootstrapNativeSession): Promise<void> { await nativeSession.writeExclusive(relativePath(projectRoot, file), Buffer.from(bytes)); }
 async function readJsonFile(file: string, message: string): Promise<unknown> { try { const info = await lstat(file); if (!info.isFile() || info.isSymbolicLink()) throw new Error(message); return JSON.parse(await readFile(file, "utf8")); } catch { throw new Error(message); } }
 async function readOptionalJson(file: string): Promise<unknown | undefined> { try { const info = await lstat(file); if (!info.isFile() || info.isSymbolicLink()) throw new Error("unsafe"); return JSON.parse(await readFile(file, "utf8")); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw new Error("named bootstrap transaction journal is malformed"); } }
-async function releaseLock(file: string, lock: LockRecord): Promise<void> {
-  stopHeartbeat(lock);
-  if (await sameLock(file, lock)) await unlink(file).catch(() => {});
-  const heartbeat = `${file}.heartbeat`;
-  if (await heartbeatBelongsTo(heartbeat, lock)) await unlink(heartbeat).catch(() => {});
-}
-async function markSimulatedOrphan(file: string, lock: LockRecord): Promise<void> {
-  stopHeartbeat(lock);
-  await writeFileAtomic(file, canonicalBytes({ ...lock, pid: 2147483647 }));
-}
-async function sameLock(file: string, lock: LockRecord): Promise<boolean> { try { return digest(await readJsonFile(file, "invalid lock")) === digest(lock); } catch { return false; } }
-async function assertOwnLock(file: string, lock: LockRecord): Promise<void> { if (!await sameLock(file, lock)) throw new Error("named bootstrap lock ownership changed"); }
 async function exists(file: string): Promise<boolean> { try { await access(file); return true; } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; } }
-async function startHeartbeat(lockPath: string, lock: LockRecord): Promise<void> {
-  activeLockTokens.add(lock.ownerToken);
-  heartbeatCounters.set(lock.ownerToken, 0);
-  const write = async (): Promise<void> => {
-    if (!activeLockTokens.has(lock.ownerToken) || !await sameLock(lockPath, lock)) return;
-    const counter = (heartbeatCounters.get(lock.ownerToken) ?? 0) + 1;
-    heartbeatCounters.set(lock.ownerToken, counter);
-    await writeFileAtomic(`${lockPath}.heartbeat`, canonicalBytes({
-      v: "reelier.bootstrap-heartbeat/v1", transactionId: lock.transactionId,
-      ownerTokenCommitment: sha256(lock.ownerToken), counter,
-    }));
-  };
-  await write();
-  const timer = setInterval(() => { void write().catch(() => {}); }, 25);
-  timer.unref();
-  heartbeatTimers.set(lock.ownerToken, timer);
+function relativePath(projectRoot: string, absolute: string): string {
+  const relative = path.relative(projectRoot, absolute).split(path.sep).join("/");
+  if (relative.length === 0 || relative.startsWith("../") || path.isAbsolute(relative)) throw new TypeError("named bootstrap mutation escaped the project root");
+  return relative;
 }
-function stopHeartbeat(lock: LockRecord): void {
-  const timer = heartbeatTimers.get(lock.ownerToken);
-  if (timer !== undefined) clearInterval(timer);
-  heartbeatTimers.delete(lock.ownerToken);
-  heartbeatCounters.delete(lock.ownerToken);
-  activeLockTokens.delete(lock.ownerToken);
+
+function recoveredLock(fresh: LockRecord, priorBytes: Buffer): Readonly<{ lock: LockRecord; priorLock: LockRecord; priorBytes: Buffer }> {
+  let prior: LockRecord;
+  try { prior = parseLock(JSON.parse(priorBytes.toString("utf8"))); }
+  catch { throw new Error("named bootstrap is busy: lock owner cannot be proved recoverable"); }
+  return Object.freeze({ lock: Object.freeze({ ...fresh, transactionId: prior.transactionId }), priorLock: prior, priorBytes });
 }
-async function heartbeatAdvanced(lockPath: string, lock: LockRecord): Promise<boolean> {
-  const heartbeat = `${lockPath}.heartbeat`;
-  const before = await readHeartbeatCounter(heartbeat, lock);
-  await new Promise(resolve => setTimeout(resolve, 80));
-  const after = await readHeartbeatCounter(heartbeat, lock);
-  return before !== null && after !== null && after > before;
-}
-async function readHeartbeatCounter(file: string, lock: LockRecord): Promise<number | null> {
-  try {
-    const value = await readJsonFile(file, "invalid heartbeat");
-    if (!isRecord(value) || !hasExactKeys(value, ["v", "transactionId", "ownerTokenCommitment", "counter"]) || value.v !== "reelier.bootstrap-heartbeat/v1" || value.transactionId !== lock.transactionId || value.ownerTokenCommitment !== sha256(lock.ownerToken) || !Number.isSafeInteger(value.counter) || Number(value.counter) < 1) return null;
-    return Number(value.counter);
-  } catch { return null; }
-}
-async function heartbeatBelongsTo(file: string, lock: LockRecord): Promise<boolean> { return await readHeartbeatCounter(file, lock) !== null; }
 function stagingPath(root: string, transactionId: string): string { return path.join(root, "staging", transactionId); }
 function plannedArtifacts(target: CanonicalTarget, initializedAt: string) {
   const project: MinimalNamedProjectV1 = Object.freeze({

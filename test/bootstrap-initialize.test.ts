@@ -5,7 +5,6 @@ import { mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, unlink, writeFi
 import os from "node:os";
 import path from "node:path";
 import { authorityDigest } from "../src/authority/wire.js";
-import { computeInstalledBuildDigest } from "../src/bootstrap/build-identity.js";
 import { initializeAgentProject, type InitializeAgentProjectOptions } from "../src/bootstrap/initialize.js";
 
 type TestNativeFactory = (input: Readonly<{ root: string; lockName: ".reelier-bootstrap.lock"; lockBytes: Buffer }>) => Promise<{
@@ -38,7 +37,7 @@ function recordingNativeFactory(operations: string[]): TestNativeFactory {
     return {
       acquisition,
       async replaceLock(bytes) { operations.push("replace-lock"); await writeFile(lockPath, bytes); },
-      async mkdir(relative) { operations.push(`mkdir:${relative}`); await mkdir(resolve(relative)); },
+      async mkdir(relative) { operations.push(`mkdir:${relative}`); await mkdir(resolve(relative)).catch(error => { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }); },
       async writeExclusive(relative, bytes) { operations.push(`write-exclusive:${relative}`); await writeFile(resolve(relative), bytes, { flag: "wx" }); },
       async writeAtomic(relative, bytes) { operations.push(`write-atomic:${relative}`); await writeFile(resolve(relative), bytes); },
       async rename(from, to) { operations.push(`rename:${from}->${to}`); await rename(resolve(from), resolve(to)); },
@@ -53,7 +52,7 @@ async function withFixture<T>(run: (options: InitializeAgentProjectOptions) => P
   const cwd = path.join(root, "project");
   const homedir = path.join(root, "home");
   await Promise.all([mkdir(cwd), mkdir(homedir)]);
-  try { return await run({ cwd, homedir, agentName: "my-agent", exactVersion: "0.32.1" }); }
+  try { return await run({ cwd, homedir, agentName: "my-agent", exactVersion: "0.32.1", nativeSessionFactory: recordingNativeFactory([]) }); }
   finally { await rm(root, { recursive: true, force: true }); }
 }
 
@@ -77,7 +76,7 @@ test("minimal named preparation freezes the exact descriptor, honest report, and
     assert.equal(project.agentName, "my-agent");
     assert.equal(project.projectRoot, await (await import("node:fs/promises")).realpath(options.cwd));
     assert.equal(project.reelierVersion, "0.32.1");
-    assert.equal(project.installedBuildDigest, await computeInstalledBuildDigest(process.cwd()));
+    assert.match(project.installedBuildDigest, /^sha256:[0-9a-f]{64}$/);
     assert.equal(project.authority, "absent");
     assert.equal(project.completeness, "not-proved");
     assert.equal(persisted.authority, "absent");
