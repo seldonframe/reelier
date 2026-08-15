@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { cmdInit, type ParsedArgs } from "../src/cli.js";
@@ -117,6 +117,21 @@ test("reelier init my-agent uses named bootstrap while bare init retains its ins
     assert.equal(namedResult.result, 0);
     assert.match(namedResult.output, /npx reelier@0\.32\.1 up/);
     assert.equal(JSON.parse(await readFile(path.join(root, ".reelier", "bootstrap", "report.json"), "utf8")).authority, "unavailable");
+  });
+});
+
+test("named init discloses wrapped, already-wrapped, and unwrappable MCP surfaces", async () => {
+  await withTempDir(async root => {
+    await writeFile(path.join(root, ".mcp.json"), JSON.stringify({ mcpServers: {
+      local: { command: "npx", args: ["-y", "@example/server"] },
+      legacy: { command: "npx", args: ["-y", "reelier", "mcp", "--wrap", "npx -y @example/legacy"] },
+      remote: { url: "https://example.invalid/mcp" },
+    } }), "utf8");
+    const { result, output } = await capture(() => cmdInit(named("my-agent", ["yes"]), { cwd: root, homedir: root, dependencies: localDependencies() }));
+    assert.equal(result, 0);
+    assert.match(output, /local: wrapped/i);
+    assert.match(output, /legacy: wrapped.*already/i);
+    assert.match(output, /remote: unwrappable/i);
   });
 });
 

@@ -1,9 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { dispatchFromBootstrap, initializeAgentProject, type InitializeAgentProjectOptions } from "../src/bootstrap/initialize.js";
+import { BOOTSTRAP_CHECKPOINT_IDS, dispatchFromBootstrap, initializeAgentProject, type InitializeAgentProjectOptions } from "../src/bootstrap/initialize.js";
 import { digestAgentProjectV1 } from "../src/bootstrap/project.js";
 import { parseRuntimeDescriptorV1 } from "../src/runtime/manifest.js";
 import { authorityDigest } from "../src/authority/wire.js";
@@ -25,13 +26,18 @@ async function withFixture<T>(run: (options: InitializeAgentProjectOptions) => P
   }
 }
 
-test("named initialization prepares drafts but cannot certify, activate, or dispatch", async () => {
+test("named initialization reports no draft when it only records installed pack registrations", async () => {
   await withFixture(async options => {
     const report = await initializeAgentProject(options);
-    assert.equal(report.actions.profileDrafted, true);
+    assert.equal(report.actions.profileDrafted, false);
     assert.equal(report.actions.profileCertified, false);
     assert.equal(report.actions.authorityActivated, false);
     assert.equal(report.pathC, "unavailable-no-activation");
+    const artifact = JSON.parse(await readFile(path.join(options.cwd, ".reelier", "bootstrap", "profile-drafts.json"), "utf8"));
+    assert.equal(artifact.status, "not-drafted");
+    assert.deepEqual(artifact.drafts, []);
+    assert.ok(artifact.installedPackRegistrations.some((entry: { alias?: string; packDigest?: string; definitionDigest?: string; registrationDigest?: string }) =>
+      entry.alias === "stripe_refund_issue_v1" && /^sha256:[0-9a-f]{64}$/.test(entry.packDigest ?? "") && /^sha256:[0-9a-f]{64}$/.test(entry.definitionDigest ?? "") && /^sha256:[0-9a-f]{64}$/.test(entry.registrationDigest ?? "")));
     await assert.rejects(() => dispatchFromBootstrap(report), /validated profile activation required/);
   });
 });
@@ -442,6 +448,38 @@ test("project records the canonical installed build digest rather than a synthet
     const project = JSON.parse(await readFile(path.join(options.cwd, ".reelier", "bootstrap", "project.json"), "utf8"));
     assert.equal(project.installedBuildDigest, await computeInstalledBuildDigest(process.cwd()));
   });
+});
+
+test("project continuity provenance is the digest of the installed public Continuity declaration", async () => {
+  await withFixture(async options => {
+    await initializeAgentProject(options);
+    const project = JSON.parse(await readFile(path.join(options.cwd, ".reelier", "bootstrap", "project.json"), "utf8"));
+    const declaration = await readFile(path.join(process.cwd(), "dist", "continuity", "index.d.ts"));
+    const expected = `sha256:${createHash("sha256").update(declaration).digest("hex")}`;
+    assert.equal(project.continuityContractDigest, expected);
+  });
+});
+
+test("every durable checkpoint crash cut rolls project artifacts back without leaking workload private material", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-checkpoint-cuts-"));
+  try {
+    const home = path.join(root, "home");
+    await mkdir(home, { recursive: true });
+    for (const [index, checkpoint] of BOOTSTRAP_CHECKPOINT_IDS.entries()) {
+      const project = path.join(root, `project-${index}`);
+      await mkdir(project);
+      const options = {
+        cwd: project, homedir: home, agentName: `agent-${index}`, yes: true, exactVersion: "0.32.1",
+        afterCheckpoint: async (completed: string) => { if (completed === checkpoint) throw new Error("private-crash-canary"); },
+      } as InitializeAgentProjectOptions & { afterCheckpoint: (completed: string) => Promise<void> };
+      await assert.rejects(() => initializeAgentProject(options), /transaction failed/i, checkpoint);
+      const bootstrap = path.join(project, ".reelier", "bootstrap");
+      assert.deepEqual((await readdir(bootstrap)).filter(name => name !== ".lock"), [], checkpoint);
+      const workloadFiles = await readdir(path.join(home, ".reelier", "workloads", `agent-${index}`));
+      assert.equal(workloadFiles.filter(name => name.endsWith(".pem")).length, 1, checkpoint);
+      assert.doesNotMatch(JSON.stringify(workloadFiles), /BEGIN PRIVATE KEY|private-crash-canary/i, checkpoint);
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
 
 test("a self-asserted governance summary without fixed-root admission artifacts is refused", async () => {
