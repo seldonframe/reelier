@@ -165,6 +165,21 @@ test("dry-run inspects Path A, B, and C independently without filesystem writes"
   });
 });
 
+test("named bootstrap route discovery writes only the bootstrap artifact after frozen inspection", async () => {
+  await withTempDir(async root => {
+    const result = await initializeInspection({
+      cwd: root, homedir: path.join(root, "home"), dependencies: dependencies(),
+      namedBootstrapRouteDiscovery: { agentName: "route-agent", now: new Date("2026-08-15T12:00:00.000Z"), contractIdentityDigest: `sha256:${"9".repeat(64)}`, findings: [] },
+    });
+    assert.equal(result.status, "complete");
+    const routeBytes = await readFile(path.join(root, ".reelier", "bootstrap", "route-coverage.json"), "utf8");
+    const routes = JSON.parse(routeBytes) as readonly { routeId: string }[];
+    assert.ok(routes.length > 0 && routes.every(row => /^route_[0-9a-f]{64}$/.test(row.routeId)));
+    assert.deepEqual(INIT_CHECKPOINT_IDS, ["config-surfaces", "path-a-coverage", "path-b-candidates", "path-c-candidates", "inspection-report"]);
+    assert.equal(Object.keys(await filesBelow(path.join(root, ".reelier", "init"))).includes("route-coverage.json"), false);
+  });
+});
+
 test("a durable completed checkpoint resumes at the first incomplete checkpoint", async () => {
   await withTempDir(async root => {
     const firstCalls: string[] = [];

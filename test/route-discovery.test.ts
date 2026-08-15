@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createRouteDiscoveryAdapterRegistryV1 } from "../src/routes/adapters.js";
+import { createCodexRouteDiscoverySnapshotV1, createRouteDiscoveryAdapterRegistryV1 } from "../src/routes/adapters.js";
 import { discoverRouteCoverage, refreshRouteCoverage } from "../src/routes/discovery.js";
 import type { RouteCoverageV1 } from "../src/routes/types.js";
 
@@ -9,39 +9,33 @@ const now = new Date("2026-08-15T12:00:00.000Z");
 const configPath = "C:/private/.codex/config.toml";
 const pluginPath = "C:/private/plugins/gmail/mcp.json";
 
-const surface = (overrides: Record<string, unknown>) => ({
-  sourceInstanceIdentityDigest: digest("2"), routeKey: "route", discoverySource: "unknown" as const,
-  transport: "unknown" as const, observation: "unknown" as const, replay: "unknown" as const,
-  outcome: "unknown" as const, enforcement: "absent" as const, topologyEvidenceDigest: null,
-  evidenceRefs: [], reasonCodes: [], catalogMetadata: false, ...overrides,
-});
+const finding = (kind: string, routeKey: string, sourceRef: string) => ({ kind, routeKey, sourceRef });
 
-function codexSnapshot(overrides: Record<string, unknown> = {}) {
+function codexReport() {
   return {
-    sourceKind: "codex" as const, report: {
       homedir: "C:/private", configPath,
       config: { configPath, location: "parsed" as const, servers: [{ name: "gmail.send", origin: configPath, location: "parsed" as const, transport: "stdio" as const, routing: "wrapped" as const }], plugins: [], marketplaces: [] },
       plugins: [{ registration: { name: "gmail", marketplace: "official", enabled: true }, inspected: true, location: "parsed" as const, manifestPath: pluginPath, candidatesTried: [], servers: [{ name: "gmail.send", origin: pluginPath, location: "parsed" as const, transport: "stdio" as const, routing: "unwrapped" as const }] }],
       inspectedLocations: [configPath],
-    },
-    observedAt: now.toISOString(), freshnessMs: 15 * 60_000, sourceDigest: digest("1"),
-    canonicalConfigBytes: "[mcp_servers.gmail]", fileIdentityDigest: digest("2"), contractIdentityDigest: digest("3"),
-    sourceInstances: [{ sourceRef: configPath, sourceInstanceIdentityDigest: digest("4"), canonicalBytes: "[mcp_servers.gmail]", fileIdentityDigest: digest("2") }, { sourceRef: pluginPath, sourceInstanceIdentityDigest: digest("5"), canonicalBytes: "{}", fileIdentityDigest: digest("6") }],
-    surfaces: [], ...overrides,
+      routeEvidence: [{ sourceRef: configPath, sourceInstanceIdentityDigest: digest("4"), canonicalBytes: "[mcp_servers.gmail]", fileIdentityDigest: digest("2") }, { sourceRef: pluginPath, sourceInstanceIdentityDigest: digest("5"), canonicalBytes: "{}", fileIdentityDigest: digest("6") }],
   };
+}
+
+function codexSnapshot(overrides: Record<string, unknown> = {}) {
+  const base = {
+    report: codexReport(),
+    observedAt: now.toISOString(), freshnessMs: 15 * 60_000, contractIdentityDigest: digest("3"), findings: [], ...overrides,
+  };
+  return createCodexRouteDiscoverySnapshotV1(base as never);
 }
 
 test("route discovery preserves bypasses and same-name routes as separate opaque identities", async () => {
   const registry = createRouteDiscoveryAdapterRegistryV1();
   assert.ok(Object.isFrozen(registry));
-  const rows = await discoverRouteCoverage({ registry, now, snapshots: [codexSnapshot({ surfaces: [
-    surface({ sourceInstanceIdentityDigest: digest("7"), routeKey: "gmail.send", discoverySource: "direct-http", transport: "https", observation: "uncovered", reasonCodes: ["direct-http-bypass"] }),
-    surface({ sourceInstanceIdentityDigest: digest("8"), routeKey: "gmail.remote", discoverySource: "host-config", transport: "mcp-http", observation: "uncovered", reasonCodes: ["remote-mcp-no-native-wrap"] }),
-    surface({ sourceInstanceIdentityDigest: digest("9"), routeKey: "browser.write", discoverySource: "writable-browser", transport: "browser", observation: "uncovered", reasonCodes: ["writable-browser-bypass"] }),
-    surface({ sourceInstanceIdentityDigest: digest("a"), routeKey: "private.connection", discoverySource: "host-private", transport: "opaque-host", observation: "partially-observed", outcome: "shadow-only", reasonCodes: ["host-private"] }),
-    surface({ sourceInstanceIdentityDigest: digest("b"), routeKey: "reviewed.mcp", discoverySource: "host-config", transport: "mcp-stdio", observation: "observed", replay: "available", outcome: "outcome-capable", enforcement: "unchecked", reasonCodes: ["reviewed-mcp"] }),
-    surface({ sourceInstanceIdentityDigest: digest("c"), routeKey: "native.activated", discoverySource: "native-config", transport: "https", observation: "observed", outcome: "activated", enforcement: "unchecked", reasonCodes: ["activated-not-topology-verified"] }),
-    surface({ sourceInstanceIdentityDigest: digest("d"), routeKey: "registry", discoverySource: "plugin-manifest", observation: "unknown", reasonCodes: ["registry-unreadable"] }),
+  const rows = await discoverRouteCoverage({ registry, now, snapshots: [codexSnapshot({ findings: [
+    finding("direct-http", "gmail.send", "direct:gmail"), finding("writable-browser", "browser.write", "browser:primary"),
+    finding("host-private", "private.connection", "connection:private"), finding("reviewed-mcp", "reviewed.mcp", "reviewed:mcp"),
+    finding("activated-native", "native.activated", "native:activated"), finding("unreadable-registry", "registry", "registry:unreadable"),
   ] })] });
 
   const gmail = rows.filter((row: RouteCoverageV1) =>
@@ -57,9 +51,9 @@ test("route discovery preserves bypasses and same-name routes as separate opaque
 });
 
 test("harness catalog metadata adds distinct rows but cannot upgrade trust identity topology or activation", async () => {
-  const rows = await discoverRouteCoverage({ registry: createRouteDiscoveryAdapterRegistryV1(), now, snapshots: [codexSnapshot({ report: { ...codexSnapshot().report, config: { ...codexSnapshot().report.config, servers: [] }, plugins: [] }, surfaces: [
-    surface({ sourceInstanceIdentityDigest: digest("e"), routeKey: "payments.refund", discoverySource: "openapi", transport: "https", observation: "observed", outcome: "activated", enforcement: "verified", topologyEvidenceDigest: digest("f"), catalogMetadata: true }),
-    surface({ sourceInstanceIdentityDigest: digest("f"), routeKey: "payments.refund", discoverySource: "openapi", transport: "https", observation: "observed", outcome: "activated", enforcement: "verified", topologyEvidenceDigest: digest("e"), catalogMetadata: true }),
+  const emptyReport = codexReport();
+  const rows = await discoverRouteCoverage({ registry: createRouteDiscoveryAdapterRegistryV1(), now, snapshots: [codexSnapshot({ report: { ...emptyReport, config: { ...emptyReport.config, servers: [] }, plugins: [] }, findings: [
+    finding("openapi", "payments.refund", "catalog:first"), finding("openapi", "payments.refund", "catalog:second"),
   ] })] });
   assert.equal(rows.length, 2);
   assert.notEqual(rows[0]?.routeId, rows[1]?.routeId);
@@ -68,9 +62,12 @@ test("harness catalog metadata adds distinct rows but cannot upgrade trust ident
 });
 
 test("opaque route identity is stable across mutable evidence and contract changes", async () => {
-  const discover = (sourceDigest: string, contractIdentityDigest: string) => discoverRouteCoverage({ registry: createRouteDiscoveryAdapterRegistryV1(), now, snapshots: [codexSnapshot({ sourceDigest, contractIdentityDigest })] });
-  const before = await discover(digest("1"), digest("2"));
-  const after = await discover(digest("3"), digest("4"));
+  const discover = (canonicalBytes: string, contractIdentityDigest: string) => {
+    const report = codexReport();
+    return discoverRouteCoverage({ registry: createRouteDiscoveryAdapterRegistryV1(), now, snapshots: [codexSnapshot({ report: { ...report, routeEvidence: report.routeEvidence.map((value: { sourceRef: string }) => value.sourceRef === configPath ? { ...value, canonicalBytes } : value) }, contractIdentityDigest })] });
+  };
+  const before = await discover("old", digest("2"));
+  const after = await discover("new", digest("4"));
   assert.deepEqual(before.map(row => row.routeId), after.map(row => row.routeId));
   assert.notDeepEqual(before.map(row => row.evidenceDigest), after.map(row => row.evidenceDigest));
 });
@@ -95,4 +92,12 @@ test("freshness refresh never preserves stale changed unreadable or missing cert
 test("adapter freshness is bounded and invalid discovery snapshots refuse", async () => {
   const registry = createRouteDiscoveryAdapterRegistryV1();
   for (const freshnessMs of [0, -1, Number.POSITIVE_INFINITY, 24 * 60 * 60_000 + 1]) await assert.rejects(discoverRouteCoverage({ registry, now, snapshots: [codexSnapshot({ freshnessMs })] }), TypeError);
+});
+
+test("discovery refuses forged snapshots and caller-supplied route authority claims", async () => {
+  const registry = createRouteDiscoveryAdapterRegistryV1();
+  const valid = codexSnapshot();
+  const forged = { ...valid, findings: [{ kind: "activated-native", routeKey: "forged", sourceRef: "forged", observation: "observed", outcome: "activated", enforcement: "verified", topologyEvidenceDigest: digest("f"), sourceInstanceIdentityDigest: digest("e") }] };
+  await assert.rejects(discoverRouteCoverage({ registry, now, snapshots: [forged as never] }), /snapshot.*Reelier|provenance/i);
+  assert.equal((await discoverRouteCoverage({ registry, now, snapshots: [valid] })).every(row => row.enforcement !== "verified"), true);
 });
