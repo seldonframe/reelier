@@ -32,6 +32,7 @@ import { canonicalizeJsonHttpsRoute, jsonHttpsRouteDigest, type JsonHttpsRouteV1
 import { classifyHttpResponse, httpResponseSemanticsProfileDigest, parseHttpResponseSemanticsProfileV1, type HttpResponseSemanticsProfileV1 } from "../host/http-response-semantics.js";
 import { parseAuthorityReceiptBundle } from "../evidence.js";
 import { AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST } from "../adapter-contract.js";
+import { refreshLifecycleAuthorityReceiptSigningAuthority } from "../host/receipt-authority.js";
 import { createCertificationDuplicateAttempt, createCertificationDuplicateAttemptHead, createCertificationDuplicateDecision, createCertificationPolicyEvidence, createCertificationPostStateEvidence, createCertificationTaskAuthorityEvidence, createCertificationTaskStatusEvidence } from "./portable-evidence.js";
 
 export type HermeticGitHubMode = "normal" | "source-drift" | "effect-drift" | "provider-503" | "accessor-response" | "cut-after-budget" | "cut-after-dispatched" | "cut-after-send-intent" | "cut-after-apply" | "cut-after-cleanup-publication" | "cut-after-conflict-publication" | "cut-after-conflict-receipt-before-extension" | "pause-after-dispatched";
@@ -177,6 +178,7 @@ export async function createGitHubIssueLabelsHermeticComposition(cell: Certifica
   });
   const requestIdsByReservation = new Map<string, string>(),
     cleanupRequestIdsByReservation = new Map<string, string>();
+  const prePublicationRefusals = new Set<string>();
   let controlledCut: ControlledCut | undefined;
   const publication = createCertificationLifecycleReceiptPublication({
     rootDir: receiptRoot,
@@ -407,6 +409,7 @@ export async function createGitHubIssueLabelsHermeticComposition(cell: Certifica
   async function executeRun(value: Readonly<{ bearerToken: string; requestId: string }>): Promise<GitHubHermeticRunnerResult> {
     closed(value, ["bearerToken", "requestId"], "GitHub runner call");
     validateRequestId(value.requestId);
+    try{await refreshLifecycleAuthorityReceiptSigningAuthority(journalAuthority.lifecycle);}catch(error){prePublicationRefusals.add(value.requestId);throw error;}
     const accessSnapshot = await state.observeHermeticGitHubState(value.bearerToken);
     const prior = await loadJournal(journalRoot, value.requestId, journalAuthority);
     if (prior) {
@@ -1056,7 +1059,7 @@ export async function createGitHubIssueLabelsHermeticComposition(cell: Certifica
       validateRequestId(value.requestId);
       await state.principalRegistry.resolve(value.bearerToken, state.now?.() ?? new Date());
       const journal = await loadJournal(journalRoot, value.requestId, journalAuthority);
-      if (!journal) throw new TypeError("GitHub runner request not found");
+      if (!journal) {if(prePublicationRefusals.has(value.requestId))return Object.freeze({requestId:value.requestId,status:"refused" as const,success:false as const,providerWrites:0,reservationId:null});throw new TypeError("GitHub runner request not found");}
       return view(journal);
     },
   });

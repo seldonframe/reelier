@@ -18,7 +18,7 @@ import { certificationRunnerRegistryDigest, getCertificationRunnerRegistryEntry 
 import { preflightCertification } from "./preflight.js";
 import { CERTIFICATION_SCENARIO_IDS, type CertificationScenarioId } from "./scenarios.js";
 import { assertLinuxAuthorityCellHost } from "../host/platform.js";
-import { consumeCertificationLifecycleAuthority, registerCertificationLifecycleTrustContext, type CertificationArtifactKeyBindingCommitmentV1, type CertificationArtifactKeyBindingV1, type CertificationLifecycleAuthorityHandle, type CertificationLifecycleAuthorityMaterial } from "./lifecycle-authority.js";
+import { consumeCertificationLifecycleAuthority, registerCertificationLifecycleTrustContext, registerCertificationLifecycleTrustRefreshSource, type CertificationArtifactKeyBindingCommitmentV1, type CertificationArtifactKeyBindingV1, type CertificationLifecycleAuthorityHandle, type CertificationLifecycleAuthorityMaterial } from "./lifecycle-authority.js";
 import { AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST } from "../adapter-contract.js";
 
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
@@ -160,6 +160,7 @@ export async function createCertificationCellHost(input: Readonly<{ workspace: s
   const currentTrustPinPathDigest = trustPinPathDigest(configuredTrustPinPath);
   if (!input.lifecycleAuthority) throw new TypeError("opaque certification lifecycle authority is required");
   const hermeticAuthority = await bindHermeticGitHubAuthority(configuredTrustPinPath, input.lifecycleAuthority, loaded.initialization.identifiers, input.now?.() ?? new Date());
+  registerCertificationLifecycleTrustRefreshSource(hermeticAuthority.lifecycle,async()=>{const currentPath=await canonicalExternalTrustPin(workspace,configuredTrustPinPath);if(trustPinPathDigest(currentPath)!==currentTrustPinPathDigest)throw new TypeError("operator current trust pin path changed after host configuration");const jobCardTrustPin=JSON.parse((await readUnlinkedFile(currentPath)).toString("utf8")) as JobCardTrustPinV1;return Object.freeze({tenant:loaded.initialization.identifiers.authorityCellId,jobCardTrustPin,expectedAuthorityCellId:loaded.initialization.identifiers.authorityCellId,expectedTaskId:loaded.initialization.identifiers.taskId,observedAt:input.now?.()??new Date()});});
   const host: CertificationCellHost = {
     activateRootTask: async (values: Parameters<CertificationCellHost["activateRootTask"]>[0]) => {
       assertLinuxAuthorityCellHost();
@@ -272,7 +273,7 @@ async function bindHermeticGitHubAuthority(pinPath: string, input: Certification
   }
   const human = descriptors.find(item => item.keyId === pin.signedReadiness.signerKeyId)!;
   const lifecycle = consumeCertificationLifecycleAuthority(input.handle, input.binding, input.commitment, { authorityCellId: identifiers.authorityCellId, taskId: identifiers.taskId, readinessDigest: authorityDigest(pin.signedReadiness), descriptors: selected as AuthorityKeyDescriptorV1[], humanDescriptor: human, now });
-  registerCertificationLifecycleTrustContext(lifecycle,{jobCardTrustPin:pin,expectedAuthorityCellId:identifiers.authorityCellId,expectedTaskId:identifiers.taskId,observedAt:now});
+  registerCertificationLifecycleTrustContext(lifecycle,{tenant:identifiers.authorityCellId,jobCardTrustPin:pin,expectedAuthorityCellId:identifiers.authorityCellId,expectedTaskId:identifiers.taskId,observedAt:now});
   const get = <P extends "outcome-contract" | "gate-event" | "authority-journal">(purpose: P) => lifecycle.direct.get(purpose)!;
   const contract = get("outcome-contract"), gate = get("gate-event"), journal = get("authority-journal");
   return Object.freeze({ contractDescriptor: contract.descriptor, gateDescriptor: gate.descriptor, journalDescriptor: journal.descriptor, signContract: (digest: string) => signAuthorityDigest(contract.privateKey, "outcome-contract", digest), signGate: (digest: string) => signAuthorityDigest(gate.privateKey, "gate-event", digest), signJournal: (digest: string) => signAuthorityDigest(journal.privateKey, "authority-journal", digest), lifecycle, binding: input.binding, commitment: input.commitment, keyDescriptors: descriptors, signedReadiness: pin.signedReadiness });
