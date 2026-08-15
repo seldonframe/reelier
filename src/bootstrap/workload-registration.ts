@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { lstat, mkdir, readFile, readdir } from "node:fs/promises";
+import { lstat, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { generateSigningKeypair } from "../signing.js";
 
@@ -12,7 +12,7 @@ export interface WorkloadRegistrationRequest {
   readonly privateKeyIsolation: "posix-mode-0600-or-windows-acl-unchecked";
 }
 
-export async function prepareWorkloadRegistration(homedir: string, agentName: string): Promise<WorkloadRegistrationRequest> {
+export async function prepareWorkloadRegistration(homedir: string, agentName: string, projectScope = "default"): Promise<WorkloadRegistrationRequest> {
   const reelierRoot = path.join(homedir, ".reelier");
   const workloadRoot = path.join(reelierRoot, "workloads");
   await ensureRealDirectory(reelierRoot);
@@ -22,12 +22,14 @@ export async function prepareWorkloadRegistration(homedir: string, agentName: st
   }
   const directory = path.join(workloadRoot, agentName);
   await ensureRealDirectory(directory);
+  const scope = createHash("sha256").update(projectScope, "utf8").digest("hex").slice(0, 16);
+  const scopeFile = path.join(directory, `.scope-${scope}.json`);
   let publicPem: string | undefined;
   try {
-    const files = (await readdir(directory)).filter(file => /^[0-9a-f]{16}\.pub\.pem$/.test(file)).sort();
-    if (files.length > 0) publicPem = await readFile(path.join(directory, files[0]), "utf8");
+    const keyId = JSON.parse(await readFile(scopeFile, "utf8")) as { keyId?: unknown };
+    if (typeof keyId.keyId === "string" && /^[0-9a-f]{16}$/.test(keyId.keyId)) publicPem = await readFile(path.join(directory, `${keyId.keyId}.pub.pem`), "utf8");
   } catch {}
-  if (publicPem === undefined) publicPem = (await generateSigningKeypair(directory)).publicPem;
+  if (publicPem === undefined) { const generated = await generateSigningKeypair(directory); publicPem = generated.publicPem; await writeFile(scopeFile, JSON.stringify({ keyId: generated.keyId }), { encoding: "utf8", flag: "wx" }).catch(async error => { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; publicPem = await readFile(path.join(directory, `${(JSON.parse(await readFile(scopeFile, "utf8")) as { keyId: string }).keyId}.pub.pem`), "utf8"); }); }
   return Object.freeze({ v: "reelier.workload-registration-request/v1", agentName, publicKeyCommitment: `sha256:${createHash("sha256").update(publicPem, "utf8").digest("hex")}`, certification: "unsigned", activation: "absent", privateKeyIsolation: "posix-mode-0600-or-windows-acl-unchecked" });
 }
 
