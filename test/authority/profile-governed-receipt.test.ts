@@ -11,7 +11,7 @@ import { loadProfileGovernanceFromOperatorTrust } from "../../src/authority/host
 import { validateLifecycleAuthorityReceiptSigningAuthority } from "../../src/authority/host/receipt-authority.js";
 import { signJobCard } from "../../src/authority/job.js";
 import { authorityDigest } from "../../src/authority/wire.js";
-import { governanceRef, governedReceiptSigningFixture, profileGovernanceFixture, sha, tenant, verificationTime, writeProfileGovernanceFixture } from "./profile-governance-fixture.js";
+import { governanceRef, governedReceiptSigningFixture, profileGovernanceFixture, sha, tenant, verificationTime, writeGovernedPublicFactoryFixture, writeProfileGovernanceFixture } from "./profile-governance-fixture.js";
 
 function lifecycleSigningAuthority() {
   return validateLifecycleAuthorityReceiptSigningAuthority(governedReceiptSigningFixture(verificationTime).material);
@@ -97,6 +97,38 @@ test("every governed store operation rejects noncanonical tenant and reservation
   const unequal = { ...equal, identity: { ...base, tenant: `${tenant}/fork` } };
   await assert.rejects(() => Promise.all([publication.loadDurableHead!(equal), independent.loadDurableHead!(unequal)]), /identity|tenant|canonical|fork|conflict/i);
   assert.deepEqual(await (await import("node:fs/promises")).readdir(outside), [], "invalid store identities must not create or adopt outside nodes");
+});
+
+test("independent governed publishers deterministically adopt equal reservation bytes and refuse an unequal physical-store fork", async t => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "reelier-governed-cas-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const fixture = await writeGovernedPublicFactoryFixture(home);
+  const rootDir = path.join(home, "shared-governed-receipts");
+  await mkdir(rootDir);
+  const governance = await loadProfileGovernanceFromOperatorTrust({ tenant, governanceRef, expectedManifestDigest: fixture.profile.manifestDigest, expectedTrustHeadDigest: fixture.profile.manifest.trustHeadDigest, homedir: home, verificationTime: new Date() });
+  const signingAuthority = validateLifecycleAuthorityReceiptSigningAuthority(fixture.signing.material);
+  const publicationInput = {
+    rootDir,
+    governance,
+    signedJobCard: fixture.jobCard,
+    deploymentSnapshot: fixture.deploymentSnapshot,
+    expectedRouteScopeDigest: authorityDigest(fixture.routeScope),
+    foundations: fixture.foundations,
+    signingAuthority,
+    currentAuthority: () => ({ signingAuthority, jobCardTrustPin: fixture.signing.pin, observedAt: fixture.signing.observedAt }),
+    verification: fixture.verification,
+  };
+  const firstModule = await import(new URL("../../src/authority/host/profile-governed-receipt.js", import.meta.url).href + "?cas=first") as typeof import("../../src/authority/host/profile-governed-receipt.js");
+  const secondModule = await import(new URL("../../src/authority/host/profile-governed-receipt.js", import.meta.url).href + "?cas=second") as typeof import("../../src/authority/host/profile-governed-receipt.js");
+  const first = firstModule.createProfileGovernedAuthorityReceiptPublication(publicationInput);
+  const second = secondModule.createProfileGovernedAuthorityReceiptPublication(publicationInput);
+  const built = fixture.publicationState("reservation_governed_cas");
+  const identity = { v: "reelier.durable-dispatch-publication-identity/v1" as const, reservationId: built.state.reservation.reservationId, tenant, requestDigest: built.requestDigest, capabilityDigest: built.capabilityDigest, effectDigest: built.effectDigest, routeAuthorityDigest: authorityDigest(fixture.routeAuthority), expectedDispatchedRequestDigest: sha("b"), reservationIntentDigest: sha("c") };
+  const equal = { phase: "reservation" as const, identity, state: built.state, outcome: { kind: "ambiguous" as const, resultDigest: sha("d"), reconciliationStatus: "not-attempted" as const }, dispatchedRequestDigest: null, priorReceiptDigest: null };
+  const adopted = await Promise.all([first.publishReservation!(equal), second.publishReservation!(equal)]);
+  assert.deepEqual(adopted[0], adopted[1], "separate publisher lock maps must adopt identical deterministic receipt bytes");
+  const unequal = { ...equal, identity: { ...identity, requestDigest: sha("e") } };
+  await assert.rejects(() => Promise.all([first.publishReservation!(equal), second.publishReservation!(unequal)]), /identity|fork|conflict|root already exists|semantic CAS/i);
 });
 
 test("the offline verifier rejects mutations of every real outer evidence family and unchanged inner claims", async () => {
