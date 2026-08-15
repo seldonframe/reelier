@@ -27,6 +27,7 @@ export interface InitializeAgentProjectOptions { readonly cwd: string; readonly 
 export type BootstrapPreparationReport = BootstrapReportV1 & Readonly<{ actions: { profileDrafted: boolean; profileCertified: boolean; authorityActivated: boolean }; pathC: "unavailable-no-activation"; }>;
 interface BootstrapCompleted { id: BootstrapCheckpointId; artifact: string; digest: string; }
 interface BootstrapState { v: "reelier.bootstrap-state/v1"; planDigest: string; completed: readonly BootstrapCompleted[]; }
+interface BootstrapFileSnapshot { path: string; kind: "absent" | "file" | "other"; content?: string; }
 const BOOTSTRAP_PROCESS_STARTED_AT = Math.floor(Date.now() - process.uptime() * 1_000);
 
 export async function initializeAgentProject(options: InitializeAgentProjectOptions): Promise<BootstrapPreparationReport> {
@@ -44,31 +45,34 @@ export async function initializeAgentProject(options: InitializeAgentProjectOpti
   await ensureRealDirectory(bootstrapParent, "named bootstrap directory");
   const release = await acquireBootstrapLock(path.join(bootstrapParent, ".lock"));
   try {
-  const inspection = await initializeInspection({ cwd: projectRoot, homedir: options.homedir, ...(options.dependencies === undefined ? {} : { dependencies: options.dependencies }), namedBootstrapRouteDiscovery: { agentName: options.agentName, now: new Date(), contractIdentityDigest: BOOTSTRAP_CONTRACT_V1_DIGEST, findings: [] } });
-  if (inspection.status === "busy") throw new Error("named bootstrap is busy");
   const bootstrapDir = path.join(projectRoot, ".reelier", "bootstrap");
   const info = await lstat(bootstrapDir);
   if (!info.isDirectory() || info.isSymbolicLink()) throw new TypeError("named bootstrap directory is unsafe");
   const statePath = path.join(bootstrapDir, "state.json");
-  const importedGovernance = await loadImportedGovernance(options);
-  const registration = await prepareWorkloadRegistration(options.homedir, options.agentName, projectRoot);
   const existing = await readState(statePath, planDigest);
   if (existing !== undefined) await validateCompletedArtifacts(bootstrapDir, existing);
+  const importedGovernance = await loadImportedGovernance(options);
   if (existing !== undefined && existing.completed.length === BOOTSTRAP_CHECKPOINT_IDS.length) {
     const report = parseBootstrapReportV1(await readJson(bootstrapDir, "report.json"));
     return Object.freeze({ ...report, actions: Object.freeze({ profileDrafted: true, profileCertified: false, authorityActivated: false }), pathC: "unavailable-no-activation" });
   }
-  const drafts = createProfileDrafts();
-  const runtimeDescriptor = { v: "reelier.runtime-descriptor/v1", adapterId: "externally-managed", adapterVersion: "1.0.0", adapterDigest: digest({ adapter: "externally-managed" }), launchMode: "externally-managed", command: null, args: [], cwd: null, connectionRef: "managed-cell", environmentAllowlist: [], authenticatedBinding: "host-private", shutdown: "external" } as const;
-  const routeCoverage = await readFile(path.join(bootstrapDir, "route-coverage.json"), "utf8");
+  const snapshots = await snapshotBootstrapFiles(bootstrapDir, statePath);
   const configPath = path.join(projectRoot, ".mcp.json");
   let installation = { changed: false, backupPath: undefined as string | undefined };
   let removeInstalledConfigOnRollback = false;
+  let phase: "preparation" | "installation" | "checkpoints" = "preparation";
   try {
+  const discoverRouteCoverage = existing === undefined || existing.completed.length <= BOOTSTRAP_CHECKPOINT_IDS.indexOf("route-coverage");
+  const inspection = await initializeInspection({ cwd: projectRoot, homedir: options.homedir, ...(options.dependencies === undefined ? {} : { dependencies: options.dependencies }), ...(discoverRouteCoverage ? { namedBootstrapRouteDiscovery: { agentName: options.agentName, now: new Date(), contractIdentityDigest: BOOTSTRAP_CONTRACT_V1_DIGEST, findings: [] } } : {}) });
+  if (inspection.status === "busy") throw new Error("named bootstrap is busy");
+  const registration = await prepareWorkloadRegistration(options.homedir, options.agentName, projectRoot);
+  const drafts = createProfileDrafts();
+  const runtimeDescriptor = { v: "reelier.runtime-descriptor/v1", adapterId: "externally-managed", adapterVersion: "1.0.0", adapterDigest: digest({ adapter: "externally-managed" }), launchMode: "externally-managed", command: null, args: [], cwd: null, connectionRef: "managed-cell", environmentAllowlist: [], authenticatedBinding: "host-private", shutdown: "external" } as const;
+  const routeCoverage = await readFile(path.join(bootstrapDir, "route-coverage.json"), "utf8");
+  phase = "installation";
     const plan = await planBootstrapInstall(configPath, options.exactVersion, projectRoot);
     if (plan.changed && options.yes) { installation = { changed: true, ...(await applyBootstrapInstall(plan, { consent: true })) }; removeInstalledConfigOnRollback = !plan.configExisted; if (await readFile(configPath, "utf8") !== plan.after) throw new Error("installed configuration read-back mismatch"); if (options.failAfterInstall) throw new Error("injected post-apply artifact failure"); }
-  } catch (error) { if (installation.backupPath !== undefined) await restoreFromBackup(configPath, installation.backupPath); else if (installation.changed && removeInstalledConfigOnRollback) await unlink(configPath).catch(() => {}); throw new Error(`named bootstrap installation failed: ${(error as Error).message}`); }
-  try {
+  phase = "checkpoints";
   const reportFields = { runtimeDescriptorDigest: digest(runtimeDescriptor), routeCoverageDigest: sha256(routeCoverage), initializedAt: new Date().toISOString(), canary: installation.changed ? "verified" as const : "unchecked" as const, authority: "unavailable" as const, recoveryCommand: `npx reelier@${options.exactVersion} up`, completeness: "not-proved" as const };
   const governed = importedGovernance as { tenant: string | null; governanceRef: string | null; manifestDigest: string | null; trustHeadDigest: string | null };
   const project = { v: "reelier.agent-project/v1", agentName: options.agentName, projectId: `project_${options.agentName}`, tenant: governed.tenant, reelierVersion: options.exactVersion, installedBuildDigest: await computeInstalledBuildDigest(await installedPackageRoot()), packageTarballIntegrityDigest: null, authorityContractDigest: AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST, continuityContractDigest: digest({ contract: "continuity" }), outcomeProfileContractDigest: OUTCOME_PROFILE_CONTRACT_V1_DIGEST, bootstrapContractDigest: BOOTSTRAP_CONTRACT_V1_DIGEST, initializationReportDigest: digest(inspection.report), runtimeDescriptorDigest: reportFields.runtimeDescriptorDigest, routeCoverageDigest: reportFields.routeCoverageDigest, profileGovernanceRef: governed.governanceRef, profileGovernanceManifestDigest: governed.manifestDigest, profileTrustHeadDigest: governed.trustHeadDigest, authorityMode: governed.governanceRef === null ? "unconfigured" : "managed-cell" } as const;
@@ -82,7 +86,8 @@ export async function initializeAgentProject(options: InitializeAgentProjectOpti
   } catch (error) {
     if (installation.backupPath !== undefined) await restoreFromBackup(configPath, installation.backupPath);
     else if (installation.changed && removeInstalledConfigOnRollback) await unlink(configPath).catch(() => {});
-    throw new Error(`named bootstrap transaction failed: ${(error as Error).message}`);
+    await restoreBootstrapFiles(snapshots);
+    throw new Error(`named bootstrap ${phase === "installation" ? "installation" : "transaction"} failed: ${(error as Error).message}`);
   }
   } finally { await release(); }
 }
@@ -96,6 +101,23 @@ async function ensureRealDirectory(directory: string, label: string): Promise<vo
 async function acquireBootstrapLock(file: string): Promise<() => Promise<void>> { const owner = JSON.stringify({ v: "reelier.bootstrap-lock/v1", pid: process.pid, processStartedAt: BOOTSTRAP_PROCESS_STARTED_AT, nonce: `${process.pid}-${Date.now()}` }); try { const handle = await open(file, "wx"); await handle.writeFile(owner); await handle.close(); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; let raw: { pid?: unknown; processStartedAt?: unknown }; try { raw = JSON.parse(await readFile(file, "utf8")) as { pid?: unknown; processStartedAt?: unknown }; } catch { throw new Error("named bootstrap is busy: lock present"); } if (typeof raw.pid === "number" && (!isLivePid(raw.pid) || raw.pid === process.pid && typeof raw.processStartedAt === "number" && raw.processStartedAt !== BOOTSTRAP_PROCESS_STARTED_AT)) { await unlink(file); return acquireBootstrapLock(file); } if (raw.pid === process.pid && raw.processStartedAt === BOOTSTRAP_PROCESS_STARTED_AT) { await new Promise(resolve => setTimeout(resolve, 10)); return acquireBootstrapLock(file); } throw new Error("named bootstrap is busy: lock present"); } return async () => { if (await readFile(file, "utf8").catch(() => "") === owner) await unlink(file).catch(() => {}); }; }
 async function loadImportedGovernance(options: InitializeAgentProjectOptions): Promise<unknown> { if (!options.governance) { try { await access(path.join(options.homedir, ".reelier", "governance", "profile-governance.json")); throw new TypeError("self-authored governance summary is not authority"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; } return { v: "reelier.imported-governance/v1", tenant: null, governanceRef: null, manifestDigest: null, trustHeadDigest: null, verificationStatus: "absent" }; } const admitted = await loadProfileGovernanceFromOperatorTrust({ ...options.governance, homedir: options.homedir }); const state = admittedProfileGovernanceState(admitted); return { v: "reelier.imported-governance/v1", tenant: options.governance.tenant, governanceRef: options.governance.governanceRef, manifestDigest: options.governance.expectedManifestDigest, trustHeadDigest: options.governance.expectedTrustHeadDigest, verificationStatus: state.manifest.profileDigest ? "verified" : "absent" }; }
 function isLivePid(pid: number): boolean { if (!Number.isInteger(pid) || pid < 1) return false; try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; } }
-async function validateCompletedArtifacts(root: string, state: BootstrapState): Promise<void> { for (const entry of state.completed) { if (entry.artifact !== CHECKPOINT_ARTIFACT_NAMES[entry.id] || path.basename(entry.artifact) !== entry.artifact || entry.artifact.includes("\\") || entry.artifact.includes("/")) throw new TypeError("named bootstrap checkpoint artifact path is invalid"); const info = await lstat(path.join(root, entry.artifact)).catch(() => undefined); if (!info?.isFile() || info.isSymbolicLink()) throw new TypeError("named bootstrap checkpoint artifact is unsafe or linked"); const value = await readJson(root, entry.artifact); if (digest(value) !== entry.digest) throw new TypeError("named bootstrap checkpoint artifact digest is invalid"); } if (state.completed.length === BOOTSTRAP_CHECKPOINT_IDS.length) { const [project, report, runtime] = await Promise.all([readJson(root, "project.json"), readJson(root, "report.json"), readJson(root, "runtime-descriptor.json")]); parseAgentProjectV1(project); parseBootstrapReportV1(report); parseRuntimeDescriptorV1(runtime); if ((report as BootstrapReportV1).projectDigest !== digestAgentProjectV1(project)) throw new TypeError("named bootstrap project/report digest join is invalid"); } }
+async function validateCompletedArtifacts(root: string, state: BootstrapState): Promise<void> { for (const entry of state.completed) { if (entry.artifact !== CHECKPOINT_ARTIFACT_NAMES[entry.id] || path.basename(entry.artifact) !== entry.artifact || entry.artifact.includes("\\") || entry.artifact.includes("/")) throw new TypeError("named bootstrap checkpoint artifact path is invalid"); const info = await lstat(path.join(root, entry.artifact)).catch(() => undefined); if (!info?.isFile() || info.isSymbolicLink()) throw new TypeError("named bootstrap checkpoint artifact is unsafe or linked"); const value = await readJson(root, entry.artifact); if (digest(value) !== entry.digest) throw new TypeError("named bootstrap checkpoint artifact digest is invalid"); if (entry.id === "route-coverage" && (value as { digest?: unknown }).digest !== sha256(await readFile(path.join(root, "route-coverage.json"), "utf8"))) throw new TypeError("named bootstrap route coverage digest join is invalid"); } if (state.completed.length === BOOTSTRAP_CHECKPOINT_IDS.length) { const [project, report, runtime] = await Promise.all([readJson(root, "project.json"), readJson(root, "report.json"), readJson(root, "runtime-descriptor.json")]); parseAgentProjectV1(project); parseBootstrapReportV1(report); parseRuntimeDescriptorV1(runtime); if ((report as BootstrapReportV1).projectDigest !== digestAgentProjectV1(project)) throw new TypeError("named bootstrap project/report digest join is invalid"); } }
 async function readJson(root: string, file: string): Promise<unknown> { try { return JSON.parse(await readFile(path.join(root, file), "utf8")); } catch { throw new TypeError("named bootstrap checkpoint artifact is malformed"); } }
 async function installedPackageRoot(): Promise<string> { let candidate = path.dirname(fileURLToPath(import.meta.url)); for (;;) { try { await access(path.join(candidate, "package.json")); return candidate; } catch {} const parent = path.dirname(candidate); if (parent === candidate) throw new TypeError("installed package root is unavailable"); candidate = parent; } }
+
+async function snapshotBootstrapFiles(root: string, statePath: string): Promise<readonly BootstrapFileSnapshot[]> {
+  const paths = [statePath, path.join(root, "route-coverage.json"), ...Object.values(CHECKPOINT_ARTIFACT_NAMES).map(name => path.join(root, name))];
+  return Promise.all([...new Set(paths)].map(async file => {
+    const info = await lstat(file).catch(() => undefined);
+    if (info === undefined) return { path: file, kind: "absent" as const };
+    if (!info.isFile() || info.isSymbolicLink()) return { path: file, kind: "other" as const };
+    return { path: file, kind: "file" as const, content: await readFile(file, "utf8") };
+  }));
+}
+
+async function restoreBootstrapFiles(snapshots: readonly BootstrapFileSnapshot[]): Promise<void> {
+  for (const snapshot of [...snapshots].reverse()) {
+    if (snapshot.kind === "absent") await unlink(snapshot.path).catch(() => {});
+    else if (snapshot.kind === "file") await writeFileAtomic(snapshot.path, snapshot.content!);
+  }
+}
