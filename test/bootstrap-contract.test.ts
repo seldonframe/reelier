@@ -53,7 +53,7 @@ test("bootstrap parsers accept closed inert records and return frozen detached v
   assert.equal(parseSupervisorStatusV1({
     v: "reelier.supervisor-status/v1", observedAt: "2026-08-15T12:00:00.000Z",
     observedRoutes: 2, partialRoutes: 1, uncoveredRoutes: 1, unknownRoutes: 0,
-    replayAvailable: 1, replayCandidates: 1, outcomesActivated: 0, outcomesUnavailable: 2, outcomesEnforced: 0,
+    replayAvailable: 1, replayCandidates: 1, outcomesActivated: 0, outcomesUnavailable: 4, outcomesEnforced: 0,
     runtime: "externally-managed", completeness: "not-proved",
   }).completeness, "not-proved");
   assert.deepEqual(parseAuthorityCellSessionBindingV1(binding()), binding());

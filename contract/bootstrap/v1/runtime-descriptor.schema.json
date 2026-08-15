@@ -7,7 +7,7 @@
     "v": { "const": "reelier.runtime-descriptor/v1" }, "adapterId": { "$ref": "#/$defs/id" },
     "adapterVersion": { "$ref": "#/$defs/version" }, "adapterDigest": { "$ref": "#/$defs/digest" },
     "launchMode": { "enum": ["local-process", "externally-managed"] }, "command": { "anyOf": [{ "$ref": "#/$defs/path" }, { "type": "null" }] },
-    "args": { "type": "array", "items": { "type": "string", "minLength": 1, "maxLength": 512 }, "maxItems": 128 },
+    "args": { "type": "array", "items": { "$ref": "#/$defs/arg" }, "maxItems": 128 },
     "cwd": { "anyOf": [{ "$ref": "#/$defs/path" }, { "type": "null" }] },
     "connectionRef": { "anyOf": [{ "$ref": "#/$defs/id" }, { "type": "null" }] },
     "environmentAllowlist": { "type": "array", "items": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,127}$" }, "uniqueItems": true, "maxItems": 128 },
@@ -15,6 +15,8 @@
   },
   "$defs": {
     "id": { "type": "string", "pattern": "^[A-Za-z0-9._~-]{1,128}$" }, "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[A-Za-z0-9.-]+)?$" },
-    "digest": { "type": "string", "pattern": "^sha256:(?!0{64}$)[0-9a-f]{64}$" }, "path": { "type": "string", "pattern": "^(?:\\.|[A-Za-z0-9._~-]+)(?:/[A-Za-z0-9._~-]+)*$", "maxLength": 512 }
+    "digest": { "type": "string", "pattern": "^sha256:(?!0{64}$)[0-9a-f]{64}$" },
+    "path": { "type": "string", "pattern": "^(?:\\.|[A-Za-z0-9._~-]+)(?:/[A-Za-z0-9._~-]+)*$", "maxLength": 512 },
+    "arg": { "type": "string", "minLength": 1, "maxLength": 512, "pattern": "^(?!.*://)(?!.*(?:&&|\\|\\||[;&|`<>]|\\$\\())(?!.*(?:[Tt][Oo][Kk][Ee][Nn]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Cc][Rr][Ee][Dd][Ee][Nn][Tt][Ii][Aa][Ll]))[A-Za-z0-9_./:=,+@% -]+$" }
   }
 }

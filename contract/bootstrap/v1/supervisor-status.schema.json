@@ -1,6 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema", "$id": "https://reelier.dev/contracts/bootstrap/v1/supervisor-status.schema.json",
   "type": "object", "additionalProperties": false,
+  "$comment": "observedRoutes, partialRoutes, uncoveredRoutes, and unknownRoutes partition all route rows; replayAvailable plus replayCandidates is a subset of that total; outcomesActivated plus outcomesUnavailable equals that total; outcomesEnforced is a subset of outcomesActivated",
   "required": ["v", "observedAt", "observedRoutes", "partialRoutes", "uncoveredRoutes", "unknownRoutes", "replayAvailable", "replayCandidates", "outcomesActivated", "outcomesUnavailable", "outcomesEnforced", "runtime", "completeness"],
   "properties": {
     "v": { "const": "reelier.supervisor-status/v1" }, "observedAt": { "$ref": "#/$defs/time" },

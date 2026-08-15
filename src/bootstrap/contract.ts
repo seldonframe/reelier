@@ -28,18 +28,18 @@ const generatedContract: BootstrapContractV1 = {
     },
     {
       "path": "route-coverage.schema.json",
-      "digest": "sha256:2aff854dbc8984b313d7ef1e0fd6e566eb52c88a455c0543863433bb3ac716c3"
+      "digest": "sha256:777c3b4f9f34ca3b3924536bddb0b44ccd995958b51e01773a4a930f90c33cbf"
     },
     {
       "path": "runtime-descriptor.schema.json",
-      "digest": "sha256:e533b0e13dcec9ec02ce334f48a594274761e7b567cfa5579daeb43a93467600"
+      "digest": "sha256:086701c02d45986c5c5ee9e2c0e57e1c01536bd4baaa0d6dd336bcde7ca9dcd8"
     },
     {
       "path": "supervisor-status.schema.json",
-      "digest": "sha256:619ac0abee08e7997df3fd2df54082e149e421cc90394e94603e72db43b8dac2"
+      "digest": "sha256:be84bfcb0ce711402ccd427c06556c81c28a1708fccb2a311d81fa6da2956afc"
     }
   ],
-  "digest": "sha256:3b161491c1a8c0edb69e58b5d6c97713aa481778c30843127360e5188ebb20b6"
+  "digest": "sha256:8be3d4307c6cc265a3d1b6702b71f0ff4d09687a72e3813c5fb3df36abb9fb24"
 };
 export const BOOTSTRAP_CONTRACT_V1: BootstrapContractV1 = freezeContract(generatedContract);
 export const BOOTSTRAP_CONTRACT_V1_DIGEST = BOOTSTRAP_CONTRACT_V1.digest;
