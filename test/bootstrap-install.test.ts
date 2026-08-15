@@ -12,12 +12,16 @@ test("named bootstrap plans an exact-version proxy without changing legacy wrapp
     const config = path.join(root, ".mcp.json");
     await writeFile(config, JSON.stringify({ mcpServers: {
       local: { command: "npx", args: ["-y", "@example/server"] },
+      legacy: { command: "npx", args: ["-y", "reelier", "mcp", "--wrap", "npx -y @legacy/server"] },
       remote: { type: "http", url: "https://example.test/mcp" },
     } }), "utf8");
     const plan = await planBootstrapInstall(config, "0.32.1");
     assert.equal(plan.changed, true);
     assert.deepEqual(JSON.parse(plan.after).mcpServers.local, {
       command: "npx", args: ["-y", "reelier@0.32.1", "mcp", "--wrap", "npx -y @example/server"],
+    });
+    assert.deepEqual(JSON.parse(plan.after).mcpServers.legacy, {
+      command: "npx", args: ["-y", "reelier", "mcp", "--wrap", "npx -y @legacy/server"],
     });
     assert.equal(plan.entries.find((entry: { name: string; action: string }) => entry.name === "remote")?.action, "skip-unwrappable");
     assert.equal(await readFile(config, "utf8"), JSON.stringify({ mcpServers: {
