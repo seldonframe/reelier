@@ -39,12 +39,14 @@ export interface BootstrapReportV1 {
 export interface SupervisorStatusV1 {
   readonly v: "reelier.supervisor-status/v1";
   readonly observedAt: string;
+  /** Observation-lane counts form a complete partition of current route rows. */
   readonly observedRoutes: number;
   readonly partialRoutes: number;
   readonly uncoveredRoutes: number;
   readonly unknownRoutes: number;
   readonly replayAvailable: number;
   readonly replayCandidates: number;
+  /** Activated and unavailable form a complete Outcome partition; enforced is an activated subset. */
   readonly outcomesActivated: number;
   readonly outcomesUnavailable: number;
   readonly outcomesEnforced: number;

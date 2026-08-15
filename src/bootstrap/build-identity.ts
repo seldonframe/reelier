@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { lstat, readFile, readdir } from "node:fs/promises";
-import { basename, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { authorityDigest } from "../authority/wire.js";
 
 const semanticVersion = /^[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?$/;
@@ -17,27 +19,56 @@ export async function computeInstalledBuildDigest(packageRoot: string): Promise<
   const fileRules = manifest.files as string[];
   validateFileRules(fileRules);
   const positive = fileRules.filter(rule => !rule.startsWith("!"));
-  const negative = fileRules.filter(rule => rule.startsWith("!")).map(rule => rule.slice(1));
-  const selected = new Map<string, string>();
+  const selectedForValidation = new Map<string, string>();
   for (const rule of positive) {
     const absolute = join(root, ...rule.split("/"));
-    await collectRegularFiles(root, absolute, selected);
+    await collectRegularFiles(root, absolute, selectedForValidation);
   }
-  for (const rule of ["package.json", "README.md", "LICENSE"]) {
-    if (selected.has(rule)) continue;
-    try { await collectRegularFiles(root, join(root, rule), selected); }
-    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT" || rule === "package.json") throw error; }
-  }
-  for (const [path] of selected) {
-    if (negative.some(rule => path === rule || path.startsWith(`${rule}/`)) || basename(path) === "installed-build-digest.json") selected.delete(path);
-  }
-  const paths = [...selected.keys()].sort(compareUtf8);
+  const paths = npmShippedPaths(root).filter(path => basename(path) !== "installed-build-digest.json").sort(compareUtf8);
   assertNoCaseCollisions(paths, "selected installed package paths");
-  const files = await Promise.all(paths.map(async path => ({
-    path,
-    digest: `sha256:${createHash("sha256").update(await readFile(selected.get(path)!)).digest("hex")}`,
-  })));
+  const files = await Promise.all(paths.map(async path => {
+    const absolute = join(root, ...path.split("/"));
+    const stat = await lstat(absolute);
+    if (stat.isSymbolicLink() || !stat.isFile() || portable(root, absolute) !== path) throw new TypeError(`npm shipped path is not a confined regular file: ${path}`);
+    return { path, digest: `sha256:${createHash("sha256").update(await readFile(absolute)).digest("hex")}` };
+  }));
   return authorityDigest({ v: "reelier.installed-build-identity/v1", packageVersion: manifest.version, files });
+}
+
+function npmShippedPaths(root: string): string[] {
+  const npmCli = npmCliPath();
+  let stdout: string;
+  try {
+    stdout = execFileSync(process.execPath, [npmCli, "pack", "--ignore-scripts", "--dry-run", "--json"], {
+      cwd: root,
+      encoding: "utf8",
+      maxBuffer: 16 * 1024 * 1024,
+      env: { ...process.env, npm_config_audit: "false", npm_config_fund: "false", npm_config_loglevel: "error", npm_config_offline: "true", npm_config_update_notifier: "false" },
+    });
+  } catch { throw new TypeError("cannot derive exact npm shipped-file membership"); }
+  let result: unknown;
+  try { result = JSON.parse(stdout); } catch { throw new TypeError("npm shipped-file membership output is invalid"); }
+  if (!Array.isArray(result) || result.length !== 1 || !isPlainRecord(result[0]) || !Array.isArray(result[0].files)) throw new TypeError("npm shipped-file membership shape is invalid");
+  const paths = result[0].files.map(entry => {
+    if (!isPlainRecord(entry) || typeof entry.path !== "string") throw new TypeError("npm shipped-file entry is invalid");
+    const path = entry.path;
+    if (path.length === 0 || path.includes("\\") || path.startsWith("/") || /^[A-Za-z]:/.test(path) || path.split("/").some(part => part === "" || part === "." || part === "..")) throw new TypeError("npm shipped-file path is invalid");
+    return path;
+  });
+  if (new Set(paths).size !== paths.length) throw new TypeError("npm shipped-file membership contains duplicates");
+  return paths;
+}
+
+function npmCliPath(): string {
+  const candidates = [
+    process.env.npm_execpath,
+    join(dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js"),
+    resolve(dirname(process.execPath), "../lib/node_modules/npm/bin/npm-cli.js"),
+    resolve(dirname(process.execPath), "../node_modules/npm/bin/npm-cli.js"),
+  ];
+  const path = candidates.find(candidate => candidate !== undefined && existsSync(candidate));
+  if (path === undefined) throw new TypeError("npm CLI is required to derive exact shipped-file membership");
+  return path;
 }
 
 async function collectRegularFiles(root: string, target: string, selected: Map<string, string>): Promise<void> {

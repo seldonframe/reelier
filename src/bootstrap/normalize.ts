@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+import { types as utilTypes } from "node:util";
 import type { ValidateFunction } from "ajv";
 import type { AuthorityCellSessionBindingV1, AuthorityCellSessionBindingVerificationV1, BootstrapReportV1, SupervisorStatusV1 } from "./types.js";
 
@@ -24,9 +25,9 @@ export function parseBootstrapReportV1(value: unknown): BootstrapReportV1 {
 export function parseSupervisorStatusV1(value: unknown): SupervisorStatusV1 {
   const parsed = parseBootstrapSchema<SupervisorStatusV1>("supervisor-status", value);
   parseCanonicalTime(parsed.observedAt, "supervisor observation time");
-  for (const count of [parsed.partialRoutes, parsed.uncoveredRoutes, parsed.unknownRoutes]) {
-    if (count > parsed.observedRoutes) throw new TypeError("supervisor route counts exceed observed routes");
-  }
+  const totalRoutes = parsed.observedRoutes + parsed.partialRoutes + parsed.uncoveredRoutes + parsed.unknownRoutes;
+  if (parsed.replayAvailable + parsed.replayCandidates > totalRoutes) throw new TypeError("supervisor replay counts exceed route coverage");
+  if (parsed.outcomesActivated + parsed.outcomesUnavailable !== totalRoutes) throw new TypeError("supervisor outcome counts must partition route coverage");
   if (parsed.outcomesEnforced > parsed.outcomesActivated) throw new TypeError("supervisor enforced outcomes exceed activated outcomes");
   return parsed;
 }
@@ -76,6 +77,7 @@ export function parseBootstrapSchema<T>(name: BootstrapSchemaName, value: unknow
 
 export function assertOwnDataTree(value: unknown, label: string, seen = new Set<object>()): void {
   if (value === null || typeof value !== "object") return;
+  if (utilTypes.isProxy(value)) throw new TypeError(`${label} must not contain proxies`);
   if (seen.has(value)) throw new TypeError(`${label} must not be cyclic`);
   seen.add(value);
   if (Array.isArray(value)) {

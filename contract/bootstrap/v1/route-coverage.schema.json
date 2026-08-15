@@ -17,7 +17,7 @@
     "reasonCodes": { "type": "array", "items": { "$ref": "#/$defs/id" }, "uniqueItems": true, "maxItems": 128 }
   },
   "$defs": {
-    "id": { "type": "string", "pattern": "^[A-Za-z0-9._~-]{1,128}$" }, "ref": { "type": "string", "pattern": "^[A-Za-z0-9._~:/-]{1,256}$" },
+    "id": { "type": "string", "pattern": "^[A-Za-z0-9._~-]{1,128}$" }, "ref": { "type": "string", "pattern": "^(?!.*://)[A-Za-z0-9._~:/-]{1,256}$" },
     "time": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$" },
     "digest": { "type": "string", "pattern": "^sha256:(?!0{64}$)[0-9a-f]{64}$" }
   }

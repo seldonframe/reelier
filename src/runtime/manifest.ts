@@ -2,17 +2,22 @@ import { parseBootstrapSchema } from "../bootstrap/normalize.js";
 import type { RuntimeDescriptorV1 } from "./types.js";
 
 const shellSyntax = /(?:&&|\|\||[;&|`<>]|\$\(|\r|\n)/;
-const endpointSyntax = /^[A-Za-z][A-Za-z0-9+.-]*:\/\//;
+const endpointSyntax = /[A-Za-z][A-Za-z0-9+.-]*:\/\//;
+const credentialSyntax = /(?:^|[-_/])(?:api[-_]?key|token|secret|password|credential|private[-_]?key)(?:=|:|$)|\bBearer\s|\bsk_(?:live|test)_/i;
+const shellExecutables = new Set(["cmd", "cmd.exe", "powershell", "powershell.exe", "pwsh", "pwsh.exe", "sh", "bash", "zsh", "fish", "wsl", "wsl.exe", "cscript", "cscript.exe", "wscript", "wscript.exe"]);
+const shellModes = new Set(["/c", "/k", "-c", "-command", "-encodedcommand", "--command"]);
 const secretName = /(?:^|_)(?:TOKEN|SECRET|PASSWORD|PASS|API_KEY|CREDENTIAL|PRIVATE_KEY)(?:_|$)/;
 
 export function parseRuntimeDescriptorV1(value: unknown): RuntimeDescriptorV1 {
   const parsed = parseBootstrapSchema<RuntimeDescriptorV1>("runtime-descriptor", value);
-  if (parsed.args.some(argument => shellSyntax.test(argument) || endpointSyntax.test(argument))) throw new TypeError("runtime arguments cannot contain shell command or endpoint syntax");
+  if (parsed.args.some(argument => shellSyntax.test(argument) || endpointSyntax.test(argument) || credentialSyntax.test(argument) || shellModes.has(argument.toLowerCase()))) throw new TypeError("runtime arguments cannot contain shell, credential, or endpoint syntax");
   if (parsed.environmentAllowlist.some(name => secretName.test(name))) throw new TypeError("runtime environment allowlist cannot carry credential material");
   assertSortedUnique(parsed.environmentAllowlist, "runtime environment allowlist");
   if (parsed.launchMode === "local-process") {
     if (parsed.command === null || parsed.connectionRef !== null || parsed.shutdown !== "signal-owned-child") throw new TypeError("local runtime descriptor field combination is invalid");
     assertConfinedPath(parsed.command, "runtime command");
+    const executable = parsed.command.split("/").at(-1)?.toLowerCase();
+    if (executable === undefined || shellExecutables.has(executable)) throw new TypeError("runtime command cannot be a shell executable");
     if (parsed.cwd !== null) assertConfinedPath(parsed.cwd, "runtime working directory");
   } else {
     if (parsed.command !== null || parsed.args.length !== 0 || parsed.cwd !== null || parsed.connectionRef === null || parsed.environmentAllowlist.length !== 0 || parsed.shutdown !== "external") throw new TypeError("externally managed runtime descriptor field combination is invalid");

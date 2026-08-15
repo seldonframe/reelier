@@ -39,6 +39,7 @@ test("installed build digest follows package files exclusions and ignores unship
   const before = await computeInstalledBuildDigest(root);
   await writeFile(join(root, "dist", "private.js"), "secret\n");
   await writeFile(join(root, "dist", "build.tmp"), "temporary\n");
+  await writeFile(join(root, "dist", ".npmignore"), "*.tmp\n");
   await mkdir(join(root, "node_modules", "x"), { recursive: true });
   await writeFile(join(root, "node_modules", "x", "index.js"), "changed\n");
   await mkdir(join(root, ".reelier", "bootstrap"), { recursive: true });

@@ -5,6 +5,7 @@ export function parseRouteCoverageV1(value: unknown): RouteCoverageV1 {
   const parsed = parseBootstrapSchema<RouteCoverageV1>("route-coverage", value);
   if (parseCanonicalTime(parsed.freshUntil, "route freshness time") <= parseCanonicalTime(parsed.observedAt, "route observation time")) throw new TypeError("route coverage freshness interval is invalid");
   assertSortedUnique(parsed.evidenceRefs, "route evidence references");
+  if (parsed.evidenceRefs.some(reference => /[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(reference))) throw new TypeError("route evidence references cannot contain endpoint URLs");
   assertSortedUnique(parsed.reasonCodes, "route reason codes");
   if (parsed.enforcement === "verified" && parsed.topologyEvidenceDigest === null) throw new TypeError("verified route enforcement requires topology evidence");
   if (parsed.enforcement !== "verified" && parsed.topologyEvidenceDigest !== null) throw new TypeError("topology evidence cannot upgrade an unverified route");
