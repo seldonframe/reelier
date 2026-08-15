@@ -235,6 +235,29 @@ test("checkpoint artifact paths are closed basenames and cannot redirect validat
   });
 });
 
+test("completed checkpoints bind their canonical artifact names and reject linked artifacts", async () => {
+  await withFixture(async options => {
+    await initializeAgentProject(options);
+    const bootstrap = path.join(options.cwd, ".reelier", "bootstrap");
+    const statePath = path.join(bootstrap, "state.json");
+    const state = JSON.parse(await readFile(statePath, "utf8"));
+    const originalState = JSON.stringify(state);
+    const runtime = JSON.parse(await readFile(path.join(bootstrap, "runtime-descriptor.json"), "utf8"));
+    state.completed[0].artifact = "runtime-descriptor.json";
+    state.completed[0].digest = authorityDigest(runtime);
+    await writeFile(statePath, JSON.stringify(state), "utf8");
+    await assert.rejects(() => initializeAgentProject(options), /checkpoint|artifact|path/i);
+
+    await writeFile(statePath, originalState, "utf8");
+    const source = path.join(bootstrap, "inspection-link.json");
+    const outside = path.join(options.cwd, "inspection-link-outside.json");
+    await writeFile(outside, await readFile(source, "utf8"), "utf8");
+    await rm(source);
+    await symlink(outside, source, "file");
+    await assert.rejects(() => initializeAgentProject(options), /checkpoint|artifact|linked/i);
+  });
+});
+
 test("the same agent name in separate projects receives separate project-scoped workload keys", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "reelier-workload-project-scope-"));
   try {
