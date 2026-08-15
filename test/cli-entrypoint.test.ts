@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { watch } from "node:fs";
 import { promisify } from "node:util";
-import { mkdtemp, mkdir, readFile, readdir, symlink, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, mkdir, readFile, readdir, symlink, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -67,7 +67,9 @@ test("root parser retains authority connection values required by the existing c
   });
 });
 
-test("real CLI restart recovers an interrupted exact plan and refuses later identity drift", async () => {
+test("real CLI restart recovers an interrupted exact plan and refuses later identity drift", async t => {
+  try { await access(path.resolve(CLI_DIR, "../../native/bootstrap-helper/manifest.json")); }
+  catch { t.skip("certified native bootstrap artifacts are unavailable on this checkout"); return; }
   const root = await mkdtemp(path.join(tmpdir(), "reelier-cli-restart-"));
   const project = path.join(root, "project");
   await mkdir(project);
