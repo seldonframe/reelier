@@ -343,6 +343,18 @@ test("stale-lock retirement cannot unlink through another recovery generation", 
   });
 });
 
+test("a provably dead orphaned lock-recovery generation is retired on restart", async () => {
+  await withFixture(async options => {
+    await initializeAgentProject(options);
+    const recovery = path.join(options.cwd, ".reelier", "bootstrap", ".lock.recovery");
+    await writeFile(recovery, JSON.stringify({ v: "reelier.bootstrap-lock-recovery/v1", pid: -1, processStartedAt: 0, nonce: "orphaned-recovery" }), "utf8");
+
+    const report = await initializeAgentProject(options);
+    assert.equal(report.pathC, "unavailable-no-activation");
+    await assert.rejects(lstat(recovery), { code: "ENOENT" });
+  });
+});
+
 test("case-colliding workload names are admitted atomically before the losing project writes artifacts", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "reelier-workload-case-race-"));
   try {
