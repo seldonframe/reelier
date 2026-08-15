@@ -257,6 +257,7 @@ test("verified imported governance joins exact pins into the project descriptor"
     assert.equal(project.profileGovernanceRef, governanceRef);
     assert.equal(project.profileGovernanceManifestDigest, fixture.manifestDigest);
     assert.equal(project.profileTrustHeadDigest, fixture.manifest.trustHeadDigest);
+    assert.equal(project.tenant, tenant);
   });
 });
 
