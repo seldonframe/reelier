@@ -25,6 +25,7 @@
     "./serve": "./dist/serve.js",
     "./authority": "./dist/authority/index.js",
     "./continuity": "./dist/continuity/index.js",
+    "./bootstrap": "./dist/bootstrap/index.js",
     "./authority/pack": "./dist/authority/pack/index.js",
     "./authority/host": "./dist/authority/host/index.js",
     "./observation": "./dist/observation/index.js",
@@ -76,10 +77,11 @@
     "node": ">=20"
   },
   "scripts": {
-    "build": "node scripts/build-authority-contract.mjs --check && tsc -p tsconfig.json && node scripts/build-authority-contract.mjs --copy-schemas && node scripts/build-packs.mjs",
+    "build": "node scripts/build-authority-contract.mjs --check && node scripts/build-bootstrap-contract.mjs --check && tsc -p tsconfig.json && node scripts/build-authority-contract.mjs --copy-schemas && node scripts/build-packs.mjs",
     "build:authority-contract": "node scripts/build-authority-contract.mjs",
     "check:authority-contract": "node scripts/build-authority-contract.mjs --check",
     "check:outcome-profile-contract": "node scripts/build-outcome-profile-contract.mjs --check",
+    "check:bootstrap-contract": "node scripts/build-bootstrap-contract.mjs --check",
     "check:agent-adapter": "node conformance/agent-adapter/v0/check.mjs",
     "check:continuity-adapter": "node conformance/continuity-adapter/v1/check.mjs",
     "check:continuity-eve": "npm --prefix conformance/continuity-adapter/v1/eve-fixture ci --ignore-scripts && npm --prefix conformance/continuity-adapter/v1/eve-fixture run conformance",

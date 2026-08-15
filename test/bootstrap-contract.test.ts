@@ -1,11 +1,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import {
+  BOOTSTRAP_CONTRACT_V1,
   parseAgentProjectV1,
   parseAuthorityCellSessionBindingV1,
   parseBootstrapReportV1,
   parseSupervisorStatusV1,
   verifyAuthorityCellSessionBindingV1,
+  verifyBootstrapContractV1,
 } from "../src/bootstrap/index.js";
 
 const digest = (char: string) => `sha256:${char.repeat(64)}`;
@@ -55,8 +59,12 @@ test("bootstrap parsers accept closed inert records and return frozen detached v
 });
 
 test("bootstrap parsers reject accessors, symbols, non-enumerable extras, and prototype substitution before getters execute", () => {
+  let reads = 0;
+  const accessor = project();
+  Object.defineProperty(accessor, "agentName", { enumerable: true, get() { reads++; return "x"; } });
+  assert.throws(() => parseAgentProjectV1(accessor), TypeError);
+  assert.equal(reads, 0);
   const mutations: Array<() => unknown> = [
-    () => { let reads = 0; const value = project(); Object.defineProperty(value, "agentName", { enumerable: true, get() { reads++; return "x"; } }); assert.throws(() => parseAgentProjectV1(value)); assert.equal(reads, 0); },
     () => { const value = project() as Record<PropertyKey, unknown>; value[Symbol("extra")] = true; return parseAgentProjectV1(value); },
     () => { const value = project(); Object.defineProperty(value, "secret", { value: "token", enumerable: false }); return parseAgentProjectV1(value); },
     () => parseAgentProjectV1(Object.assign(Object.create({ inherited: true }), project())),
@@ -112,4 +120,22 @@ test("session binding refuses stale, expired, future, widened, and boundary-time
     assert.throws(() => verifyAuthorityCellSessionBindingV1(binding(), { ...expectedBinding(), observationTime }), TypeError);
   }
   assert.doesNotThrow(() => verifyAuthorityCellSessionBindingV1(binding(), { ...expectedBinding(), observationTime: binding().bindingObservedAt }));
+});
+
+test("bootstrap contract verification binds the exact six schemas and evaluates no descriptor accessor", async () => {
+  assert.deepEqual(BOOTSTRAP_CONTRACT_V1.members.map(member => member.path), [
+    "agent-project.schema.json", "authority-cell-session-binding.schema.json", "bootstrap-report.schema.json",
+    "route-coverage.schema.json", "runtime-descriptor.schema.json", "supervisor-status.schema.json",
+  ]);
+  const files = new Map<string, Uint8Array>();
+  for (const member of BOOTSTRAP_CONTRACT_V1.members) files.set(member.path, await readFile(join(process.cwd(), "contract", "bootstrap", "v1", member.path)));
+  assert.deepEqual(verifyBootstrapContractV1(BOOTSTRAP_CONTRACT_V1, files), BOOTSTRAP_CONTRACT_V1);
+  const mutated = new Map(files);
+  mutated.set("runtime-descriptor.schema.json", Buffer.from("{}\n"));
+  assert.throws(() => verifyBootstrapContractV1(BOOTSTRAP_CONTRACT_V1, mutated), TypeError);
+  let reads = 0;
+  const accessor = { ...BOOTSTRAP_CONTRACT_V1 };
+  Object.defineProperty(accessor, "digest", { enumerable: true, get() { reads++; return BOOTSTRAP_CONTRACT_V1.digest; } });
+  assert.throws(() => verifyBootstrapContractV1(accessor, files), TypeError);
+  assert.equal(reads, 0);
 });
