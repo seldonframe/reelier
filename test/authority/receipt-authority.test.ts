@@ -10,6 +10,10 @@ import {
 import { profileGovernanceFixture } from "./profile-governance-fixture.js";
 import { authorityDigest } from "../../src/authority/wire.js";
 import { createCertificationArtifactKeyBinding, createCertificationLifecycleAuthorityCeremony, verifyCertificationArtifactKeyBinding } from "../../src/authority/certification/lifecycle-authority.js";
+import { createGitHubIssueLabelsHermeticComposition } from "../../src/authority/certification/github-issue-labels-runner.js";
+import { createGitHubIssueLabelsFixture } from "./fixtures/github-issue-labels.js";
+import { readFile, readdir } from "node:fs/promises";
+import path from "node:path";
 
 const phases = ["reservation", "dispatch", "cancelled", "ambiguous", "reconcile"] as const;
 const purposes = ["source-bundle", "compiled-capability", "transport-effect", "authority-evidence", "authority-receipt", "pack-manifest"] as const;
@@ -19,7 +23,49 @@ test("produced receipt kinds name the six generated bundle properties, not wire 
   profileGovernanceFixture();
   const kinds: readonly ProducedReceiptKindV1[] = producedProperties;
   assert.deepEqual(kinds, producedProperties);
-  assert.deepEqual(phases, ["reservation", "dispatch", "cancelled", "ambiguous", "reconcile"]);
+});
+
+test("real lifecycle construction preserves reservation, dispatch, ambiguity, and reconciliation byte/prior semantics", async () => {
+  const normal = await createGitHubIssueLabelsFixture("normal");
+  try {
+    await normal.runner.run({ bearerToken: normal.credential.token, requestId: "receipt_phase_normal" });
+    const graph: any = await normal.runner.exportGraph({ bearerToken: normal.credential.token });
+    const [reservation, dispatch, reconcile] = graph.receipts;
+    assert.deepEqual(reservation.evidence.value.timeline.map((item: any) => item.state), ["reserved"]);
+    assert.equal(reservation.receipt.value.claims.dispatch, "absent");
+    assert.equal(reservation.receipt.value.priorReceiptDigest, null);
+    assert.equal(dispatch.receipt.value.priorReceiptDigest, authorityDigest(reservation.receipt.value));
+    assert.equal(reconcile.receipt.value.priorReceiptDigest, authorityDigest(dispatch.receipt.value));
+    assert.deepEqual(reconcile.evidence.value.timeline.map((item: any) => item.state), ["reserved", "dispatched", "acknowledged", "reconciled"]);
+    for (const bundle of graph.receipts) {
+      assert.equal(bundle.signatures.length, 10);
+      assert.equal(bundle.receipt.value.decisionContextDigest, reservation.receipt.value.decisionContextDigest);
+      assert.equal(bundle.contract.digest, reservation.contract.digest);
+      assert.equal(bundle.gateEvent.digest, reservation.gateEvent.digest);
+    }
+  } finally { await normal.close(); }
+
+  const cancelled = await createGitHubIssueLabelsFixture("source-drift");
+  try {
+    await cancelled.runner.run({ bearerToken: cancelled.credential.token, requestId: "receipt_phase_cancelled" });
+    const directory = path.join(cancelled.initialized.workspace, "authority", "github-label-runner", "receipts", "portable");
+    const names = await readdir(directory);
+    assert.equal(names.length, 1);
+    const bundle: any = JSON.parse(await readFile(path.join(directory, names[0]!), "utf8"));
+    assert.deepEqual(bundle.evidence.value.timeline.map((item: any) => item.state), ["reserved", "cancelled"]);
+    assert.equal(bundle.receipt.value.priorReceiptDigest, null);
+    assert.equal(bundle.receipt.value.claims.dispatch, "absent");
+  } finally { await cancelled.close(); }
+
+  const ambiguous = await createGitHubIssueLabelsFixture("provider-503");
+  try {
+    await ambiguous.runner.run({ bearerToken: ambiguous.credential.token, requestId: "receipt_phase_ambiguous" });
+    const restarted = await createGitHubIssueLabelsHermeticComposition(ambiguous.cell);
+    await restarted.recover();
+    const graph: any = await restarted.exportGraph({ bearerToken: ambiguous.credential.token });
+    assert.deepEqual(graph.receipts[1].evidence.value.timeline.map((item: any) => item.state), ["reserved", "dispatched", "ambiguous"]);
+    assert.equal(graph.receipts[1].receipt.value.priorReceiptDigest, authorityDigest(graph.receipts[0].receipt.value));
+  } finally { await ambiguous.close(); }
 });
 
 test("raw callbacks and structural validation handles cannot construct authority receipts", async () => {

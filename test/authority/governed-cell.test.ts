@@ -15,6 +15,24 @@ type Assert<T extends true> = T;
 type PublicOptionsHaveNoSecondBindingSigner = Assert<"authorityBindingSigner" extends keyof GovernedAuthorityCellOptionsV1 ? false : true>;
 const publicOptionsHaveNoSecondBindingSigner: PublicOptionsHaveNoSecondBindingSigner = true;
 
+type GovernedFactoryCase = "correct" | "wrong-write" | "wrong-read" | "provider-mismatch" | "extra-route"
+  | "draft-only" | "conformance-only" | "activation-only" | "self-certified" | "revoked-activation"
+  | "profile-pack-substitution" | "profile-contract-substitution" | "profile-job-card-substitution"
+  | "profile-deployment-substitution" | "profile-route-scope-substitution"
+  | "profile-authority-trust-head-substitution" | "profile-trust-head-substitution" | "configured-definition-substitution";
+
+async function runPlatformNeutralFactoryCase(kind: GovernedFactoryCase) {
+  const home = await mkdtemp(path.join(os.tmpdir(), `reelier-governed-route-${kind}-`));
+  try {
+    const fixtureUrl = new URL("./profile-governance-fixture.js", import.meta.url).href;
+    const platformUrl = new URL("../../src/authority/host/platform.js", import.meta.url).href;
+    const factoryUrl = new URL("../../src/authority/host/governed-cell.js", import.meta.url).href;
+    const script = `import {createGovernedAuthorityCell} from ${JSON.stringify(factoryUrl)};import {__testSetAuthorityCellHostPlatform} from ${JSON.stringify(platformUrl)};import {writeGovernedPublicFactoryFixture} from ${JSON.stringify(fixtureUrl)};import {access,readFile,unlink,writeFile} from "node:fs/promises";import path from "node:path";const kind=${JSON.stringify(kind)};const restore=__testSetAuthorityCellHostPlatform("linux");const f=await writeGovernedPublicFactoryFixture(process.env.HOME,kind==="provider-mismatch"?{profileProvider:"gitlab"}:{});const counts={sourceReads:0,credentialReads:0,reservations:0,preparedSends:0,providerWrites:0,servers:0};const original=f.options;f.options={...original,sourceReadAdapter:{async execute(plans){counts.sourceReads++;return original.sourceReadAdapter.execute(plans)}},secretResolver:{async resolve(){counts.credentialReads++;throw new Error("credential access before admission")}},dispatchAdapter:{async prepare(value){counts.preparedSends++;const prepared=await original.dispatchAdapter.prepare(value);return{...prepared,send:async()=>{counts.providerWrites++;return prepared.send()}}},async dispatch(){counts.providerWrites++;return original.dispatchAdapter.dispatch()}},certifiedDispatch:original.certifiedDispatch};const remove=async name=>unlink(path.join(f.profile.root,name));const rewrite=async(file,mutate)=>{const value=JSON.parse(await readFile(file,"utf8"));mutate(value);await writeFile(file,JSON.stringify(value)+"\\n")};if(kind==="draft-only"){await remove("conformance-report.json");await remove("conformance.json");await remove("activation.json")}if(kind==="conformance-only")await remove("activation.json");if(kind==="activation-only"){await remove("conformance-report.json");await remove("conformance.json")}if(kind==="self-certified")await rewrite(path.join(f.profile.root,"trust-pin.json"),v=>{v.certifier=v.operator});if(kind==="revoked-activation")await rewrite(path.join(f.profile.root,"activation.json"),v=>{v.state="revoked"});if(kind==="profile-pack-substitution")f.config.definitions=["other_definition"];if(kind==="profile-contract-substitution")await rewrite(f.config.deploymentPath,v=>{v.states[0].candidates[0].contractEnvelope.advertisedDigest="sha256:"+"0".repeat(64)});if(kind==="profile-job-card-substitution")await rewrite(f.config.deploymentPath,v=>{v.jobCard.title="substituted"});if(kind==="profile-deployment-substitution")await rewrite(f.config.deploymentPath,v=>{v.enforcement.bypasses=["substituted"]});if(kind==="profile-route-scope-substitution")f.config.nativeHttpsRoutes=[f.routes[0],{...f.routes[1],credentialSlotId:"other_slot"}];if(kind==="profile-authority-trust-head-substitution")await rewrite(f.config.jobCardTrustPinPath,v=>{v.currentTrustEvents=v.currentTrustEvents.slice(0,-1)});if(kind==="profile-trust-head-substitution")f.reference.expectedTrustHeadDigest="sha256:"+"0".repeat(64);if(kind==="configured-definition-substitution")f.config.definitions=["configured_other"];if(kind==="wrong-write")f.config.nativeHttpsRoutes=[f.routes[0],{...f.routes[1],endpointId:"unlisted_write"}];if(kind==="wrong-read")f.config.nativeHttpsRoutes=[{...f.routes[0],endpointId:"unlisted_read"},f.routes[1]];if(kind==="extra-route")f.config.nativeHttpsRoutes=[...f.routes,{...f.routes[1],endpointId:"unrelated_write"}];let status="accepted";let message="";let host;try{host=await createGovernedAuthorityCell(f.config,f.reference,f.options);counts.servers++;}catch(error){status="refused";message=String(error?.message??error)}finally{await host?.close();restore()}const exists=async p=>{try{await access(p);return true}catch{return false}};process.stdout.write(JSON.stringify({status,message,counts,created:{ledger:await exists(f.config.ledgerDir),decision:await exists(f.config.decisionDir),receipt:await exists(f.config.receiptDir)}}));`;
+    const child = await promisify(execFile)(process.execPath, ["--input-type=module", "--eval", script], { cwd: process.cwd(), env: { ...process.env, HOME: home, USERPROFILE: home }, maxBuffer: 1024 * 1024 });
+    return JSON.parse(child.stdout) as { status: string; message: string; counts: Record<string, number>; created: Record<string, boolean> };
+  } finally { await rm(home, { recursive: true, force: true }); }
+}
+
 test("governed Cell refuses Windows before config, reference, options, or filesystem access", async () => {
   const restore = __testSetAuthorityCellHostPlatform("win32");
   let accesses = 0;
@@ -52,6 +70,32 @@ test("public governed Linux factory evidence is registered on every platform", {
     assert.deepEqual(result, { verdict: "accepted", receiptRef: result.receiptRef, verified: true }); assert.match(result.receiptRef, /^sha256:/);
   } finally {
     await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("the public factory admits only the exact definition, connector, read route, and profile provider join", async () => {
+  const correct = await runPlatformNeutralFactoryCase("correct");
+  assert.equal(correct.status, "accepted", correct.message);
+  for (const kind of ["wrong-write", "wrong-read", "provider-mismatch", "extra-route"] as const) {
+    const result = await runPlatformNeutralFactoryCase(kind);
+    assert.equal(result.status, "refused", `${kind}: ${result.message}`);
+    assert.deepEqual(result.counts, { sourceReads: 0, credentialReads: 0, reservations: 0, preparedSends: 0, providerWrites: 0, servers: 0 }, kind);
+    assert.deepEqual(result.created, { ledger: false, decision: false, receipt: false }, kind);
+  }
+});
+
+test("all thirteen governed admission mutations cross the public factory and stop every runtime boundary", async () => {
+  const mutations = [
+    "draft-only", "conformance-only", "activation-only", "self-certified", "revoked-activation",
+    "profile-pack-substitution", "profile-contract-substitution", "profile-job-card-substitution",
+    "profile-deployment-substitution", "profile-route-scope-substitution",
+    "profile-authority-trust-head-substitution", "profile-trust-head-substitution", "configured-definition-substitution",
+  ] as const;
+  for (const mutation of mutations) {
+    const result = await runPlatformNeutralFactoryCase(mutation);
+    assert.equal(result.status, "refused", `${mutation}: ${result.message}`);
+    assert.deepEqual(result.counts, { sourceReads: 0, credentialReads: 0, reservations: 0, preparedSends: 0, providerWrites: 0, servers: 0 }, mutation);
+    assert.deepEqual(result.created, { ledger: false, decision: false, receipt: false }, mutation);
   }
 });
 

@@ -64,6 +64,36 @@ test("loader refuses a governance-root junction even when it contains a complete
   await assert.rejects(() => loadProfileGovernanceFromOperatorTrust({ tenant, governanceRef, expectedManifestDigest: fixture.manifestDigest, expectedTrustHeadDigest: fixture.manifest.trustHeadDigest, homedir: home, verificationTime }), /link|junction|physical|canonical/i);
 });
 
+test("each of the six cold reads refuses a child from a different generation", async t => {
+  const names = ["trust-pin.json", "manifest.json", "profile.json", "conformance-report.json", "conformance.json", "activation.json"] as const;
+  for (const name of names) {
+    const home = await mkdtemp(path.join(os.tmpdir(), `reelier-profile-six-read-${name.replace(".json", "")}-`));
+    t.after(() => rm(home, { recursive: true, force: true }));
+    const fixture = await writeProfileGovernanceFixture(home);
+    const target = path.join(fixture.root, name);
+    const displaced = `${target}.accepted-generation`;
+    await rename(target, displaced);
+    await writeFile(target, "{}\n", { flag: "wx" });
+    await assert.rejects(
+      () => loadProfileGovernanceFromOperatorTrust({ tenant, governanceRef, expectedManifestDigest: fixture.manifestDigest, expectedTrustHeadDigest: fixture.manifest.trustHeadDigest, homedir: home, verificationTime }),
+      /invalid|closed|digest|manifest|trust|profile|conformance|activation/i,
+      name,
+    );
+  }
+});
+
+test("a child replacement after a successful cold load cannot be adopted as the same generation", async t => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "reelier-profile-child-replacement-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const fixture = await writeProfileGovernanceFixture(home);
+  const input = { tenant, governanceRef, expectedManifestDigest: fixture.manifestDigest, expectedTrustHeadDigest: fixture.manifest.trustHeadDigest, homedir: home, verificationTime };
+  await loadProfileGovernanceFromOperatorTrust(input);
+  const target = path.join(fixture.root, "activation.json");
+  await rename(target, `${target}.accepted-generation`);
+  await writeFile(target, "{}\n", { flag: "wx" });
+  await assert.rejects(() => loadProfileGovernanceFromOperatorTrust(input), /activation|invalid|closed|digest/i);
+});
+
 test("status inspection is sanitized and never returns an admission handle", async t => {
   const home = await mkdtemp(path.join(os.tmpdir(), "reelier-profile-status-"));
   t.after(() => rm(home, { recursive: true, force: true }));
