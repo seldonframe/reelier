@@ -392,19 +392,28 @@ fn refused(status: &'static str) -> OpenSessionResult {
 mod tests {
     use super::*;
     use std::fs;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn root() -> std::path::PathBuf {
-        let value = std::env::temp_dir().join(format!(
-            "reelier-native-session-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        fs::create_dir(&value).unwrap();
-        value
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        for _ in 0..100 {
+            let value = std::env::temp_dir().join(format!(
+                "reelier-native-session-{}-{}-{}",
+                std::process::id(),
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            match fs::create_dir(&value) {
+                Ok(()) => return value,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("failed to create native test root: {error}"),
+            }
+        }
+        panic!("failed to allocate unique native test root")
     }
     fn open(root: &Path, owner: &str) -> OpenSessionResult {
         open_session(OpenSessionRequest {
