@@ -215,7 +215,7 @@ test("a complete operator governance import is verified and reported without cop
     const fixture = await writeProfileGovernanceFixture(options.homedir);
     await initializeAgentProject({ ...options, governance: { tenant, governanceRef, expectedManifestDigest: fixture.manifestDigest, expectedTrustHeadDigest: fixture.manifest.trustHeadDigest, verificationTime } });
     const imported = JSON.parse(await readFile(path.join(options.cwd, ".reelier", "bootstrap", "imported-governance.json"), "utf8"));
-    assert.deepEqual(imported, { v: "reelier.imported-governance/v1", governanceRef, manifestDigest: fixture.manifestDigest, trustHeadDigest: fixture.manifest.trustHeadDigest, verificationStatus: "verified" });
+    assert.deepEqual(imported, { v: "reelier.imported-governance/v1", tenant, governanceRef, manifestDigest: fixture.manifestDigest, trustHeadDigest: fixture.manifest.trustHeadDigest, verificationStatus: "verified" });
     assert.equal((await readdir(path.join(options.cwd, ".reelier", "bootstrap"))).some(name => /trust|root|public.*key/i.test(name)), false);
   });
 });
