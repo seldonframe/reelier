@@ -287,3 +287,14 @@ test("completed checkpoint state is bound to agent, version, cwd, and consent in
     ]) await assert.rejects(() => initializeAgentProject(changed), /checkpoint|plan|identity/i);
   });
 });
+
+test("named initialization refuses a project cwd junction before creating any project artifacts", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-project-root-link-"));
+  try {
+    const target = path.join(root, "target"), linked = path.join(root, "linked"), home = path.join(root, "home");
+    await Promise.all([mkdir(target, { recursive: true }), mkdir(home, { recursive: true })]);
+    await symlink(target, linked, process.platform === "win32" ? "junction" : "dir");
+    await assert.rejects(() => initializeAgentProject({ cwd: linked, homedir: home, agentName: "agent", exactVersion: "0.32.1" }), /project|linked|junction|unsafe/i);
+    await assert.rejects(readdir(path.join(target, ".reelier")), { code: "ENOENT" });
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
