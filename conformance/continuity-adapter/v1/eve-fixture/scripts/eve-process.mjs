@@ -23,6 +23,7 @@ export async function startEveProcess({ cwd, env }) {
       env,
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
+      detached: process.platform !== "win32",
     });
     capture(child.stdout, lines);
     capture(child.stderr, lines);
@@ -63,7 +64,7 @@ export async function stopEveProcess(child) {
       await new Promise((resolveExit) => forceTree.once("close", resolveExit));
     }
   } else {
-    child.kill("SIGTERM");
+    try { process.kill(-exactPid, "SIGTERM"); } catch (error) { if (error?.code !== "ESRCH") child.kill("SIGTERM"); }
     exited = await waitForExit(child, 5_000);
     if (!exited) {
       try { process.kill(exactPid, "SIGKILL"); } catch (error) { if (error?.code !== "ESRCH") throw error; }
@@ -82,7 +83,11 @@ export async function crashEveProcess(processHandle) {
     const code = await new Promise((resolveExit, reject) => { forceTree.once("error", reject); forceTree.once("close", resolveExit); });
     assert.equal(code, 0, `taskkill failed for exact Eve PID ${exactPid}`);
   } else {
-    try { process.kill(exactPid, "SIGKILL"); } catch (error) { if (error?.code !== "ESRCH") throw error; }
+    try { process.kill(-exactPid, "SIGKILL"); } catch (error) {
+      if (error?.code === "ESRCH") {
+        try { process.kill(exactPid, "SIGKILL"); } catch (fallback) { if (fallback?.code !== "ESRCH") throw fallback; }
+      } else throw error;
+    }
   }
   assert.equal(await waitForExit(child, 5_000), true, `exact Eve PID ${exactPid} survived the crash cut`);
   await waitForListenerClosed(url, processHandle.http);
