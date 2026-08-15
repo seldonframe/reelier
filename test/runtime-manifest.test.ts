@@ -60,6 +60,29 @@ test("runtime manifest refuses credential-bearing and embedded endpoint argument
   ]) assert.throws(() => parseRuntimeDescriptorV1({ ...local(), args: [argument] }), TypeError, argument);
 });
 
+test("runtime manifest refuses absolute and traversing argument paths on POSIX and Windows", () => {
+  for (const argument of [
+    "--config=../../outside", "--config=../outside", "nested/../../../outside", "../private.pem",
+    "/etc/passwd", "/home/operator/private.pem", "C:/Users/operator/private.pem", "C:\\Users\\operator\\private.pem",
+    "\\\\server\\share\\private.pem",
+  ]) assert.throws(() => parseRuntimeDescriptorV1({ ...local(), args: [argument] }), TypeError, argument);
+});
+
+test("runtime manifest refuses authentication header cookie and credential-value channels", () => {
+  for (const argument of [
+    "--header=Authorization:opaque-value", "--header=X-Api-Key:opaque-value", "-H=Cookie:sessionid=opaque-value",
+    "--cookie=sessionid=opaque-value", "--auth=opaque-value", "--authorization=Bearer-opaque-value",
+    "--cert=project/client.pem", "--key=project/private.pem", "--user=operator:opaque-value",
+  ]) assert.throws(() => parseRuntimeDescriptorV1({ ...local(), args: [argument] }), TypeError, argument);
+});
+
+test("runtime manifest freezes structurally safe flags identifiers and confined paths for adapter validation", () => {
+  const args = ["--serve", "agent_1", "serve-mode", "agent.json", "profiles/agent_1.json", "."];
+  const parsed = parseRuntimeDescriptorV1({ ...local(), args });
+  assert.deepEqual(parsed.args, args);
+  assert.ok(Object.isFrozen(parsed.args));
+});
+
 test("local and externally managed descriptor fields cannot be mixed", () => {
   assert.throws(() => parseRuntimeDescriptorV1({ ...local(), launchMode: "externally-managed" }), TypeError);
   const external = { ...local(), launchMode: "externally-managed", command: null, args: [], cwd: null, connectionRef: "runtime_1", environmentAllowlist: [], authenticatedBinding: "host-private", shutdown: "external" };
