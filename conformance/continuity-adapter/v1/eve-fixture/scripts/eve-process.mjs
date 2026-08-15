@@ -75,11 +75,12 @@ export async function stopEveProcess(child) {
       await new Promise((resolveExit) => forceTree.once("close", resolveExit));
     }
   } else {
-    try { process.kill(-exactPid, "SIGTERM"); } catch (error) { if (error?.code !== "ESRCH") child.kill("SIGTERM"); }
-    exited = await waitForExit(child, 5_000);
-    if (!exited) {
-      try { process.kill(exactPid, "SIGKILL"); } catch (error) { if (error?.code !== "ESRCH") throw error; }
+    signalProcessGroup(exactPid, "SIGTERM");
+    if (!await waitForProcessGroupExit(exactPid, 5_000)) {
+      signalProcessGroup(exactPid, "SIGKILL");
     }
+    assert.equal(await waitForProcessGroupExit(exactPid, 5_000), true, `Eve process group ${exactPid} survived forced stop`);
+    exited = await waitForExit(child, 5_000);
   }
   assert.equal(exited || await waitForExit(child, 5_000), true, `exact Eve PID ${exactPid} survived graceful stop`);
   const listener = listenerByChild.get(child);
@@ -462,6 +463,9 @@ async function unusedLoopbackPort() { const server = createServer(); await new P
 async function waitForHealth(baseUrl, child, token, http) { for (let attempt = 0; attempt < 600; attempt += 1) { if (child.exitCode !== null) throw new Error(`Eve dev exited before health (${child.exitCode})`); try { const health = await http.request(new URL("/eve/v1/health", baseUrl), { redirect: "error", signal: AbortSignal.timeout(500) }); const info = health.ok && token ? await http.request(new URL("/eve/v1/info", baseUrl), { redirect: "error", headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(500) }) : null; if (health.ok && info?.ok) return; } catch {} await delay(100); } throw new Error("Eve health timeout"); }
 async function waitForListenerClosed(baseUrl, http) { for (let attempt = 0; attempt < 100; attempt += 1) { try { await http.request(new URL("/eve/v1/health", baseUrl), { redirect: "error", signal: AbortSignal.timeout(200) }); } catch { return; } await delay(50); } throw new Error(`Eve listener survived exact tree termination at ${baseUrl}`); }
 async function waitForPath(path) { for (let attempt = 0; attempt < 600; attempt += 1) { try { await access(path); return; } catch {} await delay(50); } throw new Error(`expected crash-cut marker was not written: ${path}`); }
+function signalProcessGroup(pid, signal) { try { process.kill(-pid, signal); } catch (error) { if (error?.code !== "ESRCH") throw error; } }
+function processGroupExists(pid) { try { process.kill(-pid, 0); return true; } catch (error) { if (error?.code === "ESRCH") return false; throw error; } }
+async function waitForProcessGroupExit(pid, timeout) { const deadline = Date.now() + timeout; while (Date.now() < deadline) { if (!processGroupExists(pid)) return true; await delay(25); } return !processGroupExists(pid); }
 async function waitForExit(child, timeout) { if (child.exitCode !== null) return true; return new Promise((resolveExit) => { const timer = setTimeout(() => { child.off("close", close); resolveExit(false); }, timeout); timer.unref(); const close = () => { clearTimeout(timer); resolveExit(true); }; child.once("close", close); }); }
 const delay = (ms) => new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
 
