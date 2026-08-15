@@ -339,17 +339,22 @@ async function copyFixture(target, patchCheckpoint) {
   await symlink(resolve(sourceFixtureRoot, "node_modules"), resolve(target, "node_modules"), process.platform === "win32" ? "junction" : "dir");
   const agentPath = resolve(target, "agent/agent.ts");
   let source = await readFile(agentPath, "utf8");
+  source = source.replaceAll("\r\n", "\n");
   source = source.replace("model: mockModel(({ lastUserMessage, messages, toolResults }) => {", "model: mockModel({ modelId: process.env.REELIER_EVE_MODEL_ID ?? \"continuity-script-a\", respond: ({ lastUserMessage, messages, toolResults }) => {");
-  source = source.replace(/\n  \}\),\n\}\);\s*$/u, "\n  }}),\n});\n");
+  source = source.replace(/\r?\n\s*\}\),\s*\r?\n\}\);\s*$/u, "\n  }}),\n});\n");
   source = source.replace("expectedCursor: 0,", "expectedCursor: 1,");
   source = source.replace("events: [{\n    type: \"task.opened\",\n    eventId: \"event_eve_opened\",\n    outcome: \"Eve checkpoint outcome\",\n    completionProjection: \"The deterministic Eve conformance run completes without a failed action.\",\n    nonGoals: [\"external model calls\"],\n  }],", "events: [{ type: \"claim.recorded\", eventId: \"event_eve_checkpoint\", claimId: \"claim_eve_checkpoint\", statement: \"Checkpoint survived process termination.\", status: \"unchecked\", evidenceDigest: null }],");
   await writeFile(agentPath, source, "utf8");
   if (patchCheckpoint) {
     const toolPath = resolve(target, "agent/tools/continuity_checkpoint.ts");
     let toolSource = await readFile(toolPath, "utf8");
-    toolSource = toolSource.replace('import { defineTool } from "eve/tools";', 'import { access, writeFile } from "node:fs/promises";\nimport { defineTool } from "eve/tools";')
-      .replace("    const result = await continuityRuntime(ctx).checkpoint(checkpoint);", "    const result = await continuityRuntime(ctx).checkpoint(checkpoint);\n    if (process.env.REELIER_CHECKPOINT_CUT_MARKER) {\n      let cutAlreadyReached = false;\n      try { await access(process.env.REELIER_CHECKPOINT_CUT_MARKER); cutAlreadyReached = true; } catch {}\n      if (!cutAlreadyReached) {\n        await writeFile(process.env.REELIER_CHECKPOINT_CUT_MARKER, \"committed\\n\", \"utf8\");\n        await new Promise<never>(() => {});\n      }\n    }");
-    await writeFile(toolPath, toolSource, "utf8");
+    if (!toolSource.includes("REELIER_CHECKPOINT_CUT_MARKER")) {
+    toolSource = toolSource.replaceAll("\r\n", "\n").replace(/\s*const result = await continuityRuntime\(ctx\)\.checkpoint\(checkpoint\);/u, "    const result = await continuityRuntime(ctx).checkpoint(checkpoint);");
+    toolSource = toolSource.replace(/import \{ defineTool \} from "eve\/tools";\r?\n/u, 'import { access, writeFile } from "node:fs/promises";\nimport { defineTool } from "eve/tools";\n')
+      .replace(/    const result = await continuityRuntime\(ctx\)\.checkpoint\(checkpoint\);\r?\n/u, "    const result = await continuityRuntime(ctx).checkpoint(checkpoint);\n    if (process.env.REELIER_CHECKPOINT_CUT_MARKER) {\n      let cutAlreadyReached = false;\n      try { await access(process.env.REELIER_CHECKPOINT_CUT_MARKER); cutAlreadyReached = true; } catch {}\n      if (!cutAlreadyReached) {\n        await writeFile(process.env.REELIER_CHECKPOINT_CUT_MARKER, \"committed\\n\", \"utf8\");\n        await new Promise<never>(() => {});\n      }\n    }\n");
+    assert.equal(toolSource.includes("REELIER_CHECKPOINT_CUT_MARKER"), true, "checkpoint cut injection did not match fixture source");
+      await writeFile(toolPath, toolSource, "utf8");
+    }
   }
 }
 
