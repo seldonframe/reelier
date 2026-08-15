@@ -14,6 +14,8 @@ import {
   type ObservedActionV1,
 } from "./observation/index.js";
 import { agentSources, scanAgentSessions } from "./scan.js";
+import { createClaudeCodeRouteDiscoverySnapshotV1, createCodexRouteDiscoverySnapshotV1, createRouteDiscoveryAdapterRegistryV1, type HarnessRouteFindingV1 } from "./routes/adapters.js";
+import { discoverRouteCoverage } from "./routes/discovery.js";
 
 /** Closed, ordered checkpoints for the local inspection-only initializer. */
 export const INIT_CHECKPOINT_IDS = Object.freeze([
@@ -71,7 +73,7 @@ interface SanitizedStep {
   readonly readBackTools: readonly string[];
 }
 
-interface PathBCandidate {
+export interface PathBCandidate {
   readonly candidateId: string;
   readonly fingerprintDigest: string;
   readonly sourceAgents: readonly string[];
@@ -83,7 +85,7 @@ interface PathBCandidate {
   readonly observedAt: string;
 }
 
-interface PathBArtifact {
+export interface PathBArtifact {
   readonly v: "reelier.init-path-b/v1";
   readonly candidates: readonly PathBCandidate[];
   readonly limitations: readonly string[];
@@ -91,7 +93,7 @@ interface PathBArtifact {
 
 export type PathCClassification = "boundable" | "outcome-capable" | "shadow-only" | "unsupported";
 
-interface PathCConnectionSummary {
+export interface PathCConnectionSummary {
   readonly connectionDigest: string;
   readonly provider: string;
   readonly connectionKind: ConnectionInventoryEntryV1["connectionKind"];
@@ -103,7 +105,7 @@ interface PathCConnectionSummary {
   readonly reasonCodes: readonly string[];
 }
 
-interface PathCCandidateSummary {
+export interface PathCCandidateSummary {
   readonly candidateId: string;
   readonly shapeDigest: string;
   readonly classification: PathCClassification;
@@ -113,7 +115,7 @@ interface PathCCandidateSummary {
   readonly reasonCodes: readonly string[];
 }
 
-interface PathCArtifact {
+export interface PathCArtifact {
   readonly v: "reelier.init-path-c/v1";
   readonly connections: readonly PathCConnectionSummary[];
   readonly candidates: readonly PathCCandidateSummary[];
@@ -159,6 +161,13 @@ export interface InitializeInspectionOptions {
   readonly duringRecoveryCleanup?: () => void | Promise<void>;
   readonly afterArtifactWrite?: (id: InitCheckpointId) => void | Promise<void>;
   readonly afterCheckpoint?: (id: InitCheckpointId) => void | Promise<void>;
+  /** Present only for named bootstrap; bare inspection never writes this artifact. */
+  readonly namedBootstrapRouteDiscovery?: Readonly<{
+    agentName: string;
+    now: Date;
+    contractIdentityDigest: string;
+    findings: readonly HarnessRouteFindingV1[];
+  }>;
 }
 
 export type InitializeInspectionResult =
@@ -229,6 +238,10 @@ function canonicalFile(value: unknown): string {
 function validateOptions(options: InitializeInspectionOptions): void {
   if (!path.isAbsolute(options.cwd) || !path.isAbsolute(options.homedir)) throw new TypeError("initialization plan is invalid");
   if (options.authorityRoot !== undefined && !path.isAbsolute(options.authorityRoot)) throw new TypeError("initialization plan is invalid");
+  if (options.namedBootstrapRouteDiscovery) {
+    const named = options.namedBootstrapRouteDiscovery;
+    if (options.dryRun || !/^[A-Za-z0-9._~-]{1,128}$/.test(named.agentName) || !(named.now instanceof Date) || !Number.isFinite(named.now.getTime()) || !/^sha256:[0-9a-f]{64}$/.test(named.contractIdentityDigest) || !Array.isArray(named.findings)) throw new TypeError("named bootstrap route discovery is invalid");
+  }
   if (new Set(INIT_CHECKPOINT_IDS).size !== INIT_CHECKPOINT_IDS.length) throw new TypeError("initialization plan is invalid");
   for (const id of INIT_CHECKPOINT_IDS) {
     const artifact = ARTIFACTS[id];
@@ -624,6 +637,12 @@ async function runDry(options: InitializeInspectionOptions, dependencies: Initia
 
 /** Inspect all three Reelier paths locally. This function never deploys, gates, uploads, dispatches, or rewrites host configuration. */
 export async function initializeInspection(options: InitializeInspectionOptions): Promise<InitializeInspectionResult> {
+  const result = await initializeInspectionCore(options);
+  if (result.status === "complete" && options.namedBootstrapRouteDiscovery) await writeNamedBootstrapRouteCoverage(options, result.report, options.dependencies ?? defaultDependencies);
+  return result;
+}
+
+async function initializeInspectionCore(options: InitializeInspectionOptions): Promise<InitializeInspectionResult> {
   validateOptions(options);
   const dependencies = options.dependencies ?? defaultDependencies;
   const initDir = path.join(options.cwd, ".reelier", "init");
@@ -670,4 +689,35 @@ export async function initializeInspection(options: InitializeInspectionOptions)
   } finally {
     await release();
   }
+}
+
+async function writeNamedBootstrapRouteCoverage(options: InitializeInspectionOptions, report: InitializationReportV1, dependencies: InitializationDependencies): Promise<void> {
+  const named = options.namedBootstrapRouteDiscovery!;
+  const [codex, claude] = await Promise.all([
+    dependencies.collectCodexCoverage(options.homedir),
+    dependencies.collectClaudeCodeCoverage(options.cwd, options.homedir, {}),
+  ]);
+  const derived = inspectionRouteFindings(report);
+  const snapshots = [
+    createCodexRouteDiscoverySnapshotV1({ report: codex, observedAt: named.now.toISOString(), freshnessMs: 15 * 60_000, contractIdentityDigest: named.contractIdentityDigest, findings: [...derived, ...named.findings] }),
+    createClaudeCodeRouteDiscoverySnapshotV1({ view: claude, observedAt: named.now.toISOString(), freshnessMs: 5 * 60_000, contractIdentityDigest: named.contractIdentityDigest, findings: [] }),
+  ];
+  const rows = await discoverRouteCoverage({ registry: createRouteDiscoveryAdapterRegistryV1(), now: named.now, snapshots });
+  const bootstrapDir = path.join(options.cwd, ".reelier", "bootstrap");
+  await mkdir(bootstrapDir, { recursive: true });
+  await writeDurableAtomic(path.join(bootstrapDir, "route-coverage.json"), canonicalFile(rows));
+}
+
+function inspectionRouteFindings(report: InitializationReportV1): HarnessRouteFindingV1[] {
+  const findings: HarnessRouteFindingV1[] = [];
+  for (const candidate of report.pathB.candidates) findings.push({ kind: "replay-candidate", routeKey: candidate.candidateId, sourceRef: `path-b:${candidate.fingerprintDigest}` });
+  for (const connection of report.pathC.connections) {
+    const kind = connection.connectionKind === "host-private" ? "host-private" : connection.classification === "outcome-capable" ? "outcome-candidate" : connection.classification === "shadow-only" ? "shadow-candidate" : "unsupported-candidate";
+    findings.push({ kind, routeKey: connection.provider, sourceRef: `path-c:${connection.connectionDigest}` });
+  }
+  for (const candidate of report.pathC.candidates) {
+    const kind = candidate.classification === "outcome-capable" ? "outcome-candidate" : candidate.classification === "shadow-only" ? "shadow-candidate" : "unsupported-candidate";
+    findings.push({ kind, routeKey: candidate.candidateId, sourceRef: `path-c:${candidate.shapeDigest}` });
+  }
+  return findings;
 }
