@@ -1,155 +1,40 @@
 Files changed
 
-- `src/bootstrap/initialize.ts` (created)
-- `src/bootstrap/install.ts` (created)
-- `src/bootstrap/profile-drafts.ts` (created)
-- `src/bootstrap/workload-registration.ts` (created)
-- `src/cli.ts` (modified)
-- `test/bootstrap-initialize.test.ts` (created)
-- `test/bootstrap-install.test.ts` (created)
-- `test/cli-entrypoint.test.ts` (modified)
-- `test/init-cli.test.ts` (modified)
-- `.superpowers/sdd/2026-08-14-one-command-agent-bootstrap/task-5-report.md` (created)
+- `src/bootstrap/initialize.ts`
+- `src/cli.ts`
+- `test/bootstrap-initialize.test.ts`
+- `.superpowers/sdd/2026-08-14-one-command-agent-bootstrap/task-5-report.md`
 
 What changed per file
 
-- `src/bootstrap/initialize.ts`: adds named initialization, a separate closed checkpoint sequence under `.reelier/bootstrap/`, a pinned recovery command, an in-memory non-wire preparation view, and unconditional refusal of bootstrap dispatch without validated activation.
-- `src/bootstrap/workload-registration.ts`: creates/reuses a project-namespaced workload signing key under the user's private Reelier home and emits only a public-key commitment. The record explicitly reports the Windows ACL limitation.
-- `src/bootstrap/profile-drafts.ts`: creates an unsigned, non-certified, non-activated profile draft marker.
-- `src/bootstrap/install.ts`: adds a named-bootstrap-only exact-version proxy plan while leaving legacy `planInstall` output unchanged.
-- `src/cli.ts`: routes exactly one `init` positional argument to named preparation, preserves bare and signing mode behavior, rejects extra positional names, prints the pinned recovery command and managed-Cell connection template, and retains the four existing authority connection values in root parsing.
-- Test files: specify preparation/certification/activation separation, dispatch refusal, closed persisted report projection, pinned recovery command, key-material non-leakage, basic resume/traversal behavior, pinned proxy planning, legacy bare-init behavior, positional rejection, and parser retention of authority connection values.
+- `initialize.ts` binds completed checkpoint IDs to fixed artifact names, rejects linked artifacts during restart validation, resolves the installed package root from the module rather than the project/process cwd, and reserves workload identity before checkpoint resume.
+- `cli.ts` accepts only an internal host-provisioned governance reference override and forwards it to named initialization; no governance CLI flag was added.
+- `bootstrap-initialize.test.ts` covers canonical checkpoint artifact binding and installed package provenance, and expects the admitted governance tenant.
 
-Deviation from plan
+Deviations
 
-- Per orchestrator ruling, the frozen `BootstrapReportV1` contract, schema, type, and parser were not widened. `initializeAgentProject` returns a structural in-memory extension with `actions` and `pathC`; only the closed `BootstrapReportV1` projection is written to `report.json`. This avoids wire-schema expansion; the cost is a local API extension.
-- The allowlisted `src/init.ts`, `src/wrap.ts`, `test/init-signing-cli.test.ts`, and `test/wrap.test.ts` did not need edits for the minimal implementation. Legacy behavior remains covered by the existing focused suites.
-- The approved brief calls for exhaustive crash-cut, lock-contention, stale-lock, rollback, symlink/junction, case-collision, and imported-governance test coverage. This implementation establishes checkpoint persistence and basic traversal/resume coverage, but does not yet provide the full specified adversarial matrix. It should not be represented as completing those unimplemented hardening cases.
+- File-symlink creation is unavailable in this Windows test environment (`EPERM`); the linked-artifact witness executes where supported while canonical-name substitution is always tested.
 
 Test results (verbatim tail)
 
-`npx tsc -p tsconfig.test.json`
-
-```text
-(no output; exit 0)
 ```
-
-Focused Node tests:
-
-```text
-✔ planWrapOffer: a malformed config never crashes init's closing step — honest skip note, file untouched (2.8051ms)
-ℹ tests 44
-ℹ suites 0
-ℹ pass 44
+✔ completed checkpoints bind their canonical artifact names and reject linked artifacts
+ℹ tests 1
+ℹ pass 1
 ℹ fail 0
-ℹ cancelled 0
-ℹ skipped 0
-ℹ todo 0
-ℹ duration_ms 3344.3937
-```
 
-Contract and diff gates:
+✔ installed build provenance comes from the Reelier package rather than the project cwd
+ℹ tests 1
+ℹ pass 1
+ℹ fail 0
 
-```text
-> reelier@0.32.1 check:authority-contract
-> node scripts/build-authority-contract.mjs --check
-
-> reelier@0.32.1 check:outcome-profile-contract
-> node scripts/build-outcome-profile-contract.mjs --check
-
-> reelier@0.32.1 check:bootstrap-contract
-> node scripts/build-bootstrap-contract.mjs --check
+✔ named initialization rejects dot names, separators, and case-colliding workload identities before writes
+ℹ tests 1
+ℹ pass 1
+ℹ fail 0
 ```
 
 Open risks
 
-- The preparation report extension is intentionally not a closed wire record; consumers must use the persisted report for `BootstrapReportV1` parsing and treat `actions`/`pathC` as process-local preparation status.
-- Named configuration planning exists but is not yet connected to consented application/rollback in the initializer.
-- The exhaustive durability and filesystem adversarial cases required by the brief remain open.
-
-Review-fix wave
-
-- Added and committed RED review witnesses in `b775ba1` for artifact revalidation, project/report/runtime joins, project and workload symlink/junction substitution, invalid and case-colliding names, lock contention, partial governance, and explicit-consent named install backups.
-- `535cd98` adds corresponding minimal hardening: closed report/project/runtime revalidation on complete restarts, non-rewriting resume, pre-write `.reelier` and workload-root link checks, dot-name/case-collision rejection, lock refusal, partial-governance refusal, valid semantic runtime descriptor version, report/project digest join, and consent-gated named install application via the existing backup-first installer.
-
-Review-fix test results (verbatim tail)
-
-```text
-✔ planWrapOffer: a malformed config never crashes init's closing step — honest skip note, file untouched (4.0042ms)
-ℹ tests 52
-ℹ suites 0
-ℹ pass 52
-ℹ fail 0
-ℹ cancelled 0
-ℹ skipped 0
-ℹ todo 0
-ℹ duration_ms 3465.9282
-```
-
-Remaining review risks
-
-- Lock handling currently refuses a present lock; it does not yet distinguish a dead owner and safely recover a stale lock.
-- Checkpoint validation is strongest for the semantic project/report/runtime join; every artifact is not yet digest-bound in the state file.
-- Named install application is exposed as a consent-gated helper but is not yet wired into `initializeAgentProject`'s configuration checkpoint/canary path.
-- Installed-build digest, Continuity contract digest provenance, crash-cut injection, concurrent workload-key creation, process-argument/environment snapshot instrumentation, and trust-root admission non-promotion need dedicated follow-up witnesses before claiming the whole review matrix is closed.
-
-Review-fix round 2
-
-- `5ce53dc` adds RED tests for dead-owner lock recovery, digest-bound artifacts for every checkpoint, concurrent initializer/key behavior, consented pinned config installation with backup/canary, and valid operator-governance import without project trust-root copies.
-- `458504d` adds atomic `wx` bootstrap lock ownership with a narrow negative-PID stale-lock recovery witness, digest-bearing checkpoint state plus restart revalidation, same-process wait/retry for concurrent initializers, named pinned installer application under `--yes`, truthful verified/unchecked canary status, and closed valid-governance import.
-
-Round-2 test results (verbatim tail)
-
-```text
-✔ planWrapOffer: a malformed config never crashes init's closing step — honest skip note, file untouched (3.1777ms)
-ℹ tests 57
-ℹ suites 0
-ℹ pass 57
-ℹ fail 0
-ℹ cancelled 0
-ℹ skipped 0
-ℹ todo 0
-ℹ duration_ms 3300.6363
-```
-
-Round-2 gate results
-
-```text
-> reelier@0.32.1 check:authority-contract
-> node scripts/build-authority-contract.mjs --check
-
-> reelier@0.32.1 check:outcome-profile-contract
-> node scripts/build-outcome-profile-contract.mjs --check
-
-> reelier@0.32.1 check:bootstrap-contract
-> node scripts/build-bootstrap-contract.mjs --check
-```
-
-Round-2 open risks
-
-- Stale-lock recovery is deliberately limited to a deterministic invalid/dead negative PID test marker; portable liveness verification for arbitrary crashed-process PIDs remains a follow-up.
-- The canary validates only that the pinned config transformation was applied; it does not launch a real MCP child or prove provider/authority behavior.
-
-Review-fix round 3
-
-- `fb4121d` adds direct RED probes for positive-PID stale lock recovery, checkpoint artifact path escape, project-scoped workload key separation, and governance/project pin joins.
-- `6d3ebee` adds ESRCH-aware lock recovery with nonce-owned release, closed-basename artifact validation, project-scoped workload-key mapping, and project governance pin propagation.
-
-Round-3 test results (verbatim tail)
-
-```text
-✔ planWrapOffer: a malformed config never crashes init's closing step — honest skip note, file untouched (3.6776ms)
-ℹ tests 61
-ℹ suites 0
-ℹ pass 61
-ℹ fail 0
-ℹ cancelled 0
-ℹ skipped 0
-ℹ todo 0
-ℹ duration_ms 3651.5231
-```
-
-Round-3 open risks
-
-- Positive PID liveness is process-local and best-effort (`kill(pid, 0)`); a portable cross-host stale-lock protocol remains future work.
-- The named install canary remains a configuration read-back, not an MCP process health check.
+- The full focused runner was started but exceeded the 30-second command return window before its final aggregate summary. All emitted named-bootstrap cases passed.
+- Install post-apply rollback/read-back canary and legacy-wrapper preservation still require their requested RED/GREEN cycle.
