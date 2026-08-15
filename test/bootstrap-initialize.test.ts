@@ -210,6 +210,16 @@ test("named init applies a consented project config plan with backup and records
   });
 });
 
+test("named install restores config after an injected post-apply failure and verifies by rereading bytes", async () => {
+  await withFixture(async options => {
+    const config = path.join(options.cwd, ".mcp.json");
+    const original = JSON.stringify({ mcpServers: { local: { command: "npx", args: ["-y", "@example/server"] } } });
+    await writeFile(config, original, "utf8");
+    await assert.rejects(() => initializeAgentProject({ ...options, failAfterInstall: true }), /installation failed/i);
+    assert.equal(await readFile(config, "utf8"), original);
+  });
+});
+
 test("a complete operator governance import is verified and reported without copying roots into the project", async () => {
   await withFixture(async options => {
     const fixture = await writeProfileGovernanceFixture(options.homedir);
