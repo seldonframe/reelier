@@ -43,11 +43,22 @@ export async function startEveProcess({ cwd, env }) {
 }
 
 export async function runEveCommand({ cwd, env, args }) {
-  const child = spawn(process.execPath, [eveCliPath, ...args], { cwd, env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+  const child = spawn(process.execPath, [eveCliPath, ...args], {
+    cwd,
+    env,
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
+    detached: process.platform !== "win32",
+  });
   let output = "";
   child.stdout?.on("data", (chunk) => { output = `${output}${String(chunk)}`.slice(-32_000); });
   child.stderr?.on("data", (chunk) => { output = `${output}${String(chunk)}`.slice(-32_000); });
   const code = await new Promise((resolveExit, reject) => { child.once("error", reject); child.once("close", resolveExit); });
+  if (process.platform !== "win32" && child.pid !== undefined) {
+    try { process.kill(-child.pid, "SIGTERM"); } catch (error) { if (error?.code !== "ESRCH") throw error; }
+    await delay(25);
+    try { process.kill(-child.pid, "SIGKILL"); } catch (error) { if (error?.code !== "ESRCH") throw error; }
+  }
   return Object.freeze({ code, output });
 }
 
